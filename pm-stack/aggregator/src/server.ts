@@ -83,12 +83,20 @@ import {
   upsertDecisionDrafts,
   validateDecisionDraftUpsert,
   validateDecisionSet,
+  withGeneratedSetId,
+  effectiveQuestionMode,
   type DecisionItem,
   type DecisionSet,
   type DecisionSetView,
   type DecisionSubmission,
   decisionsDraftScript,
 } from "./decisions.ts";
+import {
+  appendDecisionEvents,
+  readDecisionEvents,
+  validateDecisionEventInput,
+  type DecisionEventInput,
+} from "./decision-events.ts";
 import { listStackHealthDown, readStackHealthStates, setStackHealth, validateStackHealth } from "./stack-health.ts";
 import {
   buildHealth,
@@ -696,6 +704,44 @@ function decisionsPageUrl(set: DecisionSet): string {
   return `${cfg.publicOrigin}/decisions/${encodeURIComponent(set.setId)}?t=${set.token}`;
 }
 
+/** Append decision-set events (#9335 v2): best-effort — an event-log
+ * failure is logged and never fails the interaction it records. */
+async function logDecisionEvents(inputs: DecisionEventInput[]): Promise<void> {
+  if (!inputs.length) return;
+  try {
+    await appendDecisionEvents(cfg.decisionsEventsFile, cfg.decisionsOutboxFile, inputs);
+  } catch (err) {
+    console.error(`decision events: append failed (${err instanceof Error ? err.message : "error"})`);
+  }
+}
+
+function questionRefFor(
+  set: DecisionSet,
+  ledgerId: string,
+  qid: string,
+): { ledgerId: string; qid: string; questionIndex?: number } {
+  const item = set.items.find((i) => i.ledgerId === ledgerId);
+  const idx = item ? item.questions.findIndex((q) => q.qid === qid) : -1;
+  return { ledgerId, qid, ...(idx >= 0 ? { questionIndex: idx + 1 } : {}) };
+}
+
+function eventTypeForKind(kind: DecisionSubmission["kind"]): "submit" | "defer" | "request-info" {
+  return kind === "answered" ? "submit" : kind === "deferred" ? "defer" : "request-info";
+}
+
+function submissionEventPayload(sub: DecisionSubmission): Record<string, unknown> {
+  return {
+    kind: sub.kind,
+    ...(sub.optionId ? { optionId: sub.optionId } : {}),
+    ...(sub.optionIds ? { optionIds: sub.optionIds } : {}),
+    ...(sub.freeText ? { freeText: sub.freeText.slice(0, 2000) } : {}),
+    ...(sub.customAnswer ? { customAnswer: sub.customAnswer.slice(0, 2000) } : {}),
+    ...(sub.lean ? { lean: sub.lean } : {}),
+    ...(sub.note ? { note: sub.note.slice(0, 2000) } : {}),
+    ...(sub.comment ? { comment: sub.comment.slice(0, 2000) } : {}),
+  };
+}
+
 /** Parse a decisions submissions array — shared by /submit and by
  * /defer's filled-answers-win payload (#8766). */
 function parseDecisionSubmissions(
@@ -724,7 +770,11 @@ function parseDecisionSubmissions(
       qid,
       kind,
       ...(typeof s.optionId === "string" ? { optionId: s.optionId } : {}),
+      ...(Array.isArray(s.optionIds)
+        ? { optionIds: s.optionIds.filter((x): x is string => typeof x === "string") }
+        : {}),
       ...(typeof s.freeText === "string" ? { freeText: s.freeText } : {}),
+      ...(typeof s.customAnswer === "string" ? { customAnswer: s.customAnswer } : {}),
       ...(isDeferLean(s.lean) ? { lean: s.lean } : {}),
       ...(typeof s.note === "string" ? { note: s.note } : {}),
       ...(typeof s.comment === "string" ? { comment: s.comment } : {}),
@@ -753,6 +803,13 @@ const DECISIONS_PAGE_STYLE = `${ANSWER_PAGE_STYLE}<style>
   button.reqinfo { background: #8250df; margin-top: 0.4rem; }
   .bulkchk { font-size: 0.92rem; color: #9da7b1; }
   #status { min-height: 1.2em; }
+  .chip { display: inline-block; border: 1px solid #30363d; border-radius: 999px; padding: 0.05rem 0.5rem; font-size: 0.78rem; color: #9da7b1; margin: 0 0.25rem 0.25rem 0; }
+  .chip.reco { border-color: #238636; color: #3fb950; }
+  .desc { border: 1px solid #21262d; border-radius: 0.5rem; padding: 0.6rem 0.8rem; margin: 0.5rem 0; background: #0d1117; white-space: pre-wrap; color: #c9d1d9; }
+  .combo { color: #9da7b1; font-size: 0.85rem; }
+  .reco-note { color: #3fb950; font-size: 0.9rem; }
+  label.own { display: block; margin-top: 0.6rem; color: #9da7b1; font-size: 0.92rem; }
+  button.defaults { background: #238636; }
 </style>`;
 
 /** Render GET /decisions/<setId>. The caller has already verified the
@@ -780,24 +837,48 @@ function renderDecisionsPage(set: DecisionSet): string {
             ? `deferred to the orchestrator${r.lean && r.lean !== "none" ? ` (lean: ${esc(r.lean)})` : ""}${r.optionLabel ? ` — your tentative pick: ${esc(r.optionLabel)}` : ""}${r.comment ? ` — comment: ${esc(r.comment)}` : ""}`
             : r.kind === "request-info"
               ? `more information requested${r.note ? ` — you said: ${esc(r.note)}` : ""}`
-              : `answered${r.optionLabel ? `: ${esc(r.optionLabel)}` : r.freeText ? `: ${esc(r.freeText)}` : ""}`;
+              : `answered${
+                  r.optionLabels && r.optionLabels.length > 1
+                    ? `: ${esc(r.optionLabels.join(" + "))}`
+                    : r.optionLabel
+                      ? `: ${esc(r.optionLabel)}`
+                      : r.freeText
+                        ? `: ${esc(r.freeText)}`
+                        : ""
+                }${r.customAnswer ? ` — own answer: ${esc(r.customAnswer)}` : ""}`;
         return `<div class="done">✓ ${esc(q.question)} — ${what}</div>`;
       })
       .join("");
-    const questionBlocks = open
+    const sortedOpen = open
+      .map((q, i) => ({ q, i }))
+      .sort((a, b) => (a.q.order ?? a.i) - (b.q.order ?? b.i))
+      .map((x) => x.q);
+    const questionBlocks = sortedOpen
       .map((q) => {
-        const radios = q.options
-          .map(
-            (o) =>
-              `<label class="opt"><input type="radio" name="opt-${esc(q.qid)}" value="${esc(o.id)}">${esc(o.label)}</label>`,
-          )
+        const mode = effectiveQuestionMode(q);
+        const recommended = q.recommendedOptionIds ?? [];
+        const chips = (tags?: string[]): string =>
+          (tags ?? []).map((t) => `<span class="chip">${esc(t)}</span>`).join("");
+        const inputs = q.options
+          .map((o) => {
+            const combo =
+              o.combinationOf && o.combinationOf.length
+                ? ` <span class="combo">combines ${o.combinationOf
+                    .map((cid) => esc(q.options.find((x) => x.id === cid)?.label ?? cid))
+                    .join(" + ")}</span>`
+                : "";
+            const isReco = recommended.includes(o.id);
+            return `<label class="opt"><input class="optin" type="${mode === "multi" ? "checkbox" : "radio"}" name="opt-${esc(q.qid)}" value="${esc(o.id)}"${isReco ? ` checked data-recommended="1"` : ""}>${esc(o.label)}${isReco ? ` <span class="chip reco">recommended</span>` : ""}${chips(o.tags)}${combo}</label>`;
+          })
           .join("");
-        return `<div class="q" data-ledger="${esc(item.ledgerId)}" data-qid="${esc(q.qid)}">
-<p class="qq">${esc(q.question)}</p>
+        return `<div class="q" data-ledger="${esc(item.ledgerId)}" data-qid="${esc(q.qid)}" data-mode="${mode}" data-recommended="${esc(JSON.stringify(recommended))}">
+<p class="qq">${esc(q.question)}${chips(q.tags)}</p>
+${q.description ? `<div class="desc">${esc(q.description)}</div>` : ""}
 ${q.infoProvided ? `<div class="provided"><p class="ph">Information you requested</p><p>${esc(q.infoProvided)}</p></div>` : ""}
 ${q.context ? `<p class="context">${esc(q.context)}</p>` : ""}
-${radios}
-<textarea class="ft" placeholder="Answer in your own words, or a comment (sent back with any action on this question)"></textarea>
+${recommended.length ? `<p class="reco-note">Recommended default preselected — it is not recorded until you submit.</p>` : ""}
+${inputs}
+<label class="own">My own answer<textarea class="ft" placeholder="My own answer — or a comment (sent back with any action on this question)"></textarea></label>
 <select class="defer">
 <option value="">I'll answer this one</option>
 <option value="none">Defer</option>
@@ -822,6 +903,9 @@ ${questionBlocks}
     .map((g) => {
       const cards = set.items
         .filter((i) => i.group === g)
+        .map((item, i) => ({ item, i }))
+        .sort((a, b) => (a.item.order ?? a.i) - (b.item.order ?? b.i))
+        .map((x) => x.item)
         .map(itemCard)
         .join("");
       return cards ? `<div class="group">${esc(g)}</div>${cards}` : "";
@@ -836,6 +920,8 @@ ${caughtUp ? `<div class="confirm"><p>All caught up — every question in this s
 <div class="bar">
 <p class="context">Bulk actions</p>
 <button class="submit" type="button" id="submitAll">Submit everything I've filled in</button>
+<button class="submit defaults" type="button" id="submitDefaults">Submit defaults</button>
+<p class="context">Submit defaults records the raiser's recommended preselection for every open question that has one (plus any "my own answer" text you typed on those questions). Preselected defaults are shown selected, but they are NOT an answer until you submit them.</p>
 <p class="context">Defer checked items to the orchestrator instead of answering — they leave this page and become the orchestrator's job. Precedence per question: (1) the question's own defer setting wins, with its tentative pick and comment riding along as guidance; (2) a filled-in answer submits as an answer; (3) only a question nobody touched uses the default flavor picked here:</p>
 <select class="defer" id="bulkLean">
 <option value="none">Defer</option>
@@ -853,6 +939,16 @@ ${caughtUp ? `<div class="confirm"><p>All caught up — every question in this s
 var TOKEN = ${JSON.stringify(set.token)};
 var SET_ID = ${JSON.stringify(set.setId)};
 function status(msg) { document.getElementById('status').textContent = msg; }
+function pickedValues(block) {
+  var vals = [];
+  block.querySelectorAll('input.optin:checked').forEach(function (i) { vals.push(i.value); });
+  return vals;
+}
+function applySelection(sub, block, vals) {
+  if (!vals.length) return;
+  if (block.getAttribute('data-mode') === 'multi') sub.optionIds = vals;
+  else sub.optionId = vals[0];
+}
 function collect(scopeLedger) {
   var subs = [];
   document.querySelectorAll('.q').forEach(function (block) {
@@ -862,18 +958,17 @@ function collect(scopeLedger) {
     var lean = block.querySelector('select.defer').value;
     if (lean) {
       var dsub = { ledgerId: ledger, qid: qid, kind: 'deferred', lean: lean };
-      var dpick = block.querySelector('input[type=radio]:checked');
-      if (dpick) dsub.optionId = dpick.value;
+      applySelection(dsub, block, pickedValues(block));
       var dtext = block.querySelector('textarea.ft').value.trim();
       if (dtext) dsub.comment = dtext;
       subs.push(dsub); return;
     }
-    var picked = block.querySelector('input[type=radio]:checked');
+    var vals = pickedValues(block);
     var text = block.querySelector('textarea.ft').value.trim();
-    if (picked || text) {
+    if (vals.length || text) {
       var sub = { ledgerId: ledger, qid: qid, kind: 'answered' };
-      if (picked) sub.optionId = picked.value;
-      if (text) sub.freeText = text;
+      applySelection(sub, block, vals);
+      if (text) { sub.freeText = text; sub.customAnswer = text; }
       subs.push(sub);
     }
   });
@@ -941,16 +1036,15 @@ async function sendBack(all) {
     var text = block.querySelector('textarea.ft').value.trim();
     if (qlean) {
       var dsub = { ledgerId: ledger, qid: qid, kind: 'deferred', lean: qlean };
-      var dpick = block.querySelector('input[type=radio]:checked');
-      if (dpick) dsub.optionId = dpick.value;
+      applySelection(dsub, block, pickedValues(block));
       if (text) dsub.comment = text;
       subs.push(dsub); return;
     }
-    var picked = block.querySelector('input[type=radio]:checked');
-    if (picked || text) {
+    var vals = pickedValues(block);
+    if (vals.length || text) {
       var sub = { ledgerId: ledger, qid: qid, kind: 'answered' };
-      if (picked) sub.optionId = picked.value;
-      if (text) sub.freeText = text;
+      applySelection(sub, block, vals);
+      if (text) { sub.freeText = text; sub.customAnswer = text; }
       subs.push(sub);
     }
   });
@@ -1004,6 +1098,56 @@ document.querySelectorAll('[data-reqinfo]').forEach(function (b) {
   b.addEventListener('click', function () { requestInfoOne(b.closest('.q')); });
 });
 document.getElementById('reqinfoChecked').addEventListener('click', requestInfoChecked);
+async function submitDefaults() {
+  var subs = [];
+  document.querySelectorAll('.q').forEach(function (block) {
+    var reco = [];
+    try { reco = JSON.parse(block.getAttribute('data-recommended') || '[]'); } catch (e) { reco = []; }
+    if (!reco.length) return;
+    var sub = { ledgerId: block.getAttribute('data-ledger'), qid: block.getAttribute('data-qid'), kind: 'answered' };
+    if (block.getAttribute('data-mode') === 'multi') sub.optionIds = reco; else sub.optionId = reco[0];
+    var text = block.querySelector('textarea.ft').value.trim();
+    if (text) { sub.freeText = text; sub.customAnswer = text; }
+    subs.push(sub);
+  });
+  if (!subs.length) { status('No recommended defaults in this set.'); return; }
+  status('Submitting defaults…');
+  try {
+    var out = await post('/api/decisions/' + encodeURIComponent(SET_ID) + '/submit', { submissions: subs });
+    applyOpenState(out);
+    var applied = out.outcomes.filter(function (o) { return o.applied; }).length;
+    status('Recorded ' + applied + ' default(s) — ' + out.remainingOpenQuestions + ' question(s) still open.');
+  } catch (e) { status('Sending failed — please try again.'); }
+}
+var defaultsBtn = document.getElementById('submitDefaults');
+if (defaultsBtn) defaultsBtn.addEventListener('click', submitDefaults);
+// --- Draft event reporting (#9335): typed-but-not-submitted changes are
+// events too. Debounced per question (2.5s of inactivity), never per
+// keystroke; the server drafts push remains the durable state copy.
+var draftEventTimers = {};
+function reportDraftEvent(block) {
+  var qid = block.getAttribute('data-qid');
+  if (!qid) return;
+  if (draftEventTimers[qid]) clearTimeout(draftEventTimers[qid]);
+  draftEventTimers[qid] = setTimeout(function () {
+    var payload = { selected: pickedValues(block) };
+    var ft = block.querySelector('textarea.ft');
+    if (ft && ft.value.trim()) payload.customAnswer = ft.value.trim().slice(0, 2000);
+    var leanEl = block.querySelector('select.defer');
+    if (leanEl && leanEl.value) payload.lean = leanEl.value;
+    var noteEl = block.querySelector('textarea.infonote');
+    if (noteEl && noteEl.value.trim()) payload.note = noteEl.value.trim().slice(0, 2000);
+    try {
+      fetch('/api/decisions/' + encodeURIComponent(SET_ID) + '/events', {
+        method: 'POST', headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ token: TOKEN, events: [{ type: 'draft', questionRef: { ledgerId: block.getAttribute('data-ledger'), qid: qid }, payload: payload }] }),
+        keepalive: true
+      }).catch(function () {});
+    } catch (e) { /* events are best-effort */ }
+  }, 2500);
+}
+document.addEventListener('input', function (e) { var b = e.target && e.target.closest ? e.target.closest('.q') : null; if (b) reportDraftEvent(b); });
+document.addEventListener('change', function (e) { var b = e.target && e.target.closest ? e.target.closest('.q') : null; if (b) reportDraftEvent(b); });
 ${decisionsDraftScript(set.setId)}
 </script>
 </main></body></html>`;
@@ -3028,7 +3172,23 @@ async function handler(req: Request): Promise<Response> {
         const v = validateDecisionSet(ext.decisionSet);
         if (!v.ok) return json({ error: v.error }, 400);
         try {
+          const beforeSet = await getDecisionSet(cfg.decisionsFile, v.value.setId).catch(() => null);
           const set = await raiseDecisionSet(cfg.decisionsFile, v.value, parsed.value.source);
+          if (!beforeSet) {
+            await logDecisionEvents([
+              {
+                setId: set.setId,
+                type: "set.created",
+                payload: {
+                  via: "api/alerts",
+                  source: parsed.value.source,
+                  title: set.title,
+                  items: set.items.length,
+                  questions: set.items.reduce((n, i) => n + i.questions.length, 0),
+                },
+              },
+            ]);
+          }
           requestAlertTick();
           return json({ incident, created, decisionSet: { setId: set.setId, pageUrl: decisionsPageUrl(set) } }, status);
         } catch (err) {
@@ -3095,6 +3255,114 @@ async function handler(req: Request): Promise<Response> {
     if (!item || !token || token !== item.token) return html(renderAnswerForbidden(), 403);
     return html(renderAnswerPage(item));
   }
+  // --- Decision-set submit API + event log (#9335 v2) -----------------
+  // POST /api/decision-sets (alias: /api/decision-sets/submit): the
+  // authenticated submit API. Intake-bearer auth, the same token as
+  // /api/alerts. Body: the bare v2 set object or { decisionSet: {...} }
+  // (a sibling `source` string is honored). setId may be omitted — a
+  // UUID is minted. The response returns the setId and the full token
+  // page URL to the authenticated submitter ONLY; the URL is never
+  // logged. Exactly one push per set: a fresh raise requests the alert
+  // tick exactly like the /api/alerts decisionSet path; a re-submit of
+  // an existing setId is idempotent and sends no second push.
+  if (req.method === "POST" && (path === "/api/decision-sets" || path === "/api/decision-sets/submit")) {
+    if (!(await alertsIntakeAuthorized(req))) return json({ error: "unauthorized" }, 401);
+    let rawBody: unknown;
+    try {
+      rawBody = await readJsonBody(req);
+    } catch {
+      return json({ error: "invalid submit body" }, 400);
+    }
+    const prepared = withGeneratedSetId(rawBody);
+    const ext =
+      prepared && typeof prepared === "object" && !Array.isArray(prepared)
+        ? (prepared as Record<string, unknown>)
+        : {};
+    const candidate = ext.decisionSet !== undefined ? ext.decisionSet : prepared;
+    const v = validateDecisionSet(candidate);
+    if (!v.ok) return json({ error: v.error }, 400);
+    const source = typeof ext.source === "string" && ext.source ? ext.source : "decisions-ledger";
+    const before = await getDecisionSet(cfg.decisionsFile, v.value.setId).catch(() => null);
+    try {
+      const set = await raiseDecisionSet(cfg.decisionsFile, v.value, source);
+      if (!before) {
+        await logDecisionEvents([
+          {
+            setId: set.setId,
+            type: "set.created",
+            payload: {
+              via: "api/decision-sets",
+              source,
+              title: set.title,
+              items: set.items.length,
+              questions: set.items.reduce((n, i) => n + i.questions.length, 0),
+            },
+          },
+        ]);
+        requestAlertTick();
+      }
+      const pageUrl = decisionsPageUrl(set);
+      return json({ setId: set.setId, pageUrl, url: pageUrl, created: !before }, before ? 200 : 201);
+    } catch (err) {
+      console.error(`decision-sets submit: raise failed (${err instanceof Error ? err.message : "error"})`);
+      return json({ error: "decision set raise failed" }, 500);
+    }
+  }
+  // Decision-set events: read (activity processor polling) + report
+  // (the page's draft/edit events). Two prefixes name the same routes:
+  // /api/decision-sets/<setId>/events (the documented contract) and
+  // /api/decisions/<setId>/events (the page's own prefix).
+  // Auth: the intake bearer OR the per-set token (as ?t=, as a bearer,
+  // or — for POST — as body.token). Nothing about the set's events is
+  // served without one of them.
+  const decisionEventsMatch = /^\/api\/(?:decision-sets|decisions)\/([^/]+)\/events$/.exec(path);
+  if ((req.method === "GET" || req.method === "POST") && decisionEventsMatch) {
+    const setId = decodePathSegment(decisionEventsMatch[1]);
+    if (setId === null) return json({ error: "bad setId" }, 400);
+    const set = await getDecisionSet(cfg.decisionsFile, setId).catch(() => null);
+    if (!set) return json({ error: "unknown set" }, 404);
+    const bearer = (req.headers.get("authorization") ?? "").replace(/^Bearer\s+/i, "").trim();
+    const tokenOk = (t: unknown): boolean => typeof t === "string" && t.length > 0 && t === set.token;
+    if (req.method === "GET") {
+      const qToken = url.searchParams.get("t") ?? "";
+      if (!tokenOk(qToken) && !tokenOk(bearer) && !(await alertsIntakeAuthorized(req))) {
+        return json({ error: "unknown set or bad token" }, 403);
+      }
+      const since = url.searchParams.get("since") ?? undefined;
+      const limitRaw = Number(url.searchParams.get("limit") ?? "");
+      const page = await readDecisionEvents(cfg.decisionsEventsFile, setId, {
+        since,
+        ...(Number.isFinite(limitRaw) && limitRaw > 0 ? { limit: limitRaw } : {}),
+      });
+      return json({ setId, events: page.events, nextCursor: page.nextCursor, count: page.count });
+    }
+    let evBody: { token?: unknown; events?: unknown };
+    try {
+      evBody = (await readJsonBody(req)) as typeof evBody;
+    } catch {
+      return json({ error: "invalid events body" }, 400);
+    }
+    if (!tokenOk(evBody.token) && !tokenOk(bearer) && !(await alertsIntakeAuthorized(req))) {
+      return json({ error: "unknown set or bad token" }, 403);
+    }
+    if (!Array.isArray(evBody.events) || evBody.events.length < 1 || evBody.events.length > 32) {
+      return json({ error: "events must be an array of 1-32 entries" }, 400);
+    }
+    const inputs: DecisionEventInput[] = [];
+    for (const rawEv of evBody.events) {
+      const ve = validateDecisionEventInput(rawEv);
+      if (!ve.ok) return json({ error: ve.error }, 400);
+      inputs.push({
+        setId,
+        type: ve.value.type,
+        ...(ve.value.questionRef ? { questionRef: ve.value.questionRef } : {}),
+        payload: ve.value.payload,
+      });
+    }
+    const stored = await appendDecisionEvents(cfg.decisionsEventsFile, cfg.decisionsOutboxFile, inputs).catch(() => null);
+    if (!stored) return json({ error: "event append failed" }, 500);
+    return json({ appended: stored.length, eventIds: stored.map((e) => e.eventId) });
+  }
   // --- Decision sets (#8766) -------------------------------------------
   // --- Decision-sets index (#8867) --------------------------------------
   // GET /decisions: every set in the store, counts computed live at
@@ -3137,6 +3405,19 @@ async function handler(req: Request): Promise<Response> {
     if (!parsedSubs.ok) return json({ error: parsedSubs.error }, 400);
     const result = await recordResolutions(cfg.decisionsFile, setId, parsedSubs.value);
     if (!result) return json({ error: "unknown set" }, 404);
+    await logDecisionEvents(
+      result.outcomes
+        .filter((o) => o.applied)
+        .map((o) => {
+          const sub = parsedSubs.value.find((x) => x.qid === o.qid)!;
+          return {
+            setId,
+            type: eventTypeForKind(sub.kind),
+            questionRef: questionRefFor(set, sub.ledgerId, sub.qid),
+            payload: submissionEventPayload(sub),
+          } satisfies DecisionEventInput;
+        }),
+    );
     return json({ outcomes: result.outcomes, ...decisionSetOpenState(result.set) });
   }
   const decisionsDeferMatch = /^\/api\/decisions\/([^/]+)\/defer$/.exec(path);
@@ -3189,6 +3470,28 @@ async function handler(req: Request): Promise<Response> {
       typeof body.comment === "string" ? body.comment : undefined,
     );
     if (!result) return json({ error: "unknown set" }, 404);
+    await logDecisionEvents([
+      ...result.outcomes
+        .filter((o) => o.applied)
+        .map((o) => {
+          const sub = submissions.find((x) => x.qid === o.qid)!;
+          return {
+            setId,
+            type: eventTypeForKind(sub.kind),
+            questionRef: questionRefFor(set, sub.ledgerId, sub.qid),
+            payload: submissionEventPayload(sub),
+          } satisfies DecisionEventInput;
+        }),
+      ...(result.deferredCount > 0
+        ? [
+            {
+              setId,
+              type: "defer" as const,
+              payload: { bulk: true, deferredCount: result.deferredCount, lean: body.lean as string, scope: all ? "allRemaining" : "checked" },
+            } satisfies DecisionEventInput,
+          ]
+        : []),
+    ]);
     return json({
       outcomes: result.outcomes,
       deferredCount: result.deferredCount,
@@ -3224,6 +3527,20 @@ async function handler(req: Request): Promise<Response> {
       typeof body.note === "string" ? body.note : undefined,
     );
     if (!result) return json({ error: "unknown set" }, 404);
+    if (result.requestedCount > 0) {
+      await logDecisionEvents([
+        {
+          setId,
+          type: "request-info",
+          payload: {
+            bulk: true,
+            requestedCount: result.requestedCount,
+            scope: all ? "allRemaining" : "checked",
+            ...(typeof body.note === "string" && body.note ? { note: body.note.slice(0, 2000) } : {}),
+          },
+        },
+      ]);
+    }
     return json({ requestedCount: result.requestedCount, ...decisionSetOpenState(result.set) });
   }
 
@@ -3258,6 +3575,24 @@ async function handler(req: Request): Promise<Response> {
     if (!parsedDrafts.ok) return json({ error: parsedDrafts.error }, 400);
     const result = await upsertDecisionDrafts(cfg.decisionsFile, setId, parsedDrafts.value);
     if (!result) return json({ error: "unknown set" }, 404);
+    await logDecisionEvents(
+      result.applied.map((qid) => {
+        const entry = result.drafts.questions[qid];
+        const ledgerId = qid.slice(0, qid.lastIndexOf("#")) || qid;
+        return {
+          setId,
+          type: "draft" as const,
+          questionRef: questionRefFor(set, ledgerId, qid),
+          payload: {
+            ...(entry?.opt ? { opt: entry.opt } : {}),
+            ...(entry?.opts ? { opts: entry.opts } : {}),
+            ...(entry?.ft ? { freeText: entry.ft.slice(0, 2000) } : {}),
+            ...(entry?.lean ? { lean: entry.lean } : {}),
+            ...(entry?.note ? { note: entry.note.slice(0, 2000) } : {}),
+          },
+        } satisfies DecisionEventInput;
+      }),
+    );
     return json({ drafts: result.drafts, applied: result.applied, skipped: result.skipped });
   }
   const alertActionMatch = /^\/api\/alerts\/([\w-]+)\/(ack|close)$/.exec(path);
