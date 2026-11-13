@@ -1,0 +1,132 @@
+{
+  "canonical_records": 1496,
+  "source_ids_unique": true,
+  "canonical_group_ids_unique": 1345,
+  "member_outcomes": 1825,
+  "member_ids_unique": true,
+  "member_record_class_counts": {
+    "normative-or-proposed": 1825
+  },
+  "member_oracle_status_counts": {
+    "source-specific-oracle-present": 1825
+  },
+  "source_commit": "34faffbff26615e313488f6d04705a444342e41e",
+  "source_root": "doc/2026-11-13T01-34-11Z_design_fleet_ca_credentials_secrets/source-snapshots/intake-34faffbff2/sources",
+  "record_class_counts": {
+    "context/admin": 21,
+    "normative-or-proposed": 935,
+    "historical": 540
+  },
+  "oracle_status_counts": {
+    "not-applicable-nonnormative": 522,
+    "source-specific-oracle-present": 935,
+    "not-applicable-superseded-witness": 39
+  },
+  "oracle_gap_count": 0,
+  "oracle_gaps": [],
+  "granularity_status_counts": {
+    "explicit-history-context-admin": 519,
+    "aggregate-section-witness": 10,
+    "atomic-record": 550,
+    "aggregate-source-witness": 187,
+    "reviewed-cohesive-parameterized-oracle": 47,
+    "superseded-residual-witness": 39,
+    "register-atomic-outcome": 49,
+    "aggregate-register-witness": 34,
+    "register-atomic-requirement": 61
+  },
+  "atomicity_gap_count": 0,
+  "atomicity_gaps": [],
+  "source_files": [
+    {
+      "source": "ADDENDUM_secrets_architecture_performance_infrastructure.md",
+      "lines": 114,
+      "nonblank_lines": 113,
+      "mapped_nonblank_lines": 113,
+      "unmapped_nonblank_lines": [],
+      "sha256": "a84b7885cc6c19707b6ff0a8f77460af06b9c8ad80cd554053f01dc40942ea20"
+    },
+    {
+      "source": "COMPANION_pm_charter_shared_conventions.md",
+      "lines": 196,
+      "nonblank_lines": 127,
+      "mapped_nonblank_lines": 127,
+      "unmapped_nonblank_lines": [],
+      "sha256": "e61767fbbfcc18c49c4475c8ec101de430f07b1eb74e5d1dec5a12eb05d7fb21"
+    },
+    {
+      "source": "COORDINATOR_summit_handoff.md",
+      "lines": 389,
+      "nonblank_lines": 279,
+      "mapped_nonblank_lines": 279,
+      "unmapped_nonblank_lines": [],
+      "sha256": "a9ffa05e429d16332e6c012c3f648c2637e8e1232522b223426c34665181f3b9"
+    },
+    {
+      "source": "DECISION_REVIEW_AND_NEXT_STEPS.md",
+      "lines": 57,
+      "nonblank_lines": 41,
+      "mapped_nonblank_lines": 41,
+      "unmapped_nonblank_lines": [],
+      "sha256": "9ddfd578f21bdd67b0497d3e36c0fe9e471feb0c2e38067efbb4caa66826d85d"
+    },
+    {
+      "source": "HANDOFF_claude_fleet_ca_credentials_secrets.md",
+      "lines": 71,
+      "nonblank_lines": 43,
+      "mapped_nonblank_lines": 43,
+      "unmapped_nonblank_lines": [],
+      "sha256": "024f5119d0c8a8a2b6adb5ef609885f13a7bebe862c16e3b19eb2f907480236f"
+    },
+    {
+      "source": "README.md",
+      "lines": 26,
+      "nonblank_lines": 17,
+      "mapped_nonblank_lines": 17,
+      "unmapped_nonblank_lines": [],
+      "sha256": "c372a6ec1c51e1a794d0d3610f31f7fe2c13a8d7e26837d2339a144f7409d81e"
+    },
+    {
+      "source": "SECRETS_BACKEND_RESEARCH_2026-11-06.md",
+      "lines": 157,
+      "nonblank_lines": 117,
+      "mapped_nonblank_lines": 117,
+      "unmapped_nonblank_lines": [],
+      "sha256": "551fb17f423a4b5151d915a7ac4d206d858d7c899a7f075d90caddb31680b449"
+    },
+    {
+      "source": "SHA256SUMS",
+      "lines": 5,
+      "nonblank_lines": 5,
+      "mapped_nonblank_lines": 5,
+      "unmapped_nonblank_lines": [],
+      "sha256": "f1f24d1bec999a23739ddcba1f1336cbcbaf5a212e025137a0bec1e8f27ba337"
+    },
+    {
+      "source": "fleet_agent_handoff_prompt_v0_3.md",
+      "lines": 104,
+      "nonblank_lines": 60,
+      "mapped_nonblank_lines": 60,
+      "unmapped_nonblank_lines": [],
+      "sha256": "638be8f7d17f1a738fb4fc1ff8f196c4c4b2adef4dbef7487f8b0d029437da71"
+    },
+    {
+      "source": "fleet_architecture_spec_v0_3.md",
+      "lines": 2788,
+      "nonblank_lines": 2119,
+      "mapped_nonblank_lines": 2119,
+      "unmapped_nonblank_lines": [],
+      "sha256": "a17559474cc82992edf374615c28547dcbbdfe051481bae41cc0bfece018e6bb"
+    },
+    {
+      "source": "source_input_3_architectural_perspective.txt",
+      "lines": 1796,
+      "nonblank_lines": 1183,
+      "mapped_nonblank_lines": 1183,
+      "unmapped_nonblank_lines": [],
+      "sha256": "4266154d2fc67cc28d033beff65fe1d6a78b170728dc44b8e24934871957022e"
+    }
+  ],
+  "register_anchor_audit": "Run audit_register_anchors.py; expected 158 register rows / zero anchor errors.",
+  "proposal_mapping": "Not performed; parent will launch a separate proposal mapper after canonical freeze."
+}

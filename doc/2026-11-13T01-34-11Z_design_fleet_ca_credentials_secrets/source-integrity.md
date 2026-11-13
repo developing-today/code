@@ -45,6 +45,11 @@ snapshot hashes are in the provenance record, not falsely attributed to the
 supplied manifest. The original ZIP was not re-fetched by this continuation;
 its earlier verified receipt remains in `note.md`.
 
+The original intake `note.md` is also preserved one level above the snapshot's
+`sources/` directory, with its own auxiliary provenance entry. This supports
+the corrective #6767 evidence row's exact original-note witness; it is not a
+twelfth package input or a new independently verified deployment claim.
+
 ## Citation and validation contract
 
 - `source_file_and_section` filenames and source line ranges refer to this

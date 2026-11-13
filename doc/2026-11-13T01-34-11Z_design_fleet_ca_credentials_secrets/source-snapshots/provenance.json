@@ -2,6 +2,13 @@
   "source_commit": "34faffbff26615e313488f6d04705a444342e41e",
   "formatter_commit": "8d0921ba60",
   "method": "copy original Git blobs to new paths; preserve upstream files unchanged",
+  "auxiliary_intake_note": {
+    "source_file": "note.md",
+    "source_commit": "34faffbff26615e313488f6d04705a444342e41e",
+    "original_sha256": "3a8a50e9d4d557b820ebdee58d6279c960ae18c50f1355e1e67d856d687bc097",
+    "snapshot_path": "doc/2026-11-13T01-34-11Z_design_fleet_ca_credentials_secrets/source-snapshots/intake-34faffbff2/note.md",
+    "purpose": "Exact witness for the separately recorded V1 census correction; not an additional archive/source-package entry."
+  },
   "files": [
     {
       "source_file": "ADDENDUM_secrets_architecture_performance_infrastructure.md",
