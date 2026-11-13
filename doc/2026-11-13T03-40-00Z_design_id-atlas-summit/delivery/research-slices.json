@@ -1,0 +1,41 @@
+{
+  "schema_version": 1,
+  "research_slices": [
+    {
+      "id": "meta-9112-R-original-30-provenance",
+      "parent": 9112,
+      "title": "Recover the provenance of the original Part B thirty-item list",
+      "kind": "research",
+      "version": "V4 provenance investigation",
+      "tier": "contingent",
+      "research_scope": "original-30-provenance-recovery",
+      "trigger": "Proceed if the original intake/source record becomes accessible; otherwise complete a bounded source scan and report an unrecovered result without reconstructing a fictional original list.",
+      "statements": [],
+      "goal": "Determine whether the original thirty Part B candidate boundaries can be recovered from an authoritative source, separately from the current statement-derived reconstruction.",
+      "enables": "A provenance-backed comparison or an explicit unrecovered disposition that prevents the reconstruction from being mislabeled as the original list.",
+      "owned_files": [
+        {"path": "doc/2026-11-13T03-40-00Z_design_id-atlas-summit/delivery/original-30-provenance-report.json", "status": "new"}
+      ],
+      "requires": [],
+      "after": [],
+      "test": {
+        "file": "doc/2026-11-13T03-40-00Z_design_id-atlas-summit/delivery/original-30-provenance-report.json",
+        "command": "python3 -I doc/2026-11-13T03-40-00Z_design_id-atlas-summit/delivery/validate_research_report.py --input doc/2026-11-13T03-40-00Z_design_id-atlas-summit/delivery/original-30-provenance-report.json",
+        "oracle": {
+          "kind": "research-matrix",
+          "expected": "Either 30 unique source-backed original records, or status unrecovered with a completed bounded search log and no fabricated item list.",
+          "verifier": "The standard-library artifact validator checks status-dependent shape, uniqueness, search log presence, and source references."
+        }
+      },
+      "rollback": "Remove only the provenance report; never replace it with inferred titles or treat the statement-derived reconstruction as recovered source.",
+      "design_source": "main.md",
+      "design_section": "4. Research and verification discipline",
+      "owner": "ses_e5e2d06f0ccffefg2Z4FGyW3mW",
+      "research_evidence": [
+        "inventory-live/candidate-provenance.md",
+        "part-b/implementation-slices.json provenance status",
+        "authoritative source records searched by the research owner"
+      ]
+    }
+  ]
+}

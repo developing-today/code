@@ -76,7 +76,7 @@ All web sources below were retrieved 2026-11-12. Dates shown are publication or 
 
 ## Reference codec evidence
 
-`python3 -I uri_codec_reference.py self-test` passed on 2026-11-12: 5 required examples, 14 malformed inputs and 10,000 deterministic random array-URI encode/parse round trips. It verifies empty array, null, empty bytes, encoded slash, Unicode namespace, malformed escapes, invalid UTF-8, unknown critical version, resolver alias context, and delimiter handling. This is a small stdlib reference implementation, not production software. It makes no timing/performance claim.
+`python3 -I uri_codec_reference.py self-test` passed on 2026-11-12: 6 readable array vectors, one raw-blake3 content golden, 17 malformed inputs, 10,000 deterministic array round trips and 10,000 deterministic content parse/format round trips. It includes negative digest-length, uppercase/non-hex digest, unknown parse/formatter profile, malformed escapes, invalid UTF-8, unknown critical version, resolver alias context and delimiter handling. This is a small stdlib reference implementation, not production software. It makes no timing/performance claim.
 
 ## Limits and summit questions
 

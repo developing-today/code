@@ -97,7 +97,7 @@ The separate #9111 design should own named modes, link kinds and storage tiers. 
 ## Executable invariants and test oracles
 
 * **PBT envelope:** arbitrary mutation of any signed field causes verification failure; oracle is independent reference verifier/golden vectors.
-* **PBT budget monotonicity:** every relay transition reduces or preserves no budget only when no work/bytes spent; spent budgets never increase; oracle is arithmetic invariant over generated paths.
+* **PBT budget accounting:** spent counters are monotone non-decreasing and never refunded; `spent + held reservation <= cap` in every scope. Cancellation/expiry refunds only unused held amount, and retries do not create an extra reservation. Oracle is a multidimensional reference ledger, not a fairness/crypto proof.
 * **PBT dedup:** same request ID + policy version yields one deterministic result; cache eviction while request remains live can only reuse retained outcome/state and reservation, never mint budget or repeat completed work; once origin expires return `Expired` and never rerun. Oracle is reference state machine.
 * **MBT state machine:** generate ingest/rotate/revoke/replay/accept sequences; expected result comes from explicit model (event accepted at time/key policy and subsequent incident status).
 * **MBT network:** generated cyclic graphs, failures, duplicate delivery and retries; every trace terminates under deadline/work/byte/hop caps; oracle is budget ledger plus model result set.

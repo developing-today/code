@@ -533,14 +533,17 @@
     "behavioral_defaults": {
       "deployment": {
         "sync_scope": "metadata",
-        "tier": "cold"
+        "tier": "cold",
+        "max_hops": 2
       },
       "mode": {
         "sync_scope": "full",
-        "tier": "hot"
+        "tier": "hot",
+        "max_hops": 4
       },
       "tenant": {
-        "tier": "warm"
+        "tier": "warm",
+        "max_hops": 3
       },
       "peer": {
         "max_hops": 1
@@ -560,6 +563,15 @@
       },
       {
         "tenant_scope_required": false
+      },
+      {
+        "sync_scope": "unknown-scope"
+      },
+      {
+        "replay_check_required": false
+      },
+      {
+        "semantic_validation_required": false
       }
     ]
   },

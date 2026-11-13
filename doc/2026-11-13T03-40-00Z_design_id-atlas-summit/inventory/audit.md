@@ -27,7 +27,7 @@ Both commands completed successfully. The regression suite passed 11 determinist
 - Declared counts: S0 17, S1 120, S2 19, S3 38, S4 93, S5 64, S6 17, S7 16 (sum 384).
 - Parsed: 384 definitions, 384 unique IDs; no missing or duplicate definitions; declared total 384 agrees.
 - Expanded every comma-delimited range token in section 3: 0 unmapped statements. Malformed terms, unknown endpoints/sections, reversed ranges, missing/invalid bold homes, and a missing/empty map section are rejected. The only non-range row is the explicitly recognized administrative `Sequencing of all of the above` row.
-- The checker rejects source/output path aliasing and validates the entire CLI before source reads or output writes.
+- The checker stops reading map rows at the next top-level section, rejects source/output path aliasing (including hardlinks when both paths exist), and validates the entire CLI before source reads or output writes.
 - The JSON has one row per statement, preserving its text and source line. `issue_homes` contains distinct bold home issue IDs; references that are not bolded homes (for example, amendments/consumers in parentheticals) are intentionally not treated as assignments.
 
 ## Mapping overlaps and semantic review flags
@@ -46,4 +46,4 @@ Other shared ranges above are sensible cross-cutting seams but should retain exp
 
 ## Regression cases
 
-`verify_inventory_regressions.py` runs 11 cases with only the Python standard library: valid real source, duplicate definition, missing map coverage, valid real IDs plus unknown endpoint `S0.999`, malformed map syntax, reversed range, malformed home, declared-count mismatch, absent map section, invalid CLI with no output, and source/output alias protection. It uses temporary fixtures and checks rejected fixtures do not produce JSON output.
+`verify_inventory_regressions.py` runs 14 cases with only the Python standard library: valid real source, duplicate definition, missing map coverage, a later-section fake mapping that cannot mask missing section-3 coverage, valid real IDs plus unknown endpoint `S0.999`, malformed map syntax, reversed range, malformed home, declared-count mismatch, absent map section, invalid CLI with no output, direct source/output alias protection, hardlink alias protection, and symlink alias protection. It uses `TMPDIR` when set (otherwise `/home/user/.local/share/opencode/tmp/opencode`) for temporary fixtures and checks rejected fixtures do not produce JSON output or mutate aliased source bytes.

@@ -1,0 +1,32 @@
+{
+  "format": "synthetic-recommendation-page/v1",
+  "status": "tiny deterministic reference vector only; not production state",
+  "canonicalization": "deterministic CBOR subset for this fixture only; SHA256 identity is test-only, not a production profile claim",
+  "signature_note": "signature_hex fields are deterministic fixture bytes included in envelope hashes; this oracle does not claim cryptographic signature verification",
+  "parent_envelope": {
+    "body": {
+      "type": "recommendation-parent-v1",
+      "tenant": "tenant-a",
+      "algorithm": "score-desc-id-asc-v1",
+      "cutoff_sequence": 7,
+      "page_size": 2,
+      "input_digest": "sha256:synthetic-input-set-7",
+      "candidate_set": [
+        {"id":"rec-b","score_micros":900,"arrival_sequence":5},
+        {"id":"rec-c","score_micros":700,"arrival_sequence":7},
+        {"id":"rec-a","score_micros":900,"arrival_sequence":4}
+      ]
+    },
+    "signature_hex": "746573742d706172656e742d7369676e6174757265"
+  },
+  "post_cutoff_candidate": {"id":"rec-aa","score_micros":999,"arrival_sequence":8},
+  "expected_parent_snapshot_id": "sha256:8797b6bd7f4821dfb8273ee23cad9dacd50e9361b06d8a4e686f2515b8cf5c91",
+  "expected_pages": [
+    {"position":0,"signature_hex":"746573742d706167652d30","expected_envelope_id":"sha256:e67e1aa7ad2343411ec8019ec1bef037ee0c8e8d27d01f305df641a2d957fc7d","expected_ids":["rec-a","rec-b"],"done":false},
+    {"position":2,"signature_hex":"746573742d706167652d32","expected_envelope_id":"sha256:50edb5f8e6dfb49b16580b44dffd8932998f4f21bee6836a951698f01c2de0a2","expected_ids":["rec-c"],"done":true}
+  ],
+  "expected_next_cursor": {"parent_snapshot_id":"sha256:8797b6bd7f4821dfb8273ee23cad9dacd50e9361b06d8a4e686f2515b8cf5c91","position":2},
+  "wrong_parent_cursor": {"parent_snapshot_id":"sha256:0000000000000000000000000000000000000000000000000000000000000000","position":0,"expected_error":"WrongParentSnapshotId"},
+  "restart_replay_position": 0,
+  "expected_restart_envelope_id": "sha256:e67e1aa7ad2343411ec8019ec1bef037ee0c8e8d27d01f305df641a2d957fc7d"
+}

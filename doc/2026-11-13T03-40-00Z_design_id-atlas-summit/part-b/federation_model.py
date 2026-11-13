@@ -67,14 +67,14 @@ class ScopedLedger:
     finished: dict[str, tuple[dict[str, int], tuple[str, ...], int, dict[str, int]]] = field(default_factory=dict)
 
     def reserve(self, reservation_id: str, vector: dict[str, int], scopes: tuple[str, ...], expires: int, now: int) -> dict[str, int]:
+        if len(set(scopes)) != len(scopes):
+            raise ValueError("duplicate accounting scope")
         done = self.finished.get(reservation_id)
         if done is not None:
             old_vector, old_scopes, old_expiry, _ = done
             if (old_vector, old_scopes, old_expiry) != (vector, scopes, expires):
                 raise ValueError("completed reservation binding conflict")
-            if now >= old_expiry:
-                raise ValueError("expired reservation cannot be retried")
-            return dict(old_vector)  # completed-ID tombstone; never reserve again
+            raise ValueError("completed reservation tombstone cannot be reopened")
         old = self.reservations.get(reservation_id)
         if old is not None:
             old_vector, old_scopes, old_expiry = old
@@ -97,6 +97,7 @@ class ScopedLedger:
                 key = (scope, dim)
                 self.held[key] = self.held.get(key, 0) + amount
         self.reservations[reservation_id] = (dict(vector), scopes, expires)
+        self._assert_caps()
         return dict(vector)
 
     def finish(self, reservation_id: str, used: dict[str, int], now: int) -> None:
@@ -108,8 +109,9 @@ class ScopedLedger:
         vector, scopes, expires = self.reservations[reservation_id]
         # Caller supplies locally measured actual use. Expiry closes the
         # reservation; it refunds only vector minus measured use, never spent work.
-        if any(used.get(dim, 0) < 0 or used.get(dim, 0) > amount for dim, amount in vector.items()):
+        if set(used) - set(vector) or any(used.get(dim, 0) < 0 or used.get(dim, 0) > amount for dim, amount in vector.items()):
             raise ValueError("actual use exceeds reserved vector")
+        spent_before = dict(self.spent)
         for scope in scopes:
             for dim, amount in vector.items():
                 key = (scope, dim)
@@ -117,6 +119,13 @@ class ScopedLedger:
                 self.spent[key] = self.spent.get(key, 0) + used.get(dim, 0)
         self.finished[reservation_id] = (dict(vector), scopes, expires, dict(used))
         del self.reservations[reservation_id]
+        assert all(self.spent.get(key, 0) >= amount for key, amount in spent_before.items())
+        self._assert_caps()
+
+    def _assert_caps(self) -> None:
+        for key, cap in self.limits.items():
+            assert self.held.get(key, 0) >= 0 and self.spent.get(key, 0) >= 0
+            assert self.held.get(key, 0) + self.spent.get(key, 0) <= cap
 
 
 def origin_request_id(origin_key: str, nonce: str, query: str, scope: str, issued: int, expires: int, limits: tuple[int, ...]) -> str:
@@ -166,10 +175,31 @@ def check_fixed_oracles() -> None:
         pass
     else:
         raise AssertionError("mismatched retry minted a changed reservation")
+    held_before = dict(scoped.held)
+    spent_before = dict(scoped.spent)
+    try:
+        scoped.reserve("duplicate-scope", {"work": 1}, ("node:node-1", "node:node-1"), 30, 11)
+    except ValueError:
+        pass
+    else:
+        raise AssertionError("duplicate accounting scopes double-counted one bucket")
+    assert scoped.held == held_before and scoped.spent == spent_before
+    try:
+        scoped.finish("reservation-1", {"work": 1, "bytes": 1_000_000}, now=11)
+    except ValueError:
+        pass
+    else:
+        raise AssertionError("usage outside reserved vector was accepted")
+    assert scoped.held == held_before and scoped.spent == spent_before
     scoped.finish("reservation-1", {"peers": 1, "work": 2, "bytes": 100}, now=12)
     assert scoped.spent[("node:node-1", "work")] == 2
     assert scoped.held[("node:node-1", "work")] == 0  # unused 2 work units refunded
-    assert scoped.reserve("reservation-1", vector, scopes, expires=30, now=13) == vector
+    try:
+        scoped.reserve("reservation-1", vector, scopes, expires=30, now=13)
+    except ValueError:
+        pass
+    else:
+        raise AssertionError("completed reservation tombstone was reopened")
     scoped.finish("reservation-1", {"peers": 1, "work": 2, "bytes": 100}, now=13)
     assert scoped.spent[("node:node-1", "work")] == 2
     assert scoped.held[("node:node-1", "work")] == 0

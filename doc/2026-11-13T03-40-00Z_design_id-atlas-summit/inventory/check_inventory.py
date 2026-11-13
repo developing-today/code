@@ -52,6 +52,13 @@ def arguments(argv: list[str]) -> tuple[Path, Path]:
     source_path, output_path = Path(values["--source"]), Path(values["--json"])
     if source_path.resolve() == output_path.resolve():
         raise ValueError("--source and --json must not name the same path")
+    if source_path.exists() and output_path.exists():
+        try:
+            same_file = source_path.samefile(output_path)
+        except OSError as exc:
+            raise ValueError(f"cannot verify source/output path identity: {exc}") from exc
+        if same_file:
+            raise ValueError("--source and --json must not refer to the same file")
     return source_path, output_path
 
 
@@ -101,6 +108,11 @@ def parse(source: str) -> tuple[dict[str, int], list[dict], dict[str, list[str]]
             in_inventory = False
             in_map = True
             found_map_section = True
+            continue
+        if in_map and line.startswith("## "):
+            # Section 3 ends at the next top-level section; later tables are
+            # not part of the issue map and cannot satisfy its coverage.
+            in_map = False
             continue
         if in_inventory:
             header = SECTION_HEADER.match(line)

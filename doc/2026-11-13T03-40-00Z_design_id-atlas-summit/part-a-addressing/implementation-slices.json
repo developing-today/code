@@ -2,604 +2,2109 @@
   "parent_issue": "developing-today/code#9106",
   "design": "doc/2026-11-13T03-40-00Z_design_id-atlas-summit/part-a-addressing/versioned-design.md",
   "research": "doc/2026-11-13T03-40-00Z_design_id-atlas-summit/part-a-addressing/research.md",
-  "note": "Every command is proposed for a future implementation slice and has not been run unless separately reported. Files marked NEW are exact future paths, not files created by this design worker. The tests are model/property/conformance oracles, not benchmarks.",
+  "note": "Normalized Part A slice manifest. Every test command is a proposed FUTURE command and is not evidence of a build/test run. All owned paths are exact; common exports/Cargo manifests are owned by crosscut slice 9110-02. Research row evidence is citation-backed and uses an artifact verifier, not a fabricated production-code test.",
   "slices": [
     {
       "id": "A9113-shape-types",
-      "issue": "developing-today/code#9113",
+      "parent": 9113,
       "title": "Define versioned ID shape and profile types",
-      "statements": ["S3.1-S3.3"],
+      "kind": "contract",
       "version": "V2",
       "tier": "crucial",
-      "kind": "contract",
+      "statements": [
+        "S3.1-S3.3"
+      ],
       "goal": "Add typed shape discriminator and strict version/profile parsing without changing any existing ID bytes.",
       "enables": "Content and array cores can share dispatch while retaining separate identity semantics.",
-      "owned_files": ["NEW pkgs/id/crates/id-core/src/id_shape.rs", "pkgs/id/crates/id-core/src/lib.rs", "NEW pkgs/id/crates/id-core/tests/id_shape.rs"],
-      "dependencies": [],
-      "test_module": "NEW id_shape.rs",
-      "tests": ["PBT parse/format round trip", "Unknown critical profile/version rejects", "No heuristic conversion between domain ID types"],
-      "oracle": "A finite typed reference enum; every known encoding maps to exactly one variant, unknown critical tags return UnsupportedShape, and canonical encode(parse(x)) equals x.",
-      "acceptance_command": "FUTURE: cargo test -p id-core --test id_shape"
+      "owned_files": [
+        {
+          "path": "pkgs/id/crates/id-core/src/id_shape.rs",
+          "status": "new",
+          "owner": "A9113-shape-types"
+        },
+        {
+          "path": "pkgs/id/crates/id-core/tests/id_shape.rs",
+          "status": "new",
+          "owner": "A9113-shape-types"
+        }
+      ],
+      "requires": [
+        {
+          "ref": "9110-02",
+          "description": "Adds this consumer module to the crate root and owns Cargo manifest/export changes; this slice owns only its distinct module and tests."
+        }
+      ],
+      "after": [],
+      "test": {
+        "file": "pkgs/id/crates/id-core/tests/id_shape.rs",
+        "command": "FUTURE: cargo test -p id-core --test id_shape",
+        "oracle": {
+          "kind": "invariant",
+          "expected": "A finite typed reference enum; every known encoding maps to exactly one variant, unknown critical tags return UnsupportedShape, and canonical encode(parse(x)) equals x.",
+          "verifier": "Check the stated property over generated inputs and assert the exact invariant and failure classification."
+        },
+        "notes": [
+          "PBT parse/format round trip",
+          "Unknown critical profile/version rejects",
+          "No heuristic conversion between domain ID types"
+        ]
+      },
+      "rollback": "Stop emitting the new profile/shape; retain every existing parser and verifier so stored IDs remain readable. Do not rewrite or re-sign persisted identifiers.",
+      "design_source": "doc/2026-11-13T03-40-00Z_design_id-atlas-summit/part-a-addressing/versioned-design.md",
+      "design_section": "#9113 — Extensible ID shapes and content portability",
+      "owner": "A9113-shape-types"
     },
     {
       "id": "A9113-profile-dispatch",
-      "issue": "developing-today/code#9113",
+      "parent": 9113,
       "title": "Add static/configured hash-profile dispatch",
-      "statements": ["S3.2-S3.10"],
+      "kind": "contract",
       "version": "V2",
       "tier": "crucial",
-      "kind": "contract",
+      "statements": [
+        "S3.2-S3.10"
+      ],
       "goal": "Dispatch self-describing profile tokens through static/configured code; prohibit per-object translation maps.",
       "enables": "Portable IDs without requiring an extra runtime registry lookup.",
-      "owned_files": ["NEW pkgs/id/crates/id-core/src/hash_profile.rs", "NEW pkgs/id/crates/id-core/tests/hash_profile.rs"],
-      "dependencies": ["A9113-shape-types"],
-      "test_module": "NEW hash_profile.rs",
-      "tests": ["Profile token golden vectors", "Unsupported profile failure", "No mapping table access in parse/verify API"],
-      "oracle": "Profile token selects exactly one compiled/configured verifier; all unsupported tokens reject before content processing.",
-      "acceptance_command": "FUTURE: cargo test -p id-core --test hash_profile"
+      "owned_files": [
+        {
+          "path": "pkgs/id/crates/id-core/src/hash_profile.rs",
+          "status": "new",
+          "owner": "A9113-profile-dispatch"
+        },
+        {
+          "path": "pkgs/id/crates/id-core/tests/hash_profile.rs",
+          "status": "new",
+          "owner": "A9113-profile-dispatch"
+        }
+      ],
+      "requires": [
+        {
+          "ref": "A9113-shape-types",
+          "description": "Requires typed ContentId/ArrayId shape variants, shape-version tag and unsupported-critical-shape error from A9113-shape-types."
+        },
+        {
+          "ref": "9110-02",
+          "description": "Adds this consumer module to the crate root and owns Cargo manifest/export changes; this slice owns only its distinct module and tests."
+        }
+      ],
+      "after": [],
+      "test": {
+        "file": "pkgs/id/crates/id-core/tests/hash_profile.rs",
+        "command": "FUTURE: cargo test -p id-core --test hash_profile",
+        "oracle": {
+          "kind": "invariant",
+          "expected": "Profile token selects exactly one compiled/configured verifier; all unsupported tokens reject before content processing.",
+          "verifier": "Check the stated property over generated inputs and assert the exact invariant and failure classification."
+        },
+        "notes": [
+          "Profile token golden vectors",
+          "Unsupported profile failure",
+          "No mapping table access in parse/verify API"
+        ]
+      },
+      "rollback": "Stop emitting the new profile/shape; retain every existing parser and verifier so stored IDs remain readable. Do not rewrite or re-sign persisted identifiers.",
+      "design_source": "doc/2026-11-13T03-40-00Z_design_id-atlas-summit/part-a-addressing/versioned-design.md",
+      "design_section": "#9113 — Extensible ID shapes and content portability",
+      "owner": "A9113-profile-dispatch"
     },
     {
       "id": "A9113-legacy-hash-vectors",
-      "issue": "developing-today/code#9113",
+      "parent": 9113,
       "title": "Pin legacy Iroh and artifact identity compatibility vectors",
-      "statements": ["S3.4-S3.10"],
+      "kind": "compatibility",
       "version": "V2",
       "tier": "crucial",
-      "kind": "compatibility",
+      "statements": [
+        "S3.4-S3.10"
+      ],
       "goal": "Record exact Iroh raw BLAKE3-256 vectors and separately pin legacy SHA-256 artifact serialization/signature bytes, including the docs/code preimage discrepancy.",
       "enables": "Safe new profile parsing without silently changing identifiers or re-signing old artifacts.",
-      "owned_files": ["NEW pkgs/id/crates/id-core/tests/legacy_hash_vectors.rs", "NEW pkgs/id/crates/id-sync/tests/legacy_artifact_vectors.rs", "NEW doc/2026-11-13T03-40-00Z_design_id-atlas-summit/part-a-addressing/legacy-artifact-compatibility.md"],
-      "dependencies": ["A9113-profile-dispatch"],
-      "test_module": "NEW legacy_hash_vectors.rs and legacy_artifact_vectors.rs",
-      "tests": ["Exact Iroh bytes-to-digest golden cases", "serde_json SignedBody serialization SHA-256 golden bytes", "Ed25519 signature verification over preserved legacy preimage", "Documented claimed-domain-prefix vs implementation mismatch"],
-      "oracle": "Known source implementation and fixed byte-level golden vectors. No serializer or signature preimage is changed by this slice.",
-      "acceptance_command": "FUTURE: cargo test -p id-core --test legacy_hash_vectors && cargo test -p id-sync --test legacy_artifact_vectors"
+      "owned_files": [
+        {
+          "path": "pkgs/id/crates/id-core/tests/legacy_hash_vectors.rs",
+          "status": "new",
+          "owner": "A9113-legacy-hash-vectors"
+        },
+        {
+          "path": "pkgs/id/crates/id-sync/tests/legacy_artifact_vectors.rs",
+          "status": "new",
+          "owner": "A9113-legacy-hash-vectors"
+        },
+        {
+          "path": "doc/2026-11-13T03-40-00Z_design_id-atlas-summit/part-a-addressing/legacy-artifact-compatibility.md",
+          "status": "new",
+          "owner": "A9113-legacy-hash-vectors"
+        }
+      ],
+      "requires": [
+        {
+          "ref": "A9113-profile-dispatch",
+          "description": "Requires static/configured profile-token dispatch and typed unsupported-profile result from A9113-profile-dispatch."
+        },
+        {
+          "ref": "9110-02",
+          "description": "Adds this consumer module to the crate root and owns Cargo manifest/export changes; this slice owns only its distinct module and tests."
+        }
+      ],
+      "after": [],
+      "test": {
+        "file": "pkgs/id/crates/id-core/tests/legacy_hash_vectors.rs",
+        "command": "FUTURE: cargo test -p id-core --test legacy_hash_vectors && cargo test -p id-sync --test legacy_artifact_vectors",
+        "oracle": {
+          "kind": "golden",
+          "expected": "Known source implementation and fixed byte-level golden vectors. No serializer or signature preimage is changed by this slice.",
+          "verifier": "Compare output bytes and typed outcomes with the cited fixed golden vectors; fail on any difference."
+        },
+        "notes": [
+          "Exact Iroh bytes-to-digest golden cases",
+          "serde_json SignedBody serialization SHA-256 golden bytes",
+          "Ed25519 signature verification over preserved legacy preimage",
+          "Documented claimed-domain-prefix vs implementation mismatch"
+        ]
+      },
+      "rollback": "Stop emitting the new profile/shape; retain every existing parser and verifier so stored IDs remain readable. Do not rewrite or re-sign persisted identifiers.",
+      "design_source": "doc/2026-11-13T03-40-00Z_design_id-atlas-summit/part-a-addressing/versioned-design.md",
+      "design_section": "#9113 — Extensible ID shapes and content portability",
+      "owner": "A9113-legacy-hash-vectors"
     },
     {
       "id": "A9113-atlas-profile-contract",
-      "issue": "developing-today/code#9113",
-      "follow_up_issue": "Proposed child issue: establish Atlas content_hash producer contract (not filed)",
-      "filing_status": "proposed-not-filed",
-      "title": "Record Atlas chunk hash snapshot profile and missing writer boundary",
-      "statements": ["S3.4-S3.10"],
+      "parent": 9113,
+      "title": "Consume the Atlas producer contract as separate ID compatibility vectors",
+      "kind": "contract",
       "version": "V2",
       "tier": "recommended",
-      "kind": "compatibility",
-      "goal": "Document observed SHA-256(UTF-8 chunk text) corpus snapshot values as a separate atlas-chunk-sha256-utf8 seam from ID raw-byte BLAKE3; file a follow-up for the missing production writer source/contract.",
-      "enables": "Explicit Atlas-to-ID joins without falsely equating ID content identity and Atlas chunk identity.",
-      "owned_files": ["NEW doc/2026-11-13T03-40-00Z_design_id-atlas-summit/part-a-addressing/atlas-hash-seam.md", "NEW pkgs/atlas-search/tests/content_hash_snapshot_contract.py"],
-      "dependencies": [],
-      "test_module": "NEW content_hash_snapshot_contract.py",
-      "tests": ["Snapshot fixture verifies SHA-256(text encoded UTF-8) against supplied observed fixture rows", "Schema consumer code does not claim to be the producer", "Vector row identity remains distinct"],
-      "oracle": "Exact checked-in source evidence plus immutable observed corpus fixture; never treated as proof of writer implementation or universal future producer contract.",
-      "acceptance_command": "FUTURE: python3 -I -m pytest pkgs/atlas-search/tests/content_hash_snapshot_contract.py"
+      "statements": [
+        "S3.4-S3.10"
+      ],
+      "goal": "After crosscut 9110-R2 pins the producer profile or records it unavailable, add an explicit Atlas/ID compatibility vector and typed foreign-profile seam without owning the producer investigation.",
+      "enables": "Consumers can verify compatible Atlas IDs only when R2 supplies a known-answer vector; otherwise Atlas content_hash remains opaque and cannot be misidentified as raw-byte Iroh BLAKE3.",
+      "owned_files": [
+        {
+          "path": "doc/2026-11-13T03-40-00Z_design_id-atlas-summit/part-a-addressing/atlas-hash-compatibility.md",
+          "status": "new",
+          "owner": "A9113-atlas-profile-contract"
+        },
+        {
+          "path": "pkgs/id/test-vectors/atlas-content-hash-v1.json",
+          "status": "new",
+          "owner": "A9113-atlas-profile-contract"
+        },
+        {
+          "path": "pkgs/id/crates/id-core/tests/atlas_content_profile_vectors.rs",
+          "status": "new",
+          "owner": "A9113-atlas-profile-contract"
+        }
+      ],
+      "requires": [
+        {
+          "ref": "9110-R2",
+          "description": "Requires 9110-R2's pinned producer/profile and known-answer vector, or its explicit producer-unavailable disposition, before defining any Atlas interoperability mapping."
+        },
+        {
+          "ref": "9110-02",
+          "description": "Adds this consumer test/module to crate-root exports and Cargo manifests; the slice owns only its separate compatibility vector and module."
+        }
+      ],
+      "after": [],
+      "test": {
+        "file": "pkgs/id/crates/id-core/tests/atlas_content_profile_vectors.rs",
+        "command": "FUTURE: cargo test -p id-core --test atlas_content_profile_vectors",
+        "oracle": {
+          "kind": "golden",
+          "expected": "If 9110-R2 provides an available producer profile, the Atlas adapter matches its exact byte-level known-answer vector; if R2 records unavailable, parsing/verification keeps Atlas content_hash opaque and rejects an interop claim. No branch aliases it to raw-blake3-256.",
+          "verifier": "Read R2's report status and vector: recompute the specified profile over the exact fixture bytes and compare digest, or assert the unavailable disposition yields UnsupportedProfile for cross-system ContentId conversion."
+        },
+        "notes": [
+          "Compatibility vectors are owned separately from the crosscut producer-source report",
+          "Observed SHA-256(UTF-8 chunk text) snapshot facts are not treated as the producer contract",
+          "Atlas vector-row identity remains distinct from source chunk identity"
+        ]
+      },
+      "rollback": "Disable the Atlas compatibility adapter and keep Atlas content_hash opaque; retain the vector file for audit, and do not rewrite or re-sign existing ID/Atlas identifiers.",
+      "design_source": "doc/2026-11-13T03-40-00Z_design_id-atlas-summit/part-a-addressing/versioned-design.md",
+      "design_section": "#9113 — Extensible ID shapes and content portability",
+      "owner": "A9113-atlas-profile-contract"
     },
     {
       "id": "A9114-cbor-profile",
-      "issue": "developing-today/code#9114",
+      "parent": 9114,
       "title": "Specify canonical CBOR profile and byte-level vectors for new signed records",
-      "statements": ["S3.11-S3.14"],
+      "kind": "codec",
       "version": "V2",
       "tier": "crucial",
-      "kind": "codec",
+      "statements": [
+        "S3.11-S3.14"
+      ],
       "goal": "Define deterministic CBOR profile, duplicate-key rejection, critical field behavior and cross-language canonical vectors.",
       "enables": "Stable body signatures and envelope IDs across Rust and hosted TypeScript.",
-      "owned_files": ["NEW pkgs/id/crates/id-core/src/canonical_cbor.rs", "NEW pkgs/id/crates/id-core/tests/canonical_cbor_vectors.rs", "NEW pkgs/id/hosted-worker/src/canonical-cbor.ts", "NEW pkgs/id/hosted-worker/test/canonical-cbor.test.ts"],
-      "dependencies": [],
-      "test_module": "NEW canonical_cbor_vectors.rs and canonical-cbor.test.ts",
-      "tests": ["Cross-edition golden bytes", "Duplicate map keys reject", "Unknown critical fields reject", "Round-trip deterministic serialization"],
-      "oracle": "Independent reference vectors and byte equality across Rust/TypeScript; decoder rejects any ambiguous signed encoding.",
-      "acceptance_command": "FUTURE: cargo test -p id-core --test canonical_cbor_vectors && cd pkgs/id/hosted-worker && bun test canonical-cbor.test.ts"
+      "owned_files": [
+        {
+          "path": "pkgs/id/crates/id-core/src/canonical_cbor.rs",
+          "status": "new",
+          "owner": "A9114-cbor-profile"
+        },
+        {
+          "path": "pkgs/id/crates/id-core/tests/canonical_cbor_vectors.rs",
+          "status": "new",
+          "owner": "A9114-cbor-profile"
+        },
+        {
+          "path": "pkgs/id/hosted-worker/src/canonical-cbor.ts",
+          "status": "new",
+          "owner": "A9114-cbor-profile"
+        },
+        {
+          "path": "pkgs/id/hosted-worker/test/canonical-cbor.test.ts",
+          "status": "new",
+          "owner": "A9114-cbor-profile"
+        }
+      ],
+      "requires": [
+        {
+          "ref": "9110-02",
+          "description": "Adds this consumer module to the crate root and owns Cargo manifest/export changes; this slice owns only its distinct module and tests."
+        }
+      ],
+      "after": [],
+      "test": {
+        "file": "pkgs/id/crates/id-core/tests/canonical_cbor_vectors.rs",
+        "command": "FUTURE: cargo test -p id-core --test canonical_cbor_vectors && cd pkgs/id/hosted-worker && bun test canonical-cbor.test.ts",
+        "oracle": {
+          "kind": "golden",
+          "expected": "Independent reference vectors and byte equality across Rust/TypeScript; decoder rejects any ambiguous signed encoding.",
+          "verifier": "Compare output bytes and typed outcomes with the cited fixed golden vectors; fail on any difference."
+        },
+        "notes": [
+          "Cross-edition golden bytes",
+          "Duplicate map keys reject",
+          "Unknown critical fields reject",
+          "Round-trip deterministic serialization"
+        ]
+      },
+      "rollback": "Disable new snapshot/head writes and keep the previous head readable; preserve immutable snapshots and legacy metadata readers. Rebuild the head only from verified signed parent chains.",
+      "design_source": "doc/2026-11-13T03-40-00Z_design_id-atlas-summit/part-a-addressing/versioned-design.md",
+      "design_section": "#9114 — Complete metadata sidecars and mutable head",
+      "owner": "A9114-cbor-profile"
     },
     {
       "id": "A9114-envelope-identities",
-      "issue": "developing-today/code#9114",
+      "parent": 9114,
       "title": "Implement payload, body, signature and signed-envelope identity separation",
-      "statements": ["S3.11-S3.20"],
+      "kind": "contract",
       "version": "V2",
       "tier": "crucial",
-      "kind": "contract",
+      "statements": [
+        "S3.11-S3.20"
+      ],
       "goal": "Define PayloadId over raw bytes, canonical Body over payload ID/length/domain/context, signature over domain prefix plus Body, and EnvelopeId over full signed envelope.",
       "enables": "Non-recursive signed snapshots and reusable receipt/assertion envelopes.",
-      "owned_files": ["NEW pkgs/id/crates/id-core/src/signed_envelope.rs", "NEW pkgs/id/crates/id-core/tests/signed_envelope_identity.rs"],
-      "dependencies": ["A9114-cbor-profile", "A9113-profile-dispatch"],
-      "test_module": "NEW signed_envelope_identity.rs",
-      "tests": ["PBT: envelope ID changes when signature changes", "Body signature preimage excludes envelope ID/signature", "PayloadId is raw exact payload hash", "LogicalGraphId remains distinct"],
-      "oracle": "Reference functions over canonical bytes; no signed preimage can contain the identity digest of its enclosing signed envelope.",
-      "acceptance_command": "FUTURE: cargo test -p id-core --test signed_envelope_identity"
+      "owned_files": [
+        {
+          "path": "pkgs/id/crates/id-core/src/signed_envelope.rs",
+          "status": "new",
+          "owner": "A9114-envelope-identities"
+        },
+        {
+          "path": "pkgs/id/crates/id-core/tests/signed_envelope_identity.rs",
+          "status": "new",
+          "owner": "A9114-envelope-identities"
+        }
+      ],
+      "requires": [
+        {
+          "ref": "A9114-cbor-profile",
+          "description": "Requires deterministic CBOR rules, duplicate-key rejection and cross-edition golden bytes from A9114-cbor-profile."
+        },
+        {
+          "ref": "A9113-profile-dispatch",
+          "description": "Requires static/configured profile-token dispatch and typed unsupported-profile result from A9113-profile-dispatch."
+        },
+        {
+          "ref": "9110-02",
+          "description": "Adds this consumer module to the crate root and owns Cargo manifest/export changes; this slice owns only its distinct module and tests."
+        }
+      ],
+      "after": [],
+      "test": {
+        "file": "pkgs/id/crates/id-core/tests/signed_envelope_identity.rs",
+        "command": "FUTURE: cargo test -p id-core --test signed_envelope_identity",
+        "oracle": {
+          "kind": "invariant",
+          "expected": "Reference functions over canonical bytes; no signed preimage can contain the identity digest of its enclosing signed envelope.",
+          "verifier": "Check the stated property over generated inputs and assert the exact invariant and failure classification."
+        },
+        "notes": [
+          "PBT: envelope ID changes when signature changes",
+          "Body signature preimage excludes envelope ID/signature",
+          "PayloadId is raw exact payload hash",
+          "LogicalGraphId remains distinct"
+        ]
+      },
+      "rollback": "Disable new snapshot/head writes and keep the previous head readable; preserve immutable snapshots and legacy metadata readers. Rebuild the head only from verified signed parent chains.",
+      "design_source": "doc/2026-11-13T03-40-00Z_design_id-atlas-summit/part-a-addressing/versioned-design.md",
+      "design_section": "#9114 — Complete metadata sidecars and mutable head",
+      "owner": "A9114-envelope-identities"
     },
     {
       "id": "A9114-sidecar-snapshot",
-      "issue": "developing-today/code#9114",
+      "parent": 9114,
       "title": "Encode complete signed metadata snapshot records",
-      "statements": ["S3.11-S3.14", "S3.18"],
+      "kind": "storage",
       "version": "V2",
       "tier": "crucial",
-      "kind": "storage",
+      "statements": [
+        "S3.11-S3.14",
+        "S3.18"
+      ],
       "goal": "Store complete, scoped signed sidecar snapshots with parent generation and digest-derived snapshot ID.",
       "enables": "Reproducible metadata versioning and location-index reconstruction.",
-      "owned_files": ["NEW pkgs/id/crates/id-store/src/sidecar_snapshot.rs", "NEW pkgs/id/crates/id-store/tests/sidecar_snapshot.rs"],
-      "dependencies": ["A9114-envelope-identities"],
-      "test_module": "NEW sidecar_snapshot.rs",
-      "tests": ["Complete-scope schema validation", "Snapshot ID over complete signed envelope", "Timestamp variation does not define identity", "Parent reference verified"],
-      "oracle": "Canonical signed-envelope digest and a model of complete scope; snapshot digest is not recursively embedded in signed Body.",
-      "acceptance_command": "FUTURE: cargo test -p id-store --test sidecar_snapshot"
+      "owned_files": [
+        {
+          "path": "pkgs/id/crates/id-store/src/sidecar_snapshot.rs",
+          "status": "new",
+          "owner": "A9114-sidecar-snapshot"
+        },
+        {
+          "path": "pkgs/id/crates/id-store/tests/sidecar_snapshot.rs",
+          "status": "new",
+          "owner": "A9114-sidecar-snapshot"
+        }
+      ],
+      "requires": [
+        {
+          "ref": "A9114-envelope-identities",
+          "description": "Requires PayloadId, canonical Body, detached-signature preimage and nonrecursive EnvelopeId types from A9114-envelope-identities."
+        },
+        {
+          "ref": "9110-02",
+          "description": "Adds this consumer module to the crate root and owns Cargo manifest/export changes; this slice owns only its distinct module and tests."
+        },
+        {
+          "issue": 9083,
+          "description": "Consumes the authenticated tenant/scope context contract; this slice does not define tenancy."
+        }
+      ],
+      "after": [],
+      "test": {
+        "file": "pkgs/id/crates/id-store/tests/sidecar_snapshot.rs",
+        "command": "FUTURE: cargo test -p id-store --test sidecar_snapshot",
+        "oracle": {
+          "kind": "model",
+          "expected": "Canonical signed-envelope digest and a model of complete scope; snapshot digest is not recursively embedded in signed Body.",
+          "verifier": "Generate the listed operations against the specified state/reference model and compare every resulting state and error."
+        },
+        "notes": [
+          "Complete-scope schema validation",
+          "Snapshot ID over complete signed envelope",
+          "Timestamp variation does not define identity",
+          "Parent reference verified"
+        ]
+      },
+      "rollback": "Disable new snapshot/head writes and keep the previous head readable; preserve immutable snapshots and legacy metadata readers. Rebuild the head only from verified signed parent chains.",
+      "design_source": "doc/2026-11-13T03-40-00Z_design_id-atlas-summit/part-a-addressing/versioned-design.md",
+      "design_section": "#9114 — Complete metadata sidecars and mutable head",
+      "owner": "A9114-sidecar-snapshot"
     },
     {
       "id": "A9114-cas-head",
-      "issue": "developing-today/code#9114",
+      "parent": 9114,
       "title": "Implement compare-and-swap metadata head and ABA protection",
-      "statements": ["S3.15-S3.20"],
+      "kind": "storage",
       "version": "V2",
       "tier": "crucial",
-      "kind": "storage",
+      "statements": [
+        "S3.15-S3.20"
+      ],
       "goal": "Update head only from expected generation and snapshot digest; refuse unsupported multiwriter adapters.",
       "enables": "Lost-update safe current snapshot pointer.",
-      "owned_files": ["NEW pkgs/id/crates/id-store/src/sidecar_head.rs", "NEW pkgs/id/crates/id-store/tests/sidecar_head_model.rs"],
-      "dependencies": ["A9114-sidecar-snapshot"],
-      "test_module": "NEW sidecar_head_model.rs",
-      "tests": ["MBT two concurrent writers", "Stale generation conflict", "ABA old digest cannot overwrite newer generation", "Single-writer fallback explicit"],
-      "oracle": "State machine permits one CAS per expected head; each accepted generation has exact previous snapshot parent.",
-      "acceptance_command": "FUTURE: cargo test -p id-store --test sidecar_head_model"
+      "owned_files": [
+        {
+          "path": "pkgs/id/crates/id-store/src/sidecar_head.rs",
+          "status": "new",
+          "owner": "A9114-cas-head"
+        },
+        {
+          "path": "pkgs/id/crates/id-store/tests/sidecar_head_model.rs",
+          "status": "new",
+          "owner": "A9114-cas-head"
+        }
+      ],
+      "requires": [
+        {
+          "ref": "A9114-sidecar-snapshot",
+          "description": "Requires complete scoped signed sidecar snapshot record with payload/envelope IDs, parent and generation from A9114-sidecar-snapshot."
+        },
+        {
+          "ref": "9110-02",
+          "description": "Adds this consumer module to the crate root and owns Cargo manifest/export changes; this slice owns only its distinct module and tests."
+        }
+      ],
+      "after": [],
+      "test": {
+        "file": "pkgs/id/crates/id-store/tests/sidecar_head_model.rs",
+        "command": "FUTURE: cargo test -p id-store --test sidecar_head_model",
+        "oracle": {
+          "kind": "model",
+          "expected": "State machine permits one CAS per expected head; each accepted generation has exact previous snapshot parent.",
+          "verifier": "Generate the listed operations against the specified state/reference model and compare every resulting state and error."
+        },
+        "notes": [
+          "MBT two concurrent writers",
+          "Stale generation conflict",
+          "ABA old digest cannot overwrite newer generation",
+          "Single-writer fallback explicit"
+        ]
+      },
+      "rollback": "Disable new snapshot/head writes and keep the previous head readable; preserve immutable snapshots and legacy metadata readers. Rebuild the head only from verified signed parent chains.",
+      "design_source": "doc/2026-11-13T03-40-00Z_design_id-atlas-summit/part-a-addressing/versioned-design.md",
+      "design_section": "#9114 — Complete metadata sidecars and mutable head",
+      "owner": "A9114-cas-head"
     },
     {
       "id": "A9114-snapshot-migration",
-      "issue": "developing-today/code#9114",
+      "parent": 9114,
       "title": "Add legacy metadata read bridge and immutable snapshot migration",
-      "statements": ["S3.11-S3.22"],
+      "kind": "migration",
       "version": "V2",
       "tier": "recommended",
-      "kind": "migration",
+      "statements": [
+        "S3.11-S3.22"
+      ],
       "goal": "Read old metadata forms and create signed snapshots without modifying content bytes or claiming a consistent source snapshot without evidence.",
       "enables": "Incremental adoption of signed sidecar format.",
-      "owned_files": ["NEW pkgs/id/crates/id-store/src/sidecar_migration.rs", "NEW pkgs/id/crates/id-store/tests/sidecar_migration.rs"],
-      "dependencies": ["A9114-sidecar-snapshot", "A9114-cas-head"],
-      "test_module": "NEW sidecar_migration.rs",
-      "tests": ["Legacy read remains stable", "Migration is idempotent", "Inconsistent source cannot publish complete snapshot", "No hash or signature rewrite"],
-      "oracle": "Before/after data-model comparison plus fixed signed snapshot vector; only consistent source views may advance head.",
-      "acceptance_command": "FUTURE: cargo test -p id-store --test sidecar_migration"
+      "owned_files": [
+        {
+          "path": "pkgs/id/crates/id-store/src/sidecar_migration.rs",
+          "status": "new",
+          "owner": "A9114-snapshot-migration"
+        },
+        {
+          "path": "pkgs/id/crates/id-store/tests/sidecar_migration.rs",
+          "status": "new",
+          "owner": "A9114-snapshot-migration"
+        }
+      ],
+      "requires": [
+        {
+          "ref": "A9114-sidecar-snapshot",
+          "description": "Requires complete scoped signed sidecar snapshot record with payload/envelope IDs, parent and generation from A9114-sidecar-snapshot."
+        },
+        {
+          "ref": "A9114-cas-head",
+          "description": "Requires generation-and-parent compare-and-swap head update with stale/ABA conflict result from A9114-cas-head."
+        },
+        {
+          "ref": "9110-02",
+          "description": "Adds this consumer module to the crate root and owns Cargo manifest/export changes; this slice owns only its distinct module and tests."
+        }
+      ],
+      "after": [],
+      "test": {
+        "file": "pkgs/id/crates/id-store/tests/sidecar_migration.rs",
+        "command": "FUTURE: cargo test -p id-store --test sidecar_migration",
+        "oracle": {
+          "kind": "model",
+          "expected": "Before/after data-model comparison plus fixed signed snapshot vector; only consistent source views may advance head.",
+          "verifier": "Generate the listed operations against the specified state/reference model and compare every resulting state and error."
+        },
+        "notes": [
+          "Legacy read remains stable",
+          "Migration is idempotent",
+          "Inconsistent source cannot publish complete snapshot",
+          "No hash or signature rewrite"
+        ]
+      },
+      "rollback": "Disable new snapshot/head writes and keep the previous head readable; preserve immutable snapshots and legacy metadata readers. Rebuild the head only from verified signed parent chains.",
+      "design_source": "doc/2026-11-13T03-40-00Z_design_id-atlas-summit/part-a-addressing/versioned-design.md",
+      "design_section": "#9114 — Complete metadata sidecars and mutable head",
+      "owner": "A9114-snapshot-migration"
     },
     {
       "id": "A9115-existence-receipt",
-      "issue": "developing-today/code#9115",
+      "parent": 9115,
       "title": "Bind existence acknowledgements to shared B19 receipt contract",
-      "statements": ["S3.23-S3.25"],
+      "kind": "protocol",
       "version": "V2",
       "tier": "crucial",
-      "kind": "protocol",
+      "statements": [
+        "S3.23-S3.25"
+      ],
       "goal": "Reuse Part B B19 V2 schema and bind responder, subject digest, scope, verified_present assertion kind, policy epoch and observation time.",
       "enables": "Interoperable evidence without divergent receipt formats or future-retention promises.",
-      "owned_files": ["NEW pkgs/id/crates/id-core/src/existence_receipt.rs", "NEW pkgs/id/crates/id-core/tests/existence_receipt.rs"],
-      "dependencies": ["A9114-envelope-identities", "B19"],
-      "test_module": "NEW existence_receipt.rs",
-      "tests": ["Signature binds all required fields", "Verified presence differs from an unverified inventory observation", "Old observation is not a retention promise", "B19 vector compatibility"],
-      "oracle": "Part B B19 V2 schema/vector; the slice requires that shared contract and must not fork it.",
-      "acceptance_command": "FUTURE: cargo test -p id-core --test existence_receipt"
+      "owned_files": [
+        {
+          "path": "pkgs/id/crates/id-core/src/existence_receipt.rs",
+          "status": "new",
+          "owner": "A9115-existence-receipt"
+        },
+        {
+          "path": "pkgs/id/crates/id-core/tests/existence_receipt.rs",
+          "status": "new",
+          "owner": "A9115-existence-receipt"
+        }
+      ],
+      "requires": [
+        {
+          "ref": "A9114-envelope-identities",
+          "description": "Requires PayloadId, canonical Body, detached-signature preimage and nonrecursive EnvelopeId types from A9114-envelope-identities."
+        },
+        {
+          "ref": "B19",
+          "description": "Consumes Part B B19 V2 shared receipt schema output; #9115 must not fork the receipt type."
+        },
+        {
+          "ref": "9110-02",
+          "description": "Adds this consumer module to the crate root and owns Cargo manifest/export changes; this slice owns only its distinct module and tests."
+        },
+        {
+          "issue": 9083,
+          "description": "Consumes the authenticated tenant/scope context contract; this slice does not define tenancy."
+        }
+      ],
+      "after": [],
+      "test": {
+        "file": "pkgs/id/crates/id-core/tests/existence_receipt.rs",
+        "command": "FUTURE: cargo test -p id-core --test existence_receipt",
+        "oracle": {
+          "kind": "model",
+          "expected": "Part B B19 V2 schema/vector; the slice requires that shared contract and must not fork it.",
+          "verifier": "Generate the listed operations against the specified state/reference model and compare every resulting state and error."
+        },
+        "notes": [
+          "Signature binds all required fields",
+          "Verified presence differs from an unverified inventory observation",
+          "Old observation is not a retention promise",
+          "B19 vector compatibility"
+        ]
+      },
+      "rollback": "Disable the affected acknowledgement or derived location-index writer/query; preserve signed receipts, sidecars and tombstones so the projection can be rebuilt without losing evidence.",
+      "design_source": "doc/2026-11-13T03-40-00Z_design_id-atlas-summit/part-a-addressing/versioned-design.md",
+      "design_section": "#9115 — Existence acknowledgements, location harvester, privacy",
+      "owner": "A9115-existence-receipt"
     },
     {
       "id": "A9115-locator-types",
-      "issue": "developing-today/code#9115",
+      "parent": 9115,
       "title": "Define typed R2, laptop and Drive location values",
-      "statements": ["S3.21-S3.22", "S3.26-S3.30"],
-      "version": "V2",
-      "tier": "recommended",
       "kind": "contract",
+      "version": "V2",
+      "tier": "crucial",
+      "statements": [
+        "S3.21-S3.22",
+        "S3.26-S3.30"
+      ],
       "goal": "Represent locations by typed provider and scoped locator fields rather than opaque untyped path strings.",
       "enables": "Safe location resolution, privacy filtering and backend-specific freshness handling.",
-      "owned_files": ["NEW pkgs/id/crates/id-core/src/location_ref.rs", "NEW pkgs/id/crates/id-core/tests/location_ref.rs"],
-      "dependencies": ["A9113-shape-types"],
-      "test_module": "NEW location_ref.rs",
-      "tests": ["Round-trip R2 account/bucket/key", "Laptop hostname/path is distinct from URL", "Drive account/file_id/url identity", "Tenant and namespace scope are mandatory"],
-      "oracle": "Typed enum reference model; no coercion between locator kinds and no scope-less locator accepted.",
-      "acceptance_command": "FUTURE: cargo test -p id-core --test location_ref"
+      "owned_files": [
+        {
+          "path": "pkgs/id/crates/id-core/src/location_ref.rs",
+          "status": "new",
+          "owner": "A9115-locator-types"
+        },
+        {
+          "path": "pkgs/id/crates/id-core/tests/location_ref.rs",
+          "status": "new",
+          "owner": "A9115-locator-types"
+        }
+      ],
+      "requires": [
+        {
+          "ref": "A9113-shape-types",
+          "description": "Requires typed ContentId/ArrayId shape variants, shape-version tag and unsupported-critical-shape error from A9113-shape-types."
+        },
+        {
+          "ref": "9110-02",
+          "description": "Adds this consumer module to the crate root and owns Cargo manifest/export changes; this slice owns only its distinct module and tests."
+        },
+        {
+          "issue": 9083,
+          "description": "Consumes the authenticated tenant/scope context contract; this slice does not define tenancy."
+        }
+      ],
+      "after": [
+        {
+          "issue": 9084,
+          "description": "Coordinate the reference/copy adapter seam before integration; this slice makes no reference-versus-copy decision."
+        }
+      ],
+      "test": {
+        "file": "pkgs/id/crates/id-core/tests/location_ref.rs",
+        "command": "FUTURE: cargo test -p id-core --test location_ref",
+        "oracle": {
+          "kind": "invariant",
+          "expected": "Typed enum reference model; no coercion between locator kinds and no scope-less locator accepted.",
+          "verifier": "Check the stated property over generated inputs and assert the exact invariant and failure classification."
+        },
+        "notes": [
+          "Round-trip R2 account/bucket/key",
+          "Laptop hostname/path is distinct from URL",
+          "Drive account/file_id/url identity",
+          "Tenant and namespace scope are mandatory"
+        ]
+      },
+      "rollback": "Disable the affected acknowledgement or derived location-index writer/query; preserve signed receipts, sidecars and tombstones so the projection can be rebuilt without losing evidence.",
+      "design_source": "doc/2026-11-13T03-40-00Z_design_id-atlas-summit/part-a-addressing/versioned-design.md",
+      "design_section": "#9115 — Existence acknowledgements, location harvester, privacy",
+      "owner": "A9115-locator-types"
     },
     {
       "id": "A9115-complete-harvest",
-      "issue": "developing-today/code#9115",
+      "parent": 9115,
       "title": "Index every valid visible sidecar location with tombstone reconciliation",
-      "statements": ["S3.26-S3.38"],
-      "version": "V2",
-      "tier": "recommended",
       "kind": "projection",
+      "version": "V2",
+      "tier": "crucial",
+      "statements": [
+        "S3.26-S3.38"
+      ],
       "goal": "Build a rebuildable per-scope index from all authorized visible complete sidecar locations; model stale/delete tombstones and reconciliation cursor.",
       "enables": "Fresh location queries with explicit completeness and version lineage.",
-      "owned_files": ["NEW pkgs/id/crates/id-store/src/location_index.rs", "NEW pkgs/id/crates/id-store/tests/location_index_model.rs"],
-      "dependencies": ["A9114-sidecar-snapshot", "A9115-locator-types"],
-      "test_module": "NEW location_index_model.rs",
-      "tests": ["MBT insert/update/stale/delete/rebuild", "Complete authorized set is indexed", "Tombstones prevent resurrection from stale snapshot", "Atlas occurrence/version ref retained"],
-      "oracle": "Rebuilt index equals fold of validated signed sidecars and tombstones at scope epoch.",
-      "acceptance_command": "FUTURE: cargo test -p id-store --test location_index_model"
+      "owned_files": [
+        {
+          "path": "pkgs/id/crates/id-store/src/location_index.rs",
+          "status": "new",
+          "owner": "A9115-complete-harvest"
+        },
+        {
+          "path": "pkgs/id/crates/id-store/tests/location_index_model.rs",
+          "status": "new",
+          "owner": "A9115-complete-harvest"
+        }
+      ],
+      "requires": [
+        {
+          "ref": "A9114-sidecar-snapshot",
+          "description": "Requires complete scoped signed sidecar snapshot record with payload/envelope IDs, parent and generation from A9114-sidecar-snapshot."
+        },
+        {
+          "ref": "A9115-locator-types",
+          "description": "Requires typed R2/Laptop/Drive locator variants with required scope fields from A9115-locator-types."
+        },
+        {
+          "ref": "9110-02",
+          "description": "Adds this consumer module to the crate root and owns Cargo manifest/export changes; this slice owns only its distinct module and tests."
+        },
+        {
+          "issue": 9083,
+          "description": "Consumes the authenticated tenant/scope context contract; this slice does not define tenancy."
+        }
+      ],
+      "after": [
+        {
+          "issue": 9084,
+          "description": "Coordinate the reference/copy adapter seam before integration; this slice makes no reference-versus-copy decision."
+        }
+      ],
+      "test": {
+        "file": "pkgs/id/crates/id-store/tests/location_index_model.rs",
+        "command": "FUTURE: cargo test -p id-store --test location_index_model",
+        "oracle": {
+          "kind": "model",
+          "expected": "Rebuilt index equals fold of validated signed sidecars and tombstones at scope epoch.",
+          "verifier": "Generate the listed operations against the specified state/reference model and compare every resulting state and error."
+        },
+        "notes": [
+          "MBT insert/update/stale/delete/rebuild",
+          "Complete authorized set is indexed",
+          "Tombstones prevent resurrection from stale snapshot",
+          "Atlas occurrence/version ref retained"
+        ]
+      },
+      "rollback": "Disable the affected acknowledgement or derived location-index writer/query; preserve signed receipts, sidecars and tombstones so the projection can be rebuilt without losing evidence.",
+      "design_source": "doc/2026-11-13T03-40-00Z_design_id-atlas-summit/part-a-addressing/versioned-design.md",
+      "design_section": "#9115 — Existence acknowledgements, location harvester, privacy",
+      "owner": "A9115-complete-harvest"
     },
     {
       "id": "A9115-privacy-filter",
-      "issue": "developing-today/code#9115",
+      "parent": 9115,
       "title": "Apply scope authorization before location candidate counts and projection",
-      "statements": ["S3.21-S3.22", "S3.26-S3.38"],
+      "kind": "security",
       "version": "V2",
       "tier": "crucial",
-      "kind": "security",
+      "statements": [
+        "S3.21-S3.22",
+        "S3.26-S3.38"
+      ],
       "goal": "Filter unauthorized locator values and counts before ranking, caching or returning results.",
       "enables": "Privacy-safe location harvesting in shared storage deployments.",
-      "owned_files": ["NEW pkgs/id/crates/id-store/src/location_policy.rs", "NEW pkgs/id/crates/id-store/tests/location_privacy.rs"],
-      "dependencies": ["A9115-complete-harvest"],
-      "test_module": "NEW location_privacy.rs",
-      "tests": ["Cross-tenant enumeration denied", "Hidden candidate count cannot leak", "Logs redact raw path and user locators"],
-      "oracle": "Authorization model: output/candidate counts are functions only of the authorized visible subset.",
-      "acceptance_command": "FUTURE: cargo test -p id-store --test location_privacy"
+      "owned_files": [
+        {
+          "path": "pkgs/id/crates/id-store/src/location_policy.rs",
+          "status": "new",
+          "owner": "A9115-privacy-filter"
+        },
+        {
+          "path": "pkgs/id/crates/id-store/tests/location_privacy.rs",
+          "status": "new",
+          "owner": "A9115-privacy-filter"
+        }
+      ],
+      "requires": [
+        {
+          "ref": "A9115-complete-harvest",
+          "description": "Requires complete per-scope fold of validated locations, source-version refs and signed stale/delete tombstones from A9115-complete-harvest."
+        },
+        {
+          "ref": "9110-02",
+          "description": "Adds this consumer module to the crate root and owns Cargo manifest/export changes; this slice owns only its distinct module and tests."
+        },
+        {
+          "issue": 9083,
+          "description": "Consumes the authenticated tenant/scope context contract; this slice does not define tenancy."
+        }
+      ],
+      "after": [],
+      "test": {
+        "file": "pkgs/id/crates/id-store/tests/location_privacy.rs",
+        "command": "FUTURE: cargo test -p id-store --test location_privacy",
+        "oracle": {
+          "kind": "model",
+          "expected": "Authorization model: output/candidate counts are functions only of the authorized visible subset.",
+          "verifier": "Generate the listed operations against the specified state/reference model and compare every resulting state and error."
+        },
+        "notes": [
+          "Cross-tenant enumeration denied",
+          "Hidden candidate count cannot leak",
+          "Logs redact raw path and user locators"
+        ]
+      },
+      "rollback": "Disable the affected acknowledgement or derived location-index writer/query; preserve signed receipts, sidecars and tombstones so the projection can be rebuilt without losing evidence.",
+      "design_source": "doc/2026-11-13T03-40-00Z_design_id-atlas-summit/part-a-addressing/versioned-design.md",
+      "design_section": "#9115 — Existence acknowledgements, location harvester, privacy",
+      "owner": "A9115-privacy-filter"
     },
     {
       "id": "A9116-registry-record",
-      "issue": "developing-today/code#9116",
+      "parent": 9116,
       "title": "Define local namespace registry record and two-core constraint",
-      "statements": ["S4.1-S4.7", "S4.19-S4.22"],
+      "kind": "contract",
       "version": "V2",
       "tier": "crucial",
-      "kind": "contract",
+      "statements": [
+        "S4.1-S4.7",
+        "S4.19-S4.22"
+      ],
       "goal": "Bind a server-local namespace name to one of exactly two core IDs and explicit handler/config profiles.",
       "enables": "Stable local resolution while preserving divergent domain-local registries.",
-      "owned_files": ["NEW pkgs/id/crates/id-core/src/namespace_definition.rs", "NEW pkgs/id/crates/id-core/tests/namespace_definition.rs"],
-      "dependencies": ["A9113-shape-types", "A9118-array-codec", "A9120-content-id"],
-      "test_module": "NEW namespace_definition.rs",
-      "tests": ["Exactly two core variants", "Same namespace name resolves differently in separate registries", "No global fallback"],
-      "oracle": "Finite model keyed by explicit resolver/registry identity; a definition cannot name an unknown third core.",
-      "acceptance_command": "FUTURE: cargo test -p id-core --test namespace_definition"
+      "owned_files": [
+        {
+          "path": "pkgs/id/crates/id-core/src/namespace_definition.rs",
+          "status": "new",
+          "owner": "A9116-registry-record"
+        },
+        {
+          "path": "pkgs/id/crates/id-core/tests/namespace_definition.rs",
+          "status": "new",
+          "owner": "A9116-registry-record"
+        }
+      ],
+      "requires": [
+        {
+          "ref": "A9113-shape-types",
+          "description": "Requires typed ContentId/ArrayId shape variants, shape-version tag and unsupported-critical-shape error from A9113-shape-types."
+        },
+        {
+          "ref": "A9118-array-codec",
+          "description": "Requires lossless ordered Option<Bytes> address encoder/decoder with null/empty distinction from A9118-array-codec."
+        },
+        {
+          "ref": "A9120-content-id",
+          "description": "Requires raw exact-byte Iroh BLAKE3-256 ContentId type and fixed legacy-compatible text/binary parser from A9120-content-id."
+        },
+        {
+          "ref": "9110-02",
+          "description": "Adds this consumer module to the crate root and owns Cargo manifest/export changes; this slice owns only its distinct module and tests."
+        }
+      ],
+      "after": [],
+      "test": {
+        "file": "pkgs/id/crates/id-core/tests/namespace_definition.rs",
+        "command": "FUTURE: cargo test -p id-core --test namespace_definition",
+        "oracle": {
+          "kind": "invariant",
+          "expected": "Finite model keyed by explicit resolver/registry identity; a definition cannot name an unknown third core.",
+          "verifier": "Check the stated property over generated inputs and assert the exact invariant and failure classification."
+        },
+        "notes": [
+          "Exactly two core variants",
+          "Same namespace name resolves differently in separate registries",
+          "No global fallback"
+        ]
+      },
+      "rollback": "Disable new registry mutations and resolve through the last verified registry generation; preserve existing Iroh namespace registries and IDs unchanged.",
+      "design_source": "doc/2026-11-13T03-40-00Z_design_id-atlas-summit/part-a-addressing/versioned-design.md",
+      "design_section": "#9116 — Local namespace registry",
+      "owner": "A9116-registry-record"
     },
     {
       "id": "A9116-registry-state",
-      "issue": "developing-today/code#9116",
+      "parent": 9116,
       "title": "Implement versioned namespace registry state and authorization seam",
-      "statements": ["S4.2-S4.10", "S4.18"],
-      "version": "V2",
-      "tier": "recommended",
       "kind": "state",
+      "version": "V2",
+      "tier": "crucial",
+      "statements": [
+        "S4.2-S4.10",
+        "S4.18"
+      ],
       "goal": "Persist local registry generations and authorize mutations without merging unrelated ID world/group authority.",
       "enables": "Version-aware, auditable local namespace configuration.",
-      "owned_files": ["NEW pkgs/id/crates/id-store/src/namespace_registry.rs", "NEW pkgs/id/crates/id-store/tests/namespace_registry_model.rs"],
-      "dependencies": ["A9116-registry-record"],
-      "test_module": "NEW namespace_registry_model.rs",
-      "tests": ["MBT create/update/revoke", "Concurrent generation conflict", "Existing Iroh doc registry can coexist"],
-      "oracle": "Registry state machine; mutation requires injected authorized context and increments one generation.",
-      "acceptance_command": "FUTURE: cargo test -p id-store --test namespace_registry_model"
+      "owned_files": [
+        {
+          "path": "pkgs/id/crates/id-store/src/namespace_registry.rs",
+          "status": "new",
+          "owner": "A9116-registry-state"
+        },
+        {
+          "path": "pkgs/id/crates/id-store/tests/namespace_registry_model.rs",
+          "status": "new",
+          "owner": "A9116-registry-state"
+        }
+      ],
+      "requires": [
+        {
+          "ref": "A9116-registry-record",
+          "description": "Requires namespace definition bound to exactly the content-addressed or array-addressed core ID from A9116-registry-record."
+        },
+        {
+          "ref": "9110-02",
+          "description": "Adds this consumer module to the crate root and owns Cargo manifest/export changes; this slice owns only its distinct module and tests."
+        },
+        {
+          "issue": 9083,
+          "description": "Consumes the authenticated tenant/scope context contract; this slice does not define tenancy."
+        }
+      ],
+      "after": [],
+      "test": {
+        "file": "pkgs/id/crates/id-store/tests/namespace_registry_model.rs",
+        "command": "FUTURE: cargo test -p id-store --test namespace_registry_model",
+        "oracle": {
+          "kind": "model",
+          "expected": "Registry state machine; mutation requires injected authorized context and increments one generation.",
+          "verifier": "Generate the listed operations against the specified state/reference model and compare every resulting state and error."
+        },
+        "notes": [
+          "MBT create/update/revoke",
+          "Concurrent generation conflict",
+          "Existing Iroh doc registry can coexist"
+        ]
+      },
+      "rollback": "Disable new registry mutations and resolve through the last verified registry generation; preserve existing Iroh namespace registries and IDs unchanged.",
+      "design_source": "doc/2026-11-13T03-40-00Z_design_id-atlas-summit/part-a-addressing/versioned-design.md",
+      "design_section": "#9116 — Local namespace registry",
+      "owner": "A9116-registry-state"
     },
     {
       "id": "A9117-uri-parser",
-      "issue": "developing-today/code#9117",
+      "parent": 9117,
       "title": "Implement strict authority/path parser for settled internal id URI V1",
-      "statements": ["S4.11-S4.18"],
+      "kind": "codec",
       "version": "V2",
       "tier": "crucial",
-      "kind": "codec",
+      "statements": [
+        "S4.11-S4.18"
+      ],
       "goal": "Parse required lowercase resolver alias, UTF-8 namespace, v1 shape and typed array/content components without normalization or double decode.",
       "enables": "Unambiguous RFC 3986-compatible local URI resolution.",
-      "owned_files": ["NEW pkgs/id/crates/id-core/src/id_uri_parse.rs", "NEW pkgs/id/crates/id-core/tests/id_uri_parse.rs"],
-      "dependencies": ["A9116-registry-record", "A9118-array-codec", "A9120-content-id"],
-      "test_module": "NEW id_uri_parse.rs",
-      "tests": ["Authority alias mismatch", "Malformed escapes and invalid namespace UTF-8", "No dot normalization/double decode", "Unknown critical version rejects"],
-      "oracle": "RFC 3986 component parse followed by exactly one field-specific decode and exact grammar validation.",
-      "acceptance_command": "FUTURE: cargo test -p id-core --test id_uri_parse"
+      "owned_files": [
+        {
+          "path": "pkgs/id/crates/id-core/src/id_uri_parse.rs",
+          "status": "new",
+          "owner": "A9117-uri-parser"
+        },
+        {
+          "path": "pkgs/id/crates/id-core/tests/id_uri_parse.rs",
+          "status": "new",
+          "owner": "A9117-uri-parser"
+        }
+      ],
+      "requires": [
+        {
+          "ref": "A9116-registry-record",
+          "description": "Requires namespace definition bound to exactly the content-addressed or array-addressed core ID from A9116-registry-record."
+        },
+        {
+          "ref": "A9118-array-codec",
+          "description": "Requires lossless ordered Option<Bytes> address encoder/decoder with null/empty distinction from A9118-array-codec."
+        },
+        {
+          "ref": "A9120-content-id",
+          "description": "Requires raw exact-byte Iroh BLAKE3-256 ContentId type and fixed legacy-compatible text/binary parser from A9120-content-id."
+        },
+        {
+          "ref": "9110-02",
+          "description": "Adds this consumer module to the crate root and owns Cargo manifest/export changes; this slice owns only its distinct module and tests."
+        }
+      ],
+      "after": [],
+      "test": {
+        "file": "pkgs/id/crates/id-core/tests/id_uri_parse.rs",
+        "command": "FUTURE: cargo test -p id-core --test id_uri_parse",
+        "oracle": {
+          "kind": "invariant",
+          "expected": "RFC 3986 component parse followed by exactly one field-specific decode and exact grammar validation.",
+          "verifier": "Check the stated property over generated inputs and assert the exact invariant and failure classification."
+        },
+        "notes": [
+          "Authority alias mismatch",
+          "Malformed escapes and invalid namespace UTF-8",
+          "No dot normalization/double decode",
+          "Unknown critical version rejects"
+        ]
+      },
+      "rollback": "Stop emitting this URI encoding and retain its parser for already published links; fall back only to an explicitly selected prior syntax, never global lookup or silent reinterpretation.",
+      "design_source": "doc/2026-11-13T03-40-00Z_design_id-atlas-summit/part-a-addressing/versioned-design.md",
+      "design_section": "#9117 — URI syntax (`id://`) and encoding",
+      "owner": "A9117-uri-parser"
     },
     {
       "id": "A9117-uri-format",
-      "issue": "developing-today/code#9117",
+      "parent": 9117,
       "title": "Implement canonical formatter and caller-local resolver hint check",
-      "statements": ["S4.11-S4.18"],
+      "kind": "codec",
       "version": "V2",
       "tier": "crucial",
-      "kind": "codec",
+      "statements": [
+        "S4.11-S4.18"
+      ],
       "goal": "Emit lowercase aliases, uppercase percent escapes and settled null/bytes/content syntax; require selected local resolver alias equality.",
       "enables": "Stable URI output without DNS/global resolution behavior.",
-      "owned_files": ["NEW pkgs/id/crates/id-core/src/id_uri_format.rs", "NEW pkgs/id/crates/id-core/tests/id_uri_format.rs"],
-      "dependencies": ["A9117-uri-parser"],
-      "test_module": "NEW id_uri_format.rs",
-      "tests": ["Required examples exact output", "Resolver hint mismatch explicit error", "Canonical parse-format idempotence"],
-      "oracle": "Golden URI examples and parse(format(value)) equals typed value; format(parse(canonical)) byte-identical.",
-      "acceptance_command": "FUTURE: cargo test -p id-core --test id_uri_format"
+      "owned_files": [
+        {
+          "path": "pkgs/id/crates/id-core/src/id_uri_format.rs",
+          "status": "new",
+          "owner": "A9117-uri-format"
+        },
+        {
+          "path": "pkgs/id/crates/id-core/tests/id_uri_format.rs",
+          "status": "new",
+          "owner": "A9117-uri-format"
+        }
+      ],
+      "requires": [
+        {
+          "ref": "A9117-uri-parser",
+          "description": "Requires typed parse result for authority alias, UTF-8 namespace, V1 content ID or array ID from A9117-uri-parser."
+        },
+        {
+          "ref": "9110-02",
+          "description": "Adds this consumer module to the crate root and owns Cargo manifest/export changes; this slice owns only its distinct module and tests."
+        }
+      ],
+      "after": [],
+      "test": {
+        "file": "pkgs/id/crates/id-core/tests/id_uri_format.rs",
+        "command": "FUTURE: cargo test -p id-core --test id_uri_format",
+        "oracle": {
+          "kind": "golden",
+          "expected": "Golden URI examples and parse(format(value)) equals typed value; format(parse(canonical)) byte-identical.",
+          "verifier": "Compare output bytes and typed outcomes with the cited fixed golden vectors; fail on any difference."
+        },
+        "notes": [
+          "Required examples exact output",
+          "Resolver hint mismatch explicit error",
+          "Canonical parse-format idempotence"
+        ]
+      },
+      "rollback": "Stop emitting this URI encoding and retain its parser for already published links; fall back only to an explicitly selected prior syntax, never global lookup or silent reinterpretation.",
+      "design_source": "doc/2026-11-13T03-40-00Z_design_id-atlas-summit/part-a-addressing/versioned-design.md",
+      "design_section": "#9117 — URI syntax (`id://`) and encoding",
+      "owner": "A9117-uri-format"
     },
     {
       "id": "A9117-uri-reference-pbt",
-      "issue": "developing-today/code#9117",
+      "parent": 9117,
       "title": "Port deterministic URI codec property and adversarial corpus to conformance tests",
-      "statements": ["S4.12-S4.17"],
+      "kind": "conformance",
       "version": "V2",
       "tier": "crucial",
-      "kind": "conformance",
+      "statements": [
+        "S4.12-S4.17"
+      ],
       "goal": "Use the stdlib reference codec's deterministic random cases and malformed corpus as Rust/TypeScript conformance vectors.",
       "enables": "Cross-edition URI parity and protection against URI parser differentials.",
-      "owned_files": ["NEW pkgs/id/crates/id-core/tests/id_uri_property.rs", "NEW pkgs/id/hosted-worker/test/id-uri-vectors.test.ts", "doc/2026-11-13T03-40-00Z_design_id-atlas-summit/part-a-addressing/uri_codec_reference.py"],
-      "dependencies": ["A9117-uri-parser", "A9117-uri-format"],
-      "test_module": "NEW id_uri_property.rs and id-uri-vectors.test.ts",
-      "tests": ["10,000 deterministic round trips", "Null/empty/order/percent escape cases", "Malformed version, authority, delimiters, query/fragment reject"],
-      "oracle": "Reference `uri_codec_reference.py self-test` output and fixed golden corpus; outcome equality across Rust and TypeScript.",
-      "acceptance_command": "FUTURE: python3 -I doc/2026-11-13T03-40-00Z_design_id-atlas-summit/part-a-addressing/uri_codec_reference.py self-test && cargo test -p id-core --test id_uri_property"
+      "owned_files": [
+        {
+          "path": "pkgs/id/crates/id-core/tests/id_uri_property.rs",
+          "status": "new",
+          "owner": "A9117-uri-reference-pbt"
+        },
+        {
+          "path": "pkgs/id/hosted-worker/test/id-uri-vectors.test.ts",
+          "status": "new",
+          "owner": "A9117-uri-reference-pbt"
+        },
+        {
+          "path": "doc/2026-11-13T03-40-00Z_design_id-atlas-summit/part-a-addressing/uri_codec_reference.py",
+          "status": "existing",
+          "owner": "A9117-uri-reference-pbt"
+        }
+      ],
+      "requires": [
+        {
+          "ref": "A9117-uri-parser",
+          "description": "Requires typed parse result for authority alias, UTF-8 namespace, V1 content ID or array ID from A9117-uri-parser."
+        },
+        {
+          "ref": "A9117-uri-format",
+          "description": "Requires canonical V1 URI formatter and caller-selected resolver-alias equality check from A9117-uri-format."
+        },
+        {
+          "ref": "9110-02",
+          "description": "Adds this consumer module to the crate root and owns Cargo manifest/export changes; this slice owns only its distinct module and tests."
+        }
+      ],
+      "after": [],
+      "test": {
+        "file": "pkgs/id/crates/id-core/tests/id_uri_property.rs",
+        "command": "FUTURE: python3 -I doc/2026-11-13T03-40-00Z_design_id-atlas-summit/part-a-addressing/uri_codec_reference.py self-test && cargo test -p id-core --test id_uri_property",
+        "oracle": {
+          "kind": "golden",
+          "expected": "Reference self-test passes readable array byte vectors, one raw-blake3 content golden, 10000 deterministic ArrayId round trips, 10000 deterministic ContentId parse/format round trips, and rejects invalid digest length, uppercase/non-hex digest, unsupported parse/formatter profile, and malformed URI vectors; Rust/TypeScript results match the reference.",
+          "verifier": "Compare output bytes and typed outcomes with the cited fixed golden vectors; fail on any difference."
+        },
+        "notes": [
+          "Readable array URI examples including b.us%20president.md",
+          "Content golden and 10,000 deterministic content parse/format round trips",
+          "Negative content digest length, uppercase/non-hex text, and unknown formatter profile cases",
+          "10,000 deterministic array round trips",
+          "Null/empty/order/percent escape cases",
+          "Malformed version, authority, delimiters, query/fragment reject"
+        ]
+      },
+      "rollback": "Stop emitting this URI encoding and retain its parser for already published links; fall back only to an explicitly selected prior syntax, never global lookup or silent reinterpretation.",
+      "design_source": "doc/2026-11-13T03-40-00Z_design_id-atlas-summit/part-a-addressing/versioned-design.md",
+      "design_section": "#9117 — URI syntax (`id://`) and encoding",
+      "owner": "A9117-uri-reference-pbt"
     },
     {
       "id": "A9118-array-codec",
-      "issue": "developing-today/code#9118",
+      "parent": 9118,
       "title": "Implement nullable ordered byte-slot address type and codec",
-      "statements": ["S4.23-S4.28"],
+      "kind": "codec",
       "version": "V2",
       "tier": "crucial",
-      "kind": "codec",
+      "statements": [
+        "S4.23-S4.28"
+      ],
       "goal": "Encode/decode zero-or-more Option<Bytes> slots, preserving null versus empty bytes and slot order.",
       "enables": "General array-address core semantics and URI slot payload model.",
-      "owned_files": ["NEW pkgs/id/crates/id-core/src/array_address.rs", "NEW pkgs/id/crates/id-core/tests/array_address.rs"],
-      "dependencies": [],
-      "test_module": "NEW array_address.rs",
-      "tests": ["PBT injective round-trip", "Null/empty/zero-address goldens", "Arbitrary slot count without domain fixed maximum"],
-      "oracle": "Typed reference vector and byte-for-byte canonical round trip; values with different null/empty structure never collide.",
-      "acceptance_command": "FUTURE: cargo test -p id-core --test array_address"
+      "owned_files": [
+        {
+          "path": "pkgs/id/crates/id-core/src/array_address.rs",
+          "status": "new",
+          "owner": "A9118-array-codec"
+        },
+        {
+          "path": "pkgs/id/crates/id-core/tests/array_address.rs",
+          "status": "new",
+          "owner": "A9118-array-codec"
+        }
+      ],
+      "requires": [
+        {
+          "ref": "9110-02",
+          "description": "Adds this consumer module to the crate root and owns Cargo manifest/export changes; this slice owns only its distinct module and tests."
+        }
+      ],
+      "after": [],
+      "test": {
+        "file": "pkgs/id/crates/id-core/tests/array_address.rs",
+        "command": "FUTURE: cargo test -p id-core --test array_address",
+        "oracle": {
+          "kind": "golden",
+          "expected": "Typed reference vector and byte-for-byte canonical round trip; values with different null/empty structure never collide.",
+          "verifier": "Compare output bytes and typed outcomes with the cited fixed golden vectors; fail on any difference."
+        },
+        "notes": [
+          "PBT injective round-trip",
+          "Null/empty/zero-address goldens",
+          "Arbitrary slot count without domain fixed maximum"
+        ]
+      },
+      "rollback": "Stop new writes using this array codec/order profile; retain the decoder and stored bytes until an explicit migration proves round-trip equivalence.",
+      "design_source": "doc/2026-11-13T03-40-00Z_design_id-atlas-summit/part-a-addressing/versioned-design.md",
+      "design_section": "#9118 — Array-address core",
+      "owner": "A9118-array-codec"
     },
     {
       "id": "A9118-array-order",
-      "issue": "developing-today/code#9118",
+      "parent": 9118,
       "title": "Define typed lexicographic ordering for array addresses",
-      "statements": ["S4.25-S4.28"],
+      "kind": "comparator",
       "version": "V2",
       "tier": "crucial",
-      "kind": "comparator",
+      "statements": [
+        "S4.25-S4.28"
+      ],
       "goal": "Implement null-before-bytes, unsigned-byte lexicographic, then shorter-prefix ordering.",
       "enables": "Index order and deterministic pagination.",
-      "owned_files": ["NEW pkgs/id/crates/id-core/src/array_order.rs", "NEW pkgs/id/crates/id-core/tests/array_order_prop.rs"],
-      "dependencies": ["A9118-array-codec"],
-      "test_module": "NEW array_order_prop.rs",
-      "tests": ["PBT antisymmetry/transitivity/totality", "Sort matches reference comparator", "Null vs empty bytes order"],
-      "oracle": "Independent tuple comparator over Rust Option<Vec<u8>> values.",
-      "acceptance_command": "FUTURE: cargo test -p id-core --test array_order_prop"
+      "owned_files": [
+        {
+          "path": "pkgs/id/crates/id-core/src/array_order.rs",
+          "status": "new",
+          "owner": "A9118-array-order"
+        },
+        {
+          "path": "pkgs/id/crates/id-core/tests/array_order_prop.rs",
+          "status": "new",
+          "owner": "A9118-array-order"
+        }
+      ],
+      "requires": [
+        {
+          "ref": "A9118-array-codec",
+          "description": "Requires lossless ordered Option<Bytes> address encoder/decoder with null/empty distinction from A9118-array-codec."
+        },
+        {
+          "ref": "9110-02",
+          "description": "Adds this consumer module to the crate root and owns Cargo manifest/export changes; this slice owns only its distinct module and tests."
+        }
+      ],
+      "after": [],
+      "test": {
+        "file": "pkgs/id/crates/id-core/tests/array_order_prop.rs",
+        "command": "FUTURE: cargo test -p id-core --test array_order_prop",
+        "oracle": {
+          "kind": "invariant",
+          "expected": "None sorts before Some(bytes); Some byte strings compare unsigned lexicographically with shorter equal prefixes first; tuple comparison proceeds slotwise then shorter equal tuples first, yielding a total antisymmetric transitive order.",
+          "verifier": "Generate address pairs/triples and compare sorted results to an independent Python tuple reference; assert antisymmetry, transitivity, totality and null-versus-empty ordering."
+        },
+        "notes": [
+          "PBT antisymmetry/transitivity/totality",
+          "Sort matches reference comparator",
+          "Null vs empty bytes order"
+        ]
+      },
+      "rollback": "Stop new writes using this array codec/order profile; retain the decoder and stored bytes until an explicit migration proves round-trip equivalence.",
+      "design_source": "doc/2026-11-13T03-40-00Z_design_id-atlas-summit/part-a-addressing/versioned-design.md",
+      "design_section": "#9118 — Array-address core",
+      "owner": "A9118-array-order"
     },
     {
       "id": "A9118-typed-values",
-      "issue": "developing-today/code#9118",
+      "parent": 9118,
       "title": "Implement tagged typed values and arbitrary-object codec boundary",
-      "statements": ["S4.34-S4.40"],
+      "kind": "codec",
       "version": "V2",
       "tier": "recommended",
-      "kind": "codec",
+      "statements": [
+        "S4.34-S4.40"
+      ],
       "goal": "Preserve type ID plus bytes for values and require explicit codec profiles for structured objects.",
       "enables": "Type-sensitive equality and safely extensible object serialization.",
-      "owned_files": ["NEW pkgs/id/crates/id-core/src/typed_value.rs", "NEW pkgs/id/crates/id-core/tests/typed_value.rs"],
-      "dependencies": ["A9114-cbor-profile", "A9118-array-codec"],
-      "test_module": "NEW typed_value.rs",
-      "tests": ["Same bytes/different type unequal", "Unknown critical type rejects", "Unknown noncritical value preserved opaque", "Object codec round trip"],
-      "oracle": "Typed-value equality model and declared codec reference vectors.",
-      "acceptance_command": "FUTURE: cargo test -p id-core --test typed_value"
+      "owned_files": [
+        {
+          "path": "pkgs/id/crates/id-core/src/typed_value.rs",
+          "status": "new",
+          "owner": "A9118-typed-values"
+        },
+        {
+          "path": "pkgs/id/crates/id-core/tests/typed_value.rs",
+          "status": "new",
+          "owner": "A9118-typed-values"
+        }
+      ],
+      "requires": [
+        {
+          "ref": "A9114-cbor-profile",
+          "description": "Requires deterministic CBOR rules, duplicate-key rejection and cross-edition golden bytes from A9114-cbor-profile."
+        },
+        {
+          "ref": "A9118-array-codec",
+          "description": "Requires lossless ordered Option<Bytes> address encoder/decoder with null/empty distinction from A9118-array-codec."
+        },
+        {
+          "ref": "9110-02",
+          "description": "Adds this consumer module to the crate root and owns Cargo manifest/export changes; this slice owns only its distinct module and tests."
+        }
+      ],
+      "after": [],
+      "test": {
+        "file": "pkgs/id/crates/id-core/tests/typed_value.rs",
+        "command": "FUTURE: cargo test -p id-core --test typed_value",
+        "oracle": {
+          "kind": "invariant",
+          "expected": "Typed-value equality model and declared codec reference vectors.",
+          "verifier": "Check the stated property over generated inputs and assert the exact invariant and failure classification."
+        },
+        "notes": [
+          "Same bytes/different type unequal",
+          "Unknown critical type rejects",
+          "Unknown noncritical value preserved opaque",
+          "Object codec round trip"
+        ]
+      },
+      "rollback": "Stop new writes using this array codec/order profile; retain the decoder and stored bytes until an explicit migration proves round-trip equivalence.",
+      "design_source": "doc/2026-11-13T03-40-00Z_design_id-atlas-summit/part-a-addressing/versioned-design.md",
+      "design_section": "#9118 — Array-address core",
+      "owner": "A9118-typed-values"
     },
     {
       "id": "A9119-shorthand-policy",
-      "issue": "developing-today/code#9119",
+      "parent": 9119,
       "title": "Implement per-namespace configured bare-string shorthand",
-      "statements": ["S4.29-S4.33"],
+      "kind": "query",
       "version": "V2",
       "tier": "recommended",
-      "kind": "query",
+      "statements": [
+        "S4.29-S4.33"
+      ],
       "goal": "Expand a bare UTF-8 string into slots using required configured default index; missing policy is an error.",
       "enables": "Compact human query without hard-coding example index 2.",
-      "owned_files": ["NEW pkgs/id/crates/id-core/src/array_shorthand.rs", "NEW pkgs/id/crates/id-core/tests/array_shorthand.rs"],
-      "dependencies": ["A9116-registry-record", "A9118-array-codec"],
-      "test_module": "NEW array_shorthand.rs",
-      "tests": ["Unset policy error", "Per-namespace slot expansion", "Server override beats namespace default only where configured"],
-      "oracle": "Pure expansion function compared with configured index reference; no fallback index exists.",
-      "acceptance_command": "FUTURE: cargo test -p id-core --test array_shorthand"
+      "owned_files": [
+        {
+          "path": "pkgs/id/crates/id-core/src/array_shorthand.rs",
+          "status": "new",
+          "owner": "A9119-shorthand-policy"
+        },
+        {
+          "path": "pkgs/id/crates/id-core/tests/array_shorthand.rs",
+          "status": "new",
+          "owner": "A9119-shorthand-policy"
+        }
+      ],
+      "requires": [
+        {
+          "ref": "A9116-registry-record",
+          "description": "Requires namespace definition bound to exactly the content-addressed or array-addressed core ID from A9116-registry-record."
+        },
+        {
+          "ref": "A9118-array-codec",
+          "description": "Requires lossless ordered Option<Bytes> address encoder/decoder with null/empty distinction from A9118-array-codec."
+        },
+        {
+          "ref": "9110-02",
+          "description": "Adds this consumer module to the crate root and owns Cargo manifest/export changes; this slice owns only its distinct module and tests."
+        }
+      ],
+      "after": [],
+      "test": {
+        "file": "pkgs/id/crates/id-core/tests/array_shorthand.rs",
+        "command": "FUTURE: cargo test -p id-core --test array_shorthand",
+        "oracle": {
+          "kind": "model",
+          "expected": "Pure expansion function compared with configured index reference; no fallback index exists.",
+          "verifier": "Generate the listed operations against the specified state/reference model and compare every resulting state and error."
+        },
+        "notes": [
+          "Unset policy error",
+          "Per-namespace slot expansion",
+          "Server override beats namespace default only where configured"
+        ]
+      },
+      "rollback": "Disable the shorthand/paging endpoint and keep the underlying array records unchanged; invalidate only cursors issued under the removed policy with an explicit typed error.",
+      "design_source": "doc/2026-11-13T03-40-00Z_design_id-atlas-summit/part-a-addressing/versioned-design.md",
+      "design_section": "#9119 — shorthand and streaming query API",
+      "owner": "A9119-shorthand-policy"
     },
     {
       "id": "A9119-query-cursor",
-      "issue": "developing-today/code#9119",
+      "parent": 9119,
       "title": "Add max-items result paging with snapshot-bound cursor",
-      "statements": ["S4.41-S4.44"],
+      "kind": "query",
       "version": "V2",
       "tier": "recommended",
-      "kind": "query",
+      "statements": [
+        "S4.41-S4.44"
+      ],
       "goal": "Bound each response page while keeping address length/result domain unbounded and exposing truncation, cancellation and cursor state.",
       "enables": "Streaming interfaces that do not silently truncate.",
-      "owned_files": ["NEW pkgs/id/crates/id-store/src/array_query.rs", "NEW pkgs/id/crates/id-store/tests/array_query_model.rs"],
-      "dependencies": ["A9118-array-order", "A9116-registry-state"],
-      "test_module": "NEW array_query_model.rs",
-      "tests": ["MBT pagination against snapshot model", "Cross-tenant cursor replay rejection", "Explicit truncated/end/cancel outcomes"],
-      "oracle": "Reference sorted snapshot result; pages form disjoint ordered slices and cursor binds scope/query/snapshot.",
-      "acceptance_command": "FUTURE: cargo test -p id-store --test array_query_model"
+      "owned_files": [
+        {
+          "path": "pkgs/id/crates/id-store/src/array_query.rs",
+          "status": "new",
+          "owner": "A9119-query-cursor"
+        },
+        {
+          "path": "pkgs/id/crates/id-store/tests/array_query_model.rs",
+          "status": "new",
+          "owner": "A9119-query-cursor"
+        }
+      ],
+      "requires": [
+        {
+          "ref": "A9118-array-order",
+          "description": "Requires total null/unsigned-byte/shorter-prefix ordering comparator for array addresses from A9118-array-order."
+        },
+        {
+          "ref": "A9116-registry-state",
+          "description": "Requires versioned local registry read/mutate operations and mutation authorization check from A9116-registry-state."
+        },
+        {
+          "ref": "9110-02",
+          "description": "Adds this consumer module to the crate root and owns Cargo manifest/export changes; this slice owns only its distinct module and tests."
+        },
+        {
+          "issue": 9083,
+          "description": "Consumes the authenticated tenant/scope context contract; this slice does not define tenancy."
+        }
+      ],
+      "after": [],
+      "test": {
+        "file": "pkgs/id/crates/id-store/tests/array_query_model.rs",
+        "command": "FUTURE: cargo test -p id-store --test array_query_model",
+        "oracle": {
+          "kind": "model",
+          "expected": "Reference sorted snapshot result; pages form disjoint ordered slices and cursor binds scope/query/snapshot.",
+          "verifier": "Generate the listed operations against the specified state/reference model and compare every resulting state and error."
+        },
+        "notes": [
+          "MBT pagination against snapshot model",
+          "Cross-tenant cursor replay rejection",
+          "Explicit truncated/end/cancel outcomes"
+        ]
+      },
+      "rollback": "Disable the shorthand/paging endpoint and keep the underlying array records unchanged; invalidate only cursors issued under the removed policy with an explicit typed error.",
+      "design_source": "doc/2026-11-13T03-40-00Z_design_id-atlas-summit/part-a-addressing/versioned-design.md",
+      "design_section": "#9119 — shorthand and streaming query API",
+      "owner": "A9119-query-cursor"
     },
     {
       "id": "A9120-content-id",
-      "issue": "developing-today/code#9120",
+      "parent": 9120,
       "title": "Implement immutable exact-byte raw-blake3-256 ContentId",
-      "statements": ["S3.4-S3.10", "S4.19-S4.22"],
+      "kind": "core",
       "version": "V2",
       "tier": "crucial",
-      "kind": "core",
+      "statements": [
+        "S3.4-S3.10",
+        "S4.19-S4.22"
+      ],
       "goal": "Represent initial content ID as raw exact-byte Iroh BLAKE3-256 while retaining profile token and legacy binary/text forms.",
       "enables": "Portable immutable content core with no metadata or location in identity.",
-      "owned_files": ["NEW pkgs/id/crates/id-core/src/content_id.rs", "NEW pkgs/id/crates/id-core/tests/content_id_vectors.rs"],
-      "dependencies": ["A9113-shape-types", "A9113-profile-dispatch"],
-      "test_module": "NEW content_id_vectors.rs",
-      "tests": ["Exact empty/hello/binary byte vectors", "Metadata/location changes do not change ID", "Atlas snapshot profile cannot parse as raw-blake3-256"],
-      "oracle": "Pinned Iroh Hash::new implementation and published golden bytes; source profile mismatch is explicit error.",
-      "acceptance_command": "FUTURE: cargo test -p id-core --test content_id_vectors"
+      "owned_files": [
+        {
+          "path": "pkgs/id/crates/id-core/src/content_id.rs",
+          "status": "new",
+          "owner": "A9120-content-id"
+        },
+        {
+          "path": "pkgs/id/crates/id-core/tests/content_id_vectors.rs",
+          "status": "new",
+          "owner": "A9120-content-id"
+        }
+      ],
+      "requires": [
+        {
+          "ref": "A9113-shape-types",
+          "description": "Requires typed ContentId/ArrayId shape variants, shape-version tag and unsupported-critical-shape error from A9113-shape-types."
+        },
+        {
+          "ref": "A9113-profile-dispatch",
+          "description": "Requires static/configured profile-token dispatch and typed unsupported-profile result from A9113-profile-dispatch."
+        },
+        {
+          "ref": "9110-02",
+          "description": "Adds this consumer module to the crate root and owns Cargo manifest/export changes; this slice owns only its distinct module and tests."
+        }
+      ],
+      "after": [],
+      "test": {
+        "file": "pkgs/id/crates/id-core/tests/content_id_vectors.rs",
+        "command": "FUTURE: cargo test -p id-core --test content_id_vectors",
+        "oracle": {
+          "kind": "golden",
+          "expected": "Pinned Iroh Hash::new implementation and published golden bytes; source profile mismatch is explicit error.",
+          "verifier": "Compare output bytes and typed outcomes with the cited fixed golden vectors; fail on any difference."
+        },
+        "notes": [
+          "Exact empty/hello/binary byte vectors",
+          "Metadata/location changes do not change ID",
+          "Atlas snapshot profile cannot parse as raw-blake3-256"
+        ]
+      },
+      "rollback": "Disable the new content writer/admission route; keep legacy content readers and all previously verified content-addresses intact. Never delete or rehash data as rollback.",
+      "design_source": "doc/2026-11-13T03-40-00Z_design_id-atlas-summit/part-a-addressing/versioned-design.md",
+      "design_section": "#9120 — content-address core",
+      "owner": "A9120-content-id"
     },
     {
       "id": "A9120-content-store",
-      "issue": "developing-today/code#9120",
+      "parent": 9120,
       "title": "Expose immutable content core adapter and verified streaming ingest",
-      "statements": ["S4.19-S4.22"],
+      "kind": "storage",
       "version": "V2",
       "tier": "crucial",
-      "kind": "storage",
+      "statements": [
+        "S4.19-S4.22"
+      ],
       "goal": "Commit content only after complete exact-byte digest match; preserve existing Iroh storage adapter boundary.",
       "enables": "Uniform immutable content contract without rewriting event/world stores.",
-      "owned_files": ["NEW pkgs/id/crates/id-store/src/content_store.rs", "NEW pkgs/id/crates/id-store/tests/content_store.rs"],
-      "dependencies": ["A9120-content-id"],
-      "test_module": "NEW content_store.rs",
-      "tests": ["Truncated stream does not commit", "Digest mismatch does not commit", "Iroh store adapter reads old IDs unchanged"],
-      "oracle": "Store-state model: object exists iff full stream length and digest validate; no partial staging object is accepted.",
-      "acceptance_command": "FUTURE: cargo test -p id-store --test content_store"
+      "owned_files": [
+        {
+          "path": "pkgs/id/crates/id-store/src/content_store.rs",
+          "status": "new",
+          "owner": "A9120-content-store"
+        },
+        {
+          "path": "pkgs/id/crates/id-store/tests/content_store.rs",
+          "status": "new",
+          "owner": "A9120-content-store"
+        }
+      ],
+      "requires": [
+        {
+          "ref": "A9120-content-id",
+          "description": "Requires raw exact-byte Iroh BLAKE3-256 ContentId type and fixed legacy-compatible text/binary parser from A9120-content-id."
+        },
+        {
+          "ref": "9110-02",
+          "description": "Adds this consumer module to the crate root and owns Cargo manifest/export changes; this slice owns only its distinct module and tests."
+        }
+      ],
+      "after": [],
+      "test": {
+        "file": "pkgs/id/crates/id-store/tests/content_store.rs",
+        "command": "FUTURE: cargo test -p id-store --test content_store",
+        "oracle": {
+          "kind": "model",
+          "expected": "Store-state model: object exists iff full stream length and digest validate; no partial staging object is accepted.",
+          "verifier": "Generate the listed operations against the specified state/reference model and compare every resulting state and error."
+        },
+        "notes": [
+          "Truncated stream does not commit",
+          "Digest mismatch does not commit",
+          "Iroh store adapter reads old IDs unchanged"
+        ]
+      },
+      "rollback": "Disable the new content writer/admission route; keep legacy content readers and all previously verified content-addresses intact. Never delete or rehash data as rollback.",
+      "design_source": "doc/2026-11-13T03-40-00Z_design_id-atlas-summit/part-a-addressing/versioned-design.md",
+      "design_section": "#9120 — content-address core",
+      "owner": "A9120-content-store"
     },
     {
       "id": "A9120-signature-gate",
-      "issue": "developing-today/code#9120",
+      "parent": 9120,
       "title": "Enforce universal signed-and-validated admission gate for both cores",
-      "statements": ["S1.12-S1.20", "S3.4-S3.10", "S4.19-S4.28"],
+      "kind": "security",
       "version": "V2",
       "tier": "crucial",
-      "kind": "security",
+      "statements": [
+        "S1.12-S1.20",
+        "S3.4-S3.10",
+        "S4.19-S4.28"
+      ],
       "goal": "Require signature, signer binding, semantic validation, namespace/tenant authorization and policy checks at every admission path, including local producers after signing.",
       "enables": "One auditable acceptance invariant without trusted-local bypass.",
-      "owned_files": ["NEW pkgs/id/crates/id-core/src/admission_gate.rs", "NEW pkgs/id/crates/id-core/tests/admission_gate.rs", "NEW pkgs/id/hosted-worker/src/admission-gate.ts", "NEW pkgs/id/hosted-worker/test/admission-gate.test.ts"],
-      "dependencies": ["A9114-envelope-identities", "A9116-registry-state", "A9120-content-store"],
-      "test_module": "NEW admission_gate.rs and admission-gate.test.ts",
-      "tests": ["Enumerated ingress matrix including local write and hosted edge", "Unsigned/invalid/signer-mismatch reject", "Local producer signs then same gate verifies", "Configuration cannot disable gate"],
-      "oracle": "Ingress model: every accepted state transition has verified signature and all validation decisions; no route bypass exists.",
-      "acceptance_command": "FUTURE: cargo test -p id-core --test admission_gate && cd pkgs/id/hosted-worker && bun test admission-gate.test.ts"
+      "owned_files": [
+        {
+          "path": "pkgs/id/crates/id-core/src/admission_gate.rs",
+          "status": "new",
+          "owner": "A9120-signature-gate"
+        },
+        {
+          "path": "pkgs/id/crates/id-core/tests/admission_gate.rs",
+          "status": "new",
+          "owner": "A9120-signature-gate"
+        },
+        {
+          "path": "pkgs/id/hosted-worker/src/admission-gate.ts",
+          "status": "new",
+          "owner": "A9120-signature-gate"
+        },
+        {
+          "path": "pkgs/id/hosted-worker/test/admission-gate.test.ts",
+          "status": "new",
+          "owner": "A9120-signature-gate"
+        }
+      ],
+      "requires": [
+        {
+          "ref": "A9114-envelope-identities",
+          "description": "Requires PayloadId, canonical Body, detached-signature preimage and nonrecursive EnvelopeId types from A9114-envelope-identities."
+        },
+        {
+          "ref": "A9116-registry-state",
+          "description": "Requires versioned local registry read/mutate operations and mutation authorization check from A9116-registry-state."
+        },
+        {
+          "ref": "A9120-content-store",
+          "description": "Requires immutable content adapter that commits only after complete digest validation from A9120-content-store."
+        },
+        {
+          "ref": "9110-02",
+          "description": "Adds this consumer module to the crate root and owns Cargo manifest/export changes; this slice owns only its distinct module and tests."
+        },
+        {
+          "issue": 9083,
+          "description": "Consumes the authenticated tenant/scope context contract; this slice does not define tenancy."
+        }
+      ],
+      "after": [],
+      "test": {
+        "file": "pkgs/id/crates/id-core/tests/admission_gate.rs",
+        "command": "FUTURE: cargo test -p id-core --test admission_gate && cd pkgs/id/hosted-worker && bun test admission-gate.test.ts",
+        "oracle": {
+          "kind": "model",
+          "expected": "Ingress model: every accepted state transition has verified signature and all validation decisions; no route bypass exists.",
+          "verifier": "Generate the listed operations against the specified state/reference model and compare every resulting state and error."
+        },
+        "notes": [
+          "Enumerated ingress matrix including local write and hosted edge",
+          "Unsigned/invalid/signer-mismatch reject",
+          "Local producer signs then same gate verifies",
+          "Configuration cannot disable gate"
+        ]
+      },
+      "rollback": "Disable the new content writer/admission route; keep legacy content readers and all previously verified content-addresses intact. Never delete or rehash data as rollback.",
+      "design_source": "doc/2026-11-13T03-40-00Z_design_id-atlas-summit/part-a-addressing/versioned-design.md",
+      "design_section": "#9120 — content-address core",
+      "owner": "A9120-signature-gate"
     },
     {
       "id": "A9121-name-candidates",
-      "issue": "developing-today/code#9121",
+      "parent": 9121,
       "title": "Store string-path names as signed collision-preserving candidates",
-      "statements": ["S4.45-S4.52"],
+      "kind": "derived-family",
       "version": "V3",
       "tier": "recommended",
-      "kind": "derived-family",
+      "statements": [
+        "S4.45-S4.52"
+      ],
       "goal": "Keep original name spelling and all authorized signed target claims; do not silently choose one winner.",
       "enables": "Ambiguity-aware name search and later lens projection.",
-      "owned_files": ["NEW pkgs/id/crates/id-store/src/name_candidates.rs", "NEW pkgs/id/crates/id-store/tests/name_candidates.rs"],
-      "dependencies": ["A9116-registry-state", "A9118-typed-values", "A9114-sidecar-snapshot"],
-      "test_module": "NEW name_candidates.rs",
-      "tests": ["Collision retained", "Unicode comparison profile does not mutate source name", "Unauthorized candidates filtered"],
-      "oracle": "Reference signed candidate multiset and configured comparison profile.",
-      "acceptance_command": "FUTURE: cargo test -p id-store --test name_candidates"
+      "owned_files": [
+        {
+          "path": "pkgs/id/crates/id-store/src/name_candidates.rs",
+          "status": "new",
+          "owner": "A9121-name-candidates"
+        },
+        {
+          "path": "pkgs/id/crates/id-store/tests/name_candidates.rs",
+          "status": "new",
+          "owner": "A9121-name-candidates"
+        }
+      ],
+      "requires": [
+        {
+          "ref": "A9116-registry-state",
+          "description": "Requires versioned local registry read/mutate operations and mutation authorization check from A9116-registry-state."
+        },
+        {
+          "ref": "A9118-typed-values",
+          "description": "Requires type-ID plus payload value representation and explicit object-codec dispatch from A9118-typed-values."
+        },
+        {
+          "ref": "A9114-sidecar-snapshot",
+          "description": "Requires complete scoped signed sidecar snapshot record with payload/envelope IDs, parent and generation from A9114-sidecar-snapshot."
+        },
+        {
+          "ref": "9110-02",
+          "description": "Adds this consumer module to the crate root and owns Cargo manifest/export changes; this slice owns only its distinct module and tests."
+        }
+      ],
+      "after": [],
+      "test": {
+        "file": "pkgs/id/crates/id-store/tests/name_candidates.rs",
+        "command": "FUTURE: cargo test -p id-store --test name_candidates",
+        "oracle": {
+          "kind": "reference",
+          "expected": "Reference signed candidate multiset and configured comparison profile.",
+          "verifier": "Run the named independent reference procedure on the same inputs and compare typed outputs/errors exactly."
+        },
+        "notes": [
+          "Collision retained",
+          "Unicode comparison profile does not mutate source name",
+          "Unauthorized candidates filtered"
+        ]
+      },
+      "rollback": "Disable the affected name projection/lens while retaining signed candidate assertions; revert query presentation without rewriting names or authority claims.",
+      "design_source": "doc/2026-11-13T03-40-00Z_design_id-atlas-summit/part-a-addressing/versioned-design.md",
+      "design_section": "#9121 — String-path names, lenses and authority groups",
+      "owner": "A9121-name-candidates"
     },
     {
       "id": "A9121-lenses-groups",
-      "issue": "developing-today/code#9121",
+      "parent": 9121,
       "title": "Implement explicit name lenses and voluntary authority-group filters",
-      "statements": ["S4.53-S4.63"],
+      "kind": "projection",
       "version": "V3",
       "tier": "recommended",
-      "kind": "projection",
+      "statements": [
+        "S4.53-S4.63"
+      ],
       "goal": "Project candidate sets through local override, popularity, cohort, standing and selected authority-group lenses with deterministic tie-breaks.",
       "enables": "User-selectable name resolution without a global naming authority.",
-      "owned_files": ["NEW pkgs/id/crates/id-store/src/name_lens.rs", "NEW pkgs/id/crates/id-store/tests/name_lens_model.rs"],
-      "dependencies": ["A9121-name-candidates", "A9115-existence-receipt"],
-      "test_module": "NEW name_lens_model.rs",
-      "tests": ["MBT overlapping groups/local overrides", "Standing claim issuer/scope/expiry", "Stable tie ordering", "Group preference cannot create authority"],
-      "oracle": "Pure lens function over authorized candidate/evidence model; deterministic ordering for same policy version.",
-      "acceptance_command": "FUTURE: cargo test -p id-store --test name_lens_model"
+      "owned_files": [
+        {
+          "path": "pkgs/id/crates/id-store/src/name_lens.rs",
+          "status": "new",
+          "owner": "A9121-lenses-groups"
+        },
+        {
+          "path": "pkgs/id/crates/id-store/tests/name_lens_model.rs",
+          "status": "new",
+          "owner": "A9121-lenses-groups"
+        }
+      ],
+      "requires": [
+        {
+          "ref": "A9121-name-candidates",
+          "description": "Requires signed collision-preserving name-to-target candidate set from A9121-name-candidates."
+        },
+        {
+          "ref": "A9115-existence-receipt",
+          "description": "Requires B19 verified_present receipt binding and separate inventory-only stored_unverified assertion from A9115-existence-receipt."
+        },
+        {
+          "ref": "9110-02",
+          "description": "Adds this consumer module to the crate root and owns Cargo manifest/export changes; this slice owns only its distinct module and tests."
+        }
+      ],
+      "after": [],
+      "test": {
+        "file": "pkgs/id/crates/id-store/tests/name_lens_model.rs",
+        "command": "FUTURE: cargo test -p id-store --test name_lens_model",
+        "oracle": {
+          "kind": "model",
+          "expected": "Pure lens function over authorized candidate/evidence model; deterministic ordering for same policy version.",
+          "verifier": "Generate the listed operations against the specified state/reference model and compare every resulting state and error."
+        },
+        "notes": [
+          "MBT overlapping groups/local overrides",
+          "Standing claim issuer/scope/expiry",
+          "Stable tie ordering",
+          "Group preference cannot create authority"
+        ]
+      },
+      "rollback": "Disable the affected name projection/lens while retaining signed candidate assertions; revert query presentation without rewriting names or authority claims.",
+      "design_source": "doc/2026-11-13T03-40-00Z_design_id-atlas-summit/part-a-addressing/versioned-design.md",
+      "design_section": "#9121 — String-path names, lenses and authority groups",
+      "owner": "A9121-lenses-groups"
     },
     {
       "id": "A9122-numeric-encoding",
-      "issue": "developing-today/code#9122",
+      "parent": 9122,
       "title": "Encode arbitrary integers, decimals and normalized binary floats",
-      "statements": ["S4.64-S4.71"],
+      "kind": "codec",
       "version": "V3",
       "tier": "recommended",
-      "kind": "codec",
+      "statements": [
+        "S4.64-S4.71"
+      ],
       "goal": "Add unbounded typed numeric significand/exponent values, canonical positive zero and reject NaN/infinity in ordered profile.",
       "enables": "Infinitely growable numeric registry over array-address core.",
-      "owned_files": ["NEW pkgs/id/crates/id-core/src/numeric_value.rs", "NEW pkgs/id/crates/id-core/tests/numeric_value_prop.rs"],
-      "dependencies": ["A9118-typed-values"],
-      "test_module": "NEW numeric_value_prop.rs",
-      "tests": ["PBT canonical round trip", "Strip powers-of-ten/two normalization", "Signed zero canonicalizes", "Non-finite ordered values reject"],
-      "oracle": "Arbitrary precision reference integer and exact exponent/significand model.",
-      "acceptance_command": "FUTURE: cargo test -p id-core --test numeric_value_prop"
+      "owned_files": [
+        {
+          "path": "pkgs/id/crates/id-core/src/numeric_value.rs",
+          "status": "new",
+          "owner": "A9122-numeric-encoding"
+        },
+        {
+          "path": "pkgs/id/crates/id-core/tests/numeric_value_prop.rs",
+          "status": "new",
+          "owner": "A9122-numeric-encoding"
+        }
+      ],
+      "requires": [
+        {
+          "ref": "A9118-typed-values",
+          "description": "Requires type-ID plus payload value representation and explicit object-codec dispatch from A9118-typed-values."
+        },
+        {
+          "ref": "9110-02",
+          "description": "Adds this consumer module to the crate root and owns Cargo manifest/export changes; this slice owns only its distinct module and tests."
+        }
+      ],
+      "after": [],
+      "test": {
+        "file": "pkgs/id/crates/id-core/tests/numeric_value_prop.rs",
+        "command": "FUTURE: cargo test -p id-core --test numeric_value_prop",
+        "oracle": {
+          "kind": "invariant",
+          "expected": "Arbitrary precision reference integer and exact exponent/significand model.",
+          "verifier": "Check the stated property over generated inputs and assert the exact invariant and failure classification."
+        },
+        "notes": [
+          "PBT canonical round trip",
+          "Strip powers-of-ten/two normalization",
+          "Signed zero canonicalizes",
+          "Non-finite ordered values reject"
+        ]
+      },
+      "rollback": "Disable new numeric writes under this profile; retain its decoder for stored values and do not coerce or rewrite existing keys during rollback.",
+      "design_source": "doc/2026-11-13T03-40-00Z_design_id-atlas-summit/part-a-addressing/versioned-design.md",
+      "design_section": "#9122 — Numeric registry family",
+      "owner": "A9122-numeric-encoding"
     },
     {
       "id": "A9122-numeric-order",
-      "issue": "developing-today/code#9122",
+      "parent": 9122,
       "title": "Implement type-first numeric order with allocation-safe within-kind comparison",
-      "statements": ["S4.69-S4.73"],
+      "kind": "comparator",
       "version": "V3",
       "tier": "recommended",
-      "kind": "comparator",
+      "statements": [
+        "S4.69-S4.73"
+      ],
       "goal": "Order kinds by explicit stable type tag and compare values within kind without materializing huge exponent powers.",
       "enables": "Correct range scans over large numeric values without coercion.",
-      "owned_files": ["NEW pkgs/id/crates/id-core/src/numeric_order.rs", "NEW pkgs/id/crates/id-core/tests/numeric_order_prop.rs"],
-      "dependencies": ["A9122-numeric-encoding"],
-      "test_module": "NEW numeric_order_prop.rs",
-      "tests": ["PBT comparator laws", "Huge exponent does not allocate exponent-sized integer", "Type-first mixed-kind ordering", "Budget exhaustion typed resource_limit"],
-      "oracle": "Reference comparator using virtual padded digits/bits and exact sign/magnitude arithmetic.",
-      "acceptance_command": "FUTURE: cargo test -p id-core --test numeric_order_prop"
+      "owned_files": [
+        {
+          "path": "pkgs/id/crates/id-core/src/numeric_order.rs",
+          "status": "new",
+          "owner": "A9122-numeric-order"
+        },
+        {
+          "path": "pkgs/id/crates/id-core/tests/numeric_order_prop.rs",
+          "status": "new",
+          "owner": "A9122-numeric-order"
+        }
+      ],
+      "requires": [
+        {
+          "ref": "A9122-numeric-encoding",
+          "description": "Requires normalized arbitrary-precision integer/decimal/binary-float wire values from A9122-numeric-encoding."
+        },
+        {
+          "ref": "9110-02",
+          "description": "Adds this consumer module to the crate root and owns Cargo manifest/export changes; this slice owns only its distinct module and tests."
+        }
+      ],
+      "after": [],
+      "test": {
+        "file": "pkgs/id/crates/id-core/tests/numeric_order_prop.rs",
+        "command": "FUTURE: cargo test -p id-core --test numeric_order_prop",
+        "oracle": {
+          "kind": "invariant",
+          "expected": "The reference comparator orders negatives by descending absolute magnitude, then canonical zero, then positives by ascending magnitude; type tag orders mixed kinds first, and exponent comparison terminates or returns resource_limit without allocating exponent-sized powers.",
+          "verifier": "Compare generated cases with an exact arbitrary-precision reference model and fixed negative/zero/positive, cross-sign, mixed-kind, large-exponent and allocation-budget vectors; assert -10 < -2 < 0 < 2 < 10 and the specified failure class."
+        },
+        "notes": [
+          "PBT comparator laws",
+          "Negative magnitude order, canonical zero and cross-sign examples",
+          "Large exponents compare without materializing exponent-sized powers",
+          "Huge exponent does not allocate exponent-sized integer",
+          "Type-first mixed-kind ordering",
+          "Budget exhaustion typed resource_limit"
+        ]
+      },
+      "rollback": "Disable new numeric writes under this profile; retain its decoder for stored values and do not coerce or rewrite existing keys during rollback.",
+      "design_source": "doc/2026-11-13T03-40-00Z_design_id-atlas-summit/part-a-addressing/versioned-design.md",
+      "design_section": "#9122 — Numeric registry family",
+      "owner": "A9122-numeric-order"
     },
     {
       "id": "A9122-numeric-registry",
-      "issue": "developing-today/code#9122",
+      "parent": 9122,
       "title": "Add numeric registry validator and configurable resource budgets",
-      "statements": ["S4.64-S4.73"],
+      "kind": "derived-family",
       "version": "V3",
       "tier": "recommended",
-      "kind": "derived-family",
+      "statements": [
+        "S4.64-S4.73"
+      ],
       "goal": "Apply numeric-kind validation at array writes while distinguishing operational parser limits from numeric domain limits.",
       "enables": "Numeric semantics without a third address core.",
-      "owned_files": ["NEW pkgs/id/crates/id-store/src/numeric_registry.rs", "NEW pkgs/id/crates/id-store/tests/numeric_registry.rs"],
-      "dependencies": ["A9116-registry-state", "A9122-numeric-order"],
-      "test_module": "NEW numeric_registry.rs",
-      "tests": ["Wrong type rejected at write", "Configurable budget returns resource_limit", "Valid large value is not rejected by fixed semantic max"],
-      "oracle": "Namespace policy plus NumericValue validator; no max magnitude/precision semantic rule.",
-      "acceptance_command": "FUTURE: cargo test -p id-store --test numeric_registry"
+      "owned_files": [
+        {
+          "path": "pkgs/id/crates/id-store/src/numeric_registry.rs",
+          "status": "new",
+          "owner": "A9122-numeric-registry"
+        },
+        {
+          "path": "pkgs/id/crates/id-store/tests/numeric_registry.rs",
+          "status": "new",
+          "owner": "A9122-numeric-registry"
+        }
+      ],
+      "requires": [
+        {
+          "ref": "A9116-registry-state",
+          "description": "Requires versioned local registry read/mutate operations and mutation authorization check from A9116-registry-state."
+        },
+        {
+          "ref": "A9122-numeric-order",
+          "description": "Requires type-first exact comparator with negative magnitude reversal and bounded-work exponent compare from A9122-numeric-order."
+        },
+        {
+          "ref": "9110-02",
+          "description": "Adds this consumer module to the crate root and owns Cargo manifest/export changes; this slice owns only its distinct module and tests."
+        }
+      ],
+      "after": [],
+      "test": {
+        "file": "pkgs/id/crates/id-store/tests/numeric_registry.rs",
+        "command": "FUTURE: cargo test -p id-store --test numeric_registry",
+        "oracle": {
+          "kind": "reference",
+          "expected": "Namespace policy plus NumericValue validator; no max magnitude/precision semantic rule.",
+          "verifier": "Run the named independent reference procedure on the same inputs and compare typed outputs/errors exactly."
+        },
+        "notes": [
+          "Wrong type rejected at write",
+          "Configurable budget returns resource_limit",
+          "Valid large value is not rejected by fixed semantic max"
+        ]
+      },
+      "rollback": "Disable new numeric writes under this profile; retain its decoder for stored values and do not coerce or rewrite existing keys during rollback.",
+      "design_source": "doc/2026-11-13T03-40-00Z_design_id-atlas-summit/part-a-addressing/versioned-design.md",
+      "design_section": "#9122 — Numeric registry family",
+      "owner": "A9122-numeric-registry"
     },
     {
       "id": "A9123-stream-records",
-      "issue": "developing-today/code#9123",
+      "parent": 9123,
       "title": "Define signed stream descriptor, chunks and lifecycle state machine",
-      "statements": ["S4.74-S4.82"],
+      "kind": "protocol",
       "version": "V3",
       "tier": "recommended",
-      "kind": "protocol",
+      "statements": [
+        "S4.74-S4.82"
+      ],
       "goal": "Model addressable open stream with signed chained immutable chunks and one CAS terminal transition.",
       "enables": "Text/chat/voice/video streams that are addressable while in progress.",
-      "owned_files": ["NEW pkgs/id/crates/id-core/src/stream_record.rs", "NEW pkgs/id/crates/id-core/tests/stream_lifecycle_model.rs"],
-      "dependencies": ["A9114-envelope-identities", "A9118-array-codec", "A9120-content-id"],
-      "test_module": "NEW stream_lifecycle_model.rs",
-      "tests": ["MBT append/finalize/abort/expire", "Sequence fork and duplicate payload", "Concurrent terminal transition"],
-      "oracle": "Finite lifecycle model with chain sequence/hash invariants; exactly one terminal record.",
-      "acceptance_command": "FUTURE: cargo test -p id-core --test stream_lifecycle_model"
+      "owned_files": [
+        {
+          "path": "pkgs/id/crates/id-core/src/stream_record.rs",
+          "status": "new",
+          "owner": "A9123-stream-records"
+        },
+        {
+          "path": "pkgs/id/crates/id-core/tests/stream_lifecycle_model.rs",
+          "status": "new",
+          "owner": "A9123-stream-records"
+        }
+      ],
+      "requires": [
+        {
+          "ref": "A9114-envelope-identities",
+          "description": "Requires PayloadId, canonical Body, detached-signature preimage and nonrecursive EnvelopeId types from A9114-envelope-identities."
+        },
+        {
+          "ref": "A9118-array-codec",
+          "description": "Requires lossless ordered Option<Bytes> address encoder/decoder with null/empty distinction from A9118-array-codec."
+        },
+        {
+          "ref": "A9120-content-id",
+          "description": "Requires raw exact-byte Iroh BLAKE3-256 ContentId type and fixed legacy-compatible text/binary parser from A9120-content-id."
+        },
+        {
+          "ref": "9110-02",
+          "description": "Adds this consumer module to the crate root and owns Cargo manifest/export changes; this slice owns only its distinct module and tests."
+        },
+        {
+          "issue": 9083,
+          "description": "Consumes the authenticated tenant/scope context contract; this slice does not define tenancy."
+        }
+      ],
+      "after": [],
+      "test": {
+        "file": "pkgs/id/crates/id-core/tests/stream_lifecycle_model.rs",
+        "command": "FUTURE: cargo test -p id-core --test stream_lifecycle_model",
+        "oracle": {
+          "kind": "model",
+          "expected": "Finite lifecycle model with chain sequence/hash invariants; exactly one terminal record.",
+          "verifier": "Generate the listed operations against the specified state/reference model and compare every resulting state and error."
+        },
+        "notes": [
+          "MBT append/finalize/abort/expire",
+          "Sequence fork and duplicate payload",
+          "Concurrent terminal transition"
+        ]
+      },
+      "rollback": "Stop stream creation/subscription for the affected protocol revision; retain signed chunk chains and terminal records for replay/read-only recovery.",
+      "design_source": "doc/2026-11-13T03-40-00Z_design_id-atlas-summit/part-a-addressing/versioned-design.md",
+      "design_section": "#9123 — addressable live streams",
+      "owner": "A9123-stream-records"
     },
     {
       "id": "A9123-stream-subscribe",
-      "issue": "developing-today/code#9123",
+      "parent": 9123,
       "title": "Implement resumable stream subscription and completed target resolution",
-      "statements": ["S4.79-S4.82"],
+      "kind": "query",
       "version": "V3",
       "tier": "recommended",
-      "kind": "query",
+      "statements": [
+        "S4.79-S4.82"
+      ],
       "goal": "Subscribe/resume by chain cursor and return typed completion target with reauthorization rather than implicit redirect.",
       "enables": "Live and replay consumers with explicit lifecycle outcomes.",
-      "owned_files": ["NEW pkgs/id/crates/id-store/src/stream_subscribe.rs", "NEW pkgs/id/crates/id-store/tests/stream_subscribe.rs"],
-      "dependencies": ["A9123-stream-records", "A9119-query-cursor"],
-      "test_module": "NEW stream_subscribe.rs",
-      "tests": ["Resume from cursor exact suffix", "Backpressure/cancel/expiry", "Completed target access rechecked", "No hidden HTTP redirect"],
-      "oracle": "Reference stream chain prefix/suffix model plus current authorization result.",
-      "acceptance_command": "FUTURE: cargo test -p id-store --test stream_subscribe"
+      "owned_files": [
+        {
+          "path": "pkgs/id/crates/id-store/src/stream_subscribe.rs",
+          "status": "new",
+          "owner": "A9123-stream-subscribe"
+        },
+        {
+          "path": "pkgs/id/crates/id-store/tests/stream_subscribe.rs",
+          "status": "new",
+          "owner": "A9123-stream-subscribe"
+        }
+      ],
+      "requires": [
+        {
+          "ref": "A9123-stream-records",
+          "description": "Requires signed stream descriptor/chunk-chain types and CAS terminal lifecycle transition from A9123-stream-records."
+        },
+        {
+          "ref": "A9119-query-cursor",
+          "description": "Requires snapshot-bound max-items page operation and scope/query/sort-bound opaque cursor from A9119-query-cursor."
+        },
+        {
+          "ref": "9110-02",
+          "description": "Adds this consumer module to the crate root and owns Cargo manifest/export changes; this slice owns only its distinct module and tests."
+        },
+        {
+          "issue": 9083,
+          "description": "Consumes the authenticated tenant/scope context contract; this slice does not define tenancy."
+        }
+      ],
+      "after": [],
+      "test": {
+        "file": "pkgs/id/crates/id-store/tests/stream_subscribe.rs",
+        "command": "FUTURE: cargo test -p id-store --test stream_subscribe",
+        "oracle": {
+          "kind": "model",
+          "expected": "Reference stream chain prefix/suffix model plus current authorization result.",
+          "verifier": "Generate the listed operations against the specified state/reference model and compare every resulting state and error."
+        },
+        "notes": [
+          "Resume from cursor exact suffix",
+          "Backpressure/cancel/expiry",
+          "Completed target access rechecked",
+          "No hidden HTTP redirect"
+        ]
+      },
+      "rollback": "Stop stream creation/subscription for the affected protocol revision; retain signed chunk chains and terminal records for replay/read-only recovery.",
+      "design_source": "doc/2026-11-13T03-40-00Z_design_id-atlas-summit/part-a-addressing/versioned-design.md",
+      "design_section": "#9123 — addressable live streams",
+      "owner": "A9123-stream-subscribe"
     },
     {
       "id": "A9124-world-definition",
-      "issue": "developing-today/code#9124",
+      "parent": 9124,
       "title": "Encode signer-local signed coordinate-world definitions",
-      "statements": ["S4.83-S4.92"],
+      "kind": "protocol",
       "version": "V4",
       "tier": "contingent",
-      "kind": "protocol",
+      "statements": [
+        "S4.83-S4.92"
+      ],
       "goal": "Sign immutable world definition over array coordinates, root reference, profile, signer and version with signer-local authority semantics.",
       "enables": "Portable coordinate resolution without global registry or protocol monopoly.",
-      "owned_files": ["NEW pkgs/id/crates/id-core/src/world_definition.rs", "NEW pkgs/id/crates/id-core/tests/world_definition.rs"],
-      "dependencies": ["A9114-envelope-identities", "A9116-registry-state", "A9118-array-codec", "A9120-content-store"],
-      "test_module": "NEW world_definition.rs",
-      "tests": ["Signature binds exact definition bytes", "Signer-local canonical label", "Local alternate mapping cannot claim signer authority"],
-      "oracle": "COSE/reference signature vectors and world definition model; valid signature never implies global trust.",
-      "acceptance_command": "FUTURE: cargo test -p id-core --test world_definition"
+      "owned_files": [
+        {
+          "path": "pkgs/id/crates/id-core/src/world_definition.rs",
+          "status": "new",
+          "owner": "A9124-world-definition"
+        },
+        {
+          "path": "pkgs/id/crates/id-core/tests/world_definition.rs",
+          "status": "new",
+          "owner": "A9124-world-definition"
+        }
+      ],
+      "requires": [
+        {
+          "ref": "A9114-envelope-identities",
+          "description": "Requires PayloadId, canonical Body, detached-signature preimage and nonrecursive EnvelopeId types from A9114-envelope-identities."
+        },
+        {
+          "ref": "A9116-registry-state",
+          "description": "Requires versioned local registry read/mutate operations and mutation authorization check from A9116-registry-state."
+        },
+        {
+          "ref": "A9118-array-codec",
+          "description": "Requires lossless ordered Option<Bytes> address encoder/decoder with null/empty distinction from A9118-array-codec."
+        },
+        {
+          "ref": "A9120-content-store",
+          "description": "Requires immutable content adapter that commits only after complete digest validation from A9120-content-store."
+        },
+        {
+          "ref": "9110-02",
+          "description": "Adds this consumer module to the crate root and owns Cargo manifest/export changes; this slice owns only its distinct module and tests."
+        },
+        {
+          "issue": 9083,
+          "description": "Consumes the authenticated tenant/scope context contract; this slice does not define tenancy."
+        }
+      ],
+      "after": [],
+      "test": {
+        "file": "pkgs/id/crates/id-core/tests/world_definition.rs",
+        "command": "FUTURE: cargo test -p id-core --test world_definition",
+        "oracle": {
+          "kind": "model",
+          "expected": "COSE/reference signature vectors and world definition model; valid signature never implies global trust.",
+          "verifier": "Generate the listed operations against the specified state/reference model and compare every resulting state and error."
+        },
+        "notes": [
+          "Signature binds exact definition bytes",
+          "Signer-local canonical label",
+          "Local alternate mapping cannot claim signer authority"
+        ]
+      },
+      "rollback": "Disable new world definitions/current-authority decisions; preserve signed historical definitions and report unknown current key status as not currently authorized.",
+      "design_source": "doc/2026-11-13T03-40-00Z_design_id-atlas-summit/part-a-addressing/versioned-design.md",
+      "design_section": "#9124 — signer-local worlds and horizons",
+      "owner": "A9124-world-definition"
     },
     {
       "id": "A9124-world-key-history",
-      "issue": "developing-today/code#9124",
+      "parent": 9124,
       "title": "Separate historical signature validity, current key status and local trust",
-      "statements": ["S4.93"],
+      "kind": "verification",
       "version": "V4",
       "tier": "contingent",
-      "kind": "verification",
+      "statements": [
+        "S4.93"
+      ],
       "goal": "Expose historical/current verification dimensions and define key rotation/revocation resolution seam without deciding SSO.",
       "enables": "Auditable world horizon and compromise response.",
-      "owned_files": ["NEW pkgs/id/crates/id-core/src/world_key_status.rs", "NEW pkgs/id/crates/id-core/tests/world_key_status_model.rs"],
-      "dependencies": ["A9124-world-definition"],
-      "test_module": "NEW world_key_status_model.rs",
-      "tests": ["MBT valid-at-signing then revoked", "Unknown status not valid", "Rotation successor and historical proof", "Key substitution rejected"],
-      "oracle": "Explicit key history state machine; cryptographic validity, currentness and verifier trust are independent outputs.",
-      "acceptance_command": "FUTURE: cargo test -p id-core --test world_key_status_model"
+      "owned_files": [
+        {
+          "path": "pkgs/id/crates/id-core/src/world_key_status.rs",
+          "status": "new",
+          "owner": "A9124-world-key-history"
+        },
+        {
+          "path": "pkgs/id/crates/id-core/tests/world_key_status_model.rs",
+          "status": "new",
+          "owner": "A9124-world-key-history"
+        }
+      ],
+      "requires": [
+        {
+          "ref": "A9124-world-definition",
+          "description": "Requires signed immutable signer-local world definition and coordinate profile from A9124-world-definition."
+        },
+        {
+          "ref": "9110-02",
+          "description": "Adds this consumer module to the crate root and owns Cargo manifest/export changes; this slice owns only its distinct module and tests."
+        },
+        {
+          "issue": 9083,
+          "description": "Consumes the authenticated tenant/scope context contract; this slice does not define tenancy."
+        }
+      ],
+      "after": [],
+      "test": {
+        "file": "pkgs/id/crates/id-core/tests/world_key_status_model.rs",
+        "command": "FUTURE: cargo test -p id-core --test world_key_status_model",
+        "oracle": {
+          "kind": "model",
+          "expected": "Explicit key history state machine; cryptographic validity, currentness and verifier trust are independent outputs.",
+          "verifier": "Generate the listed operations against the specified state/reference model and compare every resulting state and error."
+        },
+        "notes": [
+          "MBT valid-at-signing then revoked",
+          "Unknown status not valid",
+          "Rotation successor and historical proof",
+          "Key substitution rejected"
+        ]
+      },
+      "rollback": "Disable new world definitions/current-authority decisions; preserve signed historical definitions and report unknown current key status as not currently authorized.",
+      "design_source": "doc/2026-11-13T03-40-00Z_design_id-atlas-summit/part-a-addressing/versioned-design.md",
+      "design_section": "#9124 — signer-local worlds and horizons",
+      "owner": "A9124-world-key-history"
     }
-  ]
+  ],
+  "schema_version": 1
 }

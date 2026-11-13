@@ -1,1351 +1,50 @@
 {
-  "schema_version": 2,
+  "schema_version": 3,
+  "delivery_policy": "32 stable slices B01-B32, each a standalone issue and exactly one PR. Every implementation row owns a unique module/test file. Every research row retains existing reports/validators as read-only evidence and creates a distinct future result JSON validated by the shared delivery validator.",
   "provenance": {
-    "status": "original exact 30-item list not recovered",
-    "source": "See ../inventory-live/candidate-provenance.md for sources searched, seven named-category anchors, and an explicitly labeled statement-derived reconstruction. Slice names/boundaries below are not represented as the original filed 30. The interop kit maps to #9110 and is not counted among Part B component slices."
+    "status": "statement-derived reconstructed 32; not the original missing 30",
+    "source": "See ../inventory-live/candidate-provenance.md for bounded provenance search. B01-B30 preserve the 30 reconstructed IDs; B31-B32 are additional foundational statement coverage, not claimed original candidates."
   },
-  "component_counts": {
-    "#9141": 8,
-    "#9142": 3,
-    "#9143": 5,
-    "#9144": 5,
-    "#9145": 3,
-    "#9146": 2,
-    "#9147": 3,
-    "#9148": 3
-  },
-  "crosscut_inputs": [
-    {
-      "id": "X1",
-      "owner": "#9111",
-      "scope": "Modes/link kinds/storage tiering and final config schema; input seam only, not counted. This config seam cannot disable signed validation, budgets, replay binding or emergency revocation."
-    },
-    {
-      "id": "X2",
-      "owner": "#9110",
-      "scope": "Interop kit/non-specialness conformance; input seam only, not counted. No interop kit slice is falsely counted as a #9141-#9148 candidate."
-    },
-    {
-      "id": "X3",
-      "owner": "#9113 / Atlas content-plane sibling owner (exact owner to reconcile)",
-      "scope": "Missing checked-in Atlas content_hash producer/profile contract: Part B must consume exact ContentId bytes and not invent producer semantics."
-    },
-    {
-      "id": "X4",
-      "owner": "ID artifact compatibility follow-up within B05; sibling identity designs #6277/#6287-6290/#6312 to reconcile",
-      "scope": "Document existing serde_json::to_vec(SignedBody) signature preimage mismatch and preserve legacy vectors; new canonical-CBOR profile is additive, never silent re-sign/re-hash."
-    }
-  ],
-  "slices": [
-    {
-      "id": "B01",
-      "parent": "#9141",
-      "component": "signed acceptance and peer classes",
-      "title": "Key lifecycle: rotation, generation overlap, and preserving validity of data signed by a then-current key",
-      "goal": "Key lifecycle: rotation, generation overlap, and preserving validity of data signed by a then-current key as an independently reviewable contract and implementation increment.",
-      "statements": [
-        "S1.21"
-      ],
-      "candidate_provenance": "named category anchor only; not verified as original candidate title/boundary",
-      "named_category_anchor": "named category (label only)",
-      "kind": "design-and-implementation",
-      "enables": "The component acceptance criterion without redesigning sibling concerns.",
-      "version": "V2",
-      "tier": "crucial",
-      "hard_dependencies": [],
-      "soft_dependencies": [],
-      "owned_surfaces": [
-        {
-          "path": "pkgs/id/crates/id-sync/src/federation/peer_policy.rs",
-          "status": "proposed new shared module, owned by PR-B-9141; does not exist yet"
-        },
-        {
-          "path": "pkgs/id/crates/id-sync/tests/federation_9141.rs",
-          "status": "proposed single integration test target federation_9141, owned by PR-B-9141; does not exist yet"
-        }
-      ],
-      "failing_test_or_oracle": "Future failing test to add at pkgs/id/crates/id-sync/tests/federation_acceptance.rs: assert the stated invariant against an explicit reference/model oracle; proposed path does not exist yet.",
-      "done_command": "cargo test -p id-sync --test federation_9141 (future target created by PR-B-9141)",
-      "future_test_note": "Future test path/target pkgs/id/crates/id-sync/tests/federation_9141.rs / federation_9141; one target per component PR, not one target per slice.",
-      "dependencies_note": "Hard dependencies are implementation/API blockers; soft_dependencies are coordination/review inputs only. Crucial work has no dependency on recommended or contingent work.",
-      "interface_first": true,
-      "sequence_within_component": 1,
-      "pr_unit": "PR-B-9141",
-      "pr_scope": "One component PR contains this slice and all same-component slices; shared module/test ownership is sequenced within PR-B-9141, not split into conflicting PRs."
-    },
-    {
-      "id": "B02",
-      "parent": "#9141",
-      "component": "signed acceptance and peer classes",
-      "title": "Key compromise/revocation effect on previously accepted data (revalidate, flag, or quarantine)",
-      "goal": "Key compromise/revocation effect on previously accepted data (revalidate, flag, or quarantine) as an independently reviewable contract and implementation increment.",
-      "statements": [
-        "S1.22"
-      ],
-      "candidate_provenance": "statement-derived reconstruction; original title/boundary not recovered",
-      "named_category_anchor": null,
-      "kind": "design-and-implementation",
-      "enables": "The component acceptance criterion without redesigning sibling concerns.",
-      "version": "V2",
-      "tier": "crucial",
-      "hard_dependencies": [
-        "B01"
-      ],
-      "soft_dependencies": [],
-      "owned_surfaces": [
-        {
-          "path": "pkgs/id/crates/id-sync/src/federation/peer_policy.rs",
-          "status": "proposed new shared module, owned by PR-B-9141; does not exist yet"
-        },
-        {
-          "path": "pkgs/id/crates/id-sync/tests/federation_9141.rs",
-          "status": "proposed single integration test target federation_9141, owned by PR-B-9141; does not exist yet"
-        }
-      ],
-      "failing_test_or_oracle": "Future failing test to add at pkgs/id/crates/id-sync/tests/federation_acceptance.rs: assert the stated invariant against an explicit reference/model oracle; proposed path does not exist yet.",
-      "done_command": "cargo test -p id-sync --test federation_9141 (future target created by PR-B-9141)",
-      "future_test_note": "Future test path/target pkgs/id/crates/id-sync/tests/federation_9141.rs / federation_9141; one target per component PR, not one target per slice.",
-      "dependencies_note": "Hard dependencies are implementation/API blockers; soft_dependencies are coordination/review inputs only. Crucial work has no dependency on recommended or contingent work.",
-      "interface_first": false,
-      "sequence_within_component": 2,
-      "pr_unit": "PR-B-9141",
-      "pr_scope": "One component PR contains this slice and all same-component slices; shared module/test ownership is sequenced within PR-B-9141, not split into conflicting PRs."
-    },
-    {
-      "id": "B03",
-      "parent": "#9141",
-      "component": "signed acceptance and peer classes",
-      "title": "Replay/freshness rules for re-presented signed data",
-      "goal": "Replay/freshness rules for re-presented signed data as an independently reviewable contract and implementation increment.",
-      "statements": [
-        "S1.23"
-      ],
-      "candidate_provenance": "named category anchor only; not verified as original candidate title/boundary",
-      "named_category_anchor": "named category (label only)",
-      "kind": "design-and-implementation",
-      "enables": "The component acceptance criterion without redesigning sibling concerns.",
-      "version": "V2",
-      "tier": "crucial",
-      "hard_dependencies": [
-        "B01"
-      ],
-      "soft_dependencies": [],
-      "owned_surfaces": [
-        {
-          "path": "pkgs/id/crates/id-sync/src/federation/peer_policy.rs",
-          "status": "proposed new shared module, owned by PR-B-9141; does not exist yet"
-        },
-        {
-          "path": "pkgs/id/crates/id-sync/tests/federation_9141.rs",
-          "status": "proposed single integration test target federation_9141, owned by PR-B-9141; does not exist yet"
-        }
-      ],
-      "failing_test_or_oracle": "Future failing test to add at pkgs/id/crates/id-sync/tests/federation_acceptance.rs: assert the stated invariant against an explicit reference/model oracle; proposed path does not exist yet.",
-      "done_command": "cargo test -p id-sync --test federation_9141 (future target created by PR-B-9141)",
-      "future_test_note": "Future test path/target pkgs/id/crates/id-sync/tests/federation_9141.rs / federation_9141; one target per component PR, not one target per slice.",
-      "dependencies_note": "Hard dependencies are implementation/API blockers; soft_dependencies are coordination/review inputs only. Crucial work has no dependency on recommended or contingent work.",
-      "interface_first": false,
-      "sequence_within_component": 3,
-      "pr_unit": "PR-B-9141",
-      "pr_scope": "One component PR contains this slice and all same-component slices; shared module/test ownership is sequenced within PR-B-9141, not split into conflicting PRs."
-    },
-    {
-      "id": "B04",
-      "parent": "#9141",
-      "component": "signed acceptance and peer classes",
-      "title": "Signature-suite agility and algorithm deprecation/migration",
-      "goal": "Signature-suite agility and algorithm deprecation/migration as an independently reviewable contract and implementation increment. Initial new profile is Ed25519 + deterministic CBOR with allowlisted suites; unknown suite fails closed.",
-      "statements": [
-        "S1.24"
-      ],
-      "candidate_provenance": "statement-derived reconstruction; original title/boundary not recovered",
-      "named_category_anchor": null,
-      "kind": "design-and-implementation",
-      "enables": "The component acceptance criterion without redesigning sibling concerns.",
-      "version": "V2",
-      "tier": "recommended",
-      "hard_dependencies": [
-        "B01"
-      ],
-      "soft_dependencies": [],
-      "owned_surfaces": [
-        {
-          "path": "pkgs/id/crates/id-sync/src/federation/peer_policy.rs",
-          "status": "proposed new shared module, owned by PR-B-9141; does not exist yet"
-        },
-        {
-          "path": "pkgs/id/crates/id-sync/tests/federation_9141.rs",
-          "status": "proposed single integration test target federation_9141, owned by PR-B-9141; does not exist yet"
-        }
-      ],
-      "failing_test_or_oracle": "Future failing test to add at pkgs/id/crates/id-sync/tests/federation_acceptance.rs: assert the stated invariant against an explicit reference/model oracle; proposed path does not exist yet.",
-      "done_command": "cargo test -p id-sync --test federation_9141 (future target created by PR-B-9141)",
-      "future_test_note": "Future test path/target pkgs/id/crates/id-sync/tests/federation_9141.rs / federation_9141; one target per component PR, not one target per slice.",
-      "dependencies_note": "Hard dependencies are implementation/API blockers; soft_dependencies are coordination/review inputs only. Crucial work has no dependency on recommended or contingent work.",
-      "interface_first": false,
-      "sequence_within_component": 4,
-      "pr_unit": "PR-B-9141",
-      "pr_scope": "One component PR contains this slice and all same-component slices; shared module/test ownership is sequenced within PR-B-9141, not split into conflicting PRs."
-    },
-    {
-      "id": "B05",
-      "parent": "#9141",
-      "component": "signed acceptance and peer classes",
-      "title": "Signer identity binding and validation distinct from mere signature presence",
-      "goal": "Signer identity binding and validation distinct from mere signature presence as an independently reviewable contract and implementation increment. Also preserve compatibility vectors for the existing SignedBody serde_json signature preimage mismatch; do not alter legacy signed bytes. Preserve legacy SignedBody serde_json preimage compatibility vectors and document the existing docs/code mismatch without changing old bytes.",
-      "statements": [
-        "S1.17\u2013S1.18"
-      ],
-      "candidate_provenance": "statement-derived reconstruction; original title/boundary not recovered",
-      "named_category_anchor": null,
-      "kind": "design-and-implementation",
-      "enables": "The component acceptance criterion without redesigning sibling concerns.",
-      "version": "V2",
-      "tier": "crucial",
-      "hard_dependencies": [
-        "B01"
-      ],
-      "soft_dependencies": [],
-      "owned_surfaces": [
-        {
-          "path": "pkgs/id/crates/id-sync/src/federation/peer_policy.rs",
-          "status": "proposed new shared module, owned by PR-B-9141; does not exist yet"
-        },
-        {
-          "path": "pkgs/id/crates/id-sync/tests/federation_9141.rs",
-          "status": "proposed single integration test target federation_9141, owned by PR-B-9141; does not exist yet"
-        }
-      ],
-      "failing_test_or_oracle": "Future failing test to add at pkgs/id/crates/id-sync/tests/federation_acceptance.rs: assert the stated invariant against an explicit reference/model oracle; proposed path does not exist yet. Additional oracle: legacy artifact vectors verify against exact historical serde_json bytes before and after new canonical-CBOR profile support.",
-      "done_command": "cargo test -p id-sync --test federation_9141 (future target created by PR-B-9141)",
-      "future_test_note": "Future test path/target pkgs/id/crates/id-sync/tests/federation_9141.rs / federation_9141; one target per component PR, not one target per slice.",
-      "dependencies_note": "Hard dependencies are implementation/API blockers; soft_dependencies are coordination/review inputs only. Crucial work has no dependency on recommended or contingent work.",
-      "interface_first": true,
-      "sequence_within_component": 5,
-      "pr_unit": "PR-B-9141",
-      "pr_scope": "One component PR contains this slice and all same-component slices; shared module/test ownership is sequenced within PR-B-9141, not split into conflicting PRs."
-    },
-    {
-      "id": "B06",
-      "parent": "#9141",
-      "component": "signed acceptance and peer classes",
-      "title": "Observable, recordable rejection events at the universal signed-ingest gate",
-      "goal": "Observable, recordable rejection events at the universal signed-ingest gate as an independently reviewable contract and implementation increment.",
-      "statements": [
-        "S1.19",
-        "S1.25"
-      ],
-      "candidate_provenance": "statement-derived reconstruction; original title/boundary not recovered",
-      "named_category_anchor": null,
-      "kind": "design-and-implementation",
-      "enables": "The component acceptance criterion without redesigning sibling concerns.",
-      "version": "V2",
-      "tier": "crucial",
-      "hard_dependencies": [
-        "B05"
-      ],
-      "soft_dependencies": [],
-      "owned_surfaces": [
-        {
-          "path": "pkgs/id/crates/id-sync/src/federation/peer_policy.rs",
-          "status": "proposed new shared module, owned by PR-B-9141; does not exist yet"
-        },
-        {
-          "path": "pkgs/id/crates/id-sync/tests/federation_9141.rs",
-          "status": "proposed single integration test target federation_9141, owned by PR-B-9141; does not exist yet"
-        }
-      ],
-      "failing_test_or_oracle": "Future failing test to add at pkgs/id/crates/id-sync/tests/federation_acceptance.rs: assert the stated invariant against an explicit reference/model oracle; proposed path does not exist yet.",
-      "done_command": "cargo test -p id-sync --test federation_9141 (future target created by PR-B-9141)",
-      "future_test_note": "Future test path/target pkgs/id/crates/id-sync/tests/federation_9141.rs / federation_9141; one target per component PR, not one target per slice.",
-      "dependencies_note": "Hard dependencies are implementation/API blockers; soft_dependencies are coordination/review inputs only. Crucial work has no dependency on recommended or contingent work.",
-      "interface_first": false,
-      "sequence_within_component": 6,
-      "pr_unit": "PR-B-9141",
-      "pr_scope": "One component PR contains this slice and all same-component slices; shared module/test ownership is sequenced within PR-B-9141, not split into conflicting PRs."
-    },
-    {
-      "id": "B07",
-      "parent": "#9142",
-      "component": "sync and conflict reports",
-      "title": "First-class conflict-report artifact: versions, signers/sources, disputed data, retention/actionability",
-      "goal": "First-class conflict-report artifact: versions, signers/sources, disputed data, retention/actionability as an independently reviewable contract and implementation increment.",
-      "statements": [
-        "S1.34\u2013S1.38"
-      ],
-      "candidate_provenance": "statement-derived reconstruction; original title/boundary not recovered",
-      "named_category_anchor": null,
-      "kind": "design-and-implementation",
-      "enables": "The component acceptance criterion without redesigning sibling concerns.",
-      "version": "V2",
-      "tier": "crucial",
-      "hard_dependencies": [],
-      "soft_dependencies": [
-        "#9141 envelope and peer-policy interfaces"
-      ],
-      "owned_surfaces": [
-        {
-          "path": "pkgs/id/crates/id-sync/src/federation/sync.rs",
-          "status": "proposed new shared module, owned by PR-B-9142; does not exist yet"
-        },
-        {
-          "path": "pkgs/id/crates/id-sync/tests/federation_9142.rs",
-          "status": "proposed single integration test target federation_9142, owned by PR-B-9142; does not exist yet"
-        }
-      ],
-      "failing_test_or_oracle": "Future failing test to add at pkgs/id/crates/id-sync/tests/federation_sync.rs: assert the stated invariant against an explicit reference/model oracle; proposed path does not exist yet.",
-      "done_command": "cargo test -p id-sync --test federation_9142 (future target created by PR-B-9142)",
-      "future_test_note": "Future test path/target pkgs/id/crates/id-sync/tests/federation_9142.rs / federation_9142; one target per component PR, not one target per slice.",
-      "dependencies_note": "Hard dependencies are implementation/API blockers; soft_dependencies are coordination/review inputs only. Crucial work has no dependency on recommended or contingent work.",
-      "interface_first": true,
-      "sequence_within_component": 7,
-      "pr_unit": "PR-B-9142",
-      "pr_scope": "One component PR contains this slice and all same-component slices; shared module/test ownership is sequenced within PR-B-9142, not split into conflicting PRs."
-    },
-    {
-      "id": "B08",
-      "parent": "#9142",
-      "component": "sync and conflict reports",
-      "title": "Implicit-trust sync scope/tolerance under capacity, retention, tenant and trust-domain boundaries",
-      "goal": "Define implicit-trust internal sync toward 1:1 sameness within reason: authorized scope, capacity, retention, tenant/trust boundaries; detect divergence and exclusions.",
-      "statements": [
-        "S1.26-S1.27",
-        "S1.28-S1.31"
-      ],
-      "candidate_provenance": "statement-derived reconstruction; original title/boundary not recovered S1.27 added from #9142 statement coverage; not claimed in the recovered candidate source row. Includes S1.26-S1.27 coverage repair; not claimed in original candidate listing.",
-      "named_category_anchor": null,
-      "kind": "design-and-implementation",
-      "enables": "The component acceptance criterion without redesigning sibling concerns.",
-      "version": "V2",
-      "tier": "crucial",
-      "hard_dependencies": [],
-      "soft_dependencies": [
-        "#9141 envelope and peer-policy interfaces"
-      ],
-      "owned_surfaces": [
-        {
-          "path": "pkgs/id/crates/id-sync/src/federation/sync.rs",
-          "status": "proposed new shared module, owned by PR-B-9142; does not exist yet"
-        },
-        {
-          "path": "pkgs/id/crates/id-sync/tests/federation_9142.rs",
-          "status": "proposed single integration test target federation_9142, owned by PR-B-9142; does not exist yet"
-        }
-      ],
-      "failing_test_or_oracle": "Future model-based test: in-scope retained records converge; out-of-scope, deleted, expired or unauthorized records do not cross; oracle is scoped-set reference model.",
-      "done_command": "cargo test -p id-sync --test federation_9142 (future target created by PR-B-9142)",
-      "future_test_note": "Future test path/target pkgs/id/crates/id-sync/tests/federation_9142.rs / federation_9142; one target per component PR, not one target per slice.",
-      "dependencies_note": "Hard dependencies are implementation/API blockers; soft_dependencies are coordination/review inputs only. Crucial work has no dependency on recommended or contingent work.",
-      "interface_first": true,
-      "sequence_within_component": 8,
-      "pr_unit": "PR-B-9142",
-      "pr_scope": "One component PR contains this slice and all same-component slices; shared module/test ownership is sequenced within PR-B-9142, not split into conflicting PRs."
-    },
-    {
-      "id": "B09",
-      "parent": "#9142",
-      "component": "sync and conflict reports",
-      "title": "Divergence detection and anti-entropy/reconciliation requirements before any later merge",
-      "goal": "Divergence detection and anti-entropy/reconciliation requirements before any later merge as an independently reviewable contract and implementation increment.",
-      "statements": [
-        "S1.32\u2013S1.40"
-      ],
-      "candidate_provenance": "statement-derived reconstruction; original title/boundary not recovered",
-      "named_category_anchor": null,
-      "kind": "design-and-implementation",
-      "enables": "The component acceptance criterion without redesigning sibling concerns.",
-      "version": "V2",
-      "tier": "crucial",
-      "hard_dependencies": [
-        "B08"
-      ],
-      "soft_dependencies": [
-        "#9141 envelope and peer-policy interfaces"
-      ],
-      "owned_surfaces": [
-        {
-          "path": "pkgs/id/crates/id-sync/src/federation/sync.rs",
-          "status": "proposed new shared module, owned by PR-B-9142; does not exist yet"
-        },
-        {
-          "path": "pkgs/id/crates/id-sync/tests/federation_9142.rs",
-          "status": "proposed single integration test target federation_9142, owned by PR-B-9142; does not exist yet"
-        }
-      ],
-      "failing_test_or_oracle": "Future failing test to add at pkgs/id/crates/id-sync/tests/federation_sync.rs: assert the stated invariant against an explicit reference/model oracle; proposed path does not exist yet.",
-      "done_command": "cargo test -p id-sync --test federation_9142 (future target created by PR-B-9142)",
-      "future_test_note": "Future test path/target pkgs/id/crates/id-sync/tests/federation_9142.rs / federation_9142; one target per component PR, not one target per slice.",
-      "dependencies_note": "Hard dependencies are implementation/API blockers; soft_dependencies are coordination/review inputs only. Crucial work has no dependency on recommended or contingent work.",
-      "interface_first": false,
-      "sequence_within_component": 9,
-      "pr_unit": "PR-B-9142",
-      "pr_scope": "One component PR contains this slice and all same-component slices; shared module/test ownership is sequenced within PR-B-9142, not split into conflicting PRs."
-    },
-    {
-      "id": "B10",
-      "parent": "#9143",
-      "component": "CRDT research",
-      "title": "Automerge fit/evaluation against the shared CRDT criteria",
-      "goal": "Automerge fit/evaluation against the shared CRDT criteria; produce evidence and conditional/non-adoption result, not merge code.",
-      "statements": [
-        "S1.41"
-      ],
-      "candidate_provenance": "statement-derived reconstruction; original title/boundary not recovered",
-      "named_category_anchor": null,
-      "kind": "research",
-      "enables": "The component acceptance criterion without redesigning sibling concerns.",
-      "version": "V4",
-      "tier": "contingent",
-      "hard_dependencies": [],
-      "soft_dependencies": [],
-      "owned_surfaces": [
-        {
-          "path": "doc/2026-11-13T03-40-00Z_design_id-atlas-summit/part-b/research.md",
-          "status": "same docs-only PR-B-research; add dedicated component section"
-        }
-      ],
-      "failing_test_or_oracle": "Research acceptance oracle: compare at least two approaches on the common criteria, separate evidence from inference, and report conditional recommendation/non-adoption.",
-      "done_command": "python3 -I -c \"from pathlib import Path; p=Path('doc/2026-11-13T03-40-00Z_design_id-atlas-summit/part-b/research.md'); t=p.read_text(); assert '#9143' in t and '#9147' in t\"",
-      "future_test_note": "Research artifact exists; add component-specific evidence.",
-      "dependencies_note": "Hard dependencies are implementation/API blockers; soft_dependencies are coordination/review inputs only. Crucial work has no dependency on recommended or contingent work.",
-      "interface_first": true,
-      "sequence_within_component": 10,
-      "pr_unit": "PR-B-research",
-      "pr_scope": "One docs-only PR owns all research.md edits for #9143 and #9147; these slices are individually reviewed sections, not separate PRs."
-    },
-    {
-      "id": "B11",
-      "parent": "#9143",
-      "component": "CRDT research",
-      "title": "Identify \u201cdiamonds\u201d as Diamond Types and evaluate it on the shared criteria",
-      "goal": "Identify \u201cdiamonds\u201d as Diamond Types and evaluate it on the shared criteria; produce evidence and conditional/non-adoption result, not merge code.",
-      "statements": [
-        "S1.42"
-      ],
-      "candidate_provenance": "statement-derived reconstruction; original title/boundary not recovered",
-      "named_category_anchor": null,
-      "kind": "research",
-      "enables": "The component acceptance criterion without redesigning sibling concerns.",
-      "version": "V4",
-      "tier": "contingent",
-      "hard_dependencies": [],
-      "soft_dependencies": [],
-      "owned_surfaces": [
-        {
-          "path": "doc/2026-11-13T03-40-00Z_design_id-atlas-summit/part-b/research.md",
-          "status": "same docs-only PR-B-research; add dedicated component section"
-        }
-      ],
-      "failing_test_or_oracle": "Research acceptance oracle: compare at least two approaches on the common criteria, separate evidence from inference, and report conditional recommendation/non-adoption.",
-      "done_command": "python3 -I -c \"from pathlib import Path; p=Path('doc/2026-11-13T03-40-00Z_design_id-atlas-summit/part-b/research.md'); t=p.read_text(); assert '#9143' in t and '#9147' in t\"",
-      "future_test_note": "Research artifact exists; add component-specific evidence.",
-      "dependencies_note": "Hard dependencies are implementation/API blockers; soft_dependencies are coordination/review inputs only. Crucial work has no dependency on recommended or contingent work.",
-      "interface_first": false,
-      "sequence_within_component": 11,
-      "pr_unit": "PR-B-research",
-      "pr_scope": "One docs-only PR owns all research.md edits for #9143 and #9147; these slices are individually reviewed sections, not separate PRs."
-    },
-    {
-      "id": "B12",
-      "parent": "#9143",
-      "component": "CRDT research",
-      "title": "Willow protocol fit against reconciliation, scoping and signed-only acceptance",
-      "goal": "Willow protocol fit against reconciliation, scoping and signed-only acceptance; produce evidence and conditional/non-adoption result, not merge code.",
-      "statements": [
-        "S1.43"
-      ],
-      "candidate_provenance": "statement-derived reconstruction; original title/boundary not recovered",
-      "named_category_anchor": null,
-      "kind": "research",
-      "enables": "The component acceptance criterion without redesigning sibling concerns.",
-      "version": "V4",
-      "tier": "contingent",
-      "hard_dependencies": [],
-      "soft_dependencies": [],
-      "owned_surfaces": [
-        {
-          "path": "doc/2026-11-13T03-40-00Z_design_id-atlas-summit/part-b/research.md",
-          "status": "same docs-only PR-B-research; add dedicated component section"
-        }
-      ],
-      "failing_test_or_oracle": "Research acceptance oracle: compare at least two approaches on the common criteria, separate evidence from inference, and report conditional recommendation/non-adoption.",
-      "done_command": "python3 -I -c \"from pathlib import Path; p=Path('doc/2026-11-13T03-40-00Z_design_id-atlas-summit/part-b/research.md'); t=p.read_text(); assert '#9143' in t and '#9147' in t\"",
-      "future_test_note": "Research artifact exists; add component-specific evidence.",
-      "dependencies_note": "Hard dependencies are implementation/API blockers; soft_dependencies are coordination/review inputs only. Crucial work has no dependency on recommended or contingent work.",
-      "interface_first": false,
-      "sequence_within_component": 12,
-      "pr_unit": "PR-B-research",
-      "pr_scope": "One docs-only PR owns all research.md edits for #9143 and #9147; these slices are individually reviewed sections, not separate PRs."
-    },
-    {
-      "id": "B13",
-      "parent": "#9143",
-      "component": "CRDT research",
-      "title": "OCapN capability-reference/handoff fit; evaluate application-level attenuation separately",
-      "goal": "Evaluate what cited OCapN sources establish about object references and handoff; treat attenuation as an open application-level option, not a verified OCapN feature.",
-      "statements": [
-        "S1.44"
-      ],
-      "candidate_provenance": "statement-derived reconstruction; original title/boundary not recovered",
-      "named_category_anchor": null,
-      "kind": "research",
-      "enables": "The component acceptance criterion without redesigning sibling concerns.",
-      "version": "V4",
-      "tier": "contingent",
-      "hard_dependencies": [],
-      "soft_dependencies": [],
-      "owned_surfaces": [
-        {
-          "path": "doc/2026-11-13T03-40-00Z_design_id-atlas-summit/part-b/research.md",
-          "status": "same docs-only PR-B-research; add dedicated component section"
-        }
-      ],
-      "failing_test_or_oracle": "Research oracle: cited primary passages support capabilities/references/handoff; mark attenuation unverified unless a precise primary section is produced. Compare application wrapper as a separate option.",
-      "done_command": "python3 -I -c \"from pathlib import Path; p=Path('doc/2026-11-13T03-40-00Z_design_id-atlas-summit/part-b/research.md'); t=p.read_text(); assert '#9143' in t and '#9147' in t\"",
-      "future_test_note": "Research artifact exists; add component-specific evidence.",
-      "dependencies_note": "Hard dependencies are implementation/API blockers; soft_dependencies are coordination/review inputs only. Crucial work has no dependency on recommended or contingent work.",
-      "interface_first": false,
-      "sequence_within_component": 13,
-      "pr_unit": "PR-B-research",
-      "pr_scope": "One docs-only PR owns all research.md edits for #9143 and #9147; these slices are individually reviewed sections, not separate PRs."
-    },
-    {
-      "id": "B14",
-      "parent": "#9143",
-      "component": "CRDT research",
-      "title": "Common comparison matrix, non-exhaustive prior art and revisit threshold/recommendation",
-      "goal": "Common comparison matrix, non-exhaustive prior art and revisit threshold/recommendation; produce evidence and conditional/non-adoption result, not merge code.",
-      "statements": [
-        "S1.45\u2013S1.46"
-      ],
-      "candidate_provenance": "statement-derived reconstruction; original title/boundary not recovered",
-      "named_category_anchor": null,
-      "kind": "research",
-      "enables": "The component acceptance criterion without redesigning sibling concerns.",
-      "version": "V4",
-      "tier": "contingent",
-      "hard_dependencies": [],
-      "soft_dependencies": [],
-      "owned_surfaces": [
-        {
-          "path": "doc/2026-11-13T03-40-00Z_design_id-atlas-summit/part-b/research.md",
-          "status": "same docs-only PR-B-research; add dedicated component section"
-        }
-      ],
-      "failing_test_or_oracle": "Research acceptance oracle: compare at least two approaches on the common criteria, separate evidence from inference, and report conditional recommendation/non-adoption.",
-      "done_command": "python3 -I -c \"from pathlib import Path; p=Path('doc/2026-11-13T03-40-00Z_design_id-atlas-summit/part-b/research.md'); t=p.read_text(); assert '#9143' in t and '#9147' in t\"",
-      "future_test_note": "Research artifact exists; add component-specific evidence.",
-      "dependencies_note": "Hard dependencies are implementation/API blockers; soft_dependencies are coordination/review inputs only. Crucial work has no dependency on recommended or contingent work.",
-      "interface_first": true,
-      "sequence_within_component": 14,
-      "pr_unit": "PR-B-research",
-      "pr_scope": "One docs-only PR owns all research.md edits for #9143 and #9147; these slices are individually reviewed sections, not separate PRs."
-    },
-    {
-      "id": "B15",
-      "parent": "#9144",
-      "component": "federated query fan-out",
-      "title": "Prioritized remote selection: inputs, ordering, and treatment of a remote negative answer",
-      "goal": "Prioritized remote selection: inputs, ordering, and treatment of a remote negative answer as an independently reviewable contract and implementation increment.",
-      "statements": [
-        "S1.47\u2013S1.53"
-      ],
-      "candidate_provenance": "named category anchor only; not verified as original candidate title/boundary",
-      "named_category_anchor": "prioritization scoring",
-      "kind": "design-and-implementation",
-      "enables": "The component acceptance criterion without redesigning sibling concerns.",
-      "version": "V3",
-      "tier": "recommended",
-      "hard_dependencies": [],
-      "soft_dependencies": [
-        "#9141 envelope and peer-policy interfaces",
-        "#9146 routing observations"
-      ],
-      "owned_surfaces": [
-        {
-          "path": "pkgs/id/crates/id-sync/src/federation/query.rs",
-          "status": "proposed new shared module, owned by PR-B-9144; does not exist yet"
-        },
-        {
-          "path": "pkgs/id/crates/id-sync/tests/federation_9144.rs",
-          "status": "proposed single integration test target federation_9144, owned by PR-B-9144; does not exist yet"
-        }
-      ],
-      "failing_test_or_oracle": "Future failing test to add at pkgs/id/crates/id-sync/tests/federation_query.rs: assert the stated invariant against an explicit reference/model oracle; proposed path does not exist yet.",
-      "done_command": "cargo test -p id-sync --test federation_9144 (future target created by PR-B-9144)",
-      "future_test_note": "Future test path/target pkgs/id/crates/id-sync/tests/federation_9144.rs / federation_9144; one target per component PR, not one target per slice.",
-      "dependencies_note": "Hard dependencies are implementation/API blockers; soft_dependencies are coordination/review inputs only. Crucial work has no dependency on recommended or contingent work.",
-      "interface_first": true,
-      "sequence_within_component": 15,
-      "pr_unit": "PR-B-9144",
-      "pr_scope": "One component PR contains this slice and all same-component slices; shared module/test ownership is sequenced within PR-B-9144, not split into conflicting PRs."
-    },
-    {
-      "id": "B16",
-      "parent": "#9144",
-      "component": "federated query fan-out",
-      "title": "Trusted-relay permission, max-hop propagation, and breadth\u00d7depth resource bounds",
-      "goal": "Trusted-relay permission, max-hop propagation, and breadth\u00d7depth resource bounds as an independently reviewable contract and implementation increment. Account atomically at query, authenticated requester/origin, supplying peer, authorized tenant and node scopes; refund only unused amounts; retries reuse exact multidimensional reservation.",
-      "statements": [
-        "S1.54\u2013S1.57",
-        "S1.61"
-      ],
-      "candidate_provenance": "statement-derived reconstruction; original title/boundary not recovered",
-      "named_category_anchor": null,
-      "kind": "design-and-implementation",
-      "enables": "The component acceptance criterion without redesigning sibling concerns.",
-      "version": "V3",
-      "tier": "recommended",
-      "hard_dependencies": [
-        "B17"
-      ],
-      "soft_dependencies": [
-        "#9141 envelope and peer-policy interfaces",
-        "#9146 routing observations"
-      ],
-      "owned_surfaces": [
-        {
-          "path": "pkgs/id/crates/id-sync/src/federation/query.rs",
-          "status": "proposed new shared module, owned by PR-B-9144; does not exist yet"
-        },
-        {
-          "path": "pkgs/id/crates/id-sync/tests/federation_9144.rs",
-          "status": "proposed single integration test target federation_9144, owned by PR-B-9144; does not exist yet"
-        }
-      ],
-      "failing_test_or_oracle": "Future federation_9144 target covers hops/peer/work/bytes vector limits independently at per-query, authenticated-client, supplying-peer, tenant and node-aggregate scopes; reservation is atomic; cancellation/expiry refunds only unused amounts; retries reuse exact reservation and changed retry cannot mint; deadlines never reset. Oracle: local accounting ledger reference model (not crypto/fairness proof).",
-      "done_command": "python3 -I doc/2026-11-13T03-40-00Z_design_id-atlas-summit/part-b/federation_model.py && cargo test -p id-sync --test federation_9144 (future target created by PR-B-9144)",
-      "future_test_note": "Future test path/target pkgs/id/crates/id-sync/tests/federation_9144.rs / federation_9144; one target per component PR, not one target per slice.",
-      "dependencies_note": "Hard dependencies are implementation/API blockers; soft_dependencies are coordination/review inputs only. Crucial work has no dependency on recommended or contingent work.",
-      "interface_first": false,
-      "sequence_within_component": 16,
-      "pr_unit": "PR-B-9144",
-      "pr_scope": "One component PR contains this slice and all same-component slices; shared module/test ownership is sequenced within PR-B-9144, not split into conflicting PRs."
-    },
-    {
-      "id": "B17",
-      "parent": "#9144",
-      "component": "federated query fan-out",
-      "title": "Query/relay/response signature validation, end-to-end responder provenance and stable request identity",
-      "goal": "Query/relay/response signature validation, end-to-end responder provenance and stable request identity as an independently reviewable contract and implementation increment.",
-      "statements": [
-        "S1.58\u2013S1.62"
-      ],
-      "candidate_provenance": "statement-derived reconstruction; original title/boundary not recovered",
-      "named_category_anchor": null,
-      "kind": "design-and-implementation",
-      "enables": "The component acceptance criterion without redesigning sibling concerns.",
-      "version": "V3",
-      "tier": "recommended",
-      "hard_dependencies": [],
-      "soft_dependencies": [
-        "#9141 envelope and peer-policy interfaces",
-        "#9146 routing observations"
-      ],
-      "owned_surfaces": [
-        {
-          "path": "pkgs/id/crates/id-sync/src/federation/query.rs",
-          "status": "proposed new shared module, owned by PR-B-9144; does not exist yet"
-        },
-        {
-          "path": "pkgs/id/crates/id-sync/tests/federation_9144.rs",
-          "status": "proposed single integration test target federation_9144, owned by PR-B-9144; does not exist yet"
-        }
-      ],
-      "failing_test_or_oracle": "Future failing test to add at pkgs/id/crates/id-sync/tests/federation_query.rs: assert the stated invariant against an explicit reference/model oracle; proposed path does not exist yet.",
-      "done_command": "cargo test -p id-sync --test federation_9144 (future target created by PR-B-9144)",
-      "future_test_note": "Future test path/target pkgs/id/crates/id-sync/tests/federation_9144.rs / federation_9144; one target per component PR, not one target per slice.",
-      "dependencies_note": "Hard dependencies are implementation/API blockers; soft_dependencies are coordination/review inputs only. Crucial work has no dependency on recommended or contingent work.",
-      "interface_first": true,
-      "sequence_within_component": 17,
-      "pr_unit": "PR-B-9144",
-      "pr_scope": "One component PR contains this slice and all same-component slices; shared module/test ownership is sequenced within PR-B-9144, not split into conflicting PRs."
-    },
-    {
-      "id": "B18",
-      "parent": "#9144",
-      "component": "federated query fan-out",
-      "title": "Privacy surface of query-interest disclosure and explicit mitigation/acceptance decision",
-      "goal": "Privacy surface of query-interest disclosure and explicit mitigation/acceptance decision as an independently reviewable contract and implementation increment.",
-      "statements": [
-        "S1.63"
-      ],
-      "candidate_provenance": "named category anchor only; not verified as original candidate title/boundary",
-      "named_category_anchor": "privacy surface",
-      "kind": "design-and-implementation",
-      "enables": "The component acceptance criterion without redesigning sibling concerns.",
-      "version": "V3",
-      "tier": "recommended",
-      "hard_dependencies": [],
-      "soft_dependencies": [
-        "#9141 envelope and peer-policy interfaces",
-        "#9146 routing observations"
-      ],
-      "owned_surfaces": [
-        {
-          "path": "pkgs/id/crates/id-sync/src/federation/query.rs",
-          "status": "proposed new shared module, owned by PR-B-9144; does not exist yet"
-        },
-        {
-          "path": "pkgs/id/crates/id-sync/tests/federation_9144.rs",
-          "status": "proposed single integration test target federation_9144, owned by PR-B-9144; does not exist yet"
-        }
-      ],
-      "failing_test_or_oracle": "Future failing test to add at pkgs/id/crates/id-sync/tests/federation_query.rs: assert the stated invariant against an explicit reference/model oracle; proposed path does not exist yet.",
-      "done_command": "cargo test -p id-sync --test federation_9144 (future target created by PR-B-9144)",
-      "future_test_note": "Future test path/target pkgs/id/crates/id-sync/tests/federation_9144.rs / federation_9144; one target per component PR, not one target per slice.",
-      "dependencies_note": "Hard dependencies are implementation/API blockers; soft_dependencies are coordination/review inputs only. Crucial work has no dependency on recommended or contingent work.",
-      "interface_first": true,
-      "sequence_within_component": 18,
-      "pr_unit": "PR-B-9144",
-      "pr_scope": "One component PR contains this slice and all same-component slices; shared module/test ownership is sequenced within PR-B-9144, not split into conflicting PRs."
-    },
-    {
-      "id": "B19",
-      "parent": "#9144",
-      "component": "federated query fan-out",
-      "title": "V2 shared signed receipt schema (accepted / retained_until / verified_present)",
-      "goal": "Define the V2 shared signed receipt enum and binding fields, independently of V3 query fanout. #9115 existence uses verified_present; stored_unverified is inventory-only and never accepted content.",
-      "statements": [
-        "S1.100\u2013S1.104"
-      ],
-      "candidate_provenance": "named category anchor only; not verified as original candidate title/boundary",
-      "named_category_anchor": "ack primitive",
-      "kind": "design-and-implementation",
-      "enables": "The component acceptance criterion without redesigning sibling concerns.",
-      "version": "V2",
-      "tier": "crucial",
-      "hard_dependencies": [
-        "B05",
-        "B32"
-      ],
-      "soft_dependencies": [],
-      "owned_surfaces": [
-        {
-          "path": "pkgs/id/crates/id-sync/src/receipt.rs",
-          "status": "proposed new V2 shared receipt schema module in PR-B-receipt-v2"
-        },
-        {
-          "path": "pkgs/id/crates/id-sync/tests/receipt_v2.rs",
-          "status": "proposed single integration test target; does not exist yet"
-        }
-      ],
-      "failing_test_or_oracle": "Future schema conformance test distinguishes accepted, retained_until and verified_present; verifies all fields bind digest/recipient/scope/time/policy/duration; stored_unverified cannot pass acceptance gate. Oracle: typed reference validator plus signed vectors.",
-      "done_command": "cargo test -p id-sync --test receipt_v2 (future target created by PR-B-receipt-v2)",
-      "future_test_note": "V2 receipt schema PR is separate from V3 fanout PR; V3 later integrates relay provenance.",
-      "dependencies_note": "V2 shared schema depends only on V2 signer identity and validation gate. V3 relay provenance consumes this schema later; no V3 fanout dependency.",
-      "interface_first": true,
-      "sequence_within_component": 19,
-      "pr_unit": "PR-B-receipt-v2",
-      "pr_scope": "Standalone V2 interface PR for B19; depends only on V2 signer/envelope foundations B05 and B32."
-    },
-    {
-      "id": "B20",
-      "parent": "#9145",
-      "component": "duplicate and loop handling",
-      "title": "Request identity, duplicate-vs-loop classification, finite dedup state and expiry",
-      "goal": "Request identity, duplicate-vs-loop classification, finite dedup state and expiry as an independently reviewable contract and implementation increment.",
-      "statements": [
-        "S1.64",
-        "S1.70\u2013S1.72"
-      ],
-      "candidate_provenance": "statement-derived reconstruction; original title/boundary not recovered",
-      "named_category_anchor": null,
-      "kind": "design-and-implementation",
-      "enables": "The component acceptance criterion without redesigning sibling concerns.",
-      "version": "V3",
-      "tier": "recommended",
-      "hard_dependencies": [],
-      "soft_dependencies": [
-        "#9144 OriginQuery and RelayGrant types"
-      ],
-      "owned_surfaces": [
-        {
-          "path": "pkgs/id/crates/id-sync/src/federation/dedup.rs",
-          "status": "proposed new shared module, owned by PR-B-9145; does not exist yet"
-        },
-        {
-          "path": "pkgs/id/crates/id-sync/tests/federation_9145.rs",
-          "status": "proposed single integration test target federation_9145, owned by PR-B-9145; does not exist yet"
-        }
-      ],
-      "failing_test_or_oracle": "Future failing test to add at pkgs/id/crates/id-sync/tests/federation_dedup.rs: assert the stated invariant against an explicit reference/model oracle; proposed path does not exist yet.",
-      "done_command": "cargo test -p id-sync --test federation_9145 (future target created by PR-B-9145)",
-      "future_test_note": "Future test path/target pkgs/id/crates/id-sync/tests/federation_9145.rs / federation_9145; one target per component PR, not one target per slice.",
-      "dependencies_note": "Hard dependencies are implementation/API blockers; soft_dependencies are coordination/review inputs only. Crucial work has no dependency on recommended or contingent work.",
-      "interface_first": true,
-      "sequence_within_component": 20,
-      "pr_unit": "PR-B-9145",
-      "pr_scope": "One component PR contains this slice and all same-component slices; shared module/test ownership is sequenced within PR-B-9145, not split into conflicting PRs."
-    },
-    {
-      "id": "B21",
-      "parent": "#9145",
-      "component": "duplicate and loop handling",
-      "title": "Short-circuit and deduplicate in-flight/answered requests into coherent results",
-      "goal": "Short-circuit and deduplicate in-flight/answered requests into coherent results as an independently reviewable contract and implementation increment.",
-      "statements": [
-        "S1.67\u2013S1.68"
-      ],
-      "candidate_provenance": "statement-derived reconstruction; original title/boundary not recovered",
-      "named_category_anchor": null,
-      "kind": "design-and-implementation",
-      "enables": "The component acceptance criterion without redesigning sibling concerns.",
-      "version": "V3",
-      "tier": "recommended",
-      "hard_dependencies": [
-        "B20"
-      ],
-      "soft_dependencies": [
-        "#9144 OriginQuery and RelayGrant types"
-      ],
-      "owned_surfaces": [
-        {
-          "path": "pkgs/id/crates/id-sync/src/federation/dedup.rs",
-          "status": "proposed new shared module, owned by PR-B-9145; does not exist yet"
-        },
-        {
-          "path": "pkgs/id/crates/id-sync/tests/federation_9145.rs",
-          "status": "proposed single integration test target federation_9145, owned by PR-B-9145; does not exist yet"
-        }
-      ],
-      "failing_test_or_oracle": "Future failing test to add at pkgs/id/crates/id-sync/tests/federation_dedup.rs: assert the stated invariant against an explicit reference/model oracle; proposed path does not exist yet.",
-      "done_command": "cargo test -p id-sync --test federation_9145 (future target created by PR-B-9145)",
-      "future_test_note": "Future test path/target pkgs/id/crates/id-sync/tests/federation_9145.rs / federation_9145; one target per component PR, not one target per slice.",
-      "dependencies_note": "Hard dependencies are implementation/API blockers; soft_dependencies are coordination/review inputs only. Crucial work has no dependency on recommended or contingent work.",
-      "interface_first": false,
-      "sequence_within_component": 21,
-      "pr_unit": "PR-B-9145",
-      "pr_scope": "One component PR contains this slice and all same-component slices; shared module/test ownership is sequenced within PR-B-9145, not split into conflicting PRs."
-    },
-    {
-      "id": "B22",
-      "parent": "#9145",
-      "component": "duplicate and loop handling",
-      "title": "Inform requester/parties about duplicates and specifically signal detected loops",
-      "goal": "Inform requester/parties about duplicates and specifically signal detected loops as an independently reviewable contract and implementation increment.",
-      "statements": [
-        "S1.65\u2013S1.66",
-        "S1.69"
-      ],
-      "candidate_provenance": "statement-derived reconstruction; original title/boundary not recovered",
-      "named_category_anchor": null,
-      "kind": "design-and-implementation",
-      "enables": "The component acceptance criterion without redesigning sibling concerns.",
-      "version": "V3",
-      "tier": "recommended",
-      "hard_dependencies": [
-        "B20",
-        "B21"
-      ],
-      "soft_dependencies": [
-        "#9144 OriginQuery and RelayGrant types"
-      ],
-      "owned_surfaces": [
-        {
-          "path": "pkgs/id/crates/id-sync/src/federation/dedup.rs",
-          "status": "proposed new shared module, owned by PR-B-9145; does not exist yet"
-        },
-        {
-          "path": "pkgs/id/crates/id-sync/tests/federation_9145.rs",
-          "status": "proposed single integration test target federation_9145, owned by PR-B-9145; does not exist yet"
-        }
-      ],
-      "failing_test_or_oracle": "Future failing test to add at pkgs/id/crates/id-sync/tests/federation_dedup.rs: assert the stated invariant against an explicit reference/model oracle; proposed path does not exist yet.",
-      "done_command": "cargo test -p id-sync --test federation_9145 (future target created by PR-B-9145)",
-      "future_test_note": "Future test path/target pkgs/id/crates/id-sync/tests/federation_9145.rs / federation_9145; one target per component PR, not one target per slice.",
-      "dependencies_note": "Hard dependencies are implementation/API blockers; soft_dependencies are coordination/review inputs only. Crucial work has no dependency on recommended or contingent work.",
-      "interface_first": false,
-      "sequence_within_component": 22,
-      "pr_unit": "PR-B-9145",
-      "pr_scope": "One component PR contains this slice and all same-component slices; shared module/test ownership is sequenced within PR-B-9145, not split into conflicting PRs."
-    },
-    {
-      "id": "B23",
-      "parent": "#9146",
-      "component": "routing state",
-      "title": "Routing-state freshness, periodic validation, and detection of peer/topology changes",
-      "goal": "Routing-state freshness, periodic validation, and detection of peer/topology changes as an independently reviewable contract and implementation increment.",
-      "statements": [
-        "S1.73\u2013S1.76"
-      ],
-      "candidate_provenance": "statement-derived reconstruction; original title/boundary not recovered",
-      "named_category_anchor": null,
-      "kind": "design-and-implementation",
-      "enables": "The component acceptance criterion without redesigning sibling concerns.",
-      "version": "V3",
-      "tier": "recommended",
-      "hard_dependencies": [],
-      "soft_dependencies": [
-        "#9141 signed envelope interface"
-      ],
-      "owned_surfaces": [
-        {
-          "path": "pkgs/id/crates/id-sync/src/federation/routing.rs",
-          "status": "proposed new shared module, owned by PR-B-9146; does not exist yet"
-        },
-        {
-          "path": "pkgs/id/crates/id-sync/tests/federation_9146.rs",
-          "status": "proposed single integration test target federation_9146, owned by PR-B-9146; does not exist yet"
-        }
-      ],
-      "failing_test_or_oracle": "Future failing test to add at pkgs/id/crates/id-sync/tests/federation_routing.rs: assert the stated invariant against an explicit reference/model oracle; proposed path does not exist yet.",
-      "done_command": "cargo test -p id-sync --test federation_9146 (future target created by PR-B-9146)",
-      "future_test_note": "Future test path/target pkgs/id/crates/id-sync/tests/federation_9146.rs / federation_9146; one target per component PR, not one target per slice.",
-      "dependencies_note": "Hard dependencies are implementation/API blockers; soft_dependencies are coordination/review inputs only. Crucial work has no dependency on recommended or contingent work.",
-      "interface_first": true,
-      "sequence_within_component": 23,
-      "pr_unit": "PR-B-9146",
-      "pr_scope": "One component PR contains this slice and all same-component slices; shared module/test ownership is sequenced within PR-B-9146, not split into conflicting PRs."
-    },
-    {
-      "id": "B24",
-      "parent": "#9146",
-      "component": "routing state",
-      "title": "Signed/validated routing updates and protection against poisoning, suppression and manufactured loops",
-      "goal": "Signed/validated routing updates and protection against poisoning, suppression and manufactured loops as an independently reviewable contract and implementation increment.",
-      "statements": [
-        "S1.77\u2013S1.78"
-      ],
-      "candidate_provenance": "statement-derived reconstruction; original title/boundary not recovered",
-      "named_category_anchor": null,
-      "kind": "design-and-implementation",
-      "enables": "The component acceptance criterion without redesigning sibling concerns.",
-      "version": "V3",
-      "tier": "recommended",
-      "hard_dependencies": [
-        "B23"
-      ],
-      "soft_dependencies": [
-        "#9141 signed envelope interface"
-      ],
-      "owned_surfaces": [
-        {
-          "path": "pkgs/id/crates/id-sync/src/federation/routing.rs",
-          "status": "proposed new shared module, owned by PR-B-9146; does not exist yet"
-        },
-        {
-          "path": "pkgs/id/crates/id-sync/tests/federation_9146.rs",
-          "status": "proposed single integration test target federation_9146, owned by PR-B-9146; does not exist yet"
-        }
-      ],
-      "failing_test_or_oracle": "Future failing test to add at pkgs/id/crates/id-sync/tests/federation_routing.rs: assert the stated invariant against an explicit reference/model oracle; proposed path does not exist yet.",
-      "done_command": "cargo test -p id-sync --test federation_9146 (future target created by PR-B-9146)",
-      "future_test_note": "Future test path/target pkgs/id/crates/id-sync/tests/federation_9146.rs / federation_9146; one target per component PR, not one target per slice.",
-      "dependencies_note": "Hard dependencies are implementation/API blockers; soft_dependencies are coordination/review inputs only. Crucial work has no dependency on recommended or contingent work.",
-      "interface_first": false,
-      "sequence_within_component": 24,
-      "pr_unit": "PR-B-9146",
-      "pr_scope": "One component PR contains this slice and all same-component slices; shared module/test ownership is sequenced within PR-B-9146, not split into conflicting PRs."
-    },
-    {
-      "id": "B25",
-      "parent": "#9147",
-      "component": "reputation and claims",
-      "title": "Evidence-based ratings and explicit way reputation affects prioritization/class changes",
-      "goal": "Evidence-based ratings and explicit way reputation affects prioritization/class changes as an independently reviewable contract and implementation increment.",
-      "statements": [
-        "S1.79\u2013S1.82"
-      ],
-      "candidate_provenance": "statement-derived reconstruction; original title/boundary not recovered",
-      "named_category_anchor": null,
-      "kind": "design-and-implementation",
-      "enables": "The component acceptance criterion without redesigning sibling concerns.",
-      "version": "V4",
-      "tier": "contingent",
-      "hard_dependencies": [],
-      "soft_dependencies": [
-        "#9141 signed identity/rejection evidence",
-        "#9148 receipt evidence"
-      ],
-      "owned_surfaces": [
-        {
-          "path": "pkgs/id/crates/id-sync/src/federation/reputation.rs",
-          "status": "proposed new shared module, owned by PR-B-9147-impl; does not exist yet"
-        },
-        {
-          "path": "pkgs/id/crates/id-sync/tests/federation_9147.rs",
-          "status": "proposed single integration test target federation_9147, owned by PR-B-9147-impl; does not exist yet"
-        }
-      ],
-      "failing_test_or_oracle": "Future failing test to add at pkgs/id/crates/id-sync/tests/federation_reputation.rs: assert the stated invariant against an explicit reference/model oracle; proposed path does not exist yet.",
-      "done_command": "cargo test -p id-sync --test federation_9147 (future target created by PR-B-9147-impl)",
-      "future_test_note": "Future test path/target pkgs/id/crates/id-sync/tests/federation_9147.rs / federation_9147; one target per component PR, not one target per slice.",
-      "dependencies_note": "Hard dependencies are implementation/API blockers; soft_dependencies are coordination/review inputs only. Crucial work has no dependency on recommended or contingent work.",
-      "interface_first": true,
-      "sequence_within_component": 25,
-      "pr_unit": "PR-B-9147-impl",
-      "pr_scope": "One component PR contains this slice and all same-component slices; shared module/test ownership is sequenced within PR-B-9147-impl, not split into conflicting PRs."
-    },
-    {
-      "id": "B26",
-      "parent": "#9147",
-      "component": "reputation and claims",
-      "title": "Abuse-protection research: manipulation, retaliation, Sybils, whitewashing, collusion and spam claims",
-      "goal": "Abuse-protection research: manipulation, retaliation, Sybils, whitewashing, collusion and spam claims as an independently reviewable contract and implementation increment.",
-      "statements": [
-        "S1.88\u2013S1.91",
-        "S1.99"
-      ],
-      "candidate_provenance": "named category anchor only; not verified as original candidate title/boundary",
-      "named_category_anchor": "reputation-abuse research",
-      "kind": "research",
-      "enables": "The component acceptance criterion without redesigning sibling concerns.",
-      "version": "V4",
-      "tier": "contingent",
-      "hard_dependencies": [],
-      "soft_dependencies": [
-        "#9141 signed identity/rejection evidence",
-        "#9148 receipt evidence"
-      ],
-      "owned_surfaces": [
-        {
-          "path": "doc/2026-11-13T03-40-00Z_design_id-atlas-summit/part-b/research.md",
-          "status": "same docs-only PR-B-research; add dedicated component section"
-        }
-      ],
-      "failing_test_or_oracle": "Research acceptance oracle: evaluate manipulation, retaliation, Sybil, whitewashing, collusion and spam-claim options; state limits/defaults; do not implement reputation thresholds in this slice.",
-      "done_command": "python3 -I -c \"from pathlib import Path; p=Path('doc/2026-11-13T03-40-00Z_design_id-atlas-summit/part-b/research.md'); assert '#9147' in p.read_text()\"",
-      "future_test_note": "Research only; does not block or imply V4 implementation.",
-      "dependencies_note": "Hard dependencies are implementation/API blockers; soft_dependencies are coordination/review inputs only. Crucial work has no dependency on recommended or contingent work.",
-      "interface_first": false,
-      "sequence_within_component": 26,
-      "pr_unit": "PR-B-research",
-      "pr_scope": "Docs-only shared research PR; no implementation dependency or Rust module."
-    },
-    {
-      "id": "B27",
-      "parent": "#9147",
-      "component": "reputation and claims",
-      "title": "Public signed append-only claims/disputes log, right of reply, and use of evidence in reputation",
-      "goal": "Public signed append-only claims/disputes log, right of reply, and use of evidence in reputation as an independently reviewable contract and implementation increment.",
-      "statements": [
-        "S1.92\u2013S1.98"
-      ],
-      "candidate_provenance": "statement-derived reconstruction; original title/boundary not recovered",
-      "named_category_anchor": null,
-      "kind": "design-and-implementation",
-      "enables": "The component acceptance criterion without redesigning sibling concerns.",
-      "version": "V4",
-      "tier": "contingent",
-      "hard_dependencies": [
-        "B05"
-      ],
-      "soft_dependencies": [
-        "#9141 signed identity/rejection evidence",
-        "#9148 receipt evidence"
-      ],
-      "owned_surfaces": [
-        {
-          "path": "pkgs/id/crates/id-sync/src/federation/reputation.rs",
-          "status": "proposed new shared module, owned by PR-B-9147-impl; does not exist yet"
-        },
-        {
-          "path": "pkgs/id/crates/id-sync/tests/federation_9147.rs",
-          "status": "proposed single integration test target federation_9147, owned by PR-B-9147-impl; does not exist yet"
-        }
-      ],
-      "failing_test_or_oracle": "Future failing test to add at pkgs/id/crates/id-sync/tests/federation_reputation.rs: assert the stated invariant against an explicit reference/model oracle; proposed path does not exist yet.",
-      "done_command": "cargo test -p id-sync --test federation_9147 (future target created by PR-B-9147-impl)",
-      "future_test_note": "Future test path/target pkgs/id/crates/id-sync/tests/federation_9147.rs / federation_9147; one target per component PR, not one target per slice.",
-      "dependencies_note": "Hard dependencies are implementation/API blockers; soft_dependencies are coordination/review inputs only. Crucial work has no dependency on recommended or contingent work.",
-      "interface_first": true,
-      "sequence_within_component": 27,
-      "pr_unit": "PR-B-9147-impl",
-      "pr_scope": "One component PR contains this slice and all same-component slices; shared module/test ownership is sequenced within PR-B-9147-impl, not split into conflicting PRs."
-    },
-    {
-      "id": "B28",
-      "parent": "#9148",
-      "component": "takeover and inconsistency evidence",
-      "title": "Highly trusted server takeover/key compromise: rapid revocation, blast-radius identification and prior-data posture",
-      "goal": "Highly trusted server takeover/key compromise: rapid revocation, blast-radius identification and prior-data posture as an independently reviewable contract and implementation increment.",
-      "statements": [
-        "S1.83\u2013S1.87"
-      ],
-      "candidate_provenance": "statement-derived reconstruction; original title/boundary not recovered",
-      "named_category_anchor": null,
-      "kind": "design-and-implementation",
-      "enables": "The component acceptance criterion without redesigning sibling concerns.",
-      "version": "V2",
-      "tier": "crucial",
-      "hard_dependencies": [
-        "B02"
-      ],
-      "soft_dependencies": [
-        "#9144 query/receipt types",
-        "#9147 claims/log interface"
-      ],
-      "owned_surfaces": [
-        {
-          "path": "pkgs/id/crates/id-sync/src/federation/evidence.rs",
-          "status": "proposed new shared module, owned by PR-B-9148; does not exist yet"
-        },
-        {
-          "path": "pkgs/id/crates/id-sync/tests/federation_9148.rs",
-          "status": "proposed single integration test target federation_9148, owned by PR-B-9148; does not exist yet"
-        }
-      ],
-      "failing_test_or_oracle": "Future failing test to add at pkgs/id/crates/id-sync/tests/federation_evidence.rs: assert the stated invariant against an explicit reference/model oracle; proposed path does not exist yet.",
-      "done_command": "cargo test -p id-sync --test federation_9148 (future target created by PR-B-9148)",
-      "future_test_note": "Future test path/target pkgs/id/crates/id-sync/tests/federation_9148.rs / federation_9148; one target per component PR, not one target per slice.",
-      "dependencies_note": "Hard dependencies are implementation/API blockers; soft_dependencies are coordination/review inputs only. Crucial work has no dependency on recommended or contingent work.",
-      "interface_first": false,
-      "sequence_within_component": 28,
-      "pr_unit": "PR-B-9148",
-      "pr_scope": "One component PR contains this slice and all same-component slices; shared module/test ownership is sequenced within PR-B-9148, not split into conflicting PRs."
-    },
-    {
-      "id": "B29",
-      "parent": "#9148",
-      "component": "takeover and inconsistency evidence",
-      "title": "Ack/recipient-list contradiction detection, evidence retention, collusion threshold and public-log integration",
-      "goal": "Ack/recipient-list contradiction detection, evidence retention, collusion threshold and public-log integration as an independently reviewable contract and implementation increment.",
-      "statements": [
-        "S1.100\u2013S1.108"
-      ],
-      "candidate_provenance": "statement-derived reconstruction; original title/boundary not recovered",
-      "named_category_anchor": null,
-      "kind": "design-and-implementation",
-      "enables": "The component acceptance criterion without redesigning sibling concerns.",
-      "version": "V4",
-      "tier": "contingent",
-      "hard_dependencies": [
-        "B19",
-        "B27"
-      ],
-      "soft_dependencies": [
-        "#9144 query/receipt types",
-        "#9147 claims/log interface"
-      ],
-      "owned_surfaces": [
-        {
-          "path": "pkgs/id/crates/id-sync/src/federation/evidence.rs",
-          "status": "proposed new shared module, owned by PR-B-9148; does not exist yet"
-        },
-        {
-          "path": "pkgs/id/crates/id-sync/tests/federation_9148.rs",
-          "status": "proposed single integration test target federation_9148, owned by PR-B-9148; does not exist yet"
-        }
-      ],
-      "failing_test_or_oracle": "Future failing test to add at pkgs/id/crates/id-sync/tests/federation_evidence.rs: assert the stated invariant against an explicit reference/model oracle; proposed path does not exist yet.",
-      "done_command": "cargo test -p id-sync --test federation_9148 (future target created by PR-B-9148)",
-      "future_test_note": "Future test path/target pkgs/id/crates/id-sync/tests/federation_9148.rs / federation_9148; one target per component PR, not one target per slice.",
-      "dependencies_note": "Hard dependencies are implementation/API blockers; soft_dependencies are coordination/review inputs only. Crucial work has no dependency on recommended or contingent work.",
-      "interface_first": true,
-      "sequence_within_component": 29,
-      "pr_unit": "PR-B-9148",
-      "pr_scope": "One component PR contains this slice and all same-component slices; shared module/test ownership is sequenced within PR-B-9148, not split into conflicting PRs."
-    },
-    {
-      "id": "B30",
-      "parent": "#9148",
-      "component": "takeover and inconsistency evidence",
-      "title": "Federated-search tampering threat model: omission/injection/reordering/staleness and completeness claims",
-      "goal": "Federated-search tampering threat model: omission/injection/reordering/staleness and completeness claims as an independently reviewable contract and implementation increment.",
-      "statements": [
-        "S1.109\u2013S1.113"
-      ],
-      "candidate_provenance": "statement-derived reconstruction; original title/boundary not recovered",
-      "named_category_anchor": null,
-      "kind": "design-and-implementation",
-      "enables": "The component acceptance criterion without redesigning sibling concerns.",
-      "version": "V4",
-      "tier": "contingent",
-      "hard_dependencies": [
-        "B17",
-        "B29"
-      ],
-      "soft_dependencies": [
-        "#9144 query/receipt types",
-        "#9147 claims/log interface"
-      ],
-      "owned_surfaces": [
-        {
-          "path": "pkgs/id/crates/id-sync/src/federation/evidence.rs",
-          "status": "proposed new shared module, owned by PR-B-9148; does not exist yet"
-        },
-        {
-          "path": "pkgs/id/crates/id-sync/tests/federation_9148.rs",
-          "status": "proposed single integration test target federation_9148, owned by PR-B-9148; does not exist yet"
-        }
-      ],
-      "failing_test_or_oracle": "Future failing test to add at pkgs/id/crates/id-sync/tests/federation_evidence.rs: assert the stated invariant against an explicit reference/model oracle; proposed path does not exist yet.",
-      "done_command": "cargo test -p id-sync --test federation_9148 (future target created by PR-B-9148)",
-      "future_test_note": "Future test path/target pkgs/id/crates/id-sync/tests/federation_9148.rs / federation_9148; one target per component PR, not one target per slice.",
-      "dependencies_note": "Hard dependencies are implementation/API blockers; soft_dependencies are coordination/review inputs only. Crucial work has no dependency on recommended or contingent work.",
-      "interface_first": false,
-      "sequence_within_component": 30,
-      "pr_unit": "PR-B-9148",
-      "pr_scope": "One component PR contains this slice and all same-component slices; shared module/test ownership is sequenced within PR-B-9148, not split into conflicting PRs."
-    },
-    {
-      "id": "B31",
-      "parent": "#9141",
-      "component": "signed acceptance and peer classes",
-      "title": "Core directional peer-class behavior and unknown-peer default",
-      "goal": "Implement the peer class operation matrix: fully_trusted is configured bidirectional policy but no bypass; send_only rejects inbound acceptance; accept_signed_from accepts only validated authorized data; unknown defaults to no acceptance; classes grant no relay by themselves.",
-      "statements": [
-        "S1.1-S1.11"
-      ],
-      "candidate_provenance": "additional foundational coverage slice; not part of the reconstructed 30-item count or claimed original candidate list",
-      "named_category_anchor": null,
-      "kind": "design-and-implementation",
-      "enables": "Core peer-policy API required before federation class behavior can ship.",
-      "version": "V2",
-      "tier": "crucial",
-      "hard_dependencies": [],
-      "soft_dependencies": [],
-      "dependencies_note": "In same ordered PR unit as B01-B06 and B32; no crucial slice depends on recommended work.",
-      "interface_first": true,
-      "sequence_within_component": 31,
-      "owned_surfaces": [
-        {
-          "path": "pkgs/id/crates/id-sync/src/federation/peer_policy.rs",
-          "status": "proposed new shared module in PR-B-9141"
-        },
-        {
-          "path": "pkgs/id/crates/id-sync/tests/federation_9141.rs",
-          "status": "one proposed integration test target for the whole #9141 PR unit"
-        }
-      ],
-      "failing_test_or_oracle": "Future table/model test across class \u00d7 direction \u00d7 operation \u00d7 peer-known state; oracle is the explicit policy matrix above.",
-      "done_command": "cargo test -p id-sync --test federation_9141 (future target created by PR-B-9141)",
-      "future_test_note": "Same one PR/test target shared by B01-B06 and B32; ordered changes inside the #9141 PR, not separate overlapping PRs.",
-      "pr_unit": "PR-B-9141",
-      "pr_scope": "One ordered component PR contains B01-B06, B31 and B32; shared module/test ownership is sequenced within this PR."
-    },
-    {
-      "id": "B32",
-      "parent": "#9141",
-      "component": "signed acceptance and peer classes",
-      "title": "Mandatory universal signed-and-validated acceptance gate",
-      "goal": "Enforce signature, signer-binding, semantic validation, authorization and replay checks before admission from local, loopback, internal, hosted or remote paths; local producers sign before admission and use the same gate.",
-      "statements": [
-        "S1.12-S1.20"
-      ],
-      "candidate_provenance": "additional foundational coverage slice; not part of the reconstructed 30-item count or claimed original candidate list",
-      "named_category_anchor": null,
-      "kind": "design-and-implementation",
-      "enables": "Safety invariant for all new federation APIs; configuration cannot disable it.",
-      "version": "V2",
-      "tier": "crucial",
-      "hard_dependencies": [
-        "B31"
-      ],
-      "soft_dependencies": [],
-      "dependencies_note": "Hard substep depends on core peer-policy interface B31 within the same PR-B-9141; both are crucial.",
-      "interface_first": false,
-      "sequence_within_component": 32,
-      "owned_surfaces": [
-        {
-          "path": "pkgs/id/crates/id-sync/src/federation/acceptance.rs",
-          "status": "proposed new gate module in PR-B-9141"
-        },
-        {
-          "path": "pkgs/id/crates/id-sync/tests/federation_9141.rs",
-          "status": "one proposed integration test target for the whole #9141 PR unit"
-        }
-      ],
-      "failing_test_or_oracle": "Future ingress matrix test supplies unsigned, malformed, wrong-signer and invalid payload through local/loopback/internal/hosted/remote paths; oracle: each is rejected before admission, while local signed valid record passes the same gate.",
-      "done_command": "cargo test -p id-sync --test federation_9141 (future target created by PR-B-9141)",
-      "future_test_note": "Same one PR/test target shared by B01-B06 and B31; ordered changes inside the #9141 PR, not separate overlapping PRs.",
-      "pr_unit": "PR-B-9141",
-      "pr_scope": "One ordered component PR contains B01-B06, B31 and B32; shared module/test ownership is sequenced within this PR."
-    }
-  ],
-  "component_statement_coverage": {
-    "#9141": [
-      "S1.1-S1.25"
+  "crosscut_interface_owner": {
+    "id": "9110-02",
+    "issue": "9110-02",
+    "owner": "#9110-02 (single interface owner)",
+    "minimum_output": [
+      "Create/export pkgs/id/crates/id-sync/src/federation/mod.rs and pkgs/id/crates/id-sync/src/federation/slices/mod.rs as stable root/registry scaffolding.",
+      "Own pkgs/id/crates/id-sync/Cargo.toml feature/module setup and test-target registration convention.",
+      "Record the exact B01-B09, B15-B25, B27-B32 module paths in the registry inventory; do not unconditionally export modules that do not exist yet.",
+      "Allow independently owned slice source/test files to compile without slice PRs editing shared federation roots, Cargo.toml, or crate lib.rs. #9110-09 wires versioned public exports after module files exist."
     ],
-    "#9142": [
-      "S1.26-S1.40"
-    ],
-    "#9143": [
-      "S1.41-S1.46"
-    ],
-    "#9144": [
-      "S1.47-S1.63",
-      "S1.100-S1.104 (ack primitive; coordinate with #9148)"
-    ],
-    "#9145": [
-      "S1.64-S1.72"
-    ],
-    "#9146": [
-      "S1.73-S1.78"
-    ],
-    "#9147": [
-      "S1.79-S1.82",
-      "S1.88-S1.99"
-    ],
-    "#9148": [
-      "S1.83-S1.87",
-      "S1.100-S1.113"
+    "required_by": "Every implementation slice B01-B09, B15-B25, and B27-B32. Research-only slices B10-B14 and B26 do not depend on code registration.",
+    "module_inventory": [
+      "pkgs/id/crates/id-sync/src/federation/slices/b01_key_lifecycle.rs",
+      "pkgs/id/crates/id-sync/src/federation/slices/b02_key_revocation.rs",
+      "pkgs/id/crates/id-sync/src/federation/slices/b03_replay_guard.rs",
+      "pkgs/id/crates/id-sync/src/federation/slices/b04_signature_suites.rs",
+      "pkgs/id/crates/id-sync/src/federation/slices/b05_signer_binding.rs",
+      "pkgs/id/crates/id-sync/src/federation/slices/b06_rejection_events.rs",
+      "pkgs/id/crates/id-sync/src/federation/slices/b07_conflict_report.rs",
+      "pkgs/id/crates/id-sync/src/federation/slices/b08_sync_scope.rs",
+      "pkgs/id/crates/id-sync/src/federation/slices/b09_anti_entropy.rs",
+      "pkgs/id/crates/id-sync/src/federation/slices/b15_peer_priority.rs",
+      "pkgs/id/crates/id-sync/src/federation/slices/b16_fanout_budget.rs",
+      "pkgs/id/crates/id-sync/src/federation/slices/b17_query_grants.rs",
+      "pkgs/id/crates/id-sync/src/federation/slices/b18_query_privacy.rs",
+      "pkgs/id/crates/id-sync/src/federation/slices/b19_signed_receipt.rs",
+      "pkgs/id/crates/id-sync/src/federation/slices/b20_request_identity.rs",
+      "pkgs/id/crates/id-sync/src/federation/slices/b21_result_dedup.rs",
+      "pkgs/id/crates/id-sync/src/federation/slices/b22_loop_inform.rs",
+      "pkgs/id/crates/id-sync/src/federation/slices/b23_routing_state.rs",
+      "pkgs/id/crates/id-sync/src/federation/slices/b24_topology_probe.rs",
+      "pkgs/id/crates/id-sync/src/federation/slices/b25_local_reputation.rs",
+      "pkgs/id/crates/id-sync/src/federation/slices/b27_claim_log.rs",
+      "pkgs/id/crates/id-sync/src/federation/slices/b28_takeover_response.rs",
+      "pkgs/id/crates/id-sync/src/federation/slices/b29_receipt_contradiction.rs",
+      "pkgs/id/crates/id-sync/src/federation/slices/b30_search_integrity.rs",
+      "pkgs/id/crates/id-sync/src/federation/slices/b31_peer_classes.rs",
+      "pkgs/id/crates/id-sync/src/federation/slices/b32_ingest_gate.rs"
     ]
   },
-  "dependency_semantics": "Hard edges mean the named contract/API must land first; soft edges are not blockers. Interface-first slices establish protocol types before dependents. No crucial slice depends on recommended/contingent work.",
-  "pr_units": [
-    {
-      "id": "PR-B-9141",
-      "scope": "B01-B06 and B31-B32 one ordered component PR",
-      "test": "pkgs/id/crates/id-sync/tests/federation_9141.rs",
-      "target": "federation_9141"
-    },
-    {
-      "id": "PR-B-9142",
-      "scope": "B07-B09 one ordered component PR",
-      "test": "pkgs/id/crates/id-sync/tests/federation_9142.rs",
-      "target": "federation_9142"
-    },
-    {
-      "id": "PR-B-research",
-      "scope": "B10-B14 and B26 docs-only research PR; B26 is not implementation",
-      "test": "research.md acceptance checks",
-      "target": "none"
-    },
-    {
-      "id": "PR-B-9144",
-      "scope": "B15-B18 one ordered V3 component PR; B19 receipt schema has independent V2 PR-B-receipt-v2.",
-      "test": "pkgs/id/crates/id-sync/tests/federation_9144.rs",
-      "target": "federation_9144"
-    },
-    {
-      "id": "PR-B-9145",
-      "scope": "B20-B22 one ordered component PR",
-      "test": "pkgs/id/crates/id-sync/tests/federation_9145.rs",
-      "target": "federation_9145"
-    },
-    {
-      "id": "PR-B-9146",
-      "scope": "B23-B24 one ordered component PR",
-      "test": "pkgs/id/crates/id-sync/tests/federation_9146.rs",
-      "target": "federation_9146"
-    },
-    {
-      "id": "PR-B-9147-impl",
-      "scope": "B25 and B27 only; distinct from research-only B26",
-      "test": "pkgs/id/crates/id-sync/tests/federation_9147.rs",
-      "target": "federation_9147"
-    },
-    {
-      "id": "PR-B-9148",
-      "scope": "B28-B30 one ordered component PR",
-      "test": "pkgs/id/crates/id-sync/tests/federation_9148.rs",
-      "target": "federation_9148"
-    },
-    {
-      "id": "PR-B-receipt-v2",
-      "scope": "B19 V2 shared receipt schema; dependency only on signer/envelope foundations B05 and B32",
-      "test": "pkgs/id/crates/id-sync/tests/receipt_v2.rs",
-      "target": "receipt_v2"
-    }
-  ],
-  "reconstruction_count": 30,
-  "additional_foundational_coverage_slices": [
-    "B31",
-    "B32"
-  ],
-  "total_slice_count": 32,
   "statement_coverage": {
     "S1.1-S1.25": "#9141 slices B01-B06 and B31-B32; B31 covers classes/default, B32 covers universal gate",
     "S1.26-S1.40": "#9142 B08 explicitly covers S1.26-S1.27; B07-B09 remaining sync/conflict coverage",
@@ -1356,5 +55,1810 @@
     "S1.79-S1.82 and S1.88-S1.99": "#9147 B25-B27",
     "S1.83-S1.87 and S1.100-S1.113": "#9148 B28-B30; B19 defines V2 receipt schema for S1.100-S1.104, B29 evaluates contradiction evidence",
     "S1.114-S1.120": "Crosscut #9106/#9110; not a Part B slice"
-  }
+  },
+  "slices": [
+    {
+      "id": "B01",
+      "parent": "#9141",
+      "title": "Key lifecycle: rotation, generation overlap, and preserving validity of data signed by a then-current key",
+      "kind": "implementation",
+      "version": "V2",
+      "tier": "crucial",
+      "statements": [
+        "S1.21"
+      ],
+      "goal": "Key lifecycle: rotation, generation overlap, and preserving validity of data signed by a then-current key as an independently reviewable contract and implementation increment.",
+      "enables": "Provides key lineage so future signed events remain attributable across rotation.",
+      "owned_files": [
+        {
+          "path": "pkgs/id/crates/id-sync/src/federation/slices/b01_key_lifecycle.rs",
+          "status": "new",
+          "owner": "B01"
+        },
+        {
+          "path": "pkgs/id/crates/id-sync/tests/federation_b01.rs",
+          "status": "new",
+          "owner": "B01"
+        }
+      ],
+      "requires": [
+        {
+          "description": "Minimum output from #9110-02: root federation/slices registry scaffolding and Cargo convention, with this exact module path recorded but not exported before it exists. Slice PRs do not edit shared roots/Cargo/lib.rs; #9110-09 wires versioned public exports after module outputs land.",
+          "ref": "9110-02"
+        }
+      ],
+      "after": [],
+      "test": {
+        "file": "pkgs/id/crates/id-sync/tests/federation_b01.rs",
+        "command": "cargo test -p id-sync --test federation_b01",
+        "oracle": {
+          "kind": "invariant",
+          "expected": "A rotation preserves verification/attribution of an event signed under the prior valid key; key lineage is explicit.",
+          "verifier": "Independent reference state machine or golden fixture in the dedicated integration test; cryptographic tests use independent vectors, not the implementation under test."
+        }
+      },
+      "rollback": "Disable new remote key-rotation writes; retain verified key lineage and reject keys not covered by existing policy.",
+      "design_source": "doc/2026-11-13T03-40-00Z_design_id-atlas-summit/part-b/versioned-design.md",
+      "design_section": "### Wire/data model",
+      "owner": "B01",
+      "provenance": "named proto category anchor: key lifecycle; original exact title/boundary not recovered",
+      "delivery": "one child issue for this slice; exactly one PR; do not bundle with another B slice"
+    },
+    {
+      "id": "B02",
+      "parent": "#9141",
+      "title": "Key compromise/revocation effect on previously accepted data (revalidate, flag, or quarantine)",
+      "kind": "implementation",
+      "version": "V2",
+      "tier": "crucial",
+      "statements": [
+        "S1.22",
+        "S1.84",
+        "S1.86"
+      ],
+      "goal": "Implement minimal V2 key/peer emergency disable, revocation and quarantine for previously accepted data; preserve evidence and do not claim signing-time proof from issuer timestamps.",
+      "enables": "Provides mandatory V2 emergency containment before advanced takeover automation.",
+      "owned_files": [
+        {
+          "path": "pkgs/id/crates/id-sync/src/federation/slices/b02_key_revocation.rs",
+          "status": "new",
+          "owner": "B02"
+        },
+        {
+          "path": "pkgs/id/crates/id-sync/tests/federation_b02.rs",
+          "status": "new",
+          "owner": "B02"
+        }
+      ],
+      "requires": [
+        {
+          "description": "Minimum output from #9110-02: root federation/slices registry scaffolding and Cargo convention, with this exact module path recorded but not exported before it exists. Slice PRs do not edit shared roots/Cargo/lib.rs; #9110-09 wires versioned public exports after module outputs land.",
+          "ref": "9110-02"
+        },
+        {
+          "ref": "B01",
+          "description": "Minimum output: Key lifecycle: rotation, generation overlap, and preserving validity of data signed by a then-current key; stable interface needed by B02."
+        },
+        {
+          "ref": "B31",
+          "description": "Minimum output: per-peer class/disable policy state so emergency peer disable is explicit."
+        }
+      ],
+      "after": [],
+      "test": {
+        "file": "pkgs/id/crates/id-sync/tests/federation_b02.rs",
+        "command": "cargo test -p id-sync --test federation_b02",
+        "oracle": {
+          "kind": "invariant",
+          "expected": "Emergency disable prevents new acceptance/relay and quarantines in-scope prior accepted records without trusting issuer wall-clock signing times.",
+          "verifier": "Independent reference state machine or golden fixture in the dedicated integration test; cryptographic tests use independent vectors, not the implementation under test."
+        }
+      },
+      "rollback": "Disable affected peer/key admission and relay immediately; preserve quarantine and evidence. Do not restore acceptance as rollback.",
+      "design_source": "doc/2026-11-13T03-40-00Z_design_id-atlas-summit/part-b/versioned-design.md",
+      "design_section": "### Wire/data model",
+      "owner": "B02",
+      "provenance": "statement-derived reconstruction; original title/boundary not recovered",
+      "delivery": "one child issue for this slice; exactly one PR; do not bundle with another B slice"
+    },
+    {
+      "id": "B03",
+      "parent": "#9141",
+      "title": "Replay/freshness rules for re-presented signed data",
+      "kind": "implementation",
+      "version": "V2",
+      "tier": "crucial",
+      "statements": [
+        "S1.23"
+      ],
+      "goal": "Replay/freshness rules for re-presented signed data as an independently reviewable contract and implementation increment.",
+      "enables": "Prevents a previously admitted signed event from being replayed as new.",
+      "owned_files": [
+        {
+          "path": "pkgs/id/crates/id-sync/src/federation/slices/b03_replay_guard.rs",
+          "status": "new",
+          "owner": "B03"
+        },
+        {
+          "path": "pkgs/id/crates/id-sync/tests/federation_b03.rs",
+          "status": "new",
+          "owner": "B03"
+        }
+      ],
+      "requires": [
+        {
+          "description": "Minimum output from #9110-02: root federation/slices registry scaffolding and Cargo convention, with this exact module path recorded but not exported before it exists. Slice PRs do not edit shared roots/Cargo/lib.rs; #9110-09 wires versioned public exports after module outputs land.",
+          "ref": "9110-02"
+        },
+        {
+          "ref": "B01",
+          "description": "Minimum output: Key lifecycle: rotation, generation overlap, and preserving validity of data signed by a then-current key; stable interface needed by B03."
+        }
+      ],
+      "after": [],
+      "test": {
+        "file": "pkgs/id/crates/id-sync/tests/federation_b03.rs",
+        "command": "cargo test -p id-sync --test federation_b03",
+        "oracle": {
+          "kind": "invariant",
+          "expected": "Same signed event ID is rejected as replay; new event ID with identical payload is not conflated with replay.",
+          "verifier": "Independent reference state machine or golden fixture in the dedicated integration test; cryptographic tests use independent vectors, not the implementation under test."
+        }
+      },
+      "rollback": "Disable federation operation for requests lacking stable event IDs; never fall back to replay-permissive ingest.",
+      "design_source": "doc/2026-11-13T03-40-00Z_design_id-atlas-summit/part-b/versioned-design.md",
+      "design_section": "### Errors / state outcomes",
+      "owner": "B03",
+      "provenance": "named proto category anchor: replay protection; original exact title/boundary not recovered",
+      "delivery": "one child issue for this slice; exactly one PR; do not bundle with another B slice"
+    },
+    {
+      "id": "B04",
+      "parent": "#9141",
+      "title": "Signature-suite agility and algorithm deprecation/migration",
+      "kind": "implementation",
+      "version": "V2",
+      "tier": "crucial",
+      "statements": [
+        "S1.24"
+      ],
+      "goal": "Signature-suite agility and algorithm deprecation/migration as an independently reviewable contract and implementation increment. Initial new profile is Ed25519 + deterministic CBOR with allowlisted suites; unknown suite fails closed.",
+      "enables": "Allows versioned Ed25519 suite policy and fails closed on unallowed suites.",
+      "owned_files": [
+        {
+          "path": "pkgs/id/crates/id-sync/src/federation/slices/b04_signature_suites.rs",
+          "status": "new",
+          "owner": "B04"
+        },
+        {
+          "path": "pkgs/id/crates/id-sync/tests/federation_b04.rs",
+          "status": "new",
+          "owner": "B04"
+        }
+      ],
+      "requires": [
+        {
+          "description": "Minimum output from #9110-02: root federation/slices registry scaffolding and Cargo convention, with this exact module path recorded but not exported before it exists. Slice PRs do not edit shared roots/Cargo/lib.rs; #9110-09 wires versioned public exports after module outputs land.",
+          "ref": "9110-02"
+        },
+        {
+          "ref": "B01",
+          "description": "Minimum output: Key lifecycle: rotation, generation overlap, and preserving validity of data signed by a then-current key; stable interface needed by B04."
+        }
+      ],
+      "after": [],
+      "test": {
+        "file": "pkgs/id/crates/id-sync/tests/federation_b04.rs",
+        "command": "cargo test -p id-sync --test federation_b04",
+        "oracle": {
+          "kind": "golden",
+          "expected": "Allowed Ed25519 deterministic-CBOR profile verifies; unknown suite, malformed encoding, and noncanonical encoding fail closed.",
+          "verifier": "Independent Ed25519/Cbor golden vectors plus negative malformed/noncanonical/unknown-suite vectors in this slice test file."
+        }
+      },
+      "rollback": "Remove newly introduced suites from allowlist; keep Ed25519 new profile and legacy JSON verification intact.",
+      "design_source": "doc/2026-11-13T03-40-00Z_design_id-atlas-summit/part-b/versioned-design.md",
+      "design_section": "### Conformance and tests",
+      "owner": "B04",
+      "provenance": "statement-derived reconstruction; original title/boundary not recovered",
+      "delivery": "one child issue for this slice; exactly one PR; do not bundle with another B slice"
+    },
+    {
+      "id": "B05",
+      "parent": "#9141",
+      "title": "Signer identity binding and validation distinct from mere signature presence",
+      "kind": "implementation",
+      "version": "V2",
+      "tier": "crucial",
+      "statements": [
+        "S1.17\u2013S1.18"
+      ],
+      "goal": "Signer identity binding and validation distinct from mere signature presence as an independently reviewable contract and implementation increment. Also preserve compatibility vectors for the existing SignedBody serde_json signature preimage mismatch; do not alter legacy signed bytes. Preserve legacy SignedBody serde_json preimage compatibility vectors and document the existing docs/code mismatch without changing old bytes.",
+      "enables": "Provides key-to-signer binding and preserves legacy artifact bytes as compatibility contract.",
+      "owned_files": [
+        {
+          "path": "pkgs/id/crates/id-sync/src/federation/slices/b05_signer_binding.rs",
+          "status": "new",
+          "owner": "B05"
+        },
+        {
+          "path": "pkgs/id/crates/id-sync/tests/federation_b05.rs",
+          "status": "new",
+          "owner": "B05"
+        }
+      ],
+      "requires": [
+        {
+          "description": "Minimum output from #9110-02: root federation/slices registry scaffolding and Cargo convention, with this exact module path recorded but not exported before it exists. Slice PRs do not edit shared roots/Cargo/lib.rs; #9110-09 wires versioned public exports after module outputs land.",
+          "ref": "9110-02"
+        },
+        {
+          "ref": "B01",
+          "description": "Minimum output: Key lifecycle: rotation, generation overlap, and preserving validity of data signed by a then-current key; stable interface needed by B05."
+        }
+      ],
+      "after": [],
+      "test": {
+        "file": "pkgs/id/crates/id-sync/tests/federation_b05.rs",
+        "command": "cargo test -p id-sync --test federation_b05",
+        "oracle": {
+          "kind": "golden",
+          "expected": "Signer key binds to claimed identity; legacy SignedBody serde_json vectors verify exact old bytes and do not change after new-profile support.",
+          "verifier": "Pinned legacy fixture bytes and independent key-binding verifier; compare pre/post new-profile verification."
+        }
+      },
+      "rollback": "Disable new identity profile admission while retaining exact legacy verification vectors/bytes; never re-sign old data.",
+      "design_source": "doc/2026-11-13T03-40-00Z_design_id-atlas-summit/part-b/versioned-design.md",
+      "design_section": "### Conformance and tests",
+      "owner": "B05",
+      "provenance": "statement-derived reconstruction; original title/boundary not recovered",
+      "delivery": "one child issue for this slice; exactly one PR; do not bundle with another B slice"
+    },
+    {
+      "id": "B06",
+      "parent": "#9141",
+      "title": "Observable, recordable rejection events at the universal signed-ingest gate",
+      "kind": "implementation",
+      "version": "V2",
+      "tier": "crucial",
+      "statements": [
+        "S1.19",
+        "S1.25"
+      ],
+      "goal": "Observable, recordable rejection events at the universal signed-ingest gate as an independently reviewable contract and implementation increment.",
+      "enables": "Makes gate rejection observable for operators and later evidence policy.",
+      "owned_files": [
+        {
+          "path": "pkgs/id/crates/id-sync/src/federation/slices/b06_rejection_events.rs",
+          "status": "new",
+          "owner": "B06"
+        },
+        {
+          "path": "pkgs/id/crates/id-sync/tests/federation_b06.rs",
+          "status": "new",
+          "owner": "B06"
+        }
+      ],
+      "requires": [
+        {
+          "description": "Minimum output from #9110-02: root federation/slices registry scaffolding and Cargo convention, with this exact module path recorded but not exported before it exists. Slice PRs do not edit shared roots/Cargo/lib.rs; #9110-09 wires versioned public exports after module outputs land.",
+          "ref": "9110-02"
+        },
+        {
+          "ref": "B05",
+          "description": "Minimum output: Signer identity binding and validation distinct from mere signature presence; stable interface needed by B06."
+        },
+        {
+          "ref": "B32",
+          "description": "Minimum output: Mandatory universal signed-and-validated acceptance gate; stable interface needed by B06."
+        }
+      ],
+      "after": [],
+      "test": {
+        "file": "pkgs/id/crates/id-sync/tests/federation_b06.rs",
+        "command": "cargo test -p id-sync --test federation_b06",
+        "oracle": {
+          "kind": "invariant",
+          "expected": "Every rejected ingest has typed observable evidence and no rejected payload reaches accepted state.",
+          "verifier": "Independent reference state machine or golden fixture in the dedicated integration test; cryptographic tests use independent vectors, not the implementation under test."
+        }
+      },
+      "rollback": "Disable optional rejection-event export only; keep rejection fail-closed and locally observable.",
+      "design_source": "doc/2026-11-13T03-40-00Z_design_id-atlas-summit/part-b/versioned-design.md",
+      "design_section": "### Errors / state outcomes",
+      "owner": "B06",
+      "provenance": "statement-derived reconstruction; original title/boundary not recovered",
+      "delivery": "one child issue for this slice; exactly one PR; do not bundle with another B slice"
+    },
+    {
+      "id": "B07",
+      "parent": "#9142",
+      "title": "First-class conflict-report artifact: versions, signers/sources, disputed data, retention/actionability",
+      "kind": "implementation",
+      "version": "V2",
+      "tier": "crucial",
+      "statements": [
+        "S1.34\u2013S1.38"
+      ],
+      "goal": "First-class conflict-report artifact: versions, signers/sources, disputed data, retention/actionability as an independently reviewable contract and implementation increment.",
+      "enables": "Makes conflicts durable and reviewable before any resolution.",
+      "owned_files": [
+        {
+          "path": "pkgs/id/crates/id-sync/src/federation/slices/b07_conflict_report.rs",
+          "status": "new",
+          "owner": "B07"
+        },
+        {
+          "path": "pkgs/id/crates/id-sync/tests/federation_b07.rs",
+          "status": "new",
+          "owner": "B07"
+        }
+      ],
+      "requires": [
+        {
+          "description": "Minimum output from #9110-02: root federation/slices registry scaffolding and Cargo convention, with this exact module path recorded but not exported before it exists. Slice PRs do not edit shared roots/Cargo/lib.rs; #9110-09 wires versioned public exports after module outputs land.",
+          "ref": "9110-02"
+        },
+        {
+          "ref": "B05",
+          "description": "Minimum output: Signer identity binding and validation distinct from mere signature presence; stable interface needed by B07."
+        },
+        {
+          "ref": "B32",
+          "description": "Minimum output: Mandatory universal signed-and-validated acceptance gate; stable interface needed by B07."
+        }
+      ],
+      "after": [],
+      "test": {
+        "file": "pkgs/id/crates/id-sync/tests/federation_b07.rs",
+        "command": "cargo test -p id-sync --test federation_b07",
+        "oracle": {
+          "kind": "invariant",
+          "expected": "Conflict report is persisted before any resolution; unrelated object can continue sync.",
+          "verifier": "Independent reference state machine or golden fixture in the dedicated integration test; cryptographic tests use independent vectors, not the implementation under test."
+        }
+      },
+      "rollback": "Pause automatic resolution; preserve reports and continue unrelated sync.",
+      "design_source": "doc/2026-11-13T03-40-00Z_design_id-atlas-summit/part-b/versioned-design.md",
+      "design_section": "### Wire/data model",
+      "owner": "B07",
+      "provenance": "statement-derived reconstruction; original title/boundary not recovered",
+      "delivery": "one child issue for this slice; exactly one PR; do not bundle with another B slice"
+    },
+    {
+      "id": "B08",
+      "parent": "#9142",
+      "title": "Implicit-trust sync scope/tolerance under capacity, retention, tenant and trust-domain boundaries",
+      "kind": "implementation",
+      "version": "V2",
+      "tier": "crucial",
+      "statements": [
+        "S1.26-S1.27",
+        "S1.28-S1.31"
+      ],
+      "goal": "Define implicit-trust internal sync toward 1:1 sameness within reason: authorized scope, capacity, retention, tenant/trust boundaries; detect divergence and exclusions.",
+      "enables": "Defines authorized convergence scope and explicit 1:1-within-reason boundary.",
+      "owned_files": [
+        {
+          "path": "pkgs/id/crates/id-sync/src/federation/slices/b08_sync_scope.rs",
+          "status": "new",
+          "owner": "B08"
+        },
+        {
+          "path": "pkgs/id/crates/id-sync/tests/federation_b08.rs",
+          "status": "new",
+          "owner": "B08"
+        }
+      ],
+      "requires": [
+        {
+          "description": "Minimum output from #9110-02: root federation/slices registry scaffolding and Cargo convention, with this exact module path recorded but not exported before it exists. Slice PRs do not edit shared roots/Cargo/lib.rs; #9110-09 wires versioned public exports after module outputs land.",
+          "ref": "9110-02"
+        },
+        {
+          "ref": "B31",
+          "description": "Minimum output: Core directional peer-class behavior and unknown-peer default; stable interface needed by B08."
+        }
+      ],
+      "after": [],
+      "test": {
+        "file": "pkgs/id/crates/id-sync/tests/federation_b08.rs",
+        "command": "cargo test -p id-sync --test federation_b08",
+        "oracle": {
+          "kind": "model",
+          "expected": "Within authorized scope peers converge toward 1:1 within configured capacity/retention; excluded/deleted/unauthorized data never crosses.",
+          "verifier": "Independent reference state machine or golden fixture in the dedicated integration test; cryptographic tests use independent vectors, not the implementation under test."
+        }
+      },
+      "rollback": "Disable this sync scope/link; retain tenant and privacy boundaries and local data.",
+      "design_source": "doc/2026-11-13T03-40-00Z_design_id-atlas-summit/part-b/versioned-design.md",
+      "design_section": "## Component dispositions and statement coverage",
+      "owner": "B08",
+      "provenance": "statement-derived reconstruction; original title/boundary not recovered S1.27 added from #9142 statement coverage; not claimed in the recovered candidate source row. Includes S1.26-S1.27 coverage repair; not claimed in original candidate listing.",
+      "delivery": "one child issue for this slice; exactly one PR; do not bundle with another B slice",
+      "design_anchor": "Item 2; S1.26-S1.31 includes the explicit sync-toward-1:1 target."
+    },
+    {
+      "id": "B09",
+      "parent": "#9142",
+      "title": "Divergence detection and anti-entropy/reconciliation requirements before any later merge",
+      "kind": "implementation",
+      "version": "V2",
+      "tier": "crucial",
+      "statements": [
+        "S1.32\u2013S1.40"
+      ],
+      "goal": "Divergence detection and anti-entropy/reconciliation requirements before any later merge as an independently reviewable contract and implementation increment.",
+      "enables": "Detects scoped divergence and exchanges anti-entropy deltas without silent merge.",
+      "owned_files": [
+        {
+          "path": "pkgs/id/crates/id-sync/src/federation/slices/b09_anti_entropy.rs",
+          "status": "new",
+          "owner": "B09"
+        },
+        {
+          "path": "pkgs/id/crates/id-sync/tests/federation_b09.rs",
+          "status": "new",
+          "owner": "B09"
+        }
+      ],
+      "requires": [
+        {
+          "description": "Minimum output from #9110-02: root federation/slices registry scaffolding and Cargo convention, with this exact module path recorded but not exported before it exists. Slice PRs do not edit shared roots/Cargo/lib.rs; #9110-09 wires versioned public exports after module outputs land.",
+          "ref": "9110-02"
+        },
+        {
+          "ref": "B07",
+          "description": "Minimum output: First-class conflict-report artifact: versions, signers/sources, disputed data, retention/actionability; stable interface needed by B09."
+        },
+        {
+          "ref": "B08",
+          "description": "Minimum output: Implicit-trust sync scope/tolerance under capacity, retention, tenant and trust-domain boundaries; stable interface needed by B09."
+        }
+      ],
+      "after": [],
+      "test": {
+        "file": "pkgs/id/crates/id-sync/tests/federation_b09.rs",
+        "command": "cargo test -p id-sync --test federation_b09",
+        "oracle": {
+          "kind": "model",
+          "expected": "Reference inventory delta detects divergence and every resolution follows conflict report; order of reconciliation does not silently merge.",
+          "verifier": "Independent reference state machine or golden fixture in the dedicated integration test; cryptographic tests use independent vectors, not the implementation under test."
+        }
+      },
+      "rollback": "Pause reconciliation jobs; preserve records, tombstones, and conflict reports.",
+      "design_source": "doc/2026-11-13T03-40-00Z_design_id-atlas-summit/part-b/versioned-design.md",
+      "design_section": "## Component dispositions and statement coverage",
+      "owner": "B09",
+      "provenance": "statement-derived reconstruction; original title/boundary not recovered",
+      "delivery": "one child issue for this slice; exactly one PR; do not bundle with another B slice"
+    },
+    {
+      "id": "B10",
+      "parent": "#9143",
+      "title": "Automerge fit/evaluation against the shared CRDT criteria",
+      "kind": "research",
+      "version": "V4",
+      "tier": "contingent",
+      "statements": [
+        "S1.41"
+      ],
+      "goal": "Automerge fit/evaluation against the shared CRDT criteria; produce evidence and conditional/non-adoption result, not merge code.",
+      "enables": "Provides Automerge-specific evidence to the #9143 adopt/defer/none decision. Existing research.md and slice-specific reports remain cited evidence; this issue creates the separate machine-readable result artifact.",
+      "owned_files": [
+        {
+          "path": "doc/2026-11-13T03-40-00Z_design_id-atlas-summit/part-b/research-results/B10-result.json",
+          "status": "new",
+          "owner": "B10"
+        }
+      ],
+      "requires": [],
+      "after": [],
+      "test": {
+        "file": "doc/2026-11-13T03-40-00Z_design_id-atlas-summit/part-b/research-results/B10-result.json",
+        "command": "python3 -I doc/2026-11-13T03-40-00Z_design_id-atlas-summit/delivery/validate_research_report.py --input doc/2026-11-13T03-40-00Z_design_id-atlas-summit/part-b/research-results/B10-result.json",
+        "oracle": {
+          "kind": "research-matrix",
+          "expected": "Future crdt-automerge result is scope-tagged, contains its own dated/cited findings, two or more options and a conditional recommendation including non-adoption when warranted.",
+          "verifier": "Shared delivery research artifact validator (CLI/schema update owned by delivery worker) plus exact citation/scope assertions; existing Part B reports and validators remain read-only evidence."
+        }
+      },
+      "rollback": "Research-only artifact can be withdrawn or superseded without changing runtime behavior; retain source-cited disposition history.",
+      "design_source": "doc/2026-11-13T03-40-00Z_design_id-atlas-summit/part-b/versioned-design.md",
+      "design_section": "## Component dispositions and statement coverage",
+      "owner": "B10",
+      "provenance": "statement-derived reconstruction; original title/boundary not recovered",
+      "trigger": "Research slice deliverable remains scoped; any implementation/adoption is triggered only by the versioned-design evidence threshold or a demonstrated abuse/workload need, and may conclude adopt-none.",
+      "research_scope": "crdt-automerge",
+      "research_evidence": [
+        "https://automerge.org/docs/reference/concepts/",
+        "https://automerge.org/docs/reference/under-the-hood/merge-rules/",
+        "https://automerge.org/automerge/automerge/sync/index.html"
+      ],
+      "delivery": "one child issue for this slice; exactly one PR; do not bundle with another B slice",
+      "design_anchor": "Item 3; research paragraph lists Automerge evaluation.",
+      "evidence_files": [
+        {
+          "path": "doc/2026-11-13T03-40-00Z_design_id-atlas-summit/part-b/B10-research-automerge.md",
+          "status": "existing",
+          "access": "read-only evidence; preserve, do not overwrite/delete"
+        },
+        {
+          "path": "doc/2026-11-13T03-40-00Z_design_id-atlas-summit/part-b/B10-research-automerge-validate.py",
+          "status": "existing",
+          "access": "read-only evidence; preserve, do not overwrite/delete"
+        }
+      ]
+    },
+    {
+      "id": "B11",
+      "parent": "#9143",
+      "title": "Identify \u201cdiamonds\u201d as Diamond Types and evaluate it on the shared criteria",
+      "kind": "research",
+      "version": "V4",
+      "tier": "contingent",
+      "statements": [
+        "S1.42"
+      ],
+      "goal": "Identify \u201cdiamonds\u201d as Diamond Types and evaluate it on the shared criteria; produce evidence and conditional/non-adoption result, not merge code.",
+      "enables": "Provides Diamond Types-specific evidence while retaining referent uncertainty. Existing research.md and slice-specific reports remain cited evidence; this issue creates the separate machine-readable result artifact.",
+      "owned_files": [
+        {
+          "path": "doc/2026-11-13T03-40-00Z_design_id-atlas-summit/part-b/research-results/B11-result.json",
+          "status": "new",
+          "owner": "B11"
+        }
+      ],
+      "requires": [],
+      "after": [],
+      "test": {
+        "file": "doc/2026-11-13T03-40-00Z_design_id-atlas-summit/part-b/research-results/B11-result.json",
+        "command": "python3 -I doc/2026-11-13T03-40-00Z_design_id-atlas-summit/delivery/validate_research_report.py --input doc/2026-11-13T03-40-00Z_design_id-atlas-summit/part-b/research-results/B11-result.json",
+        "oracle": {
+          "kind": "research-matrix",
+          "expected": "Future crdt-diamond-types result is scope-tagged, contains its own dated/cited findings, two or more options and a conditional recommendation including non-adoption when warranted.",
+          "verifier": "Shared delivery research artifact validator (CLI/schema update owned by delivery worker) plus exact citation/scope assertions; existing Part B reports and validators remain read-only evidence."
+        }
+      },
+      "rollback": "Research-only artifact can be withdrawn or superseded without changing runtime behavior; retain source-cited disposition history.",
+      "design_source": "doc/2026-11-13T03-40-00Z_design_id-atlas-summit/part-b/versioned-design.md",
+      "design_section": "## Component dispositions and statement coverage",
+      "owner": "B11",
+      "provenance": "statement-derived reconstruction; original title/boundary not recovered",
+      "trigger": "Research slice deliverable remains scoped; any implementation/adoption is triggered only by the versioned-design evidence threshold or a demonstrated abuse/workload need, and may conclude adopt-none.",
+      "research_scope": "crdt-diamond-types",
+      "research_evidence": [
+        "https://martin.kleppmann.com/2025/03/30/eg-walker-collaborative-text.html",
+        "https://github.com/josephg/egwalker-paper",
+        "https://docs.rs/diamond-types/latest/diamond_types/"
+      ],
+      "delivery": "one child issue for this slice; exactly one PR; do not bundle with another B slice",
+      "design_anchor": "Item 3; research paragraph retains uncertain Diamond Types referent.",
+      "evidence_files": [
+        {
+          "path": "doc/2026-11-13T03-40-00Z_design_id-atlas-summit/part-b/B11-research-diamond.md",
+          "status": "existing",
+          "access": "read-only evidence; preserve, do not overwrite/delete"
+        },
+        {
+          "path": "doc/2026-11-13T03-40-00Z_design_id-atlas-summit/part-b/B11-research-diamond-validate.py",
+          "status": "existing",
+          "access": "read-only evidence; preserve, do not overwrite/delete"
+        }
+      ]
+    },
+    {
+      "id": "B12",
+      "parent": "#9143",
+      "title": "Willow protocol fit against reconciliation, scoping and signed-only acceptance",
+      "kind": "research",
+      "version": "V4",
+      "tier": "contingent",
+      "statements": [
+        "S1.43"
+      ],
+      "goal": "Willow protocol fit against reconciliation, scoping and signed-only acceptance; produce evidence and conditional/non-adoption result, not merge code.",
+      "enables": "Provides Willow-specific evidence and proposal caveats. Existing research.md and slice-specific reports remain cited evidence; this issue creates the separate machine-readable result artifact.",
+      "owned_files": [
+        {
+          "path": "doc/2026-11-13T03-40-00Z_design_id-atlas-summit/part-b/research-results/B12-result.json",
+          "status": "new",
+          "owner": "B12"
+        }
+      ],
+      "requires": [],
+      "after": [],
+      "test": {
+        "file": "doc/2026-11-13T03-40-00Z_design_id-atlas-summit/part-b/research-results/B12-result.json",
+        "command": "python3 -I doc/2026-11-13T03-40-00Z_design_id-atlas-summit/delivery/validate_research_report.py --input doc/2026-11-13T03-40-00Z_design_id-atlas-summit/part-b/research-results/B12-result.json",
+        "oracle": {
+          "kind": "research-matrix",
+          "expected": "Future crdt-willow result is scope-tagged, contains its own dated/cited findings, two or more options and a conditional recommendation including non-adoption when warranted.",
+          "verifier": "Shared delivery research artifact validator (CLI/schema update owned by delivery worker) plus exact citation/scope assertions; existing Part B reports and validators remain read-only evidence."
+        }
+      },
+      "rollback": "Research-only artifact can be withdrawn or superseded without changing runtime behavior; retain source-cited disposition history.",
+      "design_source": "doc/2026-11-13T03-40-00Z_design_id-atlas-summit/part-b/versioned-design.md",
+      "design_section": "## Component dispositions and statement coverage",
+      "owner": "B12",
+      "provenance": "statement-derived reconstruction; original title/boundary not recovered",
+      "trigger": "Research slice deliverable remains scoped; any implementation/adoption is triggered only by the versioned-design evidence threshold or a demonstrated abuse/workload need, and may conclude adopt-none.",
+      "research_scope": "crdt-willow",
+      "research_evidence": [
+        "https://willowprotocol.org/specs/data-model/",
+        "https://willowprotocol.org/specs/willow25/index.html",
+        "https://willowprotocol.org/specs/confidential-sync/"
+      ],
+      "delivery": "one child issue for this slice; exactly one PR; do not bundle with another B slice",
+      "design_anchor": "Item 3; Willow evaluation.",
+      "evidence_files": [
+        {
+          "path": "doc/2026-11-13T03-40-00Z_design_id-atlas-summit/part-b/B12-research-willow.md",
+          "status": "existing",
+          "access": "read-only evidence; preserve, do not overwrite/delete"
+        },
+        {
+          "path": "doc/2026-11-13T03-40-00Z_design_id-atlas-summit/part-b/B12-research-willow-validate.py",
+          "status": "existing",
+          "access": "read-only evidence; preserve, do not overwrite/delete"
+        }
+      ]
+    },
+    {
+      "id": "B13",
+      "parent": "#9143",
+      "title": "OCapN capability-reference/handoff fit; evaluate application-level attenuation separately",
+      "kind": "research",
+      "version": "V4",
+      "tier": "contingent",
+      "statements": [
+        "S1.44"
+      ],
+      "goal": "Evaluate what cited OCapN sources establish about object references and handoff; treat attenuation as an open application-level option, not a verified OCapN feature.",
+      "enables": "Provides OCapN authority/handoff evidence without asserting unverified attenuation. Existing research.md and slice-specific reports remain cited evidence; this issue creates the separate machine-readable result artifact.",
+      "owned_files": [
+        {
+          "path": "doc/2026-11-13T03-40-00Z_design_id-atlas-summit/part-b/research-results/B13-result.json",
+          "status": "new",
+          "owner": "B13"
+        }
+      ],
+      "requires": [],
+      "after": [],
+      "test": {
+        "file": "doc/2026-11-13T03-40-00Z_design_id-atlas-summit/part-b/research-results/B13-result.json",
+        "command": "python3 -I doc/2026-11-13T03-40-00Z_design_id-atlas-summit/delivery/validate_research_report.py --input doc/2026-11-13T03-40-00Z_design_id-atlas-summit/part-b/research-results/B13-result.json",
+        "oracle": {
+          "kind": "research-matrix",
+          "expected": "Future crdt-ocapn result is scope-tagged, contains its own dated/cited findings, two or more options and a conditional recommendation including non-adoption when warranted.",
+          "verifier": "Shared delivery research artifact validator (CLI/schema update owned by delivery worker) plus exact citation/scope assertions; existing Part B reports and validators remain read-only evidence."
+        }
+      },
+      "rollback": "Research-only artifact can be withdrawn or superseded without changing runtime behavior; retain source-cited disposition history.",
+      "design_source": "doc/2026-11-13T03-40-00Z_design_id-atlas-summit/part-b/versioned-design.md",
+      "design_section": "## Component dispositions and statement coverage",
+      "owner": "B13",
+      "provenance": "statement-derived reconstruction; original title/boundary not recovered",
+      "trigger": "Research slice deliverable remains scoped; any implementation/adoption is triggered only by the versioned-design evidence threshold or a demonstrated abuse/workload need, and may conclude adopt-none.",
+      "research_scope": "crdt-ocapn",
+      "research_evidence": [
+        "https://github.com/ocapn/ocapn/blob/main/draft-specifications/CapTP%20Specification.md",
+        "https://github.com/ocapn/ocapn/blob/main/implementation-guide/Implementation%20Guide.md",
+        "https://github.com/ocapn/ocapn/blob/main/draft-specifications/Netlayers.md"
+      ],
+      "delivery": "one child issue for this slice; exactly one PR; do not bundle with another B slice",
+      "design_anchor": "Item 3; OCapN authority/handoff and attenuation caveat.",
+      "evidence_files": [
+        {
+          "path": "doc/2026-11-13T03-40-00Z_design_id-atlas-summit/part-b/B13-research-ocapn.md",
+          "status": "existing",
+          "access": "read-only evidence; preserve, do not overwrite/delete"
+        },
+        {
+          "path": "doc/2026-11-13T03-40-00Z_design_id-atlas-summit/part-b/B13-research-ocapn-validate.py",
+          "status": "existing",
+          "access": "read-only evidence; preserve, do not overwrite/delete"
+        }
+      ]
+    },
+    {
+      "id": "B14",
+      "parent": "#9143",
+      "title": "Common comparison matrix, non-exhaustive prior art and revisit threshold/recommendation",
+      "kind": "research",
+      "version": "V4",
+      "tier": "contingent",
+      "statements": [
+        "S1.45\u2013S1.46"
+      ],
+      "goal": "Common comparison matrix, non-exhaustive prior art and revisit threshold/recommendation; produce evidence and conditional/non-adoption result, not merge code.",
+      "enables": "Joins project evidence under common criteria and permits adopt-none outcome. Existing research.md and slice-specific reports remain cited evidence; this issue creates the separate machine-readable result artifact.",
+      "owned_files": [
+        {
+          "path": "doc/2026-11-13T03-40-00Z_design_id-atlas-summit/part-b/research-results/B14-result.json",
+          "status": "new",
+          "owner": "B14"
+        }
+      ],
+      "requires": [
+        {
+          "ref": "B10",
+          "description": "Minimum output: Automerge fit/evaluation against the shared CRDT criteria; stable interface needed by B14."
+        },
+        {
+          "ref": "B11",
+          "description": "Minimum output: Identify \u201cdiamonds\u201d as Diamond Types and evaluate it on the shared criteria; stable interface needed by B14."
+        },
+        {
+          "ref": "B12",
+          "description": "Minimum output: Willow protocol fit against reconciliation, scoping and signed-only acceptance; stable interface needed by B14."
+        },
+        {
+          "ref": "B13",
+          "description": "Minimum output: OCapN capability-reference/handoff fit; evaluate application-level attenuation separately; stable interface needed by B14."
+        }
+      ],
+      "after": [],
+      "test": {
+        "file": "doc/2026-11-13T03-40-00Z_design_id-atlas-summit/part-b/research-results/B14-result.json",
+        "command": "python3 -I doc/2026-11-13T03-40-00Z_design_id-atlas-summit/delivery/validate_research_report.py --input doc/2026-11-13T03-40-00Z_design_id-atlas-summit/part-b/research-results/B14-result.json",
+        "oracle": {
+          "kind": "research-matrix",
+          "expected": "Future crdt-common-matrix result is scope-tagged, contains its own dated/cited findings, two or more options and a conditional recommendation including non-adoption when warranted.",
+          "verifier": "Shared delivery research artifact validator (CLI/schema update owned by delivery worker) plus exact citation/scope assertions; existing Part B reports and validators remain read-only evidence."
+        }
+      },
+      "rollback": "Research-only artifact can be withdrawn or superseded without changing runtime behavior; retain source-cited disposition history.",
+      "design_source": "doc/2026-11-13T03-40-00Z_design_id-atlas-summit/part-b/versioned-design.md",
+      "design_section": "## Component dispositions and statement coverage",
+      "owner": "B14",
+      "provenance": "statement-derived reconstruction; original title/boundary not recovered",
+      "trigger": "Research slice deliverable remains scoped; any implementation/adoption is triggered only by the versioned-design evidence threshold or a demonstrated abuse/workload need, and may conclude adopt-none.",
+      "research_scope": "crdt-common-matrix",
+      "research_evidence": [
+        "https://automerge.org/docs/reference/concepts/",
+        "https://martin.kleppmann.com/2025/03/30/eg-walker-collaborative-text.html",
+        "https://willowprotocol.org/specs/data-model/",
+        "https://willowprotocol.org/specs/confidential-sync/",
+        "https://github.com/ocapn/ocapn/blob/main/draft-specifications/CapTP%20Specification.md"
+      ],
+      "delivery": "one child issue for this slice; exactly one PR; do not bundle with another B slice",
+      "design_anchor": "Item 3; common comparison/revisit threshold.",
+      "evidence_files": [
+        {
+          "path": "doc/2026-11-13T03-40-00Z_design_id-atlas-summit/part-b/B14-research-crdt-matrix.md",
+          "status": "existing",
+          "access": "read-only evidence; preserve, do not overwrite/delete"
+        },
+        {
+          "path": "doc/2026-11-13T03-40-00Z_design_id-atlas-summit/part-b/B14-research-crdt-matrix-validate.py",
+          "status": "existing",
+          "access": "read-only evidence; preserve, do not overwrite/delete"
+        }
+      ]
+    },
+    {
+      "id": "B15",
+      "parent": "#9144",
+      "title": "Prioritized remote selection: inputs, ordering, and treatment of a remote negative answer",
+      "kind": "implementation",
+      "version": "V3",
+      "tier": "recommended",
+      "statements": [
+        "S1.47\u2013S1.53"
+      ],
+      "goal": "Prioritized remote selection: inputs, ordering, and treatment of a remote negative answer as an independently reviewable contract and implementation increment.",
+      "enables": "Orders eligible remotes without converting score into authority or global absence.",
+      "owned_files": [
+        {
+          "path": "pkgs/id/crates/id-sync/src/federation/slices/b15_peer_priority.rs",
+          "status": "new",
+          "owner": "B15"
+        },
+        {
+          "path": "pkgs/id/crates/id-sync/tests/federation_b15.rs",
+          "status": "new",
+          "owner": "B15"
+        }
+      ],
+      "requires": [
+        {
+          "ref": "B20",
+          "description": "Minimum output: stable request identity."
+        },
+        {
+          "ref": "B21",
+          "description": "Minimum output: duplicate work does not inflate priority/fanout execution."
+        },
+        {
+          "description": "Minimum output from #9110-02: root federation/slices registry scaffolding and Cargo convention, with this exact module path recorded but not exported before it exists. Slice PRs do not edit shared roots/Cargo/lib.rs; #9110-09 wires versioned public exports after module outputs land.",
+          "ref": "9110-02"
+        }
+      ],
+      "after": [
+        {
+          "ref": "B23",
+          "description": "Routing observations may improve peer prioritization but do not block deterministic configured order."
+        },
+        {
+          "ref": "B25",
+          "description": "Reputation bands may later feed priority but cannot authorize peers."
+        }
+      ],
+      "test": {
+        "file": "pkgs/id/crates/id-sync/tests/federation_b15.rs",
+        "command": "cargo test -p id-sync --test federation_b15",
+        "oracle": {
+          "kind": "invariant",
+          "expected": "Equal inputs produce deterministic remote ordering; one remote negative is never interpreted as global absence.",
+          "verifier": "Independent reference state machine or golden fixture in the dedicated integration test; cryptographic tests use independent vectors, not the implementation under test."
+        }
+      },
+      "rollback": "Fall back to deterministic configured remote order; retain local-first query and no-global-negative semantics.",
+      "design_source": "doc/2026-11-13T03-40-00Z_design_id-atlas-summit/part-b/versioned-design.md",
+      "design_section": "### Query contract",
+      "owner": "B15",
+      "provenance": "named proto category anchor: prioritization scoring; original exact title/boundary not recovered",
+      "delivery": "one child issue for this slice; exactly one PR; do not bundle with another B slice"
+    },
+    {
+      "id": "B16",
+      "parent": "#9144",
+      "title": "Trusted-relay permission, max-hop propagation, and breadth\u00d7depth resource bounds",
+      "kind": "implementation",
+      "version": "V3",
+      "tier": "recommended",
+      "statements": [
+        "S1.54\u2013S1.57",
+        "S1.61"
+      ],
+      "goal": "Trusted-relay permission, max-hop propagation, and breadth\u00d7depth resource bounds as an independently reviewable contract and implementation increment. Account atomically at query, authenticated requester/origin, supplying peer, authorized tenant and node scopes; refund only unused amounts; retries reuse exact multidimensional reservation.",
+      "enables": "Bounds recursive query resource use at requester and honest-node scopes.",
+      "owned_files": [
+        {
+          "path": "pkgs/id/crates/id-sync/src/federation/slices/b16_fanout_budget.rs",
+          "status": "new",
+          "owner": "B16"
+        },
+        {
+          "path": "pkgs/id/crates/id-sync/tests/federation_b16.rs",
+          "status": "new",
+          "owner": "B16"
+        },
+        {
+          "path": "doc/2026-11-13T03-40-00Z_design_id-atlas-summit/part-b/federation_model.py",
+          "status": "existing",
+          "owner": "B16"
+        }
+      ],
+      "requires": [
+        {
+          "ref": "B17",
+          "description": "Minimum output: immutable OriginQuery and signed chained RelayGrant contract."
+        },
+        {
+          "ref": "B20",
+          "description": "Minimum output: stable origin request identity."
+        },
+        {
+          "ref": "B21",
+          "description": "Minimum output: dedup ledger so retries reuse work/reservations."
+        },
+        {
+          "ref": "B32",
+          "description": "Minimum output: mandatory validation gate."
+        },
+        {
+          "description": "Minimum output from #9110-02: root federation/slices registry scaffolding and Cargo convention, with this exact module path recorded but not exported before it exists. Slice PRs do not edit shared roots/Cargo/lib.rs; #9110-09 wires versioned public exports after module outputs land.",
+          "ref": "9110-02"
+        }
+      ],
+      "after": [
+        {
+          "ref": "B23",
+          "description": "Routing evidence is an optional fanout input after query/dedup foundations; it does not change budget accounting."
+        }
+      ],
+      "test": {
+        "file": "pkgs/id/crates/id-sync/tests/federation_b16.rs",
+        "command": "cargo test -p id-sync --test federation_b16",
+        "oracle": {
+          "kind": "model",
+          "expected": "At per-query, authenticated requester, supplying-peer, tenant and node scopes, spent never decreases and held+spent stays within cap. Duplicate scope IDs, over-cap reservations, and usage outside reserved dimensions reject atomically. Cancel/expiry refunds only unused held values; same reservation retry never mints.",
+          "verifier": "Dedicated B16 future Rust test compares each vector scope to a small reference ledger; current federation_model.py supplies a separate executable accounting example. Neither proves crypto/fairness/Byzantine enforcement."
+        }
+      },
+      "rollback": "Disable recursive remote fanout; retain local query and outstanding ledger/tombstones until expiry.",
+      "design_source": "doc/2026-11-13T03-40-00Z_design_id-atlas-summit/part-b/versioned-design.md",
+      "design_section": "### Query contract",
+      "owner": "B16",
+      "provenance": "statement-derived reconstruction; original title/boundary not recovered",
+      "delivery": "one child issue for this slice; exactly one PR; do not bundle with another B slice"
+    },
+    {
+      "id": "B17",
+      "parent": "#9144",
+      "title": "Query/relay/response signature validation, end-to-end responder provenance and stable request identity",
+      "kind": "implementation",
+      "version": "V3",
+      "tier": "recommended",
+      "statements": [
+        "S1.58\u2013S1.62"
+      ],
+      "goal": "Query/relay/response signature validation, end-to-end responder provenance and stable request identity as an independently reviewable contract and implementation increment.",
+      "enables": "Defines immutable signed request and relay grant contracts with end-to-end responder provenance.",
+      "owned_files": [
+        {
+          "path": "pkgs/id/crates/id-sync/src/federation/slices/b17_query_grants.rs",
+          "status": "new",
+          "owner": "B17"
+        },
+        {
+          "path": "pkgs/id/crates/id-sync/tests/federation_b17.rs",
+          "status": "new",
+          "owner": "B17"
+        }
+      ],
+      "requires": [
+        {
+          "ref": "B05",
+          "description": "Minimum output: authenticated signer/key binding and canonical signed envelope foundation."
+        },
+        {
+          "ref": "B32",
+          "description": "Minimum output: mandatory universal validation gate."
+        },
+        {
+          "ref": "B20",
+          "description": "Minimum output: immutable request identity and replay binding."
+        },
+        {
+          "ref": "B21",
+          "description": "Minimum output: duplicate/in-flight dedup and retained outcome/ledger semantics."
+        },
+        {
+          "description": "Minimum output from #9110-02: root federation/slices registry scaffolding and Cargo convention, with this exact module path recorded but not exported before it exists. Slice PRs do not edit shared roots/Cargo/lib.rs; #9110-09 wires versioned public exports after module outputs land.",
+          "ref": "9110-02"
+        }
+      ],
+      "after": [
+        {
+          "ref": "B23",
+          "description": "Routing evidence can inform eligible destinations after request/grant/dedup contracts are defined."
+        }
+      ],
+      "test": {
+        "file": "pkgs/id/crates/id-sync/tests/federation_b17.rs",
+        "command": "cargo test -p id-sync --test federation_b17",
+        "oracle": {
+          "kind": "golden",
+          "expected": "Origin query signature remains immutable; each relay grant is parent-digest chained; original responder signature verifies unchanged at requester.",
+          "verifier": "Independent reference state machine or golden fixture in the dedicated integration test; cryptographic tests use independent vectors, not the implementation under test."
+        }
+      },
+      "rollback": "Disable relay forwarding; retain origin signature validation and direct responses.",
+      "design_source": "doc/2026-11-13T03-40-00Z_design_id-atlas-summit/part-b/versioned-design.md",
+      "design_section": "### Query contract",
+      "owner": "B17",
+      "provenance": "statement-derived reconstruction; original title/boundary not recovered",
+      "delivery": "one child issue for this slice; exactly one PR; do not bundle with another B slice"
+    },
+    {
+      "id": "B18",
+      "parent": "#9144",
+      "title": "Privacy surface of query-interest disclosure and explicit mitigation/acceptance decision",
+      "kind": "implementation",
+      "version": "V3",
+      "tier": "recommended",
+      "statements": [
+        "S1.63"
+      ],
+      "goal": "Privacy surface of query-interest disclosure and explicit mitigation/acceptance decision as an independently reviewable contract and implementation increment.",
+      "enables": "Makes query-interest disclosure explicit and testable.",
+      "owned_files": [
+        {
+          "path": "pkgs/id/crates/id-sync/src/federation/slices/b18_query_privacy.rs",
+          "status": "new",
+          "owner": "B18"
+        },
+        {
+          "path": "pkgs/id/crates/id-sync/tests/federation_b18.rs",
+          "status": "new",
+          "owner": "B18"
+        }
+      ],
+      "requires": [
+        {
+          "ref": "B17",
+          "description": "Minimum output: query and relay schema."
+        },
+        {
+          "ref": "B20",
+          "description": "Minimum output: stable request identity."
+        },
+        {
+          "ref": "B21",
+          "description": "Minimum output: duplicate behavior and cached outcomes."
+        },
+        {
+          "description": "Minimum output from #9110-02: root federation/slices registry scaffolding and Cargo convention, with this exact module path recorded but not exported before it exists. Slice PRs do not edit shared roots/Cargo/lib.rs; #9110-09 wires versioned public exports after module outputs land.",
+          "ref": "9110-02"
+        }
+      ],
+      "after": [
+        {
+          "ref": "B16",
+          "description": "Budget caps can be integrated as an optional privacy-preserving query limit; privacy can be tested independently."
+        }
+      ],
+      "test": {
+        "file": "pkgs/id/crates/id-sync/tests/federation_b18.rs",
+        "command": "cargo test -p id-sync --test federation_b18",
+        "oracle": {
+          "kind": "invariant",
+          "expected": "Only configured authorized remotes receive query fields; test oracle records recipient set and disclosed fields.",
+          "verifier": "Independent reference state machine or golden fixture in the dedicated integration test; cryptographic tests use independent vectors, not the implementation under test."
+        }
+      },
+      "rollback": "Disable remote fanout for privacy-sensitive scopes; local-only query remains available.",
+      "design_source": "doc/2026-11-13T03-40-00Z_design_id-atlas-summit/part-b/versioned-design.md",
+      "design_section": "### Resource/security invariants",
+      "owner": "B18",
+      "provenance": "named proto category anchor: privacy surface; original exact title/boundary not recovered",
+      "delivery": "one child issue for this slice; exactly one PR; do not bundle with another B slice"
+    },
+    {
+      "id": "B19",
+      "parent": "#9144",
+      "title": "V2 shared signed receipt schema (accepted / retained_until / verified_present)",
+      "kind": "implementation",
+      "version": "V2",
+      "tier": "crucial",
+      "statements": [
+        "S1.100\u2013S1.104"
+      ],
+      "goal": "Define the V2 shared signed receipt enum and binding fields, independently of V3 query fanout. #9115 existence uses verified_present; stored_unverified is inventory-only and never accepted content.",
+      "enables": "Provides shared V2 receipt semantics for #9115 and later federation consumers.",
+      "owned_files": [
+        {
+          "path": "pkgs/id/crates/id-sync/src/federation/slices/b19_signed_receipt.rs",
+          "status": "new",
+          "owner": "B19"
+        },
+        {
+          "path": "pkgs/id/crates/id-sync/tests/federation_b19.rs",
+          "status": "new",
+          "owner": "B19"
+        }
+      ],
+      "requires": [
+        {
+          "description": "Minimum output from #9110-02: root federation/slices registry scaffolding and Cargo convention, with this exact module path recorded but not exported before it exists. Slice PRs do not edit shared roots/Cargo/lib.rs; #9110-09 wires versioned public exports after module outputs land.",
+          "ref": "9110-02"
+        },
+        {
+          "ref": "B05",
+          "description": "Minimum output: Signer identity binding and validation distinct from mere signature presence; stable interface needed by B19."
+        },
+        {
+          "ref": "B32",
+          "description": "Minimum output: Mandatory universal signed-and-validated acceptance gate; stable interface needed by B19."
+        }
+      ],
+      "after": [],
+      "test": {
+        "file": "pkgs/id/crates/id-sync/tests/federation_b19.rs",
+        "command": "cargo test -p id-sync --test federation_b19",
+        "oracle": {
+          "kind": "golden",
+          "expected": "Accepted, retained_until, and verified_present are distinct signed assertions; stored_unverified never admits content.",
+          "verifier": "Independent typed receipt reference validator and fixed signed vectors; V2 gate only."
+        }
+      },
+      "rollback": "Disable receipt production/consumption only; never reinterpret stored_unverified as accepted.",
+      "design_source": "doc/2026-11-13T03-40-00Z_design_id-atlas-summit/part-b/versioned-design.md",
+      "design_section": "### V2 shared receipt schema (B19; later V3/V4 consumers)",
+      "owner": "B19",
+      "provenance": "named proto category anchor: acknowledgment primitive; original exact title/boundary not recovered",
+      "delivery": "one child issue for this slice; exactly one PR; do not bundle with another B slice"
+    },
+    {
+      "id": "B20",
+      "parent": "#9145",
+      "title": "Request identity, duplicate-vs-loop classification, finite dedup state and expiry",
+      "kind": "implementation",
+      "version": "V3",
+      "tier": "recommended",
+      "statements": [
+        "S1.64",
+        "S1.70\u2013S1.72"
+      ],
+      "goal": "Request identity, duplicate-vs-loop classification, finite dedup state and expiry as an independently reviewable contract and implementation increment.",
+      "enables": "Provides nonce-bound request identity and bounded replay/dedup keys.",
+      "owned_files": [
+        {
+          "path": "pkgs/id/crates/id-sync/src/federation/slices/b20_request_identity.rs",
+          "status": "new",
+          "owner": "B20"
+        },
+        {
+          "path": "pkgs/id/crates/id-sync/tests/federation_b20.rs",
+          "status": "new",
+          "owner": "B20"
+        }
+      ],
+      "requires": [
+        {
+          "description": "Minimum output from #9110-02: root federation/slices registry scaffolding and Cargo convention, with this exact module path recorded but not exported before it exists. Slice PRs do not edit shared roots/Cargo/lib.rs; #9110-09 wires versioned public exports after module outputs land.",
+          "ref": "9110-02"
+        }
+      ],
+      "after": [],
+      "test": {
+        "file": "pkgs/id/crates/id-sync/tests/federation_b20.rs",
+        "command": "cargo test -p id-sync --test federation_b20",
+        "oracle": {
+          "kind": "model",
+          "expected": "Same query/time with distinct nonce yields distinct request IDs; altered binding under old ID fails; expired origin never reruns.",
+          "verifier": "Independent reference state machine or golden fixture in the dedicated integration test; cryptographic tests use independent vectors, not the implementation under test."
+        }
+      },
+      "rollback": "Reject federated requests when stable identity ledger is unavailable; do not mint fallback IDs or reservations.",
+      "design_source": "doc/2026-11-13T03-40-00Z_design_id-atlas-summit/part-b/versioned-design.md",
+      "design_section": "### Duplicate/replay/cycle state",
+      "owner": "B20",
+      "provenance": "statement-derived reconstruction; original title/boundary not recovered",
+      "delivery": "one child issue for this slice; exactly one PR; do not bundle with another B slice"
+    },
+    {
+      "id": "B21",
+      "parent": "#9145",
+      "title": "Short-circuit and deduplicate in-flight/answered requests into coherent results",
+      "kind": "implementation",
+      "version": "V3",
+      "tier": "recommended",
+      "statements": [
+        "S1.67\u2013S1.68"
+      ],
+      "goal": "Short-circuit and deduplicate in-flight/answered requests into coherent results as an independently reviewable contract and implementation increment.",
+      "enables": "Avoids repeated in-flight work and forms one provenance-preserving result set.",
+      "owned_files": [
+        {
+          "path": "pkgs/id/crates/id-sync/src/federation/slices/b21_result_dedup.rs",
+          "status": "new",
+          "owner": "B21"
+        },
+        {
+          "path": "pkgs/id/crates/id-sync/tests/federation_b21.rs",
+          "status": "new",
+          "owner": "B21"
+        }
+      ],
+      "requires": [
+        {
+          "ref": "B20",
+          "description": "Minimum output: nonce-bound request identity and finite dedup key/ledger state."
+        },
+        {
+          "description": "Minimum output from #9110-02: root federation/slices registry scaffolding and Cargo convention, with this exact module path recorded but not exported before it exists. Slice PRs do not edit shared roots/Cargo/lib.rs; #9110-09 wires versioned public exports after module outputs land.",
+          "ref": "9110-02"
+        }
+      ],
+      "after": [],
+      "test": {
+        "file": "pkgs/id/crates/id-sync/tests/federation_b21.rs",
+        "command": "cargo test -p id-sync --test federation_b21",
+        "oracle": {
+          "kind": "model",
+          "expected": "Concurrent duplicate request attaches once; stable result IDs deduplicate while retaining each provenance proof.",
+          "verifier": "Independent reference state machine or golden fixture in the dedicated integration test; cryptographic tests use independent vectors, not the implementation under test."
+        }
+      },
+      "rollback": "Disable result sharing; retain request ledger and reservation idempotency to prevent duplicate execution.",
+      "design_source": "doc/2026-11-13T03-40-00Z_design_id-atlas-summit/part-b/versioned-design.md",
+      "design_section": "### Duplicate/replay/cycle state",
+      "owner": "B21",
+      "provenance": "statement-derived reconstruction; original title/boundary not recovered",
+      "delivery": "one child issue for this slice; exactly one PR; do not bundle with another B slice"
+    },
+    {
+      "id": "B22",
+      "parent": "#9145",
+      "title": "Inform requester/parties about duplicates and specifically signal detected loops",
+      "kind": "implementation",
+      "version": "V3",
+      "tier": "recommended",
+      "statements": [
+        "S1.65\u2013S1.66",
+        "S1.69"
+      ],
+      "goal": "Inform requester/parties about duplicates and specifically signal detected loops as an independently reviewable contract and implementation increment.",
+      "enables": "Surfaces duplicate and verified-cycle status to relevant request parties.",
+      "owned_files": [
+        {
+          "path": "pkgs/id/crates/id-sync/src/federation/slices/b22_loop_inform.rs",
+          "status": "new",
+          "owner": "B22"
+        },
+        {
+          "path": "pkgs/id/crates/id-sync/tests/federation_b22.rs",
+          "status": "new",
+          "owner": "B22"
+        }
+      ],
+      "requires": [
+        {
+          "description": "Minimum output from #9110-02: root federation/slices registry scaffolding and Cargo convention, with this exact module path recorded but not exported before it exists. Slice PRs do not edit shared roots/Cargo/lib.rs; #9110-09 wires versioned public exports after module outputs land.",
+          "ref": "9110-02"
+        },
+        {
+          "ref": "B20",
+          "description": "Minimum output: Request identity, duplicate-vs-loop classification, finite dedup state and expiry; stable interface needed by B22."
+        },
+        {
+          "ref": "B21",
+          "description": "Minimum output: Short-circuit and deduplicate in-flight/answered requests into coherent results; stable interface needed by B22."
+        }
+      ],
+      "after": [],
+      "test": {
+        "file": "pkgs/id/crates/id-sync/tests/federation_b22.rs",
+        "command": "cargo test -p id-sync --test federation_b22",
+        "oracle": {
+          "kind": "invariant",
+          "expected": "Requester/participants are informed of duplicate; loop is reported only with retained signed path showing self-visit.",
+          "verifier": "Independent reference state machine or golden fixture in the dedicated integration test; cryptographic tests use independent vectors, not the implementation under test."
+        }
+      },
+      "rollback": "Suppress optional duplicate notifications only; retain loop state and query safety behavior.",
+      "design_source": "doc/2026-11-13T03-40-00Z_design_id-atlas-summit/part-b/versioned-design.md",
+      "design_section": "### Duplicate/replay/cycle state",
+      "owner": "B22",
+      "provenance": "statement-derived reconstruction; original title/boundary not recovered",
+      "delivery": "one child issue for this slice; exactly one PR; do not bundle with another B slice"
+    },
+    {
+      "id": "B23",
+      "parent": "#9146",
+      "title": "Routing-state freshness, periodic validation, and detection of peer/topology changes",
+      "kind": "implementation",
+      "version": "V3",
+      "tier": "recommended",
+      "statements": [
+        "S1.73\u2013S1.76"
+      ],
+      "goal": "Routing-state freshness, periodic validation, and detection of peer/topology changes as an independently reviewable contract and implementation increment.",
+      "enables": "Provides signed, expiring partial routing observations.",
+      "owned_files": [
+        {
+          "path": "pkgs/id/crates/id-sync/src/federation/slices/b23_routing_state.rs",
+          "status": "new",
+          "owner": "B23"
+        },
+        {
+          "path": "pkgs/id/crates/id-sync/tests/federation_b23.rs",
+          "status": "new",
+          "owner": "B23"
+        }
+      ],
+      "requires": [
+        {
+          "description": "Minimum output from #9110-02: root federation/slices registry scaffolding and Cargo convention, with this exact module path recorded but not exported before it exists. Slice PRs do not edit shared roots/Cargo/lib.rs; #9110-09 wires versioned public exports after module outputs land.",
+          "ref": "9110-02"
+        },
+        {
+          "ref": "B05",
+          "description": "Minimum output: Signer identity binding and validation distinct from mere signature presence; stable interface needed by B23."
+        },
+        {
+          "ref": "B32",
+          "description": "Minimum output: Mandatory universal signed-and-validated acceptance gate; stable interface needed by B23."
+        }
+      ],
+      "after": [],
+      "test": {
+        "file": "pkgs/id/crates/id-sync/tests/federation_b23.rs",
+        "command": "cargo test -p id-sync --test federation_b23",
+        "oracle": {
+          "kind": "golden",
+          "expected": "Expired or poisoned route observation cannot be treated as current trusted topology; partial graph remains explicitly partial.",
+          "verifier": "Independent reference state machine or golden fixture in the dedicated integration test; cryptographic tests use independent vectors, not the implementation under test."
+        }
+      },
+      "rollback": "Ignore dynamic routing observations and use explicit static local configuration; expire stale dynamic state.",
+      "design_source": "doc/2026-11-13T03-40-00Z_design_id-atlas-summit/part-b/versioned-design.md",
+      "design_section": "### Resource/security invariants",
+      "owner": "B23",
+      "provenance": "statement-derived reconstruction; original title/boundary not recovered",
+      "delivery": "one child issue for this slice; exactly one PR; do not bundle with another B slice"
+    },
+    {
+      "id": "B24",
+      "parent": "#9146",
+      "title": "Signed/validated routing updates and protection against poisoning, suppression and manufactured loops",
+      "kind": "implementation",
+      "version": "V3",
+      "tier": "recommended",
+      "statements": [
+        "S1.77\u2013S1.78"
+      ],
+      "goal": "Signed/validated routing updates and protection against poisoning, suppression and manufactured loops as an independently reviewable contract and implementation increment.",
+      "enables": "Periodically checks observed topology with nonce-bound probes.",
+      "owned_files": [
+        {
+          "path": "pkgs/id/crates/id-sync/src/federation/slices/b24_topology_probe.rs",
+          "status": "new",
+          "owner": "B24"
+        },
+        {
+          "path": "pkgs/id/crates/id-sync/tests/federation_b24.rs",
+          "status": "new",
+          "owner": "B24"
+        }
+      ],
+      "requires": [
+        {
+          "description": "Minimum output from #9110-02: root federation/slices registry scaffolding and Cargo convention, with this exact module path recorded but not exported before it exists. Slice PRs do not edit shared roots/Cargo/lib.rs; #9110-09 wires versioned public exports after module outputs land.",
+          "ref": "9110-02"
+        },
+        {
+          "ref": "B23",
+          "description": "Minimum output: Routing-state freshness, periodic validation, and detection of peer/topology changes; stable interface needed by B24."
+        }
+      ],
+      "after": [],
+      "test": {
+        "file": "pkgs/id/crates/id-sync/tests/federation_b24.rs",
+        "command": "cargo test -p id-sync --test federation_b24",
+        "oracle": {
+          "kind": "invariant",
+          "expected": "Probe response binds nonce and peer; stale/vanished/appeared edges update only local scoped routing state.",
+          "verifier": "Independent reference state machine or golden fixture in the dedicated integration test; cryptographic tests use independent vectors, not the implementation under test."
+        }
+      },
+      "rollback": "Disable probes and expire probe-derived edges; keep configured peers and signed policy.",
+      "design_source": "doc/2026-11-13T03-40-00Z_design_id-atlas-summit/part-b/versioned-design.md",
+      "design_section": "### Routing validation and reputation policy",
+      "owner": "B24",
+      "provenance": "statement-derived reconstruction; original title/boundary not recovered",
+      "delivery": "one child issue for this slice; exactly one PR; do not bundle with another B slice"
+    },
+    {
+      "id": "B25",
+      "parent": "#9147",
+      "title": "Evidence-based ratings and explicit way reputation affects prioritization/class changes",
+      "kind": "implementation",
+      "version": "V4",
+      "tier": "contingent",
+      "statements": [
+        "S1.79\u2013S1.82"
+      ],
+      "goal": "Evidence-based ratings and explicit way reputation affects prioritization/class changes as an independently reviewable contract and implementation increment.",
+      "enables": "Provides local evidence-weighted priority/class inputs with accountable attribution.",
+      "owned_files": [
+        {
+          "path": "pkgs/id/crates/id-sync/src/federation/slices/b25_local_reputation.rs",
+          "status": "new",
+          "owner": "B25"
+        },
+        {
+          "path": "pkgs/id/crates/id-sync/tests/federation_b25.rs",
+          "status": "new",
+          "owner": "B25"
+        }
+      ],
+      "requires": [
+        {
+          "description": "Minimum output from #9110-02: root federation/slices registry scaffolding and Cargo convention, with this exact module path recorded but not exported before it exists. Slice PRs do not edit shared roots/Cargo/lib.rs; #9110-09 wires versioned public exports after module outputs land.",
+          "ref": "9110-02"
+        }
+      ],
+      "after": [
+        {
+          "ref": "B06",
+          "description": "Use typed rejection evidence only when available; invalid-signature attribution still requires accountable supplier proof."
+        },
+        {
+          "ref": "B29",
+          "description": "Scoped contradiction evidence may be a local rating input; no claim is a verdict."
+        }
+      ],
+      "test": {
+        "file": "pkgs/id/crates/id-sync/tests/federation_b25.rs",
+        "command": "cargo test -p id-sync --test federation_b25",
+        "oracle": {
+          "kind": "invariant",
+          "expected": "Invalid signature is charged only to proven accountable supplying peer; otherwise unattributed; hysteresis prevents threshold oscillation.",
+          "verifier": "Independent reference state machine or golden fixture in the dedicated integration test; cryptographic tests use independent vectors, not the implementation under test."
+        }
+      },
+      "rollback": "Disable reputation-based priority/class changes; use manual local policy, never loosen signature gate.",
+      "design_source": "doc/2026-11-13T03-40-00Z_design_id-atlas-summit/part-b/versioned-design.md",
+      "design_section": "### Routing validation and reputation policy",
+      "owner": "B25",
+      "provenance": "statement-derived reconstruction; original title/boundary not recovered",
+      "trigger": "Research slice deliverable remains scoped; any implementation/adoption is triggered only by the versioned-design evidence threshold or a demonstrated abuse/workload need, and may conclude adopt-none.",
+      "delivery": "one child issue for this slice; exactly one PR; do not bundle with another B slice"
+    },
+    {
+      "id": "B26",
+      "parent": "#9147",
+      "title": "Abuse-protection research: manipulation, retaliation, Sybils, whitewashing, collusion and spam claims",
+      "kind": "research",
+      "version": "V4",
+      "tier": "contingent",
+      "statements": [
+        "S1.88\u2013S1.91",
+        "S1.99"
+      ],
+      "goal": "Abuse-protection research: manipulation, retaliation, Sybils, whitewashing, collusion and spam claims as an independently reviewable contract and implementation increment.",
+      "enables": "Provides abuse-control research without implementing reputation policy. Existing research.md and slice-specific reports remain cited evidence; this issue creates the separate machine-readable result artifact.",
+      "owned_files": [
+        {
+          "path": "doc/2026-11-13T03-40-00Z_design_id-atlas-summit/part-b/research-results/B26-result.json",
+          "status": "new",
+          "owner": "B26"
+        }
+      ],
+      "requires": [],
+      "after": [],
+      "test": {
+        "file": "doc/2026-11-13T03-40-00Z_design_id-atlas-summit/part-b/research-results/B26-result.json",
+        "command": "python3 -I doc/2026-11-13T03-40-00Z_design_id-atlas-summit/delivery/validate_research_report.py --input doc/2026-11-13T03-40-00Z_design_id-atlas-summit/part-b/research-results/B26-result.json",
+        "oracle": {
+          "kind": "research-matrix",
+          "expected": "Future reputation-abuse result is scope-tagged, contains its own dated/cited findings, two or more options and a conditional recommendation including non-adoption when warranted.",
+          "verifier": "Shared delivery research artifact validator (CLI/schema update owned by delivery worker) plus exact citation/scope assertions; existing Part B reports and validators remain read-only evidence."
+        }
+      },
+      "rollback": "Research-only artifact can be withdrawn or superseded without changing runtime behavior; retain source-cited disposition history.",
+      "design_source": "doc/2026-11-13T03-40-00Z_design_id-atlas-summit/part-b/versioned-design.md",
+      "design_section": "### Routing validation and reputation policy",
+      "owner": "B26",
+      "provenance": "named proto category anchor: reputation-abuse research; original exact title/boundary not recovered",
+      "trigger": "Research slice deliverable remains scoped; any implementation/adoption is triggered only by the versioned-design evidence threshold or a demonstrated abuse/workload need, and may conclude adopt-none.",
+      "research_scope": "reputation-abuse",
+      "research_evidence": [
+        "https://github.com/libp2p/specs/blob/master/pubsub/gossipsub/gossipsub-v1.1.md",
+        "https://www.rfc-editor.org/rfc/rfc9162.html",
+        "https://www.rfc-editor.org/rfc/rfc9942.html"
+      ],
+      "delivery": "one child issue for this slice; exactly one PR; do not bundle with another B slice",
+      "evidence_files": [
+        {
+          "path": "doc/2026-11-13T03-40-00Z_design_id-atlas-summit/part-b/B26-research-reputation-abuse.md",
+          "status": "existing",
+          "access": "read-only evidence; preserve, do not overwrite/delete"
+        },
+        {
+          "path": "doc/2026-11-13T03-40-00Z_design_id-atlas-summit/part-b/B26-research-reputation-abuse-validate.py",
+          "status": "existing",
+          "access": "read-only evidence; preserve, do not overwrite/delete"
+        }
+      ]
+    },
+    {
+      "id": "B27",
+      "parent": "#9147",
+      "title": "Public signed append-only claims/disputes log, right of reply, and use of evidence in reputation",
+      "kind": "implementation",
+      "version": "V4",
+      "tier": "contingent",
+      "statements": [
+        "S1.92\u2013S1.98"
+      ],
+      "goal": "Public signed append-only claims/disputes log, right of reply, and use of evidence in reputation as an independently reviewable contract and implementation increment.",
+      "enables": "Provides attributable append-only claims/replies without verdict authority.",
+      "owned_files": [
+        {
+          "path": "pkgs/id/crates/id-sync/src/federation/slices/b27_claim_log.rs",
+          "status": "new",
+          "owner": "B27"
+        },
+        {
+          "path": "pkgs/id/crates/id-sync/tests/federation_b27.rs",
+          "status": "new",
+          "owner": "B27"
+        }
+      ],
+      "requires": [
+        {
+          "description": "Minimum output from #9110-02: root federation/slices registry scaffolding and Cargo convention, with this exact module path recorded but not exported before it exists. Slice PRs do not edit shared roots/Cargo/lib.rs; #9110-09 wires versioned public exports after module outputs land.",
+          "ref": "9110-02"
+        },
+        {
+          "ref": "B05",
+          "description": "Minimum output: Signer identity binding and validation distinct from mere signature presence; stable interface needed by B27."
+        }
+      ],
+      "after": [],
+      "test": {
+        "file": "pkgs/id/crates/id-sync/tests/federation_b27.rs",
+        "command": "cargo test -p id-sync --test federation_b27",
+        "oracle": {
+          "kind": "golden",
+          "expected": "Claims/replies are signed append-only, equal-authenticated, and a unilateral claim never changes global score.",
+          "verifier": "Independent reference state machine or golden fixture in the dedicated integration test; cryptographic tests use independent vectors, not the implementation under test."
+        }
+      },
+      "rollback": "Close claim submission endpoint; retain signed log, private evidence controls, and reply history.",
+      "design_source": "doc/2026-11-13T03-40-00Z_design_id-atlas-summit/part-b/versioned-design.md",
+      "design_section": "### Public claims log privacy/fairness",
+      "owner": "B27",
+      "provenance": "statement-derived reconstruction; original title/boundary not recovered",
+      "trigger": "Research slice deliverable remains scoped; any implementation/adoption is triggered only by the versioned-design evidence threshold or a demonstrated abuse/workload need, and may conclude adopt-none.",
+      "delivery": "one child issue for this slice; exactly one PR; do not bundle with another B slice"
+    },
+    {
+      "id": "B28",
+      "parent": "#9148",
+      "title": "Highly trusted server takeover/key compromise: rapid revocation, blast-radius identification and prior-data posture",
+      "kind": "implementation",
+      "version": "V2",
+      "tier": "crucial",
+      "statements": [
+        "S1.83\u2013S1.87"
+      ],
+      "goal": "Implement the #9148 V2-crucial takeover safety response as a separate issue/PR: immediate peer/key disable, identify bounded prior-data blast radius and quarantine pending revalidation; never infer signing time from issuer wall-clock.",
+      "enables": "Bounds and records incident blast radius beyond V2 emergency disable.",
+      "owned_files": [
+        {
+          "path": "pkgs/id/crates/id-sync/src/federation/slices/b28_takeover_response.rs",
+          "status": "new",
+          "owner": "B28"
+        },
+        {
+          "path": "pkgs/id/crates/id-sync/tests/federation_b28.rs",
+          "status": "new",
+          "owner": "B28"
+        }
+      ],
+      "requires": [
+        {
+          "description": "Minimum output from #9110-02: root federation/slices registry scaffolding and Cargo convention, with this exact module path recorded but not exported before it exists. Slice PRs do not edit shared roots/Cargo/lib.rs; #9110-09 wires versioned public exports after module outputs land.",
+          "ref": "9110-02"
+        },
+        {
+          "ref": "B02",
+          "description": "Minimum output: Key compromise/revocation effect on previously accepted data (revalidate, flag, or quarantine); stable interface needed by B28."
+        }
+      ],
+      "after": [],
+      "test": {
+        "file": "pkgs/id/crates/id-sync/tests/federation_b28.rs",
+        "command": "cargo test -p id-sync --test federation_b28",
+        "oracle": {
+          "kind": "invariant",
+          "expected": "Incident query identifies affected objects from key lineage/admission interval; cause may remain indeterminate.",
+          "verifier": "Independent reference state machine or golden fixture in the dedicated integration test; cryptographic tests use independent vectors, not the implementation under test."
+        }
+      },
+      "rollback": "Keep compromised peer disabled/quarantined; rollback incident automation only, never restore that peer by default.",
+      "design_source": "doc/2026-11-13T03-40-00Z_design_id-atlas-summit/part-b/versioned-design.md",
+      "design_section": "## Component dispositions and statement coverage",
+      "owner": "B28",
+      "provenance": "statement-derived reconstruction; original title/boundary not recovered",
+      "delivery": "one child issue for this slice; exactly one PR; do not bundle with another B slice",
+      "trigger": "V2 safety prerequisite for any trusted federation peer; advanced cross-peer reputation/attribution remains V4 and is not in this slice.",
+      "design_anchor": "Item 8; V2 emergency disable/quarantine is implemented here, advanced attribution remains V4."
+    },
+    {
+      "id": "B29",
+      "parent": "#9148",
+      "title": "Ack/recipient-list contradiction detection, evidence retention, collusion threshold and public-log integration",
+      "kind": "implementation",
+      "version": "V4",
+      "tier": "contingent",
+      "statements": [
+        "S1.100\u2013S1.108"
+      ],
+      "goal": "Ack/recipient-list contradiction detection, evidence retention, collusion threshold and public-log integration as an independently reviewable contract and implementation increment.",
+      "enables": "Distinguishes provable contradictions from incomparable or missing evidence.",
+      "owned_files": [
+        {
+          "path": "pkgs/id/crates/id-sync/src/federation/slices/b29_receipt_contradiction.rs",
+          "status": "new",
+          "owner": "B29"
+        },
+        {
+          "path": "pkgs/id/crates/id-sync/tests/federation_b29.rs",
+          "status": "new",
+          "owner": "B29"
+        }
+      ],
+      "requires": [
+        {
+          "description": "Minimum output from #9110-02: root federation/slices registry scaffolding and Cargo convention, with this exact module path recorded but not exported before it exists. Slice PRs do not edit shared roots/Cargo/lib.rs; #9110-09 wires versioned public exports after module outputs land.",
+          "ref": "9110-02"
+        },
+        {
+          "ref": "B19",
+          "description": "Minimum output: V2 shared signed receipt schema (accepted / retained_until / verified_present); stable interface needed by B29."
+        },
+        {
+          "ref": "B27",
+          "description": "Minimum output: Public signed append-only claims/disputes log, right of reply, and use of evidence in reputation; stable interface needed by B29."
+        }
+      ],
+      "after": [],
+      "test": {
+        "file": "pkgs/id/crates/id-sync/tests/federation_b29.rs",
+        "command": "cargo test -p id-sync --test federation_b29",
+        "oracle": {
+          "kind": "model",
+          "expected": "Contradiction result is positive only when object/digest/time/scope/policy/authorization/claim semantics match; otherwise insufficient_evidence.",
+          "verifier": "Independent reference state machine or golden fixture in the dedicated integration test; cryptographic tests use independent vectors, not the implementation under test."
+        }
+      },
+      "rollback": "Return insufficient_evidence for contradiction decisions; preserve receipts and claims for later review.",
+      "design_source": "doc/2026-11-13T03-40-00Z_design_id-atlas-summit/part-b/versioned-design.md",
+      "design_section": "### V4 acknowledgment and recipient-list evidence",
+      "owner": "B29",
+      "provenance": "statement-derived reconstruction; original title/boundary not recovered",
+      "trigger": "Research slice deliverable remains scoped; any implementation/adoption is triggered only by the versioned-design evidence threshold or a demonstrated abuse/workload need, and may conclude adopt-none.",
+      "delivery": "one child issue for this slice; exactly one PR; do not bundle with another B slice"
+    },
+    {
+      "id": "B30",
+      "parent": "#9148",
+      "title": "Federated-search tampering threat model: omission/injection/reordering/staleness and completeness claims",
+      "kind": "implementation",
+      "version": "V4",
+      "tier": "contingent",
+      "statements": [
+        "S1.109\u2013S1.113"
+      ],
+      "goal": "Federated-search tampering threat model: omission/injection/reordering/staleness and completeness claims as an independently reviewable contract and implementation increment.",
+      "enables": "Defines what result tampering is detectable and where omission proof is absent.",
+      "owned_files": [
+        {
+          "path": "pkgs/id/crates/id-sync/src/federation/slices/b30_search_integrity.rs",
+          "status": "new",
+          "owner": "B30"
+        },
+        {
+          "path": "pkgs/id/crates/id-sync/tests/federation_b30.rs",
+          "status": "new",
+          "owner": "B30"
+        }
+      ],
+      "requires": [
+        {
+          "description": "Minimum output from #9110-02: root federation/slices registry scaffolding and Cargo convention, with this exact module path recorded but not exported before it exists. Slice PRs do not edit shared roots/Cargo/lib.rs; #9110-09 wires versioned public exports after module outputs land.",
+          "ref": "9110-02"
+        },
+        {
+          "ref": "B17",
+          "description": "Minimum output: Query/relay/response signature validation, end-to-end responder provenance and stable request identity; stable interface needed by B30."
+        },
+        {
+          "ref": "B29",
+          "description": "Minimum output: Ack/recipient-list contradiction detection, evidence retention, collusion threshold and public-log integration; stable interface needed by B30."
+        }
+      ],
+      "after": [],
+      "test": {
+        "file": "pkgs/id/crates/id-sync/tests/federation_b30.rs",
+        "command": "cargo test -p id-sync --test federation_b30",
+        "oracle": {
+          "kind": "model",
+          "expected": "Invalid injection is rejected; omission is not asserted unless matching completeness claim and proof obligations exist.",
+          "verifier": "Independent reference state machine or golden fixture in the dedicated integration test; cryptographic tests use independent vectors, not the implementation under test."
+        }
+      },
+      "rollback": "Mark remote result completeness unknown and stop federated integrity claims; preserve local-only search.",
+      "design_source": "doc/2026-11-13T03-40-00Z_design_id-atlas-summit/part-b/versioned-design.md",
+      "design_section": "## Component dispositions and statement coverage",
+      "owner": "B30",
+      "provenance": "statement-derived reconstruction; original title/boundary not recovered",
+      "trigger": "Research slice deliverable remains scoped; any implementation/adoption is triggered only by the versioned-design evidence threshold or a demonstrated abuse/workload need, and may conclude adopt-none.",
+      "delivery": "one child issue for this slice; exactly one PR; do not bundle with another B slice",
+      "design_anchor": "Item 8; omission/injection/reordering/staleness and completeness proof obligations."
+    },
+    {
+      "id": "B31",
+      "parent": "#9141",
+      "title": "Core directional peer-class behavior and unknown-peer default",
+      "kind": "implementation",
+      "version": "V2",
+      "tier": "crucial",
+      "statements": [
+        "S1.1-S1.11"
+      ],
+      "goal": "Implement the peer class operation matrix: fully_trusted is configured bidirectional policy but no bypass; send_only rejects inbound acceptance; accept_signed_from accepts only validated authorized data; unknown defaults to no acceptance; classes grant no relay by themselves.",
+      "enables": "Implements explicit directional peer classes and restrictive unknown-peer default.",
+      "owned_files": [
+        {
+          "path": "pkgs/id/crates/id-sync/src/federation/slices/b31_peer_classes.rs",
+          "status": "new",
+          "owner": "B31"
+        },
+        {
+          "path": "pkgs/id/crates/id-sync/tests/federation_b31.rs",
+          "status": "new",
+          "owner": "B31"
+        }
+      ],
+      "requires": [
+        {
+          "description": "Minimum output from #9110-02: root federation/slices registry scaffolding and Cargo convention, with this exact module path recorded but not exported before it exists. Slice PRs do not edit shared roots/Cargo/lib.rs; #9110-09 wires versioned public exports after module outputs land.",
+          "ref": "9110-02"
+        }
+      ],
+      "after": [],
+      "test": {
+        "file": "pkgs/id/crates/id-sync/tests/federation_b31.rs",
+        "command": "cargo test -p id-sync --test federation_b31",
+        "oracle": {
+          "kind": "golden",
+          "expected": "Policy matrix covers class\u00d7direction\u00d7operation and unknown defaults; fully_trusted never bypasses gate.",
+          "verifier": "Independent reference state machine or golden fixture in the dedicated integration test; cryptographic tests use independent vectors, not the implementation under test."
+        }
+      },
+      "rollback": "Disable new peer-class API until policy matrix is valid; unknown peers continue to reject.",
+      "design_source": "doc/2026-11-13T03-40-00Z_design_id-atlas-summit/part-b/versioned-design.md",
+      "design_section": "### Wire/data model",
+      "owner": "B31",
+      "provenance": "additional foundational coverage slice; not part of the reconstructed 30-item count or claimed original candidate list",
+      "delivery": "one child issue for this slice; exactly one PR; do not bundle with another B slice",
+      "design_anchor": "Item 1; class matrix and unknown-peer restrictive default."
+    },
+    {
+      "id": "B32",
+      "parent": "#9141",
+      "title": "Mandatory universal signed-and-validated acceptance gate",
+      "kind": "implementation",
+      "version": "V2",
+      "tier": "crucial",
+      "statements": [
+        "S1.12-S1.20"
+      ],
+      "goal": "Enforce signature, signer-binding, semantic validation, authorization and replay checks before admission from local, loopback, internal, hosted or remote paths; local producers sign before admission and use the same gate.",
+      "enables": "Enforces the mandatory signature and validation gate before admission.",
+      "owned_files": [
+        {
+          "path": "pkgs/id/crates/id-sync/src/federation/slices/b32_ingest_gate.rs",
+          "status": "new",
+          "owner": "B32"
+        },
+        {
+          "path": "pkgs/id/crates/id-sync/tests/federation_b32.rs",
+          "status": "new",
+          "owner": "B32"
+        }
+      ],
+      "requires": [
+        {
+          "description": "Minimum output from #9110-02: root federation/slices registry scaffolding and Cargo convention, with this exact module path recorded but not exported before it exists. Slice PRs do not edit shared roots/Cargo/lib.rs; #9110-09 wires versioned public exports after module outputs land.",
+          "ref": "9110-02"
+        },
+        {
+          "ref": "B05",
+          "description": "Minimum output: Signer identity binding and validation distinct from mere signature presence; stable interface needed by B32."
+        },
+        {
+          "ref": "B31",
+          "description": "Minimum output: Core directional peer-class behavior and unknown-peer default; stable interface needed by B32."
+        }
+      ],
+      "after": [],
+      "test": {
+        "file": "pkgs/id/crates/id-sync/tests/federation_b32.rs",
+        "command": "cargo test -p id-sync --test federation_b32",
+        "oracle": {
+          "kind": "golden",
+          "expected": "Unsigned/invalid/wrong-signer inputs fail before admission on local, loopback, internal, hosted and remote paths; valid local producer signs before same gate.",
+          "verifier": "Explicit ingress matrix test invokes one validator through each adapter; accepted-state reference oracle."
+        }
+      },
+      "rollback": "Do not activate the new API; preserve local/remote validation path and keep legacy unverified data quarantined.",
+      "design_source": "doc/2026-11-13T03-40-00Z_design_id-atlas-summit/part-b/versioned-design.md",
+      "design_section": "### Conformance and tests",
+      "owner": "B32",
+      "provenance": "additional foundational coverage slice; not part of the reconstructed 30-item count or claimed original candidate list",
+      "delivery": "one child issue for this slice; exactly one PR; do not bundle with another B slice",
+      "design_anchor": "Item 1; universal signed gate and local sign-before-admission."
+    }
+  ],
+  "module_path_manifest": "doc/2026-11-13T03-40-00Z_design_id-atlas-summit/part-b/delivery-normalization.md"
 }

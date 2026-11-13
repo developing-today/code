@@ -126,6 +126,21 @@ def sqlite_jsonb(rows):
     return blob, restored
 
 
+def require_equal(actual, expected, label):
+    if actual != expected:
+        raise AssertionError(f"{label}: decoded output differs from reference corpus")
+
+
+def check_mutation_is_rejected(rows):
+    mutated = list(rows)
+    mutated[0] = (b"mutated-subject", *mutated[0][1:])
+    try:
+        require_equal(mutated, rows, "mutation probe")
+    except AssertionError:
+        return
+    raise AssertionError("mutation probe unexpectedly passed the equality oracle")
+
+
 def main(argv):
     args = parse_args(argv)
     rows = corpus_rows()
@@ -143,13 +158,16 @@ def main(argv):
     arbitrary_rows = [(b"subject\x00\xff", b"pred\x80", b"obj\xfe\x00")]
     arbitrary_jsonb, arbitrary_decoded = sqlite_jsonb(arbitrary_rows)
 
-    if args.check_oracles:
-        assert [tuple(value.encode("utf-8") for value in row) for row in json.loads(compact_json)] == rows
-        assert decode_framed(framed) == rows
-        assert decode_framed(zlib.decompress(compressed)) == rows
-        assert decode_map(mapped) == sorted(rows)
-        assert jsonb_rows == rows
-        assert arbitrary_decoded == arbitrary_rows
+    # Equality checks run in every mode. Do not use Python `assert`: `-O`
+    # removes assert statements and must never turn a mismatch into PASS.
+    decoded_json = [tuple(value.encode("utf-8") for value in row) for row in json.loads(compact_json)]
+    require_equal(decoded_json, rows, "compact JSON")
+    require_equal(decode_framed(framed), rows, "framed binary")
+    require_equal(decode_framed(zlib.decompress(compressed)), rows, "compressed binary")
+    require_equal(decode_map(mapped), sorted(rows), "normalized byte map")
+    require_equal(jsonb_rows, rows, "SQLite JSONB")
+    require_equal(arbitrary_decoded, arbitrary_rows, "arbitrary non-UTF-8 SQLite JSONB")
+    check_mutation_is_rejected(rows)
 
     encodings = {
         "compact_json_utf8": compact_json,
@@ -177,8 +195,9 @@ def main(argv):
     print(f"sqlite_version={sqlite3.sqlite_version}; sqlite_jsonb_available=yes")
     print("roundtrip=PASS for compact JSON, framed binary, compressed binary, byte map, and SQLite JSONB; mismatch=0")
     print("arbitrary_non_utf8_typed_bytes=PASS (00 ff / 80 / fe 00); probe_bytes=" + str(len(arbitrary_jsonb)))
+    print("mutation_rejection=PASS")
     if args.check_oracles:
-        print("check_oracles=PASS")
+        print("check_oracles=PASS; explicit equality and mutation-rejection checks ran")
     return 0
 
 

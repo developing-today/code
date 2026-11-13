@@ -1,74 +1,116 @@
 {
-  "schema_version": 1,
+  "schema_version": 2,
   "research_slices": [
     {
       "id": "9110-R1",
       "parent": 9110,
-      "title": "Reconcile signed-artifact legacy preimage and new canonical profile",
+      "title": "Reconcile signed-artifact legacy preimage and additive canonical profile",
       "kind": "research",
+      "version": "V2",
       "tier": "crucial",
       "statements": [
         "S0.7",
         "S0.13",
         "S0.15"
       ],
-      "problem": "Current artifact documentation describes a domain-separated/length-prefixed preimage, but audited implementation hashes serialized SignedBody bytes directly. New profile design must not silently change existing signatures.",
-      "scope": [
-        "Compare audited docs and implementation byte-for-byte",
-        "Record serde serialization profile/version and actual legacy verification vectors",
-        "Specify separate deterministic-CBOR Body/signature/envelope-ID profile and dual-reader transition",
-        "Do not re-sign or rewrite old history"
+      "goal": "Produce a byte-accurate, reviewable compatibility finding and known-answer evidence for the legacy signature profile and any distinct new profile.",
+      "enables": "A follow-on implementation can preserve all existing serde JSON signature bytes while adding deterministic-CBOR records without implicit re-signing or rehashing.",
+      "owned_files": [
+        {
+          "path": "doc/2026-11-13T03-40-00Z_design_id-atlas-summit/crosscut/research-results/legacy-artifact-profile.md",
+          "status": "new",
+          "owner": "9110-R1"
+        },
+        {
+          "path": "pkgs/id/test-vectors/legacy-artifact-signatures.json",
+          "status": "new",
+          "owner": "9110-R1"
+        },
+        {
+          "path": "doc/2026-11-13T03-40-00Z_design_id-atlas-summit/crosscut/validate_legacy_artifact_research.py",
+          "status": "new",
+          "owner": "9110-R1"
+        }
       ],
-      "evidence": [
-        "../baseline/v1-audit.md#L12-L13",
-        "../answers.md#L11-L13",
-        "../../../pkgs/id/crates/id-sync/src/artifact.rs#L107-L159",
-        "../../../pkgs/id/crates/id-sync/src/artifact.rs#L416-L432"
-      ],
-      "test_oracle": "Independent Ed25519 verifier checks golden legacy bytes and new CBOR vectors; existing signed fixtures continue verifying unchanged; neither profile hashes its own identifier into its signed preimage.",
-      "done_criteria": [
-        "Legacy source-level mismatch is resolved or explicitly documented with exact byte behavior",
-        "Versioned profile table and compatibility vectors are reviewed",
-        "Migration/downgrade behavior is explicit and forbids silent re-sign/rehash"
-      ],
-      "test_first_file": "pkgs/id/tests/artifact_profile_compat.rs",
-      "test_first_command": "cargo test --manifest-path pkgs/id/Cargo.toml --test artifact_profile_compat",
-      "test_first_required": true
+      "requires": [],
+      "after": [],
+      "test": {
+        "file": "doc/2026-11-13T03-40-00Z_design_id-atlas-summit/crosscut/validate_legacy_artifact_research.py",
+        "command": "python3 -I doc/2026-11-13T03-40-00Z_design_id-atlas-summit/crosscut/validate_legacy_artifact_research.py",
+        "oracle": {
+          "kind": "golden",
+          "expected": "The report identifies exact legacy serde_json::to_vec(SignedBody) bytes and includes vectors that independently verify unchanged; a new profile excludes its signature and envelope ID from its own signed preimage.",
+          "verifier": "A standalone validator checks report fields and invokes/compares independent known-answer vector metadata; the follow-on Rust compatibility test is a separate file owned by 9110-11."
+        }
+      },
+      "rollback": "Discard the research report/vector/validator draft; no source artifact bytes, signature preimages, or versioned-design file are modified.",
+      "design_source": "doc/2026-11-13T03-40-00Z_design_id-atlas-summit/crosscut/versioned-design.md",
+      "design_section": "Cross-part identity profiles consumed by the ports",
+      "owner": "9110-R1",
+      "research_evidence": [
+        "doc/2026-11-13T03-40-00Z_design_id-atlas-summit/baseline/v1-audit.md",
+        "doc/2026-11-13T03-40-00Z_design_id-atlas-summit/answers.md",
+        "pkgs/id/crates/id-sync/src/artifact.rs",
+        "https://github.com/developing-today/code/issues/6277",
+        "https://github.com/developing-today/code/issues/6287",
+        "https://github.com/developing-today/code/issues/6290"
+      ]
     },
     {
       "id": "9110-R2",
-      "parent": 9110,
-      "title": "Trace Atlas content_hash production and define exact producer contract",
+      "parent": 9113,
+      "title": "Trace Atlas content_hash production and define its exact producer contract",
       "kind": "research",
+      "version": "V2",
       "tier": "contingent",
-      "trigger": "Before any Atlas content_hash interoperability claim, or when the external production pipeline is located.",
+      "research_scope": "producer-contract-gap",
+      "goal": "Locate and pin the actual Atlas content_hash producer or establish that none is available, then state exact bytes/profile and an independent oracle.",
+      "enables": "Atlas ID/profile interoperability remains blocked until the source producer, canonical bytes, algorithm/profile, and known-answer vector agree.",
+      "owned_files": [
+        {
+          "path": "doc/2026-11-13T03-40-00Z_design_id-atlas-summit/crosscut/research-results/atlas-content-hash-producer.md",
+          "status": "new",
+          "owner": "9110-R2"
+        },
+        {
+          "path": "pkgs/atlas-search/test-vectors/content-hash-v1.json",
+          "status": "new",
+          "owner": "9110-R2"
+        },
+        {
+          "path": "doc/2026-11-13T03-40-00Z_design_id-atlas-summit/crosscut/validate_atlas_content_hash_research.py",
+          "status": "new",
+          "owner": "9110-R2"
+        }
+      ],
+      "requires": [],
+      "after": [],
+      "test": {
+        "file": "doc/2026-11-13T03-40-00Z_design_id-atlas-summit/crosscut/validate_atlas_content_hash_research.py",
+        "command": "python3 -I doc/2026-11-13T03-40-00Z_design_id-atlas-summit/crosscut/validate_atlas_content_hash_research.py",
+        "oracle": {
+          "kind": "research-matrix",
+          "expected": "Either a pinned producer and exact input-byte/profile known-answer vector are verified, or the report explicitly records producer unavailable and forbids interop claims.",
+          "verifier": "A dedicated validator checks provenance, exact byte/profile fields, independent recomputation vector, and the conservative no-producer disposition."
+        }
+      },
+      "rollback": "Remove draft report/vector/validator only; retain the conservative rule that consumers and fixtures do not establish producer semantics.",
+      "design_source": "doc/2026-11-13T03-40-00Z_design_id-atlas-summit/crosscut/versioned-design.md",
+      "design_section": "Remaining evidence gaps and conservative defaults",
+      "owner": "9110-R2",
+      "trigger": "Before any Atlas content_hash interoperability claim or when the external production pipeline is located.",
+      "research_evidence": [
+        "doc/2026-11-13T03-40-00Z_design_id-atlas-summit/baseline/v1-audit.md",
+        "pkgs/atlas-search/schema/atlas_stage_v1.sql",
+        "pkgs/atlas-search/crates/atlas-core/src/local.rs",
+        "pkgs/atlas-search/atlas_search.py",
+        "doc/2026-11-13T03-40-00Z_design_id-atlas-summit/answers.md"
+      ],
       "statements": [
         "S0.7",
         "S0.13",
         "S1.118"
-      ],
-      "problem": "Checked-in Atlas schema and search consumers use content_hash but the audited checkout has no production producer; fixtures do not establish exact source bytes or a profile.",
-      "scope": [
-        "Locate and pin actual producer pipeline, if any",
-        "Specify exact source bytes, normalization, algorithm/profile/version and file/chunk semantics",
-        "Record a known-answer vector and independent recomputation oracle",
-        "If producer is external/unavailable, state that explicitly and block interop claims"
-      ],
-      "evidence": [
-        "../baseline/v1-audit.md#L18-L20",
-        "../baseline/v1-audit.md#L30-L34",
-        "../../../pkgs/atlas-search/schema/atlas_stage_v1.sql#L52-L67",
-        "../../../pkgs/atlas-search/crates/atlas-core/src/local.rs#L457-L478"
-      ],
-      "test_oracle": "Independent bytes-to-ContentId implementation matches a producer-generated known-answer vector; consumer join resolves the expected chunk. If no producer can be reached, the decisive oracle is a documented no-interoperability status and absence of inferred hash claims.",
-      "done_criteria": [
-        "Producer provenance and pinned revision recorded or confirmed absent",
-        "Exact bytes/profile and test vector defined or explicitly left unknown",
-        "Cross-system use blocked until this contract passes"
-      ],
-      "test_first_file": "pkgs/atlas-search/tests/content_hash_producer_contract.rs",
-      "test_first_command": "cargo test --manifest-path pkgs/atlas-search/Cargo.toml --test content_hash_producer_contract",
-      "test_first_required": true
+      ]
     }
   ]
 }

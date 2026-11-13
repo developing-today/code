@@ -1,16 +1,13 @@
 {
-  "schema_version": 1,
-  "source": "crosscut/versioned-design.md",
+  "schema_version": 2,
   "slices": [
     {
       "id": "9110-01",
       "parent": 9110,
       "title": "Map existing ID stores to explicit port boundaries",
       "kind": "design",
+      "version": "V2",
       "tier": "crucial",
-      "versions": [
-        "V2"
-      ],
       "statements": [
         "S0.1",
         "S0.2",
@@ -19,35 +16,49 @@
         "S0.7",
         "S0.14"
       ],
+      "goal": "Establish a source-accurate seam map that keeps blob, event, world, and sync stores distinct and gives port design an explicit ownership baseline.",
       "enables": "Document and type the existing blob, event, world, and sync store seams without merging their authority; identify consumer-owned files and compatibility adapters.",
       "owned_files": [
         {
           "path": "pkgs/id/ARCHITECTURE.md",
-          "status": "existing"
+          "status": "existing",
+          "owner": "9110-01"
         },
         {
           "path": "pkgs/id/tests/store_port_boundary.rs",
-          "status": "new"
+          "status": "new",
+          "owner": "9110-01"
         }
       ],
       "requires": [],
       "after": [],
-      "tests": {
+      "test": {
         "file": "pkgs/id/tests/store_port_boundary.rs",
         "command": "cargo test --manifest-path pkgs/id/Cargo.toml --test store_port_boundary",
-        "oracle": "A new architecture/contract test fails when an existing subsystem is assigned to a single generic store; oracle is the audited seam map plus compile-time port ownership checks.",
-        "new_before_code": true
-      }
+        "oracle": {
+          "kind": "invariant",
+          "expected": "The architecture boundary names blob/event/world/sync stores separately and a fixture rejects their flattening.",
+          "verifier": "The seam-map classification table and compile-time trait ownership test."
+        }
+      },
+      "rollback": "Revert the documentation/test additions; no runtime behavior or persisted bytes change.",
+      "design_source": "doc/2026-11-13T03-40-00Z_design_id-atlas-summit/crosscut/versioned-design.md",
+      "design_section": "Port contract",
+      "owner": "9110-01",
+      "research_evidence": [
+        "pkgs/id/crates/id-store/src/store.rs",
+        "pkgs/id/crates/id-events/src/event_store/mod.rs",
+        "pkgs/id/crates/id-worlds/src/world_store.rs",
+        "doc/2026-11-13T03-40-00Z_design_id-atlas-summit/baseline/seam-map.md"
+      ]
     },
     {
       "id": "9110-02",
       "parent": 9110,
       "title": "Define versioned capability-oriented port contracts",
       "kind": "implementation",
+      "version": "V2",
       "tier": "crucial",
-      "versions": [
-        "V2"
-      ],
       "statements": [
         "S0.2",
         "S0.7",
@@ -57,187 +68,311 @@
         "S0.15",
         "S0.16"
       ],
-      "enables": "Introduce separate store, blob, event-log, world, object-bucket, stream, and request-transport contract types with capability declarations, semantic guarantees, limits, and typed unsupported errors. Include a Kafka-like ordered-stream test double to verify additive supportability without selecting or implementing Kafka. This is the sole owner of common crate root exports/Cargo manifests and the shared test-vector schema; consumers add distinct module files and do not edit those roots.",
+      "goal": "Phase 1 root owner: land the common interface and private module-root skeletons before consumer adapters add leaf modules. Do not declare or export absent leaf modules. After this PR merges, this slice relinquishes shared-root writes; consumers do not edit roots.",
+      "enables": "Introduce separate store, blob, event-log, world, object-bucket, stream, and request-transport contract types with capability declarations, semantic guarantees, limits, and typed unsupported errors. Include a Kafka-like ordered-stream test double to verify additive supportability without selecting or implementing Kafka. This is the sole owner of common crate root exports/Cargo manifests and the shared test-vector schema; consumers add distinct module files and do not edit those roots. Owns stable crate-root exports/Cargo manifests and shared test-vector schema. The `federation/mod.rs`, `graph/mod.rs`, and `triples/mod.rs` files define roots only; they do NOT unconditionally export absent future feature modules. V2/V3 feature exports are wired by 9110-09 after exact module outputs exist, with a release gate. Consumers own distinct child modules and do not edit roots. The Kafka-like ordered-stream double is in-memory contract coverage only, not a Kafka adapter or deployment choice. The B registry inventory is exactly b01_key_lifecycle, b02_key_revocation, b03_replay_guard, b04_signature_suites, b05_signer_binding, b06_rejection_events, b07_conflict_report, b08_sync_scope, b09_anti_entropy, b15_peer_priority, b16_fanout_budget, b17_query_grants, b18_query_privacy, b19_signed_receipt, b20_request_identity, b21_result_dedup, b22_loop_inform, b23_routing_state, b24_topology_probe, b25_local_reputation, b27_claim_log, b28_takeover_response, b29_receipt_contradiction, b30_search_integrity, b31_peer_classes, and b32_ingest_gate under federation/slices/. The registry file records these exact paths but leaves not-yet-built modules unexported.",
       "owned_files": [
         {
           "path": "pkgs/id/crates/id-core/src/lib.rs",
-          "status": "existing"
+          "status": "existing",
+          "owner": "9110-02"
         },
         {
           "path": "pkgs/id/crates/id-core/Cargo.toml",
-          "status": "existing"
-        },
-        {
-          "path": "pkgs/id/crates/id-core/src/port.rs",
-          "status": "new"
+          "status": "existing",
+          "owner": "9110-02"
         },
         {
           "path": "pkgs/id/crates/id-sync/src/lib.rs",
-          "status": "existing"
+          "status": "existing",
+          "owner": "9110-02"
         },
         {
           "path": "pkgs/id/crates/id-sync/Cargo.toml",
-          "status": "existing"
-        },
-        {
-          "path": "pkgs/id/test-vectors/schema.json",
-          "status": "new"
-        },
-        {
-          "path": "pkgs/id/tests/port_contract.rs",
-          "status": "new"
+          "status": "existing",
+          "owner": "9110-02"
         },
         {
           "path": "pkgs/id/crates/id-events/src/lib.rs",
-          "status": "existing"
+          "status": "existing",
+          "owner": "9110-02"
+        },
+        {
+          "path": "pkgs/id/crates/id-events/Cargo.toml",
+          "status": "existing",
+          "owner": "9110-02"
         },
         {
           "path": "pkgs/id/crates/id-store/src/lib.rs",
-          "status": "existing"
+          "status": "existing",
+          "owner": "9110-02"
+        },
+        {
+          "path": "pkgs/id/crates/id-store/Cargo.toml",
+          "status": "existing",
+          "owner": "9110-02"
+        },
+        {
+          "path": "pkgs/id/crates/id-worlds/src/lib.rs",
+          "status": "existing",
+          "owner": "9110-02"
+        },
+        {
+          "path": "pkgs/id/crates/id-worlds/Cargo.toml",
+          "status": "existing",
+          "owner": "9110-02"
+        },
+        {
+          "path": "pkgs/id/crates/id-core/src/port.rs",
+          "status": "new",
+          "owner": "9110-02"
+        },
+        {
+          "path": "pkgs/id/crates/id-core/src/graph/mod.rs",
+          "status": "new",
+          "owner": "9110-02"
+        },
+        {
+          "path": "pkgs/id/crates/id-core/src/triples/mod.rs",
+          "status": "new",
+          "owner": "9110-02"
+        },
+        {
+          "path": "pkgs/id/crates/id-sync/src/federation/mod.rs",
+          "status": "new",
+          "owner": "9110-02"
+        },
+        {
+          "path": "pkgs/id/crates/id-sync/src/federation/slices/mod.rs",
+          "status": "new",
+          "owner": "9110-02"
+        },
+        {
+          "path": "pkgs/id/test-vectors/schema.json",
+          "status": "new",
+          "owner": "9110-02"
+        },
+        {
+          "path": "pkgs/id/tests/port_contract.rs",
+          "status": "new",
+          "owner": "9110-02"
+        },
+        {
+          "path": "pkgs/id/tests/kafka_like_stream_contract.rs",
+          "status": "new",
+          "owner": "9110-02"
+        },
+        {
+          "path": "pkgs/id/tests/support/kafka_like_ordered_stream.rs",
+          "status": "new",
+          "owner": "9110-02"
         }
       ],
-      "requires": [],
-      "after": [
-        "9110-01"
+      "requires": [
+        {
+          "ref": "9110-01",
+          "description": "Required output from slice 9110-01."
+        }
       ],
-      "tests": {
-        "file": "pkgs/id/tests/port_contract.rs",
-        "command": "cargo test --manifest-path pkgs/id/Cargo.toml --test port_contract",
-        "oracle": "Capability mismatch currently reaches an adapter side effect; reference negotiation model requires rejection before side effects.",
-        "new_before_code": true
-      }
+      "after": [],
+      "test": {
+        "file": "pkgs/id/tests/kafka_like_stream_contract.rs",
+        "command": "cargo test --manifest-path pkgs/id/Cargo.toml --test port_contract --test kafka_like_stream_contract",
+        "oracle": {
+          "kind": "model",
+          "expected": "Capability negotiation chooses the ordered-stream profile only when declared; in-memory duplicate/retry traces conform without a Kafka client or runtime dependency.",
+          "verifier": "A small independent ordered-stream reference state machine checks sequence, redelivery, ack, and unsupported-capability outcomes."
+        }
+      },
+      "rollback": "Keep existing adapters and data formats; remove or revise only unused additive exports after all consumers are migrated. Never remove a module/root still imported by a consumer.",
+      "design_source": "doc/2026-11-13T03-40-00Z_design_id-atlas-summit/crosscut/versioned-design.md",
+      "design_section": "Port contract",
+      "owner": "9110-02",
+      "research_evidence": [
+        "doc/2026-11-13T03-40-00Z_design_id-atlas-summit/part-b/implementation-slices.json",
+        "doc/2026-11-13T03-40-00Z_design_id-atlas-summit/part-a-graph/implementation-slices.json",
+        "doc/2026-11-13T03-40-00Z_design_id-atlas-summit/part-a-addressing/implementation-slices.json",
+        "doc/2026-11-13T03-40-00Z_design_id-atlas-summit/inventory-live/live-issues.json"
+      ]
     },
     {
       "id": "9110-03",
       "parent": 9110,
       "title": "Specify redb and Turso/SQLite capability profiles",
       "kind": "implementation",
+      "version": "V2",
       "tier": "crucial",
-      "versions": [
-        "V2"
-      ],
       "statements": [
         "S0.5",
         "S0.6",
         "S0.16"
       ],
+      "goal": "Provide honest redb and Turso/libSQL capability profiles, including bounded atomic scope and explicit timeout/unknown-commit behavior.",
       "enables": "Implement required port profiles for redb and Turso/libSQL; state transaction, durability, scan, retry, and timeout ambiguity semantics without claiming identical atomicity.",
       "owned_files": [
         {
           "path": "pkgs/id/crates/id-store/src/port_adapter.rs",
-          "status": "new"
+          "status": "new",
+          "owner": "9110-03"
         },
         {
           "path": "pkgs/id/tests/store_adapter_profiles.rs",
-          "status": "new"
+          "status": "new",
+          "owner": "9110-03"
         }
       ],
       "requires": [
         {
+          "ref": "9110-02",
+          "description": "Required output from slice 9110-02."
+        },
+        {
           "issue": 9082,
-          "condition": "consume owned contract only; do not wait for full sibling program"
+          "description": "consume owned contract only; do not wait for full sibling program"
         }
       ],
-      "after": [
-        "9110-02"
-      ],
-      "tests": {
+      "after": [],
+      "test": {
         "file": "pkgs/id/tests/store_adapter_profiles.rs",
         "command": "cargo test --manifest-path pkgs/id/Cargo.toml --test store_adapter_profiles",
-        "oracle": "Shared state-machine fixture diverges or a remote timeout is reported as definite rollback; oracle is abstract store model plus injected-fault expected outcomes.",
-        "new_before_code": true
-      }
+        "oracle": {
+          "kind": "model",
+          "expected": "redb and Turso profiles report only declared transaction scopes; an injected lost response remains unknown until stable-ID readback.",
+          "verifier": "An abstract store state machine plus a fault injector independent of either adapter."
+        }
+      },
+      "rollback": "Keep the prior adapter selection/config active; do not migrate or rewrite persisted data on rollback.",
+      "design_source": "doc/2026-11-13T03-40-00Z_design_id-atlas-summit/crosscut/versioned-design.md",
+      "design_section": "V2 \u2014 stable seams and conformance foundation (first implementation target)",
+      "owner": "9110-03",
+      "research_evidence": [
+        "https://docs.rs/redb/latest/redb/",
+        "https://docs.turso.tech/sdk/ts/reference",
+        "https://docs.turso.tech/sdk/http/reference",
+        "doc/2026-11-13T03-40-00Z_design_id-atlas-summit/crosscut/research.md"
+      ]
     },
     {
       "id": "9110-04",
       "parent": 9110,
       "title": "Build shared store conformance fixtures and capability reports",
       "kind": "test",
+      "version": "V2",
       "tier": "crucial",
-      "versions": [
-        "V2"
-      ],
       "statements": [
         "S0.5",
         "S0.6",
         "S0.16"
       ],
+      "goal": "Make adapter behavior decidable through a shared state-machine corpus and machine-readable capability reports.",
       "enables": "Create portable conformance vectors and machine-readable required/optional capability reports; run the suite against redb and Turso/SQLite, with IndexedDB profile reserved for its verdict.",
       "owned_files": [
         {
           "path": "pkgs/id/tests/conformance.rs",
-          "status": "new"
+          "status": "new",
+          "owner": "9110-04"
         },
         {
           "path": "pkgs/id/tests/fixtures/port-v1.json",
-          "status": "new"
+          "status": "new",
+          "owner": "9110-04"
         }
       ],
-      "requires": [],
-      "after": [
-        "9110-02",
-        "9110-03"
+      "requires": [
+        {
+          "ref": "9110-02",
+          "description": "Required output from slice 9110-02."
+        },
+        {
+          "ref": "9110-03",
+          "description": "Required output from slice 9110-03."
+        }
       ],
-      "tests": {
+      "after": [],
+      "test": {
         "file": "pkgs/id/tests/conformance.rs",
         "command": "cargo test --manifest-path pkgs/id/Cargo.toml --test conformance",
-        "oracle": "An adapter can pass while violating abstract reference-state transitions; oracle is deterministic model plus emitted capability report.",
-        "new_before_code": true
-      }
+        "oracle": {
+          "kind": "model",
+          "expected": "Adapter observations match reference CRUD, scan, transaction, retry, and capability-negotiation transitions.",
+          "verifier": "A deterministic abstract state machine that emits expected state and capability report."
+        }
+      },
+      "rollback": "Disable the new conformance runner without changing adapter runtime selection or stored data.",
+      "design_source": "doc/2026-11-13T03-40-00Z_design_id-atlas-summit/crosscut/versioned-design.md",
+      "design_section": "V2 \u2014 stable seams and conformance foundation (first implementation target)",
+      "owner": "9110-04",
+      "research_evidence": [
+        "doc/2026-11-13T03-40-00Z_design_id-atlas-summit/crosscut/research.md",
+        "doc/2026-11-13T03-40-00Z_design_id-atlas-summit/crosscut/versioned-design.md"
+      ]
     },
     {
       "id": "9110-05",
       "parent": 9110,
-      "title": "Add IndexedDB evaluation adapter and conformance verdict",
-      "kind": "research-and-test",
+      "title": "Prototype IndexedDB adapter for bounded conformance evaluation",
+      "kind": "prototype",
+      "version": "V2; V4 if adopted",
       "tier": "recommended",
-      "versions": [
-        "V2",
-        "V4 if adopted"
-      ],
       "statements": [
         "S0.6",
         "S0.7",
         "S0.16"
       ],
-      "enables": "Evaluate browser transaction lifetime, quota/eviction, upgrades, and restart behavior against the declared port contract; adopt, defer, or reject with measured gaps.",
+      "goal": "Implement an isolated IndexedDB request-batch prototype that exercises the declared browser-store capability subset without deciding product adoption.",
+      "enables": "Produce browser conformance results for transaction lifetime, quota/eviction, upgrades, and reopen behavior. #9082 owns the adopt/defer/reject decision; this prototype remains disabled by default.",
       "owned_files": [
         {
           "path": "pkgs/id/browser/src/indexeddb_store.ts",
-          "status": "new"
+          "status": "new",
+          "owner": "9110-05"
         },
         {
           "path": "pkgs/id/browser/test/indexeddb_conformance.test.ts",
-          "status": "new"
+          "status": "new",
+          "owner": "9110-05"
         }
       ],
       "requires": [
         {
+          "ref": "9110-02",
+          "description": "Required output from slice 9110-02."
+        },
+        {
+          "ref": "9110-04",
+          "description": "Required output from slice 9110-04."
+        },
+        {
           "issue": 9082,
-          "condition": "consume owned contract only; do not wait for full sibling program"
+          "description": "consume owned contract only; do not wait for full sibling program"
         }
       ],
-      "after": [
-        "9110-02",
-        "9110-04"
-      ],
-      "tests": {
+      "after": [],
+      "test": {
         "file": "pkgs/id/browser/test/indexeddb_conformance.test.ts",
         "command": "pnpm --dir pkgs/id/browser test -- indexeddb_conformance.test.ts",
-        "oracle": "Browser adapter violates a required state-machine property or cannot meet declared guarantees; oracle is shared fixtures run in supported browsers and explicit capability matrix.",
-        "new_before_code": true
-      }
+        "oracle": {
+          "kind": "reference",
+          "expected": "IndexedDB either passes the required browser subset or produces an explicit unsupported-capability verdict; it never advertises a long-lived async transaction.",
+          "verifier": "Shared store fixtures executed in supported browsers and a per-engine capability matrix."
+        }
+      },
+      "rollback": "Default to evaluate-only; do not enable IndexedDB in production. If evaluation fails, retain existing browser persistence and remove the experimental adapter.",
+      "design_source": "doc/2026-11-13T03-40-00Z_design_id-atlas-summit/crosscut/versioned-design.md",
+      "design_section": "V2 \u2014 stable seams and conformance foundation (first implementation target)",
+      "owner": "9110-05",
+      "research_evidence": [
+        "https://developer.mozilla.org/en-US/docs/Web/API/IDBTransaction",
+        "https://developer.mozilla.org/en-US/docs/Web/API/IDBTransaction/durability",
+        "doc/2026-11-13T03-40-00Z_design_id-atlas-summit/inventory-live/live-issues.json"
+      ]
     },
     {
       "id": "9110-06",
       "parent": 9110,
       "title": "Implement ordered lifecycle hooks and fixed acceptance gate",
       "kind": "implementation",
+      "version": "V2; V3",
       "tier": "crucial",
-      "versions": [
-        "V2",
-        "V3"
-      ],
       "statements": [
         "S0.12",
         "S0.17",
@@ -245,134 +380,187 @@
         "S1.115",
         "S1.118"
       ],
+      "goal": "Route every retained-data ingress through the fixed signed/validated gate and deterministic extension lifecycle, including commit-time policy reauthorization.",
       "enables": "Add typed prepare/commit/outbox lifecycle hooks with deterministic order, bounded context, reentrancy policy, typed errors, and an unbypassable signature/validation/replay/tenant authorization gate; local producers sign before admission. Enumerate all normal paths before claiming completeness; see 9110-13.",
       "owned_files": [
         {
           "path": "pkgs/id/crates/id-store/src/admission.rs",
-          "status": "new"
+          "status": "new",
+          "owner": "9110-06"
         },
         {
           "path": "pkgs/id/crates/id-events/src/admission.rs",
-          "status": "new"
+          "status": "new",
+          "owner": "9110-06"
         },
         {
           "path": "pkgs/id/crates/id-sync/src/admission.rs",
-          "status": "new"
+          "status": "new",
+          "owner": "9110-06"
         },
         {
           "path": "pkgs/id/tests/admission_hooks.rs",
-          "status": "new"
+          "status": "new",
+          "owner": "9110-06"
         }
       ],
       "requires": [
         {
+          "ref": "9110-02",
+          "description": "Required output from slice 9110-02."
+        },
+        {
+          "ref": "9110-13",
+          "description": "Required output from slice 9110-13."
+        },
+        {
           "issue": 9141,
-          "condition": "consume signature/acceptance contract only"
+          "description": "consume signature/acceptance contract only"
         },
         {
           "issue": 9083,
-          "condition": "consume tenant scope contract only"
+          "description": "consume tenant scope contract only"
         }
       ],
-      "after": [
-        "9110-02",
-        "9110-13"
-      ],
-      "tests": {
+      "after": [],
+      "test": {
         "file": "pkgs/id/tests/admission_hooks.rs",
         "command": "cargo test --manifest-path pkgs/id/Cargo.toml --test admission_hooks",
-        "oracle": "Malicious hook/local path accepts unsigned, invalid, replayed, or cross-tenant data; oracle is generated gate invariant matrix and hook state-machine model.",
-        "new_before_code": true
-      }
+        "oracle": {
+          "kind": "model",
+          "expected": "No hook/local path accepts an unsigned, invalid, replayed, or unauthorized retained object; revoked policy blocks commit and retry.",
+          "verifier": "Generated admission trace model with independently evaluated gate invariants."
+        }
+      },
+      "rollback": "Revert the extension implementation only while retaining the fixed signed/validated gate; security invariants are not rollback switches.",
+      "design_source": "doc/2026-11-13T03-40-00Z_design_id-atlas-summit/crosscut/versioned-design.md",
+      "design_section": "Operation pipeline (mandatory ordering)",
+      "owner": "9110-06",
+      "research_evidence": [
+        "doc/2026-11-13T03-40-00Z_design_id-atlas-summit/main.md",
+        "doc/2026-11-13T03-40-00Z_design_id-atlas-summit/baseline/v1-audit.md",
+        "doc/2026-11-13T03-40-00Z_design_id-atlas-summit/crosscut/versioned-design.md"
+      ]
     },
     {
       "id": "9110-07",
       "parent": 9110,
       "title": "Add durable outbox recovery and at-least-once hook delivery",
       "kind": "implementation",
+      "version": "V2; V4 operations",
       "tier": "recommended",
-      "versions": [
-        "V2",
-        "V4 operations"
-      ],
       "statements": [
         "S0.12",
-        "S0.17",
-        "S0.15"
+        "S0.15",
+        "S0.17"
       ],
+      "goal": "Recover post-commit event delivery safely across restart with stable IDs and at-least-once semantics.",
       "enables": "Persist post-commit events within advertised transaction scope, replay by stable ID after restart, and expose quarantine/reconciliation when store and stream cannot commit atomically.",
       "owned_files": [
         {
           "path": "pkgs/id/crates/id-store/src/outbox.rs",
-          "status": "new"
+          "status": "new",
+          "owner": "9110-07"
         },
         {
           "path": "pkgs/id/tests/outbox_recovery.rs",
-          "status": "new"
+          "status": "new",
+          "owner": "9110-07"
         }
       ],
-      "requires": [],
-      "after": [
-        "9110-03",
-        "9110-06"
+      "requires": [
+        {
+          "ref": "9110-03",
+          "description": "Required output from slice 9110-03."
+        },
+        {
+          "ref": "9110-06",
+          "description": "Required output from slice 9110-06."
+        }
       ],
-      "tests": {
+      "after": [],
+      "test": {
         "file": "pkgs/id/tests/outbox_recovery.rs",
         "command": "cargo test --manifest-path pkgs/id/Cargo.toml --test outbox_recovery",
-        "oracle": "Crash between commit and callback loses or falsely rolls back an event; oracle is model-based crash injection with durable event-ID accounting.",
-        "new_before_code": true
-      }
+        "oracle": {
+          "kind": "model",
+          "expected": "Every committed operation is either delivered at least once or remains visibly pending/quarantined across restart; no unknown outcome is labeled rollback.",
+          "verifier": "Crash-injected outbox state machine keyed by durable operation/event IDs."
+        }
+      },
+      "rollback": "Disable outbox delivery only after preserving committed operation records for operator replay; never delete or replay with new IDs.",
+      "design_source": "doc/2026-11-13T03-40-00Z_design_id-atlas-summit/crosscut/versioned-design.md",
+      "design_section": "Failure, recovery, and version rules",
+      "owner": "9110-07",
+      "research_evidence": [
+        "doc/2026-11-13T03-40-00Z_design_id-atlas-summit/crosscut/research.md",
+        "doc/2026-11-13T03-40-00Z_design_id-atlas-summit/crosscut/versioned-design.md"
+      ]
     },
     {
       "id": "9110-08",
       "parent": 9110,
       "title": "Prototype additive NATS stream adapter",
       "kind": "prototype",
+      "version": "V2 proof; V4 production consideration",
       "tier": "contingent",
-      "versions": [
-        "V2 proof",
-        "V4 production consideration"
-      ],
       "statements": [
         "S0.2",
         "S0.9",
         "S0.13",
         "S0.15"
       ],
+      "goal": "Prove a second ordered-stream adapter can fit the stable port without changing core semantics; do not build a Kafka product adapter.",
       "enables": "Demonstrate a second stream/transport adapter using existing stable contracts and document ack, ordering, redelivery, replay, retention, and limits; do not promise exactly-once.",
       "owned_files": [
         {
           "path": "pkgs/id/crates/id-transport-nats/src/lib.rs",
-          "status": "new"
+          "status": "new",
+          "owner": "9110-08"
         },
         {
           "path": "pkgs/id/tests/nats_stream_contract.rs",
-          "status": "new"
+          "status": "new",
+          "owner": "9110-08"
         }
       ],
-      "requires": [],
-      "after": [
-        "9110-02",
-        "9110-04"
+      "requires": [
+        {
+          "ref": "9110-02",
+          "description": "Requires the stable stream port contract."
+        },
+        {
+          "ref": "9110-04",
+          "description": "Requires the conformance fixture contract."
+        }
       ],
-      "trigger": "Only when a named product consumer or owning deployment selects this capability; review on 2027-02-12.",
-      "tests": {
+      "after": [],
+      "test": {
         "file": "pkgs/id/tests/nats_stream_contract.rs",
         "command": "cargo test --manifest-path pkgs/id/Cargo.toml --test nats_stream_contract",
-        "oracle": "Adapter requires a core special case or violates declared stream model; oracle is contract-only integration test with duplicate delivery/restart injection.",
-        "new_before_code": true
-      }
+        "oracle": {
+          "kind": "model",
+          "expected": "A contract-only ordered stream test passes duplicate/restart traces without a Kafka client or runtime adapter.",
+          "verifier": "In-memory ordered-stream reference model; no Kafka implementation is built."
+        }
+      },
+      "rollback": "Do not enable the adapter unless selected; remove the optional test adapter without altering core stream contract.",
+      "design_source": "doc/2026-11-13T03-40-00Z_design_id-atlas-summit/crosscut/versioned-design.md",
+      "design_section": "V2 \u2014 stable seams and conformance foundation (first implementation target)",
+      "owner": "9110-08",
+      "trigger": "Only when a named product consumer or owning deployment selects this capability; review on 2027-02-12.",
+      "research_evidence": [
+        "doc/2026-11-13T00-41-00Z_design_id-atlas-primitives-federation-namespaces/note.md",
+        "doc/2026-11-13T03-40-00Z_design_id-atlas-summit/crosscut/research.md"
+      ]
     },
     {
       "id": "9110-09",
       "parent": 9110,
-      "title": "Verify Rust and TypeScript protocol conformance",
-      "kind": "test",
+      "title": "Wire versioned public module exports and verify Rust/TypeScript conformance",
+      "kind": "integration-and-test",
+      "version": "V2 foundation; V3 interop",
       "tier": "crucial",
-      "versions": [
-        "V2 foundation",
-        "V3 interop"
-      ],
       "statements": [
         "S0.5",
         "S1.114",
@@ -383,79 +571,294 @@
         "S1.119",
         "S1.120"
       ],
-      "enables": "Run common signed-envelope, config, operation, and failure fixtures in native Rust and hosted TypeScript implementations; compare behavior without requiring identical internals.",
+      "goal": "Phase 2 root owner after 9110-02 and required V2 leaf PRs merge: perform the sole V2 public module/export wiring, then demonstrate Rust and TypeScript agreement with independent golden vectors. No consumer edits the shared roots before this serial handoff.",
+      "enables": "Run common signed-envelope, config, operation, and failure fixtures in native Rust and hosted TypeScript implementations; compare behavior without requiring identical internals. V2 public release cannot pass until all listed module outputs are wired. V3 additions repeat this same integration gate additively; do not require any V4 module.",
       "owned_files": [
         {
           "path": "pkgs/id/test-vectors/cross-runtime.json",
-          "status": "new"
+          "status": "new",
+          "owner": "9110-09"
         },
         {
           "path": "pkgs/id/tests/cross_runtime_conformance.rs",
-          "status": "new"
+          "status": "new",
+          "owner": "9110-09"
+        },
+        {
+          "path": "pkgs/id/crates/id-core/src/lib.rs",
+          "status": "existing",
+          "owner": "9110-09"
+        },
+        {
+          "path": "pkgs/id/crates/id-sync/src/lib.rs",
+          "status": "existing",
+          "owner": "9110-09"
+        },
+        {
+          "path": "pkgs/id/crates/id-events/src/lib.rs",
+          "status": "existing",
+          "owner": "9110-09"
+        },
+        {
+          "path": "pkgs/id/crates/id-store/src/lib.rs",
+          "status": "existing",
+          "owner": "9110-09"
+        },
+        {
+          "path": "pkgs/id/crates/id-worlds/src/lib.rs",
+          "status": "existing",
+          "owner": "9110-09"
+        },
+        {
+          "path": "pkgs/id/crates/id-core/src/graph/mod.rs",
+          "status": "new",
+          "owner": "9110-09"
+        },
+        {
+          "path": "pkgs/id/crates/id-core/src/triples/mod.rs",
+          "status": "new",
+          "owner": "9110-09"
+        },
+        {
+          "path": "pkgs/id/crates/id-sync/src/federation/mod.rs",
+          "status": "new",
+          "owner": "9110-09"
+        },
+        {
+          "path": "pkgs/id/crates/id-sync/src/federation/slices/mod.rs",
+          "status": "new",
+          "owner": "9110-09"
         }
       ],
       "requires": [
         {
+          "ref": "9110-04",
+          "description": "Required output from slice 9110-04."
+        },
+        {
+          "ref": "9110-06",
+          "description": "Admission module output must exist before the V2 public export gate."
+        },
+        {
           "issue": 9085,
-          "condition": "consume owned contract only; do not wait for full sibling program"
+          "description": "Use the hosted TypeScript runtime/transport contract for cross-runtime fixture coverage."
+        },
+        {
+          "ref": "9110-02",
+          "description": "Shared roots and stable contracts must exist before version-gated public wiring."
+        },
+        {
+          "ref": "9110-11",
+          "description": "Legacy/new signed-profile implementation and vectors must be available to the V2 cross-runtime fixture."
+        },
+        {
+          "ref": "A9113-shape-types",
+          "description": "Wire the implemented ID shape module only after its file exists."
+        },
+        {
+          "ref": "A9113-profile-dispatch",
+          "description": "Wire profile dispatch after its module output exists."
+        },
+        {
+          "ref": "A9114-cbor-profile",
+          "description": "Wire canonical CBOR profile after its module output exists."
+        },
+        {
+          "ref": "A9114-envelope-identities",
+          "description": "Wire signed envelope identity types after their module output exists."
+        },
+        {
+          "ref": "A9115-existence-receipt",
+          "description": "Wire the implemented receipt API after its module output exists."
+        },
+        {
+          "ref": "A9116-registry-record",
+          "description": "Wire namespace definition type after its module output exists."
+        },
+        {
+          "ref": "A9118-array-codec",
+          "description": "Wire array-address type after its module output exists."
+        },
+        {
+          "ref": "A9120-content-id",
+          "description": "Wire ContentId profile type after its module output exists."
+        },
+        {
+          "ref": "A-GRAPH-9125-01",
+          "description": "Wire typed triple identity after the Part A graph module exists."
+        },
+        {
+          "ref": "B01",
+          "description": "Wire peer policy after its module is implemented."
+        },
+        {
+          "ref": "B05",
+          "description": "Wire signer identity/validation after its module is implemented."
+        },
+        {
+          "ref": "B07",
+          "description": "Wire sync/conflict module after its module is implemented."
+        },
+        {
+          "ref": "B02",
+          "description": "V2 key disable/revocation output."
+        },
+        {
+          "ref": "B03",
+          "description": "V2 replay guard output."
+        },
+        {
+          "ref": "B04",
+          "description": "V2 signature-suite output."
+        },
+        {
+          "ref": "B06",
+          "description": "V2 rejection-event output."
+        },
+        {
+          "ref": "B08",
+          "description": "V2 sync-scope output."
+        },
+        {
+          "ref": "B09",
+          "description": "V2 anti-entropy output."
+        },
+        {
+          "ref": "B19",
+          "description": "V2 signed receipt output."
+        },
+        {
+          "ref": "B28",
+          "description": "V2 emergency takeover/revocation output; advanced reputation remains later."
+        },
+        {
+          "ref": "B31",
+          "description": "V2 directional peer-class output."
+        },
+        {
+          "ref": "B32",
+          "description": "V2 universal ingest-gate output."
         }
       ],
       "after": [
-        "9110-04",
-        "9110-06"
+        {
+          "ref": "B15",
+          "description": "V3 public export wiring is a later additive pass after peer-priority module output."
+        },
+        {
+          "ref": "B16",
+          "description": "V3 public export wiring is a later additive pass after bounded-fanout module output."
+        },
+        {
+          "ref": "B17",
+          "description": "V3 public export wiring is a later additive pass after signed query-grant module output."
+        },
+        {
+          "ref": "B18",
+          "description": "V3 public export wiring is a later additive pass after query-privacy module output."
+        },
+        {
+          "ref": "B20",
+          "description": "V3 public export wiring is a later additive pass after request-identity module output."
+        },
+        {
+          "ref": "B21",
+          "description": "V3 public export wiring is a later additive pass after result-dedup module output."
+        },
+        {
+          "ref": "B22",
+          "description": "V3 public export wiring is a later additive pass after loop-inform module output."
+        },
+        {
+          "ref": "B23",
+          "description": "V3 public export wiring is a later additive pass after routing-state module output."
+        },
+        {
+          "ref": "B24",
+          "description": "V3 public export wiring is a later additive pass after topology-probe module output."
+        }
       ],
-      "tests": {
+      "test": {
         "file": "pkgs/id/tests/cross_runtime_conformance.rs",
         "command": "cargo test --manifest-path pkgs/id/Cargo.toml --test cross_runtime_conformance",
-        "oracle": "Cross-runtime observable traces differ for same fixture/config; oracle is shared golden vectors verified by independent implementation.",
-        "new_before_code": true
-      }
+        "oracle": {
+          "kind": "golden",
+          "expected": "All implemented V2 public module exports resolve without consumer edits to crate-root files, and Rust/TypeScript traces match for shared protocol vectors; V2 release is blocked until this gate passes.",
+          "verifier": "A checked export manifest plus an independent golden-vector verifier compares public symbol availability and cross-runtime results; no absent V3/V4 module is declared."
+        }
+      },
+      "rollback": "Revert only the additive public module declarations for the affected protocol version; keep shared port contracts and prior supported exports. No consumer module or persisted data is deleted.",
+      "design_source": "doc/2026-11-13T03-40-00Z_design_id-atlas-summit/crosscut/versioned-design.md",
+      "design_section": "Conformance and test gates",
+      "owner": "9110-09",
+      "research_evidence": [
+        "doc/2026-11-13T03-40-00Z_design_id-atlas-summit/main.md",
+        "doc/2026-11-13T03-40-00Z_design_id-atlas-summit/crosscut/versioned-design.md",
+        "doc/2026-11-13T03-40-00Z_design_id-atlas-summit/part-a-addressing/implementation-slices.json",
+        "doc/2026-11-13T03-40-00Z_design_id-atlas-summit/part-a-graph/implementation-slices.json",
+        "doc/2026-11-13T03-40-00Z_design_id-atlas-summit/part-b/implementation-slices.json"
+      ]
     },
     {
       "id": "9110-10",
       "parent": 9110,
       "title": "Add Postgres capability profile without core changes",
       "kind": "implementation",
+      "version": "V4",
       "tier": "contingent",
-      "versions": [
-        "V4"
-      ],
       "statements": [
         "S0.7",
         "S0.8",
         "S0.13",
         "S0.15"
       ],
+      "goal": "When selected by an owning deployment, add a Postgres profile as an additive adapter without changing core ports.",
       "enables": "Implement an optional Postgres adapter against stable ports and publish its capability/conformance report; only proceed when an owning deployment chooses it.",
       "owned_files": [
         {
           "path": "pkgs/id/crates/id-store-postgres/src/lib.rs",
-          "status": "new"
+          "status": "new",
+          "owner": "9110-10"
         },
         {
           "path": "pkgs/id/tests/postgres_conformance.rs",
-          "status": "new"
+          "status": "new",
+          "owner": "9110-10"
         }
       ],
-      "requires": [],
+      "requires": [
+        {
+          "ref": "9110-02",
+          "description": "Requires stable port contracts before an adapter can be implemented."
+        }
+      ],
       "after": [],
-      "trigger": "Only when an owning deployment selects Postgres; until then keep the adapter as a V4 parked horizon item.",
-      "tests": {
+      "test": {
         "file": "pkgs/id/tests/postgres_conformance.rs",
         "command": "cargo test --manifest-path pkgs/id/Cargo.toml --test postgres_conformance",
-        "oracle": "Adding backend requires changing core port types or fails required fixtures; oracle is port API compatibility and shared reference-state suite.",
-        "new_before_code": true
-      }
+        "oracle": {
+          "kind": "reference",
+          "expected": "Only a deployment that selects Postgres enables the adapter, and its declared profile passes the common port suite without core API changes.",
+          "verifier": "An independent port compatibility harness and capability report; no Postgres client is required before the explicit trigger."
+        }
+      },
+      "rollback": "Contingent: if selected deployment fails conformance, withdraw Postgres from config and keep the prior backend; no data migration occurs automatically.",
+      "design_source": "doc/2026-11-13T03-40-00Z_design_id-atlas-summit/crosscut/versioned-design.md",
+      "design_section": "V4 \u2014 long-tail implementations and operations",
+      "owner": "9110-10",
+      "trigger": "Only when an owning deployment selects Postgres; until then keep the adapter as a V4 parked horizon item.",
+      "research_evidence": [
+        "doc/2026-11-13T03-40-00Z_design_id-atlas-summit/crosscut/research.md",
+        "doc/2026-11-13T03-40-00Z_design_id-atlas-summit/crosscut/versioned-design.md"
+      ]
     },
     {
       "id": "9111-01",
       "parent": 9111,
       "title": "Define versioned configuration schema and hard invariants",
       "kind": "schema-and-test",
+      "version": "V2",
       "tier": "crucial",
-      "versions": [
-        "V2"
-      ],
       "statements": [
         "S7.1",
         "S7.10",
@@ -463,50 +866,66 @@
         "S7.12",
         "S7.13"
       ],
+      "goal": "Establish the minimum validated V2 config contract needed before admission gates consume configuration.",
       "enables": "Specify canonical versioned ConfigDocument, hard non-overridable ceilings, config validation errors, mechanism-versus-behavior classification, and secure unknown-field policy. This minimal schema is a V2 prerequisite for core gates.",
       "owned_files": [
         {
           "path": "pkgs/id/config/id-config-v1.schema.json",
-          "status": "new"
+          "status": "new",
+          "owner": "9111-01"
         },
         {
           "path": "pkgs/id/crates/id-config/src/lib.rs",
-          "status": "new"
+          "status": "new",
+          "owner": "9111-01"
         },
         {
           "path": "pkgs/id/crates/id-config/Cargo.toml",
-          "status": "new"
+          "status": "new",
+          "owner": "9111-01"
         },
         {
           "path": "pkgs/id/tests/config_invariants.rs",
-          "status": "new"
+          "status": "new",
+          "owner": "9111-01"
         }
       ],
       "requires": [
         {
+          "ref": "9110-02",
+          "description": "Required output from slice 9110-02."
+        },
+        {
           "issue": 9141,
-          "condition": "consume owned contract only; do not wait for full sibling program"
+          "description": "consume owned contract only; do not wait for full sibling program"
         }
       ],
-      "after": [
-        "9110-02"
-      ],
-      "tests": {
+      "after": [],
+      "test": {
         "file": "pkgs/id/tests/config_invariants.rs",
         "command": "cargo test --manifest-path pkgs/id/Cargo.toml --test config_invariants",
-        "oracle": "Invalid config weakens an invariant or resolves nondeterministically; oracle is independent canonical resolver and invariant properties.",
-        "new_before_code": true
-      }
+        "oracle": {
+          "kind": "invariant",
+          "expected": "Canonical V2 config rejects any attempt to disable fixed gates and resolves deterministically.",
+          "verifier": "Independent schema/reference validator with generated invalid-config matrix."
+        }
+      },
+      "rollback": "Reject the candidate config schema and keep the last valid version; fixed admission invariants remain compiled and enforced.",
+      "design_source": "doc/2026-11-13T03-40-00Z_design_id-atlas-summit/crosscut/versioned-design.md",
+      "design_section": "Configuration data model and precedence",
+      "owner": "9111-01",
+      "research_evidence": [
+        "doc/2026-11-13T00-41-00Z_design_id-atlas-primitives-federation-namespaces/note.md",
+        "doc/2026-11-13T03-40-00Z_design_id-atlas-summit/part-b/versioned-design.md"
+      ]
     },
     {
       "id": "9111-02",
       "parent": 9111,
       "title": "Implement mode bundles and safe override precedence",
       "kind": "implementation",
+      "version": "V3",
       "tier": "recommended",
-      "versions": [
-        "V3"
-      ],
       "statements": [
         "S7.1",
         "S7.4",
@@ -514,42 +933,56 @@
         "S7.15",
         "S7.16"
       ],
+      "goal": "Resolve mode and scoped behavioral defaults deterministically while enforcing invariant, authority, and resource ceilings.",
       "enables": "Resolve deployment mode defaults with documented precedence through tenant, peer/link/storage scopes and permitted operation overrides; ensure scopes remain distinct and non-special.",
       "owned_files": [
         {
           "path": "pkgs/id/crates/id-config/src/resolve.rs",
-          "status": "new"
+          "status": "new",
+          "owner": "9111-02"
         },
         {
           "path": "pkgs/id/tests/config_precedence.rs",
-          "status": "new"
+          "status": "new",
+          "owner": "9111-02"
         }
       ],
       "requires": [
         {
+          "ref": "9111-01",
+          "description": "Required output from slice 9111-01."
+        },
+        {
           "issue": 9083,
-          "condition": "consume owned contract only; do not wait for full sibling program"
+          "description": "consume owned contract only; do not wait for full sibling program"
         }
       ],
-      "after": [
-        "9111-01"
-      ],
-      "tests": {
+      "after": [],
+      "test": {
         "file": "pkgs/id/tests/config_precedence.rs",
         "command": "cargo test --manifest-path pkgs/id/Cargo.toml --test config_precedence",
-        "oracle": "Equivalent config documents resolve differently or lower scope widens a hard bound; oracle is reference resolver and generated precedence lattice.",
-        "new_before_code": true
-      }
+        "oracle": {
+          "kind": "reference",
+          "expected": "Layered behavior overrides resolve in order within authority/resource ceilings, including both loosening and tightening examples.",
+          "verifier": "Independent pure reference resolver and checked-in precedence examples."
+        }
+      },
+      "rollback": "Restore the previous resolved config revision; already-completed external effects remain explicit and are not claimed undone.",
+      "design_source": "doc/2026-11-13T03-40-00Z_design_id-atlas-summit/crosscut/versioned-design.md",
+      "design_section": "Configuration data model and precedence",
+      "owner": "9111-02",
+      "research_evidence": [
+        "doc/2026-11-13T03-40-00Z_design_id-atlas-summit/answers.md",
+        "doc/2026-11-13T03-40-00Z_design_id-atlas-summit/crosscut/versioned-design.md"
+      ]
     },
     {
       "id": "9111-03",
       "parent": 9111,
       "title": "Model peer, link, storage, tier, and namespace planes independently",
       "kind": "implementation",
+      "version": "V3",
       "tier": "recommended",
-      "versions": [
-        "V3"
-      ],
       "statements": [
         "S0.11",
         "S7.2",
@@ -561,216 +994,361 @@
         "S7.9",
         "S7.15"
       ],
+      "goal": "Keep peer, link, storage, tier, and namespace settings as distinct typed planes with explicit composition rules.",
       "enables": "Define typed references and validation rules so peer class, link kind, storage capability/durability, data tier, and namespace registry can compose without implying one another.",
       "owned_files": [
         {
           "path": "pkgs/id/crates/id-config/src/planes.rs",
-          "status": "new"
+          "status": "new",
+          "owner": "9111-03"
         },
         {
           "path": "pkgs/id/tests/config_planes.rs",
-          "status": "new"
+          "status": "new",
+          "owner": "9111-03"
         }
       ],
       "requires": [
         {
+          "ref": "9111-01",
+          "description": "Required output from slice 9111-01."
+        },
+        {
           "issue": 9141,
-          "condition": "consume owned contract only; do not wait for full sibling program"
+          "description": "consume owned contract only; do not wait for full sibling program"
         },
         {
           "issue": 9116,
-          "condition": "consume owned contract only; do not wait for full sibling program"
+          "description": "consume owned contract only; do not wait for full sibling program"
         },
         {
           "issue": 9084,
-          "condition": "consume owned contract only; do not wait for full sibling program"
+          "description": "consume owned contract only; do not wait for full sibling program"
         }
       ],
-      "after": [
-        "9111-01"
-      ],
-      "tests": {
+      "after": [],
+      "test": {
         "file": "pkgs/id/tests/config_planes.rs",
         "command": "cargo test --manifest-path pkgs/id/Cargo.toml --test config_planes",
-        "oracle": "Config infers trust from transport or authorization from shared bucket; oracle is type-level model and invalid-combination matrix.",
-        "new_before_code": true
-      }
+        "oracle": {
+          "kind": "invariant",
+          "expected": "Invalid combinations cannot infer peer trust from link kind or authorization from storage/tier selection.",
+          "verifier": "A typed plane model and exhaustive invalid-combination matrix."
+        }
+      },
+      "rollback": "Restore prior bindings; preserve independent peer/link/storage authorization checks.",
+      "design_source": "doc/2026-11-13T03-40-00Z_design_id-atlas-summit/crosscut/versioned-design.md",
+      "design_section": "Configuration data model and precedence",
+      "owner": "9111-03",
+      "research_evidence": [
+        "doc/2026-11-13T03-40-00Z_design_id-atlas-summit/part-b/versioned-design.md",
+        "doc/2026-11-13T03-40-00Z_design_id-atlas-summit/baseline/seam-map.md"
+      ]
     },
     {
       "id": "9111-04",
       "parent": 9111,
       "title": "Add capability negotiation and downgrade rejection",
       "kind": "implementation",
+      "version": "V3",
       "tier": "recommended",
-      "versions": [
-        "V3"
-      ],
       "statements": [
+        "S1.118",
         "S7.10",
         "S7.11",
         "S7.13",
-        "S7.16",
-        "S1.118"
+        "S7.16"
       ],
+      "goal": "Negotiate only mutually supported protocol/capability versions and reject security-weakening downgrades.",
       "enables": "Negotiate highest mutually allowed version and required capabilities, bind negotiation to authenticated identities, and reject downgrade that removes mandatory security/correctness semantics.",
       "owned_files": [
         {
           "path": "pkgs/id/crates/id-config/src/negotiation.rs",
-          "status": "new"
+          "status": "new",
+          "owner": "9111-04"
         },
         {
           "path": "pkgs/id/tests/config_downgrade.rs",
-          "status": "new"
+          "status": "new",
+          "owner": "9111-04"
         }
       ],
       "requires": [
         {
+          "ref": "9110-02",
+          "description": "Required output from slice 9110-02."
+        },
+        {
+          "ref": "9111-01",
+          "description": "Required output from slice 9111-01."
+        },
+        {
           "issue": 9141,
-          "condition": "consume owned contract only; do not wait for full sibling program"
+          "description": "consume owned contract only; do not wait for full sibling program"
         }
       ],
-      "after": [
-        "9110-02",
-        "9111-01"
-      ],
-      "tests": {
+      "after": [],
+      "test": {
         "file": "pkgs/id/tests/config_downgrade.rs",
         "command": "cargo test --manifest-path pkgs/id/Cargo.toml --test config_downgrade",
-        "oracle": "Peer can force a weaker or unauthenticated fallback; oracle is negotiation state machine with adversarial version offers.",
-        "new_before_code": true
-      }
+        "oracle": {
+          "kind": "model",
+          "expected": "Negotiation selects the highest allowed common capability set and rejects security-weakening downgrade offers.",
+          "verifier": "Adversarial protocol-negotiation state machine and signed transcript vectors."
+        }
+      },
+      "rollback": "Reject negotiation/config change and continue only with a previously allowed protocol version; never downgrade past a security floor.",
+      "design_source": "doc/2026-11-13T03-40-00Z_design_id-atlas-summit/crosscut/versioned-design.md",
+      "design_section": "Failure, recovery, and version rules",
+      "owner": "9111-04",
+      "research_evidence": [
+        "doc/2026-11-13T03-40-00Z_design_id-atlas-summit/part-b/versioned-design.md",
+        "doc/2026-11-13T03-40-00Z_design_id-atlas-summit/crosscut/versioned-design.md"
+      ]
     },
     {
       "id": "9111-05",
       "parent": 9111,
       "title": "Stage config activation and rollback by revision",
       "kind": "implementation",
+      "version": "V3; V4 operational hardening",
       "tier": "recommended",
-      "versions": [
-        "V3",
-        "V4 operational hardening"
-      ],
       "statements": [
         "S7.1",
         "S7.10",
         "S7.14"
       ],
+      "goal": "Activate configuration revisions only after capability validation and provide rollback to prior configuration without rollback fiction for external effects.",
       "enables": "Validate new config against all selected adapter capabilities before activation, expose resolved digest/provenance, retain prior revision for rollback, and document non-rollbackable external effects.",
       "owned_files": [
         {
           "path": "pkgs/id/crates/id-config/src/rollout.rs",
-          "status": "new"
+          "status": "new",
+          "owner": "9111-05"
         },
         {
           "path": "pkgs/id/tests/config_rollout.rs",
-          "status": "new"
+          "status": "new",
+          "owner": "9111-05"
         }
       ],
-      "requires": [],
-      "after": [
-        "9110-02",
-        "9111-01",
-        "9111-02"
+      "requires": [
+        {
+          "ref": "9110-02",
+          "description": "Required output from slice 9110-02."
+        },
+        {
+          "ref": "9111-01",
+          "description": "Required output from slice 9111-01."
+        },
+        {
+          "ref": "9111-02",
+          "description": "Required output from slice 9111-02."
+        }
       ],
-      "tests": {
+      "after": [],
+      "test": {
         "file": "pkgs/id/tests/config_rollout.rs",
         "command": "cargo test --manifest-path pkgs/id/Cargo.toml --test config_rollout",
-        "oracle": "Invalid revision becomes active or rollback claims to undo completed remote effects; oracle is rollout state machine with adapter rejection injection.",
-        "new_before_code": true
-      }
+        "oracle": {
+          "kind": "model",
+          "expected": "A bad adapter/config never activates; rollback selects the exact previous revision and does not claim to undo external effects.",
+          "verifier": "Config rollout state machine with injected validation failures and irreversible-effect markers."
+        }
+      },
+      "rollback": "Restore the prior config revision; external side effects require explicit compensating operations.",
+      "design_source": "doc/2026-11-13T03-40-00Z_design_id-atlas-summit/crosscut/versioned-design.md",
+      "design_section": "Failure, recovery, and version rules",
+      "owner": "9111-05",
+      "research_evidence": [
+        "doc/2026-11-13T03-40-00Z_design_id-atlas-summit/crosscut/versioned-design.md"
+      ]
     },
     {
       "id": "9110-11",
       "parent": 9110,
       "title": "Preserve legacy artifact preimages and define new canonical profile",
       "kind": "test-and-compatibility",
+      "version": "V2",
       "tier": "crucial",
-      "versions": [
-        "V2"
-      ],
       "statements": [
         "S0.7",
         "S0.13",
         "S0.15"
       ],
+      "goal": "Preserve legacy signed artifact bytes exactly and introduce any corrected canonical record profile as an explicit additive version.",
       "enables": "Test exact existing serde JSON bytes against compatibility vectors; define deterministic-CBOR profile as a separate new format; do not silently re-sign or change legacy bytes.",
       "owned_files": [
         {
           "path": "pkgs/id/crates/id-sync/src/artifact.rs",
-          "status": "existing"
-        },
-        {
-          "path": "pkgs/id/test-vectors/legacy-artifact-signatures.json",
-          "status": "new"
+          "status": "existing",
+          "owner": "9110-11"
         },
         {
           "path": "pkgs/id/tests/artifact_profile_compat.rs",
-          "status": "new"
+          "status": "new",
+          "owner": "9110-11"
         }
       ],
       "requires": [
         {
+          "ref": "9110-02",
+          "description": "Required output from slice 9110-02."
+        },
+        {
+          "ref": "9110-R1",
+          "description": "Use the completed legacy-preimage research report and vectors before implementing the compatibility test."
+        },
+        {
           "issue": 9113,
-          "condition": "consume its typed identity-profile contract; not a blocker on its unrelated implementation"
+          "description": "consume its typed identity-profile contract; not a blocker on its unrelated implementation"
         }
       ],
-      "after": [
-        "9110-02",
-        "9110-R1"
-      ],
-      "tests": {
+      "after": [],
+      "test": {
         "file": "pkgs/id/tests/artifact_profile_compat.rs",
         "command": "cargo test --manifest-path pkgs/id/Cargo.toml --test artifact_profile_compat",
-        "oracle": "New vectors fail to match checked-in legacy signature verification or a new-profile record includes its own EnvelopeId in the signed preimage.",
-        "new_before_code": true
-      }
+        "oracle": {
+          "kind": "golden",
+          "expected": "Legacy signature bytes verify unchanged, while any new signed-envelope profile excludes its signature and IDs from the canonical Body preimage.",
+          "verifier": "Independent Ed25519 verification against checked-in compatibility vectors and a second canonical-CBOR encoder."
+        }
+      },
+      "rollback": "Keep legacy serde JSON verification and bytes unchanged; disable only new-profile writes/read support if compatibility vectors fail.",
+      "design_source": "doc/2026-11-13T03-40-00Z_design_id-atlas-summit/crosscut/versioned-design.md",
+      "design_section": "Cross-part identity profiles consumed by the ports",
+      "owner": "9110-11",
+      "research_evidence": [
+        "doc/2026-11-13T03-40-00Z_design_id-atlas-summit/baseline/v1-audit.md",
+        "doc/2026-11-13T03-40-00Z_design_id-atlas-summit/answers.md",
+        "doc/2026-11-13T03-40-00Z_design_id-atlas-summit/crosscut/research-slices.json"
+      ]
     },
     {
       "id": "9110-13",
       "parent": 9110,
       "title": "Inventory every normal path through admission and hooks",
       "kind": "test-and-compatibility",
+      "version": "V2",
       "tier": "crucial",
-      "versions": [
-        "V2"
-      ],
       "statements": [
         "S0.12",
         "S0.17",
         "S1.114",
         "S1.118"
       ],
+      "goal": "Produce a complete path-to-gate inventory and test oracle before claiming hook/admission extensibility coverage.",
       "enables": "Track every ingress/read/write/sync/query/stream/bucket path, gate/hooks, bypass test and recovery semantics; leave explicit unmigrated entries and block completeness claim until covered.",
       "owned_files": [
         {
           "path": "pkgs/id/docs/operation-path-inventory.md",
-          "status": "new"
+          "status": "new",
+          "owner": "9110-13"
         },
         {
           "path": "pkgs/id/tests/admission_path_coverage.rs",
-          "status": "new"
+          "status": "new",
+          "owner": "9110-13"
         }
       ],
-      "requires": [],
-      "after": [
-        "9110-02"
+      "requires": [
+        {
+          "ref": "9110-02",
+          "description": "Required output from slice 9110-02."
+        }
       ],
-      "tests": {
+      "after": [],
+      "test": {
         "file": "pkgs/id/tests/admission_path_coverage.rs",
         "command": "cargo test --manifest-path pkgs/id/Cargo.toml --test admission_path_coverage",
-        "oracle": "Path inventory contains a normal retained-data path with no verified fixed-gate edge; oracle is path-to-test coverage matrix.",
-        "new_before_code": true
-      }
+        "oracle": {
+          "kind": "invariant",
+          "expected": "Every normal retained-data path in the inventory maps to a fixed gate and a bypass test; any unmapped path blocks completion.",
+          "verifier": "A path-to-test coverage matrix independently reviewed against source/call-site inventory."
+        }
+      },
+      "rollback": "Mark incomplete paths unsupported/blocked; never roll back by opening a bypass around the fixed gate.",
+      "design_source": "doc/2026-11-13T03-40-00Z_design_id-atlas-summit/crosscut/versioned-design.md",
+      "design_section": "Operation pipeline (mandatory ordering)",
+      "owner": "9110-13",
+      "research_evidence": [
+        "doc/2026-11-13T03-40-00Z_design_id-atlas-summit/baseline/v1-audit.md",
+        "doc/2026-11-13T03-40-00Z_design_id-atlas-summit/main.md"
+      ]
     }
   ],
   "file_collisions": [
     {
-      "path": "pkgs/id/tests/artifact_profile_compat.rs",
+      "path": "pkgs/id/crates/id-core/src/lib.rs",
       "slices": [
-        "9110-R1",
-        "9110-11"
+        "9110-02",
+        "9110-09"
       ],
-      "reason": "The research slice creates the failing legacy/new-profile compatibility test first; the follow-on implementation slice owns filling and preserving that same test. Hard after edge requires research completion before implementation."
+      "reason": "9110-02 owns the common interface/root and creates no absent feature exports; 9110-09 is the sole version-gated integration writer after concrete consumer modules exist."
+    },
+    {
+      "path": "pkgs/id/crates/id-sync/src/lib.rs",
+      "slices": [
+        "9110-02",
+        "9110-09"
+      ],
+      "reason": "9110-02 owns the common interface/root and creates no absent feature exports; 9110-09 is the sole version-gated integration writer after concrete consumer modules exist."
+    },
+    {
+      "path": "pkgs/id/crates/id-events/src/lib.rs",
+      "slices": [
+        "9110-02",
+        "9110-09"
+      ],
+      "reason": "9110-02 owns the common interface/root and creates no absent feature exports; 9110-09 is the sole version-gated integration writer after concrete consumer modules exist."
+    },
+    {
+      "path": "pkgs/id/crates/id-store/src/lib.rs",
+      "slices": [
+        "9110-02",
+        "9110-09"
+      ],
+      "reason": "9110-02 owns the common interface/root and creates no absent feature exports; 9110-09 is the sole version-gated integration writer after concrete consumer modules exist."
+    },
+    {
+      "path": "pkgs/id/crates/id-worlds/src/lib.rs",
+      "slices": [
+        "9110-02",
+        "9110-09"
+      ],
+      "reason": "9110-02 owns the common interface/root and creates no absent feature exports; 9110-09 is the sole version-gated integration writer after concrete consumer modules exist."
+    },
+    {
+      "path": "pkgs/id/crates/id-core/src/graph/mod.rs",
+      "slices": [
+        "9110-02",
+        "9110-09"
+      ],
+      "reason": "9110-02 owns the common interface/root and creates no absent feature exports; 9110-09 is the sole version-gated integration writer after concrete consumer modules exist."
+    },
+    {
+      "path": "pkgs/id/crates/id-core/src/triples/mod.rs",
+      "slices": [
+        "9110-02",
+        "9110-09"
+      ],
+      "reason": "9110-02 owns the common interface/root and creates no absent feature exports; 9110-09 is the sole version-gated integration writer after concrete consumer modules exist."
+    },
+    {
+      "path": "pkgs/id/crates/id-sync/src/federation/mod.rs",
+      "slices": [
+        "9110-02",
+        "9110-09"
+      ],
+      "reason": "9110-02 owns the common interface/root and creates no absent feature exports; 9110-09 is the sole version-gated integration writer after concrete consumer modules exist."
+    },
+    {
+      "path": "pkgs/id/crates/id-sync/src/federation/slices/mod.rs",
+      "slices": [
+        "9110-02",
+        "9110-09"
+      ],
+      "reason": "9110-02 owns the common interface/root and creates no absent feature exports; 9110-09 is the sole version-gated integration writer after concrete consumer modules exist."
     }
   ]
 }

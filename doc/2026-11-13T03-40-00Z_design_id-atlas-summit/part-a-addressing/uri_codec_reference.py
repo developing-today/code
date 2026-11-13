@@ -197,6 +197,18 @@ def self_test() -> int:
         assert got == expected, (uri, got, expected)
         assert format_array(got) == uri
 
+    empty_blake3 = bytes.fromhex(
+        "af1349b9f5f9a1a6a0404dea36dcc949"
+        "9bcb25c9adc112b7cc9a93cae41f3262"
+    )
+    content_uri = (
+        "id://local/main/v1/content/raw-blake3-256."
+        "af1349b9f5f9a1a6a0404dea36dcc9499bcb25c9adc112b7cc9a93cae41f3262"
+    )
+    content_golden = ContentId("local", "main", _PROFILE, empty_blake3)
+    assert parse(content_uri) == content_golden
+    assert format_content(content_golden) == content_uri
+
     bad = [
         "id:/local/main/v1/array",  # no authority
         "id://Local/main/v1/array",  # aliases are lowercase
@@ -212,6 +224,9 @@ def self_test() -> int:
         "id://local/main/v1/array#x",
         "id://local/../v1/array",
         "id://local/main/v1/content/unknown.0000000000000000000000000000000000000000000000000000000000000000",
+        "id://local/main/v1/content/raw-blake3-256.000000000000000000000000000000000000000000000000000000000000000",
+        "id://local/main/v1/content/raw-blake3-256.000000000000000000000000000000000000000000000000000000000000000G",
+        "id://local/main/v1/content/raw-blake3-256.000000000000000000000000000000000000000000000000000000000000000A",
     ]
     for uri in bad:
         try:
@@ -238,6 +253,25 @@ def self_test() -> int:
         assert reparsed == address, (address, uri, reparsed)
         assert format_array(reparsed) == uri
 
+    # Content syntax has its own deterministic generator and typed formatter.
+    for _ in range(10_000):
+        content = ContentId("local", "main", _PROFILE, rng.randbytes(32))
+        uri = format_content(content)
+        reparsed = parse(uri)
+        assert reparsed == content, (content, uri, reparsed)
+        assert format_content(reparsed) == uri
+
+    for invalid_content in (
+        ContentId("local", "main", _PROFILE, b"short"),
+        ContentId("local", "main", "unknown-profile", bytes(32)),
+    ):
+        try:
+            format_content(invalid_content)
+        except UriError:
+            pass
+        else:
+            raise AssertionError(f"formatted invalid content ID: {invalid_content!r}")
+
     # Explicit resolver context: URI alias must match selected local resolver.
     uri = format_array(ArrayId("local", "main", (None, b"")))
     parsed = parse(uri)
@@ -249,7 +283,10 @@ def self_test() -> int:
     else:
         raise AssertionError("mismatched resolver context accepted")
 
-    print(f"PASS: {len(vectors)} required vectors, {len(bad)} malformed cases, 10000 deterministic round trips")
+    print(
+        f"PASS: {len(vectors)} array vectors + 1 content golden, {len(bad)} malformed cases, "
+        "10000 deterministic array and 10000 content round trips"
+    )
     return 0
 
 

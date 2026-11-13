@@ -29,6 +29,6 @@ Every later component in `sequencing.json` has its own `review_date` of 2027-02-
 
 ## Verification
 
-The interface-owner slice `9110-02` alone owns common ID crate root exports/Cargo manifests and shared test-vector schema. Consumer slices add distinct module files and tests. The only intentional shared file is the test-first compatibility file owned by research slice `9110-R1` then completed by `9110-11`; its collision is recorded with a hard after edge and reason. Other shared files fail the verifier.
+Shared Rust roots have two **serial** owners, never concurrent writers. `9110-02` owns phase 1: common crate-root/Cargo interfaces and private module-root skeletons, with no declarations of absent leaf modules. Consumer slices own only distinct leaf modules and tests; tests use explicit direct-path imports while leaves are not publicly wired. After required V2 leaves merge, `9110-09` hard-depends on them and owns phase 2: the sole public module/export wiring and cross-runtime gate. Every phase-1/phase-2 collision is declared by exact path and enforced by a hard edge. `9110-R1` and `9110-11` own distinct research and Rust test files; no consumer shares a root file.
 
 Run `python3 -I doc/2026-11-13T03-40-00Z_design_id-atlas-summit/crosscut/verify_crosscut.py`. The stdlib verifier checks the per-issue DAG, per-slice DAG, owned-file collision graph, config override/security examples, and emits the component/research/implementation-slice counts. Update the JSON and rerun the verifier whenever a sibling design changes the minimum prerequisites.

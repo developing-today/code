@@ -1,11 +1,14 @@
 {
-  "canonical_fixture_profile": "SHA256 of exact bytes 616263",
-  "cloud_evidence": "not measured; separate follow-up",
-  "engine_operation_capability_mappings_checked": 44,
-  "fixture": "synthetic-reference-store-v2",
+  "engine_operation_capability_mappings_checked": 64,
+  "explicit_resurrection": "new generation key; canonical ContentId unchanged",
+  "fixture": "synthetic-reference-store-v3",
   "fixture_digest_verified": true,
-  "generation_fence_and_resurrection": "reference model matched expected transitions",
+  "ordinary_put_after_tombstone": "rejected without resurrection",
+  "provider_calls": 0,
+  "r2_conditional_delete_claim": "none; model uses captured non-reused old key only after fence",
   "r2_metadata_scan": "explicitly unsupported",
-  "reference_transitions_executed_and_matched": 11,
+  "reference_transitions_executed_and_matched": 16,
+  "row_preserving_put_replay": "matched",
+  "stale_g1_delete_after_g2_put": "g2 bytes and reference remain",
   "timings_measured": false
 }

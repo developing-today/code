@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 import sys
 import tempfile
@@ -77,6 +78,10 @@ class Suite:
         self.run_case("valid-real-source", self.source)
         self.run_case("duplicate-definition", self.source.replace("S0.2 Primitives/adapters/hooks", "S0.1 Primitives/adapters/hooks", 1), "duplicate statement definitions")
         self.run_case("missing-map-target", self.source.replace("| S0.1–S0.17 |", "| S0.2–S0.17 |", 1), "unmapped statements")
+        missing_plus_later_fake = self.source.replace("| S0.1–S0.17 |", "| S0.2–S0.17 |", 1).replace(
+            "## 4. Version plan", "## 4. Version plan\n\n| S0.1 | **#9999** |", 1
+        )
+        self.run_case("later-fake-home-cannot-mask-gap", missing_plus_later_fake, "unmapped statements")
         self.run_case("unknown-extra-endpoint", self.source.replace("| S0.1–S0.17 |", "| S0.1, S0.999 |", 1), "unknown map endpoint: S0.999")
         self.run_case("malformed-map-syntax", self.source.replace("| S0.1–S0.17 |", "| S0.1; S0.2 |", 1), "malformed map range token")
         self.run_case("reversed-range", self.source.replace("| S0.1–S0.17 |", "| S0.17–S0.1 |", 1), "reversed map range")
@@ -112,6 +117,40 @@ class Suite:
             raise AssertionError("source-output-alias: checker did not protect source")
         self.passed += 1
         print("PASS source-output-alias")
+
+        source_file = self.temp / "hardlink-source.md"
+        hardlink = self.temp / "hardlink-output.json"
+        source_file.write_text(self.source, encoding="utf-8")
+        os.link(source_file, hardlink)
+        before = source_file.read_bytes()
+        result = subprocess.run(
+            [sys.executable, "-I", str(self.checker), "--source", str(source_file), "--json", str(hardlink)],
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            check=False,
+        )
+        if result.returncode != 2 or "same file" not in result.stderr or source_file.read_bytes() != before or hardlink.read_bytes() != before:
+            raise AssertionError("hardlink-alias: checker failed to protect aliased source bytes")
+        self.passed += 1
+        print("PASS hardlink-alias-preserves-source")
+
+        symlink_source = self.temp / "symlink-source.md"
+        symlink_output = self.temp / "symlink-output.json"
+        symlink_source.write_text(self.source, encoding="utf-8")
+        symlink_output.symlink_to(symlink_source)
+        before = symlink_source.read_bytes()
+        result = subprocess.run(
+            [sys.executable, "-I", str(self.checker), "--source", str(symlink_source), "--json", str(symlink_output)],
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            check=False,
+        )
+        if result.returncode != 2 or "same path" not in result.stderr or not symlink_output.is_symlink() or symlink_source.read_bytes() != before:
+            raise AssertionError("symlink-alias: checker failed to preserve symlink/source")
+        self.passed += 1
+        print("PASS symlink-alias-preserves-source")
         print(f"{self.passed} regression cases passed")
         return self.passed
 
@@ -128,7 +167,8 @@ def main(argv: list[str]) -> int:
         print(f"source error: {exc}", file=sys.stderr)
         return 1
     checker = Path(__file__).with_name("check_inventory.py").resolve()
-    with tempfile.TemporaryDirectory(prefix="inventory-regressions-") as directory:
+    temp_root = os.environ.get("TMPDIR", "/home/user/.local/share/opencode/tmp/opencode")
+    with tempfile.TemporaryDirectory(prefix="inventory-regressions-", dir=temp_root) as directory:
         Suite(source, checker, Path(directory)).run()
     return 0
 

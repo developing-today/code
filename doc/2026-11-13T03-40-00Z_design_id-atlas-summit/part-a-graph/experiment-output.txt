@@ -8,4 +8,5 @@ ratios_vs_compact_json=framed_binary_typed:1.053 framed_binary_zlib6:0.112 norma
 sqlite_version=3.53.3; sqlite_jsonb_available=yes
 roundtrip=PASS for compact JSON, framed binary, compressed binary, byte map, and SQLite JSONB; mismatch=0
 arbitrary_non_utf8_typed_bytes=PASS (00 ff / 80 / fe 00); probe_bytes=91
-check_oracles=PASS
+mutation_rejection=PASS
+check_oracles=PASS; explicit equality and mutation-rejection checks ran
