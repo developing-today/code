@@ -3220,10 +3220,7 @@ mod tests {
         let core = WorldCore::new("caps", WorldLimits::default()).unwrap();
         let world = WorldHandle::spawn_with_program(core, Box::new(Mock::new()));
         let (_, token) = world
-            .issue(
-                "ann",
-                WorldScopes(WorldScopes::JOIN.bits() | WorldScopes::INPUT.bits()),
-            )
+            .issue("ann", WorldScopes::JOIN.union(WorldScopes::INPUT))
             .await
             .unwrap();
         world
@@ -3251,15 +3248,7 @@ mod tests {
     async fn a_participant_with_chat_lets_the_program_say_what_it_asks() {
         let core = WorldCore::new("caps", WorldLimits::default()).unwrap();
         let world = WorldHandle::spawn_with_program(core, Box::new(Mock::new()));
-        let (_, token) = world
-            .issue(
-                "ann",
-                WorldScopes(
-                    WorldScopes::JOIN.bits() | WorldScopes::CHAT.bits() | WorldScopes::INPUT.bits(),
-                ),
-            )
-            .await
-            .unwrap();
+        let (_, token) = world.issue("ann", WorldScopes::GUEST).await.unwrap();
         world
             .update_caps(vec!["chat.say".to_owned()], Vec::new())
             .await
@@ -3321,7 +3310,7 @@ mod tests {
                     display_name: "ann".to_owned(),
                 },
                 digest,
-                scopes: WorldScopes::GUEST.0,
+                scopes: WorldScopes::GUEST.bits(),
                 parent: None,
                 expires_at: None,
                 uses: None,
@@ -3584,7 +3573,8 @@ mod tests {
                 used: 0,
                 subject: Some(subject.to_owned()),
             };
-        let delegated_scopes = WorldScopes::JOIN.0 | WorldScopes::INPUT.0 | WorldScopes::CHAT.0;
+        let delegated_scopes =
+            WorldScopes::JOIN.bits() | WorldScopes::INPUT.bits() | WorldScopes::CHAT.bits();
         let entries = vec![
             issued_with(1, WorldScopes::ALL.bits(), None, "subject-a"),
             issued_with(2, delegated_scopes, Some(1), "subject-b"),
@@ -3642,7 +3632,7 @@ mod tests {
 
     #[test]
     fn test_restore_refuses_issued_scopes_without_join() {
-        for scopes in [0, WorldScopes::CHAT.0, WorldScopes::INPUT.0] {
+        for scopes in [0, WorldScopes::CHAT.bits(), WorldScopes::INPUT.bits()] {
             let error = restore_with_scopes(scopes).unwrap_err();
             assert!(
                 error.to_string().contains("join scope"),
@@ -3654,9 +3644,9 @@ mod tests {
     #[test]
     fn test_restore_accepts_guest_and_admin_bit_scopes() {
         for scopes in [
-            WorldScopes::GUEST.0,
-            WorldScopes::JOIN.0 | WorldScopes::BUILDER.0,
-            WorldScopes::JOIN.0 | WorldScopes::MODERATOR.0,
+            WorldScopes::GUEST.bits(),
+            WorldScopes::JOIN.bits() | WorldScopes::BUILDER.bits(),
+            WorldScopes::JOIN.bits() | WorldScopes::MODERATOR.bits(),
         ] {
             let restored = restore_with_scopes(scopes).unwrap();
             let record = restored.core.capabilities.get(&1).unwrap();
@@ -3765,7 +3755,7 @@ mod tests {
                     display_name: "ann".to_owned(),
                 },
                 digest,
-                scopes: WorldScopes::GUEST.0,
+                scopes: WorldScopes::GUEST.bits(),
                 parent: None,
                 expires_at: None,
                 uses: None,
@@ -4604,9 +4594,7 @@ mod tests {
         }
 
         fn records(&mut self) -> Result<Option<String>> {
-            Ok(Some(
-                serde_json::json!({"events": self.events}).to_string(),
-            ))
+            Ok(Some(serde_json::json!({"events": self.events}).to_string()))
         }
     }
 
@@ -4939,7 +4927,7 @@ mod tests {
         .unwrap();
         core.ledger
             .set_granted(BTreeSet::from(["time.tick".to_owned()]));
-        let owner_scopes = WorldScopes(WorldScopes::GUEST.bits() | WorldScopes::DELEGATE.bits());
+        let owner_scopes = WorldScopes::GUEST.union(WorldScopes::DELEGATE);
         let (_, owner) = core
             .issue_capability("ann", owner_scopes, CapabilityBounds::default())
             .unwrap();
@@ -5022,7 +5010,7 @@ mod tests {
         let (spectator, _) = core
             .issue_capability(
                 "spectator",
-                WorldScopes(WorldScopes::JOIN.bits() | WorldScopes::INPUT.bits()),
+                WorldScopes::JOIN.union(WorldScopes::INPUT),
                 CapabilityBounds::default(),
             )
             .unwrap();
@@ -5568,7 +5556,7 @@ mod tests {
         let (_, owner) = core
             .issue_capability(
                 "Ada",
-                WorldScopes(WorldScopes::GUEST.bits() | WorldScopes::DELEGATE.bits()),
+                WorldScopes::GUEST.union(WorldScopes::DELEGATE),
                 CapabilityBounds {
                     expires_at: Some(in_an_hour()),
                     uses: None,
@@ -5612,7 +5600,7 @@ mod tests {
         let (_, owner) = core
             .issue_capability(
                 "Ada",
-                WorldScopes(WorldScopes::GUEST.bits() | WorldScopes::DELEGATE.bits()),
+                WorldScopes::GUEST.union(WorldScopes::DELEGATE),
                 CapabilityBounds {
                     expires_at: None,
                     uses: Some(3),
@@ -5641,7 +5629,7 @@ mod tests {
     #[test]
     fn a_delegated_grant_carries_no_use_count() {
         let mut core = world(8);
-        let delegator = WorldScopes(WorldScopes::GUEST.bits() | WorldScopes::DELEGATE.bits());
+        let delegator = WorldScopes::GUEST.union(WorldScopes::DELEGATE);
         let (_, owner) = core
             .issue_capability("Ada", delegator, CapabilityBounds::default())
             .unwrap();
@@ -5792,7 +5780,7 @@ mod tests {
         let (owner, owner_token) = source
             .issue_capability(
                 "Ada",
-                WorldScopes(WorldScopes::GUEST.bits() | WorldScopes::DELEGATE.bits()),
+                WorldScopes::GUEST.union(WorldScopes::DELEGATE),
                 CapabilityBounds {
                     expires_at: Some(in_an_hour()),
                     uses: None,
@@ -5816,8 +5804,7 @@ mod tests {
             JournalEntry::Issued {
                 participant: owner,
                 digest: hex_encode(&token_digest(owner_token.expose())),
-                scopes: WorldScopes(WorldScopes::GUEST.bits() | WorldScopes::DELEGATE.bits())
-                    .bits(),
+                scopes: WorldScopes::GUEST.union(WorldScopes::DELEGATE).bits(),
                 parent: None,
                 expires_at: Some(in_an_hour()),
                 uses: None,
@@ -5844,7 +5831,7 @@ mod tests {
         let (owner, owner_token) = source
             .issue_capability(
                 "Ada",
-                WorldScopes(WorldScopes::GUEST.bits() | WorldScopes::DELEGATE.bits()),
+                WorldScopes::GUEST.union(WorldScopes::DELEGATE),
                 CapabilityBounds::default(),
             )
             .unwrap();
@@ -6380,7 +6367,7 @@ mod tests {
     #[test]
     fn attenuation_only_narrows_and_needs_delegate() {
         let join = WorldScopes::JOIN;
-        let delegator = WorldScopes(WorldScopes::GUEST.bits() | WorldScopes::DELEGATE.bits());
+        let delegator = WorldScopes::GUEST.union(WorldScopes::DELEGATE);
         assert_eq!(delegator.attenuate(join), Some(join));
         assert!(delegator.attenuate(WorldScopes::GUEST).is_some());
         assert!(
@@ -6391,7 +6378,7 @@ mod tests {
             delegator.attenuate(WorldScopes::CHAT).is_none(),
             "must keep join"
         );
-        let join_only = WorldScopes(WorldScopes::JOIN.bits() | WorldScopes::DELEGATE.bits());
+        let join_only = WorldScopes::JOIN.union(WorldScopes::DELEGATE);
         assert!(
             join_only.attenuate(WorldScopes::GUEST).is_none(),
             "widening"
@@ -6402,12 +6389,12 @@ mod tests {
     fn scope_names_and_effects_follow_the_scopes() {
         assert_eq!(
             WorldScopes::from_names(["join", "delegate"]),
-            Some(WorldScopes(0b1001))
+            WorldScopes::from_bits(0b1001)
         );
         assert_eq!(WorldScopes::from_names(["join", "telepathy"]), None);
         assert!(WorldScopes::GUEST.allows_effect("chat.say"));
         assert!(WorldScopes::GUEST.allows_effect("chat.history"));
-        let spectator = WorldScopes(WorldScopes::JOIN.bits() | WorldScopes::INPUT.bits());
+        let spectator = WorldScopes::JOIN.union(WorldScopes::INPUT);
         assert!(!spectator.allows_effect("chat.say"));
         assert!(!spectator.allows_effect("chat.history"));
         assert!(spectator.allows_effect("time.now"));
@@ -6416,14 +6403,14 @@ mod tests {
     #[test]
     fn delegated_capabilities_are_narrow_and_die_with_their_parent() {
         let mut core = world(8);
-        let root = WorldScopes(WorldScopes::GUEST.bits() | WorldScopes::DELEGATE.bits());
+        let root = WorldScopes::GUEST.union(WorldScopes::DELEGATE);
         let (owner, owner_token) = core
             .issue_capability("Ada", root, CapabilityBounds::default())
             .unwrap();
         let (child, child_token) = core
             .attenuate(
                 &owner_token,
-                WorldScopes(WorldScopes::JOIN.bits() | WorldScopes::DELEGATE.bits()),
+                WorldScopes::JOIN.union(WorldScopes::DELEGATE),
                 CapabilityBounds::default(),
                 "Bo",
             )
@@ -6470,7 +6457,7 @@ mod tests {
             ..WorldLimits::default()
         };
         let mut core = WorldCore::new("limit", limits).unwrap();
-        let root = WorldScopes(WorldScopes::GUEST.bits() | WorldScopes::DELEGATE.bits());
+        let root = WorldScopes::GUEST.union(WorldScopes::DELEGATE);
         let (_, owner_token) = core
             .issue_capability("Ada", root, CapabilityBounds::default())
             .unwrap();

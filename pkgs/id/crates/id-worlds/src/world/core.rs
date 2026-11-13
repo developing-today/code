@@ -1734,7 +1734,7 @@ impl WorldCore {
             .map(|record| JournalEntry::Issued {
                 participant: record.participant.clone(),
                 digest: hex_encode(&record.digest),
-                scopes: record.scopes.0,
+                scopes: record.scopes.bits(),
                 parent: record.parent,
                 expires_at: record.bounds.expires_at,
                 uses: record.bounds.uses,
@@ -1924,7 +1924,7 @@ impl WorldCore {
                 && subject != parent_subject
                 && !self.directory.are_friends(parent_subject, subject)
             {
-                return Some(WorldScopes(0));
+                return Some(WorldScopes::EMPTY);
             }
             current = record.parent;
         }
@@ -2605,7 +2605,7 @@ impl WorldCore {
 
     pub(crate) fn viewer_scopes(&self, participant_id: u64) -> WorldScopes {
         self.effective_scopes(participant_id)
-            .unwrap_or(WorldScopes(0))
+            .unwrap_or(WorldScopes::EMPTY)
     }
 
     pub(crate) fn viewer(&self, token: &JoinCapability) -> Result<Participant> {
