@@ -94,17 +94,12 @@ pub fn hex_decode(input: &str) -> Result<Vec<u8>> {
         .collect()
 }
 
-/// Truncate `s` to at most `max` bytes **on a character boundary**, appending `…`.
-pub fn truncate_on_char_boundary(s: &str, max: usize) -> String {
-    if s.len() <= max {
-        return s.to_owned();
-    }
-    let mut end = max;
-    while end > 0 && !s.is_char_boundary(end) {
-        end -= 1;
-    }
-    format!("{}…", &s[..end])
-}
+/// Truncate `s` to at most `max` bytes **on a character boundary**,
+/// appending `…`. The definition lives in `id-core`
+/// ([`id_core::text::truncate_on_char_boundary`], crate split step
+/// 6c, #4409) so `id-web` can use it without the facade; re-exported
+/// here at its historical path.
+pub use id_core::text::truncate_on_char_boundary;
 
 impl TagDisplayOptions {
     /// Format a tag value for display according to these options.

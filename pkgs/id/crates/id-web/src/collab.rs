@@ -68,7 +68,7 @@ use super::identity::{sanitize_name, short_id};
 use super::markdown::{
     markdown_to_prosemirror, plain_text_to_prosemirror, raw_text_to_prosemirror,
 };
-use crate::frames::MAX_FRAME_BYTES;
+use id_core::frames::MAX_FRAME_BYTES;
 
 /// Message type tags for the wire protocol.
 mod msg {

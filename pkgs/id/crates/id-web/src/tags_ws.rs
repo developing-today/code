@@ -37,7 +37,7 @@
 //! - otherwise — delete the exact `(subject, key, value)` tag (a request with
 //!   no value deletes the value-less key-only tag)
 
-use crate::frames::MAX_FRAME_BYTES;
+use id_core::frames::MAX_FRAME_BYTES;
 use axum::{
     Json,
     extract::{Query, State, WebSocketUpgrade, ws::Message},
@@ -49,7 +49,7 @@ use futures::{SinkExt, StreamExt};
 use serde::{Deserialize, Serialize};
 
 use super::AppState;
-use crate::tags::{CustomNamespace, NamespacePair, Tag, TagStore};
+use id_store::tags::{CustomNamespace, NamespacePair, Tag, TagStore};
 
 /// Resolve the `ns` request parameter to a namespace pair.
 ///
@@ -302,7 +302,7 @@ pub async fn get_tags_handler(
                 tags.into_iter()
                     .filter(|t| {
                         value.is_none()
-                            || t.value.as_ref().map(super::super::tags::TagValue::as_bytes)
+                            || t.value.as_ref().map(id_store::tags::TagValue::as_bytes)
                                 == value.map(str::as_bytes)
                     })
                     .collect::<Vec<_>>()
@@ -462,7 +462,7 @@ pub async fn search_tags_handler(
         Err(message) => return bad_ns(message).into_response(),
     };
 
-    if let Err(e) = crate::tags::parse_search_query(&query.q) {
+    if let Err(e) = id_store::tags::parse_search_query(&query.q) {
         return bad_ns(format!("invalid search query: {e}")).into_response();
     }
 
@@ -506,9 +506,9 @@ mod tests {
     use tower::ServiceExt as _;
 
     use super::*;
-    use crate::frames::MAX_FRAME_BYTES;
-    use crate::tags::TagStore;
-    use crate::web::AppState;
+    use id_core::frames::MAX_FRAME_BYTES;
+    use id_store::tags::TagStore;
+    use crate::AppState;
 
     async fn router() -> (Router, tempfile::TempDir, Endpoint, Docs) {
         let endpoint = Endpoint::builder(presets::Minimal)

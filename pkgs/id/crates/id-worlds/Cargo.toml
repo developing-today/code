@@ -43,6 +43,10 @@ sandbox = ["dep:wasmtime", "id-caps/sandbox", "id-core/sandbox"]
 # The russh dependency lives inside id-worlds (design feature
 # mapping); the facade `ssh` feature forwards here.
 ssh = ["dep:russh"]
+# Test-support surface (world_hub::testing) for downstream test suites
+# (id-web's, since step 6c); mirrors the id-core/id-sync test-utils
+# pattern. Never enabled by a production build.
+test-utils = []
 
 [dependencies]
 anyhow = "1"

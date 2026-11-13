@@ -39,9 +39,9 @@ use axum::{
 };
 use serde::{Deserialize, Serialize};
 
-use crate::directory::{Actor, Directory};
-use crate::seitan::{Invite, Proof, Reject, Token};
-use crate::world_hub::ResolveError;
+use id_directory::directory::{Actor, Directory};
+use id_directory::seitan::{Invite, Proof, Reject, Token};
+use id_worlds::world_hub::ResolveError;
 
 use super::AppState;
 
@@ -113,7 +113,7 @@ impl SeitanState {
     }
 
     /// The window admits are checked under: the configured one, or
-    /// [`crate::seitan::DEFAULT_WINDOW`] for the default (no-config)
+    /// [`id_directory::seitan::DEFAULT_WINDOW`] for the default (no-config)
     /// state, so a serve without a server config behaves exactly as
     /// before.
     #[must_use]
@@ -122,7 +122,7 @@ impl SeitanState {
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .window
-            .unwrap_or(crate::seitan::DEFAULT_WINDOW)
+            .unwrap_or(id_directory::seitan::DEFAULT_WINDOW)
     }
 
     /// Whether the directory currently marks `account` verified —
@@ -145,7 +145,7 @@ impl SeitanState {
         &self,
         key: &str,
         name: &str,
-    ) -> anyhow::Result<crate::directory::DirectoryEntry> {
+    ) -> anyhow::Result<id_directory::directory::DirectoryEntry> {
         self.inner
             .lock()
             .unwrap_or_else(|e| e.into_inner())
@@ -285,8 +285,8 @@ pub(crate) async fn seitan_admit_handler(
     Json(request): Json<SeitanAdmitRequest>,
 ) -> Response {
     let (Some(message), Some(signature_bytes)) = (
-        crate::world_session::decode_hex(&request.message),
-        crate::world_session::decode_hex(&request.signature),
+        id_worlds::world_session::decode_hex(&request.message),
+        id_worlds::world_session::decode_hex(&request.signature),
     ) else {
         return error_response(StatusCode::BAD_REQUEST, "malformed");
     };
@@ -296,7 +296,7 @@ pub(crate) async fn seitan_admit_handler(
     let proof = Proof { message, signature };
     // Parse first: an unparseable proof is a 400 and names no invite,
     // so nothing else can be checked — and nothing is consumed.
-    let fields = match crate::seitan::accept::parse(&proof.message) {
+    let fields = match id_directory::seitan::accept::parse(&proof.message) {
         Ok(fields) => fields,
         Err(_) => return error_response(StatusCode::BAD_REQUEST, "malformed"),
     };

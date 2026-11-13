@@ -565,7 +565,7 @@ fn hex_encode(bytes: &[u8]) -> String {
 pub(super) fn sanitize_name(name: Option<String>) -> Option<String> {
     name.map(|name| {
         name.chars()
-            .filter(|ch| !ch.is_control() && !crate::is_format_char(*ch))
+            .filter(|ch| !ch.is_control() && !id_core::is_format_char(*ch))
             .take(MAX_NAME_LENGTH)
             .collect::<String>()
             .trim()
@@ -990,7 +990,7 @@ fn base64url_decode(encoded: &str) -> Option<Vec<u8>> {
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
     use super::*;
-    use crate::test_forgeries::{IDENTITY_KEY, identity_forgery, with_non_canonical_s};
+    use id_core::test_forgeries::{IDENTITY_KEY, identity_forgery, with_non_canonical_s};
     use proptest::prelude::*;
     use std::collections::HashSet;
 
@@ -1751,7 +1751,7 @@ mod tests {
         let output = std::process::Command::new(std::env::current_exe().unwrap())
             .args([
                 "--exact",
-                "web::identity::tests::test_second_open_probe",
+                "identity::tests::test_second_open_probe",
                 "--nocapture",
             ])
             .env(PROBE_PATH_ENV, &path)

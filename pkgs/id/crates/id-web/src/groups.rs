@@ -3,10 +3,10 @@
 //! their members and roles, and the grants in force.
 //!
 //! This is NOT the hosted-world directory group list at `/explore`
-//! (a `crate::directory_view::DirectoryView`); it is the local
+//! (a `id_directory::directory_view::DirectoryView`); it is the local
 //! `groups.jsonl` event log the group commands and `id serve` maintain.
 //!
-//! Read-only is load-bearing: [`GroupLog::open`](crate::groups::log::GroupLog::open)
+//! Read-only is load-bearing: [`GroupLog::open`](id_groups::groups::log::GroupLog::open)
 //! truncates a torn final line, which is a mutation — a page GET must
 //! never repair the file. [`read_projection`] therefore parses the file
 //! itself with the same torn-tail tolerance (every unterminated final
@@ -23,13 +23,13 @@ use axum::response::{Html, IntoResponse, Response};
 
 use super::AppState;
 use super::templates::{html_escape, render_page};
-use crate::groups::{Event, Key, Projection, fold};
+use id_events::groups::{Event, Key, Projection, fold};
 
 /// Resolves the group-log path the web page reads: the configured
 /// path when one was passed in, else the default file name the group
 /// CLI uses (`groups.jsonl`).
 pub fn resolve_groups_log(configured: Option<PathBuf>) -> PathBuf {
-    configured.unwrap_or_else(|| PathBuf::from(crate::groups::log::FILE_NAME))
+    configured.unwrap_or_else(|| PathBuf::from(id_groups::groups::log::FILE_NAME))
 }
 
 /// The group-log path for this state: the path `id serve` resolved
@@ -89,7 +89,7 @@ fn key_hex(key: &Key) -> String {
 /// it — via [`Projection::grants_in_force`], so a grant whose grantor
 /// was later removed still shows while it remains in force.
 pub fn render_groups(projection: &Projection) -> String {
-    let grants: Vec<&crate::groups::Grant> = projection.grants_in_force().collect();
+    let grants: Vec<&id_events::groups::Grant> = projection.grants_in_force().collect();
     let mut html = String::from(
         "<h1>Groups</h1>\
          <p>This node's local groups from its group event log, read-only. \
@@ -124,7 +124,7 @@ pub fn render_groups(projection: &Projection) -> String {
             }
             html.push_str("</tbody></table>");
         }
-        let group_grants: Vec<&&crate::groups::Grant> =
+        let group_grants: Vec<&&id_events::groups::Grant> =
             grants.iter().filter(|grant| grant.group == *id).collect();
         if group_grants.is_empty() {
             html.push_str("<p>No grants in force.</p>");
@@ -188,9 +188,9 @@ pub async fn groups_page_handler(State(state): State<AppState>) -> Response {
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
-    use crate::groups::log::GroupLog;
-    use crate::groups::policy::{Delegation, Policy, RemoveMode, Template};
-    use crate::groups::{Body, Create, Delegate, MemberOp, Role};
+    use id_groups::groups::log::GroupLog;
+    use id_events::groups::policy::{Delegation, Policy, RemoveMode, Template};
+    use id_events::groups::{Body, Create, Delegate, MemberOp, Role};
     use tempfile::TempDir;
 
     const OWNER: Key = [1; 32];
@@ -208,7 +208,7 @@ mod tests {
     /// A group whose grantor grants ANN a scope, then leaves; under
     /// `KeepPrior` the grant made before the removal stands.
     fn log_with_retained_grant(dir: &TempDir) -> PathBuf {
-        let path = dir.path().join(crate::groups::log::FILE_NAME);
+        let path = dir.path().join(id_groups::groups::log::FILE_NAME);
         let mut log = GroupLog::open(&path).unwrap();
         let policy = Policy {
             delegation: Some(Delegation::KeepPrior),
@@ -290,7 +290,7 @@ mod tests {
         assert_eq!(resolve_groups_log(Some(custom.clone())), custom);
         assert_eq!(
             resolve_groups_log(None),
-            PathBuf::from(crate::groups::log::FILE_NAME)
+            PathBuf::from(id_groups::groups::log::FILE_NAME)
         );
     }
 
@@ -324,13 +324,13 @@ mod tests {
 
     #[test]
     fn pending_friendship_renders_pending_not_dissolved() {
-        use crate::groups::{Pair, friendship_id};
+        use id_events::groups::{Pair, friendship_id};
 
         let dir = TempDir::new().unwrap();
-        let path = dir.path().join(crate::groups::log::FILE_NAME);
+        let path = dir.path().join(id_groups::groups::log::FILE_NAME);
         let mut log = GroupLog::open(&path).unwrap();
         // A friendship's create must name the pair-derived group id, or
-        // the fold refuses it (see crate::groups::tests::request).
+        // the fold refuses it (see id_events::groups::tests::request).
         let pair = Pair::of(OWNER, ANN).unwrap();
         let friendship = friendship_id(&pair, 0);
         log.record(
@@ -354,7 +354,7 @@ mod tests {
     #[test]
     fn corrupt_complete_line_is_an_error_not_a_silent_drop() {
         let dir = TempDir::new().unwrap();
-        let path = dir.path().join(crate::groups::log::FILE_NAME);
+        let path = dir.path().join(id_groups::groups::log::FILE_NAME);
         std::fs::write(&path, "not json\n").unwrap();
         assert!(read_projection(&path).is_err());
     }

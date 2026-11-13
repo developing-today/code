@@ -11,7 +11,7 @@ use std::fmt::Write;
 
 use super::content_mode::MediaType;
 use super::routes::{FileKind, FileListPage};
-use crate::event_store::{Block, BlockKind};
+use id_events::event_store::{Block, BlockKind};
 
 /// Asset URLs for templates.
 ///
@@ -313,9 +313,9 @@ pub fn render_file_list_content(page: &FileListPage) -> String {
                         // Truncate on a char boundary: a raw &v[..256] slice
                         // panics when byte 256 splits a multi-byte character
                         // (#815). The CLI's helper already handles this.
-                        let truncated = crate::commands::tag::truncate_on_char_boundary(
+                        let truncated = id_core::text::truncate_on_char_boundary(
                             v,
-                            crate::tags::TAG_DISPLAY_MAX_BYTES,
+                            id_store::tags::TAG_DISPLAY_MAX_BYTES,
                         );
                         let val_esc = html_escape(&truncated);
                         let _ = write!(
@@ -1265,7 +1265,7 @@ pub fn render_blocks(blocks: &[Block]) -> String {
     if blocks.is_empty() {
         html.push_str("        <p class=\"text-muted\">No blocks. The list is empty.</p>\n");
     } else {
-        let now_ms = crate::time::unix_ms();
+        let now_ms = id_core::time::unix_ms();
         html.push_str("        <table class=\"table table-xs\">\n");
         html.push_str(
             "            <tr><th>Kind</th><th>Value</th><th>Added</th><th>Reason</th><th>Expires</th><th></th></tr>\n",
@@ -1427,8 +1427,8 @@ fn format_size(bytes: u64) -> String {
 mod tests {
     use super::*;
 
-    use crate::web::content_mode::MediaType;
-    use crate::web::routes::FileInfo;
+    use crate::content_mode::MediaType;
+    use crate::routes::FileInfo;
 
     #[test]
     fn test_render_settings_shows_client_id_and_theme_labels() {
@@ -1701,7 +1701,7 @@ mod tests {
         // whose byte-256 offset splits a multi-byte character used to panic
         // on &v[..256]. 'é' here occupies bytes 255..257.
         let value = format!("{}é{}", "a".repeat(255), "tail-tail-tail");
-        assert!(value.len() > crate::tags::TAG_DISPLAY_MAX_BYTES);
+        assert!(value.len() > id_store::tags::TAG_DISPLAY_MAX_BYTES);
         let files = vec![FileInfo {
             name: "tagged.txt".to_owned(),
             display_name: None,

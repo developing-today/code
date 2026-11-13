@@ -11,16 +11,16 @@ use axum::{
     routing::{get, post},
 };
 
-use crate::directory::{Member, Refusal};
-use crate::directory_auth::{Caller, SESSION_TTL_MS};
-use crate::directory_view::{
+use id_directory::directory::{Member, Refusal};
+use id_directory::directory_auth::{Caller, SESSION_TTL_MS};
+use id_directory::directory_view::{
     AccountView, DeliveryView, DirectoryAction, DirectoryOutcome, DirectoryView, GroupView,
     account_labels, action_from_fields, level_name,
 };
-use crate::invite::Invite;
-use crate::petname::Label;
-use crate::qr;
-use crate::world_hub::{ResolveError, WorldHub};
+use id_directory::invite::Invite;
+use id_core::petname::Label;
+use id_core::qr;
+use id_worlds::world_hub::{ResolveError, WorldHub};
 
 use super::security::secure_attribute;
 use super::templates::html_escape;
@@ -649,9 +649,9 @@ fn login_forms() -> String {
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
     use super::*;
-    use crate::directory_view::render_text;
-    use crate::world::{WorldCore, WorldHandle, WorldLimits};
-    use crate::world_session::WorldService;
+    use id_directory::directory_view::render_text;
+    use id_worlds::world::{WorldCore, WorldHandle, WorldLimits};
+    use id_worlds::world_session::WorldService;
     use axum::body::Body;
     use axum::http::Request;
     use tower::ServiceExt as _;

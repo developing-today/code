@@ -23,9 +23,9 @@ use super::templates::{
     render_file_list, render_file_list_content, render_main_page_wrapper, render_media_viewer,
     render_page, render_peers, render_peers_content, render_settings,
 };
-use crate::event_store::{Block, BlockKind};
-use crate::fileops::{FileOpError, FileOps, claim_archive_name, snapshot_provenance_tags};
-use crate::tags::TagStore;
+use id_events::event_store::{Block, BlockKind};
+use id_sync::fileops::{FileOpError, FileOps, claim_archive_name, snapshot_provenance_tags};
+use id_store::tags::TagStore;
 use iroh_base::EndpointId;
 
 mod file_handlers;
@@ -1138,9 +1138,9 @@ fn parse_block_kind(raw: Option<&str>) -> Result<BlockKind, String> {
 
 /// Raw row value for `kind` from the operator's text: a peer key parses
 /// as an endpoint ID (its 32 key bytes are the row, matching
-/// [`BlockList::peer_blocked`](crate::event_store::BlockList::peer_blocked)),
+/// [`BlockList::peer_blocked`](id_events::event_store::BlockList::peer_blocked)),
 /// an IP parses and stores in text form (the form
-/// [`BlockList::ip_blocked`](crate::event_store::BlockList::ip_blocked)
+/// [`BlockList::ip_blocked`](id_events::event_store::BlockList::ip_blocked)
 /// checks), a topic tag stores verbatim.
 fn parse_block_value(kind: BlockKind, raw: &str) -> Result<Vec<u8>, String> {
     let raw = raw.trim();
@@ -1229,7 +1229,7 @@ async fn block_create_handler(
     let block = Block {
         kind,
         value,
-        added_at_ms: crate::time::unix_ms(),
+        added_at_ms: id_core::time::unix_ms(),
         reason: form.reason.as_deref().unwrap_or("").trim().to_owned(),
         expires_at_ms,
     };
@@ -1426,7 +1426,7 @@ async fn get_file_list(state: &AppState) -> Vec<FileInfo> {
                     tag.key.display_lossy(),
                     tag.value
                         .as_ref()
-                        .map(super::super::tags::TagValue::display_lossy),
+                        .map(id_store::tags::TagValue::display_lossy),
                 ));
         }
     }
@@ -1442,7 +1442,7 @@ async fn get_file_list(state: &AppState) -> Vec<FileInfo> {
         let name = String::from_utf8_lossy(tag_info.name.as_ref()).to_string();
 
         // Skip internal tags (e.g., .meta)
-        if crate::tags::is_internal_tag(&name) {
+        if id_store::tags::is_internal_tag(&name) {
             continue;
         }
 
@@ -1913,11 +1913,10 @@ mod save_publication_tests {
     use serde_json::json;
 
     use super::*;
-    use crate::{
-        local_events::Entry,
-        tags::TagStore,
-        web::{AppState, SaveRateLimiter},
-    };
+    use id_events::local_events::Entry;
+    use id_store::tags::TagStore;
+
+    use crate::{AppState, SaveRateLimiter};
 
     async fn state() -> (AppState, Endpoint, Docs) {
         let endpoint = Endpoint::builder(presets::Minimal)
@@ -2173,7 +2172,7 @@ mod upload_router_tests {
     use tower::ServiceExt as _;
 
     use super::*;
-    use crate::tags::TagStore;
+    use id_store::tags::TagStore;
 
     const BOUNDARY: &str = "----id-upload-test-boundary";
 
@@ -2219,12 +2218,12 @@ mod upload_router_tests {
         )
     }
 
-    fn hub_with_world(name: &str, admin: Option<&str>) -> crate::world_hub::WorldHub {
-        crate::world_hub::WorldHub::single_named(
+    fn hub_with_world(name: &str, admin: Option<&str>) -> id_worlds::world_hub::WorldHub {
+        id_worlds::world_hub::WorldHub::single_named(
             name,
-            crate::world_session::WorldService::new(
-                crate::world::WorldHandle::spawn(
-                    crate::world::WorldCore::new(name, crate::world::WorldLimits::default())
+            id_worlds::world_session::WorldService::new(
+                id_worlds::world::WorldHandle::spawn(
+                    id_worlds::world::WorldCore::new(name, id_worlds::world::WorldLimits::default())
                         .unwrap(),
                 ),
                 admin.map(str::to_owned),
@@ -2297,14 +2296,14 @@ mod upload_router_tests {
     #[tokio::test]
     async fn program_router_bridge_is_pinned_to_the_bound_world() {
         let (_, mut state, _dir, _endpoint, _docs) = router_with_state().await;
-        let opener = crate::world_hub::testing::MemoryOpener::new(false);
-        let dyn_opener: std::sync::Arc<dyn crate::world_hub::WorldOpener> =
+        let opener = id_worlds::world_hub::testing::MemoryOpener::new(false);
+        let dyn_opener: std::sync::Arc<dyn id_worlds::world_hub::WorldOpener> =
             opener.clone();
-        let hub = crate::world_hub::WorldHub::new(
+        let hub = id_worlds::world_hub::WorldHub::new(
             dyn_opener,
             Some("admin".to_owned()),
             "arena",
-            crate::world_hub::HubLimits::default(),
+            id_worlds::world_hub::HubLimits::default(),
         );
         // Host both worlds before the program router exists.
         hub.create("arena").await.unwrap();
@@ -2463,7 +2462,7 @@ mod upload_router_tests {
     /// test account already keyed into its directory when
     /// `with_account`), hosting world `arena` under admin `s3cret`.
     async fn seitan_app(
-        seitan: crate::web::SeitanState,
+        seitan: crate::SeitanState,
         with_account: bool,
     ) -> (Router, AppState, tempfile::TempDir, Endpoint, Docs) {
         let (_, mut state, dir, endpoint, docs) = router_with_state().await;
@@ -2496,7 +2495,7 @@ mod upload_router_tests {
             .unwrap()
     }
 
-    async fn seitan_admit(app: &Router, proof: &crate::seitan::Proof) -> Response {
+    async fn seitan_admit(app: &Router, proof: &id_directory::seitan::Proof) -> Response {
         let body = serde_json::json!({
             "message": seitan_hex(&proof.message),
             "signature": seitan_hex(&proof.signature),
@@ -2521,16 +2520,16 @@ mod upload_router_tests {
         // is exercised at the boundary: a proof signed 8 minutes
         // before the invite was created is outside the default window
         // and inside the configured one, and it admits.
-        let seitan = crate::web::SeitanState::new(
-            crate::directory::Directory::new(),
+        let seitan = crate::SeitanState::new(
+            id_directory::directory::Directory::new(),
             std::time::Duration::from_mins(10),
         );
         let (app, state, _dir, _endpoint, _docs) = seitan_app(seitan, true).await;
-        let token = crate::seitan::Token::generate();
+        let token = id_directory::seitan::Token::generate();
         let registered = seitan_register(&app, token.as_str(), Some("s3cret")).await;
         assert_eq!(registered.status(), StatusCode::OK);
         let uid = seitan_account_key();
-        let proof = crate::seitan::accept::sign(
+        let proof = id_directory::seitan::accept::sign(
             &token,
             &uid,
             1,
@@ -2552,15 +2551,15 @@ mod upload_router_tests {
     async fn seitan_admit_refuses_a_stale_proof_through_the_live_path() {
         // (b) Under a 1-minute configured window, a proof signed 5
         // minutes before the invite was created refuses `stale`.
-        let seitan = crate::web::SeitanState::new(
-            crate::directory::Directory::new(),
+        let seitan = crate::SeitanState::new(
+            id_directory::directory::Directory::new(),
             std::time::Duration::from_mins(1),
         );
         let (app, _state, _dir, _endpoint, _docs) = seitan_app(seitan, true).await;
-        let token = crate::seitan::Token::generate();
+        let token = id_directory::seitan::Token::generate();
         let registered = seitan_register(&app, token.as_str(), Some("s3cret")).await;
         assert_eq!(registered.status(), StatusCode::OK);
-        let proof = crate::seitan::accept::sign(
+        let proof = id_directory::seitan::accept::sign(
             &token,
             &seitan_account_key(),
             1,
@@ -2577,11 +2576,11 @@ mod upload_router_tests {
         // (c) The default state (no server config) admits a fresh
         // proof under the 5-minute default window.
         let (app, _state, _dir, _endpoint, _docs) =
-            seitan_app(crate::web::SeitanState::default(), true).await;
-        let token = crate::seitan::Token::generate();
+            seitan_app(crate::SeitanState::default(), true).await;
+        let token = id_directory::seitan::Token::generate();
         let registered = seitan_register(&app, token.as_str(), Some("s3cret")).await;
         assert_eq!(registered.status(), StatusCode::OK);
-        let proof = crate::seitan::accept::sign(&token, &seitan_account_key(), 1, seitan_now_ms())
+        let proof = id_directory::seitan::accept::sign(&token, &seitan_account_key(), 1, seitan_now_ms())
             .unwrap();
         let admitted = seitan_admit(&app, &proof).await;
         assert_eq!(admitted.status(), StatusCode::OK);
@@ -2592,9 +2591,9 @@ mod upload_router_tests {
         // (d) A proof for a token that was never registered names an
         // invite the registry does not hold.
         let (app, _state, _dir, _endpoint, _docs) =
-            seitan_app(crate::web::SeitanState::default(), true).await;
-        let token = crate::seitan::Token::generate();
-        let proof = crate::seitan::accept::sign(&token, &seitan_account_key(), 1, seitan_now_ms())
+            seitan_app(crate::SeitanState::default(), true).await;
+        let token = id_directory::seitan::Token::generate();
+        let proof = id_directory::seitan::accept::sign(&token, &seitan_account_key(), 1, seitan_now_ms())
             .unwrap();
         let refused = seitan_admit(&app, &proof).await;
         assert_eq!(refused.status(), StatusCode::NOT_FOUND);
@@ -2606,13 +2605,13 @@ mod upload_router_tests {
         // (e) The account check runs before `admit`: an unknown uid
         // refuses 403, and the same proof succeeds once the account
         // exists — the invite was not consumed by the refusal.
-        let seitan = crate::web::SeitanState::default();
+        let seitan = crate::SeitanState::default();
         let (app, state, _dir, _endpoint, _docs) = seitan_app(seitan.clone(), false).await;
-        let token = crate::seitan::Token::generate();
+        let token = id_directory::seitan::Token::generate();
         let registered = seitan_register(&app, token.as_str(), Some("s3cret")).await;
         assert_eq!(registered.status(), StatusCode::OK);
         let uid = seitan_account_key();
-        let proof = crate::seitan::accept::sign(&token, &uid, 1, seitan_now_ms()).unwrap();
+        let proof = id_directory::seitan::accept::sign(&token, &uid, 1, seitan_now_ms()).unwrap();
         let refused = seitan_admit(&app, &proof).await;
         assert_eq!(refused.status(), StatusCode::FORBIDDEN);
         assert_eq!(seitan_response_json(refused).await["reason"], "unknown_account");
@@ -2628,8 +2627,8 @@ mod upload_router_tests {
         // Minting an invite without the admin secret (or with the
         // wrong one) is refused, like POST /api/world/invite.
         let (app, _state, _dir, _endpoint, _docs) =
-            seitan_app(crate::web::SeitanState::default(), false).await;
-        let token = crate::seitan::Token::generate();
+            seitan_app(crate::SeitanState::default(), false).await;
+        let token = id_directory::seitan::Token::generate();
         let no_secret = seitan_register(&app, token.as_str(), None).await;
         assert_eq!(no_secret.status(), StatusCode::UNAUTHORIZED);
         let wrong_secret = seitan_register(&app, token.as_str(), Some("wrong")).await;
@@ -2643,12 +2642,12 @@ mod upload_router_tests {
         // with a fresh one — the same proof refuses `used`, it does
         // not admit a second time.
         let (app, _state, _dir, _endpoint, _docs) =
-            seitan_app(crate::web::SeitanState::default(), true).await;
-        let token = crate::seitan::Token::generate();
+            seitan_app(crate::SeitanState::default(), true).await;
+        let token = id_directory::seitan::Token::generate();
         let registered = seitan_register(&app, token.as_str(), Some("s3cret")).await;
         assert_eq!(registered.status(), StatusCode::OK);
         let proof =
-            crate::seitan::accept::sign(&token, &seitan_account_key(), 1, seitan_now_ms()).unwrap();
+            id_directory::seitan::accept::sign(&token, &seitan_account_key(), 1, seitan_now_ms()).unwrap();
         let admitted = seitan_admit(&app, &proof).await;
         assert_eq!(admitted.status(), StatusCode::OK);
 
@@ -2670,21 +2669,21 @@ mod upload_router_tests {
         // The world page handler 404s when no world is hosted; host
         // one so the assertions below measure routing (the configured
         // route registered, the default route absent), not hosting.
-        state.world = Some(crate::world_hub::WorldHub::single(
-            crate::world_session::WorldService::new(
-                crate::world::WorldHandle::spawn(
-                    crate::world::WorldCore::new("lobby", crate::world::WorldLimits::default())
+        state.world = Some(id_worlds::world_hub::WorldHub::single(
+            id_worlds::world_session::WorldService::new(
+                id_worlds::world::WorldHandle::spawn(
+                    id_worlds::world::WorldCore::new("lobby", id_worlds::world::WorldLimits::default())
                         .unwrap(),
                 ),
                 None,
             ),
         ));
-        let interface = crate::web::web_interface_from_app_toml(
+        let interface = crate::web_interface_from_app_toml(
             "[interfaces.web]\nmode = \"adapter\"\nroute = \"/arena\"\nsocket = \"/ws/arena\"\n",
         )
         .unwrap()
         .unwrap();
-        let app = crate::web::create_router_for_app(state, &interface, WebSecurity::default());
+        let app = crate::create_router_for_app(state, &interface, WebSecurity::default());
         let arena = app
             .clone()
             .oneshot(
