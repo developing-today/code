@@ -18,7 +18,6 @@ The earlier v1.9-era Talos test cluster (the layout in [`doc/talos-addresses.md`
 
 | Title                                  | Status  | Intent                                                                                        | Links |
 | -------------------------------------- | ------- | --------------------------------------------------------------------------------------------- | ----- |
-| Network fabric                         | planned | Switching and a new addressing plan, replacing the torn-down 01b.us test layout.              | #1084 |
 | Storage assembly and design validation | planned | Build the HDD RAID 10 pools and NVMe tiers, validated against per-drive records.              | #1085 |
 | TALM and Talos bootstrap               | planned | Prove the declarative bootstrap flow, including per-machine drives that are all different.    | #1086 |
 | Cloud extension                        | planned | The OCI always-free fleet, egress offload, and cold tiering to R2 alongside the home cluster. | #1091 |
