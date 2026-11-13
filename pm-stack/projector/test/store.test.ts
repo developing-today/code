@@ -406,3 +406,71 @@ describe("store: comments + links + subject view", () => {
     expect(view!.activity.length).toBeGreaterThan(0);
   });
 });
+
+describe("store: legacy review timestamp correction (#3087 P2)", () => {
+  const legacy = (over: Partial<CommentRow> = {}): Omit<CommentRow, "fetched_at"> =>
+    comment({
+      id: "review-legacy-1",
+      kind: "review",
+      review_state: "approved",
+      submitted_at: "2026-10-25T01:00:00Z",
+      // Fabricated pre-#7814 delivery-time timestamp: later than submitted_at.
+      source_updated_at: "2026-10-25T03:30:00Z",
+      ...over,
+    });
+
+  test("a new-rule webhook corrects a legacy fabricated review row", async () => {
+    await upsertComment(db, legacy());
+    await upsertComment(
+      db,
+      legacy({
+        review_state: "dismissed",
+        source_updated_at: "2026-10-25T01:00:00Z",
+      }),
+    );
+    const rows = await getComments(db, ["developing-today/code#2"]);
+    const row = rows.find((r) => r.id === "review-legacy-1");
+    expect(row?.review_state).toBe("dismissed");
+    expect(row?.source_updated_at).toBe("2026-10-25T01:00:00Z");
+  });
+
+  test("monotonicity resumes after the correction", async () => {
+    // A stale replay (older than the corrected timestamp) is refused.
+    await upsertComment(
+      db,
+      legacy({
+        review_state: "commented",
+        source_updated_at: "2026-10-25T00:30:00Z",
+      }),
+    );
+    const rows = await getComments(db, ["developing-today/code#2"]);
+    const row = rows.find((r) => r.id === "review-legacy-1");
+    expect(row?.review_state).toBe("dismissed");
+  });
+
+  test("the correction branch never fires for non-review rows", async () => {
+    await upsertComment(
+      db,
+      comment({
+        id: "issue-comment-1",
+        kind: "issue_comment",
+        body: "original",
+        submitted_at: null,
+        source_updated_at: "2026-10-25T03:30:00Z",
+      }),
+    );
+    await upsertComment(
+      db,
+      comment({
+        id: "issue-comment-1",
+        kind: "issue_comment",
+        body: "stale rewrite",
+        submitted_at: null,
+        source_updated_at: "2026-10-25T01:00:00Z",
+      }),
+    );
+    const rows = await getComments(db, ["developing-today/code#2"]);
+    const row = rows.find((r) => r.id === "issue-comment-1");
+    expect(row?.body).toBe("original");
+  });
+});
