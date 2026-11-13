@@ -33,6 +33,7 @@ pub use crate::groups::worlds::Isolation;
 pub(crate) use crate::time::unix_ms;
 mod actor;
 mod clock;
+mod coordinator;
 mod core;
 mod handle;
 pub mod hotness;
@@ -49,6 +50,11 @@ mod tests;
 
 pub(crate) use actor::{WorldActor, WorldCommand};
 pub use clock::{Clock, ManualClock, SystemClock};
+pub use coordinator::{
+    ActiveHandoff, Coordinator, CoordinatorError, EntityInTransit, EntityOwner, ExportReceipt,
+    HandoffCompletion, HandoffStage, ImportReceipt, ObserveOutcome, ReconcileOutcome,
+    TransitStage, STUCK_THRESHOLD_MS,
+};
 pub(crate) use core::AdminHistoryByteLedger;
 pub use core::WorldCore;
 pub use handle::WorldHandle;
