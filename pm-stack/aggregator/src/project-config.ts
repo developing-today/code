@@ -304,7 +304,7 @@ export const PROJECT_CONFIGS: ProjectConfig[] = [
         {
           title: "The path to Phase 12 (Now)",
           detail:
-            "A CI signal that can be trusted, validation of the delivered phases, journal format management (must land before any new journal entry type), cost visibility baselines, and the Phase 12 designs run through the research workflow. The ordered prerequisite queue is #1235.",
+            "The ordered prerequisite queue is #1235 — its steps render live in the Path to Phase 12 panel on this page (per-step GitHub state joined from the #1235 body), which replaces the hand-written narrative that used to sit in this entry. The themes: a CI signal that can be trusted, validation of the delivered phases, journal format management (must land before any new journal entry type), cost visibility baselines, and the Phase 12 designs run through the research workflow.",
           refs: [code(229), code(1075), code(534), code(1235)],
         },
         {

@@ -1,0 +1,7 @@
+[Unit]
+Description=PM host-health collector — claimant mode + pm unit states for the aggregator watchdog (code#10141)
+After=network.target
+
+[Service]
+Type=oneshot
+ExecStart=/bin/sh -lc 'python3 /home/user/pm-stack/host-health-collector.py'

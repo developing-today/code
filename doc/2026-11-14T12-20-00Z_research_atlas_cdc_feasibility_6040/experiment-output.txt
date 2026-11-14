@@ -1,0 +1,56 @@
+self-check OK: unchanged document => reuse == survival == 1.0 for all chunkers
+corpus: 651 markdown files >=4KiB under doc/ + planning/, 16804740 bytes
+{
+  "fastcdc": {
+    "insert15": {
+      "chunks_v1_total": 6667,
+      "dedup_ratio_v1_mean": 0.0,
+      "reuse_v2_mean": 0.2789,
+      "survival_mean": 0.3466
+    },
+    "rewrite": {
+      "chunks_v1_total": 6667,
+      "dedup_ratio_v1_mean": 0.0,
+      "reuse_v2_mean": 0.4537,
+      "survival_mean": 0.5285
+    }
+  },
+  "fixed": {
+    "insert15": {
+      "chunks_v1_total": 8528,
+      "dedup_ratio_v1_mean": 0.0,
+      "reuse_v2_mean": 0.0,
+      "survival_mean": 0.0
+    },
+    "rewrite": {
+      "chunks_v1_total": 8528,
+      "dedup_ratio_v1_mean": 0.0,
+      "reuse_v2_mean": 0.5491,
+      "survival_mean": 0.5901
+    }
+  },
+  "span": {
+    "insert15": {
+      "chunks_v1_total": 9446,
+      "dedup_ratio_v1_mean": 0.0,
+      "reuse_v2_mean": 0.3461,
+      "survival_mean": 0.417
+    },
+    "rewrite": {
+      "chunks_v1_total": 9446,
+      "dedup_ratio_v1_mean": 0.0,
+      "reuse_v2_mean": 0.5544,
+      "survival_mean": 0.607
+    }
+  }
+}
+
+Byte-weighted (pooled) aggregates, same run:
+fastcdc insert15 reuse 0.5205 survival 0.5557
+fastcdc rewrite  reuse 0.6706 survival 0.7009
+fixed   insert15 reuse 0.0000 survival 0.0000
+fixed   rewrite  reuse 0.7552 survival 0.7635
+span    insert15 reuse 0.5464 survival 0.5927
+span    rewrite  reuse 0.7539 survival 0.7775
+Sanity anchor (single 1195710-byte doc, one 15-byte insertion):
+fastcdc reuse 0.9979 survival 0.9970; fixed reuse 0.0034; span reuse 0.9985 survival 0.9984

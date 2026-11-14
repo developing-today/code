@@ -1,0 +1,66 @@
+{
+  "title": "Triage developing-today/code#9241: research(pm-orchestration): recover Queue Table Improvements provenance and schema crosswalk",
+  "body": "Triage the research-only issue https://github.com/developing-today/code/issues/9241. It records the Queue Table Improvements provenance/schema-crosswalk gap under census #9198 and epic #9196. Verify the issue is understood and routed to the research queue; do not implement production or schema changes.",
+  "priority": 30,
+  "dedupe_key": "repo-health:v1:triage:developing-today/code:issue:9241",
+  "payload": {
+    "schema": "repo-task/v1",
+    "kind": "triage",
+    "repo": "developing-today/code",
+    "queue": "repo-health-code-pilot",
+    "issue": {
+      "number": 9241,
+      "url": "https://github.com/developing-today/code/issues/9241",
+      "title": "research(pm-orchestration): recover Queue Table Improvements provenance and schema crosswalk",
+      "state_checked_at": "2026-11-13T03:49:52Z"
+    },
+    "problem": "New research-only issue filed under #9198. It must receive a live triage task in the code pilot queue in the same filing pass. The QTI original is unlocated/unverified; #3424/#8579 are candidate compatibility evidence, not presumed equivalents. This packet requests triage/research routing only, not implementation.",
+    "evidence": [
+      "https://github.com/developing-today/code/issues/9241",
+      "https://github.com/developing-today/code/issues/9198",
+      "https://github.com/developing-today/code/issues/9196",
+      "https://github.com/developing-today/code/pull/9225",
+      "doc/2026-11-13T03-20-24Z_design_pm-stack-fleet-orchestration/census/track-a.md",
+      "doc/2026-11-13T03-20-24Z_design_pm-stack-fleet-orchestration/census/anchors.json",
+      "doc/2026-11-13T03-20-24Z_design_pm-stack-fleet-orchestration/issues/seed/research-gap.md"
+    ],
+    "acceptance": [
+      "Triage #9241 and route it to research-only disposition; preserve the explicit no-production/no-schema-change boundary.",
+      "If further recovery is assigned, record reproducible search results, source identity evidence or bounded unresolved status, and a field-owner crosswalk; do not equate #3424 or #8579 with QTI without primary evidence."
+    ],
+    "tests": [
+      "Verify the issue and its marker/title are readable; verify its live queue task is present in repo-health-code-pilot."
+    ],
+    "scope": {
+      "include": [
+        "Triage and research routing for developing-today/code#9241",
+        "Queue Table Improvements provenance and schema compatibility research only"
+      ],
+      "exclude": [
+        "Production code or schema changes",
+        "Queue, Project, deployment, or migration changes",
+        "Duplicating the census worker's #3424/#8579 candidate investigation",
+        "Urgency 450 or translating it into queue priority"
+      ]
+    },
+    "risk": {
+      "level": "low",
+      "flags": ["research-only", "same-pass-triage"]
+    },
+    "priority_reason": "Normal (30): ordinary triage routing for a research issue. The source charter's urgency 450/Do Now instruction does not set this queue task priority.",
+    "timebox_minutes": 45,
+    "max_attempts": 6,
+    "context_refs": [
+      "https://github.com/developing-today/code/issues/9241",
+      "https://github.com/developing-today/code/issues/9198",
+      "https://github.com/developing-today/code/issues/9196",
+      "https://github.com/developing-today/code/pull/9225",
+      "doc/2026-11-13T03-20-24Z_design_pm-stack-fleet-orchestration/census/track-a.md",
+      "doc/2026-11-13T03-20-24Z_design_pm-stack-fleet-orchestration/census/anchors.json"
+    ],
+    "dedupe": {
+      "checked_at": "2026-11-13T03:49:52Z",
+      "basis": "New issue #9241 was read back and has no live task yet; stable issue-number triage key makes enqueue retries idempotent."
+    }
+  }
+}

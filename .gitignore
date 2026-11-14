@@ -36,6 +36,13 @@ targets
 .direnv
 **/.direnv
 **/dist
+# pkgs/id/web/dist must exist (possibly empty) in source copies: id-web
+# embeds it with rust-embed, which generates no Assets::get when the
+# folder is absent - that broke source-only builds (the Nix id-lib
+# package) once the web layer became its own crate in split step 6c.
+!/pkgs/id/web/dist
+/pkgs/id/web/dist/*
+!/pkgs/id/web/dist/.gitkeep
 **/.tmp
 *.kate-swp
 **/*.kate-swp

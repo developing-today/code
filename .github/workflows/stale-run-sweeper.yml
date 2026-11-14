@@ -1,0 +1,115 @@
+name: stale-run sweeper
+
+# #2605 follow-on (task 16678): the Actions queue never expires stale
+# runs. At the 2026-11-14 measurement, 88 of 183 queued runs dated from
+# 2026-11-11 for long-superseded SHAs, and runners burn on ancient
+# commits while current checks wait.
+#
+# This sweeper cancels QUEUED runs that are both:
+#   - older than the threshold (default 6h), and
+#   - superseded: their head SHA is no longer the head of their branch
+#     (a branch that no longer exists counts as superseded).
+# It never touches in_progress runs, runs younger than the threshold,
+# or runs whose SHA is still their branch's head -- the current head's
+# verification always survives. Every decision (cancel or keep, with
+# the reason) is written to the job summary as the auditable log.
+#
+# The two largest fan-out workflows (mcpx test, id) already carry
+# concurrency/cancel-in-progress for same-ref supersession of non-push
+# runs; their push-to-main runs are deliberately keyed by run_id (see
+# id-check.yml) so each merge keeps its own run -- which is exactly
+# the population only a sweeper can reap once superseded.
+
+on:
+  schedule:
+    - cron: "23 */2 * * *"
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "Log decisions without cancelling"
+        type: boolean
+        default: true
+      threshold_hours:
+        description: "Minimum queued age in hours before a superseded run is cancelled"
+        type: number
+        default: 6
+
+permissions:
+  actions: write
+
+concurrency:
+  group: stale-run-sweeper
+  cancel-in-progress: false
+
+jobs:
+  sweep:
+    name: sweep stale queued runs
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      GH_TOKEN: ${{ github.token }}
+      DRY_RUN: ${{ github.event_name == 'workflow_dispatch' && inputs.dry_run || 'false' }}
+      THRESHOLD_HOURS: ${{ github.event_name == 'workflow_dispatch' && inputs.threshold_hours || '6' }}
+    steps:
+      - name: Sweep superseded queued runs older than the threshold
+        run: |
+          set -euo pipefail
+          repo="${{ github.repository }}"
+          cutoff=$(date -u -d "-${THRESHOLD_HOURS} hours" +%Y-%m-%dT%H:%M:%SZ)
+          summary="$GITHUB_STEP_SUMMARY"
+          echo "## stale-run sweeper — $(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$summary"
+          echo "repo $repo · threshold ${THRESHOLD_HOURS}h (cutoff $cutoff) · dry_run $DRY_RUN" >> "$summary"
+          # Collect candidates across ALL pages BEFORE cancelling any:
+          # cancelling while paginating shrinks the list and skips runs
+          # (found live in the inaugural sweep, task 16678).
+          candidates=$(mktemp)
+          declare -A heads=()
+          page=1
+          while :; do
+            runs=$(gh api "repos/$repo/actions/runs?status=queued&per_page=100&page=$page" \
+              --jq '.workflow_runs[] | [.id, .created_at, .head_branch, .head_sha, .name] | @tsv')
+            [ -z "$runs" ] && break
+            while IFS=$'\t' read -r id created branch sha wname; do
+              [ -z "$id" ] && continue
+              [[ "$created" > "$cutoff" ]] && continue
+              if [ -z "${heads[$branch]+x}" ]; then
+                heads[$branch]=$(gh api "repos/$repo/branches/$branch" --jq '.commit.sha' 2>/dev/null || echo "MISSING")
+              fi
+              if [ "${heads[$branch]}" = "$sha" ]; then
+                echo "- keep run $id ($wname, $branch @ $sha): still branch head" >> "$summary"
+              else
+                echo "$id|$created|$branch|$sha|$wname" >> "$candidates"
+              fi
+            done <<< "$runs"
+            page=$((page+1))
+          done
+          cancelled=0; phantom=0; failed=0; total=0
+          while IFS='|' read -r id created branch sha wname; do
+            [ -z "$id" ] && continue
+            total=$((total+1))
+            # Phantom runs: queued since the 2026-11-11 saturation with
+            # zero jobs materialized. The cancel endpoint refuses them
+            # (409 "Cannot cancel a workflow run that has not been
+            # queued yet") and they hold no runner; only GitHub-side
+            # expiry clears them. Log them as their own class so queue
+            # depth stops being misread as runner demand.
+            jobs=$(gh api "repos/$repo/actions/runs/$id/jobs" --jq '.total_count' 2>/dev/null || echo "?")
+            if [ "$jobs" = "0" ]; then
+              echo "- phantom run $id ($wname, $branch @ $sha, queued since $created): zero jobs, uncancellable via API (409 class); reported, not attempted" >> "$summary"
+              phantom=$((phantom+1))
+              continue
+            fi
+            if [ "$DRY_RUN" = "true" ]; then
+              echo "- would cancel run $id ($wname, $branch @ $sha, queued since $created): superseded" >> "$summary"
+              cancelled=$((cancelled+1))
+            elif gh api -X POST "repos/$repo/actions/runs/$id/cancel" > /dev/null 2>&1; then
+              echo "- cancelled run $id ($wname, $branch @ $sha, queued since $created): superseded" >> "$summary"
+              cancelled=$((cancelled+1))
+            else
+              echo "- cancel FAILED run $id ($wname, $branch @ $sha, queued since $created)" >> "$summary"
+              failed=$((failed+1))
+            fi
+          done < "$candidates"
+          echo "" >> "$summary"
+          echo "superseded stale candidates $total · cancelled $cancelled · phantom (zero-job, API-uncancellable) $phantom · failed $failed (dry_run $DRY_RUN)" >> "$summary"
+          cat "$summary"
