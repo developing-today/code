@@ -55,7 +55,14 @@ function runInstaller(home, args) {
 async function expectNoWrites(stores) {
   expect(await readFile(stores.defaultStore, "utf8")).toBe(stores.original);
   expect(await readFile(stores.explicitStore, "utf8")).toBe(stores.original);
-  expect(await readdir(stores.home)).toEqual([
+  // Bun itself may drop a `.bun` cache/state directory into HOME when it
+  // runs the installer (observed on CI runners where bun is installed under
+  // ~/.bun); that is a runtime artifact, not an installer write, so it is
+  // excluded from the no-write assertion. See developing-today/code#9532.
+  const homeEntries = (await readdir(stores.home)).filter(
+    (name) => name !== ".bun",
+  );
+  expect(homeEntries).toEqual([
     ".config", "explicit-store.json",
   ]);
   expect(await readdir(stores.defaultDir)).toEqual([
