@@ -4169,7 +4169,7 @@ ${dnsTable(section.entries, renewingSoon, next)}`;
  * Written without template literals on purpose — it lives inside one.
  */
 const AA_EXPLORER_SCRIPT = `<script type="module">
-import { applyInequalityFilters, bandIndex, chartClickSuppressed, computeRecommendations, effectiveChartView, logEdges, normName, panChartView, paretoSet, parseChartViewBox, pctRank, projectTask, resetChartView, scoreEdges, zoomChartView } from "/assets/aa-explorer-computations.js";
+import { applyDominanceFilters, applyInequalityFilters, bandIndex, baselineRatios, chartClickSuppressed, computeRecommendations, effectiveChartView, logEdges, normName, panChartView, paretoSet, parseChartViewBox, pctRank, projectTask, resetChartView, scoreEdges, sortRows, zoomChartView } from "/assets/aa-explorer-computations.js";
 (function () {
   var dataEl = document.getElementById("xpl-data");
   if (!dataEl) return;
@@ -4282,6 +4282,7 @@ import { applyInequalityFilters, bandIndex, chartClickSuppressed, computeRecomme
     rec: { allow: 5, speedPriority: 85, priceAllow: 500, slowAllow: 2, altWindow: 2, diversity: "lab", dominance: "lab", perBand: 3, maxCost: "", maxSec: "" },
     pj: { turns: 3, inputTokens: 20000, answerTokens: 2000, thinkingTokens: 4000, cacheReadPct: 50, writesPct: 0, overheadSec: 10, window: "peak" },
     ineq: { mode: "off", combine: "and", conds: [{ metric: "score", op: ">=", value: "" }, { metric: "cost", op: "<=", value: "" }, { metric: "time", op: "<=", value: "" }] },
+    sortKey: "", sortDir: "desc", dom: { dominated: false, slower: false, dumber: false, pricier: false },
   };
   var XP_NOTES = {
     plan: "Plan perspective — plan quotas are sunk cost, so dollars are ignored: ranked on intelligence per second (speed + intelligence). Cost columns hidden.",
@@ -4308,7 +4309,8 @@ import { applyInequalityFilters, bandIndex, chartClickSuppressed, computeRecomme
   // cost at or above this score; speed gap = score gap against time.
   function visPoints() {
     var base = basePoints();
-    return applyInequalityFilters(base, S.ineq.mode, S.ineq.combine, S.ineq.conds);
+    var filtered = applyInequalityFilters(base, S.ineq.mode, S.ineq.combine, S.ineq.conds);
+    return applyDominanceFilters(filtered, S.dom);
   }
   function visCatalog() {
     if (!CATALOG) return [];
@@ -5378,17 +5380,31 @@ import { applyInequalityFilters, bandIndex, chartClickSuppressed, computeRecomme
   function renderAaTable() {
     var tb = document.getElementById("xpl-rows");
     if (!tb) return;
-    var rows = sortPoints(visPoints());
+    var SORT_GETTERS = { perDollar: function (p) { return p.pointsPerDollar != null ? p.pointsPerDollar : p.scorePerDollar; }, perSecond: function (p) { return p.pointsPerSecond != null ? p.pointsPerSecond : p.scorePerSecond; } };
+    var rows = S.sortKey ? sortRows(visPoints(), SORT_GETTERS[S.sortKey] || S.sortKey, S.sortDir) : sortPoints(visPoints());
+    var ratios = S.baseline ? baselineRatios(rows, [S.baseline]) : null;
+    function baseCells(p) {
+      if (!ratios) return "";
+      var r = ratios[p.key] && ratios[p.key].vs[S.baseline];
+      return '<td class="num xpl-costcol">' + fmtN(r ? r.scorePerCost : null, 2) + "x</td>" + '<td class="num">' + fmtN(r ? r.scorePerSpeed : null, 2) + "x</td>";
+    }
     var scoreHead = document.getElementById("xpl-scorehead");
     if (scoreHead) scoreHead.textContent = S.persp === "cai" ? "CAI score" : "Intelligence";
     document.getElementById("xpl-count").textContent =
       rows.length + " of " + POINTS.length + " ranked configurations · sorted by the " + S.xp + " perspective · dots are colored by model family; white-ringed dots sit on that chart's frontier, dimmed dots are beaten on its axes";
     tb.innerHTML = rows.map(function (p) {
-      return '<tr data-sel="' + esc(p.key) + '" data-key="' + esc(p.key) + '"><td><strong>' + esc(p.family) + '</strong><br><span class="muted">' + esc(p.creator) + (p.qualStatus ? " · " + esc(p.qualStatus) : "") + '</span></td><td>' + esc(p.effort || "—") + '</td><td class="num">' + fmtN(p.score, 1) + '</td><td class="num xpl-costcol">' + fmt$(p.cost) + '</td><td class="num">' + fmtT(p.time) + '</td><td class="num">' + fmtT(p.ttft) + '</td><td class="num">' + fmtN(p.tps, 0) + '</td><td class="num xpl-costcol">' + fmtN(p.pointsPerDollar != null ? p.pointsPerDollar : p.scorePerDollar, 1) + '</td><td class="num">' + fmtN(p.pointsPerSecond != null ? p.pointsPerSecond : p.scorePerSecond, 3) + "</td></tr>";
+      return '<tr data-sel="' + esc(p.key) + '" data-key="' + esc(p.key) + '"><td><strong>' + esc(p.family) + '</strong><br><span class="muted">' + esc(p.creator) + (p.qualStatus ? " · " + esc(p.qualStatus) : "") + '</span></td><td>' + esc(p.effort || "—") + '</td><td class="num">' + fmtN(p.score, 1) + '</td><td class="num xpl-costcol">' + fmt$(p.cost) + '</td><td class="num">' + fmtT(p.time) + '</td><td class="num">' + fmtT(p.ttft) + '</td><td class="num">' + fmtN(p.tps, 0) + '</td><td class="num xpl-costcol">' + fmtN(p.pointsPerDollar != null ? p.pointsPerDollar : p.scorePerDollar, 1) + '</td><td class="num">' + fmtN(p.pointsPerSecond != null ? p.pointsPerSecond : p.scorePerSecond, 3) + "</td>" + baseCells(p) + "</tr>";
     }).join("");
     tb.querySelectorAll("tr").forEach(function (tr) {
       tr.addEventListener("click", function () { selectPoint(tr.getAttribute("data-key")); });
     });
+    document.querySelectorAll("[data-sortkey]").forEach(function (th) {
+      var k = th.getAttribute("data-sortkey");
+      th.textContent = th.textContent.replace(/ [↑↓]$/, "") + (S.sortKey === k ? (S.sortDir === "asc" ? " ↑" : " ↓") : "");
+    });
+    var bc = document.getElementById("xpl-bcosthead"), bs = document.getElementById("xpl-bspeedhead");
+    if (bc) bc.style.display = S.baseline ? "" : "none";
+    if (bs) bs.style.display = S.baseline ? "" : "none";
     markSelectedRow();
   }
   // --- task-assumptions projection (Site 2, in the Model Explorer) -------
@@ -5630,7 +5646,20 @@ import { applyInequalityFilters, bandIndex, chartClickSuppressed, computeRecomme
     b.addEventListener("click", function () { S.tasksMode = b.getAttribute("data-tmode"); drawCharts(); });
   });
   var baselineSel = document.getElementById("xf-baseline");
-  if (baselineSel) baselineSel.addEventListener("change", function (ev) { S.baseline = ev.target.value; drawCharts(); });
+  if (baselineSel) baselineSel.addEventListener("change", function (ev) { S.baseline = ev.target.value; drawCharts(); renderAaTable(); });
+  document.querySelectorAll("[data-sortkey]").forEach(function (th) {
+    th.style.cursor = "pointer";
+    th.title = "Sort by this column";
+    th.addEventListener("click", function () {
+      var k = th.getAttribute("data-sortkey");
+      if (S.sortKey === k) S.sortDir = S.sortDir === "asc" ? "desc" : "asc";
+      else { S.sortKey = k; S.sortDir = th.getAttribute("data-dir") || "desc"; }
+      renderAaTable();
+    });
+  });
+  document.querySelectorAll("[data-dom]").forEach(function (el) {
+    el.addEventListener("change", function () { S.dom[el.getAttribute("data-dom")] = el.checked; render(); });
+  });
   // --- inequality filter rows ---------------------------------------------
   var INEQ_METRICS = [["score", "Score"], ["cost", "Task cost"], ["time", "Selected speed (time / task)"], ["tps", "Output speed (tok/s)"], ["gapScore", "Pareto gap: score gap (vs cost frontier)"], ["gapCost", "Pareto gap: price premium (vs score)"], ["gapSpeed", "Pareto gap: speed gap (vs time frontier)"]];
   function renderIneqConds() {
@@ -5658,7 +5687,7 @@ import { applyInequalityFilters, bandIndex, chartClickSuppressed, computeRecomme
       tab: S.tab, persp: S.persp, xp: S.xp, q: S.q, creator: S.creator, fam: S.fam, bench: S.bench,
       effortAny: S.effortAny, efforts: S.efforts, off: S.off, elig: S.elig, pooledOnly: S.pooledOnly,
       measuredOnly: S.measuredOnly, hideDisabled: S.hideDisabled, hidden: S.hidden, sizeBy: S.sizeBy,
-      tasksMode: S.tasksMode, baseline: S.baseline, pfCut: S.pfCut, bandCount: S.bandCount,
+      tasksMode: S.tasksMode, baseline: S.baseline, sortKey: S.sortKey, sortDir: S.sortDir, dom: S.dom, pfCut: S.pfCut, bandCount: S.bandCount,
       bandScale: S.bandScale, rec: S.rec, pj: S.pj, ineq: S.ineq,
     }));
   }
@@ -5672,14 +5701,15 @@ import { applyInequalityFilters, bandIndex, chartClickSuppressed, computeRecomme
     var bd = document.getElementById("xf-bands"); if (bd) bd.value = String(S.bandCount);
     var bs = document.getElementById("xf-bandscale"); if (bs) bs.value = String(S.bandScale);
     if (ineqModeEl) ineqModeEl.value = S.ineq.mode;
+    document.querySelectorAll("[data-dom]").forEach(function (el) { el.checked = !!S.dom[el.getAttribute("data-dom")]; });
     if (ineqCombineEl) ineqCombineEl.value = S.ineq.combine;
     document.querySelectorAll("[data-tmode]").forEach(function (b) { b.classList.toggle("active", b.getAttribute("data-tmode") === S.tasksMode); });
     document.querySelectorAll("[data-sizeby]").forEach(function (cb) { cb.checked = !!S.sizeBy[cb.getAttribute("data-sizeby")]; });
   }
   function applySetup(st) {
     if (!st || typeof st !== "object") return;
-    ["tab", "persp", "xp", "q", "creator", "fam", "bench", "effortAny", "elig", "pooledOnly", "measuredOnly", "hideDisabled", "tasksMode", "baseline", "pfCut", "bandCount", "bandScale"].forEach(function (k) { if (st[k] !== undefined) S[k] = st[k]; });
-    ["efforts", "off", "hidden", "sizeBy", "rec", "pj", "ineq"].forEach(function (k) { if (st[k] !== undefined) S[k] = st[k]; });
+    ["tab", "persp", "xp", "q", "creator", "fam", "bench", "effortAny", "elig", "pooledOnly", "measuredOnly", "hideDisabled", "tasksMode", "baseline", "pfCut", "bandCount", "bandScale", "sortKey", "sortDir"].forEach(function (k) { if (st[k] !== undefined) S[k] = st[k]; });
+    ["efforts", "off", "hidden", "sizeBy", "rec", "pj", "ineq", "dom"].forEach(function (k) { if (st[k] !== undefined) S[k] = st[k]; });
     POINTS = S.persp === "cai" ? CAI_POINTS : AA_POINTS;
     S.sel = null;
     showDetail(null);
@@ -5756,6 +5786,7 @@ import { applyInequalityFilters, bandIndex, chartClickSuppressed, computeRecomme
       rec: { allow: 5, speedPriority: 85, priceAllow: 500, slowAllow: 2, altWindow: 2, diversity: "lab", dominance: "lab", perBand: 3, maxCost: "", maxSec: "" },
       pj: { turns: 3, inputTokens: 20000, answerTokens: 2000, thinkingTokens: 4000, cacheReadPct: 50, writesPct: 0, overheadSec: 10, window: "peak" },
       ineq: { mode: "off", combine: "and", conds: [{ metric: "score", op: ">=", value: "" }, { metric: "cost", op: "<=", value: "" }, { metric: "time", op: "<=", value: "" }] },
+      sortKey: "", sortDir: "desc", dom: { dominated: false, slower: false, dumber: false, pricier: false },
     });
   });
   function csvCell(v) { return '"' + String(v == null ? "" : v).replace(/"/g, '""') + '"'; }
@@ -5969,6 +6000,7 @@ ${batchSelector}
 <span class="muted">Pareto-gap metrics compare against the observed frontier of the current scope: score gap (score vs cost), price premium (cost vs score), speed gap (score vs time).</span>
 <div id="xf-ineq-conds"></div>
 <button type="button" class="xpl-ctl-btn" id="xf-ineq-add">+ Add condition</button>
+<div><span class="muted">Dominance hides (#9852):</span> <label><input type="checkbox" data-dom="dominated"> Hide dominated</label> <label><input type="checkbox" data-dom="slower"> Hide slower (beaten)</label> <label><input type="checkbox" data-dom="dumber"> Hide lower-score (beaten)</label> <label><input type="checkbox" data-dom="pricier"> Hide pricier (beaten)</label></div>
 </details></div>
 <div style="flex-basis:100%">
 <label>Settings name <input type="text" id="xf-setup-name" placeholder="Name this setup"></label>
@@ -6002,7 +6034,7 @@ ${aaTabAge}
 <div class="tblwrap"><table class="xpl-table"><caption>Multiples table — every visible configuration as multiples of the baseline</caption><thead><tr><th scope="col">Model</th><th scope="col">Effort</th><th scope="col" class="num">Score</th><th scope="col" class="num">Score ×</th><th scope="col" class="num xpl-costcol">Cost/task</th><th scope="col" class="num xpl-costcol">Cost ×</th><th scope="col" class="num">Time/task</th><th scope="col" class="num">Time ×</th><th scope="col">Benchmark</th></tr></thead><tbody id="xpl-mtrows"></tbody></table></div>
 <h2>Configurations</h2>
 <p class="muted" id="xpl-count"></p>
-<div class="tblwrap"><table class="xpl-table"><caption>Configurations — intelligence, cost, and speed per model</caption><thead><tr><th scope="col">Model</th><th scope="col">Effort</th><th scope="col" class="num" id="xpl-scorehead">Intelligence</th><th scope="col" class="num xpl-costcol">$/task</th><th scope="col" class="num">Time/task</th><th scope="col" class="num">TTFT</th><th scope="col" class="num">Speed (t/s)</th><th scope="col" class="num xpl-costcol">Score / $</th><th scope="col" class="num">Score / s</th></tr></thead><tbody id="xpl-rows"></tbody></table></div>
+<div class="tblwrap"><table class="xpl-table"><caption>Configurations — intelligence, cost, and speed per model</caption><thead><tr><th scope="col" data-sortkey="family" data-dir="asc">Model</th><th scope="col" data-sortkey="effort" data-dir="asc">Effort</th><th scope="col" class="num" id="xpl-scorehead" data-sortkey="score" data-dir="desc">Intelligence</th><th scope="col" class="num xpl-costcol" data-sortkey="cost" data-dir="asc">$/task</th><th scope="col" class="num" data-sortkey="time" data-dir="asc">Time/task</th><th scope="col" class="num" data-sortkey="ttft" data-dir="asc">TTFT</th><th scope="col" class="num" data-sortkey="tps" data-dir="desc">Speed (t/s)</th><th scope="col" class="num xpl-costcol" data-sortkey="perDollar" data-dir="desc">Score / $</th><th scope="col" class="num" data-sortkey="perSecond" data-dir="desc">Score / s</th><th scope="col" class="num xpl-costcol" id="xpl-bcosthead" style="display:none">Score/$ x base</th><th scope="col" class="num" id="xpl-bspeedhead" style="display:none">Score/s x base</th></tr></thead><tbody id="xpl-rows"></tbody></table></div>
 <h2>Pareto frontiers</h2>
 <p class="muted">Each list keeps variants that are not dominated on its named dimensions: another variant cannot be at least as good on every dimension and strictly better on one. The first two lists are the same score–speed frontier in different priority orders. Percentile ranks use the current filtered models; 100% is best. Missing measures are excluded only from a frontier that needs them.</p>
 <label>Minimum score and speed percentile in the price shortlist <select id="xf-pfcut"><option value="50" selected>At least median · 50th percentile</option><option value="60">At least 60th percentile</option><option value="75">Top quarter · 75th percentile</option><option value="0">No cutoff · full Pareto frontier</option></select></label>
