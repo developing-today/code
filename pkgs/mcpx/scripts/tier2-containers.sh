@@ -33,14 +33,18 @@ CGO_ENABLED=0 go build -trimpath -ldflags "-s -w -X main.version=0.1.0" \
   -o "$WORK/mcpx" ./cmd/mcpx
 go version -m "$WORK/mcpx" | grep -q 'CGO_ENABLED=0'
 file "$WORK/mcpx" | grep -q 'statically linked'
-cp "$WORK/mcpx" "$WORK/ctx/mcpx" 2>/dev/null || { mkdir -p "$WORK/ctx"; cp "$WORK/mcpx" "$WORK/ctx/mcpx"; }
+cp "$WORK/mcpx" "$WORK/ctx/mcpx" 2>/dev/null || {
+  mkdir -p "$WORK/ctx"
+  cp "$WORK/mcpx" "$WORK/ctx/mcpx"
+}
 cd "$WORK/ctx"
 
 STATE_ENV=(-e MCPX_STATE_DIR=/tmp/state -e MCPX_CACHE_DIR=/tmp/cache)
 
 expect_refusal() {
   # $1 = image, rest = entrypoint args prefix (may be empty)
-  local image="$1"; shift
+  local image="$1"
+  shift
   local out
   out="$(timeout 120 docker run --rm "${STATE_ENV[@]}" "$image" "$@" exec 'console.log(1)' 2>&1 || true)"
   echo "$out" | head -2
@@ -60,7 +64,7 @@ leg_alpine_nonexec() {
 
 leg_alpine_bunmusl_exec() {
   echo "== leg: alpine-bunmusl-exec =="
-  cat > Containerfile.bunmusl <<'EOF'
+  cat >Containerfile.bunmusl <<'EOF'
 FROM oven/bun:1-alpine AS bun
 FROM alpine:3.21
 RUN apk add --no-cache ca-certificates libstdc++ libgcc
@@ -76,7 +80,7 @@ EOF
 
 leg_alpine_node_exec() {
   echo "== leg: alpine-node-exec =="
-  cat > Containerfile.alpinenode <<'EOF'
+  cat >Containerfile.alpinenode <<'EOF'
 FROM alpine:3.21
 RUN apk add --no-cache nodejs
 COPY mcpx /usr/local/bin/mcpx
@@ -96,7 +100,7 @@ EOF
 
 leg_scratch_nonexec() {
   echo "== leg: scratch-nonexec =="
-  cat > Containerfile.scratch <<'EOF'
+  cat >Containerfile.scratch <<'EOF'
 FROM alpine:3.21 AS certs
 FROM scratch
 COPY --from=certs /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/ca-certificates.crt
@@ -111,7 +115,7 @@ EOF
 
 leg_distroless_static_nonexec() {
   echo "== leg: distroless-static-nonexec =="
-  cat > Containerfile.dstatic <<'EOF'
+  cat >Containerfile.dstatic <<'EOF'
 FROM gcr.io/distroless/static-debian12
 COPY mcpx /mcpx
 ENV MCPX_STATE_DIR=/tmp/state MCPX_CACHE_DIR=/tmp/cache
@@ -124,7 +128,7 @@ EOF
 
 leg_distroless_cc_deno_exec() {
   echo "== leg: distroless-cc-deno-exec =="
-  cat > Containerfile.dcc <<'EOF'
+  cat >Containerfile.dcc <<'EOF'
 FROM denoland/deno:debian AS deno
 FROM gcr.io/distroless/cc-debian12
 COPY --from=deno /usr/bin/deno /usr/local/bin/deno
@@ -140,17 +144,20 @@ EOF
 legs=("$@")
 if [ "${#legs[@]}" -eq 0 ]; then
   legs=(alpine-nonexec alpine-bunmusl-exec alpine-node-exec scratch-nonexec
-        distroless-static-nonexec distroless-cc-deno-exec)
+    distroless-static-nonexec distroless-cc-deno-exec)
 fi
 for leg in "${legs[@]}"; do
   case "$leg" in
-    alpine-nonexec) leg_alpine_nonexec ;;
-    alpine-bunmusl-exec) leg_alpine_bunmusl_exec ;;
-    alpine-node-exec) leg_alpine_node_exec ;;
-    scratch-nonexec) leg_scratch_nonexec ;;
-    distroless-static-nonexec) leg_distroless_static_nonexec ;;
-    distroless-cc-deno-exec) leg_distroless_cc_deno_exec ;;
-    *) echo "unknown leg: $leg" >&2; exit 2 ;;
+  alpine-nonexec) leg_alpine_nonexec ;;
+  alpine-bunmusl-exec) leg_alpine_bunmusl_exec ;;
+  alpine-node-exec) leg_alpine_node_exec ;;
+  scratch-nonexec) leg_scratch_nonexec ;;
+  distroless-static-nonexec) leg_distroless_static_nonexec ;;
+  distroless-cc-deno-exec) leg_distroless_cc_deno_exec ;;
+  *)
+    echo "unknown leg: $leg" >&2
+    exit 2
+    ;;
   esac
 done
 echo "tier2-containers: all requested legs passed"

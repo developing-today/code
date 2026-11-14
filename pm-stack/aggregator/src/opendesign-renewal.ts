@@ -72,12 +72,7 @@ export interface BrowserCookie {
   domain: string;
 }
 
-export type CaptureResult =
-  | "stored"
-  | "no-browser-session"
-  | "cdp-unreachable"
-  | "validation-failed"
-  | "not-attempted";
+export type CaptureResult = "stored" | "no-browser-session" | "cdp-unreachable" | "validation-failed" | "not-attempted";
 
 export interface OpenDesignRenewalState {
   provider: "opendesign";
@@ -139,9 +134,7 @@ const defaultFetchSession = async (
       signal: AbortSignal.timeout(15_000),
     });
     if (!response.ok) return null;
-    const payload = (await response.json().catch(() => null)) as
-      | { session?: { expiresAt?: unknown } | null }
-      | null;
+    const payload = (await response.json().catch(() => null)) as { session?: { expiresAt?: unknown } | null } | null;
     // Better Auth answers 200 with a null/empty body when the cookie
     // names no live session — that is an auth failure, not a session
     // with an unknown expiry.
@@ -173,7 +166,9 @@ const withTimeout = async <T>(promise: Promise<T>, ms: number, label: string): P
   }
 };
 
-const cdpSession = async (cdpUrl: string): Promise<{
+const cdpSession = async (
+  cdpUrl: string,
+): Promise<{
   send: (method: string, params?: Record<string, unknown>) => Promise<Record<string, unknown>>;
   close: () => void;
 }> => {

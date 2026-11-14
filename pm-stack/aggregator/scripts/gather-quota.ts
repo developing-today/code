@@ -28,15 +28,18 @@
 //      a quota source. Fail-soft: a keeper error never fails the tick.
 //      (Its credential-store accessors live in the OpenChamber lib
 //      the store was born in — store plumbing, not a reading path.)
-//   1b. The Meta session keeper (src/meta-renewal.ts, same rule):
-//      Meta's quota functions ride the laptop Helium profile's
-//      dev.meta.ai session — no stored credential exists to
-//      maintain — so the keeper watches the meta-quota-export probe
-//      document each tick, re-arms the exporter units if they were
-//      renamed away (the 2026-11-01 failure), takes a fresh probe,
-//      and records the verdict in meta-renewal.json with an alert
-//      from the first bad tick when the session is truly logged
-//      out. Fail-soft like the OpenDesign keeper.
+//   1b. The Meta session keeper (src/meta-renewal.ts, same rule,
+//      Drew's Meta answer meta-auth-keeper-6120): the provider owns
+//      the credential — the keeper captures the dev.meta.ai session
+//      from the laptop Helium profile over CDP, validates it against
+//      the portal API before storing it in the ONE provider-owned
+//      location (meta-credential.json beside the state file), and
+//      renews it on cadence and on auth failure. A renewal failure
+//      records the alert in meta-renewal.json from the first bad
+//      tick AND dispatches a Web Push. The meta-quota-export probe
+//      document is read only for last-good continuity; the keeper
+//      no longer arms or manages the exporter units. Fail-soft like
+//      the OpenDesign keeper.
 //   2. The subcommand, twice: the configured listing
 //      (`opencode quota --json`) and the explicit ask
 //      (`opencode quota --json meta command-code`) — providers whose
@@ -97,6 +100,9 @@
 //      the subcommand owns fetch concurrency now),
 //      OPENCHAMBER_LIB_DIR (ONLY the OpenDesign keeper's credential
 //      store accessors resolve from here; no quota reading does),
+//      OPENCHAMBER_LIB_INSTALL_CMD (override for the lib checkout's
+//      dependency install step, shell-split like QUOTA_SUBCOMMAND;
+//      default is bun install at the checkout root, #8759),
 //      TURSO_QUOTA_SINK=0 (or the legacy SUPABASE_QUOTA_SINK=0)
 //      disables the Turso sink (default on; token resolved by name
 //      via the resolveBwsSecret plumbing:
@@ -110,6 +116,7 @@ import { fileURLToPath } from "node:url";
 import type { QuotaCurrentEntry, QuotaCurrentFile, QuotaGatherHeartbeat, SnapshotRecord } from "../src/model.ts";
 import {
   GATHERER_SOURCE,
+  canonicalProviderId,
   entriesWithPoolSplits,
   entryFromResult,
   entryHasMeasuredWindow,
@@ -121,8 +128,11 @@ import {
 import { SnapshotStore, isSnapshotRecord, snapshotKey } from "../src/snapshots.ts";
 import { safeProviderReason } from "../src/credential-lifecycle.ts";
 import { renewOpenDesignSession, type OpenDesignCredentialLike } from "../src/opendesign-renewal.ts";
+import { ensureLibDependencies } from "../src/lib-deps.ts";
 import { readProviderAuthAlerts } from "../src/provider-auth-alerts.ts";
 import { renewMetaSession } from "../src/meta-renewal.ts";
+import { classEnabled, getAlertsStore } from "../src/alerts.ts";
+import { sendPush, type PushTarget } from "../src/push.ts";
 
 const PKG = join(dirname(fileURLToPath(import.meta.url)), "..");
 const HOME = homedir();
@@ -283,8 +293,39 @@ interface OpenDesignProviderModule {
 async function runOpenDesignRenewal(tickAt: string): Promise<void> {
   if (process.env.OPENDESIGN_RENEWAL_DISABLED === "1") return;
   try {
-    const credentials = (await import(join(libDir, "quota/credentials/providers.js"))) as unknown as OpenDesignCredentialsModule;
-    const provider = (await import(join(libDir, "quota/providers/opendesign.js"))) as unknown as OpenDesignProviderModule;
+    // #8759: the lib checkout is a plain clone; if its declared
+    // dependencies were never installed, every import below fails
+    // with "Cannot find package ..." and Bun caches that failure
+    // for the process, so install BEFORE the first import
+    // (src/lib-deps.ts preflight), never as an import retry.
+    const installCmd = process.env.OPENCHAMBER_LIB_INSTALL_CMD?.split(/\s+/).filter(Boolean) ?? [];
+    const install =
+      installCmd.length > 0
+        ? async (root: string): Promise<void> => {
+            await new Promise<void>((resolve, reject) => {
+              execFile(
+                installCmd[0],
+                installCmd.slice(1),
+                { cwd: root, timeout: 240_000, maxBuffer: 16 * 1024 * 1024 },
+                (err) => {
+                  if (err) reject(new Error("OPENCHAMBER_LIB_INSTALL_CMD failed in the OpenChamber lib checkout"));
+                  else resolve();
+                },
+              );
+            });
+          }
+        : undefined;
+    await ensureLibDependencies({
+      libDir,
+      log: (line) => console.log("quota-gatherer: " + line),
+      ...(install ? { install } : {}),
+    });
+    const credentials = (await import(
+      join(libDir, "quota/credentials/providers.js")
+    )) as unknown as OpenDesignCredentialsModule;
+    const provider = (await import(
+      join(libDir, "quota/providers/opendesign.js")
+    )) as unknown as OpenDesignProviderModule;
     const state = await renewOpenDesignSession({
       readCredential: () => credentials.readManagedCredential("opendesign"),
       writeCredential: (value) => {
@@ -311,22 +352,59 @@ async function runOpenDesignRenewal(tickAt: string): Promise<void> {
 
 /**
  * The Meta session keeper run (src/meta-renewal.ts, Drew's
- * 2026-11-05 auto-renewal rule). Meta's quota functions ride the
- * laptop Helium profile's dev.meta.ai session — no stored credential
- * exists for a keeper to maintain, so this keeper watches the
- * meta-quota-export probe document instead: fresh + ok = session
- * valid; expired or silent = re-arm the exporter units if they were
- * renamed away, take a fresh probe, and if the session is truly
- * logged out raise an alert in meta-renewal.json from the first bad
- * tick (re-login is a human step — Meta emails a code). Fail-soft,
- * same contract as the OpenDesign keeper.
+ * 2026-11-05 auto-renewal rule + his 2026-11-13 Meta answer,
+ * meta-auth-keeper-6120). The keeper owns the Meta credential: CDP
+ * capture from the laptop Helium profile, validate-before-store into
+ * meta-credential.json, renewal on cadence and on auth failure. On a
+ * new alert episode it also dispatches a push (notifyMetaAuthPush).
+ * Fail-soft, same contract as the OpenDesign keeper.
  */
+
+/**
+ * The push half of Drew's Meta auth answer (#6120): a NEW meta-renewal
+ * alert episode dispatches a Web Push (class "incident", the
+ * breakthrough class) to every stored subscription, with the same
+ * sends-ledger bookkeeping the digest delivery uses. No alerts store
+ * (Supabase unavailable) = no delivery surface; the state-file alert
+ * still stands and the outcome string records the skip.
+ */
+async function notifyMetaAuthPush(notice: { title: string; body: string }): Promise<string> {
+  const store = await getAlertsStore();
+  if (!store) return "no-store";
+  const subs = await store.listSubscriptions();
+  const payload = {
+    class: "incident",
+    objectRef: "provider-auth/meta",
+    url: "/quota",
+    title: notice.title,
+    body: notice.body,
+  };
+  let sent = 0;
+  for (const sub of subs) {
+    if (!classEnabled(sub, "incident")) continue;
+    const target: PushTarget = { endpoint: sub.endpoint, p256dh: sub.p256dh, auth: sub.auth };
+    const outcome = await sendPush(target, payload);
+    if (outcome.ok) {
+      sent += 1;
+      await store.logSend({ class: "incident", objectRef: payload.objectRef, outcome: "sent" });
+      await store.noteSubscriptionAlive(sub.endpoint);
+    } else if (outcome.gone) {
+      await store.logSend({ class: "incident", objectRef: payload.objectRef, outcome: "gone" });
+      await store.noteSubscriptionGone(sub.endpoint);
+    } else {
+      await store.logSend({ class: "incident", objectRef: payload.objectRef, outcome: "error" });
+    }
+  }
+  return `sent:${sent}/${subs.length}`;
+}
 async function runMetaRenewal(tickAt: string): Promise<void> {
   if (process.env.META_RENEWAL_DISABLED === "1") return;
   try {
     const state = await renewMetaSession({
       statePath: process.env.META_RENEWAL_STATE_PATH ?? join(dirname(currentPath), "meta-renewal.json"),
       ...(process.env.META_EXPORTER_LATEST_PATH ? { latestPath: process.env.META_EXPORTER_LATEST_PATH } : {}),
+      ...(process.env.META_CREDENTIAL_PATH ? { credentialPath: process.env.META_CREDENTIAL_PATH } : {}),
+      notifyPush: notifyMetaAuthPush,
       now: () => new Date(tickAt),
       log: (line) => console.log(`quota-gatherer: ${line}`),
     });
@@ -368,8 +446,7 @@ function finalizeRun(id: string, entries: QuotaCurrentEntry[], t0: number): Prov
   const anyMeasured = entries.some((e) => entryHasMeasuredWindow(e));
   if (anyOk && !anyMeasured) {
     const reason =
-      entries.find((e) => e.error)?.error ??
-      "no-data: provider reported ok but no window carried a percentage";
+      entries.find((e) => e.error)?.error ?? "no-data: provider reported ok but no window carried a percentage";
     for (const e of entries) {
       if (e.state === "ok") e.state = "error";
       if (!e.error) e.error = reason;
@@ -388,12 +465,16 @@ function finalizeRun(id: string, entries: QuotaCurrentEntry[], t0: number): Prov
     ms: Date.now() - t0,
     entries,
     // A partially-failed run still surfaces its first failure: a
-    // folded provider (codex answers one row per OpenAI credential)
+    // folded provider (_openai answers one row per OpenAI credential)
     // must not let one credential's ok row hide a sibling credential's
-    // error from the heartbeat — 2026-11-10 the codex run read "ok"
-    // with no error while the openai.main and _openai credentials were
+    // error from the heartbeat — 2026-11-10 the _openai run read "ok"
+    // with no error while the main and self-contained credentials were
     // both failing token_expired at the provider.
-    ...(firstFailure?.error ? { error: firstFailure.error } : {}),
+    ...(firstFailure?.error
+      ? { error: firstFailure.error }
+      : onlyLapsed
+        ? { error: entries.find((e) => e.state === "lapsed")?.error }
+        : {}),
   };
 }
 
@@ -580,7 +661,19 @@ async function collectRuns(tickAt: string): Promise<ProviderRun[]> {
   for (const [id, group] of byProvider) {
     const t0 = Date.now() - group.ms;
     const entries = group.results.map((r) => entryFromResult(r, tickAt));
-    let run = finalizeRun(id, entries, t0);
+    // The folded OpenAI door still answers under the fork's pre-rename
+    // spelling ("codex"); its entries already file under the canonical
+    // door id via entryFromResult, but the run kept the raw spelling —
+    // so the heartbeat's perProvider leg for the OpenAI pool was keyed
+    // "codex" while every consumer (quota-current's legErrorFor,
+    // matched on the entry's providerId) looks up "_openai". Rename
+    // the run to the canonical id, the same mapping quota-gather-map
+    // applies to the entries. Only this door's run id changes: the
+    // heartbeat contract for the other doors is the fork spelling
+    // (e.g. "meta"), and retention canonicalizes both sides already,
+    // so nothing else moves.
+    const runId = canonicalProviderId(id) === "_openai" ? "_openai" : id;
+    let run = finalizeRun(runId, entries, t0);
     if (id === "command-code" || id === "_commandcode") run = keepCommandCodePlanWindows(run);
     runs.push(run);
   }
@@ -647,10 +740,7 @@ async function writeTursoRecords(entries: QuotaCurrentEntry[], tickAt: string): 
       method: "POST",
       headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
       body: JSON.stringify({
-        requests: [
-          { type: "execute", stmt: { sql: query } },
-          { type: "close" },
-        ],
+        requests: [{ type: "execute", stmt: { sql: query } }, { type: "close" }],
       }),
     });
     if (!res.ok) {
@@ -704,21 +794,33 @@ async function main(): Promise<number> {
   const prevEntries = await readPreviousEntries();
   if (prevEntries.length) {
     for (const run of runs) {
-      if (run.state !== "error" || run.entries.some((e) => e.state === "ok")) continue;
+      // #8294: a Meta session lapse is temporary (remedy: re-auth on
+      // the hub), unlike the terminal Go lapse — the pool keeps its
+      // last good windows visible as stale rows while lapsed, so a
+      // lapsed Meta run engages retention exactly like an error run,
+      // and its own credential's readings are retained too.
+      const metaLapsed = run.state === "lapsed" && run.id === "meta";
+      if ((run.state !== "error" && !metaLapsed) || run.entries.some((e) => e.state === "ok")) continue;
       const retained = lastKnownEntries(prevEntries, run.id);
       if (retained.length) {
         const lapsed = run.entries.filter((e) => e.state === "lapsed");
         // Do not retain the previous ok reading for the same credential
         // that has just reported a lapse. Other credentials in the same
         // provider run may still retain their last-known readings.
-        const retainedSiblings = retained.filter(
-          (previous) =>
-            !lapsed.some((current) =>
-              (current.credentialId && previous.credentialId === current.credentialId) ||
-              (current.credentialLabel &&
-                previous.credentialLabel?.trim().toLowerCase() === current.credentialLabel.trim().toLowerCase()),
-            ),
-        );
+        // (Meta is the exception, per the #8294 note above: its lapse
+        // is the pool's own session, and retaining its last good
+        // windows beside the lapsed row is the point.)
+        const retainedSiblings = metaLapsed
+          ? retained
+          : retained.filter(
+              (previous) =>
+                !lapsed.some(
+                  (current) =>
+                    (current.credentialId && previous.credentialId === current.credentialId) ||
+                    (current.credentialLabel &&
+                      previous.credentialLabel?.trim().toLowerCase() === current.credentialLabel.trim().toLowerCase()),
+                ),
+            );
         run.entries = [...markRetained(retainedSiblings, tickAt), ...lapsed];
         run.retained = retainedSiblings.length > 0;
       }
@@ -759,8 +861,7 @@ async function main(): Promise<number> {
   // project as "keeper not reporting", never silence). Fail-soft:
   // the reader never throws.
   const providerAuth = await readProviderAuthAlerts({
-    opendesign:
-      process.env.OPENDESIGN_RENEWAL_STATE_PATH ?? join(dirname(currentPath), "opendesign-renewal.json"),
+    opendesign: process.env.OPENDESIGN_RENEWAL_STATE_PATH ?? join(dirname(currentPath), "opendesign-renewal.json"),
     meta: process.env.META_RENEWAL_STATE_PATH ?? join(dirname(currentPath), "meta-renewal.json"),
   });
   const file: QuotaCurrentFile = {

@@ -7,7 +7,7 @@
   merge `2e8ba8e031`). This outline takes v1's mechanisms — agent key,
   UCAN-style delegation, capability ceiling, policy point, hash-chained
   audit — as given, and covers only what changes when a world has
-  *citizens*: configured roles, several agents at once, quotas that
+  _citizens_: configured roles, several agents at once, quotas that
   outlive a session, and an owner who reviews what their agents did.
 - **Siblings:** v1 #6300 (design landed; spike steps #7913–#7917) ·
   v3 #6302 (shared agent worlds) · v4 #6303 (hosted agent services).
@@ -34,8 +34,8 @@ object**:
   it, editable by the world owner through the same surface that edits
   every other world setting. No role exists only as a string in a
   token scope.
-- Grants are explicit world state: *this agent key holds this role in
-  this world, granted by this owner, at this time* — enumerable by
+- Grants are explicit world state: _this agent key holds this role in
+  this world, granted by this owner, at this time_ — enumerable by
   the owner, revocable independently of delegation expiry (revocation
   ends the grant; expiry only ends a session's proof of it).
 - Role changes are themselves audited world events, and a changed
@@ -55,7 +55,7 @@ object**:
 - Agents are visible to each other exactly as their roles allow: an
   agent's presence, chat and world edits are world events like any
   shell's. Co-presence needs no new contract surface in v2 — what an
-  agent may *do about* another agent is §2.4's narrower question.
+  agent may _do about_ another agent is §2.4's narrower question.
 - Join arbitration: a world may cap concurrent agents per role; a
   refused join is audited with the reason, as in v1.
 
@@ -69,7 +69,7 @@ v1, deliberately replaceable by F12.10 #1067). V2 makes quota a
   cadence, and persist across sessions — a citizen cannot reset its
   budget by rejoining.
 - Charging stays per action (v1 Q3b); exhaustion still parks the
-  agent *visibly* (world event), and the park now names the role's
+  agent _visibly_ (world event), and the park now names the role's
   replenishment time.
 - The ledger's event shape stays the one F12.10 consumes (v1 §9.3):
   when the world's quota system lands, the per-agent ledger becomes
@@ -103,10 +103,10 @@ V2 makes review a working surface, not a report:
   its role, current quota state, recent actions and refusals —
   rendered from the audit log, which remains the record of truth.
 - **Above-ceiling requests queue for review:** when an agent's action
-  is refused by the ceiling, the owner may be offered the *request*
+  is refused by the ceiling, the owner may be offered the _request_
   (not a standing widening) to approve or deny once. Approval executes
   that one action under the owner's authority and is audited as such;
-  it never edits the role. (Whether *standing* approvals for an
+  it never edits the role. (Whether _standing_ approvals for an
   action class should exist is an open question for Drew, §5.)
 - **Refusal digests:** repeated refusals of the same shape surface as
   a pattern ("archivist was refused object.export 12 times") so a
@@ -146,7 +146,7 @@ each step issue below carries the ones in its scope):
 6. **Agent profile split** — v1 §9.1 deferred this: if multi-agent
    field experience shows agent needs diverging structurally from
    shells, v2 is where the agent profile may split from the shell
-   contract. Default remains *no split* until evidence says otherwise.
+   contract. Default remains _no split_ until evidence says otherwise.
 
 ## 5. Open questions needing Drew's ruling
 
@@ -155,7 +155,7 @@ the step breakdown in §6; each step issue names the question it
 depends on, and work that does not depend on a ruling can start.
 
 1. **Third-party citizens:** may an agent hold a role in a world
-   whose owner is *not* the agent's owner (a guest citizen under
+   whose owner is _not_ the agent's owner (a guest citizen under
    someone else's world configuration)? v1 assumes owner = grantor.
    Guest citizenship changes the trust reading of §2.1/§2.5 (whose
    review queue, whose quota funds the agent) and v4's hiring model
@@ -166,8 +166,8 @@ depends on, and work that does not depend on a ruling can start.
    §2.3 designs counts; cost-denominated budgets are a different
    promise to owners.
 3. **Standing approvals:** §2.5 offers one-shot approval of a refused
-   action. Should owners also be able to pre-approve an *action
-   class* for a role (a standing, revocable exception), or is
+   action. Should owners also be able to pre-approve an _action
+   class_ for a role (a standing, revocable exception), or is
    one-shot-only a deliberate guardrail? Standing approvals drift
    toward silent ceiling edits; the audit can record them either way,
    so this is a product-trust call, not a mechanism call.

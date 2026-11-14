@@ -219,6 +219,9 @@ export interface RoadmapRow {
   links: Link[];
   /** Grist UI link for this row's document (#1136), when known. */
   gristUrl?: string;
+  /** Repo-file link for this row's source file + heading (#1738), when
+   * the row was parsed from a repo roadmap file rather than Grist. */
+  fileUrl?: string;
 }
 
 /** Where each facet's data came from, shown in the UI footer. */
@@ -278,6 +281,15 @@ export interface QuotaWindow {
   percent?: number;
 }
 
+/** Result of the quota-view pattern extraction, separate from live quota state. */
+export interface ExtractionHealth {
+  status: "matched" | "gap" | "intentional" | "unavailable";
+  matched: boolean | null;
+  reason?: "section-missing" | "extractor-null" | "extractor-threw" | "uninstrumented" | "not-recorded";
+  /** Number of windows/metrics extracted when matched. */
+  count: number;
+}
+
 /** One pool (plan + identity) with its windows and live burn. */
 export interface QuotaPool {
   id: string;
@@ -291,8 +303,14 @@ export interface QuotaPool {
   windows: QuotaWindow[];
   /** tokens/min over the recent window, when measurable. */
   burnTokensPerMin?: number;
+  /** Per-window exhaustion interval forecasts (#3983), set by the
+   * collector from the measured burn history. Additive for existing
+   * consumers; absent when the collector did not derive them. */
+  exhaustion?: ExhaustionForecast[];
   /** Sessions currently burning this pool, with cumulative tokens. */
   activeSessions?: { session: string; model: string; tokens: number }[];
+  /** Pattern-extraction health; absent on older fleet feeds. */
+  extractionHealth?: ExtractionHealth;
   /** Gatherer freshness for this pool (#1151), set when
    * quota-current.json carried an entry for it. */
   freshness?: PoolFreshness;
@@ -302,6 +320,42 @@ export interface QuotaPool {
    * share one pool read — never a fake split. The pool's own windows
    * stay the headline. */
   credentials?: QuotaCredentialRow[];
+}
+
+/** One window's time-to-exhaustion forecast (#3983): an interval
+ * projected from the measured burn-rate distribution of the #3933
+ * contract, or an explicit unknown — never a fabricated date. */
+export interface ExhaustionForecast {
+  pool: string;
+  provider: string;
+  window: string;
+  unit: string;
+  state: "forecast" | "unknown" | "exhausted";
+  /** Why no forecast exists, when state is "unknown". */
+  reason?:
+    | "missing_limit"
+    | "missing_reset"
+    | "reset_passed"
+    | "stale_source"
+    | "no_measured_burn"
+    | "insufficient_observations"
+    | "zero_rate";
+  /** limit - used for the window; null when the limit is unknown. */
+  remaining: number | null;
+  resetsAt: string | null;
+  /** The named measurement window pair rates must fit inside. */
+  rateWindowMs: number;
+  /** Gatherer source for the pool read, when freshness is known. */
+  source: string | null;
+  /** Same-period pair rates behind the percentiles, when forecast. */
+  sampleRates?: number;
+  ratesPerMin?: { p50: number; p80: number };
+  p50ExhaustsAt?: string;
+  p80ExhaustsAt?: string;
+  p50VsReset?: "before" | "after";
+  p80VsReset?: "before" | "after";
+  /** When state is "exhausted": the collection instant (already there). */
+  exhaustsAt?: string;
 }
 
 /** One credential's own quota read within a pool (#1113). */
@@ -851,7 +905,7 @@ export interface AaThreshold {
   usdPerUsablePoint: number | null;
 }
 
-/** One AA Intelligence Index row of ainventory.benchmark_results. */
+/** One AA Intelligence Index row of ainventory.measurement_events (canonical, code#4401). */
 export interface AaConfig {
   modelName: string;
   benchmark: string;
@@ -880,7 +934,7 @@ export interface AaTestRun {
 }
 
 /**
- * One Coding Agent Index row of ainventory.benchmark_results (the
+ * One Coding Agent Index row of ainventory.measurement_events (the
  * import's Coding_Agent_Results rows): a model + effort + agent
  * harness observation, kept strictly separate from the AA Intelligence
  * Index — no score conversion between the indexes (the ChatGPT
@@ -1174,6 +1228,8 @@ export interface DashComment {
   objectRef: string;
   kind: DashCommentKind;
   author: DashAuthor;
+  /** True only when a privileged Drew/Muse author supplied the configured operator token. */
+  authorVerified?: boolean;
   body: string;
   createdAt: string;
   /** kind "message": the orchestrator's triage state. */
@@ -1188,6 +1244,13 @@ export interface DashComment {
    *  fleet poster reported (#1210), rendered so a failed comment
    *  shows why it failed, not just that it did. Cleared on posting. */
   githubError?: string;
+  /** kind "github", when githubState is "failed": when the most
+   *  recent failure was reported (#8586), so the queue renders the
+   *  failure's age rather than the comment's age. Refreshed on every
+   *  repeat failure alongside githubError; cleared on posting.
+   *  Absent on records written before the field existed — readers
+   *  fall back to createdAt for those. */
+  githubFailedAt?: string;
 }
 
 /** Runtime families the session registry tracks. */
@@ -1344,6 +1407,8 @@ export interface SaasService {
   reads: DatedRead[];
   /** The section's usage prose, trimmed (detail view + shell cards). */
   usageNote?: string;
+  /** Pattern-extraction health; absent on older fleet feeds. */
+  extractionHealth?: ExtractionHealth;
 }
 
 /** A service evaluated in free-services-to-check.md but not represented
@@ -1389,14 +1454,45 @@ export interface ChargeRow {
 /**
  * One tripped bubble rule (§1.3): a metric over 80% of its limit, or
  * projected unbilled PAYG over $5 (unbilled accrual only, Q3 default).
+ * "quota-action" entries are the eligible quota actions from
+ * buildQuotaActions (derive.ts, #1174) — expiry/cancellation, walled,
+ * and high-usage — rendered on the same strip, never a second list.
  */
 export interface AttentionFlag {
-  kind: "over-limit" | "payg-unbilled" | "unmatched-charge" | "credential-lifecycle";
+  kind: "over-limit" | "payg-unbilled" | "unmatched-charge" | "credential-lifecycle" | "quota-action";
   label: string;
   detail: string;
   href: string;
   /** Percent (over-limit) or counted dollars (payg-unbilled); worst first. */
   severity: number;
+}
+
+/**
+ * One actionable quota entry (#1174): an expiring/cancelled plan
+ * period, a walled pool, or a high-usage window whose reset is far
+ * enough away to act on. Derived once by buildQuotaActions (derive.ts)
+ * from the pools' typed source data — never by scraping display
+ * prose — and rendered identically on /quota, /today, and /attention.
+ * An entry exists only while its source condition holds: past
+ * deadlines and cleared states produce no entry, so nothing goes
+ * stale and nothing renders twice.
+ */
+export type QuotaActionKind = "expiry" | "walled" | "high-usage";
+
+export interface QuotaAction {
+  /** Stable per pool + kind, so surfaces dedupe by identity. */
+  id: string;
+  poolId: string;
+  provider: string;
+  plan: string;
+  kind: QuotaActionKind;
+  /** Actionable one-liner, e.g. "OpenCode Go — Personal ends 2026-11-02". */
+  title: string;
+  /** Reason + deadline + concrete next step, when the source names one. */
+  detail: string;
+  /** ISO deadline when the source carries one (expiry date, wall lift, reset). */
+  deadline: string | null;
+  href: string;
 }
 
 /**

@@ -34,7 +34,7 @@ will actually work in: multi-world windowing and presence, the world
 inspector (journal, triple graph, capability grants, lease state as
 browsable objects), or the debug UI (event tailing, replay scrubbing,
 fuzz/soak playback). Every serious session with ID ends with someone
-wanting to *see* the journal and the graph; today the only windows are
+wanting to _see_ the journal and the graph; today the only windows are
 the terminal and the web Explorer, and neither was designed as an
 inspector. This record designs that surface as requirements any shell
 (web growth or native, per #788/#1072) must satisfy identically where
@@ -62,7 +62,7 @@ created for it.
   down another world's session or subscriptions.
 - **World organisation.** Worlds are organised as a list with pinned
   worlds first, then recent, then discovered. Discovery is the #5545
-  discovery query *rendered*: the same counted/uncounted distinction
+  discovery query _rendered_: the same counted/uncounted distinction
   the query returns is visible in the list (a world you can find but
   are not a counted writer of is shown as such, never silently
   omitted and never shown as fully joined).
@@ -137,19 +137,19 @@ identically by another operator.
 Decided here as requirements; framework choice stays with #788's
 record and #1072's stack decision.
 
-| Surface element | Web (Explorer growth) | Native | Identical in both |
-|---|---|---|---|
-| World list + discovery rendering (#5545) | yes | yes | semantics, counted/uncounted rendering |
-| Presence header | yes | yes | presence model and states |
-| Journal browser | yes | yes | filters, lease columns, deep links |
-| Triple explorer | yes, within §7 Q2 budgets | yes, within §7 Q2 budgets | budgets, truncation affordance |
-| Grant/capability viewer | yes | yes | chain rendering, both query directions |
-| Writer-set sides | yes | yes | side-by-side rule |
-| Live event tail | yes, sampled at lower rate cap | yes | sampling disclosure rule |
-| Replay scrubber | yes, fixture/range replay | yes | coordinate system, read-only rule |
-| Fuzz/soak playback | yes | yes | divergence marking |
-| Multi-window detach | docked regions instead | yes | panel content identical either way |
-| 3D / spatial world rendering | no (out of Explorer scope) | yes, per #788 shell | shell contract events only |
+| Surface element                          | Web (Explorer growth)          | Native                    | Identical in both                      |
+| ---------------------------------------- | ------------------------------ | ------------------------- | -------------------------------------- |
+| World list + discovery rendering (#5545) | yes                            | yes                       | semantics, counted/uncounted rendering |
+| Presence header                          | yes                            | yes                       | presence model and states              |
+| Journal browser                          | yes                            | yes                       | filters, lease columns, deep links     |
+| Triple explorer                          | yes, within §7 Q2 budgets      | yes, within §7 Q2 budgets | budgets, truncation affordance         |
+| Grant/capability viewer                  | yes                            | yes                       | chain rendering, both query directions |
+| Writer-set sides                         | yes                            | yes                       | side-by-side rule                      |
+| Live event tail                          | yes, sampled at lower rate cap | yes                       | sampling disclosure rule               |
+| Replay scrubber                          | yes, fixture/range replay      | yes                       | coordinate system, read-only rule      |
+| Fuzz/soak playback                       | yes                            | yes                       | divergence marking                     |
+| Multi-window detach                      | docked regions instead         | yes                       | panel content identical either way     |
+| 3D / spatial world rendering             | no (out of Explorer scope)     | yes, per #788 shell       | shell contract events only             |
 
 The "identical" column is the conformance surface: a shell that
 renders one of these elements renders it with these semantics, which
@@ -194,7 +194,7 @@ path and list equivalent.
 **Q4. Write affordances, or read-only by design?**
 DECIDED for v1: read-only by design. The inspector creates no write
 path of its own. Moderation and other writes (the #835 question)
-enter, if #835 decides they should, as *proposed-action drafts*
+enter, if #835 decides they should, as _proposed-action drafts_
 composed in the inspector but executed through the ordinary client
 write path — with that path's own authority checks, journal
 entries, and lease rules — never as a privileged inspector channel.
@@ -210,14 +210,14 @@ or budgeted, all state their truncation, and none is a new write
 API. Names are logical; the owning presenter (web first, per §6)
 shapes the concrete encoding.
 
-| Read model | Contents | Bound |
-|---|---|---|
-| `world_directory` | discovery results with counted/uncounted sides, pins, recency | paged |
-| `journal_page` | entries by position range, kind/author/epoch filters, lease columns | paged by position |
-| `triple_neighbourhood` | focus entity, radius, typed edges, aggregate supernodes | §7 Q2 budgets |
-| `grant_chains` | chains for a principal or an action, scope/expiry/revocation per link | paged |
-| `event_tail` | live subscription at journal position, sampling state disclosed | rate-capped, sampling stated |
-| `replay_session` | projection rebuild over a range or fixture, step/scrub positions | range-bounded, read-only |
+| Read model             | Contents                                                              | Bound                        |
+| ---------------------- | --------------------------------------------------------------------- | ---------------------------- |
+| `world_directory`      | discovery results with counted/uncounted sides, pins, recency         | paged                        |
+| `journal_page`         | entries by position range, kind/author/epoch filters, lease columns   | paged by position            |
+| `triple_neighbourhood` | focus entity, radius, typed edges, aggregate supernodes               | §7 Q2 budgets                |
+| `grant_chains`         | chains for a principal or an action, scope/expiry/revocation per link | paged                        |
+| `event_tail`           | live subscription at journal position, sampling state disclosed       | rate-capped, sampling stated |
+| `replay_session`       | projection rebuild over a range or fixture, step/scrub positions      | range-bounded, read-only     |
 
 ## 9. Implementation slices (next actions)
 

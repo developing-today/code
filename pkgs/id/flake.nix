@@ -159,6 +159,14 @@
           '';
         };
 
+        # Same pinned toolchain plus the wasm32-unknown-unknown target
+        # (#7904): rust-toolchain.toml carries no targets, so the stock
+        # toolchain cannot rebuild examples/rust-counter/counter.wasm;
+        # the rebuild check below needs this override.
+        rustToolchainWasm = rustToolchain.override {
+          targets = [ "wasm32-unknown-unknown" ];
+        };
+
         # Helper to create a check that runs a just command or direct test
         # command, with an optional pre-check step and check-specific tools.
         mkCheck = name: justCmd: mkCheckWith { inherit name justCmd; };
@@ -180,6 +188,9 @@
             CARGO_INCREMENTAL = "0";
             CARGO_PROFILE_TEST_DEBUG = "line-tables-only";
             CARGO_PROFILE_DEV_DEBUG = "line-tables-only";
+            # Fake-compiler probe tests need a real interpreter for their
+            # shebang in the sandbox, where /bin/sh does not exist (#5926).
+            ID_TEST_FAKE_SH = "${pkgs.stdenv.shell}";
             src = ./.;
             inherit buildInputs;
             nativeBuildInputs =
@@ -359,13 +370,45 @@
           test = mkCheck "test" "test-sandbox";
           test-unit = mkCheck "test-unit" "test-unit";
           test-native-shell = mkCheck "test-native-shell" "test-native-shell";
+          # Rust example guests (#7904): plaza-sdk (examples/rust-world)
+          # and rust-counter (examples/rust-counter) are standalone
+          # crates outside the pkgs/id workspace, so no workspace test
+          # check ever ran their unit tests (9 + 2).
+          test-rust-examples = mkCheck "test-rust-examples" "test-rust-examples";
+          # Rebuild the Rust counter guest from source and run the
+          # sandbox tests against the rebuilt module (#7904) -- the
+          # roc-examples pattern. Wasm bytes are not reproducible
+          # across rustc builds or build paths (the producers/code
+          # sections differ between the rustup and rust-overlay
+          # builds of the same pinned 1.99.0), so a byte drift gate
+          # would be permanently red; what CI must prove is that the
+          # module built from current source passes the conformance
+          # tests that load it (src/sandbox.rs include_bytes!).
+          rust-counter-wasm = mkCheckWith {
+            name = "rust-counter-wasm";
+            beforeCheck = ''
+              export PATH="${rustToolchainWasm}/bin:$PATH"
+              bash examples/rust-counter/build.sh
+            '';
+            checkCommand = ''
+              cargo test --no-default-features --features sandbox,world --lib sandbox
+            '';
+          };
           test-int = mkCheck "test-int" "test-int-sandbox";
           # PR-gate shards of the integration suite (#869): the four
           # shards together run every target test-sandbox runs, in
           # parallel jobs instead of one serial ~25-minute check.
           # (3 → 4 shards in #551: the 3-way shards had drifted to
           # ~12.5 min, close to the fast-lane exit.)
-          test-shard-0 = mkCheck "test-shard-0" "test-shard-sandbox 0 4";
+          # Keep the shard argument/empty-selection regression in the PR
+          # gate once, alongside shard 0, before running its real partition.
+          test-shard-0 = mkCheckWith {
+            name = "test-shard-0";
+            checkCommand = ''
+              bash scripts/test-shard-sandbox-test.sh
+              just test-shard-sandbox 0 4
+            '';
+          };
           test-shard-1 = mkCheck "test-shard-1" "test-shard-sandbox 1 4";
           test-shard-2 = mkCheck "test-shard-2" "test-shard-sandbox 2 4";
           test-shard-3 = mkCheck "test-shard-3" "test-shard-sandbox 3 4";
@@ -399,8 +442,10 @@
           doc = mkCheck "doc" "doc";
           cargo-check = mkCheck "cargo-check" "cargo-check";
           # Production module-size guard (#1411): fails when any
-          # production .rs file exceeds 2,500 production lines
-          # (grandfathered: src/web/markdown.rs, split tracked in #1438).
+          # production .rs file exceeds 2,500 production lines.
+          # src/web/markdown.rs was the last id grandfather entry; its
+          # split into web/markdown/ submodules landed under #4704 and
+          # the entry was removed there, completing #1438.
           prod-lines-check = mkCheck "prod-lines-check" "prod-lines-check";
           crash-gate = mkCheck "crash-gate" "crash-gate";
           # PR-gate splits of crash-gate (#551): the aggregate above runs
@@ -824,6 +869,9 @@
               "--skip"
               "serve_tests"
             ];
+            preCheck = ''
+              export ID_TEST_FAKE_SH="${pkgs.stdenv.shell}"
+            '';
 
             meta = commonMeta // {
               description = "A peer-to-peer file sharing CLI built with Iroh (with web UI)";
@@ -873,6 +921,9 @@
               "--skip"
               "serve_tests"
             ];
+            preCheck = ''
+              export ID_TEST_FAKE_SH="${pkgs.stdenv.shell}"
+            '';
 
             meta = commonMeta // {
               description = "A peer-to-peer file sharing CLI built with Iroh";

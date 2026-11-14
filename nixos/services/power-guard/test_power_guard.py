@@ -29,7 +29,20 @@ HERE = Path(__file__).resolve().parent
 DAEMON = HERE / "power-guard.py"
 
 TIMING_VARS = ("POWER_GUARD_POLL", "POWER_GUARD_CONFIRM", "POWER_GUARD_EDGE_CONFIRM")
-BAD_VALUES = ["abc", "", "nan", "NaN", "inf", "-inf", "0", "0.0", "-1", "-5", "1e10", "1e100"]
+BAD_VALUES = [
+    "abc",
+    "",
+    "nan",
+    "NaN",
+    "inf",
+    "-inf",
+    "0",
+    "0.0",
+    "-1",
+    "-5",
+    "1e10",
+    "1e100",
+]
 
 
 def load_daemon():

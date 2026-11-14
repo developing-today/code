@@ -16,6 +16,10 @@
 // this census is open-only by design, so a closed item can never appear
 // here. That is recorded on #1226 rather than claimed as met.
 import { REPOS } from "./model.ts";
+import { randomUUID } from "node:crypto";
+import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
+import { homedir } from "node:os";
+import { dirname, join } from "node:path";
 
 export const NEEDS_DREW_LABELS = ["user/review", "user/escalated"] as const;
 export type NeedsDrewLabel = (typeof NEEDS_DREW_LABELS)[number];
@@ -255,4 +259,216 @@ export async function buildNeedsDrewCensus(
     sources,
     complete: sources.every((s) => s.ok && !s.truncated && !s.incomplete),
   };
+}
+
+// ---------------------------------------------------------------------------
+// Needs-Drew QUESTIONS (#8568, notifications Phase 1): a fleet worker
+// blocked on Drew raises a question through the alert throat
+// (POST /api/alerts with a `needsDrew` extension, source "fleet-queue").
+// This file-backed store is the aggregator half of that contract: the
+// per-question token (minted once, at first raise) is the authority for
+// the answer page (/answer/<ledgerId>?t=<token>) and the answer endpoint
+// (POST /api/needs-drew/<ledgerId>/answer). First answer wins. Answered
+// items are published into fleet-feed.json's top-level `answers` array
+// by scripts/collect-fleet-feed.ts so the fleet lane can resume workers.
+// NOTE: this section shares the module with the #1226 label census
+// above because the task named this file; the two concerns are
+// independent (census = GitHub labels, read-only; questions = local
+// store, writable).
+
+export interface NeedsDrewOption {
+  id: string;
+  label: string;
+}
+
+export interface NeedsDrewAnswer {
+  optionId?: string;
+  freeText?: string;
+  at: string;
+  via: string;
+}
+
+export interface NeedsDrewQuestion {
+  ledgerId: string;
+  question: string;
+  context?: string;
+  options: NeedsDrewOption[];
+  links: string[];
+  /** Per-question answer authority; minted at first raise, never rotated. */
+  token: string;
+  raisedAt: string;
+  source: string;
+  answer?: NeedsDrewAnswer;
+}
+
+export interface NeedsDrewInput {
+  ledgerId: string;
+  question: string;
+  context?: string;
+  options: NeedsDrewOption[];
+  links: string[];
+}
+
+export const NEEDS_DREW_OPEN_MAX_AGE_MS = 7 * 24 * 60 * 60_000;
+
+/** Default question-store path (mirrors src/config.ts needsDrewFile). */
+export function defaultNeedsDrewFile(env: Record<string, string | undefined> = process.env): string {
+  const v = env.PM_AGG_NEEDS_DREW_FILE?.trim();
+  return v ? v : join(homedir(), ".local", "state", "pm-aggregator", "needs-drew.json");
+}
+
+/** Validate the intake `needsDrew` extension object (#8568 wire contract). */
+export function validateNeedsDrew(value: unknown): { ok: true; value: NeedsDrewInput } | { ok: false; error: string } {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return { ok: false, error: "needsDrew must be an object" };
+  }
+  const b = value as Record<string, unknown>;
+  const ledgerId = typeof b.ledgerId === "string" ? b.ledgerId.trim() : "";
+  if (!ledgerId) return { ok: false, error: "needsDrew.ledgerId required" };
+  const question = typeof b.question === "string" ? b.question.trim() : "";
+  if (!question) return { ok: false, error: "needsDrew.question required" };
+  if (b.context !== undefined && typeof b.context !== "string") {
+    return { ok: false, error: "needsDrew.context must be a string" };
+  }
+  if (!Array.isArray(b.options) || b.options.length < 1 || b.options.length > 8) {
+    return { ok: false, error: "needsDrew.options must be an array of 1-8 entries" };
+  }
+  const options: NeedsDrewOption[] = [];
+  for (const raw of b.options) {
+    if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
+      return { ok: false, error: "needsDrew.options entries must be objects" };
+    }
+    const o = raw as Record<string, unknown>;
+    const id = typeof o.id === "string" ? o.id.trim() : "";
+    const label = typeof o.label === "string" ? o.label.trim() : "";
+    if (!id || !label) return { ok: false, error: "needsDrew.options entries require id and label" };
+    options.push({ id, label });
+  }
+  let links: string[] = [];
+  if (b.links !== undefined) {
+    if (!Array.isArray(b.links) || b.links.some((l) => typeof l !== "string")) {
+      return { ok: false, error: "needsDrew.links must be an array of strings" };
+    }
+    links = [...(b.links as string[])];
+  }
+  return {
+    ok: true,
+    value: {
+      ledgerId,
+      question,
+      ...(typeof b.context === "string" ? { context: b.context } : {}),
+      options,
+      links,
+    },
+  };
+}
+
+interface NeedsDrewFileShape {
+  version: 1;
+  items: NeedsDrewQuestion[];
+}
+
+async function readNeedsDrewItems(file: string): Promise<NeedsDrewQuestion[]> {
+  try {
+    const parsed: unknown = JSON.parse(await readFile(file, "utf8"));
+    if (parsed && typeof parsed === "object" && Array.isArray((parsed as NeedsDrewFileShape).items)) {
+      return (parsed as NeedsDrewFileShape).items.filter(
+        (i): i is NeedsDrewQuestion =>
+          !!i && typeof i === "object" && typeof i.ledgerId === "string" && typeof i.token === "string",
+      );
+    }
+    if (Array.isArray(parsed)) return parsed as NeedsDrewQuestion[];
+    return [];
+  } catch {
+    return []; // absent/corrupt store reads as empty; a raise rewrites it
+  }
+}
+
+let needsDrewWriteSeq = 0;
+const needsDrewChains = new Map<string, Promise<unknown>>();
+
+function serializeNeedsDrew<T>(file: string, fn: () => Promise<T>): Promise<T> {
+  const prev = needsDrewChains.get(file) ?? Promise.resolve();
+  const run = prev.then(fn, fn);
+  needsDrewChains.set(
+    file,
+    run.catch(() => {}),
+  );
+  return run;
+}
+
+async function writeNeedsDrewItems(file: string, items: NeedsDrewQuestion[]): Promise<void> {
+  await mkdir(dirname(file), { recursive: true });
+  const tmp = `${file}.tmp-${process.pid}-${++needsDrewWriteSeq}`;
+  const data: NeedsDrewFileShape = { version: 1, items };
+  await writeFile(tmp, JSON.stringify(data, null, 2));
+  await rename(tmp, file);
+}
+
+/** Raise a question. Idempotent: an existing ledgerId keeps its token
+ * and its original fields (a re-post is a duplicate, not an edit). */
+export async function raiseNeedsDrew(
+  file: string,
+  input: NeedsDrewInput,
+  source = "fleet-queue",
+): Promise<NeedsDrewQuestion> {
+  return serializeNeedsDrew(file, async () => {
+    const items = await readNeedsDrewItems(file);
+    const existing = items.find((i) => i.ledgerId === input.ledgerId);
+    if (existing) return existing;
+    const item: NeedsDrewQuestion = {
+      ledgerId: input.ledgerId,
+      question: input.question,
+      ...(input.context !== undefined ? { context: input.context } : {}),
+      options: input.options,
+      links: input.links,
+      token: randomUUID(),
+      raisedAt: new Date().toISOString(),
+      source,
+    };
+    items.push(item);
+    await writeNeedsDrewItems(file, items);
+    return item;
+  });
+}
+
+export async function getNeedsDrew(file: string, ledgerId: string): Promise<NeedsDrewQuestion | null> {
+  const items = await readNeedsDrewItems(file);
+  return items.find((i) => i.ledgerId === ledgerId) ?? null;
+}
+
+/** Record an answer. First answer wins; repeats return current state. */
+export async function recordAnswer(
+  file: string,
+  ledgerId: string,
+  answer: { optionId?: string; freeText?: string; via?: string },
+): Promise<NeedsDrewQuestion | null> {
+  return serializeNeedsDrew(file, async () => {
+    const items = await readNeedsDrewItems(file);
+    const item = items.find((i) => i.ledgerId === ledgerId);
+    if (!item) return null;
+    if (item.answer) return item;
+    item.answer = {
+      ...(answer.optionId !== undefined ? { optionId: answer.optionId } : {}),
+      ...(answer.freeText !== undefined ? { freeText: answer.freeText } : {}),
+      at: new Date().toISOString(),
+      via: answer.via ?? "api",
+    };
+    await writeNeedsDrewItems(file, items);
+    return item;
+  });
+}
+
+/** Open (unanswered) questions younger than 7 days, oldest first. */
+export async function listOpenNeedsDrew(file: string, now = Date.now()): Promise<NeedsDrewQuestion[]> {
+  const items = await readNeedsDrewItems(file);
+  return items
+    .filter((i) => !i.answer && now - Date.parse(i.raisedAt) < NEEDS_DREW_OPEN_MAX_AGE_MS)
+    .sort((a, b) => a.raisedAt.localeCompare(b.raisedAt));
+}
+
+/** Every answered item, in raise order (the feed's `answers` source). */
+export async function listAnswers(file: string): Promise<NeedsDrewQuestion[]> {
+  const items = await readNeedsDrewItems(file);
+  return items.filter((i) => i.answer);
 }

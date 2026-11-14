@@ -34,6 +34,8 @@ import {
   type NotificationSnapshot,
 } from "./notifications.ts";
 import { JsonlNotificationHistory, type NotificationHistoryStore } from "./notification-history.ts";
+import { getNeedsDrew } from "./needs-drew.ts";
+import { getDecisionSet } from "./decisions.ts";
 
 // --- Shapes ----------------------------------------------------------------
 
@@ -142,11 +144,36 @@ export const DEFAULT_CLASSES: Record<string, boolean> = NOTIFICATION_CLASS_DEFAU
 /** Design §2: default quiet window 23:00–07:00 America/Chicago. */
 export const DEFAULT_QUIET: QuietPrefs = { start: "23:00", end: "07:00", tz: "America/Chicago", enabled: true };
 
+/** #4981: how many client-supplied class keys one subscription may carry
+ * beyond {@link DEFAULT_CLASSES}. The class registry that would validate
+ * names and give the set its real shape arrives with #3317; until then a
+ * fixed cap keeps a client from growing the stored `classes` object
+ * without bound. Keys past the cap are dropped, not stored. */
+export const MAX_CLASS_KEYS = 16;
+/** #4981: longest accepted class key. Real class names are short slugs
+ * ("quota-wall"); anything longer is not a class this build knows. */
+export const MAX_CLASS_KEY_LENGTH = 64;
+
 export function mergeClasses(input: unknown): Record<string, boolean> {
   const out = { ...DEFAULT_CLASSES };
+  let clientKeys = 0;
+  const seenClient: Record<string, true> = {};
   if (input && typeof input === "object") {
     for (const [k, v] of Object.entries(input as Record<string, unknown>)) {
-      if (typeof v === "boolean") out[k] = v;
+      // #4981: bound growth — a key must be a plausible class name, and a
+      // subscription may carry only MAX_CLASS_KEYS client-supplied keys.
+      // Over-limit input is dropped rather than extending the stored
+      // object. Object.hasOwn (not `in`) so prototype names like
+      // "toString" count against the cap like any other client key.
+      if (k.length === 0 || k.length > MAX_CLASS_KEY_LENGTH) continue;
+      if (typeof v !== "boolean") continue;
+      const isClientKey = !Object.hasOwn(DEFAULT_CLASSES, k) && !Object.hasOwn(seenClient, k);
+      if (isClientKey && clientKeys >= MAX_CLASS_KEYS) continue;
+      if (isClientKey) {
+        clientKeys += 1;
+        seenClient[k] = true;
+      }
+      out[k] = v;
     }
   }
   return out;
@@ -187,7 +214,7 @@ export function mergeQuiet(input: unknown): QuietPrefs {
  * only the original incident class defaults on for old rows; new rows
  * receive the reviewed defaults from mergeClasses at creation. */
 export function classEnabled(sub: { classes: Record<string, boolean> }, cls: string): boolean {
-  return sub.classes?.[cls] ?? (cls === "incident");
+  return sub.classes?.[cls] ?? cls === "incident";
 }
 
 /** Is `now` inside the quiet window (evaluated in the prefs' timezone)?
@@ -245,6 +272,9 @@ export interface PushPayload {
   body: string;
   escalation?: boolean;
   items?: Array<{ class: string; objectRef: string; title: string; url: string }>;
+  /** #8568: tappable answers for a needs-Drew question push; `url` is
+   * the absolute answer-page URL including the per-question token. */
+  answer?: { ledgerId: string; options: Array<{ id: string; label: string }>; url: string };
 }
 
 export function buildIncidentPayload(incident: Incident, origin: string, escalation: boolean): PushPayload {
@@ -530,6 +560,21 @@ export class AlertsStore {
     return { incident: await this.getIncident(id), transitioned: false };
   }
 
+  /** #8568: close the open incident for a (source, key) pair — the
+   * sentinel's "up" transition resolves the incident its "down" post
+   * opened. Reuses closeIncident for the transition + event. */
+  async closeOpenIncidentByKey(
+    source: string,
+    key: string,
+  ): Promise<{ incident: Incident | null; transitioned: boolean }> {
+    const rows = await this.db.query<Incident>(
+      `select * from alerts.incidents where source = ${sqlStr(source)} and incident_key = ${sqlStr(key)} and status <> 'closed' order by first_seen_at limit 1`,
+    );
+    const open = rows[0];
+    if (!open) return { incident: null, transitioned: false };
+    return this.closeIncident(open.id);
+  }
+
   async closeIncident(id: string): Promise<{ incident: Incident | null; transitioned: boolean }> {
     const rows = await this.db.query<Incident>(
       `update alerts.incidents set status = 'closed', closed_at = now()
@@ -758,7 +803,7 @@ export function createAlertsStoreGetter(
       );
     }
     return storePromise;
-  }
+  };
 }
 
 /** The shared store; null when the Supabase path is unavailable. */
@@ -846,15 +891,17 @@ async function runDashboardNotificationTick(
   const [snapshot, history] = await Promise.all([options.dashboardSnapshot(), historyStore.read()]);
   const candidates = buildNotificationCandidates(snapshot, now);
 
-  const keyOf = (entry: Pick<NotificationHistoryEntry, "class" | "objectRef" | "stateFingerprint" | "subscriptionId">) =>
-    `${entry.subscriptionId ?? ""}\u0000${entry.class}\u0000${entry.objectRef}\u0000${entry.stateFingerprint}`;
+  const keyOf = (
+    entry: Pick<NotificationHistoryEntry, "class" | "objectRef" | "stateFingerprint" | "subscriptionId">,
+  ) => `${entry.subscriptionId ?? ""}\u0000${entry.class}\u0000${entry.objectRef}\u0000${entry.stateFingerprint}`;
   const pendingFor = (subId: string): Map<string, NotificationHistoryEntry> => {
     const pending = new Map<string, NotificationHistoryEntry>();
     for (const entry of history) {
       if (entry.subscriptionId !== subId) continue;
       const key = keyOf(entry);
       if (entry.outcome === "queued") pending.set(key, entry);
-      else if (entry.outcome === "queue-cancelled" || entry.outcome === "sent" || entry.outcome === "gone") pending.delete(key);
+      else if (entry.outcome === "queue-cancelled" || entry.outcome === "sent" || entry.outcome === "gone")
+        pending.delete(key);
     }
     return pending;
   };
@@ -988,6 +1035,37 @@ async function runDashboardNotificationTick(
         body: candidate.body,
         ...(candidate.escalationStep ? { escalation: true } : {}),
       };
+      // #8568: a needs-Drew candidate pushes with tappable answers —
+      // the payload url becomes the token-carrying answer page.
+      if (candidate.needsDrew) {
+        try {
+          const item = await getNeedsDrew(cfg.needsDrewFile, candidate.needsDrew.ledgerId);
+          if (item) {
+            const answerUrl = `${cfg.publicOrigin}/answer/${encodeURIComponent(item.ledgerId)}?t=${item.token}`;
+            payload.answer = { ledgerId: item.ledgerId, options: item.options, url: answerUrl };
+            payload.url = answerUrl;
+          }
+        } catch (err) {
+          console.error(
+            `alerts engine: needs-drew answer payload lookup failed (${err instanceof Error ? err.message : "error"})`,
+          );
+        }
+      }
+      // #8766: a decision-set candidate pushes with the set page as
+      // its URL — the per-set token rides the URL; the page itself is
+      // the answer surface, so no `answer` payload is attached.
+      if (candidate.decisionSet) {
+        try {
+          const set = await getDecisionSet(cfg.decisionsFile, candidate.decisionSet.setId);
+          if (set) {
+            payload.url = `${cfg.publicOrigin}/decisions/${encodeURIComponent(set.setId)}?t=${set.token}`;
+          }
+        } catch (err) {
+          console.error(
+            `alerts engine: decision-set payload lookup failed (${err instanceof Error ? err.message : "error"})`,
+          );
+        }
+      }
       const target: PushTarget = { endpoint: sub.endpoint, p256dh: sub.p256dh, auth: sub.auth };
       const result = await push(target, payload);
       const outcome = result.ok ? "sent" : result.gone ? "gone" : "error";
@@ -1007,7 +1085,9 @@ async function runDashboardNotificationTick(
     }
 
     const due = [...pending.entries()].filter(([, entry]) => Date.parse(entry.dueAt ?? "") <= now);
-    const digestCandidates = due.map(([, entry]) => entry.candidate).filter((candidate): candidate is NonNullable<typeof candidate> => !!candidate);
+    const digestCandidates = due
+      .map(([, entry]) => entry.candidate)
+      .filter((candidate): candidate is NonNullable<typeof candidate> => !!candidate);
     if (digestCandidates.length === 0) continue;
     // #7193 Codex: revalidate the CURRENT quiet window before draining —
     // the persisted dueAt was computed under an earlier window (or the
@@ -1117,6 +1197,18 @@ export async function runAlertTick(
 }
 
 let engineStarted = false;
+let alertTickHook: (() => void) | null = null;
+
+/** #8568: ask the running engine to tick promptly (e.g. a needs-Drew
+ * question or a stack-health transition just landed at the intake).
+ * The engine's own in-flight guard dedupes; no-op when not started. */
+export function requestAlertTick(): void {
+  try {
+    alertTickHook?.();
+  } catch {
+    // A prompt tick is best-effort; the 60s loop remains the backstop.
+  }
+}
 
 /** Start the ~60s engine loop (live mode only; fail-soft per tick). */
 export function startAlertEngine(cfg: Config, dashboardSnapshot?: () => Promise<NotificationSnapshot>): void {
@@ -1134,6 +1226,9 @@ export function startAlertEngine(cfg: Config, dashboardSnapshot?: () => Promise<
     } finally {
       ticking = false;
     }
+  };
+  alertTickHook = () => {
+    void tick();
   };
   setTimeout(tick, 10_000);
   setInterval(tick, cfg.alerts.tickMs);

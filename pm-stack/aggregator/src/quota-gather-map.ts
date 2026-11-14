@@ -91,8 +91,8 @@ export function serviceIdFor(providerId: string): string {
     case "claude":
     case "_claude":
       return "anthropic:claude-pro";
-    case "codex":
-      return "openai.main";
+    case "_openai":
+      return "_openai.main";
     case "cline-pass":
       return "cline-pass";
     case "command-code":
@@ -121,13 +121,16 @@ export function serviceIdFor(providerId: string): string {
  * (#1823, 2026-11-07): antigravity -> _antigravity, the claude-code door
  * (module: "claude") -> _claude, commandcode (module: "command-code")
  * -> _commandcode, and the muse-direct door (module: "meta", the Muse
- * Code High Usage reading) -> _muse. Normalize here, at the one mapping
+ * Code High Usage reading) -> _muse. The OpenAI quota door (module:
+ * "codex" before fork PR #2261) -> _openai by the same rule (2026-11-10,
+ * code#8163). Normalize here, at the one mapping
  * point every gathered result passes through. Pool/service ids are a
  * separate contract and stay put: serviceIdFor carries the dual-spelling
  * cases (both "claude" and "_claude" land on anthropic:claude-pro, and
  * "_muse" keeps the "meta" pool).
  */
 const CANONICAL_PROVIDER_IDS: Readonly<Record<string, string>> = {
+  codex: "_openai",
   antigravity: "_antigravity",
   claude: "_claude",
   "command-code": "_commandcode",
@@ -162,35 +165,41 @@ export const ANTIGRAVITY_CLAUDE_GPT_SERVICE_ID = "_antigravity.claude-gpt";
 export const ANTIGRAVITY_LEGACY_GEMINI_SERVICE_ID = "antigravity-direct.gemini";
 export const ANTIGRAVITY_LEGACY_CLAUDE_GPT_SERVICE_ID = "antigravity-direct.claude-gpt";
 
-export const OPENAI_MAIN_SERVICE_ID = "openai.main";
-export const OPENAI_ALTERNATE_SERVICE_ID = "openai.alternate";
-export const OPENAI_SELF_SERVICE_ID = "_openai";
+export const OPENAI_MAIN_SERVICE_ID = "_openai.main";
+export const OPENAI_ALTERNATE_SERVICE_ID = "_openai.alt";
+export const OPENAI_SELF_SERVICE_ID = "_openai.main";
 
 /**
- * Which OpenAI pool a folded `codex` entry belongs to, from the
+ * Which OpenAI pool a folded `_openai` entry belongs to, from the
  * credential's human label / the instance name the fork stamps on the
- * folded result. The fork's codex provider folds every OpenAI instance
- * credential (openai.main, openai.alternate, _openai) into its
- * per-credential answer under the bare provider id "codex"
- * (foldInstanceCredentials), and serviceIdFor historically filed ALL
- * of those rows under "openai.main" — so the alternate account's 5h
- * window landed in the snapshot store as openai.main|5h (its values
- * mirror openai.alternate|5h tick-for-tick in usage-2026-11.jsonl)
- * and its weekly competed under main's key in the #1624 max-collapse
+ * folded result. The fork's _openai provider folds every OpenAI instance
+ * credential into its per-credential answer under the bare provider id
+ * "_openai" (foldInstanceCredentials), and serviceIdFor historically
+ * filed ALL of those rows under the main pool — so the alternate
+ * account's 5h window landed in the snapshot store under main's key
+ * (its values mirror the alternate series tick-for-tick) and its
+ * weekly competed under main's key in the #1624 max-collapse
  * (2026-11-04: main|weekly published 100 with the ALTERNATE window's
  * reset label while main's own read was ~17). Like goPoolServiceId,
  * the label is the only stable gatherer-side signal: instance ids are
  * config names, credential ids are opaque row ids the mapping would
- * have to hardcode. Unmatched entries yield null and keep the
- * historical fallback (serviceIdFor: openai.main, the base provider's
- * own pool) — never a fabricated pool row.
+ * have to hardcode. Unmatched entries yield null and keep the fallback
+ * (serviceIdFor: _openai.main, the base provider's own pool) — never a
+ * fabricated pool row.
+ *
+ * Service ids are the door ids (Drew, 2026-11-10, code#8163):
+ * _openai.main (drewrypope) and _openai.alt (popesdrew). The
+ * pre-rename ids (openai.main / openai.alternate) survive only in the
+ * historical snapshot series, unrewritten; the dedicated _openai door
+ * and the openai.main instance are the same account, so their rows
+ * file together under _openai.main.
  */
-export function codexPoolServiceId(entry: {
+export function openaiPoolServiceId(entry: {
   credentialLabel?: string | null;
   providerName?: string | null;
 }): string | null {
   const text = `${entry.credentialLabel ?? ""} ${entry.providerName ?? ""}`.toLowerCase();
-  if (text.includes("alternate")) return OPENAI_ALTERNATE_SERVICE_ID;
+  if (text.includes("alternate") || text.includes("_openai.alt")) return OPENAI_ALTERNATE_SERVICE_ID;
   if (text.includes("_openai") || text.includes("self-contained") || text.includes("self contained"))
     return OPENAI_SELF_SERVICE_ID;
   if (text.includes("main")) return OPENAI_MAIN_SERVICE_ID;
@@ -223,7 +232,8 @@ export function goPoolServiceId(entry: QuotaCurrentEntry): string | null {
  * quota would disagree about which pool a model draws from.
  */
 function antigravityPoolForModel(model: string, legacy = false): string {
-  if (legacy) return model.startsWith("gemini") ? ANTIGRAVITY_LEGACY_GEMINI_SERVICE_ID : ANTIGRAVITY_LEGACY_CLAUDE_GPT_SERVICE_ID;
+  if (legacy)
+    return model.startsWith("gemini") ? ANTIGRAVITY_LEGACY_GEMINI_SERVICE_ID : ANTIGRAVITY_LEGACY_CLAUDE_GPT_SERVICE_ID;
   return model.startsWith("gemini") ? ANTIGRAVITY_GEMINI_SERVICE_ID : ANTIGRAVITY_CLAUDE_GPT_SERVICE_ID;
 }
 
@@ -447,6 +457,32 @@ export function isGoLapseResult(result: QuotaProviderResult): boolean {
   );
 }
 
+/** The remedy every Meta session-lapse surface must name (#8294). */
+export const META_SESSION_LAPSE_REMEDY =
+  "dev.meta.ai portal session is logged out; re-auth (re-login) in the hub browser profile to restore Meta quota reads";
+
+/**
+ * A configured Meta result that failed because the dev.meta.ai portal
+ * session lapsed (#8294). The Meta read rides the provider-owned
+ * credential the Meta keeper captures and renews (see meta-renewal.ts);
+ * when that session expires, the provider leg fails session-class
+ * ("unauthorized", or the exporter's "session-expired" shape) rather
+ * than with a provider error. A lapsed session has a known remedy
+ * (re-auth on the hub) and is not a provider failure, so — following
+ * the OpenCode Go lapse template (#1161 / PR #7898) — it classifies
+ * as "lapsed", never "error". Unlike the Go lapse this one is
+ * temporary: the gatherer retains the pool's last good windows as
+ * stale rows alongside the lapsed entry (see gather-quota.ts).
+ */
+export function isMetaSessionLapseResult(result: QuotaProviderResult): boolean {
+  if (canonicalProviderId(result.providerId) !== "_muse" || result.ok || !result.configured) {
+    return false;
+  }
+  if (result.failureClass === "unauthorized") return true;
+  const error = typeof result.error === "string" ? result.error : "";
+  return /unauthorized|session-expired|session expired|logged out/i.test(error);
+}
+
 /** Map one provider result onto a quota-current entry. */
 export function entryFromResult(result: QuotaProviderResult, tickIso: string): QuotaCurrentEntry {
   let measuredAt = tickIso;
@@ -456,19 +492,19 @@ export function entryFromResult(result: QuotaProviderResult, tickIso: string): Q
   }
   const state: QuotaCurrentEntry["state"] = result.ok
     ? "ok"
-    : isGoLapseResult(result)
+    : isGoLapseResult(result) || isMetaSessionLapseResult(result)
       ? "lapsed"
       : result.configured
         ? "error"
         : "unconfigured";
   const providerId = canonicalProviderId(result.providerId);
-  // Folded codex rows carry one credential per OpenAI instance; file
-  // each under its own pool (codexPoolServiceId) instead of the base
+  // Folded _openai rows carry one credential per OpenAI instance; file
+  // each under its own pool (openaiPoolServiceId) instead of the base
   // provider's pool, or a sibling account's windows contaminate
-  // openai.main's rows and snapshot series.
+  // _openai.main's rows and snapshot series.
   const serviceId =
-    providerId === "codex"
-      ? (codexPoolServiceId({ credentialLabel: result.credentialLabel, providerName: result.providerName }) ??
+    providerId === "_openai"
+      ? (openaiPoolServiceId({ credentialLabel: result.credentialLabel, providerName: result.providerName }) ??
         serviceIdFor(providerId))
       : serviceIdFor(providerId);
   const entry: QuotaCurrentEntry = {
@@ -493,6 +529,12 @@ export function entryFromResult(result: QuotaProviderResult, tickIso: string): Q
   if (result.credentialSource) entry.credentialSource = result.credentialSource;
   if (result.planLabel) entry.planLabel = result.planLabel;
   if (result.error) entry.error = safeProviderReason(result.error);
+  if (isMetaSessionLapseResult(result)) {
+    // Name the remedy on the entry itself: this text is what the pool
+    // note surfaces (quota-current freshness.error), so a lapsed Meta
+    // session reads as an actionable re-auth state, not a bare error.
+    entry.error = `session lapsed: ${entry.error ?? "unauthorized"} — ${META_SESSION_LAPSE_REMEDY}`;
+  }
   if (typeof result.failureClass === "string" && result.failureClass !== "") entry.failureClass = result.failureClass;
   if (typeof result.lastSuccessAt === "number" && Number.isFinite(result.lastSuccessAt) && result.lastSuccessAt > 0) {
     entry.lastSuccessAt = new Date(result.lastSuccessAt).toISOString();
@@ -648,8 +690,7 @@ export function recordsFromEntries(
       // native-record branch; a prototype spelling falls through to the
       // normal pct path like any unknown window name.
       const nativeRecords = entry.serviceId === "turso" ? tursoNativeRecords(entry.planLabel) : undefined;
-      const native =
-        nativeRecords && Object.hasOwn(nativeRecords, w.name) ? nativeRecords[w.name] : undefined;
+      const native = nativeRecords && Object.hasOwn(nativeRecords, w.name) ? nativeRecords[w.name] : undefined;
       if (native) {
         if (w.value == null) continue;
         const key = `${entry.serviceId}|${w.name}`;
@@ -847,8 +888,9 @@ const positiveQuota = (v: unknown): number | null => (isFiniteNumber(v) && v > 0
  * behaviour).
  */
 export function resolveTursoLimits(planLabel?: string, plansDoc?: TursoPlansDoc | null): TursoLimits {
-  const fallback: TursoLimits =
-    (planLabel ? TURSO_PLAN_LIMITS[planLabel.toLowerCase()] : undefined) ?? { ...TURSO_LIMITS };
+  const fallback: TursoLimits = (planLabel ? TURSO_PLAN_LIMITS[planLabel.toLowerCase()] : undefined) ?? {
+    ...TURSO_LIMITS,
+  };
   if (!plansDoc || typeof planLabel !== "string" || planLabel === "" || !Array.isArray(plansDoc.plans)) {
     return fallback;
   }

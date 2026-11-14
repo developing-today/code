@@ -54,7 +54,11 @@ export interface RepoCensus {
   staleIssuesError?: string | null;
 }
 
-export interface RepoCoverage extends Omit<RepoCensus, "openIssues" | "gateNow" | "gateNext" | "staleOpenIssues" | "staleIssuesCollectedAt" | "staleIssuesError"> {
+export interface RepoCoverage
+  extends Omit<
+    RepoCensus,
+    "openIssues" | "gateNow" | "gateNext" | "staleOpenIssues" | "staleIssuesCollectedAt" | "staleIssuesError"
+  > {
   /** Null when the feed carried no census for this repo. */
   openIssues: number | null;
   gateNow: number | null;
@@ -109,6 +113,16 @@ function isRepositoryRef(value: string): boolean {
   );
 }
 
+/**
+ * One census count as the collector emits it (#3992): a non-negative
+ * integer, or null when that count's query failed ("unavailable, not
+ * zero"). Anything else - negative, fractional, a numeric string, a
+ * boolean - is an impossible row and stays rejected.
+ */
+function isCensusCount(v: unknown): v is number | null {
+  return v === null || (Number.isInteger(v) && (v as number) >= 0);
+}
+
 /** Structural gate for one census row, shared by the feed reader. */
 export function isRepoCensus(v: unknown): v is RepoCensus {
   if (!v || typeof v !== "object") return false;
@@ -116,17 +130,19 @@ export function isRepoCensus(v: unknown): v is RepoCensus {
   return (
     typeof r.repo === "string" &&
     isRepositoryRef(r.repo) &&
-    Number.isInteger(r.openIssues) &&
-    (r.openIssues as number) >= 0 &&
-    Number.isInteger(r.gateNow) &&
-    (r.gateNow as number) >= 0 &&
-    Number.isInteger(r.gateNext) &&
-    (r.gateNext as number) >= 0 &&
-    (r.gateNow as number) <= (r.openIssues as number) &&
-    (r.gateNext as number) <= (r.openIssues as number) &&
-    (r.staleOpenIssues === undefined || r.staleOpenIssues === null ||
+    isCensusCount(r.openIssues) &&
+    isCensusCount(r.gateNow) &&
+    isCensusCount(r.gateNext) &&
+    // The gate-vs-total ordering is only decidable when both sides
+    // were actually counted; a null on either side is the partial-
+    // failure row #3992 emits, not an impossible one.
+    (r.gateNow === null || r.openIssues === null || (r.gateNow as number) <= (r.openIssues as number)) &&
+    (r.gateNext === null || r.openIssues === null || (r.gateNext as number) <= (r.openIssues as number)) &&
+    (r.staleOpenIssues === undefined ||
+      r.staleOpenIssues === null ||
       (Number.isInteger(r.staleOpenIssues) && (r.staleOpenIssues as number) >= 0)) &&
-    (r.staleIssuesCollectedAt === undefined || r.staleIssuesCollectedAt === null ||
+    (r.staleIssuesCollectedAt === undefined ||
+      r.staleIssuesCollectedAt === null ||
       (typeof r.staleIssuesCollectedAt === "string" && Number.isFinite(Date.parse(r.staleIssuesCollectedAt)))) &&
     (r.staleIssuesError === undefined || r.staleIssuesError === null || typeof r.staleIssuesError === "string")
   );
@@ -135,7 +151,10 @@ export function isRepoCensus(v: unknown): v is RepoCensus {
 export type StaleIssueState = "current" | "stale" | "error" | "unavailable";
 
 /** The collection freshness is independent of the 90-day issue-age threshold. */
-export function staleIssueState(repo: Pick<RepoCoverage, "staleOpenIssues" | "staleIssuesCollectedAt" | "staleIssuesError">, now = new Date()): StaleIssueState {
+export function staleIssueState(
+  repo: Pick<RepoCoverage, "staleOpenIssues" | "staleIssuesCollectedAt" | "staleIssuesError">,
+  now = new Date(),
+): StaleIssueState {
   if (repo.staleIssuesError) return "error";
   if (repo.staleOpenIssues === null || !repo.staleIssuesCollectedAt) return "unavailable";
   const collectedAt = Date.parse(repo.staleIssuesCollectedAt);
@@ -296,11 +315,7 @@ function isCoverageRow(value: unknown): value is RepoCoverage {
 function isCoverageReport(value: unknown): value is CoverageReport {
   if (!value || typeof value !== "object") return false;
   const report = value as Record<string, unknown>;
-  return (
-    typeof report.generatedAt === "string" &&
-    Array.isArray(report.repos) &&
-    report.repos.every(isCoverageRow)
-  );
+  return typeof report.generatedAt === "string" && Array.isArray(report.repos) && report.repos.every(isCoverageRow);
 }
 
 /**

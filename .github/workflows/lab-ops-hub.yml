@@ -21,6 +21,15 @@ name: lab-ops-hub
 
 on:
   workflow_dispatch:
+  # Push-to-main only, per the 2026-11-13 main-only CI policy
+  # (.github/ci-policy.md): no pull_request triggers anywhere in
+  # this repo. The suites verify main on every package-touching
+  # merge; workflow_dispatch covers manual runs.
+  push:
+    branches: [main]
+    paths:
+      - "pkgs/lab-ops-hub/**"
+      - ".github/workflows/lab-ops-hub.yml"
 
 permissions:
   contents: read

@@ -38,6 +38,13 @@ import (
 type Options struct {
 	// Source is the TypeScript to run. Exactly one of Source or File.
 	Source string
+	// SourceName is the name of the file Source was rendered from,
+	// when the caller rendered a declared file's body itself (a
+	// script-backed tool view, #1933 slice 2). It is language
+	// evidence only -- the runner executes Source, never a file by
+	// this name -- so a .py declaration with no shebang is Python
+	// even though its rendered body arrives as text.
+	SourceName string
 	// File is a path to a script. Its directory is used as the working dir.
 	File string
 	// ClientSource is the generated client module of the default target,
@@ -92,6 +99,14 @@ type Options struct {
 	CollectLogs func(logging.Record)
 	// OnResult receives values a script streamed with emit().
 	OnResult func(logging.Streamed)
+
+	// OnFinal fires when the generated client reports the snippet's
+	// final top-level expression (CODE-19): Run rewrites an inline
+	// source whose last statement is an expression so the client
+	// captures its value, and the record arrives here kept apart
+	// from stdout and from result()/emit() values. Nil drops it,
+	// like OnResult.
+	OnFinal func(logging.Streamed)
 	// OnArtifact receives files a script registered with artifact().
 	OnArtifact func(logging.Artifacted)
 	// OnWarning receives each non-fatal preflight diagnostic, in order,
@@ -372,6 +387,16 @@ func workDirKeyMaterial(kind string, opts Options) string {
 	return material
 }
 
+// evidenceFile names the file whose extension may speak for the
+// script's language: the execution target when there is one, else the
+// file Source was rendered from.
+func (o Options) evidenceFile() string {
+	if o.File != "" {
+		return o.File
+	}
+	return o.SourceName
+}
+
 // Run generates the client, writes the script and executes it.
 func Run(ctx context.Context, opts Options) (*Result, error) {
 	if opts.Source == "" && opts.File == "" {
@@ -399,7 +424,7 @@ func Run(ctx context.Context, opts Options) (*Result, error) {
 		// harness path honours what the raw path preserves.
 		opts.Runtime = js.runtime
 		jsEnv = js
-	} else if ScriptLanguage(opts.File, opts.Source) == codegen.Python.Name {
+	} else if ScriptLanguage(opts.evidenceFile(), opts.Source) == codegen.Python.Name {
 		// Rank 3: nothing named an interpreter and the script is Python
 		// by extension, so the run is a Python harness run rather than a
 		// TypeScript one. Installing the client is the difference from a
@@ -490,7 +515,27 @@ func Run(ctx context.Context, opts Options) (*Result, error) {
 		// the same program, the same program run twice reuses the path and
 		// so hits the runtime's type-check cache, and a different program
 		// cannot be mistaken for it.
-		src := opts.Prelude + opts.Source
+		source := opts.Source
+		if opts.Export == "" && strings.TrimSpace(opts.Launcher) != LauncherNone && opts.Log != nil && opts.OnFinal != nil && strings.Contains(opts.ClientSource, "__mcpxFinal") && launcherInstallsCaptureGlobal(opts) {
+			// CODE-19: a snippet's final top-level expression is
+			// its result; rewrite it to report through the client
+			// (whose capture global exists only when the client
+			// carries it). With no launcher shim there are no
+			// globals at all, so bare-runtime runs keep their
+			// source too. The rewrite also requires a consumer:
+			// records are demultiplexed only when a Log writer
+			// is set, and a caller without an OnFinal handler
+			// (saved-recipe and resolve executions, for one)
+			// would leak the record into its stderr and lose
+			// the answer, so those sources run as written. A
+			// selected named export is an entry
+			// point with its own result rule, like the default
+			// export the transform itself abstains on. The
+			// transform abstains on anything it cannot classify,
+			// leaving the source as written.
+			source, _ = rewriteFinalExpression(source)
+		}
+		src := opts.Prelude + source
 		sum := sha256.Sum256([]byte(src))
 		scriptPath = filepath.Join(workDir, "script-"+hex.EncodeToString(sum[:])[:16]+".ts")
 		// Written only when absent or different, so a concurrent run of the
@@ -556,16 +601,16 @@ func Run(ctx context.Context, opts Options) (*Result, error) {
 		}
 		if opts.Deps.frozenNPM(rt.Kind) {
 			if cerr := installFrozenNPM(runCtx, workDir, opts.Deps, opts.Env); cerr != nil {
-				return nil, cerr
+				return nil, preflightErr(runCtx, cerr)
 			}
 		}
 		if opts.Deps.frozenBun(rt.Kind) {
 			if cerr := installFrozenBun(runCtx, rt.Bin, workDir, opts.Deps, opts.Env); cerr != nil {
-				return nil, cerr
+				return nil, preflightErr(runCtx, cerr)
 			}
 		} else if rt.Kind == KindBun && (opts.Deps.AutoInstall == "fallback" || opts.Deps.AutoInstall == "always") && (len(opts.Deps.Packages) > 0 || opts.Deps.Manifest != "") {
 			if cerr := installBun(runCtx, rt.Bin, workDir, opts.Deps, opts.Env); cerr != nil {
-				return nil, cerr
+				return nil, preflightErr(runCtx, cerr)
 			}
 		}
 		// A file script resolves bare imports from its own directory
@@ -597,7 +642,7 @@ func Run(ctx context.Context, opts Options) (*Result, error) {
 			}
 			unlock, lerr2 := lockScriptDirs(runCtx, lockDirs...)
 			if lerr2 != nil {
-				return nil, lerr2
+				return nil, preflightErr(runCtx, lerr2)
 			}
 			defer unlock()
 			// The set must also be visible at the selected
@@ -810,6 +855,7 @@ func Run(ctx context.Context, opts Options) (*Result, error) {
 				Collect:     opts.CollectLogs,
 				Result:      opts.OnResult,
 				Artifact:    opts.OnArtifact,
+				Final:       opts.OnFinal,
 			})
 		}()
 		defer func() {
@@ -886,6 +932,24 @@ var fileScriptLocks sync.Map // map[string]chan struct{}
 // vice versa) cannot deadlock by acquiring in opposite orders
 // (Codex review, PR #2589). The returned function releases every
 // acquired lock.
+// preflightErr preserves the run deadline's signal on a preparation
+// failure. The ctx-bound preflight steps (dependency installs,
+// directory-lock waits) run on the run's timeout context, but an
+// install killed by that context reports only "signal: killed", so
+// without this wrap a pre-execution timeout is indistinguishable
+// from a plain startup failure downstream (Codex review, PR #9205).
+// When the context has fired, its error leads and the step's own
+// error stays in the chain; otherwise the error passes unchanged.
+func preflightErr(ctx context.Context, err error) error {
+	if err == nil {
+		return nil
+	}
+	if cerr := ctx.Err(); cerr != nil && !errors.Is(err, cerr) {
+		return fmt.Errorf("%w: %w", cerr, err)
+	}
+	return err
+}
+
 func lockScriptDirs(ctx context.Context, dirs ...string) (func(), error) {
 	cleaned := make([]string, 0, len(dirs))
 	seen := map[string]bool{}
@@ -1095,6 +1159,30 @@ func textScanSource(opts Options, scriptPath string) string {
 		scan += "\n" + string(b)
 	}
 	return scan
+}
+
+// launcherInstallsCaptureGlobal reports whether the selected
+// launcher actually installs the globals (installGlobals), which is
+// what defines __mcpxFinal at run time. The built-in launcher always
+// does. A custom template does only when it reaches the globals --
+// through the @globals placeholder or by calling installGlobals
+// itself; a template that references @import or @entry but never
+// @globals leaves __mcpxFinal undefined, so the CODE-19 rewrite must
+// not run for it (CODE-19 review, PR #9344).
+func launcherInstallsCaptureGlobal(opts Options) bool {
+	custom := strings.TrimSpace(opts.Launcher)
+	if custom == "" {
+		return true
+	}
+	if strings.Contains(custom, "installGlobals(") {
+		return true
+	}
+	for _, p := range launcher.Used(launcher.Template{Text: custom}) {
+		if p == launcher.Globals {
+			return true
+		}
+	}
+	return false
 }
 
 // LauncherNone given as the launcher means no shim at all: the script is

@@ -130,7 +130,11 @@ def main(argv):
             seed = int(argv[i + 1])
         if a == "--cases":
             cases = int(argv[i + 1])
-    path = args[0] if args else os.path.join(os.path.dirname(os.path.abspath(__file__)), "deploy.py")
+    path = (
+        args[0]
+        if args
+        else os.path.join(os.path.dirname(os.path.abspath(__file__)), "deploy.py")
+    )
     mod = load(path)
 
     rng = random.Random(seed)
@@ -152,7 +156,12 @@ def main(argv):
                     units.insert(0, ("flag", flag, "eq", flag_value(rng, flag, regs)))
                 units.insert(
                     rng.randint(0, len(units)),
-                    ("flag", flag, rng.choice(["space", "eq"]), flag_value(rng, flag, regs)),
+                    (
+                        "flag",
+                        flag,
+                        rng.choice(["space", "eq"]),
+                        flag_value(rng, flag, regs),
+                    ),
                 )
             if kind == "missing":
                 flag = rng.choice(FLAGS)
@@ -173,19 +182,27 @@ def main(argv):
                 got, out, err = run(mod, tokens, env)
                 want = f"deploy: {flag} needs a path"
                 if got != 2 or want not in err:
-                    print(f"counterexample (missing) seed={seed} case={case}: {tokens}\nexit={got} err={err!r}")
+                    print(
+                        f"counterexample (missing) seed={seed} case={case}: {tokens}\nexit={got} err={err!r}"
+                    )
                     return 1
                 continue
             tokens = [t for u in units for t in render(u)]
             code, frag, svc = model(units, env, regs)
             got, out, err = run(mod, tokens, env)
-            if got != code or (frag is not None and frag not in err) or (svc is not None and svc not in out):
+            if (
+                got != code
+                or (frag is not None and frag not in err)
+                or (svc is not None and svc not in out)
+            ):
                 print(
                     f"counterexample ({kind}) seed={seed} case={case}: {tokens}\n"
                     f"model: exit={code} frag={frag!r} svc={svc!r}\ngot: exit={got} out={out!r} err={err!r}"
                 )
                 return 1
-    print(f"property holds: {cases} cases (seed {seed}); duplicates and missing values rejected, valid placements/spellings preserve the modelled registry selection")
+    print(
+        f"property holds: {cases} cases (seed {seed}); duplicates and missing values rejected, valid placements/spellings preserve the modelled registry selection"
+    )
     return 0
 
 

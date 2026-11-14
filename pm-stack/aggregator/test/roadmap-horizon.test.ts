@@ -42,7 +42,14 @@ describe("roadmap Horizon contract (#1207)", () => {
 
     const live = mapGristRoadmapRecord("doc", {
       id: 9,
-      fields: { Title: "Bad live value", Area: "PM stack", Status: "Planned", Horizon: "Q5 2026", Source: "", Notes: "" },
+      fields: {
+        Title: "Bad live value",
+        Area: "PM stack",
+        Status: "Planned",
+        Horizon: "Q5 2026",
+        Source: "",
+        Notes: "",
+      },
     });
     expect(live.title).toBe("Bad live value");
     expect(live.horizon).toBe("Q5 2026");
@@ -68,15 +75,17 @@ describe("roadmap Horizon contract (#1207)", () => {
     }
     expect(day).toContain("Outside this window (1)");
     expect(day).toContain("Undated or coarse horizons (2)");
-    expect(day).toContain("Alpha <span class=\"muted theme-rollup\">(1/2 done)</span>");
-    expect(day).toContain("Beta <span class=\"muted theme-rollup\">(0/2 done)</span>");
+    expect(day).toContain('Alpha <span class="muted theme-rollup">(1/2 done)</span>');
+    expect(day).toContain('Beta <span class="muted theme-rollup">(0/2 done)</span>');
     expect(quarter).toContain("(1/2 done)");
     expect(day).toContain("Invalid Horizon");
     expect(day).toContain("Original values are preserved");
   });
 
   test("unavailable live Grist remains explicitly reported while fixtures stay available", async () => {
-    const source = liveSource(loadConfig({ ...process.env, PM_AGG_SOURCE: "live", GRIST_API_KEY: "", PM_PROJECTOR_URL: "off" }));
+    const source = liveSource(
+      loadConfig({ ...process.env, PM_AGG_SOURCE: "live", GRIST_API_KEY: "", PM_PROJECTOR_URL: "off" }),
+    );
     const rows = await source.roadmap();
     expect(rows.length).toBeGreaterThan(0);
     expect(source.provenance().roadmap).toContain("grist unreachable");
@@ -127,7 +136,9 @@ describe("roadmap Horizon contract (#1207)", () => {
         let canonical: string;
         let variant: string;
         if (kind === 0) {
-          let year = 0, month = 0, day = 0;
+          let year = 0,
+            month = 0,
+            day = 0;
           do {
             year = 1800 + Math.floor(rand() * 800);
             month = 1 + Math.floor(rand() * 12);

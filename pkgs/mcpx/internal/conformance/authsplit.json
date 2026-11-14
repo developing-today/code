@@ -39,6 +39,13 @@
       "client": {
         "verdict": "permissive"
       }
+    },
+    "authz-accept-only-own-tokens": {
+      "server": {
+        "verdict": "validation",
+        "checks": ["invalid"],
+        "why": "the #1975 bearer gate (PR #2711) accepts only the daemon's own configured token and refuses any other token with 401 on every route including /mcp (daemon.TestMCPRejectsUnauthenticatedWhenBearerSet); a shared-secret gate has no expiry, audience or scope to check, so 'invalid' is the only check it performs (task 14860)"
+      }
     }
   }
 }

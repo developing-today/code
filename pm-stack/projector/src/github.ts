@@ -167,8 +167,7 @@ export async function apiTokenFor(
     // instead of returning { token: undefined } as success (every later
     // call would 401 as "Bearer undefined") or throwing a raw
     // property-access TypeError on null (#6954).
-    const token =
-      body !== null && typeof body === "object" ? (body as { token?: unknown }).token : undefined;
+    const token = body !== null && typeof body === "object" ? (body as { token?: unknown }).token : undefined;
     if (typeof token !== "string" || token === "") {
       throw new Error("installation_token_failed_shape: access_tokens response carried no string token");
     }

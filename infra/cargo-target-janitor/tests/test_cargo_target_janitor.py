@@ -191,7 +191,6 @@ class JanitorTests(unittest.TestCase):
         self.assertTrue(path.exists())
         self.assertIn('"event": "plan"', log.read_text())
 
-
     def test_owner_changed_when_worktree_switched_branch(self):
         target = self.make_target("task-43/pkgs/id/target")
         recorded = janitor.Target(target.resolve(), 10, 0, "queue/42-old", 42)
@@ -235,7 +234,9 @@ class StubQueueModule:
         if "id=in." in query:
             ids = {
                 int(x)
-                for x in re.search(r"id=in\.\%28([0-9,]+)\%29", query).group(1).split(",")
+                for x in re.search(r"id=in\.\%28([0-9,]+)\%29", query)
+                .group(1)
+                .split(",")
             }
             return [r for r in self.rows if r["id"] in ids][:limit]
         if "id=gt." in query:
@@ -312,14 +313,37 @@ class JanitorPaginationTests(unittest.TestCase):
         pages = [
             {"error": "boom"},  # error-dict page
             ["not-a-row"],  # string row
-            [{"queue": janitor.QUEUE, "status": "claimed",
-              "payload": {"repo": janitor.REPO}}],  # missing row id
-            [{"id": "zz", "queue": janitor.QUEUE, "status": "claimed",
-              "payload": {"repo": janitor.REPO}}],  # non-int id
-            [{"id": {"n": 1}, "queue": janitor.QUEUE, "status": "claimed",
-              "payload": {"repo": janitor.REPO}}],  # dict id
-            [{"id": 1, "queue": janitor.QUEUE, "status": "claimed",
-              "payload": "not-an-object"}],  # string payload
+            [
+                {
+                    "queue": janitor.QUEUE,
+                    "status": "claimed",
+                    "payload": {"repo": janitor.REPO},
+                }
+            ],  # missing row id
+            [
+                {
+                    "id": "zz",
+                    "queue": janitor.QUEUE,
+                    "status": "claimed",
+                    "payload": {"repo": janitor.REPO},
+                }
+            ],  # non-int id
+            [
+                {
+                    "id": {"n": 1},
+                    "queue": janitor.QUEUE,
+                    "status": "claimed",
+                    "payload": {"repo": janitor.REPO},
+                }
+            ],  # dict id
+            [
+                {
+                    "id": 1,
+                    "queue": janitor.QUEUE,
+                    "status": "claimed",
+                    "payload": "not-an-object",
+                }
+            ],  # string payload
         ]
         for page in pages:
             with self.subTest(page=page):
@@ -391,8 +415,7 @@ class JanitorPaginationTests(unittest.TestCase):
 
     def test_queue_task_states_chunks_beyond_1000_ids(self):
         rows = [
-            {"id": i, "status": "claimed" if i % 2 else "done"}
-            for i in range(1, 1201)
+            {"id": i, "status": "claimed" if i % 2 else "done"} for i in range(1, 1201)
         ]
         stub = StubQueueModule(rows)
         got = janitor.queue_task_states((stub, "key"), set(range(1, 1201)))
@@ -463,10 +486,10 @@ class JanitorFallbackSourceTests(unittest.TestCase):
             {"items": ["not-an-item"]},  # string item
             {"items": [{"number": 1, "claim": "live"}]},  # string claim
             {"items": [{"claim": {"state": "live"}}]},  # missing number
-            {"items": [{"number": {"n": 1},
-                        "claim": {"state": "live"}}]},  # dict number
-            {"items": [{"number": "zz",
-                        "claim": {"state": "live"}}]},  # non-int number
+            {
+                "items": [{"number": {"n": 1}, "claim": {"state": "live"}}]
+            },  # dict number
+            {"items": [{"number": "zz", "claim": {"state": "live"}}]},  # non-int number
         ]
         for scan in scans:
             with self.subTest(scan=scan):
@@ -579,7 +602,13 @@ class JanitorFallbackSourceTests(unittest.TestCase):
         os.utime(target_dir, (stamp, stamp))
         os.utime(probe / "target", (stamp, stamp))
         found = janitor.discover_targets(
-            self.root, {}, set(), {}, set(), [], time.time() - 48 * 3600,
+            self.root,
+            {},
+            set(),
+            {},
+            set(),
+            [],
+            time.time() - 48 * 3600,
         )
         self.assertEqual(len(found), 1)
         self.assertEqual(found[0].path, (probe / "target").resolve())
@@ -618,10 +647,14 @@ class JanitorFallbackSourceTests(unittest.TestCase):
         state_dir = Path(self.tmp.name) / "state"
         argv = [
             "janitor",
-            "--fleet-root", str(self.root),
-            "--primary", str(Path(self.tmp.name) / "not-a-repo"),
-            "--queue-helper", str(Path(self.tmp.name) / "nope.py"),
-            "--state-dir", str(state_dir),
+            "--fleet-root",
+            str(self.root),
+            "--primary",
+            str(Path(self.tmp.name) / "not-a-repo"),
+            "--queue-helper",
+            str(Path(self.tmp.name) / "nope.py"),
+            "--state-dir",
+            str(state_dir),
         ]
         with mock.patch.object(sys, "argv", argv):
             rc = janitor.main()
@@ -629,7 +662,6 @@ class JanitorFallbackSourceTests(unittest.TestCase):
         records = list((state_dir / "runs").glob("*.jsonl"))
         self.assertEqual(len(records), 1)
         self.assertIn('"event": "refused"', records[0].read_text())
-
 
 
 if __name__ == "__main__":

@@ -48,7 +48,7 @@ here. No divergence from #5683.
   an observation class mapping to the lowest assurance tier — this record
   does not re-decide that, it assigns the tier; #5883
   (`doc/2026-11-08T09-15-00Z_design_boundary_audit_appeals.md`) logs
-  evidence *classes* with assurance levels, never the dossier — this
+  evidence _classes_ with assurance levels, never the dossier — this
   record defines what those classes are.
 
 ## Decision
@@ -144,22 +144,22 @@ location, applies unchanged.
   possible without leaking the value everywhere.
 - **No global dossier:** declarations live in the scope that collected
   them (server / world / account scope). There is no cross-scope or global
-  residency registry. The audit log references evidence *classes and
-  assurance levels* ("L1 org-attested declaration"), never raw values.
+  residency registry. The audit log references evidence _classes and
+  assurance levels_ ("L1 org-attested declaration"), never raw values.
 - Raw identity documents are never stored in the evidence store at all —
   only the verifier's signed assertion that a check passed.
 
 ## Alternatives rejected and why
 
-| Option | Why rejected |
-| --- | --- |
-| Bare boolean/flag ("is-resident: true") with no provenance or assurance | Collapses L0/L1/L2 into one bit; boundaries cannot state an assurance floor, appeals cannot distinguish "renew" from "supply stronger evidence", and audit cannot reproduce the decision. Directly contradicts the parent's "stores the level of assurance" requirement. |
-| Central global residency registry shared across scopes | Creates the sensitive dossier the parent explicitly forbids; violates scope-local visibility and the "no global log" rule #5883 already decided. |
-| Storing raw identity documents in the evidence store | Turns the evidence store into an identity-theft target and a dossier by construction; unnecessary — the evaluator needs the issuer's assertion, not the document. |
-| Auto-promotion (a declaration "ages into" higher assurance, or IP corroboration upgrades L0 to L1) | Assurance measures verification actually performed, not confidence felt. Silent upgrades let weak evidence satisfy strong boundaries. Upgrades happen only by issuing a new declaration at the higher level. |
-| Indefinite-lived declarations | Access granted on stale facts never lapses; moves, expiries, and withdrawn attestations silently persist. Mandatory expiry plus revocation is the mechanism the evaluator already enforces. |
-| Exact-value disclosure to every checker | Every enforcement point becomes a copy of the dossier. The boolean-by-default rule gives checkers exactly what they need (admit/deny/step-up) and nothing more. |
-| IP-alone as a declaration | Re-decides sibling #5877, which this record must not fork: IP is an observation class with known spoofing/NAT/egress error modes, usable for corroboration and step-up, never load-bearing. |
+| Option                                                                                             | Why rejected                                                                                                                                                                                                                                                             |
+| -------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| Bare boolean/flag ("is-resident: true") with no provenance or assurance                            | Collapses L0/L1/L2 into one bit; boundaries cannot state an assurance floor, appeals cannot distinguish "renew" from "supply stronger evidence", and audit cannot reproduce the decision. Directly contradicts the parent's "stores the level of assurance" requirement. |
+| Central global residency registry shared across scopes                                             | Creates the sensitive dossier the parent explicitly forbids; violates scope-local visibility and the "no global log" rule #5883 already decided.                                                                                                                         |
+| Storing raw identity documents in the evidence store                                               | Turns the evidence store into an identity-theft target and a dossier by construction; unnecessary — the evaluator needs the issuer's assertion, not the document.                                                                                                        |
+| Auto-promotion (a declaration "ages into" higher assurance, or IP corroboration upgrades L0 to L1) | Assurance measures verification actually performed, not confidence felt. Silent upgrades let weak evidence satisfy strong boundaries. Upgrades happen only by issuing a new declaration at the higher level.                                                             |
+| Indefinite-lived declarations                                                                      | Access granted on stale facts never lapses; moves, expiries, and withdrawn attestations silently persist. Mandatory expiry plus revocation is the mechanism the evaluator already enforces.                                                                              |
+| Exact-value disclosure to every checker                                                            | Every enforcement point becomes a copy of the dossier. The boolean-by-default rule gives checkers exactly what they need (admit/deny/step-up) and nothing more.                                                                                                          |
+| IP-alone as a declaration                                                                          | Re-decides sibling #5877, which this record must not fork: IP is an observation class with known spoofing/NAT/egress error modes, usable for corroboration and step-up, never load-bearing.                                                                              |
 
 ## Invariants implementation must hold
 

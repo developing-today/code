@@ -43,11 +43,11 @@ their own variants (#5886/#5887/#5889), or issuer rotation (#2804).
 At setup the identity is issued **ten independent, single-use recovery codes**. Each
 code is **100 bits** of CSPRNG entropy rendered as **20 Crockford-base32 characters**
 in five groups of four. For every code the setup ceremony derives a distinct Ed25519
-**recovery key** and publishes only that key's **hash** — the *recovery set*: a signed,
+**recovery key** and publishes only that key's **hash** — the _recovery set_: a signed,
 versioned object naming the identity, a monotonically increasing `set_generation`, and
 ten slot commitments. **Any one unused code is sufficient to recover**; each code works
-once. Redemption is an anchored two-phase signed event — *claim*, a **72-hour** settle
-window in which the current key may *cancel*, then *settle*, which installs a **new
+once. Redemption is an anchored two-phase signed event — _claim_, a **72-hour** settle
+window in which the current key may _cancel_, then _settle_, which installs a **new
 identity key** (a rotation, never a rebind of the old key) and issues a **fresh set of
 ten codes**, invalidating the old set as a whole. If every code is lost and no other
 path exists, **the identity is unrecoverable**: there is no support reset, no operator
@@ -74,7 +74,7 @@ override, and no developer backdoor, and the setup screen says so in those words
 
 One code carries 100 bits. Guessing a code is an offline attack against a public
 commitment (below), so the per-code figure — not the aggregate of ten — is the one that
-matters against a thief who wants to *forge* a code. At 2^100 derivations, guessing is
+matters against a thief who wants to _forge_ a code. At 2^100 derivations, guessing is
 not a practical attack on any hardware horizon this design considers; it is also far
 stronger than the 64-bit (GitHub) and 26-bit (Google backup codes) conventions it
 replaces.
@@ -100,16 +100,16 @@ derives/clamps its scalar internally. No caller pre-clamps or re-encodes the see
 
 This deterministic vector is for interoperability tests only, not a credential:
 
-| Input / output | Hex or text |
-| --- | --- |
-| `identity_id_raw` | `000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f` |
-| `seed_bytes` | `000102030405060708090a0b0c` |
-| `slot_i` | `0` (`00`) |
-| printed code | `0082-0C20-A1G7-104G-M2RC` |
-| HKDF-Extract PRK | `79a16fb829d0002342d172baa194f1da47f39ab13c6ae8b5f1d3161cec835765` |
-| `recovery_sk_seed` (HKDF output) | `ff8bb0c3394081cb029d87da441dd3f444ea6e508e6d6c8d1d175a11e210f99a` |
+| Input / output                           | Hex or text                                                        |
+| ---------------------------------------- | ------------------------------------------------------------------ |
+| `identity_id_raw`                        | `000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f` |
+| `seed_bytes`                             | `000102030405060708090a0b0c`                                       |
+| `slot_i`                                 | `0` (`00`)                                                         |
+| printed code                             | `0082-0C20-A1G7-104G-M2RC`                                         |
+| HKDF-Extract PRK                         | `79a16fb829d0002342d172baa194f1da47f39ab13c6ae8b5f1d3161cec835765` |
+| `recovery_sk_seed` (HKDF output)         | `ff8bb0c3394081cb029d87da441dd3f444ea6e508e6d6c8d1d175a11e210f99a` |
 | `recovery_pk_i` (raw Ed25519 public key) | `bf84a3db9047871d529efc602dfef543cf0a620fd3bc0fe944f5fe447b2f513f` |
-| `commitment_i` | `1177777cf67e33ed69e0746c5569f0a8638d3e4ac661bffc225889c7f8407163` |
+| `commitment_i`                           | `1177777cf67e33ed69e0746c5569f0a8638d3e4ac661bffc225889c7f8407163` |
 
 HKDF uses RFC 5869 HMAC-SHA-256: `PRK = HMAC-SHA256(salt, IKM)` and
 `OKM = HMAC-SHA256(PRK, info || 0x01)` for this one-block, 32-byte output.
@@ -176,7 +176,7 @@ is the transcription check (§7.1), which is real, rather than a nag the user cl
 Why any-one:
 
 - **Simplicity-first is a hard requirement, not a preference.** A quorum asks a
-  non-technical user to understand *how many* codes they need, keep that many in
+  non-technical user to understand _how many_ codes they need, keep that many in
   separate places, and remember which ones they kept. The realistic failure is a user who
   keeps one code believing one is enough — and then is locked out by the design that was
   supposed to protect them.
@@ -298,7 +298,7 @@ identity, publish, and issue new delegations. It does **not** restore:
   `encryption/roster.rs` rotates on membership change; codes are not a group-key backup);
 - pseudo-login sessions or delegations issued under the old generation — those are
   revoked by the key change (§6.3);
-- access to a hosted account credential. The code recovers the *identity*, not the
+- access to a hosted account credential. The code recovers the _identity_, not the
   account. A hosted binding may still need its own rebind (that is #2046's path, and it
   is not replaced by this one).
 
@@ -323,7 +323,7 @@ Saying this plainly at recovery time is part of the design, not an implementatio
 
 Only a key authorised for the **current key generation** may sign
 `identity.recovery.regenerate/v1 || {identity, expected_set_generation, new_set}`. A
-recovery code never authorises a standalone regeneration: a code authorises a *recovery*,
+recovery code never authorises a standalone regeneration: a code authorises a _recovery_,
 and recovery ends with a fresh set. This keeps one rule — a code's only power is to
 replace the key, and replacing the key always replaces the set.
 
@@ -396,7 +396,7 @@ Rules for the surface:
 
 ### 7.3 The inverse statement
 
-The same copy must state the positive case, so the user knows what *does* work: one
+The same copy must state the positive case, so the user knows what _does_ work: one
 unused code from the current set can start recovery from any device; an anchored claim,
 trusted time evidence, and the full 72-hour wait are required, and the current key can
 cancel before settlement. A user who still has the current key can instead authorize a
@@ -476,19 +476,19 @@ comment rather than silently forking the parent — none is raised now.
 
 ## 11. Alternatives rejected, and why
 
-| Alternative | Why rejected |
-| --- | --- |
-| **k-of-n quorum** (e.g. 2-of-10) | Simplicity-first and lockout risk: users keep one code believing one suffices and are then locked out. The single-stolen-code threat it addresses is handled by the settle window, cancellation, and notification at lower user cost. |
-| **One long recovery passphrase** | Human-chosen secrets lose entropy in practice, get reused, and add a second password to remember. Ten printed 100-bit codes are both stronger and easier. |
-| **Service-held recovery key** | Makes the service a custodian of the identity and collapses variant (c) into variant (a); breaks LIST 7 and #2060's "SSO never rebinds a key". |
-| **Codes as a password reset** | Recovers the account row, not the identity key — exactly the failure #2060 documents. The code must install a new identity key, never a new password. |
-| **Email magic link / SSO as the sole recovery path** | Requires the service to be able to rebind, which makes the "nobody can" statement false. Usable as an account pointer; never as recovery authority. |
-| **Social / guardian recovery (Shamir among guardians)** | Parent non-goal; also depends on stable guardian identities that do not exist yet. |
-| **Passkey / hardware key as recovery** | Parent non-goal; a plausible future *additional* slot type, not v1. |
-| **Mark one code spent and keep the other nine** | Leaves a printout in a drawer the user may no longer trust after a recovery event. Reissuing all ten at settle costs one print and removes the class. |
-| **Treat codes as a guaranteed exit from service-held custody** | The service-held current key can cancel a pending claim or authorize regeneration. Promising an exit against that custodian would exceed variant (a)'s stated trust model; a new parent-level decision is required. |
-| **Immediate recovery with no wait** | A photographed printout becomes an instant permanent takeover with no notice to the legitimate holder. The 72-hour window is the cheapest defence that costs the honest user nothing but time. |
-| **Support override / break-glass** | Destroys the honest statement and the whole point of the variant. If ever proposed, it is a new design decision and a new record, not an implementation detail. |
+| Alternative                                                    | Why rejected                                                                                                                                                                                                                          |
+| -------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **k-of-n quorum** (e.g. 2-of-10)                               | Simplicity-first and lockout risk: users keep one code believing one suffices and are then locked out. The single-stolen-code threat it addresses is handled by the settle window, cancellation, and notification at lower user cost. |
+| **One long recovery passphrase**                               | Human-chosen secrets lose entropy in practice, get reused, and add a second password to remember. Ten printed 100-bit codes are both stronger and easier.                                                                             |
+| **Service-held recovery key**                                  | Makes the service a custodian of the identity and collapses variant (c) into variant (a); breaks LIST 7 and #2060's "SSO never rebinds a key".                                                                                        |
+| **Codes as a password reset**                                  | Recovers the account row, not the identity key — exactly the failure #2060 documents. The code must install a new identity key, never a new password.                                                                                 |
+| **Email magic link / SSO as the sole recovery path**           | Requires the service to be able to rebind, which makes the "nobody can" statement false. Usable as an account pointer; never as recovery authority.                                                                                   |
+| **Social / guardian recovery (Shamir among guardians)**        | Parent non-goal; also depends on stable guardian identities that do not exist yet.                                                                                                                                                    |
+| **Passkey / hardware key as recovery**                         | Parent non-goal; a plausible future _additional_ slot type, not v1.                                                                                                                                                                   |
+| **Mark one code spent and keep the other nine**                | Leaves a printout in a drawer the user may no longer trust after a recovery event. Reissuing all ten at settle costs one print and removes the class.                                                                                 |
+| **Treat codes as a guaranteed exit from service-held custody** | The service-held current key can cancel a pending claim or authorize regeneration. Promising an exit against that custodian would exceed variant (a)'s stated trust model; a new parent-level decision is required.                   |
+| **Immediate recovery with no wait**                            | A photographed printout becomes an instant permanent takeover with no notice to the legitimate holder. The 72-hour window is the cheapest defence that costs the honest user nothing but time.                                        |
+| **Support override / break-glass**                             | Destroys the honest statement and the whole point of the variant. If ever proposed, it is a new design decision and a new record, not an implementation detail.                                                                       |
 
 ## 12. Invariants implementation must hold
 
@@ -504,7 +504,7 @@ comment rather than silently forking the parent — none is raised now.
    one slot never validates against another.
 5. **Single use, durably.** Consumption is recorded in durable signed state, replicated
    with the chain — never only in memory.
-6. **Recovery is rotation.** Settle installs a *new* key and increments the generation; it
+6. **Recovery is rotation.** Settle installs a _new_ key and increments the generation; it
    never re-authorises a retired key and never rebinds an existing key binding.
 7. **Any one suffices.** Exactly one unused code is sufficient. No other code, secret,
    support action, or operator capability can substitute.
@@ -540,14 +540,14 @@ comment rather than silently forking the parent — none is raised now.
 
 ## 13. Open questions for implementation (with defaults)
 
-| Question | Default this record sets |
-| --- | --- |
-| Which store and time evidence anchor the settle window? | Every claim is durably appended to the identity-chain journal at a monotonic position. For elapsed time, the network configures three independent witness keys, not controlled by the current key custodian; at least two sign receipts binding `identity_id`, journal position, event hash, witness-set version, and UTC time. Each witness has a documented clock-error bound of ±60 seconds, with at most one faulty witness. Validators require a 2-of-3 certificate both at claim and settle, using the same configured set. To prove the full wait, `min(settle receipt times) - 60s` must be at least `max(claim receipt times) + 60s + 72h`. The journal position proves event order; conservative witness-time bounds prove elapsed time. Without a durable anchor or valid time certificate, a client may prepare locally but no claim is accepted or settled; recovery remains unavailable until evidence is available. There is no offline/advisory bypass. |
-| Where do notification channels come from? | The directory account's emails and the hosted binding's channels; an identity with neither gets the claim recorded but no notice, and the UX says so. |
-| Does a cancelled claim count against the daily claim limit? | Yes — otherwise cancellation is free rate-limit evasion. |
-| How is the print screen implemented (PDF, plain text, browser print)? | #5884's call; this record only requires legible grouped codes, the slot labels, and the §7.1 copy. |
-| What happens to the old generation's published objects? | They remain valid history and remain attributable; no retroactive invalidation. |
-| Should slot indices be randomised rather than 0–9? | No: the index is not secret, and sequential labels are easier to read and to track. |
+| Question                                                              | Default this record sets                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                |
+| --------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Which store and time evidence anchor the settle window?               | Every claim is durably appended to the identity-chain journal at a monotonic position. For elapsed time, the network configures three independent witness keys, not controlled by the current key custodian; at least two sign receipts binding `identity_id`, journal position, event hash, witness-set version, and UTC time. Each witness has a documented clock-error bound of ±60 seconds, with at most one faulty witness. Validators require a 2-of-3 certificate both at claim and settle, using the same configured set. To prove the full wait, `min(settle receipt times) - 60s` must be at least `max(claim receipt times) + 60s + 72h`. The journal position proves event order; conservative witness-time bounds prove elapsed time. Without a durable anchor or valid time certificate, a client may prepare locally but no claim is accepted or settled; recovery remains unavailable until evidence is available. There is no offline/advisory bypass. |
+| Where do notification channels come from?                             | The directory account's emails and the hosted binding's channels; an identity with neither gets the claim recorded but no notice, and the UX says so.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   |
+| Does a cancelled claim count against the daily claim limit?           | Yes — otherwise cancellation is free rate-limit evasion.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                |
+| How is the print screen implemented (PDF, plain text, browser print)? | #5884's call; this record only requires legible grouped codes, the slot labels, and the §7.1 copy.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      |
+| What happens to the old generation's published objects?               | They remain valid history and remain attributable; no retroactive invalidation.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         |
+| Should slot indices be randomised rather than 0–9?                    | No: the index is not secret, and sequential labels are easier to read and to track.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     |
 
 ## 14. Handoff and definition of done for this design ticket
 

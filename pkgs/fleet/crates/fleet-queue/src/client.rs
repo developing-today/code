@@ -151,8 +151,66 @@ fn direct_token() -> Result<String, String> {
     Ok(token.trim().to_string())
 }
 
+/// Decode one complete HTTP chunked body. The direct transports read
+/// through connection close, so an incomplete chunk is a definite
+/// truncation rather than a request for more bytes.
+fn decode_chunked_body(mut rest: &[u8]) -> Result<Vec<u8>, String> {
+    let mut decoded = Vec::new();
+    loop {
+        let line_end = rest
+            .windows(2)
+            .position(|window| window == b"\r\n")
+            .ok_or_else(|| {
+                "queue-broker response truncated inside a chunk-size line".to_string()
+            })?;
+        let line = std::str::from_utf8(&rest[..line_end])
+            .map_err(|_| "queue-broker response has a non-ASCII chunk-size line".to_string())?;
+        let size_field = line.split(';').next().unwrap_or("").trim();
+        let size = usize::from_str_radix(size_field, 16).map_err(|_| {
+            format!("queue-broker response has malformed chunk size {size_field:?}")
+        })?;
+        rest = &rest[line_end + 2..];
+        if size == 0 {
+            loop {
+                if rest.starts_with(b"\r\n") {
+                    rest = &rest[2..];
+                    if !rest.is_empty() {
+                        return Err(
+                            "queue-broker response has bytes after the terminal chunk".into()
+                        );
+                    }
+                    return Ok(decoded);
+                }
+                let trailer_end = rest
+                    .windows(2)
+                    .position(|window| window == b"\r\n")
+                    .ok_or_else(|| {
+                        "queue-broker response truncated inside chunk trailers".to_string()
+                    })?;
+                if !rest[..trailer_end].contains(&b':') {
+                    return Err("queue-broker response has a malformed chunk trailer".into());
+                }
+                rest = &rest[trailer_end + 2..];
+            }
+        }
+        let chunk_end = size
+            .checked_add(2)
+            .ok_or_else(|| "queue-broker response chunk size overflow".to_string())?;
+        if rest.len() < chunk_end {
+            return Err("queue-broker response truncated inside a chunk".into());
+        }
+        if &rest[size..chunk_end] != b"\r\n" {
+            return Err("queue-broker response chunk is missing its CRLF terminator".into());
+        }
+        decoded.extend_from_slice(&rest[..size]);
+        rest = &rest[chunk_end..];
+    }
+}
+
 /// The response handling both direct legs share: status line,
-/// JSON body, 401 and >=400 die with exit 3 exactly as before.
+/// transfer framing, JSON body, 401 and >=400 die with exit 3 exactly
+/// as before. A malformed successful JSON body is never converted to
+/// `Value::Null`: callers must not mistake it for an empty result.
 fn finish_direct_response(raw: &[u8]) -> Result<Value, String> {
     let split = raw
         .windows(4)
@@ -163,12 +221,67 @@ fn finish_direct_response(raw: &[u8]) -> Result<Value, String> {
         .split_whitespace()
         .nth(1)
         .and_then(|c| c.parse().ok())
-        .unwrap_or(0);
-    let resp_body: Value = serde_json::from_slice(&raw[split + 4..]).unwrap_or(Value::Null);
+        .ok_or_else(|| "queue-broker answered with a malformed status line".to_string())?;
+    let mut transfer_codings = Vec::new();
+    let mut content_length = None;
+    for line in head_txt.lines().skip(1) {
+        if let Some((name, value)) = line.split_once(':') {
+            if name.eq_ignore_ascii_case("transfer-encoding") {
+                transfer_codings.extend(
+                    value
+                        .split(',')
+                        .map(|coding| coding.trim().to_ascii_lowercase())
+                        .filter(|coding| !coding.is_empty()),
+                );
+            } else if name.eq_ignore_ascii_case("content-length") {
+                for part in value.split(',') {
+                    let length: usize = part.trim().parse().map_err(|_| {
+                        format!("queue-broker response has malformed Content-Length {value:?}")
+                    })?;
+                    match content_length {
+                        None => content_length = Some(length),
+                        Some(previous) if previous == length => {}
+                        Some(previous) => {
+                            return Err(format!(
+                                "queue-broker response has conflicting Content-Length values {previous} and {length}"
+                            ));
+                        }
+                    }
+                }
+            }
+        }
+    }
+    let wire_body = &raw[split + 4..];
+    let decoded_body = match (content_length, transfer_codings.as_slice()) {
+        (Some(expected), []) => {
+            if wire_body.len() != expected {
+                return Err(format!(
+                    "queue-broker response truncated: Content-Length {expected}, received {} body bytes",
+                    wire_body.len()
+                ));
+            }
+            wire_body.to_vec()
+        }
+        (None, []) => wire_body.to_vec(),
+        (None, [coding]) if coding == "chunked" => decode_chunked_body(wire_body)?,
+        (Some(_), _) => {
+            return Err(
+                "queue-broker response has both Content-Length and Transfer-Encoding".into(),
+            );
+        }
+        _ => {
+            return Err(format!(
+                "queue-broker response has unsupported Transfer-Encoding: {}",
+                transfer_codings.join(", ")
+            ));
+        }
+    };
+    let parsed_body: Result<Value, _> = serde_json::from_slice(&decoded_body);
     if status == 401 {
         die(3, "queue-broker rejected the client token (HTTP 401)");
     }
     if status >= 400 {
+        let resp_body: Value = parsed_body.unwrap_or(Value::Null);
         let msg = resp_body
             .get("error")
             .and_then(|e| e.as_str())
@@ -176,7 +289,9 @@ fn finish_direct_response(raw: &[u8]) -> Result<Value, String> {
             .to_string();
         die(3, &msg);
     }
-    Ok(resp_body)
+    parsed_body.map_err(|error| {
+        format!("queue-broker answered HTTP {status} with invalid JSON body: {error}")
+    })
 }
 
 fn direct_tcp_roundtrip(url: &str, path: &str, body: &Value) -> Result<Value, String> {
@@ -385,6 +500,13 @@ fn call_result(path: &str, body: &Value) -> Result<Value, (i32, String)> {
     // the caller. Safe for writes: a 57014 means Postgres cancelled
     // the statement, so the write rolled back and cannot
     // double-apply (enqueue dedupe keys are a second belt).
+    // /claim-flow invariant (#5757-A, Codex P1 on PR #8493): this
+    // whole-request retry is safe ONLY because both brokers answer
+    // any post-claim-commit lane/bind failure as a partial SUCCESS
+    // (ok envelope + `claim_flow_partial`), never as a retryable
+    // error — a retryable error out of /claim-flow can therefore
+    // only come from the claim step itself, whose statement rolled
+    // back. Do not weaken the broker side of this invariant.
     let mut attempt: u32 = 0;
     loop {
         match broker_roundtrip(path, body) {
@@ -721,7 +843,10 @@ fn parse_args(rest: &[String], flags: &[&str], bools: &[&str]) -> Args {
 /// (e.g. `--queue a --queue b` recorded queue=b), and a boolean given
 /// an inline value (`--dry-run=false`) used to be read as `true` —
 /// a real enqueue silently became a dry run that enqueued nothing
-/// and exited 0.
+/// and exited 0. A value flag followed by another flag token is the
+/// same class (#8582, Codex P1 on PR #8790): the flag token is not a
+/// value — `--head-sha --dry-run` used to persist "--dry-run" as the
+/// SHA on a mutating stack record instead of erroring.
 fn parse_args_inner(rest: &[String], flags: &[&str], bools: &[&str]) -> Result<Args, String> {
     let mut pos = Vec::new();
     let mut opts = Map::new();
@@ -748,7 +873,7 @@ fn parse_args_inner(rest: &[String], flags: &[&str], bools: &[&str]) -> Result<A
                 if let Some(v) = inline {
                     opts.insert(name, Value::String(v));
                     i += 1;
-                } else if i + 1 < rest.len() {
+                } else if i + 1 < rest.len() && !rest[i + 1].starts_with("--") {
                     opts.insert(name, Value::String(rest[i + 1].clone()));
                     i += 2;
                 } else {
@@ -845,6 +970,134 @@ pub(crate) fn list_limit_or_default(raw: Option<i64>) -> Result<i64, String> {
     validate_list_limit(raw.unwrap_or(LIST_LIMIT_DEFAULT))
 }
 
+/// One page of a `list` fetch (#7871): a single /list response
+/// reliably carries at most ~100 rows — above that the reply comes
+/// back unusable and, before this fix, the client rendered it as a
+/// silent "(no tasks)" with exit 0. `cmd_list` therefore fetches
+/// any limit in pages of this size, advancing an offset the broker
+/// honors on both backends (PostgREST `offset=` and Turso
+/// `OFFSET`), so a large --limit returns rows page by page instead
+/// of one oversized response.
+pub(crate) const LIST_PAGE_SIZE: i64 = 100;
+
+/// The (offset, page_limit) requests that fetch `limit` rows in
+/// pages of LIST_PAGE_SIZE (#7871). Pure, so the paging plan is
+/// unit-testable without a broker. Oracle: the pages are
+/// contiguous, non-overlapping, in ascending offset order, and
+/// their page_limits sum to exactly `limit`.
+pub(crate) fn list_pages(limit: i64) -> Vec<(i64, i64)> {
+    let mut pages = Vec::new();
+    let mut offset = 0;
+    while offset < limit {
+        let page = LIST_PAGE_SIZE.min(limit - offset);
+        pages.push((offset, page));
+        offset += page;
+    }
+    pages
+}
+
+/// The /list `offset` for a broker request (#7871): absent means
+/// the first page; a negative value is never interpolated into a
+/// query — it clamps to 0. The client only ever sends offsets its
+/// own paging plan produced; the broker re-derives the value here
+/// because it is the trust boundary for non-CLI callers.
+pub(crate) fn list_offset_or_default(raw: Option<i64>) -> i64 {
+    raw.unwrap_or(0).max(0)
+}
+
+/// The rows of a /list envelope (#7871): the `rows` field must be
+/// present and an array. Before this guard, a malformed or
+/// truncated broker reply (which parses to a Null body) fell
+/// through `unwrap_or_default` in cmd_list and printed
+/// "(no tasks)" with exit 0 — a silent empty that reads as "task
+/// does not exist". A reply we cannot read is an error, never an
+/// empty list.
+pub(crate) fn list_rows(resp: &Value) -> Result<Vec<Value>, String> {
+    resp.get("rows")
+        .and_then(|r| r.as_array())
+        .cloned()
+        .ok_or_else(|| {
+            "queue-broker /list reply had no rows array — refusing to report an empty list"
+                .to_string()
+        })
+}
+
+/// The accepted ranges for the queue duration flags (#6420; design
+/// #6448 Phase 3 pin, same as `list --limit`: out-of-range is
+/// REJECTED, never clamped, at both the client and the broker).
+/// A 0/negative lease is born expired, a 0/negative heartbeat extend
+/// lapses the holder's own claim, and a negative park delay puts
+/// `not_before` in the past and silently defeats the park; an
+/// unbounded value overflows the SQL `integer` RPC parameters.
+/// Maxima: a lease or extend beyond a day defeats the expiry the
+/// lease exists to provide; a park delay beyond the dep-block TTL
+/// ceiling (7 days, #8276) outlives every broker wait.
+pub(crate) const LEASE_SECONDS_MAX: i64 = 86_400;
+pub(crate) const LEASE_SECONDS_DEFAULT: i64 = 2_700;
+pub(crate) const EXTEND_SECONDS_MAX: i64 = 86_400;
+pub(crate) const EXTEND_SECONDS_DEFAULT: i64 = 900;
+pub(crate) const DELAY_SECONDS_MAX: i64 = 604_800;
+
+/// Validate one duration flag's value against `1..=max`; the error
+/// names the flag so a usage failure points at it. Zero is rejected
+/// for every flag: for `--delay-seconds` that is the explicit #6420
+/// decision — a park that waits zero seconds is a requeue, and a
+/// requeue already has its own verb (`release`).
+pub(crate) fn validate_duration(flag: &str, value: i64, max: i64) -> Result<i64, String> {
+    if (1..=max).contains(&value) {
+        Ok(value)
+    } else {
+        Err(format!(
+            "argument --{flag}: value {value} out of range 1..={max}"
+        ))
+    }
+}
+
+/// Validate a `claim --lease-seconds` value against
+/// `1..=LEASE_SECONDS_MAX`; the error names `--lease-seconds`.
+pub(crate) fn validate_lease_seconds(value: i64) -> Result<i64, String> {
+    validate_duration("lease-seconds", value, LEASE_SECONDS_MAX)
+}
+
+/// The `claim --lease-seconds` value for a call: the flag's value
+/// validated, or the unchanged default when the flag is absent.
+pub(crate) fn lease_seconds_or_default(raw: Option<i64>) -> Result<i64, String> {
+    validate_lease_seconds(raw.unwrap_or(LEASE_SECONDS_DEFAULT))
+}
+
+/// Validate a `heartbeat --extend-seconds` value against
+/// `1..=EXTEND_SECONDS_MAX`; the error names `--extend-seconds`.
+pub(crate) fn validate_extend_seconds(value: i64) -> Result<i64, String> {
+    validate_duration("extend-seconds", value, EXTEND_SECONDS_MAX)
+}
+
+/// The `heartbeat --extend-seconds` value for a call: the flag's
+/// value validated, or the unchanged default when the flag is absent.
+pub(crate) fn extend_seconds_or_default(raw: Option<i64>) -> Result<i64, String> {
+    validate_extend_seconds(raw.unwrap_or(EXTEND_SECONDS_DEFAULT))
+}
+
+/// Validate a `park --delay-seconds` value against
+/// `1..=DELAY_SECONDS_MAX`; the error names `--delay-seconds`.
+/// (No default: the flag is optional, and an absent flag leaves
+/// `delay_seconds` out of the park request entirely.)
+pub(crate) fn validate_delay_seconds(value: i64) -> Result<i64, String> {
+    validate_duration("delay-seconds", value, DELAY_SECONDS_MAX)
+}
+
+/// Validate a `--not-before` flag value (#6426): the same rule the
+/// packet validator and the broker apply — a non-empty RFC 3339
+/// timestamp no more than 366 days in the future. Until now the raw
+/// string went into the park/revive body unchecked, so garbage
+/// failed only as a downstream DB cast error. A valid value is
+/// returned unchanged, so the broker body for valid timestamps is
+/// byte-for-byte what it was before; an invalid one is a usage
+/// error naming `--not-before` (the caller dies with exit 2).
+pub(crate) fn validate_not_before_flag(raw: &str) -> Result<String, String> {
+    crate::validate::validate_not_before(&json!(raw), "--not-before")?;
+    Ok(raw.to_string())
+}
+
 fn env_or_default(value: Option<&str>, default: &str) -> String {
     value
         .map(str::trim)
@@ -884,6 +1137,22 @@ fn default_queue() -> String {
 
 fn opt_queue(args: &Args) -> String {
     args.get("queue").unwrap_or_else(default_queue)
+}
+
+/// The claim command's queue resolution (#8097 one-queue
+/// model): an explicit --queue wins, then the
+/// REPO_QUEUE_DEFAULT_QUEUE env; with neither, the claim is
+/// UNSCOPED (None) and the broker claims across the one fleet
+/// queue in priority order. Every other command keeps
+/// opt_queue's built-in default.
+fn opt_queue_claim(args: &Args) -> Option<String> {
+    if let Some(q) = args.get("queue") {
+        return Some(q);
+    }
+    std::env::var("REPO_QUEUE_DEFAULT_QUEUE")
+        .ok()
+        .map(|v| v.trim().to_string())
+        .filter(|v| !v.is_empty())
 }
 
 fn opt_worker(args: &Args) -> String {
@@ -1069,6 +1338,193 @@ fn model_stamp_flags(
                 .to_string(),
         ),
     }
+}
+
+/// The provider id that addresses configured routes, not serving
+/// leaves: routes appear in the catalog under this provider
+/// (opencode-route/<route-id>), so a model addressed under it is a
+/// route alias, never the leaf that served a claim (#9408).
+const ROUTE_PROVIDER: &str = "opencode-route";
+
+/// One stamp derivation, shared by the session-model path (id key
+/// "id") and the route_usage lastServing path (id key "modelID"):
+/// providerID + id, variant only when the record carries a real
+/// effort variant (the server reports "default" when none was
+/// chosen; that is the absence of a variant, not a variant).
+fn stamp_from(record: &Value, id_key: &str) -> Option<(String, String, Option<String>)> {
+    let provider = record
+        .get("providerID")
+        .and_then(|x| x.as_str())
+        .map(str::trim)
+        .filter(|s| !s.is_empty())?;
+    let id = record
+        .get(id_key)
+        .and_then(|x| x.as_str())
+        .map(str::trim)
+        .filter(|s| !s.is_empty())?;
+    let variant = record
+        .get("variant")
+        .and_then(|x| x.as_str())
+        .map(str::trim)
+        .filter(|s| !s.is_empty() && *s != "default");
+    Some((
+        provider.to_string(),
+        id.to_string(),
+        variant.map(str::to_string),
+    ))
+}
+
+/// #8176 (2026-11-12 fix): read the claim stamp off a session
+/// record (the OpenCode server's GET /api/session/<id> shape,
+/// enveloped in `data` or bare): the session's own model —
+/// providerID + id, variant only when the session carries a real
+/// effort variant (the server reports "default" when none was
+/// chosen; that is the absence of a variant, not a variant).
+/// Pure: the oracle for the derivation below.
+///
+/// #9408: the stamp must name the SERVING leaf, not the declared
+/// route. When the record carries the route_usage readout
+/// (opencode#1891: route_usage.lastServing, providerID + modelID +
+/// variant), it wins. Otherwise the session model is used only when
+/// it is not a route alias: a model under the opencode-route
+/// provider is the configured route (opencode-route/workhorse),
+/// which says nothing about which leaf served the claim, so the
+/// claim is left unstamped rather than permanently recording the
+/// alias. (The deployed server's session records today carry no
+/// route_usage field at all — verified 2026-11-14 — so routed
+/// claims go unstamped until the readout reaches the record.)
+fn session_model_stamp(session: &Value) -> Option<(String, String, Option<String>)> {
+    let inner = if session.get("model").is_some() {
+        session
+    } else {
+        session.get("data")?
+    };
+    // The serving-leaf readout, when the record carries one: under
+    // route_usage (the tool's output shape), or bare at the top of
+    // the record. A present readout that does not parse stamps
+    // nothing — falling back to the declared model would record
+    // exactly the alias this path exists to avoid.
+    let readout = inner
+        .get("route_usage")
+        .and_then(|ru| ru.get("lastServing"))
+        .or_else(|| inner.get("lastServing"));
+    if let Some(leaf) = readout {
+        return stamp_from(leaf, "modelID").filter(|s| s.0 != ROUTE_PROVIDER);
+    }
+    let model = inner.get("model")?;
+    let stamp = stamp_from(model, "id")?;
+    if stamp.0 == ROUTE_PROVIDER {
+        return None;
+    }
+    Some(stamp)
+}
+
+/// Minimal base64 (standard alphabet, padded) for the server's
+/// Basic auth header — the crate carries no base64 dependency and
+/// this is the only encoding the claim path needs.
+fn b64_encode(bytes: &[u8]) -> String {
+    const ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut out = String::with_capacity((bytes.len() + 2) / 3 * 4);
+    for chunk in bytes.chunks(3) {
+        let n = ((chunk[0] as u32) << 16)
+            | ((*chunk.get(1).unwrap_or(&0) as u32) << 8)
+            | (*chunk.get(2).unwrap_or(&0) as u32);
+        out.push(ALPHABET[(n >> 18) as usize & 63] as char);
+        out.push(ALPHABET[(n >> 12) as usize & 63] as char);
+        out.push(if chunk.len() > 1 {
+            ALPHABET[(n >> 6) as usize & 63] as char
+        } else {
+            '='
+        });
+        out.push(if chunk.len() > 2 {
+            ALPHABET[n as usize & 63] as char
+        } else {
+            '='
+        });
+    }
+    out
+}
+
+/// OpenCode server base URL for the claim-stamp lookup (#9409),
+/// resolved consistently with the claimant tooling
+/// (pm-stack/opencode-claimant/claimant.py and poll.py): the
+/// `OPENCODE_URL` override wins, then the legacy
+/// `OPENCODE_SERVER_URL` this lookup originally read, then the
+/// loopback default both sides share. Pure, so the resolution
+/// order is unit-testable.
+fn resolve_opencode_base_url(env_url: Option<&str>, env_server_url: Option<&str>) -> String {
+    for candidate in [env_url, env_server_url] {
+        if let Some(u) = candidate
+            .map(|v| v.trim().trim_end_matches('/'))
+            .filter(|v| !v.is_empty())
+        {
+            return u.to_string();
+        }
+    }
+    "http://127.0.0.1:13420".to_string()
+}
+
+/// OpenCode credential file for the claim-stamp lookup (#9409),
+/// resolved consistently with the claimant tooling: the
+/// `OPENCODE_AUTH_FILE` override wins, then the production state
+/// file under the user's home. Pure, so the resolution is
+/// unit-testable.
+fn resolve_opencode_auth_file(env_file: Option<&str>, home: &str) -> String {
+    match env_file.map(str::trim).filter(|v| !v.is_empty()) {
+        Some(f) => f.to_string(),
+        None => format!("{home}/.local/state/opencode/service-prod.json"),
+    }
+}
+
+/// #8176 (2026-11-12 fix): derive the claim stamp for a claim that
+/// names its claiming session (--session-id) but carries no
+/// explicit --model-* flags. The dispatch surfaces claim on behalf
+/// of a live session and name it, but the #8176 wiring stopped at
+/// the transfer path — the batch claims that carry the fleet's
+/// volume never passed the flags, so in production the stamp
+/// landed only on hand-driven proof claims (4 stamped claims of
+/// 12,684 in the Nov 10-12 window, 3 of them worker `proof-8176`).
+/// The session's own record is the authority (the same record
+/// route_usage reads), fetched from the OpenCode server with its
+/// Basic auth (password in the server's state file — claimant.py's
+/// route; the value is used for the header only, never logged).
+/// FAIL-SOFT by design: any failure — no state file, server
+/// unreachable, session unknown, malformed record — returns None
+/// and the claim proceeds exactly as an unstamped claim always
+/// has; a claim must never fail because its stamp could not be
+/// derived.
+fn derive_claim_model_stamp(session_id: &str) -> Option<(String, String, Option<String>)> {
+    let session_id = session_id.trim();
+    if session_id.is_empty() {
+        return None;
+    }
+    let base = resolve_opencode_base_url(
+        std::env::var("OPENCODE_URL").ok().as_deref(),
+        std::env::var("OPENCODE_SERVER_URL").ok().as_deref(),
+    );
+    let home = crate::home::from_env().ok()?;
+    let auth_file =
+        resolve_opencode_auth_file(std::env::var("OPENCODE_AUTH_FILE").ok().as_deref(), &home);
+    let state = std::fs::read_to_string(auth_file).ok()?;
+    let state: Value = serde_json::from_str(&state).ok()?;
+    let password = state.get("password")?.as_str()?;
+    let agent: ureq::Agent = ureq::Agent::config_builder()
+        .http_status_as_error(true)
+        .timeout_global(Some(Duration::from_secs(3)))
+        .build()
+        .into();
+    let auth = format!(
+        "Basic {}",
+        b64_encode(format!("opencode:{password}").as_bytes())
+    );
+    let mut resp = agent
+        .get(format!("{base}/api/session/{session_id}"))
+        .header("Authorization", &auth)
+        .call()
+        .ok()?;
+    let text = resp.body_mut().read_to_string().ok()?;
+    let session: Value = serde_json::from_str(&text).ok()?;
+    session_model_stamp(&session)
 }
 
 fn cmd_validate(rest: &[String]) -> i32 {
@@ -1268,7 +1724,15 @@ fn find_task_row(rows: &[Value], task_id: i64) -> Option<&Value> {
 fn cmd_list(rest: &[String]) -> i32 {
     let args = parse_args(
         rest,
-        &["queue", "status", "limit", "not-before", "lane", "worker"],
+        &[
+            "queue",
+            "status",
+            "limit",
+            "not-before",
+            "lane",
+            "worker",
+            "task",
+        ],
         &[],
     );
     reject_extra_pos("list", &args, 0);
@@ -1276,23 +1740,38 @@ fn cmd_list(rest: &[String]) -> i32 {
         Ok(limit) => limit,
         Err(e) => die(2, &e),
     };
-    let resp = call(
-        "/list",
-        &json!({
-            "queue": opt_queue(&args),
-            "status": args.get("status"),
-            "limit": limit,
-            "not_before": args.get("not-before"),
-            "lane": args.get("lane"),
-            "worker": args.get("worker"),
-        }),
-    );
-    let resp = unwrap_ok(resp);
-    let rows = resp
-        .get("rows")
-        .and_then(|r| r.as_array())
-        .cloned()
-        .unwrap_or_default();
+    // #7871: fetch in pages of LIST_PAGE_SIZE (see list_pages) — a
+    // single oversized /list response comes back unusable and used
+    // to render as a silent "(no tasks)". `--task <id>` narrows to
+    // one task regardless of status ordering, so a worker can
+    // verify a just-completed task's status from list output even
+    // when the done list is thousands of rows long.
+    let mut rows: Vec<Value> = Vec::new();
+    for (offset, page_limit) in list_pages(limit) {
+        let resp = call(
+            "/list",
+            &json!({
+                "queue": opt_queue(&args),
+                "status": args.get("status"),
+                "limit": page_limit,
+                "offset": offset,
+                "not_before": args.get("not-before"),
+                "lane": args.get("lane"),
+                "worker": args.get("worker"),
+                "task": args.get_i64("task"),
+            }),
+        );
+        let resp = unwrap_ok(resp);
+        let page = match list_rows(&resp) {
+            Ok(page) => page,
+            Err(e) => die(3, &e),
+        };
+        let short_page = (page.len() as i64) < page_limit;
+        rows.extend(page);
+        if short_page {
+            break;
+        }
+    }
     if rows.is_empty() {
         println!("(no tasks)");
         return 0;
@@ -1303,6 +1782,522 @@ fn cmd_list(rest: &[String]) -> i32 {
         .collect();
     let str_rows: Vec<Vec<String>> = rows.iter().map(list_row_cells).collect();
     print_table(&cols, &str_rows);
+    0
+}
+
+/// The /claim-flow request invariants (#5757-A), checked before
+/// any step runs, on both broker backends (the broker is the
+/// trust boundary; the client mirrors the same rules in
+/// claim_bind_path): a session to bind is required, batch claims
+/// bind one session per item elsewhere, and --from-session
+/// transfers keep the three-verb sequence. Returns the session
+/// id to bind.
+pub(crate) fn claim_flow_precheck(req: &Value) -> Result<String, String> {
+    let session = req.get("session_id").and_then(|s| s.as_str()).unwrap_or("");
+    if session.is_empty() {
+        return Err("claim-flow: session_id is required (the session the claimed                     task binds to; without one use /claim)"
+            .to_string());
+    }
+    if req.get("count").and_then(|c| c.as_i64()).unwrap_or(1) > 1 {
+        return Err("claim-flow: batch claims (--count > 1) bind one session per                     item — dispatch or send each item instead"
+            .to_string());
+    }
+    let from_session = req
+        .get("from_session")
+        .and_then(|s| s.as_str())
+        .map(|s| !s.is_empty())
+        .unwrap_or(false);
+    if from_session {
+        return Err(
+            "claim-flow: from_session transfers keep the claim/lane/bind sequence".to_string(),
+        );
+    }
+    Ok(session.to_string())
+}
+
+/// #5757-A: the operator-facing note for a /claim-flow partial
+/// success — the claim COMMITTED and stands, but the lane or bind
+/// step failed broker-side. The claimed task's identity is
+/// preserved (no re-claim, no replay); the caller finishes the
+/// named step with the single-verb call for this task id.
+/// Returns None on a full success (or a non-claim-flow answer).
+fn claim_flow_partial_note(resp: &Value) -> Option<String> {
+    let partial = resp.get("claim_flow_partial")?;
+    let step = partial
+        .get("step")
+        .and_then(|s| s.as_str())
+        .unwrap_or("lane/bind");
+    let error = partial
+        .get("error")
+        .and_then(|e| e.as_str())
+        .unwrap_or("unknown error");
+    let task_id = resp
+        .get("row")
+        .and_then(|r| r.get("id"))
+        .cloned()
+        .unwrap_or(Value::Null);
+    Some(format!(
+        "repo-queue: claim-flow claimed task {task_id} but the {step} step failed ({error}); \
+         the claim stands — finish that step with the single-verb call for task {task_id}, do not re-claim"
+    ))
+}
+
+/// Whether this claim takes the one-trip /claim-flow path
+/// (#5757-A): only with an explicit --bind, a single (non-batch)
+/// claim, no --from-session transfer, and a --session-id to
+/// bind. --bind is never implied by --session-id alone: existing
+/// callers pass --session-id as a claim mark and keep
+/// byte-identical behavior without the flag. Each refusal names
+/// the flag at fault — a caller who asked for a bind must never
+/// silently get an unbound claim. Mirrors claim_flow_precheck
+/// (the broker-side enforcement of the same invariants).
+pub(crate) fn claim_bind_path(
+    bind: bool,
+    count: i64,
+    from_session: bool,
+    session_id: Option<&str>,
+) -> Result<bool, String> {
+    if !bind {
+        return Ok(false);
+    }
+    if count > 1 {
+        return Err("claim --bind: batch claims (--count > 1) bind one session per                     item — dispatch or send each item instead"
+            .to_string());
+    }
+    if from_session {
+        return Err(
+            "claim --bind: --from-session transfers keep the claim/lane/bind sequence".to_string(),
+        );
+    }
+    match session_id {
+        Some(s) if !s.is_empty() => Ok(true),
+        _ => Err(
+            "claim --bind: --session-id is required (the session the claimed task binds to)"
+                .to_string(),
+        ),
+    }
+}
+
+/// #9046: append one timeline record (model_stamp / session_bound
+/// / session_unbound) through the broker's generic /events-append
+/// verb. Fail-soft by design: a timeline record must never fail
+/// the operation it annotates.
+fn append_timeline_event(worker: &str, task_id: i64, kind: &str, detail: Value) {
+    let resp = call(
+        "/events-append",
+        &json!({
+            "worker_id": worker,
+            "task_id": task_id,
+            "kind": kind,
+            "detail": detail,
+        }),
+    );
+    if resp.get("ok").and_then(|o| o.as_bool()) != Some(true) {
+        eprint(&format!(
+            "repo-queue: warning: {kind} timeline append for task {task_id} failed"
+        ));
+    }
+}
+
+/// #9046: the stamp a claim surface carries, as (provider, model,
+/// variant) — read back off the request body cmd_claim built, so
+/// explicit flags and session-derived stamps are indistinguishable
+/// here (both were resolved before the claim was sent).
+fn body_stamp(body: &Value) -> Option<(String, String, Option<String>)> {
+    let provider = body.get("model_provider")?.as_str()?.to_string();
+    let model = body.get("model_id")?.as_str()?.to_string();
+    let variant = body
+        .get("model_variant")
+        .and_then(|v| v.as_str())
+        .map(str::to_string);
+    Some((provider, model, variant))
+}
+
+/// #9046: after a claim, mirror the binding + stamp into the
+/// task's timeline when the broker did not write them itself.
+/// Capability signal: a broker that stamps in-op (post-#9046)
+/// returns claim_session_id on the claimed row (TASK_COLS carries
+/// it); a pre-switch broker's row has no such key, and
+/// /events-append is the live path. Post-switch this is a no-op.
+fn claim_timeline_appends(
+    worker: &str,
+    row: &Value,
+    stamp: &Option<(String, String, Option<String>)>,
+    session_id: &Option<String>,
+    trigger: &str,
+) {
+    if row.get("claim_session_id").is_some() {
+        return;
+    }
+    let task_id = row.get("id").and_then(|v| v.as_i64()).unwrap_or(0);
+    if task_id == 0 {
+        return;
+    }
+    if let Some(sid) = session_id {
+        append_timeline_event(
+            worker,
+            task_id,
+            "session_bound",
+            json!({"session_id": sid, "trigger": trigger, "via": "fleet-cli"}),
+        );
+    }
+    if let Some((provider, model, variant)) = stamp {
+        append_timeline_event(
+            worker,
+            task_id,
+            "model_stamp",
+            json!({
+                "session_id": session_id,
+                "provider": provider,
+                "model": model,
+                "variant": variant,
+                "trigger": trigger,
+                "via": "fleet-cli",
+            }),
+        );
+    }
+}
+
+/// #9046: mirror a binding close into the timeline when a
+/// transition verb's answer row shows the task had a session
+/// bound (progress.session_id, or the just-cleared
+/// progress.session_cleared.session_id). A post-switch broker
+/// writes session_unbound in-op; the timeline reader collapses
+/// the duplicate (same kind/session/trigger inside 120 s).
+fn unbound_append(worker: &str, row: &Value, trigger: &str) {
+    let task_id = row.get("id").and_then(|v| v.as_i64()).unwrap_or(0);
+    if task_id == 0 {
+        return;
+    }
+    let progress = row.get("progress").cloned().unwrap_or(Value::Null);
+    let sid = progress
+        .get("session_id")
+        .and_then(|v| v.as_str())
+        .or_else(|| {
+            progress
+                .get("session_cleared")
+                .and_then(|c| c.get("session_id"))
+                .and_then(|v| v.as_str())
+        });
+    if let Some(sid) = sid {
+        append_timeline_event(
+            worker,
+            task_id,
+            "session_unbound",
+            json!({"session_id": sid, "trigger": trigger, "via": "fleet-cli"}),
+        );
+    }
+}
+
+/// #9046: fleet session ids are `ses_` + alphanumerics — the
+/// shape every session surface mints. Anything else is not a
+/// session id and must never reach a route_attempt SQL string.
+fn valid_session_id(s: &str) -> bool {
+    s.len() > 4 && s.starts_with("ses_") && s.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
+}
+
+/// #9046: the OpenCode server's raw route ledger — the data the
+/// session join reads (route proxy's OPENCODE_ROUTE_PROXY_DB).
+fn route_attempt_db() -> String {
+    std::env::var("OPENCODE_ROUTE_PROXY_DB")
+        .unwrap_or_else(|_| format!("{}/.local/share/opencode/opencode.db", home()))
+}
+
+/// #9046: the dominant serving leaf for one session over one
+/// window, by route_attempt call count (the close-out summary).
+/// Read-only sqlite3 shell-out; None on any failure — callers
+/// proceed without the summary rather than blocking.
+fn dominant_model_for_session(session_id: &str, start_ms: i64, end_ms: i64) -> Option<Value> {
+    if !valid_session_id(session_id) || end_ms <= start_ms {
+        return None;
+    }
+    let sql = format!(
+        "SELECT provider_id, model_id, variant, COUNT(*) AS c FROM route_attempt \
+         WHERE session_id = '{session_id}' AND time_started >= {start_ms} \
+         AND time_started < {end_ms} \
+         GROUP BY provider_id, model_id, variant ORDER BY c DESC LIMIT 1"
+    );
+    let out = std::process::Command::new("sqlite3")
+        .args(["-readonly", "-json", &route_attempt_db(), &sql])
+        .output()
+        .ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    let rows: Value = serde_json::from_slice(&out.stdout).ok()?;
+    let r = rows.as_array()?.first()?;
+    Some(json!({
+        "provider": r.get("provider_id")?,
+        "model": r.get("model_id")?,
+        "variant": r.get("variant").cloned().unwrap_or(Value::Null),
+        "calls": r.get("c")?,
+        "session_id": session_id,
+        "window_start_ms": start_ms,
+        "window_end_ms": end_ms,
+        "source": "route_attempt",
+    }))
+}
+
+/// #9046: the exact model segments one session served inside one
+/// window, from route_attempt (provider/model/variant + call
+/// count, chronological). None when the raw data is unreachable.
+fn route_segments_for_session(session_id: &str, start_ms: i64, end_ms: i64) -> Option<Vec<String>> {
+    if !valid_session_id(session_id) || end_ms <= start_ms {
+        return None;
+    }
+    let sql = format!(
+        "SELECT provider_id, model_id, variant, COUNT(*) AS c FROM route_attempt \
+         WHERE session_id = '{session_id}' AND time_started >= {start_ms} \
+         AND time_started < {end_ms} \
+         GROUP BY provider_id, model_id, variant ORDER BY MIN(time_started)"
+    );
+    let out = std::process::Command::new("sqlite3")
+        .args(["-readonly", "-json", &route_attempt_db(), &sql])
+        .output()
+        .ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    let rows: Value = serde_json::from_slice(&out.stdout).ok()?;
+    let mut segs = Vec::new();
+    for r in rows.as_array()? {
+        let variant = r
+            .get("variant")
+            .and_then(|v| v.as_str())
+            .map(|v| format!("#{v}"))
+            .unwrap_or_default();
+        segs.push(format!(
+            "session={} {}/{}{} x{}",
+            session_id,
+            r.get("provider_id")?.as_str()?,
+            r.get("model_id")?.as_str()?,
+            variant,
+            r.get("c")?.as_i64()?,
+        ));
+    }
+    Some(segs)
+}
+
+/// #9046: the close-out summary for a task being completed: its
+/// bound session (progress.session_id) over its claim window
+/// [claimed_at, now], resolved against route_attempt. Needs the
+/// task's queue to fetch its row; every miss returns None and
+/// the completion proceeds without the summary.
+fn dominant_model_for_task(args: &Args, task_id: i64) -> Option<Value> {
+    let queue = opt_queue_claim(args)?;
+    let resp = call(
+        "/list",
+        &json!({"queue": queue, "rich": true, "task": task_id, "limit": 1}),
+    );
+    let row = resp.get("rows")?.as_array()?.first()?;
+    let session = row.get("progress")?.get("session_id")?.as_str()?;
+    let start_ms = parse_ts(row.get("claimed_at")?)? / 1000;
+    let end_ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .ok()?
+        .as_millis() as i64;
+    dominant_model_for_session(session, start_ms, end_ms)
+}
+
+/// #9046: one timeline record as the reader keeps it, normalized
+/// over an /events-list row (pre-#9046 kinds fold in:
+/// lane_session_bound is a bind, session_binding_cleared an
+/// unbind; a claimed event's detail carries its session).
+#[derive(Debug, Clone, PartialEq)]
+struct TimelineEvent {
+    id: i64,
+    kind: String,
+    session_id: Option<String>,
+    provider: Option<String>,
+    model: Option<String>,
+    variant: Option<String>,
+    trigger: Option<String>,
+    created_at: String,
+    created_us: i64,
+}
+
+fn timeline_event(row: &Value) -> Option<TimelineEvent> {
+    let detail = match row.get("detail") {
+        Some(Value::String(s)) => serde_json::from_str(s).unwrap_or(Value::Null),
+        Some(v) => v.clone(),
+        None => Value::Null,
+    };
+    let str_at = |key: &str| detail.get(key).and_then(|x| x.as_str()).map(str::to_string);
+    let kind = row.get("kind")?.as_str()?;
+    let kind = match kind {
+        "lane_session_bound" => "session_bound",
+        "session_binding_cleared" => "session_unbound",
+        other => other,
+    }
+    .to_string();
+    Some(TimelineEvent {
+        id: row.get("id").and_then(|v| v.as_i64()).unwrap_or(0),
+        kind,
+        session_id: str_at("session_id"),
+        provider: str_at("provider").or_else(|| str_at("model_provider")),
+        model: str_at("model").or_else(|| str_at("model_id")),
+        variant: str_at("variant").or_else(|| str_at("model_variant")),
+        trigger: str_at("trigger").or_else(|| str_at("via")),
+        created_at: row.get("created_at")?.as_str()?.to_string(),
+        created_us: row.get("created_at").and_then(parse_ts).unwrap_or(0),
+    })
+}
+
+/// #9046 oracle: collapse duplicate timeline writes — the same
+/// (kind, session, provider, model, variant, trigger) recorded
+/// twice within 120 s is one record written by two surfaces (a
+/// pre-switch CLI append and the post-switch broker write of the
+/// same touch), never two transitions. Anything else — a changed
+/// field, or the same shape after the window — is a real second
+/// record and stays.
+fn collapse_timeline(events: Vec<TimelineEvent>) -> Vec<TimelineEvent> {
+    let mut out: Vec<TimelineEvent> = Vec::new();
+    for ev in events {
+        if let Some(prev) = out.last() {
+            let same = prev.kind == ev.kind
+                && prev.session_id == ev.session_id
+                && prev.provider == ev.provider
+                && prev.model == ev.model
+                && prev.variant == ev.variant
+                && prev.trigger == ev.trigger;
+            if same && ev.created_us - prev.created_us <= 120_000_000 {
+                continue;
+            }
+        }
+        out.push(ev);
+    }
+    out
+}
+
+/// #9046 oracle: pair session_bound -> session_unbound per
+/// session into windows (session, start, end-or-None), in the
+/// order the windows close (open bindings last) — the windows
+/// that slice the session's route_attempt rows per task.
+fn binding_windows(events: &[TimelineEvent]) -> Vec<(String, String, Option<String>)> {
+    let mut open: Vec<(String, String)> = Vec::new();
+    let mut out: Vec<(String, String, Option<String>)> = Vec::new();
+    for ev in events {
+        match ev.kind.as_str() {
+            "session_bound" => {
+                if let Some(sid) = &ev.session_id {
+                    open.push((sid.clone(), ev.created_at.clone()));
+                }
+            }
+            "session_unbound" => {
+                if let Some(sid) = &ev.session_id {
+                    if let Some(pos) = open.iter().position(|(s, _)| s == sid) {
+                        let (s, start) = open.remove(pos);
+                        out.push((s, start, Some(ev.created_at.clone())));
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    for (s, start) in open {
+        out.push((s, start, None));
+    }
+    out
+}
+
+/// #9046: render one task's model timeline — binding windows,
+/// stamps, and transitions in order, with the exact resolved
+/// models per window joined from route_attempt.
+fn cmd_timeline(rest: &[String]) -> i32 {
+    let args = parse_args(rest, &["worker"], &[]);
+    reject_extra_pos("timeline", &args, 1);
+    let task_id = args.pos_i64(0, "task_id");
+    let mut events: Vec<TimelineEvent> = Vec::new();
+    for kind in [
+        "claimed",
+        "session_bound",
+        "lane_session_bound",
+        "model_stamp",
+        "session_unbound",
+        "session_binding_cleared",
+        "completed",
+        "released",
+        "parked",
+        "failed",
+        "cancelled",
+    ] {
+        let resp = call(
+            "/events-list",
+            &json!({"task_id": task_id, "kind": kind, "limit": 1000}),
+        );
+        if resp.get("ok").and_then(|o| o.as_bool()) != Some(true) {
+            eprint(
+                "repo-queue timeline: this broker does not serve /events-list yet \
+                 — the full timeline activates with the #9046 broker at the \
+                 coordinated switch. Interim read (fleet-queue DB): SELECT id, \
+                 kind, detail, created_at FROM events WHERE task_id = <id> AND \
+                 kind IN ('model_stamp','session_bound','session_unbound',\
+                 'lane_session_bound','session_binding_cleared') ORDER BY id;",
+            );
+            return 3;
+        }
+        if let Some(rows) = resp
+            .get("row")
+            .and_then(|r| r.get("rows"))
+            .and_then(|r| r.as_array())
+        {
+            for row in rows {
+                if let Some(ev) = timeline_event(row) {
+                    events.push(ev);
+                }
+            }
+        }
+    }
+    events.sort_by_key(|e| e.id);
+    let events = collapse_timeline(events);
+    if events.is_empty() {
+        println!("task {task_id}: no timeline records");
+        return 0;
+    }
+    for ev in &events {
+        let mut line = format!("{}  {}", ev.created_at, ev.kind);
+        if let Some(sid) = &ev.session_id {
+            line += &format!("  session={sid}");
+        }
+        if let Some(p) = &ev.provider {
+            line += &format!("  {p}/{}", ev.model.as_deref().unwrap_or("?"));
+            if let Some(v) = &ev.variant {
+                line += &format!("#{v}");
+            }
+        }
+        if let Some(t) = &ev.trigger {
+            line += &format!("  ({t})");
+        }
+        println!("{line}");
+    }
+    // The join: exact resolved models per binding window, from
+    // the session's raw route_attempt rows (laptop-local,
+    // fail-soft — unreachable route data says so and moves on).
+    let windows = binding_windows(&events);
+    if !windows.is_empty() {
+        println!("served (route_attempt join):");
+        for (sid, start, end) in &windows {
+            let start_ms = parse_ts_str(start).map(|us| us / 1000).unwrap_or(0);
+            let end_ms = end
+                .as_ref()
+                .and_then(|e| parse_ts_str(e))
+                .map(|us| us / 1000)
+                .unwrap_or_else(|| {
+                    std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .map(|d| d.as_millis() as i64)
+                        .unwrap_or(0)
+                });
+            match route_segments_for_session(sid, start_ms, end_ms) {
+                Some(segs) if !segs.is_empty() => {
+                    for seg in segs {
+                        println!("  {seg}");
+                    }
+                }
+                _ => println!("  session={sid}: no route attempts in window"),
+            }
+        }
+    }
     0
 }
 
@@ -1322,16 +2317,44 @@ fn cmd_claim(rest: &[String]) -> i32 {
             "model-provider",
             "model-id",
             "model-variant",
+            "filter",
+            "pool",
+            "launched-by",
         ],
-        &["handoff"],
+        &["handoff", "bind"],
     );
     reject_extra_pos("claim", &args, 0);
     let worker = opt_worker(&args);
+    let lease_seconds = match lease_seconds_or_default(args.get_i64("lease-seconds")) {
+        Ok(v) => v,
+        Err(e) => die(2, &e),
+    };
     let mut body = json!({
-        "queue": opt_queue(&args),
         "worker": worker,
-        "lease_seconds": args.get_i64("lease-seconds").unwrap_or(2700),
+        "lease_seconds": lease_seconds,
     });
+    // One-queue model (#8097, 2026-11-10): a claim with no
+    // --queue (and no REPO_QUEUE_DEFAULT_QUEUE in the env) is
+    // UNSCOPED — the broker claims across the one fleet queue
+    // in priority order. An explicit --queue still scopes the
+    // claim to one stream exactly as before, so existing shift
+    // bodies keep working unchanged.
+    if let Some(q) = opt_queue_claim(&args) {
+        body["queue"] = json!(q);
+    }
+    // --filter '<expr>': the claimer-side boolean filter
+    // expression over task metadata (repo, queue, pool,
+    // platform, label, kind, priority, lane, model), evaluated
+    // by the broker inside the claim. Absent: no filtering.
+    if let Some(f) = args.get("filter") {
+        body["filter"] = json!(f);
+    }
+    // --pool <name>: the claimer's declared pool identity,
+    // recorded like the other claim marks and used only to
+    // satisfy a task's own requires.pool.
+    if let Some(p) = args.get("pool") {
+        body["pool"] = json!(p);
+    }
     if let Some(lane) = args.get("lane") {
         body["lane"] = json!(lane);
     }
@@ -1371,6 +2394,22 @@ fn cmd_claim(rest: &[String]) -> i32 {
         Ok(None) => {}
         Err(e) => die(2, &e),
     }
+    // #8176 (2026-11-12 fix): no explicit stamp — derive it from
+    // the claiming session's own record when the claim names the
+    // session (--session-id, the dispatch surfaces' form). Claims
+    // that name no session keep the unstamped shape exactly as
+    // before; derivation failure never fails the claim.
+    if body.get("model_provider").is_none() {
+        if let Some(sid) = args.get("session-id") {
+            if let Some((provider, model, variant)) = derive_claim_model_stamp(&sid) {
+                body["model_provider"] = json!(provider);
+                body["model_id"] = json!(model);
+                if let Some(v) = variant {
+                    body["model_variant"] = json!(v);
+                }
+            }
+        }
+    }
     // --handoff: the no-id collection of the next recorded
     // opencode handoff from the sink (status 'handed_off', #8234;
     // #8097 Rule 1) — the claimant's default handoff path. The
@@ -1407,9 +2446,87 @@ fn cmd_claim(rest: &[String]) -> i32 {
     if let Some(fs) = args.get("from-session") {
         body["from_session"] = json!(fs);
     }
-    let resp = unwrap_ok_fb(call_fb("/claim", &body), "/claim");
+    // --bind (#5757-A): claim + lane-assign + session-bind in
+    // ONE broker round trip via /claim-flow instead of the three
+    // trips claim -> lane -> bind. The answer carries the same
+    // task row in `row`, so claim_output and the #6741 fallback
+    // guard below work unchanged. The flow goes through call_fb
+    // like /claim: on a backend failure the fallback switch
+    // fires identically, and lane/bind — broker-ledger steps —
+    // are skipped in fallback mode (runbook §0a: no ledger
+    // there), so there is no client-side three-verb replay.
+    let bind = match claim_bind_path(
+        args.has("bind"),
+        count,
+        args.get("from-session").is_some(),
+        args.get("session-id").as_deref(),
+    ) {
+        Ok(bind) => bind,
+        Err(e) => die(2, &e),
+    };
+    if bind {
+        body["launched_by"] = json!(
+            args.get("launched-by")
+                .unwrap_or_else(|| "opencode-claimant".to_string())
+        );
+    }
+    // #9046: the effective stamp + session for the timeline
+    // appends below (explicit flags or session-derived — by now
+    // both live on the request body).
+    let tl_stamp = body_stamp(&body);
+    let tl_session = args.get("session-id");
+    let tl_trigger = if args.get("from-session").is_some() {
+        "transfer"
+    } else {
+        "claim"
+    };
+    let resp = if bind {
+        unwrap_ok_fb(call_fb("/claim-flow", &body), "/claim-flow")
+    } else {
+        unwrap_ok_fb(call_fb("/claim", &body), "/claim")
+    };
+    if let Some(note) = claim_flow_partial_note(&resp) {
+        eprint(&note);
+    }
     if count > 1 {
+        // #9046: one binding + stamp timeline record per row.
+        if let Some(rows) = resp.get("rows").and_then(|r| r.as_array()) {
+            for row in rows {
+                claim_timeline_appends(&worker, row, &tl_stamp, &tl_session, tl_trigger);
+            }
+        }
         return claim_batch_output(&resp, &worker, count);
+    }
+    // #9046: mirror the claim's binding + stamp into the
+    // timeline (a no-op when the broker stamped in-op).
+    if let Some(row) = resp.get("row") {
+        if !row.is_null() {
+            // A transfer closes the previous session's window
+            // first: the CLI knows the from-session even when a
+            // pre-switch broker recorded no binding to clear (its
+            // claims never set progress.session_id). Same
+            // capability signal as claim_timeline_appends — a
+            // post-switch broker writes this unbound in-op via
+            // on_binding_cleared, and its rows carry the key.
+            if tl_trigger == "transfer" && row.get("claim_session_id").is_none() {
+                if let (Some(fs), Some(tid)) = (
+                    args.get("from-session"),
+                    row.get("id").and_then(|v| v.as_i64()),
+                ) {
+                    append_timeline_event(
+                        &worker,
+                        tid,
+                        "session_unbound",
+                        json!({
+                            "session_id": fs,
+                            "trigger": "transfer",
+                            "via": "fleet-cli",
+                        }),
+                    );
+                }
+            }
+            claim_timeline_appends(&worker, row, &tl_stamp, &tl_session, tl_trigger);
+        }
     }
     let (mut out, code) = claim_output(&resp);
     if code != 0 {
@@ -1647,7 +2764,10 @@ fn cmd_release(rest: &[String]) -> i32 {
             "reason": reason,
         }),
     ));
-    print_json(&require_row(&resp, "release_repo_task"));
+    let row = require_row(&resp, "release_repo_task");
+    // #9046: a release closes the binding window on the timeline.
+    unbound_append(&opt_worker(&args), &row, "release");
+    print_json(&row);
     0
 }
 
@@ -1698,6 +2818,16 @@ fn claim_output(resp: &Value) -> (Value, i32) {
             return (json!({"task": Value::Null}), NO_CLAIM_EXIT);
         }
     }
+    // #5757-A (Codex P2, PR #8493): a /claim-flow partial success
+    // must stay distinguishable in the machine-readable output —
+    // the stderr note alone leaves stdout consumers unable to tell
+    // a completed bind from an unbound claim. Carry the broker's
+    // claim_flow_partial marker on the printed row, alongside the
+    // claimed task's identity; the claim itself is not retried.
+    let mut row = row;
+    if let (Some(partial), Some(obj)) = (resp.get("claim_flow_partial"), row.as_object_mut()) {
+        obj.insert("claim_flow_partial".to_string(), partial.clone());
+    }
     (row, 0)
 }
 
@@ -1734,20 +2864,74 @@ fn cmd_lane(rest: &[String]) -> i32 {
 }
 
 fn cmd_bind(rest: &[String]) -> i32 {
-    let args = parse_args(rest, &["worker", "session-id", "launched-by"], &[]);
+    let args = parse_args(
+        rest,
+        &[
+            "worker",
+            "session-id",
+            "launched-by",
+            "model-provider",
+            "model-id",
+            "model-variant",
+        ],
+        &[],
+    );
     reject_extra_pos("bind", &args, 1);
     let session_id = args
         .get("session-id")
         .unwrap_or_else(|| die(2, "bind: --session-id is required"));
-    let resp = unwrap_ok(call(
-        "/bind",
-        &json!({
-            "task_id": args.pos_i64(0, "task_id"),
-            "worker": opt_worker(&args),
-            "session_id": session_id,
-            "launched_by": args.get("launched-by").unwrap_or_else(|| "opencode-claimant".to_string()),
-        }),
-    ));
+    // #9046: the bind stamps the bound session's own model —
+    // explicit --model-* flags win; otherwise the stamp derives
+    // from the session's own record, exactly as on claim (#8176).
+    // The stamp rides the /bind body (a post-#9046 broker stamps
+    // in-op) and the timeline appends below (the live path on a
+    // pre-switch broker; the reader collapses the duplicate).
+    let stamp = match model_stamp_flags(
+        args.get("model-provider").as_deref(),
+        args.get("model-id").as_deref(),
+        args.get("model-variant").as_deref(),
+    ) {
+        Ok(Some(s)) => Some(s),
+        Ok(None) => derive_claim_model_stamp(&session_id),
+        Err(e) => die(2, &e),
+    };
+    let mut body = json!({
+        "task_id": args.pos_i64(0, "task_id"),
+        "worker": opt_worker(&args),
+        "session_id": session_id,
+        "launched_by": args.get("launched-by").unwrap_or_else(|| "opencode-claimant".to_string()),
+    });
+    if let Some((provider, model, variant)) = &stamp {
+        body["model_provider"] = json!(provider);
+        body["model_id"] = json!(model);
+        if let Some(v) = variant {
+            body["model_variant"] = json!(v);
+        }
+    }
+    let resp = unwrap_ok(call("/bind", &body));
+    let task_id = args.pos_i64(0, "task_id");
+    let worker = opt_worker(&args);
+    append_timeline_event(
+        &worker,
+        task_id,
+        "session_bound",
+        json!({"session_id": session_id, "trigger": "bind", "via": "fleet-cli"}),
+    );
+    if let Some((provider, model, variant)) = &stamp {
+        append_timeline_event(
+            &worker,
+            task_id,
+            "model_stamp",
+            json!({
+                "session_id": session_id,
+                "provider": provider,
+                "model": model,
+                "variant": variant,
+                "trigger": "bind",
+                "via": "fleet-cli",
+            }),
+        );
+    }
     print_json(&require_row(&resp, "bind_repo_task_lane_session"));
     0
 }
@@ -1759,13 +2943,17 @@ fn cmd_heartbeat(rest: &[String]) -> i32 {
         &[],
     );
     reject_extra_pos("heartbeat", &args, 1);
+    let extend_seconds = match extend_seconds_or_default(args.get_i64("extend-seconds")) {
+        Ok(v) => v,
+        Err(e) => die(2, &e),
+    };
     let resp = unwrap_ok_fb(
         call_fb(
             "/heartbeat",
             &json!({
                 "task_id": args.pos_i64(0, "task_id"),
                 "worker": opt_worker(&args),
-                "extend_seconds": args.get_i64("extend-seconds").unwrap_or(900),
+                "extend_seconds": extend_seconds,
                 "progress": progress_arg(&args),
             }),
         ),
@@ -1829,8 +3017,16 @@ fn cmd_park(rest: &[String]) -> i32 {
         "progress": progress_arg(&args).unwrap_or(json!({})),
     });
     if let Some(nb) = args.get("not-before") {
+        let nb = match validate_not_before_flag(&nb) {
+            Ok(v) => v,
+            Err(e) => die(2, &e),
+        };
         body["not_before"] = json!(nb);
     } else if let Some(d) = args.get_i64("delay-seconds") {
+        let d = match validate_delay_seconds(d) {
+            Ok(v) => v,
+            Err(e) => die(2, &e),
+        };
         body["delay_seconds"] = json!(d);
     }
     if let Some(rc_raw) = args.get("ready-condition") {
@@ -1847,6 +3043,10 @@ fn cmd_park(rest: &[String]) -> i32 {
         body["execution"] = ex;
     }
     let resp = unwrap_ok(call("/park", &body));
+    // #9046: a park closes the binding window on the timeline.
+    if let Some(row) = resp.get("row") {
+        unbound_append(&opt_worker(&args), row, "park");
+    }
     row_or_ledger(&resp, "park_task");
     0
 }
@@ -1867,6 +3067,77 @@ fn cmd_wake(rest: &[String]) -> i32 {
     0
 }
 
+/// #8568: resolve the PM aggregator's alerts-intake token by
+/// name, through the same in-process route the fleet binary's
+/// `fleet secrets get` verb uses — fleet-secrets'
+/// `Resolver::default_chain` over the loaded fleet config (the
+/// direct secrets-broker source on the laptop, the session-proxy
+/// broker source in the sandbox, the `bws` CLI as fallback). The
+/// queue client has no other named-secret resolution of its own;
+/// this is that machinery, reused in-process (no shelling out).
+/// The token value is used for the one POST and dropped — never
+/// printed, never filed.
+fn resolve_alerts_intake_token() -> Result<String, String> {
+    let config = fleet_config::Config::load().unwrap_or_default();
+    fleet_secrets::Resolver::default_chain(&config)
+        .resolve(crate::needs_drew::ALERTS_INTAKE_TOKEN_SECRET)
+        .map(|v| v.expose().to_string())
+        .map_err(|e| e.to_string())
+}
+
+/// #8568: parse cmd_block's --options-json flag: a JSON array of
+/// {"id": ..., "label": ...} objects. Bad shapes are usage errors
+/// at the caller's terminal, like --progress.
+fn block_options_arg(args: &Args) -> Vec<crate::needs_drew::NeedsDrewOption> {
+    let Some(raw) = args.get("options-json") else {
+        return Vec::new();
+    };
+    let val: Value = match serde_json::from_str(&raw) {
+        Ok(v) => v,
+        Err(e) => die(2, &format!("block: --options-json is not valid JSON: {e}")),
+    };
+    let Some(arr) = val.as_array() else {
+        die(2, "block: --options-json must be a JSON array");
+    };
+    arr.iter()
+        .map(|o| {
+            let id = o.get("id").and_then(|v| v.as_str());
+            let label = o.get("label").and_then(|v| v.as_str());
+            match (id, label) {
+                (Some(id), Some(label)) => crate::needs_drew::NeedsDrewOption {
+                    id: id.to_string(),
+                    label: label.to_string(),
+                },
+                _ => die(
+                    2,
+                    "block: --options-json entries must be {\"id\": ..., \"label\": ...} objects",
+                ),
+            }
+        })
+        .collect()
+}
+
+/// #8568: parse cmd_block's --links-json flag: a JSON array of
+/// strings.
+fn block_links_arg(args: &Args) -> Vec<String> {
+    let Some(raw) = args.get("links-json") else {
+        return Vec::new();
+    };
+    let val: Value = match serde_json::from_str(&raw) {
+        Ok(v) => v,
+        Err(e) => die(2, &format!("block: --links-json is not valid JSON: {e}")),
+    };
+    let Some(arr) = val.as_array() else {
+        die(2, "block: --links-json must be a JSON array");
+    };
+    arr.iter()
+        .map(|l| match l.as_str() {
+            Some(s) => s.to_string(),
+            None => die(2, "block: --links-json entries must be strings"),
+        })
+        .collect()
+}
+
 fn cmd_block(rest: &[String]) -> i32 {
     let args = parse_args(
         rest,
@@ -1876,6 +3147,15 @@ fn cmd_block(rest: &[String]) -> i32 {
             "blocker",
             "progress",
             "progress-file",
+            // #8568: needs-drew payload for an escalated-to-user
+            // block (PM-stack notifications Phase 1). All optional;
+            // without --ledger-id + --question an escalated block
+            // behaves exactly as before.
+            "ledger-id",
+            "question",
+            "context",
+            "options-json",
+            "links-json",
             // #8276: typed dependency blocks — the broker watches
             // these and releases the task itself when they clear
             // (or when the max TTL expires). Comma-separated for
@@ -1896,13 +3176,67 @@ fn cmd_block(rest: &[String]) -> i32 {
     let blocker = args
         .get("blocker")
         .unwrap_or_else(|| die(2, "block: --blocker is required"));
+    // #8568: the needs-drew payload is live only for an
+    // escalated-to-user block that names its ledger item and its
+    // question; every other block keeps today's shape exactly.
+    let needs_drew = if rc == "escalated-to-user" {
+        match (args.get("ledger-id"), args.get("question")) {
+            (Some(ledger_id), Some(question)) => Some(crate::needs_drew::BlockNeedsDrew {
+                ledger_id,
+                question,
+                context: args.get("context"),
+                options: block_options_arg(&args),
+                links: block_links_arg(&args),
+                blocker: blocker.clone(),
+            }),
+            _ => None,
+        }
+    } else {
+        None
+    };
+    let mut progress = progress_arg(&args).unwrap_or(json!({}));
+    if let Some(nd) = &needs_drew {
+        // Stamp the ledger id onto the task row through the
+        // progress the CURRENT broker already persists — no
+        // broker change needed for the ledger-id half. Any
+        // caller-supplied progress content is preserved; only a
+        // caller-set needs_drew.ledger_id of their own would be
+        // overwritten, and the flag is the authoritative source.
+        let mut stamp = json!({"ledger_id": nd.ledger_id});
+        if let Some(existing) = progress.get("needs_drew").and_then(|v| v.as_object()) {
+            for (k, v) in existing {
+                stamp[k] = v.clone();
+            }
+            stamp["ledger_id"] = json!(nd.ledger_id);
+        }
+        progress["needs_drew"] = stamp;
+    }
     let mut body = json!({
         "task_id": args.pos_i64(0, "task_id"),
         "worker": opt_worker(&args),
         "reason_class": rc,
         "blocker": blocker,
-        "progress": progress_arg(&args).unwrap_or(json!({})),
+        "progress": progress,
     });
+    if let Some(nd) = &needs_drew {
+        // Snake_case keys, matching the /block body's own style;
+        // the broker (and, later, the broker-side raise) reads
+        // this shape back via needs_drew::from_block_request.
+        let mut nd_json = json!({
+            "ledger_id": nd.ledger_id,
+            "question": nd.question,
+            "options": nd
+                .options
+                .iter()
+                .map(|o| json!({"id": o.id, "label": o.label}))
+                .collect::<Vec<_>>(),
+            "links": nd.links,
+        });
+        if let Some(context) = &nd.context {
+            nd_json["context"] = json!(context);
+        }
+        body["needs_drew"] = nd_json;
+    }
     let deps = dep_flags(&args);
     if !deps.is_empty() {
         body["deps"] = json!(deps);
@@ -1915,6 +3249,25 @@ fn cmd_block(rest: &[String]) -> i32 {
     }
     let resp = unwrap_ok(call("/block", &body));
     print_json(&require_row(&resp, "block_task"));
+    // #8568: the live raise path — after the block lands, post
+    // the needs-drew alert to the PM throat. Emission failure
+    // must NOT fail the block (the block already succeeded and
+    // the throat dedupes, so a later retry / the broker-side
+    // raise can still land it): warn on stderr, exit 0. Stdout
+    // above keeps its current JSON shape exactly.
+    if let Some(nd) = &needs_drew {
+        let raised = resolve_alerts_intake_token()
+            .and_then(|token| crate::needs_drew::post_needs_drew(&token, nd));
+        match raised {
+            Ok(_) => eprint(&format!(
+                "repo-queue: needs-drew raised for ledger item {}",
+                nd.ledger_id
+            )),
+            Err(e) => eprint(&format!(
+                "repo-queue: WARNING: needs-drew throat post failed: {e}"
+            )),
+        }
+    }
     0
 }
 
@@ -2021,7 +3374,10 @@ fn cmd_cancel(rest: &[String]) -> i32 {
             "reason": reason,
         }),
     ));
-    print_json(&require_row(&resp, "cancel_repo_task"));
+    let row = require_row(&resp, "cancel_repo_task");
+    // #9046: a cancel closes the binding window on the timeline.
+    unbound_append(&worker, &row, "cancel");
+    print_json(&row);
     0
 }
 
@@ -2038,6 +3394,10 @@ fn cmd_revive(rest: &[String]) -> i32 {
         "reason": args.get("reason").unwrap_or_default(),
     });
     if let Some(nb) = args.get("not-before") {
+        let nb = match validate_not_before_flag(&nb) {
+            Ok(v) => v,
+            Err(e) => die(2, &e),
+        };
         body["not_before"] = json!(nb);
     }
     let resp = unwrap_ok(call("/revive", &body));
@@ -2070,6 +3430,10 @@ fn cmd_fail(rest: &[String]) -> i32 {
         body["execution"] = ex;
     }
     let resp = unwrap_ok(call("/fail", &body));
+    // #9046: a fail closes the binding window on the timeline.
+    if let Some(row) = resp.get("row") {
+        unbound_append(&opt_worker(&args), row, "fail");
+    }
     row_or_ledger(&resp, "fail_repo_task");
     0
 }
@@ -2077,7 +3441,14 @@ fn cmd_fail(rest: &[String]) -> i32 {
 fn cmd_complete(rest: &[String]) -> i32 {
     let args = parse_args(
         rest,
-        &["worker", "result", "result-file", "telemetry", "execution"],
+        &[
+            "worker",
+            "result",
+            "result-file",
+            "telemetry",
+            "execution",
+            "queue",
+        ],
         &[],
     );
     reject_extra_pos("complete", &args, 1);
@@ -2166,6 +3537,17 @@ fn cmd_complete(rest: &[String]) -> i32 {
             result_obj["execution"] = Value::Object(block);
         }
     }
+    // #9046 close-out convenience: record the bound session's
+    // dominant model (route_attempt call count over this task's
+    // claim window) in the result, so lists and reports don't
+    // need the session join for the common case. Fail-soft at
+    // every step — any miss completes without the summary, and
+    // a caller-supplied dominant_model always wins.
+    if result_obj.get("dominant_model").is_none() {
+        if let Some(dom) = dominant_model_for_task(&args, args.pos_i64(0, "task_id")) {
+            result_obj["dominant_model"] = dom;
+        }
+    }
     let mut body = json!({
         "task_id": args.pos_i64(0, "task_id"),
         "worker": opt_worker(&args),
@@ -2175,12 +3557,23 @@ fn cmd_complete(rest: &[String]) -> i32 {
         body["execution"] = ex;
     }
     let resp = unwrap_ok_fb(call_fb("/complete", &body), "/complete");
+    // #9046: completion closes the binding window on the timeline.
+    if let Some(row) = resp.get("row") {
+        unbound_append(&opt_worker(&args), row, "complete");
+    }
     row_or_ledger(&resp, "complete_task");
     0
 }
 
+/// Value flags the `health` verb accepts (#7349). `--worker` is
+/// accepted for attribution only: the opencode-claimant packet
+/// mandates `--worker` on every verb, and a packet-literal fire used
+/// to abort on its first health call. It changes neither the request
+/// body nor the printed table.
+const HEALTH_FLAGS: &[&str] = &["queue", "worker"];
+
 fn cmd_health(rest: &[String]) -> i32 {
-    let args = parse_args(rest, &["queue"], &[]);
+    let args = parse_args(rest, HEALTH_FLAGS, &[]);
     reject_extra_pos("health", &args, 0);
     let mut body = json!({});
     if let Some(q) = args.get("queue") {
@@ -2414,25 +3807,93 @@ fn cmd_outbox_resolve(rest: &[String]) -> i32 {
     0
 }
 
-/// Run one `gh` command and capture (success, stdout, stderr)
-/// without a shell — arguments never pass through shell expansion.
-fn gh_run(argv: &[String]) -> (bool, String, String) {
-    match std::process::Command::new("gh").args(argv).output() {
-        Ok(out) => (
-            out.status.success(),
-            String::from_utf8_lossy(&out.stdout).trim().to_string(),
-            String::from_utf8_lossy(&out.stderr).trim().to_string(),
-        ),
-        Err(e) => (false, String::new(), format!("cannot run gh: {e}")),
+/// How one `gh` invocation is run. Production runs the real `gh`
+/// binary; tests substitute a stub binary through this seam so the
+/// exact argv and the failure shapes are observable (#8361 — the
+/// creation-outbox production leg previously had no seam at all and
+/// its marker search was never exercised by a test).
+#[derive(Debug, Clone)]
+struct GhRunner {
+    bin: String,
+}
+
+impl GhRunner {
+    fn system() -> Self {
+        let bin = std::env::var("FLEET_QUEUE_GH_BIN")
+            .ok()
+            .filter(|b| !b.trim().is_empty())
+            .unwrap_or_else(|| "gh".to_string());
+        GhRunner { bin }
+    }
+
+    fn with_bin(bin: impl Into<String>) -> Self {
+        GhRunner { bin: bin.into() }
+    }
+
+    /// Run one `gh` command and capture (success, stdout, stderr)
+    /// without a shell — arguments never pass through shell expansion.
+    fn run(&self, argv: &[String]) -> (bool, String, String) {
+        match std::process::Command::new(&self.bin).args(argv).output() {
+            Ok(out) => (
+                out.status.success(),
+                String::from_utf8_lossy(&out.stdout).trim().to_string(),
+                String::from_utf8_lossy(&out.stderr).trim().to_string(),
+            ),
+            Err(e) => (false, String::new(), format!("cannot run gh: {e}")),
+        }
+    }
+
+    /// Run one `gh` command expecting JSON on stdout. A failure is
+    /// an `Err` carrying the error class derived from stderr —
+    /// never a silent `None` — so callers that must distinguish
+    /// "checked and absent" from "could not check" can (#8361).
+    fn json(&self, argv: &[String]) -> Result<Value, String> {
+        let (ok, stdout, stderr) = self.run(argv);
+        if !ok {
+            return Err(gh_error_class(&stderr));
+        }
+        serde_json::from_str(&stdout).map_err(|_| "unparseable_json".to_string())
     }
 }
 
-fn gh_json(argv: &[String]) -> Option<Value> {
-    let (ok, stdout, _) = gh_run(argv);
-    if !ok {
-        return None;
+/// Classify a failed `gh` invocation's stderr into the error-class
+/// vocabulary recorded in an outbox entry's `last_error_class`.
+fn gh_error_class(stderr: &str) -> String {
+    let lower = stderr.to_lowercase();
+    if lower.contains("rate limit")
+        || lower.contains("submitted too quickly")
+        || lower.contains("429")
+    {
+        "rate_limit".to_string()
+    } else if lower.contains("404") {
+        "http_404".to_string()
+    } else if lower.contains("403") {
+        "http_403".to_string()
+    } else if lower.contains("cannot run gh") {
+        "spawn_failed".to_string()
+    } else if stderr.trim().is_empty() {
+        "gh_failed_no_stderr".to_string()
+    } else {
+        "gh_failed".to_string()
     }
-    serde_json::from_str(&stdout).ok()
+}
+
+/// The three-way result of a marker lookup (#8361). The old
+/// `Option` collapsed "the search ran and found nothing" into the
+/// same `None` as "the search itself failed", and the drain loop
+/// re-created on both — duplicating objects whose create had
+/// actually landed.
+#[derive(Debug, Clone, PartialEq)]
+enum MarkerLookup {
+    Found(i64, String),
+    /// The search completed and no listed object carries the marker:
+    /// absence is proven, re-creating is safe.
+    Absent,
+    /// The lookup could not be performed (non-2xx, transport error,
+    /// unparseable response). Absence is NOT proven: the entry must
+    /// stay uncertain and must never be re-created on this. Carries
+    /// the stderr error class.
+    CouldNotCheck(String),
 }
 
 fn s(v: &Value, key: &str) -> String {
@@ -2445,7 +3906,21 @@ fn s(v: &Value, key: &str) -> String {
 /// The drainer's GitHub leg (production `Creator` for the
 /// creation_outbox state machine): submits with the entry's marker
 /// in the body, classifies the result, and verifies by read-back.
-struct GhCreator;
+struct GhCreator {
+    gh: GhRunner,
+}
+
+impl GhCreator {
+    fn new() -> Self {
+        GhCreator {
+            gh: GhRunner::system(),
+        }
+    }
+
+    fn with_runner(gh: GhRunner) -> Self {
+        GhCreator { gh }
+    }
+}
 
 impl GhCreator {
     fn create(&mut self, entry: &Value) -> crate::creation_outbox::CreateOutcome {
@@ -2521,7 +3996,7 @@ impl GhCreator {
             ],
             other => return CreateOutcome::Failed(format!("unknown outbox kind {other:?}")),
         };
-        let (ok, stdout, stderr) = gh_run(&argv);
+        let (ok, stdout, stderr) = self.gh.run(&argv);
         if !ok {
             let lower = stderr.to_lowercase();
             if lower.contains("403")
@@ -2553,11 +4028,19 @@ impl GhCreator {
     }
 
     fn read_back(&mut self, entry: &Value, number: i64) -> bool {
+        matches!(self.read_back_checked(entry, number), Ok(true))
+    }
+
+    /// The read-back with the failure kept: `Err(class)` when the
+    /// verifying call itself could not be performed, so a marker
+    /// lookup never mistakes a failed verification for a proven
+    /// absence (#8361).
+    fn read_back_checked(&mut self, entry: &Value, number: i64) -> Result<bool, String> {
         let repo = s(entry, "repo");
         let kind = s(entry, "kind");
         let id = s(entry, "id");
         let obj = match kind.as_str() {
-            "issue" => gh_json(&[
+            "issue" => self.gh.json(&[
                 "issue".into(),
                 "view".into(),
                 number.to_string(),
@@ -2565,8 +4048,8 @@ impl GhCreator {
                 repo,
                 "--json".into(),
                 "number,url,body".into(),
-            ]),
-            "pull_request" => gh_json(&[
+            ])?,
+            "pull_request" => self.gh.json(&[
                 "pr".into(),
                 "view".into(),
                 number.to_string(),
@@ -2574,37 +4057,109 @@ impl GhCreator {
                 repo,
                 "--json".into(),
                 "number,url,body".into(),
-            ]),
-            _ => gh_json(&[
+            ])?,
+            _ => self.gh.json(&[
                 "api".into(),
                 format!("repos/{repo}/issues/comments/{number}"),
-            ]),
+            ])?,
         };
-        match obj {
-            Some(v) => crate::creation_outbox::marker_id(&s(&v, "body")) == Some(id),
-            None => false,
-        }
+        Ok(crate::creation_outbox::marker_id(&s(&obj, "body")) == Some(id))
     }
 
-    fn find_by_marker(&mut self, entry: &Value) -> Option<(i64, String)> {
+    /// Reconcile an uncertain entry by searching for its marker.
+    /// Three-way (#8361): the search is issued as a GET — the old
+    /// `gh api search/issues -f q=...` form makes gh use POST,
+    /// /search/issues has no POST route (404), and the failure read
+    /// as proven absence, so every uncertain entry was re-created.
+    fn find_by_marker(&mut self, entry: &Value) -> MarkerLookup {
         let repo = s(entry, "repo");
+        let kind = s(entry, "kind");
         let id = s(entry, "id");
         let q = format!("repo:{repo} fleet-outbox:{id}");
-        let results = gh_json(&[
+        let results = match self.gh.json(&[
             "api".into(),
+            "--method".into(),
+            "GET".into(),
             "search/issues".into(),
             "-f".into(),
             format!("q={q}"),
-        ])?;
-        let items = results.get("items").and_then(|i| i.as_array())?;
+        ]) {
+            Ok(v) => v,
+            Err(class) => return MarkerLookup::CouldNotCheck(class),
+        };
+        let Some(items) = results.get("items").and_then(|i| i.as_array()) else {
+            return MarkerLookup::CouldNotCheck("unexpected_search_shape".to_string());
+        };
+        // For comment entries the search hit's number is the ISSUE
+        // (or PR) number -- a different id namespace from comment
+        // ids -- so the marker must be resolved through the issue's
+        // comment list, and what is recorded is the COMMENT's id and
+        // html_url (#8363). Reading the issue number back as a
+        // comment id can never match a landed comment, so every
+        // landed comment was judged absent and re-created.
+        let comment_kind = matches!(kind.as_str(), "issue_comment" | "pr_comment");
         for item in items {
-            let number = item.get("number").and_then(|n| n.as_i64())?;
+            let Some(number) = item.get("number").and_then(|n| n.as_i64()) else {
+                continue;
+            };
+            if comment_kind {
+                match self.find_comment_on_issue(entry, number) {
+                    Ok(Some(found)) => return MarkerLookup::Found(found.0, found.1),
+                    Ok(None) => {}
+                    Err(class) => return MarkerLookup::CouldNotCheck(class),
+                }
+                continue;
+            }
             let url = s(item, "html_url");
-            if self.read_back(entry, number) {
-                return Some((number, url));
+            match self.read_back_checked(entry, number) {
+                Ok(true) => return MarkerLookup::Found(number, url),
+                Ok(false) => {}
+                Err(class) => return MarkerLookup::CouldNotCheck(class),
             }
         }
-        None
+        MarkerLookup::Absent
+    }
+
+    /// Resolve a comment entry's marker on one candidate issue:
+    /// page the issue's comments and return the (id, html_url) of
+    /// the one carrying the entry's marker, or None when the issue's
+    /// comments were fully listed and none carries it (#8363). The
+    /// page bound mirrors the fallback marker read's: a listing that
+    /// still has not terminated there is an error, never a proven
+    /// absence.
+    fn find_comment_on_issue(
+        &mut self,
+        entry: &Value,
+        issue_number: i64,
+    ) -> Result<Option<(i64, String)>, String> {
+        let repo = s(entry, "repo");
+        let id = s(entry, "id");
+        const PER_PAGE: usize = 100;
+        const MAX_PAGES: usize = 10;
+        for page in 1..=MAX_PAGES {
+            let comments = self.gh.json(&[
+                "api".into(),
+                format!(
+                    "repos/{repo}/issues/{issue_number}/comments?per_page={PER_PAGE}&page={page}"
+                ),
+            ])?;
+            let Some(list) = comments.as_array() else {
+                return Err("unexpected_comments_shape".to_string());
+            };
+            let full_page = list.len() == PER_PAGE;
+            for comment in list {
+                if crate::creation_outbox::marker_id(&s(comment, "body")) == Some(id.clone()) {
+                    let Some(cid) = comment.get("id").and_then(|n| n.as_i64()) else {
+                        continue;
+                    };
+                    return Ok(Some((cid, s(comment, "html_url"))));
+                }
+            }
+            if !full_page {
+                return Ok(None);
+            }
+        }
+        Err("comments_list_unbounded".to_string())
     }
 }
 
@@ -2616,7 +4171,7 @@ fn cmd_outbox_drain(rest: &[String]) -> i32 {
         .get("owner")
         .unwrap_or_else(|| "outbox-drainer".to_string());
     let max = args.get_i64("max").unwrap_or(20).max(1);
-    let mut creator = GhCreator;
+    let mut creator = GhCreator::new();
     let mut processed = 0i64;
     let mut last_create: Option<std::time::Instant> = None;
     for _ in 0..max {
@@ -2636,7 +4191,7 @@ fn cmd_outbox_drain(rest: &[String]) -> i32 {
         // Uncertain first: reconcile by marker, never blind-retry.
         if state == "uncertain" {
             match creator.find_by_marker(&row) {
-                Some((number, url)) => {
+                MarkerLookup::Found(number, url) => {
                     let resp = outbox_resolve(
                         &id,
                         "done",
@@ -2648,9 +4203,26 @@ fn cmd_outbox_drain(rest: &[String]) -> i32 {
                     );
                     continue;
                 }
-                None => {
+                MarkerLookup::Absent => {
                     // Marker search proves absence: fall through and
                     // re-create under the same entry.
+                }
+                MarkerLookup::CouldNotCheck(class) => {
+                    // The lookup itself failed (#8361): absence is
+                    // NOT proven. Keep the entry uncertain (the
+                    // resolve applies the backoff) with the error
+                    // class recorded, and never re-create on an
+                    // unchecked lookup.
+                    let resp = outbox_resolve(
+                        &id,
+                        "uncertain",
+                        json!({"error": format!("marker lookup could not check: {class}")}),
+                    );
+                    println!(
+                        "{}",
+                        json!({"id": id, "outcome": "lookup_unchecked", "error_class": class, "row": resp.get("row")})
+                    );
+                    continue;
                 }
             }
         }
@@ -2713,6 +4285,1073 @@ fn cmd_outbox_drain(rest: &[String]) -> i32 {
     0
 }
 
+/// Merge-intent stack verbs (#8582 increments 3-4): the client
+/// surface for the broker's /stack-record and /stack-list routes
+/// (increment 2), the /stack-transition route, and the replay
+/// executor (increment 4, `stack replay` below). Recording a finished branch names its authoring lane/worker
+/// pair; the broker validates that pair against the lane registry
+/// (the validation deferred from the CodeRabbit round on PR #8660,
+/// where the pair originates — here, at the client verbs).
+/// Stack list answers the full stack state from the database alone.
+pub(crate) fn stack_record_body(
+    stack_id: &str,
+    repo: &str,
+    branch: &str,
+    base_branch: Option<&str>,
+    head_sha: Option<&str>,
+    issue_number: Option<i64>,
+    pr_number: Option<i64>,
+    owner_lane: &str,
+    owner_worker: &str,
+    owner_session: Option<&str>,
+) -> Result<Value, String> {
+    // Fail fast with the pure core's own append rules, so a bad
+    // record is a usage error here and the identical verdict at
+    // the broker (validate_append is the one rule set, #8582).
+    let append = crate::merge_intent::AppendRequest {
+        stack_id: stack_id.to_string(),
+        repo: repo.to_string(),
+        branch: branch.to_string(),
+        base_branch: base_branch.map(|s| s.to_string()),
+        head_sha: head_sha.map(|s| s.to_string()),
+        issue_number,
+        pr_number,
+        owner_lane: owner_lane.to_string(),
+        owner_worker: owner_worker.to_string(),
+        owner_session: owner_session.map(|s| s.to_string()),
+    };
+    crate::merge_intent::validate_append(&append)?;
+    Ok(json!({
+        "stack_id": stack_id,
+        "repo": repo,
+        "branch": branch,
+        "base_branch": base_branch,
+        "head_sha": head_sha,
+        "issue_number": issue_number,
+        "pr_number": pr_number,
+        "owner_lane": owner_lane,
+        "owner_worker": owner_worker,
+        "owner_session": owner_session,
+    }))
+}
+
+fn cmd_stack_record(rest: &[String]) -> i32 {
+    let args = parse_args(
+        rest,
+        &[
+            "stack",
+            "repo",
+            "branch",
+            "base-branch",
+            "head-sha",
+            "issue",
+            "pr",
+            "lane",
+            "worker",
+            "session-id",
+        ],
+        &[],
+    );
+    reject_extra_pos("stack record", &args, 0);
+    let stack_id = args
+        .get("stack")
+        .unwrap_or_else(|| die(2, "stack record: --stack is required"));
+    let repo = args
+        .get("repo")
+        .unwrap_or_else(|| die(2, "stack record: --repo is required"));
+    let branch = args
+        .get("branch")
+        .unwrap_or_else(|| die(2, "stack record: --branch is required"));
+    // The owner pair originates here (#8582): the authoring lane is
+    // required, and the worker defaults to this caller's worker —
+    // the broker refuses a pair the lane registry does not hold.
+    let owner_lane = args
+        .get("lane")
+        .unwrap_or_else(|| die(2, "stack record: --lane is required (the authoring lane)"));
+    let body = match stack_record_body(
+        &stack_id,
+        &repo,
+        &branch,
+        args.get("base-branch").as_deref(),
+        args.get("head-sha").as_deref(),
+        args.get_i64("issue"),
+        args.get_i64("pr"),
+        &owner_lane,
+        &opt_worker(&args),
+        args.get("session-id").as_deref(),
+    ) {
+        Ok(b) => b,
+        Err(e) => die(2, &e),
+    };
+    let resp = unwrap_ok(call("/stack-record", &body));
+    print_json(&require_row(&resp, "stack_record"));
+    0
+}
+
+fn cmd_stack_list(rest: &[String]) -> i32 {
+    let args = parse_args(rest, &["stack", "worker"], &[]);
+    reject_extra_pos("stack list", &args, 1);
+    let positional = args.pos.first().cloned();
+    let stack_id = match (positional, args.get("stack")) {
+        (Some(p), Some(f)) if p != f => {
+            die(2, "stack list: positional stack id and --stack disagree")
+        }
+        (Some(p), _) => p,
+        (None, Some(f)) => f,
+        (None, None) => die(2, "stack list: a stack id is required"),
+    };
+    let resp = unwrap_ok(call("/stack-list", &json!({"stack_id": stack_id})));
+    print_json(&require_row(&resp, "stack_list"));
+    0
+}
+
+/// Body for the broker's /stack-transition route (#8582 increment
+/// 4), shaped and fail-fast validated here: the target state must
+/// parse in the pure core, and a move to `conflicted` must carry
+/// the detail the authoring lane will resolve against — a
+/// conflict recorded without context strands its owner.
+pub(crate) fn stack_transition_body(
+    stack_id: &str,
+    position: i64,
+    to_state: &str,
+    pr_number: Option<i64>,
+    conflict_detail: Option<&str>,
+) -> Result<Value, String> {
+    if stack_id.trim().is_empty() {
+        return Err("stack transition requires a non-empty stack_id".to_string());
+    }
+    let Some(to) = crate::merge_intent::IntentState::parse(to_state) else {
+        return Err(format!(
+            "stack transition: unknown target state {to_state:?}"
+        ));
+    };
+    if to == crate::merge_intent::IntentState::Conflicted {
+        match conflict_detail {
+            Some(d) if !d.trim().is_empty() => {}
+            _ => {
+                return Err(
+                    "stack transition: a move to conflicted requires --conflict-detail \
+                     naming what the authoring lane must resolve"
+                        .to_string(),
+                );
+            }
+        }
+    }
+    Ok(json!({
+        "stack_id": stack_id,
+        "position": position,
+        "to_state": to.as_str(),
+        "pr_number": pr_number,
+        "conflict_detail": conflict_detail,
+    }))
+}
+
+fn stack_transition(
+    stack_id: &str,
+    position: i64,
+    to_state: &str,
+    pr_number: Option<i64>,
+    conflict_detail: Option<&str>,
+) -> Value {
+    let body = match stack_transition_body(stack_id, position, to_state, pr_number, conflict_detail)
+    {
+        Ok(b) => b,
+        Err(e) => die(2, &e),
+    };
+    let resp = unwrap_ok(call("/stack-transition", &body));
+    require_row(&resp, "stack_transition")
+}
+
+/// The replay executor's transition helper: like
+/// [`stack_transition`] but it returns the broker's verdict instead
+/// of exiting on it (CodeRabbit finding, PR #8849, comment
+/// 4547592887). The broker's store/transport failures carry exit 4,
+/// which inside `stack replay` is reserved for a conflict routed to
+/// its authoring lane — a helper that dies with the envelope's code
+/// makes a store failure indistinguishable from a routed conflict,
+/// and prints no replay JSON at all. Replay maps an Err onto its
+/// transient path (exit 3, intent left `replaying`, resumable).
+fn stack_transition_result(
+    stack_id: &str,
+    position: i64,
+    to_state: &str,
+    pr_number: Option<i64>,
+    conflict_detail: Option<&str>,
+) -> Result<Value, String> {
+    let body = stack_transition_body(stack_id, position, to_state, pr_number, conflict_detail)?;
+    let resp = call("/stack-transition", &body);
+    if resp.get("ok").and_then(|o| o.as_bool()) == Some(false) {
+        let msg = resp
+            .get("error")
+            .and_then(|e| e.as_str())
+            .unwrap_or("queue-broker error");
+        return Err(format!("stack transition to {to_state} failed: {msg}"));
+    }
+    Ok(resp.get("row").cloned().unwrap_or(Value::Null))
+}
+
+fn cmd_stack_transition(rest: &[String]) -> i32 {
+    let args = parse_args(
+        rest,
+        &["stack", "position", "to", "pr", "conflict-detail", "worker"],
+        &[],
+    );
+    reject_extra_pos("stack transition", &args, 0);
+    let stack_id = args
+        .get("stack")
+        .unwrap_or_else(|| die(2, "stack transition: --stack is required"));
+    let position = args
+        .get_i64("position")
+        .unwrap_or_else(|| die(2, "stack transition: --position is required"));
+    let to = args
+        .get("to")
+        .unwrap_or_else(|| die(2, "stack transition: --to is required"));
+    let row = stack_transition(
+        &stack_id,
+        position,
+        &to,
+        args.get_i64("pr"),
+        args.get("conflict-detail").as_deref(),
+    );
+    print_json(&row);
+    0
+}
+
+/// Body for the broker's /stack-restack route (#8582; Codex P2,
+/// PR #8849, comment 4547537340): the acknowledgement that an
+/// intent's author restacked its branch off a withdrawn base, so
+/// the recorded base_branch can be refreshed. Fail-fast validated
+/// here for shape; the broker re-plans with the pure core's
+/// `plan_restack` against the stored rows, which is where the
+/// taint rules bind.
+pub(crate) fn stack_restack_body(
+    stack_id: &str,
+    position: i64,
+    new_base_branch: &str,
+    new_head_sha: Option<&str>,
+) -> Result<Value, String> {
+    if stack_id.trim().is_empty() {
+        return Err("stack restack requires a non-empty stack_id".to_string());
+    }
+    if new_base_branch.trim().is_empty() {
+        return Err(
+            "stack restack requires a non-empty --base (the branch's new base)".to_string(),
+        );
+    }
+    if let Some(sha) = new_head_sha {
+        if sha.trim().is_empty() {
+            return Err(
+                "stack restack requires a non-empty --head-sha when one is given".to_string(),
+            );
+        }
+    }
+    Ok(json!({
+        "stack_id": stack_id,
+        "position": position,
+        "new_base_branch": new_base_branch,
+        "head_sha": new_head_sha,
+    }))
+}
+
+fn cmd_stack_restack(rest: &[String]) -> i32 {
+    let args = parse_args(
+        rest,
+        &["stack", "position", "base", "head-sha", "worker"],
+        &[],
+    );
+    reject_extra_pos("stack restack", &args, 0);
+    let stack_id = args
+        .get("stack")
+        .unwrap_or_else(|| die(2, "stack restack: --stack is required"));
+    let position = args
+        .get_i64("position")
+        .unwrap_or_else(|| die(2, "stack restack: --position is required"));
+    let base = args.get("base").unwrap_or_else(|| {
+        die(
+            2,
+            "stack restack: --base is required (the branch's new base after restacking)",
+        )
+    });
+    let body = match stack_restack_body(&stack_id, position, &base, args.get("head-sha").as_deref())
+    {
+        Ok(b) => b,
+        Err(e) => die(2, &e),
+    };
+    let resp = unwrap_ok(call("/stack-restack", &body));
+    print_json(&require_row(&resp, "stack_restack"));
+    0
+}
+
+/// One recorded intent, parsed back from a /stack-list row for the
+/// replay executor (the broker's row shape is the storage shape).
+fn stack_intent_from_row(row: &Value) -> Option<crate::merge_intent::MergeIntent> {
+    Some(crate::merge_intent::MergeIntent {
+        stack_id: row.get("stack_id")?.as_str()?.to_string(),
+        position: row.get("position")?.as_i64()?,
+        repo: row.get("repo")?.as_str()?.to_string(),
+        branch: row.get("branch")?.as_str()?.to_string(),
+        base_branch: row.get("base_branch")?.as_str()?.to_string(),
+        head_sha: row
+            .get("head_sha")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string()),
+        base_head_sha: row
+            .get("base_head_sha")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string()),
+        issue_number: row.get("issue_number").and_then(|v| v.as_i64()),
+        pr_number: row.get("pr_number").and_then(|v| v.as_i64()),
+        owner_lane: row.get("owner_lane")?.as_str()?.to_string(),
+        owner_worker: row.get("owner_worker")?.as_str()?.to_string(),
+        owner_session: row
+            .get("owner_session")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string()),
+        state: crate::merge_intent::IntentState::parse(row.get("state")?.as_str()?)?,
+    })
+}
+
+fn replay_snippet(s: &str) -> String {
+    s.chars().take(300).collect()
+}
+
+/// Run one external step of a replay (git/gh) in the repo
+/// checkout: Ok(trimmed stdout) on success, Err(a bounded
+/// stderr/stdout summary) otherwise.
+fn replay_run(dir: &str, program: &str, argv: &[String]) -> Result<String, String> {
+    match std::process::Command::new(program)
+        .args(argv)
+        .current_dir(dir)
+        .output()
+    {
+        Ok(o) if o.status.success() => Ok(String::from_utf8_lossy(&o.stdout).trim().to_string()),
+        Ok(o) => {
+            let err = String::from_utf8_lossy(&o.stderr).trim().to_string();
+            let out = String::from_utf8_lossy(&o.stdout).trim().to_string();
+            Err(replay_snippet(if err.is_empty() { &out } else { &err }))
+        }
+        Err(e) => Err(format!("{program}: {e}")),
+    }
+}
+
+/// Whether the checkout at `dir` already has a rebase in progress
+/// that this replay did NOT start (Codex P2, PR #8849). Replay must
+/// refuse that checkout state up front: `git rebase --abort` on a
+/// rebase somebody else is mid-way through would discard their
+/// conflict-resolution progress.
+fn rebase_in_progress(dir: &str) -> bool {
+    for kind in ["rebase-merge", "rebase-apply"] {
+        if let Ok(p) = replay_run(dir, "git", &replay_args(&["rev-parse", "--git-path", kind])) {
+            let path = std::path::Path::new(&p);
+            let full = if path.is_absolute() {
+                path.to_path_buf()
+            } else {
+                std::path::Path::new(dir).join(path)
+            };
+            if full.exists() {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+fn replay_args(parts: &[&str]) -> Vec<String> {
+    parts.iter().map(|s| s.to_string()).collect()
+}
+
+/// The replay executor (#8582 increment 4): walk one stack's
+/// recorded merge order bottom-up and land it — rebase onto the
+/// new main, push, open the PR, merge, mark landed, post the
+/// outcome note — one intent at a time, in the recorded order.
+/// The plan is the pure core's (`plan_for_walk` over the
+/// `resumable_walk`), so `--dry-run` prints exactly what a live
+/// pass would do. A rebase or merge conflict is never resolved
+/// here: the intent is marked `conflicted` with the detail, the
+/// walk stops, and the summary routes the conflict to the
+/// authoring lane recorded on the intent (exit 4). Any other step
+/// failure stops the pass with the intent left `replaying` — a
+/// later `stack replay` resumes it (exit 3).
+fn cmd_stack_replay(rest: &[String]) -> i32 {
+    let args = parse_args(rest, &["stack", "worker", "repo-dir"], &["dry-run"]);
+    reject_extra_pos("stack replay", &args, 0);
+    let stack_id = args
+        .get("stack")
+        .unwrap_or_else(|| die(2, "stack replay: --stack is required"));
+    let dir = args.get("repo-dir").unwrap_or_else(|| ".".to_string());
+    let resp = unwrap_ok(call("/stack-list", &json!({"stack_id": stack_id})));
+    let state = require_row(&resp, "stack_list");
+    let rows = state
+        .get("intents")
+        .and_then(|v| v.as_array())
+        .cloned()
+        .unwrap_or_default();
+    let intents: Vec<crate::merge_intent::MergeIntent> =
+        rows.iter().filter_map(stack_intent_from_row).collect();
+    let walk = crate::merge_intent::resumable_walk(&intents, &stack_id);
+    let plan = crate::merge_intent::plan_for_walk(&walk);
+    if args.has("dry-run") {
+        let steps: Vec<Value> = plan
+            .iter()
+            .map(|s| {
+                json!({
+                    "position": s.position,
+                    "branch": s.branch,
+                    "action": s.action.as_str(),
+                })
+            })
+            .collect();
+        print_json(&json!({"stack_id": stack_id, "dry_run": true, "plan": steps}));
+        return 0;
+    }
+    if plan.is_empty() {
+        print_json(&json!({
+            "stack_id": stack_id,
+            "landed": [],
+            "note": "no replayable prefix: the stack is empty, finished, or blocked at a conflicted head (see stack state)",
+            "stack": state,
+        }));
+        return 0;
+    }
+    let by_position: std::collections::HashMap<i64, &crate::merge_intent::MergeIntent> =
+        intents.iter().map(|i| (i.position, i)).collect();
+    let mut pr_numbers: std::collections::HashMap<i64, Option<i64>> =
+        intents.iter().map(|i| (i.position, i.pr_number)).collect();
+    let mut landed: Vec<i64> = Vec::new();
+    let mut warnings: Vec<String> = Vec::new();
+    // The verified pre-rebase tip of every branch this pass rebases
+    // (position -> sha recorded immediately before its rebase ran):
+    // the Push step pins its force-with-lease to this tip and refuses
+    // to rewrite a branch whose remote moved past it (Codex P1,
+    // PR #8849, comment 4547537332).
+    // Persisted across attempts (Codex P2, PR #8849, comment
+    // 4548246124): a pass that rebases a published branch and then
+    // stops transiently at Push must not lose the verified tip --
+    // on the next invocation the intent can look like the walk's
+    // bottom and never rebase again, so the tip is stored in the
+    // checkout's git dir, keyed by stack, and cleared as intents
+    // land. A stale entry is only ever used as a force-with-lease
+    // pin after a live ls-remote confirms the remote is still
+    // exactly at that tip.
+    let tips_path = replay_run(
+        &dir,
+        "git",
+        &replay_args(&[
+            "rev-parse",
+            "--git-path",
+            "fleet-replay-pre-rebase-tips.json",
+        ]),
+    )
+    .ok()
+    .map(|rel| {
+        let path = std::path::Path::new(&rel);
+        if path.is_absolute() {
+            path.to_path_buf()
+        } else {
+            std::path::Path::new(&dir).join(path)
+        }
+    });
+    let mut pre_rebase_tips: std::collections::HashMap<i64, String> =
+        std::collections::HashMap::new();
+    if let Some(path) = &tips_path {
+        if let Ok(text) = std::fs::read_to_string(path) {
+            if let Ok(saved) = serde_json::from_str::<serde_json::Map<String, Value>>(&text) {
+                if let Some(entry) = saved.get(&stack_id) {
+                    if let Some(obj) = entry.as_object() {
+                        for (pos, sha) in obj {
+                            if let (Ok(pos), Some(sha)) = (pos.parse::<i64>(), sha.as_str()) {
+                                pre_rebase_tips.insert(pos, sha.to_string());
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    if let Err(e) = replay_run(&dir, "git", &replay_args(&["fetch", "origin", "main"])) {
+        print_json(&json!({
+            "stack_id": stack_id,
+            "landed": landed,
+            "stopped_at": {"step": "fetch", "error": e},
+        }));
+        return 3;
+    }
+    // Preflight (Codex P2, PR #8849): a checkout with somebody
+    // else's rebase already in progress is not replay's to abort
+    // or build on — refuse before any step runs.
+    if rebase_in_progress(&dir) {
+        print_json(&json!({
+            "stack_id": stack_id,
+            "landed": landed,
+            "stopped_at": {"step": "preflight", "error": "checkout already has a rebase in progress that this replay did not start; finish or abort it outside replay first"},
+        }));
+        return 3;
+    }
+    // Shared conflict exit: mark the intent conflicted (it is
+    // `replaying` by then — Begin precedes every other step in the
+    // plan), name the route to its authoring lane, and stop.
+    let conflict_exit = |position: i64, detail: String, landed: &[i64]| -> i32 {
+        // Exit 4 is earned only once the conflicted transition is
+        // recorded (CodeRabbit, PR #8849): if the store refuses it,
+        // the conflict is not routed yet — report a resumable stop
+        // (exit 3) with the conflict named, never a bare 4.
+        if let Err(e) =
+            stack_transition_result(&stack_id, position, "conflicted", None, Some(&detail))
+        {
+            print_json(&json!({
+                "stack_id": stack_id,
+                "landed": landed,
+                "stopped_at": {"position": position, "step": "conflict_transition", "error": e},
+                "conflict": {"position": position, "detail": detail},
+                "note": "the conflict could not be recorded; the intent is left replaying and a later pass resumes it",
+            }));
+            return 3;
+        }
+        let route = crate::merge_intent::route_replay_conflict(&intents, &stack_id, position);
+        print_json(&json!({
+            "stack_id": stack_id,
+            "landed": landed,
+            "conflict": {
+                "position": position,
+                "detail": detail,
+                "route": route.map(|r| json!({
+                    "owner_lane": r.owner_lane,
+                    "owner_worker": r.owner_worker,
+                    "owner_session": r.owner_session,
+                    "repo": r.repo,
+                    "branch": r.branch,
+                    "base_branch": r.base_branch,
+                    "issue_number": r.issue_number,
+                })),
+            },
+        }));
+        4
+    };
+    let transient_exit = |step: &crate::merge_intent::PlannedStep,
+                          e: String,
+                          landed: &[i64]|
+     -> i32 {
+        print_json(&json!({
+            "stack_id": stack_id,
+            "landed": landed,
+            "stopped_at": {
+                "position": step.position,
+                "action": step.action.as_str(),
+                "error": e,
+            },
+            "note": "the intent is left replaying; fix the cause and re-run stack replay to resume",
+        }));
+        3
+    };
+    for step in &plan {
+        let intent = by_position[&step.position];
+        let repo = intent.repo.clone();
+        let branch = intent.branch.clone();
+        match step.action {
+            crate::merge_intent::ReplayAction::Begin => {
+                if intent.state != crate::merge_intent::IntentState::Replaying {
+                    if let Err(e) =
+                        stack_transition_result(&stack_id, step.position, "replaying", None, None)
+                    {
+                        return transient_exit(step, e, &landed);
+                    }
+                }
+            }
+            crate::merge_intent::ReplayAction::RebaseOntoMain => {
+                if rebase_in_progress(&dir) {
+                    return transient_exit(
+                        step,
+                        "checkout already has a rebase in progress that this replay did not start; finish or abort it outside replay first".to_string(),
+                        &landed,
+                    );
+                }
+                if let Ok(tip) = replay_run(&dir, "git", &replay_args(&["rev-parse", &branch])) {
+                    pre_rebase_tips.insert(step.position, tip);
+                    if let Some(path) = &tips_path {
+                        let mut saved: serde_json::Map<String, Value> =
+                            std::fs::read_to_string(path)
+                                .ok()
+                                .and_then(|t| serde_json::from_str(&t).ok())
+                                .unwrap_or_default();
+                        let entry = saved.entry(stack_id.clone()).or_insert_with(|| json!({}));
+                        if let Some(obj) = entry.as_object_mut() {
+                            for (pos, sha) in &pre_rebase_tips {
+                                obj.insert(pos.to_string(), json!(sha));
+                            }
+                        }
+                        let _ =
+                            std::fs::write(path, serde_json::to_string(&saved).unwrap_or_default());
+                    }
+                }
+                // Merge-bearing histories are refused, never
+                // flattened (Codex P1, PR #8849, comment
+                // 4549335625): a plain rebase skips merge commits,
+                // so a merge commit carrying merge-only changes (a
+                // fixup or new file added while merging the base)
+                // would be silently discarded and the altered tree
+                // published as success. If the range replay would
+                // rebase contains any merge commit, route it to
+                // the authoring lane as a conflict: the author
+                // restacks preserving the merges (or merges main
+                // in) and replay resumes afterwards.
+                match replay_run(
+                    &dir,
+                    "git",
+                    &replay_args(&["rev-list", "--merges", &format!("origin/main..{branch}")]),
+                ) {
+                    Ok(list) if !list.is_empty() => {
+                        return conflict_exit(
+                            step.position,
+                            format!(
+                                "branch {branch} contains merge commits ({}) in the range replay would rebase onto main; a plain rebase would discard their merge-only changes, so replay refuses to flatten this history -- the authoring lane restacks it preserving the merges and re-runs replay",
+                                list.lines().take(5).collect::<Vec<_>>().join(", ")
+                            ),
+                            &landed,
+                        );
+                    }
+                    Ok(_) => {}
+                    Err(e) => {
+                        return transient_exit(
+                            step,
+                            format!(
+                                "checking {branch} for merge commits before its rebase failed: {e}"
+                            ),
+                            &landed,
+                        );
+                    }
+                }
+                if let Err(e) = replay_run(
+                    &dir,
+                    "git",
+                    &replay_args(&["rebase", "origin/main", &branch]),
+                ) {
+                    // Distinguish a rebase conflict from a rebase
+                    // that never started (Codex P2, PR #8849,
+                    // comment 4547537349): git refuses to START a
+                    // rebase — dirty checkout, missing branch,
+                    // spawn failure — without leaving any rebase
+                    // state behind, and that failure is transient:
+                    // the intent stays `replaying` and a later pass
+                    // resumes it once the cause is fixed. Only a
+                    // rebase this step actually started can be a
+                    // conflict — the guard above proved none was in
+                    // progress before, so state present now is ours
+                    // to abort before routing the conflict to the
+                    // authoring lane.
+                    if rebase_in_progress(&dir) {
+                        let _ = replay_run(&dir, "git", &replay_args(&["rebase", "--abort"]));
+                        return conflict_exit(
+                            step.position,
+                            format!("rebase of {branch} onto origin/main failed at replay: {e}"),
+                            &landed,
+                        );
+                    }
+                    return transient_exit(
+                        step,
+                        format!("rebase of {branch} onto origin/main never started: {e}"),
+                        &landed,
+                    );
+                }
+            }
+            crate::merge_intent::ReplayAction::Push => {
+                // Publishing a branch must never delete commits this
+                // pass has not accounted for (Codex P1, PR #8849,
+                // comment 4547537332). The earlier fix for
+                // already-published branches (comment 4546983376)
+                // used a bare --force-with-lease, whose expected
+                // value is the mutable remote-tracking ref: an
+                // ordinary fetch can move that ref to a tip carrying
+                // remote-only commits the local branch lacks, and
+                // the lease then passes while the push deletes them.
+                // So decide from the LIVE remote tip, read with
+                // ls-remote at push time:
+                // - no remote branch yet: plain first push;
+                // - remote tip == local tip, or an ancestor of the
+                //   local branch: a no-op or a fast-forward (the
+                //   untouched bottom branch's case) — plain push;
+                // - this pass rebased the branch and the remote tip
+                //   is still the verified pre-rebase tip: the
+                //   rewrite is this pass's alone — publish with the
+                //   lease PINNED to that tip;
+                // - anything else (the remote moved past what this
+                //   pass verified): refuse. The intent stays
+                //   `replaying`; its author reconciles the
+                //   remote-only commits and a later pass resumes.
+                let remote_tip = replay_run(
+                    &dir,
+                    "git",
+                    &replay_args(&["ls-remote", "origin", &format!("refs/heads/{branch}")]),
+                )
+                .ok()
+                .and_then(|out| out.split_whitespace().next().map(|s| s.to_string()));
+                let push = match remote_tip {
+                    None => replay_run(&dir, "git", &replay_args(&["push", "origin", &branch])),
+                    Some(remote_sha) => {
+                        // Make the remote tip's object available for
+                        // the ancestry check below.
+                        let _ =
+                            replay_run(&dir, "git", &replay_args(&["fetch", "origin", &branch]));
+                        let local_tip =
+                            replay_run(&dir, "git", &replay_args(&["rev-parse", &branch]))
+                                .unwrap_or_default();
+                        let remote_is_ancestor = replay_run(
+                            &dir,
+                            "git",
+                            &replay_args(&["merge-base", "--is-ancestor", &remote_sha, &branch]),
+                        )
+                        .is_ok();
+                        if remote_sha == local_tip || remote_is_ancestor {
+                            replay_run(&dir, "git", &replay_args(&["push", "origin", &branch]))
+                        } else if pre_rebase_tips.get(&step.position) == Some(&remote_sha) {
+                            replay_run(
+                                &dir,
+                                "git",
+                                &replay_args(&[
+                                    "push",
+                                    &format!("--force-with-lease=refs/heads/{branch}:{remote_sha}"),
+                                    "origin",
+                                    &branch,
+                                ]),
+                            )
+                        } else {
+                            return transient_exit(
+                                step,
+                                format!(
+                                    "remote branch {branch} is at {remote_sha}, which is \
+                                     neither contained in the local branch nor the verified \
+                                     pre-rebase tip of this pass; refusing to force-push \
+                                     over possible remote-only commits — the authoring \
+                                     lane reconciles the remote branch first"
+                                ),
+                                &landed,
+                            );
+                        }
+                    }
+                };
+                if let Err(e) = push {
+                    return transient_exit(step, e, &landed);
+                }
+            }
+            crate::merge_intent::ReplayAction::OpenPr => {
+                if pr_numbers.get(&step.position).copied().flatten().is_none() {
+                    let title = format!("stack replay {} #{}: {}", stack_id, step.position, branch);
+                    let body = format!(
+                        "Replayed from merge-intent stack {stack_id} position {} (#8582). \
+                         Recorded author: lane {} / worker {}.",
+                        step.position, intent.owner_lane, intent.owner_worker
+                    );
+                    let created = replay_run(
+                        &dir,
+                        "gh",
+                        &replay_args(&[
+                            "pr", "create", "--repo", &repo, "--base", "main", "--head", &branch,
+                            "--title", &title, "--body", &body,
+                        ]),
+                    );
+                    let found = match &created {
+                        Ok(url) => url
+                            .rsplit('/')
+                            .next()
+                            .and_then(|n| n.trim().parse::<i64>().ok()),
+                        Err(_) => replay_run(
+                            &dir,
+                            "gh",
+                            &replay_args(&[
+                                "pr", "list", "--repo", &repo, "--head", &branch, "--state", "all",
+                                "--json", "number", "--limit", "1",
+                            ]),
+                        )
+                        .ok()
+                        .and_then(|out| serde_json::from_str::<Value>(&out).ok())
+                        .and_then(|v| {
+                            v.as_array()
+                                .and_then(|a| a.first())
+                                .and_then(|r| r.get("number"))
+                                .and_then(|n| n.as_i64())
+                        }),
+                    };
+                    match found {
+                        Some(n) => {
+                            pr_numbers.insert(step.position, Some(n));
+                        }
+                        None => {
+                            return transient_exit(
+                                step,
+                                created.err().unwrap_or_else(|| {
+                                    "PR number not parseable from gh output".to_string()
+                                }),
+                                &landed,
+                            );
+                        }
+                    }
+                }
+            }
+            crate::merge_intent::ReplayAction::Merge => {
+                let pr = pr_numbers
+                    .get(&step.position)
+                    .copied()
+                    .flatten()
+                    .unwrap_or_else(|| die(2, "stack replay: merge step without a PR number"));
+                let pr_s = pr.to_string();
+                // Resume reconciliation (Codex P1, PR #8849): if an
+                // earlier pass merged this PR but stopped before the
+                // landed transition recorded it, the intent is still
+                // `replaying` with no persisted number — the OpenPr
+                // fallback above recovered the number across all PR
+                // states, and an already-MERGED PR here is success,
+                // not a merge to re-attempt (re-attempting fails and
+                // would block the rest of the stack forever).
+                let pr_view = replay_run(
+                    &dir,
+                    "gh",
+                    &replay_args(&[
+                        "pr",
+                        "view",
+                        &pr_s,
+                        "--repo",
+                        &repo,
+                        "--json",
+                        "state,baseRefName",
+                    ]),
+                )
+                .ok()
+                .and_then(|out| serde_json::from_str::<Value>(&out).ok());
+                let pr_field = |name: &str| {
+                    pr_view
+                        .as_ref()
+                        .and_then(|v| v.get(name))
+                        .and_then(|f| f.as_str())
+                        .map(|f| f.to_string())
+                };
+                let pr_state = pr_field("state");
+                // Base validation (Codex P1, PR #8849, comment
+                // 4546983383): a reused PR recorded from the stack
+                // may still target its parent branch; merging it
+                // would land the changes into that branch, not
+                // main, while Land records success. Retarget to
+                // main before merging.
+                if pr_state.as_deref() != Some("MERGED")
+                    && pr_field("baseRefName").as_deref() != Some("main")
+                {
+                    if let Err(e) = replay_run(
+                        &dir,
+                        "gh",
+                        &replay_args(&["pr", "edit", &pr_s, "--repo", &repo, "--base", "main"]),
+                    ) {
+                        return transient_exit(
+                            step,
+                            format!("retargeting reused PR #{pr} to base main failed: {e}"),
+                            &landed,
+                        );
+                    }
+                }
+                // Abandon coordination (Codex P1, PR #8849,
+                // comment 4549335594): the plan executes a stack
+                // snapshot taken at pass start, but an author may
+                // withdraw this intent (replaying -> abandoned is a
+                // legal transition) while the pass works. Merging
+                // on the stale snapshot would land withdrawn
+                // changes on main; the Land transition afterwards
+                // would refuse, but only after the irreversible
+                // step. So re-read the intent's live state
+                // immediately before merging and honor a
+                // withdrawal: stop the pass without merging. Any
+                // state other than replaying, or a state that
+                // cannot be read at all, also stops the pass --
+                // never merge blind.
+                let mut abandon_stop: Option<String> = None;
+                if pr_state.as_deref() != Some("MERGED") {
+                    let resp = call("/stack-list", &json!({"stack_id": stack_id}));
+                    if resp.get("ok").and_then(|o| o.as_bool()) == Some(false) {
+                        abandon_stop = Some(
+                            "could not re-read the stack state before merging; refusing to merge on a stale snapshot".to_string(),
+                        );
+                    } else {
+                        let fresh_rows = resp
+                            .get("row")
+                            .and_then(|r| r.get("intents"))
+                            .and_then(|v| v.as_array())
+                            .cloned()
+                            .unwrap_or_default();
+                        let fresh_state = fresh_rows
+                            .iter()
+                            .filter_map(stack_intent_from_row)
+                            .find(|i| i.position == step.position)
+                            .map(|i| i.state);
+                        match fresh_state {
+                            Some(crate::merge_intent::IntentState::Replaying) => {}
+                            Some(crate::merge_intent::IntentState::Abandoned) => {
+                                abandon_stop = Some(format!(
+                                    "intent at position {} was abandoned by its author during this replay pass; PR #{pr} was NOT merged",
+                                    step.position
+                                ));
+                            }
+                            Some(other) => {
+                                abandon_stop = Some(format!(
+                                    "intent at position {} is {} in the live stack state, not replaying; refusing to merge on a stale snapshot",
+                                    step.position,
+                                    other.as_str()
+                                ));
+                            }
+                            None => {
+                                abandon_stop = Some(format!(
+                                    "intent at position {} is missing from the live stack state; refusing to merge on a stale snapshot",
+                                    step.position
+                                ));
+                            }
+                        }
+                    }
+                }
+                if let Some(stop) = abandon_stop {
+                    return transient_exit(step, stop, &landed);
+                }
+                if pr_state.as_deref() == Some("MERGED") {
+                    // Fall through to Land: the merge already
+                    // happened; recording it is the remaining step.
+                } else if let Err(e) = replay_run(
+                    &dir,
+                    "gh",
+                    &replay_args(&["pr", "merge", &pr_s, "--repo", &repo, "--merge"]),
+                ) {
+                    let mergeable = replay_run(
+                        &dir,
+                        "gh",
+                        &replay_args(&[
+                            "pr",
+                            "view",
+                            &pr_s,
+                            "--repo",
+                            &repo,
+                            "--json",
+                            "mergeable",
+                        ]),
+                    )
+                    .ok()
+                    .and_then(|out| serde_json::from_str::<Value>(&out).ok())
+                    .and_then(|v| {
+                        v.get("mergeable")
+                            .and_then(|m| m.as_str())
+                            .map(|s| s.to_string())
+                    });
+                    if mergeable.as_deref() == Some("CONFLICTING") {
+                        return conflict_exit(
+                            step.position,
+                            format!(
+                                "PR #{pr} ({branch}) is conflicting against main at replay: {e}"
+                            ),
+                            &landed,
+                        );
+                    }
+                    return transient_exit(step, e, &landed);
+                }
+                // Refresh main after each merge (Codex P2, PR
+                // #8849, comment 4546983362): the next intent
+                // rebases onto origin/main, which must already
+                // contain this just-landed parent — rebasing onto
+                // the pre-replay tip replays the parent's commits
+                // and can conflict falsely. A fetch failure here is
+                // resumable: the PR is merged, the intent is still
+                // replaying, and the Merge arm's already-MERGED
+                // reconciliation lands it on the next pass.
+                if let Err(e) = replay_run(&dir, "git", &replay_args(&["fetch", "origin", "main"]))
+                {
+                    return transient_exit(
+                        step,
+                        format!(
+                            "PR #{pr} merged but refreshing origin/main before the next intent failed: {e}"
+                        ),
+                        &landed,
+                    );
+                }
+            }
+            crate::merge_intent::ReplayAction::Land => {
+                let pr = pr_numbers.get(&step.position).copied().flatten();
+                // A refused landing is a resumable stop, not a
+                // landed intent: the PR is merged, the intent stays
+                // `replaying`, and the Merge arm's already-MERGED
+                // reconciliation records the landing on the next
+                // pass (CodeRabbit, PR #8849).
+                if let Err(e) =
+                    stack_transition_result(&stack_id, step.position, "landed", pr, None)
+                {
+                    return transient_exit(step, e, &landed);
+                }
+                landed.push(step.position);
+                pre_rebase_tips.remove(&step.position);
+                if let Some(path) = &tips_path {
+                    if let Ok(text) = std::fs::read_to_string(path) {
+                        if let Ok(mut saved) =
+                            serde_json::from_str::<serde_json::Map<String, Value>>(&text)
+                        {
+                            if let Some(obj) =
+                                saved.get_mut(&stack_id).and_then(|e| e.as_object_mut())
+                            {
+                                obj.remove(&step.position.to_string());
+                            }
+                            let _ = std::fs::write(
+                                path,
+                                serde_json::to_string(&saved).unwrap_or_default(),
+                            );
+                        }
+                    }
+                }
+                // The outcome note replays in the same pass: the
+                // intent's issue hears that its branch landed, in
+                // the recorded order, as soon as it lands.
+                if let (Some(issue), Some(pr)) = (intent.issue_number, pr) {
+                    let issue_s = issue.to_string();
+                    let note = format!(
+                        "stack replay: position {} of stack {stack_id} landed via PR #{pr} \
+                         (branch {branch}), in the recorded merge order (#8582).",
+                        step.position
+                    );
+                    if let Err(e) = replay_run(
+                        &dir,
+                        "gh",
+                        &replay_args(&[
+                            "issue", "comment", &issue_s, "--repo", &repo, "--body", &note,
+                        ]),
+                    ) {
+                        warnings.push(format!(
+                            "position {}: outcome note on issue #{issue} failed: {e}",
+                            step.position
+                        ));
+                    }
+                }
+            }
+        }
+    }
+    let resp = unwrap_ok(call("/stack-list", &json!({"stack_id": stack_id})));
+    let state = require_row(&resp, "stack_list");
+    print_json(&json!({
+        "stack_id": stack_id,
+        "landed": landed,
+        "warnings": warnings,
+        "stack": state,
+    }));
+    0
+}
+
+fn cmd_stack(rest: &[String]) -> i32 {
+    if rest.is_empty() {
+        eprint("usage: repo-queue stack <record|list|transition|restack|replay> ...");
+        return 2;
+    }
+    let sub = rest[0].as_str();
+    let tail = &rest[1..];
+    match sub {
+        "record" => cmd_stack_record(tail),
+        "list" => cmd_stack_list(tail),
+        "transition" => cmd_stack_transition(tail),
+        "restack" => cmd_stack_restack(tail),
+        "replay" => cmd_stack_replay(tail),
+        _ => {
+            eprint(&format!("repo-queue: unknown stack command {sub:?}"));
+            2
+        }
+    }
+}
+
 fn cmd_outbox(rest: &[String]) -> i32 {
     if rest.is_empty() {
         eprint("usage: repo-queue outbox <enqueue|list|metrics|claim|resolve|drain> ...");
@@ -2736,7 +5375,7 @@ fn cmd_outbox(rest: &[String]) -> i32 {
 pub fn run(args: &[String]) -> i32 {
     if args.is_empty() {
         eprint(
-            "usage: repo-queue <validate|list|enqueue|claim|release|lane|bind|heartbeat|checkpoint|park|wake|block|unblock|dep-recheck|cancel|fail|complete|revive|health|signal|fallback|outbox> ...",
+            "usage: repo-queue <validate|list|enqueue|claim|release|lane|bind|heartbeat|checkpoint|park|wake|block|unblock|dep-recheck|cancel|fail|complete|timeline|revive|health|signal|fallback|outbox|dispatch|session|surfaces|stack> ...",
         );
         return 2;
     }
@@ -2764,10 +5403,15 @@ pub fn run(args: &[String]) -> i32 {
         "revive" => cmd_revive(rest),
         "fail" => cmd_fail(rest),
         "complete" => cmd_complete(rest),
+        "timeline" => cmd_timeline(rest),
         "health" => cmd_health(rest),
         "signal" => cmd_signal(rest),
         "fallback" => crate::fallback::run(rest),
+        "dispatch" => crate::placement::cmd_dispatch(rest),
+        "session" => crate::placement::cmd_session(rest),
+        "surfaces" => crate::placement::cmd_surfaces(rest),
         "outbox" => cmd_outbox(rest),
+        "stack" => cmd_stack(rest),
         _ => {
             eprint(&format!("repo-queue: unknown command {sub:?}"));
             2
@@ -2781,6 +5425,77 @@ mod tests {
     use proptest::prelude::*;
 
     #[test]
+    #[test]
+    fn collapse_timeline_9046_drops_only_duplicate_writes() {
+        // #9046 oracle: same (kind, session, leaf, trigger) inside
+        // 120 s = one record written by two surfaces; a changed
+        // field or a later repeat is a real second record.
+        let ev = |id: i64, us: i64, model: &str| TimelineEvent {
+            id,
+            kind: "model_stamp".to_string(),
+            session_id: Some("ses_a".to_string()),
+            provider: Some("opencode-route".to_string()),
+            model: Some(model.to_string()),
+            variant: None,
+            trigger: Some("claim".to_string()),
+            created_at: "2026-11-12T00:00:00Z".to_string(),
+            created_us: us,
+        };
+        let out = collapse_timeline(vec![
+            ev(1, 0, "workhorse"),
+            ev(2, 30_000_000, "workhorse"),
+            ev(3, 60_000_000, "workhorse-x"),
+            ev(4, 300_000_000, "workhorse-x"),
+        ]);
+        let ids: Vec<i64> = out.iter().map(|e| e.id).collect();
+        assert_eq!(ids, vec![1, 3, 4]);
+    }
+
+    #[test]
+    fn binding_windows_9046_pair_bounds_and_unbounds() {
+        // #9046 oracle: windows pair per session in bound order;
+        // an unclosed binding stays open (end None) — its slice
+        // of the session runs to now.
+        let ev = |id: i64, kind: &str, sid: &str, at: &str| TimelineEvent {
+            id,
+            kind: kind.to_string(),
+            session_id: Some(sid.to_string()),
+            provider: None,
+            model: None,
+            variant: None,
+            trigger: None,
+            created_at: at.to_string(),
+            created_us: 0,
+        };
+        let out = binding_windows(&[
+            ev(1, "session_bound", "ses_a", "t1"),
+            ev(2, "session_unbound", "ses_a", "t2"),
+            ev(3, "session_bound", "ses_b", "t3"),
+        ]);
+        assert_eq!(
+            out,
+            vec![
+                (
+                    "ses_a".to_string(),
+                    "t1".to_string(),
+                    Some("t2".to_string())
+                ),
+                ("ses_b".to_string(), "t3".to_string(), None),
+            ]
+        );
+    }
+
+    #[test]
+    fn valid_session_id_9046_rejects_non_session_shapes() {
+        // #9046 oracle: only the fleet's own session-id shape may
+        // reach a route_attempt SQL string.
+        assert!(valid_session_id("ses_e5e37addeb0ffeumu1UPO2bI8G"));
+        assert!(!valid_session_id("ses_a'; DROP TABLE route_attempt; --"));
+        assert!(!valid_session_id("not-a-session"));
+        assert!(!valid_session_id("ses_"));
+        assert!(!valid_session_id(""));
+    }
+
     #[test]
     fn model_stamp_flags_require_provider_and_model_together() {
         // #8176 oracle: the claim stamp names the serving leaf —
@@ -2809,6 +5524,80 @@ mod tests {
     }
 
     #[test]
+    fn session_model_stamp_reads_the_session_record() {
+        // #8176 derivation oracle, as corrected by #9408: the stamp
+        // is the SERVING leaf. A direct session's own model —
+        // providerID + id from the server's session record
+        // (enveloped or bare) — is its leaf; a "default" variant is
+        // no variant.
+        let bare = json!({
+            "id": "ses_y", "model": {"id": "gpt-6-luna", "providerID": "openai-plan", "variant": "high"}
+        });
+        assert_eq!(
+            session_model_stamp(&bare),
+            Some((
+                "openai-plan".to_string(),
+                "gpt-6-luna".to_string(),
+                Some("high".to_string()),
+            ))
+        );
+        // #9408: a routed session's model is the configured route
+        // alias (opencode-route/workhorse), not a serving leaf —
+        // with no route_usage readout on the record the claim is
+        // left unstamped instead of recording the alias.
+        let enveloped = json!({
+            "data": {"id": "ses_x", "model": {"id": "workhorse", "providerID": "opencode-route", "variant": "default"}}
+        });
+        assert_eq!(session_model_stamp(&enveloped), None);
+        // #9408: when the record carries the route_usage readout
+        // (opencode#1891), its lastServing leaf is the stamp — even
+        // though the declared model is the route alias.
+        let routed = json!({
+            "data": {
+                "id": "ses_x",
+                "model": {"id": "workhorse", "providerID": "opencode-route", "variant": "default"},
+                "route_usage": {"lastServing": {"providerID": "openai.main", "modelID": "gpt-6-luna", "variant": "high"}}
+            }
+        });
+        assert_eq!(
+            session_model_stamp(&routed),
+            Some((
+                "openai.main".to_string(),
+                "gpt-6-luna".to_string(),
+                Some("high".to_string()),
+            ))
+        );
+        // A present-but-incomplete readout stamps nothing; it never
+        // falls back to the route alias.
+        let incomplete = json!({
+            "model": {"id": "workhorse", "providerID": "opencode-route"},
+            "route_usage": {"lastServing": {"providerID": "openai.main"}}
+        });
+        assert_eq!(session_model_stamp(&incomplete), None);
+        // Half a model, or no model, stamps nothing.
+        assert_eq!(session_model_stamp(&json!({"data": {"id": "ses_z"}})), None);
+        assert_eq!(
+            session_model_stamp(&json!({"model": {"id": "workhorse"}})),
+            None
+        );
+        assert_eq!(
+            session_model_stamp(&json!({"model": {"providerID": "opencode-route"}})),
+            None
+        );
+    }
+
+    #[test]
+    fn b64_encode_matches_the_standard_alphabet() {
+        // The server's Basic auth is the only consumer; vectors
+        // are the RFC 4648 canonical set.
+        assert_eq!(b64_encode(b""), "");
+        assert_eq!(b64_encode(b"f"), "Zg==");
+        assert_eq!(b64_encode(b"fo"), "Zm8=");
+        assert_eq!(b64_encode(b"foo"), "Zm9v");
+        assert_eq!(b64_encode(b"opencode:pw"), "b3BlbmNvZGU6cHc=");
+    }
+
+    #[test]
     fn platform_flag_accepts_only_the_two_families() {
         // #8097 Rule 2: the selector is a coarse family, never a
         // lane name — a lane id as --platform is a usage error.
@@ -2832,6 +5621,140 @@ mod tests {
         assert!(batch_count_flag(Some(0)).is_err());
         assert!(batch_count_flag(Some(-3)).is_err());
         assert!(batch_count_flag(Some(crate::turso_queue::BATCH_CLAIM_MAX + 1)).is_err());
+    }
+
+    #[test]
+    fn stack_transition_body_carries_the_transition_shape_8582() {
+        // #8582 increment 4 oracle: the client transition body is
+        // exactly the broker's transition shape (stack, position,
+        // target state in the core's spelling, optional landing PR
+        // number and conflict detail).
+        let body = stack_transition_body("outage-2026-11-11", 2, "landed", Some(8810), None)
+            .expect("a landing transition is well-formed");
+        assert_eq!(body["stack_id"], json!("outage-2026-11-11"));
+        assert_eq!(body["position"], json!(2));
+        assert_eq!(body["to_state"], json!("landed"));
+        assert_eq!(body["pr_number"], json!(8810));
+        assert_eq!(body["conflict_detail"], Value::Null);
+        let body = stack_transition_body(
+            "outage-2026-11-11",
+            1,
+            "conflicted",
+            None,
+            Some("rebase onto main conflicts in client.rs"),
+        )
+        .expect("a conflicted transition with detail is well-formed");
+        assert_eq!(body["to_state"], json!("conflicted"));
+        assert_eq!(
+            body["conflict_detail"],
+            json!("rebase onto main conflicts in client.rs")
+        );
+    }
+
+    #[test]
+    fn stack_transition_body_rejects_unknown_state_and_bare_conflict_8582() {
+        // A state the core cannot parse, and a conflict recorded
+        // without the detail its authoring lane needs, are usage
+        // errors here — they never reach the broker.
+        assert!(stack_transition_body("s1", 0, "bogus", None, None).is_err());
+        assert!(stack_transition_body("s1", 0, "conflicted", None, None).is_err());
+        assert!(stack_transition_body("s1", 0, "conflicted", None, Some("  ")).is_err());
+        assert!(stack_transition_body(" ", 0, "replaying", None, None).is_err());
+        assert!(stack_transition_body("s1", 0, "replaying", None, None).is_ok());
+    }
+
+    #[test]
+    fn stack_restack_body_carries_the_refresh_shape_8582() {
+        // Oracle: the restack acknowledgement carries exactly the
+        // fields the broker's plan_restack consumes (#8582) — stack,
+        // position, the new base, and the restacked head when given.
+        let body = stack_restack_body("outage-2026-11-11", 2, "main", Some("deadbeef"))
+            .expect("valid restack body");
+        assert_eq!(body["stack_id"], "outage-2026-11-11");
+        assert_eq!(body["position"], 2);
+        assert_eq!(body["new_base_branch"], "main");
+        assert_eq!(body["head_sha"], "deadbeef");
+        assert!(stack_restack_body("s1", 2, "main", None).is_ok());
+        assert!(stack_restack_body(" ", 2, "main", None).is_err());
+        assert!(stack_restack_body("s1", 2, " ", None).is_err());
+        assert!(stack_restack_body("s1", 2, "main", Some(" ")).is_err());
+    }
+
+    #[test]
+    fn stack_record_body_carries_the_append_shape_8582() {
+        // #8582 increment 3 oracle: the client record body is
+        // exactly the broker's append shape (stack, repo, branch,
+        // owner lane/worker pair, optional base/head/issue/pr/
+        // session), and the pure core's append rules are the
+        // client's fail-fast rules too — an ownerless or
+        // branchless record never reaches the broker.
+        let body = stack_record_body(
+            "outage-2026-11-11",
+            "developing-today/code",
+            "queue/1-2-fix",
+            None,
+            Some("abc123"),
+            Some(8582),
+            None,
+            "any-a",
+            "repo-worker-code",
+            Some("ses_1"),
+        )
+        .expect("a complete append is valid");
+        assert_eq!(body["stack_id"], json!("outage-2026-11-11"));
+        assert_eq!(body["repo"], json!("developing-today/code"));
+        assert_eq!(body["branch"], json!("queue/1-2-fix"));
+        assert_eq!(body["base_branch"], Value::Null);
+        assert_eq!(body["head_sha"], json!("abc123"));
+        assert_eq!(body["issue_number"], json!(8582));
+        assert_eq!(body["owner_lane"], json!("any-a"));
+        assert_eq!(body["owner_worker"], json!("repo-worker-code"));
+        assert_eq!(body["owner_session"], json!("ses_1"));
+        assert!(
+            stack_record_body(
+                "s",
+                "developing-today/code",
+                "queue/1-2-fix",
+                None,
+                None,
+                None,
+                None,
+                "",
+                "repo-worker-code",
+                None,
+            )
+            .is_err()
+        );
+        assert!(
+            stack_record_body(
+                "s",
+                "developing-today/code",
+                "",
+                None,
+                None,
+                None,
+                None,
+                "any-a",
+                "repo-worker-code",
+                None,
+            )
+            .is_err()
+        );
+        assert!(
+            stack_record_body(
+                "s",
+                "developing-today/code",
+                "queue/1-2-fix",
+                Some("  "),
+                None,
+                None,
+                None,
+                "any-a",
+                "repo-worker-code",
+                None,
+            )
+            .is_err()
+        );
     }
 
     #[test]
@@ -2903,6 +5826,48 @@ mod tests {
     }
 
     #[test]
+    fn opencode_base_url_honors_claimant_overrides() {
+        // #9409: OPENCODE_URL (the claimant tooling's override) wins
+        // over the legacy OPENCODE_SERVER_URL; trailing slashes and
+        // blank values are normalized away; the shared loopback
+        // default applies when neither is set.
+        assert_eq!(
+            resolve_opencode_base_url(Some("http://example:9999/"), Some("http://legacy:1")),
+            "http://example:9999"
+        );
+        assert_eq!(
+            resolve_opencode_base_url(None, Some("http://legacy:1/")),
+            "http://legacy:1"
+        );
+        assert_eq!(
+            resolve_opencode_base_url(Some("  "), Some("")),
+            "http://127.0.0.1:13420"
+        );
+        assert_eq!(
+            resolve_opencode_base_url(None, None),
+            "http://127.0.0.1:13420"
+        );
+    }
+
+    #[test]
+    fn opencode_auth_file_honors_claimant_override() {
+        // #9409: OPENCODE_AUTH_FILE (the claimant tooling's override)
+        // wins; otherwise the production state file under home.
+        assert_eq!(
+            resolve_opencode_auth_file(Some("/tmp/alt-auth.json"), "/home/x"),
+            "/tmp/alt-auth.json"
+        );
+        assert_eq!(
+            resolve_opencode_auth_file(Some(" "), "/home/x"),
+            "/home/x/.local/state/opencode/service-prod.json"
+        );
+        assert_eq!(
+            resolve_opencode_auth_file(None, "/home/x"),
+            "/home/x/.local/state/opencode/service-prod.json"
+        );
+    }
+
+    #[test]
     fn enqueue_queue_resolution_never_falls_back_to_shadow() {
         // #7016: the flag wins over the packet, the packet wins over
         // the env, and with none of the three the enqueue fails
@@ -2963,6 +5928,37 @@ mod tests {
             json!({"ok": true})
         );
         assert!(finish_direct_response(b"no header split").is_err());
+    }
+
+    #[test]
+    fn finish_direct_response_dechunks_and_rejects_invalid_success_json() {
+        let response = b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n4\r\n{\"ok\r\n4\r\n\":tr\r\n3\r\nue}\r\n0\r\n\r\n";
+        assert_eq!(
+            finish_direct_response(response).unwrap(),
+            json!({"ok": true})
+        );
+
+        let malformed = b"HTTP/1.1 200 OK\r\nContent-Length: 5\r\n\r\nnope!";
+        let error = finish_direct_response(malformed).unwrap_err();
+        assert!(error.contains("invalid JSON body"), "{error}");
+
+        let truncated = b"HTTP/1.1 200 OK\r\nContent-Length: 100\r\n\r\n[]";
+        let error = finish_direct_response(truncated).unwrap_err();
+        assert!(error.contains("response truncated"), "{error}");
+    }
+
+    #[test]
+    fn chunk_decoder_rejects_truncated_and_malformed_chunks() {
+        assert!(
+            decode_chunked_body(b"5\r\nabc")
+                .unwrap_err()
+                .contains("truncated")
+        );
+        assert!(
+            decode_chunked_body(b"x\r\nabc\r\n0\r\n\r\n")
+                .unwrap_err()
+                .contains("malformed chunk size")
+        );
     }
 
     #[test]
@@ -3039,6 +6035,47 @@ mod tests {
     }
 
     #[test]
+    fn flag_token_as_value_is_a_usage_error() {
+        // #8582 (Codex P1 on PR #8790): a value flag followed by a flag
+        // token used to consume that token as its value, so
+        // `stack record --head-sha --dry-run` persisted "--dry-run" as
+        // the head SHA on a mutating broker call instead of erroring.
+        // Oracle: the operator argument contract (AGENTS.md #3352) - a
+        // present-but-valueless option is a usage error naming the flag.
+        let err = parse_args_inner(
+            &pos(&["--head-sha", "--dry-run"]),
+            &["head-sha"],
+            &["dry-run"],
+        )
+        .err()
+        .expect("flag token must not be consumed as a value");
+        assert!(err.contains("--head-sha"), "error names the flag: {err}");
+        assert!(
+            err.contains("expected one argument"),
+            "error names the defect: {err}"
+        );
+        // Any flag-shaped token is refused, known or not, and the
+        // refusal fires even when a well-formed flag follows it.
+        assert!(
+            parse_args_inner(
+                &pos(&["--queue", "--bogus", "--limit", "5"]),
+                &["queue", "limit"],
+                &[]
+            )
+            .is_err()
+        );
+        // Ordinary values still parse, including single-dash values.
+        let args = parse_args_inner(&pos(&["--queue", "alpha"]), &["queue"], &[])
+            .ok()
+            .expect("ordinary value parses");
+        assert_eq!(args.get("queue").as_deref(), Some("alpha"));
+        let args = parse_args_inner(&pos(&["--limit", "-1"]), &["limit"], &[])
+            .ok()
+            .expect("single-dash value parses");
+        assert_eq!(args.get("limit").as_deref(), Some("-1"));
+    }
+
+    #[test]
     fn duplicate_bool_flag_is_a_usage_error() {
         let err = parse_args_inner(&pos(&["--dry-run", "--dry-run"]), &[], &["dry-run"])
             .err()
@@ -3095,6 +6132,216 @@ mod tests {
     }
 
     #[test]
+    fn claim_flow_partial_note_names_the_claimed_task_and_step() {
+        // #5757-A Codex P1 oracle (PR #8493): a partial success
+        // produces a note that preserves the claimed task's
+        // identity and names the failed step; a full success (and
+        // a plain /claim answer) produces no note.
+        let partial = json!({
+            "row": {"id": 4242},
+            "claim_flow_partial": {"step": "bind", "exit": 4, "error": "PGRST002 boom"},
+        });
+        let note = claim_flow_partial_note(&partial).expect("partial yields a note");
+        assert!(note.contains("4242"), "{note}");
+        assert!(note.contains("bind"), "{note}");
+        assert!(note.contains("do not re-claim"), "{note}");
+        let full = json!({"row": {"id": 4242}, "lane_row": {}, "bind_row": {}});
+        assert!(claim_flow_partial_note(&full).is_none());
+        assert!(claim_flow_partial_note(&json!({"row": {"id": 1}})).is_none());
+    }
+
+    #[test]
+    fn claim_output_preserves_claim_flow_partial_marker() {
+        // #5757-A Codex P2 oracle (PR #8493): claim_output on a
+        // partial /claim-flow answer keeps claim_flow_partial in
+        // the printed JSON with the claimed task's identity and
+        // exit 0; a full success passes the row through untouched.
+        let partial = json!({
+            "row": {"id": 4242, "status": "claimed"},
+            "claim_flow_partial": {"step": "bind", "exit": 4, "error": "PGRST002 boom"},
+        });
+        let (out, code) = claim_output(&partial);
+        assert_eq!(code, 0);
+        assert_eq!(out["id"], 4242);
+        assert_eq!(out["claim_flow_partial"]["step"], "bind");
+        assert_eq!(out["claim_flow_partial"]["exit"], 4);
+        let full =
+            json!({"row": {"id": 4242, "status": "claimed"}, "lane_row": {}, "bind_row": {}});
+        let (out, code) = claim_output(&full);
+        assert_eq!(code, 0);
+        assert!(out.get("claim_flow_partial").is_none());
+    }
+
+    #[test]
+    fn claim_bind_path_requires_explicit_bind_single_claim_and_session() {
+        // #5757-A oracle: /claim-flow is chosen ONLY for an
+        // explicit --bind with a session to bind, a single claim,
+        // and no transfer; --session-id as a bare mark never
+        // selects it, and every refused combination errors loudly
+        // instead of silently claiming unbound.
+        assert_eq!(claim_bind_path(false, 1, false, Some("ses_1")), Ok(false));
+        assert_eq!(claim_bind_path(false, 1, false, None), Ok(false));
+        assert_eq!(claim_bind_path(true, 1, false, Some("ses_1")), Ok(true));
+        assert!(claim_bind_path(true, 1, false, None).is_err());
+        assert!(claim_bind_path(true, 1, false, Some("")).is_err());
+        assert!(claim_bind_path(true, 2, false, Some("ses_1")).is_err());
+        assert!(claim_bind_path(true, 1, true, Some("ses_1")).is_err());
+    }
+
+    #[test]
+    fn claim_flow_precheck_enforces_the_same_invariants() {
+        // #5757-A oracle (broker side): the precheck returns the
+        // session id for a well-formed flow request and refuses
+        // a missing session, a batch, and a transfer — before
+        // any step runs.
+        assert_eq!(
+            claim_flow_precheck(&json!({"session_id": "ses_1"})),
+            Ok("ses_1".to_string())
+        );
+        assert!(claim_flow_precheck(&json!({})).is_err());
+        assert!(claim_flow_precheck(&json!({"session_id": ""})).is_err());
+        assert!(claim_flow_precheck(&json!({"session_id": "s", "count": 2})).is_err());
+        assert!(claim_flow_precheck(&json!({"session_id": "s", "from_session": "ses_0"})).is_err());
+        assert_eq!(
+            claim_flow_precheck(&json!({"session_id": "s", "count": 1})),
+            Ok("s".to_string())
+        );
+    }
+
+    #[test]
+    fn list_pages_cover_the_limit_exactly() {
+        // #7871 oracle: pages are contiguous, ascending, and sum
+        // to the requested limit; no page exceeds LIST_PAGE_SIZE
+        // (the per-response row ceiling the bug tracks).
+        assert_eq!(list_pages(1), vec![(0, 1)]);
+        assert_eq!(list_pages(20), vec![(0, 20)]);
+        assert_eq!(list_pages(LIST_PAGE_SIZE), vec![(0, LIST_PAGE_SIZE)]);
+        assert_eq!(
+            list_pages(LIST_PAGE_SIZE + 1),
+            vec![(0, LIST_PAGE_SIZE), (LIST_PAGE_SIZE, 1)]
+        );
+        let pages = list_pages(LIST_LIMIT_MAX);
+        assert_eq!(pages.len() as i64, LIST_LIMIT_MAX / LIST_PAGE_SIZE);
+        assert_eq!(pages.iter().map(|(_, n)| n).sum::<i64>(), LIST_LIMIT_MAX);
+        for (i, (offset, n)) in pages.iter().enumerate() {
+            assert_eq!(*offset, i as i64 * LIST_PAGE_SIZE);
+            assert!(*n >= 1 && *n <= LIST_PAGE_SIZE);
+        }
+        // Offsets clamp at 0, absent means the first page.
+        assert_eq!(list_offset_or_default(None), 0);
+        assert_eq!(list_offset_or_default(Some(-5)), 0);
+        assert_eq!(list_offset_or_default(Some(200)), 200);
+    }
+
+    #[test]
+    fn list_rows_rejects_a_reply_without_a_rows_array() {
+        // #7871: the silent-empty path — a truncated broker reply
+        // parses to Null, and an ok-envelope may still lack rows.
+        // Both must be errors, never an empty list.
+        assert!(list_rows(&Value::Null).is_err());
+        assert!(list_rows(&json!({"ok": true})).is_err());
+        assert!(list_rows(&json!({"ok": true, "rows": {}})).is_err());
+        assert_eq!(list_rows(&json!({"ok": true, "rows": []})), Ok(vec![]));
+        assert_eq!(
+            list_rows(&json!({"ok": true, "rows": [{"id": 7}]})),
+            Ok(vec![json!({"id": 7})])
+        );
+    }
+
+    #[test]
+    fn duration_flags_range_is_validated() {
+        // #6420: 0/negative durations corrupt claim state (a lease
+        // born expired, a heartbeat that lapses its own claim, a park
+        // whose not_before lands in the past) and unbounded values
+        // overflow the SQL integer RPC parameters. Out-of-range is a
+        // usage error naming the flag (design #6448 Phase 3: reject,
+        // not clamp). Park delay 0 is rejected by explicit decision:
+        // a zero-wait park is a requeue, which has its own verb.
+        for bad in [0, -1, LEASE_SECONDS_MAX + 1, i64::MAX] {
+            let err = validate_lease_seconds(bad)
+                .err()
+                .expect("out-of-range --lease-seconds must be rejected");
+            assert!(
+                err.contains("--lease-seconds"),
+                "error names the flag: {err}"
+            );
+        }
+        for bad in [0, -1, EXTEND_SECONDS_MAX + 1, i64::MAX] {
+            let err = validate_extend_seconds(bad)
+                .err()
+                .expect("out-of-range --extend-seconds must be rejected");
+            assert!(
+                err.contains("--extend-seconds"),
+                "error names the flag: {err}"
+            );
+        }
+        for bad in [0, -1, DELAY_SECONDS_MAX + 1, i64::MAX] {
+            let err = validate_delay_seconds(bad)
+                .err()
+                .expect("out-of-range --delay-seconds must be rejected");
+            assert!(
+                err.contains("--delay-seconds"),
+                "error names the flag: {err}"
+            );
+        }
+        // Boundaries and ordinary values pass through unchanged.
+        assert_eq!(validate_lease_seconds(1), Ok(1));
+        assert_eq!(
+            validate_lease_seconds(LEASE_SECONDS_MAX),
+            Ok(LEASE_SECONDS_MAX)
+        );
+        assert_eq!(validate_extend_seconds(1), Ok(1));
+        assert_eq!(
+            validate_extend_seconds(EXTEND_SECONDS_MAX),
+            Ok(EXTEND_SECONDS_MAX)
+        );
+        assert_eq!(validate_delay_seconds(1), Ok(1));
+        assert_eq!(
+            validate_delay_seconds(DELAY_SECONDS_MAX),
+            Ok(DELAY_SECONDS_MAX)
+        );
+        // Absent flags keep the existing defaults (claim 2700,
+        // heartbeat 900).
+        assert_eq!(lease_seconds_or_default(None), Ok(2700));
+        assert_eq!(extend_seconds_or_default(None), Ok(900));
+        assert_eq!(lease_seconds_or_default(Some(0)), validate_lease_seconds(0));
+        assert_eq!(
+            extend_seconds_or_default(Some(-1)),
+            validate_extend_seconds(-1)
+        );
+    }
+
+    #[test]
+    fn not_before_flag_is_validated() {
+        // #6426: park/revive --not-before went into the broker body
+        // as a raw string — garbage failed only as a downstream DB
+        // cast error, and a far-future value parked a task out of
+        // reach for years. It is now a usage error naming the flag
+        // (cmd_park/cmd_revive die with exit 2 on Err).
+        for bad in [
+            "banana",
+            "",
+            "   ",
+            "2026-02-31T00:00:00Z",
+            "9999-01-01T00:00:00Z",
+        ] {
+            let err = validate_not_before_flag(bad)
+                .err()
+                .expect("invalid --not-before must be rejected");
+            assert!(err.contains("--not-before"), "error names the flag: {err}");
+        }
+        // Valid timestamps pass through unchanged — the broker body
+        // for a valid value is byte-for-byte what it was before.
+        for ok in [
+            "2020-01-01T00:00:00Z",
+            "2026-11-06T00:00:00Z",
+            "2026-11-06T05:30:00+05:30",
+        ] {
+            assert_eq!(validate_not_before_flag(ok), Ok(ok.to_string()));
+        }
+    }
+
+    #[test]
     fn well_formed_invocation_is_unchanged() {
         // Control (#5939 acceptance): list --queue alpha records
         // queue=alpha and the absent --limit defaults at the call site.
@@ -3103,6 +6350,43 @@ mod tests {
             .expect("well-formed invocation parses");
         assert_eq!(args.get("queue"), Some("alpha".to_string()));
         assert_eq!(args.get_i64("limit").unwrap_or(20), 20);
+    }
+
+    #[test]
+    fn health_accepts_worker_flag() {
+        // #7349 regression, oracle: the health verb's CLI flag set
+        // accepts the same `--worker` the mutating verbs accept. The
+        // value is attribution only — it never reaches the request
+        // body — but a packet-literal claimant fire
+        // (`health ... --worker opencode-claimant`) must not abort on
+        // its first call with "unrecognized argument".
+        let args = parse_args_inner(
+            &pos(&[
+                "--queue",
+                "repo-health-code-pilot",
+                "--worker",
+                "opencode-claimant",
+            ]),
+            HEALTH_FLAGS,
+            &[],
+        )
+        .ok()
+        .expect("health must accept --worker");
+        assert_eq!(
+            args.get("queue"),
+            Some("repo-health-code-pilot".to_string())
+        );
+        assert_eq!(args.get("worker"), Some("opencode-claimant".to_string()));
+
+        // Acceptance: health without --worker is unchanged.
+        let args = parse_args_inner(&pos(&["--queue", "q"]), HEALTH_FLAGS, &[])
+            .ok()
+            .expect("health without --worker parses");
+        assert_eq!(args.get("queue"), Some("q".to_string()));
+        assert_eq!(args.get("worker"), None);
+
+        // The acceptance is narrow: unrelated flags stay rejected.
+        assert!(parse_args_inner(&pos(&["--bogus", "x"]), HEALTH_FLAGS, &[]).is_err());
     }
 
     /// One spelling of a value flag: `--flag value` or `--flag=value`.
@@ -3409,5 +6693,251 @@ mod tests {
             "{args:?}"
         );
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // ---- #8361: GhCreator marker-search seam tests ----
+    // Oracle: the production drainer's reconciliation leg, driven
+    // through a stub `gh` binary that logs its argv and plays back
+    // canned responses. The argv log is the evidence for the GET
+    // shape; the stub's exit/stderr shapes drive the three-way
+    // lookup (found / checked-absent / could-not-check).
+
+    // The stub-gh tests below spawn real child processes in
+    // parallel by default; on loaded machines one spawn in the
+    // batch intermittently fails (CouldNotCheck("spawn_failed"))
+    // even though the stub is intact and executable — observed
+    // 2026-11-12 on the fleet laptop (threads=1: 6/6 pass;
+    // threads=7: ~50% of runs lose exactly one spawn; strace,
+    // which serializes, passes 12/12). Serialize just these
+    // process-spawning tests; every assertion is unchanged.
+    static GH_STUB_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    fn stub_gh_8361(tag: &str, script: &str) -> (std::path::PathBuf, std::path::PathBuf) {
+        let dir = std::env::temp_dir().join(format!(
+            "fleet-queue-ghcreator-{}-{}",
+            tag,
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let log = dir.join("argv.log");
+        let bin = dir.join("gh");
+        let full = format!("#!/bin/sh\necho \"$@\" >> '{}'\n{}", log.display(), script);
+        std::fs::write(&bin, full).unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        (bin, log)
+    }
+
+    fn outbox_entry_8361() -> Value {
+        json!({
+            "id": "OB-test-1",
+            "repo": "developing-today/code",
+            "kind": "issue",
+            "payload": {"title": "t", "body": "b"},
+        })
+    }
+
+    #[test]
+    fn marker_search_is_a_get_and_finds_the_landed_marker() {
+        let _gh_stub_guard = GH_STUB_LOCK.lock().unwrap();
+        let (bin, log) = stub_gh_8361(
+            "found",
+            r#"case "$*" in
+  *search/issues*) printf '%s' '{"total_count":1,"items":[{"number":42,"html_url":"https://github.com/developing-today/code/issues/42"}]}' ;;
+  *view*) printf '%s' '{"number":42,"url":"https://github.com/developing-today/code/issues/42","body":"landed <!-- fleet-outbox:OB-test-1 -->"}' ;;
+  *) echo "unexpected argv: $*" >&2; exit 3 ;;
+esac
+"#,
+        );
+        let mut creator = GhCreator::with_runner(GhRunner::with_bin(bin.to_string_lossy()));
+        let found = creator.find_by_marker(&outbox_entry_8361());
+        assert_eq!(
+            found,
+            MarkerLookup::Found(
+                42,
+                "https://github.com/developing-today/code/issues/42".to_string()
+            )
+        );
+        let argv_log = std::fs::read_to_string(&log).unwrap();
+        let search_line = argv_log
+            .lines()
+            .find(|l| l.contains("search/issues"))
+            .expect("the stub must have seen the search call");
+        assert!(
+            search_line.contains("--method GET"),
+            "marker search must be a GET, argv was: {search_line}"
+        );
+        let _ = std::fs::remove_dir_all(bin.parent().unwrap());
+    }
+
+    // ---- #8363: comment-kind marker resolution ----
+    // Oracle: for issue_comment / pr_comment entries the search hit's
+    // number is the ISSUE number, a different id namespace from
+    // comment ids. Reconcile must resolve the marker through the
+    // issue's comment list and record the COMMENT's id and html_url;
+    // the old code read the issue number back as a comment id
+    // (repos/{repo}/issues/comments/{issue_number}), which can never
+    // match a landed comment, so landed comments were re-created.
+
+    fn outbox_comment_entry_8363(kind: &str) -> Value {
+        json!({
+            "id": "OB-test-1",
+            "repo": "developing-today/code",
+            "kind": kind,
+            "payload": {"target_number": 7, "body": "b"},
+        })
+    }
+
+    #[test]
+    fn comment_marker_resolves_through_the_issues_comment_list() {
+        let _gh_stub_guard = GH_STUB_LOCK.lock().unwrap();
+        let (bin, log) = stub_gh_8361(
+            "comment8363",
+            r#"case "$*" in
+  *search/issues*) printf '%s' '{"total_count":1,"items":[{},{"number":7,"html_url":"https://github.com/developing-today/code/issues/7"}]}' ;;
+  *issues/7/comments*) printf '%s' '[{"id":111,"html_url":"https://github.com/developing-today/code/issues/7#issuecomment-111","body":"an earlier comment"},{"id":6781256653,"html_url":"https://github.com/developing-today/code/issues/7#issuecomment-6781256653","body":"landed <!-- fleet-outbox:OB-test-1 -->"}]' ;;
+  *) echo "unexpected argv: $*" >&2; exit 3 ;;
+esac
+"#,
+        );
+        let mut creator = GhCreator::with_runner(GhRunner::with_bin(bin.to_string_lossy()));
+        // The first search item is malformed (no number): skipped,
+        // not fatal (#8363). The landed comment is the second one on
+        // issue 7; reconcile must find THAT comment's id and URL.
+        let found = creator.find_by_marker(&outbox_comment_entry_8363("issue_comment"));
+        assert_eq!(
+            found,
+            MarkerLookup::Found(
+                6781256653,
+                "https://github.com/developing-today/code/issues/7#issuecomment-6781256653"
+                    .to_string()
+            )
+        );
+        let argv_log = std::fs::read_to_string(&log).unwrap();
+        assert!(
+            argv_log.contains("issues/7/comments"),
+            "reconcile must list the candidate issue's comments, argv was: {argv_log}"
+        );
+        assert!(
+            !argv_log.contains("issues/comments/7"),
+            "the issue number must not be read back as a comment id, argv was: {argv_log}"
+        );
+        let _ = std::fs::remove_dir_all(bin.parent().unwrap());
+    }
+
+    #[test]
+    fn pr_comment_marker_resolves_the_same_way() {
+        let _gh_stub_guard = GH_STUB_LOCK.lock().unwrap();
+        let (bin, _log) = stub_gh_8361(
+            "prcomment8363",
+            r#"case "$*" in
+  *search/issues*) printf '%s' '{"total_count":1,"items":[{"number":7,"html_url":"https://github.com/developing-today/code/pull/7"}]}' ;;
+  *issues/7/comments*) printf '%s' '[{"id":555,"html_url":"https://github.com/developing-today/code/pull/7#issuecomment-555","body":"landed <!-- fleet-outbox:OB-test-1 -->"}]' ;;
+  *) echo "unexpected argv: $*" >&2; exit 3 ;;
+esac
+"#,
+        );
+        let mut creator = GhCreator::with_runner(GhRunner::with_bin(bin.to_string_lossy()));
+        assert_eq!(
+            creator.find_by_marker(&outbox_comment_entry_8363("pr_comment")),
+            MarkerLookup::Found(
+                555,
+                "https://github.com/developing-today/code/pull/7#issuecomment-555".to_string()
+            )
+        );
+        let _ = std::fs::remove_dir_all(bin.parent().unwrap());
+    }
+
+    #[test]
+    fn comment_list_failure_is_could_not_check_not_absent() {
+        let _gh_stub_guard = GH_STUB_LOCK.lock().unwrap();
+        let (bin, _log) = stub_gh_8361(
+            "commentfail8363",
+            r#"case "$*" in
+  *search/issues*) printf '%s' '{"total_count":1,"items":[{"number":7,"html_url":"https://github.com/developing-today/code/issues/7"}]}' ;;
+  *issues/7/comments*) echo 'gh: Forbidden (HTTP 403)' >&2; exit 1 ;;
+  *) echo "unexpected argv: $*" >&2; exit 3 ;;
+esac
+"#,
+        );
+        let mut creator = GhCreator::with_runner(GhRunner::with_bin(bin.to_string_lossy()));
+        assert_eq!(
+            creator.find_by_marker(&outbox_comment_entry_8363("issue_comment")),
+            MarkerLookup::CouldNotCheck("http_403".to_string())
+        );
+        let _ = std::fs::remove_dir_all(bin.parent().unwrap());
+    }
+
+    #[test]
+    fn marker_search_404_is_could_not_check_not_absent() {
+        let _gh_stub_guard = GH_STUB_LOCK.lock().unwrap();
+        let (bin, _log) = stub_gh_8361("e404", "echo 'gh: Not Found (HTTP 404)' >&2\nexit 1\n");
+        let mut creator = GhCreator::with_runner(GhRunner::with_bin(bin.to_string_lossy()));
+        assert_eq!(
+            creator.find_by_marker(&outbox_entry_8361()),
+            MarkerLookup::CouldNotCheck("http_404".to_string())
+        );
+        let _ = std::fs::remove_dir_all(bin.parent().unwrap());
+    }
+
+    #[test]
+    fn marker_search_403_is_could_not_check_not_absent() {
+        let _gh_stub_guard = GH_STUB_LOCK.lock().unwrap();
+        let (bin, _log) = stub_gh_8361("e403", "echo 'gh: Forbidden (HTTP 403)' >&2\nexit 1\n");
+        let mut creator = GhCreator::with_runner(GhRunner::with_bin(bin.to_string_lossy()));
+        assert_eq!(
+            creator.find_by_marker(&outbox_entry_8361()),
+            MarkerLookup::CouldNotCheck("http_403".to_string())
+        );
+        let _ = std::fs::remove_dir_all(bin.parent().unwrap());
+    }
+
+    #[test]
+    fn marker_search_empty_result_is_checked_absent() {
+        let _gh_stub_guard = GH_STUB_LOCK.lock().unwrap();
+        let (bin, _log) =
+            stub_gh_8361("absent", "printf '%s' '{\"total_count\":0,\"items\":[]}'\n");
+        let mut creator = GhCreator::with_runner(GhRunner::with_bin(bin.to_string_lossy()));
+        assert_eq!(
+            creator.find_by_marker(&outbox_entry_8361()),
+            MarkerLookup::Absent
+        );
+        let _ = std::fs::remove_dir_all(bin.parent().unwrap());
+    }
+
+    #[test]
+    fn marker_search_unparseable_is_could_not_check() {
+        let _gh_stub_guard = GH_STUB_LOCK.lock().unwrap();
+        let (bin, _log) = stub_gh_8361("garbage", "printf '%s' 'not json'\n");
+        let mut creator = GhCreator::with_runner(GhRunner::with_bin(bin.to_string_lossy()));
+        assert_eq!(
+            creator.find_by_marker(&outbox_entry_8361()),
+            MarkerLookup::CouldNotCheck("unparseable_json".to_string())
+        );
+        let _ = std::fs::remove_dir_all(bin.parent().unwrap());
+    }
+
+    #[test]
+    fn marker_search_failed_candidate_readback_is_could_not_check() {
+        let _gh_stub_guard = GH_STUB_LOCK.lock().unwrap();
+        let (bin, _log) = stub_gh_8361(
+            "readback404",
+            r#"case "$*" in
+  *search/issues*) printf '%s' '{"total_count":1,"items":[{"number":42,"html_url":"https://github.com/developing-today/code/issues/42"}]}' ;;
+  *view*) echo 'gh: Not Found (HTTP 404)' >&2; exit 1 ;;
+  *) echo "unexpected argv: $*" >&2; exit 3 ;;
+esac
+"#,
+        );
+        let mut creator = GhCreator::with_runner(GhRunner::with_bin(bin.to_string_lossy()));
+        assert_eq!(
+            creator.find_by_marker(&outbox_entry_8361()),
+            MarkerLookup::CouldNotCheck("http_404".to_string())
+        );
+        let _ = std::fs::remove_dir_all(bin.parent().unwrap());
     }
 }

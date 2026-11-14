@@ -20,12 +20,12 @@ being serviced or waiting in a queue in front of a service point. Service time i
 the work itself; waiting time is set by how much work is queued ahead of it. Little's law
 ties the three quantities together: mean number in system = arrival rate × mean time in
 system (L = λW). Any latency that is not service time is, by definition, queueing — the
-only questions are *which* queue, and *why is it occupied*.
+only questions are _which_ queue, and _why is it occupied_.
 
 **Bufferbloat is a specific way a queue stays occupied.** Classic TCP congestion control
 (CUBIC and its ancestors) detects congestion by packet loss. Faced with a buffer, it
-therefore keeps sending until the buffer overflows — i.e., it *fills any buffer it is
-given, by design*. If the buffer is oversized, the result is a **standing queue**: the
+therefore keeps sending until the buffer overflows — i.e., it _fills any buffer it is
+given, by design_. If the buffer is oversized, the result is a **standing queue**: the
 buffer sits near-full for as long as the flow runs, and every packet pays delay ≈ buffer
 size ÷ drain rate. Throughput is unaffected (that is what makes it insidious — speed tests
 pass), while latency inflates by exactly the standing queue's drain time. Gettys' home
@@ -49,29 +49,29 @@ modem buffer (via LWN's report of his December 2010 posts).
 timeouts (RTOs); congestion reacts more slowly the deeper the buffer (Gettys & Nichols
 report the reaction slowdown grows quadratically — a 10× deeper buffer means ~10× the
 latency but ~100× slower congestion response). The system doesn't just get slower; it gets
-slower to *notice and recover*.
+slower to _notice and recover_.
 
 **The good queue / bad queue distinction (CoDel).** Not all queueing is bloat. A burst
-that drains within about one RTT is a *good* queue — buffering doing its one legitimate
-job, absorbing transients. A queue that persists across several RTTs is a *bad* queue: it
+that drains within about one RTT is a _good_ queue — buffering doing its one legitimate
+job, absorbing transients. A queue that persists across several RTTs is a _bad_ queue: it
 is a standing queue, and its delay is pure cost. CoDel's design follows from this: measure
 each packet's **sojourn time** (time actually spent in the queue), not queue length or
-averages, and drop only when the *minimum* sojourn over an interval (~100 ms) exceeds a
+averages, and drop only when the _minimum_ sojourn over an interval (~100 ms) exceeds a
 target (~5 ms). No knobs, because the measured quantity is the one users feel.
 
 **The four families of fix.**
 
-- *Manage the queue* (AQM): CoDel (RFC 8289), PIE (RFC 8033, ~15 ms target), fq_codel
+- _Manage the queue_ (AQM): CoDel (RFC 8289), PIE (RFC 8033, ~15 ms target), fq_codel
   (RFC 8290 — per-flow queues + deficit round-robin scheduling + CoDel per queue, so one
   flow's standing queue is not everyone's latency), CAKE (shaping + AQM + per-flow and
   per-host fairness + link-overhead compensation in one qdisc). The FQ-PIE draft
   (draft-ietf-tsvwg-fq-pie-03, Oct 2026) shows the taxonomy still hybridizing.
-- *Size the buffer right*: the BDP rule is correct for one/few flows; Appenzeller,
+- _Size the buffer right_: the BDP rule is correct for one/few flows; Appenzeller,
   Keslassy & McKeown (SIGCOMM 2004) showed that with n desynchronized flows the need falls
   to BDP/√n; Spang, Arslan & McKeown (2021) re-examined the theory and found √n holds
   under broader assumptions than the original, including newer congestion controls. Tiny
   buffers (tens of packets) suffice when flows are many and bursts smooth out.
-- *Don't build the queue at the endpoint*: BBR models the path as BtlBw × RTprop = BDP
+- _Don't build the queue at the endpoint_: BBR models the path as BtlBw × RTprop = BDP
   (Kleinrock's optimal operating point) and paces at the estimated bottleneck bandwidth
   with inflight capped near the BDP. Where loss-based control parks at BDP + buffer size
   (a standing queue by construction), BBR aims to run with the pipe full and the queue
@@ -79,7 +79,7 @@ target (~5 ms). No knobs, because the measured quantity is the one users feel.
   the network-side version of the same idea: mark ECN at ~1 ms of queue so "scalable"
   congestion controls can hold queues near-empty, with a DualQ separating L4S traffic from
   classic traffic. Deployment is genuinely contested (see §2).
-- *Remove the queue from the path*: fewer trips, fewer serial queues, queues relocated to
+- _Remove the queue from the path_: fewer trips, fewer serial queues, queues relocated to
   where they are cheap and observable. This is where caching, coalescing, and connection
   architecture live — §3 and §4.
 
@@ -87,11 +87,11 @@ target (~5 ms). No knobs, because the measured quantity is the one users feel.
 reference because they produce the same user-visible signature (latency ≫ service time,
 worse under load, worst during recovery):
 
-- *Head-of-line (HoL) blocking*: many logical streams over one ordered byte stream. One
+- _Head-of-line (HoL) blocking_: many logical streams over one ordered byte stream. One
   lost or slow segment stalls every stream behind it, however small the buffers are. QUIC
   (RFC 9000) / HTTP/3 (RFC 9114) exist largely to delete this: streams are independent at
   the transport, so a loss delays only the stream whose data it carried.
-- *TCP-over-TCP meltdown*: run a reliable transport inside a reliable transport and the
+- _TCP-over-TCP meltdown_: run a reliable transport inside a reliable transport and the
   two retransmission/backoff loops couple destructively. The outer layer masks path health
   from the inner; the inner layer's RTO (calibrated in calm conditions) fires first and
   injects duplicate retransmissions that queue behind the delayed originals in the outer
@@ -116,7 +116,7 @@ Each entry: what it establishes, and why it matters to us. URLs verified 2026-11
 2010 bufferbloat posts** — reported at https://lwn.net/Articles/418918/
 The discovery narrative. Establishes the empirical signature: latency 4–10× (in his modem
 trace, >100× the RTT estimator) what the path should deliver, caused by buffers holding
-*seconds* of data. Matters to us: it defines the shape we should look for — delay that
+_seconds_ of data. Matters to us: it defines the shape we should look for — delay that
 scales with offered load while throughput and service time stay innocent.
 
 **Gettys & Nichols, "Bufferbloat: Dark Buffers in the Internet," ACM Queue Jan 2012 /
@@ -126,7 +126,7 @@ https://archive.nanog.org/meetings/nanog52/presentations/Tuesday/Gettys-NANOG11a
 The field's founding survey. Proves the problem is systemic: buffers at every layer, the
 RED manifesto's advice ignored for a decade, OS autotuning cascading bloat up the stack.
 Matters to us: our path (client → tunnel pool → runtime proxy → DERP relay → broker) is
-likewise a *stack of independently-buffered layers*; no single layer needs to be "the bug"
+likewise a _stack of independently-buffered layers_; no single layer needs to be "the bug"
 for the sum to be pathological.
 
 **Nichols & Jacobson, "Controlling Queue Delay," ACM Queue May 2012 (CoDel)** —
@@ -152,7 +152,7 @@ the broker or pool. Our analogue of "flows" is lanes/callers.
 **Høiland-Jørgensen, Täht, Morton, "Piece of CAKE," arXiv:1804.07617** —
 https://arxiv.org/pdf/1804.07617 · LWN: https://lwn.net/Articles/758353/
 CAKE integrates rate shaping with link-layer overhead compensation, the COBALT AQM
-(CoDel + BLUE), 8-way set-associative flow hashing with per-flow *and* per-host fairness,
+(CoDel + BLUE), 8-way set-associative flow hashing with per-flow _and_ per-host fairness,
 DiffServ tiers, and ACK filtering, in one Linux qdisc derived from fq_codel. Proves the
 integrated approach beats bolting AQM onto an unshaped link. Matters to us as the design
 pattern: shaping + AQM + fairness as one mechanism, and the per-host fairness idea maps to
@@ -165,7 +165,7 @@ Gettys & Nichols and the sizing literature below.
 Correct for its measured regime (≤8 flows, 40 Mb/s backbone links); catastrophic as a
 universal default, because it sizes for the worst case of a single flow needing a full
 BDP of slack. Matters to us: every fixed-size pool/buffer default in our stack deserves
-the same question — *sized for which regime, measured when?*
+the same question — _sized for which regime, measured when?_
 
 **Appenzeller, Keslassy & McKeown, "Sizing Router Buffers," SIGCOMM 2004** —
 http://yuba.stanford.edu/~appenz/pubs/bufsiz.pdf
@@ -190,7 +190,7 @@ https://iqua.ece.toronto.edu/baochun/ece1771f/papers/bbr-cacm.pdf
 The model-based counterpoint to the whole AQM line: instead of managing the queue the
 sender creates, model the path (windowed-max delivery rate over ~10 RTTs, windowed-min
 RTT over ~10 s), pace at BtlBw, cap inflight ≈ BDP, and cycle ProbeBW/ProbeRTT. Proves
-the standing queue is a *sender* behavior — loss-based control's equilibrium *is* a full
+the standing queue is a _sender_ behavior — loss-based control's equilibrium _is_ a full
 buffer. Matters to us in two places: (a) any bulk mover we run (atlas restores, backups,
 file RPC) shapes the latency of everything sharing its path, and its congestion control
 decides whether it leaves a standing queue behind it; (b) BBR's probe cycle is a reminder
@@ -201,7 +201,7 @@ go stale, which is one reason low-load benchmarks mislead (§4).
 9332 (DualQ Coupled AQM), Jan 2023, Experimental** — overview and debate:
 https://en.wikipedia.org/wiki/L4S · partial-deployment measurements, ANRW 2024:
 https://irtf.org/anrw/2024/slides-120-anrw-08.pdf
-L4S tries to make ~1 ms queueing the *normal* operating point via immediate ECN marking
+L4S tries to make ~1 ms queueing the _normal_ operating point via immediate ECN marking
 and scalable congestion controls (TCP Prague, adapted from DCTCP). The contention is also
 documented and unresolved: the pacing/burstiness Prague must exhibit (RFC 9331 expects
 per-flow burst queue ≲250 µs at minimum RTT; the Prague draft states "a Prague CCA MUST
@@ -216,7 +216,7 @@ should get its wins from our own segment, not from hoping the path upgrades.
 https://http.dev/3 · https://safeguard.sh/resources/blog/quic-and-http-3-explained-rfc-9000-and-rfc-9114
 QUIC moves multiplexing into the transport over UDP: streams are independent, so loss on
 one stream never stalls another; handshake is 1 RTT (0 on resumption). Proves HoL blocking
-is an *architecture* property, removable by stream independence — not a tuning problem.
+is an _architecture_ property, removable by stream independence — not a tuning problem.
 Matters to us directly: it is the existence proof and the design spec for #5756. A
 multiplexed tunnel that serializes streams behind one ordered byte stream re-creates
 HTTP/2-over-TCP's failure mode inside our own stack.
@@ -255,16 +255,16 @@ is therefore a first-class discriminating measurement (§5), not an optimization
 **Connection-pool sizing, the HikariCP tradition (Little's law applied)** — interactive
 model: https://www.giaicuuthegioi.com/visualization/PoolSizing.html · production tuning
 notes: https://www.umurinan.com/pages/tutorials/hikaricp-production-tuning.html
-Two results worth importing wholesale. (1) A pool does not abolish queueing; it *chooses
-where the queue lives*. Too small a pool and requests queue in front of it (cheap,
+Two results worth importing wholesale. (1) A pool does not abolish queueing; it _chooses
+where the queue lives_. Too small a pool and requests queue in front of it (cheap,
 visible, sheddable); too large and the queue moves inside the server, where each admitted
 request makes all the others slower — the interactive model shows a just-right pool
 (cores × 2 rule of thumb) beating both a starved pool and a 4× oversized one on
-throughput *and* latency. (2) The exhaustion signature is measurable separately from
+throughput _and_ latency. (2) The exhaustion signature is measurable separately from
 service: threads-awaiting-connection count and acquire-time percentiles vs in-service
 time. Matters to us: this is the exact anatomy of our TunnelPool question. A warm pool
-*creates* a standing queue when callers are admitted faster than the far end drains, and
-*hides* one when pool-wait is not measured separately from call time. Our warm p50 of
+_creates_ a standing queue when callers are admitted faster than the far end drains, and
+_hides_ one when pool-wait is not measured separately from call time. Our warm p50 of
 369 ms with 1–11 ms of daemon work is, until decomposed, precisely an un-split
 acquire+service number (§5).
 
@@ -273,9 +273,9 @@ https://aws.amazon.com/builders-library/timeouts-retries-and-backoff-with-jitter
 (companion to his 2015 AWS Architecture Blog post, "Exponential Backoff and Jitter").
 Retries are selfish: each layer's retry multiplies the load seen below it (the standard
 worked example: 3 retries at each of 5 layers = up to 243×). Backoff alone does not
-desynchronize a fleet that failed together — clients retry in lockstep waves; *full
-jitter* (sleep = random(0, min(cap, base × 2^attempt))) is what breaks the wave, and a
-*retry budget* (retries capped as a fraction of request volume) is what bounds the total
+desynchronize a fleet that failed together — clients retry in lockstep waves; _full
+jitter_ (sleep = random(0, min(cap, base × 2^attempt))) is what breaks the wave, and a
+_retry budget_ (retries capped as a fraction of request volume) is what bounds the total
 harm. Matters to us: the post-recycle herd is our fleet failing together by construction
 (everything restarts at once). Whatever jitter/budget discipline we adopt belongs in the
 same design conversation as queue depth, because herds are how deep queues get filled.
@@ -285,9 +285,9 @@ doi 10.1145/2408776.2408794 · full text:
 https://www.rose-hulman.edu/class/cs/csse576/papers/The%20Tail%20at%20Scale%20_%20February%202013%20_%20Communications%20of%20the%20ACM.htm
 Fan-out amplifies tails: if each of 100 leaves is slow 1% of the time, ~63% of composite
 requests hit a slow leaf; in their table, one-request p99 of 10 ms becomes all-requests
-p99 of 140 ms. Their key queueing observation: most response-time variability is *queue
-wait before service starts*, not service — hence "tied requests" (enqueue on two
-replicas; whichever *starts service* cancels its twin) and hedged requests (a 10 ms hedge
+p99 of 140 ms. Their key queueing observation: most response-time variability is _queue
+wait before service starts_, not service — hence "tied requests" (enqueue on two
+replicas; whichever _starts service_ cancels its twin) and hedged requests (a 10 ms hedge
 cut a BigTable p99.9 from 1,800 ms to 74 ms at ~2% extra requests). Matters to us: (a)
 any fleet operation that fans out over the tunnel path inherits the path's tail, squared;
 (b) hedging is only safe with cancellation and idempotence — otherwise it is a
@@ -308,7 +308,7 @@ with the last good answer while the path recovers" — the caching face of fail-
 
 **Request collapsing at Fastly (Perf Planet, 2019)** —
 https://calendar.perfplanet.com/2019/request-collapsing-the-hidden-magic-that-invisibly-speeds-up-the-web/
-A cache that receives concurrent misses for the same object forwards *one* fetch upstream
+A cache that receives concurrent misses for the same object forwards _one_ fetch upstream
 and attaches the other requesters to it; done in layers (per edge server, per data
 center, between data centers via shielding) so exactly one request reaches the origin.
 Also documents the sharp edges: a `private` response forces queued waiters to be dequeued
@@ -323,7 +323,7 @@ https://www.compress-pdf.pro/courses/secure-video-streaming/pages/08-cdn-signed-
 The shield pattern: a designated mid-tier is the only layer allowed to fetch from origin,
 so synchronized misses across many edges converge into one fetch. Names the failure it
 prevents — the "thundering herd" where caches amplify load instead of absorbing it.
-Matters to us: placement *is* queue relocation. A shield/cache hit deletes arrivals from
+Matters to us: placement _is_ queue relocation. A shield/cache hit deletes arrivals from
 every downstream queue; a miss converges at one instrumented point instead of stampeding
 the origin from fifty directions. Our post-recycle herd is a thundering herd wearing a
 different hat (cold everything, all at once), and the shield/collapse pattern is the
@@ -333,18 +333,18 @@ canonical answer to it.
 
 ## 3. Mitigation taxonomy, mapped to our designs
 
-| # | Mitigation family | Literature anchor | Our mapping |
-|---|---|---|---|
-| 1 | Measure sojourn, not occupancy | CoDel (sojourn time, local min); Tail at Scale (percentiles) | #5702's four trip timestamps = per-segment sojourn. Prerequisite for every claim in §5. |
-| 2 | Cap the wait, not the retries | CoDel's 5 ms target as a *time* budget; #5758 | Fail-fast ≤2 s is a queue-length cap expressed in time — CoDel's move, applied at the RPC layer. A request that cannot be served within budget should fail while the queue is still short enough to recover. |
-| 3 | Isolate flows so one queue isn't everyone's | fq_codel (per-flow queues + DRR); CAKE (per-flow + per-host fairness, DiffServ tiers) | Broker/pool fairness by lane or caller class; bulk movers (restores, backups) in a bulk tier that cannot queue ahead of interactive calls. |
-| 4 | Pace and cap inflight at the sender | BBR (pace at BtlBw, inflight ≈ BDP) | Bulk transfers over the fleet path should be rate-shaped to the path, not to the disk; an unpaced fill creates the standing queue everyone else pays for. |
-| 5 | Delete trips (reduce λ at the bottleneck) | Little's law; request collapsing (Fastly); origin shield | #5757 coalescing (server /claim-flow, /batch; the daemon already batches 10 cmds/trip at 483 ms); caching (§4). Every deleted trip shortens every queue behind it. |
-| 6 | Remove serialization inside the pipe | QUIC/HTTP/3 stream independence; HoL analysis | #5756 multiplexed persistent streams — with the QUIC caveat: streams must be independently flow-controlled, or multiplexing re-creates HoL blocking on one ordered stream. Also amortizes cold CONNECT setup (1.2–1.8 s) across the pool's life. |
-| 7 | Desynchronize recovery | Brooker (full jitter, retry budgets); collapsing literature (stampede) | Post-recycle reconnects and client retries: jittered backoff + a fleet-level retry budget, so the herd arrives as a slope, not a step. |
-| 8 | Keep queues where they are cheap and observable | HikariCP pool doctrine (queue in front of the pool, measured as acquire time) | Prefer waiting at the client/broker (instrumented, sheddable, deadline-able) over waiting inside tunnels/relays (dark). Split pool-acquire time from in-call time in metrics. |
-| 9 | Don't stack blind reliability layers | Titz; TCP meltdown (RFC 9329) | Audit timeout/retry layering on the path: an inner timeout shorter than the outer layer's delivery patience manufactures duplicate work. Deadlines should be set end-to-end and subdivided, not independently per layer. |
-| 10 | Serve stale under duress | RFC 5861 (SWR, stale-if-error) | §4. For control-plane reads that tolerate staleness, a cached answer beats a 16 s 502. |
+| #   | Mitigation family                               | Literature anchor                                                                     | Our mapping                                                                                                                                                                                                                                      |
+| --- | ----------------------------------------------- | ------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| 1   | Measure sojourn, not occupancy                  | CoDel (sojourn time, local min); Tail at Scale (percentiles)                          | #5702's four trip timestamps = per-segment sojourn. Prerequisite for every claim in §5.                                                                                                                                                          |
+| 2   | Cap the wait, not the retries                   | CoDel's 5 ms target as a _time_ budget; #5758                                         | Fail-fast ≤2 s is a queue-length cap expressed in time — CoDel's move, applied at the RPC layer. A request that cannot be served within budget should fail while the queue is still short enough to recover.                                     |
+| 3   | Isolate flows so one queue isn't everyone's     | fq_codel (per-flow queues + DRR); CAKE (per-flow + per-host fairness, DiffServ tiers) | Broker/pool fairness by lane or caller class; bulk movers (restores, backups) in a bulk tier that cannot queue ahead of interactive calls.                                                                                                       |
+| 4   | Pace and cap inflight at the sender             | BBR (pace at BtlBw, inflight ≈ BDP)                                                   | Bulk transfers over the fleet path should be rate-shaped to the path, not to the disk; an unpaced fill creates the standing queue everyone else pays for.                                                                                        |
+| 5   | Delete trips (reduce λ at the bottleneck)       | Little's law; request collapsing (Fastly); origin shield                              | #5757 coalescing (server /claim-flow, /batch; the daemon already batches 10 cmds/trip at 483 ms); caching (§4). Every deleted trip shortens every queue behind it.                                                                               |
+| 6   | Remove serialization inside the pipe            | QUIC/HTTP/3 stream independence; HoL analysis                                         | #5756 multiplexed persistent streams — with the QUIC caveat: streams must be independently flow-controlled, or multiplexing re-creates HoL blocking on one ordered stream. Also amortizes cold CONNECT setup (1.2–1.8 s) across the pool's life. |
+| 7   | Desynchronize recovery                          | Brooker (full jitter, retry budgets); collapsing literature (stampede)                | Post-recycle reconnects and client retries: jittered backoff + a fleet-level retry budget, so the herd arrives as a slope, not a step.                                                                                                           |
+| 8   | Keep queues where they are cheap and observable | HikariCP pool doctrine (queue in front of the pool, measured as acquire time)         | Prefer waiting at the client/broker (instrumented, sheddable, deadline-able) over waiting inside tunnels/relays (dark). Split pool-acquire time from in-call time in metrics.                                                                    |
+| 9   | Don't stack blind reliability layers            | Titz; TCP meltdown (RFC 9329)                                                         | Audit timeout/retry layering on the path: an inner timeout shorter than the outer layer's delivery patience manufactures duplicate work. Deadlines should be set end-to-end and subdivided, not independently per layer.                         |
+| 10  | Serve stale under duress                        | RFC 5861 (SWR, stale-if-error)                                                        | §4. For control-plane reads that tolerate staleness, a cached answer beats a 16 s 502.                                                                                                                                                           |
 
 What the taxonomy deliberately omits: "add bandwidth" and "enlarge the pool/buffer."
 Both raise the ceiling without touching the standing queue; the sizing literature
@@ -355,8 +355,8 @@ term.
 
 ## 4. The caching connection (the reason this doc exists)
 
-Queueing delay changes what a cache is *for*. At zero load a cache saves work; under
-bloat it saves *queueing*, and queueing is the expensive part. Five interactions worth
+Queueing delay changes what a cache is _for_. At zero load a cache saves work; under
+bloat it saves _queueing_, and queueing is the expensive part. Five interactions worth
 carrying into future caching discussions:
 
 1. **A miss costs latency-under-load, not idle latency.** Cache evaluations quote miss
@@ -371,7 +371,7 @@ carrying into future caching discussions:
    idle-only.** A prefetch is speculative offered load. If it runs while queues are
    occupied, it lengthens the queue for real demand and its own fill arrives stale-dated
    by the sojourn it suffered. BBR's probe discipline is the model: refresh your picture
-   of the path during quiet, and treat "the path is busy" as a reason to *defer*
+   of the path during quiet, and treat "the path is busy" as a reason to _defer_
    speculative work, not to push harder. Cache warming belongs in the same scheduler
    class as bulk transfer: bulk tier, paced, preemptible (taxonomy #3/#4).
 
@@ -393,8 +393,8 @@ carrying into future caching discussions:
    Fastly-documented care around uncacheable responses (dequeue in batches, mark
    hit-for-pass) so a non-cacheable fill doesn't serialize everyone behind it.
 
-5. **Hit ratios measured at low load mislead twice.** First, as in (1): the *value* of a
-   hit is load-dependent. Second, the *ratio itself* is load-dependent: synchronized
+5. **Hit ratios measured at low load mislead twice.** First, as in (1): the _value_ of a
+   hit is load-dependent. Second, the _ratio itself_ is load-dependent: synchronized
    expiry and cold starts produce correlated misses at peak (the thundering herd), so
    the hit ratio observed in steady state overstates the hit ratio during the only
    intervals where the path is in trouble. Report hit ratio conditioned on load (or on
@@ -404,10 +404,10 @@ carrying into future caching discussions:
 
 6. **Edge placement is queue relocation.** Every hit at an edge deletes that request
    from every downstream queue — λ falls at the bottleneck, so by Little's law the queue
-   shortens for the misses too. Conversely, a cache placed *behind* the bottleneck
+   shortens for the misses too. Conversely, a cache placed _behind_ the bottleneck
    protects the origin but does nothing for path latency. When we discuss where a fleet
-   cache or shield should sit, the question to ask is: *which queue does a hit here
-   delete?*
+   cache or shield should sit, the question to ask is: _which queue does a hit here
+   delete?_
 
 ---
 
@@ -423,7 +423,7 @@ clients arrive as a herd.
 ### 5.1 What matches
 
 - **Delay ≫ service time.** ~97% of the warm p50 is not work. In queueing terms the call
-  is almost all wait. That is the *shape* of every queueing pathology in this literature
+  is almost all wait. That is the _shape_ of every queueing pathology in this literature
   (and of no other common failure mode) — something on the path is making requests wait
   in line. Gettys' signature is the same shape at packet scale.
 - **The failure tax is denominated in tens of seconds.** 16.3 s / 26.0 s stalls are the
@@ -439,32 +439,32 @@ clients arrive as a herd.
 - **There is at least one certified dark buffer on the path.** The DERP relay leg is, by
   construction, a queue on a machine we do not instrument, carrying traffic in a pattern
   (hairpin) that doubles its exposure to the path. The relay literature's warning —
-  relayed paths show higher latency *and variance* — matches a path whose p50 is 369 ms
+  relayed paths show higher latency _and variance_ — matches a path whose p50 is 369 ms
   against 1–11 ms of work on what should be a short hop.
 
 ### 5.2 What doesn't match
 
 - **Classic bufferbloat is load-dependent by definition.** A standing queue exists only
   while a sender is trying to overfill the path. If the warm 369 ms p50 persists at
-  near-zero concurrency — one call at a time, nothing else moving — it is *not* bloat; it
+  near-zero concurrency — one call at a time, nothing else moving — it is _not_ bloat; it
   is fixed path cost: hairpin propagation, per-hop handling, proxy overheads. Bloat
   predicts a latency-vs-load curve that climbs; a flat 369 ms floor is architecture,
   not queueing. (WS-C's number does not record the load at measurement time; that gap is
   itself one of the findings.)
 - **Setup serialization is not bloat.** Roughly linear latency growth across the
   50→128 ramp indicates a serialized resource — handshakes processed one at a time,
-  proxy CPU, TLS/session setup. That is a *service-rate* limit at a setup server.
+  proxy CPU, TLS/session setup. That is a _service-rate_ limit at a setup server.
   Queueing is involved (requests wait for the serializer), but enlarging or shrinking
   buffers changes nothing; the fix is parallelism/pre-warming/multiplexing (#5756), i.e.
   deleting the setup from the critical path — a different lever than AQM.
 - **The incident's prime mover was not a queue.** The 2026-11-04 wedge itself was CPU
   saturation on the sandbox (load 30 on 4 CPUs, a .gh-wrapped tree at 1645% CPU) plus a
-  silent sampler. Bloat may describe how the *recovery* felt from the laptop side; it
+  silent sampler. Bloat may describe how the _recovery_ felt from the laptop side; it
   does not explain the wedge. Conflating them would send the fix effort to the wrong
   machine.
 - **Small-payload RPC is not the classic bloat workload.** Textbook bloat needs a flow
   trying to move bulk data through the bottleneck. Our warm calls are tiny. For bloat to
-  inflate *their* latency, someone else's bulk (or an aggregate of many small flows)
+  inflate _their_ latency, someone else's bulk (or an aggregate of many small flows)
   must be keeping a shared queue full — possible (restores, backups, herd moments), but
   it is a claim that needs a witness, not an assumption.
 
@@ -489,37 +489,37 @@ timestamps plus host tooling; none requires new infrastructure.
 
 1. **Latency-vs-load curve on the tunnel path (RRUL-style).** Warm-call latency at
    concurrency 1 / 5 / 10 / 25 / 50, idle path, then repeated with one bulk transfer in
-   flight. *Bloat/queueing predicts:* latency climbs steeply with load (claim: p50 at
+   flight. _Bloat/queueing predicts:_ latency climbs steeply with load (claim: p50 at
    concurrency 50 > 3× p50 at concurrency 1) while throughput stays flat, and the bulk
-   flow taxes interactive calls disproportionately. *Kills it:* latency flat vs load →
+   flow taxes interactive calls disproportionately. _Kills it:_ latency flat vs load →
    the 369 ms is fixed path cost; spend effort on the hairpin, not on queues.
 2. **Per-segment sojourn decomposition.** Split the 369 ms by #5702's timestamps:
-   client→proxy, proxy→DERP→laptop, broker queue, daemon service. *Queueing predicts:*
-   the waiting share concentrates in one segment and grows with load. *Kills it:* shares
+   client→proxy, proxy→DERP→laptop, broker queue, daemon service. _Queueing predicts:_
+   the waiting share concentrates in one segment and grows with load. _Kills it:_ shares
    constant across load → fixed per-hop costs.
 3. **Pool acquire vs in-call split.** Instrument TunnelPool with the HikariCP pair:
    waiters-pending gauge + acquire-time histogram, separate from call duration.
-   *Pool-queueing predicts:* sustained pending > 0 and acquire p99 tracking the warm
-   latency inflation. *Kills it:* acquire ≈ 0 while call time stays 369 ms → the wait
+   _Pool-queueing predicts:_ sustained pending > 0 and acquire p99 tracking the warm
+   latency inflation. _Kills it:_ acquire ≈ 0 while call time stays 369 ms → the wait
    is downstream of the pool.
 4. **Retransmit/RTO fingerprint during failure windows.** `ss -ti` on tunnel sockets
-   while 502/no-status trips occur. *Meltdown-family predicts:* retransmit bursts and
-   inflated RTOs on outer connections coincident with inner timeouts. *Kills it:*
+   while 502/no-status trips occur. _Meltdown-family predicts:_ retransmit bursts and
+   inflated RTOs on outer connections coincident with inner timeouts. _Kills it:_
    clean sockets during failures → the tax is application-layer timeouts, not transport
    coupling.
 5. **DERP vs direct A/B.** Same call, same hour, over the hairpin vs a direct tailnet
-   path (tailscale status/ping to establish which is which). *Relay-queueing predicts:*
+   path (tailscale status/ping to establish which is which). _Relay-queueing predicts:_
    direct collapses latency toward daemon time (tens of ms) and slashes variance.
-   *Kills it:* direct ≈ hairpin → the relay leg is innocent; look at proxy/broker.
+   _Kills it:_ direct ≈ hairpin → the relay leg is innocent; look at proxy/broker.
 6. **Failure-tax decomposition.** For individual 502/no-status trips, log where the
    16–26 s went: client timeout budget, per-layer retries, RTO ladder, proxy timeout.
-   *Timer-coupling predicts:* durations cluster at sums of doubling timers / stacked
-   timeout values. *Kills it:* a single constant dominates → one mis-set timeout is the
+   _Timer-coupling predicts:_ durations cluster at sums of doubling timers / stacked
+   timeout values. _Kills it:_ a single constant dominates → one mis-set timeout is the
    whole tax, and #5758 is a one-line fix.
 7. **Herd replay.** Restart a client cohort against a warm path with and without
-   jittered reconnect backoff (Brooker). *Stampede dynamics predict:* unjittered cohort
+   jittered reconnect backoff (Brooker). _Stampede dynamics predict:_ unjittered cohort
    reproduces the failure tax; jittered cohort drains cleanly at the same total work.
-   *Kills it:* identical outcomes → herd shape is not the amplifier; the path fails at
+   _Kills it:_ identical outcomes → herd shape is not the amplifier; the path fails at
    steady load too.
 
 **Reading of the likely outcome, stated in advance so it can be wrong:** measurement 1
@@ -527,7 +527,7 @@ will show a mostly-flat warm curve with a real knee under herd/bulk conditions;
 measurement 5 will assign the largest single share of the warm 369 ms to the hairpin's
 fixed cost; measurement 6 will find the failure tax is mostly stacked timeouts/retries,
 i.e. timer coupling rather than standing queues. If all three land that way, bufferbloat
-proper explains the *tail* of our problem (herds, bulk interference) and not its median —
+proper explains the _tail_ of our problem (herds, bulk interference) and not its median —
 and the caching/fail-fast agenda in §3–§4 remains the right spend, because the tail is
 where the incident lived.
 
@@ -538,7 +538,7 @@ where the incident lived.
 - Incident record and measurements: #5701. Trip instrumentation: #5702.
 - Designs this reference supports: #5756 (multiplexed streams), #5757 (coalescing),
   #5758 (fail-fast). Broker redesign adjacent: #5703.
-- When a future caching discussion needs a term from here: *standing queue*, *sojourn
-  time*, *collapsed forwarding*, *stale-while-revalidate / stale-if-error (RFC 5861)*,
-  *full jitter + retry budget*, *pool acquire vs service split*, *good queue vs bad
-  queue*. Each is defined above with its source.
+- When a future caching discussion needs a term from here: _standing queue_, _sojourn
+  time_, _collapsed forwarding_, _stale-while-revalidate / stale-if-error (RFC 5861)_,
+  _full jitter + retry budget_, _pool acquire vs service split_, _good queue vs bad
+  queue_. Each is defined above with its source.

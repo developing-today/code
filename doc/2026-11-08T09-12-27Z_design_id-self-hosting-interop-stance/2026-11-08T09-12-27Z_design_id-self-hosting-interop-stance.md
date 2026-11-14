@@ -38,7 +38,7 @@ Load-bearing (protocol-level; changing one of these changes interoperability):
   parse what the other emits and reject what it cannot honour. The concrete
   format is being settled in
   [#5674](https://github.com/developing-today/code/issues/5674); this stance
-  fixes only that the wire format *is* load-bearing, and defers its unsettled
+  fixes only that the wire format _is_ load-bearing, and defers its unsettled
   details there.
 - **Identity.** How participants are named and how a name is bound to proof
   of control (keys, signatures, delegation). An implementation that invents
@@ -54,7 +54,7 @@ Load-bearing (protocol-level; changing one of these changes interoperability):
 Not load-bearing (product choices on top of the protocol):
 
 - Chat and world user interfaces, and whether they are present at all.
-- Our registry as a service (as opposed to the registry *format*).
+- Our registry as a service (as opposed to the registry _format_).
 - Permission, licensing, and moderation defaults (see below).
 - Hosting topology: relays, bridges, and residency arrangements an operator
   picks for their own deployment. Boundary enforcement across bridges,

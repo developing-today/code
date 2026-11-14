@@ -380,7 +380,9 @@ class ItemsTests(unittest.TestCase):
             json.dumps({"segments": [{"id": "S1"}, {"id": "S2"}]}) + "\n",
             encoding="utf-8",
         )
-        self.assertEqual(self.cli("ids", "--package", package)["segments"], ["S1", "S2"])
+        self.assertEqual(
+            self.cli("ids", "--package", package)["segments"], ["S1", "S2"]
+        )
         manifest.write_text("{}\n", encoding="utf-8")
         self.assertEqual(self.cli("ids", "--package", package)["segments"], [])
         # Wrong shapes fail via the tool's single-line error contract,

@@ -66,8 +66,18 @@ export interface SpendRollup {
 }
 
 const ROLLUP_KEYS: ReadonlySet<string> = new Set([
-  "kind", "windowKind", "windowStart", "windowEnd", "scopeKind", "scopeId",
-  "unit", "pool", "value", "coverage", "coverageStart", "attributionVersion",
+  "kind",
+  "windowKind",
+  "windowStart",
+  "windowEnd",
+  "scopeKind",
+  "scopeId",
+  "unit",
+  "pool",
+  "value",
+  "coverage",
+  "coverageStart",
+  "attributionVersion",
 ]);
 
 export function rollupKey(r: SpendRollup): string {
@@ -85,7 +95,8 @@ function versionRank(v: string): number {
 export function validateSpendRollup(r: unknown): asserts r is SpendRollup {
   if (typeof r !== "object" || r === null) throw new Error("spend rollup: not an object");
   for (const k of Object.keys(r)) {
-    if (!ROLLUP_KEYS.has(k)) throw new Error(`spend rollup: unexpected field "${k}" (merged cross-unit fields are banned)`);
+    if (!ROLLUP_KEYS.has(k))
+      throw new Error(`spend rollup: unexpected field "${k}" (merged cross-unit fields are banned)`);
   }
   const v = r as Record<string, unknown>;
   if (v.kind !== "spend-rollup/v1") throw new Error("spend rollup: bad kind");
@@ -160,7 +171,17 @@ export function buildSpendRollups(events: readonly SpendRollupEvent[], opts: Bui
         const key = [kind, start, scopeKind, scopeId].join("|");
         let g = groups.get(key);
         if (!g) {
-          g = { windowKind: kind, windowStart: start, windowEnd: end, scopeKind, scopeId, tokens: new Map(), share: new Map(), usdValues: [], eventCount: 0 };
+          g = {
+            windowKind: kind,
+            windowStart: start,
+            windowEnd: end,
+            scopeKind,
+            scopeId,
+            tokens: new Map(),
+            share: new Map(),
+            usdValues: [],
+            eventCount: 0,
+          };
           groups.set(key, g);
         }
         g.eventCount += 1;
@@ -189,14 +210,17 @@ export function buildSpendRollups(events: readonly SpendRollupEvent[], opts: Bui
     const coverage = coverageFor(g);
     const base = {
       kind: "spend-rollup/v1" as const,
-      windowKind: g.windowKind, windowStart: g.windowStart, windowEnd: g.windowEnd,
-      scopeKind: g.scopeKind, scopeId: g.scopeId, coverage,
-      coverageStart: opts.coverageStart, attributionVersion: opts.attributionVersion,
+      windowKind: g.windowKind,
+      windowStart: g.windowStart,
+      windowEnd: g.windowEnd,
+      scopeKind: g.scopeKind,
+      scopeId: g.scopeId,
+      coverage,
+      coverageStart: opts.coverageStart,
+      attributionVersion: opts.attributionVersion,
     };
-    for (const [pool, value] of [...g.tokens.entries()].sort())
-      out.push({ ...base, unit: "tokens", pool, value });
-    for (const [pool, value] of [...g.share.entries()].sort())
-      out.push({ ...base, unit: "share_pct", pool, value });
+    for (const [pool, value] of [...g.tokens.entries()].sort()) out.push({ ...base, unit: "tokens", pool, value });
+    for (const [pool, value] of [...g.share.entries()].sort()) out.push({ ...base, unit: "share_pct", pool, value });
     // USD is emitted only when every event in the group carried a matched
     // charge figure; a group with any unknown charge state emits no USD
     // record at all (unknown is not zero, and a partial sum would lie).
@@ -287,7 +311,8 @@ export function selectRollups(records: readonly SpendRollup[], version?: string)
   for (const r of pool) {
     const w = [r.windowKind, r.windowStart].join("|");
     const prev = newestByWindow.get(w);
-    if (prev === undefined || versionRank(r.attributionVersion) > versionRank(prev)) newestByWindow.set(w, r.attributionVersion);
+    if (prev === undefined || versionRank(r.attributionVersion) > versionRank(prev))
+      newestByWindow.set(w, r.attributionVersion);
   }
   return pool
     .filter((r) => r.attributionVersion === newestByWindow.get([r.windowKind, r.windowStart].join("|")))

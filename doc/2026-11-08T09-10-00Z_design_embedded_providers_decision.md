@@ -39,7 +39,7 @@ session instance by default.
   special case, and a second format is exactly that special case.
 - **Smartphone projection:** capabilities may additionally be registered with
   Android AppFunctions so OS-mediated callers (system agents) can discover and
-  invoke them. Rejected as the *authoritative* registry: at survey time
+  invoke them. Rejected as the _authoritative_ registry: at survey time
   AppFunctions is beta/alpha with a private-preview caller set (#5931 §2.1,
   §7), the registry is the OS's, and its authority is Android permissions, not
   owner-controlled signed objects — adopting it as the model would replace
@@ -51,8 +51,8 @@ session instance by default.
   registry's state back into the manifest.
 - **Engine projection:** provider surfaces (render, input, audio, entity data)
   register into the running engine (components/resources in Bevy's ECS) from
-  the same manifest. The engine-specific part is confined to *how surfaces are
-  produced*, never to what is declared (#5931 §4, decider question 1 —
+  the same manifest. The engine-specific part is confined to _how surfaces are
+  produced_, never to what is declared (#5931 §4, decider question 1 —
   answered: yes, same manifest).
 
 ## D2 — Engine provider shape: native at the boundary, scripted only inside it
@@ -105,7 +105,7 @@ pass"); this record fixes the semantics:
    auto-resets) a permission, every capability depending on it is suspended at
    once: the declaration is updated, discovery shows the capability as
    suspended (not merely failing at call time), and outstanding grants against
-   it are inert until the permission is re-granted *and* the capability is
+   it are inert until the permission is re-granted _and_ the capability is
    re-declared. Rejected: install-time / app-level consent as a grant
    substitute — its granularity is the app, not the consumer or the grant
    (#5931 §2.2). Rejected: building the provider on accessibility services —
@@ -114,7 +114,7 @@ pass"); this record fixes the semantics:
 4. **Sensitivity scaling is inherited, not re-invented:** observation vs
    actuation remain different risk classes (#5686, #5900). On this host that
    means actuation-class capabilities default to per-use approval on the `id`
-   side *and* a foreground, user-visible context on the OS side; standing
+   side _and_ a foreground, user-visible context on the OS side; standing
    grants are for low-sensitivity observation only.
 
 ## D4 — Session-bound lifecycles (engine first, phone by the same rule)
@@ -195,7 +195,7 @@ pass"); this record fixes the semantics:
   discovery, negotiation, grants, ceiling composition) and leaves the
   embedded instantiation open as decomposition item 6; this record is that
   item, decided inside the parent's constraints.
-- Two of the parent's *open questions* are answered **for the embedded
+- Two of the parent's _open questions_ are answered **for the embedded
   classes only** (grants outliving session-bound providers → D4; provider
   identity for a phone → D5). The general answers remain the parent's and
   #5900's to state.
@@ -223,14 +223,14 @@ pass"); this record fixes the semantics:
 
 ## Alternatives rejected — summary
 
-| Alternative | Why not |
-|---|---|
-| AppFunctions as authoritative registry | Beta/alpha + gated caller set; authority would be Google's, not the owner's (#5931 §2.1, §6.7) |
-| Ignore AppFunctions entirely | Loses the OS-native discovery/invocation surface the projection gets almost free |
-| Embedded-specific declaration format | A per-target special case — the failure #5686's one-model test exists to catch |
-| Scripts as the general engine provider mechanism | Weak isolation, bridge churn, Rune on hold (#5931 §4.2, §7) |
-| Engine replication as world authority | Replicates engine state, not journal authority; different question (#5931 §4.3) |
-| OS permission as the grant | App-level granularity; no per-consumer, per-purpose, revocable-by-owner semantics (#5931 §2.2) |
-| Provider on accessibility services | Platform-policy fight; bypasses the permission model (D3) |
-| Grants that silently follow a provider across sessions | Breaks instance binding; replays authority into a context nobody granted (D4) |
-| Inbound-reachable phone provider | Carrier/NAT reality; outbound relay is the proven pattern (#5931 §2.1) |
+| Alternative                                            | Why not                                                                                        |
+| ------------------------------------------------------ | ---------------------------------------------------------------------------------------------- |
+| AppFunctions as authoritative registry                 | Beta/alpha + gated caller set; authority would be Google's, not the owner's (#5931 §2.1, §6.7) |
+| Ignore AppFunctions entirely                           | Loses the OS-native discovery/invocation surface the projection gets almost free               |
+| Embedded-specific declaration format                   | A per-target special case — the failure #5686's one-model test exists to catch                 |
+| Scripts as the general engine provider mechanism       | Weak isolation, bridge churn, Rune on hold (#5931 §4.2, §7)                                    |
+| Engine replication as world authority                  | Replicates engine state, not journal authority; different question (#5931 §4.3)                |
+| OS permission as the grant                             | App-level granularity; no per-consumer, per-purpose, revocable-by-owner semantics (#5931 §2.2) |
+| Provider on accessibility services                     | Platform-policy fight; bypasses the permission model (D3)                                      |
+| Grants that silently follow a provider across sessions | Breaks instance binding; replays authority into a context nobody granted (D4)                  |
+| Inbound-reachable phone provider                       | Carrier/NAT reality; outbound relay is the proven pattern (#5931 §2.1)                         |

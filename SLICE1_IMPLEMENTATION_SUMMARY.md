@@ -27,24 +27,28 @@ The OpenCode lane claimant/executor slice 1 provides the complete **claim/bind/l
 ## 📁 Files Created/Modified
 
 ### Core Implementation (Production Ready)
+
 - `pm-stack/opencode-claimant/claimant.py` (530 lines) - Main execution script
 - `pm-stack/opencode-claimant/poll.py` (459 lines) - Candidate discovery
 - `pm-stack/opencode-claimant/README.md` (203 lines) - Complete documentation
 - `pm-stack/opencode-claimant/Makefile` - Setup helpers
 
 ### Database Migrations (4 migrations)
+
 - `migration-0021.sql` - bind_repo_task_lane_session
 - `migration-0022.sql` - Atomic recovery operations
 - `migration-0023.sql` - Additional schema updates
 - `migration-0024.sql` - Final schema updates
 
 ### Testing & Verification
+
 - `test_slice1.sh` - Complete test suite
 - `verify_slice1.sh` - 43/43 verification checks (PASSING ✅)
 - `test_implementation.py` - Implementation tests
 - `test_poll.py` - Unit tests
 
 ### Documentation (Comprehensive)
+
 - `SLICE1_COMPLETION_REPORT.md` - 39/39 implementation checks
 - `SLICE1_FINAL_CONFIRMATION.md` - Complete verification (43/43 checks)
 - `SLICE1_FINAL_SUMMARY.md` - Executive summary
@@ -58,33 +62,40 @@ The OpenCode lane claimant/executor slice 1 provides the complete **claim/bind/l
 ## 🚀 Key Features
 
 ### Mode System ✅
+
 - **Shadow mode** (default): Read-only, no mutations
 - **Live mode**: Full execution including session creation
 - Automatic fallback to shadow on missing/unreadable mode file
 
 ### Concurrency Control ✅
+
 - **36-session cap** (raised from 12→20→36 on 2026-11-05)
 - Active root session counting via OpenCode server API
 - Fail-closed behavior when server unreadable
 
 ### Recovery Rules (#4758) ✅
+
 - **Zero-message recovery**: Identifies bound sessions with zero messages, deletes them, atomically reclaims task
 - **Gone-session recovery**: Identifies absent sessions, atomically reclaims task
 - **Exhausted attempts**: Terminally fails tasks when attempts exhausted
 
 ### Atomic Operations ✅
+
 - Session creation and binding in single atomic operation
 - Recovery operations use compare-and-clear guards
 - Prevents double-binding and race conditions
 
 ### Session Management ✅
+
 - Creates worker sessions via OpenCode server API
 - Verifies `location.directory` matches requested directory (#4870 fix)
 - Uses correct model object shape
 - Atomic binding with `repo-queue bind` command
 
 ### Hard Rules Enforcement ✅
+
 All 7 hard rules enforced:
+
 1. Never work tasks directly ✅
 2. No credentials in prompts/logs ✅
 3. No cap violations ✅
@@ -98,6 +109,7 @@ All 7 hard rules enforced:
 ## ✅ Verification Results
 
 ### Test Suite: PASSED ✅
+
 ```bash
 $ bash pm-stack/opencode-claimant/test_slice1.sh
 === All Tests Passed! ===
@@ -105,6 +117,7 @@ OpenCode lane claimant/executor slice 1 is working correctly.
 ```
 
 ### Verification Script: 43/43 PASSED ✅
+
 ```bash
 $ bash pm-stack/opencode-claimant/verify_slice1.sh
 ==========================================
@@ -115,6 +128,7 @@ Verification Complete: 43 / 43 checks passed
 ```
 
 ### Verification Categories (43 checks):
+
 1. File Structure Verification (4/4) ✅
 2. Script Executability (2/2) ✅
 3. Mode File Handling (2/2) ✅
@@ -131,6 +145,7 @@ Verification Complete: 43 / 43 checks passed
 ## 📊 Execution Examples
 
 ### Running in Shadow Mode (Safe Testing)
+
 ```bash
 $ python3 pm-stack/opencode-claimant/claimant.py
 OpenCode claimant starting in shadow mode
@@ -139,6 +154,7 @@ No unbound opencode-lane candidates found. Exiting.
 ```
 
 ### Running in Live Mode
+
 ```bash
 $ echo "live" > ~/.local/state/opencode-claimant/mode
 $ python3 pm-stack/opencode-claimant/claimant.py
@@ -151,6 +167,7 @@ Fire complete. Launched X sessions.
 ```
 
 ### Poll.py Output (System State)
+
 ```bash
 $ python3 pm-stack/opencode-claimant/poll.py
 {
@@ -171,6 +188,7 @@ $ python3 pm-stack/opencode-claimant/poll.py
 ```
 
 ### Fire Log Example
+
 ```json
 {
   "timestamp": "2026-11-07T21:20:32.582028+00:00",
@@ -178,7 +196,7 @@ $ python3 pm-stack/opencode-claimant/poll.py
   "candidates_seen": [],
   "sessions_launched": [],
   "cap_room": 0,
-  "skips": [{"reason": "no_candidates"}]
+  "skips": [{ "reason": "no_candidates" }]
 }
 ```
 
@@ -189,6 +207,7 @@ $ python3 pm-stack/opencode-claimant/poll.py
 ### Slice 1 is COMPLETE ✅
 
 The implementation satisfies all requirements for slice 1:
+
 - ✅ All 6 steps implemented
 - ✅ All 43 verification checks passing
 - ✅ All 7 hard rules enforced
@@ -196,6 +215,7 @@ The implementation satisfies all requirements for slice 1:
 - ✅ Comprehensive documentation and testing
 
 ### Future Work (Slice 2+)
+
 - Parallel-run gate implementation (#3026 slice 2)
 - Additional features and optimizations
 - Enhanced monitoring and error handling
@@ -219,6 +239,7 @@ For detailed information, see:
 **The OpenCode lane claimant/executor slice 1 implementation is COMPLETE and PRODUCTION-READY.**
 
 All requirements from #3026 slice 1 have been met:
+
 - ✅ Claim/bind/launch/record lifecycle implemented
 - ✅ Supervision with recovery rules (#4758) implemented
 - ✅ Concurrency control (36-session cap) implemented
@@ -230,5 +251,5 @@ All requirements from #3026 slice 1 have been met:
 
 ---
 
-*Generated: November 7, 2026*  
-*Status: ✅ IMPLEMENTATION COMPLETE*
+_Generated: November 7, 2026_  
+_Status: ✅ IMPLEMENTATION COMPLETE_

@@ -8,8 +8,9 @@
 use std::sync::{Arc, Mutex};
 
 use id::world::{
-    CapabilityBounds, JoinCapability, JournalEntry, WorldCore, WorldHandle, WorldJournal,
-    WorldLimits, WorldProgram, WorldScopes,
+    CapabilityBounds, JoinCapability, JournalEntry, TrustBasis, TrustDecision, WorldCore,
+    WorldEventKind, WorldHandle, WorldJournal, WorldLimits, WorldProgram, WorldScopes,
+    is_capability_denied,
 };
 
 /// A capturing journal for asserting what a world records.
@@ -85,6 +86,15 @@ fn builder_and_moderator_bits_add_no_capability_effect_authority() {
         assert_eq!(
             scope.allows_effect("records.read"),
             guest.allows_effect("records.read")
+        );
+    }
+
+    // Network, file, and process access are not participant scope bits and
+    // cannot be added through the role/scope wire parser.
+    for external_authority in ["network", "file", "process"] {
+        assert!(
+            WorldScopes::from_names([external_authority]).is_none(),
+            "{external_authority} must not be a grantable participant scope"
         );
     }
 
@@ -249,18 +259,20 @@ async fn a_builder_capability_installs_and_a_revoked_builder_is_denied() {
     );
 
     // A plain guest capability carries no BUILDER authority.
+    let guest_error = handle
+        .install_program_authorized(
+            guest_token,
+            "guest-hash".to_owned(),
+            1,
+            None,
+            None,
+            Box::<Empty>::default(),
+        )
+        .await
+        .expect_err("guest capability must be denied the authorized install");
     assert!(
-        handle
-            .install_program_authorized(
-                guest_token,
-                "guest-hash".to_owned(),
-                1,
-                None,
-                Box::<Empty>::default(),
-            )
-            .await
-            .is_err(),
-        "guest capability must be denied the authorized install"
+        is_capability_denied(&guest_error),
+        "the denial must be classifiable from the command's own error: {guest_error:#}"
     );
     assert!(
         !journal
@@ -271,13 +283,20 @@ async fn a_builder_capability_installs_and_a_revoked_builder_is_denied() {
     );
 
     // The builder's live capability installs, attributed to the builder ID
-    // the actor derived from the capability.
+    // the actor derived from the capability. The caller's trust decision
+    // is carried through to the durable install event, as on the admin
+    // path: a verified publisher stays attributable in the journal.
+    let trust = TrustDecision {
+        basis: TrustBasis::SignatureVerified,
+        publisher: Some("publisher-key".to_owned()),
+    };
     handle
         .install_program_authorized(
             builder_token,
             "builder-hash".to_owned(),
             7,
             None,
+            Some(trust.clone()),
             Box::<Empty>::default(),
         )
         .await
@@ -290,6 +309,18 @@ async fn a_builder_capability_installs_and_a_revoked_builder_is_denied() {
                 if *by == builder.id && module_hash == "builder-hash" && *seed == 7
         )),
         "expected a BuilderInstalled audit record naming the derived builder: {entries:?}"
+    );
+    assert!(
+        entries.iter().any(|entry| matches!(
+            entry,
+            JournalEntry::Committed { event }
+                if matches!(
+                    &event.kind,
+                    WorldEventKind::ProgramInstalled { trust: recorded, .. }
+                        if recorded.as_ref() == Some(&trust)
+                )
+        )),
+        "the authorized install must journal the caller's trust decision: {entries:?}"
     );
 
     handle.shutdown().await.unwrap();
@@ -319,12 +350,13 @@ async fn a_revoked_moderator_capability_is_denied() {
     // authorizing at the actor boundary (the check is at mutation time,
     // not at some earlier session check).
     assert!(handle.revoke(moderator.id).await.unwrap());
+    let revoke_error = handle
+        .revoke_authorized(moderator_token, victim.id)
+        .await
+        .expect_err("a revoked moderator capability must be denied");
     assert!(
-        handle
-            .revoke_authorized(moderator_token, victim.id)
-            .await
-            .is_err(),
-        "a revoked moderator capability must be denied"
+        is_capability_denied(&revoke_error),
+        "the denial must be classifiable from the command's own error: {revoke_error:#}"
     );
 
     handle.shutdown().await.unwrap();

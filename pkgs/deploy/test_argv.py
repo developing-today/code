@@ -74,21 +74,52 @@ def main(argv):
                 assert err_has in err, f"{label}: stderr lacks {err_has!r}: {err}"
 
         check("plain list", ["--registry", a, "list"], 0, out_has="svc-a")
-        check("registry after subcommand", ["list", "--registry", a], 0, out_has="svc-a")
+        check(
+            "registry after subcommand", ["list", "--registry", a], 0, out_has="svc-a"
+        )
         check("registry= form", ["--registry=" + a, "list"], 0, out_has="svc-a")
         check("env fallback", ["list"], 0, out_has="svc-b", env=b)
-        check("flag overrides env", ["--registry", a, "list"], 0, out_has="svc-a", env=b)
+        check(
+            "flag overrides env", ["--registry", a, "list"], 0, out_has="svc-a", env=b
+        )
         # Unknown targets exit 1 on current main: slice 2 replaced the
         # slice-1 "not implemented" exit 2, and test_deploy_slice2.py
         # (CliTests.test_cli_unknown_target) pins exit 1.
         check("unknown subcommand", ["--registry", a, "bogus"], 1, err_has="'bogus'")
         check("no args", [], 2)
-        check("trailing junk", ["--registry", a, "list", "extra-junk"], 2, err_has="'extra-junk'")
-        check("typo flag", ["--registry", a, "list", "--dry-rnu"], 2, err_has="'--dry-rnu'")
-        check("duplicate registry", ["--registry", a, "--registry", b, "list"], 2, err_has="more than once")
-        check("duplicate registry reversed", ["--registry", b, "list", "--registry", a], 2, err_has="more than once")
-        check("duplicate mixed forms", ["--registry=" + a, "--registry", b, "list"], 2, err_has="more than once")
-        check("registry missing path", ["list", "--registry"], 2, err_has="needs a path")
+        check(
+            "trailing junk",
+            ["--registry", a, "list", "extra-junk"],
+            2,
+            err_has="'extra-junk'",
+        )
+        check(
+            "typo flag",
+            ["--registry", a, "list", "--dry-rnu"],
+            2,
+            err_has="'--dry-rnu'",
+        )
+        check(
+            "duplicate registry",
+            ["--registry", a, "--registry", b, "list"],
+            2,
+            err_has="more than once",
+        )
+        check(
+            "duplicate registry reversed",
+            ["--registry", b, "list", "--registry", a],
+            2,
+            err_has="more than once",
+        )
+        check(
+            "duplicate mixed forms",
+            ["--registry=" + a, "--registry", b, "list"],
+            2,
+            err_has="more than once",
+        )
+        check(
+            "registry missing path", ["list", "--registry"], 2, err_has="needs a path"
+        )
         check("registry= empty", ["--registry=", "list"], 2, err_has="needs a path")
     print("deploy argv checks: ok")
     return 0

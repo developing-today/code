@@ -1473,7 +1473,23 @@ img.ProseMirror-separator {
   padding: 0.75em 1.25em;
   border-top: 1px solid oklch(var(--bc) / 0.1);
   display: flex;
+  gap: 0.5em;
   justify-content: flex-end;
+}
+
+.pm-image-browser-load-more {
+  padding: 0.4em 1.2em;
+  background: oklch(var(--b2));
+  color: oklch(var(--bc));
+  border: 1px solid oklch(var(--bc) / 0.2);
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 0.9em;
+}
+
+.pm-image-browser-load-more:disabled {
+  opacity: 0.5;
+  cursor: wait;
 }
 
 .pm-image-browser-insert {

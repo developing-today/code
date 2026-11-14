@@ -39,7 +39,7 @@ part of this decision.
 - Two listeners, both address-shaped. `Server.Listen`
   (`pkgs/mcpx/internal/daemon/server.go:253`) binds a unix socket
   (`net.Listen("unix", …)`, :258) and a TCP host/port (`net.Listen("tcp",
-  …)`, :273) — nothing else. The serve loop already iterates a slice of
+…)`, :273) — nothing else. The serve loop already iterates a slice of
   `net.Listener`s (:313), which matters in §5: a transport that can hand
   back a `net.Listener` needs no surgery in the daemon.
 - One client setting, address-shaped. `daemon.endpoint`
@@ -47,21 +47,21 @@ part of this decision.
   unix socket, a URL points at a daemon on another machine, `unix:///path`
   targets a different local socket. No identity scheme exists.
 - No candidate is present. `grep -rn 'iroh|tsnet|libp2p' pkgs/mcpx/internal
-  pkgs/mcpx/cmd pkgs/mcpx/go.mod` at `528886eba`: zero hits.
+pkgs/mcpx/cmd pkgs/mcpx/go.mod` at `528886eba`: zero hits.
 
 ## 3. Criteria matrix
 
 Scored against §1. ● meets it, ◐ partially / with a real asterisk,
 ○ fails or fights it.
 
-| Criterion | iroh via cgo (`iroh-ffi`) | iroh as sidecar | `tsnet` (Tailscale) | `go-libp2p` |
-|---|---|---|---|---|
-| 1. Stable crypto identity | ● ed25519 NodeId is the address | ● same, via the sidecar's NodeId | ● tailnet node identity (WireGuard keypair, account-anchored device name); stable across networks/addresses | ● PeerId from the node's keypair |
-| 2. NAT traversal + relay fallback | ● hole punching + iroh relays | ● same | ● the most battle-tested of the four: STUN/hole-punching plus the global DERP relay network | ◐ DCUtR hole punching + Circuit Relay v2 exist, but relay capacity is bring-your-own/public-best-effort, and finding *your* peer (DHT/rendezvous) is the genuinely hard part |
-| 3. E2E encryption + mutual auth from identity | ● QUIC/TLS, peer is its key | ● same on the tunnel; the last hop (sidecar→unix socket) is local-trust | ● WireGuard end to end; the server learns the peer's tailnet identity (WhoIs), so mutual auth comes from enrolment | ● Noise/TLS with peer-id authentication |
-| 4. Pure-Go build / cross-compile / release cost (#158) | ○ **fails the constraint.** cgo + a Rust toolchain per platform; per iroh's own language docs the Go bindings are *community* FFI bindings — not officially supported, may lag iroh releases, and cover fewer platforms than any other binding. Also embeds a Rust async runtime in the Go process. | ◐ daemon stays pure Go, but the release gains a per-platform Rust binary: a second toolchain in the pipeline, version pairing between daemon and sidecar, and #158's matrix multiplies | ● a Go library (`tailscale.com/tsnet`). `tsnet.Server.Listen` returns a plain `net.Listener`; CGO_ENABLED=0 preserved; no new toolchain | ● pure Go, but the dependency tree is very large for one feature, and it lands in every binary whether used or not |
-| 5. Coordinator centralisation | ● none: discovery via DNS/pkarr-style records and public relays; no account | ● none, same | ○ by default the Tailscale coordination server is the control plane — the one genuine structural objection. Mitigation exists: Headscale (self-hosted control server, custom control URL), at the cost of running it | ● none: no coordinator; bootstrap/DHT only |
-| 6. Operational sharp edges | two runtimes, one process: panics and debugging cross the FFI boundary; binding lag is a standing risk | a second process to supervise, health-check and address; "mcpx supports iroh" really means "install a thing next to mcpx" | enrolment ceremony (auth key / login URL) for a headless daemon; both ends must be on the tailnet; a large (if mature) dependency | the sharpest edges of the four: relay scarcity, discovery bootstrap, fast-moving APIs, and the operator becomes the network engineer |
+| Criterion                                              | iroh via cgo (`iroh-ffi`)                                                                                                                                                                                                                                                                           | iroh as sidecar                                                                                                                                                                        | `tsnet` (Tailscale)                                                                                                                                                                                                  | `go-libp2p`                                                                                                                                                                  |
+| ------------------------------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 1. Stable crypto identity                              | ● ed25519 NodeId is the address                                                                                                                                                                                                                                                                     | ● same, via the sidecar's NodeId                                                                                                                                                       | ● tailnet node identity (WireGuard keypair, account-anchored device name); stable across networks/addresses                                                                                                          | ● PeerId from the node's keypair                                                                                                                                             |
+| 2. NAT traversal + relay fallback                      | ● hole punching + iroh relays                                                                                                                                                                                                                                                                       | ● same                                                                                                                                                                                 | ● the most battle-tested of the four: STUN/hole-punching plus the global DERP relay network                                                                                                                          | ◐ DCUtR hole punching + Circuit Relay v2 exist, but relay capacity is bring-your-own/public-best-effort, and finding _your_ peer (DHT/rendezvous) is the genuinely hard part |
+| 3. E2E encryption + mutual auth from identity          | ● QUIC/TLS, peer is its key                                                                                                                                                                                                                                                                         | ● same on the tunnel; the last hop (sidecar→unix socket) is local-trust                                                                                                                | ● WireGuard end to end; the server learns the peer's tailnet identity (WhoIs), so mutual auth comes from enrolment                                                                                                   | ● Noise/TLS with peer-id authentication                                                                                                                                      |
+| 4. Pure-Go build / cross-compile / release cost (#158) | ○ **fails the constraint.** cgo + a Rust toolchain per platform; per iroh's own language docs the Go bindings are _community_ FFI bindings — not officially supported, may lag iroh releases, and cover fewer platforms than any other binding. Also embeds a Rust async runtime in the Go process. | ◐ daemon stays pure Go, but the release gains a per-platform Rust binary: a second toolchain in the pipeline, version pairing between daemon and sidecar, and #158's matrix multiplies | ● a Go library (`tailscale.com/tsnet`). `tsnet.Server.Listen` returns a plain `net.Listener`; CGO_ENABLED=0 preserved; no new toolchain                                                                              | ● pure Go, but the dependency tree is very large for one feature, and it lands in every binary whether used or not                                                           |
+| 5. Coordinator centralisation                          | ● none: discovery via DNS/pkarr-style records and public relays; no account                                                                                                                                                                                                                         | ● none, same                                                                                                                                                                           | ○ by default the Tailscale coordination server is the control plane — the one genuine structural objection. Mitigation exists: Headscale (self-hosted control server, custom control URL), at the cost of running it | ● none: no coordinator; bootstrap/DHT only                                                                                                                                   |
+| 6. Operational sharp edges                             | two runtimes, one process: panics and debugging cross the FFI boundary; binding lag is a standing risk                                                                                                                                                                                              | a second process to supervise, health-check and address; "mcpx supports iroh" really means "install a thing next to mcpx"                                                              | enrolment ceremony (auth key / login URL) for a headless daemon; both ends must be on the tailnet; a large (if mature) dependency                                                                                    | the sharpest edges of the four: relay scarcity, discovery bootstrap, fast-moving APIs, and the operator becomes the network engineer                                         |
 
 ## 4. Does #187 want iroh-blobs badly enough to pay for a sidecar? No.
 
@@ -126,7 +126,7 @@ Reasons, in the order they decided it:
    interface (below) means tsnet is a tenant, not a foundation.
 
 The interface is part of the recommendation, not an afterthought: the
-daemon should hold *transports* — objects that produce a `net.Listener`
+daemon should hold _transports_ — objects that produce a `net.Listener`
 and a dialer for an identity — with unix/TCP as the built-in address
 transports and tsnet as the first identity transport. That is what makes
 §5's fallbacks cheap if the world changes, and it is the same shape the
@@ -138,7 +138,7 @@ policy checks an identity at a transport boundary.
 - **More than one transport at once, or one at a time?** More than one,
   by design — the serve loop already holds several listeners, and unix +
   tsnet simultaneously is the obviously right default (local tools keep
-  the fast path). Ship and *enable* one identity transport first; the
+  the fast path). Ship and _enable_ one identity transport first; the
   surface each additional one adds is per-transport identity handling,
   not listener plumbing.
 - **Does the TUI work over a relayed connection?** Acceptably, with a
@@ -156,7 +156,7 @@ policy checks an identity at a transport boundary.
   phone-specific work exists in this design. Browser: **none** of the
   four candidates is reachable from a web page; that requirement means a
   hosted gateway/relay product, which is a different project. This doc
-  proceeds on *phone yes, browser no* — and flags the browser half as
+  proceeds on _phone yes, browser no_ — and flags the browser half as
   Drew's scope decision, escalated on #297 rather than silently assumed.
 - **`daemon.endpoint` scheme, or a new setting?** Grow the scheme. The
   setting already mixes forms (bare URL, `unix:///path`), so an identity
@@ -166,7 +166,7 @@ policy checks an identity at a transport boundary.
 - **If a sidecar is acceptable here, is it acceptable for the Roc
   platform host too?** Moot under this recommendation: no sidecar is
   adopted, so no precedent is set. A hypothetical second use must not be
-  counted in iroh-sidecar's favour today — two issues *possibly* wanting
+  counted in iroh-sidecar's favour today — two issues _possibly_ wanting
   a Rust artefact in future is not the same fact as one issue needing
   one now. The Roc question stands on its own when it is asked.
 

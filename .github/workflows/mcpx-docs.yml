@@ -19,6 +19,8 @@ name: mcpx docs
 # differ only in that one value (#1941).
 
 on:
+  push:
+    branches: [main]
   workflow_dispatch:
 
 permissions:

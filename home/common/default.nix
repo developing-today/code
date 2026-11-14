@@ -130,15 +130,6 @@ let
   # wrapper below execs it, and the wrapped package joins over it.
   opencodeCascade = inputs.openchamber.inputs.opencode.packages.${system}.opencode;
 
-  # The build the watchdog's build-identity check (code#8255) expects
-  # on the port — read from the name of the very package derivation
-  # the unit runs (opencodeCascade), so expectation and ExecStart
-  # resolve from one derivation and cannot drift apart.
-  watchdogExpectedVersion =
-    let
-      m = builtins.match "opencode-(.*)" inputs.openchamber.inputs.opencode.packages.${system}.opencode.name;
-    in
-    if m == null then "" else builtins.head m;
   # Drew's opencode wrapper -- formerly a standalone home.packages
   # entry (writeShellScriptBin "opencode"), logic unchanged:
   # Cloudflare env top-up and the stamp-gated sync-models
@@ -279,14 +270,16 @@ let
     CLAUDE_BIN = "${claude-code}/bin/claude";
     CODEX_BIN = "${latestCli.codex}/bin/codex";
     ANTIGRAVITY_BIN = "${pkgs.antigravity-cli}/bin/agy";
-    PATH = lib.makeBinPath [
-      inputs.opencode.packages.${system}.opencode
-      claude-code
-      latestCli.codex
-      pkgs.antigravity-cli
-      pkgs.git
-      pkgs.openssh
-    ];
+    PATH =
+      lib.makeBinPath [
+        inputs.opencode.packages.${system}.opencode
+        claude-code
+        latestCli.codex
+        pkgs.antigravity-cli
+        pkgs.git
+        pkgs.openssh
+      ]
+      + ":/home/user/.local/bin:/home/user/bin";
   };
   # The daemon's configuration (the former ~/code/.mcpx.json), and the
   # config file the mcpx module renders from it: reproduced here so
@@ -929,10 +922,18 @@ in
       Environment = [
         "OPENCODE_CONFIG_PATH=%h/.local/state/opencode/opencode-runtime.jsonc"
       ];
+      # #883: run sync-models from the checkout ($HOME/code/bin), not via
+      # a ${../../bin} store copy — the home layer is sourced from the
+      # flake source snapshot (lib.from-root -> inputs.self.outPath), so a
+      # store copy silently bakes whatever bin/ tree that snapshot held.
       ExecStart = toString (
         pkgs.writeShellScript "sync-models-run" ''
           export PATH="/run/current-system/sw/bin:$HOME/.gemini/bin:$HOME/.local/bin:$PATH"
-          exec ${pkgs.nodejs}/bin/node ${../../bin/sync-models.mjs}
+          if [ ! -f "$HOME/code/bin/sync-models.mjs" ]; then
+            echo "sync-models: $HOME/code/bin/sync-models.mjs not found — the developing-today/code checkout is required on this host" >&2
+            exit 1
+          fi
+          exec ${pkgs.nodejs}/bin/node "$HOME/code/bin/sync-models.mjs"
         ''
       );
     };
@@ -1113,9 +1114,6 @@ in
     # inherits them — the mcpx daemon receives them the same way.)
   };
 
-
-  services.opencode-watchdog.expectedVersion = watchdogExpectedVersion;
-
   services.opencode = {
     # enable comes from the cascade (mkDefault at each layer).
     #
@@ -1194,7 +1192,9 @@ in
         fi
       ''
     );
-    EnvironmentFile = "%h/.local/state/opencode/mistral-api-key.env";
+    # Let ExecStartPre run when the file is absent; systemd reads it again
+    # for ExecStart after the materializer has created it.
+    EnvironmentFile = "-%h/.local/state/opencode/mistral-api-key.env";
   };
 
   services.mcpx = {
@@ -1799,11 +1799,19 @@ in
         # native openai provider replaced the CLI bridge).
         (pkgs.writeShellScriptBin "sync-models" ''
           export PATH="/run/current-system/sw/bin:$HOME/.gemini/bin:$HOME/.local/bin:$PATH"
-          exec ${pkgs.nodejs}/bin/node ${../../bin/sync-models.mjs} "$@"
+          if [ ! -f "$HOME/code/bin/sync-models.mjs" ]; then
+            echo "sync-models: $HOME/code/bin/sync-models.mjs not found — the developing-today/code checkout is required on this host" >&2
+            exit 1
+          fi
+          exec ${pkgs.nodejs}/bin/node "$HOME/code/bin/sync-models.mjs" "$@"
         '')
         (pkgs.writeShellScriptBin "update-models" ''
           export PATH="/run/current-system/sw/bin:$HOME/.gemini/bin:$HOME/.local/bin:$PATH"
-          exec ${pkgs.nodejs}/bin/node ${../../bin/sync-models.mjs} "$@"
+          if [ ! -f "$HOME/code/bin/sync-models.mjs" ]; then
+            echo "sync-models: $HOME/code/bin/sync-models.mjs not found — the developing-today/code checkout is required on this host" >&2
+            exit 1
+          fi
+          exec ${pkgs.nodejs}/bin/node "$HOME/code/bin/sync-models.mjs" "$@"
         '')
         # No standalone "opencode" script in this list: the CLI is
         # services.opencode.package -- the cascade build with the

@@ -28,7 +28,9 @@ export async function migrate(db: Client, schemaPath?: string): Promise<void> {
   if (columns.rows.length > 0) {
     const pk = columns.rows.filter((row) => Number(row.pk) > 0).sort((a, b) => Number(a.pk) - Number(b.pk));
     if (pk.length !== 2 || pk[0].name !== "id" || pk[1].name !== "kind") {
-      throw new Error("Legacy pmp_comments schema: rebuild the comment projection before starting; preserve pmp_links and other tables. See the projector README.");
+      throw new Error(
+        "Legacy pmp_comments schema: rebuild the comment projection before starting; preserve pmp_links and other tables. See the projector README.",
+      );
     }
   }
   const path = schemaPath ?? new URL("../schema.sql", import.meta.url).pathname;
@@ -307,7 +309,28 @@ export async function upsertComment(db: Client, c: Omit<CommentRow, "fetched_at"
             source_updated_at = excluded.source_updated_at,
             fetched_at = excluded.fetched_at
           WHERE pmp_comments.deleted = 0
-            AND excluded.source_updated_at >= pmp_comments.source_updated_at`,
+            AND (
+              excluded.source_updated_at >= pmp_comments.source_updated_at
+              -- One-time migration correction (#3087, Codex P2 on PR #7814):
+              -- review rows written before the submitted_at switch carry a
+              -- fabricated delivery-time source_updated_at LATER than their
+              -- true submitted_at, so the monotonic guard above would refuse
+              -- every later new-rule webhook and freeze those rows forever.
+              -- Allow exactly the correcting update: same review (same
+              -- submitted_at), existing row still fabricated
+              -- (source_updated_at > submitted_at), incoming row following
+              -- the new rule (source_updated_at = its submitted_at). After
+              -- the correction lands the row is self-consistent, this branch
+              -- can never fire for it again, and monotonicity resumes.
+              OR (
+                pmp_comments.kind = 'review'
+                AND pmp_comments.submitted_at IS NOT NULL
+                AND pmp_comments.source_updated_at > pmp_comments.submitted_at
+                AND excluded.submitted_at IS NOT NULL
+                AND excluded.submitted_at = pmp_comments.submitted_at
+                AND excluded.source_updated_at = excluded.submitted_at
+              )
+            )`,
     args: [
       c.id,
       c.ref,

@@ -53,7 +53,21 @@ class Result:
 def make_fake_run(events, *, create_rc=0, messages="[]"):
     """subprocess.run stub dispatching on argv shape, recording an
     ordered event log: ("create",) / ("bind", argv) / ("prompt", argv)
-    / ("messages",) / ("delete",) / ("session_get",)."""
+    / ("messages",) / ("delete",) / ("session_get",).
+
+    Stub-shape audit (#7772, #7770 Phase 4): every curl reply mirrors
+    the writer it stands in for — the claimant's one transport
+    (`_server_request`) invokes curl with `-w "\\n%{http_code}"`, so a
+    real reply is the body plus a trailing status line, and curl -s
+    exits 0 even on a 401/404. This stub therefore appends the status
+    line to every curl body and answers rc 0 for HTTP errors; only a
+    transport-level create failure uses create_rc. (The pre-audit stub
+    returned bare bodies with no status line, which the verified
+    transport correctly read as UNKNOWN — the reader's-assumption
+    shape #7760 classed as a defect.)"""
+
+    def reply(body, status):
+        return Result(0, body + "\n" + str(status))
 
     def fake_run(cmd, **kwargs):
         argv = [str(part) for part in cmd]
@@ -63,24 +77,31 @@ def make_fake_run(events, *, create_rc=0, messages="[]"):
             return Result(0, "{}")
         if argv[0] == "curl" and "-X" in argv and "DELETE" in argv:
             events.append(("delete",))
-            return Result(0, "")
+            return reply("", 200)
         if argv[0] == "curl" and joined.rstrip().endswith("/message"):
             events.append(("messages",))
-            return Result(0, messages)
+            return reply(messages, 200)
         if argv[0] == "curl" and joined.rstrip().endswith("/prompt"):
             events.append(("prompt", argv))
-            return Result(0, "")
+            return reply("", 200)
         if argv[0] == "curl" and "-X" in argv and "POST" in argv:
             events.append(("create",))
             if create_rc != 0:
                 return Result(create_rc, "", "server unavailable")
-            return Result(0, json.dumps({
-                "id": "ses_new1",
-                "location": {"directory": str(claimant.PRIMARY_CLONE)},
-            }))
+            return reply(
+                json.dumps(
+                    {
+                        "id": "ses_new1",
+                        "location": {"directory": str(claimant.PRIMARY_CLONE)},
+                    }
+                ),
+                200,
+            )
         if argv[0] == "curl" and "/api/session/" in joined:
             events.append(("session_get",))
-            return Result(0, json.dumps({"error": "session not found"}))
+            # The v2 server's shape for a missing session: a 404 with
+            # an error body (the "gone" verdict's only lawful source).
+            return reply(json.dumps({"error": "session not found"}), 404)
         return Result(0, "")
 
     return fake_run
@@ -114,10 +135,17 @@ CANDIDATE = {
 
 
 def run_launch(events, *, labels=set(), create_rc=0):
-    with patch.object(claimant, "run_poll",
-                      side_effect=lambda: {"candidates": [copy.deepcopy(CANDIDATE)]}), \
-         patch.object(claimant, "_github_issue_labels", return_value=set(labels)), \
-         patch.object(claimant.subprocess, "run", make_fake_run(events, create_rc=create_rc)):
+    with (
+        patch.object(
+            claimant,
+            "run_poll",
+            side_effect=lambda: {"candidates": [copy.deepcopy(CANDIDATE)]},
+        ),
+        patch.object(claimant, "_github_issue_labels", return_value=set(labels)),
+        patch.object(
+            claimant.subprocess, "run", make_fake_run(events, create_rc=create_rc)
+        ),
+    ):
         return claimant.launch_step("live", 3)
 
 
@@ -161,11 +189,17 @@ class TestLaunch(unittest.TestCase):
 
     def test_unreadable_labels_fail_closed(self):
         events = []
-        with patch.object(claimant, "run_poll",
-                          side_effect=lambda: {"candidates": [copy.deepcopy(CANDIDATE)]}), \
-             patch.object(claimant, "_github_issue_labels",
-                          side_effect=RuntimeError("gh down")), \
-             patch.object(claimant.subprocess, "run", make_fake_run(events)):
+        with (
+            patch.object(
+                claimant,
+                "run_poll",
+                side_effect=lambda: {"candidates": [copy.deepcopy(CANDIDATE)]},
+            ),
+            patch.object(
+                claimant, "_github_issue_labels", side_effect=RuntimeError("gh down")
+            ),
+            patch.object(claimant.subprocess, "run", make_fake_run(events)),
+        ):
             launched, skips = claimant.launch_step("live", 3)
         self.assertEqual(launched, [])
         self.assertEqual(len(skips), 1)
@@ -190,15 +224,22 @@ class TestSupervision(unittest.TestCase):
         def fake_fetch(queue):
             return [dict(BOUND_ROW)] if queue == claimant.QUEUES[0] else []
 
-        with patch.object(poll_mod, "fetch_claimed_rows", side_effect=fake_fetch), \
-             patch.object(claimant.subprocess, "run", make_fake_run(events)):
+        with (
+            patch.object(poll_mod, "fetch_claimed_rows", side_effect=fake_fetch),
+            patch.object(claimant.subprocess, "run", make_fake_run(events)),
+        ):
             recovered = claimant.supervision_step("live")
 
-        self.assertEqual(recovered, [{
-            "task_id": 4242,
-            "session_id": "ses_gone",
-            "reason": "zero_message",
-        }])
+        self.assertEqual(
+            recovered,
+            [
+                {
+                    "task_id": 4242,
+                    "session_id": "ses_gone",
+                    "reason": "zero_message",
+                }
+            ],
+        )
         kinds = [e[0] for e in events]
         self.assertLess(kinds.index("messages"), kinds.index("delete"))
         self.assertLess(kinds.index("delete"), kinds.index("bind"))

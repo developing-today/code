@@ -24,6 +24,7 @@ const health: HealthView = {
     checkout: { state: "unknown", reason: "test fixture" },
     sections: [],
   },
+  quotaGatherer: null,
   jobs: {
     orchestration: { state: "unknown" },
     collector: { generatedAt: null, fileMtime: null, ageMs: null },
@@ -444,9 +445,7 @@ describe("overview reconciledInProgress ref guards (#6205)", () => {
     const d = withLinedUp([task({ ref: "goal_a243772844c3" as RefKey })]);
     expect(() => deriveOverview(d)).not.toThrow();
     const summary = deriveOverview(d);
-    expect(summary.inProgress.map((i) => i.ref)).not.toContain(
-      "goal_a243772844c3",
-    );
+    expect(summary.inProgress.map((i) => i.ref)).not.toContain("goal_a243772844c3");
     expect(summary.inProgress).toEqual([]);
   });
 
@@ -457,33 +456,23 @@ describe("overview reconciledInProgress ref guards (#6205)", () => {
   });
 
   test("an unsafe-integer title mention does not throw", () => {
-    const d = withLinedUp([
-      task({ title: "Fix developing-today/code#99999999999999999999 now" }),
-    ]);
+    const d = withLinedUp([task({ title: "Fix developing-today/code#99999999999999999999 now" })]);
     expect(() => deriveOverview(d)).not.toThrow();
     expect(deriveOverview(d).inProgress).toEqual([]);
   });
 
   test("a valid task.ref still yields an in-progress row with its GitHub URL", () => {
-    const d = withLinedUp([
-      task({ ref: "developing-today/code#123" as RefKey }),
-    ]);
+    const d = withLinedUp([task({ ref: "developing-today/code#123" as RefKey })]);
     const summary = deriveOverview(d);
-    const row = summary.inProgress.find(
-      (i) => i.ref === "developing-today/code#123",
-    );
+    const row = summary.inProgress.find((i) => i.ref === "developing-today/code#123");
     expect(row?.signals).toEqual(["active-session"]);
     expect(row?.url).toBe("https://github.com/developing-today/code/issues/123");
   });
 
   test("a valid plain title mention still yields an in-progress row", () => {
-    const d = withLinedUp([
-      task({ title: "Work on developing-today/code#124 today" }),
-    ]);
+    const d = withLinedUp([task({ title: "Work on developing-today/code#124 today" })]);
     const summary = deriveOverview(d);
-    const row = summary.inProgress.find(
-      (i) => i.ref === "developing-today/code#124",
-    );
+    const row = summary.inProgress.find((i) => i.ref === "developing-today/code#124");
     expect(row?.signals).toEqual(["active-session"]);
     expect(row?.url).toBe("https://github.com/developing-today/code/issues/124");
   });
@@ -494,8 +483,6 @@ describe("overview reconciledInProgress ref guards (#6205)", () => {
       task({ ref: "developing-today/code#125" as RefKey, title: "Real work" }),
     ]);
     const summary = deriveOverview(d);
-    expect(summary.inProgress.map((i) => i.ref)).toEqual([
-      "developing-today/code#125",
-    ]);
+    expect(summary.inProgress.map((i) => i.ref)).toEqual(["developing-today/code#125"]);
   });
 });

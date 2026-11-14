@@ -37,8 +37,8 @@ Keycloak/Auth0/Entra — or only **point at** one?
   (`internal/conformance/requirements.json`, which catalogues the spec,
   not an implementation).
 - **The only auth package is outbound.** `pkgs/mcpx/internal/mcpauth/
-  mcpauth.go:1-18`: "Package mcpauth resolves credentials for a server"
-  — bearer/basic/header credentials mcpx presents *to* upstream servers.
+mcpauth.go:1-18`: "Package mcpauth resolves credentials for a server"
+  — bearer/basic/header credentials mcpx presents _to_ upstream servers.
   Of the full OAuth flow it says only that the third case has "a place
   to attach" (`mcpauth.go:17`), because "building OAuth before anything
   needs it would be guessing at a shape".
@@ -57,13 +57,13 @@ Keycloak/Auth0/Entra — or only **point at** one?
 Scored against the constraints #345 names. ● meets it, ◐ partially,
 ○ fails or fights it.
 
-| Criterion | Embed a small AS | Point at external AS only | Hybrid (point-at + #338 low end) |
-|---|---|---|---|
-| 1. Single-user install friction | ● zero extra services; tokens out of the box | ○ standing up Keycloak for a laptop daemon is the friction that created this issue; most users will skip it and run unprotected | ● unix socket by default, one bearer token (#338) when a TCP listener needs a gate — no IdP to install |
-| 2. Conformance surface | ◐ could run the `authorization` conformance command, but must then honour RFC 8414 metadata, authorization-code + PKCE, and a registration story (DCR is deprecated in 2026-07-28; CIMD requires fetching and trusting client metadata documents — an SSRF-shaped surface) | ◐ mcpx's obligations are the client/resource-server rows (#253); the AS-side rows belong to the external AS, which already passes them | ◐ same as point-at; the AS-side conformance commands stay unrun, deliberately (§5) |
-| 3. Maintenance / security cost of issuing tokens | ○ the worst code a small project can own: signing-key custody, token storage, expiry, revocation, consent UI, redirect-URI validation. A bug is not a bug, it is credential forgery for every install. The cost is forever, not at ship time | ● mcpx never issues a token; it validates other issuers' tokens via JWKS (#253), a read-only, well-trodden surface | ● same as point-at |
-| 4. Fit with #338 as the low-end option | ○ duplicates it: an embedded AS whose only user, client, and resource server are the same person on the same host is a token machine standing in for one shared secret | ◐ leaves the low end empty — bearer or nothing is not offered by this option alone | ● #338 *is* the low end; OAuth is the high end; nothing in between needs building |
-| 5. What the security actually buys (single-user) | ○ nothing separable: AS and resource server would be the same process on the same host, so the signing key lives with the thing it protects, and "consent" is the user approving themselves. OAuth's value — delegated authorization for a third party — does not exist in this topology | ● real delegation where it exists: fleet/team installs get SSO, MFA, group claims and revocation from an IdP mcpx could never grow | ● both: delegation where it exists, a secret where it doesn't need to be more |
+| Criterion                                        | Embed a small AS                                                                                                                                                                                                                                                                         | Point at external AS only                                                                                                              | Hybrid (point-at + #338 low end)                                                                       |
+| ------------------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------ |
+| 1. Single-user install friction                  | ● zero extra services; tokens out of the box                                                                                                                                                                                                                                             | ○ standing up Keycloak for a laptop daemon is the friction that created this issue; most users will skip it and run unprotected        | ● unix socket by default, one bearer token (#338) when a TCP listener needs a gate — no IdP to install |
+| 2. Conformance surface                           | ◐ could run the `authorization` conformance command, but must then honour RFC 8414 metadata, authorization-code + PKCE, and a registration story (DCR is deprecated in 2026-07-28; CIMD requires fetching and trusting client metadata documents — an SSRF-shaped surface)               | ◐ mcpx's obligations are the client/resource-server rows (#253); the AS-side rows belong to the external AS, which already passes them | ◐ same as point-at; the AS-side conformance commands stay unrun, deliberately (§5)                     |
+| 3. Maintenance / security cost of issuing tokens | ○ the worst code a small project can own: signing-key custody, token storage, expiry, revocation, consent UI, redirect-URI validation. A bug is not a bug, it is credential forgery for every install. The cost is forever, not at ship time                                             | ● mcpx never issues a token; it validates other issuers' tokens via JWKS (#253), a read-only, well-trodden surface                     | ● same as point-at                                                                                     |
+| 4. Fit with #338 as the low-end option           | ○ duplicates it: an embedded AS whose only user, client, and resource server are the same person on the same host is a token machine standing in for one shared secret                                                                                                                   | ◐ leaves the low end empty — bearer or nothing is not offered by this option alone                                                     | ● #338 _is_ the low end; OAuth is the high end; nothing in between needs building                      |
+| 5. What the security actually buys (single-user) | ○ nothing separable: AS and resource server would be the same process on the same host, so the signing key lives with the thing it protects, and "consent" is the user approving themselves. OAuth's value — delegated authorization for a third party — does not exist in this topology | ● real delegation where it exists: fleet/team installs get SSO, MFA, group claims and revocation from an IdP mcpx could never grow     | ● both: delegation where it exists, a secret where it doesn't need to be more                          |
 
 The decisive rows are 3 and 5. Embedding fails them not on effort but
 on kind: it adds the highest-blast-radius surface in the codebase to
@@ -119,7 +119,7 @@ Explicitly, as #345's acceptance requires:
 Reopen this question only when a concrete caller exists that the hybrid
 cannot serve — specifically: multiple distinct clients, owned by
 different people, needing delegated, revocable access to one shared
-mcpx daemon *without* any external IdP being acceptable in that
+mcpx daemon _without_ any external IdP being acceptable in that
 deployment. If that day comes, the embedded design to evaluate first is
 the narrow one: loopback-only, a single pre-registered client, CIMD for
 any additional clients, authorization-code + PKCE only, no DCR. Until
@@ -128,4 +128,4 @@ prices.
 
 No question in this decision needs Drew: the one genuinely owner-shaped
 choice — adopting a specific external IdP as a fleet standard — is
-explicitly *not* made here, so nothing is escalated.
+explicitly _not_ made here, so nothing is escalated.

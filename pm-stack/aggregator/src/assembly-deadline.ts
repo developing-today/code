@@ -1,5 +1,14 @@
 const ASSEMBLY_DEADLINE_MS = 10_000;
-const MAX_STALE_AGE_MS = 5 * 60_000;
+// #5082 (2026-11-14): the last-good staleness cap was 5 minutes, but
+// the bounded routes' steadiest reader is an hourly watch — at that
+// cadence the last good response is routinely ~1 h old when an
+// assembly blows the deadline, so the cap converted every slow
+// first pass into a hard 503 instead of the marked-stale serve this
+// fallback exists for (steward runs 378/379). A stale response is
+// explicitly marked (x-aggregator-stale header; stale/staleReason in
+// JSON bodies), so a 30-minute cap stays honest while covering the
+// observed failure windows; anything older still 503s.
+const MAX_STALE_AGE_MS = 30 * 60_000;
 const MAX_CACHED_RESPONSE_BYTES = 2 * 1024 * 1024;
 const MAX_CACHE_ENTRIES = 128;
 
@@ -10,6 +19,10 @@ export const BOUNDED_DASHBOARD_PATHS: ReadonlySet<string> = new Set([
   "/api/overview.json",
   "/frag/overview",
   "/program",
+  // #9781: the JSON twin joins its HTML sibling — pool-quota-steward
+  // run 369 measured an unbounded 17.83 s first pass on this route
+  // while every bounded route at least answered stale-or-503.
+  "/api/program.json",
 ]);
 
 interface CachedResponse {
@@ -39,6 +52,12 @@ export function createDashboardResponseDeadline(options: DeadlineOptions = {}) {
   const maxCacheEntries = options.maxCacheEntries ?? MAX_CACHE_ENTRIES;
   const now = options.now ?? Date.now;
   const lastGood = new Map<string, CachedResponse>();
+  // Single-flight (#7065): one in-flight assemble() run per bounded key,
+  // shared by every overlapping waiter. The entry lives until the run
+  // settles AND its last-good seeding has finished, so a request that
+  // arrives after one waiter's deadline — while the run is still going —
+  // joins the same run instead of starting a second full assembly.
+  const inFlight = new Map<string, Promise<Response>>();
 
   if (!Number.isFinite(timeoutMs) || timeoutMs <= 0) throw new Error("timeoutMs must be positive");
 
@@ -68,7 +87,30 @@ export function createDashboardResponseDeadline(options: DeadlineOptions = {}) {
     if (request.method !== "GET" || !BOUNDED_DASHBOARD_PATHS.has(url.pathname)) return assemble();
 
     const key = `${url.pathname}${url.search}`;
-    const pending = Promise.resolve().then(assemble);
+    let pending = inFlight.get(key);
+    if (!pending) {
+      // The shared run owns last-good seeding exactly once, on settle,
+      // whether or not any individual waiter is still within its deadline.
+      // A seeding failure must not turn a successful assembly into an
+      // error for the waiters, so it is swallowed here (the cache simply
+      // stays as it was). A rejected assemble() still rejects the shared
+      // promise, so every waiter observes the ordinary error path and the
+      // cleared entry lets the next request start a fresh run.
+      pending = (async () => {
+        const response = await Promise.resolve().then(assemble);
+        try {
+          await remember(key, response);
+        } catch {
+          // Cache seeding is best-effort; the response itself is unaffected.
+        }
+        return response;
+      })();
+      inFlight.set(key, pending);
+      const clearInFlight = () => {
+        if (inFlight.get(key) === pending) inFlight.delete(key);
+      };
+      void pending.then(clearInFlight, clearInFlight);
+    }
     let timer: ReturnType<typeof setTimeout> | undefined;
     const timeout = new Promise<{ kind: "timeout" }>((resolve) => {
       timer = setTimeout(() => resolve({ kind: "timeout" }), timeoutMs);
@@ -76,22 +118,21 @@ export function createDashboardResponseDeadline(options: DeadlineOptions = {}) {
 
     let result: { kind: "timeout" } | { kind: "response"; response: Response };
     try {
-      result = await Promise.race([
-        pending.then((response) => ({ kind: "response" as const, response })),
-        timeout,
-      ]);
+      result = await Promise.race([pending.then((response) => ({ kind: "response" as const, response })), timeout]);
     } finally {
       if (timer !== undefined) clearTimeout(timer);
     }
 
     if (result.kind === "response") {
-      await remember(key, result.response);
-      return result.response;
+      // Each waiter gets its own clone: the shared Response body can only
+      // be consumed once, but every coalesced waiter must receive the full
+      // representation. The shared run already seeded the last-good cache.
+      return result.response.clone();
     }
 
-    // Keep the late work observed and let a successful completion improve the
-    // next request, without delaying this request's bounded fallback.
-    void pending.then((response) => remember(key, response)).catch(() => undefined);
+    // This waiter is out of time, but the shared run keeps going: it seeds
+    // the last-good cache on settle (once, in the shared wrapper above),
+    // improving the next request without delaying this bounded fallback.
     const cached = lastGood.get(key);
     if (cached && now() - cached.storedAt <= maxStaleAgeMs) {
       return staleResponse(url.pathname, cached, timeoutMs);

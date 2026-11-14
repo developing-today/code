@@ -1,17 +1,19 @@
 import { describe, expect, test } from "bun:test";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   buildDigest,
+  digestArchiveName,
   digestText,
   listDigestArchives,
   readDigestArchive,
   writeDigestArchive,
   type DigestInputs,
 } from "../src/digest.ts";
+import { renderDigest } from "../src/render.ts";
 import type { NeedsDrewCensus } from "../src/needs-drew.ts";
-import type { ProjectPoolItem, ProvenanceDetail, QuotaView } from "../src/model.ts";
+import type { ProjectPoolItem, Provenance, ProvenanceDetail, QuotaView } from "../src/model.ts";
 
 // Fixture tests for the scheduled digest (#1278): sections are built
 // from the canonical projection only, every item is linked, the header
@@ -265,6 +267,29 @@ describe("buildDigest", () => {
     expect(outlook.staleNote).toContain("Down");
   });
 
+  test("quota outlook marks a lapsed-only provider degraded (#8124)", () => {
+    const lapsed: QuotaView = {
+      ...quota,
+      pools: [
+        {
+          id: "pool-lapsed",
+          provider: "Lapsed",
+          plan: "Plan",
+          state: "lapsed",
+          freshness: { measuredAt: "2026-11-02T06:00:00Z", source: "gatherer", state: "lapsed" },
+          windows: [
+            { name: "weekly", unit: "tokens", limit: 1000, used: 100, resetsAt: "2026-11-09T00:00:00Z", percent: 10 },
+          ],
+        },
+      ],
+    };
+    const d = buildDigest(inputs({ quota: lapsed }));
+    const outlook = section(d, "quota");
+    expect(outlook.stale).toBe(true);
+    expect(outlook.staleNote).toContain("Lapsed");
+    expect(outlook.staleNote).toContain("provider reads degraded");
+  });
+
   test("chat text states freshness and links every section item", () => {
     const text = digestText(buildDigest(inputs()));
     expect(text).toContain("PM daily digest — 2026-11-02");
@@ -290,6 +315,113 @@ describe("digest archive", () => {
       await writeDigestArchive(dir, weekly);
       const list = await listDigestArchives(dir);
       expect(list).toContainEqual({ kind: "weekly", date: "2026-11-02", route: "/digest?date=2026-11-02&kind=weekly" });
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  // Oracle (#6506): the renderers must never throw on anything the
+  // reader accepts — so every archive shape renderDigest/digestText
+  // would throw on must read as absent (null), exactly like a missing
+  // file, and /api/digest.json keeps its 404 for those dates.
+  test("malformed archives read as absent, never as a Digest the renderers throw on", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "digest-archive-"));
+    try {
+      const valid = buildDigest(inputs());
+      const breakers: [string, (d: Record<string, unknown>) => void][] = [
+        [
+          "sections contains null",
+          (d) => {
+            d.sections = [null];
+          },
+        ],
+        [
+          "section items missing",
+          (d) => {
+            delete (d.sections as Record<string, unknown>[])[0]!.items;
+          },
+        ],
+        [
+          "section items not an array",
+          (d) => {
+            (d.sections as Record<string, unknown>[])[0]!.items = 42;
+          },
+        ],
+        [
+          "section item is null",
+          (d) => {
+            (d.sections as Record<string, unknown>[])[0]!.items = [null];
+          },
+        ],
+        [
+          "item ref not a string",
+          (d) => {
+            (d.sections as Record<string, unknown>[])[0]!.items = [{ ref: 1, title: "t", url: "u", note: "n" }];
+          },
+        ],
+        [
+          "freshness missing",
+          (d) => {
+            delete d.freshness;
+          },
+        ],
+        [
+          "freshness entry is null",
+          (d) => {
+            d.freshness = [null];
+          },
+        ],
+        [
+          "freshness ageMs not a number",
+          (d) => {
+            d.freshness = [{ facet: "items", state: "live", ageMs: "old" }];
+          },
+        ],
+        [
+          "generatedAt missing",
+          (d) => {
+            delete d.generatedAt;
+          },
+        ],
+        [
+          "windowHours not a number",
+          (d) => {
+            d.windowHours = "24";
+          },
+        ],
+        [
+          "kind not a digest kind",
+          (d) => {
+            d.kind = "monthly";
+          },
+        ],
+      ];
+      for (const [name, spoil] of breakers) {
+        const raw = JSON.parse(JSON.stringify(valid)) as Record<string, unknown>;
+        spoil(raw);
+        await writeFile(join(dir, digestArchiveName("daily", "2026-11-02")), `${JSON.stringify(raw)}\n`, "utf8");
+        expect(await readDigestArchive(dir, "2026-11-02"), name).toBeNull();
+      }
+      // Control: the unbroken archive still round-trips and both
+      // renderers render it without throwing.
+      await writeDigestArchive(dir, valid);
+      const back = await readDigestArchive(dir, "2026-11-02");
+      expect(back).not.toBeNull();
+      const prov: Provenance = {
+        board: "test",
+        roadmap: "test",
+        items: "test",
+        comments: "test",
+        quota: "test",
+        usage: "test",
+        attention: "test",
+        orchestration: "test",
+        dns: "test",
+        registry: "test",
+        aa: "test",
+      };
+      expect(() => digestText(back!)).not.toThrow();
+      expect(() => renderDigest(back!, [], prov)).not.toThrow();
     } finally {
       await rm(dir, { recursive: true, force: true });
     }

@@ -3,7 +3,8 @@
 // It owns no persistence or new feed contract.
 import { DONE_BOARD_WINDOW_MS, isRetiredDoneTableTitle } from "./board-policy.ts";
 import type { BoardItem, GhItem, OrchestrationSection, ProjectPoolItem, RefKey } from "./model.ts";
-import { isValidRef, refUrl } from "./model.ts";
+import { isValidRef, refUrl, refsInText } from "./model.ts";
+import { projectDisagreement } from "./projects.ts";
 import { FEED_STALE_MS } from "./feed.ts";
 import type { HealthView } from "./health.ts";
 
@@ -23,6 +24,10 @@ export interface QueueRow {
   horizon?: string;
   why?: string;
   source: string;
+  /** Which in-progress signals fired for this row (reconciled set only). */
+  signals?: InProgressSignal[];
+  /** Project Status vs derived state disagreement, when they clash. */
+  disagreement?: { project: string; derived: string } | null;
 }
 
 export interface QueueView {
@@ -77,8 +82,6 @@ const HORIZON_ORDER: Record<string, number> = {
   quarter: 4,
   incoming: 5,
 };
-const PRIORITY_ORDER: Record<string, number> = { urgent: 0, critical: 0, high: 1, normal: 2, medium: 2, low: 3 };
-
 function norm(value: string | null | undefined): string {
   return (value ?? "").trim().toLowerCase().replace(/[ _]+/g, "-");
 }
@@ -96,6 +99,119 @@ function repoForRef(ref: string | undefined, fallback = "unknown"): string {
 
 function statusMatches(status: string | null | undefined, choices: string[]): boolean {
   return choices.includes(norm(status));
+}
+
+export type InProgressSignal = "project-status" | "active-session" | "open-pr";
+
+export interface ReconciledInProgressItem {
+  ref: RefKey;
+  title: string;
+  repo: string;
+  url: string;
+  signals: InProgressSignal[];
+  disagreement: { project: string; derived: string } | null;
+}
+
+export interface ReconciledInProgressInput {
+  pool: ProjectPoolItem[];
+  board: BoardItem[];
+  items?: Map<RefKey, GhItem>;
+  orchestration?: OrchestrationSection | null;
+}
+
+export function reconciledInProgress(data: ReconciledInProgressInput): ReconciledInProgressItem[] {
+  const poolByRef = new Map(data.pool.map((item) => [item.ref, item]));
+  const rows = new Map<
+    RefKey,
+    {
+      ref: RefKey;
+      title: string;
+      repo: string;
+      url: string;
+      signals: Set<InProgressSignal>;
+    }
+  >();
+  const ensure = (ref: RefKey, title?: string, repo?: string, url?: string) => {
+    const project = poolByRef.get(ref);
+    const item = data.items?.get(ref);
+    const existing = rows.get(ref);
+    if (existing) return existing;
+    const hashAt = ref.lastIndexOf("#");
+    const row = {
+      ref,
+      title: project?.title ?? item?.title ?? title ?? ref,
+      repo: project?.repo ?? (hashAt >= 0 ? ref.slice(0, hashAt) : (repo ?? "")),
+      url: project?.issueUrl ?? item?.url ?? url ?? refUrl(ref),
+      signals: new Set<InProgressSignal>(),
+    };
+    rows.set(ref, row);
+    return row;
+  };
+  const signal = (ref: RefKey, kind: InProgressSignal, title?: string, repo?: string, url?: string) => {
+    ensure(ref, title, repo, url).signals.add(kind);
+  };
+
+  for (const item of data.pool) {
+    if (item.status === "In Progress") signal(item.ref, "project-status", item.title, item.repo, item.issueUrl);
+    if (item.contentKind === "pr" && item.state === "open")
+      signal(item.ref, "open-pr", item.title, item.repo, item.issueUrl);
+  }
+  for (const goal of data.orchestration?.goals ?? []) {
+    for (const task of goal.linedUp) {
+      if (task.status !== "in-progress") continue;
+      if (task.ref) {
+        // #6205: a lined-up ref is feed data, not necessarily a GitHub
+        // ref (goal ids, bare numbers). Signaling an invalid ref makes
+        // ensure() fall back to refUrl(), whose parseRef throws and
+        // kills the whole overview — skip refs the shared rule rejects.
+        if (isValidRef(task.ref)) signal(task.ref, "active-session", task.title);
+        continue;
+      }
+      for (const ref of refsInText(task.title)) signal(ref, "active-session", task.title);
+      for (const match of task.title.matchAll(/([\w.-]+\/[\w.-]+)#(\d+)/g)) {
+        const ref = `${match[1]}#${match[2]}`;
+        // #6205: same guard for title-scraped refs — \d+ admits
+        // numbers parseRef rejects as unsafe integers.
+        if (isValidRef(ref)) signal(ref, "active-session", task.title);
+      }
+    }
+  }
+  for (const boardItem of data.board) {
+    const openPr = boardItem.links.some((link) => {
+      const item = data.items?.get(link.ref);
+      return item?.kind === "pr" && item.state === "open";
+    });
+    for (const link of boardItem.links) {
+      const item = data.items?.get(link.ref);
+      const title = item?.title ?? boardItem.title;
+      const repo = item?.ref.slice(0, link.ref.lastIndexOf("#")) ?? boardItem.repo;
+      if (boardItem.source === "orchestrator" && boardItem.orchStatus === "in-progress") {
+        signal(link.ref, "active-session", title, repo, item?.url);
+      }
+      // A board card ties its linked issue and PR to the same work item.
+      if (openPr) signal(link.ref, "open-pr", title, repo, item?.url);
+    }
+  }
+
+  const additionalInProgressRefs = new Set<RefKey>();
+  for (const row of rows.values()) {
+    if (row.signals.has("active-session") || row.signals.has("open-pr")) additionalInProgressRefs.add(row.ref);
+  }
+  const signalOrder: InProgressSignal[] = ["project-status", "active-session", "open-pr"];
+  return [...rows.values()]
+    .map((row) => {
+      const project = poolByRef.get(row.ref);
+      const disagreement = project ? projectDisagreement(project, data.orchestration, additionalInProgressRefs) : null;
+      return {
+        ref: row.ref,
+        title: row.title,
+        repo: row.repo,
+        url: row.url,
+        signals: signalOrder.filter((item) => row.signals.has(item)),
+        disagreement,
+      };
+    })
+    .sort((a, b) => a.repo.localeCompare(b.repo) || a.title.localeCompare(b.title) || a.ref.localeCompare(b.ref));
 }
 
 export function buildQueueView(input: QueueViewInput): QueueView {
@@ -126,6 +242,8 @@ export function buildQueueView(input: QueueViewInput): QueueView {
     source: string;
     id?: string;
     url?: string;
+    signals?: InProgressSignal[];
+    disagreement?: { project: string; derived: string } | null;
   }): QueueRow => {
     const projectItem = args.ref ? poolByRef.get(args.ref) : undefined;
     const ghItem = args.ref ? itemByRef.get(args.ref) : undefined;
@@ -153,6 +271,8 @@ export function buildQueueView(input: QueueViewInput): QueueView {
       ...(args.horizon ? { horizon: args.horizon } : {}),
       ...(args.why ? { why: args.why } : {}),
       source: args.source,
+      ...(args.signals ? { signals: args.signals } : {}),
+      ...(args.disagreement !== undefined ? { disagreement: args.disagreement } : {}),
     };
   };
 
@@ -175,6 +295,8 @@ export function buildQueueView(input: QueueViewInput): QueueView {
         blockedBy: [...new Set([...(existing.blockedBy ?? []), ...(candidate.blockedBy ?? [])])],
         worker: candidate.worker ?? existing.worker,
         why: candidate.why ?? existing.why,
+        signals: candidate.signals ?? existing.signals,
+        disagreement: candidate.disagreement !== undefined ? candidate.disagreement : existing.disagreement,
       });
     }
     return [...byKey.values()];
@@ -222,6 +344,37 @@ export function buildQueueView(input: QueueViewInput): QueueView {
         }),
       ),
   ]);
+
+  // #1162 parity: /queue exposes the same reconciled in-progress set as the
+  // front-door overview — the union of Project Status=In Progress, active
+  // session lined-up work, and open PRs referencing the item — with the
+  // per-item signal list and any Project-vs-derived disagreement attached.
+  const reconciled = reconciledInProgress({
+    pool: input.pool,
+    board: input.board,
+    items: input.items,
+    orchestration: input.orchestration,
+  });
+  const reconciledByRef = new Map(reconciled.map((item) => [item.ref, item]));
+  const inProgressWithSignals = inProgress.map((existing) => {
+    const rec = existing.ref ? reconciledByRef.get(existing.ref) : undefined;
+    return rec ? { ...existing, signals: rec.signals, disagreement: rec.disagreement } : existing;
+  });
+  for (const rec of reconciled) {
+    if (inProgressWithSignals.some((existing) => existing.ref === rec.ref)) continue;
+    inProgressWithSignals.push(
+      row({
+        ref: rec.ref,
+        title: rec.title,
+        repo: rec.repo,
+        status: poolByRef.get(rec.ref)?.status ?? "in-progress",
+        source: "reconciled",
+        url: rec.url,
+        signals: rec.signals,
+        disagreement: rec.disagreement,
+      }),
+    );
+  }
 
   const blocked = unique([
     ...input.board
@@ -324,14 +477,13 @@ export function buildQueueView(input: QueueViewInput): QueueView {
       ),
   ]);
 
-  const nextCandidates: { row: QueueRow; horizonRank: number; priorityRank: number; sequence: number }[] = [];
+  const nextCandidates: { row: QueueRow; horizonRank: number; sequence: number }[] = [];
   let sequence = 0;
-  const addNext = (args: Parameters<typeof row>[0], horizon?: string, priority?: string) => {
+  const addNext = (args: Parameters<typeof row>[0], horizon?: string) => {
     const normalizedHorizon = norm(horizon);
     nextCandidates.push({
       row: row({ ...args, horizon: horizon ?? args.horizon }),
       horizonRank: HORIZON_ORDER[normalizedHorizon] ?? 5,
-      priorityRank: PRIORITY_ORDER[norm(priority)] ?? 2,
       sequence: sequence++,
     });
   };
@@ -392,13 +544,13 @@ export function buildQueueView(input: QueueViewInput): QueueView {
   }
   const nextUp = unique(
     nextCandidates
-      .sort((a, b) => a.horizonRank - b.horizonRank || a.priorityRank - b.priorityRank || a.sequence - b.sequence)
+      .sort((a, b) => a.horizonRank - b.horizonRank || a.sequence - b.sequence)
       .map((candidate) => candidate.row),
   );
 
   return {
     generatedAt: now.toISOString(),
-    inProgress,
+    inProgress: inProgressWithSignals,
     blocked,
     doneRecently: doneRecently.sort((a, b) => (b.updatedAt ?? "").localeCompare(a.updatedAt ?? "")),
     nextUp,

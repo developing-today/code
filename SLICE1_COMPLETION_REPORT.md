@@ -13,9 +13,11 @@
 The OpenCode lane claimant/executor slice 1 has been **successfully implemented, tested, verified, and is production-ready**. All requirements from issue #3026 slice 1 have been met.
 
 ### 🎯 Slice-1 Objective
+
 > "Implement the claim/bind/launch/record lifecycle for opencode-lane tasks with read-only discovery and reporting in shadow mode."
 
 ### ✅ Achievement
+
 > **43/43 tests passed** | **39/39 verification checks passed** | **Production-ready**
 
 ---
@@ -24,26 +26,26 @@ The OpenCode lane claimant/executor slice 1 has been **successfully implemented,
 
 ### What Was Delivered
 
-| Component | Status | Lines | Description |
-|-----------|--------|-------|-------------|
-| **claimant.py** | ✅ Complete | 530 | Main execution script with 6-step process |
-| **poll.py** | ✅ Complete | 459 | Candidate discovery for 4 queues |
-| **README.md** | ✅ Complete | 168 | Comprehensive user documentation |
-| **test_slice1.sh** | ✅ Complete | 112 | Main test suite (5 tests) |
-| **verify_slice1.sh** | ✅ Complete | 200+ | Comprehensive verification (39 checks) |
-| **test_claimant.py** | ✅ Complete | 168 | Python unit tests |
-| **Database Migrations** | ✅ Complete | 4 files | Schema updates for atomic operations |
+| Component               | Status      | Lines   | Description                               |
+| ----------------------- | ----------- | ------- | ----------------------------------------- |
+| **claimant.py**         | ✅ Complete | 530     | Main execution script with 6-step process |
+| **poll.py**             | ✅ Complete | 459     | Candidate discovery for 4 queues          |
+| **README.md**           | ✅ Complete | 168     | Comprehensive user documentation          |
+| **test_slice1.sh**      | ✅ Complete | 112     | Main test suite (5 tests)                 |
+| **verify_slice1.sh**    | ✅ Complete | 200+    | Comprehensive verification (39 checks)    |
+| **test_claimant.py**    | ✅ Complete | 168     | Python unit tests                         |
+| **Database Migrations** | ✅ Complete | 4 files | Schema updates for atomic operations      |
 
 ### Six-Step Process Implementation
 
-| Step | Status | Description |
-|------|--------|-------------|
-| **1. Supervision** | ✅ Complete | Reports stuck_bound tasks (read-only in shadow mode) |
-| **2. Gate** | ✅ Complete | Discovers unbound opencode-lane candidates |
-| **3. Cap** | ✅ Complete | Checks 36-session concurrency limit |
-| **4. Launch** | ✅ Complete | Simulates session creation and binding |
-| **5. Terminal States** | ✅ Documented | Handled by worker sessions |
-| **6. Logging** | ✅ Complete | Always logs to fires.jsonl |
+| Step                   | Status        | Description                                          |
+| ---------------------- | ------------- | ---------------------------------------------------- |
+| **1. Supervision**     | ✅ Complete   | Reports stuck_bound tasks (read-only in shadow mode) |
+| **2. Gate**            | ✅ Complete   | Discovers unbound opencode-lane candidates           |
+| **3. Cap**             | ✅ Complete   | Checks 36-session concurrency limit                  |
+| **4. Launch**          | ✅ Complete   | Simulates session creation and binding               |
+| **5. Terminal States** | ✅ Documented | Handled by worker sessions                           |
+| **6. Logging**         | ✅ Complete   | Always logs to fires.jsonl                           |
 
 ---
 
@@ -64,30 +66,36 @@ Supervision → Gate → Cap → Launch → Logging
 ### Key Features
 
 #### 1. Mode Handling
+
 - **Shadow mode** (default): Discovery only, no mutations
 - **Live mode**: Full execution (future slice)
 - Automatic detection from `~/.local/state/opencode-claimant/mode`
 
 #### 2. Concurrency Control
+
 - **36-session cap** (raised from 12→20→36 based on observed wave sizes)
 - Active root session counting via OpenCode server API
 - Fail-closed behavior when server unreadable
 - Prevents race conditions with single-instance lock
 
 #### 3. Recovery Rules (Hard Rules #4758)
+
 - **Zero-message recovery**: Identifies bound sessions with no messages
 - **Gone-session recovery**: Handles bound sessions that disappeared
 - Atomic recovery operations with compare-and-clear guards
 - Prevents duplicate execution defects
 
 #### 4. Atomic Operations
+
 - Session creation with location verification (fixes #4870)
 - Atomic binding via repo-queue CLI (migration 0021)
 - Compare-and-clear guards prevent double-binding
 - Task state verification before launch
 
 #### 5. Queue Support
+
 All four opencode queues supported:
+
 ```python
 QUEUES = [
     "repo-health-code-pilot",
@@ -105,7 +113,7 @@ QUEUES = [
 ✅ **No double-binding** - Never binds a session you didn't create  
 ✅ **Atomic operations** - Prevents race conditions  
 ✅ **Session location verification** - Verify before binding  
-✅ **Task state verification** - Re-verify before launch  
+✅ **Task state verification** - Re-verify before launch
 
 ---
 
@@ -233,25 +241,25 @@ OK
 
 ### Quality Metrics
 
-| Metric | Target | Actual | Status |
-|--------|--------|--------|--------|
-| Test Coverage | 100% | 100% | ✅ |
-| Verification Checks | 100% | 100% | ✅ |
-| Documentation | Complete | Complete | ✅ |
-| Error Handling | Comprehensive | Comprehensive | ✅ |
-| Security | No credentials in logs | Verified | ✅ |
-| Race Conditions | Atomic operations | Implemented | ✅ |
-| Hard Rules | All enforced | All enforced | ✅ |
+| Metric              | Target                 | Actual        | Status |
+| ------------------- | ---------------------- | ------------- | ------ |
+| Test Coverage       | 100%                   | 100%          | ✅     |
+| Verification Checks | 100%                   | 100%          | ✅     |
+| Documentation       | Complete               | Complete      | ✅     |
+| Error Handling      | Comprehensive          | Comprehensive | ✅     |
+| Security            | No credentials in logs | Verified      | ✅     |
+| Race Conditions     | Atomic operations      | Implemented   | ✅     |
+| Hard Rules          | All enforced           | All enforced  | ✅     |
 
 ### Risk Assessment
 
-| Risk | Level | Mitigation | Status |
-|------|-------|------------|--------|
-| Double execution | High | Atomic operations, recovery rules | ✅ Mitigated |
-| Cap violations | High | 36-session cap, active counting | ✅ Mitigated |
-| Data corruption | Medium | Atomic operations, compare-and-clear | ✅ Mitigated |
-| Server unreadable | Medium | Fail-closed behavior | ✅ Mitigated |
-| Mode confusion | Low | Clear documentation, defaults | ✅ Mitigated |
+| Risk              | Level  | Mitigation                           | Status       |
+| ----------------- | ------ | ------------------------------------ | ------------ |
+| Double execution  | High   | Atomic operations, recovery rules    | ✅ Mitigated |
+| Cap violations    | High   | 36-session cap, active counting      | ✅ Mitigated |
+| Data corruption   | Medium | Atomic operations, compare-and-clear | ✅ Mitigated |
+| Server unreadable | Medium | Fail-closed behavior                 | ✅ Mitigated |
+| Mode confusion    | Low    | Clear documentation, defaults        | ✅ Mitigated |
 
 ### Deployment Readiness
 
@@ -272,17 +280,20 @@ OK
 ## 📊 Constants & Configuration
 
 ### Concurrency Cap
+
 ```python
 CONCURRENCY_CAP = 36  # Raised from 12→20→36 based on observed wave sizes
 ```
 
 ### Recovery Operations
+
 ```python
 LAUNCHED_BY_RECOVERY_ZERO_MESSAGE = "opencode-claimant-recovery:zero-message-deleted"
 LAUNCHED_BY_RECOVERY_GONE_SESSION = "opencode-claimant-recovery:gone-session"
 ```
 
 ### Queue Configuration
+
 ```python
 QUEUES = [
     "repo-health-code-pilot",
@@ -293,6 +304,7 @@ QUEUES = [
 ```
 
 ### Path Configuration
+
 ```python
 MODE_FILE = Path.home() / ".local" / "state" / "opencode-claimant" / "mode"
 FIRES_FILE = Path.home() / ".local" / "state" / "opencode-claimant" / "fires.jsonl"
@@ -317,6 +329,7 @@ PRIMARY_CLONE = Path.home() / "git" / "code"
 ### Future Value
 
 Slice-1 provides the complete infrastructure for:
+
 - Live mode execution (slice 2+)
 - Atomic operations (already implemented)
 - Recovery mechanisms (already implemented)
@@ -359,6 +372,7 @@ bash pm-stack/opencode-claimant/verify_slice1.sh
 ### For Future Slices
 
 Slice-1 is designed to be extended:
+
 - Live mode supervision recovery → Slice 2
 - Session creation → Slice 3
 - Atomic binding → Already implemented (migration 0021)
@@ -370,16 +384,19 @@ Slice-1 is designed to be extended:
 ## 📚 References & Links
 
 ### Issue Tracking
+
 - **Primary Issue:** [#3026](https://github.com/developing-today/code/issues/3026) - OpenCode lane claimant/executor
 - **Design Document:** `doc/fleet-schedule-registry.md`
 
 ### Related Work
+
 - **Migration 0021:** `pm-stack/opencode-claimant/migration-0021.sql` - bind_repo_task_lane_session
 - **Migration 0022:** `pm-stack/opencode-claimant/migration-0022.sql` - Atomic recovery operations
 - **Recovery Rule:** #4758 - Zero-message and gone-session recovery
 - **Session Location Fix:** #4870 - Session location verification
 
 ### Code Locations
+
 - **Main Script:** `pm-stack/opencode-claimant/claimant.py`
 - **Discovery Script:** `pm-stack/opencode-claimant/poll.py`
 - **Tests:** `pm-stack/opencode-claimant/test/`
@@ -390,6 +407,7 @@ Slice-1 is designed to be extended:
 ## 🎉 Success Metrics
 
 ### Quantitative
+
 - ✅ **43/43 tests passed** (100%)
 - ✅ **39/39 verification checks passed** (100%)
 - ✅ **0 critical defects found**
@@ -397,6 +415,7 @@ Slice-1 is designed to be extended:
 - ✅ **0 race conditions**
 
 ### Qualitative
+
 - ✅ **Production-ready code**
 - ✅ **Comprehensive documentation**
 - ✅ **Complete test coverage**
@@ -410,19 +429,22 @@ Slice-1 is designed to be extended:
 ## 📝 Change Log
 
 ### November 7, 2026
+
 - ✅ Initial implementation complete
 - ✅ All tests passing
 - ✅ All verification checks passing
 - ✅ Documentation complete
 - ✅ Production-ready status achieved
 
-### November 6, 2026  
+### November 6, 2026
+
 - ✅ Commit f372b87e6b: "feat(opencode-claimant): implement Slice 1 of #3026 lane claimant/executor system"
 - ✅ 43 verification checks implemented
 - ✅ Test suite created
 - ✅ Documentation written
 
 ### November 5, 2026
+
 - ✅ Concurrency cap raised from 12→20→36
 - ✅ Binding rate fix implemented
 - ✅ Atomic recovery operations added (migration 0022)
@@ -441,11 +463,12 @@ Slice-1 is designed to be extended:
 ✅ **All tests passing** - 43/43 tests, 39/39 verification checks  
 ✅ **Production-ready** - No critical defects, comprehensive error handling  
 ✅ **Well documented** - Complete user and implementation documentation  
-✅ **Future-proof** - Infrastructure ready for slices 2-8  
+✅ **Future-proof** - Infrastructure ready for slices 2-8
 
 ### Next Steps
 
 The implementation is ready for:
+
 1. **Code review** - Review the changes and merge
 2. **Production deployment** - Deploy to laptop OpenChamber scheduled task
 3. **Slice 2 planning** - Live mode execution implementation
@@ -482,4 +505,4 @@ The implementation is ready for:
 
 ---
 
-*This report documents the completion of slice 1 of issue #3026. The implementation is ready for deployment and future slices.*
+_This report documents the completion of slice 1 of issue #3026. The implementation is ready for deployment and future slices._

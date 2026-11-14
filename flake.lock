@@ -128,6 +128,22 @@
       "original": {
         "owner": "ipetkov",
         "repo": "crane",
+        "rev": "01bc1d404a51a0a07e9d8759cd50a7903e218c82",
+        "type": "github"
+      }
+    },
+    "crane_2": {
+      "locked": {
+        "lastModified": 1766774972,
+        "narHash": "sha256-8qxEFpj4dVmIuPn9j9z6NTbU+hrcGjBOvaxTzre5HmM=",
+        "owner": "ipetkov",
+        "repo": "crane",
+        "rev": "01bc1d404a51a0a07e9d8759cd50a7903e218c82",
+        "type": "github"
+      },
+      "original": {
+        "owner": "ipetkov",
+        "repo": "crane",
         "type": "github"
       }
     },
@@ -1262,11 +1278,11 @@
         ]
       },
       "locked": {
-        "lastModified": 1791535654,
-        "narHash": "sha256-QFgGi6Wgh7AgqPFdAXEmkTgnR0B5M0omheIHvo/02dU=",
+        "lastModified": 1794561628,
+        "narHash": "sha256-oWtItM1eQqkp9OJXq2/Zo10Y9Vu9PDE6O8JRjj4+EkE=",
         "owner": "oxalica",
         "repo": "rust-overlay",
-        "rev": "4ca2963243427cb86bd6b4d9ca6010db0162a619",
+        "rev": "84edd48f141b0c8910dffdd0296ddd577e829132",
         "type": "github"
       },
       "original": {
@@ -2224,11 +2240,11 @@
         ]
       },
       "locked": {
-        "lastModified": 1794228084,
-        "narHash": "sha256-298W/X8tTZ0e80sjYkWfh2DbJ8TW8f7wBf3IG7NIujw=",
+        "lastModified": 1794499456,
+        "narHash": "sha256-NxJ26Nt1I+nClUEhSQMXviiSSNkjKWIXNFag7xSl2qs=",
         "owner": "developing-today-forks",
         "repo": "openchamber",
-        "rev": "e895968ba30b28f5345df0661d11278265505967",
+        "rev": "f33a2137b50658b21201c66b67c812e6faa4e0ff",
         "type": "github"
       },
       "original": {
@@ -2248,11 +2264,11 @@
         ]
       },
       "locked": {
-        "lastModified": 1794346696,
-        "narHash": "sha256-r6ZsB/lNctYfuD53tSkiqjhlrM8QH8fu/ajYezUWW2A=",
+        "lastModified": 1794657327,
+        "narHash": "sha256-KtOh4gnMr4Rhs01GC55/ERarmEFvu9m6gue5mHirnZg=",
         "owner": "developing-today-forks",
         "repo": "opencode",
-        "rev": "6a4793c05950256a18b5fc2734edfb8df7524dc3",
+        "rev": "4bcf07ab5d36aebb1758f2f861f3e0090735d264",
         "type": "github"
       },
       "original": {
@@ -2359,6 +2375,7 @@
         "chatgpt-desktop": "chatgpt-desktop",
         "clan-core": "clan-core",
         "claude-desktop": "claude-desktop",
+        "crane": "crane",
         "disko": "disko_2",
         "esp-dev": "esp-dev",
         "esp-dev-6": "esp-dev-6",
@@ -2428,7 +2445,7 @@
     },
     "rust-flake": {
       "inputs": {
-        "crane": "crane",
+        "crane": "crane_2",
         "nixpkgs": [
           "omnix",
           "nixpkgs"

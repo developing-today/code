@@ -1,0 +1,32 @@
+name: opencode-config-normalize-test
+
+# CI tier policy: see .github/ci-policy.md
+# #6065: normalize.sh is inlined into the live opencode-config-normalize
+# service (home/common/default.nix) and rewrites the live OpenCode config;
+# its regression suite (incl. the #2364 data-loss mirror) must run
+# automatically on changes to the package or the service definition.
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'pkgs/opencode-config-normalize/**'
+      - 'home/common/default.nix'
+      - '.github/workflows/opencode-config-normalize-test.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: opencode-config-normalize-test-${{ github.event_name == 'push' && github.run_id || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  normalize-suite:
+    name: "basic: OpenCode config-normalize regression suite"
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v7
+      - name: Run normalize regression suite
+        run: bash pkgs/opencode-config-normalize/normalize_test.sh

@@ -39,10 +39,7 @@ describe("deriveBurnHistory", () => {
   });
 
   test("a used drop also marks a reset boundary", () => {
-    const { segments } = deriveBurnHistory([
-      obs("claude", 900, T0, R1),
-      obs("claude", 5, T1, R1),
-    ]);
+    const { segments } = deriveBurnHistory([obs("claude", 900, T0, R1), obs("claude", 5, T1, R1)]);
     expect(segments).toEqual([{ provider: "meta", pool: "claude", from: T0, to: T0, tokens: 900 }]);
   });
 
@@ -63,9 +60,9 @@ describe("deriveBurnHistory", () => {
     expect(deriveBurnHistory([obs("a", 100, T0, R1)]).burnTokensPerMin.size).toBe(0);
     const stale = new Date(Date.parse(T0) + RATE_WINDOW_MS + 60000).toISOString();
     expect(deriveBurnHistory([obs("a", 100, T0, R1), obs("a", 200, stale, R1)]).burnTokensPerMin.size).toBe(0);
-    expect(
-      deriveBurnHistory([obs("a", 100, T0, R1, "usd"), obs("a", 200, T1, R1, "usd")]).burnTokensPerMin.size,
-    ).toBe(0);
+    expect(deriveBurnHistory([obs("a", 100, T0, R1, "usd"), obs("a", 200, T1, R1, "usd")]).burnTokensPerMin.size).toBe(
+      0,
+    );
     expect(deriveBurnHistory([obs("a", 100, T0, R1, "usd"), obs("a", 200, T1, R1, "usd")]).segments).toEqual([]);
     expect(deriveBurnHistory([]).segments).toEqual([]);
   });

@@ -439,8 +439,8 @@ export function prettifyModelName(modelId) {
         .split('-')
         .map((tok) => {
           if (!tok) return tok;
-          if (BRANDS[tok.toLowerCase()]) return BRANDS[tok.toLowerCase()];
-          if (ACRONYMS[tok.toLowerCase()]) return ACRONYMS[tok.toLowerCase()];
+          if (Object.hasOwn(BRANDS, tok.toLowerCase())) return BRANDS[tok.toLowerCase()];
+          if (Object.hasOwn(ACRONYMS, tok.toLowerCase())) return ACRONYMS[tok.toLowerCase()];
           if (/^v\d/i.test(tok)) return tok.toLowerCase();
           if (/^\d+$/.test(tok)) return tok;
           return tok.charAt(0).toUpperCase() + tok.slice(1);
@@ -482,7 +482,12 @@ function longestCommonPrefixSibling(modelId, siblingIds) {
 export function makeEntry(providerId, modelId, siblings, modelsDevEntry) {
   const ids = Object.keys(siblings);
   const entries = Object.values(siblings);
-  const suffix = commonSuffix(entries.map((e) => e?.name).filter(Boolean));
+  // Only string names contribute to the suffix: a truthy non-string name
+  // (number, boolean, object, array) is treated as a missing one, never
+  // fed to commonSuffix's .match (#6909).
+  const suffix = commonSuffix(
+    entries.map((e) => e?.name).filter((n) => typeof n === 'string' && n !== ''),
+  );
   const name = prettifyModelName(modelId) + (suffix ? ` ${suffix}` : '');
   // A cloneable sibling carries a variants OBJECT. A present-but-null (or
   // otherwise non-object) variants value is not cloneable: the branch gate

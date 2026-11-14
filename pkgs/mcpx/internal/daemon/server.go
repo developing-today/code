@@ -264,6 +264,10 @@ func NewServer(opts Options) (*Server, error) {
 			opts.Settings.Duration("elicit.maxAge"))
 	}
 	reg.UseSettings(opts.Settings)
+	// File-backed tool views (#1933 slice 2) run through the daemon's exec
+	// service, which exists only on the Server: the registry owns the
+	// catalogue and the call funnel, the Server owns execution.
+	reg.SetScriptToolRunner(srv.runDeclaredScript)
 	roots, err := rootsFromPaths(opts.Settings.List("daemon.roots"))
 	if err != nil {
 		return nil, err
@@ -647,7 +651,7 @@ func (s *Server) Serve(ctx context.Context) error {
 			}
 			s.watchConfig()
 			s.reg.Reap()
-			if s.shouldIdleExit() {
+			if s.shouldIdleExit(time.Now()) {
 				s.logger.Printf("no activity for %s and no live instances; exiting", s.idleExit)
 				return s.shutdown()
 			}
@@ -675,11 +679,11 @@ func (s *Server) trackActivity(next http.Handler) http.Handler {
 	})
 }
 
-func (s *Server) shouldIdleExit() bool {
+func (s *Server) shouldIdleExit(now time.Time) bool {
 	if s.idleExit <= 0 || s.committed.Load() {
 		return false
 	}
-	if time.Since(time.Unix(0, s.lastReq.Load())) < s.idleExit {
+	if now.Sub(time.Unix(0, s.lastReq.Load())) < s.idleExit {
 		return false
 	}
 	for _, st := range s.reg.Status() {
@@ -1045,7 +1049,14 @@ func (s *Server) handleClient(w http.ResponseWriter, r *http.Request) {
 	}
 	session := r.URL.Query().Get("session")
 	w.Header().Set("Content-Type", language.ContentType)
-	_, _ = w.Write([]byte(language.EmitModule(nss, s.endpoint, session)))
+	module := language.EmitModule(nss, s.endpoint, session)
+	if language.Name == codegen.TypeScript.Name {
+		// Local mcpx exec/run fetch their client here, so this is
+		// where in-script search gets its saved scripts for ordinary
+		// runs (CODE-36; Codex review, PR #9299).
+		module = codegen.ModuleWithRecipes(nss, s.endpoint, session, s.recipeMetas())
+	}
+	_, _ = w.Write([]byte(module))
 }
 
 func (s *Server) handleGlobals(w http.ResponseWriter, r *http.Request) {

@@ -53,23 +53,38 @@ class DiscoverBuildConstraintTests(unittest.TestCase):
         return self.packer.discover(self.tmp.name)
 
     def test_untagged_tests_discovered(self):
-        self.write("plain_test.go", go_file(test_fn("TestPlain") + "\n" + test_fn("TestAlsoPlain")))
+        self.write(
+            "plain_test.go",
+            go_file(test_fn("TestPlain") + "\n" + test_fn("TestAlsoPlain")),
+        )
         self.assertEqual(self.discover(), ["TestAlsoPlain", "TestPlain"])
 
     def test_unsatisfied_tag_excluded(self):
-        self.write("real_test.go", go_file(test_fn("TestRealSoftware"), "//go:build realsoftware"))
+        self.write(
+            "real_test.go",
+            go_file(test_fn("TestRealSoftware"), "//go:build realsoftware"),
+        )
         self.write("plain_test.go", go_file(test_fn("TestPlain")))
         self.assertEqual(self.discover(), ["TestPlain"])
 
     def test_ignore_tag_excluded(self):
-        self.write("ignored_test.go", go_file(test_fn("TestIgnored"), "//go:build ignore"))
+        self.write(
+            "ignored_test.go", go_file(test_fn("TestIgnored"), "//go:build ignore")
+        )
         self.assertEqual(self.discover(), [])
 
     def test_other_os_excluded_and_default_os_included(self):
         self.write("win_test.go", go_file(test_fn("TestWindows"), "//go:build windows"))
-        self.write("lin_test.go", go_file(test_fn("TestLinux"), "//go:build linux && amd64"))
-        self.write("notwin_test.go", go_file(test_fn("TestNotWindows"), "//go:build !windows"))
-        self.write("either_test.go", go_file(test_fn("TestEitherOS"), "//go:build linux || darwin"))
+        self.write(
+            "lin_test.go", go_file(test_fn("TestLinux"), "//go:build linux && amd64")
+        )
+        self.write(
+            "notwin_test.go", go_file(test_fn("TestNotWindows"), "//go:build !windows")
+        )
+        self.write(
+            "either_test.go",
+            go_file(test_fn("TestEitherOS"), "//go:build linux || darwin"),
+        )
         self.assertEqual(
             self.discover(), ["TestEitherOS", "TestLinux", "TestNotWindows"]
         )
@@ -77,7 +92,9 @@ class DiscoverBuildConstraintTests(unittest.TestCase):
     def test_parenthesised_and_negated_custom_tag(self):
         self.write(
             "combo_test.go",
-            go_file(test_fn("TestCombo"), "//go:build (linux && amd64) && !realsoftware"),
+            go_file(
+                test_fn("TestCombo"), "//go:build (linux && amd64) && !realsoftware"
+            ),
         )
         self.write(
             "combo2_test.go",
@@ -86,8 +103,13 @@ class DiscoverBuildConstraintTests(unittest.TestCase):
         self.assertEqual(self.discover(), ["TestCombo"])
 
     def test_legacy_plus_build_lines(self):
-        self.write("legacy_win_test.go", go_file(test_fn("TestLegacyWin"), "// +build windows"))
-        self.write("legacy_lin_test.go", go_file(test_fn("TestLegacyLin"), "// +build linux,amd64"))
+        self.write(
+            "legacy_win_test.go", go_file(test_fn("TestLegacyWin"), "// +build windows")
+        )
+        self.write(
+            "legacy_lin_test.go",
+            go_file(test_fn("TestLegacyLin"), "// +build linux,amd64"),
+        )
         self.assertEqual(self.discover(), ["TestLegacyLin"])
 
     def test_filename_suffix_rules(self):
@@ -106,7 +128,9 @@ class DiscoverBuildConstraintTests(unittest.TestCase):
 
     def test_mixed_fixture_pack_counts_match_discovery(self):
         self.write("plain_test.go", go_file(test_fn("TestA") + "\n" + test_fn("TestB")))
-        self.write("tagged_test.go", go_file(test_fn("TestTagged"), "//go:build realsoftware"))
+        self.write(
+            "tagged_test.go", go_file(test_fn("TestTagged"), "//go:build realsoftware")
+        )
         self.write("lin_test.go", go_file(test_fn("TestC"), "//go:build linux"))
         names = self.discover()
         self.assertEqual(names, ["TestA", "TestB", "TestC"])

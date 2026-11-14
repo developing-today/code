@@ -51,7 +51,9 @@ ok() { echo "ok: $1"; }
 BIN="$TMP_ROOT/bin"
 mkdir -p "$BIN"
 
-{ printf '#!%s\n' "$BASH"; cat <<'STUB'
+{
+  printf '#!%s\n' "$BASH"
+  cat <<'STUB'
 if [[ "${1:-} ${2:-}" == "secret list" ]]; then
   printf '%s\n' '[{"key":"cloudflare.r2-backups-access-key-id","value":"fake-access-key-id"},{"key":"cloudflare.r2-backups-secret-access-key","value":"fake-secret-access-key"},{"key":"cloudflare.r2-endpoint","value":"https://example.invalid"}]'
   exit 0
@@ -61,14 +63,18 @@ exit 1
 STUB
 } >"$BIN/bws"
 
-{ printf '#!%s\n' "$BASH"; cat <<'STUB'
+{
+  printf '#!%s\n' "$BASH"
+  cat <<'STUB'
 echo "stub journal line"
 printf '%s\n' "$*" >>"$HOME/.journalctl-calls"
 exit 0
 STUB
 } >"$BIN/journalctl"
 
-{ printf '#!%s\n' "$BASH"; cat <<'STUB'
+{
+  printf '#!%s\n' "$BASH"
+  cat <<'STUB'
 store="${RCLONE_STUB_DIR:?RCLONE_STUB_DIR unset}"
 calls="${RCLONE_CALLS_LOG:?RCLONE_CALLS_LOG unset}"
 mkdir -p "$store"
@@ -97,13 +103,17 @@ chmod +x "$BIN/bws" "$BIN/journalctl" "$BIN/rclone"
 # dump-step stubs: one that produces its dumps dir, one that does not
 DUMPBIN="$TMP_ROOT/dump-bin"
 mkdir -p "$DUMPBIN"
-{ printf '#!%s\n' "$BASH"; cat <<'STUB'
+{
+  printf '#!%s\n' "$BASH"
+  cat <<'STUB'
 mkdir -p "$HOME/backups/pm-stack/$1"
 printf 'dump bytes\n' >"$HOME/backups/pm-stack/$1/dump.sql"
 exit 0
 STUB
 } >"$DUMPBIN/dump-with-dir.sh"
-{ printf '#!%s\n' "$BASH"; cat <<'STUB'
+{
+  printf '#!%s\n' "$BASH"
+  cat <<'STUB'
 exit 0
 STUB
 } >"$DUMPBIN/dump-no-dir.sh"
@@ -169,15 +179,15 @@ sys.exit(1)
 }
 
 no_upload() { # $1 scenario name
-  [[ ! -f "$TMP_ROOT/$1/rclone-calls.log" ]] \
-    || ! grep -q '^copyto' "$TMP_ROOT/$1/rclone-calls.log"
+  [[ ! -f "$TMP_ROOT/$1/rclone-calls.log" ]] ||
+    ! grep -q '^copyto' "$TMP_ROOT/$1/rclone-calls.log"
 }
 
 # --- deleted-required fails the run -----------------------------------------
 setup_home deleted-required
 rm "$RUN_HOME/.local/state/pm-aggregator/registry.json"
 run_backup deleted-required
-if [[ "$RC" -ne 0 ]]; then
+if [[ $RC -ne 0 ]]; then
   ok "deleted-required: script exited non-zero ($RC)"
 else
   fail "deleted-required: expected non-zero exit, got 0; log: $(cat "$TMP_ROOT/deleted-required.log")"
@@ -192,7 +202,7 @@ if no_upload deleted-required; then
 else
   fail "deleted-required: an upload was attempted"
 fi
-if [[ "$MARKER_AFTER" == "$PRESET" ]]; then
+if [[ $MARKER_AFTER == "$PRESET" ]]; then
   ok "deleted-required: journal marker unchanged"
 else
   fail "deleted-required: marker advanced — was $PRESET, now $MARKER_AFTER"
@@ -203,12 +213,12 @@ assert_member deleted-required aggregator/registry.json required missing
 setup_home missing-optional
 rm -rf "$RUN_HOME/atlas/meta-quota-export"
 run_backup missing-optional
-if [[ "$RC" -eq 0 ]]; then
+if [[ $RC -eq 0 ]]; then
   ok "missing-optional: script exited 0"
 else
   fail "missing-optional: expected exit 0, got $RC; log: $(cat "$TMP_ROOT/missing-optional.log")"
 fi
-if [[ "$MARKER_AFTER" =~ ^[0-9]+$ ]] && [[ "$MARKER_AFTER" -gt "$PRESET" ]]; then
+if [[ $MARKER_AFTER =~ ^[0-9]+$ ]] && [[ $MARKER_AFTER -gt $PRESET ]]; then
   ok "missing-optional: journal marker advanced"
 else
   fail "missing-optional: marker did not advance — was $PRESET, now $MARKER_AFTER"
@@ -238,12 +248,12 @@ fi
 setup_home dump-ran-no-dir
 DUMP_SCRIPT_ARG="$DUMPBIN/dump-no-dir.sh"
 run_backup dump-ran-no-dir
-if [[ "$RC" -ne 0 ]] && grep -q 'FAILED required dataset member missing: db-dumps' "$TMP_ROOT/dump-ran-no-dir.log"; then
+if [[ $RC -ne 0 ]] && grep -q 'FAILED required dataset member missing: db-dumps' "$TMP_ROOT/dump-ran-no-dir.log"; then
   ok "dump-ran-no-dir: run failed naming db-dumps"
 else
   fail "dump-ran-no-dir: expected non-zero + FAILED db-dumps line, got rc=$RC: $(cat "$TMP_ROOT/dump-ran-no-dir.log")"
 fi
-if [[ "$MARKER_AFTER" == "$PRESET" ]] && no_upload dump-ran-no-dir; then
+if [[ $MARKER_AFTER == "$PRESET" ]] && no_upload dump-ran-no-dir; then
   ok "dump-ran-no-dir: marker unchanged, nothing uploaded"
 else
   fail "dump-ran-no-dir: marker moved or an upload was attempted"
@@ -253,7 +263,7 @@ fi
 setup_home dump-ran-with-dir
 DUMP_SCRIPT_ARG="$DUMPBIN/dump-with-dir.sh"
 run_backup dump-ran-with-dir
-if [[ "$RC" -eq 0 ]]; then
+if [[ $RC -eq 0 ]]; then
   ok "dump-ran-with-dir: script exited 0"
 else
   fail "dump-ran-with-dir: expected exit 0, got $RC; log: $(cat "$TMP_ROOT/dump-ran-with-dir.log")"
@@ -262,7 +272,7 @@ assert_member dump-ran-with-dir db-dumps required present
 assert_member dump-ran-with-dir meta-quota-export/latest.json optional present
 assert_member dump-ran-with-dir meta-quota-export/history.jsonl optional present
 
-if (( failures > 0 )); then
+if ((failures > 0)); then
   echo "pm-dashboard-backup manifest tests: $failures failure(s)" >&2
   exit 1
 fi

@@ -103,13 +103,30 @@ func (s *Server) canAsk(ctx context.Context, c *Conn, p Peer) bool {
 		p.eligibleURLElicitationRequired()
 }
 
+// MetaRequestState is the _meta key a 2025-11-25 host echoes a -32042
+// requestState under on its retry (#2897). That revision's request
+// schemas define no requestState parameter -- the modern MRTR field
+// exists only in 2026-07-28 -- so the token travels in _meta, the open
+// extension object every revision carries, under mcpx's own prefix
+// (compare MetaSession). A host that validated its frames against the
+// 2025-11-25 schema would reject a top-level requestState it does not
+// define; _meta it must accept.
+const MetaRequestState = "dev.mcpx/requestState"
+
 // resumeOf reads the two fields a modern client sends when answering.
 func resumeOf(params json.RawMessage) (state string, answers map[string]json.RawMessage, ok bool) {
 	var p struct {
 		RequestState   string                     `json:"requestState"`
 		InputResponses map[string]json.RawMessage `json:"inputResponses"`
+		Meta           map[string]json.RawMessage `json:"_meta"`
 	}
-	if json.Unmarshal(params, &p) != nil || p.RequestState == "" {
+	if json.Unmarshal(params, &p) != nil {
+		return "", nil, false
+	}
+	if p.RequestState == "" {
+		_ = json.Unmarshal(p.Meta[MetaRequestState], &p.RequestState)
+	}
+	if p.RequestState == "" {
 		return "", nil, false
 	}
 	return p.RequestState, p.InputResponses, true
@@ -174,10 +191,19 @@ func (s *Server) viaAsk(ctx context.Context, c *Conn, req request, peer Peer) *r
 	deadline := time.Now().Add(tm.AskTimeout)
 	for time.Now().Before(deadline) {
 		if err := ctx.Err(); err != nil {
-			// The client gave up, or the transport did. The call itself
-			// keeps running as a task, and its questions keep their
-			// deadlines; abandoning it here would throw away work somebody
-			// may still collect from /v1/tasks.
+			// The context ended, for one of two reasons the code must
+			// not conflate. If the client sent notifications/cancelled
+			// for this request, it said stop: the daemon task behind
+			// the call is cancelled through the task cancel path
+			// (Asker.Abandon -> /v1/ask/{id}/abandon -> the task
+			// store's Cancel, the same Cancel /v1/tasks/{id}/cancel
+			// reaches, #2497). If the transport merely died, the call
+			// itself keeps running as a task, and its questions keep
+			// their deadlines; abandoning it would throw away work
+			// somebody may still collect from /v1/tasks.
+			if _, ok := c.cancelledFor(req.ID); ok {
+				s.Ask.Abandon(callID)
+			}
 			return fail(codeInternal, req.Method+": "+err.Error())
 		}
 		wait := tm.AskPoll
@@ -187,6 +213,14 @@ func (s *Server) viaAsk(ctx context.Context, c *Conn, req request, peer Peer) *r
 		started := time.Now()
 		out, err := s.Ask.Poll(ctx, callID, wait)
 		if err != nil {
+			// A poll that fails because the request's context ended
+			// may be the client's cancellation arriving mid-wait:
+			// route it exactly as the loop head does.
+			if ctx.Err() != nil {
+				if _, ok := c.cancelledFor(req.ID); ok {
+					s.Ask.Abandon(callID)
+				}
+			}
 			return fail(codeInternal, err.Error())
 		}
 		relayNotes(ctx, out)
@@ -202,8 +236,10 @@ func (s *Server) viaAsk(ctx context.Context, c *Conn, req request, peer Peer) *r
 		// completes them out of band and retries, mirroring the client
 		// flow of #2079.
 		if senderFrom(ctx) == nil && !c.canPush() {
-			if resp := urlRequiredResponse(req, peer, out.Questions); resp != nil {
-				return resp
+			if state, err := s.states().mint(callID, requestBinding(req)); err == nil {
+				if resp := urlRequiredResponse(req, peer, out.Questions, state); resp != nil {
+					return resp
+				}
 			}
 		}
 		sendable := sendableTo(out.Questions, peer)
@@ -305,11 +341,13 @@ func (s *Server) viaAsk(ctx context.Context, c *Conn, req request, peer Peer) *r
 			// elicitation.url. Answer -32042 with this call's pending
 			// URL questions instead of waiting out the timeout and
 			// failing generically; the broker keeps the questions.
-			if resp := urlRequiredResponse(req, peer, sendable); resp != nil {
-				if len(answers) > 0 {
-					_ = s.Ask.Reply(ctx, callID, answers)
+			if state, err := s.states().mint(callID, requestBinding(req)); err == nil {
+				if resp := urlRequiredResponse(req, peer, sendable, state); resp != nil {
+					if len(answers) > 0 {
+						_ = s.Ask.Reply(ctx, callID, answers)
+					}
+					return resp
 				}
-				return resp
 			}
 		}
 		if len(answers) > 0 {

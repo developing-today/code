@@ -90,12 +90,12 @@ message/event). The link contains no target excerpt or preview. The four
 relationship names in the table are the #5682/#5870 conversation-link
 vocabulary:
 
-| Relation | Target | Part anchor | Meaning |
-| --- | --- | --- | --- |
-| `about` | ID object | absent | The conversation/thread discusses the object generally. |
-| `anchored-to-part` | ID object | required | The conversation/thread refers to exactly one selected part of the object. |
-| `derived-from` | addressable chat object | absent | The conversation/thread was forked or spun out of the source conversation/thread or named message/event. |
-| `resolved-into` | result object | absent | The discussion produced an addressable edit result; target revision identifies the exact edit/revision. |
+| Relation           | Target                  | Part anchor | Meaning                                                                                                  |
+| ------------------ | ----------------------- | ----------- | -------------------------------------------------------------------------------------------------------- |
+| `about`            | ID object               | absent      | The conversation/thread discusses the object generally.                                                  |
+| `anchored-to-part` | ID object               | required    | The conversation/thread refers to exactly one selected part of the object.                               |
+| `derived-from`     | addressable chat object | absent      | The conversation/thread was forked or spun out of the source conversation/thread or named message/event. |
+| `resolved-into`    | result object           | absent      | The discussion produced an addressable edit result; target revision identifies the exact edit/revision.  |
 
 `about`, `anchored-to-part`, and `derived-from` edges are projections of
 `chat.anchor.v1` bind/relocate events. A `resolved-into` edge is instead a
@@ -329,21 +329,21 @@ learn a private target exists.
 
 ## Alternatives rejected
 
-| Alternative | Reason for rejection |
-| --- | --- |
-| A pasted URL in a message | Not a first-class relationship, cannot reliably support reverse navigation, and has no typed selector or lifecycle. URLs may be kept as user-authored content but are not the canonical link. |
+| Alternative                                                                            | Reason for rejection                                                                                                                                                                                                                  |
+| -------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| A pasted URL in a message                                                              | Not a first-class relationship, cannot reliably support reverse navigation, and has no typed selector or lifecycle. URLs may be kept as user-authored content but are not the canonical link.                                         |
 | Store anchor state only in `chat.message.v1` or require a new mandatory envelope field | Couples link lifecycle to message history, makes multi-object/thread links awkward, and risks exposing private target metadata through ordinary transcript delivery. Use the already-decided additive `chat.anchor.v1` event instead. |
-| Store only offsets against the current object | Edits and version changes silently retarget positions; the same offsets can point at unrelated content. |
-| Store raw quote text in the link | Duplicates potentially private object content and can disclose it through sync, indexes, logs, or clients that lack object access. |
-| Always choose the “closest” or first relocation candidate | Approximate and ambiguous matches can point a discussion at the wrong content. Drift must be visible and confirmation required. |
-| Delete links when a part/object is deleted | Breaks reverse history and disconnects a conversation that the parent design says must survive; use orphan and tombstone states instead. |
-| Publish a tombstone or relation to every conversation reader | Reveals private-object existence; access checks must hide the edge itself, not merely its preview. |
-| Treat `talk-for` as an ordinary `about` link | Loses #5872's one-canonical-talk-page binding and disputed-conflict semantics; keep a separate projection over its `chat.anchor.v1` binding. |
-| Emit `resolved-into` as a `chat.anchor.v1` edge | Conflicts with #5874, which derives result-edit edges from `chat.resolution.v1` and pins the exact edit/revision. |
-| Resolve concurrent mutations with last-write-wins or event-ID order | Event arrival and presentation tie-breaks do not establish user intent; preserve concurrent maxima as disputed until a causally later event resolves them. |
-| One universal coordinate format for all object regions | Text, media, tables, boards, and other object types have different semantics and units; typed object-native selectors are less ambiguous. |
-| Duplicate a reverse link record | Creates two sources of truth that can disagree; derive reverse navigation from the canonical edge. |
-| Add another anchor wire format or change `chat.message.v1` | Duplicates the `chat.anchor.v1` event selected by #5872 or breaks v1 message compatibility; this record defines the selector carried by that event instead. |
+| Store only offsets against the current object                                          | Edits and version changes silently retarget positions; the same offsets can point at unrelated content.                                                                                                                               |
+| Store raw quote text in the link                                                       | Duplicates potentially private object content and can disclose it through sync, indexes, logs, or clients that lack object access.                                                                                                    |
+| Always choose the “closest” or first relocation candidate                              | Approximate and ambiguous matches can point a discussion at the wrong content. Drift must be visible and confirmation required.                                                                                                       |
+| Delete links when a part/object is deleted                                             | Breaks reverse history and disconnects a conversation that the parent design says must survive; use orphan and tombstone states instead.                                                                                              |
+| Publish a tombstone or relation to every conversation reader                           | Reveals private-object existence; access checks must hide the edge itself, not merely its preview.                                                                                                                                    |
+| Treat `talk-for` as an ordinary `about` link                                           | Loses #5872's one-canonical-talk-page binding and disputed-conflict semantics; keep a separate projection over its `chat.anchor.v1` binding.                                                                                          |
+| Emit `resolved-into` as a `chat.anchor.v1` edge                                        | Conflicts with #5874, which derives result-edit edges from `chat.resolution.v1` and pins the exact edit/revision.                                                                                                                     |
+| Resolve concurrent mutations with last-write-wins or event-ID order                    | Event arrival and presentation tie-breaks do not establish user intent; preserve concurrent maxima as disputed until a causally later event resolves them.                                                                            |
+| One universal coordinate format for all object regions                                 | Text, media, tables, boards, and other object types have different semantics and units; typed object-native selectors are less ambiguous.                                                                                             |
+| Duplicate a reverse link record                                                        | Creates two sources of truth that can disagree; derive reverse navigation from the canonical edge.                                                                                                                                    |
+| Add another anchor wire format or change `chat.message.v1`                             | Duplicates the `chat.anchor.v1` event selected by #5872 or breaks v1 message compatibility; this record defines the selector carried by that event instead.                                                                           |
 
 ## Implementation invariants
 

@@ -57,7 +57,9 @@ fn home_dir() -> PathBuf {
     // resolved state/config/token paths relative to the CWD.
     match std::env::var_os("HOME") {
         Some(home) if !home.is_empty() => PathBuf::from(home),
-        _ => panic!("HOME is not set or is empty: fleet-search requires a non-empty HOME to resolve its state/config paths (issue #5640)"),
+        _ => panic!(
+            "HOME is not set or is empty: fleet-search requires a non-empty HOME to resolve its state/config paths (issue #5640)"
+        ),
     }
 }
 
@@ -333,7 +335,8 @@ fn search_with_token(base: &str, request: &SearchRequest, token: &str) -> Result
             envelope = Some(page.envelope.clone());
         }
         let page_len = page.results.len();
-        results.extend(page.results.iter().cloned());
+        let remaining = request.k.saturating_sub(results.len());
+        results.extend(page.results.iter().take(remaining).cloned());
         if results.len() >= request.k || page.next_cursor.is_none() {
             break;
         }
@@ -399,6 +402,7 @@ mod tests {
         RepeatingCursor,
         EmptyPage,
         HappyPath,
+        OversizedPage,
     }
 
     fn respond(stream: &mut TcpStream, status: &str, body: &str) {
@@ -466,6 +470,9 @@ mod tests {
                         }
                         StubMode::RepeatingCursor => (r#"[{"id":1}]"#, r#""same-cursor""#),
                         StubMode::EmptyPage => (r#"[]"#, r#""some-cursor""#),
+                        StubMode::OversizedPage => {
+                            (r#"[{"id":1},{"id":2},{"id":3}]"#, r#""more-cursor""#)
+                        }
                         StubMode::HappyPath => {
                             if has_cursor {
                                 (r#"[{"id":2}]"#, "null")
@@ -541,6 +548,36 @@ mod tests {
         // the stub service's ranking, in order — [1, 2].
         let base = start_stub(StubMode::HappyPath);
         let out = search_with_token(&base, &request_k(10), "test-token").unwrap();
+        let results = out
+            .get("results")
+            .and_then(Json::as_array)
+            .expect("envelope carries a results array");
+        let ids: Vec<i64> = results
+            .iter()
+            .filter_map(|r| r.get("id")?.as_i64())
+            .collect();
+        assert_eq!(ids, vec![1, 2]);
+    }
+
+    #[test]
+    fn search_multi_page_stops_at_requested_k() {
+        let base = start_stub(StubMode::HappyPath);
+        let out = search_with_token(&base, &request_k(2), "test-token").unwrap();
+        let results = out
+            .get("results")
+            .and_then(Json::as_array)
+            .expect("envelope carries a results array");
+        let ids: Vec<i64> = results
+            .iter()
+            .filter_map(|r| r.get("id")?.as_i64())
+            .collect();
+        assert_eq!(ids, vec![1, 2]);
+    }
+
+    #[test]
+    fn search_truncates_oversized_single_page_to_requested_k() {
+        let base = start_stub(StubMode::OversizedPage);
+        let out = search_with_token(&base, &request_k(2), "test-token").unwrap();
         let results = out
             .get("results")
             .and_then(Json::as_array)

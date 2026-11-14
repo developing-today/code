@@ -64,8 +64,12 @@ describe("FreshnessStore", () => {
       expect(first).toMatchObject({ duplicate: false, pending: false, notice: { sequence: 1 } });
       expect(duplicate).toMatchObject({ duplicate: true, pending: false, notice: { sequence: 1 } });
 
-      const concurrent = await Promise.all(Array.from({ length: 20 }, (_, index) => store.publish(input(`parallel-${index}`))));
-      expect(concurrent.map((result) => result.notice.sequence)).toEqual(Array.from({ length: 20 }, (_, index) => index + 2));
+      const concurrent = await Promise.all(
+        Array.from({ length: 20 }, (_, index) => store.publish(input(`parallel-${index}`))),
+      );
+      expect(concurrent.map((result) => result.notice.sequence)).toEqual(
+        Array.from({ length: 20 }, (_, index) => index + 2),
+      );
       expect((await store.listAfter(0)).cursor).toBe(21);
     });
   });
@@ -131,7 +135,11 @@ describe("FreshnessStore", () => {
 
       await rm(file, { recursive: true });
       const recovered = await new FreshnessStore(file).listAfter(0);
-      expect(recovered).toMatchObject({ cursor: 1, resetRequired: false, events: [{ eventId: "outbox-1", sequence: 1 }] });
+      expect(recovered).toMatchObject({
+        cursor: 1,
+        resetRequired: false,
+        events: [{ eventId: "outbox-1", sequence: 1 }],
+      });
       await expect(readFile(`${file}.outbox.jsonl`, "utf8")).rejects.toMatchObject({ code: "ENOENT" });
     });
   });
@@ -166,6 +174,60 @@ describe("FreshnessStore", () => {
       await expect(new FreshnessStore(file).listAfter(0)).rejects.toThrow("outbox exceeds its configured limit");
       expect((await readFile(`${file}.outbox.jsonl`, "utf8")).split("\n")).toHaveLength(10_002);
       await expect(readFile(file, "utf8")).rejects.toMatchObject({ code: "ENOENT" });
+    });
+  });
+
+  test("verifyDurable passes on an intact journal and catches loss, replacement, and corruption", async () => {
+    await withTempDir(async (dir) => {
+      const file = join(dir, "freshness.json");
+      const store = new FreshnessStore(file);
+      // First run: no file yet and nothing in memory — healthy.
+      await store.verifyDurable();
+
+      await store.publish(input("verify-1"));
+      await store.verifyDurable();
+
+      // Replaced on disk (a different cursor): divergence, not a
+      // silent re-baseline over the in-memory journal.
+      await writeFile(file, JSON.stringify({ version: 1, cursor: 99, events: [] }));
+      await expect(store.verifyDurable()).rejects.toThrow(/diverges/);
+
+      // Corrupt on disk.
+      await writeFile(file, "not json");
+      await expect(store.verifyDurable()).rejects.toThrow(/invalid freshness journal/);
+
+      // Deleted outright while the in-memory journal is non-empty.
+      await rm(file);
+      await expect(store.verifyDurable()).rejects.toThrow(/missing/);
+    });
+  });
+
+  test("onNotice fires once per notice at the moment it becomes durable, never for duplicates", async () => {
+    await withTempDir(async (dir) => {
+      const file = join(dir, "freshness.json");
+      const store = new FreshnessStore(file);
+      const seen: string[] = [];
+      store.onNotice((notice) => seen.push(notice.eventId));
+
+      await store.publish(input("notice-1"));
+      await store.publish(input("notice-1", "different-scope")); // duplicate: no second fire
+      expect(seen).toEqual(["notice-1"]);
+
+      // A notice that only reaches the outbox is not durable yet.
+      const file2 = join(dir, "freshness-2.json");
+      const store2 = new FreshnessStore(file2);
+      store2.onNotice((notice) => seen.push(notice.eventId));
+      await store2.listAfter(0); // load before making the target unwritable
+      await mkdir(file2);
+      const queued = await store2.publish(input("notice-2"));
+      expect(queued.pending).toBe(true);
+      expect(seen).toEqual(["notice-1"]);
+
+      // Recovery flushes the outbox into the journal: that is the
+      // notice's durable moment, and the listener fires then.
+      await rm(file2, { recursive: true });
+      await store2.listAfter(0);
+      expect(seen).toEqual(["notice-1", "notice-2"]);
     });
   });
 

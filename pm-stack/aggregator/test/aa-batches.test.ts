@@ -78,6 +78,27 @@ describe("parameterized payload SQL", () => {
     expect(sql).toContain("power(intel_eff_norm, 0.7)");
   });
 
+  test("configs/cai scope as-of the selected batch, not to the newest event batch (#8817)", () => {
+    const sql = aaPayloadSql(B2);
+    // The pre-#8817 predicate pinned both sections to the newest
+    // workbook-import event batch regardless of the selected batch, so a
+    // historical payload silently mixed the newest configs/CAI into data
+    // cached under the historical batch's UUID.
+    expect(sql).not.toContain("where source_kind = 'workbook-import' order by ingested_at desc limit 1");
+    // Both sections now take the as-of mapping: an event batch is eligible
+    // only when its workbook import is no newer than the selected batch.
+    const asOf = "s.imported_at <= (select max(s2.imported_at) from ainventory.sources s2";
+    expect(sql.split(asOf).length - 1).toBe(2);
+    expect(sql).toContain("me.ingest_batch_id in (select s.import_batch from ainventory.sources s");
+    expect(sql).toContain(`s2.import_batch = '${B2}'::uuid`);
+  });
+
+  test("the default (latest) payload keeps the as-of configs/cai scoping (#8817)", () => {
+    const sql = aaPayloadSql(null);
+    expect(sql).not.toContain("where source_kind = 'workbook-import' order by ingested_at desc limit 1");
+    expect(sql.split("s.imported_at <=").length - 1).toBe(2);
+  });
+
   test("the default query still pins v_latest_import_batch", () => {
     expect(aaPayloadSql(null)).toContain("(select import_batch from ainventory.v_latest_import_batch)");
   });
@@ -117,12 +138,48 @@ describe("semantic fingerprint", () => {
     // (raw rows) or read back from a built section (parsed rows)
     // hashes identically.
     const a = [
-      { modelName: "A", inputPer1M: 1, outputPer1M: 2, cacheReadPer1M: null, cacheWritePer1M: null, contextMinTokens: 0, contextMaxTokens: 100, windowKind: "fixed" },
-      { modelName: "B", inputPer1M: 3, outputPer1M: 4, cacheReadPer1M: 1, cacheWritePer1M: 2, contextMinTokens: null, contextMaxTokens: null, windowKind: null },
+      {
+        modelName: "A",
+        inputPer1M: 1,
+        outputPer1M: 2,
+        cacheReadPer1M: null,
+        cacheWritePer1M: null,
+        contextMinTokens: 0,
+        contextMaxTokens: 100,
+        windowKind: "fixed",
+      },
+      {
+        modelName: "B",
+        inputPer1M: 3,
+        outputPer1M: 4,
+        cacheReadPer1M: 1,
+        cacheWritePer1M: 2,
+        contextMinTokens: null,
+        contextMaxTokens: null,
+        windowKind: null,
+      },
     ];
     const b = [
-      { windowKind: null, contextMaxTokens: null, contextMinTokens: null, cacheWritePer1M: 2, cacheReadPer1M: 1, outputPer1M: 4, inputPer1M: 3, modelName: "B" },
-      { windowKind: "fixed", contextMaxTokens: 100, contextMinTokens: 0, cacheWritePer1M: null, cacheReadPer1M: null, outputPer1M: 2, inputPer1M: 1, modelName: "A" },
+      {
+        windowKind: null,
+        contextMaxTokens: null,
+        contextMinTokens: null,
+        cacheWritePer1M: 2,
+        cacheReadPer1M: 1,
+        outputPer1M: 4,
+        inputPer1M: 3,
+        modelName: "B",
+      },
+      {
+        windowKind: "fixed",
+        contextMaxTokens: 100,
+        contextMinTokens: 0,
+        cacheWritePer1M: null,
+        cacheReadPer1M: null,
+        outputPer1M: 2,
+        inputPer1M: 1,
+        modelName: "A",
+      },
     ];
     expect(aaPricesFingerprint(a)).toBe(aaPricesFingerprint(b));
   });
@@ -132,7 +189,18 @@ describe("semantic fingerprint", () => {
     // no config change — produces a different validity key, so
     // cached sections rebuild instead of serving stale prices as
     // the current overlay.
-    const base = [{ modelName: "A", inputPer1M: 1, outputPer1M: 2, cacheReadPer1M: null, cacheWritePer1M: null, contextMinTokens: null, contextMaxTokens: null, windowKind: null }];
+    const base = [
+      {
+        modelName: "A",
+        inputPer1M: 1,
+        outputPer1M: 2,
+        cacheReadPer1M: null,
+        cacheWritePer1M: null,
+        contextMinTokens: null,
+        contextMaxTokens: null,
+        windowKind: null,
+      },
+    ];
     const changed = [{ ...base[0], inputPer1M: 5 }];
     expect(aaPricesFingerprint(base)).not.toBe(aaPricesFingerprint(changed));
     expect(aaPricesFingerprint([])).not.toBe(aaPricesFingerprint(base));
@@ -170,12 +238,27 @@ describe("batch summaries", () => {
     expect(out.every((b) => b.fingerprint === null)).toBe(true);
   });
 
+  test("cache entries may carry a numeric sql revision (#8817)", () => {
+    const base = { batch: B1, configFingerprint: "c", fingerprint: "f", builtAt: "t", section: {} };
+    expect(isAaBatchCacheEntry(base)).toBe(true);
+    expect(isAaBatchCacheEntry({ ...base, sqlRevision: 1 })).toBe(true);
+    expect(isAaBatchCacheEntry({ ...base, sqlRevision: "1" })).toBe(false);
+  });
+
   test("cache names are uuid-only and label is human-readable", () => {
     expect(aaCacheFileName(B1)).toBe(`aa-batch-${B1}.json`);
     expect(() => aaCacheFileName("../escape")).toThrow();
-    expect(isAaBatchCacheEntry({ batch: B1, configFingerprint: "c", fingerprint: "f", builtAt: "t", section: {} })).toBe(true);
+    expect(
+      isAaBatchCacheEntry({ batch: B1, configFingerprint: "c", fingerprint: "f", builtAt: "t", section: {} }),
+    ).toBe(true);
     expect(isAaBatchCacheEntry({ batch: "../x" })).toBe(false);
-    expect(batchLabel({ name: "ai_model_benchmark_inventory_advanced_2026-10-21", importedAt: "2026-10-31T15:00:00Z", driveModifiedAt: null })).toStartWith("2026-10-31");
+    expect(
+      batchLabel({
+        name: "ai_model_benchmark_inventory_advanced_2026-10-21",
+        importedAt: "2026-10-31T15:00:00Z",
+        driveModifiedAt: null,
+      }),
+    ).toStartWith("2026-10-31");
   });
 });
 
@@ -357,5 +440,149 @@ describe("live AA batch selection", () => {
     const html = renderAa(selected ?? null, new Proxy({}, { get: () => "live" }) as Provenance);
     expect(html).toContain("The latest collection failed");
     expect(html).toContain("rebuilding");
+  });
+
+  test("a cached batch built under an old price overlay is served with the current overlay (#8211)", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "aa-batch-overlay-"));
+    const feedFile = join(dir, "fleet-feed.json");
+    const priceRow = (input: number, output: number) => ({
+      modelName: "openai/gpt-6-luna",
+      inputPer1M: input,
+      outputPer1M: output,
+      cacheReadPer1M: null,
+      cacheWritePer1M: null,
+      contextMinTokens: null,
+      contextMaxTokens: null,
+      windowKind: "flat",
+    });
+    const oldPrices = [priceRow(1, 4)];
+    const newPrices = [priceRow(9.9, 39.6)];
+    const summary = (importBatch: string, latest: boolean, cached: boolean) => ({
+      importBatch,
+      name: "workbook.xlsx",
+      importedAt: latest ? "2026-10-31T15:00:00Z" : "2026-10-21T10:00:00Z",
+      driveModifiedAt: null,
+      ranAt: null,
+      insertedCounts: null,
+      label: latest ? "2026-10-31 · workbook.xlsx" : "2026-10-21 · workbook.xlsx",
+      fingerprint: latest ? "latest" : "historical",
+      cached,
+      latest,
+    });
+    const historical = {
+      ...FIXTURE_AA,
+      batch: B3,
+      prices: oldPrices,
+      catalog: FIXTURE_AA.catalog?.map((e) =>
+        e.id === "openai/gpt-6-luna"
+          ? {
+              ...e,
+              rate: {
+                bands: [
+                  {
+                    minTokens: null,
+                    maxTokens: null,
+                    input: 1,
+                    output: 4,
+                    cacheRead: null,
+                    cacheWrite: null,
+                    window: "flat",
+                  },
+                ],
+                windowed: false,
+              },
+            }
+          : e,
+      ),
+    };
+    await writeFile(
+      feedFile,
+      JSON.stringify({
+        version: 1,
+        generatedAt: new Date().toISOString(),
+        quota: { pools: [], burn: [], choices: { hasHeadroom: [], burnBeforeReset: [], doNotStart: [] } },
+        attention: [],
+        aa: {
+          ...FIXTURE_AA,
+          batch: B1,
+          prices: newPrices,
+          batches: [summary(B1, true, true), summary(B3, false, true)],
+        },
+      }),
+    );
+    const cacheDir = join(dir, "aa-batches");
+    await mkdir(cacheDir);
+    await writeFile(
+      join(cacheDir, aaCacheFileName(B3)),
+      JSON.stringify({
+        batch: B3,
+        configFingerprint: "config",
+        fingerprint: "historical",
+        pricesFingerprint: aaPricesFingerprint(oldPrices),
+        builtAt: historical.generatedAt,
+        section: historical,
+      }),
+    );
+
+    const source = liveSource(loadConfig({ PM_AGG_SOURCE: "live", PM_AGG_FEED_FILE: feedFile }));
+    const selected = await source.aa(B3);
+    if (selected?.status !== "ok") throw new Error("expected an ok section");
+    expect(selected.stale).toBeUndefined();
+    // The batch-bound payload is the cached one; the prices and the
+    // price-derived catalog rates are the current overlay's.
+    expect(selected.batch).toBe(B3);
+    expect(selected.prices).toEqual(newPrices);
+    const luna = selected.catalog?.find((e) => e.id === "openai/gpt-6-luna");
+    expect(luna?.rate?.bands[0].input).toBe(9.9);
+    expect(luna?.rate?.bands[0].output).toBe(39.6);
+  });
+
+  test("a cached batch with prices is served stale when the feed has no current overlay (#8211)", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "aa-batch-nooverlay-"));
+    const feedFile = join(dir, "fleet-feed.json");
+    const historical = {
+      ...FIXTURE_AA,
+      batch: B3,
+      prices: [
+        {
+          modelName: "openai/gpt-6-luna",
+          inputPer1M: 1,
+          outputPer1M: 4,
+          cacheReadPer1M: null,
+          cacheWritePer1M: null,
+          contextMinTokens: null,
+          contextMaxTokens: null,
+          windowKind: "flat",
+        },
+      ],
+    };
+    await writeFile(
+      feedFile,
+      JSON.stringify({
+        version: 1,
+        generatedAt: new Date().toISOString(),
+        quota: { pools: [], burn: [], choices: { hasHeadroom: [], burnBeforeReset: [], doNotStart: [] } },
+        attention: [],
+      }),
+    );
+    const cacheDir = join(dir, "aa-batches");
+    await mkdir(cacheDir);
+    await writeFile(
+      join(cacheDir, aaCacheFileName(B3)),
+      JSON.stringify({
+        batch: B3,
+        configFingerprint: "config",
+        fingerprint: "historical",
+        pricesFingerprint: "some-old-overlay",
+        builtAt: historical.generatedAt,
+        section: historical,
+      }),
+    );
+
+    const source = liveSource(loadConfig({ PM_AGG_SOURCE: "live", PM_AGG_FEED_FILE: feedFile }));
+    const selected = await source.aa(B3);
+    if (selected?.status !== "ok") throw new Error("expected an ok section");
+    expect(selected.stale).toBe(true);
+    expect(selected.staleReason).toContain("price overlay");
   });
 });

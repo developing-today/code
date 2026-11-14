@@ -1,15 +1,14 @@
+# Automatic tag-push releases disabled by owner, 2026-11-13; manual snapshot remains.
 name: goreleaser
 
 on:
   # Tag pushes cut the real release (see the GoReleaser args below).
-  push:
-    tags:
-      - '*'
   # Manual runs prove the workflow still works without cutting a
   # release: they build a snapshot (see the GoReleaser args below).
   workflow_dispatch:
 
 permissions:
+  actions: read
   contents: write
 
 # CI tier policy: see .github/ci-policy.md
@@ -18,6 +17,26 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  release-gate:
+    name: release gate (main-tier green)
+    # Manual runs are non-publishing snapshots; tag pushes must pass the gate.
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      actions: read
+      contents: read
+    steps:
+      - name: Checkout the release SHA
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - name: Require a green main-gate for this SHA
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: .github/scripts/release-gate.sh
+
   dump_contexts_to_log:
     runs-on: ubuntu-latest
     timeout-minutes: 10
@@ -48,6 +67,10 @@ jobs:
         run: echo "$MATRIX_CONTEXT"
   goreleaser:
     name: ${{ matrix.working-directory }} goreleaser
+    needs: release-gate
+    # workflow_dispatch is a snapshot and does not publish; on tag pushes
+    # this job starts only after the release-gate job succeeds.
+    if: always() && (github.event_name == 'workflow_dispatch' || needs.release-gate.result == 'success')
     strategy:
       matrix:
         include: [{ working-directory: "." }]

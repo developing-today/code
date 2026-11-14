@@ -1,0 +1,187 @@
+{
+  "format": "id-atlas-synthetic-workload/v3",
+  "measurement_status": "synthetic correctness fixture; no timings measured",
+  "identity_profile": "fixture-only SHA256 over exact profile bytes; not a production ContentId algorithm claim",
+  "physical_key_profile": "fixture-only immutable generation-qualified keys; key non-reuse modeled, not provider-enforced",
+  "tenant": "tenant-a",
+  "expected_content_id": "sha256:ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad",
+  "operations": [
+    {
+      "id": "blob_put_if_absent",
+      "input": { "bytes_hex": "616263", "metadata": { "owner": "fixture" } },
+      "expected": {
+        "accepted": true,
+        "created": true,
+        "generation": 1,
+        "physical_key": "fixture/sha256-ba7816bf/gen-1",
+        "lifecycle": "Live",
+        "row_revision": 1
+      },
+      "engine_support": { "d1": "supported", "r2": "supported", "redb": "supported", "turso": "supported" }
+    },
+    {
+      "id": "blob_put_if_absent",
+      "input": { "bytes_hex": "616263", "metadata": { "owner": "fixture" } },
+      "expected": {
+        "accepted": true,
+        "created": false,
+        "generation": 1,
+        "lifecycle": "Live",
+        "reference_count": 0,
+        "row_revision": 1
+      },
+      "engine_support": { "d1": "supported", "r2": "supported", "redb": "supported", "turso": "supported" }
+    },
+    {
+      "id": "blob_get",
+      "input": {},
+      "expected": { "bytes_hex": "616263", "generation": 1, "lifecycle": "Live" },
+      "engine_support": { "d1": "supported", "r2": "supported", "redb": "supported", "turso": "supported" }
+    },
+    {
+      "id": "metadata_lookup",
+      "input": {},
+      "expected": { "metadata": { "owner": "fixture" }, "generation": 1 },
+      "engine_support": { "d1": "supported", "r2": "supported", "redb": "supported", "turso": "supported" }
+    },
+    {
+      "id": "metadata_scan",
+      "input": { "tenant": "tenant-a", "prefix": "sha256:" },
+      "expected": { "content_ids": ["sha256:ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"] },
+      "engine_support": { "d1": "supported", "r2": "unsupported", "redb": "supported", "turso": "supported" }
+    },
+    {
+      "id": "ref_commit_if_live",
+      "input": { "generation": 1, "reference": "loc-1" },
+      "expected": { "accepted": true, "generation": 1, "reference_count": 1 },
+      "engine_support": {
+        "d1": "supported",
+        "r2": "external-authority-required",
+        "redb": "supported",
+        "turso": "supported"
+      }
+    },
+    {
+      "id": "blob_put_if_absent",
+      "input": { "bytes_hex": "616263", "metadata": { "owner": "fixture" } },
+      "expected": {
+        "accepted": true,
+        "created": false,
+        "generation": 1,
+        "lifecycle": "Live",
+        "reference_count": 1,
+        "row_revision": 1
+      },
+      "engine_support": { "d1": "supported", "r2": "supported", "redb": "supported", "turso": "supported" }
+    },
+    {
+      "id": "object_tombstone_delete",
+      "input": { "generation": 1 },
+      "expected": { "tombstoned": false, "reason": "references-present", "lifecycle": "Live" },
+      "engine_support": {
+        "d1": "authority-fence-only",
+        "r2": "external-authority-fence-required",
+        "redb": "authority-fence-only",
+        "turso": "authority-fence-only"
+      }
+    },
+    {
+      "id": "ref_remove",
+      "input": { "generation": 1, "reference": "loc-1" },
+      "expected": { "removed": true, "reference_count": 0 },
+      "engine_support": {
+        "d1": "supported",
+        "r2": "external-authority-required",
+        "redb": "supported",
+        "turso": "supported"
+      }
+    },
+    {
+      "id": "object_tombstone_delete",
+      "input": { "generation": 1 },
+      "expected": {
+        "tombstoned": true,
+        "generation": 1,
+        "physical_key": "fixture/sha256-ba7816bf/gen-1",
+        "lifecycle": "Tombstoned"
+      },
+      "engine_support": {
+        "d1": "authority-fence-only",
+        "r2": "external-authority-fence-required",
+        "redb": "authority-fence-only",
+        "turso": "authority-fence-only"
+      }
+    },
+    {
+      "id": "ref_commit_if_live",
+      "input": { "generation": 1, "reference": "late-ref" },
+      "expected": { "accepted": false, "reason": "generation-fenced" },
+      "engine_support": {
+        "d1": "supported",
+        "r2": "external-authority-required",
+        "redb": "supported",
+        "turso": "supported"
+      }
+    },
+    {
+      "id": "blob_put_if_absent",
+      "input": { "bytes_hex": "616263", "metadata": { "owner": "fixture" } },
+      "expected": {
+        "accepted": false,
+        "created": false,
+        "generation": 1,
+        "lifecycle": "Tombstoned",
+        "reason": "explicit-resurrection-required"
+      },
+      "engine_support": { "d1": "supported", "r2": "supported", "redb": "supported", "turso": "supported" }
+    },
+    {
+      "id": "blob_put_if_absent",
+      "input": { "bytes_hex": "616263", "metadata": { "owner": "fixture" }, "resurrection": true },
+      "expected": {
+        "accepted": true,
+        "created": true,
+        "generation": 2,
+        "physical_key": "fixture/sha256-ba7816bf/gen-2",
+        "lifecycle": "Live",
+        "row_revision": 1,
+        "content_id": "sha256:ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
+      },
+      "engine_support": { "d1": "supported", "r2": "supported", "redb": "supported", "turso": "supported" }
+    },
+    {
+      "id": "ref_commit_if_live",
+      "input": { "generation": 2, "reference": "loc-2" },
+      "expected": { "accepted": true, "generation": 2, "reference_count": 1 },
+      "engine_support": {
+        "d1": "supported",
+        "r2": "external-authority-required",
+        "redb": "supported",
+        "turso": "supported"
+      }
+    },
+    {
+      "id": "object_delete_captured_key",
+      "input": { "generation": 1 },
+      "expected": {
+        "deleted_key": "fixture/sha256-ba7816bf/gen-1",
+        "deleted": true,
+        "generation_2_key_present": true,
+        "generation_2_reference_count": 1,
+        "content_id_unchanged": true
+      },
+      "engine_support": {
+        "d1": "delete-captured-key-after-fence",
+        "r2": "plain-delete-captured-never-reused-key-after-fence",
+        "redb": "authority-then-plain-delete-captured-key",
+        "turso": "authority-then-plain-delete-captured-key"
+      }
+    },
+    {
+      "id": "blob_get",
+      "input": {},
+      "expected": { "bytes_hex": "616263", "generation": 2, "lifecycle": "Live" },
+      "engine_support": { "d1": "supported", "r2": "supported", "redb": "supported", "turso": "supported" }
+    }
+  ]
+}

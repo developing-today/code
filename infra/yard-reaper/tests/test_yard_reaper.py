@@ -7,6 +7,7 @@ only when preservation is proven (clone clean + HEAD == live remote
 tip, or scratch tree with zero keep-set files) and every liveness
 gate (claimed task/issue, process cwd, 4h idle) is clear.
 """
+
 import importlib.util
 import json
 import os
@@ -96,7 +97,6 @@ class YardEntryTests(unittest.TestCase):
         found = self.by_name(self.discover())
         self.assertEqual(found["probe-z"].keep_files, 0)
         self.assertEqual(found["probe-z"].reason, "scratch-no-keep-set")
-
 
     def test_keep_set_inside_package_cache_is_bulk(self):
         d = self.root / "probe-cache"
@@ -218,8 +218,6 @@ class YardEntryTests(unittest.TestCase):
         self.assertEqual(found["nested-b"].protected, "clone-unlanded-state")
 
 
-
-
 class PrimaryDiscoveryTests(unittest.TestCase):
     """Multi-primary registration (#7093): the yard holds worktrees
     of several primaries; a worktree of ANY primary is registered
@@ -242,13 +240,19 @@ class PrimaryDiscoveryTests(unittest.TestCase):
         self.primary = self.git_root / "somerepo"
         subprocess.run(
             ["git", "init", str(self.primary)],
-            check=True, env=env, capture_output=True,
+            check=True,
+            env=env,
+            capture_output=True,
         )
         (self.primary / "a.txt").write_text("x")
-        subprocess.run(["git", "-C", str(self.primary), "add", "."], check=True, env=env)
+        subprocess.run(
+            ["git", "-C", str(self.primary), "add", "."], check=True, env=env
+        )
         subprocess.run(
             ["git", "-C", str(self.primary), "commit", "-m", "seed"],
-            check=True, env=env, capture_output=True,
+            check=True,
+            env=env,
+            capture_output=True,
         )
 
     def tearDown(self):
@@ -263,7 +267,9 @@ class PrimaryDiscoveryTests(unittest.TestCase):
         wt = self.yard / "task-7"
         subprocess.run(
             ["git", "-C", str(self.primary), "worktree", "add", str(wt)],
-            check=True, env=self.env, capture_output=True,
+            check=True,
+            env=self.env,
+            capture_output=True,
         )
         branches = reaper.all_worktree_branches(self.git_root)
         self.assertIn(wt.resolve(), {p.resolve() for p in branches})
@@ -277,8 +283,6 @@ class PrimaryDiscoveryTests(unittest.TestCase):
             time.time() - 4 * 3600,
         )
         self.assertNotIn("task-7", {e.path.name for e in entries})
-
-
 
 
 class MainApplyTests(unittest.TestCase):
@@ -298,7 +302,8 @@ class MainApplyTests(unittest.TestCase):
         self.primary.mkdir()
         subprocess.run(
             ["git", "init", str(self.primary)],
-            check=True, capture_output=True,
+            check=True,
+            capture_output=True,
         )
 
     def tearDown(self):
@@ -328,16 +333,23 @@ class MainApplyTests(unittest.TestCase):
 
         argv = [
             "yard_reaper.py",
-            "--fleet-root", str(self.yard),
-            "--primary", str(self.primary),
-            "--state-dir", str(self.state),
-            "--trash-dir", str(self.trash),
-            "--cap-gib", "1000000",
+            "--fleet-root",
+            str(self.yard),
+            "--primary",
+            str(self.primary),
+            "--state-dir",
+            str(self.state),
+            "--trash-dir",
+            str(self.trash),
+            "--cap-gib",
+            "1000000",
             "--apply",
         ]
-        with mock.patch.object(reaper, "load_claims_source", return_value=FakeSource()), \
-                mock.patch.object(reaper, "open_pr_branches", return_value=set()), \
-                mock.patch.object(sys, "argv", argv):
+        with (
+            mock.patch.object(reaper, "load_claims_source", return_value=FakeSource()),
+            mock.patch.object(reaper, "open_pr_branches", return_value=set()),
+            mock.patch.object(sys, "argv", argv),
+        ):
             rc = reaper.main()
         self.assertEqual(rc, 0)
         self.assertFalse(junk.exists())

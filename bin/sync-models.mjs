@@ -176,7 +176,9 @@ async function discoverAntigravityModels() {
     for (const line of lines) {
       const trimmed = line.trim();
       if (!trimmed || trimmed.includes('Fetching available models')) continue;
-      const parts = trimmed.split(/\s{2,}/);
+      // agy separates the id and name columns with a single tab
+      // (older builds used multi-space columns); accept either.
+      const parts = trimmed.split(/\t|\s{2,}/);
       if (parts.length >= 2) {
         const id = parts[0].trim();
         const name = parts[1].trim();
@@ -497,6 +499,68 @@ function validateConfigShape(config, configPath) {
   }
 }
 
+// Provider renames (#7333): when a provider is renamed, the tracked config
+// and this script's target list move to the new id, but the runtime overlay
+// can still carry the catalog under the legacy id. A target section absent
+// from the overlay must never be silently skipped while its catalog sits
+// orphaned under a legacy id: migrate the legacy section onto the target id
+// (the instance repair applied by hand on 2026-11-07), and when no legacy
+// section exists either, report the provider as absent so the run names it
+// as skipped instead of in sync.
+const LEGACY_PROVIDER_IDS = {
+  _antigravity: ['antigravity-direct', 'antigravity'],
+};
+
+// Decide what run() should do about one sync target. Mutates `config` only
+// on the migrated path (the legacy section moves onto the target id).
+// Returns { outcome: 'present' }, { outcome: 'migrated', from, section },
+// or { outcome: 'absent' }.
+function resolveTargetProvider(config, targetProvider) {
+  if (config.provider?.[targetProvider]) return { outcome: 'present' };
+  for (const legacyId of LEGACY_PROVIDER_IDS[targetProvider] || []) {
+    const legacy = config.provider?.[legacyId];
+    if (legacy) {
+      defineValue(config.provider, targetProvider, legacy);
+      delete config.provider[legacyId];
+      return { outcome: 'migrated', from: legacyId, section: legacy };
+    }
+  }
+  return { outcome: 'absent' };
+}
+
+// Order-insensitive deep equality for the plain JSON values a model
+// entry is made of (objects, arrays, scalars). Key order in the parsed
+// config follows the file, while the desired state is built in code —
+// a key-order difference is not drift and must not cause write churn.
+function jsonValueEqual(a, b) {
+  if (a === b) return true;
+  if (typeof a !== 'object' || typeof b !== 'object' || a === null || b === null) return false;
+  if (Array.isArray(a) !== Array.isArray(b)) return false;
+  const aKeys = Object.keys(a);
+  const bKeys = Object.keys(b);
+  if (aKeys.length !== bKeys.length) return false;
+  return aKeys.every((key) => Object.prototype.hasOwnProperty.call(b, key) && jsonValueEqual(a[key], b[key]));
+}
+
+// Plan the reconciliation of one existing model entry against its
+// desired state (#1799). Returns one update per drifted key: the full
+// desired `limit` whenever `context` OR `output` differs from the
+// desired limits (or the limit is missing), and the desired `variants`
+// whenever they differ from the variants built from the current effort
+// set. An already-correct entry plans no updates, so a converged sync
+// records no edits. A desired empty variants set plans nothing: the
+// sync never strips variants it did not build.
+function planModelReconciliation(existing, limits, variants) {
+  const updates = [];
+  if (Object.keys(variants).length > 0 && !jsonValueEqual(existing.variants, variants)) {
+    updates.push({ key: 'variants', value: variants });
+  }
+  if (!existing.limit || existing.limit.context !== limits.context || existing.limit.output !== limits.output) {
+    updates.push({ key: 'limit', value: limits });
+  }
+  return updates;
+}
+
 // -----------------------------------------------------------------------------
 // Main Sync Runner
 // -----------------------------------------------------------------------------
@@ -523,6 +587,7 @@ async function run() {
   let totalAdded = 0;
   let totalUpdated = 0;
   let totalRemoved = 0;
+  const skippedProviders = [];
   // Every change is recorded here and applied to the text at the end, so the
   // file keeps its comments and formatting.
   const edits = [];
@@ -543,7 +608,7 @@ async function run() {
     }
 
     // Group models by base name (matching longest suffix first)
-    const effortSuffixes = ['-extra-low', '-medium', '-high', '-low'];
+    const effortSuffixes = ['-extra-low', '-xhigh', '-medium', '-high', '-low', '-extra'];
     const grouped = {};
 
     for (const m of agyModels) {
@@ -556,10 +621,14 @@ async function run() {
           break;
         }
       }
+      // Antigravity labels the xhigh tier "Extra" in some catalog
+      // spellings (-extra ids, "(Extra)" names); the fleet's variant
+      // name for that tier is xhigh.
+      if (effort === 'extra') effort = 'xhigh';
       if (!grouped[baseId]) {
         defineValue(grouped, baseId, {
           baseId,
-          name: m.name.replace(/\s*\((Low|Medium|High|Extra-Low)\)$/i, ''),
+          name: m.name.replace(/\s*\((Low|Medium|High|XHigh|Extra-Low|Extra)\)$/i, ''),
           efforts: new Set(),
           variants: {}
         });
@@ -576,7 +645,22 @@ async function run() {
     };
 
     for (const targetProvider of ['_antigravity']) {
-      if (!config.provider?.[targetProvider]) continue;
+      const resolution = resolveTargetProvider(config, targetProvider);
+      if (resolution.outcome === 'absent') {
+        skippedProviders.push(targetProvider);
+        console.warn(
+          `[sync-models] ! Skipping ${targetProvider}: no section in the runtime overlay and no legacy section to migrate - provider NOT in sync (#7333)`,
+        );
+        continue;
+      }
+      if (resolution.outcome === 'migrated') {
+        console.log(
+          `[sync-models] ! Migrated provider section '${resolution.from}' -> '${targetProvider}' (renamed provider; its catalog was orphaned under the legacy id, #7333)`,
+        );
+        edits.push({ set: ['provider', targetProvider], value: resolution.section });
+        edits.push({ remove: ['provider', resolution.from] });
+        totalUpdated++;
+      }
       const prov = config.provider[targetProvider];
       prov.models = prov.models || {};
       const modelsPath = ['provider', targetProvider, 'models'];
@@ -618,18 +702,12 @@ async function run() {
           edits.push({ set: [...modelsPath, baseId], value: modelEntry });
           totalAdded++;
         } else {
-          let changed = false;
-          if (Object.keys(variants).length > 0 && !prov.models[baseId].variants) {
-            prov.models[baseId].variants = variants;
-            edits.push({ set: [...modelsPath, baseId, 'variants'], value: variants });
-            changed = true;
+          const updates = planModelReconciliation(prov.models[baseId], limits, variants);
+          for (const update of updates) {
+            prov.models[baseId][update.key] = update.value;
+            edits.push({ set: [...modelsPath, baseId, update.key], value: update.value });
           }
-          if (prov.models[baseId].limit?.context !== limits.context) {
-            prov.models[baseId].limit = limits;
-            edits.push({ set: [...modelsPath, baseId, 'limit'], value: limits });
-            changed = true;
-          }
-          if (changed) {
+          if (updates.length > 0) {
             if (VERBOSE) console.log(`[sync-models] ~ Updated ${targetProvider}/${baseId}`);
             totalUpdated++;
           }
@@ -678,7 +756,17 @@ async function run() {
 
   console.log(`[sync-models] Summary: ${totalAdded} models added, ${totalUpdated} models updated, ${totalRemoved} models removed.`);
 
+  if (skippedProviders.length > 0) {
+    console.warn(
+      `[sync-models] Providers skipped (section absent, no legacy section to migrate): ${skippedProviders.join(', ')} - NOT in sync.`,
+    );
+  }
+
   if (totalAdded === 0 && totalUpdated === 0 && totalRemoved === 0) {
+    if (skippedProviders.length > 0) {
+      console.error('[sync-models] Failed: skipped providers above were not synced.');
+      process.exit(2);
+    }
     console.log('[sync-models] All providers are already up-to-date!');
     return;
   }
@@ -695,6 +783,10 @@ async function run() {
 
   if (DRY_RUN) {
     console.log('[sync-models] Dry run complete. No files written.');
+    if (skippedProviders.length > 0) {
+      console.error('[sync-models] Failed: skipped providers above were not synced.');
+      process.exit(2);
+    }
     return;
   }
 
@@ -710,6 +802,11 @@ async function run() {
     console.log('[sync-models] Triggered opencode configuration reload.');
   } catch {
     // Ignored if OpenCode background service is not running
+  }
+
+  if (skippedProviders.length > 0) {
+    console.error('[sync-models] Failed: skipped providers above were not synced.');
+    process.exit(2);
   }
 }
 

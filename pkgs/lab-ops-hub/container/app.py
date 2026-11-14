@@ -762,7 +762,7 @@ def _judge_idna_label(label, host):
     # violation the Worker refuses, while at label start the mapped
     # letter is an ordinary first character, closing the former
     # leading-mark over-refusal (#596).
-    # IDNA2008/UTS-46 marks every punctuation, symbol, separator,
+    # IDNA2008/UTS-46 marks every punctuation, separator,
     # private-use and surrogate codepoint DISALLOWED (the CONTEXTO /
     # CONTEXTJ exceptions below are judged by their own rules: the
     # Catalan middle dot and Hebrew punctuation are context-judged
@@ -772,21 +772,36 @@ def _judge_idna_label(label, host):
     # (not Cn), not format characters (not Cf), NFKC leaves most of
     # them unchanged, and the stdlib IDNA-2003 codec's stringprep
     # tables do not prohibit them — so a decoded label carrying
-    # U+00A8, U+00B4, U+037E or a currency/math symbol passed while
-    # the Worker refuses it (#588). Category-based, not an enumerated
-    # table, so it carries no unicodedata version skew of its own.
+    # U+00A8, U+00B4 or U+037E passed while the Worker refuses it
+    # (#588). Category-based, not an enumerated table, so it carries
+    # no unicodedata version skew of its own.
+    # The symbol categories are NOT refused wholesale (#8428): the
+    # Worker judges the WHATWG-parsed host, and WHATWG domainToASCII
+    # accepts the So/Sc/Sm symbols (U+1F600 -> xn--e28h, U+00A4 ->
+    # xn--bba, U+00D7 -> xn--rca, U+20AC -> xn--lzg, all verified
+    # against Node) — #588's premise that the Worker refuses
+    # currency/math symbols does not hold for the URL-parser path.
+    # Parity therefore refuses only what WHATWG refuses in this
+    # family: punctuation and separators as above, and the Sk
+    # modifier symbols (U+00A8/U+00B4 map to space + combining mark
+    # under UTS-46 and domainToASCII returns empty for them).
+    # Accepting So/Sc/Sm is not an SSRF weakening: these labels
+    # resolve through ordinary public DNS to the same A-label form
+    # the Worker certifies, and the private/loopback/link-local
+    # refusals live in the address checks, not in this category rule.
     if any(
         ord(c) > 0x7F
         and ord(c) not in (0x00B7, 0x05F3, 0x05F4, 0x066B, 0x066C, 0x203F, 0x2040)
         and (
-            unicodedata.category(c)[0] in "PSZ"
+            unicodedata.category(c)[0] in "PZ"
+            or unicodedata.category(c) == "Sk"
             or unicodedata.category(c) in ("Co", "Cs")
         )
         for c in label
     ):
         raise ValueError(
             f"refusing to crawl host {host}: label {label!r} "
-            "contains an IDNA-disallowed punctuation, symbol or separator character"
+            "contains an IDNA-disallowed punctuation, separator or modifier-symbol character"
         )
     label = label.translate({0x0345: "ι"})
     if any(_maps_to_label_separator(c) for c in label if ord(c) > 0x7F):
@@ -1358,6 +1373,13 @@ _CRAWL_TIMEOUT_SECONDS = 20
 _CRAWL_MAX_BODY_BYTES = 2_000_000
 _CRAWL_READ_CHUNK_BYTES = 65_536
 
+# Request-side bounds for POST /crawl (#7036): the payload is a small
+# {"url": ...} JSON object, and the server is single-threaded, so the
+# declared Content-Length is validated before any read and the read
+# itself runs under one absolute deadline.
+_CRAWL_REQUEST_MAX_BODY_BYTES = 65_536
+_CRAWL_REQUEST_READ_TIMEOUT_SECONDS = 10
+
 
 def _fetch_crawl(url):
     # Fetch a validated URL and return (status, body capped at 2 MB). One
@@ -1470,12 +1492,64 @@ class Handler(BaseHTTPRequestHandler):
     def do_GET(self):
         self._send(200, {"ok": True, "service": "labops-crawler"})
 
+    def _read_request_body(self, length):
+        # Read exactly `length` bytes under one absolute deadline
+        # (#7036): a client that declares an in-cap length but stalls
+        # mid-body must not wedge this single-threaded server.
+        deadline = time.monotonic() + _CRAWL_REQUEST_READ_TIMEOUT_SECONDS
+        chunks = []
+        remaining = length
+        try:
+            while remaining > 0:
+                left = deadline - time.monotonic()
+                if left <= 0:
+                    raise TimeoutError("request body read timed out")
+                self.connection.settimeout(left)
+                # read1(), not read(): the buffered read() keeps
+                # recv-ing until the full count arrives, and a client
+                # dribbling bytes faster than the socket timeout keeps
+                # every recv alive, so read() outlives the absolute
+                # deadline (#8906; the _fetch_crawl pattern above).
+                # read1() returns after a single raw read, so the loop
+                # rechecks the deadline between chunks.
+                chunk = self.rfile.read1(min(remaining, _CRAWL_READ_CHUNK_BYTES))
+                if time.monotonic() >= deadline:
+                    raise TimeoutError("request body read timed out")
+                if not chunk:
+                    raise ValueError(
+                        "request body ended before Content-Length bytes arrived"
+                    )
+                chunks.append(chunk)
+                remaining -= len(chunk)
+        finally:
+            self.connection.settimeout(None)
+        return b"".join(chunks)
+
     def do_POST(self):
         if self.path != "/crawl":
             return self._send(404, {"error": "POST /crawl only"})
+        # Validate Content-Length before reading a single byte (#7036):
+        # the old code trusted it outright — a negative length reads
+        # until EOF and an oversized one waits for a body that may
+        # never finish, and either wedges every later request behind
+        # this single-threaded server.
+        raw_length = self.headers.get("content-length")
+        if raw_length is None:
+            return self._send(400, {"error": "missing Content-Length"})
         try:
-            length = int(self.headers.get("content-length", "0"))
-            url = json.loads(self.rfile.read(length))["url"]
+            length = int(raw_length)
+        except ValueError:
+            return self._send(400, {"error": f"invalid Content-Length: {raw_length!r}"})
+        if length < 0 or length > _CRAWL_REQUEST_MAX_BODY_BYTES:
+            return self._send(
+                400,
+                {
+                    "error": f"Content-Length {length} out of range: "
+                    f"0..{_CRAWL_REQUEST_MAX_BODY_BYTES}"
+                },
+            )
+        try:
+            url = json.loads(self._read_request_body(length))["url"]
             try:
                 # Fetch the validated form: identical to the request
                 # except for a percent-encoded host, which is fetched
@@ -1500,6 +1574,14 @@ class Handler(BaseHTTPRequestHandler):
                     "text": text[:20000],
                 },
             )
+        except TimeoutError:
+            # The stalled-body case (#7036): answer if the socket still
+            # takes it, and either way the handler returns so the
+            # server answers the next request.
+            try:
+                self._send(408, {"error": "request body read timed out"})
+            except Exception:  # noqa: BLE001 - the client may be gone
+                pass
         except Exception as e:  # noqa: BLE001 - surface any crawl failure as JSON
             self._send(502, {"error": str(e)})
 

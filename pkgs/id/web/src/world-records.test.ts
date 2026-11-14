@@ -20,7 +20,7 @@ const here = dirname(fileURLToPath(import.meta.url));
 
 /** The world page markup, read from the Rust template so the test cannot drift from it. */
 function worldPageMarkup(): string {
-  const source = readFileSync(resolve(here, "../../src/web/templates.rs"), "utf8");
+  const source = readFileSync(resolve(here, "../../crates/id-web/src/templates.rs"), "utf8");
   const start = source.indexOf("pub fn render_world_page");
   const open = source.indexOf('r#"', start);
   const close = source.indexOf('"#;', open);
@@ -293,5 +293,49 @@ describe("world page records fetch (#1458)", () => {
     expect(reconnectedSocket).toBeDefined();
     reconnectedSocket!.open();
     expect(reconnectedSocket!.sent("join")[0]).toHaveProperty("after", 9);
+  });
+
+  it("rejects wrong-shape records frames without changing rendered records or fetch state (#7908)", () => {
+    const status = q<HTMLOutputElement>("[data-world-status]");
+
+    // The events test above ends by reconnecting: the module's live
+    // socket is the newest one, and the describe-scope `socket` is stale.
+    socket = FakeSocket.all.at(-1)!;
+
+    // Establish a known render baseline through one clean fetch.
+    q<HTMLButtonElement>("[data-world-records-refresh]").click();
+    socket.deliver({ type: "records", records: { seed: 1 }, next_after: null });
+    expect(renderedRecords()).toEqual({ seed: 1 });
+
+    // Start a fresh fetch; every frame below arrives mid-fetch.
+    q<HTMLButtonElement>("[data-world-records-refresh]").click();
+    const recordsRequests = socket.sent("records").length;
+
+    const malformedRecords: Array<Record<string, unknown>> = [
+      { type: "records", records: "abc", next_after: null },
+      { type: "records", records: [10, 20], next_after: null },
+      { type: "records", records: 42, next_after: null },
+      { type: "records", records: true, next_after: null },
+      { type: "records", records: null, next_after: null },
+      // A valid records object must not merge when the cursor is wrong:
+      // the frame is validated whole, before any state changes.
+      { type: "records", records: { ok: 1 }, next_after: 42 },
+      { type: "records", records: { ok: 1 }, next_after: { cursor: "x" } },
+    ];
+
+    for (const frame of malformedRecords) {
+      socket.deliver(frame);
+      expect(status.textContent).toBe("Received an invalid world frame");
+      expect(status.dataset.state).toBe("error");
+      // Rendered records untouched, and no bad cursor was echoed back:
+      // the fetch sent nothing new and is still pending.
+      expect(renderedRecords()).toEqual({ seed: 1 });
+      expect(socket.sent("records")).toHaveLength(recordsRequests);
+    }
+
+    // The pending fetch still completes normally on the next valid frame.
+    socket.deliver({ type: "records", records: { final: 2 }, next_after: null });
+    expect(renderedRecords()).toEqual({ final: 2 });
+    expect(socket.sent("records")).toHaveLength(recordsRequests);
   });
 });

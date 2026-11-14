@@ -201,13 +201,12 @@ export function decide(
   // --- failure tick ---
   const cls = obs.class;
   const consecutiveFailures = health.consecutiveFailures + 1;
-  const incident: Incident =
-    health.incident ?? {
-      id: `${health.source}:${at}`,
-      openedAt: at,
-      humanBlocked: false,
-      surfacing: "none",
-    };
+  const incident: Incident = health.incident ?? {
+    id: `${health.source}:${at}`,
+    openedAt: at,
+    humanBlocked: false,
+    surfacing: "none",
+  };
 
   // A human-blocked incident stays blocked until a human clears it or the
   // source recovers — the ladder must not hammer a login challenge.

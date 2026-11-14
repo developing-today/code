@@ -1150,7 +1150,15 @@ test("parseAiSummaryResult rejects non-object AI results (#7037)", () => {
 test("parseAiSummaryResult rejects a missing, non-string, or empty response (#7037)", () => {
   // {} used to store summary="" with a 200 ok:true, erasing any previous
   // summary; a numeric/object/array response crashed on .trim.
-  for (const body of [{}, { response: 123 }, { response: { text: "x" } }, { response: ["x"] }, { response: null }, { response: "" }, { response: "   " }]) {
+  for (const body of [
+    {},
+    { response: 123 },
+    { response: { text: "x" } },
+    { response: ["x"] },
+    { response: null },
+    { response: "" },
+    { response: "   " },
+  ]) {
     const parsed = parseAiSummaryResult(body);
     assert.equal(parsed.ok, false, JSON.stringify(body));
     if (!parsed.ok) assert.match(parsed.error, /AI summary result/);
@@ -1193,7 +1201,15 @@ test("parseUploadFile rejects a missing or non-file 'file' field (#7087)", () =>
   // A text field named 'file' comes back from FormData.get as a string;
   // the route's bare cast used to hide that until file.arrayBuffer()
   // crashed with a raw TypeError (500).
-  for (const value of [null, undefined, "just a string", 42, {}, { name: "x" }, { name: 7, arrayBuffer: async () => new ArrayBuffer(0) }]) {
+  for (const value of [
+    null,
+    undefined,
+    "just a string",
+    42,
+    {},
+    { name: "x" },
+    { name: 7, arrayBuffer: async () => new ArrayBuffer(0) },
+  ]) {
     const parsed = parseUploadFile(value);
     assert.equal(parsed.ok, false, String(value));
     if (!parsed.ok) assert.match(parsed.error, /multipart field 'file'/);

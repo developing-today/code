@@ -36,6 +36,26 @@ VAR_PREFIX=""
 FORMAT=""
 AUTO_ENV=true
 
+# Every value-taking option must be followed by a real value. A trailing
+# option used to hang the parse loop forever: `shift 2` on the last
+# argument cannot advance past it, so `$#` never reached 0. A flag-like
+# value was silently swallowed as the item name (`--item --bws` ran in
+# vault mode) and an empty value fetched an empty name (#6932). Validate
+# argv once, before anything reads it.
+ARGS_TO_VALIDATE=("$@")
+for ((i = 0; i < ${#ARGS_TO_VALIDATE[@]}; i++)); do
+  case "${ARGS_TO_VALIDATE[i]}" in
+  --item | --field | --secret | --project | --prefix | --format)
+    NEXT_VALUE="${ARGS_TO_VALIDATE[i + 1]-}"
+    if [[ -z $NEXT_VALUE || $NEXT_VALUE == -* ]]; then
+      echo "Error: Option ${ARGS_TO_VALIDATE[i]} requires a value" >&2
+      # `exit` would kill the caller's shell when sourced.
+      if is_sourced; then return 1; else exit 1; fi
+    fi
+    ;;
+  esac
+done
+
 # Parse arguments
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -199,7 +219,10 @@ b64_encode_value() {
 DECODED_VALUE=""
 b64_decode_value() {
   local tmp
-  tmp="$(jq -jn --arg v "$1" '$v | @base64d'; printf 'x')"
+  tmp="$(
+    jq -jn --arg v "$1" '$v | @base64d'
+    printf 'x'
+  )"
   DECODED_VALUE="${tmp%x}"
 }
 

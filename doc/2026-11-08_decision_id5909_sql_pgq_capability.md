@@ -64,14 +64,14 @@ lowered to a different execution mechanism without changing its declared
 semantics. `Unsupported` means reject it; do not approximate. “Proposed” is a
 design capability, not an implementation claim.
 
-| Capability | SQLite | libSQL | ID current redb event store |
-|---|---|---|---|
-| Native SQL/PGQ (`CREATE PROPERTY GRAPH`, `GRAPH_TABLE`) | **Unsupported** in the documented SQLite SQL surface checked | **Unsupported / not documented**; libSQL is a SQLite fork, but its exact deployed build still needs a feature probe | **Unsupported**; no SQL parser or graph-query API |
-| Basic bounded pattern to the same graph result | **Translated** (proposed): parameterized joins over triple rows | **Translated** (proposed), subject to build-specific SQLite-compatibility probes | **Translated** (proposed): Rust evaluator using ordered B-tree keys/multimaps |
-| Recursive CTE execution | **Native** (`WITH RECURSIVE`), with SQLite's documented recursive-select restrictions | **Native by SQLite compatibility**; verify the exact version used before relying on details | **Unsupported as SQL**; traversal would be application code |
-| JSON extraction/table-valued JSON functions | **Native** (`json_extract`, `json_each`, `json_tree`, subject to SQLite version/build) | **Native by SQLite compatibility**; verify the exact version/build | **Unsupported as SQL**; decode typed values in Rust instead |
-| Composite lookup indexes | **Native** relational indexes | **Native** relational indexes | **Translated** to application-maintained composite keys / multimap tables; not SQL indexes |
-| Unbounded paths / shortest paths in the proposed initial profile | **Unsupported** | **Unsupported** | **Unsupported** |
+| Capability                                                       | SQLite                                                                                 | libSQL                                                                                                              | ID current redb event store                                                                |
+| ---------------------------------------------------------------- | -------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------ |
+| Native SQL/PGQ (`CREATE PROPERTY GRAPH`, `GRAPH_TABLE`)          | **Unsupported** in the documented SQLite SQL surface checked                           | **Unsupported / not documented**; libSQL is a SQLite fork, but its exact deployed build still needs a feature probe | **Unsupported**; no SQL parser or graph-query API                                          |
+| Basic bounded pattern to the same graph result                   | **Translated** (proposed): parameterized joins over triple rows                        | **Translated** (proposed), subject to build-specific SQLite-compatibility probes                                    | **Translated** (proposed): Rust evaluator using ordered B-tree keys/multimaps              |
+| Recursive CTE execution                                          | **Native** (`WITH RECURSIVE`), with SQLite's documented recursive-select restrictions  | **Native by SQLite compatibility**; verify the exact version used before relying on details                         | **Unsupported as SQL**; traversal would be application code                                |
+| JSON extraction/table-valued JSON functions                      | **Native** (`json_extract`, `json_each`, `json_tree`, subject to SQLite version/build) | **Native by SQLite compatibility**; verify the exact version/build                                                  | **Unsupported as SQL**; decode typed values in Rust instead                                |
+| Composite lookup indexes                                         | **Native** relational indexes                                                          | **Native** relational indexes                                                                                       | **Translated** to application-maintained composite keys / multimap tables; not SQL indexes |
+| Unbounded paths / shortest paths in the proposed initial profile | **Unsupported**                                                                        | **Unsupported**                                                                                                     | **Unsupported**                                                                            |
 
 The SQLite and libSQL “translated” entries are a feasible implementation shape,
 not evidence that an adapter exists today. SQLite's official documentation
@@ -170,11 +170,11 @@ values are represented; this record does not invent that mapping.
 
 Start with these three composite lookup orders:
 
-| Index/key order | Leading lookup | Typical graph use |
-|---|---|---|
-| `(subject_id, predicate_id, object_id)` | subject; subject + predicate | outgoing edges / predicate-qualified facts |
+| Index/key order                         | Leading lookup                | Typical graph use                           |
+| --------------------------------------- | ----------------------------- | ------------------------------------------- |
+| `(subject_id, predicate_id, object_id)` | subject; subject + predicate  | outgoing edges / predicate-qualified facts  |
 | `(predicate_id, object_id, subject_id)` | predicate; predicate + object | reverse lookup by edge type and destination |
-| `(object_id, subject_id, predicate_id)` | object; object + subject | incoming edges and object-anchored patterns |
+| `(object_id, subject_id, predicate_id)` | object; object + subject      | incoming edges and object-anchored patterns |
 
 These cyclic orders give each component a leading-key path while retaining the
 other two values for covering lookups where the engine supports them. Add

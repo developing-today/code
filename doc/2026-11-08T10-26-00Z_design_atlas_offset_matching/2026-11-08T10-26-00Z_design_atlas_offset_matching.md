@@ -26,14 +26,14 @@ problem, at embed scale instead of file-transfer scale.
 
 ## 2. Parameters (settled)
 
-| Parameter | Value | Why |
-|---|---|---|
-| Window `W` | 64 bytes | At 1–2 KB embed spans, rsync's ~700 B block is most of a span. A 64 B window finds matches well inside one span and resyncs within 64 B of any edit. Smaller windows raise the weak-hit rate (§6) faster than they find extra real matches. |
-| Weak hash | Gear rolling hash, 64-bit, table-driven | Designed for small rolling windows (FastCDC); O(1) roll per byte, good distribution at 64 B where Adler-style sums collide heavily. |
-| Strong verify | BLAKE3 over the candidate run, **plus byte comparison before emitting** | The strong hash is a filter and an audit record, never the proof: a copy token is emitted only after the candidate bytes compare equal. A hash collision therefore costs time, never correctness. |
-| Minimum anchor run `MIN_MATCH` | 128 bytes (interior) | Below this, a copy token (span ref + two offsets + provenance, ~24–32 B on the wire/in the manifest) plus a span split costs more bookkeeping than re-embedding saves, and short runs are where reflow noise lives (§6). |
-| Boundary rule | A byte-verified run touching offset 0, EOF, or the end of a previously emitted token is kept at any length | There is no cheaper representation for it: folding it into the neighbouring literal copies the same bytes anyway, and splitting it off loses the span reference it verifies against. |
-| Index granularity | Every byte offset of `O` | Offset embeds exist precisely to match at arbitrary offsets; indexing only span starts would re-impose aligned boundaries. Cost is accounted in §5. |
+| Parameter                      | Value                                                                                                      | Why                                                                                                                                                                                                                                         |
+| ------------------------------ | ---------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Window `W`                     | 64 bytes                                                                                                   | At 1–2 KB embed spans, rsync's ~700 B block is most of a span. A 64 B window finds matches well inside one span and resyncs within 64 B of any edit. Smaller windows raise the weak-hit rate (§6) faster than they find extra real matches. |
+| Weak hash                      | Gear rolling hash, 64-bit, table-driven                                                                    | Designed for small rolling windows (FastCDC); O(1) roll per byte, good distribution at 64 B where Adler-style sums collide heavily.                                                                                                         |
+| Strong verify                  | BLAKE3 over the candidate run, **plus byte comparison before emitting**                                    | The strong hash is a filter and an audit record, never the proof: a copy token is emitted only after the candidate bytes compare equal. A hash collision therefore costs time, never correctness.                                           |
+| Minimum anchor run `MIN_MATCH` | 128 bytes (interior)                                                                                       | Below this, a copy token (span ref + two offsets + provenance, ~24–32 B on the wire/in the manifest) plus a span split costs more bookkeeping than re-embedding saves, and short runs are where reflow noise lives (§6).                    |
+| Boundary rule                  | A byte-verified run touching offset 0, EOF, or the end of a previously emitted token is kept at any length | There is no cheaper representation for it: folding it into the neighbouring literal copies the same bytes anyway, and splitting it off loses the span reference it verifies against.                                                        |
+| Index granularity              | Every byte offset of `O`                                                                                   | Offset embeds exist precisely to match at arbitrary offsets; indexing only span starts would re-impose aligned boundaries. Cost is accounted in §5.                                                                                         |
 
 ## 3. Algorithm
 
@@ -88,11 +88,11 @@ byte-identical. Resolution rules:
 - A copy token that exactly covers one or more whole old spans becomes
   those span references unchanged — the common case for an unedited
   region.
-- A copy token covering *part* of an old span (an edit landed mid-span)
+- A copy token covering _part_ of an old span (an edit landed mid-span)
   becomes a reference to a **sub-span**: the old span's snapshot
   restricted to `[old_start, old_end)`. The sub-span inherits the parent
   span's vector **only if** #6035's reuse rule is read at the text
-  level — the embedded text of the sub-span is *not* the text that was
+  level — the embedded text of the sub-span is _not_ the text that was
   embedded for the parent span, so under #6035's own invariant
   (embeddings are not hashes; context changes the vector) a sub-span
   **must be re-embedded as a new span** whose snapshot is the restricted
@@ -109,7 +109,7 @@ step changes. The two designs should land together; if #6035 lands
 whole-span-only, §4 resolution rounds outward and §5's savings drop by
 roughly one span per edit point.
 
-Context metadata (heading path, section) versions with the *reference*,
+Context metadata (heading path, section) versions with the _reference_,
 per #6035 — the matcher contributes the ranges; it attaches no context.
 
 ## 5. Cost model
@@ -134,13 +134,13 @@ Per new version, with `n = |N|`, `o = |O|`, `m` = matched bytes:
 
 Per source type:
 
-| Source | Expected behaviour |
-|---|---|
-| Prose / docs (this repo's `doc/`) | Edits are local: a paragraph changes, the rest matches at shifted offsets. `m/n` typically >90%. The phantom-diff risk is reflow (§6), not the matcher. |
-| Code | Same shape as prose; long repeated lines (braces, imports) create weak-hit noise that verification discards at O(run) cost. |
-| Append-mostly logs | Near-total match; the new tail is one literal. Cheapest case. |
-| Prepend-heavy logs (newest-first) | Every offset shifts by the prepend size. A chunk-aligned differ fails completely here; the sliding window resyncs within `W` bytes of the start and matches the rest, so `m/n` stays high. The real costs are (a) the index rebuild per version — O(o) CPU paid even though "only the top changed" — and (b) per-line timestamps/ids inside the prepended block defeat matching *within that block only*. This is the case where the span-block windowing note above matters most: index the old head first, extend on demand. |
-| Generated / minified single-line files | One giant line means one mid-line edit still matches before and after it; but a regenerated file with new hashes/ids throughout matches almost nothing and pays full index + slide cost for no saving. The matcher should report match ratio per file so ingestion can spot sources where matching is a wasted pass. |
+| Source                                 | Expected behaviour                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                             |
+| -------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| Prose / docs (this repo's `doc/`)      | Edits are local: a paragraph changes, the rest matches at shifted offsets. `m/n` typically >90%. The phantom-diff risk is reflow (§6), not the matcher.                                                                                                                                                                                                                                                                                                                                                                        |
+| Code                                   | Same shape as prose; long repeated lines (braces, imports) create weak-hit noise that verification discards at O(run) cost.                                                                                                                                                                                                                                                                                                                                                                                                    |
+| Append-mostly logs                     | Near-total match; the new tail is one literal. Cheapest case.                                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
+| Prepend-heavy logs (newest-first)      | Every offset shifts by the prepend size. A chunk-aligned differ fails completely here; the sliding window resyncs within `W` bytes of the start and matches the rest, so `m/n` stays high. The real costs are (a) the index rebuild per version — O(o) CPU paid even though "only the top changed" — and (b) per-line timestamps/ids inside the prepended block defeat matching _within that block only_. This is the case where the span-block windowing note above matters most: index the old head first, extend on demand. |
+| Generated / minified single-line files | One giant line means one mid-line edit still matches before and after it; but a regenerated file with new hashes/ids throughout matches almost nothing and pays full index + slide cost for no saving. The matcher should report match ratio per file so ingestion can spot sources where matching is a wasted pass.                                                                                                                                                                                                           |
 
 ## 6. Failure cases
 
@@ -151,7 +151,7 @@ Per source type:
   change reads as a total rewrite and everything is re-embedded. The
   matcher is byte-honest — this is not a bug in it — but the design
   records it as the known worst case. Mitigations belong to a
-  normalisation layer *before* matching (a separate decision under
+  normalisation layer _before_ matching (a separate decision under
   #6028), never inside the matcher: a matcher that ignores bytes
   cannot keep §4's byte-verified invariant.
 - **Edits spaced closer than `MIN_MATCH`.** Dense small edits (a

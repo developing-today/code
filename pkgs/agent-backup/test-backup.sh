@@ -58,7 +58,7 @@ chmod "${mode_test_mode}" "${HOME}/.claude/settings.json"
 export AGENT_BACKUP_TEST_STAMP="2026-01-01T00-00-02"
 bash "${SCRIPT_DIR}/backup.sh" >/dev/null 2>&1
 mode_snapshot="${AGENT_BACKUP_DIR}/2026-01-01T00-00-02/.claude/settings.json"
-[[ -f "${mode_snapshot}" ]]
+[[ -f ${mode_snapshot} ]]
 [[ "$(stat -c '%a' "${mode_snapshot}")" == "${mode_test_mode}" ]]
 
 # With content, file set, and modes unchanged, the next snapshot still dedups.
