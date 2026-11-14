@@ -31,8 +31,9 @@ use atlas_core::filters::{Filters, split_csv};
 use atlas_core::shards::{ShardedBackend, TierCeiling, open_from_spec};
 use atlas_core::turso::{TURSO_HOST, resolve_turso_token};
 use atlas_core::{
-    AtlasEmbedder, Error as CoreError, FixedEmbedder, LocalBackend, QueryEmbedder, SearchBackend,
-    SearchMode, SearchOptions, TursoBackend, VectorBackend, run_get_chunk, run_search,
+    AtlasEmbedder, CachingEmbedder, Error as CoreError, FixedEmbedder, LocalBackend, QueryEmbedder,
+    QueryEmbeddingCache, SearchBackend, SearchMode, SearchOptions, TursoBackend, VectorBackend,
+    run_get_chunk, run_search,
 };
 use atlas_proto::{
     FilterSpec, QueryVariant, SearchMode as ProtoSearchMode, SearchParametersV1, SearchRequest,
@@ -442,7 +443,7 @@ fn resolve_ort_lib() -> Option<PathBuf> {
 }
 
 enum LoadedEmbedder {
-    Real(Box<AtlasEmbedder>),
+    Real(Box<CachingEmbedder<AtlasEmbedder>>),
     Fixed(FixedEmbedder),
 }
 
@@ -484,7 +485,13 @@ impl CliEmbedder {
                         })?;
                     return Ok(LoadedEmbedder::Fixed(FixedEmbedder { raw }));
                 }
-                load_embedder(&self.model, self.embedder).map(|e| LoadedEmbedder::Real(Box::new(e)))
+                load_embedder(&self.model, self.embedder).map(|e| {
+                    let cache = QueryEmbeddingCache::from_env(&self.model, fetch_model::MODEL_REV);
+                    LoadedEmbedder::Real(Box::new(CachingEmbedder::new(
+                        e,
+                        std::sync::Arc::new(cache),
+                    )))
+                })
             })
             .as_ref()
             .map_err(|m| CoreError::fatal(m.clone()))
