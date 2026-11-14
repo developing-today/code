@@ -11,6 +11,7 @@ use std::sync::Arc;
 use anyhow::{Context, Result, bail};
 use ed25519_dalek::SigningKey;
 use iroh::{
+    EndpointAddr,
     endpoint::{Connection, RecvStream, SendStream},
     protocol::{AcceptError, ProtocolHandler},
 };
@@ -20,8 +21,9 @@ use tokio::task::JoinSet;
 use crate::{
     frames::{read_frame, write_frame},
     world::{
-        JournalSnapshot, ReplicationCursor, ReplicationEnvelope, ReplicationUpdate,
-        SignedReplicationEnvelope, chain_base_cursor, frame_digest, split_entry_payload,
+        DurableReceiver, JournalSnapshot, ReceiverProgress, ReplicationCursor, ReplicationEnvelope,
+        ReplicationUpdate, SignedReplicationEnvelope, chain_base_cursor, frame_digest,
+        split_entry_payload,
     },
     world_hub::WorldHub,
     world_session::MAX_ADMIN_TOKEN_BYTES,
@@ -360,6 +362,186 @@ where
     }
 }
 
+/// Longest silence tolerated on a replication session before the
+/// client tears it down and (in follow mode) reconnects: the server
+/// bounds its own frame writes at the same 30 s (#4726), so a silent
+/// stream for longer than this is a dead writer, not a quiet one.
+pub const REPLICA_FRAME_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+
+/// A fresh, non-zero session nonce for one replication session. The
+/// server binds every signed frame of the session to this nonce, and
+/// the receiver refuses frames minted for any other session.
+fn fresh_session_nonce() -> [u8; 16] {
+    use rand::RngExt as _;
+    loop {
+        let nonce: [u8; 16] = rand::rng().random();
+        if nonce.iter().any(|byte| *byte != 0) {
+            return nonce;
+        }
+    }
+}
+
+/// One replication session against a writer, pumped into `receiver`.
+///
+/// The session opens with the writer's snapshot (every session does;
+/// the receiver rebases on it), then tails live appends. Each frame is
+/// verified and staged by the receiver; a batch becomes durable only
+/// at its terminal frame, which is when `on_commit` fires.
+///
+/// With `stop_after_first_commit` the session ends (successfully) at
+/// the snapshot's terminal frame — the sync-once posture. Otherwise it
+/// runs until the writer closes the stream or a frame goes missing
+/// for [`REPLICA_FRAME_TIMEOUT`]; the number of commits absorbed is
+/// returned, and a stream that ends before ANY commit is an error
+/// (nothing was synced). On any failure the session is aborted, so
+/// staged-but-uncommitted bytes never leak into the next session.
+async fn pump_replication_session(
+    endpoint: &iroh::Endpoint,
+    addr: EndpointAddr,
+    world: Option<&str>,
+    admin_token: &str,
+    receiver: &mut DurableReceiver,
+    stop_after_first_commit: bool,
+    on_commit: &mut dyn FnMut(ReplicationCursor),
+) -> Result<usize> {
+    let nonce = fresh_session_nonce();
+    receiver.begin_session(nonce);
+    let outcome = pump_replication_session_inner(
+        endpoint,
+        addr,
+        world,
+        admin_token,
+        nonce,
+        receiver,
+        stop_after_first_commit,
+        on_commit,
+    )
+    .await;
+    if outcome.is_err() {
+        receiver.abort_session();
+    }
+    outcome
+}
+
+async fn pump_replication_session_inner(
+    endpoint: &iroh::Endpoint,
+    addr: EndpointAddr,
+    world: Option<&str>,
+    admin_token: &str,
+    nonce: [u8; 16],
+    receiver: &mut DurableReceiver,
+    stop_after_first_commit: bool,
+    on_commit: &mut dyn FnMut(ReplicationCursor),
+) -> Result<usize> {
+    let connection = endpoint.connect(addr, REPLICATION_ALPN).await?;
+    let (mut send, mut recv) = connection.open_bi().await?;
+    let request = serde_json::json!({
+        "world": world,
+        "admin_token": admin_token,
+        "session_nonce": nonce,
+    });
+    write_frame(&mut send, &serde_json::to_vec(&request)?).await?;
+    send.finish()?;
+    let mut commits = 0_usize;
+    loop {
+        let frame = tokio::time::timeout(REPLICA_FRAME_TIMEOUT, read_frame(&mut recv))
+            .await
+            .context("timed out waiting for a replication frame")??
+            .context("replication stream closed by the writer")?;
+        match receiver.accept_frame(&frame)? {
+            ReceiverProgress::Staged { .. } => {}
+            ReceiverProgress::Committed { cursor } => {
+                commits += 1;
+                on_commit(cursor);
+                if stop_after_first_commit {
+                    connection.close(0_u32.into(), b"replica synced");
+                    return Ok(commits);
+                }
+            }
+        }
+    }
+}
+
+/// Sync a durable replica once from its pinned writer (F12.13 phase
+/// 5, operator client): open one replication session, absorb the
+/// writer's snapshot into `receiver`, and return the verified chain
+/// cursor the replica now stands at. The receiver's journal on disk
+/// is the durable result; open it with
+/// [`crate::world_store::open_replica_with_admission`] to serve it.
+///
+/// # Errors
+///
+/// Fails when the writer is unreachable, refuses the admin token,
+/// streams a frame the receiver cannot verify against the pinned
+/// source, or closes before the snapshot commits — in every failure
+/// case the receiver is left at its previous committed cursor.
+pub async fn sync_replica_once(
+    endpoint: &iroh::Endpoint,
+    addr: EndpointAddr,
+    world: Option<&str>,
+    admin_token: &str,
+    receiver: &mut DurableReceiver,
+) -> Result<ReplicationCursor> {
+    let mut synced = None;
+    pump_replication_session(
+        endpoint,
+        addr,
+        world,
+        admin_token,
+        receiver,
+        true,
+        &mut |cursor| synced = Some(cursor),
+    )
+    .await?;
+    synced.context("replication session committed no snapshot")
+}
+
+/// Follow a writer across one replication session (F12.13 phase 5):
+/// absorb the snapshot, then keep absorbing live tail batches until
+/// the stream ends, invoking `on_commit` at every durable cursor.
+/// Returns the number of commits absorbed in this session. Callers
+/// who want to keep following reconnect on return (every new session
+/// re-snapshots, so a reconnect can never lose a tail batch).
+///
+/// # Errors
+///
+/// As [`sync_replica_once`], except that a session which committed at
+/// least one batch before ending returns its commit count instead of
+/// the stream error.
+pub async fn follow_replica_session(
+    endpoint: &iroh::Endpoint,
+    addr: EndpointAddr,
+    world: Option<&str>,
+    admin_token: &str,
+    receiver: &mut DurableReceiver,
+    on_commit: &mut dyn FnMut(ReplicationCursor),
+) -> Result<usize> {
+    let mut commits = 0_usize;
+    let outcome = pump_replication_session(
+        endpoint,
+        addr,
+        world,
+        admin_token,
+        receiver,
+        false,
+        &mut |cursor| {
+            commits += 1;
+            on_commit(cursor);
+        },
+    )
+    .await;
+    match outcome {
+        Ok(count) => Ok(count),
+        Err(error) => {
+            if commits > 0 {
+                Ok(commits)
+            } else {
+                Err(error)
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
@@ -477,6 +659,75 @@ mod tests {
             br#"{"session_nonce":[1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1]}"#,
         );
         assert!(request.is_err());
+    }
+
+    // Oracle: acceptance item 1 of #806 phase 5 — a pinned-source
+    // client session absorbs the writer's snapshot into a durable
+    // receiver, and a refused session leaves the committed cursor
+    // exactly where it stood.
+    #[tokio::test]
+    async fn sync_replica_once_absorbs_the_writer_snapshot() {
+        let dir = TempDir::new().unwrap();
+        let (service, _) = open_world(
+            dir.path(),
+            "lobby",
+            WorldLimits::default(),
+            RuntimeLimits::default(),
+            |world| WorldService::new(world, Some("test-admin".to_owned())),
+        )
+        .await
+        .unwrap();
+        let world = service.world().clone();
+        let hub = WorldHub::single(service);
+        let signing_key = SigningKey::from_bytes(&[7; 32]);
+        let source = *signing_key.verifying_key().as_bytes();
+        let server_endpoint = endpoint().await;
+        let server_addr = endpoint_addr(&server_endpoint);
+        let router = Router::builder(server_endpoint.clone())
+            .accept(
+                REPLICATION_ALPN,
+                WorldReplicationProtocol::new(hub, signing_key),
+            )
+            .spawn();
+        let client_endpoint = endpoint().await;
+        let replica_dir = TempDir::new().unwrap();
+        let mut receiver = DurableReceiver::open(replica_dir.path(), "lobby", source).unwrap();
+        assert_eq!(receiver.committed_cursor(), None);
+
+        let cursor = sync_replica_once(
+            &client_endpoint,
+            server_addr.clone(),
+            None,
+            "test-admin",
+            &mut receiver,
+        )
+        .await
+        .unwrap();
+        assert_eq!(receiver.committed_cursor(), Some(cursor));
+        assert!(
+            cursor.ordinal >= 1,
+            "the snapshot absorbs at least the Created header"
+        );
+        assert!(!receiver.read_journal().unwrap().is_empty());
+
+        // A refused session (wrong admin token) commits nothing and
+        // the previously synced cursor stands.
+        let denied = sync_replica_once(
+            &client_endpoint,
+            server_addr,
+            None,
+            "not-the-admin-token",
+            &mut receiver,
+        )
+        .await;
+        assert!(denied.is_err());
+        assert_eq!(receiver.committed_cursor(), Some(cursor));
+
+        drop(receiver);
+        let _ = router.shutdown().await;
+        client_endpoint.close().await;
+        server_endpoint.close().await;
+        world.shutdown().await.unwrap();
     }
 
     #[tokio::test]

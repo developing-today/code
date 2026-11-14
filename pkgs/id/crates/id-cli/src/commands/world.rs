@@ -17,6 +17,7 @@ use tokio::io::{AsyncBufReadExt, BufReader};
 
 use id_core::frames::{read_frame_from, write_frame_to};
 use id_worlds::world_net::WorldClient;
+use id_worlds::world_store::ReplicaStatus;
 
 use crate::{
     CLIENT_KEY_FILE,
@@ -203,6 +204,33 @@ pub async fn cmd_world(command: WorldCommand) -> Result<()> {
             endpoint.close().await;
             replica.shutdown().await;
             Ok(())
+        }
+        WorldCommand::Replica(args) => {
+            let crate::cli::WorldReplicaArgs {
+                node,
+                dir,
+                admin_token,
+                world,
+                source,
+                lease,
+                once,
+                follow,
+                addrs,
+                no_relay,
+            } = args;
+            cmd_replica(
+                &node,
+                &dir,
+                &admin_token,
+                &world,
+                source.as_deref(),
+                lease.as_deref(),
+                once,
+                follow,
+                &addrs,
+                no_relay,
+            )
+            .await
         }
         WorldCommand::Download(args) => {
             let crate::cli::WorldDownloadArgs {
@@ -2556,4 +2584,191 @@ mod tests {
         assert!(super::measure_module(wasm, 7, &["zz".to_owned()], None).is_err());
         assert!(super::measure_module(b"not wasm", 7, &[], None).is_err());
     }
+}
+
+/// Lowercase hex for status output (source keys, chain digests).
+fn hex_bytes(bytes: &[u8]) -> String {
+    bytes.iter().map(|byte| format!("{byte:02x}")).collect()
+}
+
+/// Wall-clock now in unix milliseconds, for the admission gate's
+/// open-time status (`id_worlds::world::unix_ms` is crate-private).
+fn now_unix_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |elapsed| {
+            u64::try_from(elapsed.as_millis()).unwrap_or(u64::MAX)
+        })
+}
+
+/// The one-line JSON status a replica operator reads (acceptance
+/// item 1 of #806 phase 5): pinned source, world, the verified
+/// cursor it stands at, and its policy-B staleness — how much of the
+/// admission window remains, and whether a NEW spectator would be
+/// admitted right now.
+fn replica_status_json(
+    status: &ReplicaStatus,
+    chain: id_worlds::world::ReplicationCursor,
+) -> serde_json::Value {
+    serde_json::json!({
+        "world": status.world_id,
+        "source": hex_bytes(&status.source),
+        "cursor": {
+            "entries": status.cursor.entries,
+            "sequence": status.cursor.sequence,
+            "header_version": status.cursor.header_version,
+        },
+        "chain_cursor": {
+            "ordinal": chain.ordinal,
+            "digest": hex_bytes(&chain.digest),
+        },
+        "lease_expires_at_unix_ms": status.lease_expires_at_unix_ms,
+        "lease_remaining_ms": status.lease_remaining_ms,
+        "admits_new_spectators": status.admits_new_spectators,
+    })
+}
+
+/// `id world replica`: follow a pinned writer into a durable replica
+/// directory, open the replica under the policy-B admission gate,
+/// report its status, and serve it (F12.13 phase 5, item 1).
+///
+/// Modes: `--once` syncs and reports only; `--follow` keeps the
+/// journal current across reconnects without serving; the default
+/// syncs once, reports, then serves the replica's world sessions
+/// until interrupted. The replica never re-exports the journal feed:
+/// it cannot sign for the pinned source, so it serves sessions only.
+#[allow(clippy::too_many_arguments)]
+async fn cmd_replica(
+    node: &str,
+    dir: &std::path::Path,
+    admin_token: &str,
+    world: &str,
+    source_hex: Option<&str>,
+    lease_path: Option<&std::path::Path>,
+    once: bool,
+    follow: bool,
+    addrs: &[SocketAddr],
+    no_relay: bool,
+) -> Result<()> {
+    use id_worlds::world::{DurableReceiver, SignedAdmissionLease};
+    use iroh::protocol::Router;
+
+    if !is_node_id(node) {
+        bail!("`{node}` is not a node ID (expected 64 hex characters)");
+    }
+    let node_id: EndpointId = node.parse().context("parse node ID")?;
+    let source_hex = source_hex.unwrap_or(node);
+    if !is_node_id(source_hex) {
+        bail!("`{source_hex}` is not a source key (expected 64 hex characters)");
+    }
+    let source_id: EndpointId = source_hex.parse().context("parse source key")?;
+    let source = *source_id.as_bytes();
+
+    std::fs::create_dir_all(dir)
+        .with_context(|| format!("create replica directory {}", dir.display()))?;
+    let mut receiver = DurableReceiver::open(dir, world, source)
+        .map_err(|error| anyhow::anyhow!("open replica receiver: {error}"))?;
+
+    let endpoint = client_endpoint(addrs, no_relay).await?;
+    let addr = EndpointAddr::from_parts(node_id, addrs.iter().copied().map(TransportAddr::Ip));
+
+    if follow {
+        loop {
+            let outcome = id_worlds::world_replication_net::follow_replica_session(
+                &endpoint,
+                addr.clone(),
+                Some(world),
+                admin_token,
+                &mut receiver,
+                &mut |cursor| {
+                    println!(
+                        "{}",
+                        serde_json::json!({
+                            "event": "replica_committed",
+                            "world": world,
+                            "ordinal": cursor.ordinal,
+                            "digest": hex_bytes(&cursor.digest),
+                        })
+                    );
+                },
+            )
+            .await;
+            match outcome {
+                Ok(commits) => {
+                    eprintln!(
+                        "replica follow: session ended after {commits} commit(s); reconnecting"
+                    );
+                }
+                Err(error) => {
+                    eprintln!("replica follow: session failed: {error:#}; reconnecting");
+                }
+            }
+            tokio::select! {
+                _ = tokio::signal::ctrl_c() => break,
+                () = tokio::time::sleep(std::time::Duration::from_secs(1)) => {}
+            }
+        }
+        endpoint.close().await;
+        return Ok(());
+    }
+
+    let chain = id_worlds::world_replication_net::sync_replica_once(
+        &endpoint,
+        addr,
+        Some(world),
+        admin_token,
+        &mut receiver,
+    )
+    .await?;
+    drop(receiver);
+    endpoint.close().await;
+
+    let lease = lease_path
+        .map(|path| -> Result<SignedAdmissionLease> {
+            let bytes = std::fs::read(path)
+                .with_context(|| format!("read admission lease {}", path.display()))?;
+            serde_json::from_slice(&bytes)
+                .with_context(|| format!("parse admission lease {}", path.display()))
+        })
+        .transpose()?;
+
+    let (service, _report, _cursor, status) = id_worlds::world_store::open_replica_with_admission(
+        dir,
+        world,
+        source,
+        id_worlds::world::WorldLimits::default(),
+        id_worlds::world_limits::RuntimeLimits::default(),
+        |handle| id_worlds::world_session::WorldService::new(handle, None),
+        lease,
+        now_unix_ms(),
+    )
+    .await?;
+    println!("{}", replica_status_json(&status, chain));
+    if once {
+        service.world().shutdown().await?;
+        return Ok(());
+    }
+
+    let serve_endpoint = client_endpoint(&[], no_relay).await?;
+    let serve_node = serve_endpoint.id();
+    let router = Router::builder(serve_endpoint.clone())
+        .accept(
+            id_worlds::world_net::WORLD_ALPN,
+            id_worlds::world_net::WorldProtocol::new(id_worlds::world_hub::WorldHub::single_named(
+                world, service,
+            )),
+        )
+        .spawn();
+    println!(
+        "{}",
+        serde_json::json!({
+            "event": "replica_serving",
+            "world": world,
+            "node": serve_node.to_string(),
+        })
+    );
+    tokio::signal::ctrl_c().await?;
+    let _ = router.shutdown().await;
+    serve_endpoint.close().await;
+    Ok(())
 }
