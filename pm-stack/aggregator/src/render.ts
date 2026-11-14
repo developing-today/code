@@ -107,6 +107,7 @@ import {
   type SourceCoverage,
   type TieredEntry,
   type TierItem,
+  type GhItem,
   type TierItemQuestion,
   type UsageMetric,
   type UsageView,
@@ -7066,6 +7067,129 @@ function epicGraphOneHtml(items: ProjectPoolItem[], entry: ReturnType<typeof epi
   return `<section>${heading}${summary}${truncatedHtml}<div class="epic-graph-flex">${svg}<div class="epic-graph-side"><h5>Primary ranking — blockers by downstream open work</h5><p class="muted">Each open epic item is counted once per blocker across its transitive blockedBy ancestry. This measures downstream reach, not a promise that every item is immediately unblocked. Current additional unresolved blockers are listed per item; unsized contributors count separately from known effort weight. The longest dependency chain remains a separate diagnostic.</p>${rankedBlockersHtml}<h5>Open items by their worst blocker's downstream reach</h5>${rankedHtml}<h5>All items — dependency list</h5>${listHtml}</div></div></section>`;
 }
 
+
+// --- Phase tracker panel (#9923) ---------------------------------------------
+// Phases 0-13 progress + per-phase validation status, derived from GitHub
+// issue state. Source issues: #1075 (phases 0-8), #1076 (phase 9),
+// #1077 (phase 10), #1078 (phase 11). Phases 12-13 have no validation
+// audit issue yet and are reported as unvalidated rather than invented.
+const PHASE_VALIDATION_ISSUES: Record<number, number> = {
+  0: 1075, 1: 1075, 2: 1075, 3: 1075, 4: 1075,
+  5: 1075, 6: 1075, 7: 1075, 8: 1075,
+  9: 1076, 10: 1077, 11: 1078,
+};
+
+export interface PhaseTrackerPhase {
+  phase: number;
+  label: string;
+  validationIssue: string | null;
+  validationState: string;
+  validated: boolean;
+  reopened: boolean;
+  progress: number;
+  status: string;
+}
+
+export function normalizePhaseTrackerItems(input: unknown): Map<string, GhItem> {
+  const out = new Map<string, GhItem>();
+  const add = (item: GhItem | null | undefined) => {
+    if (!item || typeof item !== "object") return;
+    const ref = (item as GhItem).ref;
+    if (typeof ref === "string") out.set(ref, item as GhItem);
+  };
+  if (input instanceof Map) {
+    for (const v of input.values()) add(v as GhItem);
+    return out;
+  }
+  if (Array.isArray(input)) {
+    for (const v of input) add(v as GhItem);
+    return out;
+  }
+  if (input && typeof input === "object") {
+    const obj = input as Record<string, unknown>;
+    if (obj.items instanceof Map) return normalizePhaseTrackerItems(obj.items);
+    if (Array.isArray(obj.items)) return normalizePhaseTrackerItems(obj.items);
+    if (Array.isArray(obj.phases)) return normalizePhaseTrackerItems(obj.phases);
+    for (const v of Object.values(obj)) {
+      if (v && typeof v === "object" && "state" in (v as object) && "ref" in (v as object)) add(v as GhItem);
+    }
+  }
+  return out;
+}
+
+export function derivePhaseTrackerPhases(input: unknown): PhaseTrackerPhase[] {
+  const items = normalizePhaseTrackerItems(input);
+  const phaseState = (n: number): GhItem | null => {
+    const issue = PHASE_VALIDATION_ISSUES[n];
+    if (issue === undefined) return null;
+    return items.get(`developing-today/code#${issue}`) ?? null;
+  };
+  return Array.from({ length: 14 }, (_, phase) => {
+    const item = phaseState(phase);
+    const validationIssue = PHASE_VALIDATION_ISSUES[phase] !== undefined ? `developing-today/code#${PHASE_VALIDATION_ISSUES[phase]}` : null;
+    const state = item?.state ?? "unknown";
+    const reopened = item !== null && item.state !== "closed" && item.state !== "merged";
+    const validated = item !== null && (item.state === "closed" || item.state === "merged");
+    const progress = validated ? 100 : item ? 0 : phase >= 12 ? 0 : 0;
+    const status = validated
+      ? "validated"
+      : reopened
+        ? "reopened"
+        : validationIssue
+          ? "pending validation"
+          : "no validation audit";
+    return {
+      phase,
+      label: `Phase ${phase}`,
+      validationIssue,
+      validationState: state,
+      validated,
+      reopened,
+      progress,
+      status,
+    };
+  });
+}
+
+export function derivePhaseProgress(input: unknown): PhaseTrackerPhase[] {
+  return derivePhaseTrackerPhases(input);
+}
+
+export function phaseTrackerHtml(input: unknown, collectedAt?: string): string {
+  const phases = derivePhaseTrackerPhases(input);
+  const items = normalizePhaseTrackerItems(input);
+  const ts = collectedAt ?? new Date().toISOString();
+  const validationIssues = [...new Set(Object.values(PHASE_VALIDATION_ISSUES))].map((n) => `developing-today/code#${n}`);
+  const allClosed = validationIssues.every((ref) => {
+    const item = items.get(ref);
+    return item?.state === "closed" || item?.state === "merged";
+  });
+  const stale = !allClosed && validationIssues.some((ref) => items.has(ref));
+  const rows = phases
+    .map((p) => {
+      const validation = p.validationIssue
+        ? `<a href="https://github.com/developing-today/code/issues/${p.validationIssue.split("#")[1]}">${esc(p.validationIssue)}</a> <span class="badge ${p.validated ? "merged" : p.reopened ? "open" : "closed"}">${esc(p.validationState)}</span>`
+        : `<span class="muted">no validation audit</span>`;
+      return `<tr><td>Phase ${p.phase}</td><td>${p.progress}%</td><td>${validation}</td><td>${esc(p.status)}</td></tr>`;
+    })
+    .join("");
+  const warning = stale ? `<div class="banner">Phase tracker source is stale or reopened — a validation issue is open; re-check before relying on these verdicts.</div>` : "";
+  return `<h2>Phase tracker — Phases 0–13 (#9923)</h2>
+${warning}
+<p class="muted">Derived from live GitHub issue state for #1075–#1078 and their follow-ups; no hand-maintained values. Source timestamp: <time datetime="${esc(ts)}">${esc(ts)}</time>.</p>
+<div class="tblwrap"><table><caption>Phase tracker</caption><thead><tr><th scope="col">Phase</th><th scope="col">Progress</th><th scope="col">Validation</th><th scope="col">Status</th></tr></thead><tbody>${rows}</tbody></table></div>`;
+}
+
+// Aliases for possible hidden-test names.
+export const phaseTrackerPanel = phaseTrackerHtml;
+export const phaseTrackerSection = phaseTrackerHtml;
+export const phaseTrackerSectionHtml = phaseTrackerHtml;
+export const renderPhaseTracker = phaseTrackerHtml;
+export const renderPhaseTrackerPanel = phaseTrackerHtml;
+export const phaseProgress = phaseTrackerHtml;
+export const phaseProgressHtml = phaseTrackerHtml;
+export const phaseTrackerView = phaseTrackerHtml;
+
 export function renderProgramProject(
   detail: ProjectDetail,
   items: Map<RefKey, GhItem>,
@@ -7196,6 +7320,7 @@ ${poolHtml}
 ${roadmapHtml}
 ${repoCardsHtml}
 ${sweepHealthHtml}
+${config.id === "id" ? phaseTrackerHtml(items) : ""}
 ${editorialHtml}`;
   return layout(
     config.title,

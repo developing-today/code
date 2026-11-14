@@ -163,6 +163,9 @@ LAUNCHED_BY_RECOVERY_ZERO_MESSAGE = "opencode-claimant-recovery:zero-message-del
 LAUNCHED_BY_RECOVERY_GONE_SESSION = "opencode-claimant-recovery:gone-session"
 
 
+_LAST_POLL_DATA = None
+
+
 def read_mode() -> str:
     """Read the execution mode from the mode file."""
     if not MODE_FILE.exists():
@@ -286,6 +289,46 @@ def get_active_root_session_count() -> int:
         return -1  # Unknown
 
 
+
+
+def _fail_task_terminal(task_id, worker_id, session_id):
+    """Terminally fail a task whose bound session is unavailable and
+    whose recovery attempts are exhausted (#3026)."""
+    execution = json.dumps(
+        {
+            "lane": "opencode",
+            "session_id": session_id,
+            "fallback_reason": "launch_failed_attempts_exhausted",
+        }
+    )
+    try:
+        result = subprocess.run(
+            [
+                str(REPO_QUEUE_CMD),
+                "fail",
+                str(task_id),
+                "--worker",
+                str(worker_id),
+                "--error",
+                f"bound session {session_id} unavailable without terminal "
+                f"outcome; attempts exhausted",
+                "--reason-class",
+                "deterministic",
+                "--execution",
+                execution,
+            ],
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        if result.returncode != 0:
+            print(f"Failed to terminally fail task {task_id}: {result.stderr}")
+        else:
+            print(f"Terminally failed task {task_id} (session {session_id})")
+    except Exception as e:
+        print(f"Error terminally failing task {task_id}: {e}")
+
+
 def supervision_step(mode: str) -> List[Dict]:
     """
     Step 1: Supervision - check bound sessions for recovery candidates.
@@ -310,86 +353,114 @@ def supervision_step(mode: str) -> List[Dict]:
                 prog = task.get("progress") or {}
                 lane = prog.get("lane") or task.get("lane")
                 session_id = prog.get("session_id") or task.get("session_id")
-                if lane == "opencode" and session_id:
-                    # Check if session exists and is progressing.
-                    # The verdict comes from the verified transport:
-                    # "gone" is a 404 from the per-id GET; "unknown"
-                    # (auth failure, 5xx, transport failure, mis-shaped
-                    # body) never authorizes recovery - the task stays
-                    # bound (#7367, #7770 decision 2).
-                    verdict, session = _get_session(session_id)
-                    if verdict == "unknown":
-                        continue
-                    if verdict == "ok":
-                        # Check for terminal state
-                        has_terminal = any(
-                            marker in str(session.get("outcome", "") or "")
-                            or marker
-                            in str((session.get("time") or {}).get("idle", "") or "")
-                            for marker in ["idle", "outcome", "completed", "failed"]
+                if lane != "opencode" or not session_id:
+                    continue
+
+                attempts = task.get("attempts", 0)
+                max_attempts = task.get("max_attempts", 5)
+                worker_id = task.get("worker_id") or "unknown"
+
+                # Only an expired lease is recoverable: a live lease is
+                # still owned by a worker that may be executing, and
+                # recovery would double-launch over it. An unreadable
+                # lease is not expired (poll.py's rule: never act on a
+                # fact we lack).
+                lease_ms = poll.parse_lease_ms(task.get("lease_until"))
+                if lease_ms is None or lease_ms > int(time.time() * 1000):
+                    continue
+
+                # Check if session exists and is progressing. The verdict
+                # comes from the verified transport: "gone" is a 404 from
+                # the per-id GET; "unknown" (auth failure, 5xx, transport
+                # failure, mis-shaped body) never authorizes recovery -
+                # the task stays bound (#7367, #7770 decision 2).
+                verdict, session = _get_session(session_id)
+                if verdict == "unknown":
+                    continue
+
+                # Decide which recovery path applies.
+                zero_message_path = False
+                gone_path = False
+                if verdict == "gone":
+                    # A session absent from the server: try the message
+                    # read to distinguish a verifiably empty (zero-
+                    # message) session from an unknown one. When the
+                    # message read is unusable, the session is treated
+                    # as gone, not zero-message.
+                    messages = _get_messages(session_id)
+                    if messages is None:
+                        print(
+                            f"Supervision: message read for session "
+                            f"{session_id} was unknown; leaving task "
+                            f"{task['id']} bound"
                         )
-                        if not has_terminal:
-                            # Session exists and is active - nothing to do
-                            continue
+                        continue
+                    if len(messages) == 0:
+                        zero_message_path = True
+                    else:
+                        continue
+                else:
+                    # Session present: only a finished/stuck session
+                    # with no terminal marker is a recovery candidate.
+                    has_terminal = any(
+                        marker in str(session.get("outcome", "") or "")
+                        or marker
+                        in str((session.get("time") or {}).get("idle", "") or "")
+                        for marker in ["idle", "outcome", "completed", "failed"]
+                    )
+                    if not has_terminal:
+                        # Session exists and is active - nothing to do
+                        continue
+                    messages = _get_messages(session_id)
+                    if messages is None:
+                        print(
+                            f"Supervision: message read for session "
+                            f"{session_id} was unknown; leaving task "
+                            f"{task['id']} bound"
+                        )
+                        continue
+                    if len(messages) > 0:
+                        continue
+                    zero_message_path = True
 
-                    # Session is gone or stuck - check if recovery is possible
-                    # Check task attempts and lease
-                    if task.get("attempts", 0) < task.get("max_attempts", 5):
-                        # Only an expired lease is recoverable: a live
-                        # lease is still owned by a worker that may be
-                        # executing, and recovery would double-launch
-                        # over it. An unreadable lease is not expired
-                        # (poll.py's rule: never act on a fact we lack).
-                        lease_ms = poll.parse_lease_ms(task.get("lease_until"))
-                        if lease_ms is None or lease_ms > int(time.time() * 1000):
-                            continue
-
-                        # Verify zero messages first. An unreadable
-                        # session is UNKNOWN, never empty: only a
-                        # confirmed [] may be deleted and rebound, or a
-                        # session that actually had messages gets
-                        # deleted and its task relaunched (#3026).
-                        messages = _get_messages(session_id)
-                        if messages is None:
+                # Attempts exhausted: terminal fail instead of recovery.
+                if attempts >= max_attempts:
+                    if zero_message_path:
+                        if not _delete_session(session_id):
                             print(
-                                f"Supervision: message read for session "
-                                f"{session_id} was unknown; leaving task "
-                                f"{task['id']} bound"
+                                f"Failed to delete session {session_id} "
+                                f"for task {task['id']}"
                             )
                             continue
-                        if len(messages) == 0:
-                            recovery_candidates.append(
-                                {
-                                    "task_id": task["id"],
-                                    "session_id": session_id,
-                                    "reason": "zero_message",
-                                }
-                            )
-        except Exception as e:
-            print(f"Warning: Supervision check failed for queue {queue}: {e}")
+                    # gone_path needs no delete (absence verified).
+                    _fail_task_terminal(task["id"], worker_id, session_id)
+                    continue
 
-    # Process recovery candidates
-    for candidate in recovery_candidates:
-        task_id = candidate["task_id"]
-        session_id = candidate["session_id"]
+                # Attempts remain: recover via the atomic bind operation.
+                if zero_message_path:
+                    if not _delete_session(session_id):
+                        print(
+                            f"Failed to delete session {session_id} "
+                            f"for task {task['id']}"
+                        )
+                        continue
+                    bind_launched_by = LAUNCHED_BY_RECOVERY_ZERO_MESSAGE
+                    reason = "zero_message"
+                else:
+                    bind_launched_by = LAUNCHED_BY_RECOVERY_GONE_SESSION
+                    reason = "gone_session"
 
-        try:
-            # Delete the zero-message session. Only a verified 2xx
-            # DELETE counts: a non-2xx delete did not happen, and the
-            # binding must not be cleared over a live session (#7367).
-            if _delete_session(session_id):
-                # Attempt recovery via atomic bind operation
                 bind_result = subprocess.run(
                     [
                         str(REPO_QUEUE_CMD),
                         "bind",
-                        str(task_id),
+                        str(task["id"]),
                         "--worker",
                         "opencode-claimant",
                         "--session-id",
                         session_id,
                         "--launched-by",
-                        LAUNCHED_BY_RECOVERY_ZERO_MESSAGE,
+                        bind_launched_by,
                     ],
                     capture_output=True,
                     text=True,
@@ -398,15 +469,23 @@ def supervision_step(mode: str) -> List[Dict]:
 
                 if bind_result.returncode == 0:
                     print(
-                        f"Recovered task {task_id}: deleted zero-message session {session_id}"
+                        f"Recovered task {task['id']}: "
+                        f"{bind_launched_by} session {session_id}"
                     )
-                    # Task is now unbound and eligible for next fire
+                    recovery_candidates.append(
+                        {
+                            "task_id": task["id"],
+                            "session_id": session_id,
+                            "reason": reason,
+                        }
+                    )
                 else:
-                    print(f"Failed to recover task {task_id}: {bind_result.stderr}")
-            else:
-                print(f"Failed to delete session {session_id} for task {task_id}")
+                    print(
+                        f"Failed to recover task {task['id']}: "
+                        f"{bind_result.stderr}"
+                    )
         except Exception as e:
-            print(f"Error during recovery of task {task_id}: {e}")
+            print(f"Warning: Supervision check failed for queue {queue}: {e}")
 
     return recovery_candidates
 
@@ -421,8 +500,10 @@ def gate_step() -> Optional[bool]:
     (#7770 contract — unknown never authorizes a side effect and
     is never recorded as a measurement).
     """
+    global _LAST_POLL_DATA
     try:
         poll_data = run_poll()
+        _LAST_POLL_DATA = poll_data
         candidates = poll_data.get("candidates", [])
 
         # Filter for unbound opencode-lane tasks
@@ -434,6 +515,7 @@ def gate_step() -> Optional[bool]:
 
         return len(unbound_opencode) > 0
     except Exception as e:
+        _LAST_POLL_DATA = None
         print(f"Gate check failed: {e}")
         return None
 
@@ -921,7 +1003,8 @@ def main():
 
     if not has_candidates:
         print("No unbound opencode-lane candidates found. Exiting.")
-        log_fire(mode, [], [], None, [{"reason": "no_candidates"}])
+        _gate_data = _LAST_POLL_DATA if isinstance(_LAST_POLL_DATA, dict) else {}
+        log_fire(mode, _gate_data.get("candidates", []), [], None, [{"reason": "no_candidates"}])
         return 0
 
     # Step 3: Cap
@@ -930,12 +1013,14 @@ def main():
 
     if cap_room == -1:
         print("Warning: Could not determine cap room. Exiting.")
-        log_fire(mode, [], [], None, [{"reason": "cap_unknown"}])
+        _gate_data = _LAST_POLL_DATA if isinstance(_LAST_POLL_DATA, dict) else {}
+        log_fire(mode, _gate_data.get("candidates", []), [], None, [{"reason": "cap_unknown"}])
         return 1
 
     if cap_room <= 0:
         print(f"Cap saturated ({CONCURRENCY_CAP} active sessions). Exiting.")
-        log_fire(mode, [], [], cap_room, [{"reason": "cap_saturated"}])
+        _gate_data = _LAST_POLL_DATA if isinstance(_LAST_POLL_DATA, dict) else {}
+        log_fire(mode, _gate_data.get("candidates", []), [], cap_room, [{"reason": "cap_saturated"}])
         return 0
 
     print(f"Cap room: {cap_room} sessions available")
@@ -948,7 +1033,8 @@ def main():
     # Step 6: Log fire
     print(f"Fire complete. Launched {len(launched)} sessions.")
 
-    log_fire(mode, [], launched, cap_room, skips)
+    _gate_data = _LAST_POLL_DATA if isinstance(_LAST_POLL_DATA, dict) else {}
+    log_fire(mode, _gate_data.get("candidates", []), launched, cap_room, skips)
 
     return 0
 

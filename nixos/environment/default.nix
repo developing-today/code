@@ -180,12 +180,12 @@ let
           nspr
           nss
           udev
-          xorg.libX11
-          xorg.libXcursor
-          xorg.libXext
-          xorg.libXi
-          xorg.libXrandr
-          xorg.libXrender
+          libx11
+          libxcursor
+          libxext
+          libxi
+          libxrandr
+          libxrender
           zlib
         ];
       runScript = "${squareline-run}/bin/squareline-run";
