@@ -1787,6 +1787,7 @@ function roadmapCard(
     .join(" ");
   const cmt = counts ? commentBadge(row.subject, counts) : "";
   const grist = row.gristUrl ? ` <a class="badge" href="${esc(row.gristUrl)}">Grist ↗</a>` : "";
+  const repoFile = row.fileUrl ? ` <a class="badge" href="${esc(row.fileUrl)}">Repo file ↗</a>` : "";
   const expansion = drill ? roadmapDrilldown(drill, row, forecasts, spend) : "";
   const notes = annotations?.get(row.subject) ?? [];
   const annotationHtml = notes.length
@@ -1813,7 +1814,7 @@ function roadmapCard(
       }
     }
   }
-  return `<div class="card"><a href="/item/${encodeURIComponent(row.subject)}">${esc(row.title)}</a>${cmt}<br><span class="badge ${esc(row.status.toLowerCase().replace(/[^a-z]/g, "-"))}">${esc(row.status)}</span> <span class="muted">${esc(row.area)} · ${esc(row.horizon)}</span>${horizonWarning}${statusClash}${refBadges}${grist}${annotationHtml}${expansion}${briefPanels}</div>`;
+  return `<div class="card"><a href="/item/${encodeURIComponent(row.subject)}">${esc(row.title)}</a>${cmt}<br><span class="badge ${esc(row.status.toLowerCase().replace(/[^a-z]/g, "-"))}">${esc(row.status)}</span> <span class="muted">${esc(row.area)} · ${esc(row.horizon)}</span>${horizonWarning}${statusClash}${refBadges}${grist}${repoFile}${annotationHtml}${expansion}${briefPanels}</div>`;
 }
 
 function roadmapAnnotationHtml(annotation: RoadmapAnnotation): string {

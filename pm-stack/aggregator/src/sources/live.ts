@@ -39,6 +39,7 @@ import {
 import { isRecord } from "../validate.ts";
 import { buildAttentionFlags, buildQuotaActions, quotaActionFlags } from "../derive.ts";
 import { validateRoadmapHorizon } from "../roadmap-horizon.ts";
+import { describeRepoRoadmapSection, mergeRoadmapRows, readRepoRoadmaps } from "./repo-roadmap.ts";
 import { summarizeDns } from "../dns.ts";
 import {
   applyCloudflareExport,
@@ -1329,13 +1330,28 @@ export function liveSource(
       try {
         const rows = await gristRoadmap(cfg);
         if (rows.length > 0) {
-          provenance.roadmap = "live (Grist)";
+          let merged = rows;
+          let label = "live (Grist)";
           if (cfg.projector.baseUrl) {
-            const enriched = await enrichWithRegistryLinks(cfg.projector.baseUrl, rows, (r) => r.subject);
-            provenance.roadmap = "live (Grist + projector links)";
-            return enriched;
+            merged = await enrichWithRegistryLinks(cfg.projector.baseUrl, rows, (r) => r.subject);
+            label = "live (Grist + projector links)";
           }
-          return rows;
+          // #1738: merge the repos' own roadmap files in alongside the
+          // Grist rows. The repo-file read never throws (its failures
+          // are section states), but guard anyway: a broken repo source
+          // must never take the Grist roadmap down with it. Empty
+          // sections name their state + reason in the label (#1500).
+          try {
+            const repo = await readRepoRoadmaps(cfg);
+            const out = mergeRoadmapRows(merged, repo.rows);
+            merged = out.rows;
+            const sections = repo.sections.map(describeRepoRoadmapSection).join("; ");
+            label += ` + repo files (${sections}${out.collapsedCount ? `; ${out.collapsedCount} grist duplicate(s) collapsed` : ""})`;
+          } catch (err) {
+            label += ` + repo files (unreadable: ${err instanceof Error ? err.message : err})`;
+          }
+          provenance.roadmap = label;
+          return merged;
         }
       } catch (err) {
         provenance.roadmap = `fixtures (grist unreachable: ${err instanceof Error ? err.message : err})`;

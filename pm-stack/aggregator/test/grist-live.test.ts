@@ -25,6 +25,8 @@ async function testConfig() {
     PM_PROJECTOR_URL: "off",
     GRIST_URL: "http://grist.test",
     GRIST_ROADMAP_DOC: "test-roadmap-doc",
+    PM_AGG_CODE_CHECKOUT: join(dir, "code"),
+    PM_AGG_NIX_CHECKOUT: join(dir, "nix"),
     GRIST_API_KEY: "test-grist-api-key",
   });
 }
@@ -86,7 +88,10 @@ describe("live Grist roadmap reader (#1213)", () => {
           gristUrl: "http://amd-6.raptor-pumpkinseed.ts.net:8484/doc/test-roadmap-doc",
         },
       ]);
-      expect(src.provenance().roadmap).toBe("live (Grist)");
+      // #1738: the live label now carries the repo-file sections;
+      // with hermetic (absent) checkouts both report missing (#1500).
+      expect(src.provenance().roadmap).toContain("live (Grist) + repo files (code planning/roadmaps: missing");
+      expect(src.provenance().roadmap).toContain("nix ROADMAP.md: missing");
     } finally {
       globalThis.fetch = realFetch;
     }
