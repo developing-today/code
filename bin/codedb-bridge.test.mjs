@@ -36,6 +36,39 @@ test('daemon URL rejects query, fragment and userinfo by name instead of silentl
   assert.throws(() => parseDaemonUrl('http://user@127.0.0.1:7719'), /CODEDB_DAEMON_URL.*userinfo/);
 });
 
+test('daemon URL errors never echo credentials, query values or fragment values (#9829)', () => {
+  const messageOf = (fn) => {
+    try {
+      fn();
+    } catch (err) {
+      return err.message;
+    }
+    throw new Error('expected parseDaemonUrl to throw');
+  };
+  // userinfo branch: neither the username nor the password may appear
+  // (distinctive sentinels -- the word userinfo itself contains user).
+  const userinfo = messageOf(() => parseDaemonUrl('http://svcacct:hunterpass@127.0.0.1:7719/'));
+  assert.match(userinfo, /CODEDB_DAEMON_URL.*userinfo/);
+  assert.ok(!userinfo.includes('hunterpass'), userinfo);
+  assert.ok(!userinfo.includes('svcacct'), userinfo);
+  const userinfoPass = messageOf(() => parseDaemonUrl('http://user:pass@127.0.0.1:7719/'));
+  assert.ok(!userinfoPass.includes('pass'), userinfoPass);
+  // query branch: the token value may not appear.
+  const query = messageOf(() => parseDaemonUrl('http://127.0.0.1:7719/?token=secret'));
+  assert.match(query, /CODEDB_DAEMON_URL.*query/);
+  assert.ok(!query.includes('secret'), query);
+  // fragment branch: the fragment value may not appear.
+  const fragment = messageOf(() => parseDaemonUrl('http://127.0.0.1:7719/#secretfrag'));
+  assert.match(fragment, /CODEDB_DAEMON_URL.*fragment/);
+  assert.ok(!fragment.includes('secretfrag'), fragment);
+  // the pre-existing branches are covered too: a credentialed value that
+  // fails URL parsing or the origin check must not be echoed either.
+  const invalid = messageOf(() => parseDaemonUrl('http://user:pass@127.0.0.1:bad/'));
+  assert.ok(!invalid.includes('pass'), invalid);
+  const nonOrigin = messageOf(() => parseDaemonUrl('https://user:pass@127.0.0.1:7719'));
+  assert.ok(!nonOrigin.includes('pass'), nonOrigin);
+});
+
 test('daemon fetch timeout defaults to a named deadline and accepts a positive integer override', () => {
   assert.equal(DEFAULT_DAEMON_FETCH_TIMEOUT_MS, 10_000);
   assert.equal(parseDaemonFetchTimeoutMs(undefined), DEFAULT_DAEMON_FETCH_TIMEOUT_MS);
@@ -143,6 +176,45 @@ test('tools/call forwards to the daemon and returns its payload', async () => {
   assert.deepEqual(JSON.parse(search.result.content[0].text).results.map((r) => r.path), ['x.rs', 'y.rs']);
   const hot = await call(handle, 'codedb_hot', { limit: 1 });
   assert.deepEqual(JSON.parse(hot.result.content[0].text).files, ['a']);
+});
+
+test('arguments in no tool schema are rejected by name, never silently dropped (#4216)', () => {
+  const neverNamed = {
+    codedb_tree: { bogus_tree_opt: 1 },
+    codedb_outline: { path: 'x', bogus_outline_opt: 1 },
+    codedb_symbol: { name: 'x', bogus_symbol_opt: 1 },
+    codedb_search: { query: 'x', bogus_search_opt: 1 },
+    codedb_word: { word: 'x', bogus_word_opt: 1 },
+    codedb_hot: { bogus_hot_opt: 1 },
+    codedb_deps: { path: 'x', bogus_deps_opt: 1 },
+  };
+  for (const t of CODEDB_TOOLS) {
+    const key = Object.keys(neverNamed[t.name]).find((k) => k.startsWith('bogus_'));
+    assert.throws(() => routeForTool(t.name, neverNamed[t.name]), new RegExp(`"${key}"`));
+  }
+  // The typo case from the issue: max_result (no s) is not max_results.
+  assert.throws(() => routeForTool('codedb_search', { query: 'x', max_result: 2 }), /"max_result"/);
+});
+
+test('a typoed max_result surfaces as an MCP error naming the argument, not the full result set (#4216)', async () => {
+  const handle = createHandler({
+    fetchFn: stubFetch({
+      '/explore/search?q=x': {
+        query: 'x',
+        results: [
+          { path: 'a.rs', line: 1, text: 'a' },
+          { path: 'b.rs', line: 2, text: 'b' },
+          { path: 'c.rs', line: 3, text: 'c' },
+          { path: 'd.rs', line: 4, text: 'd' },
+          { path: 'e.rs', line: 5, text: 'e' },
+        ],
+      },
+    }),
+    daemonUrl: 'http://127.0.0.1:7719',
+  });
+  const typo = await call(handle, 'codedb_search', { query: 'x', max_result: 2 });
+  assert.equal(typo.result.isError, true);
+  assert.match(typo.result.content[0].text, /"max_result"/);
 });
 
 test('a slow daemon call does not head-of-line block a later ping (PR #4171 Codex P2)', async () => {

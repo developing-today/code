@@ -120,18 +120,12 @@ export async function uploadImageFile(file: File): Promise<UploadResponse> {
  * misreported the failure as an insertion failure.
  */
 export function parseUploadResponse(payload: unknown): UploadResponse {
-  if (
-    typeof payload !== "object" ||
-    payload === null ||
-    Array.isArray(payload)
-  ) {
+  if (typeof payload !== "object" || payload === null || Array.isArray(payload)) {
     throw new Error("Upload failed: malformed /api/upload response (expected an object)");
   }
   const { hash, name, url } = payload as Record<string, unknown>;
   if (typeof hash !== "string" || typeof name !== "string" || typeof url !== "string") {
-    throw new Error(
-      "Upload failed: malformed /api/upload response (hash, name and url must be strings)",
-    );
+    throw new Error("Upload failed: malformed /api/upload response (hash, name and url must be strings)");
   }
   return { hash, name, url };
 }

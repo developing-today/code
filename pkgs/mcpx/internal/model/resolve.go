@@ -31,6 +31,11 @@ type Config struct {
 	Timeout time.Duration
 	// Sampler is the broker sampling path, when the daemon has one.
 	Sampler SampleFunc
+	// PluginSampler is the plugin sampler binding over the same
+	// broker, when the daemon has one: the path model.provider=plugin
+	// resolves through. Nil means no plugin answerer path is
+	// installed, and plugin resolves to a precise ErrUnavailable.
+	PluginSampler SampleFunc
 	// LookupEnv reads the environment; nil means os.Getenv. A seam for
 	// tests, which must not depend on the machine's real variables.
 	LookupEnv func(string) string
@@ -74,8 +79,8 @@ var Providers = []string{"auto", "sampling", "plugin", "openai", "anthropic", "g
 // none (the daemon default), so nothing calls a model and the caller
 // stays on its deterministic path -- no behaviour change for a user who
 // configures nothing. An error means a provider was named but cannot be
-// built (the plugin backend is not built yet; sampling was asked for
-// with no sampling path installed); callers treat it as unavailable and
+// built (sampling or plugin was asked for with no answerer path
+// installed); callers treat it as unavailable and
 // fall back the same way.
 func Resolve(cfg Config) (Provider, error) {
 	lookup := cfg.LookupEnv
@@ -106,11 +111,16 @@ func Resolve(cfg Config) (Provider, error) {
 		}
 		return NewSamplingProvider(cfg.Sampler), nil
 	case "plugin":
-		// The opencode-plugin backend answers through the v2 plugin's
-		// ctx.generate.text and depends on #47; it is a later slice of
-		// #1925, named in the enum now so configurations written for it
-		// fail with this sentence rather than a bare "unknown provider".
-		return nil, fmt.Errorf("model: provider plugin: %w (the opencode-plugin backend is not built yet; it depends on #47)", ErrUnavailable)
+		// The plugin backend is a sampler binding over the elicitation
+		// broker (#1925, task 13246): the daemon installs it as
+		// PluginSampler when it can carry questions to a plugin
+		// answerer. Without that path the honest answer is a precise
+		// unavailable, not the stale "#47" dependency this case used
+		// to cite -- #47 is an unrelated closed Dependabot PR.
+		if cfg.PluginSampler == nil {
+			return nil, fmt.Errorf("model: provider plugin: %w (no plugin answerer path installed)", ErrUnavailable)
+		}
+		return NewPluginProvider(cfg.PluginSampler), nil
 	case "openai", "anthropic", "google":
 		name := strings.ToLower(strings.TrimSpace(cfg.Provider))
 		return configured(cfg, name, lookup), nil
@@ -238,7 +248,10 @@ func (r *profileRouter) provider(name string) (Provider, error) {
 		return NewSamplingProvider(r.cfg.Sampler), nil
 	}
 	if name == "plugin" {
-		return nil, fmt.Errorf("model: provider plugin: %w", ErrUnavailable)
+		if r.cfg.PluginSampler == nil {
+			return nil, fmt.Errorf("model: provider plugin: %w (no plugin answerer path installed)", ErrUnavailable)
+		}
+		return NewPluginProvider(r.cfg.PluginSampler), nil
 	}
 	var settings providerSettings
 	configured := false

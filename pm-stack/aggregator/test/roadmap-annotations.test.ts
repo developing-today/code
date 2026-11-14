@@ -6,6 +6,7 @@ import {
   RoadmapAnnotationsStore,
   validateNewRoadmapAnnotation,
   type NewRoadmapAnnotation,
+  type RoadmapAnnotation,
 } from "../src/roadmap-annotations.ts";
 
 const author = { kind: "drew" as const, id: "drew", label: "Drew" };
@@ -72,7 +73,7 @@ describe("roadmap annotations (#1284)", () => {
     expect(statSync(join(dir, quarantined[0])).isDirectory()).toBe(true);
     expect(existsSync(file)).toBe(false);
 
-    const restored = {
+    const restored: RoadmapAnnotation = {
       id: "ra-restored",
       stableRef: "grist:doc/Roadmap/restored",
       kind: "decision",

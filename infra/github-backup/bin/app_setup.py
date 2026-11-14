@@ -31,7 +31,14 @@ import json, os, secrets as secrets_mod, subprocess, sys, time
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from ghb_common import load_config
 
-CFG = load_config()
+try:
+    CFG = load_config()
+except (ValueError, OSError) as e:
+    # A wrong-shape config is a clean, field-naming diagnostic for
+    # every subcommand (#6849) — never a raw KeyError/TypeError
+    # traceback from the import-time indexing below.
+    print(f"app_setup: {e}", file=sys.stderr)
+    sys.exit(2)
 NAMES = CFG["app"]["bitwarden_secret_names"]
 
 
@@ -49,22 +56,49 @@ def app_manifest(worker_url):
     }
 
 
-def _bws_list():
-    r = subprocess.run(
-        ["bws", "secret", "list"], capture_output=True, text=True, env=dict(os.environ)
-    )
+def _bws_json(argv, what):
+    """Run a bws read command and return its parsed JSON.
+
+    The subprocess failure is reported as the bws failure it is
+    (return code + stderr excerpt), and unparseable output is a
+    named diagnostic — never a raw JSONDecodeError or a misleading
+    downstream shape accident (#6849).
+    """
+    r = subprocess.run(argv, capture_output=True, text=True, env=dict(os.environ))
     if r.returncode != 0:
-        raise RuntimeError(f"bws secret list failed: {r.stderr[:200]}")
-    return json.loads(r.stdout or "[]")
+        raise RuntimeError(f"{what} failed (exit {r.returncode}): {r.stderr[:200]}")
+    try:
+        return json.loads(r.stdout or "null")
+    except json.JSONDecodeError:
+        raise RuntimeError(f"{what} returned unparseable output: {r.stdout[:200]!r}")
+
+
+def _bws_list():
+    secrets = _bws_json(["bws", "secret", "list"], "bws secret list")
+    if not isinstance(secrets, list) or not all(
+        isinstance(s, dict)
+        and isinstance(s.get("id"), str)
+        and isinstance(s.get("key"), str)
+        for s in secrets
+    ):
+        raise RuntimeError(
+            "bws secret list returned an unexpected shape: "
+            "expected a list of objects with string 'id' and 'key'"
+        )
+    return secrets
 
 
 def _project_id():
     if os.environ.get("GHB_BWS_PROJECT_ID"):
         return os.environ["GHB_BWS_PROJECT_ID"]
-    r = subprocess.run(
-        ["bws", "project", "list"], capture_output=True, text=True, env=dict(os.environ)
-    )
-    projects = json.loads(r.stdout or "[]")
+    projects = _bws_json(["bws", "project", "list"], "bws project list")
+    if not isinstance(projects, list) or not all(
+        isinstance(p, dict) and isinstance(p.get("id"), str) for p in projects
+    ):
+        raise RuntimeError(
+            "bws project list returned an unexpected shape: "
+            "expected a list of objects with string 'id'"
+        )
     if not projects:
         raise RuntimeError("no Bitwarden projects visible to this token")
     return projects[0]["id"]
@@ -95,13 +129,13 @@ def bws_get(name):
     sid = next((s["id"] for s in _bws_list() if s.get("key") == name), None)
     if not sid:
         raise KeyError(name)
-    r = subprocess.run(
-        ["bws", "secret", "get", sid],
-        capture_output=True,
-        text=True,
-        env=dict(os.environ),
-    )
-    return json.loads(r.stdout)["value"]
+    got = _bws_json(["bws", "secret", "get", sid], f"bws secret get {name}")
+    if not isinstance(got, dict) or not isinstance(got.get("value"), str):
+        raise RuntimeError(
+            f"bws secret get {name} returned an unexpected shape: "
+            "expected an object with a string 'value'"
+        )
+    return got["value"]
 
 
 def cmd_manifest():
@@ -124,6 +158,34 @@ CLICK PATH (one human step — GitHub requires it):
     )
 
 
+def validate_conversion(conv):
+    """The full conversion response, validated BEFORE anything is
+    stored (#6849): a response missing a late field must store
+    nothing, never a partial credential set. Returns the validated
+    (id, client_id, client_secret, pem, slug) tuple."""
+    if not isinstance(conv, dict):
+        raise RuntimeError("conversion response is not an object — nothing stored")
+    problems = []
+    if not isinstance(conv.get("id"), int) or isinstance(conv.get("id"), bool):
+        problems.append("'id' must be an integer")
+    for field in ("client_id", "client_secret", "pem", "slug"):
+        if not isinstance(conv.get(field), str) or not conv.get(field):
+            problems.append(f"'{field}' must be a non-empty string")
+    if problems:
+        raise RuntimeError(
+            "conversion response failed validation ("
+            + "; ".join(problems)
+            + ") — nothing stored"
+        )
+    return (
+        conv["id"],
+        conv["client_id"],
+        conv["client_secret"],
+        conv["pem"],
+        conv["slug"],
+    )
+
+
 def cmd_convert(code):
     import urllib.request
 
@@ -135,12 +197,13 @@ def cmd_convert(code):
     req.add_header("Accept", "application/vnd.github+json")
     with urllib.request.urlopen(req, timeout=60) as r:
         conv = json.loads(r.read())
-    bws_set(NAMES["app_id"], str(conv["id"]))
-    bws_set(NAMES["client_id"], conv["client_id"])
-    bws_set(NAMES["client_secret"], conv["client_secret"])
-    bws_set(NAMES["private_key"], conv["pem"])
+    app_id, client_id, client_secret, pem, slug = validate_conversion(conv)
+    bws_set(NAMES["app_id"], str(app_id))
+    bws_set(NAMES["client_id"], client_id)
+    bws_set(NAMES["client_secret"], client_secret)
+    bws_set(NAMES["private_key"], pem)
     print(
-        f"App created: id={conv['id']} slug={conv['slug']} — credentials stored "
+        f"App created: id={app_id} slug={slug} — credentials stored "
         f"in Bitwarden by name ({', '.join(NAMES.values())})."
     )
     print("Next: app_setup.py webhook-secret, then install the App per RUNBOOK §App.")
@@ -154,6 +217,26 @@ def cmd_webhook_secret():
         "Set the same value on the App (GitHub UI > App settings > Webhook secret) "
         "and on the Worker: wrangler secret put GITHUB_WEBHOOK_SECRET."
     )
+
+
+def validate_installations(installs):
+    """The installations payload, validated before any indexing
+    (#6849): a list of objects with an integer 'id' and an
+    'account' object with a string 'login'."""
+    if not isinstance(installs, list) or not all(
+        isinstance(i, dict)
+        and isinstance(i.get("id"), int)
+        and not isinstance(i.get("id"), bool)
+        and isinstance(i.get("account"), dict)
+        and isinstance(i["account"].get("login"), str)
+        for i in installs
+    ):
+        raise RuntimeError(
+            "installations response returned an unexpected shape: "
+            "expected a list of objects with integer 'id' and "
+            "'account.login' string"
+        )
+    return installs
 
 
 def cmd_install_report():
@@ -178,6 +261,7 @@ def cmd_install_report():
     req.add_header("Accept", "application/vnd.github+json")
     with urllib.request.urlopen(req, timeout=60) as r:
         installs = json.loads(r.read())
+    validate_installations(installs)
     for i in installs:
         acct = i["account"]["login"]
         print(

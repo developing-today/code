@@ -8,7 +8,7 @@ files are gone.
 
 The environment block advertises a `/var/folders/.../T/opencode` path as
 "pre-approved for external directory access". That approval is about
-*permissions*, not *durability*. Use it for scratch output you are willing to
+_permissions_, not _durability_. Use it for scratch output you are willing to
 lose. **Never create a git worktree there.**
 
 ## Where worktrees go

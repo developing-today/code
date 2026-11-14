@@ -364,6 +364,80 @@ func ResolutionArgs(args []string) []string {
 	return out
 }
 
+// infoArgs adapts the runtime's resolution arguments for
+// `deno info`, reporting whether the runtime asked for cache-only
+// resolution. --cached-only is a run/check flag: `deno check`
+// accepts it, but `deno info` rejects it outright ("unexpected
+// argument", verified on deno 2.9.8) -- forwarding it verbatim
+// made every import-graph computation fail whenever the executing
+// runtime carried it, which is every deno run under
+// deps.autoInstall=off, its default (#8457).
+//
+// The flag cannot simply be translated to --no-remote: on the
+// info surface that refuses even CACHED remote modules at graph
+// level ("A remote specifier was requested ... but --no-remote
+// is specified"), so a script importing an already-cached HTTPS
+// module would be reported unresolved, and it does not restrain
+// npm resolution at all (CodeRabbit review, PR #10289; both
+// verified against deno 2.9.8). Nor can it be dropped: without
+// restraint `deno info` fetches, defeating the no-fetch rule the
+// flag exists to state. So the flag is stripped from the info
+// argv and the restraint is applied to the subprocess
+// environment instead (cacheOnlyEnv): the cache stays
+// authoritative, and any fetch the graph would need fails
+// immediately and surfaces as the graph error it is. Verified
+// permutations on deno 2.9.8: cached HTTPS and npm imports
+// resolve; uncached ones error without downloading.
+func infoArgs(args []string) ([]string, bool) {
+	out := ResolutionArgs(args)
+	cacheOnly := false
+	kept := out[:0]
+	for _, a := range out {
+		if a == "--cached-only" || strings.HasPrefix(a, "--cached-only=") {
+			cacheOnly = true
+			continue
+		}
+		kept = append(kept, a)
+	}
+	return kept, cacheOnly
+}
+
+// cacheOnlyProxy is the dead endpoint cacheOnlyEnv points every
+// proxy variable at: a loopback discard port, so a connection is
+// refused (or answered by a service that speaks no HTTP) at once
+// rather than hanging until the check's timeout.
+const cacheOnlyProxy = "http://127.0.0.1:9"
+
+// cacheOnlyEnv returns env with every proxy variable forced to
+// cacheOnlyProxy and the bypass lists emptied: a NO_PROXY entry
+// naming a registry would silently restore fetching for exactly
+// the hosts the restraint exists for. Deno's fetcher honours
+// these variables for HTTPS modules and the npm registry alike.
+func cacheOnlyEnv(env []string) []string {
+	forced := map[string]string{
+		"HTTP_PROXY": cacheOnlyProxy, "http_proxy": cacheOnlyProxy,
+		"HTTPS_PROXY": cacheOnlyProxy, "https_proxy": cacheOnlyProxy,
+		"NO_PROXY": "", "no_proxy": "",
+	}
+	out := make([]string, 0, len(env)+len(forced))
+	seen := make(map[string]bool, len(forced))
+	for _, kv := range env {
+		key, _, _ := strings.Cut(kv, "=")
+		if v, ok := forced[key]; ok {
+			out = append(out, key+"="+v)
+			seen[key] = true
+			continue
+		}
+		out = append(out, kv)
+	}
+	for key, v := range forced {
+		if !seen[key] {
+			out = append(out, key+"="+v)
+		}
+	}
+	return out
+}
+
 // isolationArgs are appended LAST to every report-mode deno info call, so
 // they win over any forwarded or project-configured value: report mode
 // must not install dependencies or write a lockfile as a side effect of
@@ -411,10 +485,14 @@ func CheckImportsResolved(ctx context.Context, denoBin, entry string, mode Impor
 		defer cancel()
 	}
 	argv := []string{"info", "--json"}
-	argv = append(argv, ResolutionArgs(runtimeArgs)...)
+	resolution, cacheOnly := infoArgs(runtimeArgs)
+	argv = append(argv, resolution...)
 	argv = append(argv, isolationArgs...)
 	argv = append(argv, entry)
 	cmd := exec.CommandContext(cctx, denoBin, argv...)
+	if cacheOnly {
+		cmd.Env = cacheOnlyEnv(os.Environ())
+	}
 	// Execute in the directory the script will execute in, not beside
 	// the entry file: relative --config paths and configuration discovery
 	// resolve from the working directory (Codex review, PR #2575).
