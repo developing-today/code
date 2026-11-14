@@ -2246,6 +2246,11 @@
       // per workspace); per-workspace key wiring is verified by live
       // probe after the switch, and a workspace without a working key is
       // demoted by the router's health/quota rules, not by config edits.
+      // 2026-11-14 (Drew, later same day): the Zen free models carry
+      // limited context — they are the LAST RESORT wherever they fit.
+      // In the per-model pools the Zen leaf sits at weight 0.5 behind
+      // its Go/plan doors; in the ordered tiers the Zen routes sit last
+      // before the escalation leg.
       "opencode-plans": {
         "providers": ["opencode.drewrypope", "opencode.popesdrew", "opencode.developing-today-0"],
         "selection": "weighted",
@@ -2885,8 +2890,8 @@
         // the route to beam-free. Deliberately NOT seated: one model, one
         // seat. (The Go endpoint no longer serves cat-jam-free at all.)
         // 2026-11-14 (Zen pass): the Zen door for the same model joins as
-        // a second leaf (opencode-plans/beam-free, default weight behind
-        // the Go leaf's 3).
+        // a second leaf at weight 0.5 — last resort behind the Go leaf's
+        // 3 (Drew: Zen free models carry limited context).
         "targets": [
           "opencode-go-plans/beam-free",
           "opencode-plans/beam-free"
@@ -2894,7 +2899,8 @@
         "selection": "round-robin",
         "autonomy": "rules",
         "weights": {
-          "opencode-go-plans/beam-free": 3
+          "opencode-go-plans/beam-free": 3,
+          "opencode-plans/beam-free": 0.5
         }
       },
       "longcat-plan": {
@@ -2916,7 +2922,8 @@
         "selection": "round-robin",
         "autonomy": "rules",
         "weights": {
-          "opencode-go-plans/longcat-2.5-free": 3
+          "opencode-go-plans/longcat-2.5-free": 3,
+          "opencode-plans/longcat-2.5-free": 0.5
         }
       },
       "iceman-plan": {
@@ -2939,7 +2946,8 @@
         "selection": "round-robin",
         "autonomy": "rules",
         "weights": {
-          "opencode-go-plans/iceman-contributor-free": 3
+          "opencode-go-plans/iceman-contributor-free": 3,
+          "opencode-plans/iceman-free": 0.5
         }
       },
       "flash-free-plan": {
@@ -3108,7 +3116,8 @@
         // accounting, and MiMo is ClinePass's best seat), OpenDesign,
         // and Command Code as a minor leaf (weight 0.5, $10 credits/mo).
         // 2026-11-14 (Zen pass): the Zen free door (mimo-v2.6-flash-free)
-        // joins as a fourth leaf at default weight.
+        // joins as a fourth leaf at weight 0.5 — last resort (Drew:
+        // Zen free models carry limited context).
         "targets": [
           "opencode-go-plans/mimo-v2.6-flash",
           "cline-pass/mimo-v2.6-flash",
@@ -3118,7 +3127,8 @@
         "selection": "round-robin",
         "autonomy": "rules",
         "weights": {
-          "opencode-go-plans/mimo-v2.6-flash": 3
+          "opencode-go-plans/mimo-v2.6-flash": 3,
+          "opencode-plans/mimo-v2.6-flash-free": 0.5
         }
       },
       "glm-5-3-plan": {
@@ -3197,15 +3207,18 @@
         // now seated in this tier (probe-verified 2026-11-14).
         // 2026-11-14 (Drew, Zen pass): Inkling 2 Small Free joins through
         // inkling-plan — AA v5 II 31, the strongest free generalist on
-        // either shelf after Flash — behind the Go free legs (Zen key
-        // wiring is verified per workspace after the switch).
+        // either shelf after Flash. Seated LAST in this tier, just ahead
+        // of the workhorse escalation (Drew, later same day: the Zen
+        // free models carry limited context — last resort wherever they
+        // fit). Zen key wiring is verified per workspace after the
+        // switch.
         "targets": [
           "opencode-route/beam-plan",
           "opencode-route/longcat-plan",
           "opencode-route/iceman-plan",
-          "opencode-route/inkling-plan",
           "opencode-route/deepseek-flash-plan#low",
           "opencode-route/haiku-plan#low",
+          "opencode-route/inkling-plan",
           "opencode-route/workhorse"
         ],
         "selection": "ordered",
@@ -3268,6 +3281,9 @@
         // Pickle (stealth, rotating backend — no score can attach), and
         // the two Nemotron free models last (VL 13.6, Lightning 5.5 —
         // the weakest measured seats in the fleet; free last resorts).
+        // Drew (2026-11-14, later): the whole Zen shelf sits in this
+        // last-resort position deliberately — limited context on the
+        // Zen free models means they are never a first-choice leg.
         "targets": [
           {
             "model": "opencode-route/mimo-flash-plan",

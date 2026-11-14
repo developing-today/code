@@ -34,7 +34,7 @@ match this table and the config; the guard fails on drift).
 | workhorse | workhorse-ordered → workhorse-primary (empty stage) → workhorse-weighted → workhorse-last-resort | → scout → specialist | Workhorse's failure mode is quota exhaustion; scout diversifies onto different doors (free Beam via CommandCode, DeepSeek #low, Haiku #low). Scout-first was main's recommendation, wired 2026-11-13 pending Drew's pick. |
 | summit | fable-plan #medium → opus-plan #high → argon-plan #high → Hydrogen #high (direct) → Wonder #xhigh (direct) → sol-plan #xhigh | → specialist | Confirmed: the deliberate tier falls back to the hard-work tier. |
 | specialist | fable-plan #low → sonnet-plan #high → argon-plan #high → spark-plan #xhigh → sol-plan #medium | — (SINK) | No class fallback out of specialist; if every leg is down the call errors. |
-| scout | beam-plan → longcat-plan → iceman-plan → inkling-plan → deepseek-flash-plan #low → haiku-plan #low | → workhorse (PROPOSAL) | Drew has not ruled on scout yet (2026-11-13): routine work that exhausts the free/cheap seats escalates to the standard tier. |
+| scout | beam-plan → longcat-plan → iceman-plan → deepseek-flash-plan #low → haiku-plan #low → inkling-plan | → workhorse (PROPOSAL) | Drew has not ruled on scout yet (2026-11-13): routine work that exhausts the free/cheap seats escalates to the standard tier. |
 | background | MiMo Flash / DeepSeek Flash #high, peak-window aware (see config) → Zen free shelf: flash-free-plan → minimax-flash-plan → glm-5-3-flash-zen-plan → flint-plan → big-pickle-plan → nemotron-vl-plan → nemotron-lightning-plan | → workhorse (PROPOSAL) | Drew has not ruled on background yet (2026-11-13): patient queue work escalates to the standard tier. |
 
 ## Workhorse stages and trial routes (no own class edges — escalation is workhorse's)
@@ -70,7 +70,7 @@ between, in the pool's selection order.
 | spark-plan | OpenCode Go → CommandCode → ClinePass → _muse (ordered) | Meta Spark across four doors. |
 | argon-plan | OpenCode Go → Antigravity (round-robin) | |
 | gemini-hydrogen-plan | Antigravity only | **Single door — no internal failover.** |
-| beam-plan | OpenCode Go (beam-free) → OpenCode Zen (beam-free) (round-robin) | The free-tier pool behind scout. (CommandCode door removed 2026-11-13, #9397; cat-jam-free is the same model — deliberately not seated.) |
+| beam-plan | OpenCode Go (beam-free) → OpenCode Zen (beam-free) (round-robin) | The free-tier pool behind scout. (CommandCode door removed 2026-11-13, #9397; cat-jam-free is the same model — deliberately not seated. Zen door at weight 0.5: last resort, limited context — Drew 2026-11-14.) |
 | longcat-plan | OpenCode Go (longcat-2.5-free) → OpenCode Zen (longcat-2.5-free) (round-robin) | Free LongCat 2.5 pool behind scout (2026-11-14, probe-verified 3/3 workspaces). No AA listing. |
 | iceman-plan | OpenCode Go (iceman-contributor-free) → OpenCode Zen (iceman-free) (round-robin) | Free Iceman pool behind scout (2026-11-14, probe-verified 3/3 workspaces). Stealth model, identity unclaimed; no AA listing. |
 | mimo-flash-plan | OpenCode Go → ClinePass → OpenDesign → CommandCode → OpenCode Zen (mimo-v2.6-flash-free) (round-robin) | |
