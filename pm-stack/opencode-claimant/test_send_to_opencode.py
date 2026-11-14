@@ -280,25 +280,43 @@ class TestHappyPath(unittest.TestCase):
     def test_one_queue_code_stream_dry_run_for_claimed_issue(self):
         with tempfile.TemporaryDirectory() as wt:
             with (
-                patch.object(poll, "_broker_post", return_value={
-                    "rows": [sender_row(queue="code")]
-                }) as broker,
+                patch.object(
+                    poll,
+                    "_broker_post",
+                    return_value={"rows": [sender_row(queue="code")]},
+                ) as broker,
                 live_and_room(),
                 patch.object(send, "log", side_effect=lambda record: record) as log,
                 patch.object(launch_one, "queue") as mutate,
                 patch.object(launch_one, "hard_stop_reason", return_value=None),
                 patch.object(send, "is_worktree_of", return_value=True) as worktree,
             ):
-                rc = send.main([
-                    "send_to_opencode.py", "--queue", "code", "--issue", "4242",
-                    "--worker", SENDER, "--from-session", FROM_SESSION,
-                    "--reason", "sender at its time limit", "--notes", NOTES,
-                    "--worktree", wt, "--dry-run",
-                ])
+                rc = send.main(
+                    [
+                        "send_to_opencode.py",
+                        "--queue",
+                        "code",
+                        "--issue",
+                        "4242",
+                        "--worker",
+                        SENDER,
+                        "--from-session",
+                        FROM_SESSION,
+                        "--reason",
+                        "sender at its time limit",
+                        "--notes",
+                        NOTES,
+                        "--worktree",
+                        wt,
+                        "--dry-run",
+                    ]
+                )
             self.assertEqual(rc, 0)
             self.assertEqual(
-                [(call.args[0], call.args[1]["queue"], call.args[1]["status"])
-                 for call in broker.call_args_list],
+                [
+                    (call.args[0], call.args[1]["queue"], call.args[1]["status"])
+                    for call in broker.call_args_list
+                ],
                 [("/list", "code", "claimed"), ("/list", "code", "claimed")],
             )
             worktree.assert_called_once_with(PRIMARY, wt)

@@ -35,7 +35,7 @@ for _ in $(seq 1 60); do
   fi
   sleep 1
 done
-if [[ "$ready" != true ]]; then
+if [[ $ready != true ]]; then
   echo "disposable PostgreSQL did not become ready" >&2
   exit 1
 fi
@@ -47,7 +47,7 @@ psql_test() {
 # Supabase's service_role carries BYPASSRLS; model that so the test proves
 # the role can actually operate under the RLS model, not just hold grants.
 psql_test -c 'CREATE ROLE service_role BYPASSRLS LOGIN;'
-psql_test < "$up"
+psql_test <"$up"
 
 # A run row: the document's runId and version must match the columns.
 psql_test -c "INSERT INTO public.orch_runs
@@ -82,7 +82,7 @@ privileges="$(psql_test -Atc "SELECT concat(
   has_table_privilege('service_role', 'public.orch_runs', 'UPDATE')::text, ':',
   has_table_privilege('service_role', 'public.orch_runs', 'DELETE')::text, ':',
   has_table_privilege('service_role', 'public.orch_items', 'DELETE')::text)")"
-if [[ "$privileges" != "true:true:true:false:false:true" ]]; then
+if [[ $privileges != "true:true:true:false:false:true" ]]; then
   echo "unexpected RLS/service_role privileges: $privileges" >&2
   exit 1
 fi
@@ -97,7 +97,7 @@ docker exec -i "$container" psql -X -v ON_ERROR_STOP=1 -U service_role -d pm_orc
     '{\"version\": 1, \"runId\": \"orch-2026-11-11T01:00:00Z\", \"tiers\": {\"needsDrew\": [], \"needsOrchestrator\": []}}',
     0);"
 svc_seen="$(docker exec -i "$container" psql -X -qAt -v ON_ERROR_STOP=1 -U service_role -d pm_orch_test -c "SELECT count(*) FROM public.orch_items")"
-if [[ "$svc_seen" != "2" ]]; then
+if [[ $svc_seen != "2" ]]; then
   echo "service_role could not read back the state rows under RLS: $svc_seen" >&2
   exit 1
 fi
@@ -210,16 +210,16 @@ psql_test -c "INSERT INTO public.orch_items
     'orch-2026-11-11T00:00:00Z', 'orch-2026-11-11T01:00:00Z');"
 echo "ok - snapshot replace carries first_seen_run_id forward"
 
-if psql_test < "$down" >/dev/null 2>&1; then
+if psql_test <"$down" >/dev/null 2>&1; then
   echo "down migration should refuse populated tables" >&2
   exit 1
 fi
 echo "ok - down migration protects non-empty tables"
 
 psql_test -c 'DELETE FROM public.orch_items; DELETE FROM public.orch_runs;'
-psql_test < "$down"
+psql_test <"$down"
 remaining="$(psql_test -Atc "SELECT (to_regclass('public.orch_runs') IS NULL AND to_regclass('public.orch_items') IS NULL)::text")"
-if [[ "$remaining" != "true" ]]; then
+if [[ $remaining != "true" ]]; then
   echo "down migration left schema objects behind" >&2
   exit 1
 fi

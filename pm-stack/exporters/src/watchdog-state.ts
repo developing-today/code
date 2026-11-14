@@ -426,10 +426,7 @@ export function coerceHealth(source: string, raw: unknown): SourceHealth {
           since: e.since,
           queueTaskId: typeof e.queueTaskId === "string" ? e.queueTaskId : null,
           issueRepo: e.issueRepo,
-          issueNumber:
-            typeof e.issueNumber === "number" && Number.isFinite(e.issueNumber)
-              ? e.issueNumber
-              : null,
+          issueNumber: typeof e.issueNumber === "number" && Number.isFinite(e.issueNumber) ? e.issueNumber : null,
         }
       : null;
   };

@@ -40,7 +40,7 @@ re-serialization with different key order, no re-signing, no rehashing.
 ## Finding 2 — the docs/code mismatch (do not "fix" in place)
 
 The doc comment on `signed_bytes` describes the bytes as
-*"length-prefixed and domain-separated"*. The implementation applies **no length prefixes and
+_"length-prefixed and domain-separated"_. The implementation applies **no length prefixes and
 no domain separation** — the preimage is exactly
 `serde_json::to_vec(SignedBody)` and nothing else. Until an owner-level
 reconciliation lands, the comment must not be treated as an interoperability

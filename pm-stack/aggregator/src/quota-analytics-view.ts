@@ -40,7 +40,6 @@ export function fmtN(n: number): string {
   return `${Math.round(n)}`;
 }
 
-
 // --- Reset horizon (#9553 Part 1, Drew 2026-11-13) -------------------------
 // A reset timeline spanning the past 3 days through 35 days out, per
 // pool/window, so "what is open, what opens soon, what is walled" —
@@ -126,7 +125,16 @@ export function resetHorizonEvents(a: QuotaAnalytics): ResetHorizonEvent[] {
         list = kept;
       }
       for (const at of list) {
-        out.push({ poolId: p.poolId, provider: p.provider, plan: p.plan, window: w.name, percent: w.percent, at, recorded: at === first, thinned });
+        out.push({
+          poolId: p.poolId,
+          provider: p.provider,
+          plan: p.plan,
+          window: w.name,
+          percent: w.percent,
+          at,
+          recorded: at === first,
+          thinned,
+        });
       }
     }
   }
@@ -145,7 +153,8 @@ function resetHorizonHtml(a: QuotaAnalytics, display: (n: string) => string): st
   const head =
     `<h3 id="analytics-horizon">Reset horizon — past 3 days to next 35 days</h3>` +
     `<p class="muted">Every pool window's resets in the horizon, stepped from its recorded next reset by its period. All times America/Chicago (Central) — no UTC on this page.</p>`;
-  if (!events.length) return head + `<div class="card"><span class="muted">no recorded resets in the horizon</span></div>`;
+  if (!events.length)
+    return head + `<div class="card"><span class="muted">no recorded resets in the horizon</span></div>`;
   const byWindow = new Map<string, ResetHorizonEvent[]>();
   for (const e of events) {
     const key = `${e.poolId} ${e.window}`;
@@ -166,8 +175,14 @@ function resetHorizonHtml(a: QuotaAnalytics, display: (n: string) => string): st
     if (past.length) parts.push(`<span class="muted">reset ${past.map((e) => esc(fmtWhen(e.at))).join(", ")}</span>`);
     if (next) parts.push(`<strong>next ${esc(fmtWhen(next.at))}</strong> (in ${esc(fmtDuration(next.at - a.now))})`);
     if (shown.length) parts.push(shown.map((e) => esc(dayFmt.format(new Date(e.at)))).join(" · "));
-    if (more > 0) parts.push(`<span class="muted">+${more} more through ${esc(dayFmt.format(new Date(rest[rest.length - 1].at)))}</span>`);
-    if (firstEv.thinned) parts.push(`<span class="muted">repeats every ${esc(firstEv.window)} — only the resets nearest now are listed</span>`);
+    if (more > 0)
+      parts.push(
+        `<span class="muted">+${more} more through ${esc(dayFmt.format(new Date(rest[rest.length - 1].at)))}</span>`,
+      );
+    if (firstEv.thinned)
+      parts.push(
+        `<span class="muted">repeats every ${esc(firstEv.window)} — only the resets nearest now are listed</span>`,
+      );
     rows.push(
       `<div><strong><a href="#pool-${esc(firstEv.poolId)}">${esc(display(firstEv.provider))} · ${esc(firstEv.plan)} — ${esc(firstEv.window)}</a></strong> (${firstEv.percent.toFixed(0)}% used): ${parts.join(" · ")}</div>`,
     );

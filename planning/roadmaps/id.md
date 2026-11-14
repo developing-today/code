@@ -59,31 +59,31 @@ Design order: F12.4 (#1061) and F12.10 (#1067) designs first, then Phase 14 v1 d
 
 The Phase tracker panel's per-phase progress counts F-items against live GitHub state, and this table is the mapping it counts from — maintained as plan data here, never copied into the aggregator. Researched and verified against GitHub on 2026-11-14 (task 16681): each ref is the item's dedicated tracking issue, except F11.6 and F11.14, which were delivered by PR with no dedicated issue (per the 2026-10-20 Phase 11 status record). Phase 12 is not in this table: its uniform source is the ordered step list in #1235, which the panel already counts. Phases 0–10 have no rows because their plans carry no F-item numbering at all (Phase 9's plan included) — the panel states that gap rather than inventing a percentage for them.
 
-| Phase | Item | Ref | Title |
-| --- | --- | --- | --- |
-| 11 | F11.1 | #238 | Relay kit location |
-| 11 | F11.2 | #229 | Firefox E2E isolation |
-| 11 | F11.3 | #241 | Explain the LogSync flakes |
-| 11 | F11.4 | #551 | A fast lane |
-| 11 | F11.5 | #552 | Injected time |
-| 11 | F11.6 | PR #247 | Per-call fuel metrics and budgets |
-| 11 | F11.7 | #553 | Host metrics and tracing |
-| 11 | F11.8 | #539 | Benchmarks |
-| 11 | F11.9 | #542 | Bytes per frame |
-| 11 | F11.10 | #540 | Split the large modules, with no behavior change |
-| 11 | F11.11 | #543 | One client projection |
-| 11 | F11.12 | #227 | Journal format management |
-| 11 | F11.13 | #554 | Error taxonomy |
-| 11 | F11.14 | PR #248 | Cheaper Screen |
-| 11 | F11.15 | #555 | Smaller modules |
-| 11 | F11.16 | #544 | Replay self-check |
-| 11 | F11.17 | #547 | A view trap must not poison the world |
-| 11 | F11.18 | #541 | Pinned toolchain for checked-in artifacts |
-| 13 | F13.1 | #783 | The shell contract |
-| 13 | F13.2 | #784 | SSH as a transport for the frame protocol |
-| 13 | F13.3 | #785 | SSH-over-iroh reachability |
-| 13 | F13.4 | #786 | Presentation capability tiers |
-| 13 | F13.5 | #787 | Kitty keyboard protocol on the raw input path |
-| 13 | F13.6 | #788 | Native client shells |
-| 13 | F13.7 | #789 | Client-side capability providers |
-| 13 | F13.8 | #790 | Multi-server, multi-client topology; client-only mode |
+| Phase | Item   | Ref     | Title                                                 |
+| ----- | ------ | ------- | ----------------------------------------------------- |
+| 11    | F11.1  | #238    | Relay kit location                                    |
+| 11    | F11.2  | #229    | Firefox E2E isolation                                 |
+| 11    | F11.3  | #241    | Explain the LogSync flakes                            |
+| 11    | F11.4  | #551    | A fast lane                                           |
+| 11    | F11.5  | #552    | Injected time                                         |
+| 11    | F11.6  | PR #247 | Per-call fuel metrics and budgets                     |
+| 11    | F11.7  | #553    | Host metrics and tracing                              |
+| 11    | F11.8  | #539    | Benchmarks                                            |
+| 11    | F11.9  | #542    | Bytes per frame                                       |
+| 11    | F11.10 | #540    | Split the large modules, with no behavior change      |
+| 11    | F11.11 | #543    | One client projection                                 |
+| 11    | F11.12 | #227    | Journal format management                             |
+| 11    | F11.13 | #554    | Error taxonomy                                        |
+| 11    | F11.14 | PR #248 | Cheaper Screen                                        |
+| 11    | F11.15 | #555    | Smaller modules                                       |
+| 11    | F11.16 | #544    | Replay self-check                                     |
+| 11    | F11.17 | #547    | A view trap must not poison the world                 |
+| 11    | F11.18 | #541    | Pinned toolchain for checked-in artifacts             |
+| 13    | F13.1  | #783    | The shell contract                                    |
+| 13    | F13.2  | #784    | SSH as a transport for the frame protocol             |
+| 13    | F13.3  | #785    | SSH-over-iroh reachability                            |
+| 13    | F13.4  | #786    | Presentation capability tiers                         |
+| 13    | F13.5  | #787    | Kitty keyboard protocol on the raw input path         |
+| 13    | F13.6  | #788    | Native client shells                                  |
+| 13    | F13.7  | #789    | Client-side capability providers                      |
+| 13    | F13.8  | #790    | Multi-server, multi-client topology; client-only mode |

@@ -79,7 +79,7 @@ Corollaries, all fail-closed:
    and p95 latency on the hardware that will actually run it, at the
    batch sizes the delta protocol (#6028) actually produces. Delta
    workloads are bursty and small (tens to hundreds of new chunks per
-   batch, ≈27–54M tokens for a *full* corpus re-embed per #6058), so
+   batch, ≈27–54M tokens for a _full_ corpus re-embed per #6058), so
    the benchmark reports cold-start + small-batch latency, not just
    peak throughput at saturation. A candidate that needs a warm,
    always-resident GPU to hit acceptable latency fails this section

@@ -65,7 +65,7 @@ Atlas index as prose memory, discriminated by the `kind` tag,
 with **kind-aware retrieval quotas** so neither corpus can
 starve the other out of a result set.
 
-Reasons: the motivating failure was a *cross*-corpus miss —
+Reasons: the motivating failure was a _cross_-corpus miss —
 prose said a DNS project exists, and retrieval needed to reach
 the config itself; two indexes make that join the caller's
 problem forever. One index keeps one freshness story, one
@@ -80,20 +80,20 @@ imitate.
 ## 3. The three decisions, and the failure each accepts
 
 1. **Shared index with a `kind` tag** (not a separate code
-   dump). *Failure accepted:* retrieval pollution in both
+   dump). _Failure accepted:_ retrieval pollution in both
    directions — a prose query can surface a config chunk and
    vice versa. Kind-aware quotas bound it; they do not
    eliminate it. If pollution proves worse than the join cost,
    this decision is the one to revisit, with evidence.
-2. **Whole-file units for small configs.** *Failure accepted:*
+2. **Whole-file units for small configs.** _Failure accepted:_
    section-level precision loss — a 30 KiB config whose one
    relevant section should rank can be dragged by the rest of
    the file, and a query for one record may retrieve the whole
    config. Accepted because the cross-reference loss from
    splitting configs was the original defect (§1).
 3. **Commit-SHA freshness with stale marking** (not
-   synchronous re-embedding on every commit). *Failure
-   accepted:* a freshness window — between a config commit and
+   synchronous re-embedding on every commit). _Failure
+   accepted:_ a freshness window — between a config commit and
    its re-embedding, retrieval can return the previous revision,
    labelled stale. A reader who ignores the label can act on
    old config. Accepted because synchronous embedding on the
@@ -123,7 +123,7 @@ Confirm the recommended design; allow for more down the road;
 only the existing basic sensitivity filters; build into Atlas;
 support sharding to many Turso DBs using workers (Durable
 Objects and D1 as appropriate); benchmark various shard sizes.
-The sharding/benchmark work is sequenced *after* the minimal
+The sharding/benchmark work is sequenced _after_ the minimal
 ingestion path below proves retrieval; shard-size benchmarks
 are recorded against the same corpus at several shard sizes
 before any sharded rollout.

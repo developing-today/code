@@ -66,13 +66,12 @@ const MAX_NAMED_PATHS = 5;
 export function assessPrimaryCheckout(status: PrimaryCheckoutStatus): PrimaryCheckoutVerdict {
   const problems: string[] = [];
   if (status.branch !== "main") {
-    problems.push(
-      status.branch === null ? "HEAD is detached (not on main)" : `on branch ${status.branch}, not main`,
-    );
+    problems.push(status.branch === null ? "HEAD is detached (not on main)" : `on branch ${status.branch}, not main`);
   }
   if (status.dirtyPaths.length > 0) {
     const named = status.dirtyPaths.slice(0, MAX_NAMED_PATHS).join(", ");
-    const more = status.dirtyPaths.length > MAX_NAMED_PATHS ? `, +${status.dirtyPaths.length - MAX_NAMED_PATHS} more` : "";
+    const more =
+      status.dirtyPaths.length > MAX_NAMED_PATHS ? `, +${status.dirtyPaths.length - MAX_NAMED_PATHS} more` : "";
     problems.push(`${status.dirtyPaths.length} uncommitted path(s): ${named}${more}`);
   }
   if (problems.length === 0) {
@@ -95,7 +94,10 @@ export function checkPrimaryCheckout(dir: string): PrimaryCheckoutVerdict {
     });
     if (!proc.success) {
       const stderr = new TextDecoder().decode(proc.stderr).trim().split("\n")[0] ?? "";
-      return { state: "down", detail: `primary checkout blocked: git status failed in ${dir} (${stderr || "unknown error"})` };
+      return {
+        state: "down",
+        detail: `primary checkout blocked: git status failed in ${dir} (${stderr || "unknown error"})`,
+      };
     }
     output = new TextDecoder().decode(proc.stdout);
   } catch (err) {

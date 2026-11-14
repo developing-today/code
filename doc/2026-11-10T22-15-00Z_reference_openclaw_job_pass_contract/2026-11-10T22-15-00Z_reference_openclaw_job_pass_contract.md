@@ -17,7 +17,7 @@ Jobs have been passed to OpenClaw since 2026-10-29, on ad-hoc
 packets. The comparison those jobs produced is only as good as the
 packets are complete: a result that omits its outcome, its
 artifacts, or its cost cannot be reviewed against an OpenCode run,
-and an incomplete packet that *looks* complete (a missing token
+and an incomplete packet that _looks_ complete (a missing token
 count recorded as 0) actively corrupts the comparison. This
 contract fixes the packet shapes so every future job — on either
 executor — produces reviewable evidence.
@@ -28,14 +28,14 @@ A job passed to OpenClaw (or recorded for comparison against one)
 is a packet with these fields, all required unless marked
 otherwise:
 
-| Field | Content |
-|---|---|
-| Scope | What the job is to do, stated as a bounded question or change. One job, one scope. |
-| Job class | One of: read-only investigation · CI diagnosis · design review · small implementation. The class decides the review burden (§ Recommendation). |
-| Repo / worktree | The repository and the exact worktree or snapshot the job runs against. Read-only classes name a commit; implementations name a dedicated worktree and branch. |
-| Evidence links | The inputs the job may rely on: issue/PR links, logs, frozen prompts, source snapshots. Anything not linked is out of scope unless the job class says otherwise. |
+| Field              | Content                                                                                                                                                                                                                   |
+| ------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Scope              | What the job is to do, stated as a bounded question or change. One job, one scope.                                                                                                                                        |
+| Job class          | One of: read-only investigation · CI diagnosis · design review · small implementation. The class decides the review burden (§ Recommendation).                                                                            |
+| Repo / worktree    | The repository and the exact worktree or snapshot the job runs against. Read-only classes name a commit; implementations name a dedicated worktree and branch.                                                            |
+| Evidence links     | The inputs the job may rely on: issue/PR links, logs, frozen prompts, source snapshots. Anything not linked is out of scope unless the job class says otherwise.                                                          |
 | Definition of done | The deliverable, in checkable form: the questions answered, the artifact produced, the tests that must pass. "Investigate X" is not a definition of done; "name the failing job, step, and root cause with log lines" is. |
-| Authority posture | Read-only, or the exact write surface (branch, files) an implementation job may touch. Default is read-only. |
+| Authority posture  | Read-only, or the exact write surface (branch, files) an implementation job may touch. Default is read-only.                                                                                                              |
 
 ## Result contract
 
@@ -44,13 +44,13 @@ below. **A measurement that was not captured is recorded as
 `unavailable`, never as zero** — zero is a measurement, and a
 false zero poisons every aggregate built on the comparison.
 
-| Field | Content |
-|---|---|
-| Outcome | `accepted` · `needed rework` · `failed`, judged by the reviewer against the definition of done — not self-reported by the executor. A run that produced no deliverable is `failed` with the failure mode named (e.g. provider stream error), however good its partial reasoning looked. |
-| Artifacts | PR, branch, files, or the answer text itself — links, not descriptions. |
-| Tokens | Input / output / cache-read as the executing system reports them, with the system named. The two systems count differently today (OpenClaw's input includes its full harness prompt, uncached; OpenCode's rides in cache reads), so token figures compare **cost-relatively within a route**, never as absolute cross-system totals. Unreported is `unavailable`. |
-| Wall time | End-to-end wall time; gateway/executor time too when the platform reports it separately (the two diverged by 6× on the first smoke job under laptop load). |
-| Review / supervision | Who reviewed, against what ground truth or definition of done, and the verdict per criterion when the job has several. |
+| Field                | Content                                                                                                                                                                                                                                                                                                                                                           |
+| -------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Outcome              | `accepted` · `needed rework` · `failed`, judged by the reviewer against the definition of done — not self-reported by the executor. A run that produced no deliverable is `failed` with the failure mode named (e.g. provider stream error), however good its partial reasoning looked.                                                                           |
+| Artifacts            | PR, branch, files, or the answer text itself — links, not descriptions.                                                                                                                                                                                                                                                                                           |
+| Tokens               | Input / output / cache-read as the executing system reports them, with the system named. The two systems count differently today (OpenClaw's input includes its full harness prompt, uncached; OpenCode's rides in cache reads), so token figures compare **cost-relatively within a route**, never as absolute cross-system totals. Unreported is `unavailable`. |
+| Wall time            | End-to-end wall time; gateway/executor time too when the platform reports it separately (the two diverged by 6× on the first smoke job under laptop load).                                                                                                                                                                                                        |
+| Review / supervision | Who reviewed, against what ground truth or definition of done, and the verdict per criterion when the job has several.                                                                                                                                                                                                                                            |
 
 ## Evidence on record (what the recommendation may use)
 

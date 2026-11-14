@@ -83,9 +83,12 @@ describe("getSupabaseClient retry-after-null memoization", () => {
   });
 
   test("trims and prefers an explicit project-ref override", async () => {
-    const ref = await resolveSupabaseProjectRef(async () => {
-      throw new Error("secret lookup should not run for an explicit override");
-    }, { SUPABASE_PROJECT_REF: "  override-project  " });
+    const ref = await resolveSupabaseProjectRef(
+      async () => {
+        throw new Error("secret lookup should not run for an explicit override");
+      },
+      { SUPABASE_PROJECT_REF: "  override-project  " },
+    );
 
     expect(ref).toBe("override-project");
   });

@@ -130,12 +130,7 @@ describe("packet completeness (#6033 acceptance 2)", () => {
 
 describe("recovery (#6033 acceptance 3)", () => {
   test("producer success plans comment + close + task completion against the recorded refs", async () => {
-    const recorded = recordEscalation(
-      escalatingHealth(),
-      CTX,
-      { queueTaskId: "task-4242", issueNumber: 777 },
-      T0,
-    );
+    const recorded = recordEscalation(escalatingHealth(), CTX, { queueTaskId: "task-4242", issueNumber: 777 }, T0);
     const actions = planRecovery(recorded, "2026-11-10T06:00:00Z");
     expect(actions.map((a) => a.type)).toEqual(["comment_issue", "close_issue", "complete_task"]);
     const { calls, effectors } = countingEffectors();
@@ -160,12 +155,7 @@ describe("surfacing (#6033 acceptance 4 + 5)", () => {
   });
 
   test("ordinary escalation is quiet before 24h and surfaces at the threshold", () => {
-    const recorded = recordEscalation(
-      escalatingHealth(),
-      CTX,
-      { queueTaskId: "task-4242", issueNumber: 777 },
-      T0,
-    );
+    const recorded = recordEscalation(escalatingHealth(), CTX, { queueTaskId: "task-4242", issueNumber: 777 }, T0);
     const t0 = Date.parse(T0);
     expect(surfacingLine(recorded, t0 + ESCALATION_NEEDS_DREW_AFTER_MS - 1)).toBeNull();
     const line = surfacingLine(recorded, t0 + ESCALATION_NEEDS_DREW_AFTER_MS);
@@ -176,12 +166,7 @@ describe("surfacing (#6033 acceptance 4 + 5)", () => {
 
 describe("state coercion keeps the escalation record", () => {
   test("coerceHealth round-trips a valid escalation and drops a malformed one", () => {
-    const recorded = recordEscalation(
-      escalatingHealth(),
-      CTX,
-      { queueTaskId: "task-4242", issueNumber: 777 },
-      T0,
-    );
+    const recorded = recordEscalation(escalatingHealth(), CTX, { queueTaskId: "task-4242", issueNumber: 777 }, T0);
     const back = coerceHealth("mistral", JSON.parse(JSON.stringify(recorded)));
     expect(back.incident?.escalation?.queueTaskId).toBe("task-4242");
     expect(back.incident?.escalation?.issueNumber).toBe(777);
@@ -195,12 +180,7 @@ describe("state coercion keeps the escalation record", () => {
 
 describe("Codex findings on PR #8357 (class change, partial progress, surfacing reason)", () => {
   test("a class change preserves the earlier hand-off; recovery closes both pairs; changing back dedupes", () => {
-    const first = recordEscalation(
-      escalatingHealth(),
-      CTX,
-      { queueTaskId: "task-a", issueNumber: 111 },
-      T0,
-    );
+    const first = recordEscalation(escalatingHealth(), CTX, { queueTaskId: "task-a", issueNumber: 111 }, T0);
     const changed: SourceHealth = { ...first, currentClass: "endpoint-changed" };
     const second = recordEscalation(changed, CTX, { queueTaskId: "task-b", issueNumber: 222 }, T0);
     expect(second.incident?.escalation?.class).toBe("endpoint-changed");
@@ -221,10 +201,7 @@ describe("Codex findings on PR #8357 (class change, partial progress, surfacing 
       "complete_task",
     ]);
     const completes = actions.filter((a) => a.type === "complete_task");
-    expect(completes.map((a) => (a as { queueTaskId: string }).queueTaskId)).toEqual([
-      "task-b",
-      "task-a",
-    ]);
+    expect(completes.map((a) => (a as { queueTaskId: string }).queueTaskId)).toEqual(["task-b", "task-a"]);
 
     const backAgain: SourceHealth = { ...second, currentClass: "session-expired" };
     const plan = planEscalation(backAgain, CTX);
@@ -266,10 +243,7 @@ describe("Codex findings on PR #8357 (class change, partial progress, surfacing 
   test("human-blocked surfacing names the persisted challenge reason, not the producer detail", () => {
     const hb = escalatingHealth();
     hb.lastDetail = "HTTP 401";
-    hb.repairLog = [
-      ...hb.repairLog,
-      { at: T0, rung: 4, outcome: "failed", detail: "passkey required on the laptop" },
-    ];
+    hb.repairLog = [...hb.repairLog, { at: T0, rung: 4, outcome: "failed", detail: "passkey required on the laptop" }];
     hb.incident = { ...hb.incident!, humanBlocked: true, surfacing: "human-blocked" };
     const line = surfacingLine(hb, Date.parse(T0));
     expect(line).toContain("passkey required on the laptop");
@@ -277,12 +251,7 @@ describe("Codex findings on PR #8357 (class change, partial progress, surfacing 
   });
 
   test("coerceHealth round-trips the previous hand-offs", () => {
-    const first = recordEscalation(
-      escalatingHealth(),
-      CTX,
-      { queueTaskId: "task-a", issueNumber: 111 },
-      T0,
-    );
+    const first = recordEscalation(escalatingHealth(), CTX, { queueTaskId: "task-a", issueNumber: 111 }, T0);
     const changed: SourceHealth = { ...first, currentClass: "endpoint-changed" };
     const second = recordEscalation(changed, CTX, { queueTaskId: "task-b", issueNumber: 222 }, T0);
     const back = coerceHealth("mistral", JSON.parse(JSON.stringify(second)));

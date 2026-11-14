@@ -38,8 +38,8 @@ when it passes the F13.1 conformance check, not when it demos.**
 The check already exists: a shell records a session against
 shell-contract v1 (`pkgs/id/contract/shell-contract.v1.json`,
 printed by `id world contract`) and runs the conformance command;
-the contract is strict about what a shell *sends* and tolerant
-about what it *reads*. Conformance is necessary but not
+the contract is strict about what a shell _sends_ and tolerant
+about what it _reads_. Conformance is necessary but not
 sufficient (review finding, PR #8243): the checker validates
 recorded frames, so a shell could pass on a thin transcript
 without completing its required workflow. Each v1 shell must
@@ -67,7 +67,7 @@ asks for:
 
 - **Offline read model.** A journaled world is its journal. The
   shell keeps a local snapshot (last applied journal sequence +
-  rendered state) sufficient to *read* the world fully offline.
+  rendered state) sufficient to _read_ the world fully offline.
   Offline writes are not queued as intent: the journal is the
   authority, and a phone that cannot reach the host (directly or
   via iroh) is a reader, not a writer. The capability statement
@@ -167,7 +167,7 @@ for v1:
   registry/manifest shape this design relies on exists.
 - **F12.10 fair scheduling and per-account quotas (#1067): STILL
   OPEN.** Named explicitly, per the topic's sequencing note:
-  quotas bind the *hosted* side (many accounts on one host), and
+  quotas bind the _hosted_ side (many accounts on one host), and
   every v1 shell above is local-first — none needs a quota
   decision to be designed or to pass conformance against a
   self-hosted world. The dependency lands where it belongs: the

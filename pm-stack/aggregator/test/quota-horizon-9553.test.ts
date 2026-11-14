@@ -15,7 +15,13 @@ function analytics(): QuotaAnalytics {
     percent,
     resetsAt,
     durationUntilResetMs: resetsAt ? Date.parse(resetsAt) - NOW : null,
-    projection: { state: "no-wall-before-reset" as const, projectedWallAt: null, durationUntilWallMs: null, ratePtsPerHour: null, samples: 0 },
+    projection: {
+      state: "no-wall-before-reset" as const,
+      projectedWallAt: null,
+      durationUntilWallMs: null,
+      ratePtsPerHour: null,
+      samples: 0,
+    },
     wowDurationUntilWall: null,
   });
   return {

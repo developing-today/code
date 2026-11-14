@@ -32,14 +32,14 @@ One row per orchestration pass; append-only (grants are `SELECT,
 INSERT` — history is never rewritten or deleted through the service
 role).
 
-| Column | Type / nullability | `orchestration.json` field | Contract |
-|---|---|---|---|
-| `run_id` | `text` primary key | `runId` | Stable run identity (`orch-<generatedAt>` today). The document's `runId` must equal it. |
-| `generated_at` | `timestamptz`, not null | `generatedAt` | When the pass produced the state. |
-| `document_version` | `integer`, not null, ≥ 1 | `version` | Export document schema version; the document's `version` must equal it. |
-| `provenance` | `jsonb`, not null, object | `provenance` | The sources the pass read, verbatim. |
-| `document` | `jsonb`, not null, object | (the whole file) | The complete export document for this run. The generated export is the newest run's `document`, so the #898 dashboard shape is preserved by construction, not by a renderer. |
-| `item_count` | `integer`, not null, ≥ 0 | `tiers` lengths | `len(tiers.needsDrew) + len(tiers.needsOrchestrator)` for the run; a cheap parity probe against `orch_items` after a snapshot replace. |
+| Column             | Type / nullability        | `orchestration.json` field | Contract                                                                                                                                                                     |
+| ------------------ | ------------------------- | -------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `run_id`           | `text` primary key        | `runId`                    | Stable run identity (`orch-<generatedAt>` today). The document's `runId` must equal it.                                                                                      |
+| `generated_at`     | `timestamptz`, not null   | `generatedAt`              | When the pass produced the state.                                                                                                                                            |
+| `document_version` | `integer`, not null, ≥ 1  | `version`                  | Export document schema version; the document's `version` must equal it.                                                                                                      |
+| `provenance`       | `jsonb`, not null, object | `provenance`               | The sources the pass read, verbatim.                                                                                                                                         |
+| `document`         | `jsonb`, not null, object | (the whole file)           | The complete export document for this run. The generated export is the newest run's `document`, so the #898 dashboard shape is preserved by construction, not by a renderer. |
+| `item_count`       | `integer`, not null, ≥ 0  | `tiers` lengths            | `len(tiers.needsDrew) + len(tiers.needsOrchestrator)` for the run; a cheap parity probe against `orch_items` after a snapshot replace.                                       |
 
 ## `public.orch_items` — current classification state
 
@@ -50,15 +50,15 @@ verbatim in `item` — the columns are the queryable classification
 surface, the JSONB is the lossless record, the same split the #6103
 contract uses for action payloads.
 
-| Column | Type / nullability | Item field | Contract |
-|---|---|---|---|
-| `id` | `text` primary key | `id` | Stable item identity; the `item` document's `id` must equal it. Never reused. |
-| `tier` | `text`, not null | (the `tiers` key) | Check-constrained to `needsDrew`, `needsOrchestrator` — the two tiers the document carries today. A new tier is a contract change, not data. |
-| `kind`, `title`, `source`, `state`, `reason` | `text`, not null | `kind`, `title`, `source`, `state`, `reason` | The classification itself. `kind`/`state` must be non-empty. |
-| `ref` | `text`, nullable | `ref` | The item's governing reference (e.g. `gh:owner/repo#n`), when it has one. |
-| `since`, `last_seen_at` | `timestamptz`, not null | `since`, `lastSeenAt` | First classified / most recently seen; `last_seen_at >= since` is enforced. |
-| `item` | `jsonb`, not null, object | (the whole item) | The item verbatim. |
-| `first_seen_run_id`, `last_seen_run_id` | `text`, not null, FK → `orch_runs` | — | The runs that first and most recently carried the item; `ON DELETE RESTRICT` keeps the log's referents honest. |
+| Column                                       | Type / nullability                 | Item field                                   | Contract                                                                                                                                     |
+| -------------------------------------------- | ---------------------------------- | -------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------- |
+| `id`                                         | `text` primary key                 | `id`                                         | Stable item identity; the `item` document's `id` must equal it. Never reused.                                                                |
+| `tier`                                       | `text`, not null                   | (the `tiers` key)                            | Check-constrained to `needsDrew`, `needsOrchestrator` — the two tiers the document carries today. A new tier is a contract change, not data. |
+| `kind`, `title`, `source`, `state`, `reason` | `text`, not null                   | `kind`, `title`, `source`, `state`, `reason` | The classification itself. `kind`/`state` must be non-empty.                                                                                 |
+| `ref`                                        | `text`, nullable                   | `ref`                                        | The item's governing reference (e.g. `gh:owner/repo#n`), when it has one.                                                                    |
+| `since`, `last_seen_at`                      | `timestamptz`, not null            | `since`, `lastSeenAt`                        | First classified / most recently seen; `last_seen_at >= since` is enforced.                                                                  |
+| `item`                                       | `jsonb`, not null, object          | (the whole item)                             | The item verbatim.                                                                                                                           |
+| `first_seen_run_id`, `last_seen_run_id`      | `text`, not null, FK → `orch_runs` | —                                            | The runs that first and most recently carried the item; `ON DELETE RESTRICT` keeps the log's referents honest.                               |
 
 ## Writer contract (the cutover slice's obligations, fixed here)
 

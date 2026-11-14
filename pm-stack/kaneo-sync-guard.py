@@ -18,6 +18,7 @@ drift itself is never silent.
 Run on the laptop (where the pm-stack containers live):
   python3 pm-stack/kaneo-sync-guard.py
 """
+
 import json
 import re
 import subprocess
@@ -35,8 +36,19 @@ EXPECTED = {
 FORBIDDEN_TARGETS = {"done"}
 
 CONTAINER = "pm-stack-postgres-1"
-PSQL = ["docker", "exec", CONTAINER, "psql", "-U", "kaneo", "-d", "kaneo",
-        "-tA", "-v", "ON_ERROR_STOP=1"]
+PSQL = [
+    "docker",
+    "exec",
+    CONTAINER,
+    "psql",
+    "-U",
+    "kaneo",
+    "-d",
+    "kaneo",
+    "-tA",
+    "-v",
+    "ON_ERROR_STOP=1",
+]
 
 
 def psql(sql):
@@ -47,8 +59,7 @@ def psql(sql):
 
 
 def main():
-    rows = psql("SELECT id || E'\\t' || config FROM integration "
-                "WHERE type='github'")
+    rows = psql("SELECT id || E'\\t' || config FROM integration WHERE type='github'")
     if not rows:
         print("GUARD ERROR: no github integrations found")
         return 2
@@ -60,8 +71,7 @@ def main():
             print(f"GUARD ERROR: unexpected integration id {integ_id!r}")
             return 2
         cfg = json.loads(raw)
-        repo = (f"{cfg.get('repositoryOwner')}/{cfg.get('repositoryName')}"
-                or integ_id)
+        repo = f"{cfg.get('repositoryOwner')}/{cfg.get('repositoryName')}" or integ_id
         st = cfg.get("statusTransitions") or {}
         problems = []
         for key, want in EXPECTED.items():
@@ -77,8 +87,9 @@ def main():
         print(f"DRIFT {repo}: " + "; ".join(problems))
         healed = dict(st)
         healed.update(EXPECTED)
-        for key in [k for k, v in healed.items()
-                    if v in FORBIDDEN_TARGETS and k not in EXPECTED]:
+        for key in [
+            k for k, v in healed.items() if v in FORBIDDEN_TARGETS and k not in EXPECTED
+        ]:
             del healed[key]
         # Re-apply in SQL so the write is atomic per integration.
         psql(
@@ -86,9 +97,11 @@ def main():
             "config::jsonb, '{statusTransitions,onPRMerge}', "
             "'\"in-review\"'), '{statusTransitions,onPROpen}', "
             "'\"in-review\"'), '{statusTransitions,onBranchPush}', "
-            f"'\"in-progress\"')::text WHERE id='{integ_id}'")
-        after = json.loads(psql(
-            f"SELECT config FROM integration WHERE id='{integ_id}'"))
+            f"'\"in-progress\"')::text WHERE id='{integ_id}'"
+        )
+        after = json.loads(
+            psql(f"SELECT config FROM integration WHERE id='{integ_id}'")
+        )
         after_st = after.get("statusTransitions") or {}
         bad = [k for k, v in EXPECTED.items() if after_st.get(k) != v]
         if bad:

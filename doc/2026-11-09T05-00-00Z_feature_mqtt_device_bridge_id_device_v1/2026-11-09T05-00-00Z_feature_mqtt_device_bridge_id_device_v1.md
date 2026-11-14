@@ -10,13 +10,13 @@ subset, bridge-as-translator. Production hardware rollout stays deferred
 One connection per device, one prefix per world. `PREFIX` is
 `worlds/<world>/devices/<device-id>`:
 
-| Topic | Direction | Retained | Document |
-|---|---|---|---|
-| `<PREFIX>/manifest` | device → bridge | **yes** (only) | §1 |
-| `<PREFIX>/wants` | device → bridge | **never** | §2 |
-| `<PREFIX>/cap/result` | bridge → device | no | §3 |
-| `<PREFIX>/surface` | bridge → device | no | §4 |
-| `<PREFIX>/events` | device → bridge | no | §5 |
+| Topic                 | Direction       | Retained       | Document |
+| --------------------- | --------------- | -------------- | -------- |
+| `<PREFIX>/manifest`   | device → bridge | **yes** (only) | §1       |
+| `<PREFIX>/wants`      | device → bridge | **never**      | §2       |
+| `<PREFIX>/cap/result` | bridge → device | no             | §3       |
+| `<PREFIX>/surface`    | bridge → device | no             | §4       |
+| `<PREFIX>/events`     | device → bridge | no             | §5       |
 
 A retained `wants` replays a stale request to the next subscriber, so the
 bridge rejects retained wants publishes outright.
@@ -25,12 +25,12 @@ bridge rejects retained wants publishes outright.
 
 Identical to the host protocol (`id-core/src/world_caps.rs`):
 
-* `wants` document: at most 64 KiB (`MAX_WANTS_BYTES`), 64 entries
+- `wants` document: at most 64 KiB (`MAX_WANTS_BYTES`), 64 entries
   (`MAX_WANTS_ENTRIES`), names at most 64 bytes (`MAX_NAME_BYTES`).
-* Request `args`: at most 8 KiB serialized (`MAX_ARGS_BYTES`); oversize
+- Request `args`: at most 8 KiB serialized (`MAX_ARGS_BYTES`); oversize
   args reject the whole `wants` document at parse time, the same boundary
   as the host path.
-* Events and the manifest: at most 64 KiB (`MAX_EVENT_BYTES`).
+- Events and the manifest: at most 64 KiB (`MAX_EVENT_BYTES`).
 
 ## 1. Manifest (retained, on connect)
 
@@ -39,12 +39,12 @@ sections. Example — pixel screen, keys plus encoder, GNSS, no mic/camera:
 
 ```json
 {
-  "manifest": {"v": 1},
-  "display": {"kind": "pixel", "width": 128, "height": 64, "colors": 1},
-  "input": {"keys": 8, "encoder": true, "pointer": false, "text_entry": "none"},
-  "sensors": {"gnss": {"accuracy_m": 5}, "microphone": false, "camera": false},
-  "audio": {"out": "pcm", "in": null},
-  "network": {"transport": "mqtt", "rtt_class": "slow"}
+  "manifest": { "v": 1 },
+  "display": { "kind": "pixel", "width": 128, "height": 64, "colors": 1 },
+  "input": { "keys": 8, "encoder": true, "pointer": false, "text_entry": "none" },
+  "sensors": { "gnss": { "accuracy_m": 5 }, "microphone": false, "camera": false },
+  "audio": { "out": "pcm", "in": null },
+  "network": { "transport": "mqtt", "rtt_class": "slow" }
 }
 ```
 
@@ -61,8 +61,8 @@ array, `requests` array of `{id, cap, args}`. Example:
   "v": 1,
   "subscribe": ["time.tick:1000", "players"],
   "requests": [
-    {"id": "r1", "cap": "device.info", "args": {}},
-    {"id": "r2", "cap": "loc.position", "args": {"fix": "cached"}}
+    { "id": "r1", "cap": "device.info", "args": {} },
+    { "id": "r2", "cap": "loc.position", "args": { "fix": "cached" } }
   ]
 }
 ```
@@ -86,7 +86,7 @@ Location refusals reuse the #2341 codes
 The current surface document for the device's screen subset, e.g.:
 
 ```json
-{"v": 1, "screen": {"kind": "pixel", "width": 128, "height": 64, "cells": "<base64 1 KiB>"}, "text": {"lines": ["id ready", "world abc"]}}
+{ "v": 1, "screen": { "kind": "pixel", "width": 128, "height": 64, "cells": "<base64 1 KiB>" }, "text": { "lines": ["id ready", "world abc"] } }
 ```
 
 ## 5. Events
@@ -95,25 +95,25 @@ Device → bridge input events. A rotary encoder reports as a `Key` event
 with a signed `delta` in `args`:
 
 ```json
-{"protocol": "id.device.v1", "kind": "Key", "key": "volume", "args": {"delta": -3}}
+{ "protocol": "id.device.v1", "kind": "Key", "key": "volume", "args": { "delta": -3 } }
 ```
 
 ## Recommendations (open decisions, recorded)
 
-* **Retained:** manifest only. Wants are never retained.
-* **Auth:** TLS plus per-device credentials, provisioned out of band;
+- **Retained:** manifest only. Wants are never retained.
+- **Auth:** TLS plus per-device credentials, provisioned out of band;
   fail closed (unknown device or wrong token refuses before any
   publish/delivery). No oracle: the refusal says nothing about which half
   was wrong.
-* **Reconnect/backoff:** exponential from 500 ms, capped at 30 s
+- **Reconnect/backoff:** exponential from 500 ms, capped at 30 s
   (`backoff_delay_ms`). The manifest republishes on every connect, so a
   reconnect needs no other recovery step.
-* **Device-side journaling:** the device journals locally (ticks, events)
+- **Device-side journaling:** the device journals locally (ticks, events)
   across reconnects; the journal is the miniature form in `FakeDevice`.
-* **Minimum `time.tick`:** 1 Hz (`MIN_TIME_TICK_MS = 1000`) for the device
+- **Minimum `time.tick`:** 1 Hz (`MIN_TIME_TICK_MS = 1000`) for the device
   path — slower than the `loc.watch` 5 s floor allows for watches, and
   chosen to avoid wake storms on ESP32-class radios.
-* **Firmware subset (closed):** `device.info`, small `screen`/`text`, a
+- **Firmware subset (closed):** `device.info`, small `screen`/`text`, a
   closed `form.*` subset, `loc.position` when GNSS is present, key/encoder
   events. Nothing else without a new decision.
 

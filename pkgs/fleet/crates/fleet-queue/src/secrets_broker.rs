@@ -1229,7 +1229,10 @@ mod tests {
             let parsed = parse_ttl_s(Some(raw)).expect("garbage falls back, never refuses");
             assert_eq!(parsed.ttl_s, DEFAULT_TTL_S, "raw={raw:?}");
             let warning = parsed.warning.expect("the fallback must not be silent");
-            assert!(warning.contains("SECRETS_BROKER_TTL_S"), "warning: {warning}");
+            assert!(
+                warning.contains("SECRETS_BROKER_TTL_S"),
+                "warning: {warning}"
+            );
             assert!(warning.contains(raw), "warning: {warning}");
         }
     }

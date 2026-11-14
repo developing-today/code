@@ -45,8 +45,16 @@ import argparse, json, os, sqlite3, subprocess, sys, tempfile
 from datetime import datetime, timezone
 
 TERMINAL_STATUSES = {
-    "success", "error", "failed", "failure", "cancelled",
-    "canceled", "timeout", "timed_out", "disabled", "skipped",
+    "success",
+    "error",
+    "failed",
+    "failure",
+    "cancelled",
+    "canceled",
+    "timeout",
+    "timed_out",
+    "disabled",
+    "skipped",
 }
 
 DEFAULT_STORE = os.path.join(
@@ -70,13 +78,19 @@ def now_iso(clock=None):
 def fetch_tasks(project_dir, runner=subprocess.run):
     out = runner(
         ["openchamber", "schedule", "list", "--json", "--dir", project_dir],
-        capture_output=True, text=True, timeout=120,
+        capture_output=True,
+        text=True,
+        timeout=120,
     )
     if out.returncode != 0:
-        raise RuntimeError(f"openchamber schedule list failed for {project_dir}: {out.stderr.strip()[:200]}")
+        raise RuntimeError(
+            f"openchamber schedule list failed for {project_dir}: {out.stderr.strip()[:200]}"
+        )
     doc = json.loads(out.stdout)
     if doc.get("status") != "ok":
-        raise RuntimeError(f"openchamber schedule list error for {project_dir}: {doc.get('error')}")
+        raise RuntimeError(
+            f"openchamber schedule list error for {project_dir}: {doc.get('error')}"
+        )
     return doc.get("tasks", [])
 
 
@@ -90,7 +104,8 @@ def session_lookup(db_path, session_id):
             row = con.execute(
                 "SELECT cost, tokens_input, tokens_output, tokens_reasoning,"
                 " tokens_cache_read, tokens_cache_write, time_created, time_updated"
-                " FROM session_v2 WHERE id = ?", (session_id,),
+                " FROM session_v2 WHERE id = ?",
+                (session_id,),
             ).fetchone()
         finally:
             con.close()
@@ -102,8 +117,11 @@ def session_lookup(db_path, session_id):
     return {
         "cost": cost,
         "tokens": {
-            "input": ti, "output": to, "reasoning": tr,
-            "cache_read": tcr, "cache_write": tcw,
+            "input": ti,
+            "output": to,
+            "reasoning": tr,
+            "cache_read": tcr,
+            "cache_write": tcw,
         },
         "session_created_at": iso(created),
         "session_updated_at": iso(updated),
@@ -224,16 +242,24 @@ def cmd_collect(args):
     for project_dir in args.dir:
         tasks = fetch_tasks(project_dir)
         counts = reconcile(
-            rows, tasks, project_dir,
+            rows,
+            tasks,
+            project_dir,
             lookup=lambda sid: session_lookup(args.opencode_db, sid),
         )
         totals = [a + b for a, b in zip(totals, counts)]
     save_store(args.store, rows)
-    print(json.dumps({
-        "rows_total": len(rows), "inserted": totals[0],
-        "updated": totals[1], "finalized_superseded": totals[2],
-        "store": args.store,
-    }))
+    print(
+        json.dumps(
+            {
+                "rows_total": len(rows),
+                "inserted": totals[0],
+                "updated": totals[1],
+                "finalized_superseded": totals[2],
+                "store": args.store,
+            }
+        )
+    )
     return 0
 
 
@@ -261,10 +287,16 @@ def cmd_list(args):
     since_dt = parse_instant(args.since) if args.since else None
     until_dt = parse_instant(args.until) if args.until else None
     if args.since and since_dt is None:
-        print(f"error: --since is not an ISO-8601 timestamp: {args.since}", file=sys.stderr)
+        print(
+            f"error: --since is not an ISO-8601 timestamp: {args.since}",
+            file=sys.stderr,
+        )
         return 2
     if args.until and until_dt is None:
-        print(f"error: --until is not an ISO-8601 timestamp: {args.until}", file=sys.stderr)
+        print(
+            f"error: --until is not an ISO-8601 timestamp: {args.until}",
+            file=sys.stderr,
+        )
         return 2
     out = []
     for row in rows.values():
@@ -296,8 +328,9 @@ def main(argv=None):
     ap.add_argument("--store", default=DEFAULT_STORE)
     sub = ap.add_subparsers(dest="cmd", required=True)
     c = sub.add_parser("collect", help="one polling tick over the given projects")
-    c.add_argument("--dir", action="append", required=True,
-                   help="project directory (repeatable)")
+    c.add_argument(
+        "--dir", action="append", required=True, help="project directory (repeatable)"
+    )
     c.add_argument("--opencode-db", default=DEFAULT_DB)
     c.set_defaults(fn=cmd_collect)
     l = sub.add_parser("list", help="query stored runs")

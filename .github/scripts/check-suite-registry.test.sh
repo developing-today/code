@@ -31,7 +31,7 @@ expect_exit() {
 
 FIXTURE="$TMP/repo"
 mkdir -p "$FIXTURE/.github/workflows" "$FIXTURE/pkgs/id/tests" "$FIXTURE/pkgs/id/src"
-cat > "$FIXTURE/.github/test-suite-registry.json" <<'JSON'
+cat >"$FIXTURE/.github/test-suite-registry.json" <<'JSON'
 {
   "schema_version": 1,
   "scope": {"boundaries": [
@@ -48,7 +48,7 @@ cat > "$FIXTURE/.github/test-suite-registry.json" <<'JSON'
   ]
 }
 JSON
-cat > "$FIXTURE/.github/workflows/id-check.yml" <<'YAML'
+cat >"$FIXTURE/.github/workflows/id-check.yml" <<'YAML'
 name: id-check
 on: workflow_dispatch
 jobs:
@@ -86,7 +86,7 @@ p.write_text(json.dumps(d))
 PY
 
 # 4. A venue that stops naming the suite fails, naming the suite.
-cat > "$FIXTURE/.github/workflows/id-check.yml" <<'YAML'
+cat >"$FIXTURE/.github/workflows/id-check.yml" <<'YAML'
 name: id-check
 on: workflow_dispatch
 jobs:

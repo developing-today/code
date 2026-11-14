@@ -191,7 +191,6 @@ export function fmtDate(iso: string | null | undefined): string {
     .replace(/\.\d+Z$/, "Z");
 }
 
-
 /** Central-time stamp for Drew-facing quota/reset surfaces (#9553):
  * "Sat, Nov 14, 8:00 AM CST". fmtDate above renders raw UTC ISO; the
  * /quota page (pool resets, wall lifts, freshness, burn windows) must
@@ -7279,7 +7278,9 @@ export function phase12PanelHtml(
     const bits = [`task ${task.id}`];
     if (task.lane) bits.push(`lane ${task.lane}`);
     if (task.progressStage) bits.push(task.progressStage);
-    const more = earlier.length ? ` <span class="muted">(+${earlier.length} earlier task${earlier.length === 1 ? "" : "s"})</span>` : "";
+    const more = earlier.length
+      ? ` <span class="muted">(+${earlier.length} earlier task${earlier.length === 1 ? "" : "s"})</span>`
+      : "";
     return ` <span class="badge ${cls}">queue: ${esc(task.status)}</span> <span class="muted">${esc(bits.join(" · "))}</span>${more}`;
   };
   const rows = steps
@@ -7331,9 +7332,7 @@ export function phaseTrackerPanelHtml(
           ? `<span class="muted">—</span>`
           : `<a href="${esc(r.auditUrl ?? "")}">#${r.auditIssue}</a>${r.auditTitle ? ` ${esc(r.auditTitle)}` : ""}`;
       const followUps = r.openFollowUps.length
-        ? r.openFollowUps
-            .map((f) => `<a href="${esc(f.url)}">#${f.issueNumber}</a>`)
-            .join(" ")
+        ? r.openFollowUps.map((f) => `<a href="${esc(f.url)}">#${f.issueNumber}</a>`).join(" ")
         : `<span class="muted">—</span>`;
       const mapped = mappedProgress?.get(r.phase);
       const progressCell =
@@ -7462,7 +7461,6 @@ export function f12ReadinessPanelHtml(
   return `${head}${sourceLine}${rows}`;
 }
 
-
 export function queuePanelHtml(snapshot: QueueSnapshot | null): string {
   const head = `<h2>Queue &amp; fleet \u2014 live from the fleet queue broker</h2>`;
   if (!snapshot) {
@@ -7471,9 +7469,7 @@ export function queuePanelHtml(snapshot: QueueSnapshot | null): string {
   const fetchedIso = new Date(snapshot.fetchedAt).toISOString();
   const sourceLine = `<p class="muted">Source: queue-broker /health + /list (read-only), fetched ${esc(fetchedIso)}.</p>`;
   if (!snapshot.available || snapshot.stale) {
-    const why = snapshot.errors.length
-      ? ` Last read error: ${esc(snapshot.errors[0])}.`
-      : "";
+    const why = snapshot.errors.length ? ` Last read error: ${esc(snapshot.errors[0])}.` : "";
     return `${head}${sourceLine}<div class="banner">Stale source: this queue snapshot was fetched at ${esc(fetchedIso)}, outside the freshness window \u2014 queue numbers are withheld rather than shown silently old.${why} They refresh on the next successful broker read.</div>`;
   }
   const age = (ms: number | null): string => {
@@ -7492,7 +7488,10 @@ export function queuePanelHtml(snapshot: QueueSnapshot | null): string {
     .join("");
   const streams = `<table><thead><tr><th>Queue stream</th><th>Queued</th><th>Claimed</th><th>Parked</th><th>Blocked</th><th>Done</th><th>Oldest queued</th><th>Terminal 24h / 7d</th></tr></thead><tbody>${streamRows}</tbody></table>`;
   const idItems = snapshot.tasks.filter(
-    (task) => task.repo === "developing-today/code" && task.issue !== null && (task.status === "claimed" || task.status === "parked"),
+    (task) =>
+      task.repo === "developing-today/code" &&
+      task.issue !== null &&
+      (task.status === "claimed" || task.status === "parked"),
   );
   const itemRows = idItems
     .slice(0, 50)
@@ -7624,8 +7623,10 @@ export function renderProgramProject(
 <p class="muted">Built only from already-published fleet data — the orchestration section this aggregator serves and the fleet's tracked issues. No new data pipeline feeds this section.</p>${programEntries(config.sweepHealth, items)}`
     : "";
 
-  const phaseTrackerHtml = config.id === "id" ? phaseTrackerPanelHtml(items, phase12 ?? null, phaseMapping ?? null) : "";
-  const phase12Html = config.id === "id" && phase12 !== undefined ? phase12PanelHtml(phase12, items, queueSnap ?? null) : "";
+  const phaseTrackerHtml =
+    config.id === "id" ? phaseTrackerPanelHtml(items, phase12 ?? null, phaseMapping ?? null) : "";
+  const phase12Html =
+    config.id === "id" && phase12 !== undefined ? phase12PanelHtml(phase12, items, queueSnap ?? null) : "";
   const buildHealthHtml = config.id === "id" && buildHealth !== undefined ? buildHealthPanelHtml(buildHealth) : "";
   const f12Html =
     config.id === "id" && f12 !== undefined

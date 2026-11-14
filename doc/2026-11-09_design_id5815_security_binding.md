@@ -8,7 +8,7 @@
   "id: design: Wire format & transport adapters — postcard schema, non-UDP
   carriers, relays/proxies". Programme epic:
   [#2056](https://github.com/developing-today/code/issues/2056).
-- Sibling records this review is written *against*:
+- Sibling records this review is written _against_:
   [#5811](https://github.com/developing-today/code/issues/5811) (WSS/HTTPS
   adapter, record in PR #7613), [#5813](https://github.com/developing-today/code/issues/5813)
   (relay & proxy protocol, record in PR #7653),
@@ -20,7 +20,7 @@
   [#2036](https://github.com/developing-today/code/issues/2036) messaging
   semantics (`doc/2026-11-01_design_id2036.md`),
   [#5791](https://github.com/developing-today/code/issues/5791) transport
-  negotiation & fallback *ordering*
+  negotiation & fallback _ordering_
   (`doc/2026-11-05T13-38-00Z_design_id5791_transport_negotiation.md`),
   [#5795](https://github.com/developing-today/code/issues/5795) broker
   authorization, allowlists and metadata minimization.
@@ -33,14 +33,14 @@
 
 ## 1. The question
 
-From #5815: *replay and downgrade protection reviewed across all adapters
+From #5815: _replay and downgrade protection reviewed across all adapters
 and relays — the security binding that stops a transport downgrade
-becoming a security downgrade.*
+becoming a security downgrade._
 
 The adapter family (#5674 §4, ordered by #5791) deliberately spans
 carriers with wildly different transport security: native UDP, relayed
 UDP, TCP/TLS, WSS, plain HTTPS request/response, WebRTC, local IPC, and
-store-and-forward carriers. A client *will* walk down that ladder on
+store-and-forward carriers. A client _will_ walk down that ladder on
 hostile networks, and relays and middleboxes sit on several of the
 rungs. If any security property of an ID session is supplied by the
 carrier — TLS on one rung, nothing on another — then forcing a client
@@ -116,17 +116,17 @@ carrier.** Concretely:
    lowered by a peer, a relay, or a carrier failure. An adapter or
    carrier class that cannot meet the floor is simply not offered.
 4. **Replay protection per class, bound to the session.**
-   - *Durable:* replay is idempotent by construction — origin-signed
+   - _Durable:_ replay is idempotent by construction — origin-signed
      events carry their event identity and are deduplicated by the
      #2036 range-sync/event-graph contract. A relay or attacker
      re-injecting a captured durable frame creates no new fact.
-   - *Live:* per-session monotonic sequence numbers under the session
+   - _Live:_ per-session monotonic sequence numbers under the session
      MAC, with signed segment checkpoints per #2036. Session keys are
      derived from the transcript (§3.2), so a frame captured in one
      session is cryptographically invalid in any other session, on any
      carrier. Keys are discarded at session close; there is no
      cross-session replay window to manage.
-   - *Handshake and control:* handshake nonces are single-use and the
+   - _Handshake and control:_ handshake nonces are single-use and the
      confirmation (§3.2) binds them into the transcript, so a replayed
      handshake cannot resurrect a session. Relay registration and
      route advertisements are signed and expiring per #5813; an
@@ -146,7 +146,7 @@ carrier.** Concretely:
    cannot terminate, re-key, or re-sign an ID session, and hop metadata
    it adds is unauthenticated advisory data that never feeds ID
    validation. Member-relay validation-before-forward (#2036) lets a
-   relay *check* an envelope signature; it never lets a relay *create*
+   relay _check_ an envelope signature; it never lets a relay _create_
    one. All signatures and MACs use purpose-separated domain labels
    (handshake confirmation, live-frame MAC, checkpoint signing,
    registration) — no key or label is shared across purposes, adapters,
@@ -155,13 +155,13 @@ carrier.** Concretely:
 
 ## 4. Alternatives considered and rejected
 
-| Alternative | Verdict | Why |
-|---|---|---|
-| Rely on carrier TLS for session security | Reject | TLS terminates at relays, corporate middleboxes and TLS-terminating proxies — exactly the rungs where downgrade pressure exists. #5674 already forbids treating TLS as ID identity; making it load-bearing on some adapters recreates the downgrade seam between adapters. |
-| Per-adapter bespoke security rules | Reject | The attacks this review exists to stop live *between* adapters (forced fallback, cross-carrier replay). N bespoke rule sets guarantee N+1 seams. One binding contract, stated once, is the design. |
-| Negotiated downgrade with a warning / best-effort security | Reject | A downgrade an attacker can induce is not a negotiation outcome, it is the attack succeeding politely. The floor + abort rule (§§3.3, 3.5) is deterministic, testable, and matches #5813 invariant 9's "no silent downgrade". |
-| One global replay window / sequence space across sessions | Reject | Breaks store-and-forward carriers and contradicts #2036's no-backlog live semantics; forces durable state for ephemeral traffic. Per-session binding (§3.4) achieves the same resistance with session-scoped state only. |
-| Let relays terminate and re-originate sessions (hop-by-hop security) | Reject | Makes every relay a trusted security principal and contradicts the #5791 dumb-pipe model and #5813's opaque-payload rule. A compromised relay must be a metadata/availability problem (#5795's ceiling), never a content-integrity problem. |
+| Alternative                                                          | Verdict | Why                                                                                                                                                                                                                                                                        |
+| -------------------------------------------------------------------- | ------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Rely on carrier TLS for session security                             | Reject  | TLS terminates at relays, corporate middleboxes and TLS-terminating proxies — exactly the rungs where downgrade pressure exists. #5674 already forbids treating TLS as ID identity; making it load-bearing on some adapters recreates the downgrade seam between adapters. |
+| Per-adapter bespoke security rules                                   | Reject  | The attacks this review exists to stop live _between_ adapters (forced fallback, cross-carrier replay). N bespoke rule sets guarantee N+1 seams. One binding contract, stated once, is the design.                                                                         |
+| Negotiated downgrade with a warning / best-effort security           | Reject  | A downgrade an attacker can induce is not a negotiation outcome, it is the attack succeeding politely. The floor + abort rule (§§3.3, 3.5) is deterministic, testable, and matches #5813 invariant 9's "no silent downgrade".                                              |
+| One global replay window / sequence space across sessions            | Reject  | Breaks store-and-forward carriers and contradicts #2036's no-backlog live semantics; forces durable state for ephemeral traffic. Per-session binding (§3.4) achieves the same resistance with session-scoped state only.                                                   |
+| Let relays terminate and re-originate sessions (hop-by-hop security) | Reject  | Makes every relay a trusted security principal and contradicts the #5791 dumb-pipe model and #5813's opaque-payload rule. A compromised relay must be a metadata/availability problem (#5795's ceiling), never a content-integrity problem.                                |
 
 ## 5. Invariants implementation must hold
 
@@ -212,7 +212,7 @@ carrier.** Concretely:
   to fail per §5. Filed as an obligation on the existing #5814, not a
   new split.
 - **#5795 (broker authorization)** remains the owner of what a relay is
-  *allowed* to do; this record owns what a relay *cannot* do to session
+  _allowed_ to do; this record owns what a relay _cannot_ do to session
   security even if authorization fails or a broker is compromised,
   which is the binding half of #5795's compromised-broker ceiling.
 

@@ -20,31 +20,55 @@ Exit 0 with a one-line JSON verdict on success; nonzero on any failure
 (the files remain authoritative — a failed write changes nothing the
 dashboard serves).
 """
+
 import json, os, subprocess, sys, tempfile
+
 
 def secret(name):
     fleet = "/home/hatch/tools/bin/fleet"
     if not os.path.exists(fleet):
         fleet = "fleet"
-    out = subprocess.run([fleet, "secrets", "get", name], capture_output=True, text=True)
+    out = subprocess.run(
+        [fleet, "secrets", "get", name], capture_output=True, text=True
+    )
     if out.returncode != 0:
         raise SystemExit(f"secret fetch failed: {name}")
     return out.stdout.strip()
 
+
 REF = secret("supabase.muse-dev2.project-ref")
 TOKEN = secret("supabase.muse-dev2.access-token-muse-cli")
 URL = f"https://api.supabase.com/v1/projects/{REF}/database/query"
+
 
 def sql(query):
     fd, tmp = tempfile.mkstemp(suffix=".json")
     with os.fdopen(fd, "w") as f:
         json.dump({"query": query}, f)
     try:
-        out = subprocess.run(["curl", "-sS", "-m", "120", "-A", "Mozilla/5.0",
-                              "-X", "POST", "-H", f"Authorization: Bearer {TOKEN}",
-                              "-H", "Content-Type: application/json",
-                              "--data", "@" + tmp, URL, "-w", "\n%{http_code}"],
-                             capture_output=True, text=True)
+        out = subprocess.run(
+            [
+                "curl",
+                "-sS",
+                "-m",
+                "120",
+                "-A",
+                "Mozilla/5.0",
+                "-X",
+                "POST",
+                "-H",
+                f"Authorization: Bearer {TOKEN}",
+                "-H",
+                "Content-Type: application/json",
+                "--data",
+                "@" + tmp,
+                URL,
+                "-w",
+                "\n%{http_code}",
+            ],
+            capture_output=True,
+            text=True,
+        )
     finally:
         os.unlink(tmp)
     if out.returncode != 0:
@@ -54,20 +78,30 @@ def sql(query):
         raise SystemExit(f"SQL failed (HTTP {code}): {body[:400]}")
     return json.loads(body) if body.strip() else []
 
+
 def lit(value):
     if value is None:
         return "NULL"
     return "'" + str(value).replace("'", "''") + "'"
 
+
 def jsonb(obj):
     return lit(json.dumps(obj)) + "::jsonb"
 
+
 def main():
-    path = sys.argv[1] if len(sys.argv) > 1 else os.path.expanduser(
-        "~/workspace/goals/keep-the-four-repos-healthy/hidden_files/orchestration.json")
+    path = (
+        sys.argv[1]
+        if len(sys.argv) > 1
+        else os.path.expanduser(
+            "~/workspace/goals/keep-the-four-repos-healthy/hidden_files/orchestration.json"
+        )
+    )
     with open(path) as f:
         doc = json.load(f)
-    run_id = doc["runId"]; generated_at = doc["generatedAt"]; version = int(doc["version"])
+    run_id = doc["runId"]
+    generated_at = doc["generatedAt"]
+    version = int(doc["version"])
     provenance = doc.get("provenance") or {}
     tiers = doc.get("tiers") or {}
     items = []
@@ -82,32 +116,64 @@ def main():
     stmts = ["BEGIN;"]
     stmts.append(
         "INSERT INTO public.orch_runs (run_id, generated_at, document_version, provenance, document, item_count) VALUES ("
-        + ", ".join([lit(run_id), lit(generated_at), str(version), jsonb(provenance), jsonb(doc), str(item_count)])
-        + ") ON CONFLICT (run_id) DO NOTHING;")
+        + ", ".join(
+            [
+                lit(run_id),
+                lit(generated_at),
+                str(version),
+                jsonb(provenance),
+                jsonb(doc),
+                str(item_count),
+            ]
+        )
+        + ") ON CONFLICT (run_id) DO NOTHING;"
+    )
     stmts.append("DELETE FROM public.orch_items;")
     for tier, item in items:
         fsr = first_seen.get(item["id"], run_id)
         stmts.append(
             "INSERT INTO public.orch_items (id, tier, kind, title, source, state, reason, ref, since, last_seen_at, item, first_seen_run_id, last_seen_run_id) VALUES ("
-            + ", ".join([
-                lit(item["id"]), lit(tier), lit(item["kind"]), lit(item["title"]), lit(item["source"]),
-                lit(item.get("state")), lit(item["reason"]), lit(item.get("ref")),
-                lit(item["since"]), lit(item["lastSeenAt"]), jsonb(item), lit(fsr), lit(run_id)])
-            + ");")
+            + ", ".join(
+                [
+                    lit(item["id"]),
+                    lit(tier),
+                    lit(item["kind"]),
+                    lit(item["title"]),
+                    lit(item["source"]),
+                    lit(item.get("state")),
+                    lit(item["reason"]),
+                    lit(item.get("ref")),
+                    lit(item["since"]),
+                    lit(item["lastSeenAt"]),
+                    jsonb(item),
+                    lit(fsr),
+                    lit(run_id),
+                ]
+            )
+            + ");"
+        )
     stmts.append("COMMIT;")
     sql("\n".join(stmts))
 
-    runs = sql("SELECT run_id, item_count, document FROM public.orch_runs WHERE run_id = " + lit(run_id))
+    runs = sql(
+        "SELECT run_id, item_count, document FROM public.orch_runs WHERE run_id = "
+        + lit(run_id)
+    )
     if len(runs) != 1:
         raise SystemExit(f"read-back: run row missing for {run_id}")
     if runs[0]["item_count"] != item_count:
-        raise SystemExit(f"read-back: item_count {runs[0]['item_count']} != {item_count}")
+        raise SystemExit(
+            f"read-back: item_count {runs[0]['item_count']} != {item_count}"
+        )
     if runs[0]["document"] != doc:
         raise SystemExit("read-back: stored document differs from the file document")
     counts = sql("SELECT count(*) AS n FROM public.orch_items")
     if counts[0]["n"] != item_count:
-        raise SystemExit(f"read-back: orch_items has {counts[0]['n']} rows, expected {item_count}")
+        raise SystemExit(
+            f"read-back: orch_items has {counts[0]['n']} rows, expected {item_count}"
+        )
     print(json.dumps({"ok": True, "run_id": run_id, "items": item_count}))
+
 
 if __name__ == "__main__":
     main()

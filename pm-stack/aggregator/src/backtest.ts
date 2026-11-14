@@ -100,9 +100,15 @@ export function createSnapshot(input: CreateSnapshotInput): ForecastSnapshot {
   if (versions.size !== 1) {
     throw new Error(`forecast snapshot mixes model versions: ${[...versions].join(", ")}`);
   }
-  const cutoff = input.cutoff ?? epics.map((f) => f.asOf).sort().at(-1)!;
+  const cutoff =
+    input.cutoff ??
+    epics
+      .map((f) => f.asOf)
+      .sort()
+      .at(-1)!;
   for (const f of epics) {
-    if (f.asOf > cutoff) throw new Error(`forecast for ${f.subjectRef} is as of ${f.asOf}, after snapshot cutoff ${cutoff}`);
+    if (f.asOf > cutoff)
+      throw new Error(`forecast for ${f.subjectRef} is as of ${f.asOf}, after snapshot cutoff ${cutoff}`);
   }
   return {
     snapshotVersion: FORECAST_SNAPSHOT_VERSION,
@@ -230,7 +236,11 @@ function horizonBucket(errSpanMs: number): HorizonBucket {
   return "over8w";
 }
 
-function groupMetrics(rows: Scored[], horizon: BacktestGroup["horizon"], confidence: BacktestGroup["confidence"]): BacktestGroup {
+function groupMetrics(
+  rows: Scored[],
+  horizon: BacktestGroup["horizon"],
+  confidence: BacktestGroup["confidence"],
+): BacktestGroup {
   const p80Rows = rows.filter((r) => r.p80Covered !== null);
   const baseRows = rows.filter((r) => r.baselineErrorDays !== null);
   return {
@@ -258,7 +268,9 @@ export function evaluateVersion(input: {
 
   // Visibility: nothing created after the evaluation instant exists.
   const snapshots = input.snapshots
-    .filter((s) => s.modelVersion === modelVersion && Date.parse(s.cutoff) <= asOfMs && Date.parse(s.capturedAt) <= asOfMs)
+    .filter(
+      (s) => s.modelVersion === modelVersion && Date.parse(s.cutoff) <= asOfMs && Date.parse(s.capturedAt) <= asOfMs,
+    )
     .sort((a, b) => a.cutoff.localeCompare(b.cutoff));
   const outcomeBySubject = new Map<RefKey, ForecastOutcome>();
   for (const o of input.outcomes) {
@@ -393,7 +405,8 @@ export function evaluateVersion(input: {
     },
     quotaWall: {
       state: "not_evaluated",
-      reason: "quota-wall classification accuracy requires the #3983 outcome history, which does not exist yet; excluded from #3986 evaluation until it does",
+      reason:
+        "quota-wall classification accuracy requires the #3983 outcome history, which does not exist yet; excluded from #3986 evaluation until it does",
     },
   };
 }

@@ -24,7 +24,7 @@ permissions:
 
 jobs:
   provenance:
-    name: 'basic: aggregator provenance matrix'
+    name: "basic: aggregator provenance matrix"
     runs-on: ubuntu-latest
     timeout-minutes: 5
     defaults:

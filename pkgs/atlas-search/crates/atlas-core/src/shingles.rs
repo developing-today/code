@@ -303,10 +303,11 @@ pub fn rescore_fused(
         let (a_final, a_j, a_rrf) = (a.1, a.2, a.3);
         let (b_final, b_j, b_rrf) = (b.1, b.2, b.3);
         if (a_final - b_final).abs() >= TIE_WINDOW {
-            return b_final.partial_cmp(&a_final).unwrap_or(std::cmp::Ordering::Equal);
+            return b_final
+                .partial_cmp(&a_final)
+                .unwrap_or(std::cmp::Ordering::Equal);
         }
-        b_j
-            .partial_cmp(&a_j)
+        b_j.partial_cmp(&a_j)
             .unwrap_or(std::cmp::Ordering::Equal)
             .then_with(|| {
                 b_rrf
@@ -362,7 +363,11 @@ mod tests {
         sorted.sort_unstable();
         assert_eq!(set.hashes, sorted);
         let repeated = ShingleSet::from_text("x x x x x x");
-        assert_eq!(repeated.hashes.len(), 1, "identical windows dedupe to one shingle");
+        assert_eq!(
+            repeated.hashes.len(),
+            1,
+            "identical windows dedupe to one shingle"
+        );
     }
 
     #[test]
@@ -399,10 +404,20 @@ mod tests {
             (2, set("the quick brown fox jumps over the lazy dog again")),
             (3, set("something else entirely about dogs and foxes")),
         ]);
-        let report = rescore_fused(&mut entries, &query, &sets, 100, DEFAULT_NEAR_EXACT_THRESHOLD);
+        let report = rescore_fused(
+            &mut entries,
+            &query,
+            &sets,
+            100,
+            DEFAULT_NEAR_EXACT_THRESHOLD,
+        );
         assert_eq!(report.near_exact, 1);
         assert_eq!(entries[0].chunk_id, 2);
-        assert!(entries[0].score >= 1.0, "near-exact tier: {}", entries[0].score);
+        assert!(
+            entries[0].score >= 1.0,
+            "near-exact tier: {}",
+            entries[0].score
+        );
         assert!(entries[1].score < 1.0 && entries[2].score < 1.0);
     }
 
@@ -415,7 +430,13 @@ mod tests {
             (1, set("one two three four five six")),
             (2, set("seven eight nine ten eleven twelve")),
         ]);
-        rescore_fused(&mut entries, &query, &sets, 100, DEFAULT_NEAR_EXACT_THRESHOLD);
+        rescore_fused(
+            &mut entries,
+            &query,
+            &sets,
+            100,
+            DEFAULT_NEAR_EXACT_THRESHOLD,
+        );
         assert!((entries[0].score - 0.85).abs() < 1e-12);
         assert!((entries[1].score - 0.85 * 0.5).abs() < 1e-12);
     }
@@ -427,9 +448,18 @@ mod tests {
         stale.version = NORMALIZER_VERSION + 1;
         let mut entries = vec![entry(1, 0.02), entry(2, 0.01)];
         let sets = HashMap::from([(2, stale), (1, set("unrelated words here for chunk one"))]);
-        let report = rescore_fused(&mut entries, &query, &sets, 100, DEFAULT_NEAR_EXACT_THRESHOLD);
+        let report = rescore_fused(
+            &mut entries,
+            &query,
+            &sets,
+            100,
+            DEFAULT_NEAR_EXACT_THRESHOLD,
+        );
         assert_eq!(report.near_exact, 0);
-        assert_eq!(entries[0].chunk_id, 1, "no near-exact promotion across versions");
+        assert_eq!(
+            entries[0].chunk_id, 1,
+            "no near-exact promotion across versions"
+        );
     }
 
     #[test]
@@ -441,6 +471,9 @@ mod tests {
         assert_eq!(report.rescored, 2);
         assert_eq!(report.near_exact, 0, "chunk 3 is outside the union");
         assert_eq!(entries[2].chunk_id, 3);
-        assert_eq!(entries[2].score, 0.01, "beyond-depth entries keep fused score and place");
+        assert_eq!(
+            entries[2].score, 0.01,
+            "beyond-depth entries keep fused score and place"
+        );
     }
 }

@@ -186,7 +186,7 @@ if [ -d "$PM_STACK_ROOT" ]; then
     [ -d "$day_dir" ] || continue
     day="${day_dir%/}"
     day="${day##*/}"
-    [[ "$day" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}$ ]] || continue
+    [[ $day =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}$ ]] || continue
     normalized_day="$(date -d "$day" +%F 2>/dev/null || true)"
     [ "$normalized_day" = "$day" ] || continue
 
@@ -195,11 +195,11 @@ if [ -d "$PM_STACK_ROOT" ]; then
     # was ever written. Select by the ISO date, not mtime ordering, in
     # case a later write touches an older day directory.
     day_mtime="$(stat -c %Y -- "$day_dir" 2>/dev/null || true)"
-    [[ "$day_mtime" =~ ^[0-9]+$ ]] || continue
+    [[ $day_mtime =~ ^[0-9]+$ ]] || continue
     age=$((NOW_EPOCH - day_mtime))
     [ "$age" -lt "$((-SKEW_TOLERANCE_SEC))" ] && continue
     [ "$age" -gt "$MAX_AGE_SEC" ] && continue
-    if [[ -z "$newest_pm_stack_day" || "$day" > "$newest_pm_stack_day" ]]; then
+    if [[ -z $newest_pm_stack_day || $day > $newest_pm_stack_day ]]; then
       newest_pm_stack_day="$day"
     fi
   done

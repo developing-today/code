@@ -46,7 +46,9 @@ if (Array.isArray(parsed)) {
 } else if (Array.isArray(parsed.forecasts)) {
   forecasts = parsed.forecasts;
 } else {
-  console.error("forecast-snapshot: --forecasts file has no contracts/forecasts array (expected the /api/forecasts.json shape)");
+  console.error(
+    "forecast-snapshot: --forecasts file has no contracts/forecasts array (expected the /api/forecasts.json shape)",
+  );
   process.exit(2);
 }
 const sourceWatermarks: Record<string, string> = {};
@@ -63,4 +65,6 @@ const snapshot = createSnapshot({
   cutoff: arg("cutoff"),
 });
 await appendSnapshot(out, snapshot);
-console.log(`snapshot: model=${snapshot.modelVersion} cutoff=${snapshot.cutoff} forecasts=${snapshot.forecasts.length} -> ${out}`);
+console.log(
+  `snapshot: model=${snapshot.modelVersion} cutoff=${snapshot.cutoff} forecasts=${snapshot.forecasts.length} -> ${out}`,
+);

@@ -183,7 +183,9 @@ describe("host-health snapshot normalization (#10141)", () => {
   test("absent, corrupt, or shapeless input reads as null, never as health", () => {
     expect(normalizeHostHealthSnapshot(null)).toBeNull();
     expect(normalizeHostHealthSnapshot({})).toBeNull();
-    expect(normalizeHostHealthSnapshot({ generatedAt: "not-a-date", claimantMode: { state: "live" }, units: {} })).toBeNull();
+    expect(
+      normalizeHostHealthSnapshot({ generatedAt: "not-a-date", claimantMode: { state: "live" }, units: {} }),
+    ).toBeNull();
     expect(
       normalizeHostHealthSnapshot({ generatedAt: iso(NOW), claimantMode: { state: "banana" }, units: {} }),
     ).toBeNull();

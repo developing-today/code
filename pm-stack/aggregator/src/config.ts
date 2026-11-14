@@ -196,10 +196,7 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
     freshnessFile: s(env.PM_AGG_FRESHNESS_FILE, join(homedir(), ".local", "state", "pm-aggregator", "freshness.json")),
     freshnessPort: parseAggregatorPort(env.PM_AGG_FRESHNESS_PORT, "PM_AGG_FRESHNESS_PORT", "4871"),
     queueBrokerUrl: s(env.PM_AGG_QUEUE_BROKER_URL, "http://100.99.113.103:4801"),
-    queueBrokerTokenFile: s(
-      env.PM_AGG_QUEUE_BROKER_TOKEN_FILE,
-      join(homedir(), ".config", "queue-broker", "token"),
-    ),
+    queueBrokerTokenFile: s(env.PM_AGG_QUEUE_BROKER_TOKEN_FILE, join(homedir(), ".config", "queue-broker", "token")),
     // Default is the state dir, NOT cwd (#5389): aggregator runtime state
     // lives in ~/.local/state/pm-aggregator (2026-10-27 precedent), and the
     // cwd default let an env-less run write this store into whatever

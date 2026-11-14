@@ -83,7 +83,7 @@ nothing is presented as created.
   enrolment — the ceremony never silently starts in service custody, and a
   variant-(a) setup still records `custody_variant: a` in the same artefact
   shape (no forked artefact). For variant (d), pseudo-logins are delegated
-  *after* genesis (§5), never instead of it.
+  _after_ genesis (§5), never instead of it.
 - **An existing key file is a hard stop, not an overwrite.** If a key file
   already exists, setup refuses to generate: the operator either resumes an
   incomplete ceremony for that key (§7) or abandons it (§7). Silent rotation
@@ -149,7 +149,7 @@ never a published artefact.
 - This record **consumes the `RecoverySet` interface exactly as published**
   by the #5888 record in open PR #7622:
   `RecoverySet { identity, set_generation, slots[10] of SHA-256 commitments,
-  created_at }`, signed by the identity key. No field is added, removed, or
+created_at }`, signed by the identity key. No field is added, removed, or
   reinterpreted here; the setup statement references it **by hash** (§4)
   rather than embedding it, so #5888's object stays the single definition.
 - #5888 §9 assigns this ticket ceremony ordering and the print screen, and
@@ -184,7 +184,7 @@ Failure and recovery invariants implementation must hold:
    was never published, so nothing dangles.
 3. **Resume is same-key or nothing.** A key file with no published setup
    statement means an incomplete ceremony: resume completes the remaining
-   steps *for that key*, or abort per (2). Generating a second key over an
+   steps _for that key_, or abort per (2). Generating a second key over an
    incomplete ceremony is forbidden (§3).
 4. **Published is never rolled back.** Once the `RecoverySet` is published,
    the identity exists; later failure (e.g. a binding step fails) is a
@@ -233,19 +233,19 @@ Failure and recovery invariants implementation must hold:
   Accepted: shortening the window (publish earlier) would break the
   publish-before-presented rule's purpose.
 - **Variant drift:** the attested `custody_variant` could go stale after a
-  later migration (#5890). The statement records the variant *at genesis*;
+  later migration (#5890). The statement records the variant _at genesis_;
   migrations are later signed objects, never edits to this statement.
 
 ## 10. Alternatives rejected, and why
 
-| Alternative | Why rejected |
-|---|---|
-| Lazy creation via `load_or_create_keypair` on first run as the ceremony | No informed variant choice, no recovery at the first moment of existence, identity exists before its genesis is attested. The primitive stays as storage plumbing *inside* the ceremony's generate step. |
-| Server-side key generation (all variants) | Makes every identity variant-(a) at birth regardless of the user's choice; contradicts #5885's settled client-side recommendation and the parent's custody honesty. |
-| Password- or login-derived key | Entropy and custody failures settled by #5885; a derived key makes the login credential a signing key in disguise. |
-| Present the identity, publish the `RecoverySet` later | #5888 §9 forbids it: the first moment of existence would have no recovery path. |
-| Embed the full `RecoverySet` inside the setup statement | Two definitions of one object; the statement references it by hash so #5888's record stays canonical. |
-| Support-assisted setup completion for a stuck ceremony | A completion path that does not need the key is a backdoor against §7/§5888 invariant 10. Stuck means resume-same-key or abort, for the user, on the device. |
+| Alternative                                                             | Why rejected                                                                                                                                                                                             |
+| ----------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Lazy creation via `load_or_create_keypair` on first run as the ceremony | No informed variant choice, no recovery at the first moment of existence, identity exists before its genesis is attested. The primitive stays as storage plumbing _inside_ the ceremony's generate step. |
+| Server-side key generation (all variants)                               | Makes every identity variant-(a) at birth regardless of the user's choice; contradicts #5885's settled client-side recommendation and the parent's custody honesty.                                      |
+| Password- or login-derived key                                          | Entropy and custody failures settled by #5885; a derived key makes the login credential a signing key in disguise.                                                                                       |
+| Present the identity, publish the `RecoverySet` later                   | #5888 §9 forbids it: the first moment of existence would have no recovery path.                                                                                                                          |
+| Embed the full `RecoverySet` inside the setup statement                 | Two definitions of one object; the statement references it by hash so #5888's record stays canonical.                                                                                                    |
+| Support-assisted setup completion for a stuck ceremony                  | A completion path that does not need the key is a backdoor against §7/§5888 invariant 10. Stuck means resume-same-key or abort, for the user, on the device.                                             |
 
 ## 11. Parent (#5684) decisions — preserved, none changed
 
@@ -261,13 +261,13 @@ this ticket is settled.
 
 ## 12. Open questions for implementation (with defaults)
 
-| Question | Default this record sets |
-|---|---|
-| Canonical encoding for `SetupStatement` | The repo's existing canonical encoding for signed ID-graph objects; oracle = cross-implementation `setup_hash` agreement. |
-| Where does the ceremony live (CLI, app, web)? | The client that owns the key file; web-only setup that cannot hold a key file device-locally is out of scope until variant design says otherwise. |
-| Must the optional first delegation (#5889) wait for its record? | Yes — genesis ships without it; it is post-genesis by design (§5). |
-| Coarse `created_at` granularity | Day. Finer only with a stated verifier need. |
-| Key file already exists and belongs to a *node* (non-user) identity | Out of scope: this ceremony is for user native IDs; node bootstrap keeps the existing lazy path. |
+| Question                                                            | Default this record sets                                                                                                                          |
+| ------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Canonical encoding for `SetupStatement`                             | The repo's existing canonical encoding for signed ID-graph objects; oracle = cross-implementation `setup_hash` agreement.                         |
+| Where does the ceremony live (CLI, app, web)?                       | The client that owns the key file; web-only setup that cannot hold a key file device-locally is out of scope until variant design says otherwise. |
+| Must the optional first delegation (#5889) wait for its record?     | Yes — genesis ships without it; it is post-genesis by design (§5).                                                                                |
+| Coarse `created_at` granularity                                     | Day. Finer only with a stated verifier need.                                                                                                      |
+| Key file already exists and belongs to a _node_ (non-user) identity | Out of scope: this ceremony is for user native IDs; node bootstrap keeps the existing lazy path.                                                  |
 
 ## 13. Follow-on implementation work (separately timed)
 

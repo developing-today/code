@@ -14,14 +14,14 @@ Compare a candidate with the standard baseline using paired runs of the same wor
 
 The v1 budgets are:
 
-| Metric | Regression direction | Budget |
-|---|---|---:|
-| Throughput (`operations_per_second`) | lower | 10% decrease |
-| Latency p50 | higher | 10% increase |
-| Latency p95 | higher | 10% increase |
-| Latency p99 | higher | 15% increase |
-| CPU per operation | higher | 10% increase |
-| Memory per operation / high-water memory, when defined by a workload | higher | 15% increase |
+| Metric                                                               | Regression direction |       Budget |
+| -------------------------------------------------------------------- | -------------------- | -----------: |
+| Throughput (`operations_per_second`)                                 | lower                | 10% decrease |
+| Latency p50                                                          | higher               | 10% increase |
+| Latency p95                                                          | higher               | 10% increase |
+| Latency p99                                                          | higher               | 15% increase |
+| CPU per operation                                                    | higher               | 10% increase |
+| Memory per operation / high-water memory, when defined by a workload | higher               | 15% increase |
 
 A workload must declare a metric's statistic, unit, and worse-is direction before that metric can gate. The v1 blocking set is throughput and p95 latency, matching #5685's explicit examples and #5895's parent-level gate statement. The other budgets are recorded and reported as advisory until a workload's implementation declares them gate-enabled; adding or removing a blocking metric is a reviewed design change, not an implicit comparator default. No universal budget is inferred for counters or resource metrics whose direction is workload-dependent.
 

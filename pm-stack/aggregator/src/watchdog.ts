@@ -366,11 +366,7 @@ const HOST_UNIT_LABELS: Record<string, string> = {
  *  snapshot in, same items out; recovery = the next snapshot no
  *  longer breaches, and the card clears itself. Thresholds are the
  *  constants in host-health.ts, named at their definition site. */
-function deriveHostHealthItems(
-  snapshot: HostHealthSnapshot | null,
-  now: number,
-  put: (it: TierItem) => void,
-): void {
+function deriveHostHealthItems(snapshot: HostHealthSnapshot | null, now: number, put: (it: TierItem) => void): void {
   if (snapshot === null) {
     put(
       item(

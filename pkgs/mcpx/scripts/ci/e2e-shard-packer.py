@@ -283,7 +283,8 @@ def load_weights(path: str | None, names: list[str]) -> tuple[dict[str, float], 
                 return {name: DEFAULT_SECONDS for name in names}, (
                     f"equal weights at the run-41530429335 rate ({DEFAULT_SECONDS:.0f}s/test; "
                     f"timing seed defect: 'tests' is {type(tests_val).__name__}, "
-                    f"expected object; ignoring seed)")
+                    f"expected object; ignoring seed)"
+                )
             raw = tests_val
         elif isinstance(doc, dict):
             raw = doc
@@ -298,8 +299,7 @@ def load_weights(path: str | None, names: list[str]) -> tuple[dict[str, float], 
             else:
                 measured[name] = weight
     skipped_note = (
-        f"; skipped invalid weight(s): {', '.join(sorted(skipped))}"
-        if skipped else ""
+        f"; skipped invalid weight(s): {', '.join(sorted(skipped))}" if skipped else ""
     )
     if not measured:
         # Equal weights, scaled by the only per-test rate this repo has:
@@ -311,12 +311,14 @@ def load_weights(path: str | None, names: list[str]) -> tuple[dict[str, float], 
         )
         return {name: DEFAULT_SECONDS for name in names}, (
             f"equal weights at the run-41530429335 rate ({DEFAULT_SECONDS:.0f}s/test; "
-            f"{fallback_reason})")
+            f"{fallback_reason})"
+        )
     median = statistics.median(measured.values())
     weights = {name: measured.get(name, median) for name in names}
     return weights, (
         f"seed: {len(measured)} measured, median {median:.1f}s for the rest"
-        f"{skipped_note}")
+        f"{skipped_note}"
+    )
 
 
 def lpt_pack(weights: dict[str, float], shards: int) -> list[list[str]]:

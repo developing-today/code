@@ -37,7 +37,9 @@ REPO = "developing-today/code"
 QUEUE = "repo-health-code-pilot"
 
 
-def fixture(covered: list[int], uncovered: list[int], pulls: list[dict] | None = None) -> dict:
+def fixture(
+    covered: list[int], uncovered: list[int], pulls: list[dict] | None = None
+) -> dict:
     issues = [{"number": n, "title": f"issue {n}"} for n in covered + uncovered]
     return {
         "issues": {REPO: issues},
@@ -319,22 +321,64 @@ class OpenPrCoverageTest(unittest.TestCase):
         cov = check_coverage.build_pr_coverage
         # branch namespace alone
         self.assertEqual(
-            set(cov([{"number": 1, "title": "x", "body": "", "head": {"ref": "queue/9-42-a"}}])),
+            set(
+                cov(
+                    [
+                        {
+                            "number": 1,
+                            "title": "x",
+                            "body": "",
+                            "head": {"ref": "queue/9-42-a"},
+                        }
+                    ]
+                )
+            ),
             {42},
         )
         # closing keyword alone
         self.assertEqual(
-            set(cov([{"number": 1, "title": "x", "body": "Fixes #43", "head": {"ref": "feat/y"}}])),
+            set(
+                cov(
+                    [
+                        {
+                            "number": 1,
+                            "title": "x",
+                            "body": "Fixes #43",
+                            "head": {"ref": "feat/y"},
+                        }
+                    ]
+                )
+            ),
             {43},
         )
         # trailing title reference alone
         self.assertEqual(
-            set(cov([{"number": 1, "title": "fix: x (#44)", "body": "", "head": {"ref": "feat/y"}}])),
+            set(
+                cov(
+                    [
+                        {
+                            "number": 1,
+                            "title": "fix: x (#44)",
+                            "body": "",
+                            "head": {"ref": "feat/y"},
+                        }
+                    ]
+                )
+            ),
             {44},
         )
         # a bare prose mention is NOT coverage
         self.assertEqual(
-            cov([{"number": 1, "title": "x", "body": "discussed in #45 today", "head": {"ref": "feat/y"}}]),
+            cov(
+                [
+                    {
+                        "number": 1,
+                        "title": "x",
+                        "body": "discussed in #45 today",
+                        "head": {"ref": "feat/y"},
+                    }
+                ]
+            ),
             {},
         )
 

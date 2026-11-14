@@ -229,7 +229,8 @@ describe("age-feed drill: a real run ages, notices, and restores", () => {
     expect(evidence.degraded).toBe(true);
   });
 
-  test("collector rewrites the feed mid-drill -> re-aged, still fires and restores", () => {    // health reads: baseline fresh, wait-poll fresh (collector's write
+  test("collector rewrites the feed mid-drill -> re-aged, still fires and restores", () => {
+    // health reads: baseline fresh, wait-poll fresh (collector's write
     // landed during the sleep), wait-poll stale -> signal, restore fresh.
     const r = runDrill({
       timerActive: true,

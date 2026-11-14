@@ -50,7 +50,11 @@ function snapshot(forecasts: EpicCompletionForecast[], cutoff = CUTOFF, captured
   return createSnapshot({ forecasts, capturedAt, sourceWatermarks: { "item-history": "fixture" }, cutoff });
 }
 
-function outcome(subjectRef: string, completedAt: string | null, recordedAt = "2026-03-01T00:00:00.000Z"): ForecastOutcome {
+function outcome(
+  subjectRef: string,
+  completedAt: string | null,
+  recordedAt = "2026-03-01T00:00:00.000Z",
+): ForecastOutcome {
   return { subjectRef, completedAt, recordedAt };
 }
 
@@ -128,13 +132,23 @@ describe("rolling-origin evaluation (#3986)", () => {
     const visible = snapshot([forecast("gh:o/r#a", CUTOFF, "2026-01-12T00:00:00.000Z", "2026-01-19T00:00:00.000Z")]);
     // Same cutoff, but captured after asOf: a record created after T.
     const futureCapture = { ...visible, capturedAt: "2026-03-02T00:00:00.000Z" };
-    const report = evaluateVersion({ snapshots: [futureCapture], outcomes: [outcome("gh:o/r#a", "2026-01-14T00:00:00.000Z")], asOf, modelVersion: "forecast/v3" });
+    const report = evaluateVersion({
+      snapshots: [futureCapture],
+      outcomes: [outcome("gh:o/r#a", "2026-01-14T00:00:00.000Z")],
+      asOf,
+      modelVersion: "forecast/v3",
+    });
     expect(report.snapshotsUsed).toBe(0);
     expect(report.resolved).toBe(0);
     // An outcome recorded after asOf does not resolve the forecast,
     // even though the completion itself predates asOf.
     const lateRecord = outcome("gh:o/r#a", "2026-01-14T00:00:00.000Z", "2026-03-02T00:00:00.000Z");
-    const report2 = evaluateVersion({ snapshots: [visible], outcomes: [lateRecord], asOf, modelVersion: "forecast/v3" });
+    const report2 = evaluateVersion({
+      snapshots: [visible],
+      outcomes: [lateRecord],
+      asOf,
+      modelVersion: "forecast/v3",
+    });
     expect(report2.resolved).toBe(0);
     expect(report2.unresolved).toBe(1);
   });
@@ -142,16 +156,31 @@ describe("rolling-origin evaluation (#3986)", () => {
   it("separates model versions into separate reports", () => {
     const v3 = snapshot([forecast("gh:o/r#a", CUTOFF, "2026-01-12T00:00:00.000Z", null, "high", "forecast/v3")]);
     const v4 = snapshot([forecast("gh:o/r#a", CUTOFF, "2026-01-19T00:00:00.000Z", null, "high", "forecast/v4")]);
-    const reports = evaluateBacktest({ snapshots: [v3, v4], outcomes: [outcome("gh:o/r#a", "2026-01-13T00:00:00.000Z")], asOf });
+    const reports = evaluateBacktest({
+      snapshots: [v3, v4],
+      outcomes: [outcome("gh:o/r#a", "2026-01-13T00:00:00.000Z")],
+      asOf,
+    });
     expect(reports.map((r) => r.modelVersion)).toEqual(["forecast/v3", "forecast/v4"]);
     expect(reports[0].groups.find((g) => g.horizon === "all" && g.confidence === "all")!.medianAbsEtaErrorDays).toBe(1);
     expect(reports[1].groups.find((g) => g.horizon === "all" && g.confidence === "all")!.medianAbsEtaErrorDays).toBe(6);
   });
 
   it("scores the no-change baseline from the subject's previous snapshot", () => {
-    const first = snapshot([forecast("gh:o/r#a", "2026-01-05T00:00:00.000Z", "2026-02-01T00:00:00.000Z", null)], "2026-01-05T00:00:00.000Z");
-    const second = snapshot([forecast("gh:o/r#a", "2026-01-12T00:00:00.000Z", "2026-01-20T00:00:00.000Z", null)], "2026-01-12T00:00:00.000Z");
-    const report = evaluateVersion({ snapshots: [first, second], outcomes: [outcome("gh:o/r#a", "2026-01-22T00:00:00.000Z")], asOf, modelVersion: "forecast/v3" });
+    const first = snapshot(
+      [forecast("gh:o/r#a", "2026-01-05T00:00:00.000Z", "2026-02-01T00:00:00.000Z", null)],
+      "2026-01-05T00:00:00.000Z",
+    );
+    const second = snapshot(
+      [forecast("gh:o/r#a", "2026-01-12T00:00:00.000Z", "2026-01-20T00:00:00.000Z", null)],
+      "2026-01-12T00:00:00.000Z",
+    );
+    const report = evaluateVersion({
+      snapshots: [first, second],
+      outcomes: [outcome("gh:o/r#a", "2026-01-22T00:00:00.000Z")],
+      asOf,
+      modelVersion: "forecast/v3",
+    });
     const all = report.groups.find((g) => g.horizon === "all" && g.confidence === "all")!;
     expect(all.n).toBe(2);
     expect(all.baselineN).toBe(1); // only the second forecast has a predecessor
@@ -258,7 +287,9 @@ describe("Codex P2 regressions (PR #8436)", () => {
     for (let k = 0; k < 30; k++) {
       const subject = `gh:o/r#g${k}`;
       fs.push(forecast(subject, c8, new Date(c8ms + 10 * DAY).toISOString(), new Date(c8ms + 20 * DAY).toISOString()));
-      outcomes.push(outcome(subject, new Date(c8ms + (k % 5 !== 4 ? 12 : 25) * DAY).toISOString(), "2026-05-01T00:00:00.000Z"));
+      outcomes.push(
+        outcome(subject, new Date(c8ms + (k % 5 !== 4 ? 12 : 25) * DAY).toISOString(), "2026-05-01T00:00:00.000Z"),
+      );
     }
     snapshots.push(snapshot(fs, c8));
     const report = evaluateVersion({ snapshots, outcomes, asOf, modelVersion: "forecast/v3" });
@@ -274,7 +305,10 @@ describe("Codex P2 regressions (PR #8436)", () => {
     const c3 = "2026-01-19T00:00:00.000Z";
     const actual = "2026-03-01T00:00:00.000Z";
     const s1 = snapshot(
-      [forecast("gh:o/r#a", c1, "2026-01-20T00:00:00.000Z", null), forecast("gh:o/r#b", c1, "2026-01-20T00:00:00.000Z", null)],
+      [
+        forecast("gh:o/r#a", c1, "2026-01-20T00:00:00.000Z", null),
+        forecast("gh:o/r#b", c1, "2026-01-20T00:00:00.000Z", null),
+      ],
       c1,
     );
     // Continuing subjects improve (model err 5 vs baseline err 40);
@@ -322,7 +356,17 @@ describe("Codex P2 regressions (PR #8436)", () => {
       const outPath = join(dir, "snapshots.jsonl");
       const script = join(import.meta.dir, "../scripts/forecast-snapshot.ts");
       const proc = Bun.spawn(
-        [process.execPath, "run", script, "--forecasts", inputPath, "--out", outPath, "--watermark", "item-history=fixture"],
+        [
+          process.execPath,
+          "run",
+          script,
+          "--forecasts",
+          inputPath,
+          "--out",
+          outPath,
+          "--watermark",
+          "item-history=fixture",
+        ],
         { stdout: "pipe", stderr: "pipe" },
       );
       expect(await proc.exited).toBe(0);

@@ -140,9 +140,14 @@
     {
       "id": "id.roc.examples",
       "paths": [
-        "pkgs/id/examples/lounge/**", "pkgs/id/examples/roc-chat/**", "pkgs/id/examples/roc-counter/**",
-        "pkgs/id/examples/roc-grid/**", "pkgs/id/examples/roc-screen/**", "pkgs/id/examples/roc-text-counter/**",
-        "pkgs/id/examples/territory/**", "pkgs/id/apps/tic-tac-toe/program/**",
+        "pkgs/id/examples/lounge/**",
+        "pkgs/id/examples/roc-chat/**",
+        "pkgs/id/examples/roc-counter/**",
+        "pkgs/id/examples/roc-grid/**",
+        "pkgs/id/examples/roc-screen/**",
+        "pkgs/id/examples/roc-text-counter/**",
+        "pkgs/id/examples/territory/**",
+        "pkgs/id/apps/tic-tac-toe/program/**",
         "pkgs/id/scripts/rebuild-roc-examples.sh"
       ],
       "invocation": "roc-examples flake check: rebuild examples, run sandbox/world tests, cargo test --test toolchain_pin",
@@ -198,8 +203,10 @@
     {
       "id": "id.nixos.vm",
       "paths": [
-        "pkgs/id/nix/tests/serve-test.nix", "pkgs/id/nix/tests/e2e-test.nix",
-        "pkgs/id/nix/tests/integration-test.nix", "pkgs/id/nix/tests/playwright-e2e-test.nix"
+        "pkgs/id/nix/tests/serve-test.nix",
+        "pkgs/id/nix/tests/e2e-test.nix",
+        "pkgs/id/nix/tests/integration-test.nix",
+        "pkgs/id/nix/tests/playwright-e2e-test.nix"
       ],
       "invocation": "nix flake check for nixos-serve, nixos-e2e, nixos-integration, and nixos-playwright-e2e (runNixOSTest)",
       "venue": {
@@ -227,7 +234,8 @@
     {
       "id": "id.hosted-worker.routing",
       "paths": [
-        "pkgs/id/hosted-worker/test/routing.test.ts", "pkgs/id/hosted-worker/test/blobs.test.ts",
+        "pkgs/id/hosted-worker/test/routing.test.ts",
+        "pkgs/id/hosted-worker/test/blobs.test.ts",
         "pkgs/id/hosted-worker/test/usage.test.ts"
       ],
       "invocation": "cd pkgs/id/hosted-worker && npm test (node --test test/routing.test.ts)",
@@ -411,9 +419,12 @@
     {
       "id": "mcpx.plugin.v2",
       "paths": [
-        "pkgs/mcpx/plugin/opencode/v2/permission.test.ts", "pkgs/mcpx/plugin/opencode/v2/picker.test.ts",
-        "pkgs/mcpx/plugin/opencode/v2/sampling.test.ts", "pkgs/mcpx/plugin/opencode/v2/tool-filter.test.ts",
-        "pkgs/mcpx/plugin/opencode/v2/tools.test.ts", "pkgs/mcpx/plugin/opencode/v2/v2.test.ts"
+        "pkgs/mcpx/plugin/opencode/v2/permission.test.ts",
+        "pkgs/mcpx/plugin/opencode/v2/picker.test.ts",
+        "pkgs/mcpx/plugin/opencode/v2/sampling.test.ts",
+        "pkgs/mcpx/plugin/opencode/v2/tool-filter.test.ts",
+        "pkgs/mcpx/plugin/opencode/v2/tools.test.ts",
+        "pkgs/mcpx/plugin/opencode/v2/v2.test.ts"
       ],
       "invocation": "bun test plugin/opencode/v2/ (73 tests)",
       "venue": {
@@ -617,8 +628,10 @@
     {
       "id": "pkarr-worker",
       "paths": [
-        "pkgs/pkarr-worker/test/deploy-args.test.ts", "pkgs/pkarr-worker/test/deploy-probe.test.ts",
-        "pkgs/pkarr-worker/test/deploy-verification.test.ts", "pkgs/pkarr-worker/test/worker.test.ts"
+        "pkgs/pkarr-worker/test/deploy-args.test.ts",
+        "pkgs/pkarr-worker/test/deploy-probe.test.ts",
+        "pkgs/pkarr-worker/test/deploy-verification.test.ts",
+        "pkgs/pkarr-worker/test/worker.test.ts"
       ],
       "invocation": "cd pkgs/pkarr-worker && npm test (Vitest)",
       "venue": null,
@@ -658,7 +671,10 @@
     },
     {
       "id": "pm-stack.aggregator.contract-corpus",
-      "paths": ["pm-stack/aggregator/test/contract-corpus.test.ts", "pm-stack/aggregator/test/contract-collector.test.ts"],
+      "paths": [
+        "pm-stack/aggregator/test/contract-corpus.test.ts",
+        "pm-stack/aggregator/test/contract-collector.test.ts"
+      ],
       "invocation": "bun test test/contract-corpus.test.ts test/contract-collector.test.ts",
       "venue": {
         "workflow": ".github/workflows/pm-aggregator-tests.yml",
@@ -711,7 +727,8 @@
     {
       "id": "pm-stack.claimant.explicit-dispatch",
       "paths": [
-        "pm-stack/opencode-claimant/test_launch_one.py", "pm-stack/opencode-claimant/test_send_to_opencode.py",
+        "pm-stack/opencode-claimant/test_launch_one.py",
+        "pm-stack/opencode-claimant/test_send_to_opencode.py",
         "pm-stack/opencode-claimant/test_dispatch_batch.py"
       ],
       "invocation": "cd pm-stack/opencode-claimant && python3 -m unittest test_launch_one.py test_send_to_opencode.py test_dispatch_batch.py",
@@ -847,7 +864,10 @@
     },
     {
       "id": "cf-container-hello.python",
-      "paths": ["pkgs/cf-container-hello/test/test_probe_hardening.py", "pkgs/cf-container-hello/test/test_name_decode.py"],
+      "paths": [
+        "pkgs/cf-container-hello/test/test_probe_hardening.py",
+        "pkgs/cf-container-hello/test/test_name_decode.py"
+      ],
       "invocation": "npm test (Python unittest discovery)",
       "venue": {
         "workflow": ".github/workflows/cf-container-hello.yml",
@@ -862,7 +882,8 @@
     {
       "id": "cold-store-reaper.python",
       "paths": [
-        "pkgs/cold-store-reaper/tests/test_cold_store.py", "pkgs/cold-store-reaper/tests/test_nightly_backup.py",
+        "pkgs/cold-store-reaper/tests/test_cold_store.py",
+        "pkgs/cold-store-reaper/tests/test_nightly_backup.py",
         "pkgs/cold-store-reaper/tests/test_export_turso.py"
       ],
       "invocation": "Python unittest discovery",
@@ -897,8 +918,10 @@
     {
       "id": "lab-ops-hub",
       "paths": [
-        "pkgs/lab-ops-hub/test/*.test.ts", "pkgs/lab-ops-hub/test/test_container_validate.py",
-        "pkgs/lab-ops-hub/test/test_html5_entity_corpus.py", "pkgs/lab-ops-hub/test/test_extractor_parity.py"
+        "pkgs/lab-ops-hub/test/*.test.ts",
+        "pkgs/lab-ops-hub/test/test_container_validate.py",
+        "pkgs/lab-ops-hub/test/test_html5_entity_corpus.py",
+        "pkgs/lab-ops-hub/test/test_extractor_parity.py"
       ],
       "invocation": "npm test (TypeScript and Python suites)",
       "venue": {
@@ -940,7 +963,8 @@
     {
       "id": "scripts.direct-python",
       "paths": [
-        "scripts/tests/test_update_nixpkgs_inputs.py", "scripts/tests/test_worker_preflight.py",
+        "scripts/tests/test_update_nixpkgs_inputs.py",
+        "scripts/tests/test_worker_preflight.py",
         "scripts/tests/test_bitwarden_load_secrets.py"
       ],
       "invocation": "python3 <file> (each explicitly listed in workflow)",
@@ -971,8 +995,10 @@
     {
       "id": "scripts.research-workflow",
       "paths": [
-        "scripts/tests/test_research_workflow.py", "scripts/tests/test_research_workflow_items.py",
-        "scripts/tests/test_research_workflow_live.py", "scripts/tests/test_sync_research_workflow.py",
+        "scripts/tests/test_research_workflow.py",
+        "scripts/tests/test_research_workflow_items.py",
+        "scripts/tests/test_research_workflow_live.py",
+        "scripts/tests/test_sync_research_workflow.py",
         "scripts/tests/test_plan_check.py"
       ],
       "invocation": "python3 unittest discovery for test_*workflow*.py; python3 scripts/tests/test_plan_check.py; python3 scripts/research_workflow.py check --repo-root .",
@@ -998,9 +1024,13 @@
     {
       "id": "nixos.home.shell-checks",
       "paths": [
-        "nixos/home/atlas-backup.test.sh", "nixos/home/laptop-backups-watchdog.test.sh", "nixos/home/pm-dashboard-backup*.test.sh",
-        "nixos/home/laptop-autocommit-in-progress.test.sh", "nixos/home/laptop-autocommit-merge-abort.test.sh",
-        "nixos/home/laptop-repo-keeper.test.sh", "nixos/home/laptop-untracked-review.test.sh",
+        "nixos/home/atlas-backup.test.sh",
+        "nixos/home/laptop-backups-watchdog.test.sh",
+        "nixos/home/pm-dashboard-backup*.test.sh",
+        "nixos/home/laptop-autocommit-in-progress.test.sh",
+        "nixos/home/laptop-autocommit-merge-abort.test.sh",
+        "nixos/home/laptop-repo-keeper.test.sh",
+        "nixos/home/laptop-untracked-review.test.sh",
         "nixos/home/openclaw-backup.test.sh"
       ],
       "invocation": "nix flake check (make-laptop-backups-checks)",
@@ -1019,7 +1049,8 @@
       "id": "atlas-search.rust",
       "paths": [
         "pkgs/atlas-search/crates/atlas-search/tests/cli_parity.rs",
-        "pkgs/atlas-search/crates/atlas-embed/tests/gate_a.rs", "pkgs/atlas-search/crates/atlas-core/tests/parity.rs",
+        "pkgs/atlas-search/crates/atlas-embed/tests/gate_a.rs",
+        "pkgs/atlas-search/crates/atlas-core/tests/parity.rs",
         "pkgs/atlas-search/crates/**/src/**"
       ],
       "invocation": "cd pkgs/atlas-search && cargo test --workspace --all-targets",
@@ -1160,8 +1191,10 @@
     {
       "id": "id.rust.crate-integration",
       "paths": [
-        "pkgs/id/crates/id-caps/tests/roc_import_policy.rs", "pkgs/id/crates/id-cli/tests/aliases.rs",
-        "pkgs/id/crates/id-core/tests/probe_petname_load.rs", "pkgs/id/crates/id-store/tests/store_traits.rs",
+        "pkgs/id/crates/id-caps/tests/roc_import_policy.rs",
+        "pkgs/id/crates/id-cli/tests/aliases.rs",
+        "pkgs/id/crates/id-core/tests/probe_petname_load.rs",
+        "pkgs/id/crates/id-store/tests/store_traits.rs",
         "pkgs/id/crates/id-web/tests/web_router_security.rs"
       ],
       "invocation": "cargo test (workspace member integration targets; candidate venue: the id flake package check, doCheck = true)",

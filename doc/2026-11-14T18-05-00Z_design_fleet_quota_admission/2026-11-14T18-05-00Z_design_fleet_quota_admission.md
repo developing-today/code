@@ -18,13 +18,13 @@ Publish a versioned, read-only admission projection from existing quota inputs a
 - **Steward stops:** carry exact scope, effective time, reason code, evidence reference and release condition. Publish atomically with a schema version and generation ID. An absent or unreadable snapshot may not silently clear a previously known stop. Only release explicit stops according to their declared condition.
 - **All windows bind:** a candidate is eligible only when none of its applicable windows blocks it. A healthy monthly value cannot override an exhausted weekly window. No new spend or implicit fallback to an unapproved plan or paid route.
 
-| Decision | Evidence | Launch behavior |
-| --- | --- | --- |
-| `stopped` | Active steward or administrative stop | Exclude within its exact scope; preserve the release condition |
-| `walled` | Fresh known 100%, confirmed quota-exhausted response, or sustained ≥99.5% | Exclude from ordinary new requests until verified recovery |
-| `pace_hold` | Configured pre-wall reserve threshold reached, or same-month burn predicts exhaustion before reset | Exclude for new seating on scoped policies; review on newer valid evidence |
-| `unknown` | Missing, stale, ambiguous or contradictory observation | Prefer an eligible configured candidate; coalesce refresh; never treat as proof of availability |
-| `eligible` | Sufficient fresh evidence and no other gate | Candidate remains in normal ranking; router still applies live health |
+| Decision    | Evidence                                                                                           | Launch behavior                                                                                 |
+| ----------- | -------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------- |
+| `stopped`   | Active steward or administrative stop                                                              | Exclude within its exact scope; preserve the release condition                                  |
+| `walled`    | Fresh known 100%, confirmed quota-exhausted response, or sustained ≥99.5%                          | Exclude from ordinary new requests until verified recovery                                      |
+| `pace_hold` | Configured pre-wall reserve threshold reached, or same-month burn predicts exhaustion before reset | Exclude for new seating on scoped policies; review on newer valid evidence                      |
+| `unknown`   | Missing, stale, ambiguous or contradictory observation                                             | Prefer an eligible configured candidate; coalesce refresh; never treat as proof of availability |
+| `eligible`  | Sufficient fresh evidence and no other gate                                                        | Candidate remains in normal ranking; router still applies live health                           |
 
 ### Separate a wall from a pace hold
 
@@ -43,11 +43,11 @@ A known wall persists for its valid period even if the next read is unavailable.
 
 ## Implementation packets and acceptance
 
-| Packet | Deliverable | Checks |
-| --- | --- | --- |
+| Packet                     | Deliverable                                                                                                   | Checks                                                                                                                                                                                            |
+| -------------------------- | ------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | A. Projection and fixtures | Additive schema and pure builder beside the existing aggregator quota inputs; no consumer or behavior changes | Shared-bucket aliases, distinct siblings, stale/future windows, duplicate evidence, 97/99.5/100 boundaries, short window defeating monthly headroom, same-window pace, and manual stop precedence |
-| B. Shadow preflight | Launcher/claimant uses the projection and emits would-defer reasons, including launch and resume | Compare expected and actual selected account; no task or session writes from shadow mode; one issue/task per existing claimant lifecycle |
-| C. Resolver canary | Recheck selected credentials and activate pre-seat deferral on one approved route after proof | Simulated known wall generates zero calls to that account, leaves the task resumable, and can use a proven eligible sibling; controlled recovery does not unbench other accounts |
-| D. Rollout and proof | Extend to other launchers and consume decision counts in steward reporting | Same guard for scheduled/manual/resume; fresh valid alternative advances; all-blocked case parks work; real threshold refusal seen without inducing exhaustion |
+| B. Shadow preflight        | Launcher/claimant uses the projection and emits would-defer reasons, including launch and resume              | Compare expected and actual selected account; no task or session writes from shadow mode; one issue/task per existing claimant lifecycle                                                          |
+| C. Resolver canary         | Recheck selected credentials and activate pre-seat deferral on one approved route after proof                 | Simulated known wall generates zero calls to that account, leaves the task resumable, and can use a proven eligible sibling; controlled recovery does not unbench other accounts                  |
+| D. Rollout and proof       | Extend to other launchers and consume decision counts in steward reporting                                    | Same guard for scheduled/manual/resume; fresh valid alternative advances; all-blocked case parks work; real threshold refusal seen without inducing exhaustion                                    |
 
 A should not wait for operator choices about applying the reserve policy in C. Do not close #2732 on a spec, a merged unused registry, a successful shadow run, or a provider reset alone. Close after enforcing on the approved scope and verifying the refusal/re-route in the launch and attempt logs.

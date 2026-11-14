@@ -36,6 +36,7 @@ SPEC = importlib.util.spec_from_file_location("e2e_shard_packer", PACKER_PATH)
 packer = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(packer)
 
+
 class WeightLoadingTest(unittest.TestCase):
     def write_seed(self, value):
         # Write-close-read: close the temp file before anything reopens
@@ -53,7 +54,7 @@ class WeightLoadingTest(unittest.TestCase):
         return packer.load_weights(self.write_seed(value), ["TestA", "TestB"])
 
     def test_non_object_tests_field_falls_back_with_named_reason(self):
-        for invalid_tests in ([ ["TestA", 10] ], "TestA=10"):
+        for invalid_tests in ([["TestA", 10]], "TestA=10"):
             with self.subTest(tests=invalid_tests):
                 weights, note = self.load_seed({"tests": invalid_tests})
                 self.assertEqual(weights, {"TestA": 3.0, "TestB": 3.0})
@@ -76,14 +77,26 @@ class WeightLoadingTest(unittest.TestCase):
             }
         }
         names = [
-            "TestLow", "TestHigh", "TestInfinity", "TestNegativeInfinity",
-            "TestNaN", "TestZero", "TestNegative", "TestTrue", "TestFalse",
+            "TestLow",
+            "TestHigh",
+            "TestInfinity",
+            "TestNegativeInfinity",
+            "TestNaN",
+            "TestZero",
+            "TestNegative",
+            "TestTrue",
+            "TestFalse",
         ]
         weights, note = packer.load_weights(self.write_seed(value), names)
 
         invalid_names = [
-            "TestInfinity", "TestNegativeInfinity", "TestNaN", "TestZero",
-            "TestNegative", "TestTrue", "TestFalse"
+            "TestInfinity",
+            "TestNegativeInfinity",
+            "TestNaN",
+            "TestZero",
+            "TestNegative",
+            "TestTrue",
+            "TestFalse",
         ]
         for name in invalid_names:
             with self.subTest(name=name):
@@ -91,12 +104,16 @@ class WeightLoadingTest(unittest.TestCase):
                 self.assertIn(name, note)
         self.assertEqual(weights["TestLow"], 10.0)
         self.assertEqual(weights["TestHigh"], 30.0)
-        self.assertTrue(all(math.isfinite(weight) and weight > 0 for weight in weights.values()))
+        self.assertTrue(
+            all(math.isfinite(weight) and weight > 0 for weight in weights.values())
+        )
 
         # Every accepted weight remains usable by median/packing arithmetic.
         shards, buckets = packer.pack(names, weights, target_seconds=40, max_shards=6)
         self.assertEqual(shards, 5)
-        self.assertEqual(sorted(name for bucket in buckets for name in bucket), sorted(names))
+        self.assertEqual(
+            sorted(name for bucket in buckets for name in bucket), sorted(names)
+        )
 
     def test_all_invalid_seed_falls_back_and_names_rejected_entries(self):
         names = ["TestTrue", "TestZero"]
@@ -145,12 +162,18 @@ class WeightLoadingTest(unittest.TestCase):
         self.addCleanup(os.unlink, output_path)
         result = subprocess.run(
             [
-                sys.executable, PACKER_PATH,
-                "--tests-dir", os.path.join(MCPX_DIR, "internal", "e2e"),
-                "--timings", TIMINGS_PATH,
-                "--target-seconds", "170",
-                "--max-shards", "6",
-                "--github-output", output_path,
+                sys.executable,
+                PACKER_PATH,
+                "--tests-dir",
+                os.path.join(MCPX_DIR, "internal", "e2e"),
+                "--timings",
+                TIMINGS_PATH,
+                "--target-seconds",
+                "170",
+                "--max-shards",
+                "6",
+                "--github-output",
+                output_path,
             ],
             cwd=REPO_ROOT,
             capture_output=True,
@@ -295,6 +318,7 @@ class DiscoverBuildConstraintTests(unittest.TestCase):
         self.packer.assert_covered(names, buckets)
         self.assertEqual(sum(len(b) for b in buckets), len(names))
         self.assertGreaterEqual(shards, 1)
+
 
 if __name__ == "__main__":
     unittest.main()

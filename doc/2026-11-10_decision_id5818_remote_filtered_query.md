@@ -49,9 +49,9 @@
 2. **Effective visibility is the intersection of grant reach and
    clearance filtering — deny wins.** This records the composition
    rule the parent (§10) assigns to this design: a selective-sharing
-   grant (#5799) decides whether a peer may *reach* a collection at
+   grant (#5799) decides whether a peer may _reach_ a collection at
    all; classification filtering decides what a query over reached
-   data *returns*. A grant never raises a requester's clearance, and
+   data _returns_. A grant never raises a requester's clearance, and
    clearance never creates reach. When the two disagree, the data is
    not returned.
 3. **Row-level exclusion is the default; field-level redaction is the
@@ -73,7 +73,7 @@
    Silent filtering and existence leaks are both failure modes
    (parent §4); the gradient is the per-level choice the parent
    assigns to this record. **PROVISIONAL (#5817)** in level naming
-   only: the gradient is defined over level *rank*, so it survives
+   only: the gradient is defined over level _rank_, so it survives
    whatever level set #5817 lands.
 5. **Unclassified data is treated as above-clearance for remote
    requesters.** The parent fixes the default for unclassified data
@@ -179,19 +179,19 @@ withheld: {
 One append-only record per remote query, written by the serving
 server:
 
-| Field | Content |
-|---|---|
-| `at` | Serving-server timestamp |
-| `requester` | Authenticated transport identity (never a query field) |
-| `query_hash` | Hash of the canonical query object |
-| `query` | The canonical #5816 query object (it is data, not secrets) |
-| `target` | Table/collection queried |
-| `outcome` | `ok` / structured error code (incl. `not_authorized`, `field_withheld`, cost refusals) |
-| `rows_scanned`, `rows_returned` | Execution counts |
-| `rows_withheld`, `fields_withheld` | Exact counts (the audit is owner-visible only; the gradient applies to what the *requester* sees, not to the owner's own audit) |
-| `levels_touched` | The set of classification levels present in scanned data |
-| `override` | Whether an owner override was in effect (mechanics: #5819; the field exists from v1 so the log is never ambiguous about it) |
-| `duration_ms`, `cost` | Elapsed time and scan-cap consumption |
+| Field                              | Content                                                                                                                         |
+| ---------------------------------- | ------------------------------------------------------------------------------------------------------------------------------- |
+| `at`                               | Serving-server timestamp                                                                                                        |
+| `requester`                        | Authenticated transport identity (never a query field)                                                                          |
+| `query_hash`                       | Hash of the canonical query object                                                                                              |
+| `query`                            | The canonical #5816 query object (it is data, not secrets)                                                                      |
+| `target`                           | Table/collection queried                                                                                                        |
+| `outcome`                          | `ok` / structured error code (incl. `not_authorized`, `field_withheld`, cost refusals)                                          |
+| `rows_scanned`, `rows_returned`    | Execution counts                                                                                                                |
+| `rows_withheld`, `fields_withheld` | Exact counts (the audit is owner-visible only; the gradient applies to what the _requester_ sees, not to the owner's own audit) |
+| `levels_touched`                   | The set of classification levels present in scanned data                                                                        |
+| `override`                         | Whether an owner override was in effect (mechanics: #5819; the field exists from v1 so the log is never ambiguous about it)     |
+| `duration_ms`, `cost`              | Elapsed time and scan-cap consumption                                                                                           |
 
 Audit records are retained under the serving owner's policy and are
 never shipped to the requester or to third parties by this design.
@@ -213,7 +213,7 @@ needs to see.
    `field_withheld` rules apply vacuously until field granularity
    exists; the row rules are unaffected.
 3. **Unclassified default.** Decision 5 fixes the remote-execution
-   *behaviour* (withhold, boolean tier). If #5817 assigns
+   _behaviour_ (withhold, boolean tier). If #5817 assigns
    unclassified data a named level instead, the behaviour maps to
    that level's rank; the safe direction may not be relaxed by the
    mapping.

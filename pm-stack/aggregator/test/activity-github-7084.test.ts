@@ -460,9 +460,7 @@ describe("GitHub hot-list consumer (#7084)", () => {
         beforeAck: async ({ cursor }) => {
           const durable = await new EventsStore(parts.eventsFile).list();
           const ids = new Set(durable.map((event) => event.id));
-          return rows
-            .filter((row) => row.seq <= cursor)
-            .every((row) => ids.has(`activity:github:${row.event_id}`));
+          return rows.filter((row) => row.seq <= cursor).every((row) => ids.has(`activity:github:${row.event_id}`));
         },
       });
 

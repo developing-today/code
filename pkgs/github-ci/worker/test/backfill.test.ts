@@ -42,9 +42,7 @@ const prObj = {
 
 describe("sweep statement builders (#8580 backfill)", () => {
   it("issue upsert carries the tombstone guard and every row field", () => {
-    const stmt = issueUpsertStmt(
-      buildIssueRow({ issue: issueObj }, REPO, "deadbeef"),
-    );
+    const stmt = issueUpsertStmt(buildIssueRow({ issue: issueObj }, REPO, "deadbeef"));
     expect(stmt.sql).toContain("INSERT INTO github_mirror_issues");
     expect(stmt.sql).toContain("NOT EXISTS");
     expect(stmt.sql).toContain("github_mirror_tombstones");
@@ -55,9 +53,7 @@ describe("sweep statement builders (#8580 backfill)", () => {
   });
 
   it("PR upsert binds merged/head/base and the guard", () => {
-    const stmt = prUpsertStmt(
-      buildPrRow({ pull_request: prObj }, REPO, "cafe"),
-    );
+    const stmt = prUpsertStmt(buildPrRow({ pull_request: prObj }, REPO, "cafe"));
     expect(stmt.sql).toContain("INSERT INTO github_mirror_pull_requests");
     expect(stmt.sql).toContain("NOT EXISTS");
     expect(stmt.args).toHaveLength(23);
@@ -92,16 +88,12 @@ describe("sweep statement builders (#8580 backfill)", () => {
   it("clear-pointer is conditional on the inspected note and targets the right table", () => {
     const issueStmts = clearAgentNotePointerStmts(REPO, 1, false, 777, false);
     expect(issueStmts).toHaveLength(1);
-    expect(issueStmts[0].sql).toContain(
-      "UPDATE github_mirror_issues SET latest_agent_note_id = NULL",
-    );
+    expect(issueStmts[0].sql).toContain("UPDATE github_mirror_issues SET latest_agent_note_id = NULL");
     // Conditional: a newer pointer installed after the sweep's read survives.
     expect(issueStmts[0].sql).toContain("latest_agent_note_id = ?");
     expect(issueStmts[0].args?.[3]).toEqual({ type: "integer", value: "777" });
     const prStmts = clearAgentNotePointerStmts(REPO, 1, true, 777, false);
-    expect(prStmts[0].sql).toContain(
-      "UPDATE github_mirror_pull_requests SET latest_agent_note_id = NULL",
-    );
+    expect(prStmts[0].sql).toContain("UPDATE github_mirror_pull_requests SET latest_agent_note_id = NULL");
   });
 
   it("clear-pointer records the deletion marker first when the comment is gone", () => {
@@ -114,36 +106,21 @@ describe("sweep statement builders (#8580 backfill)", () => {
 
   it("PR comments version comes from comments_updated_at when the sweep joins it", () => {
     const joined = { ...prObj, comments_updated_at: "2026-11-11T02:30:00Z" };
-    const stmt = prUpsertStmt(
-      buildPrRow({ pull_request: joined }, REPO, "cafe"),
-    );
+    const stmt = prUpsertStmt(buildPrRow({ pull_request: joined }, REPO, "cafe"));
     // Bind 13 is the comments_gh_updated_at slot: the count's own version.
     expect(stmt.args?.[13]).toEqual({
       type: "text",
       value: "2026-11-11T02:30:00Z",
     });
-    expect(stmt.sql).toContain(
-      "excluded.comments_gh_updated_at >= github_mirror_pull_requests.comments_gh_updated_at",
-    );
+    expect(stmt.sql).toContain("excluded.comments_gh_updated_at >= github_mirror_pull_requests.comments_gh_updated_at");
     // Without the join field (webhook path) it falls back to updated_at.
-    const plain = prUpsertStmt(
-      buildPrRow({ pull_request: prObj }, REPO, "cafe"),
-    );
+    const plain = prUpsertStmt(buildPrRow({ pull_request: prObj }, REPO, "cafe"));
     expect(plain.args?.[13]).toEqual({ type: "text", value: prObj.updated_at });
   });
 
   it("force-comments targets the right table and is version-guarded", () => {
-    const stmt = forceCommentsStmt(
-      REPO,
-      10056,
-      true,
-      4,
-      "2026-11-14T14:35:00Z",
-      "2026-11-14T15:40:00Z",
-    );
-    expect(stmt.sql).toContain(
-      "UPDATE github_mirror_pull_requests SET comments = ?",
-    );
+    const stmt = forceCommentsStmt(REPO, 10056, true, 4, "2026-11-14T14:35:00Z", "2026-11-14T15:40:00Z");
+    expect(stmt.sql).toContain("UPDATE github_mirror_pull_requests SET comments = ?");
     // The write only lands if the stored comments version is still
     // the stamp the sweep diffed against — a newer webhook count is
     // never overwritten by an older API count.
@@ -157,9 +134,7 @@ describe("sweep statement builders (#8580 backfill)", () => {
       type: "text",
       value: "2026-11-14T15:40:00Z",
     });
-    expect(forceCommentsStmt(REPO, 1, false, 0, null, null).sql).toContain(
-      "UPDATE github_mirror_issues",
-    );
+    expect(forceCommentsStmt(REPO, 1, false, 0, null, null).sql).toContain("UPDATE github_mirror_issues");
   });
 
   it("comment touch: plain comment is seed+update; deleted note adds marker+clear", () => {

@@ -26,12 +26,7 @@
 // Everything in this module is pure: the derivations join their
 // sources against the aggregator's GhItem states.
 import type { GhItem, RefKey } from "./model.ts";
-import {
-  joinPhase12Steps,
-  parsePhase12Steps,
-  phase12IsStale,
-  type Phase12Snapshot,
-} from "./phase12.ts";
+import { joinPhase12Steps, parsePhase12Steps, phase12IsStale, type Phase12Snapshot } from "./phase12.ts";
 
 export const PHASE_TRACKER_REPO = "developing-today/code";
 export const PHASE_TRACKER_UMBRELLA = 796;
@@ -99,10 +94,7 @@ function issueUrl(issueNumber: number): string {
  * themselves) whose title references the audit as "#<number>" and
  * whose live state is open. Closed references are history, not
  * outstanding validation work, so they do not surface. */
-export function openFollowUpsFor(
-  auditIssue: number,
-  items: ReadonlyMap<RefKey, GhItem>,
-): PhaseFollowUp[] {
+export function openFollowUpsFor(auditIssue: number, items: ReadonlyMap<RefKey, GhItem>): PhaseFollowUp[] {
   const needle = new RegExp(`#${auditIssue}\\b`);
   const auditRefs = new Set(PHASE_AUDITS.map((a) => refFor(a.issueNumber)));
   const out: PhaseFollowUp[] = [];
@@ -122,9 +114,7 @@ export function openFollowUpsFor(
 }
 
 /** Derive validation state for every phase 0-13 from live items. */
-export function derivePhaseValidation(
-  items: ReadonlyMap<RefKey, GhItem>,
-): PhaseValidation[] {
+export function derivePhaseValidation(items: ReadonlyMap<RefKey, GhItem>): PhaseValidation[] {
   const byPhase = new Map<number, PhaseValidation>();
   for (const audit of PHASE_AUDITS) {
     const ref = refFor(audit.issueNumber);

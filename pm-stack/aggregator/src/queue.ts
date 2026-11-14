@@ -129,9 +129,7 @@ export interface QueueSnapshot {
 
 const DEDUPE_ISSUE_RE = /^repo-health:v1:[^:]+:(.+):issue:(\d+)$/;
 
-export function parseDedupeIssueRef(
-  dedupeKey: string | null | undefined,
-): { repo: string; issue: number } | null {
+export function parseDedupeIssueRef(dedupeKey: string | null | undefined): { repo: string; issue: number } | null {
   if (!dedupeKey) return null;
   const m = DEDUPE_ISSUE_RE.exec(dedupeKey);
   if (!m) return null;
@@ -144,8 +142,7 @@ function num(v: number | undefined): number {
 
 export function projectQueueTask(row: BrokerTaskRow): QueueTask {
   const dedupe = parseDedupeIssueRef(row.dedupe_key);
-  const payloadIssue =
-    typeof row.payload?.issue?.number === "number" ? row.payload.issue.number : null;
+  const payloadIssue = typeof row.payload?.issue?.number === "number" ? row.payload.issue.number : null;
   const payloadRepo = typeof row.payload?.repo === "string" ? row.payload.repo : null;
   let repo: string | null = dedupe?.repo ?? payloadRepo;
   let issue: number | null = dedupe?.issue ?? payloadIssue;

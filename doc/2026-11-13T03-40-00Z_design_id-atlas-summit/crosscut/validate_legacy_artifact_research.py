@@ -40,7 +40,11 @@ FAILURES = []
 
 
 def check(ok, label, detail=""):
-    print(("PASS " if ok else "FAIL ") + label + ((" -- " + detail) if (detail and not ok) else ""))
+    print(
+        ("PASS " if ok else "FAIL ")
+        + label
+        + ((" -- " + detail) if (detail and not ok) else "")
+    )
     if not ok:
         FAILURES.append(label)
 
@@ -85,7 +89,9 @@ def sj_value(v):
         return "[" + ",".join(sj_value(x) for x in v) + "]"
     if isinstance(v, dict):
         # serde_json Map without preserve_order is a BTreeMap: sorted keys.
-        return "{" + ",".join(sj_escape(k) + ":" + sj_value(v[k]) for k in sorted(v)) + "}"
+        return (
+            "{" + ",".join(sj_escape(k) + ":" + sj_value(v[k]) for k in sorted(v)) + "}"
+        )
     raise TypeError(repr(v))
 
 
@@ -205,63 +211,119 @@ def cbor_map(pairs):
 # --------------------------------------------------------------------- main
 def main():
     doc = json.loads(VECTORS.read_text(encoding="utf-8"))
-    check(doc["manifest_sha256"] == "3b5bce3523945bf5adaa28739f0b90b7b70ff1d6522b4ac827246654e8ff6b06",
-          "vectors manifest_sha256 binding")
+    check(
+        doc["manifest_sha256"]
+        == "3b5bce3523945bf5adaa28739f0b90b7b70ff1d6522b4ac827246654e8ff6b06",
+        "vectors manifest_sha256 binding",
+    )
     author = bytes.fromhex(doc["test_key"]["author_public_key_hex"])
 
     legacy = doc["legacy_profile"]
-    check("length-prefixed" in legacy["doc_code_mismatch"] and "NO length prefixes" in legacy["doc_code_mismatch"],
-          "legacy doc/code mismatch recorded")
+    check(
+        "length-prefixed" in legacy["doc_code_mismatch"]
+        and "NO length prefixes" in legacy["doc_code_mismatch"],
+        "legacy doc/code mismatch recorded",
+    )
     for v in legacy["vectors"]:
-        rebuilt = signed_body_bytes(v["author"], v["seq"], v["prev"], v["kind"], v["body"], v["after"])
-        check(rebuilt.hex() == v["signed_bytes_hex"], f'{v["name"]}: serde_json bytes byte-for-byte')
-        check(rebuilt.decode("utf-8") == v["signed_bytes_utf8"], f'{v["name"]}: utf8 form matches')
-        check(hashlib.sha256(rebuilt).hexdigest() == v["hash"], f'{v["name"]}: sha256 == artifact hash')
+        rebuilt = signed_body_bytes(
+            v["author"], v["seq"], v["prev"], v["kind"], v["body"], v["after"]
+        )
+        check(
+            rebuilt.hex() == v["signed_bytes_hex"],
+            f"{v['name']}: serde_json bytes byte-for-byte",
+        )
+        check(
+            rebuilt.decode("utf-8") == v["signed_bytes_utf8"],
+            f"{v['name']}: utf8 form matches",
+        )
+        check(
+            hashlib.sha256(rebuilt).hexdigest() == v["hash"],
+            f"{v['name']}: sha256 == artifact hash",
+        )
         check(
             ed25519_verify(author, rebuilt, bytes.fromhex(v["signature"])),
-            f'{v["name"]}: Ed25519 signature verifies',
+            f"{v['name']}: Ed25519 signature verifies",
         )
 
     newp = doc["new_profile"]
     ex = newp["example"]
     f = ex["body_fields"]
-    check(set(f) == {"context", "domain", "payload_id_hex", "payload_len"},
-          "new profile Body commits exactly payload ID, length, domain, context")
-    check("signature" not in f and "envelope_id" not in f and "envelope_id_sha256_hex" not in f,
-          "new profile Body excludes signature and EnvelopeId")
+    check(
+        set(f) == {"context", "domain", "payload_id_hex", "payload_len"},
+        "new profile Body commits exactly payload ID, length, domain, context",
+    )
+    check(
+        "signature" not in f
+        and "envelope_id" not in f
+        and "envelope_id_sha256_hex" not in f,
+        "new profile Body excludes signature and EnvelopeId",
+    )
     payload = ex["payload_utf8"].encode("utf-8")
-    check(hashlib.sha256(payload).hexdigest() == f["payload_id_hex"] == ex["payload_sha256_hex"],
-          "new profile PayloadId hashes raw payload bytes")
-    body = cbor_map([
-        (cbor_text("context"), cbor_text(f["context"])),
-        (cbor_text("domain"), cbor_text(f["domain"])),
-        (cbor_text("payload_id"), cbor_bytes(bytes.fromhex(f["payload_id_hex"]))),
-        (cbor_text("payload_len"), cbor_uint(f["payload_len"])),
-    ])
-    check(body.hex() == ex["body_cbor_hex"], "new profile Body deterministic CBOR re-encodes identically")
+    check(
+        hashlib.sha256(payload).hexdigest()
+        == f["payload_id_hex"]
+        == ex["payload_sha256_hex"],
+        "new profile PayloadId hashes raw payload bytes",
+    )
+    body = cbor_map(
+        [
+            (cbor_text("context"), cbor_text(f["context"])),
+            (cbor_text("domain"), cbor_text(f["domain"])),
+            (cbor_text("payload_id"), cbor_bytes(bytes.fromhex(f["payload_id_hex"]))),
+            (cbor_text("payload_len"), cbor_uint(f["payload_len"])),
+        ]
+    )
+    check(
+        body.hex() == ex["body_cbor_hex"],
+        "new profile Body deterministic CBOR re-encodes identically",
+    )
     preimage = f["domain"].encode("utf-8") + b"\x00" + body
-    check(preimage.hex() == ex["preimage_hex"], "new profile preimage = domain-prefix + Body")
-    check(bytes.fromhex(ex["signature_hex"]) not in preimage and bytes.fromhex(ex["envelope_id_sha256_hex"]) not in preimage,
-          "new profile preimage contains neither signature nor EnvelopeId bytes")
-    check(ed25519_verify(author, preimage, bytes.fromhex(ex["signature_hex"])),
-          "new profile detached signature verifies over domain-prefix + Body")
-    envelope = cbor_map([
-        (cbor_text("body"), cbor_bytes(body)),
-        (cbor_text("signature"), cbor_bytes(bytes.fromhex(ex["signature_hex"]))),
-    ])
-    check(envelope.hex() == ex["envelope_cbor_hex"], "new profile envelope re-encodes identically")
-    check(hashlib.sha256(envelope).hexdigest() == ex["envelope_id_sha256_hex"],
-          "new profile EnvelopeId = SHA-256 over complete envelope including signature")
+    check(
+        preimage.hex() == ex["preimage_hex"],
+        "new profile preimage = domain-prefix + Body",
+    )
+    check(
+        bytes.fromhex(ex["signature_hex"]) not in preimage
+        and bytes.fromhex(ex["envelope_id_sha256_hex"]) not in preimage,
+        "new profile preimage contains neither signature nor EnvelopeId bytes",
+    )
+    check(
+        ed25519_verify(author, preimage, bytes.fromhex(ex["signature_hex"])),
+        "new profile detached signature verifies over domain-prefix + Body",
+    )
+    envelope = cbor_map(
+        [
+            (cbor_text("body"), cbor_bytes(body)),
+            (cbor_text("signature"), cbor_bytes(bytes.fromhex(ex["signature_hex"]))),
+        ]
+    )
+    check(
+        envelope.hex() == ex["envelope_cbor_hex"],
+        "new profile envelope re-encodes identically",
+    )
+    check(
+        hashlib.sha256(envelope).hexdigest() == ex["envelope_id_sha256_hex"],
+        "new profile EnvelopeId = SHA-256 over complete envelope including signature",
+    )
 
     report = REPORT.read_text(encoding="utf-8")
     for needle, label in [
         ("serde_json::to_vec(SignedBody)", "report states exact legacy byte rule"),
-        ("length-prefixed and domain-separated", "report quotes the doc comment mismatch"),
+        (
+            "length-prefixed and domain-separated",
+            "report quotes the doc comment mismatch",
+        ),
         ("S0.7", "report cites S0.7"),
         ("S0.13", "report cites S0.13"),
         ("S0.15", "report cites S0.15"),
-        ("3b5bce3523945bf5adaa28739f0b90b7b70ff1d6522b4ac827246654e8ff6b06", "report carries manifest binding"),
-        ("excludes its signature and envelope ID from its own signed preimage", "report states new-profile exclusion"),
+        (
+            "3b5bce3523945bf5adaa28739f0b90b7b70ff1d6522b4ac827246654e8ff6b06",
+            "report carries manifest binding",
+        ),
+        (
+            "excludes its signature and envelope ID from its own signed preimage",
+            "report states new-profile exclusion",
+        ),
         ("legacy-artifact-signatures.json", "report references the vectors file"),
     ]:
         check(needle in report, label)
@@ -270,7 +332,9 @@ def main():
     if FAILURES:
         print(f"VALIDATION FAILED: {len(FAILURES)} check(s) failed")
         return 1
-    print("VALIDATION PASSED: legacy bytes, hashes, signatures, new-profile invariants, and report fields all verify")
+    print(
+        "VALIDATION PASSED: legacy bytes, hashes, signatures, new-profile invariants, and report fields all verify"
+    )
     return 0
 
 

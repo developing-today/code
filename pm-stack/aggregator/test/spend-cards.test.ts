@@ -167,10 +167,9 @@ function item(partial: Partial<ProjectPoolItem> & { number: number }): ProjectPo
 
 describe("Projects pool cards render spend beside progress (#4824)", () => {
   test("empty Projects pool still renders stack-level unattributed spend", () => {
-    const spend = buildSpendCards(
-      rollups([{ ts: NOV, projectId: null, epicRef: null, tokensByPool: { main: 7 } }]),
-      { unattributedReasons: [{ reason: "no-binding", text: "7 tokens" }] },
-    );
+    const spend = buildSpendCards(rollups([{ ts: NOV, projectId: null, epicRef: null, tokensByPool: { main: 7 } }]), {
+      unattributedReasons: [{ reason: "no-binding", text: "7 tokens" }],
+    });
 
     const html = projectsBodyHtml([], { spend });
 

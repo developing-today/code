@@ -104,8 +104,7 @@ export function buildEscalationPacket(health: SourceHealth, ctx: EscalationConte
       stateFilePath: ctx.stateFilePath,
       adapterRef: ctx.adapterRef,
     },
-    requiredCapability:
-      "browser-enabled agent; laptop Helium via CDP (:19222); adapter origins only",
+    requiredCapability: "browser-enabled agent; laptop Helium via CDP (:19222); adapter origins only",
     acceptance:
       "a fresh producer document lands and the watchdog auto-closes the incident (the fixer does not close anything by hand)",
     stopConditions: [
@@ -163,9 +162,7 @@ export function planEscalation(
   // back finds its original pair in `previous` instead of creating a
   // third hand-off.
   const existing = incident.escalation;
-  const records: EscalationRecord[] = existing
-    ? [existing, ...(existing.previous ?? [])]
-    : [];
+  const records: EscalationRecord[] = existing ? [existing, ...(existing.previous ?? [])] : [];
   const forClass = records.find((r) => r.class === health.currentClass);
   if (forClass) {
     // Resume a partial hand-off: plan only the creations that never
@@ -249,9 +246,7 @@ export function surfacingLine(health: SourceHealth, now: number): string | null 
     const challenge = [...health.repairLog]
       .reverse()
       .find((e) => e.outcome === "failed" && HUMAN_CHALLENGE_RE.test(e.detail));
-    const reason = challenge
-      ? challenge.detail
-      : health.lastDetail || "human-only challenge";
+    const reason = challenge ? challenge.detail : health.lastDetail || "human-only challenge";
     return `NEEDS DREW: ${health.source} quota producer is human-blocked (${health.currentClass ?? "unknown"}: ${reason}) — incident ${incident.id}`;
   }
   const esc = incident.escalation;
@@ -303,10 +298,7 @@ export function planRecovery(health: SourceHealth, recoveredAt: string): Escalat
  *  work, and recovery could never complete the orphaned task. */
 export class EscalationPartialError extends Error {
   readonly refs: { queueTaskId: string | null; issueNumber: number | null };
-  constructor(
-    cause: unknown,
-    refs: { queueTaskId: string | null; issueNumber: number | null },
-  ) {
+  constructor(cause: unknown, refs: { queueTaskId: string | null; issueNumber: number | null }) {
     super(
       `escalation action failed after partial progress (queueTaskId=${refs.queueTaskId}, issueNumber=${refs.issueNumber}): ${cause instanceof Error ? cause.message : String(cause)}`,
     );

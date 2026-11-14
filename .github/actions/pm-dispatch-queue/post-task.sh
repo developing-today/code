@@ -65,8 +65,8 @@ while :; do
   fi
 
   case "$http_code" in
-    000 | 502 | 503 | 504) transient=true ;;
-    *) transient=false ;;
+  000 | 502 | 503 | 504) transient=true ;;
+  *) transient=false ;;
   esac
 
   if [ "$transient" = "true" ] && [ "$attempt" -lt "$max_attempts" ]; then

@@ -283,9 +283,7 @@ class Inhibitor:
             pass
         pending = {"proc": proc, "event": threading.Event(), "rc": None}
         self._pending = pending
-        threading.Thread(
-            target=self._finish_reap, args=(pending,), daemon=True
-        ).start()
+        threading.Thread(target=self._finish_reap, args=(pending,), daemon=True).start()
         log(
             "INHIBIT release pending: stalled child reap moved off "
             "the sampling loop (#8183)"

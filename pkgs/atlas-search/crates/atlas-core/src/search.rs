@@ -333,13 +333,8 @@ fn run_search_impl(
         } else {
             opts.parameters.jaccard_threshold
         };
-        let report = crate::shingles::rescore_fused(
-            &mut ranked,
-            &query_set,
-            &sets,
-            depth,
-            threshold,
-        );
+        let report =
+            crate::shingles::rescore_fused(&mut ranked, &query_set, &sets, depth, threshold);
         jaccard_note = Some(format!(
             "jaccard rescore: {} candidates rescored (depth {}), {} near-exact at threshold {}",
             report.rescored, depth, report.near_exact, threshold
@@ -1001,18 +996,33 @@ mod jaccard_tests {
         fn branch_pools(&self, _q: &BranchQuery, _f: &Filters) -> Result<BranchPools> {
             Ok(BranchPools {
                 fts: vec![
-                    BranchHit { chunk_id: 1, dist: None },
-                    BranchHit { chunk_id: 2, dist: None },
-                    BranchHit { chunk_id: 3, dist: None },
+                    BranchHit {
+                        chunk_id: 1,
+                        dist: None,
+                    },
+                    BranchHit {
+                        chunk_id: 2,
+                        dist: None,
+                    },
+                    BranchHit {
+                        chunk_id: 3,
+                        dist: None,
+                    },
                 ],
                 vector: vec![],
             })
         }
         fn chunk_details(&self, ids: &[i64]) -> Result<Vec<ChunkDetail>> {
             let texts: std::collections::HashMap<i64, &str> = std::collections::HashMap::from([
-                (1, "database backup restore repair disk image troubleshooting guide"),
+                (
+                    1,
+                    "database backup restore repair disk image troubleshooting guide",
+                ),
                 (2, PASSAGE),
-                (3, "unrelated notes about cooking rice and lentils for dinner"),
+                (
+                    3,
+                    "unrelated notes about cooking rice and lentils for dinner",
+                ),
             ]);
             Ok(ids
                 .iter()

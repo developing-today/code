@@ -8,7 +8,7 @@
   implementation; §8 is the implementation follow-on's brief.
 - Method note: the issue's 2026-11-04 snapshot ("no defaults-file mechanism
   exists") is stale. A mechanism shipped with the id-core extraction and
-  grew in #2145. This design is therefore a *migration and hardening* of a
+  grew in #2145. This design is therefore a _migration and hardening_ of a
   live mechanism, not a greenfield build — and it starts from an audit of
   what the live mechanism actually does (§1), including two defects.
 
@@ -49,7 +49,7 @@ Defects found by this audit:
   and secret resolve from one source, never mixed) is enforced only
   under `--no-default-topic`. In the normal path the two halves resolve
   independently, so a conf supplying a topic but no secret pairs a
-  private topic with the *public* default secret. A private deployment
+  private topic with the _public_ default secret. A private deployment
   that edits only the topic line silently joins a network whose DHT
   records anyone can read.
 - **D2 — `--replace-defaults` leaks.** It is documented as "use ONLY
@@ -127,7 +127,7 @@ Semantics, applied per value class:
 - Scalars (`relay`, `gossip`): file value wins when present, in both
   modes.
 - The pair (`topic`, `topic_secret`): append = file pair replaces the
-  const pair *as a unit* when present. Replace = the file pair is the
+  const pair _as a unit_ when present. Replace = the file pair is the
   only pair; a replace-mode file missing either half is an error at
   first parse (§5), never a silent const fallback. **This closes D2.**
 
@@ -143,12 +143,12 @@ decisions.
 Drew's intuition is right: compile time cannot turn JSON into typed
 consts on its own. The options:
 
-| Option | Verdict |
-|---|---|
-| `include_str!` + serde parse once behind `LazyLock` | **Chosen.** Zero build machinery, the file stays diff-able data, parse cost is once per process and trivially small. This is also what the current mechanism already proves in production. |
-| `build.rs` codegen of typed consts | Rejected for v1. Buys compile-time validation at the cost of a build script in id-core (today it has none — the root package's `build.rs` is frontend-assets only, #7152), generated-code churn, and worse Nix ergonomics. The validation it buys is recovered by the checked-in-file parse test (§8). |
-| Const-eval JSON parsing | Rejected. No serde in const contexts; a hand-rolled const parser reintroduces the silent-parser problem in a harder medium. |
-| `include!` of a `.rs` data file | Rejected. The input stops being JSON — it fails Drew's format requirement and makes the file unusable by non-Rust tooling. |
+| Option                                              | Verdict                                                                                                                                                                                                                                                                                                |
+| --------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `include_str!` + serde parse once behind `LazyLock` | **Chosen.** Zero build machinery, the file stays diff-able data, parse cost is once per process and trivially small. This is also what the current mechanism already proves in production.                                                                                                             |
+| `build.rs` codegen of typed consts                  | Rejected for v1. Buys compile-time validation at the cost of a build script in id-core (today it has none — the root package's `build.rs` is frontend-assets only, #7152), generated-code churn, and worse Nix ergonomics. The validation it buys is recovered by the checked-in-file parse test (§8). |
+| Const-eval JSON parsing                             | Rejected. No serde in const contexts; a hand-rolled const parser reintroduces the silent-parser problem in a harder medium.                                                                                                                                                                            |
+| `include!` of a `.rs` data file                     | Rejected. The input stops being JSON — it fails Drew's format requirement and makes the file unusable by non-Rust tooling.                                                                                                                                                                             |
 
 Placement: the file and its parsing stay in **id-core** beside
 `discovery.rs` — the root package's `build.rs` is not involved, and no
@@ -205,7 +205,7 @@ The build-defaults JSON is a closed, deployment-owned, build-lifecycle
 shape. Runtime configuration (serve flags today) has a different owner,
 lifecycle, and trust profile; merging the shapes now would couple a
 build artifact to a runtime surface that does not yet exist as a file.
-The serde types are defined so a future runtime config file *can*
+The serde types are defined so a future runtime config file _can_
 embed the same struct — reuse is preserved, coupling is not created.
 
 ## 8. Implementation follow-on (brief)

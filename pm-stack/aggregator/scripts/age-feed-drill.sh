@@ -280,17 +280,17 @@ fi
 # when the page could not be fetched at all.
 PAGE_WARN=""
 if [ "$SIGNAL" = 1 ]; then
-	if PAGE="$(bash -c "$PAGE_CMD" 2>/dev/null)" && [ -n "$PAGE" ]; then
-		if printf '%s' "$PAGE" | grep -q 'data-signal="feed-stale"'; then
-			PAGE_WARN=1
-			log "rendered page carries the stale-feed warning (data-signal=feed-stale)"
-		else
-			PAGE_WARN=0
-			log "WARN: rendered page has no stale-feed warning though the health signal fired"
-		fi
-	else
-		log "rendered page unreadable; page warning unknown (health signal alone was recorded)"
-	fi
+  if PAGE="$(bash -c "$PAGE_CMD" 2>/dev/null)" && [ -n "$PAGE" ]; then
+    if printf '%s' "$PAGE" | grep -q 'data-signal="feed-stale"'; then
+      PAGE_WARN=1
+      log "rendered page carries the stale-feed warning (data-signal=feed-stale)"
+    else
+      PAGE_WARN=0
+      log "WARN: rendered page has no stale-feed warning though the health signal fired"
+    fi
+  else
+    log "rendered page unreadable; page warning unknown (health signal alone was recorded)"
+  fi
 fi
 
 # --- restore + confirm --------------------------------------------------------

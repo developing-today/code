@@ -103,9 +103,7 @@ export function parsePhaseMapping(content: string): PhaseMappingEntry[] {
  * checkout. Returns null when the file cannot be read or parses to
  * no entries — the panel withholds mapped progress rather than
  * rendering an empty or invented one. */
-export async function loadPhaseMapping(
-  codeCheckout: string,
-): Promise<PhaseMappingSnapshot | null> {
+export async function loadPhaseMapping(codeCheckout: string): Promise<PhaseMappingSnapshot | null> {
   try {
     const content = await readFile(join(codeCheckout, PHASE_MAPPING_PATH), "utf8");
     const entries = parsePhaseMapping(content);
@@ -141,8 +139,7 @@ export function deriveMappedProgress(
   const byPhase = new Map<number, MappedPhaseProgress>();
   for (const entry of entries) {
     const acc =
-      byPhase.get(entry.phase) ??
-      ({ total: 0, done: 0, open: 0, unresolved: 0, percent: null } as MappedPhaseProgress);
+      byPhase.get(entry.phase) ?? ({ total: 0, done: 0, open: 0, unresolved: 0, percent: null } as MappedPhaseProgress);
     acc.total++;
     const item = items.get(`${PHASE_MAPPING_REPO}#${entry.number}` as RefKey);
     if (!item || item.kind !== entry.kind) acc.unresolved++;

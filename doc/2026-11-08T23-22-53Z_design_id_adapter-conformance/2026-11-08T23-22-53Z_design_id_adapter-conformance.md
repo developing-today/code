@@ -139,13 +139,13 @@ Two dimensions ride on the adapter axis rather than standing alone:
 
 - **Pairing.** Every cell runs twice over: the adapter against the
   reference in-process peer (the harness), and the adapter against
-  *another certified adapter* over the real carrier. Self-pairing
+  _another certified adapter_ over the real carrier. Self-pairing
   proves contract conformance; cross-pairing is the interop claim
   itself — an adapter that only talks to itself is not certified
   interoperable.
 - **Bootstrap (first cells).** The pairing rule has a first-instance
-  problem: when no adapter is certified yet, there is no *another
-  certified adapter* to pair with, and I4 forbids certification on
+  problem: when no adapter is certified yet, there is no _another
+  certified adapter_ to pair with, and I4 forbids certification on
   reference-peer testing alone. The bootstrap path is **joint
   co-certification**: two independent implementations (distinct
   codebases — not two builds or configurations of one
@@ -196,7 +196,7 @@ cell is listed as blocked in the matrix, not silently absent.
 2. **The oracle is declared per step, in advance.** Each step names
    the expected outcome class — accept-and-decode-to-value,
    reject-with-error, negotiate-to-ceiling, resolve-to-entry,
-   fail-session — and the expected emitted frame's *decoded value*,
+   fail-session — and the expected emitted frame's _decoded value_,
    never its raw bytes alone. The harness compares the adapter's
    actual outcome to the declaration; equality is the pass. There is
    no human judgement inside a run.
@@ -210,22 +210,22 @@ cell is listed as blocked in the matrix, not silently absent.
    platform in the matrix, and a divergence is a defect in the
    adapter or the fixture — recorded either way, never re-rolled.
 5. **Rejected alternatives:**
-   - *Per-adapter bespoke tests* (each adapter's author writes its
+   - _Per-adapter bespoke tests_ (each adapter's author writes its
      own suite): the suites would diverge in exactly the places the
      contract is ambiguous, certifying the author's reading instead
      of the contract. This is the failure the shared harness exists
      to prevent.
-   - *Manual certification* (a reviewer runs the adapter once and
+   - _Manual certification_ (a reviewer runs the adapter once and
      attests): unrepeatable, unauditable, and it rots silently as
      the adapter changes — "certified, not hoped" requires a gate
      that re-runs on every change (§5).
-   - *Snapshot/golden-file-only oracles* (compare emitted bytes to a
+   - _Snapshot/golden-file-only oracles_ (compare emitted bytes to a
      stored golden file): they pin one implementation's accidental
      byte choices, bless regressions by re-recording, and cannot
      express rejection or negotiation outcomes. Golden bytes are
-     legitimate as fixture *input*; as the oracle they decide
+     legitimate as fixture _input_; as the oracle they decide
      nothing about conformance.
-   - *Testing only against our own implementation's peer:* proves
+   - _Testing only against our own implementation's peer:_ proves
      self-consistency, not interop; §4's cross-pairing requirement
      exists because the claim being certified is interoperability
      (#5975: a from-scratch implementation that satisfies the
@@ -297,8 +297,8 @@ load-bearing elements are §3's criteria verbatim), and the
 decided-now / blocked-remainder shape of #5866. **No #5674 or #5975
 decision is changed, narrowed, or pre-empted here.** One boundary
 is worth stating explicitly because it is the only place this
-record comes close to one: §5 makes certification a *merge gate
-for adapter PRs in this repo*. That is a process choice about our
+record comes close to one: §5 makes certification a _merge gate
+for adapter PRs in this repo_. That is a process choice about our
 own repository, not a protocol requirement — #5975 fixes that a
 self-hoster's conformance is a property of their implementation
 against the contract, and nothing here makes our CI a requirement

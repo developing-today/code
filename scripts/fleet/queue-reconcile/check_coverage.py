@@ -153,7 +153,7 @@ def fetch_open_prs(repo: str, gh: str = "gh") -> list[dict]:
         "--paginate",
         f"repos/{repo}/pulls?state=open&per_page=100",
         "--jq",
-        ".[] | {number, title, body: ((.body // \"\") | .[0:2000]), head: {ref: .head.ref}}",
+        '.[] | {number, title, body: ((.body // "") | .[0:2000]), head: {ref: .head.ref}}',
     ]
     try:
         out = subprocess.run(cmd, capture_output=True, text=True, timeout=180)
@@ -180,7 +180,7 @@ def pr_issue_numbers(pr: dict) -> set[int]:
     title. A bare `#n` mention in prose is NOT a signal — it would
     suppress triage for issues a PR merely discusses."""
     numbers: set[int] = set()
-    ref = ((pr.get("head") or {}).get("ref") or "")
+    ref = (pr.get("head") or {}).get("ref") or ""
     m = _BRANCH_ISSUE.match(ref)
     if m:
         numbers.add(int(m.group(1)))
@@ -316,7 +316,9 @@ def merge_watch_packet(repo: str, issue: dict, pr: dict, checked_at: str) -> dic
     issue_url = f"https://github.com/{repo}/issues/{number}"
     pr_url = f"https://github.com/{repo}/pull/{pr_number}"
     return {
-        "title": f"Merge-watch {repo}#{pr_number}: recheck fix PR for issue #{number}"[:180],
+        "title": f"Merge-watch {repo}#{pr_number}: recheck fix PR for issue #{number}"[
+            :180
+        ],
         "body": (
             f"Merge-watch recheck (#4951): {pr_url} is the open fix PR for {issue_url}, "
             "whose fix task completed pr_opened with no live task watching the PR. "
@@ -365,8 +367,13 @@ def merge_watch_packet(repo: str, issue: dict, pr: dict, checked_at: str) -> dic
                 "Merge-tree / mergeable verdict recorded; if merged, the PR's closing keyword disposition of the issue is verified",
             ],
             "scope": {
-                "include": [f"Shepherd existing PR {repo}#{pr_number} for issue #{number}"],
-                "exclude": ["Re-implementing the fix", "Unrelated issues, pull requests, or repositories"],
+                "include": [
+                    f"Shepherd existing PR {repo}#{pr_number} for issue #{number}"
+                ],
+                "exclude": [
+                    "Re-implementing the fix",
+                    "Unrelated issues, pull requests, or repositories",
+                ],
             },
             "risk": {"level": "low", "flags": ["merge-watch"]},
             "priority_reason": (
@@ -471,11 +478,12 @@ def render_report(
     ]
     if errors:
         lines += ["## ERRORS", ""] + [f"- {e}" for e in errors] + [""]
-    pr_any = [
-        (r, i) for r in results for i in r.get("pr_covered_issues", [])
-    ]
+    pr_any = [(r, i) for r in results for i in r.get("pr_covered_issues", [])]
     if pr_any:
-        lines += ["## Covered by an open PR — merge-watch, no triage packet (#4951)", ""]
+        lines += [
+            "## Covered by an open PR — merge-watch, no triage packet (#4951)",
+            "",
+        ]
         for r, i in pr_any:
             pr = i.get("pr") or {}
             lines.append(
@@ -483,9 +491,7 @@ def render_report(
                 f"({pr.get('branch') or 'branch unknown'})"
             )
         lines.append("")
-    uncovered_any = [
-        (r, i) for r in results for i in r.get("uncovered_issues", [])
-    ]
+    uncovered_any = [(r, i) for r in results for i in r.get("uncovered_issues", [])]
     if uncovered_any:
         lines += ["## Uncovered issues", ""]
         for r, i in uncovered_any:

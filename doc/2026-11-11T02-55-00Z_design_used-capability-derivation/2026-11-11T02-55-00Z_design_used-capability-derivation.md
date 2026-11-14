@@ -16,13 +16,13 @@ point under #5955, out of scope here.
 ## 1. Purpose
 
 A world declares the capabilities it wants (its `Wants` document).
-Nothing today derives the capabilities a world's code *actually
-uses*, so declarations can only be checked by running the world and
+Nothing today derives the capabilities a world's code _actually
+uses_, so declarations can only be checked by running the world and
 watching the ledger — and only for the paths a run happens to take.
 This tool derives the used-set statically: call-graph reachability
 over the world's Roc source closure, plus extraction of catalog
 names from the capability positions of reachable definitions.
-Capabilities are not Roc-callable functions: a world *requests* a
+Capabilities are not Roc-callable functions: a world _requests_ a
 capability by naming it as data — it constructs request and
 subscription documents (usually through platform helper modules
 such as `RocCap`) whose `cap` field carries a catalog name,
@@ -50,7 +50,7 @@ under-declaration are plain set differences (§6).
   with `catalog_names() -> BTreeSet<String>` and `is_known(name)`.
   Catalog names are dotted capability names (`chat.say`,
   `records.read`, `schedule.at`, `loc.position`, …). The catalog is
-  the *only* capability namespace the tool knows.
+  the _only_ capability namespace the tool knows.
 - **Capability name.** A catalog name carried as data in a request
   or subscription document — the `cap` field the runtime dispatches
   on. A world names a capability in exactly two places: as a string
@@ -76,7 +76,7 @@ under-declaration are plain set differences (§6).
 - **Used-set.** The set of catalog names the derivation proves the
   world can name in a capability position (§4 step 4), under the
   rules of §5.
-- **Certified.** A used-set is *certified* when the scan saw no
+- **Certified.** A used-set is _certified_ when the scan saw no
   construct that defeats static enumeration (§5 rule R4). Only a
   certified used-set supports the over-declaration difference
   (§6); an uncertified one is a sound lower bound plus the unknown
@@ -97,7 +97,7 @@ The tool takes exactly three inputs:
    declared exports for the world kind being scanned, when the
    caller does not override. A scan with zero resolved entry points
    is an input error. Entry points are also a certification input:
-   a result is certified *for the whole world* only when the
+   a result is certified _for the whole world_ only when the
    resolved entry-point set equals the platform interface's
    complete declared export set for the world kind being scanned.
    A caller override that resolves to a proper subset (one valid
@@ -129,7 +129,7 @@ allowlist/denylist input: exceptions are expressed by the rules of
    value) in the closure, keyed by module-qualified name.
 2. **Graph.** Build the call graph over closure definitions: an
    edge A → B for each direct call of B in A's body, and a
-   dependency edge A → V for each *value* definition V that A
+   dependency edge A → V for each _value_ definition V that A
    references — a module-level aggregate, record, or alias such as
    `ops = { read: records.read }` reached through `ops.read`, or
    `read = records.read` used unapplied. A value definition's
@@ -145,7 +145,7 @@ allowlist/denylist input: exceptions are expressed by the rules of
    Value-flow edges from §5 rule R3 are added during this pass and
    participate in the same fixpoint.
 4. **Collect.** The used-set is the set of catalog names that
-   appear in a *capability position* in a reachable definition. A
+   appear in a _capability position_ in a reachable definition. A
    capability position is:
    (a) the capability argument of a request-issuing call (the
    `RocCap.issue`-shaped position — a string literal supplied
@@ -162,12 +162,12 @@ allowlist/denylist input: exceptions are expressed by the rules of
    `players`) and `time.tick:<ms>` with `<ms>` a positive `u64`
    (capability `time.tick`). Every other spec — `players:extra`,
    `time.tick:0`, `time.tick:soon` — is an unknown subscription
-   whose capability string is the *whole* spec, so in a capability
+   whose capability string is the _whole_ spec, so in a capability
    position it takes the §3 version-skew error like any other
    non-catalog name; it must never be suffix-stripped into a known
    name and certified. This is how `parse_wants` itself reads
    subscription entries; and
-   (d) a *serialized* document a definition returns as a single
+   (d) a _serialized_ document a definition returns as a single
    string (a whole wants document carried as escaped JSON):
    extraction parses the embedded document with the same field
    rules as (b) and (c) — `cap` fields of its `requests` entries,
@@ -214,7 +214,7 @@ anywhere else is not implementing this spec.
   function — platform helper or closure-local — whose body names
   capabilities, taken as a value in a reachable definition in any
   non-applied position (passed as an argument, returned, stored
-  in a structure, captured by a closure), contributes *every*
+  in a structure, captured by a closure), contributes _every_
   catalog name its own body can name (its §4 step 4 literal set),
   whether or not the scan can prove the value is ever applied.
   Rationale (the triage's conservative ruling, pending #5963):
@@ -236,16 +236,16 @@ anywhere else is not implementing this spec.
 - **R4 — dynamic dispatch / runtime loading.** A reachable use of
   any mechanism that selects code or capabilities at run time —
   dynamic loading, runtime module resolution, a capability
-  position filled by a *computed* (non-literal) name, or a
+  position filled by a _computed_ (non-literal) name, or a
   platform escape hatch of the same shape — defeats enumeration.
-  A *literal* string name is R1, never R4: string-named requests
+  A _literal_ string name is R1, never R4: string-named requests
   are the protocol's normal case (§2), and treating them as
   dynamic would decertify every ordinary world. The scan adds the literal name
   `<unknown>` (the existing `UNKNOWN_CAP_USAGE_KEY` in
   world_caps.rs, the same bucket the runtime ledger uses for
   unattributable use) to the used-set and marks the result
   uncertified (§2). It does **not** add the whole catalog: the
-  used-set stays a truthful record of what was *seen*, and the
+  used-set stays a truthful record of what was _seen_, and the
   certification flag, not set inflation, carries the uncertainty.
 - **R5 — value-definition dependencies.** A platform reference
   that sits in the initializer of a module-level value definition
@@ -306,7 +306,7 @@ and the runtime instrumentation path (`CapLedger.usage` keys, with
 Static and runtime discovery are two producers of one type; #5958's
 question "static, instrumentation, or both" is answered: both,
 diffed the same way. Representation is not pairing semantics,
-though: §6.3 defines what may serve as the *declared* side of the
+though: §6.3 defines what may serve as the _declared_ side of the
 diff, and a live `Wants::caps()` snapshot may not — it is a
 demand snapshot, not a declaration (§6.3).
 
@@ -351,7 +351,7 @@ collapse).
 Given a `UsedCaps` record for a world and `declared` — the
 world's **stable declared capability surface**: the declaration of
 record for that world and build (the set the world declares it
-may request, as the registry stores it), *not* a live
+may request, as the registry stores it), _not_ a live
 `Wants::caps()` snapshot. `Wants::caps()` collects only the
 current requests and subscriptions (`world_caps.rs`): a world
 like `examples/roc-chat` starts from `RocCap.empty` and its
@@ -367,7 +367,7 @@ only:
 
 - **Under-declared** = `used − declared`. Always reportable, for
   certified and uncertified records alike: the scan only ever
-  *proves* uses (R2/R3 overstate within what was seen; they never
+  _proves_ uses (R2/R3 overstate within what was seen; they never
   invent a name), so every element is a real use the declaration
   misses. (The `<unknown>` element, when present, is excluded from
   this difference and reported as its own line.)
@@ -383,15 +383,15 @@ only:
 
 All errors name the offending artifact; none degrade silently.
 
-| Condition | Result |
-|---|---|
-| Entry module unparseable | error naming the file |
-| Import unresolvable inside the package | error naming the import (§3.1) |
-| Zero entry points resolved | input error (§3.2) |
-| Capability-position literal with no catalog name | error naming the literal (§3.3) |
-| R4 construct reachable | **not an error** — `<unknown>` + uncertified (§5) |
+| Condition                                                                            | Result                                                          |
+| ------------------------------------------------------------------------------------ | --------------------------------------------------------------- |
+| Entry module unparseable                                                             | error naming the file                                           |
+| Import unresolvable inside the package                                               | error naming the import (§3.1)                                  |
+| Zero entry points resolved                                                           | input error (§3.2)                                              |
+| Capability-position literal with no catalog name                                     | error naming the literal (§3.3)                                 |
+| R4 construct reachable                                                               | **not an error** — `<unknown>` + uncertified (§5)               |
 | Entry-point override resolving to a proper subset of the platform's declared exports | **not an error** — partial-scope record (§6.2), never certified |
-| Platform reference only in dead code | not an error, not in the used-set (§5) |
+| Platform reference only in dead code                                                 | not an error, not in the used-set (§5)                          |
 
 ## 8. Implementation shape (for the follow-on)
 

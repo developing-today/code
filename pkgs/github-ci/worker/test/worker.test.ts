@@ -89,9 +89,7 @@ describe("github-ci worker", () => {
 
     expect(res.status).toBe(503);
     expect(await res.text()).toBe("webhook secret not configured");
-    expect(log).toHaveBeenCalledWith(
-      "github-ci worker rejected webhook: GITHUB_WEBHOOK_SECRET is not configured",
-    );
+    expect(log).toHaveBeenCalledWith("github-ci worker rejected webhook: GITHUB_WEBHOOK_SECRET is not configured");
     log.mockRestore();
   });
 

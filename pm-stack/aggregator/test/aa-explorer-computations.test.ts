@@ -311,11 +311,7 @@ describe("unpricedScoredPoints (#1400 remainder)", () => {
     { key: "unpriced-mid", family: "Beta", effort: "med", score: 50, cost: undefined },
   ];
   test("selects scored-but-unpriced only, ordered by score desc", () => {
-    expect(unpricedScoredPoints(rows).map((r) => r.key)).toEqual([
-      "unpriced-high",
-      "unpriced-mid",
-      "unpriced-low",
-    ]);
+    expect(unpricedScoredPoints(rows).map((r) => r.key)).toEqual(["unpriced-high", "unpriced-mid", "unpriced-low"]);
   });
   test("empty state: no unpriced scored rows yields an empty list", () => {
     expect(unpricedScoredPoints([rows[0], rows[3]])).toEqual([]);

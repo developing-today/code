@@ -95,7 +95,6 @@ else
   fail "keep-7 expected 7 dates starting 2026-10-04, got $kept starting '$newest'"
 fi
 
-
 # --- property checks: generated sequences vs an independent model --------
 # Oracle (stated independently of the parser's code): a row files a date
 # iff its verdict is a success marker (canonical "OK" or legacy "ok");

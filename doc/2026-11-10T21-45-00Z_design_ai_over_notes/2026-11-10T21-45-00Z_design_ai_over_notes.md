@@ -35,8 +35,8 @@ knowledge layer, and this design inherits it verbatim:
   public.** An object's own read setting wins; else the owner's
   user-level default; else server configuration; else public.
 
-And the parent's binding corollary: *AI indexing/search must never
-expose content to a reader the resolution order would deny.* Every
+And the parent's binding corollary: _AI indexing/search must never
+expose content to a reader the resolution order would deny._ Every
 decision below is an application of that sentence.
 
 ## Design
@@ -50,7 +50,7 @@ asker. Retrieval, ranking, generation context, and citations all
 operate strictly inside that set.
 
 - **Filter, then rank.** Retrieval filters the corpus to the
-  asker's read set *before* any ranking, embedding lookup, or
+  asker's read set _before_ any ranking, embedding lookup, or
   counting. Rank-then-filter leaks: result counts, "no results in
   your visible set" phrasing, timing, and near-miss snippets can
   all reveal that a denied note exists and roughly what it says.
@@ -99,7 +99,7 @@ operate strictly inside that set.
    question plus the retrieved excerpts — all inside the asker's
    read set, so no authority is violated — and the UI states that
    those excerpts leave the node before the first hosted call.
-   *Reason:* locality is a privacy and availability preference,
+   _Reason:_ locality is a privacy and availability preference,
    not an authority boundary; the authority boundary is the read
    set, and it holds identically for a local and a hosted model.
    Making it a choice (rather than local-only) keeps the feature
@@ -110,12 +110,12 @@ operate strictly inside that set.
    it enlarges the surface it applies to.** The resolution order
    and its outcome for any (asker, note) pair are unchanged by
    the existence of AI features; no new principal, grant, or
-   default is introduced. What changes is the *inventory of
-   objects the order must be applied to*: embeddings, indexes,
+   default is introduced. What changes is the _inventory of
+   objects the order must be applied to_: embeddings, indexes,
    summaries, caches, and generated audio did not exist before,
    and each is a place a denied note's content could leak if the
    derived-artifact inheritance above is not implemented.
-   *Reason:* if AI changed the analysis itself — say, by treating
+   _Reason:_ if AI changed the analysis itself — say, by treating
    the index as a new kind of reader with its own grants — every
    cluster inheriting the parent's ruling would have to be
    re-audited per feature. Treating the model as the asker's
@@ -134,7 +134,7 @@ operate strictly inside that set.
   second answer), and breaks the on-behalf case — the assistant's
   grants would substitute for the asker's.
 - **Per-asker fully separate indexes.** Compliant, and the safest
-  form, but rejected as the *required* shape: it multiplies
+  form, but rejected as the _required_ shape: it multiplies
   storage per grant-combination and makes grant changes expensive
   re-index events. A shared index with in-query per-asker
   filtering (decision 3) reaches the same authority outcome;

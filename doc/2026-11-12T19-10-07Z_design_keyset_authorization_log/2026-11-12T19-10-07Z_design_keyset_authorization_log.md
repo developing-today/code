@@ -77,16 +77,16 @@ SHA-256 of those bytes; the signature is over those bytes.
 
 ## Decision 3 — entry types (`KeysetEntry`)
 
-| Variant | Fields | Admin-only? |
-| --- | --- | --- |
-| `Genesis { admin_key, device_key, label }` | hex pubkeys; first record, `prev_hash = ""`, `author == admin_key` | self-signed |
-| `DeviceEnrolled { device_key, label }` | hex pubkey, human label; requires `countersignature` by `device_key` | yes |
-| `DeviceRevoked { device_key, reason }` | hex pubkey, free-text reason | yes |
-| `AdminKeyRotated { new_admin_key }` | hex pubkey; signed by an admin key authorised at the parent state; the new key countersigns (proof of possession) via `countersignature` | yes |
-| `IdpBindingBound { binding_id }` | references a `hosted_binding::BindingRecord` by its immutable `binding_id`; the binding record itself stays the artefact connecting an IdP `sub` to this identity (#2044 §4.3 option 1) | yes |
-| `IdpBindingRevoked { binding_id }` | as above | yes |
-| `GuardianSetUpdated { guardians, threshold }` | guardian identity identifiers (Decision 1 form), k-of-n threshold; **record type reserved now**, semantics land with the social-recovery follow-up so device enrolment never blocks on it | yes |
-| `Checkpoint { state_hash, record_count }` | hex SHA-256 of the canonical folded state (§4); lets a replica verify a snapshot without replaying from genesis | no (any authorised device key) |
+| Variant                                       | Fields                                                                                                                                                                                    | Admin-only?                    |
+| --------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------ |
+| `Genesis { admin_key, device_key, label }`    | hex pubkeys; first record, `prev_hash = ""`, `author == admin_key`                                                                                                                        | self-signed                    |
+| `DeviceEnrolled { device_key, label }`        | hex pubkey, human label; requires `countersignature` by `device_key`                                                                                                                      | yes                            |
+| `DeviceRevoked { device_key, reason }`        | hex pubkey, free-text reason                                                                                                                                                              | yes                            |
+| `AdminKeyRotated { new_admin_key }`           | hex pubkey; signed by an admin key authorised at the parent state; the new key countersigns (proof of possession) via `countersignature`                                                  | yes                            |
+| `IdpBindingBound { binding_id }`              | references a `hosted_binding::BindingRecord` by its immutable `binding_id`; the binding record itself stays the artefact connecting an IdP `sub` to this identity (#2044 §4.3 option 1)   | yes                            |
+| `IdpBindingRevoked { binding_id }`            | as above                                                                                                                                                                                  | yes                            |
+| `GuardianSetUpdated { guardians, threshold }` | guardian identity identifiers (Decision 1 form), k-of-n threshold; **record type reserved now**, semantics land with the social-recovery follow-up so device enrolment never blocks on it | yes                            |
+| `Checkpoint { state_hash, record_count }`     | hex SHA-256 of the canonical folded state (§4); lets a replica verify a snapshot without replaying from genesis                                                                           | no (any authorised device key) |
 
 Everyday signing (messages, group records, blob-gate membership) is
 NOT a keyset entry: it is authorised by presenting a signature from any
@@ -112,8 +112,8 @@ same records reaches the same state.
 3. **Authorisation is judged at the record's position.** An admin
    entry is valid only if `author` was an authorised admin key in the
    state folded from all preceding records. A device key revoked at
-   position *n* cannot authorise records after *n*, but records it
-   signed before *n* remain valid history. Wall-clock time plays no
+   position _n_ cannot authorise records after _n_, but records it
+   signed before _n_ remain valid history. Wall-clock time plays no
    part in validity.
 4. **Folded state.** `{ identity_id, admin_keys: {key → Active|Rotated|Revoked}, devices: {key → {label, enrolled_at, revoked}}, idp_bindings: {binding_id → Bound|Revoked}, guardian_set: Option<{guardians, threshold}>, head_hash, records_folded }`.
    Derived queries: `is_device(key)`, `is_admin(key)`,
@@ -145,13 +145,13 @@ same records reaches the same state.
      authority (enrolment, rotation, hosted rebind under Decision 6)
      SHOULD require checkpoint finality for the state they act on
      when the identity's log has ever forked.
-   A fork created by a key that the canonical branch later revokes
-   still cannot resurrect itself: its records fold only if authorised
-   at their position on the canonical chain — and they are not on it.
-   Note the packet-1 implementation (`pkgs/id/src/keyset.rs`) folds
-   by merge key with anchored genesis and checkpoint records that
-   cannot displace admin records; revocation priority and checkpoint
-   finality are follow-up packet 5 in §7, not yet implemented.
+     A fork created by a key that the canonical branch later revokes
+     still cannot resurrect itself: its records fold only if authorised
+     at their position on the canonical chain — and they are not on it.
+     Note the packet-1 implementation (`pkgs/id/src/keyset.rs`) folds
+     by merge key with anchored genesis and checkpoint records that
+     cannot displace admin records; revocation priority and checkpoint
+     finality are follow-up packet 5 in §7, not yet implemented.
 6. **Checkpoints.** A replica may start from a `Checkpoint` whose
    `state_hash` it has verified against a full fold once, then fold
    only the suffix. A checkpoint never authorises anything by itself.

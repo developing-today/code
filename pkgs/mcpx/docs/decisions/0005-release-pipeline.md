@@ -109,7 +109,7 @@ ways out were recorded:
   reference mcpx paths must follow. This is Drew's call, not a worker's.
 - **B — Rename the module to where the code lives:**
   `github.com/developing-today/code/pkgs/mcpx`. `go install
-  github.com/developing-today/code/pkgs/mcpx/cmd/mcpx@pkgs/mcpx/vX.Y.Z`
+github.com/developing-today/code/pkgs/mcpx/cmd/mcpx@pkgs/mcpx/vX.Y.Z`
   then works from the monorepo, tags follow Go's subdirectory scheme,
   and `meta.homepage` points at the real tree. Cost: a mechanical rename
   across 328 Go files plus `package.nix` references — large diff, no

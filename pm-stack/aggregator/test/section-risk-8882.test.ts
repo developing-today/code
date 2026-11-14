@@ -85,7 +85,9 @@ describe("section-risk derivation (#8882)", () => {
     expect(candidates).toHaveLength(1);
     expect(candidates[0].title).toBe("Section at risk: workhorse");
     expect(candidates[0].breakthrough).toBe(false);
-    expect(candidates[0].body).toBe("walled: pool-a (resets Fri 8:28 AM CST) · pending: pool-b 97% (resets Mon 5:04 AM CST)");
+    expect(candidates[0].body).toBe(
+      "walled: pool-a (resets Fri 8:28 AM CST) · pending: pool-b 97% (resets Mon 5:04 AM CST)",
+    );
   });
 
   test("one healthy pool under 85% -> NO section candidate even with other pools walled/near", () => {

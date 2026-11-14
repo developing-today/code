@@ -3,7 +3,7 @@
 - Date: 2026-11-08
 - Status: **decision record** — budgets and a measurement/acceptance plan.
   No implementation, benchmark run, or performance claim is included. The
-  numbers below are *acceptance targets* for future implementation, sized
+  numbers below are _acceptance targets_ for future implementation, sized
   from the parent's topology and the settled sibling decisions; the first
   implementation run produces the baseline that confirms or revises them
   through a dated record (see [§9](#9-what-would-revise-this-record)).
@@ -34,7 +34,7 @@
     WebSocket/WSS + HTTPS fallback adapter for the browser surface. Its
     latency cost is recorded there; this record covers the non-browser ID
     client tiers and only names the reconciliation point
-     ([§7](#7-provisional-assumptions-and-reconciliation-points)).
+    ([§7](#7-provisional-assumptions-and-reconciliation-points)).
 - Programme: epic [#2056](https://github.com/developing-today/code/issues/2056).
 - Evidence baseline: `origin/main` at `5ad9688450`, worktree
   `~/git/fleet/13213-5797-latency-budget`, 2026-11-08. At that baseline,
@@ -91,7 +91,7 @@ order, a single first attempt for a remembered known-good transport,
 per-transport deadlines whose expiry is the failure class `timeout`, one
 overall budget per negotiation, at most one pass over the candidate list,
 and the override/classification rules. Nothing in this record changes
-what a failure class *means* or when the client falls through.
+what a failure class _means_ or when the client falls through.
 
 Inherited from #5794 and used as a hard boundary: **T3b-W** is budgeted
 for interactive and ordinary sync only. It has **no bulk SLO**; bulk on
@@ -109,16 +109,16 @@ ciphertext sizes and delivery timing, nothing more.
 
 ### 3.1 Metrics (each budget names exactly one)
 
-| Metric | Definition | Used for |
-|---|---|---|
-| **IRTT** | Interactive round trip: application writes a ≤ 4 KiB request/keystroke; the matching application-level response/echo is readable. Timed at the client application boundary, excluding client UI rendering. | interactive tiers |
-| **TTFB** | Time from interactive request write to first response byte, on an established session. | queries, first keystroke after idle |
-| **SETUP** | Time from "start connecting on this candidate" to "session ready for application data" (covers DNS/rendezvous where that is part of the attempt, proxy CONNECT, TCP/TLS/QUIC handshake, broker pairing and ID authentication). | connection-setup budgets |
-| **NEG** | Time from negotiation start to the chosen transport being session-ready, including every failed attempt and its backoff inside the walk. | overall negotiation budget |
-| **SYNC** | Time to transfer a defined ordinary-sync fixture end-to-end with acknowledgement, and its goodput. | ordinary sync |
-| **GOODPUT** | Sustained application bytes/second for a bulk fixture, measured after 2 s warm-up, plus completion time. | bulk |
-| **KEEPALIVE** | Spurious disconnects per session-hour while idle, and time to detect a genuinely dead peer. | keepalive/idle |
-| **RESUME** | Time from transport loss detection to application data flowing again, and bytes re-sent after the last acknowledged offset. | reconnect/resumption |
+| Metric        | Definition                                                                                                                                                                                                                     | Used for                            |
+| ------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ----------------------------------- |
+| **IRTT**      | Interactive round trip: application writes a ≤ 4 KiB request/keystroke; the matching application-level response/echo is readable. Timed at the client application boundary, excluding client UI rendering.                     | interactive tiers                   |
+| **TTFB**      | Time from interactive request write to first response byte, on an established session.                                                                                                                                         | queries, first keystroke after idle |
+| **SETUP**     | Time from "start connecting on this candidate" to "session ready for application data" (covers DNS/rendezvous where that is part of the attempt, proxy CONNECT, TCP/TLS/QUIC handshake, broker pairing and ID authentication). | connection-setup budgets            |
+| **NEG**       | Time from negotiation start to the chosen transport being session-ready, including every failed attempt and its backoff inside the walk.                                                                                       | overall negotiation budget          |
+| **SYNC**      | Time to transfer a defined ordinary-sync fixture end-to-end with acknowledgement, and its goodput.                                                                                                                             | ordinary sync                       |
+| **GOODPUT**   | Sustained application bytes/second for a bulk fixture, measured after 2 s warm-up, plus completion time.                                                                                                                       | bulk                                |
+| **KEEPALIVE** | Spurious disconnects per session-hour while idle, and time to detect a genuinely dead peer.                                                                                                                                    | keepalive/idle                      |
+| **RESUME**    | Time from transport loss detection to application data flowing again, and bytes re-sent after the last acknowledged offset.                                                                                                    | reconnect/resumption                |
 
 Percentiles are **p50, p95, p99 and max**, computed over samples, not over
 runs. A budget stated as p95 is a tail requirement; p50 is reported for
@@ -130,13 +130,13 @@ Absolute budgets are stated at **P2 (reference)**. The same tier must also
 satisfy the relative criteria at P1/P3/P4, because a fallback that is slow
 only because the network is slow is not a fallback defect.
 
-| Profile | One-way delay (each direction) | RTT p50 | Jitter | Loss | Rate (down/up) | Notes |
-|---|---:|---:|---:|---:|---:|---|
-| **P0** | loopback / same host | ≤ 0.5 ms | 0 | 0 | unshaped | component isolation only; never an acceptance profile |
-| **P1** | 1 ms | 2 ms | 0.2 ms | 0 | 100/100 Mbps | same LAN |
-| **P2** | **15 ms** | **30 ms** | 2 ms | 0 | 100/20 Mbps | **reference profile for absolute budgets** |
-| **P3** | 60 ms | 120 ms | 10 ms | 0.1% | 50/10 Mbps | tail-latency check |
-| **P4** | 100 ms | 200 ms | 25 ms | 1% | 10/2 Mbps | relative criteria only; no absolute usability claim |
+| Profile | One-way delay (each direction) |   RTT p50 | Jitter | Loss | Rate (down/up) | Notes                                                 |
+| ------- | -----------------------------: | --------: | -----: | ---: | -------------: | ----------------------------------------------------- |
+| **P0**  |           loopback / same host |  ≤ 0.5 ms |      0 |    0 |       unshaped | component isolation only; never an acceptance profile |
+| **P1**  |                           1 ms |      2 ms | 0.2 ms |    0 |   100/100 Mbps | same LAN                                              |
+| **P2**  |                      **15 ms** | **30 ms** |   2 ms |    0 |    100/20 Mbps | **reference profile for absolute budgets**            |
+| **P3**  |                          60 ms |    120 ms |  10 ms | 0.1% |     50/10 Mbps | tail-latency check                                    |
+| **P4**  |                         100 ms |    200 ms |  25 ms |   1% |      10/2 Mbps | relative criteria only; no absolute usability claim   |
 
 Profiles are produced with `tc netem` delay/jitter/loss and `tbf` rate
 limits (and MTU variation where a fixture needs it), not by choosing real
@@ -148,11 +148,11 @@ real-network cross-check at P3 per release is required ([§6.7](#67-gates)).
 
 ### 3.3 Traffic classes
 
-| Class | Definition | Target |
-|---|---|---|
-| **Interactive** | Human-in-the-loop request/response or keystroke echo; messages ≤ 4 KiB; idle gaps of 100 ms–30 s between exchanges. SSH keystrokes and single ID queries are the canonical cases. | p95 IRTT / TTFB budgets (§4.1) |
-| **Ordinary sync** | Batched control/sync traffic with a completion deadline but no per-message human deadline; a single transaction ≤ 16 MiB. The class #5794 says Workers must remain usable for. | SYNC budgets (§4.2) |
-| **Bulk** | A transfer > 16 MiB, or a stream/transaction whose rolling 10 s goodput exceeds 1 MiB/s. For a stream/transaction with both properties, bulk takes precedence. | GOODPUT floors and mixed-load bound (§4.4) |
+| Class             | Definition                                                                                                                                                                        | Target                                     |
+| ----------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------ |
+| **Interactive**   | Human-in-the-loop request/response or keystroke echo; messages ≤ 4 KiB; idle gaps of 100 ms–30 s between exchanges. SSH keystrokes and single ID queries are the canonical cases. | p95 IRTT / TTFB budgets (§4.1)             |
+| **Ordinary sync** | Batched control/sync traffic with a completion deadline but no per-message human deadline; a single transaction ≤ 16 MiB. The class #5794 says Workers must remain usable for.    | SYNC budgets (§4.2)                        |
+| **Bulk**          | A transfer > 16 MiB, or a stream/transaction whose rolling 10 s goodput exceeds 1 MiB/s. For a stream/transaction with both properties, bulk takes precedence.                    | GOODPUT floors and mixed-load bound (§4.4) |
 
 Classification is by logical operation/source, never by ciphertext frame
 size alone (a bulk stream split into 4 KiB frames is still bulk). Interactive
@@ -173,18 +173,18 @@ them directly.
 
 ### 4.1 Interactive (IRTT / TTFB)
 
-| ID | Tier | IRTT p95 | IRTT p99 | TTFB p95 (warm) | Fixed usability ceiling |
-|---|---|---|---|---|---|
-| LB-1 | T0 direct UDP | **≤ 90 ms** | ≤ 150 ms | ≤ 80 ms | interactive |
-| LB-2 | T1 relay-assisted UDP | **≤ 120 ms** | ≤ 180 ms | ≤ 110 ms | interactive |
-| LB-3 | T2 TCP direct | **≤ 120 ms** | ≤ 190 ms | ≤ 110 ms | interactive |
-| LB-4 | T3a CONNECT tunnel (established) | **≤ 140 ms** | ≤ 220 ms | ≤ 130 ms | interactive |
-| LB-5 | T3b-W Workers WSS relay | **≤ 180 ms** | ≤ 300 ms | ≤ 170 ms | interactive |
-| LB-5a | T3b-S self-hosted WSS relay | **≤ 160 ms** | ≤ 260 ms | ≤ 150 ms | interactive |
-| LB-6 | T3c HTTPS polling (provisional) | **≤ 500 ms** | ≤ 800 ms | ≤ 500 ms | **degraded, not interactive** |
+| ID    | Tier                             | IRTT p95     | IRTT p99 | TTFB p95 (warm) | Fixed usability ceiling       |
+| ----- | -------------------------------- | ------------ | -------- | --------------- | ----------------------------- |
+| LB-1  | T0 direct UDP                    | **≤ 90 ms**  | ≤ 150 ms | ≤ 80 ms         | interactive                   |
+| LB-2  | T1 relay-assisted UDP            | **≤ 120 ms** | ≤ 180 ms | ≤ 110 ms        | interactive                   |
+| LB-3  | T2 TCP direct                    | **≤ 120 ms** | ≤ 190 ms | ≤ 110 ms        | interactive                   |
+| LB-4  | T3a CONNECT tunnel (established) | **≤ 140 ms** | ≤ 220 ms | ≤ 130 ms        | interactive                   |
+| LB-5  | T3b-W Workers WSS relay          | **≤ 180 ms** | ≤ 300 ms | ≤ 170 ms        | interactive                   |
+| LB-5a | T3b-S self-hosted WSS relay      | **≤ 160 ms** | ≤ 260 ms | ≤ 150 ms        | interactive                   |
+| LB-6  | T3c HTTPS polling (provisional)  | **≤ 500 ms** | ≤ 800 ms | ≤ 500 ms        | **degraded, not interactive** |
 
 The fixed usability ceiling is **250 ms p95 IRTT at P2**. A tier that
-cannot meet it may still ship, but must be labelled *degraded* in
+cannot meet it may still ship, but must be labelled _degraded_ in
 diagnostics and documentation and cannot be described as interactive at
 P2; LB-6 is already in that category and exists only for last-ditch
 reachability. P3/P4 make **no absolute usability claim**; the profile RTT
@@ -209,7 +209,7 @@ Rules that go with the table:
 - **Relay caveat:** LB-5/LB-5a hold only when the relay is
   not CPU- or frame-capped at the broker. A run that hits the current
   16 KiB DATA payload cap, 256 KiB frame-body cap or broker backpressure
-  is reported as *capped*, not as a pass or fail, and re-run with the
+  is reported as _capped_, not as a pass or fail, and re-run with the
   documented logical-chunk sizes.
 
 ### 4.2 Ordinary sync (SYNC)
@@ -220,15 +220,15 @@ chunk into DATA payloads ≤ 16 KiB and caps a full frame body at 256 KiB
 (`pkgs/id/src/serve_proxy.rs`). The 1 MiB Workers application cap in #5794
 is not a broker wire-frame size. P2.
 
-| ID | Tier | Goodput p50 | Completion p95 | Notes |
-|---|---|---|---|---|
-| LB-7 | T0 direct UDP | ≥ 4 MiB/s | ≤ 3 s | direct-path floor |
-| LB-8 | T1 relay-assisted UDP | ≥ 2 MiB/s | ≤ 6 s | |
-| LB-9 | T2 TCP direct | ≥ 2 MiB/s | ≤ 6 s | |
-| LB-10 | T3a CONNECT tunnel | ≥ 2 MiB/s | ≤ 6 s | |
-| LB-11 | T3b-W Workers WSS relay | **≥ 512 KiB/s** | **≤ 20 s** | #5794 boundary: ordinary sync, not bulk |
-| LB-11a | T3b-S self-hosted WSS relay | ≥ 2 MiB/s | ≤ 6 s | |
-| LB-11b | T3c HTTPS polling | ≥ 256 KiB/s | ≤ 60 s | provisional degraded target; not preferred |
+| ID     | Tier                        | Goodput p50     | Completion p95 | Notes                                      |
+| ------ | --------------------------- | --------------- | -------------- | ------------------------------------------ |
+| LB-7   | T0 direct UDP               | ≥ 4 MiB/s       | ≤ 3 s          | direct-path floor                          |
+| LB-8   | T1 relay-assisted UDP       | ≥ 2 MiB/s       | ≤ 6 s          |                                            |
+| LB-9   | T2 TCP direct               | ≥ 2 MiB/s       | ≤ 6 s          |                                            |
+| LB-10  | T3a CONNECT tunnel          | ≥ 2 MiB/s       | ≤ 6 s          |                                            |
+| LB-11  | T3b-W Workers WSS relay     | **≥ 512 KiB/s** | **≤ 20 s**     | #5794 boundary: ordinary sync, not bulk    |
+| LB-11a | T3b-S self-hosted WSS relay | ≥ 2 MiB/s       | ≤ 6 s          |                                            |
+| LB-11b | T3c HTTPS polling           | ≥ 256 KiB/s     | ≤ 60 s         | provisional degraded target; not preferred |
 
 Ordinary sync is also bound by the mixed-load rule in §4.4: an 8 MiB sync
 must not push a concurrent interactive session over its ceiling.
@@ -238,22 +238,22 @@ must not push a concurrent interactive session over its ceiling.
 Each interactive budget is allocated so a failing cell names a layer. The
 network floor is 1×RTT = 30 ms at P2: a request and its matching response
 traverse the shaped path once (2 × 15 ms one-way), so the pair incurs one
-RTT of network delay, not two. "Broker hop" is broker *processing* only —
+RTT of network delay, not two. "Broker hop" is broker _processing_ only —
 for relayed paths §3.2 splits that same shaped delay across the two legs,
 so traversing a relay adds no second network RTT; the polling row uses
 the poll interval instead.
 
-| Tier | Network floor | Crypto/framing | Broker hop | Queueing/scheduling | Instrumentation error | Headroom | Budget (LB) |
-|---|---|---|---|---|---|---|---|
-| T0 | 30 | 5 | 0 | 5 | 2 | 48 | 90 (LB-1) |
-| T1 | 30 | 5 | 10 | 8 | 2 | 65 | 120 (LB-2) |
-| T2 | 30 | 5 | 0 | 10 | 2 | 73 | 120 (LB-3) |
-| T3a | 30 | 5 | 10 | 15 | 2 | 78 | 140 (LB-4) |
-| T3b-W | 30 | 5 | 10 | 20 | 2 | 113 | 180 (LB-5) |
-| T3b-S | 30 | 5 | 10 | 15 | 2 | 98 | 160 (LB-5a) |
-| T3c | 30 + 250 poll | 5 | 10 | 40 | 2 | 163 | 500 (LB-6) |
+| Tier  | Network floor | Crypto/framing | Broker hop | Queueing/scheduling | Instrumentation error | Headroom | Budget (LB) |
+| ----- | ------------- | -------------- | ---------- | ------------------- | --------------------- | -------- | ----------- |
+| T0    | 30            | 5              | 0          | 5                   | 2                     | 48       | 90 (LB-1)   |
+| T1    | 30            | 5              | 10         | 8                   | 2                     | 65       | 120 (LB-2)  |
+| T2    | 30            | 5              | 0          | 10                  | 2                     | 73       | 120 (LB-3)  |
+| T3a   | 30            | 5              | 10         | 15                  | 2                     | 78       | 140 (LB-4)  |
+| T3b-W | 30            | 5              | 10         | 20                  | 2                     | 113      | 180 (LB-5)  |
+| T3b-S | 30            | 5              | 10         | 15                  | 2                     | 98       | 160 (LB-5a) |
+| T3c   | 30 + 250 poll | 5              | 10         | 40                  | 2                     | 163      | 500 (LB-6)  |
 
-All values are milliseconds. The allocation is a *diagnostic hypothesis*,
+All values are milliseconds. The allocation is a _diagnostic hypothesis_,
 not an excuse: if a run exceeds a component's allocation while total p95
 still passes, the record reports the allocation miss; if total p95 fails,
 the overrun names the first layer to investigate.
@@ -263,7 +263,7 @@ Per-layer measurement budgets used by the plan:
 - **Proxy/TLS:** CONNECT setup p95 ≤ 1 RTT + 200 ms; TLS handshake
   (including TLS-in-TLS where the topology has it) p95 ≤ 2 RTT + 150 ms;
   certificate validation adds no network round trip.
-- **Broker/framing:** broker forwarding *processing* adds ≤ 10 ms p95 at P2
+- **Broker/framing:** broker forwarding _processing_ adds ≤ 10 ms p95 at P2
   (the shaped path's network delay is counted once, in the §4.3 network
   floor — never again as a broker hop);
   per-frame processing ≤ 0.5 ms p95 per 16 KiB DATA frame on one core;
@@ -280,21 +280,21 @@ Per-layer measurement budgets used by the plan:
 
 Bulk is where #5794's boundary matters. Budget:
 
-| ID | Tier | GOODPUT floor (p50) | Completion p95 | Notes |
-|---|---|---|---|---|
-| LB-12 | T0 direct UDP | ≥ 5 MiB/s | ≤ 30 s for 128 MiB | absolute baseline floor at P2 only (download direction; upload per the direction rule below) |
-| LB-13 | T1 relay-assisted UDP | ≥ 60% of T0 on the same profile | ≤ 2× T0 + 5 s | |
-| LB-14 | T2 TCP direct | ≥ 70% of T0 | ≤ 2× T0 + 5 s | |
-| LB-15 | T3a CONNECT tunnel | ≥ 50% of T0 | ≤ 2× T0 + 5 s | |
-| LB-16 | T3b-W Workers WSS relay | **no SLO** | best effort | #5794: not a bulk pipe |
-| LB-16a | T3b-S self-hosted WSS relay | ≥ 50% of T0 | ≤ 2× T0 + 5 s | |
-| LB-16b | T3c HTTPS polling | rejects bulk class (size > 16 MiB or sustained > 1 MiB/s over 10 s) | — | provisional; ordinary sync remains separately budgeted |
+| ID     | Tier                        | GOODPUT floor (p50)                                                 | Completion p95     | Notes                                                                                        |
+| ------ | --------------------------- | ------------------------------------------------------------------- | ------------------ | -------------------------------------------------------------------------------------------- |
+| LB-12  | T0 direct UDP               | ≥ 5 MiB/s                                                           | ≤ 30 s for 128 MiB | absolute baseline floor at P2 only (download direction; upload per the direction rule below) |
+| LB-13  | T1 relay-assisted UDP       | ≥ 60% of T0 on the same profile                                     | ≤ 2× T0 + 5 s      |                                                                                              |
+| LB-14  | T2 TCP direct               | ≥ 70% of T0                                                         | ≤ 2× T0 + 5 s      |                                                                                              |
+| LB-15  | T3a CONNECT tunnel          | ≥ 50% of T0                                                         | ≤ 2× T0 + 5 s      |                                                                                              |
+| LB-16  | T3b-W Workers WSS relay     | **no SLO**                                                          | best effort        | #5794: not a bulk pipe                                                                       |
+| LB-16a | T3b-S self-hosted WSS relay | ≥ 50% of T0                                                         | ≤ 2× T0 + 5 s      |                                                                                              |
+| LB-16b | T3c HTTPS polling           | rejects bulk class (size > 16 MiB or sustained > 1 MiB/s over 10 s) | —                  | provisional; ordinary sync remains separately budgeted                                       |
 
 **Direction.** The §4.2 sync targets and the LB-12…LB-16a floors and
-completion targets in this section are stated for the *download* direction
+completion targets in this section are stated for the _download_ direction
 (peer → client), the direction P2's 100 Mbps downlink bounds. W3 and W4
-run in *both* directions, and the budgets apply per direction. In the
-*upload* direction (client → peer), P2's 20 Mbps uplink (§3.2) caps
+run in _both_ directions, and the budgets apply per direction. In the
+_upload_ direction (client → peer), P2's 20 Mbps uplink (§3.2) caps
 goodput at ≈ 2.38 MiB/s before protocol overhead, so a 5 MiB/s floor or a
 30 s 128 MiB target would be physically impossible and a correct upload
 implementation could never produce a passing reference run. The upload
@@ -327,8 +327,8 @@ order here.
 transfer saturating the tier, a concurrent interactive session's IRTT p95
 must be ≤ **2× its idle IRTT p95** and ≤ 250 ms absolute (≤ 400 ms for
 T3b-W). p99 must be ≤ 500 ms (≤ 800 ms for T3b-W). If a single-stream
-multiplexed carrier cannot meet this, the tier is *interactive-degraded
-under bulk load* and #5792 must add streams or the parent must accept the
+multiplexed carrier cannot meet this, the tier is _interactive-degraded
+under bulk load_ and #5792 must add streams or the parent must accept the
 limitation explicitly. This is the decidable form of #5671's open question
 "is multiplexing over one TCP connection sufficient, or is HOL
 disqualifying for mixed interactive+bulk traffic?"
@@ -338,18 +338,19 @@ taken while bulk load is active, and W5 repeats bulk transfers
 back-to-back so the load spans the entire sampling interval (§6.2) — a
 single short transfer followed by an unloaded tail must not dilute the
 measurement into a false pass.
+
 ### 4.5 Keepalive, idle and reconnection
 
-| ID | Property | Budget |
-|---|---|---|
-| LB-17 | Spurious disconnect while idle (persistent tiers only) | ≤ 1 per 10 session-hours, and 0 in the 10 × 30 min idle gate (§6.5); T3c polling is N/A |
-| LB-18 | Keepalive interval, proxy tiers (T3a/T3b-W/T3b-S) | 15 s when no application traffic; never more than 1 per 10 s |
-| LB-19 | Keepalive interval, direct tiers (T0/T1/T2) | 30 s; QUIC PING/ACK is acceptable |
-| LB-20 | Dead-peer detection | 2 missed keepalives: ≤ 30 s (proxy tiers), ≤ 60 s (direct tiers) |
+| ID    | Property                                                                  | Budget                                                                                                                                                                                                                                 |
+| ----- | ------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| LB-17 | Spurious disconnect while idle (persistent tiers only)                    | ≤ 1 per 10 session-hours, and 0 in the 10 × 30 min idle gate (§6.5); T3c polling is N/A                                                                                                                                                |
+| LB-18 | Keepalive interval, proxy tiers (T3a/T3b-W/T3b-S)                         | 15 s when no application traffic; never more than 1 per 10 s                                                                                                                                                                           |
+| LB-19 | Keepalive interval, direct tiers (T0/T1/T2)                               | 30 s; QUIC PING/ACK is acceptable                                                                                                                                                                                                      |
+| LB-20 | Dead-peer detection                                                       | 2 missed keepalives: ≤ 30 s (proxy tiers), ≤ 60 s (direct tiers)                                                                                                                                                                       |
 | LB-21 | Idle survival through a 300 s proxy idle timeout (persistent proxy tiers) | 0 disconnects during keepalive-enabled 30 min idle; if a session is forcibly dropped after > 10 min idle, detect it before the next application write and apply LB-22/LB-24 rather than leaving a silent half-open; T3c polling is N/A |
-| LB-22 | Resume after transport loss (P2) | p95 ≤ 1.5 s, p99 ≤ 3 s to application data; 0 bytes re-sent after the last acknowledged offset except in-flight data |
-| LB-23 | Post-session reconnect | Record retry count, backoff intervals and final failure class; reconnect does not extend initial NEG, and retry policy remains with #5792 |
-| LB-24 | Sync resumption | a dropped bulk/ordinary-sync session resumes from the last acknowledged offset; restarting a > 1 MiB transfer from zero is a failure |
+| LB-22 | Resume after transport loss (P2)                                          | p95 ≤ 1.5 s, p99 ≤ 3 s to application data; 0 bytes re-sent after the last acknowledged offset except in-flight data                                                                                                                   |
+| LB-23 | Post-session reconnect                                                    | Record retry count, backoff intervals and final failure class; reconnect does not extend initial NEG, and retry policy remains with #5792                                                                                              |
+| LB-24 | Sync resumption                                                           | a dropped bulk/ordinary-sync session resumes from the last acknowledged offset; restarting a > 1 MiB transfer from zero is a failure                                                                                                   |
 
 LB-18's interval is chosen to be ≥ 4× shorter than the shortest common
 proxy idle timeout (60 s) so one missed keepalive does not kill the
@@ -361,22 +362,22 @@ application activity for sync progress accounting.
 #5791 fixes the shape; this section supplies the numbers it asked for.
 Deadlines are fixed wall-clock caps (not per-network multipliers); SETUP
 targets are p95, while the deadline is a hard maximum for a failed
-candidate. T3a/T3b/T3c are measured shapes *within the one parent
-HTTP/HTTPS-proxy tier*, not new global tiers. T3b-W and T3b-S are measured
+candidate. T3a/T3b/T3c are measured shapes _within the one parent
+HTTP/HTTPS-proxy tier_, not new global tiers. T3b-W and T3b-S are measured
 separately because they have different operator/platform limits. The
 existing advertisement/candidate order decides which shapes are attempted;
 every attempt consumes the same shared NEG budget, which is never extended
 to fit additional candidates.
 
-| Parent tier / carrier shape | LB-31 SETUP p95 at P2 | Per-attempt hard deadline P2 | Per-attempt hard deadline P4 |
-|---|---:|---:|---:|
-| T0 direct UDP | ≤ 250 ms | **750 ms** | **1.5 s** |
-| T1 relay-assisted UDP | ≤ 500 ms | **1.25 s** | **2 s** |
-| T2 TCP direct | ≤ 750 ms | **1.5 s** | **2.25 s** |
-| T3a CONNECT tunnel | ≤ 1.25 s | **2.5 s** | **3.5 s** |
-| T3b-W Workers WSS relay | ≤ 1.5 s | **2.5 s** | **3.5 s** |
-| T3b-S self-hosted WSS relay | ≤ 1.25 s | **2.5 s** | **3.5 s** |
-| T3c HTTPS polling, provisional | ≤ 2 s | **2.5 s** | **3.5 s** |
+| Parent tier / carrier shape    | LB-31 SETUP p95 at P2 | Per-attempt hard deadline P2 | Per-attempt hard deadline P4 |
+| ------------------------------ | --------------------: | ---------------------------: | ---------------------------: |
+| T0 direct UDP                  |              ≤ 250 ms |                   **750 ms** |                    **1.5 s** |
+| T1 relay-assisted UDP          |              ≤ 500 ms |                   **1.25 s** |                      **2 s** |
+| T2 TCP direct                  |              ≤ 750 ms |                    **1.5 s** |                   **2.25 s** |
+| T3a CONNECT tunnel             |              ≤ 1.25 s |                    **2.5 s** |                    **3.5 s** |
+| T3b-W Workers WSS relay        |               ≤ 1.5 s |                    **2.5 s** |                    **3.5 s** |
+| T3b-S self-hosted WSS relay    |              ≤ 1.25 s |                    **2.5 s** |                    **3.5 s** |
+| T3c HTTPS polling, provisional |                 ≤ 2 s |                    **2.5 s** |                    **3.5 s** |
 
 **P1 and P3 deadlines.** The per-attempt deadlines above are stated for
 P2 and P4, but §6.4 runs W9 per profile and §6.7 gates on P1 (PR gate)
@@ -391,14 +392,14 @@ are the conservative bound), the NEG budget is p95 ≤ 9 s to success with
 a hard deadline of **12 s** (LB-26's values), and LB-27's
 promoted-attempt cap is the P4 cap (3.5 s).
 
-| ID | Negotiation budget (NEG) | Value |
-|---|---|---|
-| LB-25 | Interactive, cold, no memory, P2 | p95 ≤ 7 s to success; hard deadline **8 s** |
-| LB-26 | Interactive, cold, P4 | p95 ≤ 9 s to success; hard deadline **12 s** |
+| ID    | Negotiation budget (NEG)                         | Value                                                                                                                            |
+| ----- | ------------------------------------------------ | -------------------------------------------------------------------------------------------------------------------------------- |
+| LB-25 | Interactive, cold, no memory, P2                 | p95 ≤ 7 s to success; hard deadline **8 s**                                                                                      |
+| LB-26 | Interactive, cold, P4                            | p95 ≤ 9 s to success; hard deadline **12 s**                                                                                     |
 | LB-27 | Interactive, remembered known-good first attempt | hard cap **min(tier deadline, 1.5 s at P2 / 3.5 s at P4)** for the promoted attempt; any remaining walk stays inside LB-25/LB-26 |
-| LB-28 | Ordinary sync, cold | hard deadline **15 s** |
-| LB-29 | Bulk, cold | hard deadline **30 s** |
-| LB-30 | Pinned transport | one attempt only, bounded by its §5 deadline; no walk, no overall-budget extension |
+| LB-28 | Ordinary sync, cold                              | hard deadline **15 s**                                                                                                           |
+| LB-29 | Bulk, cold                                       | hard deadline **30 s**                                                                                                           |
+| LB-30 | Pinned transport                                 | one attempt only, bounded by its §5 deadline; no walk, no overall-budget extension                                               |
 
 Consistency: at P2, T0+T1+T2+one T3 carrier deadline = 6 s. Add ≤ 1 s
 for rendezvous and signature validation, 250 ms for selection/reporting,
@@ -435,14 +436,14 @@ is reportable unless all five are recorded with the artifact.
 
 ### 6.1 Fixtures and topology
 
-| Fixture | Purpose | Minimum spec |
-|---|---|---|
-| **F1 direct pair** | T0 baseline, T2 direct TCP | Two `id` endpoints (client + server) on separate hosts/containers, same or adjacent networks; no proxy; no broker |
-| **F2 UDP-denied sandbox** | The motivating #5671 case | F1 plus an egress firewall that drops all UDP (including QUIC) while permitting TCP/443; result must be `udp_blocked`, not a hang |
-| **F3 HTTP proxy** | T3a CONNECT | `squid` or `tinyproxy` configured CONNECT-only, no URL inspection; proxy on its own host so its RTT is controllable; optional 407 auth flow |
-| **F4 self-hosted broker** | T1 relay UDP, T3a and T3b-S | `id` broker/serve-proxy on a third host; use the current codec in `pkgs/id/src/serve_proxy.rs` for frame-size fixtures and add the full #5792 broker path when available |
-| **F5 Workers staging relay** | T3b-W (#5794 shape) | A dedicated staging Worker + Durable Object on a paid plan, config frozen for the run; never production, never a shared demo account |
-| **F6 polling endpoint** | T3c provisional | A plain HTTPS request/response endpoint on the broker host; long-poll supported; no WebSocket upgrade |
+| Fixture                      | Purpose                     | Minimum spec                                                                                                                                                             |
+| ---------------------------- | --------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| **F1 direct pair**           | T0 baseline, T2 direct TCP  | Two `id` endpoints (client + server) on separate hosts/containers, same or adjacent networks; no proxy; no broker                                                        |
+| **F2 UDP-denied sandbox**    | The motivating #5671 case   | F1 plus an egress firewall that drops all UDP (including QUIC) while permitting TCP/443; result must be `udp_blocked`, not a hang                                        |
+| **F3 HTTP proxy**            | T3a CONNECT                 | `squid` or `tinyproxy` configured CONNECT-only, no URL inspection; proxy on its own host so its RTT is controllable; optional 407 auth flow                              |
+| **F4 self-hosted broker**    | T1 relay UDP, T3a and T3b-S | `id` broker/serve-proxy on a third host; use the current codec in `pkgs/id/src/serve_proxy.rs` for frame-size fixtures and add the full #5792 broker path when available |
+| **F5 Workers staging relay** | T3b-W (#5794 shape)         | A dedicated staging Worker + Durable Object on a paid plan, config frozen for the run; never production, never a shared demo account                                     |
+| **F6 polling endpoint**      | T3c provisional             | A plain HTTPS request/response endpoint on the broker host; long-poll supported; no WebSocket upgrade                                                                    |
 
 Topologies are recorded as a diagram in the run artifact. Each fixture
 host reports OS, kernel, CPU, rustc, TLS library, MTU and clock source.
@@ -451,17 +452,17 @@ to isolate a component, never as an acceptance profile.
 
 ### 6.2 Workloads
 
-| ID | Workload | Parameters | Metrics |
-|---|---|---|---|
-| **W1** | SSH keystroke echo through the fallback | 1 keystroke/100 ms for 5 min; 4 KiB max echo | IRTT, TTFB, p99 |
-| **W2** | ID query mix | 1 KiB request / ≤ 4 KiB response, 10 req/s for 3 min | IRTT, TTFB, error rate |
-| **W3** | Ordinary sync | 8 MiB in 64 KiB logical chunks, split into ≤ 16 KiB wire DATA payloads; acknowledged | SYNC, goodput |
-| **W4** | Bulk | 128 MiB sequential in 1 MiB logical chunks, split into ≤ 16 KiB wire DATA payloads | GOODPUT, completion |
-| **W5** | Mixed | W4 saturates the test tier (target 90% of its measured maximum goodput) + W1 concurrently on the same tier; bulk transfers repeat back-to-back for the whole W1 sampling interval, and mixed-load percentiles are computed only from interactive samples taken while a bulk transfer is active | interactive IRTT under load, HOL bound |
-| **W6** | Idle/keepalive | 30 min idle, then W2 for 30 s; repeated 10× | LB-17…LB-21 |
-| **W7** | Reconnect/resume | Kill the carrier at a random point ≥ 30× during W2 and W3/W4 | RESUME, re-sent bytes, retry count/backoff, final failure class, LB-20/22/23/24 |
-| **W8** | Bulk-class edge | 12 MiB logical stream paced at 1.2 MiB/s for 10 s (one finite transaction < 16 MiB) | class decision, selected tier/reason; provisional capability-filter check |
-| **W9** | Negotiation walk | Reset memory; T0/T1/T2 fail using recorded blackhole/closed-port fixtures; one T3 candidate succeeds; repeat with seeded known-good memory | NEG, candidate order, per-attempt deadline, failure class, LB-25…LB-30 |
+| ID     | Workload                                | Parameters                                                                                                                                                                                                                                                                                     | Metrics                                                                         |
+| ------ | --------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------- |
+| **W1** | SSH keystroke echo through the fallback | 1 keystroke/100 ms for 5 min; 4 KiB max echo                                                                                                                                                                                                                                                   | IRTT, TTFB, p99                                                                 |
+| **W2** | ID query mix                            | 1 KiB request / ≤ 4 KiB response, 10 req/s for 3 min                                                                                                                                                                                                                                           | IRTT, TTFB, error rate                                                          |
+| **W3** | Ordinary sync                           | 8 MiB in 64 KiB logical chunks, split into ≤ 16 KiB wire DATA payloads; acknowledged                                                                                                                                                                                                           | SYNC, goodput                                                                   |
+| **W4** | Bulk                                    | 128 MiB sequential in 1 MiB logical chunks, split into ≤ 16 KiB wire DATA payloads                                                                                                                                                                                                             | GOODPUT, completion                                                             |
+| **W5** | Mixed                                   | W4 saturates the test tier (target 90% of its measured maximum goodput) + W1 concurrently on the same tier; bulk transfers repeat back-to-back for the whole W1 sampling interval, and mixed-load percentiles are computed only from interactive samples taken while a bulk transfer is active | interactive IRTT under load, HOL bound                                          |
+| **W6** | Idle/keepalive                          | 30 min idle, then W2 for 30 s; repeated 10×                                                                                                                                                                                                                                                    | LB-17…LB-21                                                                     |
+| **W7** | Reconnect/resume                        | Kill the carrier at a random point ≥ 30× during W2 and W3/W4                                                                                                                                                                                                                                   | RESUME, re-sent bytes, retry count/backoff, final failure class, LB-20/22/23/24 |
+| **W8** | Bulk-class edge                         | 12 MiB logical stream paced at 1.2 MiB/s for 10 s (one finite transaction < 16 MiB)                                                                                                                                                                                                            | class decision, selected tier/reason; provisional capability-filter check       |
+| **W9** | Negotiation walk                        | Reset memory; T0/T1/T2 fail using recorded blackhole/closed-port fixtures; one T3 candidate succeeds; repeat with seeded known-good memory                                                                                                                                                     | NEG, candidate order, per-attempt deadline, failure class, LB-25…LB-30          |
 
 W1 and W2 are the interactive cells (LB-1…LB-6, plus LB-5a); W3 is ordinary sync
 (LB-7…LB-11b); W4 is bulk (LB-12…LB-16b); W5 decides the mixed-load bound;
@@ -507,17 +508,17 @@ failure-detection path.
 
 ### 6.5 Pass/fail gates
 
-| Gate | What must hold |
-|---|---|
-| **G1 interactive** | Every LB-1…LB-5 and LB-5a cell meets its p95 and p99 at P2 (where the tier is claimed), and the relative criterion at P1/P3/P4; LB-6 meets its P2 degraded budget and §4.1 polling criterion |
-| **G2 setup** | LB-31 SETUP p95 per tier at P2 |
-| **G3 negotiation** | LB-25…LB-30 NEG bounds, with per-attempt deadlines from §5; no negotiation exceeds one pass |
-| **G4 ordinary sync** | LB-7…LB-11b goodput and completion at P2 |
-| **G5 bulk** | LB-12…LB-15 and LB-16a floors/completion; LB-16 watchdog trigger behavior only (rate is reported, not gated); LB-16b bulk-class rejection |
-| **G6 mixed** | §4.4 mixed-load bound (HOL/multiplexing) for tiers claiming bulk support; T3b-W uses W1+W3 (interactive + ordinary sync) instead of W1+W4 |
-| **G7 idle/keepalive** | 0 spurious disconnects in the 10 × 30 min gate; LB-18/LB-19 intervals, LB-20 detection and LB-21 idle survival; T3c persistent keepalive is N/A and request timeout is reported |
-| **G8 resume** | LB-22/LB-23/LB-24: resume p95/p99, retry/backoff report, zero re-sent acknowledged bytes, no restart-from-zero |
-| **G9 absolute ceilings** | Every tier labelled interactive meets the 250 ms p95 P2 ceiling; otherwise the degraded label is mandatory |
+| Gate                     | What must hold                                                                                                                                                                                                                                     |
+| ------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **G1 interactive**       | Every LB-1…LB-5 and LB-5a cell meets its p95 and p99 at P2 (where the tier is claimed), and the relative criterion at P1/P3/P4; LB-6 meets its P2 degraded budget and §4.1 polling criterion                                                       |
+| **G2 setup**             | LB-31 SETUP p95 per tier at P2                                                                                                                                                                                                                     |
+| **G3 negotiation**       | LB-25…LB-30 NEG bounds, with per-attempt deadlines from §5; no negotiation exceeds one pass                                                                                                                                                        |
+| **G4 ordinary sync**     | LB-7…LB-11b goodput and completion at P2                                                                                                                                                                                                           |
+| **G5 bulk**              | LB-12…LB-15 and LB-16a floors/completion; LB-16 watchdog trigger behavior only (rate is reported, not gated); LB-16b bulk-class rejection                                                                                                          |
+| **G6 mixed**             | §4.4 mixed-load bound (HOL/multiplexing) for tiers claiming bulk support; T3b-W uses W1+W3 (interactive + ordinary sync) instead of W1+W4                                                                                                          |
+| **G7 idle/keepalive**    | 0 spurious disconnects in the 10 × 30 min gate; LB-18/LB-19 intervals, LB-20 detection and LB-21 idle survival; T3c persistent keepalive is N/A and request timeout is reported                                                                    |
+| **G8 resume**            | LB-22/LB-23/LB-24: resume p95/p99, retry/backoff report, zero re-sent acknowledged bytes, no restart-from-zero                                                                                                                                     |
+| **G9 absolute ceilings** | Every tier labelled interactive meets the 250 ms p95 P2 ceiling; otherwise the degraded label is mandatory                                                                                                                                         |
 | **G10 class capability** | W8 reports `bulk` for the 12 MiB / 10 s rate-edge case; T3b-W/T3c are not bulk-capable candidates under the #5794 boundary / provisional T3c assumption. This remains a parent-reconciliation test until #5791 accepts the capability-filter rule. |
 
 A tier passes only if every gate for the traffic class it claims passes.
@@ -532,7 +533,7 @@ pass T0–T3a and T3b-S and must report T3b-W as **unmeasured**, not as passing.
 2. Bring up F1; run P0 component-isolation smoke (W2, 60 s) to prove the
    harness itself adds < 2 ms p95.
 3. For each profile P1…P4: run T0 (W1, W2, W3, W4, W5, W8) as that profile's
-    baseline. A profile with a failed or unstable T0 baseline is void.
+   baseline. A profile with a failed or unstable T0 baseline is void.
 4. For each fallback tier available in the fixture set: set up its
    topology, verify with diagnostics that the intended transport was
    actually chosen (and only it — a fallback accidentally walking to
@@ -557,7 +558,7 @@ pass T0–T3a and T3b-S and must report T3b-W as **unmeasured**, not as passing.
   a metric, a fixture and a gate. Checked by review, not by running code.
 - **Implementation PR gate:** the P0/P1 netem subset of G1–G10
   runs in the PR CI where the harness is cheap enough; the full matrix is
-   `full (main tier):` per [`.github/ci-policy.md`](../.github/ci-policy.md)
+  `full (main tier):` per [`.github/ci-policy.md`](../.github/ci-policy.md)
   and is not a merge gate.
 - **Pre-release gate:** the full matrix at P1–P4, including one
   real-network P3 cross-check and the F5 Workers staging run, must pass or
@@ -591,16 +592,16 @@ These are assumptions, not decisions. If a sibling lands differently, the
 budget numbers stay as targets and the fixtures/allocations are updated in
 a dated follow-up; a sibling is never silently overridden.
 
-| Sibling | Assumption used here | If it lands differently |
-|---|---|---|
-| [#5792](https://github.com/developing-today/code/issues/5792) broker/serve-proxy (protocol, framing, multiplexing, keepalive) | One multiplexed carrier with per-stream flow control is a comparison assumption, not a design decision. Current codec: DATA payload ≤ 16 KiB; full frame body ≤ 256 KiB (`pkgs/id/src/serve_proxy.rs`). The #5794 1 MiB application cap is not a broker wire-frame size. Broker adds ≤ 1 RTT + 10 ms; keepalive intervals are test inputs only. | Re-run W5 with the chosen carrier; if it uses multiple connections, HOL budgets may relax. Revalidate LB-18…LB-23 against the chosen keepalive/resumption mechanism; protocol decisions stay with #5792. |
-| [#5793](https://github.com/developing-today/code/issues/5793) rendezvous/discovery | One signed-record fetch over HTTPS: ≤ 1 RTT + 250 ms p95, inside SETUP; stale/last-known-good adds no network RTT | Any additional lookup time/candidate consumes the shared NEG budget; no extra budget or candidate-count policy is set here. Reconcile against LB-25/LB-26 once #5793 settles its source order. |
-| [#5795](https://github.com/developing-today/code/issues/5795) relay trust/authorization | Capability check reuses the authenticated exchange; no extra round trip on the data path | One extra authenticated round trip adds 1 RTT to SETUP and to NEG for that tier; per-message IRTT unaffected unless the check is per-message, in which case LB-1…LB-6 increment by 1 RTT and this record must be revised |
-| [#5796](https://github.com/developing-today/code/issues/5796) CONNECT traversal | CONNECT with one 407 auth challenge per proxy session; 2 RTT once per connection; TLS-in-TLS only where the topology has it | Per-session challenge count/backoff changes SETUP only; per-message budgets unchanged. If #5796 adds a second TLS layer on every message, LB-4 is re-derived |
-| [#5798](https://github.com/developing-today/code/issues/5798) fleet surface | No latency effect; the fleet command configures the same client | none |
-| [#5811](https://github.com/developing-today/code/issues/5811) WSS/HTTPS browser adapter | Not a tier in this record; browser adapter latency is #5811's to record | Cross-check only: if #5811's measured cost exceeds LB-5's allocation for the same profile, both records are reconciled in a dated note; neither silently adopts the other's number |
-| [#5794](https://github.com/developing-today/code/issues/5794) Workers boundary | T3b-W is interactive/ordinary-sync only; LB-16 has a watchdog guardrail but no throughput SLO | Binding: a future Workers change that wants a bulk SLO changes #5794 first, then this record's LB-16 |
-| [#5791](https://github.com/developing-today/code/issues/5791) negotiation | Per-attempt deadlines, one overall budget, one pass, `timeout` class, memory TTLs as supplied here | If #5791 changes the walk shape, LB-25…LB-30 are re-derived; the per-tier deadlines and memory TTL values remain valid inputs |
+| Sibling                                                                                                                       | Assumption used here                                                                                                                                                                                                                                                                                                                            | If it lands differently                                                                                                                                                                                                  |
+| ----------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| [#5792](https://github.com/developing-today/code/issues/5792) broker/serve-proxy (protocol, framing, multiplexing, keepalive) | One multiplexed carrier with per-stream flow control is a comparison assumption, not a design decision. Current codec: DATA payload ≤ 16 KiB; full frame body ≤ 256 KiB (`pkgs/id/src/serve_proxy.rs`). The #5794 1 MiB application cap is not a broker wire-frame size. Broker adds ≤ 1 RTT + 10 ms; keepalive intervals are test inputs only. | Re-run W5 with the chosen carrier; if it uses multiple connections, HOL budgets may relax. Revalidate LB-18…LB-23 against the chosen keepalive/resumption mechanism; protocol decisions stay with #5792.                 |
+| [#5793](https://github.com/developing-today/code/issues/5793) rendezvous/discovery                                            | One signed-record fetch over HTTPS: ≤ 1 RTT + 250 ms p95, inside SETUP; stale/last-known-good adds no network RTT                                                                                                                                                                                                                               | Any additional lookup time/candidate consumes the shared NEG budget; no extra budget or candidate-count policy is set here. Reconcile against LB-25/LB-26 once #5793 settles its source order.                           |
+| [#5795](https://github.com/developing-today/code/issues/5795) relay trust/authorization                                       | Capability check reuses the authenticated exchange; no extra round trip on the data path                                                                                                                                                                                                                                                        | One extra authenticated round trip adds 1 RTT to SETUP and to NEG for that tier; per-message IRTT unaffected unless the check is per-message, in which case LB-1…LB-6 increment by 1 RTT and this record must be revised |
+| [#5796](https://github.com/developing-today/code/issues/5796) CONNECT traversal                                               | CONNECT with one 407 auth challenge per proxy session; 2 RTT once per connection; TLS-in-TLS only where the topology has it                                                                                                                                                                                                                     | Per-session challenge count/backoff changes SETUP only; per-message budgets unchanged. If #5796 adds a second TLS layer on every message, LB-4 is re-derived                                                             |
+| [#5798](https://github.com/developing-today/code/issues/5798) fleet surface                                                   | No latency effect; the fleet command configures the same client                                                                                                                                                                                                                                                                                 | none                                                                                                                                                                                                                     |
+| [#5811](https://github.com/developing-today/code/issues/5811) WSS/HTTPS browser adapter                                       | Not a tier in this record; browser adapter latency is #5811's to record                                                                                                                                                                                                                                                                         | Cross-check only: if #5811's measured cost exceeds LB-5's allocation for the same profile, both records are reconciled in a dated note; neither silently adopts the other's number                                       |
+| [#5794](https://github.com/developing-today/code/issues/5794) Workers boundary                                                | T3b-W is interactive/ordinary-sync only; LB-16 has a watchdog guardrail but no throughput SLO                                                                                                                                                                                                                                                   | Binding: a future Workers change that wants a bulk SLO changes #5794 first, then this record's LB-16                                                                                                                     |
+| [#5791](https://github.com/developing-today/code/issues/5791) negotiation                                                     | Per-attempt deadlines, one overall budget, one pass, `timeout` class, memory TTLs as supplied here                                                                                                                                                                                                                                              | If #5791 changes the walk shape, LB-25…LB-30 are re-derived; the per-tier deadlines and memory TTL values remain valid inputs                                                                                            |
 
 Additional assumptions:
 
@@ -624,7 +625,7 @@ Additional assumptions:
 
 ## 8. Relation to parent and siblings — explicit check
 
-No *adopted* decision above changes a #5671 decision: the attempt order is the
+No _adopted_ decision above changes a #5671 decision: the attempt order is the
 sorting axis (not amended), the broker/trust model is used as-is, the E2E
 boundary is an invariant on the harness ([§2](#2-fixed-inputs)), and
 rendezvous reachability is charged to SETUP/NEG rather than re-designed.
@@ -685,16 +686,16 @@ Each is written so it can become a literal acceptance test.
 6. **Interactive label requires the ceiling.** A tier above 250 ms p95
    IRTT at P2 is labelled degraded in diagnostics and documentation.
 7. **Mixed load is bounded on bulk-capable tiers.** Bulk must not push a
-    concurrent interactive session past 2× idle p95 and its profile
-    ceiling; if it does, that tier is degraded under load. T3b-W has no
-    bulk SLO; its forced diagnostic is only the LB-16 watchdog check.
+   concurrent interactive session past 2× idle p95 and its profile
+   ceiling; if it does, that tier is degraded under load. T3b-W has no
+   bulk SLO; its forced diagnostic is only the LB-16 watchdog check.
 8. **Keepalive is transport-level and bounded.** Intervals per §4.5, no
    more than 1 per 10 s, never counted as application/sync progress; a
    spurious disconnect while idle is a defect (LB-17).
 9. **Resume, never restart.** Reconnection resumes from the last
-    acknowledged offset; retries obey the bounded policy #5792 settles
-    and surface the final failure class. A > 1 MiB sync restarting from
-    zero is a failure (LB-24).
+   acknowledged offset; retries obey the bounded policy #5792 settles
+   and surface the final failure class. A > 1 MiB sync restarting from
+   zero is a failure (LB-24).
 10. **Bulk capability filtering is a recommendation, not an adopted
     negotiation rule here.** #5794 does not give T3b-W a bulk capability.
     This record recommends filtering it (and provisional T3c) from the
