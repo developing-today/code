@@ -15,11 +15,20 @@
 //!   membership table, never the blob store.
 //! - **Fails closed.** A request from a connection with no known `EndpointId` is refused, and so
 //!   is one whose verdict cannot be delivered.
+//! - **Local reads are the operator's.** The node's own key and its data directory's client
+//!   key — the two keys `build_access_policy` already trusts automatically for writes — may
+//!   fetch and observe any blob in the node's own store (see [`decide_with_local`]). The
+//!   local CLI and REPL connect with the client key, and locally published content
+//!   (documents with no group, plain uploads) is referenced by no world; without this the
+//!   gate would lock the operator out of their own store. Local trust extends to no other
+//!   peer: a remote requester still needs world membership for every hash.
 //!
 //! The reference index and the membership query are behind [`WorldAccess`]. The facade's
-//! `blob_gate::FoldedWorlds` answers membership from the folded worlds. Its reference index
-//! has no producer yet, so
-//! [`blob_events`] is not wired into `id serve`.
+//! `blob_gate::FoldedWorlds` answers membership from the folded worlds. The index has a
+//! producer now: [`build_reference_index`] over the event store's document references,
+//! with the worlds crate's `fold_group_events` folding the group log for membership, and
+//! `RefreshingWorlds` swapping fresh folds in as they change. `id serve` wires
+//! [`blob_events`] with those pieces whenever it has the node's event store open.
 
 use std::{
     collections::{BTreeSet, HashMap},
@@ -142,6 +151,83 @@ pub fn decide_with_blocks(
     })
 }
 
+/// Whether `requester` may make `request` for `hash`, counting local trust.
+///
+/// A requester in `local_readers` — the node's own key and its data directory's client
+/// key, the keys the write policy trusts automatically — may fetch or observe any blob
+/// in its own store, referenced or not: that is how the local CLI and REPL keep working
+/// when the gate is on, including for locally published content no world references.
+/// Everyone else is decided by [`decide`], unchanged.
+pub fn decide_with_local(
+    access: &impl WorldAccess,
+    policy: &BlobPolicy,
+    local_readers: &BTreeSet<EndpointId>,
+    requester: &EndpointId,
+    hash: &Hash,
+    request: Request,
+) -> bool {
+    local_readers.contains(requester) || decide(access, policy, requester, hash, request)
+}
+
+/// The child hashes a blob's bytes name when the blob is a `HashSeq`: the sequence is the
+/// raw concatenation of 32-byte hashes, so any other length is not a sequence and names no
+/// children.
+pub fn hashseq_children(bytes: &[u8]) -> Vec<Hash> {
+    if bytes.is_empty() || !bytes.len().is_multiple_of(32) {
+        return Vec::new();
+    }
+    bytes
+        .chunks_exact(32)
+        .map(|chunk| {
+            let mut raw = [0u8; 32];
+            raw.copy_from_slice(chunk);
+            Hash::from_bytes(raw)
+        })
+        .collect()
+}
+
+/// Builds the reference index the gate decides from: blob hash → the worlds that name it.
+///
+/// `references` pairs each referenced blob with the world that names it (a document event's
+/// blob and its group, as the worlds crate's `world_key` spells it). A document with no
+/// group names no world: the caller leaves it out, and its blob stays unreferenced.
+///
+/// `expand` names the children of a blob that is a `HashSeq` collection. Children are
+/// attributed to every world that references the collection, transitively: a member of
+/// the world may fetch the collection's contents, not just its sequence blob. The caller
+/// decides what counts as a collection (serve expands only a blob whose parsed children
+/// are all present in its store, so arbitrary 32-byte-multiple content does not spray
+/// references onto hashes nobody stored).
+pub fn build_reference_index(
+    references: impl IntoIterator<Item = (Hash, String)>,
+    expand: impl Fn(&Hash) -> Vec<Hash>,
+) -> HashMap<Hash, BTreeSet<String>> {
+    let mut index: HashMap<Hash, BTreeSet<String>> = HashMap::new();
+    for (hash, world) in references {
+        index.entry(hash).or_default().insert(world);
+    }
+    // Attribute HashSeq children to the referencing worlds, transitively. The worklist
+    // holds (hash, world) pairs not yet expanded for that world, so the loop ends when
+    // every reachable pair has been expanded once.
+    let mut worklist: Vec<(Hash, String)> = index
+        .iter()
+        .flat_map(|(hash, worlds)| worlds.iter().map(move |world| (*hash, world.clone())))
+        .collect();
+    let mut expanded: BTreeSet<(Hash, String)> = BTreeSet::new();
+    while let Some((hash, world)) = worklist.pop() {
+        if !expanded.insert((hash, world.clone())) {
+            continue;
+        }
+        for child in expand(&hash) {
+            let worlds = index.entry(child).or_default();
+            if worlds.insert(world.clone()) {
+                worklist.push((child, world.clone()));
+            }
+        }
+    }
+    index
+}
+
 /// The verdict for a request from `peer`: allowed only when the peer is known and `allow`
 /// says so. An unknown peer is refused.
 fn admit(
@@ -156,9 +242,10 @@ fn admit(
 
 /// Build the [`EventSender`] that a provider passes to `BlobsProtocol::new`.
 ///
-/// Fetch, `get_many` and observe are decided by [`decide`] over `access`. Pushes are decided by
-/// `writes`, as in [`id_core::access::blobs_events`]. Every request is intercepted, so no store
-/// read happens before the verdict.
+/// Fetch, `get_many` and observe are decided by [`decide_with_local`] over `access` and
+/// `local_readers`. Pushes are decided by `writes`, as in
+/// [`id_core::access::blobs_events`]. Every request is intercepted, so no store read
+/// happens before the verdict.
 ///
 /// A background task is spawned on the current Tokio runtime and ends when the sender is
 /// dropped.
@@ -166,8 +253,9 @@ pub fn blob_events<A: WorldAccess>(
     access: Arc<A>,
     policy: BlobPolicy,
     writes: AccessPolicy,
+    local_readers: BTreeSet<EndpointId>,
 ) -> EventSender {
-    blob_events_with_blocks(access, policy, writes, None)
+    blob_events_with_blocks(access, policy, writes, None, local_readers)
 }
 
 /// [`blob_events`], with the operator block list composed into every
@@ -181,6 +269,7 @@ pub fn blob_events_with_blocks<A: WorldAccess>(
     policy: BlobPolicy,
     writes: AccessPolicy,
     blocks: Option<Arc<dyn BlockList>>,
+    local_readers: BTreeSet<EndpointId>,
 ) -> EventSender {
     let (tx, mut rx) = tokio::sync::mpsc::channel::<ProviderMessage>(64);
     let mask = EventMask {
@@ -205,7 +294,8 @@ pub fn blob_events_with_blocks<A: WorldAccess>(
                 }
                 ProviderMessage::GetRequestReceived(m) => {
                     let verdict = admit(peers.get(&m.connection_id), |id| {
-                        decide_with_blocks(
+                        local_readers.contains(id)
+                            || decide_with_blocks(
                             &*access,
                             &policy,
                             blocks.as_deref(),
@@ -218,8 +308,9 @@ pub fn blob_events_with_blocks<A: WorldAccess>(
                 }
                 ProviderMessage::GetManyRequestReceived(m) => {
                     let verdict = admit(peers.get(&m.connection_id), |id| {
-                        m.request.hashes.iter().all(|hash| {
-                            decide_with_blocks(
+                        local_readers.contains(id)
+                            || m.request.hashes.iter().all(|hash| {
+                                decide_with_blocks(
                                 &*access,
                                 &policy,
                                 blocks.as_deref(),
@@ -233,7 +324,8 @@ pub fn blob_events_with_blocks<A: WorldAccess>(
                 }
                 ProviderMessage::ObserveRequestReceived(m) => {
                     let verdict = admit(peers.get(&m.connection_id), |id| {
-                        decide_with_blocks(
+                        local_readers.contains(id)
+                            || decide_with_blocks(
                             &*access,
                             &policy,
                             blocks.as_deref(),
@@ -336,6 +428,42 @@ mod tests {
             members: vec![("docs".to_owned(), member)],
             refs: vec![(hash, "docs".to_owned())],
         }
+    }
+
+    #[test]
+    fn a_local_reader_fetches_an_unreferenced_blob_but_a_stranger_cannot() {
+        // No world references blob(9) and nobody is a member of anything: the
+        // membership rule alone refuses everyone, which is the lockout the local
+        // trust exists to prevent for the operator's own keys.
+        let t = Table::default();
+        let p = BlobPolicy::default();
+        let local = BTreeSet::from([id(7)]);
+        assert!(decide_with_local(
+            &t,
+            &p,
+            &local,
+            &id(7),
+            &blob(9),
+            Request::Fetch
+        ));
+        assert!(!decide_with_local(
+            &t,
+            &p,
+            &local,
+            &id(8),
+            &blob(9),
+            Request::Fetch
+        ));
+        // Local trust also covers observe of the operator's own store, even
+        // when the server policy leaves observe off for worlds.
+        assert!(decide_with_local(
+            &t,
+            &p,
+            &local,
+            &id(7),
+            &blob(9),
+            Request::Observe
+        ));
     }
 
     #[test]
@@ -498,5 +626,44 @@ mod tests {
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+mod producer_tests {
+    use std::collections::HashMap;
+
+    use super::*;
+
+    fn blob(n: u8) -> Hash {
+        Hash::from_bytes([n; 32])
+    }
+
+    #[test]
+    fn reference_index_attributes_hashseq_children_transitively() {
+        // world "w" references the sequence blob 1; 1 names 2 and 3; 2 names 4.
+        let children: HashMap<Hash, Vec<Hash>> =
+            HashMap::from([(blob(1), vec![blob(2), blob(3)]), (blob(2), vec![blob(4)])]);
+        let index = build_reference_index([(blob(1), "w".to_owned())], |hash| {
+            children.get(hash).cloned().unwrap_or_default()
+        });
+        for hash in [blob(1), blob(2), blob(3), blob(4)] {
+            assert_eq!(
+                index.get(&hash).map(|w| w.contains("w")),
+                Some(true),
+                "{hash} must be referenced by w"
+            );
+        }
+        assert!(!index.contains_key(&blob(9)), "unrelated hash stays out");
+    }
+
+    #[test]
+    fn hashseq_children_parses_concatenated_hashes() {
+        let mut bytes = blob(5).as_bytes().to_vec();
+        bytes.extend_from_slice(blob(6).as_bytes());
+        assert_eq!(hashseq_children(&bytes), vec![blob(5), blob(6)]);
+        assert!(hashseq_children(&bytes[..33]).is_empty(), "ragged length");
+        assert!(hashseq_children(&[]).is_empty(), "empty names nothing");
     }
 }
