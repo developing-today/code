@@ -15,10 +15,10 @@
 use std::collections::{BTreeSet, HashMap};
 use std::path::PathBuf;
 
-use id_caps::library_gate::{check_import, GateInputs, GateOutcome};
+use id_caps::library_gate::{GateInputs, GateOutcome, check_import};
 use id_caps::library_manifest::{BuildMode, LibraryKind, LibraryManifest, PlatformRequirement};
 use id_caps::library_resolution::{
-    resolve_import, CheckedSurface, ImportRequest, ImportSource, ManifestRegistry, RegistryEntry,
+    CheckedSurface, ImportRequest, ImportSource, ManifestRegistry, RegistryEntry, resolve_import,
 };
 use id_caps::world_caps::PROVIDER_REGISTRY;
 use serde_json::Value;
@@ -181,10 +181,7 @@ fn roc_import_policy_fixture_matrix() {
             ),
             "refused" => {
                 let GateOutcome::Refused(failures) = &verdict.outcome else {
-                    panic!(
-                        "case {name}: expected a refusal, got {:?}",
-                        verdict.outcome
-                    );
+                    panic!("case {name}: expected a refusal, got {:?}", verdict.outcome);
                 };
                 let got: Vec<(String, Vec<String>)> = failures
                     .iter()
