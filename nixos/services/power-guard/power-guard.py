@@ -368,7 +368,13 @@ def main():
         edge = discharging and cap <= EDGE_PCT
 
         if not low:
-            if inh.held:
+            # Log recovery whenever a child handle exists, not only
+            # while held: a child that died since the last sample
+            # reads held=False, but the recovery (and the release
+            # below, which reaps it) still happened and belongs in
+            # the journal with the battery readings (PR #8025
+            # review, thread 4511572453).
+            if inh.held or inh.proc is not None:
                 log(
                     f"recovered (ac={on_ac} cap={cap} status={status} tte={tte}); releasing"
                 )
@@ -376,7 +382,12 @@ def main():
             critical_since = edge_since = None
             sleep_pending = None
         else:
-            inh.engage()
+            if sleep_pending is None:
+                inh.engage()
+            # While a sleep is pending on the inhibitor release
+            # settling, engaging would stack a fresh block lock
+            # directly in front of the sleep command once the reap
+            # settles (PR #8025 re-review, thread 4511572429).
             critical_since = critical_since if critical else None
             if critical and critical_since is None:
                 critical_since = now
