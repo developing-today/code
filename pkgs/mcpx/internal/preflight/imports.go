@@ -364,6 +364,48 @@ func ResolutionArgs(args []string) []string {
 	return out
 }
 
+// infoArgs adapts the runtime's resolution arguments for
+// `deno info`. --cached-only is a run/check flag: `deno check`
+// accepts it, but `deno info` rejects it outright ("unexpected
+// argument", verified on deno 2.9.8) -- forwarding it verbatim
+// made every import-graph computation fail whenever the
+// executing runtime carried it, which is every deno run under
+// deps.autoInstall=off, its default (#8457). The flag's
+// graph-relevant meaning -- resolve only what is already
+// available, never fetch -- is exactly --no-remote on the info
+// surface, so it is translated, not dropped: dropping it would
+// let a report-mode check download the very modules the run
+// will refuse to fetch.
+func infoArgs(args []string) []string {
+	out := ResolutionArgs(args)
+	seenNoRemote := false
+	for i, a := range out {
+		if a == "--no-remote" {
+			seenNoRemote = true
+		}
+		if a == "--cached-only" || strings.HasPrefix(a, "--cached-only=") {
+			out[i] = "--no-remote"
+			seenNoRemote = true
+		}
+	}
+	if !seenNoRemote {
+		return out
+	}
+	// Dedupe --no-remote (the runtime may carry both spellings).
+	deduped := out[:0]
+	seen := false
+	for _, a := range out {
+		if a == "--no-remote" {
+			if seen {
+				continue
+			}
+			seen = true
+		}
+		deduped = append(deduped, a)
+	}
+	return deduped
+}
+
 // isolationArgs are appended LAST to every report-mode deno info call, so
 // they win over any forwarded or project-configured value: report mode
 // must not install dependencies or write a lockfile as a side effect of
@@ -411,7 +453,7 @@ func CheckImportsResolved(ctx context.Context, denoBin, entry string, mode Impor
 		defer cancel()
 	}
 	argv := []string{"info", "--json"}
-	argv = append(argv, ResolutionArgs(runtimeArgs)...)
+	argv = append(argv, infoArgs(runtimeArgs)...)
 	argv = append(argv, isolationArgs...)
 	argv = append(argv, entry)
 	cmd := exec.CommandContext(cctx, denoBin, argv...)
