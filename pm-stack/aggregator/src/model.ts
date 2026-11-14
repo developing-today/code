@@ -219,6 +219,9 @@ export interface RoadmapRow {
   links: Link[];
   /** Grist UI link for this row's document (#1136), when known. */
   gristUrl?: string;
+  /** Repo-file link for this row's source file + heading (#1738), when
+   * the row was parsed from a repo roadmap file rather than Grist. */
+  fileUrl?: string;
 }
 
 /** Where each facet's data came from, shown in the UI footer. */
