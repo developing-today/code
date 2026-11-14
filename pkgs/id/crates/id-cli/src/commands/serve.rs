@@ -1689,7 +1689,7 @@ pub async fn cmd_serve(opts: ServeOptions) -> Result<()> {
             let folded = build_blob_gate(
                 events,
                 &store_handle,
-                &serve_groups_log_path(groups_log.clone()),
+                &groups_log,
             )
             .await;
             Some(Arc::new(crate::blob_gate::RefreshingWorlds::new(folded)))
