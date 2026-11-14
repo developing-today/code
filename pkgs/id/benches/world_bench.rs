@@ -828,7 +828,7 @@ fn bench_guest_replay(events: u64, reps: usize) -> Result<Vec<f64>> {
     let mut core = WorldCore::new("bench-replay", WorldLimits::default())?;
     let (participant, _token) = core.issue_capability(
         "bench",
-        WorldScopes::JOIN.union(WorldScopes::CHAT),
+        WorldScopes::GUEST,
         CapabilityBounds {
             expires_at: None,
             uses: None,
@@ -842,13 +842,16 @@ fn bench_guest_replay(events: u64, reps: usize) -> Result<Vec<f64>> {
     // expectations: issue through a scratch core and harvest its journal by
     // replaying chat through the public API instead — simpler: committed
     // events only need a participant id that exists, and restore validates
-    // the header + ordering, so issue the capability in the restored core's
+    // the header + ordering + each event kind against the participant's
+    // scopes, so the participant is issued the guest set (JOIN|CHAT|INPUT):
+    // an INPUT-less Issued entry makes restore refuse the first committed
+    // input event (#8316). Issue the capability in the restored core's
     // place by using participant 1 events after an Issued entry we construct
     // from the scratch participant's public fields.
     journal.push(JournalEntry::Issued {
         participant,
         digest: "0".repeat(64),
-        scopes: (WorldScopes::JOIN.union(WorldScopes::CHAT)).bits(),
+        scopes: WorldScopes::GUEST.bits(),
         parent: None,
         expires_at: None,
         uses: None,
