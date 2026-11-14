@@ -110,9 +110,10 @@ impl BaselineCache {
     /// Take the baseline `token` names, when it still belongs to `participant`
     /// and matches the screen shape the caller is about to send.
     ///
-    /// A token that is unknown, expired or bound to another participant (or
-    /// shape) is dropped and reported as a miss, so a caller always has to
-    /// fall back to a full view.
+    /// A token that is unknown or expired is a miss. A token bound to another
+    /// participant (or shape) is also reported as a miss, but the baseline is
+    /// NOT consumed: it stays cached for its own context. Either way the
+    /// caller falls back to a full view for this presentation.
     pub(crate) fn take_matching(
         &mut self,
         token: &str,
@@ -126,14 +127,19 @@ impl BaselineCache {
             .entries
             .iter()
             .position(|(candidate, _)| candidate == token)?;
-        let (_, baseline) = self.entries.remove(position)?;
-        if baseline.participant != participant
-            || baseline.version != version
-            || baseline.width != width
-            || baseline.height != height
         {
-            return None;
+            let baseline = &self.entries[position].1;
+            if baseline.participant != participant
+                || baseline.version != version
+                || baseline.width != width
+                || baseline.height != height
+            {
+                // A miss never consumes the baseline: the token may still be
+                // presented again in its own context (PR #5036 invariant).
+                return None;
+            }
         }
+        let (_, baseline) = self.entries.remove(position)?;
         Some(baseline)
     }
 
@@ -216,6 +222,32 @@ mod tests {
         assert!(
             cache.take_matching(&fourth, 7, 1, 1, 1).is_none(),
             "a token is single-use"
+        );
+    }
+
+    #[test]
+    fn a_mismatched_presentation_does_not_consume_the_baseline() {
+        let mut cache = BaselineCache::default();
+        let token = cache.issue(baseline(7, 3));
+        assert!(
+            cache.take_matching(&token, 8, 1, 1, 1).is_none(),
+            "another participant misses"
+        );
+        assert!(
+            cache.take_matching(&token, 7, 1, 2, 1).is_none(),
+            "another viewport misses"
+        );
+        assert!(
+            cache.take_matching(&token, 7, 2, 1, 1).is_none(),
+            "another version misses"
+        );
+        let taken = cache
+            .take_matching(&token, 7, 1, 1, 1)
+            .expect("the baseline survives mismatched presentations");
+        assert_eq!(taken.revision, 3);
+        assert!(
+            cache.take_matching(&token, 7, 1, 1, 1).is_none(),
+            "a matched token is still single-use"
         );
     }
 
