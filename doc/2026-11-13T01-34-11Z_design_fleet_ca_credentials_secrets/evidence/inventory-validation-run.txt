@@ -1,0 +1,15 @@
+ADDENDUM_secrets_architecture_performance_infrastructure.md: nonblank=113 mapped=113 gaps=0
+COMPANION_pm_charter_shared_conventions.md: nonblank=127 mapped=127 gaps=0
+COORDINATOR_summit_handoff.md: nonblank=279 mapped=279 gaps=0
+DECISION_REVIEW_AND_NEXT_STEPS.md: nonblank=41 mapped=41 gaps=0
+HANDOFF_claude_fleet_ca_credentials_secrets.md: nonblank=43 mapped=43 gaps=0
+README.md: nonblank=17 mapped=17 gaps=0
+SECRETS_BACKEND_RESEARCH_2026-11-06.md: nonblank=117 mapped=117 gaps=0
+SHA256SUMS: nonblank=5 mapped=5 gaps=0
+fleet_agent_handoff_prompt_v0_3.md: nonblank=60 mapped=60 gaps=0
+fleet_architecture_spec_v0_3.md: nonblank=2119 mapped=2119 gaps=0
+source_input_3_architectural_perspective.txt: nonblank=1183 mapped=1183 gaps=0
+shard_records=1496 excluded_assignment_manifests=2 canonical_records=1496 unique_source_ids=1496
+record_classes={'context/admin': 21, 'normative-or-proposed': 935, 'historical': 540}
+member_outcomes=1825 member_classes={'normative-or-proposed': 1825} member_oracle_gaps=0 member_atomicity_gaps=0
+normative_oracle_gaps=0 normative_atomicity_gaps=0 unmapped_nonblank_source_lines=0
