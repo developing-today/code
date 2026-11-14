@@ -16,6 +16,24 @@
 // signal it re-raises that signal on itself so the supervisor sees the
 // identical death (code=killed, signal=N) it would have seen unwrapped.
 //
+// Known limit: a signal addressed directly to the child's pid is
+// delivered only to the child, and no userspace mechanism short of
+// ptrace supervision can observe its sender; ptrace would change
+// the child's debugging semantics and can stall the service, so it
+// is deliberately not used. Such a death is still recorded
+// (child-killed, with the signal number), just without a sender.
+// The wrapper is the unit's main process — the pid that systemd,
+// systemctl kill, and a plain kill of the unit all address — which
+// is the delivery path the 2026-11-11 actor used.
+//
+// Arguments are parsed strictly, per the repo's operator-script
+// argument contract: the only wrapper options are --log FILE,
+// --log=FILE, and the -- terminator, all before the command, and
+// all validated before any side effect (no pipe, no fork, no log
+// record). Anything else starting with -- in the option prefix is
+// a usage error (exit 64) naming the option. A command whose name
+// starts with -- is run after an explicit --.
+//
 // Usage: sigterm-witness --log FILE -- CMD [ARGS...]
 //        (log path may also come from SIGTERM_WITNESS_LOG)
 
@@ -45,6 +63,12 @@ struct evt {
 };
 
 static int selfpipe[2];
+
+/* Events the handler could not queue because the self-pipe was
+ * full. The handler never blocks (the pipe is O_NONBLOCK): a full
+ * pipe costs a receipt, never the service — the main loop reports
+ * the running total so the loss is itself a matter of record. */
+static volatile sig_atomic_t dropped_events = 0;
 
 static void handler(int sig, siginfo_t *info, void *uctx) {
   (void)uctx;
@@ -143,8 +167,12 @@ static void handler(int sig, siginfo_t *info, void *uctx) {
       }
     }
   }
-  ssize_t r = write(selfpipe[1], &e, sizeof e);
-  (void)r;
+  /* sizeof e is far below PIPE_BUF, so this write is atomic: it
+   * either queues the whole event or, on a full pipe, fails with
+   * EAGAIN and the event is counted as dropped. Never a block,
+   * never a partial record. */
+  if (write(selfpipe[1], &e, sizeof e) != (ssize_t)sizeof e)
+    dropped_events++;
 }
 
 static const int caught[] = {SIGTERM, SIGINT, SIGHUP, SIGQUIT, SIGUSR1, SIGUSR2};
@@ -198,17 +226,47 @@ static const char *signame(int sig) {
 int main(int argc, char **argv) {
   const char *logpath = getenv("SIGTERM_WITNESS_LOG");
   int i = 1;
-  if (i + 1 < argc && strcmp(argv[i], "--log") == 0) {
-    logpath = argv[i + 1];
-    i += 2;
+  /* Strict option-prefix parse (operator-script argument
+   * contract): --log FILE, --log=FILE, and -- are the only wrapper
+   * options, and every one is validated here — before the pipe,
+   * the fork, and any log record. An unknown option is a usage
+   * error naming the option, never a command name to exec. */
+  while (i < argc) {
+    if (strcmp(argv[i], "--") == 0) { i++; break; }
+    if (strcmp(argv[i], "--log") == 0) {
+      if (i + 1 >= argc) {
+        fprintf(stderr, "sigterm-witness: --log requires a FILE argument\n"
+                        "usage: sigterm-witness --log FILE -- CMD [ARGS...]\n");
+        return 64;
+      }
+      logpath = argv[i + 1];
+      i += 2;
+      continue;
+    }
+    if (strncmp(argv[i], "--log=", 6) == 0) {
+      if (argv[i][6] == '\0') {
+        fprintf(stderr, "sigterm-witness: --log= requires a non-empty FILE\n"
+                        "usage: sigterm-witness --log FILE -- CMD [ARGS...]\n");
+        return 64;
+      }
+      logpath = argv[i] + 6;
+      i++;
+      continue;
+    }
+    if (argv[i][0] == '-' && argv[i][1] == '-') {
+      fprintf(stderr, "sigterm-witness: unknown option %s\n"
+                      "usage: sigterm-witness --log FILE -- CMD [ARGS...]\n",
+              argv[i]);
+      return 64;
+    }
+    break; /* first non-option token: the command */
   }
-  if (i < argc && strcmp(argv[i], "--") == 0) i++;
   if (i >= argc || logpath == NULL) {
     fprintf(stderr, "usage: sigterm-witness --log FILE -- CMD [ARGS...]\n");
     return 64;
   }
 
-  if (pipe2(selfpipe, O_CLOEXEC) != 0) { perror("pipe2"); return 70; }
+  if (pipe2(selfpipe, O_CLOEXEC | O_NONBLOCK) != 0) { perror("pipe2"); return 70; }
 
   struct sigaction sa;
   memset(&sa, 0, sizeof sa);
@@ -245,6 +303,7 @@ int main(int argc, char **argv) {
 
   int status = 0;
   int child_done = 0;
+  sig_atomic_t dropped_reported = 0;
   char rbuf[sizeof(struct evt) * 8];
   while (!child_done) {
     /* Drain any pending signal events (non-blocking read). */
@@ -263,6 +322,12 @@ int main(int argc, char **argv) {
                 e.sender_starttime, cmd, (int)child);
         kill(child, e.sig); /* forward — the service must feel it */
       }
+    }
+    if (dropped_events != dropped_reported) {
+      logline(logpath,
+              "signal-events-dropped count=%d (self-pipe full; the handler never blocks)",
+              (int)dropped_events);
+      dropped_reported = dropped_events;
     }
     pid_t w = waitpid(child, &status, WNOHANG);
     if (w == child) { child_done = 1; break; }
