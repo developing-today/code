@@ -33,7 +33,8 @@ use atlas_core::turso::{TURSO_HOST, resolve_turso_token};
 use atlas_core::{
     AtlasEmbedder, CachingEmbedder, Error as CoreError, FixedEmbedder, JsonlTraceSink,
     LocalBackend, QueryEmbedder, QueryEmbeddingCache, SearchBackend, SearchMode, SearchOptions,
-    TraceContext, TursoBackend, VectorBackend, run_get_chunk, run_search_traced,
+    TraceContext, TraceDocument, TursoBackend, VectorBackend, ingest_traces, load_feedback_refs,
+    run_get_chunk, run_retention, run_search_traced, search_traces,
 };
 use atlas_proto::{
     FilterSpec, QueryVariant, SearchMode as ProtoSearchMode, SearchParametersV1, SearchRequest,
@@ -67,6 +68,45 @@ enum Cmd {
     Init(InitArgs),
     /// download + verify the pinned Snowflake model into the state dir (step 5)
     FetchModel,
+    /// ingest query traces as a statistics-and-reports corpus, or run trace retention (design s4)
+    Traces(TracesArgs),
+}
+
+#[derive(Args)]
+struct TracesArgs {
+    #[command(subcommand)]
+    cmd: TracesCmd,
+}
+
+#[derive(Subcommand)]
+enum TracesCmd {
+    /// ingest trace JSONL into the statistics-and-reports corpus; --query searches it
+    Ingest(TraceIngestArgs),
+    /// run the 180-day hot retention pass (cold-tier move + compaction aggregate)
+    Retention(TraceRetentionArgs),
+}
+
+#[derive(Args)]
+struct TraceIngestArgs {
+    /// traces directory (default: the JsonlTraceSink default dir)
+    #[arg(long)]
+    dir: Option<PathBuf>,
+    /// only print documents matching this corpus query
+    #[arg(long)]
+    query: Option<String>,
+}
+
+#[derive(Args)]
+struct TraceRetentionArgs {
+    /// traces directory (default: the JsonlTraceSink default dir)
+    #[arg(long)]
+    dir: Option<PathBuf>,
+    /// today as YYYY-MM-DD (default: today, UTC)
+    #[arg(long)]
+    today: Option<String>,
+    /// feedback JSONL file naming referenced query ids (repeatable)
+    #[arg(long)]
+    feedback: Vec<PathBuf>,
 }
 
 #[derive(Args)]
@@ -886,6 +926,79 @@ fn cmd_serve(args: ServeArgs) -> Result<(), CliError> {
     server::serve_forever(settings, engine).map_err(|m| (1, m))
 }
 
+fn cmd_traces(args: TracesArgs) -> Result<(), CliError> {
+    match args.cmd {
+        TracesCmd::Ingest(a) => {
+            let dir = a.dir.unwrap_or_else(JsonlTraceSink::default_dir);
+            let corpus = ingest_traces(&dir).map_err(map_err)?;
+            let docs: Vec<&TraceDocument> = match &a.query {
+                Some(q) => search_traces(&corpus, q),
+                None => corpus.documents.iter().collect(),
+            };
+            let out = serde_json::json!({
+                "source_id": corpus.registration.source_id,
+                "source_class": corpus.registration.source_class,
+                "record_schema": corpus.registration.record_schema,
+                "dir": dir.display().to_string(),
+                "files": corpus.files,
+                "documents": corpus.documents.len(),
+                "skipped_lines": corpus.skipped_lines,
+                "query": a.query,
+                "matches": docs
+                    .iter()
+                    .map(|d| serde_json::json!({
+                        "query_id": d.query_id,
+                        "ts": d.ts,
+                        "surface": d.surface,
+                        "requester": format!("{}:{}", d.requester_kind, d.requester_id),
+                        "query_text": d.query_text,
+                        "query_text_hash": d.query_text_hash,
+                        "served": d.served,
+                        "merged": d.merged,
+                    }))
+                    .collect::<Vec<_>>(),
+            });
+            println!("{}", serde_json::to_string_pretty(&out).unwrap_or_default());
+            Ok(())
+        }
+        TracesCmd::Retention(a) => {
+            let dir = a.dir.unwrap_or_else(JsonlTraceSink::default_dir);
+            let today_str = match &a.today {
+                Some(t) => t.clone(),
+                None => {
+                    let ms = std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .map(|d| d.as_millis() as u64)
+                        .unwrap_or(0);
+                    atlas_core::trace::rfc3339_utc(ms)[..10].to_string()
+                }
+            };
+            let parts: Vec<i64> = today_str
+                .split('-')
+                .map(|p| p.parse().unwrap_or(0))
+                .collect();
+            if parts.len() != 3 || parts[0] == 0 {
+                return Err((2, format!("--today must be YYYY-MM-DD, got {today_str}")));
+            }
+            let refs = load_feedback_refs(&a.feedback).map_err(map_err)?;
+            let report = run_retention(&dir, (parts[0], parts[1] as u32, parts[2] as u32), &refs)
+                .map_err(map_err)?;
+            let out = serde_json::json!({
+                "dir": dir.display().to_string(),
+                "today": today_str,
+                "feedback_refs": refs.len(),
+                "kept_files": report.kept_files,
+                "moved_files": report.moved_files,
+                "compacted_records": report.compacted_records,
+                "exempt_records": report.exempt_records,
+                "cold_files": report.cold_files,
+            });
+            println!("{}", serde_json::to_string_pretty(&out).unwrap_or_default());
+            Ok(())
+        }
+    }
+}
+
 fn cmd_fetch_model() -> Result<(), CliError> {
     fetch_model::fetch_model().map_err(|m| (2, m))
 }
@@ -913,6 +1026,7 @@ fn run(cli: Cli) -> Result<(), CliError> {
         Cmd::Serve(args) => cmd_serve(args),
         Cmd::Init(args) => cmd_init(args),
         Cmd::FetchModel => cmd_fetch_model(),
+        Cmd::Traces(args) => cmd_traces(args),
     }
 }
 

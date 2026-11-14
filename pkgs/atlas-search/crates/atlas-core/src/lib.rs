@@ -40,6 +40,7 @@ pub mod shards;
 pub mod shingles;
 pub mod stage;
 pub mod trace;
+pub mod trace_ingest;
 pub mod turso;
 pub mod types;
 
@@ -70,5 +71,11 @@ pub use stage::{
     UnitState, check_stage_schema, provision_staging_db, schema_version,
 };
 pub use trace::{JsonlTraceSink, TRACE_SCHEMA, TraceContext, TraceSink};
+pub use trace_ingest::{
+    COLD_DIR_NAME, COMPACTION_SCHEMA, HOT_RETENTION_DAYS, RetentionReport, TRACE_SOURCE_CLASS,
+    TRACE_SOURCE_ID, TraceCorpus, TraceDocument, TraceSourceRegistration, days_from_civil,
+    ingest_traces, load_feedback_refs, record_included, run_retention, search_traces,
+    trace_file_day, trace_source_registration,
+};
 pub use turso::TursoBackend;
 pub use types::{BranchQuery, DEFAULT_MODEL, DEFAULT_VEC_TABLE, VectorBackend};
