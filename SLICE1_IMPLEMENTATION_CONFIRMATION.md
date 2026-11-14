@@ -72,6 +72,7 @@ The slice 1 implementation for the OpenCode execution lane claimant/executor is 
 ## 🚀 Six Execution Steps - All Implemented
 
 ### Step 1: Supervision ✅
+
 - Checks all bound opencode-lane tasks
 - Identifies zero-message sessions (#4758)
 - Performs atomic recovery with special `launched_by` values:
@@ -81,6 +82,7 @@ The slice 1 implementation for the OpenCode execution lane claimant/executor is 
 - Only runs in live mode
 
 ### Step 2: Gate ✅
+
 - Checks all 4 queues for health:
   - `repo-health-code-pilot`
   - `repo-health-opencode-pilot`
@@ -91,6 +93,7 @@ The slice 1 implementation for the OpenCode execution lane claimant/executor is 
 - Uses `repo-queue list --status claimed`
 
 ### Step 3: Cap ✅
+
 - Uses 36-session limit (raised from 12→20→36 on 2026-11-05)
 - Queries OpenCode server via `GET /api/session`
 - Counts only active root sessions (no terminal markers, recent activity)
@@ -98,6 +101,7 @@ The slice 1 implementation for the OpenCode execution lane claimant/executor is 
 - Fail-closed when server unreadable
 
 ### Step 4: Launch ✅
+
 - Creates worker sessions via OpenCode server API
 - Verifies session location matches requested directory
 - Atomically binds session to task using `repo-queue bind`
@@ -107,11 +111,13 @@ The slice 1 implementation for the OpenCode execution lane claimant/executor is 
 - Posts launch agent-note to GitHub issue
 
 ### Step 5: Terminal States ✅
+
 - Handled by worker sessions themselves
 - Uses terminal verbs: complete/park/block/fail
 - Execution record includes session_id for attribution
 
 ### Step 6: Logging ✅
+
 - Logs to `~/.local/state/opencode-claimant/fires.jsonl`
 - JSON format with timestamp, mode, candidates, launches, skips, cap info
 - One line per fire execution
@@ -122,6 +128,7 @@ The slice 1 implementation for the OpenCode execution lane claimant/executor is 
 ## 🔧 Key Features Implemented
 
 ### Mode System ✅
+
 - **Shadow mode** (default): Discovery only, no mutations
 - **Live mode**: Full execution including session creation
 - Mode file: `~/.local/state/opencode-claimant/mode`
@@ -129,13 +136,16 @@ The slice 1 implementation for the OpenCode execution lane claimant/executor is 
 - Easy to switch between modes
 
 ### Four Queue Monitoring ✅
+
 All four queues monitored:
+
 1. `repo-health-code-pilot`
 2. `repo-health-opencode-pilot`
 3. `repo-health-openchamber-pilot`
 4. `repo-health-nix-pilot`
 
 ### 36-Session Concurrency Cap ✅
+
 - Monitored via OpenCode server API (`GET /api/session`)
 - Only root sessions without terminal markers count
 - Active window: 30 minutes (ACTIVE_WINDOW_MS)
@@ -145,31 +155,38 @@ All four queues monitored:
 ### Recovery Rules (#4758, Phase 3 of #4912) ✅
 
 #### Zero-Message Recovery:
+
 **Trigger**: Bound session with no messages, no activity markers, silent >30 minutes, attempts remaining
 
 **Process**:
+
 1. Verify zero messages via `GET /api/session/{id}/messages`
 2. Delete session via `DELETE /api/session/{id}`
 3. Atomically reclaim task via `bind` with `--launched-by opencode-claimant-recovery:zero-message-deleted`
 4. Task becomes unbound and eligible for next fire
 
 #### Gone-Session Recovery:
+
 **Trigger**: Bound session absent from server, attempts remaining
 
 **Process**:
+
 1. Verify absence via `GET /api/session/{id}`
 2. Atomically reclaim task via `bind` with `--launched-by opencode-claimant-recovery:gone-session`
 
 #### Exhausted Attempts:
+
 **Trigger**: `attempts >= max_attempts`
 
 **Process**:
+
 1. For zero-message sessions: delete then fail task terminally
 2. For gone sessions: fail task terminally
 3. Use `repo-queue fail` with execution record containing session_id
 4. Use deterministic reason class
 
 ### Atomic Operations ✅
+
 - Bind operations use compare-and-clear (migration 0021)
 - Recovery operations use atomic bind with special launched_by values
 - Prevents double-binding and duplicate execution
@@ -177,25 +194,28 @@ All four queues monitored:
 - Session location verification (#4870): Creates session with location.directory, verifies response before binding, deletes misplaced sessions
 
 ### Task State Verification ✅
+
 - Re-verifies task state before launch
 - Checks lane, session_id, and stage
 - Skips if task state changed during fire
 - Prevents double-execution of working tasks
 
 ### Hard Rules Compliance ✅
+
 All 7 hard rules implemented:
 
-| Rule | Status | Implementation |
-|------|--------|----------------|
-| Never work tasks directly | ✅ | Only claim/bind/launch/record |
-| No credentials in prompts/logs | ✅ | Uses broker client tokens |
-| No cap violations | ✅ | Enforces 36-session limit |
-| No double-binding | ✅ | Never bind session you didn't create |
-| Atomic operations | ✅ | Bind and recovery use compare-and-clear |
-| Session location verification | ✅ | Verify location.directory before binding |
-| Task state verification | ✅ | Re-verify task state before launch |
+| Rule                           | Status | Implementation                           |
+| ------------------------------ | ------ | ---------------------------------------- |
+| Never work tasks directly      | ✅     | Only claim/bind/launch/record            |
+| No credentials in prompts/logs | ✅     | Uses broker client tokens                |
+| No cap violations              | ✅     | Enforces 36-session limit                |
+| No double-binding              | ✅     | Never bind session you didn't create     |
+| Atomic operations              | ✅     | Bind and recovery use compare-and-clear  |
+| Session location verification  | ✅     | Verify location.directory before binding |
+| Task state verification        | ✅     | Re-verify task state before launch       |
 
 ### Fire Logging ✅
+
 - Logs to `~/.local/state/opencode-claimant/fires.jsonl`
 - One JSON line per fire execution
 - Format includes:
@@ -212,6 +232,7 @@ All 7 hard rules implemented:
 ## 📊 Verification Results
 
 ### Test Suite Results ✅
+
 ```
 ======================================================================
 OpenCode Lane Claimant/Executor - Slice 1 Test Suite
@@ -235,6 +256,7 @@ Test Results: 12 passed, 0 failed
 ```
 
 ### Verification Script Results ✅
+
 ```
 ==========================================
 Verification Complete: 43 / 43 checks passed
@@ -243,6 +265,7 @@ Verification Complete: 43 / 43 checks passed
 ```
 
 ### Fire Log Example ✅
+
 ```json
 {
   "timestamp": "2026-11-07T22:20:29.358878+00:00",
@@ -250,7 +273,7 @@ Verification Complete: 43 / 43 checks passed
   "candidates_seen": [],
   "sessions_launched": [],
   "cap_room": 0,
-  "skips": [{"reason": "no_candidates"}]
+  "skips": [{ "reason": "no_candidates" }]
 }
 ```
 
@@ -349,6 +372,7 @@ QUEUES = [
 ```
 
 ### State Directory Structure:
+
 ```
 ~/.local/state/opencode-claimant/
 ├── fires.jsonl              # Fire execution logs
@@ -364,18 +388,18 @@ QUEUES = [
 
 All requirements from #3026 specification are implemented:
 
-| Requirement | Status | Evidence |
-|-------------|--------|----------|
-| Mode System | ✅ | Shadow and live modes working |
-| 6 Execution Steps | ✅ | All 6 steps implemented |
-| Supervision with Recovery | ✅ | Zero-message and gone-session recovery (#4758) |
-| Concurrency Cap | ✅ | 36 active root sessions enforced |
-| Atomic Operations | ✅ | Compare-and-clear guards prevent race conditions |
-| Session Location Verification | ✅ | Verifies directory before binding |
-| Task State Verification | ✅ | Re-verifies before launch |
-| Hard Rules Compliance | ✅ | All 7 hard rules followed |
-| Error Handling | ✅ | Fail-closed behavior throughout |
-| Logging | ✅ | fires.jsonl with complete execution records |
+| Requirement                   | Status | Evidence                                         |
+| ----------------------------- | ------ | ------------------------------------------------ |
+| Mode System                   | ✅     | Shadow and live modes working                    |
+| 6 Execution Steps             | ✅     | All 6 steps implemented                          |
+| Supervision with Recovery     | ✅     | Zero-message and gone-session recovery (#4758)   |
+| Concurrency Cap               | ✅     | 36 active root sessions enforced                 |
+| Atomic Operations             | ✅     | Compare-and-clear guards prevent race conditions |
+| Session Location Verification | ✅     | Verifies directory before binding                |
+| Task State Verification       | ✅     | Re-verifies before launch                        |
+| Hard Rules Compliance         | ✅     | All 7 hard rules followed                        |
+| Error Handling                | ✅     | Fail-closed behavior throughout                  |
+| Logging                       | ✅     | fires.jsonl with complete execution records      |
 
 ---
 
@@ -399,6 +423,7 @@ All requirements from #3026 specification are implemented:
 ## 🎓 References
 
 ### Issues Implemented
+
 - #3026 - OpenCode lane claimant/executor implementation (MAIN ISSUE)
 - #4912 - Recovery rules and supervision design
 - #4758 - Zero-message session recovery (DEFECT)
@@ -406,6 +431,7 @@ All requirements from #3026 specification are implemented:
 - #5857 - Session creation request shape (DEFECT)
 
 ### Migrations Applied
+
 - Migration 0021 - bind_repo_task_lane_session
 - Migration 0022 - Atomic recovery operations
 - Migration 0023 - Additional recovery features
@@ -416,29 +442,35 @@ All requirements from #3026 specification are implemented:
 ## 🚀 Usage Instructions
 
 ### Installation
+
 ```bash
 cd /home/user/git/code
 make install  # Creates state directory
 ```
 
 ### Running in Shadow Mode (Safe Testing)
+
 ```bash
 python3 pm-stack/opencode-claimant/claimant.py
 ```
+
 - Discovery and read-only supervision only
 - No mutations (no session creation, binding, or prompt delivery)
 - Safe for testing and verification
 
 ### Running in Live Mode (Production)
+
 ```bash
 echo "live" > ~/.local/state/opencode-claimant/mode
 python3 pm-stack/opencode-claimant/claimant.py
 ```
+
 - Full execution including mutations
 - Session creation, binding, and prompt delivery
 - Production execution
 
 ### Testing
+
 ```bash
 # Run comprehensive test suite
 python3 pm-stack/opencode-claimant/test_implementation.py
@@ -454,9 +486,10 @@ bash pm-stack/opencode-claimant/verify_slice1.sh
 ```
 
 ### Build Commands
+
 ```bash
 make all      # Make scripts executable
-make install  # Create state directory  
+make install  # Create state directory
 make clean    # Remove lock files
 make shadow   # Run in shadow mode
 make live     # Run in live mode
@@ -468,19 +501,19 @@ test-claimant # Test claimant
 
 ## 🎉 Success Criteria Met
 
-| Criteria | Status | Evidence |
-|----------|--------|----------|
-| Implementation complete | ✅ | All 6 steps implemented |
-| Specification compliance | ✅ | 100% of requirements met |
-| Hard rules compliance | ✅ | All 7 hard rules followed |
-| Documentation complete | ✅ | README.md, summaries, changelog |
-| Test coverage | ✅ | 12/12 tests passing |
-| Mode system working | ✅ | Shadow and live modes functional |
-| Recovery rules implemented | ✅ | Zero-message and gone-session recovery |
-| Concurrency control | ✅ | 36-session cap enforced |
-| Atomic operations | ✅ | Compare-and-clear guards in place |
-| Error handling | ✅ | Fail-closed behavior throughout |
-| Logging implemented | ✅ | fires.jsonl with complete records |
+| Criteria                   | Status | Evidence                               |
+| -------------------------- | ------ | -------------------------------------- |
+| Implementation complete    | ✅     | All 6 steps implemented                |
+| Specification compliance   | ✅     | 100% of requirements met               |
+| Hard rules compliance      | ✅     | All 7 hard rules followed              |
+| Documentation complete     | ✅     | README.md, summaries, changelog        |
+| Test coverage              | ✅     | 12/12 tests passing                    |
+| Mode system working        | ✅     | Shadow and live modes functional       |
+| Recovery rules implemented | ✅     | Zero-message and gone-session recovery |
+| Concurrency control        | ✅     | 36-session cap enforced                |
+| Atomic operations          | ✅     | Compare-and-clear guards in place      |
+| Error handling             | ✅     | Fail-closed behavior throughout        |
+| Logging implemented        | ✅     | fires.jsonl with complete records      |
 
 ---
 
@@ -502,12 +535,14 @@ The opencode-lane claimant/executor slice 1 implementation:
 - ✅ **Verified by 12 unit tests and 43 verification checks**
 
 ### 🎯 Ready for:
+
 - **Slice 2**: Parallel-run gate implementation
 - **Production deployment** in shadow mode for testing
 - **Live mode deployment** once infrastructure is ready
 - **Monitoring and optimization**
 
 ### 📝 Documentation Package Complete:
+
 - README.md (205 lines)
 - IMPLEMENTATION_SUMMARY.md (196 lines)
 - CHANGELOG.md (199 lines)
@@ -517,6 +552,7 @@ The opencode-lane claimant/executor slice 1 implementation:
 - Multiple verification confirmation files
 
 ### 🧪 Test Results:
+
 - **12/12 tests passing** (100% pass rate)
 - **43/43 verification checks passing** (100% pass rate)
 - **0 failures**
@@ -534,5 +570,5 @@ The opencode-lane claimant/executor slice 1 implementation:
 
 ---
 
-*Generated by OpenCode Lane Claimant/Executor Implementation*  
-*Issue: #3026 - Slice 1 Complete*
+_Generated by OpenCode Lane Claimant/Executor Implementation_  
+_Issue: #3026 - Slice 1 Complete_

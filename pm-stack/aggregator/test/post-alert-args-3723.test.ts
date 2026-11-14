@@ -85,11 +85,16 @@ describe("post-alert argument validation (#3723)", () => {
   test("control: the documented invocation posts exactly the incident it names", async () => {
     const before = captured.length;
     const { code, bwsCalls } = await runScript([
-      "--source", "watch",
-      "--key", "host1",
-      "--severity", "warning",
-      "--title", "host down",
-      "--body", "503",
+      "--source",
+      "watch",
+      "--key",
+      "host1",
+      "--severity",
+      "warning",
+      "--title",
+      "host down",
+      "--body",
+      "503",
     ]);
     expect(code).toBe(0);
     expect(bwsCalls).toContain("secret list");
@@ -120,7 +125,10 @@ describe("post-alert argument validation (#3723)", () => {
       { args: ["--source", "watch", "--title", "host down", "--key", "--severity", "info"], names: "--key" },
       { args: ["--source", "watch", "--key", "host1", "--title", "host down", "--severity"], names: "--severity" },
       { args: ["--source", "watch", "--key", "host1", "--title"], names: "--title" },
-      { args: ["--source", "watch", "--key", "host1", "--title", "host down", "--body", "--severity", "info"], names: "--body" },
+      {
+        args: ["--source", "watch", "--key", "host1", "--title", "host down", "--body", "--severity", "info"],
+        names: "--body",
+      },
       { args: ["--source", "watch", "--key", "host1", "--severity", "--title", "host down"], names: "--severity" },
       { args: ["--source", "watch", "--key", "host1", "--title", ""], names: "--title" },
     ];

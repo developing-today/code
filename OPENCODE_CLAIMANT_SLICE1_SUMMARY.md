@@ -11,19 +11,22 @@ The OpenCode lane claimant/executor slice 1 has been **fully implemented, tested
 ### ✅ Core Implementation (100% Complete)
 
 **Files Created/Modified:**
+
 - `pm-stack/opencode-claimant/claimant.py` (530 lines) - Main execution engine
-- `pm-stack/opencode-claimant/poll.py` (459 lines) - Candidate discovery  
+- `pm-stack/opencode-claimant/poll.py` (459 lines) - Candidate discovery
 - `pm-stack/opencode-claimant/README.md` - Comprehensive documentation
 - `pm-stack/opencode-claimant/Makefile` - Development helpers
 - `pm-stack/opencode-claimant/IMPLEMENTATION_STATUS.md` - This summary
 
 **Database Migrations:**
+
 - `migration-0021.sql` - bind_repo_task_lane_session
 - `migration-0022.sql` - Atomic recovery operations
 - `migration-0023.sql` - Additional schema updates
 - `migration-0024.sql` - Final schema updates
 
 **Test Suite:**
+
 - `test_slice1.sh` - Main test suite (5 tests, all passing)
 - `verify_slice1.sh` - Comprehensive verification (39/39 checks passed)
 - `test/` - Unit tests (43/43 test cases passed)
@@ -32,48 +35,55 @@ The OpenCode lane claimant/executor slice 1 has been **fully implemented, tested
 
 ## 🎯 6-Step Process Implementation
 
-| Step | Status | Description |
-|------|--------|-------------|
-| **1. Supervision** | ✅ Complete | Reports stuck_bound tasks (read-only in shadow mode) |
-| **2. Gate** | ✅ Complete | Discovers unbound opencode-lane candidates from 4 queues |
-| **3. Cap** | ✅ Complete | Checks 36-session concurrency limit |
-| **4. Launch** | ✅ Complete | Simulates session creation and binding |
-| **5. Terminal States** | ✅ Complete | Handled by worker sessions |
-| **6. Fire Logging** | ✅ Complete | Records execution results to fires.jsonl |
+| Step                   | Status      | Description                                              |
+| ---------------------- | ----------- | -------------------------------------------------------- |
+| **1. Supervision**     | ✅ Complete | Reports stuck_bound tasks (read-only in shadow mode)     |
+| **2. Gate**            | ✅ Complete | Discovers unbound opencode-lane candidates from 4 queues |
+| **3. Cap**             | ✅ Complete | Checks 36-session concurrency limit                      |
+| **4. Launch**          | ✅ Complete | Simulates session creation and binding                   |
+| **5. Terminal States** | ✅ Complete | Handled by worker sessions                               |
+| **6. Fire Logging**    | ✅ Complete | Records execution results to fires.jsonl                 |
 
 ---
 
 ## 🔧 Key Features Implemented
 
 ### ✅ Mode Handling
+
 - **Shadow mode** (default): Discovery only, no mutations
 - **Live mode**: Future execution (mode file controlled)
 - **Fail-safe defaults**: Missing mode file defaults to shadow mode
 
 ### ✅ Concurrency Control
+
 - **36 active root sessions** cap (raised from 12→20→36 based on observed wave sizes)
 - **Active session counting**: 30-minute activity window
 - **Fail-closed behavior**: Unknown server state prevents launches
 
 ### ✅ Recovery Rules (#4758)
+
 - **Zero-message recovery**: Identifies bound sessions with no messages, deletes them, and reclaims tasks atomically
 - **Gone-session recovery**: Handles bound sessions that disappeared from server
 - **Atomic recovery operations**: Prevent race conditions
 
 ### ✅ Atomic Operations
+
 - **Session creation with location verification**: Prevents misplaced sessions (#4870 fix)
 - **Atomic binding**: Via repo-queue CLI
 - **Compare-and-clear guards**: Prevent double-binding
 - **Task state verification**: Re-verify before launch
 
 ### ✅ Queue Support
+
 All four opencode queues supported:
+
 1. `repo-health-code-pilot`
 2. `repo-health-opencode-pilot`
 3. `repo-health-openchamber-pilot`
 4. `repo-health-nix-pilot`
 
 ### ✅ Hard Rules Enforced
+
 - ✅ Never work tasks directly - Only claim/bind/launch/record
 - ✅ No credentials in prompts/logs - Uses broker client tokens
 - ✅ No cap violations - Never exceeds 36 sessions
@@ -87,6 +97,7 @@ All four opencode queues supported:
 ## 🧪 Testing & Verification Results
 
 ### ✅ Test Suite Results
+
 ```
 === All Tests Passed! ===
 OpenCode lane claimant/executor slice 1 is working correctly.
@@ -95,22 +106,24 @@ OpenCode lane claimant/executor slice 1 is working correctly.
 **Tests Passed:** 5/5 (100%)
 
 ### ✅ Comprehensive Verification
+
 **39/39 verification checks passed (100%)**
 
-| Category | Passed | Status |
-|----------|--------|--------|
-| File Structure | 4/4 | ✅ |
-| Script Executability | 2/2 | ✅ |
-| Mode File Handling | 3/3 | ✅ |
-| Poll.py Functionality | 7/7 | ✅ |
-| Fire Log Creation | 6/6 | ✅ |
-| Constants Verification | 4/4 | ✅ |
-| Step Implementation | 5/5 | ✅ |
-| Key Features | 2/2 | ✅ |
-| Documentation | 2/2 | ✅ |
-| Mode Handling | 3/3 | ✅ |
+| Category               | Passed | Status |
+| ---------------------- | ------ | ------ |
+| File Structure         | 4/4    | ✅     |
+| Script Executability   | 2/2    | ✅     |
+| Mode File Handling     | 3/3    | ✅     |
+| Poll.py Functionality  | 7/7    | ✅     |
+| Fire Log Creation      | 6/6    | ✅     |
+| Constants Verification | 4/4    | ✅     |
+| Step Implementation    | 5/5    | ✅     |
+| Key Features           | 2/2    | ✅     |
+| Documentation          | 2/2    | ✅     |
+| Mode Handling          | 3/3    | ✅     |
 
 ### ✅ Unit Test Results
+
 **43/43 test cases passed (100%)**
 
 ---
@@ -150,22 +163,25 @@ OpenCode lane claimant/executor slice 1 is working correctly.
 ## 🚀 Usage Examples
 
 ### Run in Shadow Mode (Default)
+
 ```bash
 python3 pm-stack/opencode-claimant/claimant.py
 ```
 
 ### Run in Live Mode
+
 ```bash
 echo "live" > ~/.local/state/opencode-claimant/mode
 python3 pm-stack/opencode-claimant/claimant.py
 ```
 
 ### Run Tests
+
 ```bash
 # Main test suite
 bash pm-stack/opencode-claimant/test_slice1.sh
 
-# Comprehensive verification  
+# Comprehensive verification
 bash pm-stack/opencode-claimant/verify_slice1.sh
 
 # Unit tests
@@ -174,6 +190,7 @@ python3 -m unittest discover
 ```
 
 ### Makefile Shortcuts
+
 ```bash
 make install      # Install and setup
 make shadow       # Run in shadow mode

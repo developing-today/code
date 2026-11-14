@@ -76,7 +76,7 @@ describe("#7743 extractSaasServices caps are surrogate-pair-safe", () => {
 
   test("usageNote straddling the 600 cap is dropped whole", () => {
     const svc = bitwarden([usageStraddle]);
-    const note = svc.usageNote;
+    const note = svc.usageNote!;
     expect(note.length).toBe(599);
     expect(loneHighAtEnd(note)).toBe(false);
     expect(roundTrips(note)).toBe(true);

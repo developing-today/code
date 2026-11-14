@@ -436,6 +436,45 @@ fn resubmitted_failed_transfer_returns_id_already_failed_after_cause_fixed() {
     assert!(ledger.lookup_transfer(700).is_none());
 }
 
+/// Parity (#6108): the in-memory backend refuses the reserved ID
+/// shapes with the same typed errors the TigerBeetle binding maps,
+/// so a scenario means the same thing on both backends. A retry of
+/// a reserved-ID transfer returns the ID error again — not
+/// `IdAlreadyFailed` — because TigerBeetle validates reserved IDs
+/// ahead of its failed-transfer lookup (Codex P2 on #8670).
+#[test]
+fn in_memory_rejects_the_reserved_id_shapes_like_tigerbeetle() {
+    let mut ledger = funded_ledger();
+    let results = ledger.create_accounts(&[account(0, SRC, false)]);
+    assert_eq!(results, vec![Err(AccountError::IdMustNotBeZero)]);
+    let results = ledger.create_accounts(&[account(u128::MAX, SRC, false)]);
+    assert_eq!(results, vec![Err(AccountError::IdMustNotBeIntMax)]);
+
+    for (id, error) in [
+        (0, TransferError::IdMustNotBeZero),
+        (u128::MAX, TransferError::IdMustNotBeIntMax),
+    ] {
+        let results = ledger.create_transfers(&[funding_transfer(id, USER_SRC, LP_SRC, 10, SRC)]);
+        assert_eq!(results, vec![Err(error)]);
+        let results = ledger.create_transfers(&[funding_transfer(id, USER_SRC, LP_SRC, 10, SRC)]);
+        assert_eq!(results, vec![Err(error)], "retry of reserved ID {id}");
+    }
+
+    // Reserved debit/credit account IDs are refused with the typed
+    // errors, not misreported as "not found".
+    let results = ledger.create_transfers(&[funding_transfer(777_001, 0, LP_SRC, 10, SRC)]);
+    assert_eq!(
+        results,
+        vec![Err(TransferError::DebitAccountIdMustNotBeZero)]
+    );
+    let results =
+        ledger.create_transfers(&[funding_transfer(777_002, USER_SRC, u128::MAX, 10, SRC)]);
+    assert_eq!(
+        results,
+        vec![Err(TransferError::CreditAccountIdMustNotBeIntMax)]
+    );
+}
+
 #[test]
 fn single_unterminated_linked_transfer_rejected() {
     // #4121: a lone transfer with `linked: true` promises a following
@@ -788,6 +827,47 @@ fn duplicate_t1_and_t3_transfer_ids_fail_preflight_before_persisting_intent() {
             .transfers_with_user_data_128(777)
             .is_empty()
     );
+}
+
+#[test]
+fn reserved_transfer_ids_fail_preflight_before_persisting_intent() {
+    // Oracle: #6194 — real TigerBeetle refuses transfer IDs 0 and
+    // u128::MAX outright, so preflight must reject them in every leg
+    // position (T1, fee, T3), naming the offending ID, before any
+    // intent is persisted or anything is submitted. Pre-fix, the
+    // creator probe executed all of these Ok Posted.
+    for position in 0..3 {
+        for reserved in [0, u128::MAX] {
+            let mut executor = executor();
+            let mut bad = request();
+            bad.transfer_ids[position] = reserved;
+
+            let error = executor
+                .prepare(&bad)
+                .expect_err("a reserved transfer ID must fail preflight");
+            assert!(
+                error
+                    .to_string()
+                    .contains(&format!("transfer ID {reserved} is reserved")),
+                "the error must name the reserved ID, got: {error}"
+            );
+            assert!(executor.store.get(777).unwrap().is_none());
+            assert!(
+                executor
+                    .backend
+                    .transfers_with_user_data_128(777)
+                    .is_empty()
+            );
+        }
+    }
+
+    // The sane-ID control (the probe's 601/602/603) still executes
+    // identically: the rejection did not widen to ordinary IDs.
+    let mut executor = executor();
+    let record = executor
+        .execute(&request())
+        .expect("sane transfer IDs must still post");
+    assert_eq!(record.state, IntentState::Posted);
 }
 
 #[test]
@@ -2077,20 +2157,20 @@ impl LedgerBackend for ShortResultBackend {
         (0..self.keep).map(|_| Ok(())).collect()
     }
 
-    fn lookup_transfer(&self, id: TransferId) -> Option<Transfer> {
-        self.inner.lookup_transfer(id)
+    fn try_lookup_transfer(&self, id: TransferId) -> anyhow::Result<Option<Transfer>> {
+        self.inner.try_lookup_transfer(id)
     }
 
-    fn lookup_account(&self, id: AccountId) -> Option<Account> {
-        self.inner.lookup_account(id)
+    fn try_lookup_account(&self, id: AccountId) -> anyhow::Result<Option<Account>> {
+        self.inner.try_lookup_account(id)
     }
 
-    fn account_balance(&self, id: AccountId) -> Option<AccountBalance> {
-        self.inner.account_balance(id)
+    fn try_account_balance(&self, id: AccountId) -> anyhow::Result<Option<AccountBalance>> {
+        self.inner.try_account_balance(id)
     }
 
-    fn transfers_with_user_data_128(&self, value: u128) -> Vec<Transfer> {
-        self.inner.transfers_with_user_data_128(value)
+    fn try_transfers_with_user_data_128(&self, value: u128) -> anyhow::Result<Vec<Transfer>> {
+        self.inner.try_transfers_with_user_data_128(value)
     }
 }
 

@@ -1,5 +1,5 @@
 // Tests for the pure parsing core of meta-quota-export.mjs.
-// Run: node --test pm-stack/meta-exporter/
+// Run: node --test pm-stack/meta-exporter/meta-quota-export.test.mjs
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { createHash } from "node:crypto";
@@ -11,8 +11,10 @@ import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
+  ExportError,
   attemptBoundedRestart,
   failureDocument,
+  parseArgs,
   PAGE_NOT_READY_EXIT,
   probeCdpReadiness,
   restartAllowed,
@@ -38,6 +40,21 @@ const QUOTA = {
   },
 };
 
+// A not-yet-started short window (#1301): zero usage, no window reset.
+const QUOTA_INACTIVE_SHORT = {
+  subscription_quota: {
+    tier_id: "27681527378179523",
+    tier: "Muse Code High Usage",
+    as_of: 1793328541,
+    window_weighted_limit: "100000000000",
+    window_duration_secs: 18000,
+    weekly_weighted_limit: "300000000000",
+    weekly_resets_at: 1793577600,
+    window_weighted_used: "0",
+    weekly_weighted_used: "70873201100",
+  },
+};
+
 test("parseSubscriptionQuota: percentages and resets match the console", () => {
   const parsed = parseSubscriptionQuota(QUOTA);
   assert.equal(parsed.tier, "Muse Code High Usage");
@@ -60,6 +77,14 @@ test("parseBillingBanner: minor units to USD, currency checked", () => {
   assert.equal(parseBillingBanner({ kind: "free_partial", remaining_minor_units: 14857, currency: "USD" }), 148.57);
   assert.throws(() => parseBillingBanner({ remaining_minor_units: 100, currency: "EUR" }), /currency/);
   assert.throws(() => parseBillingBanner({}));
+  // Fractional minor units are shape drift: fail closed, never export a fractional dollar amount (#2510).
+  assert.throws(() => parseBillingBanner({ remaining_minor_units: 1050.5, currency: "USD" }), /missing\/invalid/);
+  assert.throws(() => parseBillingBanner({ remaining_minor_units: 0.1, currency: "USD" }), /missing\/invalid/);
+  assert.equal(parseBillingBanner({ remaining_minor_units: 0, currency: "USD" }), 0);
+  // Unsafe integers and negatives reject; MAX_SAFE_INTEGER itself is the
+  // representation limit, not a business cap.
+  assert.throws(() => parseBillingBanner({ remaining_minor_units: Number.MAX_SAFE_INTEGER + 1, currency: "USD" }), /missing\/invalid/);
+  assert.throws(() => parseBillingBanner({ remaining_minor_units: -100, currency: "USD" }), /missing\/invalid/);
 });
 
 test("parsePaygBalance: reads the iframe text, absence stays null", () => {
@@ -295,4 +320,233 @@ test("entry-point guard: symlinked invocation runs main, matching direct (#6343)
   const linkPath = join(base, "meta-quota-export-link.mjs");
   await symlink(EXPORTER_PATH, linkPath);
   await assertCdpUnavailableRun(linkPath, "symlink");
+});
+// #2789: num() used to be a bare Number() coercion, so drifted
+// spellings became real measurements ("" -> 0% window, "0x10" -> 16,
+// "1e2" -> 100). Only plain decimal spellings are accepted now.
+test("parseSubscriptionQuota: non-decimal numeric spellings fail closed", () => {
+  for (const bad of ["", "   ", "0x10", "0b101", "0o17", "1e2", "1E2", "abc", "12,000", " 123", "123 ", "1023570000n"]) {
+    for (const field of ["window_weighted_used", "window_weighted_limit", "window_duration_secs"]) {
+      const payload = structuredClone(QUOTA);
+      payload.subscription_quota[field] = bad;
+      assert.throws(() => parseSubscriptionQuota(payload), /not a finite|window_duration_secs/);
+    }
+  }
+  // The same spellings are rejected on the weekly fields too.
+  for (const bad of ["", "0x10", "1e2"]) {
+    const payload = structuredClone(QUOTA);
+    payload.subscription_quota.weekly_weighted_used = bad;
+    assert.throws(() => parseSubscriptionQuota(payload), /weeklyUsed/);
+  }
+});
+
+test("parseSubscriptionQuota: empty-string reset on a used window fails closed", () => {
+  for (const bad of ["", "   "]) {
+    const shortUsed = structuredClone(QUOTA);
+    shortUsed.subscription_quota.window_resets_at = bad;
+    assert.throws(() => parseSubscriptionQuota(shortUsed), /windowReset/);
+    const weeklyUsed = structuredClone(QUOTA);
+    weeklyUsed.subscription_quota.weekly_resets_at = bad;
+    assert.throws(() => parseSubscriptionQuota(weeklyUsed), /weeklyReset/);
+  }
+});
+
+test("parseSubscriptionQuota: empty-string reset on a zero-usage window is tolerated like absent", () => {
+  const payload = structuredClone(QUOTA_INACTIVE_SHORT);
+  payload.subscription_quota.window_resets_at = "";
+  assert.equal(parseSubscriptionQuota(payload).windows[0].resetAt, null);
+});
+
+test("parseSubscriptionQuota: decimal spellings still parse, including fractions", () => {
+  const frac = structuredClone(QUOTA);
+  frac.subscription_quota.window_weighted_used = "1023570000.5";
+  assert.equal(parseSubscriptionQuota(frac).windows[0].usedPct, 1.02);
+});
+
+test("parseSubscriptionQuota: empty as_of stays null; non-decimal as_of fails closed", () => {
+  const empty = structuredClone(QUOTA);
+  empty.subscription_quota.as_of = "";
+  assert.equal(parseSubscriptionQuota(empty).consoleAsOf, null);
+  const blank = structuredClone(QUOTA);
+  delete blank.subscription_quota.as_of;
+  assert.equal(parseSubscriptionQuota(blank).consoleAsOf, null);
+  for (const bad of ["0x10", "1e2", "soon"]) {
+    const payload = structuredClone(QUOTA);
+    payload.subscription_quota.as_of = bad;
+    assert.throws(() => parseSubscriptionQuota(payload), /unparseable|finite/);
+  }
+});
+
+test("parseSubscriptionQuota: epoch fields reject values outside the pinned seconds window", () => {
+  const firstAllowed = 1_577_836_800; // 2020-01-01T00:00:00Z
+  const lastAllowed = 4_102_444_800; // 2100-01-01T00:00:00Z
+  const cases = [
+    ["window_resets_at", [firstAllowed - 1, lastAllowed + 1, 0, 1_793_090_405_000, 1e300]],
+    ["weekly_resets_at", [firstAllowed - 1, lastAllowed + 1, 0, 1_793_090_405_000, 1e300]],
+    ["as_of", [firstAllowed - 1, lastAllowed + 1, 0, 1_793_000_000_000, 1e300]],
+  ];
+  for (const [field, values] of cases) {
+    for (const value of values) {
+      const payload = structuredClone(QUOTA);
+      payload.subscription_quota[field] = value;
+      assert.throws(
+        () => parseSubscriptionQuota(payload),
+        (error) => {
+          assert.ok(error instanceof ExportError);
+          assert.equal(error.status, "unparseable");
+          assert.equal(error.exitCode, 6);
+          return true;
+        },
+        `${field}=${value} should fail as unparseable`,
+      );
+    }
+  }
+});
+
+test("parseSubscriptionQuota: epoch window endpoints are inclusive", () => {
+  const endpoints = [
+    [1_577_836_800, "2020-01-01T00:00:00.000Z"],
+    [4_102_444_800, "2100-01-01T00:00:00.000Z"],
+  ];
+  for (const [epoch, expected] of endpoints) {
+    for (const field of ["window_resets_at", "weekly_resets_at"]) {
+      const payload = structuredClone(QUOTA);
+      payload.subscription_quota[field] = epoch;
+      const parsed = parseSubscriptionQuota(payload);
+      assert.equal(parsed.windows[field === "window_resets_at" ? 0 : 1].resetAt, expected);
+    }
+    const payload = structuredClone(QUOTA);
+    payload.subscription_quota.as_of = epoch;
+    assert.equal(parseSubscriptionQuota(payload).consoleAsOf, expected);
+  }
+});
+
+// Strict argv validation (#3469): a value flag followed by another flag
+// (or by nothing) is a usage error naming the flag, raised before any
+// directory creation or CDP call; no token is consumed twice; --cdp-port
+// is a decimal integer in 1-65535; the control still parses.
+function expectUsage(argv, flag) {
+  assert.throws(
+    () => parseArgs(argv),
+    (error) => {
+      assert.ok(error instanceof ExportError, `expected ExportError, got ${error}`);
+      assert.equal(error.status, "usage");
+      assert.equal(error.exitCode, 2);
+      assert.match(error.message, new RegExp(flag.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
+      return true;
+    },
+    `parseArgs(${JSON.stringify(argv)}) should be a usage error naming ${flag}`,
+  );
+}
+
+test("parseArgs: the control invocation parses, defaults intact", () => {
+  const full = parseArgs(["--out-dir", "out", "--cdp-port", "19222", "--team-id", "team1"]);
+  assert.deepEqual(full, { outDir: "out", cdpPort: 19222, teamId: "team1" });
+  const def = parseArgs([]);
+  assert.equal(def.cdpPort, 19222);
+  assert.match(def.outDir, /meta-quota-export$/);
+});
+
+test("parseArgs: flag-as-value is a usage error naming the flag (#3469)", () => {
+  // The exact probe from the issue: --cdp-port must not double as the
+  // out-dir value and the port flag.
+  expectUsage(["--out-dir", "--cdp-port", "19222"], "--out-dir");
+  expectUsage(["--cdp-port", "--team-id", "x"], "--cdp-port");
+  expectUsage(["--team-id", "--out-dir", "out"], "--team-id");
+});
+
+test("parseArgs: a trailing flag with no value is a usage error, not a silent fallback (#3469)", () => {
+  expectUsage(["--out-dir"], "--out-dir");
+  expectUsage(["--out-dir", "out", "--cdp-port"], "--cdp-port");
+  expectUsage(["--team-id"], "--team-id");
+});
+
+test("parseArgs: no token is consumed twice (#3469)", () => {
+  // Old opt() returned "--cdp-port" as the out-dir AND 19222 as the port.
+  // Now the single-pass parse refuses outright instead of splitting the
+  // token stream two ways.
+  expectUsage(["--out-dir", "--cdp-port", "19222"], "--out-dir");
+});
+
+test("parseArgs: --cdp-port must be a decimal integer in 1-65535 (#3469)", () => {
+  for (const bad of ["banana", "", "0", "-1", "65536", "99999", "0x10", "1e2", "12.5", " 19222", "19222 "]) {
+    expectUsage(["--cdp-port", bad], "--cdp-port");
+  }
+  assert.equal(parseArgs(["--cdp-port", "1"]).cdpPort, 1);
+  assert.equal(parseArgs(["--cdp-port", "65535"]).cdpPort, 65535);
+});
+
+test("parseArgs: unknown flags and bare positionals are usage errors (#3469)", () => {
+  expectUsage(["--bogus", "x"], "--bogus");
+  expectUsage(["--out-dir=out"], "--out-dir=out");
+  expectUsage(["out"], "out");
+});
+
+// Property-based coverage for parseArgs (#3469, Codex P1 on PR #9009).
+// Oracle: the declared argv grammar — a stream is zero or more
+// (value-flag, value) pairs; a value is a non-empty token not starting
+// with "--"; --cdp-port values must be decimal integers in 1-65535;
+// a repeated flag's last occurrence wins. Streams are generated from
+// that grammar (valid) or by injecting exactly one grammar violation
+// (malformed), so the expected outcome is known by construction,
+// independent of the parser under test. Deterministic seeded RNG:
+// failures reproduce exactly.
+function mulberry32(seed) {
+  let a = seed >>> 0;
+  return () => {
+    a = (a + 0x6d2b79f5) | 0;
+    let t = Math.imul(a ^ (a >>> 15), 1 | a);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+
+test("parseArgs property: generated valid streams parse, last value wins, no token consumed twice (#3469)", () => {
+  const rand = mulberry32(0x3469a);
+  const flags = ["--out-dir", "--cdp-port", "--team-id"];
+  const plainValues = ["out", "a/b", "x", "-single", "team-1", "19222", "o u t"];
+  const defaults = parseArgs([]);
+  for (let iter = 0; iter < 250; iter++) {
+    const pairs = [];
+    const n = Math.floor(rand() * 6);
+    for (let k = 0; k < n; k++) {
+      const flag = flags[Math.floor(rand() * flags.length)];
+      const value = flag === "--cdp-port" ? String(1 + Math.floor(rand() * 65535)) : plainValues[Math.floor(rand() * plainValues.length)];
+      pairs.push([flag, value]);
+    }
+    const argv = pairs.flat();
+    const parsed = parseArgs(argv);
+    const last = (flag) => pairs.filter(([f]) => f === flag).at(-1)?.[1];
+    assert.equal(parsed.outDir, last("--out-dir") ?? defaults.outDir, JSON.stringify(argv));
+    assert.equal(parsed.cdpPort, last("--cdp-port") === undefined ? defaults.cdpPort : Number(last("--cdp-port")), JSON.stringify(argv));
+    assert.equal(parsed.teamId, last("--team-id") ?? defaults.teamId, JSON.stringify(argv));
+    // No-token-twice invariant: no parsed value is itself a flag token.
+    for (const v of [parsed.outDir, parsed.teamId]) assert.ok(!String(v).startsWith("--"), JSON.stringify(argv));
+    assert.ok(Number.isInteger(parsed.cdpPort) && parsed.cdpPort >= 1 && parsed.cdpPort <= 65535, JSON.stringify(argv));
+  }
+});
+
+test("parseArgs property: generated malformed streams are usage errors naming the offending flag (#3469)", () => {
+  const rand = mulberry32(0x3469b);
+  const flags = ["--out-dir", "--cdp-port", "--team-id"];
+  const badPorts = ["banana", "0", "65536", "99999", "12.5", "1e2", "-1", "0x10", " 80", "80 "];
+  for (let iter = 0; iter < 250; iter++) {
+    const kind = Math.floor(rand() * 4);
+    const flag = flags[Math.floor(rand() * flags.length)];
+    if (kind === 0) {
+      // Flag token in a value slot: that flag must be named.
+      const other = flags[Math.floor(rand() * flags.length)];
+      expectUsage([flag, other, "x"], flag);
+    } else if (kind === 1) {
+      // Trailing flag with no value.
+      expectUsage(["--out-dir", "out", flag], flag);
+    } else if (kind === 2) {
+      // Unknown flag at a pair boundary.
+      const bogus = "--bogus-" + Math.floor(rand() * 1000);
+      expectUsage(["--out-dir", "out", bogus, "x"], bogus);
+    } else {
+      // Out-of-grammar --cdp-port value.
+      expectUsage(["--cdp-port", badPorts[Math.floor(rand() * badPorts.length)]], "--cdp-port");
+    }
+  }
 });

@@ -273,12 +273,12 @@ describe("kitty-disambiguate-v1 rich world key input (Slice C)", () => {
   });
 
   it("preserves AltGr printable input as text (fixture: altgr-a-ogonek)", () => {
-    expect(
-      richTerminalBytesForKey({ key: "ą", ctrlKey: true, altKey: true, metaKey: false, shiftKey: false }),
-    ).toEqual(new TextEncoder().encode("ą"));
-    expect(
-      richTerminalBytesForKey({ key: "€", ctrlKey: true, altKey: true, metaKey: false, shiftKey: false }),
-    ).toEqual(new TextEncoder().encode("€"));
+    expect(richTerminalBytesForKey({ key: "ą", ctrlKey: true, altKey: true, metaKey: false, shiftKey: false })).toEqual(
+      new TextEncoder().encode("ą"),
+    );
+    expect(richTerminalBytesForKey({ key: "€", ctrlKey: true, altKey: true, metaKey: false, shiftKey: false })).toEqual(
+      new TextEncoder().encode("€"),
+    );
   });
 
   it("leaves excluded and unsupported keys alone", () => {

@@ -24,6 +24,7 @@ func EraMCPBinary(t *testing.T) string {
 			eraErr = err
 			return
 		}
+		registerBuildTempDir(dir)
 		eraBin = filepath.Join(dir, "eramcp")
 		cmd := exec.Command("go", "build", "-o", eraBin, "./internal/testsupport/eramcp")
 		cmd.Dir = repoRoot()

@@ -1,0 +1,13 @@
+import assert from 'node:assert/strict';import fs from 'node:fs';import vm from 'node:vm';
+const state={items:[{id:'i',kind:'item',name:'Mask',tags:['a']}],tags:[{id:'a',name:'Sleep'}],people:['Person 1'],inventory:[],rules:{},overrides:{},recs:{}};
+let dialog,applied,notice;
+const ctx=vm.createContext({Intl,Date,console,document:{addEventListener(){}},current:()=>state,active:{id:'store'},version:1,hub:{user:{id:'user'}},editable:()=>true,byId:id=>state.items.find(x=>x.id===id),copy:x=>JSON.parse(JSON.stringify(x)),uid:()=> 'new',tidy:x=>String(x??'').trim(),prose:x=>String(x??''),scopes:()=>[['global','All'],['item:i','Mask']],archivedScope:()=>false,defaults:{reviews:'Reviews'},e:x=>String(x??'').replace(/</g,'&lt;'),field:(l,n,v)=>`<input name="${n}" value="${v}">`,area:(l,n)=>`<textarea name="${n}"></textarea>`,select:(l,n,values,v)=>`<select name="${n}">${v??''}</select>`,button:(a,b)=>`<button data-act="${a}">${b}</button>`,opt:()=>'',dlg:(title,html,submit)=>{dialog={title,html,submit}},notice:x=>notice=x,apply:(label,fn)=>{const s=JSON.parse(JSON.stringify(state));fn(s);applied=s},reportGroup:'Category',money:x=>'$'+x});
+vm.runInContext(fs.readFileSync('public/reporting.js','utf8'),ctx);vm.runInContext(fs.readFileSync('public/reporting-ui.js','utf8'),ctx);
+vm.runInContext('reportingReceipt()',ctx);assert.match(dialog.html,/transcribed/);
+const first=dialog.submit;first({receipt:'Mask | 9.99 | 2',store:'Shop',at:'2026-11-13',currency:'USD'});assert.equal(dialog.title,'Review receipt lines');assert.equal(applied,undefined);
+dialog.submit({'take:0':'on','match:0':'i'});assert.equal(applied.inventory[0].totalMinor,999);assert.equal(applied.inventory[0].qty,2);
+ctx.version=2;assert.throws(()=>dialog.submit({'take:0':'on','match:0':'i'}),/changed/);
+ctx.version=1;vm.runInContext('reportingRefresh(["item:i"])',ctx);assert.equal(applied.recs['item:i|reviews'].baseRevision,2);
+vm.runInContext('reportingInventory("i")',ctx);assert.throws(()=>dialog.submit({qty:'1',total:'2.005',allocations:'',mode:'Bought'}));
+vm.runInContext('reportingView(current())',ctx);
+console.log('PASS reporting UI: staging before apply, selected receipt mapping, stale-store guard, defaults post-write revision, precision validation, report rendering.');

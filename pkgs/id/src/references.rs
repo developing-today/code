@@ -3,15 +3,19 @@
 //!
 //! This module is the PoC specified by `doc/2026-10-30T13-25-00Z_design_friendly_name_references.md`
 //! (from the #2047 investigation). It is **not** a production resolution feature: it resolves
-//! `@`/`#` phrases against in-memory indexes (the notes/documents surface), demonstrates
-//! the spec's ranking, and renders stored references in all four states. The #5178 slice
-//! adds [`FanOut`]: resolution across several stores' indexes with a deterministic merge
-//! (see its docs for the ordering and provenance rules). The #5927 slice adds locator
+//! `@`/`#` phrases against per-store indexes (the notes/documents surface built into
+//! [`LocalIndex`], or snapshotted from a live store into one through [`StoreView`]),
+//! demonstrates
+//! the spec's ranking, and renders stored references in all four states. The #5178 slices
+//! add [`FanOut`]: resolution across several stores' indexes with a deterministic merge
+//! (see its docs for the ordering and provenance rules); [`StoreView`] plus
+//! [`FanOut::from_views`]: the hosted-store search counterpart and the live-store
+//! wiring, where every store — local or hosted — joins by producing a viewer-scoped
+//! answer set under the same contract. The #5927 slice adds locator
 //! fetch ([`FanOut::fetch_located`] / [`FanOut::render_located`]): following a stored
 //! reference's hints to fetch and render a target in another store, with the renamed,
-//! cleared, and unresolved-for-viewer states kept distinct across the boundary. There
-//! is still no hosted-store search here; that remains a later #5178 slice. The fan-out design
-//! record is `doc/2026-11-04T15-33-00Z_design_friendly_name_fanout.md`.
+//! cleared, and unresolved-for-viewer states kept distinct across the boundary. The
+//! fan-out design record is `doc/2026-11-04T15-33-00Z_design_friendly_name_fanout.md`.
 //!
 //! The rules that matter, from the spec:
 //!
@@ -46,6 +50,9 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use p2panda_core::Hash;
 
+use crate::aliases::{Named, aliases_of};
+use crate::documents::DocumentRecord;
+use crate::tag_claims::Claim;
 use crate::waiting::AuthorKey;
 
 /// The sigil that introduced a reference: `@` for an actor, `#` for a topic.
@@ -88,6 +95,14 @@ impl StoreId {
     #[must_use]
     pub fn local() -> Self {
         Self("local".to_owned())
+    }
+
+    /// A hosted store's default identity: the counterpart of [`StoreId::local`] for the
+    /// single-hosted-store case. Views of named hosted stores carry their own [`StoreId`];
+    /// this is the shorthand the hosted-search tests and single-host deployments use.
+    #[must_use]
+    pub fn hosted() -> Self {
+        Self("hosted".to_owned())
     }
 }
 
@@ -653,6 +668,156 @@ impl LocalIndex {
     }
 }
 
+/// One live store's answer set for one viewer: the adapter port over which local and
+/// hosted stores join the fan-out (#5178, hosted-search + live-wiring slice).
+///
+/// A store — the local notes/documents store, another local store, or a hosted store —
+/// presents its current rows for one viewer as a [`StoreView`]: the store's identity,
+/// the objects the viewer may see as [`IndexedObject`]s (the same shape the local
+/// in-memory index holds), the IDs hidden from this viewer, and — local stores only —
+/// the viewer's petnames. [`StoreView::index`] folds that into a viewer-scoped
+/// [`LocalIndex`], and [`FanOut::from_views`] wires several views into one fan-out.
+///
+/// The hosted-search contract: a hosted store joins by producing exactly this answer
+/// set — viewer-scoped, under the same [`MatchKind`] tiers — so [`FanOut::resolve`]
+/// needs no contract change across the local/hosted boundary. What the index
+/// enforces for local objects holds for hosted ones by construction: cleared targets
+/// never match, hidden targets yield no candidate and no claimant count (so a hosted
+/// target the viewer may not see cannot leak its existence by contesting a visible
+/// target's surface, and renders as unresolved), and exact-tier contested state is
+/// recomputed over the union of stores. A hosted view carries no petnames — the
+/// viewer's petnames live in their local index only — so [`StoreView::hosted`] takes
+/// none; use [`StoreView::with_petnames`] on a local view only.
+#[derive(Clone, Debug, Default)]
+pub struct StoreView {
+    store: StoreId,
+    objects: Vec<IndexedObject>,
+    hidden: Vec<Hash>,
+    petnames: Vec<(Hash, String)>,
+}
+
+impl StoreView {
+    /// A view of any store with nothing hidden and no petnames. Production adapters
+    /// wrap this: snapshot the live rows the viewer may see into `objects`, the rows
+    /// they may not into `hidden`.
+    #[must_use]
+    pub fn new(store: StoreId, objects: Vec<IndexedObject>, hidden: Vec<Hash>) -> Self {
+        Self {
+            store,
+            objects,
+            hidden,
+            petnames: Vec::new(),
+        }
+    }
+
+    /// A view of the local store for one viewer: `objects` are its live rows, `hidden`
+    /// the targets this viewer may not see.
+    #[must_use]
+    pub fn local(objects: Vec<IndexedObject>, hidden: Vec<Hash>) -> Self {
+        Self::new(StoreId::local(), objects, hidden)
+    }
+
+    /// A view of the hosted store `store` for one viewer: the hosted counterpart of
+    /// [`StoreView::local`]. `objects` are the hosted rows the viewer may see, `hidden`
+    /// the ones they may not — same viewer-scoping, same tiers, no petnames.
+    #[must_use]
+    pub fn hosted(store: StoreId, objects: Vec<IndexedObject>, hidden: Vec<Hash>) -> Self {
+        Self::new(store, objects, hidden)
+    }
+
+    /// The viewer's petnames for targets in this store. Local stores only: a hosted
+    /// view must leave these empty (see the type docs).
+    #[must_use]
+    pub fn with_petnames(mut self, petnames: Vec<(Hash, String)>) -> Self {
+        self.petnames = petnames;
+        self
+    }
+
+    /// Snapshots the live notes/documents surface into a viewer-scoped view: the live
+    /// store adapter for the documents store (#5178 live-wiring slice).
+    ///
+    /// Every [`DocumentRecord`] becomes a topic-side [`IndexedObject`] whose stable ID is
+    /// the document's ID, whose author is the document's author, whose alias claims are
+    /// its live `alias` claims ([`aliases_of`], claim order preserved), and whose
+    /// cleared flag is set when its author removed it ([`DocumentRecord::removal`] — a
+    /// tombstone is excluded from candidates and claimant counts by [`LocalIndex`]
+    /// exactly like any other cleared target). The title is the document's name from
+    /// `named` (the caller's viewed names, the `aliases::rows` input); a document with
+    /// no name there still resolves through its alias claims. `hidden` names the
+    /// documents this viewer may not see, so they contribute nothing to any answer.
+    ///
+    /// The reader is the caller's: this adapter takes the already-folded live store
+    /// rows, so the same call serves a local store and, given hosted rows, a hosted
+    /// one — hosted stores pair it with [`StoreView::hosted`]'s store ID instead of
+    /// [`StoreView::local`]'s.
+    #[must_use]
+    pub fn from_documents(
+        store: StoreId,
+        documents: &[DocumentRecord],
+        named: &[Named],
+        claims: &[Claim],
+        hidden: Vec<Hash>,
+    ) -> Self {
+        let names: BTreeMap<Hash, &str> = named
+            .iter()
+            .map(|object| (object.subject, object.name.as_str()))
+            .collect();
+        let objects = documents
+            .iter()
+            .map(|document| IndexedObject {
+                id: document.id,
+                kind: Sigil::Topic,
+                title: names
+                    .get(&document.id)
+                    .copied()
+                    .unwrap_or_default()
+                    .to_owned(),
+                alias_claims: aliases_of(claims, &document.id)
+                    .into_iter()
+                    .map(|alias| AliasClaim {
+                        text: alias.text,
+                        author: alias.author,
+                    })
+                    .collect(),
+                author: document.author,
+                cleared: document.removal.is_some(),
+            })
+            .collect();
+        Self::new(store, objects, hidden)
+    }
+
+    /// The store this view answers for.
+    #[must_use]
+    pub const fn store(&self) -> &StoreId {
+        &self.store
+    }
+
+    /// Folds this view into its viewer-scoped index: the [`LocalIndex`]-equivalent
+    /// answer set the fan-out resolves. Hidden IDs are applied as
+    /// [`LocalIndex::hide`], so they behave exactly as if the store did not hold them.
+    #[must_use]
+    pub fn index(self) -> LocalIndex {
+        let mut index = LocalIndex::new(self.store);
+        for object in self.objects {
+            index.add(object);
+        }
+        for id in &self.hidden {
+            index.hide(id);
+        }
+        for (target, name) in &self.petnames {
+            index.set_petname(*target, name);
+        }
+        index
+    }
+}
+
+impl From<StoreView> for LocalIndex {
+    /// The viewer-scoped index for a live store's view (see [`StoreView::index`]).
+    fn from(view: StoreView) -> Self {
+        view.index()
+    }
+}
+
 /// Cross-store fan-out (#5178, first v2 slice): one viewer's indexes for several stores,
 /// resolved as a set.
 ///
@@ -677,10 +842,13 @@ impl LocalIndex {
 ///   hidden targets), so fan-out inherits the per-store access filtering: an
 ///   inaccessible target contributes no candidate and no claimant count in any store.
 ///
-/// What this type is not: hosted-store indexing/search (a later #5178 slice). A
-/// fan-out [`Reference`] records every store that holds its target as locator hints,
-/// and the locator-fetch slice (#5927) follows them — see
-/// [`fetch_located`](Self::fetch_located) and [`render_located`](Self::render_located).
+/// What this type is not: nothing more — hosted stores join through [`StoreView`],
+/// whose viewer-scoped answer set folds into a [`LocalIndex`], so the merge above
+/// covers the local/hosted boundary unchanged; [`FanOut::from_views`] is the
+/// live-store wiring over those views. A fan-out [`Reference`] records every store
+/// that holds its target as locator hints, and the locator-fetch slice (#5927)
+/// follows them — see [`fetch_located`](Self::fetch_located) and
+/// [`render_located`](Self::render_located).
 #[derive(Clone, Debug, Default)]
 pub struct FanOut {
     stores: Vec<LocalIndex>,
@@ -691,6 +859,16 @@ impl FanOut {
     #[must_use]
     pub fn new(stores: Vec<LocalIndex>) -> Self {
         Self { stores }
+    }
+
+    /// A fan-out wired to live store views (#5178, live-wiring slice): each store —
+    /// local or hosted — presents one viewer-scoped [`StoreView`], and this folds
+    /// every view into its [`LocalIndex`]-equivalent answer set. The merge contract is
+    /// unchanged from [`FanOut::new`]: tier-first order, per-candidate provenance,
+    /// cross-store contested state, viewer-relative hiding.
+    #[must_use]
+    pub fn from_views(views: Vec<StoreView>) -> Self {
+        Self::new(views.into_iter().map(StoreView::index).collect())
     }
 
     /// The stores this fan-out queries, in the order they were added.
@@ -995,6 +1173,8 @@ fn normalize_phrase(phrase: &str) -> &str {
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
+    use crate::documents::DocumentRef;
+    use crate::{aliases, tag_claims};
 
     fn author(n: u8) -> AuthorKey {
         [n; 32]
@@ -1523,6 +1703,252 @@ mod tests {
         let rendered = render(&reference, &fanout.stores()[1]);
         assert_eq!(rendered.state, RenderState::Unresolved);
         assert_eq!(rendered.current_label, None);
+    }
+
+    fn hosted_view(objects: Vec<IndexedObject>, hidden: Vec<Hash>) -> StoreView {
+        StoreView::hosted(StoreId::hosted(), objects, hidden)
+    }
+
+    #[test]
+    fn hosted_duplicate_titles_across_the_boundary_are_contested() {
+        // The hosted counterpart of `fanout_duplicate_titles_across_stores_are_contested`,
+        // joined through the live wiring instead of hand-built indexes: one target in
+        // the local store, another in the hosted store, both titled "Minutes".
+        let local_doc = object(b"hosted-dup-local", Sigil::Topic, "Minutes", vec![], 1);
+        let hosted_doc = object(b"hosted-dup-hosted", Sigil::Topic, "Minutes", vec![], 2);
+        let fanout = FanOut::from_views(vec![
+            StoreView::local(vec![local_doc], vec![]),
+            hosted_view(vec![hosted_doc], vec![]),
+        ]);
+        let resolution = fanout.resolve(Sigil::Topic, "minutes");
+        assert_eq!(resolution.candidates.len(), 2);
+        assert!(resolution.candidates.iter().all(|c| c.contested()));
+        assert!(resolution.is_contested());
+        assert_eq!(resolution.single(), None);
+        assert!(
+            fanout
+                .insert_unambiguous(Sigil::Topic, "minutes", author(9))
+                .is_err()
+        );
+        // Provenance names the answering store on each side of the boundary.
+        let mut stores: Vec<StoreId> = resolution
+            .candidates
+            .iter()
+            .map(|candidate| candidate.provenance.store.clone())
+            .collect();
+        stores.sort();
+        stores.dedup();
+        assert_eq!(stores, vec![StoreId::hosted(), StoreId::local()]);
+    }
+
+    #[test]
+    fn hosted_contested_alias_across_the_boundary_is_never_auto_picked() {
+        // The hosted counterpart of `fanout_contested_alias_across_stores_is_never_auto_picked`:
+        // an alias claimed on both sides of the local/hosted boundary contests exactly
+        // as it does among local stores.
+        let local = object(
+            b"hosted-alias-local",
+            Sigil::Actor,
+            "Sam One",
+            vec![("sam", 1)],
+            1,
+        );
+        let hosted = object(
+            b"hosted-alias-hosted",
+            Sigil::Actor,
+            "Sam Two",
+            vec![("sam", 2)],
+            2,
+        );
+        let fanout = FanOut::from_views(vec![
+            StoreView::local(vec![local], vec![]),
+            hosted_view(vec![hosted], vec![]),
+        ]);
+        let resolution = fanout.resolve(Sigil::Actor, "sam");
+        assert_eq!(resolution.candidates.len(), 2);
+        assert!(
+            resolution
+                .candidates
+                .iter()
+                .all(|c| c.match_kind == MatchKind::ExactClaim && c.contested())
+        );
+        assert!(
+            fanout
+                .insert_unambiguous(Sigil::Actor, "sam", author(9))
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn hosted_hidden_target_leaks_nothing_and_does_not_contest() {
+        // The hosted counterpart of `fanout_hidden_target_leaks_nothing_and_does_not_contest`,
+        // joined through the live wiring: the hosted view hides its rows from this
+        // viewer, and nothing about them may cross the boundary — no candidate, no
+        // claimant count, no locator answer.
+        let visible = object(b"hosted-hide-vis", Sigil::Topic, "Atlas", vec![], 1);
+        let secret_twin = object(b"hosted-hide-twin", Sigil::Topic, "Atlas", vec![], 2);
+        let secret_only = object(b"hosted-hide-only", Sigil::Topic, "Zephyr", vec![], 2);
+        let twin_id = secret_twin.id;
+        let only_id = secret_only.id;
+        let fanout = FanOut::from_views(vec![
+            StoreView::local(vec![visible.clone()], vec![]),
+            StoreView::hosted(
+                StoreId::hosted(),
+                vec![secret_twin, secret_only],
+                vec![twin_id, only_id],
+            ),
+        ]);
+        // The hidden hosted twin produces no candidate and does not even contest the
+        // local target's surface — its existence must not leak.
+        let resolution = fanout.resolve(Sigil::Topic, "atlas");
+        assert_eq!(resolution.candidates.len(), 1);
+        assert_eq!(resolution.candidates[0].target_id, visible.id);
+        assert!(!resolution.candidates[0].contested());
+        // A phrase matching only a hidden hosted target resolves to nothing at all.
+        assert!(fanout.resolve(Sigil::Topic, "zephyr").candidates.is_empty());
+        // And a stored reference to the hidden hosted target stays unresolved across
+        // the locator boundary too: inert text, no label, no store named.
+        let reference = Reference {
+            target_id: twin_id,
+            pinned_revision: None,
+            sigil: Sigil::Topic,
+            surface: "Atlas".to_owned(),
+            locator_hints: vec![StoreId::local(), StoreId::hosted()],
+            author_context: author(9),
+        };
+        assert_eq!(fanout.fetch_located(&reference), None);
+        let located = fanout.render_located(&reference);
+        assert_eq!(located.rendered.state, RenderState::Unresolved);
+        assert_eq!(located.rendered.text, "#Atlas (unresolved)");
+        assert_eq!(located.store, None);
+        // The visible side still inserts and locates normally through the wiring.
+        let inserted = fanout
+            .insert_unambiguous(Sigil::Topic, "atlas", author(9))
+            .unwrap();
+        assert_eq!(inserted.target_id, visible.id);
+        assert_eq!(inserted.locator_hints, vec![StoreId::local()]);
+    }
+
+    #[test]
+    fn from_views_wires_live_views_without_changing_the_contract() {
+        // The same rows presented as live views merge exactly as hand-built indexes
+        // do: tier-first order across the boundary, same contested state. The wiring
+        // moves where the rows come from, never the merge.
+        let exact = object(b"wired-exact", Sigil::Topic, "Atlas", vec![], 1);
+        let prefix = object(b"wired-prefix", Sigil::Topic, "Atlas Shrugged", vec![], 2);
+        let via_indexes = FanOut::new(vec![
+            store_index("a-store", vec![prefix.clone()]),
+            store_index("b-store", vec![exact.clone()]),
+        ]);
+        let via_views = FanOut::from_views(vec![
+            StoreView::new(StoreId("a-store".to_owned()), vec![prefix], vec![]),
+            StoreView::new(StoreId("b-store".to_owned()), vec![exact], vec![]),
+        ]);
+        assert_eq!(
+            via_views.resolve(Sigil::Topic, "atlas"),
+            via_indexes.resolve(Sigil::Topic, "atlas")
+        );
+    }
+
+    #[test]
+    fn document_store_adapter_joins_the_fanout_with_hosted_rows() {
+        // The live-store adapter over the documents surface (`StoreView::from_documents`)
+        // fanned out against a hosted view: a real document record with an alias claim
+        // and a removed (cleared) sibling. The cleared document never resolves and never
+        // contests the live one; the alias claim resolves through the fan-out.
+        let live = DocumentRecord {
+            id: Hash::digest(b"adapter-live"),
+            author: author(1),
+            document: DocumentRef::for_bytes("text/plain", b"minutes").unwrap(),
+            removal: None,
+        };
+        let removed = DocumentRecord {
+            id: Hash::digest(b"adapter-removed"),
+            author: author(2),
+            document: DocumentRef::for_bytes("text/plain", b"minutes").unwrap(),
+            removal: Some(Hash::digest(b"adapter-removal-event")),
+        };
+        let claims = vec![
+            Claim {
+                id: Hash::digest(b"adapter-alias-claim"),
+                author: author(3),
+                subject: live.id,
+                name: aliases::ALIAS_NAME.to_owned(),
+                value: Some("Atlas".to_owned()),
+                scope: tag_claims::TagScope::Shared,
+            },
+            Claim {
+                id: Hash::digest(b"adapter-removed-claim"),
+                author: author(4),
+                subject: removed.id,
+                name: aliases::ALIAS_NAME.to_owned(),
+                value: Some("Atlas".to_owned()),
+                scope: tag_claims::TagScope::Shared,
+            },
+        ];
+        let named = vec![
+            Named {
+                subject: live.id,
+                name: "Minutes".to_owned(),
+            },
+            Named {
+                subject: removed.id,
+                name: "Minutes".to_owned(),
+            },
+        ];
+        let fanout = FanOut::from_views(vec![
+            StoreView::from_documents(
+                StoreId::local(),
+                &[live.clone(), removed],
+                &named,
+                &claims,
+                vec![],
+            ),
+            hosted_view(
+                vec![object(b"adapter-hosted", Sigil::Topic, "Atlas", vec![], 5)],
+                vec![],
+            ),
+        ]);
+        // The live document's alias claim is the only local candidate: the removed
+        // document is excluded as a tombstone, so locally "Atlas" is uncontested.
+        let local_only = FanOut::from_views(vec![StoreView::from_documents(
+            StoreId::local(),
+            &[live.clone()],
+            &named,
+            &claims,
+            vec![],
+        )]);
+        let local_resolution = local_only.resolve(Sigil::Topic, "atlas");
+        assert_eq!(local_resolution.candidates.len(), 1);
+        assert_eq!(local_resolution.candidates[0].target_id, live.id);
+        assert!(!local_resolution.candidates[0].contested());
+        // Fanned out against the hosted exact-title row, both candidates appear; the
+        // live document keeps its local provenance and its claiming author.
+        let resolution = fanout.resolve(Sigil::Topic, "atlas");
+        assert_eq!(resolution.candidates.len(), 2);
+        assert!(
+            resolution
+                .candidates
+                .iter()
+                .all(|candidate| candidate.match_kind == MatchKind::ExactClaim
+                    || candidate.match_kind == MatchKind::ExactTitle)
+        );
+        assert!(
+            resolution
+                .candidates
+                .iter()
+                .any(|candidate| candidate.target_id == live.id
+                    && candidate.provenance.store == StoreId::local()
+                    && candidate.provenance.author == author(3))
+        );
+        // The removed document is in neither candidate list nor claimant count.
+        assert!(
+            fanout
+                .resolve(Sigil::Topic, "minutes")
+                .candidates
+                .iter()
+                .all(|candidate| candidate.target_id == live.id)
+        );
     }
 
     #[test]

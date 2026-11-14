@@ -66,5 +66,5 @@ func (e *UpstreamError) relay(id json.RawMessage) *response {
 	if len(e.Data) > 0 {
 		data = e.Data
 	}
-	return &response{JSONRPC: "2.0", ID: id, Error: &rpcError{Code: e.Code, Message: e.Message, Data: data}}
+	return &response{JSONRPC: "2.0", ID: id, Error: &rpcError{Code: e.Code, Message: e.Message, Data: data, relayed: true}}
 }

@@ -112,7 +112,7 @@ same rule as today, with the file gone.
 
 ## 5. What the port does **not** need to rewrite
 
-`plugin/opencode/mcpx/daemon.ts` is already harness-free: `discover()`,
+`plugin/core/daemon.ts` is already harness-free: `discover()`,
 `DaemonClient`, `rank()`, `summarise()`, `readInfoFiles()`, `stateDir()` and the
 health checks take an `env` map and a directory and speak `/v1` over the unix
 socket with Bun's `fetch(url, { unix })`. v2 keeps Bun and keeps the socket, so
