@@ -1,0 +1,96 @@
+name: stale-run sweeper
+
+# #2605 follow-on (task 16678): the Actions queue never expires stale
+# runs. At the 2026-11-14 measurement, 88 of 183 queued runs dated from
+# 2026-11-11 for long-superseded SHAs, and runners burn on ancient
+# commits while current checks wait.
+#
+# This sweeper cancels QUEUED runs that are both:
+#   - older than the threshold (default 6h), and
+#   - superseded: their head SHA is no longer the head of their branch
+#     (a branch that no longer exists counts as superseded).
+# It never touches in_progress runs, runs younger than the threshold,
+# or runs whose SHA is still their branch's head -- the current head's
+# verification always survives. Every decision (cancel or keep, with
+# the reason) is written to the job summary as the auditable log.
+#
+# The two largest fan-out workflows (mcpx test, id) already carry
+# concurrency/cancel-in-progress for same-ref supersession of non-push
+# runs; their push-to-main runs are deliberately keyed by run_id (see
+# id-check.yml) so each merge keeps its own run -- which is exactly
+# the population only a sweeper can reap once superseded.
+
+on:
+  schedule:
+    - cron: "23 */2 * * *"
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "Log decisions without cancelling"
+        type: boolean
+        default: true
+      threshold_hours:
+        description: "Minimum queued age in hours before a superseded run is cancelled"
+        type: number
+        default: 6
+
+permissions:
+  actions: write
+
+concurrency:
+  group: stale-run-sweeper
+  cancel-in-progress: false
+
+jobs:
+  sweep:
+    name: sweep stale queued runs
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      GH_TOKEN: ${{ github.token }}
+      DRY_RUN: ${{ github.event_name == 'workflow_dispatch' && inputs.dry_run || 'false' }}
+      THRESHOLD_HOURS: ${{ github.event_name == 'workflow_dispatch' && inputs.threshold_hours || '6' }}
+    steps:
+      - name: Sweep superseded queued runs older than the threshold
+        run: |
+          set -euo pipefail
+          repo="${{ github.repository }}"
+          cutoff=$(date -u -d "-${THRESHOLD_HOURS} hours" +%Y-%m-%dT%H:%M:%SZ)
+          echo "## stale-run sweeper — $(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_STEP_SUMMARY"
+          echo "repo $repo · threshold ${THRESHOLD_HOURS}h (cutoff $cutoff) · dry_run $DRY_RUN" >> "$GITHUB_STEP_SUMMARY"
+          cancelled=0; kept=0; checked=0
+          declare -A heads=()
+          page=1
+          while :; do
+            runs=$(gh api "repos/$repo/actions/runs?status=queued&per_page=100&page=$page" \
+              --jq '.workflow_runs[] | [.id, .created_at, .head_branch, .head_sha, .name] | @tsv')
+            [ -z "$runs" ] && break
+            while IFS=$'\t' read -r id created branch sha wname; do
+              [ -z "$id" ] && continue
+              # Only runs older than the threshold are eligible at all.
+              [[ "$created" > "$cutoff" ]] && continue
+              checked=$((checked+1))
+              if [ -z "${heads[$branch]+x}" ]; then
+                heads[$branch]=$(gh api "repos/$repo/branches/$branch" --jq '.commit.sha' 2>/dev/null || echo "MISSING")
+              fi
+              head="${heads[$branch]}"
+              if [ "$head" = "$sha" ]; then
+                echo "- keep run $id ($wname, $branch @ $sha): still branch head" >> "$GITHUB_STEP_SUMMARY"
+                kept=$((kept+1))
+                continue
+              fi
+              reason="superseded (branch head $head)"
+              [ "$head" = "MISSING" ] && reason="branch $branch no longer exists"
+              if [ "$DRY_RUN" = "true" ]; then
+                echo "- would cancel run $id ($wname, $branch @ $sha, queued since $created): $reason" >> "$GITHUB_STEP_SUMMARY"
+              else
+                gh api -X POST "repos/$repo/actions/runs/$id/cancel" > /dev/null
+                echo "- cancelled run $id ($wname, $branch @ $sha, queued since $created): $reason" >> "$GITHUB_STEP_SUMMARY"
+              fi
+              cancelled=$((cancelled+1))
+            done <<< "$runs"
+            page=$((page+1))
+          done
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "checked $checked stale-aged queued runs · cancelled $cancelled · kept $kept (dry_run $DRY_RUN)" >> "$GITHUB_STEP_SUMMARY"
+          cat "$GITHUB_STEP_SUMMARY"
