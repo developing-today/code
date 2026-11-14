@@ -23,7 +23,7 @@ import type {
   AaThreshold,
 } from "./model.ts";
 import { isIsoDate } from "./validate.ts";
-import { serviceIdFor } from "./quota-gather-map.ts";
+import { antigravityPoolForModel, serviceIdFor } from "./quota-gather-map.ts";
 
 // --- scalar coercion ---------------------------------------------------------
 // The Supabase Management API serializes numeric columns as JSON
@@ -808,8 +808,11 @@ export const SECTION_RISK_SECTIONS = ["workhorse", "speed", "specialist", "summi
  *    pool id (serviceIdFor: _claude -> anthropic:claude-pro,
  *    _muse/meta -> meta, _openai -> _openai.main);
  *  - split pools: a pool id under the door with a dot suffix serves
- *    the door (_antigravity.gemini / _antigravity.claude-gpt serve
- *    _antigravity; opencode-go.<workspace> serves opencode-go);
+ *    the door (opencode-go.<workspace> serves opencode-go). The
+ *    _antigravity split is the exception: its pools split by MODEL,
+ *    so sectionPoolIdsFromConfig attributes _antigravity leaves
+ *    per-model via antigravityPoolForModel instead of this door
+ *    join (#9170);
  *  - plan doors: *-plan pseudo-providers in routes map to the pools
  *    of their base provider (opencode-go-plans -> opencode-go.*,
  *    openai-plan -> _openai.main/_openai.alt, mistral-plan -> mistral). */
@@ -844,10 +847,31 @@ export function sectionPoolIdsFromConfig(text: string, poolIds: readonly string[
       out[section] = [];
       continue;
     }
-    const doors = new Set([...leaves].map((leaf) => leaf.split("/")[0]));
-    out[section] = [
-      ...new Set(poolIds.filter((poolId) => [...doors].some((door) => poolServesDoor(poolId, door)))),
-    ].sort();
+    const doors = new Set<string>();
+    const pools = new Set<string>();
+    for (const leaf of leaves) {
+      const slash = leaf.indexOf("/");
+      const door = slash === -1 ? leaf : leaf.slice(0, slash);
+      // Split-pool exception (#9170): the _antigravity door fans out
+      // to two pools split BY MODEL, so door-level membership would
+      // join both pools to any section touching the door — a healthy
+      // _antigravity.claude-gpt would suppress the speed section's
+      // alert even when speed's only Antigravity leaf is a Gemini
+      // model. Preserve the leaf model and apply the gatherer's own
+      // attribution (antigravityPoolForModel): a Gemini leaf serves
+      // only _antigravity.gemini, any other leaf only
+      // _antigravity.claude-gpt.
+      if (door === "_antigravity" && slash !== -1) {
+        const pool = antigravityPoolForModel(leaf.slice(slash + 1));
+        if (poolIds.includes(pool)) pools.add(pool);
+        continue;
+      }
+      doors.add(door);
+    }
+    for (const poolId of poolIds) {
+      if ([...doors].some((door) => poolServesDoor(poolId, door))) pools.add(poolId);
+    }
+    out[section] = [...pools].sort();
   }
   return out;
 }
