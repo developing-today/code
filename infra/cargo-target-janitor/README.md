@@ -91,3 +91,13 @@ The cap and stale threshold can be overridden for a manual run with
 ```sh
 python3 ~/git/code/infra/cargo-target-janitor/tests/test_cargo_target_janitor.py
 ```
+
+## Pagination contract (#6622)
+
+Paged reads in this system follow the fleet pagination contract — a
+paged read is **complete, bounded, or says so**: (1) the cursor is
+validated where read (type first, then progress); (2) the volume is
+bounded, and breaching the bound is an error naming the listing;
+(3) truncation is never silent — the read completes, fails closed,
+or marks the truncation in its output. Closing inventory:
+ (#6623).

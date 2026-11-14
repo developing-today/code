@@ -113,3 +113,13 @@ The seven rules, in operator language:
 | `systemd/`             | laptop user units + timers + installer                                                    |
 | `docs/RUNBOOK.md`      | copy-paste operations: install, add org, upgrade, DR                                      |
 | `tests/`               | regression tests (plain python3, no deps; run by the github-backup tests workflow, #5937) |
+
+## Pagination contract (#6622)
+
+Paged reads in this system follow the fleet pagination contract — a
+paged read is **complete, bounded, or says so**: (1) the cursor is
+validated where read (type first, then progress); (2) the volume is
+bounded, and breaching the bound is an error naming the listing;
+(3) truncation is never silent — the read completes, fails closed,
+or marks the truncation in its output. Closing inventory:
+ (#6623).
