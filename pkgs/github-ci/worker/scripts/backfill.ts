@@ -53,8 +53,7 @@ import { Turso } from "../src/turso";
 type Obj = Record<string, unknown>;
 
 const TURSO_QUEUE_URL =
-  process.env.TURSO_QUEUE_URL ??
-  "https://fleet-queue-dezren39.aws-us-east-1.turso.io";
+  process.env.TURSO_QUEUE_URL ?? "https://fleet-queue-dezren39.aws-us-east-1.turso.io";
 
 const env: SinkEnv = {
   TURSO_QUEUE_URL,
@@ -62,10 +61,8 @@ const env: SinkEnv = {
 };
 
 const GH_TOKEN = process.env.GH_TOKEN ?? "";
-if (!GH_TOKEN)
-  throw new Error("GH_TOKEN is unset (see usage in the file header)");
-if (!env.TURSO_QUEUE_TOKEN)
-  throw new Error("TURSO_QUEUE_TOKEN is unset (see usage in the file header)");
+if (!GH_TOKEN) throw new Error("GH_TOKEN is unset (see usage in the file header)");
+if (!env.TURSO_QUEUE_TOKEN) throw new Error("TURSO_QUEUE_TOKEN is unset (see usage in the file header)");
 
 /**
  * Retry transient transport failures (socket termination, 5xx) with
@@ -80,21 +77,21 @@ const retry = async <T>(label: string, fn: () => Promise<T>): Promise<T> => {
       return await fn();
     } catch (e) {
       lastErr = e;
-      if (attempt < 5)
-        await new Promise((r) => setTimeout(r, 500 * 2 ** attempt));
+      if (attempt < 5) await new Promise((r) => setTimeout(r, 500 * 2 ** attempt));
     }
   }
   throw new Error(`${label}: failed after 5 attempts: ${String(lastErr)}`);
 };
 
 const sweepBatch: typeof mirrorSweepBatch = (e, stmts) =>
-  retry(`turso batch (${stmts.length} stmts)`, () =>
-    mirrorSweepBatch(e, stmts),
-  );
+  retry(`turso batch (${stmts.length} stmts)`, () => mirrorSweepBatch(e, stmts));
 
 const api = async (path: string): Promise<unknown> =>
   retry(`github api ${path}`, async () => {
     const res = await fetch(`https://api.github.com${path}`, {
+      // A wedged connection must fail into the retry loop in
+      // seconds, not stall the sweep for minutes.
+      signal: AbortSignal.timeout(20_000),
       headers: {
         Authorization: `Bearer ${GH_TOKEN}`,
         Accept: "application/vnd.github+json",
@@ -102,8 +99,7 @@ const api = async (path: string): Promise<unknown> =>
         "User-Agent": "github-ci-mirror-backfill",
       },
     });
-    if (res.status >= 500)
-      throw new Error(`github api ${path}: HTTP ${res.status}`);
+    if (res.status >= 500) throw new Error(`github api ${path}: HTTP ${res.status}`);
     if (!res.ok) throw new Error(`github api ${path}: HTTP ${res.status}`);
     return res.json();
   });
@@ -113,9 +109,7 @@ const apiAll = async (path: string): Promise<Obj[]> => {
   const out: Obj[] = [];
   for (let page = 1; ; page++) {
     const sep = path.includes("?") ? "&" : "?";
-    const items = (await api(
-      `${path}${sep}per_page=100&page=${page}`,
-    )) as Obj[];
+    const items = (await api(`${path}${sep}per_page=100&page=${page}`)) as Obj[];
     out.push(...items);
     if (items.length < 100) return out;
   }
@@ -129,11 +123,7 @@ interface StoredRow {
   agentNoteId: number | null;
 }
 
-const storedRows = async (
-  q: Turso,
-  table: string,
-  repo: string,
-): Promise<Map<number, StoredRow>> => {
+const storedRows = async (q: Turso, table: string, repo: string): Promise<Map<number, StoredRow>> => {
   const r = await retry(`read ${table}`, () =>
     q.execute(
       `SELECT number, gh_updated_at, body_hash, comments, latest_agent_note_id
@@ -145,11 +135,7 @@ const storedRows = async (
   for (const row of r.response?.result?.rows ?? []) {
     const cell = (i: number): string | null => {
       const c = row[i];
-      return !c || c.type === "null"
-        ? null
-        : "value" in c
-          ? String(c.value)
-          : null;
+      return !c || c.type === "null" ? null : "value" in c ? String(c.value) : null;
     };
     const number = Number(cell(0));
     map.set(number, {
@@ -189,12 +175,8 @@ const sweepRepo = async (repo: string): Promise<RepoSummary> => {
     unchanged: 0,
   };
   const q = new Turso(env.TURSO_QUEUE_URL, env.TURSO_QUEUE_TOKEN);
-  const issueList = await apiAll(
-    `/repos/${repo}/issues?state=all&sort=created&direction=asc`,
-  );
-  const pullList = await apiAll(
-    `/repos/${repo}/pulls?state=all&sort=created&direction=asc`,
-  );
+  const issueList = await apiAll(`/repos/${repo}/issues?state=all&sort=created&direction=asc`);
+  const pullList = await apiAll(`/repos/${repo}/pulls?state=all&sort=created&direction=asc`);
   const commentsByNumber = new Map<number, number>();
   for (const item of issueList) {
     commentsByNumber.set(Number(item.number), Number(item.comments ?? 0) || 0);
@@ -207,30 +189,17 @@ const sweepRepo = async (repo: string): Promise<RepoSummary> => {
 
   const stmts: Parameters<typeof mirrorSweepBatch>[1] = [];
   const changed: { item: Obj; isPr: boolean }[] = [];
-  const consider = async (
-    item: Obj,
-    isPr: boolean,
-    stored: Map<number, StoredRow>,
-  ): Promise<void> => {
+  const consider = async (item: Obj, isPr: boolean, stored: Map<number, StoredRow>): Promise<void> => {
     const number = Number(item.number);
     const prev = stored.get(number);
     const hash = await bodyHashOf(item);
-    if (
-      prev &&
-      prev.ghUpdatedAt === String(item.updated_at ?? "") &&
-      prev.bodyHash === hash
-    ) {
+    if (prev && prev.ghUpdatedAt === String(item.updated_at ?? "") && prev.bodyHash === hash) {
       summary.unchanged++;
       return;
     }
     if (isPr) {
-      const withComments = {
-        ...item,
-        comments: commentsByNumber.get(number) ?? Number(item.comments ?? 0),
-      };
-      stmts.push(
-        prUpsertStmt(buildPrRow({ pull_request: withComments }, repo, hash)),
-      );
+      const withComments = { ...item, comments: commentsByNumber.get(number) ?? Number(item.comments ?? 0) };
+      stmts.push(prUpsertStmt(buildPrRow({ pull_request: withComments }, repo, hash)));
     } else {
       stmts.push(issueUpsertStmt(buildIssueRow({ issue: item }, repo, hash)));
     }
@@ -263,44 +232,26 @@ const sweepRepo = async (repo: string): Promise<RepoSummary> => {
   // would exhaust the API budget repairing pointers for items nobody
   // has touched in years. Deferred items are counted, and any later
   // change to an item (or a rerun with a raised cap) repairs it.
-  changed.sort((a, b) =>
-    String(b.item.updated_at ?? "").localeCompare(
-      String(a.item.updated_at ?? ""),
-    ),
-  );
+  changed.sort((a, b) => String(b.item.updated_at ?? "").localeCompare(String(a.item.updated_at ?? "")));
   let pointerBudget = MAX_POINTER_REPAIRS;
   for (const { item, isPr } of changed) {
     const number = Number(item.number);
-    if (
-      (commentsByNumber.get(number) ?? 0) === 0 &&
-      Number(item.comments ?? 0) === 0
-    )
-      continue;
+    if ((commentsByNumber.get(number) ?? 0) === 0 && Number(item.comments ?? 0) === 0) continue;
     if (pointerBudget <= 0) {
       summary.pointers_deferred++;
       continue;
     }
     pointerBudget--;
-    const comments = await apiAll(
-      `/repos/${repo}/issues/${number}/comments?sort=created&direction=asc`,
-    );
+    const comments = await apiAll(`/repos/${repo}/issues/${number}/comments?sort=created&direction=asc`);
     const stored = (isPr ? storedPrs : storedIssues).get(number);
-    const latestNote = [...comments]
-      .reverse()
-      .find((c) => isAgentNote(typeof c.body === "string" ? c.body : null));
+    const latestNote = [...comments].reverse().find((c) => isAgentNote(typeof c.body === "string" ? c.body : null));
     if (latestNote) {
       if (!stored || stored.agentNoteId !== Number(latestNote.id)) {
-        const touch = buildCommentTouch(
-          { issue: item, comment: latestNote, action: "created" },
-          repo,
-        );
+        const touch = buildCommentTouch({ issue: item, comment: latestNote, action: "created" }, repo);
         await sweepBatch(env, commentTouchStmts(touch));
         summary.pointers_set++;
       }
-    } else if (
-      stored?.agentNoteId != null &&
-      !comments.some((c) => Number(c.id) === stored.agentNoteId)
-    ) {
+    } else if (stored?.agentNoteId != null && !comments.some((c) => Number(c.id) === stored.agentNoteId)) {
       await sweepBatch(env, [clearAgentNotePointerStmt(repo, number, isPr)]);
       summary.pointers_cleared++;
     }
@@ -311,9 +262,7 @@ const sweepRepo = async (repo: string): Promise<RepoSummary> => {
 };
 
 const MAX_POINTER_REPAIRS = Number(
-  process.argv
-    .find((a) => a.startsWith("--max-pointer-repairs="))
-    ?.split("=")[1] ?? 400,
+  process.argv.find((a) => a.startsWith("--max-pointer-repairs="))?.split("=")[1] ?? 400,
 );
 
 const main = async (): Promise<void> => {
