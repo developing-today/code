@@ -414,16 +414,22 @@
       "id": "mcpx.plugin.v2",
       "paths": [
         "pkgs/mcpx/plugin/opencode/v2/permission.test.ts",
+        "pkgs/mcpx/plugin/opencode/v2/picker.test.ts",
         "pkgs/mcpx/plugin/opencode/v2/sampling.test.ts",
         "pkgs/mcpx/plugin/opencode/v2/tool-filter.test.ts",
         "pkgs/mcpx/plugin/opencode/v2/tools.test.ts",
         "pkgs/mcpx/plugin/opencode/v2/v2.test.ts"
       ],
-      "invocation": "bun test plugin/opencode/v2/ (61 tests at filing)",
-      "venue": null,
-      "status": "uncovered",
+      "invocation": "bun test plugin/opencode/v2/ (73 tests)",
+      "venue": {
+        "workflow": ".github/workflows/mcpx.yml",
+        "job_step": "plugin / bun test (opencode plugin v2)",
+        "state": "active",
+        "dispatchable": true
+      },
+      "status": "mapped",
       "phase2_issue": 6092,
-      "reason": "mcpx.yml only invokes the v1 plugin directory; no v2 workflow reference exists."
+      "notes": "Wired 2026-11-14 (#6092): the plugin job runs the v2 directory and asserts the six registered files exist. Verified locally at wiring time: 73 pass, 0 fail, 6 files."
     },
     {
       "id": "mcpx.conformance.official",
