@@ -67,23 +67,6 @@ jobs:
             exit 1
           fi
           npm test
-      # #6370: the smoke suite (smoke/smoke.mjs, 15 checks) is the only
-      # coverage for src/user-do.ts and the worker fail-closed matrix in
-      # src/worker.ts. It drives two local 
- ⛅️ wrangler 4.147.0
-──────────────────── passes, so it
-      # needs the package's devDependencies (wrangler) installed first.
-      # The guard fails the run if the suite is missing, so a green run
-      # can never be a silently skipped suite.
-      - name: Run the hosted-worker smoke suite
-        working-directory: pkgs/id/hosted-worker
-        run: |
-          if [ ! -f smoke/smoke.mjs ]; then
-            echo "::error::pkgs/id/hosted-worker/smoke/smoke.mjs is missing — the smoke suite was not run."
-            exit 1
-          fi
-          npm install --no-audit --no-fund
-          npm run smoke
       - name: Run the hosted-worker smoke (UserDO + fail-closed matrix)
         working-directory: pkgs/id/hosted-worker
         run: |
