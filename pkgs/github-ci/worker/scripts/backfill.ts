@@ -39,6 +39,7 @@ import {
   buildPrRow,
   clearAgentNotePointerStmts,
   commentTouchStmts,
+  forceCommentsStmt,
   ensureMirrorSchema,
   isAgentNote,
   issueUpsertStmt,
@@ -97,7 +98,7 @@ const api = async (path: string): Promise<unknown> =>
     const res = await fetch(`https://api.github.com${path}`, {
       // A wedged connection must fail into the retry loop in
       // seconds, not stall the sweep for minutes.
-      signal: AbortSignal.timeout(20_000),
+      signal: AbortSignal.timeout(60_000),
       headers: {
         Authorization: `Bearer ${GH_TOKEN}`,
         Accept: "application/vnd.github+json",
@@ -111,54 +112,53 @@ const api = async (path: string): Promise<unknown> =>
     return res.json();
   });
 
-/** One list page plus the last page number from the Link header. */
-const apiPage = async (
-  path: string,
-  page: number,
-): Promise<{ items: Obj[]; lastPage: number }> => {
-  const sep = path.includes("?") ? "&" : "?";
-  const full = `${path}${sep}per_page=100&page=${page}`;
-  return retry(`github api ${full}`, async () => {
-    const res = await fetch(`https://api.github.com${full}`, {
-      signal: AbortSignal.timeout(20_000),
-      headers: {
-        Authorization: `Bearer ${GH_TOKEN}`,
-        Accept: "application/vnd.github+json",
-        "X-GitHub-Api-Version": "2022-11-28",
-        "User-Agent": "github-ci-mirror-backfill",
-      },
-    });
-    if (!res.ok) throw new Error(`github api ${full}: HTTP ${res.status}`);
-    const link = res.headers.get("link") ?? "";
-    const last = /[?&]page=(\d+)>; rel="last"/.exec(link);
-    return {
-      items: (await res.json()) as Obj[],
-      lastPage: last ? Number(last[1]) : page,
-    };
-  });
-};
-
-/** Fetch every page of a list endpoint, pages 2..N four at a time. */
+/**
+ * Fetch every page of a list endpoint by following Link rel="next"
+ * URLs verbatim. The issues endpoint is cursor-paginated (the Link
+ * header carries only an `after` cursor, no rel="last"), while the
+ * pulls endpoint still uses page numbers — following `next` is the
+ * one scheme that is correct for both. (The first version of this
+ * sweep parsed rel="last" and silently stopped after page 1 of the
+ * issues list: 2 pure issues out of 5430. The summary's seen counts
+ * are what caught it.)
+ */
 const apiAll = async (path: string): Promise<Obj[]> => {
-  const first = await apiPage(path, 1);
-  if (first.lastPage <= 1) return first.items;
-  const pages: Obj[][] = [first.items];
-  let next = 2;
-  const worker = async (): Promise<void> => {
-    while (next <= first.lastPage) {
-      const page = next++;
-      pages[page - 1] = (await apiPage(path, page)).items;
-    }
-  };
-  await Promise.all([worker(), worker(), worker(), worker()]);
-  return pages.flat();
+  const out: Obj[] = [];
+  let url: string | null =
+    `https://api.github.com${path}${path.includes("?") ? "&" : "?"}per_page=100`;
+  while (url) {
+    const page: { items: Obj[]; next: string | null } = await retry(
+      `github api ${url}`,
+      async () => {
+        const res = await fetch(url, {
+          signal: AbortSignal.timeout(60_000),
+          headers: {
+            Authorization: `Bearer ${GH_TOKEN}`,
+            Accept: "application/vnd.github+json",
+            "X-GitHub-Api-Version": "2022-11-28",
+            "User-Agent": "github-ci-mirror-backfill",
+          },
+        });
+        if (!res.ok) throw new Error(`github api ${url}: HTTP ${res.status}`);
+        const link = res.headers.get("link") ?? "";
+        const next = /<([^>]+)>; rel="next"/.exec(link);
+        return {
+          items: (await res.json()) as Obj[],
+          next: next ? next[1] : null,
+        };
+      },
+    );
+    out.push(...page.items);
+    url = page.next;
+  }
+  return out;
 };
 
 /** HTTP status of a single GET (404 is an answer, not an error). */
 const apiStatus = async (path: string): Promise<number> =>
   retry(`github api ${path}`, async () => {
     const res = await fetch(`https://api.github.com${path}`, {
-      signal: AbortSignal.timeout(20_000),
+      signal: AbortSignal.timeout(60_000),
       headers: {
         Authorization: `Bearer ${GH_TOKEN}`,
         Accept: "application/vnd.github+json",
@@ -223,6 +223,7 @@ interface RepoSummary {
   pointers_cleared: number;
   pointers_deferred: number;
   pointers_failed: number;
+  counts_forced: number;
   vanished_skipped_live: number;
   unchanged: number;
   error?: string;
@@ -240,6 +241,7 @@ const sweepRepo = async (repo: string): Promise<RepoSummary> => {
     pointers_cleared: 0,
     pointers_deferred: 0,
     pointers_failed: 0,
+    counts_forced: 0,
     unchanged: 0,
   };
   const q = new Turso(env.TURSO_QUEUE_URL, env.TURSO_QUEUE_TOKEN);
@@ -267,6 +269,13 @@ const sweepRepo = async (repo: string): Promise<RepoSummary> => {
     item: Obj;
     stmt: { sql: string; args?: import("../src/turso").TursoArg[] };
   }
+  interface CountRepair {
+    number: number;
+    isPr: boolean;
+    comments: number;
+    version: string;
+  }
+  const countRepairs: CountRepair[] = [];
   const pending: Pending[] = [];
   const consider = async (
     item: Obj,
@@ -276,13 +285,33 @@ const sweepRepo = async (repo: string): Promise<RepoSummary> => {
     const number = Number(item.number);
     const prev = stored.get(number);
     const hash = await bodyHashOf(item);
+    // The diff key is (gh_updated_at, body_hash, comments): the count
+    // must be in the key because a comment does not move a PR's
+    // updated_at, and a count written wrong under a newer version
+    // stamp is invisible to the other two fields.
+    const apiComments = isPr
+      ? (commentsByNumber.get(number) ?? Number(item.comments ?? 0))
+      : Number(item.comments ?? 0);
     if (
       prev &&
       prev.ghUpdatedAt === String(item.updated_at ?? "") &&
-      prev.bodyHash === hash
+      prev.bodyHash === hash &&
+      prev.comments === apiComments
     ) {
       summary.unchanged++;
       return;
+    }
+    if (prev && prev.comments !== apiComments) {
+      countRepairs.push({
+        number,
+        isPr,
+        comments: apiComments,
+        version: isPr
+          ? String(
+              issueByNumber.get(number)?.updated_at ?? item.updated_at ?? "",
+            )
+          : String(item.updated_at ?? ""),
+      });
     }
     if (isPr) {
       // Join the comment count from the issues-list object and keep
@@ -427,6 +456,31 @@ const sweepRepo = async (repo: string): Promise<RepoSummary> => {
   }
   for (let i = 0; i < flush.length; i += 200) {
     await sweepBatch(env, flush.slice(i, i + 200));
+  }
+
+  // Count-repair pass: re-read every row whose count mismatched at
+  // diff time; any the version guard still rejected (a wrong count
+  // carrying a newer stamp) is force-set from the API truth.
+  const afterIssues = countRepairs.some((r) => !r.isPr)
+    ? await storedRows(q, "github_mirror_issues", repo)
+    : null;
+  const afterPrs = countRepairs.some((r) => r.isPr)
+    ? await storedRows(q, "github_mirror_pull_requests", repo)
+    : null;
+  for (const repair of countRepairs) {
+    const now = (repair.isPr ? afterPrs : afterIssues)?.get(repair.number);
+    if (now && now.comments !== repair.comments) {
+      await sweepBatch(env, [
+        forceCommentsStmt(
+          repo,
+          repair.number,
+          repair.isPr,
+          repair.comments,
+          repair.version || null,
+        ),
+      ]);
+      summary.counts_forced++;
+    }
   }
 
   await sweepBatch(env, [backfillStampStmt(repo, queueNow())]);

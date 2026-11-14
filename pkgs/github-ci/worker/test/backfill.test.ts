@@ -6,6 +6,7 @@ import {
   buildPrRow,
   clearAgentNotePointerStmts,
   commentTouchStmts,
+  forceCommentsStmt,
   issueUpsertStmt,
   prUpsertStmt,
   tombstoneDeleteStmts,
@@ -129,6 +130,27 @@ describe("sweep statement builders (#8580 backfill)", () => {
       buildPrRow({ pull_request: prObj }, REPO, "cafe"),
     );
     expect(plain.args?.[13]).toEqual({ type: "text", value: prObj.updated_at });
+  });
+
+  it("force-comments targets the right table and binds count + version", () => {
+    const stmt = forceCommentsStmt(
+      REPO,
+      10056,
+      true,
+      4,
+      "2026-11-14T14:35:00Z",
+    );
+    expect(stmt.sql).toContain(
+      "UPDATE github_mirror_pull_requests SET comments = ?",
+    );
+    expect(stmt.args?.[0]).toEqual({ type: "integer", value: "4" });
+    expect(stmt.args?.[1]).toEqual({
+      type: "text",
+      value: "2026-11-14T14:35:00Z",
+    });
+    expect(forceCommentsStmt(REPO, 1, false, 0, null).sql).toContain(
+      "UPDATE github_mirror_issues",
+    );
   });
 
   it("comment touch: plain comment is seed+update; deleted note adds marker+clear", () => {

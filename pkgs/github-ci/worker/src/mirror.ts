@@ -442,6 +442,37 @@ export function tombstoneDeleteStmts(repo: string, number: number): Stmt[] {
  * delayed created/edited delivery of that comment cannot resurrect
  * the pointer through the comment path's empty-pointer branch.
  */
+/**
+ * Sweep-only repair: set a row's comments count + version directly.
+ * The version guard on the upserts is the right rule for webhooks,
+ * but it cannot repair a count that a previous sweep wrote with a
+ * WRONG count under a NEWER version stamp (the 2026-11-14 truncated
+ * list run stamped pulls-list versions onto zeroed counts). The
+ * sweep has just read the true count and its true version from the
+ * API, so it may overwrite unconditionally — this statement is never
+ * used by a webhook path.
+ */
+export function forceCommentsStmt(
+  repo: string,
+  number: number,
+  isPr: boolean,
+  comments: number,
+  commentsGhUpdatedAt: string | null,
+): Stmt {
+  const table = isPr ? "github_mirror_pull_requests" : "github_mirror_issues";
+  return {
+    sql: `UPDATE ${table} SET comments = ?, comments_gh_updated_at = ?, mirrored_at = ?
+          WHERE repo = ? AND number = ?`,
+    args: [
+      iArg(comments),
+      tArg(commentsGhUpdatedAt),
+      tArg(queueNow()),
+      tArg(repo),
+      iArg(number),
+    ],
+  };
+}
+
 export function clearAgentNotePointerStmts(
   repo: string,
   number: number,
