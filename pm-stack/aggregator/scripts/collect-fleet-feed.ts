@@ -153,12 +153,17 @@ import type { ProjectPoolItem } from "../src/model.ts";
 import { REPOS } from "../src/model.ts";
 import { staleIssueSearchQuery, type RepoCensus } from "../src/coverage.ts";
 import { loadLaunchRecords, recordFromSessionEntry } from "../src/registry.ts";
+import {
+  defaultHiddenDir,
+  defaultQuotaViewPath,
+  defaultUsageOutboxPath,
+} from "../src/default-paths.ts";
 import { mapServerSessions, poolBurn } from "../src/sources/opencode.ts";
 import type { FreshnessInput } from "../src/freshness.ts";
 
 const PKG = join(dirname(fileURLToPath(import.meta.url)), "..");
 const HOME = homedir();
-const HIDDEN = join(HOME, "workspace/goals/keep-the-four-repos-healthy/hidden_files");
+const HIDDEN = defaultHiddenDir(HOME);
 
 export type FleetFeedPublication = Readonly<{
   /** Absolute destination path that was replaced. */
@@ -277,12 +282,7 @@ function resolveOutPath(): string {
 }
 
 const outPath = resolveOutPath();
-const quotaViewPath =
-  process.env.QUOTA_VIEW_PATH ??
-  join(
-    HOME,
-    "workspace/goals/stewardship-commission-recurring-review-and-dispatch/hidden_files/visibility/quota-view.md",
-  );
+const quotaViewPath = process.env.QUOTA_VIEW_PATH ?? defaultQuotaViewPath(HOME);
 const freeServicesTrackerPath =
   process.env.PM_AGG_FREE_SERVICES_TRACKER ??
   join(HOME, "hatch-personal/workspace/ai-subscriptions/free-services-to-check.md");
@@ -295,7 +295,7 @@ const dnsRegisterPath =
 const dnsRegisterJsonPath = process.env.DNS_REGISTER_JSON_PATH ?? join(dirname(dnsRegisterPath), "register.json");
 const launchRecordsPath = process.env.CLAUDE_LAUNCH_RECORDS_PATH ?? join(HIDDEN, "claude-launch-records.jsonl");
 const quotaRegistryPath = process.env.QUOTA_REGISTRY_PATH ?? join(HIDDEN, "provider-quota-registry.md");
-const snapshotOutboxPath = process.env.USAGE_SNAPSHOT_OUTBOX_PATH ?? join(HIDDEN, "usage-snapshot-outbox.jsonl");
+const snapshotOutboxPath = process.env.USAGE_SNAPSHOT_OUTBOX_PATH ?? defaultUsageOutboxPath(HOME);
 const chargeCandidatesPath = process.env.CHARGE_CANDIDATES_PATH ?? join(HIDDEN, "charges-candidates.json");
 const chargesSurfacedStatePath = process.env.CHARGES_SURFACED_STATE_PATH ?? join(HIDDEN, "charges-surfaced-state.json");
 const burnHistoryStatePath =
