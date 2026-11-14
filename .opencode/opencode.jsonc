@@ -207,6 +207,18 @@
   // one-line targets reorder in haiku-plan, not a switchboard
   // change. Credential: ~/.claude/.credentials.json (native
   // provider reads it in place); live-probed at enable time.
+  // 2026-11-14 (Drew, direct order - code#9549): "_claude" joins the
+  // list below. Its 7-day window is at 100% until 2026-11-18 13:00 CT
+  // and every call returns a rate-limit error; sessions dealt its
+  // leaves (fable-plan, sonnet-plan, opus-plan, haiku-plan,
+  // workhorse-last-resort) do not fail over - they sit in the retry
+  // loop on the dead door (attempt counters past 10, sessions wedged
+  // 40+ minutes; the fleet minder interrupt-stopped 100+ of them on
+  // 2026-11-13/14). Drew's re-login did not revive it (probes:
+  // 236 failures / 0 successes in the trailing 30 minutes). Per the
+  // switchboard rule the definition and every seat stay in place;
+  // deleting this line re-enables it. Re-enable at the 2026-11-18
+  // reset, or sooner if a live probe shows the door answering again.
   "disabled_providers": [
     "google",
     "google-vertex",
@@ -220,7 +232,8 @@
     "openrouter",
     "cloudflare-workers-ai",
     "meta",
-    "deepseek"
+    "deepseek",
+    "_claude"
   ],
   // 2026-11-03 (Drew): muse, antigravity-ls, antigravity-agy, code-design,
   // design-code, cloudflare-gateway and chatgpt left this list together with
