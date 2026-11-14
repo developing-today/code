@@ -11,6 +11,7 @@
 //! the dependency points one way — `id-core` never names this crate.
 
 pub mod library_manifest;
+pub mod library_resolution;
 pub mod world_caps;
 pub mod world_limits;
 pub mod world_manifest;
