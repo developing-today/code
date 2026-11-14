@@ -1686,12 +1686,7 @@ pub async fn cmd_serve(opts: ServeOptions) -> Result<()> {
     #[cfg(feature = "web")]
     let blob_gate: Option<Arc<crate::blob_gate::RefreshingWorlds>> = match &event_events {
         Some(events) => {
-            let folded = build_blob_gate(
-                events,
-                &store_handle,
-                &groups_log,
-            )
-            .await;
+            let folded = build_blob_gate(events, &store_handle, &groups_log).await;
             Some(Arc::new(crate::blob_gate::RefreshingWorlds::new(folded)))
         }
         None => None,
