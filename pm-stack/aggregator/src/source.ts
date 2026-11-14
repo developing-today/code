@@ -2,6 +2,7 @@
 // whether they are looking at fixtures or live readers — swapping one for
 // the other is a config change (PM_AGG_SOURCE), not a code change.
 import type { SectionDiagnosis } from "./feed.ts";
+import type { QueueSnapshot } from "./queue.ts";
 import type { Phase12Snapshot } from "./phase12.ts";
 import type { BuildHealthSnapshot } from "./build-health.ts";
 import type { F12PrRef } from "./f12-readiness.ts";
@@ -102,6 +103,13 @@ export interface Source {
    * the readiness panel's PR column (#9926); null = the timeline
    * read is unavailable. Optional like phase12Design. */
   f12PrRefs?(): Promise<Map<number, F12PrRef[]> | null>;
+  /** The read-only fleet-queue collector snapshot (#9920): per-queue
+   * counts + task rows from the queue-broker's /health and /list
+   * read verbs, with the source timestamp and stale/unavailable
+   * state on the payload. Optional like phase12: sources that
+   * cannot read the broker omit it and the panels render the queue
+   * source as unavailable instead of inventing counts. */
+  queue?(): Promise<QueueSnapshot | null>;
   /** Which session sources are wired, for the coverage note (slice 2). */
   coverage(): Promise<SourceCoverage[]>;
   provenance(): Provenance;

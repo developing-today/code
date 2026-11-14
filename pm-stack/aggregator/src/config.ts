@@ -58,6 +58,13 @@ export interface Config {
   freshnessFile: string;
   /** Loopback-only publisher listener; never included in PM_AGG_HOSTS. */
   freshnessPort: number;
+  /** Queue-broker base URL for the read-only fleet-queue collector
+   * (#9920). The broker is laptop-local (loopback + tailnet only). */
+  queueBrokerUrl: string;
+  /** File holding the queue-broker agent token the collector sends
+   * as X-Agent-Token on read verbs only (#9920). Never a write or
+   * dispatch credential. */
+  queueBrokerTokenFile: string;
   activityFile: string;
   /** Durable identity-registry store (#906 §3), merged on every read. */
   registryFile: string;
@@ -182,6 +189,11 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
     eventsFile: s(env.PM_AGG_EVENTS_FILE, join(process.cwd(), "events.json")),
     freshnessFile: s(env.PM_AGG_FRESHNESS_FILE, join(homedir(), ".local", "state", "pm-aggregator", "freshness.json")),
     freshnessPort: parseAggregatorPort(env.PM_AGG_FRESHNESS_PORT, "PM_AGG_FRESHNESS_PORT", "4871"),
+    queueBrokerUrl: s(env.PM_AGG_QUEUE_BROKER_URL, "http://100.99.113.103:4801"),
+    queueBrokerTokenFile: s(
+      env.PM_AGG_QUEUE_BROKER_TOKEN_FILE,
+      join(homedir(), ".config", "queue-broker", "token"),
+    ),
     // Default is the state dir, NOT cwd (#5389): aggregator runtime state
     // lives in ~/.local/state/pm-aggregator (2026-10-27 precedent), and the
     // cwd default let an env-less run write this store into whatever
