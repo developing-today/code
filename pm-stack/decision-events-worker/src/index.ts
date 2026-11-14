@@ -88,25 +88,41 @@ export class DecisionSetEvents {
       this.setId = body.setId;
       const state = await this.loadState();
       state.setId = body.setId;
+      const seenList = (await this.state.storage.get<string[]>("seenEventIds")) ?? [];
+      const seen = new Set(seenList);
+      const newEvents: DecisionSetEvent[] = [];
       for (const e of body.events) {
+        if (seen.has(e.eventId)) continue;
+        seen.add(e.eventId);
+        seenList.push(e.eventId);
+        newEvents.push(e);
         state.fannedOut += 1;
         state.lastEventId = e.eventId;
         state.lastType = e.type;
         state.lastTs = e.ts;
       }
-      state.updatedAt = new Date().toISOString();
-      await this.state.storage.put("state", state);
-      const message = JSON.stringify({ type: "decision-events", setId: body.setId, events: body.events });
       let delivered = 0;
-      for (const ws of this.state.getWebSockets()) {
-        try {
-          ws.send(message);
-          delivered += 1;
-        } catch {
-          // A dead socket drops out of getWebSockets on its own.
+      if (newEvents.length > 0) {
+        state.updatedAt = new Date().toISOString();
+        const trimmedSeen = seenList.length > 1000 ? seenList.slice(-1000) : seenList;
+        await this.state.storage.put("seenEventIds", trimmedSeen);
+        await this.state.storage.put("state", state);
+        const message = JSON.stringify({ type: "decision-events", setId: body.setId, events: newEvents });
+        for (const ws of this.state.getWebSockets()) {
+          try {
+            ws.send(message);
+            delivered += 1;
+          } catch {
+            // A dead socket drops out of getWebSockets on its own.
+          }
         }
       }
-      return Response.json({ ...state, subscribers: this.state.getWebSockets().length, delivered });
+      return Response.json({
+        ...state,
+        subscribers: this.state.getWebSockets().length,
+        delivered,
+        deduplicated: body.events.length - newEvents.length,
+      });
     }
     if (url.pathname === "/state") {
       const state = await this.loadState();
@@ -151,39 +167,53 @@ async function handlePostEvents(request: Request, env: Env): Promise<Response> {
     return Response.json({ accepted: 0, inserted: 0, duplicates: 0, errors });
   }
 
-  // Store first (D1, idempotent), fan out only what was actually new.
+  // Store first (D1, idempotent), then fan out to each set's Durable Object.
+  // Fan out all valid events (not just insertedEvents) because DO /ingest
+  // deduplicates by eventId; if DO ingest failed on an earlier attempt, a retry
+  // will report 0 D1 changes but still needs to reach the DO.
   const statements = events.map((e) =>
     env.DB.prepare(
       "INSERT OR IGNORE INTO decision_set_events (event_id, set_id, question_ref, type, payload, ts) VALUES (?, ?, ?, ?, ?, ?)",
     ).bind(e.eventId, e.setId, e.questionRef, e.type, JSON.stringify(e.payload), e.ts),
   );
   const results = await env.DB.batch(statements);
-  const insertedEvents: DecisionSetEvent[] = [];
   let inserted = 0;
-  results.forEach((r, i) => {
-    const changes = r.meta?.changes ?? 0;
-    inserted += changes;
-    if (changes > 0) insertedEvents.push(events[i] as DecisionSetEvent);
+  results.forEach((r) => {
+    inserted += r.meta?.changes ?? 0;
   });
 
   const fanout: Record<string, unknown> = {};
-  for (const [setId, setEvents] of groupBySet(insertedEvents)) {
+  let fanoutFailed = false;
+  for (const [setId, setEvents] of groupBySet(events)) {
     const stub = env.SET_EVENTS.get(env.SET_EVENTS.idFromName(setId));
-    const res = await stub.fetch("https://do/ingest", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ setId, events: setEvents }),
-    });
-    fanout[setId] = res.ok ? await res.json().catch(() => null) : { error: `do ingest HTTP ${res.status}` };
+    try {
+      const res = await stub.fetch("https://do/ingest", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ setId, events: setEvents }),
+      });
+      if (!res.ok) {
+        fanoutFailed = true;
+        fanout[setId] = { error: `do ingest HTTP ${res.status}` };
+      } else {
+        fanout[setId] = await res.json().catch(() => null);
+      }
+    } catch (err) {
+      fanoutFailed = true;
+      fanout[setId] = { error: err instanceof Error ? err.message : String(err) };
+    }
   }
 
-  return Response.json({
-    accepted: events.length,
-    inserted,
-    duplicates: events.length - inserted,
-    errors,
-    fanout,
-  });
+  return Response.json(
+    {
+      accepted: events.length,
+      inserted,
+      duplicates: events.length - inserted,
+      errors,
+      fanout,
+    },
+    { status: fanoutFailed ? 502 : 200 },
+  );
 }
 
 async function handleGetEvents(url: URL, env: Env, setId: string): Promise<Response> {
