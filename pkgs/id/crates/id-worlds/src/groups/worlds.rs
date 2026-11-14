@@ -79,6 +79,15 @@ pub struct Worlds {
 }
 
 impl Worlds {
+    /// No worlds at all: the fold of nothing, for callers that must fail closed
+    /// (an empty gate) rather than propagate a fold error.
+    pub fn empty() -> Self {
+        Self {
+            folds: BTreeMap::new(),
+            markers: BTreeMap::new(),
+        }
+    }
+
     /// Folds each world's events on their own.
     ///
     /// # Errors
