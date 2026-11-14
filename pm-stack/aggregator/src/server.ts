@@ -3054,7 +3054,18 @@ async function handler(req: Request): Promise<Response> {
         }
       }
     }
-    return html(renderProgramProject(buildProjectDetail(config, items, pool, rows), items, prov(), provDetail(), pool, phase12, buildHealth, f12));
+    return html(
+      renderProgramProject(
+        buildProjectDetail(config, items, pool, rows),
+        items,
+        prov(),
+        provDetail(),
+        pool,
+        phase12,
+        buildHealth,
+        f12,
+      ),
+    );
   }
   if (path === "/api/program-project.json") {
     const id = url.searchParams.get("id") ?? "";
@@ -4191,7 +4202,13 @@ setTimeout(() => {
   void (async () => {
     try {
       primeAttemptAggregates();
-      await Promise.allSettled([boardContext(), overviewContext(), todayContext(), programSources(), commentIdentities()]);
+      await Promise.allSettled([
+        boardContext(),
+        overviewContext(),
+        todayContext(),
+        programSources(),
+        commentIdentities(),
+      ]);
       // #9781: warm the briefs' latest comments for the program pool
       // too — the board briefs read a subset of the same refs, so one
       // prime covers both pages, and neither page's first post-restart

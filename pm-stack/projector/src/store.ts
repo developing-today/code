@@ -391,7 +391,6 @@ export async function upsertComments(db: Client, rows: Omit<CommentRow, "fetched
   }
 }
 
-
 /** Persist a delete tombstone, even when the delete arrives before the first upsert. */
 export async function markCommentDeleted(db: Client, c: Omit<CommentRow, "fetched_at">): Promise<void> {
   await db.execute({

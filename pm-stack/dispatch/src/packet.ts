@@ -74,10 +74,10 @@ export function buildPacket(input: PacketInput, dedupeKey: string): Packet {
     ],
     acceptance:
       input.kind === "small_fix"
-        ? [
-            "Session launched and work completed per prompt; close the issue from the session or a follow-up",
-          ]
-        : ["Work described in the task body is triaged/completed per its prompt; findings recorded on the task or its issue"],
+        ? ["Session launched and work completed per prompt; close the issue from the session or a follow-up"]
+        : [
+            "Work described in the task body is triaged/completed per its prompt; findings recorded on the task or its issue",
+          ],
     scope: {
       include: [`${input.repo} — the work described in the task body`],
       exclude: ["Unrelated refactors or changes outside the described work"],
@@ -166,7 +166,8 @@ export function validatePayload(payload: Record<string, unknown>): string[] {
   const ded = payload.dedupe as Record<string, unknown> | undefined;
   if (!ded || !ded.checked_at || !ded.basis) errs.push("payload.dedupe: must have checked_at and basis");
   const hasIssue =
-    typeof payload.issue === "object" && payload.issue !== null &&
+    typeof payload.issue === "object" &&
+    payload.issue !== null &&
     Number.isInteger((payload.issue as Record<string, unknown>).number);
   const hasDispatch = payload.origin === "dispatch";
   if (!hasIssue && !hasDispatch && !Array.isArray(payload.prs) && typeof payload.set !== "object") {

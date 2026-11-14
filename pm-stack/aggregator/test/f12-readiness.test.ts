@@ -4,12 +4,7 @@
 // item and an item with a merged PR). Fixture bodies reproduce the
 // real grammars verified against the live issues on 2026-11-14.
 import { describe, expect, test } from "bun:test";
-import {
-  parseF12Designs,
-  parseF12Items,
-  parseTimelinePrRefs,
-  projectF12Readiness,
-} from "../src/f12-readiness.ts";
+import { parseF12Designs, parseF12Items, parseTimelinePrRefs, projectF12Readiness } from "../src/f12-readiness.ts";
 import { PHASE12_REPO } from "../src/phase12.ts";
 import type { GhItem } from "../src/model.ts";
 
@@ -52,9 +47,27 @@ describe("parseF12Designs (#534 checklist grammar)", () => {
 describe("parseTimelinePrRefs", () => {
   test("keeps cross-referenced PRs only, marking merged from merged_at", () => {
     const refs = parseTimelinePrRefs([
-      { event: "cross-referenced", source: { issue: { number: 801, state: "closed", html_url: "https://x/pull/801", pull_request: { merged_at: "2026-10-25T01:41:35Z" } } } },
-      { event: "cross-referenced", source: { issue: { number: 816, state: "open", html_url: "https://x/issues/816" } } },
-      { event: "cross-referenced", source: { issue: { number: 900, state: "open", html_url: "https://x/pull/900", pull_request: { merged_at: null } } } },
+      {
+        event: "cross-referenced",
+        source: {
+          issue: {
+            number: 801,
+            state: "closed",
+            html_url: "https://x/pull/801",
+            pull_request: { merged_at: "2026-10-25T01:41:35Z" },
+          },
+        },
+      },
+      {
+        event: "cross-referenced",
+        source: { issue: { number: 816, state: "open", html_url: "https://x/issues/816" } },
+      },
+      {
+        event: "cross-referenced",
+        source: {
+          issue: { number: 900, state: "open", html_url: "https://x/pull/900", pull_request: { merged_at: null } },
+        },
+      },
       { event: "labeled" },
     ]);
     expect(refs).toEqual([

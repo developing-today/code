@@ -123,9 +123,27 @@ import { KEY_HINT, KEYBOARD_SCRIPT, paletteHtml } from "./keyboard.ts";
 import type { ProgramData, ProgramEntry, ProgramLive, TrackedIssue } from "./program.ts";
 import type { ProjectDetail, ProjectSummary } from "./project-config.ts";
 import { derivedProjectState, projectDisagreement, PROJECT_URL } from "./projects.ts";
-import { PHASE12_ISSUE_URL, joinPhase12Steps, parsePhase12Steps, phase12IsStale, type Phase12Snapshot } from "./phase12.ts";
-import { BUILD_HEALTH_REPO, buildHealthIsStale, projectLane, projectNightlyTrend, type BuildHealthSnapshot } from "./build-health.ts";
-import { F12_DESIGN_ISSUE_URL, parseF12Designs, parseF12Items, projectF12Readiness, type F12PrRef } from "./f12-readiness.ts";
+import {
+  PHASE12_ISSUE_URL,
+  joinPhase12Steps,
+  parsePhase12Steps,
+  phase12IsStale,
+  type Phase12Snapshot,
+} from "./phase12.ts";
+import {
+  BUILD_HEALTH_REPO,
+  buildHealthIsStale,
+  projectLane,
+  projectNightlyTrend,
+  type BuildHealthSnapshot,
+} from "./build-health.ts";
+import {
+  F12_DESIGN_ISSUE_URL,
+  parseF12Designs,
+  parseF12Items,
+  projectF12Readiness,
+  type F12PrRef,
+} from "./f12-readiness.ts";
 import {
   CANONICAL_STATUSES,
   STATUS_SOURCE_LABELS,
@@ -6531,7 +6549,8 @@ export function projectsBodyHtml(
   const unsetCount = pool.filter((p) => !p.area).length;
   const area =
     opts.area === UNSET_AREA && unsetCount > 0 ? UNSET_AREA : opts.area && areas.includes(opts.area) ? opts.area : null;
-  const shownByArea = area === UNSET_AREA ? pool.filter((p) => !p.area) : area ? pool.filter((p) => p.area === area) : pool;
+  const shownByArea =
+    area === UNSET_AREA ? pool.filter((p) => !p.area) : area ? pool.filter((p) => p.area === area) : pool;
   // #1208: Status and Kind are pool fields too — facet-filter them like
   // Area (the saved-view dimensions in views.ts carry the same pair, so
   // a view and the chips agree). "(no status)" / "(no kind)" are the
@@ -6540,7 +6559,8 @@ export function projectsBodyHtml(
   const UNSET_KIND = "(no kind)";
   const statuses = [...new Set(pool.map((p) => p.status).filter((s): s is string => Boolean(s)))].sort();
   const kinds = [...new Set(pool.map((p) => p.kind).filter((s): s is string => Boolean(s)))].sort();
-  const statusSel = opts.status === UNSET_STATUS ? UNSET_STATUS : opts.status && statuses.includes(opts.status) ? opts.status : null;
+  const statusSel =
+    opts.status === UNSET_STATUS ? UNSET_STATUS : opts.status && statuses.includes(opts.status) ? opts.status : null;
   const kindSel = opts.kind === UNSET_KIND ? UNSET_KIND : opts.kind && kinds.includes(opts.kind) ? opts.kind : null;
   const shown = shownByArea
     .filter((p) => (statusSel === UNSET_STATUS ? !p.status : statusSel ? p.status === statusSel : true))
@@ -6652,15 +6672,29 @@ export function projectsBodyHtml(
   const body = `<p class="muted">${pool.length} items from the org Project <a href="${PROJECT_URL}">Developing Today (#4)</a>, read live by the fleet-feed collector (GraphQL, read-only) and carried in the feed. This pool is the resolution source for board/roadmap GitHub items. Where the Project Status and the derived state disagree, the card shows ⚠ with both values. Machine-first: <a href="/api/projects.json">/api/projects.json</a>.</p>
 <div class="chips">${chips}</div>
 <div class="chips"><span class="muted">Status:</span> ${[
-       `<a href="${facetHref({ status: null })}"${!statusSel ? ' class="active"' : ""}>any</a>`,
-       ...statuses.map((s) => `<a href="${facetHref({ status: s })}"${s === statusSel ? ' class="active"' : ""}>${esc(s)} (${pool.filter((p) => p.status === s).length})</a>`),
-       ...(pool.some((p) => !p.status) ? [`<a href="${facetHref({ status: UNSET_STATUS })}"${statusSel === UNSET_STATUS ? ' class="active"' : ""}>${UNSET_STATUS} (${pool.filter((p) => !p.status).length})</a>`] : []),
-     ].join("")}</div>
+    `<a href="${facetHref({ status: null })}"${!statusSel ? ' class="active"' : ""}>any</a>`,
+    ...statuses.map(
+      (s) =>
+        `<a href="${facetHref({ status: s })}"${s === statusSel ? ' class="active"' : ""}>${esc(s)} (${pool.filter((p) => p.status === s).length})</a>`,
+    ),
+    ...(pool.some((p) => !p.status)
+      ? [
+          `<a href="${facetHref({ status: UNSET_STATUS })}"${statusSel === UNSET_STATUS ? ' class="active"' : ""}>${UNSET_STATUS} (${pool.filter((p) => !p.status).length})</a>`,
+        ]
+      : []),
+  ].join("")}</div>
 <div class="chips"><span class="muted">Kind:</span> ${[
-       `<a href="${facetHref({ kind: null })}"${!kindSel ? ' class="active"' : ""}>any</a>`,
-       ...kinds.map((k) => `<a href="${facetHref({ kind: k })}"${k === kindSel ? ' class="active"' : ""}>${esc(k)} (${pool.filter((p) => p.kind === k).length})</a>`),
-       ...(pool.some((p) => !p.kind) ? [`<a href="${facetHref({ kind: UNSET_KIND })}"${kindSel === UNSET_KIND ? ' class="active"' : ""}>${UNSET_KIND} (${pool.filter((p) => !p.kind).length})</a>`] : []),
-     ].join("")}</div>
+    `<a href="${facetHref({ kind: null })}"${!kindSel ? ' class="active"' : ""}>any</a>`,
+    ...kinds.map(
+      (k) =>
+        `<a href="${facetHref({ kind: k })}"${k === kindSel ? ' class="active"' : ""}>${esc(k)} (${pool.filter((p) => p.kind === k).length})</a>`,
+    ),
+    ...(pool.some((p) => !p.kind)
+      ? [
+          `<a href="${facetHref({ kind: UNSET_KIND })}"${kindSel === UNSET_KIND ? ' class="active"' : ""}>${UNSET_KIND} (${pool.filter((p) => !p.kind).length})</a>`,
+        ]
+      : []),
+  ].join("")}</div>
 ${opts.audit && opts.audit.totalItems > pool.length ? `<div class="banner">Board total ${opts.audit.totalItems} items; this pool renders ${pool.length} linked issue/PR items. ${opts.audit.totalItems - pool.length} board item${opts.audit.totalItems - pool.length === 1 ? " is" : "s are"} draft or unlinked (no issue/PR to link to) and not rendered as cards \u2014 counted in the audit in <a href="/api/projects.json">/api/projects.json</a>, never silently dropped.</div>` : ""}
 ${shown.length !== pool.length ? `<p class="muted">Filters show ${shown.length} of ${pool.length} pool items.</p>` : ""}
 ${unsetCount > 0 ? `<div class="banner">${unsetCount} pool item${unsetCount === 1 ? "" : "s"} carry no Area — they belong to no project page until Area is set on the Project. Setting Area is the orchestrator's reconciliation job; this count keeps the gap visible. <a href="${base}?area=${encodeURIComponent(UNSET_AREA)}">View the (unset) bucket →</a></div>` : ""}
@@ -7133,7 +7167,10 @@ export function buildHealthPanelHtml(snapshot: BuildHealthSnapshot | null): stri
         return `<div class="card"><strong>${esc(laneRuns.lane.label)}</strong><br><span class="badge">no runs reported</span></div>`;
       }
       const history = proj.history
-        .map((r) => `<a href="${esc(r.url)}">${r.conclusion === "success" ? "✓" : r.conclusion === "failure" ? "✗" : "·"}</a>`)
+        .map(
+          (r) =>
+            `<a href="${esc(r.url)}">${r.conclusion === "success" ? "✓" : r.conclusion === "failure" ? "✗" : "·"}</a>`,
+        )
         .join(" ");
       return `<div class="card"><strong>${esc(laneRuns.lane.label)}</strong><br>${runBadge(proj.latest.status, proj.latest.conclusion)} <span class="muted">latest: <a href="${esc(proj.latest.url)}">${esc(proj.latest.createdAt)}</a> (${esc(proj.latest.event)})</span>${history ? `<br><span class="muted">recent completed: ${history}</span>` : ""}</div>`;
     })
@@ -7145,7 +7182,10 @@ export function buildHealthPanelHtml(snapshot: BuildHealthSnapshot | null): stri
     const trend = projectNightlyTrend(snapshot.nightly);
     nightlyHtml = trend.length
       ? `<div class="card"><strong>${esc(snapshot.nightly.lane.label)} — nightly trend (oldest → newest)</strong><br>${trend
-          .map((r) => `<a href="${esc(r.url)}">${r.conclusion === "success" ? "✓" : r.conclusion === "failure" ? "✗" : "·"} ${esc(r.createdAt.slice(0, 10))}</a>`)
+          .map(
+            (r) =>
+              `<a href="${esc(r.url)}">${r.conclusion === "success" ? "✓" : r.conclusion === "failure" ? "✗" : "·"} ${esc(r.createdAt.slice(0, 10))}</a>`,
+          )
           .join(" · ")}</div>`
       : `<div class="card"><strong>${esc(snapshot.nightly.lane.label)} — nightly trend</strong><br><span class="badge">no completed runs reported</span></div>`;
   }
@@ -7322,7 +7362,10 @@ export function renderProgramProject(
 
   const phase12Html = config.id === "id" && phase12 !== undefined ? phase12PanelHtml(phase12, items) : "";
   const buildHealthHtml = config.id === "id" && buildHealth !== undefined ? buildHealthPanelHtml(buildHealth) : "";
-  const f12Html = config.id === "id" && f12 !== undefined ? f12ReadinessPanelHtml(phase12 ?? null, f12?.design ?? null, f12?.prRefs ?? null, items) : "";
+  const f12Html =
+    config.id === "id" && f12 !== undefined
+      ? f12ReadinessPanelHtml(phase12 ?? null, f12?.design ?? null, f12?.prRefs ?? null, items)
+      : "";
 
   const ed = config.editorial;
   const editorialHtml = ed

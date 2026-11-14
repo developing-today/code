@@ -10,7 +10,7 @@
   pm-tunnel, the comment projector, and the feed collectors).
 - What this adds over #1148: #1148 detects and reports. This design
   declares per-facet SLOs with error budgets, and lets the watchdog
-  *remediate* the known failure classes itself inside hard guardrails,
+  _remediate_ the known failure classes itself inside hard guardrails,
   escalating to Drew only when remediation fails or budget burns.
 
 ## 1. SLO definitions per facet
@@ -23,16 +23,16 @@ hour ÷ budget ÷ window share). The health page shows, per facet:
 current signal value, SLO target, budget remaining %, 1 h burn rate,
 and state (ok / burning / exhausted).
 
-| Facet | Signal | SLO target | Budget (30 d) |
-|---|---|---|---|
-| Feed age | age of newest fleet/activity feed item the Aggregator serves | p95 age ≤ 10 min (7 d window) and no sample > 30 min | 0.5% of minutes (≈216 min) above 10 min; any sample > 30 min counts double |
-| Quota read age | age of the newest quota snapshot the dashboard renders | ≤ 75 min at p99 (hourly refresh + slack) | 1% of minutes (≈432 min) |
-| Orchestration freshness | age of the orchestration state (assignments, queue snapshot) behind the pages | ≤ 90 min at p99 | 1% of minutes (≈432 min) |
-| Aggregator up | HTTP 200 on the Aggregator health route via tailnet | 99.5% of minutes | ≈216 min down |
-| Intake (pm-dispatch) up | HTTP 200 on the dispatch health route, loopback + tunnel | 99.5% of minutes | ≈216 min down |
-| Projector up | projector heartbeat / last successful projection age ≤ 15 min | 99.5% of minutes | ≈216 min |
-| Pad / Grist up | container healthy + HTTP 200 | 99% of minutes (stateful, see §2) | ≈432 min down |
-| Tunnel up | pm-tunnel connected + public intake route answers | 99.9% of minutes | ≈43 min down |
+| Facet                   | Signal                                                                        | SLO target                                           | Budget (30 d)                                                              |
+| ----------------------- | ----------------------------------------------------------------------------- | ---------------------------------------------------- | -------------------------------------------------------------------------- |
+| Feed age                | age of newest fleet/activity feed item the Aggregator serves                  | p95 age ≤ 10 min (7 d window) and no sample > 30 min | 0.5% of minutes (≈216 min) above 10 min; any sample > 30 min counts double |
+| Quota read age          | age of the newest quota snapshot the dashboard renders                        | ≤ 75 min at p99 (hourly refresh + slack)             | 1% of minutes (≈432 min)                                                   |
+| Orchestration freshness | age of the orchestration state (assignments, queue snapshot) behind the pages | ≤ 90 min at p99                                      | 1% of minutes (≈432 min)                                                   |
+| Aggregator up           | HTTP 200 on the Aggregator health route via tailnet                           | 99.5% of minutes                                     | ≈216 min down                                                              |
+| Intake (pm-dispatch) up | HTTP 200 on the dispatch health route, loopback + tunnel                      | 99.5% of minutes                                     | ≈216 min down                                                              |
+| Projector up            | projector heartbeat / last successful projection age ≤ 15 min                 | 99.5% of minutes                                     | ≈216 min                                                                   |
+| Pad / Grist up          | container healthy + HTTP 200                                                  | 99% of minutes (stateful, see §2)                    | ≈432 min down                                                              |
+| Tunnel up               | pm-tunnel connected + public intake route answers                             | 99.9% of minutes                                     | ≈43 min down                                                               |
 
 Budget computation is deliberately boring: the watchdog samples each
 signal once per minute into an append-only SLO journal; remaining =
@@ -48,15 +48,15 @@ checked first (unit exists; no deploy in progress — the deploy lock /
 unit-file mtime is untouched for 10 min; the facet is actually bad),
 then the action, then §3 verification.
 
-| Failure | Action | Attempt cap | Cooldown |
-|---|---|---|---|
-| Collector stopped/stale feed | restart the collector user unit | 3 per incident | 15 min |
-| Feed not pushed (collector fine, age grows) | re-run the feed push producer once | 3 per incident | 15 min |
-| Aggregator down or wedged (port answers, health route fails) | restart `pm-aggregator` user unit | 3 per incident | 20 min |
-| pm-dispatch down | restart `pm-dispatch` user unit | 3 per incident | 20 min |
-| Projector stalled (heartbeat stale, unit active) | restart the projector unit | 2 per incident | 20 min |
-| Tunnel disconnected | restart `pm-tunnel` user unit | 2 per incident | 30 min |
-| Quota read stale (producer job failed) | re-run the quota refresh producer once | 2 per incident | 30 min |
+| Failure                                                      | Action                                 | Attempt cap    | Cooldown |
+| ------------------------------------------------------------ | -------------------------------------- | -------------- | -------- |
+| Collector stopped/stale feed                                 | restart the collector user unit        | 3 per incident | 15 min   |
+| Feed not pushed (collector fine, age grows)                  | re-run the feed push producer once     | 3 per incident | 15 min   |
+| Aggregator down or wedged (port answers, health route fails) | restart `pm-aggregator` user unit      | 3 per incident | 20 min   |
+| pm-dispatch down                                             | restart `pm-dispatch` user unit        | 3 per incident | 20 min   |
+| Projector stalled (heartbeat stale, unit active)             | restart the projector unit             | 2 per incident | 20 min   |
+| Tunnel disconnected                                          | restart `pm-tunnel` user unit          | 2 per incident | 30 min   |
+| Quota read stale (producer job failed)                       | re-run the quota refresh producer once | 2 per incident | 30 min   |
 
 Guardrails applying to the whole catalogue:
 
@@ -81,7 +81,7 @@ own SLO signal — not the action's exit code:
 
 - Restart actions: health route returns 200 (or the projector
   heartbeat advances) within a 5-minute verification window.
-- Re-push / refresh actions: the relevant age signal *decreases* —
+- Re-push / refresh actions: the relevant age signal _decreases_ —
   the newest served item / snapshot timestamp is newer than the
   pre-action value — within 10 minutes.
 - A verified fix closes the incident; an unverified one consumes an
@@ -119,7 +119,7 @@ Page Drew when any of these holds:
 - **Budget effect:** when a facet's budget remaining drops below
   25%, its page threshold tightens to "first failed verification"
   regardless of facet class; when budget is exhausted, the watchdog
-  pages on *detection* and performs at most one remediation attempt
+  pages on _detection_ and performs at most one remediation attempt
   before standing down — a burning budget means the stack has used
   up its silent-failure allowance for the month.
 

@@ -11,7 +11,7 @@
     `(file_version_id, start, end)` — byte offsets into one immutable file
     version. §2 and §4 are written against that shape; if #6035 changes the
     shape, this record's field names change, not its semantics.
-  - #6037 (chunk-boundary policy v2, open): how *new* literal regions are
+  - #6037 (chunk-boundary policy v2, open): how _new_ literal regions are
     cut into spans. Detection and join below are boundary-agnostic: they
     operate on whatever span list the cutter emitted.
   - #6040 (CDC feasibility, open): whether content-defined chunking joins
@@ -32,7 +32,7 @@
    the prior version. Untouched content is not re-embedded, not re-tagged,
    not re-dated. Drew's sizing case: a 21 GB corpus of which 20.5 GB is
    already in Atlas — the re-ingest may land ~0.5 GB of new/changed
-   material, and the *detection* pass that decides this must cost far
+   material, and the _detection_ pass that decides this must cost far
    less than the embedding it saves.
 2. **Non-doubling join.** At search time, a hit renders the full
    paragraph, and text assembled from overlapping span-anchored embeds
@@ -40,15 +40,15 @@
 
 #6036 settled how one file's new version is matched against its previous
 version. This record settles the two ends around it: how the system
-decides *which* objects need the matcher at all (§2, per source type,
+decides _which_ objects need the matcher at all (§2, per source type,
 with the cost ceiling), and how matched span sets are turned back into
 paragraphs at search time (§4). §3 states the anchoring and overlap
 rules both ends share.
 
 ## 2. Change detection per source type
 
-Detection answers one question per object: *unchanged, changed, new, or
-gone — since the last landed ingest of this source?* It never embeds,
+Detection answers one question per object: _unchanged, changed, new, or
+gone — since the last landed ingest of this source?_ It never embeds,
 never re-tags, and writes nothing except the ingest ledger entry
 recording its verdicts. The per-source mechanisms differ because the
 sources' own change signals differ; the ledger verdict shape does not.
@@ -78,14 +78,14 @@ A directory tree has no commit graph, so detection walks it — but the
 walk is staged so the expensive stage touches only suspects:
 
 1. **Stat pass (always).** Walk paths, sizes, and mtimes. Any file whose
-   `(path, size, mtime)` equals the landed ledger entry is *presumed
-   unchanged* and not opened. This is a directory-listing pass: kernel
+   `(path, size, mtime)` equals the landed ledger entry is _presumed
+   unchanged_ and not opened. This is a directory-listing pass: kernel
    readdir + stat, no content reads.
 2. **Hash pass (suspects only).** Files whose stat triple differs, and
    files with no ledger entry, are content-hashed (BLAKE3, streaming).
    Hash equal to the landed version's hash ⇒ unchanged (the stat
    difference was a touch, not an edit); the ledger entry is refreshed
-   for the new mtime *in the ledger only* — the landed object is not
+   for the new mtime _in the ledger only_ — the landed object is not
    re-tagged or re-dated, per the #6028 guarantee. Hash differs ⇒
    changed; no entry ⇒ new.
 3. The mtime pre-filter is an optimisation, never the verdict: any file
@@ -101,7 +101,7 @@ walk is staged so the expensive stage touches only suspects:
   allocation per byte. Compare the cost being avoided: embedding 20.5 GB
   at the embedding pipeline's observed throughput class (tens of MB/s
   per worker through the model door) is hours. Detection at ~1–3% of
-  the re-embed cost in the *worst* case, and ~0% in the stat-hit common
+  the re-embed cost in the _worst_ case, and ~0% in the stat-hit common
   case, satisfies "reads much cheaper than embeds" with two orders of
   magnitude to spare. A detection implementation that reads the corpus
   more than once, or that embeds speculatively, violates this ceiling
@@ -132,8 +132,8 @@ every append.
 - Presumption is verified per row for the boundary region only: rows
   carry a landed row hash (BLAKE3 over the row's canonical encoding).
   Rows after the watermark are hashed and compared — new watermark
-  rows with an existing key are *edits* (the row's new version lands;
-  the old row version is *superseded*, not mutated — and not retired:
+  rows with an existing key are _edits_ (the row's new version lands;
+  the old row version is _superseded_, not mutated — and not retired:
   supersession alone is not a retirement trigger, so the superseded
   version is preserved until the retention record (§4.1 of the adopted
   content-versioning/retention record) permits retirement — a retention
@@ -157,7 +157,7 @@ stat-presumption rate for §2.2, and the wall-clock + bytes-read of the
 pass. The #6028 guarantee is auditable from the ledger alone: a
 re-ingest whose `changed + new` byte total is 0.5 GB must show landed
 embeds of ~0.5 GB, and any mass re-tag or re-date of unchanged objects
-appears as ledger writes against objects whose verdict was *unchanged*
+appears as ledger writes against objects whose verdict was _unchanged_
 — which the ingest path is forbidden to make. That prohibition, stated
 once: **an object whose detection verdict is unchanged receives no
 writes of any kind — no embed, no tag write, no metadata edit, no
@@ -172,7 +172,7 @@ count in the detection ledger entry.**
   row encodings have no line structure); renderers convert to
   lines/chars at display time, never in stored anchors.
 - **No drift within a version.** Because a version is immutable, an
-  anchor into it cannot drift. An edit creates a *new* version; the
+  anchor into it cannot drift. An edit creates a _new_ version; the
   #6036 matcher re-anchors surviving content into the new version's
   span list, and embeds that match nothing are simply not referenced
   by the new version. "Detachment" is therefore not an event that
@@ -191,7 +191,7 @@ count in the detection ledger entry.**
   0, not because 17 ≥ 128.
 - **Maximum overlap / duplicate ceiling.** A new span whose content is
   ≥ 0.9 covered by spans already landed for the same logical file is
-  not embedded as a near-duplicate: it is recorded as an *occurrence*
+  not embedded as a near-duplicate: it is recorded as an _occurrence_
   of the covering spans (the #5733 ≥ 0.9 dedup edge, #3125 occurrence
   semantics) and the version's span list references those spans with
   this version's offsets. The ceiling suppresses only the near-duplicate
@@ -231,7 +231,7 @@ paragraph it touches). Assembly of one paragraph `P` of version `V`:
    `c`, initially `P.start`. For each span `S` in order:
    - the part of `S` before `c` is already emitted — skip it;
    - a gap `c .. S.start` is filled from `V`'s own stored version text
-     (the version text is the ground truth; spans are indexes *into*
+     (the version text is the ground truth; spans are indexes _into_
      it, not replacements for it);
    - emit `S`'s bytes from `max(S.start, c)` to `min(S.end, P.end)` —
      intersecting spans are clipped to the paragraph extent before
@@ -240,7 +240,7 @@ paragraph it touches). Assembly of one paragraph `P` of version `V`:
 3. Any tail gap `c .. P.end` is filled from version text as in step 2.
 
 The version text is always available for a live version (it is the
-landed object itself), so assembly never *requires* span contents
+landed object itself), so assembly never _requires_ span contents
 beyond what the hit carried; spans decide what is highlighted and
 what is a hit, the version decides what the paragraph says.
 
@@ -281,7 +281,7 @@ assembly never adds a repetition the source does not have.
   version id, and the retirement marker — never a silent substitution
   of the current version's text, and never a fabricated paragraph.
   If a successor version carries an occurrence of the same span, the
-  result may *additionally* offer the successor rendering, labelled
+  result may _additionally_ offer the successor rendering, labelled
   as the successor version. Substituting it silently would violate J1
   for the version the user asked about.
 - **Orphaned spans** (§3) behave as retired-version spans when their

@@ -18,27 +18,27 @@ so the only non-text block mcpx ever sends is the `resource_link` for an `mcpx_e
 
 Status column: **mcpx @ 05c78b2**. Legend and citation conventions: [../README.md](../README.md).
 
-| ID | Difference | Labels | Where it exists | mcpx @ 05c78b2 | Value | Effort | Risk |
-| --- | --- | --- | --- | --- | --- | --- | --- |
-| CT-01 | `text` content block | `2024-11-05 has` `opencode v1 has` `opencode v2 has` | `24-11 ✓ · 25-03 ✓ · 25-06 ✓ (+_meta) · 25-11 ✓ · 26-07 ✓` | ✓ — the only block `mcpx_call` emits | + high | S | low |
-| CT-02 | `image` content block | `2024-11-05 has` `opencode v1 has` `opencode v2 has` | `24-11 ✓ · 25-03 ✓ · 25-06 ✓ · 25-11 ✓ · 26-07 ✓ · opencode v1 attachment · v2 media` | partial — `mcpx_call` drops it; scripts keep it | + med | M | med |
-| CT-03 | `audio` content block | `2025-03-26 has` `opencode v2 has` | `24-11 — · 25-03 ✓ · 25-06 ✓ · 25-11 ✓ · 26-07 ✓ · opencode v1 dropped · v2 media` | partial — dropped by `mcpx_call`; downgrade branch dead | + low | S | low |
-| CT-04 | Embedded `resource` block (tool results and prompts only) | `2024-11-05 has` `opencode v1 has` `opencode v2 has` | `24-11 ✓ · 25-03 ✓ · 25-06 ✓ · 25-11 ✓ · 26-07 ✓ · never in sampling` | partial — dropped by `mcpx_call`; downgrade target | + med | S | low |
-| CT-05 | `resource_link` block | `2025-06-18 has` `opencode v2 has` | `25-03 — · 25-06 ✓ · 25-11 ✓ · 26-07 ✓ · opencode v1 direct dropped · v2 uri text` | ✓ — emitted for `mcpx_exec` artifacts only | + high | S | med |
-| CT-06 | `resource_link` rewritten as embedded resource below 2025-06-18 | `2025-06-18 has` `mcpx missing` | mcpx only (downgrade for 2025-03-26 clients) | partial — broken mime: link type over text label (#206) | + low | S | med |
-| CT-07 | `ContentBlock` union and where each type is allowed | `2025-06-18 has` `specs conflict` | `24-11 inline unions · 25-06 ContentBlock · prompts prose lags to 26-07` | ✓ — gated per revision in `downgrade()` | + low | S | low |
-| CT-08 | `tool_use` / `tool_result` blocks, sampling only | `2025-11-25 has` `2026-07-28 deprecates` | `25-11 ✓ · 26-07 dep` | n/a — not examined | − niche | M | low |
-| CT-09 | `annotations` on content (`audience`, `priority`, `lastModified`) | `2024-11-05 has` `2025-06-18 has` | `24-11 Annotated · 25-03 Annotations · 25-06 +lastModified · 26-07 ✓` | partial — passed by `downgrade()`, dropped by `mcpx_call` | + med | S | low |
-| CT-10 | `_meta` on content blocks | `2025-06-18 has` | `25-03 — · 25-06 ✓ · 25-11 ✓ · 26-07 ✓` | partial — dropped by `mcpx_call`, link rewrite, MRTR render | + low | S | low |
-| CT-11 | `ToolResultContent.structuredContent` becomes any JSON | `2026-07-28 has` | `25-11 object · 26-07 any JSON (sampling)` | n/a — not examined | + low | S | low |
-| CT-12 | What `downgrade()` touches, and which branches can fire | `mcpx has, others don't` | mcpx only | partial — only link and `resultType` branches live | + med | S | med |
-| CT-13 | `mcpx_call` renders every result to one text block | `2025-06-18 has` `mcpx missing` | mcpx `/mcp` and stdio `mcpx serve` | partial — images, audio, resources, `_meta` dropped (#206) | + med | M | high |
-| CT-14 | Unknown content block type fails the whole call | `opencode v1 has` `opencode v2 has` | `opencode v1 verified · v2 same union` | ✓ — never forwards an unknown block | + med | S | high |
-| CT-15 | Script clients unwrap tool results | `has better replacement` `opencode v1 has` `opencode v2 has` | `mcpx · opencode v1/v2 · Cloudflare unwrap · lootbox raw envelope` | ✓ — `structuredContent`, then text, then blocks | + high | S | low |
-| CT-16 | JSON arriving as text parsed into a value | `opencode v2 has` | `mcpx always by shape · opencode v2 without outputSchema · v1 never` | ✓ — parses `{…}`/`[…]` text | + low | S | low |
-| CT-17 | Full envelope kept on `.raw` | `mcpx has, others don't` | mcpx only | ✓ — non-enumerable `.raw` on every value | + med | S | low |
-| CT-18 | Media produced by a tool inside a script | `opencode v1 has` `opencode v2 has` | `opencode attaches to model · mcpx artifact link · lootbox base64 · CF mixed` | partial — plugin never declares `artifacts` | + med | S | med |
-| CT-19 | `isError: true` becomes an exception in scripts | `has better replacement` `opencode v1 has` `opencode v2 has` | `mcpx · opencode v1/v2 · Cloudflare throw · lootbox returns it` | ✓ — `ToolError` with `.raw` | + high | S | low |
+| ID    | Difference                                                        | Labels                                                       | Where it exists                                                                       | mcpx @ 05c78b2                                              | Value   | Effort | Risk |
+| ----- | ----------------------------------------------------------------- | ------------------------------------------------------------ | ------------------------------------------------------------------------------------- | ----------------------------------------------------------- | ------- | ------ | ---- |
+| CT-01 | `text` content block                                              | `2024-11-05 has` `opencode v1 has` `opencode v2 has`         | `24-11 ✓ · 25-03 ✓ · 25-06 ✓ (+_meta) · 25-11 ✓ · 26-07 ✓`                            | ✓ — the only block `mcpx_call` emits                        | + high  | S      | low  |
+| CT-02 | `image` content block                                             | `2024-11-05 has` `opencode v1 has` `opencode v2 has`         | `24-11 ✓ · 25-03 ✓ · 25-06 ✓ · 25-11 ✓ · 26-07 ✓ · opencode v1 attachment · v2 media` | partial — `mcpx_call` drops it; scripts keep it             | + med   | M      | med  |
+| CT-03 | `audio` content block                                             | `2025-03-26 has` `opencode v2 has`                           | `24-11 — · 25-03 ✓ · 25-06 ✓ · 25-11 ✓ · 26-07 ✓ · opencode v1 dropped · v2 media`    | partial — dropped by `mcpx_call`; downgrade branch dead     | + low   | S      | low  |
+| CT-04 | Embedded `resource` block (tool results and prompts only)         | `2024-11-05 has` `opencode v1 has` `opencode v2 has`         | `24-11 ✓ · 25-03 ✓ · 25-06 ✓ · 25-11 ✓ · 26-07 ✓ · never in sampling`                 | partial — dropped by `mcpx_call`; downgrade target          | + med   | S      | low  |
+| CT-05 | `resource_link` block                                             | `2025-06-18 has` `opencode v2 has`                           | `25-03 — · 25-06 ✓ · 25-11 ✓ · 26-07 ✓ · opencode v1 direct dropped · v2 uri text`    | ✓ — emitted for `mcpx_exec` artifacts only                  | + high  | S      | med  |
+| CT-06 | `resource_link` rewritten as embedded resource below 2025-06-18   | `2025-06-18 has` `mcpx missing`                              | mcpx only (downgrade for 2025-03-26 clients)                                          | partial — broken mime: link type over text label (#206)     | + low   | S      | med  |
+| CT-07 | `ContentBlock` union and where each type is allowed               | `2025-06-18 has` `specs conflict`                            | `24-11 inline unions · 25-06 ContentBlock · prompts prose lags to 26-07`              | ✓ — gated per revision in `downgrade()`                     | + low   | S      | low  |
+| CT-08 | `tool_use` / `tool_result` blocks, sampling only                  | `2025-11-25 has` `2026-07-28 deprecates`                     | `25-11 ✓ · 26-07 dep`                                                                 | n/a — not examined                                          | − niche | M      | low  |
+| CT-09 | `annotations` on content (`audience`, `priority`, `lastModified`) | `2024-11-05 has` `2025-06-18 has`                            | `24-11 Annotated · 25-03 Annotations · 25-06 +lastModified · 26-07 ✓`                 | partial — passed by `downgrade()`, dropped by `mcpx_call`   | + med   | S      | low  |
+| CT-10 | `_meta` on content blocks                                         | `2025-06-18 has`                                             | `25-03 — · 25-06 ✓ · 25-11 ✓ · 26-07 ✓`                                               | partial — dropped by `mcpx_call`, link rewrite, MRTR render | + low   | S      | low  |
+| CT-11 | `ToolResultContent.structuredContent` becomes any JSON            | `2026-07-28 has`                                             | `25-11 object · 26-07 any JSON (sampling)`                                            | n/a — not examined                                          | + low   | S      | low  |
+| CT-12 | What `downgrade()` touches, and which branches can fire           | `mcpx has, others don't`                                     | mcpx only                                                                             | partial — only link and `resultType` branches live          | + med   | S      | med  |
+| CT-13 | `mcpx_call` renders every result to one text block                | `2025-06-18 has` `mcpx missing`                              | mcpx `/mcp` and stdio `mcpx serve`                                                    | partial — images, audio, resources, `_meta` dropped (#206)  | + med   | M      | high |
+| CT-14 | Unknown content block type fails the whole call                   | `opencode v1 has` `opencode v2 has`                          | `opencode v1 verified · v2 same union`                                                | ✓ — never forwards an unknown block                         | + med   | S      | high |
+| CT-15 | Script clients unwrap tool results                                | `has better replacement` `opencode v1 has` `opencode v2 has` | `mcpx · opencode v1/v2 · Cloudflare unwrap · lootbox raw envelope`                    | ✓ — `structuredContent`, then text, then blocks             | + high  | S      | low  |
+| CT-16 | JSON arriving as text parsed into a value                         | `opencode v2 has`                                            | `mcpx always by shape · opencode v2 without outputSchema · v1 never`                  | ✓ — parses `{…}`/`[…]` text                                 | + low   | S      | low  |
+| CT-17 | Full envelope kept on `.raw`                                      | `mcpx has, others don't`                                     | mcpx only                                                                             | ✓ — non-enumerable `.raw` on every value                    | + med   | S      | low  |
+| CT-18 | Media produced by a tool inside a script                          | `opencode v1 has` `opencode v2 has`                          | `opencode attaches to model · mcpx artifact link · lootbox base64 · CF mixed`         | partial — plugin never declares `artifacts`                 | + med   | S      | med  |
+| CT-19 | `isError: true` becomes an exception in scripts                   | `has better replacement` `opencode v1 has` `opencode v2 has` | `mcpx · opencode v1/v2 · Cloudflare throw · lootbox returns it`                       | ✓ — `ToolError` with `.raw`                                 | + high  | S      | low  |
 
 ## CT-01 `text` content block
 
@@ -87,7 +87,7 @@ Status column: **mcpx @ 05c78b2**. Legend and citation conventions: [../README.m
   `annotations`, the `completions` capability) to 2024-11-05 clients.
 - **Detail.** The comment at `internal/mcpserver/revisions.go:45-48` says the branch is kept deliberately ("always true
   today" is a fact about the floor). `describeBlob` appends "base64, elided" only when `data` was non-empty.
-- **Sources.** `schema/2025-03-26/schema.ts:991` "type: \"audio\";"; `2025-03-26/changelog.mdx:25` "Added support for audio data, joining the existing text and image content types"; `internal/mcpserver/revisions.go:87` "FeatAudio:               \"2025-03-26\","; `internal/mcpserver/revisions.go:14`; `v1:packages/opencode/src/session/tools.ts:429`
+- **Sources.** `schema/2025-03-26/schema.ts:991` "type: \"audio\";"; `2025-03-26/changelog.mdx:25` "Added support for audio data, joining the existing text and image content types"; `internal/mcpserver/revisions.go:87` "FeatAudio: \"2025-03-26\","; `internal/mcpserver/revisions.go:14`; `v1:packages/opencode/src/session/tools.ts:429`
 
 ## CT-04 Embedded `resource` block (tool results and prompts only)
 
@@ -123,7 +123,7 @@ Status column: **mcpx @ 05c78b2**. Legend and citation conventions: [../README.m
   result should mention the URI for such hosts.
 - **Detail.** `description` on a link is valid because `ResourceLink` extends `Resource`. The prompts prose documents
   links only from 2026-07-28 although the 2025-06-18 schema allows them (CT-07).
-- **Sources.** `schema/2025-06-18/schema.ts:761` "type: \"resource_link\";"; `schema/2026-07-28/schema.ts:1712` "Note: resource links returned by tools are not guaranteed to appear in the results of"; `internal/cli/serve.go:180` "\"type\":        \"resource_link\","; `v2:packages/core/src/mcp/client.ts:327` "if (part.type === \"resource_link\") return [{ type: \"text\", text: part.uri }]"; `v1:packages/opencode/src/tool/code-mode.ts:104`
+- **Sources.** `schema/2025-06-18/schema.ts:761` "type: \"resource_link\";"; `schema/2026-07-28/schema.ts:1712` "Note: resource links returned by tools are not guaranteed to appear in the results of"; `internal/cli/serve.go:180` "\"type\": \"resource_link\","; `v2:packages/core/src/mcp/client.ts:327` "if (part.type === \"resource_link\") return [{ type: \"text\", text: part.uri }]"; `v1:packages/opencode/src/tool/code-mode.ts:104`
 
 ## CT-06 `resource_link` rewritten as embedded resource below 2025-06-18
 
@@ -267,7 +267,7 @@ Status column: **mcpx @ 05c78b2**. Legend and citation conventions: [../README.m
 ## CT-14 Unknown content block type fails the whole call
 
 - **What.** Both opencode SDKs define `ContentBlock` as a closed union (`text | image | audio | resource_link |
-  resource`). In v1 the result is parsed against `CallToolResultSchema`, so any other `type` rejects the call as a zod
+resource`). In v1 the result is parsed against `CallToolResultSchema`, so any other `type` rejects the call as a zod
   error, not an MCP error.
 - **Where.** opencode v1 (verified); v2's SDK has the same union (its validation path was not traced).
 - **mcpx @ 05c78b2.** `downgrade()` gates `resource_link` and `structuredContent` by revision

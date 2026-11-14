@@ -27,9 +27,30 @@ describe("parseWorkflowRuns", () => {
   test("keeps well-formed runs and drops malformed rows", () => {
     const parsed = parseWorkflowRuns({
       workflow_runs: [
-        { id: 1, status: "completed", conclusion: "success", created_at: "2026-11-14T00:00:00Z", html_url: "https://x/1", event: "push" },
-        { id: "nope", status: "completed", conclusion: "success", created_at: "2026-11-14T00:00:00Z", html_url: "https://x/2", event: "push" },
-        { id: 3, status: "queued", conclusion: null, created_at: "2026-11-14T01:00:00Z", html_url: "https://x/3", event: "push" },
+        {
+          id: 1,
+          status: "completed",
+          conclusion: "success",
+          created_at: "2026-11-14T00:00:00Z",
+          html_url: "https://x/1",
+          event: "push",
+        },
+        {
+          id: "nope",
+          status: "completed",
+          conclusion: "success",
+          created_at: "2026-11-14T00:00:00Z",
+          html_url: "https://x/2",
+          event: "push",
+        },
+        {
+          id: 3,
+          status: "queued",
+          conclusion: null,
+          created_at: "2026-11-14T01:00:00Z",
+          html_url: "https://x/3",
+          event: "push",
+        },
         null,
       ],
     });
@@ -91,7 +112,14 @@ describe("fetchBuildHealthSnapshot", () => {
       return new Response(
         JSON.stringify({
           workflow_runs: [
-            { id: 7, status: "completed", conclusion: "success", created_at: "2026-11-14T00:00:00Z", html_url: "https://x/7", event: "schedule" },
+            {
+              id: 7,
+              status: "completed",
+              conclusion: "success",
+              created_at: "2026-11-14T00:00:00Z",
+              html_url: "https://x/7",
+              event: "schedule",
+            },
           ],
         }),
         { status: 200 },
@@ -112,7 +140,11 @@ describe("fetchBuildHealthSnapshot", () => {
 describe("buildHealthIsStale", () => {
   test("fresh within the window, stale past it, unparseable is stale", () => {
     const now = new Date("2026-11-14T12:10:00Z");
-    const snap = (fetchedAt: string) => ({ fetchedAt, lanes: [], nightly: { lane: BUILD_HEALTH_NIGHTLY, runs: [], error: null } });
+    const snap = (fetchedAt: string) => ({
+      fetchedAt,
+      lanes: [],
+      nightly: { lane: BUILD_HEALTH_NIGHTLY, runs: [], error: null },
+    });
     expect(buildHealthIsStale(snap("2026-11-14T12:00:00Z"), now)).toBe(false);
     expect(buildHealthIsStale(snap("2026-11-14T11:00:00Z"), now)).toBe(true);
     expect(buildHealthIsStale(snap("junk"), now)).toBe(true);

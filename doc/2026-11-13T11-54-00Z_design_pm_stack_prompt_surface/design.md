@@ -34,29 +34,29 @@ Variants pre-fill the prompt template and set a default target/mode:
 
 ### Page-by-page placement
 
-| Page (route) | section | page | stack | agent | Notes |
-|---|---|---|---|---|---|
-| Overview (/) | — | ✓ | ✓ | ✓ | Front door; page widget summarizes needs-you + projects + quotas + health |
-| Today (/today) | ✓ per objective | ✓ | ✓ | ✓ | Per-objective section widgets |
-| Digest (/digest) | ✓ per section | ✓ | ✓ | ✓ | Per digest section |
-| Needs you (/attention) | ✓ per item | ✓ | ✓ | ✓ | Per needs-you item; primary agent-access surface |
-| Decision sets (/decisions) | ✓ per set | ✓ | ✓ | ✓ | Per decision set; decision-model variant lives here |
-| Board (/board) | ✓ per item | ✓ | ✓ | ✓ | Per board item |
-| Roadmap (/roadmap) | ✓ per item | ✓ | ✓ | ✓ | Per roadmap item |
-| Source conflicts (/conflicts) | ✓ per conflict | ✓ | ✓ | ✓ | — |
-| Usage & billing (/quota) | ✓ per quota | ✓ | ✓ | ✓ | Per quota row |
-| DNS register (/dns) | ✓ per domain | ✓ | ✓ | ✓ | — |
-| Cost Explorer (/aa) | — | ✓ | ✓ | ✓ | Page-level only |
-| Sessions (/sessions) | ✓ per session | ✓ | ✓ | ✓ | Per session |
-| Search (/search) | — | ✓ | ✓ | ✓ | Page-level only |
-| Events (/events) | — | ✓ | ✓ | ✓ | Page-level only |
-| Comments queue (/comments) | ✓ per comment | ✓ | ✓ | ✓ | Per queued comment |
-| Program status (/program) | ✓ per project | ✓ | ✓ | ✓ | Per project row; primary surface |
-| Queue (/queue) | ✓ per item | ✓ | ✓ | ✓ | Per queue item |
-| Health (/health) | — | ✓ | ✓ | ✓ | Page-level only |
-| Alerts (/alerts) | ✓ per alert | ✓ | ✓ | ✓ | Per alert |
-| Notifications (/notifications) | — | ✓ | ✓ | ✓ | Page-level only |
-| All pages (/pages) | — | — | ✓ | ✓ | Manifest page; stack + agent only |
+| Page (route)                   | section         | page | stack | agent | Notes                                                                     |
+| ------------------------------ | --------------- | ---- | ----- | ----- | ------------------------------------------------------------------------- |
+| Overview (/)                   | —               | ✓    | ✓     | ✓     | Front door; page widget summarizes needs-you + projects + quotas + health |
+| Today (/today)                 | ✓ per objective | ✓    | ✓     | ✓     | Per-objective section widgets                                             |
+| Digest (/digest)               | ✓ per section   | ✓    | ✓     | ✓     | Per digest section                                                        |
+| Needs you (/attention)         | ✓ per item      | ✓    | ✓     | ✓     | Per needs-you item; primary agent-access surface                          |
+| Decision sets (/decisions)     | ✓ per set       | ✓    | ✓     | ✓     | Per decision set; decision-model variant lives here                       |
+| Board (/board)                 | ✓ per item      | ✓    | ✓     | ✓     | Per board item                                                            |
+| Roadmap (/roadmap)             | ✓ per item      | ✓    | ✓     | ✓     | Per roadmap item                                                          |
+| Source conflicts (/conflicts)  | ✓ per conflict  | ✓    | ✓     | ✓     | —                                                                         |
+| Usage & billing (/quota)       | ✓ per quota     | ✓    | ✓     | ✓     | Per quota row                                                             |
+| DNS register (/dns)            | ✓ per domain    | ✓    | ✓     | ✓     | —                                                                         |
+| Cost Explorer (/aa)            | —               | ✓    | ✓     | ✓     | Page-level only                                                           |
+| Sessions (/sessions)           | ✓ per session   | ✓    | ✓     | ✓     | Per session                                                               |
+| Search (/search)               | —               | ✓    | ✓     | ✓     | Page-level only                                                           |
+| Events (/events)               | —               | ✓    | ✓     | ✓     | Page-level only                                                           |
+| Comments queue (/comments)     | ✓ per comment   | ✓    | ✓     | ✓     | Per queued comment                                                        |
+| Program status (/program)      | ✓ per project   | ✓    | ✓     | ✓     | Per project row; primary surface                                          |
+| Queue (/queue)                 | ✓ per item      | ✓    | ✓     | ✓     | Per queue item                                                            |
+| Health (/health)               | —               | ✓    | ✓     | ✓     | Page-level only                                                           |
+| Alerts (/alerts)               | ✓ per alert     | ✓    | ✓     | ✓     | Per alert                                                                 |
+| Notifications (/notifications) | —               | ✓    | ✓     | ✓     | Page-level only                                                           |
+| All pages (/pages)             | —               | —    | ✓     | ✓     | Manifest page; stack + agent only                                         |
 
 Section widgets are only placed where a page has discrete, addressable rows. Pages marked "page-level only" have no natural section granularity.
 
@@ -182,6 +182,7 @@ Upload handling, multipart, storage refs. Streaming audio is a future enhancemen
 ## 7. Granular implementation issues
 
 To be filed as sub-issues of #9539:
+
 - S1: generic prompt widget + section/page widgets on main pages
 - S2: target selector expansion + async completion notification
 - S3: sync modes (sync-block, sync-ws)
