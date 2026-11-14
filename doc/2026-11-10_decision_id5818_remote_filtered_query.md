@@ -101,8 +101,13 @@
    requester's clearance is one of the two permitted local/remote
    behavioural differences. Validation errors, predicate semantics,
    ordering, and error codes — including `field_withheld` — are
-   identical on the local and remote executors; the honesty envelope
-   is produced by both whenever filtering removes anything.
+   identical on the local and remote executors for any collection
+   within the requester's reach; for a collection outside it, the
+   remote executor returns the uniform `not_authorized` of pipeline
+   step 3 instead of any validation outcome (the anti-leak rule is
+   part of the authorization difference, not a validation
+   difference). The honesty envelope is produced by both whenever
+   filtering removes anything.
 
 ## Execution pipeline (remote target)
 
@@ -111,24 +116,32 @@ For a remote query object arriving at a serving server:
 1. **Authenticate** the requesting identity (ID transport identity;
    a query carries no caller-supplied actor — the identity is the
    transport's, never a field of the query object).
-2. **Validate** the query object exactly as #5816 specifies (known
-   table/field, operator/type match, limit cap), plus the
-   `field_withheld` predicate rule of decision 3. Validation errors
-   are identical to local execution.
+2. **Validate syntax** (target-independent): the query object is
+   well-formed as #5816 specifies for shape — operator/type match,
+   limit cap — without reference to any table or field. Nothing in
+   this step can reveal whether a collection or field exists.
 3. **Authorize reach**: the target collection must be within a
    #5799 grant to this identity (or be the owner's own data under
    #5819's rules). No reach → structured `not_authorized` error;
    the error does not distinguish "collection does not exist" from
    "no grant" (that distinction is itself an existence leak).
-4. **Execute under clearance**: scan with the server-side cost
+4. **Validate against the target** (post-authorization only): known
+   table/field, plus the `field_withheld` predicate rule of
+   decision 3, exactly as #5816 specifies; validation errors are
+   identical to local execution. Running this step only after
+   reach is authorized is what keeps step 3's indistinguishability
+   true — an ungranted requester cannot probe table existence,
+   field names, or classification metadata through validation
+   errors.
+5. **Execute under clearance**: scan with the server-side cost
    guardrails #5816 requires (scan cap, timeout); apply
    classification filtering (decision 3/5) to produce the result
    stream; collect the honesty counts and the audit facts (levels
    touched, rows scanned/returned/withheld) during the same pass —
    no second scan for bookkeeping.
-5. **Audit** (decision 6): append the audit record; on failure,
+6. **Audit** (decision 6): append the audit record; on failure,
    refuse if classified data was touched.
-6. **Shape and release**: order, limit, and cursor per #5816/#5821
+7. **Shape and release**: order, limit, and cursor per #5816/#5821
    over the filtered stream; attach the `withheld` envelope
    (decision 4); return.
 
