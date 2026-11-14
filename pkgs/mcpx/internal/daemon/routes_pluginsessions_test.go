@@ -6,7 +6,9 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/developing-today/code/pkgs/mcpx/internal/events"
 	"github.com/developing-today/code/pkgs/mcpx/internal/pluginsession"
 )
 
@@ -131,5 +133,42 @@ func TestPluginSessionListEmptyRendersEmptyList(t *testing.T) {
 	}
 	if !strings.Contains(rec.Body.String(), `"sessions":[]`) {
 		t.Fatalf("empty list must render as [], body %s", rec.Body)
+	}
+}
+
+// Slice 2 (#10046) at the route surface: opening a session with
+// manifest hooks resolves them live -- the owned hook item is on
+// the session the open returns, a matching bus event is delivered
+// addressed to the session, and closing the session drops the
+// subscription so a post-close event delivers nothing.
+func TestPluginSessionHooksResolveLiveAtOpen(t *testing.T) {
+	s := &Server{Events: events.New(64)}
+	sess := openPluginSession(t, s, `{"plugin":"greeter","hooks":["elicit"]}`)
+	if len(sess.Owned) != 1 || sess.Owned[0] != (pluginsession.OwnedItem{Kind: "hook", Name: "elicit"}) {
+		t.Fatalf("open must return the session owning its live hook: %+v", sess)
+	}
+	sub, _ := s.Events.Subscribe(events.Filter{Kinds: []string{string(pluginsession.DeliveryKind)}, Session: sess.ID}, 0)
+	defer sub.Close()
+	s.Events.Publish(events.Event{Kind: events.ElicitOpened})
+	select {
+	case e := <-sub.C:
+		if e.Session != sess.ID {
+			t.Fatalf("delivery addressed to %q, want the owning session %q", e.Session, sess.ID)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("matching event produced no delivery to the owning session")
+	}
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodDelete, "/v1/plugin-sessions/"+sess.ID, nil)
+	req.SetPathValue("id", sess.ID)
+	s.handlePluginSessionClose(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("close status = %d, want 200; body %s", rec.Code, rec.Body)
+	}
+	s.Events.Publish(events.Event{Kind: events.ElicitOpened})
+	select {
+	case e := <-sub.C:
+		t.Fatalf("post-close event delivered to a dropped session: %+v", e)
+	case <-time.After(250 * time.Millisecond):
 	}
 }
