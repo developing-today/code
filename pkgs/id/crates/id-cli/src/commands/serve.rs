@@ -1689,7 +1689,7 @@ pub async fn cmd_serve(opts: ServeOptions) -> Result<()> {
             let folded = build_blob_gate(
                 events,
                 &store_handle,
-                &serve_groups_log_path(groups_log.clone()),
+                &groups_log,
             )
             .await;
             Some(Arc::new(id_worlds::blob_gate::RefreshingWorlds::new(folded)))
@@ -1705,15 +1705,6 @@ pub async fn cmd_serve(opts: ServeOptions) -> Result<()> {
         );
     }
 
-    // Build router — gossip ALPN is always registered (needed by iroh-docs),
-    // but peer discovery gossip topic only joins when gossip is enabled
-    let meta = MetaProtocol::new(
-        &store_handle,
-        Some(peer_discovery.clone()),
-        Arc::clone(&tag_store),
-        access.clone(),
-        node_id,
-    );
     // iroh-blobs rejects pushes unless an event handler enables them; this one
     // allows them only from nodes the access policy lets write. With the blob
     // gate built, the gate's handler decides pushes the same way and also
