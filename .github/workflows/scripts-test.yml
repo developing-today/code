@@ -46,6 +46,8 @@ jobs:
         run: python3 -m unittest discover -s scripts/tests -p 'test_auto_format_workflow.py' -v
       - name: Run power-guard timing validation tests (#6477)
         run: python3 -m unittest discover -s nixos/services/power-guard -p 'test_*.py' -v
+      - name: Run fleet-paperwork pacing regression tests (#5942)
+        run: python3 -m unittest discover -s infra/fleet-paperwork/tests -p test_fleet_paperwork.py -v
       - name: Run sops atomic writers regression tests (#6555)
         run: bash lib/sops-atomic-writers.test.sh
       - name: Run run-switch regression tests (#7667)
