@@ -92,6 +92,7 @@
 //! why the read/execute-time confinements above are assigned to
 //! the steps that will.
 
+use std::collections::HashMap;
 use std::fs;
 use std::path::{Component, Path, PathBuf};
 
@@ -324,6 +325,15 @@ pub fn discover_apps(root: impl AsRef<Path>) -> AppDiscovery {
         .collect::<Vec<_>>();
     folders.sort();
 
+    // ⚡ Bolt: track already-registered route and socket values in
+    // lookup maps so each app's collision checks are O(1) instead of
+    // rescanning every previously registered app (Θ(N²) over N valid
+    // web apps). The maps store the index of the owning app in
+    // discovery.apps, preserving the conflicting app identity needed by
+    // the diagnostics below.
+    let mut route_owners: HashMap<String, usize> = HashMap::new();
+    let mut socket_owners: HashMap<String, usize> = HashMap::new();
+
     for folder in folders {
         let manifest_path = folder.join("app.toml");
         if !manifest_path.is_file() {
@@ -379,14 +389,10 @@ pub fn discover_apps(root: impl AsRef<Path>) -> AppDiscovery {
                     }
                 }
                 if let Some(web) = manifest.interfaces.web.as_ref() {
-                    if let Some(existing) = discovery.apps.iter().find(|app| {
-                        app.manifest
-                            .interfaces
-                            .web
-                            .as_ref()
-                            .map(|existing| existing.route.as_str())
-                            == Some(web.route.as_str())
-                    }) {
+                    // ⚡ Bolt: O(1) lookups via the route/socket owner maps
+                    // instead of rescanning every registered app.
+                    if let Some(&existing_idx) = route_owners.get(web.route.as_str()) {
+                        let existing = &discovery.apps[existing_idx];
                         discovery.errors.push(format!(
                             "{}: app {:?} duplicates interfaces.web.route {:?} already registered by app {:?}; app not registered",
                             manifest_path.display(),
@@ -399,14 +405,8 @@ pub fn discover_apps(root: impl AsRef<Path>) -> AppDiscovery {
                     // Cross-kind (#6454): routes and sockets share one
                     // binding namespace, so a new route must also differ
                     // from every registered app's socket.
-                    if let Some(existing) = discovery.apps.iter().find(|app| {
-                        app.manifest
-                            .interfaces
-                            .web
-                            .as_ref()
-                            .and_then(|existing| existing.socket.as_deref())
-                            == Some(web.route.as_str())
-                    }) {
+                    if let Some(&existing_idx) = socket_owners.get(web.route.as_str()) {
+                        let existing = &discovery.apps[existing_idx];
                         discovery.errors.push(format!(
                             "{}: app {:?} route {:?} (interfaces.web.route) collides with interfaces.web.socket already registered by app {:?}; app not registered",
                             manifest_path.display(),
@@ -417,14 +417,8 @@ pub fn discover_apps(root: impl AsRef<Path>) -> AppDiscovery {
                         continue;
                     }
                     if let Some(socket) = &web.socket {
-                        if let Some(existing) = discovery.apps.iter().find(|app| {
-                            app.manifest
-                                .interfaces
-                                .web
-                                .as_ref()
-                                .and_then(|existing| existing.socket.as_deref())
-                                == Some(socket.as_str())
-                        }) {
+                        if let Some(&existing_idx) = socket_owners.get(socket.as_str()) {
+                            let existing = &discovery.apps[existing_idx];
                             discovery.errors.push(format!(
                                 "{}: app {:?} duplicates interfaces.web.socket {:?} already registered by app {:?}; app not registered",
                                 manifest_path.display(),
@@ -436,14 +430,8 @@ pub fn discover_apps(root: impl AsRef<Path>) -> AppDiscovery {
                         }
                         // Cross-kind (#6454): a new socket must also
                         // differ from every registered app's route.
-                        if let Some(existing) = discovery.apps.iter().find(|app| {
-                            app.manifest
-                                .interfaces
-                                .web
-                                .as_ref()
-                                .map(|existing| existing.route.as_str())
-                                == Some(socket.as_str())
-                        }) {
+                        if let Some(&existing_idx) = route_owners.get(socket.as_str()) {
+                            let existing = &discovery.apps[existing_idx];
                             discovery.errors.push(format!(
                                 "{}: app {:?} socket {:?} (interfaces.web.socket) collides with interfaces.web.route already registered by app {:?}; app not registered",
                                 manifest_path.display(),
@@ -455,10 +443,25 @@ pub fn discover_apps(root: impl AsRef<Path>) -> AppDiscovery {
                         }
                     }
                 }
+                let registered_index = discovery.apps.len();
                 discovery.apps.push(DiscoveredApp {
                     path: folder,
                     manifest,
                 });
+                // Record this app's route/socket bindings for future
+                // collision checks. Only web apps claim bindings; apps
+                // without a web interface register no route or socket.
+                if let Some(web) = discovery.apps[registered_index]
+                    .manifest
+                    .interfaces
+                    .web
+                    .as_ref()
+                {
+                    route_owners.insert(web.route.clone(), registered_index);
+                    if let Some(socket) = &web.socket {
+                        socket_owners.insert(socket.clone(), registered_index);
+                    }
+                }
             }
             Err(error) => discovery
                 .errors
