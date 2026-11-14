@@ -244,6 +244,19 @@
       "related_issues": [6095]
     },
     {
+      "id": "id.hosted-worker.smoke",
+      "paths": ["pkgs/id/hosted-worker/smoke/smoke.mjs"],
+      "invocation": "cd pkgs/id/hosted-worker && npm install && npm run smoke (node smoke/smoke.mjs)",
+      "venue": {
+        "workflow": ".github/workflows/id-hosted-worker-tests.yml",
+        "job_step": "hosted-worker-tests / Run the hosted-worker smoke suite",
+        "state": "active",
+        "dispatchable": true
+      },
+      "status": "mapped",
+      "related_issues": [6370]
+    },
+    {
       "id": "id.native-shell.transcript",
       "paths": ["pkgs/id/crates/id-native-shell/tests/transcript.rs"],
       "invocation": "cargo test -p id-native-shell (manual invocation; no workflow invocation found)",
