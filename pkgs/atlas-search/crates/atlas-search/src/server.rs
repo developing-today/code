@@ -922,8 +922,15 @@ impl CacheKey {
             pool: req.pool,
             group_by_session: req.group_by_session,
             expand: req.expand,
-            parameters: serde_json::to_string(&req.parameters)
-                .expect("query parameters are serializable"),
+            // The shared canonical constructor (atlas-proto):
+            // the same material the result-cache key hashes, so
+            // the dedupe key and every outcome cache agree on
+            // exactly which flags distinguish two searches.
+            parameters: req.parameters.canonical_key_material(
+                req.expand,
+                req.group_by_session,
+                req.with_message,
+            ),
             with_message: req.with_message,
             model: req.model.clone(),
             embedder: req.embedder.clone(),
@@ -1371,7 +1378,14 @@ impl JobManager {
             // is queued/running, or done within its TTL. Failed
             // entries were already evicted at completion; expired
             // ones are evicted here and recomputed.
-            let cached = inner.cache.get(&key).cloned();
+            // --no-cache (#9942): skip the read entirely; the
+            // fresh computation still lands in the cache via
+            // new_computation, so the flag REFRESHES the entry.
+            let cached = if request.parameters.no_cache {
+                None
+            } else {
+                inner.cache.get(&key).cloned()
+            };
             let comp = match cached {
                 Some(comp) if comp.status(&self.limits) != JobStatus::Expired => comp,
                 Some(comp) => {
