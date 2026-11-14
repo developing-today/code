@@ -4080,6 +4080,14 @@ setTimeout(() => {
     try {
       primeAttemptAggregates();
       await Promise.allSettled([boardContext(), overviewContext(), todayContext(), programSources()]);
+      // #9781: warm the briefs' latest comments for the program pool
+      // too — the board briefs read a subset of the same refs, so one
+      // prime covers both pages, and neither page's first post-restart
+      // request pays the per-ref projector fan-out.
+      const warmed = await programSources().catch(() => null);
+      if (warmed?.pool.length) {
+        await briefCommentsFor(warmed.pool.map((p) => p.ref));
+      }
     } catch {
       // fail-soft: the first real request retries its own assembly
     }
