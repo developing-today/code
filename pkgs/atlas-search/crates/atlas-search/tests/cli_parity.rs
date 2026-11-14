@@ -61,10 +61,21 @@ fn build_fixture_db(tag: &str) -> PathBuf {
 }
 
 fn qvec_file() -> PathBuf {
-    let exp = expectations();
-    let p = std::env::temp_dir().join(format!("atlas-cli-qvec-{}.json", std::process::id()));
-    std::fs::write(&p, serde_json::to_string(&exp["qvec_raw"]).unwrap()).expect("write qvec");
-    p
+    // Written once per test-binary run. The path is named by pid and
+    // shared by every test in this binary, and the tests run in
+    // parallel: rewriting the file on every call let one test's CLI
+    // read it mid-truncate from another test's rewrite and fail with
+    // an empty-JSON error (seen under `cargo test --all-targets`,
+    // where the extra load widens the race window). The content is
+    // the shared golden fixture, identical for every caller.
+    static QVEC: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
+    QVEC.get_or_init(|| {
+        let exp = expectations();
+        let p = std::env::temp_dir().join(format!("atlas-cli-qvec-{}.json", std::process::id()));
+        std::fs::write(&p, serde_json::to_string(&exp["qvec_raw"]).unwrap()).expect("write qvec");
+        p
+    })
+    .clone()
 }
 
 fn run_bin(db: &Path, args: &[&str]) -> std::process::Output {
@@ -434,7 +445,10 @@ fn build_shard_dir(db: &Path, tag: &str) -> PathBuf {
             ("part", part.trim_start_matches('0').to_string()),
             ("expected_chunks", ids.len().to_string()),
             ("metric", "cosine".to_string()),
-            ("embedding_model", "snowflake-arctic-embed-m-v2.0".to_string()),
+            (
+                "embedding_model",
+                "snowflake-arctic-embed-m-v2.0".to_string(),
+            ),
         ] {
             con.execute(
                 "INSERT INTO atlas_manifest VALUES (?, ?)",

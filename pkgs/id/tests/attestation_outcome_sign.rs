@@ -48,7 +48,7 @@ fn sign_with_outcome(outcome: &str) -> Result<(), SignError> {
     let genesis = sign_genesis(&x, 0, None, &agreement, vec![])?;
     claim.outcome = outcome.to_owned();
     claim.frontiers = vec![genesis.id];
-    sign_claim(&x, 1, Some(genesis.id), &claim, vec![]).map(|_| ())
+    sign_claim(&x, 1, Some(genesis.id), &agreement, &claim, vec![]).map(|_| ())
 }
 
 #[test]
@@ -100,8 +100,8 @@ fn controls_sign_ok_and_compute_agreed_end_to_end() {
         let mut claim = base.clone();
         claim.outcome = outcome.to_owned();
         claim.frontiers = vec![gx.id, go.id];
-        let cx = sign_claim(&x, 1, Some(gx.id), &claim, vec![]).unwrap();
-        let co = sign_claim(&o, 1, Some(go.id), &claim, vec![]).unwrap();
+        let cx = sign_claim(&x, 1, Some(gx.id), &agreement, &claim, vec![]).unwrap();
+        let co = sign_claim(&o, 1, Some(go.id), &agreement, &claim, vec![]).unwrap();
         let _ = (cx, co);
         let genesis = vec![
             (author_id(&gx), agreement.clone()),

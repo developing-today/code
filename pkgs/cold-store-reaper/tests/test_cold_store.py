@@ -356,7 +356,6 @@ class TestAuth(ColdStoreTestBase):
         self.assertNotIn("fake-refresh-token", json.dumps(result))
 
 
-
 class TestTokenResponseShapes(ColdStoreTestBase):
     """#6846: a shape-drifted HTTP-200 token response must raise the
     module's ColdStoreError naming the flow and the shape — never a
@@ -365,9 +364,7 @@ class TestTokenResponseShapes(ColdStoreTestBase):
     """
 
     def stub_token(self, body: bytes):
-        return mock.patch(
-            "cold_store.http_request", return_value=(200, {}, body)
-        )
+        return mock.patch("cold_store.http_request", return_value=(200, {}, body))
 
     # -- access_token -------------------------------------------------
     def test_access_token_non_json_body(self):
@@ -847,6 +844,64 @@ class TestAtomicPrivateJson(ColdStoreTestBase):
         self.assertIn("credentials.json", str(ctx.exception))
 
 
+class TestWrongShapePrivateJson(ColdStoreTestBase):
+    """#6845: valid JSON of the wrong shape in credentials.json /
+    state.json raises ColdStoreError naming the file and the shape -
+    never a raw AttributeError/TypeError/ValueError, and never a
+    silently mistyped folder id used against Drive."""
+
+    def test_non_object_credentials_raise_cold_store_error(self):
+        for payload in ("[]", '[{"client_id": "x"}]', '"hello"', "123", "null", "true"):
+            self.store.credentials_path.write_text(payload)
+            with self.assertRaises(cold_store.ColdStoreError) as ctx:
+                self.store.load_credentials()
+            self.assertIn("credentials.json", str(ctx.exception), payload)
+
+    def test_non_string_credential_value_raises_cold_store_error(self):
+        for key in ("client_id", "client_secret", "refresh_token"):
+            creds = {
+                "client_id": "fake-client-id",
+                "client_secret": "fake-secret",
+                "refresh_token": "fake-refresh-token",
+            }
+            creds[key] = 123
+            self.store._write_private_json(self.store.credentials_path, creds)
+            with self.assertRaises(cold_store.ColdStoreError) as ctx:
+                self.store.load_credentials()
+            self.assertIn("credentials.json", str(ctx.exception), key)
+            self.assertIn(key, str(ctx.exception), key)
+
+    def test_non_object_state_raises_cold_store_error(self):
+        for payload in ("[]", '"hello"', "123", "null", "true"):
+            self.store.state_path.write_text(payload)
+            with self.assertRaises(cold_store.ColdStoreError) as ctx:
+                self.store.load_state()
+            self.assertIn("state.json", str(ctx.exception), payload)
+
+    def test_non_object_folders_raises_cold_store_error(self):
+        for payload in (
+            '{"folders": "abc"}',
+            '{"folders": 123}',
+            '{"folders": ["root"]}',
+            '{"folders": null}',
+        ):
+            self.store.state_path.write_text(payload)
+            with self.assertRaises(cold_store.ColdStoreError) as ctx:
+                self.store.load_state()
+            self.assertIn("state.json", str(ctx.exception), payload)
+
+    def test_non_string_folder_id_raises_cold_store_error(self):
+        self.store.state_path.write_text('{"folders": {"bundles": 123}}')
+        with self.assertRaises(cold_store.ColdStoreError) as ctx:
+            self.store.load_state()
+        self.assertIn("state.json", str(ctx.exception))
+
+    def test_happy_path_controls_still_pass(self):
+        self.assertEqual(self.store.load_credentials()["client_id"], "fake-client-id")
+        self.store.save_state({"folders": {"a": "1"}})
+        self.assertEqual(self.store.load_state(), {"folders": {"a": "1"}})
+
+
 # ------------------------------------------------------------------ fake D1
 class FakeD1:
     """Captures D1 REST query calls; can be told to fail.
@@ -859,6 +914,7 @@ class FakeD1:
     def __init__(self):
         self.requests = []  # {path, authorization, sql, params}
         self.fail = False
+        self.mode = None  # "success_false" | "wrong_shape" definitive answers
         self.db = None
 
 
@@ -889,6 +945,21 @@ def make_d1_handler(fake: FakeD1):
                     "params": payload.get("params", []),
                 }
             )
+            if fake.mode == "success_false":
+                self._send(
+                    200,
+                    {
+                        "success": False,
+                        "errors": [
+                            {"code": 7403, "message": "definitive probe failure"}
+                        ],
+                        "result": None,
+                    },
+                )
+                return
+            if fake.mode == "wrong_shape":
+                self._send(200, {"success": True, "errors": [], "result": ["x"]})
+                return
             if fake.fail:
                 self._send(
                     500, {"success": False, "errors": [{"message": "fake failure"}]}
@@ -1386,6 +1457,7 @@ class TestDriveResponseShapes(ColdStoreTestBase):
         blob.write_bytes(b"bundle")
         for body in (b"not json", b"[]", b'{"id":7}'):
             with self.subTest(body=body):
+
                 def fake_http(method, _url, **_kwargs):
                     if method == "POST":
                         return 200, {"Location": "https://upload.example/session"}, b""
@@ -2894,11 +2966,11 @@ class TestDrillCompare(ColdStoreTestBase):
         path.write_text("\n".join(lines) + "\n")
         return path
 
-    def _run_drill(self, backup_sql: Path):
+    def _run_drill(self, backup_sql: Path, base=None):
         env = dict(os.environ)
         env["CLOUDFLARE_API_TOKEN"] = "fake-cf-token"
         env["COLD_STORE_D1_BASE"] = (
-            f"http://127.0.0.1:{self.d1_server.server_address[1]}"
+            base or f"http://127.0.0.1:{self.d1_server.server_address[1]}"
         )
         return subprocess.run(
             [
@@ -2957,6 +3029,55 @@ class TestDrillCompare(ColdStoreTestBase):
         self.assertIn("objects", proc.stdout)
         self.assertIn(self.HASH_B, proc.stdout)
         self.assertIn("missing", proc.stdout)
+
+    def test_d1_http_error_with_definitive_body_fails_loudly(self):
+        # #6858: an HTTP 500 whose body is a D1 success=false payload is
+        # D1 actively rejecting the query, not unreachability — the
+        # drill must abort carrying the API's message, never downgrade
+        # to the local manifest.
+        self.d1.fail = True
+        proc = self._run_drill(self._render_backup_sql())
+        self.assertEqual(proc.returncode, 1, proc.stdout + proc.stderr)
+        self.assertIn("fake failure", proc.stdout)
+        self.assertNotIn("local manifest", proc.stdout)
+
+    def test_d1_success_false_fails_loudly(self):
+        # #6858: success=false on HTTP 200 is likewise definitive; the
+        # abort message carries the API error code and message.
+        self.d1.mode = "success_false"
+        proc = self._run_drill(self._render_backup_sql())
+        self.assertEqual(proc.returncode, 1, proc.stdout + proc.stderr)
+        self.assertIn("7403", proc.stdout)
+        self.assertIn("definitive probe failure", proc.stdout)
+        self.assertNotIn("local manifest", proc.stdout)
+
+    def test_d1_wrong_shape_payload_fails_loudly(self):
+        # #6858: a success=true payload whose result is not a list of
+        # row objects is a garbled answer, not unreachability.
+        self.d1.mode = "wrong_shape"
+        proc = self._run_drill(self._render_backup_sql())
+        self.assertEqual(proc.returncode, 1, proc.stdout + proc.stderr)
+        self.assertIn("unexpected shape", proc.stdout)
+        self.assertNotIn("local manifest", proc.stdout)
+
+    def test_d1_unreachable_keeps_local_manifest_fallback(self):
+        # #6858 control: genuine transport failure (connection refused)
+        # keeps the documented local-manifest fallback with its
+        # accurate label. The backup is emptied so it is a subset of
+        # any manifest and the drill passes against the local file.
+        def empty(conn):
+            for table in cold_store.MANIFEST_TABLES:
+                conn.execute(f'DELETE FROM "{table}"')
+
+        dead = ThreadingHTTPServer(("127.0.0.1", 0), make_d1_handler(FakeD1()))
+        port = dead.server_address[1]
+        dead.server_close()
+        proc = self._run_drill(
+            self._render_backup_sql(empty), base=f"http://127.0.0.1:{port}"
+        )
+        self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+        self.assertIn("local manifest (D1 unreachable)", proc.stdout)
+        self.assertNotIn("drill aborted", proc.stdout)
 
 
 class TestLedgerTrashMigration(ColdStoreTestBase):
@@ -3454,7 +3575,6 @@ class TestD1ResponseShapes(ColdStoreTestBase):
                     self.store.sync_manifest()
 
 
-
 class TestResumableUploadStalls(ColdStoreTestBase):
     """#2797: a 308 whose Range stops advancing must not loop forever,
     and a Range-less 308 must not count unacknowledged bytes as sent."""
@@ -3532,16 +3652,33 @@ class TestListingBounds6602Drive(ColdStoreTestBase):
     def _fresh_token_fake(self, calls):
         def fake(method, url, headers=None, **kw):
             calls["n"] += 1
-            body = {"files": [{"id": "f1", "name": "b", "size": 1,
-                               "createdTime": "2026-01-01T00:00:00Z"}],
-                    "nextPageToken": "tok-%d" % calls["n"]}
+            body = {
+                "files": [
+                    {
+                        "id": "f1",
+                        "name": "b",
+                        "size": 1,
+                        "createdTime": "2026-01-01T00:00:00Z",
+                    }
+                ],
+                "nextPageToken": "tok-%d" % calls["n"],
+            }
             return 200, {}, json.dumps(body).encode()
+
         return fake
 
     def test_drive_fresh_token_stream_hits_page_bound(self):
         calls = {"n": 0}
-        with mock.patch.object(cold_store, "http_request", self._fresh_token_fake(calls)), mock.patch.object(cold_store, "LIST_MAX_PAGES", 5):
-            with mock.patch.object(self.store, "_folder_id", lambda name: "folder1"), mock.patch.object(self.store, "_auth_headers", lambda: {}):
+        with (
+            mock.patch.object(
+                cold_store, "http_request", self._fresh_token_fake(calls)
+            ),
+            mock.patch.object(cold_store, "LIST_MAX_PAGES", 5),
+        ):
+            with (
+                mock.patch.object(self.store, "_folder_id", lambda name: "folder1"),
+                mock.patch.object(self.store, "_auth_headers", lambda: {}),
+            ):
                 with self.assertRaises(cold_store.ColdStoreError) as ctx:
                     self.store.list_backups("supabase")
         self.assertIn("supabase", str(ctx.exception))
@@ -3549,8 +3686,16 @@ class TestListingBounds6602Drive(ColdStoreTestBase):
 
     def test_drive_result_bound_trips(self):
         calls = {"n": 0}
-        with mock.patch.object(cold_store, "http_request", self._fresh_token_fake(calls)), mock.patch.object(cold_store, "LIST_MAX_RESULTS", 0):
-            with mock.patch.object(self.store, "_folder_id", lambda name: "folder1"), mock.patch.object(self.store, "_auth_headers", lambda: {}):
+        with (
+            mock.patch.object(
+                cold_store, "http_request", self._fresh_token_fake(calls)
+            ),
+            mock.patch.object(cold_store, "LIST_MAX_RESULTS", 0),
+        ):
+            with (
+                mock.patch.object(self.store, "_folder_id", lambda name: "folder1"),
+                mock.patch.object(self.store, "_auth_headers", lambda: {}),
+            ):
                 with self.assertRaises(cold_store.ColdStoreError):
                     self.store.list_backups("supabase")
 
@@ -3561,15 +3706,20 @@ class TestListingBounds6602S3(S3TestBase):
 
         def fake(method, bucket, query=None, **kw):
             calls["n"] += 1
-            body = ("<ListBucketResult xmlns=\"http://s3.amazonaws.com/doc/2006-03-01/\">"
-                    "<IsTruncated>true</IsTruncated>"
-                    f"<NextContinuationToken>tok-{calls[chr(110)]}</NextContinuationToken>"
-                    "<Contents><Key>k1</Key><Size>1</Size>"
-                    "<LastModified>2026-10-01T00:00:00.000Z</LastModified></Contents>"
-                    "</ListBucketResult>")
+            body = (
+                '<ListBucketResult xmlns="http://s3.amazonaws.com/doc/2006-03-01/">'
+                "<IsTruncated>true</IsTruncated>"
+                f"<NextContinuationToken>tok-{calls[chr(110)]}</NextContinuationToken>"
+                "<Contents><Key>k1</Key><Size>1</Size>"
+                "<LastModified>2026-10-01T00:00:00.000Z</LastModified></Contents>"
+                "</ListBucketResult>"
+            )
             return 200, {}, body.encode()
 
-        with mock.patch.object(self.store, "_s3_request", fake), mock.patch.object(cold_store, "LIST_MAX_PAGES", 5):
+        with (
+            mock.patch.object(self.store, "_s3_request", fake),
+            mock.patch.object(cold_store, "LIST_MAX_PAGES", 5),
+        ):
             with self.assertRaises(cold_store.ColdStoreError) as ctx:
                 self.store.s3_list_objects("supabase-backups")
         self.assertIn("supabase-backups", str(ctx.exception))
@@ -3742,9 +3892,7 @@ class TestDriveResponseShapesProperty(ColdStoreTestBase):
             if rng.random() < 0.1:
                 entries.insert(rng.randrange(len(entries) + 1), 7)
             payload = {"files": entries}
-            expect_ok = all(
-                _pbt_entry_oracle(entry, require_size) for entry in entries
-            )
+            expect_ok = all(_pbt_entry_oracle(entry, require_size) for entry in entries)
             with self.subTest(payload=repr(payload)[:80], require_size=require_size):
                 if expect_ok:
                     self.assertIs(
@@ -3786,9 +3934,7 @@ class TestDriveResponseShapesProperty(ColdStoreTestBase):
                     )
                 elif payload[key] is None:
                     self.assertIsNone(
-                        cold_store._drive_optional_string(
-                            payload, key, "pbt.opt", None
-                        )
+                        cold_store._drive_optional_string(payload, key, "pbt.opt", None)
                     )
                     with self.assertRaises(cold_store.ColdStoreError):
                         cold_store._drive_optional_string(

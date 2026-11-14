@@ -22,7 +22,7 @@ unchanged by this record:
    requiring step-up and states the granted window's duration; no event or
    duration is implied by enabling a boundary. Step-ups are logged.
 3. **Escrow shape (§6.4).** The org escrows credential material under its own
-   control; the server receives *assertions*, not raw values, wherever an
+   control; the server receives _assertions_, not raw values, wherever an
    assertion suffices. Every proxy use is audited with claim kind, assurance
    level, issuer, recipient, declaration version, and an opaque assertion
    reference — never the raw value. The user can see what was shared.
@@ -37,7 +37,7 @@ unchanged by this record:
 
 **One explicit scoping decision of this record (flagged, not silent):** D4
 sets a framework floor inside the parent's consent menu — org-authority
-alone never authorizes proxying *user-owned* credential material. The
+alone never authorizes proxying _user-owned_ credential material. The
 parent (§11) leaves the consent choice to each declaration; this record
 narrows that menu for user-owned material only, and the narrowing is
 recorded here and on issue #5881. Org-owned material (service accounts the
@@ -45,20 +45,20 @@ org itself issued and owns) is unaffected.
 
 ## Decision summary
 
-| Question | Decision |
-| --- | --- |
-| Step-up gate | D1: a gate is (declaration-listed event, required factor class, window scope); windows are per (subject, server, event class) and expire into re-step-up, never into denial of ordinary activity |
-| Escrow contents | D2: org-issued or org-attested material and evidence originals; never the sole copy of any user credential; never user passwords or raw biometrics |
+| Question           | Decision                                                                                                                                                                                                             |
+| ------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Step-up gate       | D1: a gate is (declaration-listed event, required factor class, window scope); windows are per (subject, server, event class) and expire into re-step-up, never into denial of ordinary activity                     |
+| Escrow contents    | D2: org-issued or org-attested material and evidence originals; never the sole copy of any user credential; never user passwords or raw biometrics                                                                   |
 | Proxied assertions | D3: signed, recipient-bound, short-lived, minimal claims (kind + assurance + boolean) — raw values only when no assertion suffices, the declaration's privacy rule names the value and reader, and consent covers it |
-| Consent | D4: standing consent scoped per claim kind as the default; per-use consent for raw-value reveals; org-authority alone sufficient only for org-owned material |
-| Audit | D5: every step-up (attempt and result) and every proxy use logged with the parent's field set; no raw values in any log |
-| User visibility | D6: the user can always enumerate escrowed contents, consent state, proxied assertions, and step-ups for their own account — this visibility is a floor an org policy cannot switch off |
-| Degraded behaviour | D7: assertion or step-up unavailable → the *gated action* fails closed, ordinary activity is untouched; break-glass (§6.5) is the only bypass |
+| Consent            | D4: standing consent scoped per claim kind as the default; per-use consent for raw-value reveals; org-authority alone sufficient only for org-owned material                                                         |
+| Audit              | D5: every step-up (attempt and result) and every proxy use logged with the parent's field set; no raw values in any log                                                                                              |
+| User visibility    | D6: the user can always enumerate escrowed contents, consent state, proxied assertions, and step-ups for their own account — this visibility is a floor an org policy cannot switch off                              |
+| Degraded behaviour | D7: assertion or step-up unavailable → the _gated action_ fails closed, ordinary activity is untouched; break-glass (§6.5) is the only bypass                                                                        |
 
 ## D1 — Step-up gates
 
-- A **gate** is a triple in the enabling declaration: an *event class*, a
-  *required factor class*, and a *window*. Event classes are the parent's
+- A **gate** is a triple in the enabling declaration: an _event class_, a
+  _required factor class_, and a _window_. Event classes are the parent's
   list — entering from a new network, privilege escalation, admin actions —
   extended by two classes this record adds because they spend other
   people's trust: **changing consent or escrow contents**, and **any
@@ -71,7 +71,7 @@ org itself issued and owns) is unaffected.
   distinct from the factor that opened the session, drawn from the org's
   IdP factors (WebAuthn/passkey preferred; TOTP acceptable; SMS never
   sufficient for admin actions or raw-value reveals). The gate checks
-  *recency of a strong authentication*, it does not re-implement 2FA
+  _recency of a strong authentication_, it does not re-implement 2FA
   inside the server — the IdP performs the factor, the server consumes a
   signed step-up assertion (D3 shape) naming the event class and time.
 - A granted **window** is scoped to (subject, server, event class), has
@@ -134,7 +134,7 @@ Never escrowed:
   requirement; the declaration's explicit privacy rule names the exact
   value and the named reader; and consent (D4) covers that reveal.
   Every raw-value reveal is per-use consented, stepped-up (D1), and
-  audited with the value's *identity*, never the value (D5).
+  audited with the value's _identity_, never the value (D5).
 
 ## D4 — Consent model
 
@@ -145,7 +145,7 @@ Never escrowed:
   revocable at any time (parent §6.4 un-escrow).
 - **Per-use consent** is required for: raw-value reveals (D3), and the
   first proxy use of any newly added claim kind.
-- **Org authority alone** authorizes proxying only *org-owned* material
+- **Org authority alone** authorizes proxying only _org-owned_ material
   (D2 class 1, where the org is issuer and owner). For user-owned
   material it is never sufficient (the flagged scoping decision above).
 - Consent is recorded as evidence: who consented, when, to which kinds,
@@ -245,7 +245,7 @@ against, and is rejected here by construction.
 
 ## Open points routed back to #5683
 
-- Whether a stepped-up window may satisfy a *residency* boundary's
+- Whether a stepped-up window may satisfy a _residency_ boundary's
   evidence bar, or only intranet-mode gates — this record uses step-up
   only for gates and consent/escrow actions, and leaves boundary
   evidence bars to #5876's model.

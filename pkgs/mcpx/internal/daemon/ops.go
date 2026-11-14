@@ -375,20 +375,32 @@ func (s *Server) handleComplete(w http.ResponseWriter, r *http.Request) {
 	// review, PR #3730). CanonicalName is a registry map read -- it
 	// acquires no lease and wakes no upstream.
 	serverName := s.reg.CanonicalName(req.Server)
-	if refused := s.completeLimiter.admit([]limitCheck{
-		{
-			Name:  "completion.perMinute",
-			What:  "this caller and server",
-			Key:   "caller\x00" + completionCaller(cc) + "\x00" + serverName,
-			Limit: cs.Int("completion.perMinute"),
-		},
-		{
-			Name:  "completion.serverPerMinute",
-			What:  "this server",
-			Key:   "server\x00" + serverName,
-			Limit: cs.Int("completion.serverPerMinute"),
-		},
-	}); refused != nil {
+	// Unknown names skip the limiter entirely (#6978): CanonicalName
+	// returns a name the registry does not know unchanged, so admitting
+	// first would mint a fresh pair of limiter buckets per distinct
+	// bogus name -- bucket growth at request rate, and a per-server
+	// window that never binds anything. KnownServer is a registry map
+	// read (no lease, no upstream), so refusal-before-pool is unchanged
+	// for configured servers, and an unknown name falls through to the
+	// pool lookup's own 400 below without having counted anything.
+	var refused *limitCheck
+	if s.reg.KnownServer(req.Server) {
+		refused = s.completeLimiter.admit([]limitCheck{
+			{
+				Name:  "completion.perMinute",
+				What:  "this caller and server",
+				Key:   "caller\x00" + completionCaller(cc) + "\x00" + serverName,
+				Limit: cs.Int("completion.perMinute"),
+			},
+			{
+				Name:  "completion.serverPerMinute",
+				What:  "this server",
+				Key:   "server\x00" + serverName,
+				Limit: cs.Int("completion.serverPerMinute"),
+			},
+		})
+	}
+	if refused != nil {
 		writeErr(w, http.StatusTooManyRequests, fmt.Errorf(
 			"completion rate limit: %s allows %d per minute for %s",
 			refused.Name, refused.Limit, refused.What))

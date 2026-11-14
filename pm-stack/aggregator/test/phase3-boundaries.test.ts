@@ -117,15 +117,15 @@ describe("entryFromTurso (#2553)", () => {
     // and dropping it erased exactly the state the card must show.
     // The boundary that remains: every published pct is finite
     // and >= 0 (negative counts are covered by the sibling test).
-    const entry = entryFromTurso(
-      { organization: { usage: { databases: 101, rows_read: 120 } } } as never,
-      null,
-      { measuredAt: "2026-10-29T15:00:00Z" },
-    );
+    const entry = entryFromTurso({ organization: { usage: { databases: 101, rows_read: 120 } } } as never, null, {
+      measuredAt: "2026-10-29T15:00:00Z",
+    });
     expect(entry.state).toBe("ok");
     expect(entry.windows.map((w) => w.name)).toEqual(["databases", "rows-read"]);
     expect(entry.windows.find((w) => w.name === "databases")?.pctOfLimit).toBe(101);
-    expect(entry.windows.every((w) => w.pctOfLimit !== null && Number.isFinite(w.pctOfLimit) && w.pctOfLimit >= 0)).toBe(true);
+    expect(
+      entry.windows.every((w) => w.pctOfLimit !== null && Number.isFinite(w.pctOfLimit) && w.pctOfLimit >= 0),
+    ).toBe(true);
   });
 });
 
@@ -206,7 +206,8 @@ Measured ${measured} ~04:48 CDT
 `;
 
 describe("extractClinePass date anchors (#2383)", () => {
-  const pool = (view: string) => extractQuotaPools(view, new Date("2026-10-29T12:00:00Z")).find((p) => p.id === "cline-pass")!;
+  const pool = (view: string) =>
+    extractQuotaPools(view, new Date("2026-10-29T12:00:00Z")).find((p) => p.id === "cline-pass")!;
 
   test("control read anchors both resets to a real measured date", () => {
     const p = pool(CLINE_VIEW("2026-10-25", "5"));

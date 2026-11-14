@@ -55,3 +55,15 @@ export function projectTask(
   aaPoints: any[],
   caiPoints: any[],
 ): { cost: number | null; time: number | null; band: any };
+
+export interface ChartViewState {
+  base: number[];
+  cur: number[] | null;
+}
+export function parseChartViewBox(s: string | null | undefined): number[] | null;
+export function effectiveChartView(st: ChartViewState): number[];
+export function clampChartView(st: ChartViewState): void;
+export function zoomChartView(st: ChartViewState, factor: number, fx: number | null, fy: number | null): void;
+export function panChartView(st: ChartViewState, dx: number, dy: number, width: number, height: number): boolean;
+export function resetChartView(st: ChartViewState): void;
+export function chartClickSuppressed(rawStamp: string | number | null | undefined, now: number): boolean;

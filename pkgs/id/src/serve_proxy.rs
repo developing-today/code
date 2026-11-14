@@ -291,7 +291,14 @@ impl Frame {
         if bytes.len() < 4 {
             return Ok(None);
         }
-        let body_len = u32::from_be_bytes(bytes[0..4].try_into().expect("4 bytes")) as usize;
+        let length_prefix = bytes
+            .get(..4)
+            .context("frame is missing its four-byte length prefix")?;
+        let body_len = u32::from_be_bytes(
+            length_prefix
+                .try_into()
+                .context("frame length prefix must be four bytes")?,
+        ) as usize;
         if body_len < HEADER_BYTES {
             bail!("frame body of {body_len} bytes is shorter than the {HEADER_BYTES}-byte header");
         }
@@ -301,12 +308,31 @@ impl Frame {
         if bytes.len() < 4 + body_len {
             return Ok(None);
         }
-        let body = &bytes[4..4 + body_len];
+        let body = bytes
+            .get(4..4 + body_len)
+            .context("frame body is shorter than its declared length")?;
+        let ty = *body.first().context("frame body is missing its type")?;
+        let stream_id = body
+            .get(1..5)
+            .context("frame body is missing its stream ID")?;
+        let seq = body
+            .get(5..13)
+            .context("frame body is missing its sequence number")?;
+        let payload = body
+            .get(HEADER_BYTES..)
+            .context("frame body is missing its payload")?;
         let frame = Self {
-            ty: FrameType::from_u8(body[0])?,
-            stream_id: u32::from_be_bytes(body[1..5].try_into().expect("4 bytes")),
-            seq: u64::from_be_bytes(body[5..13].try_into().expect("8 bytes")),
-            payload: body[HEADER_BYTES..].to_vec(),
+            ty: FrameType::from_u8(ty)?,
+            stream_id: u32::from_be_bytes(
+                stream_id
+                    .try_into()
+                    .context("frame stream ID must be four bytes")?,
+            ),
+            seq: u64::from_be_bytes(
+                seq.try_into()
+                    .context("frame sequence number must be eight bytes")?,
+            ),
+            payload: payload.to_vec(),
         };
         frame.validate()?;
         Ok(Some((frame, 4 + body_len)))
@@ -393,6 +419,7 @@ impl CreditWindow {
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
     use proptest::prelude::*;

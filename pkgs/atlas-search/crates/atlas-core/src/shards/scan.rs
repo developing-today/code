@@ -10,6 +10,7 @@
 use std::collections::BTreeSet;
 use std::sync::{Arc, Mutex};
 
+use super::content::ContentStores;
 use super::{ShardInfo, ShardSet, Tier, TierCeiling};
 use crate::backend::SearchBackend;
 use crate::error::{Error, Result};
@@ -186,6 +187,13 @@ pub struct ShardedBackend<B> {
     /// `run_search` folds late notes in after the branches run, so
     /// a fallback taken mid-search is reported in the envelope.
     fallback_notes: Mutex<Vec<String>>,
+    /// Tier content stores for hydration (#6664), when attached.
+    content: Option<Arc<ContentStores>>,
+    /// The successor switch (#6664): serve hydration from
+    /// `content` instead of the wrapped monolith. The service's
+    /// successor protocol field (coordination issue #5668) maps
+    /// onto this flag; shipped `--expand` semantics are unchanged.
+    hydrate_from_content: bool,
 }
 
 impl<B: SearchBackend> ShardedBackend<B> {
@@ -195,6 +203,31 @@ impl<B: SearchBackend> ShardedBackend<B> {
             set,
             topics: None,
             fallback_notes: Mutex::new(Vec::new()),
+            content: None,
+            hydrate_from_content: false,
+        }
+    }
+
+    /// Attach tier content stores and choose whether hydration
+    /// (chunk details, neighbors, message) is served from them
+    /// (#6664) instead of the wrapped monolith. With `enabled`
+    /// false the stores are inert: hydration stays on the monolith
+    /// exactly as before.
+    pub fn with_content_stores(
+        mut self,
+        stores: Arc<ContentStores>,
+        enabled: bool,
+    ) -> ShardedBackend<B> {
+        self.content = Some(stores);
+        self.hydrate_from_content = enabled;
+        self
+    }
+
+    fn content_if_enabled(&self) -> Option<&ContentStores> {
+        if self.hydrate_from_content {
+            self.content.as_deref()
+        } else {
+            None
         }
     }
 
@@ -277,6 +310,21 @@ impl<B: SearchBackend> SearchBackend for ShardedBackend<B> {
         if let Ok(fallback) = self.fallback_notes.lock() {
             notes.extend(fallback.iter().cloned());
         }
+        if let Some(content) = &self.content {
+            if self.hydrate_from_content {
+                let names: Vec<&str> = content.stores().iter().map(|s| s.name.as_str()).collect();
+                notes.push(format!(
+                    "hydration served by tier content stores: {}",
+                    names.join(", ")
+                ));
+            }
+            for r in &content.rejections {
+                notes.push(format!(
+                    "content store {} not connected: {}",
+                    r.name, r.reason
+                ));
+            }
+        }
         notes
     }
 
@@ -338,14 +386,23 @@ impl<B: SearchBackend> SearchBackend for ShardedBackend<B> {
     }
 
     fn chunk_details(&self, ids: &[i64]) -> Result<Vec<ChunkDetail>> {
+        if let Some(content) = self.content_if_enabled() {
+            return content.chunk_details(ids);
+        }
         self.inner.chunk_details(ids)
     }
 
     fn neighbors(&self, message_id: &str, chunk_idx: i64, n: i64) -> Result<Vec<NeighborRow>> {
+        if let Some(content) = self.content_if_enabled() {
+            return content.neighbors(message_id, chunk_idx, n);
+        }
         self.inner.neighbors(message_id, chunk_idx, n)
     }
 
     fn message(&self, message_id: &str) -> Result<Option<MessageRow>> {
+        if let Some(content) = self.content_if_enabled() {
+            return content.message(message_id);
+        }
         self.inner.message(message_id)
     }
 }

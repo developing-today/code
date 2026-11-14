@@ -579,7 +579,10 @@ mod tests {
         reg.promote("unit-good", "2026-11-10T01:00:00Z")
             .expect("mandated model must promote");
         assert_eq!(
-            reg.lookup("unit-good").expect("lookup").expect("unit").state,
+            reg.lookup("unit-good")
+                .expect("lookup")
+                .expect("unit")
+                .state,
             UnitState::Merged
         );
 
@@ -607,7 +610,10 @@ mod tests {
             .expect_err("unknown provenance must be refused");
         assert!(err.to_string().contains("unit-unknown"), "{err}");
         assert_eq!(
-            reg.lookup("unit-unknown").expect("lookup").expect("unit").state,
+            reg.lookup("unit-unknown")
+                .expect("lookup")
+                .expect("unit")
+                .state,
             UnitState::Open
         );
 

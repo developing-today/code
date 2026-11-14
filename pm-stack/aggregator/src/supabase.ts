@@ -57,7 +57,9 @@ export function createSupabaseClientGetter(
         const token = await resolveSecret("supabase.muse-dev2.access-token-muse-cli");
         if (!token) return null;
         const ref =
-          process.env.SUPABASE_PROJECT_REF ?? (await resolveSecret("supabase.muse-dev2.project-ref")) ?? "keihfchslgjetkmnmzra";
+          process.env.SUPABASE_PROJECT_REF ??
+          (await resolveSecret("supabase.muse-dev2.project-ref")) ??
+          "keihfchslgjetkmnmzra";
         return {
           ref,
           async query<T = Record<string, unknown>>(sql: string): Promise<T[]> {
@@ -72,7 +74,7 @@ export function createSupabaseClientGetter(
       });
     }
     return clientPromise;
-  }
+  };
 }
 
 /** The shared muse-dev2 client, fail-soft while its management token is unavailable. */

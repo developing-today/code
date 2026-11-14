@@ -32,12 +32,14 @@ and costs an agent the ability to restart a server that has wedged. What they
 carry instead is a description that says so and MCP annotations
 (`readOnlyHint`, `destructiveHint`) for a client that wants to scope on them.
 
-## /v1 operations (87)
+## /v1 operations (89)
 
 | Operation | Route | CLI | MCP tool | Plugin | Notes |
 | --- | --- | --- | --- | --- | --- |
 | `adapters_add` | `POST /v1/adapters` | `mcpx adapter add` | `mcpx_adapters_add` | `ops.adaptersAdd()` | Privileged. |
 | `adapters_remove` | `DELETE /v1/adapters/{name}` | `mcpx adapter remove` | `mcpx_adapters_remove` | `ops.adaptersRemove()` | Privileged. Destructive. |
+| `apis_add` | `POST /v1/apis` | `mcpx api add` | `mcpx_apis_add` | `ops.apisAdd()` | Privileged. |
+| `apis_remove` | `DELETE /v1/apis/{name}` | `mcpx api remove` | `mcpx_apis_remove` | `ops.apisRemove()` | Privileged. Destructive. |
 | `artifacts_list` | `GET /v1/artifacts` | `mcpx artifact list` *generated* | `mcpx_artifacts_list` | `ops.artifactsList()` |  |
 | `artifact_put` | `POST /v1/artifacts` | `mcpx artifact put` *generated* | `mcpx_artifact_put` | `ops.artifactPut()` | Privileged. |
 | `artifact_delete` | `DELETE /v1/artifacts/{id}` | `mcpx artifact delete` *generated* | `mcpx_artifact_delete` | `ops.artifactDelete()` | Privileged. Destructive. |
@@ -132,7 +134,7 @@ that reaches none says why: those are decisions, not gaps.
 | Command | Operations | Notes |
 | --- | --- | --- |
 | `adapter` | `adapters_add`, `adapters_remove` |  |
-| `api` | – | OpenAPI declarations are files the CLI reads; the tools they produce are served over MCP, and are not yet a tool source the daemon owns (#83). |
+| `api` | `apis_add`, `apis_remove` |  |
 | `artifact` / `artifacts` | `artifacts_list`, `artifact_put`, `artifact_delete`, `artifact_get` | Generated from the operation table. |
 | `ask` | `ask_begin`, `ask_poll`, `ask_abandon`, `ask_answers` | Generated from the operation table. |
 | `authz` | `authz_decisions_clear`, `authz_decisions` | Generated from the operation table. |

@@ -441,7 +441,9 @@ describe("ingestion store load validation (#5232)", () => {
     }
 
     expect(
-      errors.some((message) => message.includes("is unparseable") && message.includes("quarantined the original bytes")),
+      errors.some(
+        (message) => message.includes("is unparseable") && message.includes("quarantined the original bytes"),
+      ),
     ).toBe(true);
     const quarantined = readdirSync(dir).filter((name) => name.startsWith("activity.json.corrupt-"));
     expect(quarantined).toHaveLength(1);

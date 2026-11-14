@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { poolState, windowPercent } from "../src/derive.ts";
 import { disabledProvidersFromConfig } from "../src/aa.ts";
-import { extractQuotaPools } from "../src/quota-extract.ts";
+import { extractQuotaPools, POOL_SPECS } from "../src/quota-extract.ts";
 import { computeChoices } from "../src/quota-guidance.ts";
 
 // A synthetic quota view carrying the same dated-read phrasing the
@@ -73,7 +73,7 @@ describe("quota extractors", () => {
   });
 
   test("codex 7-day read", () => {
-    const p = byId.get("openai.main")!;
+    const p = byId.get("_openai.main")!;
     expect(p.windows[0].percent).toBe(11);
     expect(p.windows[0].resetsAt).toBe("2026-10-30T18:01:00.000Z");
   });
@@ -81,37 +81,42 @@ describe("quota extractors", () => {
   test("month-based resets normalize month case and preserve reads for invalid dates across extractors", () => {
     const consumers = [
       {
-        id: "openai.main",
-        view: (reset: string) => `\n### ChatGPT — main account plans\n7-day 42% used; resets ${reset}, 18:01 UTC.\n`,
+        id: "_openai.main",
+        view: (reset: string, time: string) =>
+          `\n### ChatGPT — main account plans\n7-day 42% used; resets ${reset}, ${time} UTC.\n`,
         window: { name: "7-day", percent: 42 },
         extraWindows: 0,
       },
       {
         id: "opencode-go.drewrypope",
-        view: (reset: string) =>
-          `\n### OpenCode Go ×2 workspaces\n- **drewrypope — monthly 60% used**; monthly reset ${reset}, 18:01 UTC.\n`,
+        view: (reset: string, time: string) =>
+          `\n### OpenCode Go ×2 workspaces\n- **drewrypope — monthly 60% used**; monthly reset ${reset}, ${time} UTC.\n`,
         window: { name: "monthly", unit: "usd", limit: 60, used: 36, percent: 60 },
         extraWindows: 0,
       },
       {
         id: "_commandcode",
-        view: (reset: string) =>
-          `\n### Command Code\n$6.57 of $10 used; 5h 1.2%, weekly 8.8%; period ends ${reset}, 18:01 UTC.\n`,
+        view: (reset: string, time: string) =>
+          `\n### Command Code\n$6.57 of $10 used; 5h 1.2%, weekly 8.8%; period ends ${reset}, ${time} UTC.\n`,
         window: { name: "monthly credits", unit: "usd", limit: 10, used: 6.57, percent: 65.7 },
         extraWindows: 2,
       },
     ];
     const resets = [
-      { input: "Oct 30", expected: "2026-10-30T18:01:00.000Z" },
-      { input: "oct 30", expected: "2026-10-30T18:01:00.000Z" },
-      { input: "OCT 30", expected: "2026-10-30T18:01:00.000Z" },
-      { input: "Foo 30", expected: null },
-      { input: "Oct 39", expected: null },
+      { input: "Oct 30", time: "18:01", expected: "2026-10-30T18:01:00.000Z" },
+      { input: "oct 30", time: "18:01", expected: "2026-10-30T18:01:00.000Z" },
+      { input: "OCT 30", time: "18:01", expected: "2026-10-30T18:01:00.000Z" },
+      { input: "Foo 30", time: "18:01", expected: null },
+      { input: "Oct 39", time: "18:01", expected: null },
+      { input: "Oct 30", time: "18:60", expected: null },
+      { input: "Oct 30", time: "18:99", expected: null },
+      { input: "Oct 30", time: "24:00", expected: null },
+      { input: "Oct 30", time: "23:59", expected: "2026-10-30T23:59:00.000Z" },
     ];
 
     for (const consumer of consumers) {
       for (const reset of resets) {
-        const pool = extractQuotaPools(consumer.view(reset.input), NOW).find((p) => p.id === consumer.id)!;
+        const pool = extractQuotaPools(consumer.view(reset.input, reset.time), NOW).find((p) => p.id === consumer.id)!;
         expect(pool.windows).toHaveLength(1 + consumer.extraWindows);
         expect(pool.windows[0]).toMatchObject(consumer.window);
         expect(pool.windows[0].resetsAt).toBe(reset.expected);
@@ -126,7 +131,7 @@ describe("quota extractors", () => {
     const pastDate = "Sep 24";
     const cases = [
       {
-        id: "openai.main",
+        id: "_openai.main",
         view: `\n### ChatGPT — main account plans\n7-day 42% used; resets ${pastDate}, 18:01 UTC.\n`,
       },
       {
@@ -145,7 +150,7 @@ describe("quota extractors", () => {
   });
 
   test("alternate ChatGPT account is its own pool — never merged into the main pool", () => {
-    const p = byId.get("openai.alternate")!;
+    const p = byId.get("_openai.alt")!;
     expect(p).toBeDefined();
     expect(p.provider).toBe("OpenAI");
     // This view has no "### ChatGPT (Alternate)" dated-read section, so
@@ -159,8 +164,8 @@ describe("quota extractors", () => {
     const altSection = "### ChatGPT (Alternate)\n- 7-day 42% used.\n";
     for (const view of ["\n" + altSection + "\n" + mainSection, "\n" + mainSection + "\n" + altSection]) {
       const m = new Map(extractQuotaPools(view, NOW).map((p) => [p.id, p]));
-      expect(m.get("openai.main")!.windows[0].percent).toBe(11);
-      expect(m.get("openai.alternate")!.windows[0].percent).toBe(42);
+      expect(m.get("_openai.main")!.windows[0].percent).toBe(11);
+      expect(m.get("_openai.alt")!.windows[0].percent).toBe(42);
     }
   });
 
@@ -309,6 +314,48 @@ describe("quota extractors", () => {
       expect(p.note).toBeTruthy();
     }
   });
+
+  test("extractor health distinguishes misses from intentional shell pools", () => {
+    const empty = new Map(extractQuotaPools("no reads here", NOW).map((p) => [p.id, p]));
+    for (const spec of POOL_SPECS) {
+      expect(empty.get(spec.id)?.extractionHealth).toEqual({
+        status: "gap",
+        matched: false,
+        reason: "section-missing",
+        count: 0,
+      });
+    }
+    for (const id of ["opendesign", "deepseek"]) {
+      expect(empty.get(id)?.extractionHealth).toEqual({
+        status: "intentional",
+        matched: null,
+        reason: "uninstrumented",
+        count: 0,
+      });
+    }
+  });
+
+  test("extractor health records parsed windows and distinguishes null/throw misses", () => {
+    expect(byId.get("anthropic:claude-pro")?.extractionHealth).toEqual({
+      status: "matched",
+      matched: true,
+      count: 1,
+    });
+    const nullResult = extractQuotaPools("### ChatGPT — main account plans\nno quota figures", NOW).find(
+      (p) => p.id === "_openai.main",
+    );
+    expect(nullResult?.extractionHealth).toEqual({
+      status: "gap",
+      matched: false,
+      reason: "extractor-null",
+      count: 0,
+    });
+    // No extractor-threw case: on current main every extractor is
+    // fail-soft (the codex extractor no longer throws on an
+    // unparseable reset date — it parses the window and ignores the
+    // date), so the extractor-threw branch in extractQuotaPools is
+    // defensive only and has no live input.
+  });
 });
 
 describe("America/Chicago dated reads", () => {
@@ -359,7 +406,7 @@ describe("windowPercent + guidance", () => {
     const pools = extractQuotaPools(VIEW, NOW);
     const choices = computeChoices(pools, NOW.getTime());
     expect(choices.doNotStart).toContain("meta");
-    expect(choices.hasHeadroom).toContain("openai.main");
+    expect(choices.hasHeadroom).toContain("_openai.main");
     expect(choices.hasHeadroom).not.toContain("meta");
     // Claude resets in >24h; nothing in this fixture resets within a day
     // with headroom, so burn-before-reset is empty.
@@ -392,21 +439,23 @@ describe("pass-through pool assembly (Drew, 2026-11-03)", () => {
     // #1114 the board lost anthropic:claude-pro, commandcode, deepseek
     // and BOTH Antigravity pools, and meta survived only through an
     // exemption hack — while the OpenCode quota read reported all of
-    // them. All twelve pools now render unconditionally; the dated
+    // them. Every pool now renders unconditionally; the dated
     // reads are the live read's fail-soft fallback, nothing more.
     expect(extractQuotaPools(VIEW, NOW).map((p) => p.id)).toEqual([
       "meta",
       "anthropic:claude-pro",
-      "openai.main",
-      "openai.alternate",
+      "_openai.main",
+      "_openai.alt",
       "opencode-go.drewrypope",
       "opencode-go.popesdrew",
+      "opencode-go.developing-today-0",
       "cline-pass",
       "_commandcode",
       "_antigravity.gemini",
       "_antigravity.claude-gpt",
       "opendesign",
       "deepseek",
+      "mistral",
     ]);
   });
 

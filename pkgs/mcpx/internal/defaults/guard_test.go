@@ -77,7 +77,29 @@ var allowed = map[string]string{
 
 	// A unit boundary in a duration renderer: it decides whether to print
 	// hours or days, which is arithmetic rather than policy.
-	"24*time.Hour":       "a unit boundary in the duration formatter",
+	"24*time.Hour": "a unit boundary in the duration formatter",
+
+	// Token-lifetime arithmetic in mcpauth's App minter and rotator.
+	// GitHub's platform rules fix these numbers — an App JWT may live
+	// at most 10 minutes and an installation token one hour — so they
+	// are protocol constants imposed from outside, not preferences a
+	// user could set differently.
+	"60*time.Second": "the App JWT iat backdate in mcpauth: the documented clock-skew allowance, so a minting host a few seconds fast is not refused",
+	"9*time.Minute":  "the App JWT lifetime in mcpauth: GitHub caps App JWTs at 10 minutes and 9 leaves headroom under that cap",
+	"5*time.Minute":  "the installation-token refresh margin in mcpauth: a cached token is re-minted this long before its one-hour expiry",
+
+	// Test-harness timing in internal/testsupport. These bound how the
+	// suite waits on its own fakes and stray processes; nothing a user
+	// runs has these values in it.
+	"2*time.Second":        "the reply window eramcp (testsupport's fake MCP server) gives a client before answering 'dropped': a simulated peer's timing, not a product default",
+	"10*time.Second":       "the leftover grace in testsupport's sweep: how long a process seen running from a build dir gets to exit on its own before the sweep calls it leaked; it mirrors the harness's daemon drain budget",
+	"100*time.Millisecond": "the leftover poll interval in testsupport's sweep: how often the sweep re-checks a draining process inside its grace period",
+
+	// A definition, like the kibibyte shifts above: the seed's shuffle
+	// formula masks a hash to MaxInt63, and (1<<63 - 1) is that value
+	// by definition; the formula is pinned to two other implementations
+	// by the seed package's tests.
+	"1<<63":              "the MaxInt63 mask in testsupport/seed's shuffle derivation",
 	"2*time.Millisecond": "the poll interval in artifacts' schema-migration race guard (ensureLastTouched): a bounded loop waiting out a concurrent opener's ALTER; race arbitration, not a policy value",
 }
 
@@ -181,8 +203,13 @@ func TestTheGuardWouldHaveCaughtWhatItMissed(t *testing.T) {
 	for _, line := range []string{
 		"for i := 0; i < len(rows); i++ {",
 		"return fmt.Sprintf(\"%d\", n)",
-		"if limit = 0; false {",
+		"timeout := defaults.CtxTimeout",
+		"limit := pages",
+		"0o7",
 	} {
-		_ = line
+		if got := matches(line); len(got) != 0 {
+			t.Errorf("the guard matched %q as %v; these are not hard-coded defaults, "+
+				"and matching them would push people to widen the allowlist", line, got)
+		}
 	}
 }

@@ -14,6 +14,158 @@ import { isMeteredModel } from './check-opencode-metered-providers.mjs';
 
 export const DEFAULT_CONFIG = '.opencode/opencode.jsonc';
 export const REQUIRED_TIERS = ['scout', 'workhorse', 'specialist', 'summit'];
+
+// Class-level fallback layout (Drew 2026-11-13; full table in
+// .opencode/route-fallbacks.md). Semantics: a class route's own regular
+// chain always runs first and completely; the fallback targets appended
+// after it are a second pass that engages only on exhaustion, walked
+// transitively under a per-call visited set (a class already tried in
+// the call is never re-entered), terminating at specialist, the sink.
+// The pairs workhorse->scout / scout->workhorse are therefore legal
+// fallback edges, NOT cycles: the runtime route expander prunes
+// re-entry into a route already on the expansion path. scout's and
+// background's edges are proposals Drew has not ruled on yet
+// (2026-11-13); the rest are his confirmed edges. Keep this table and
+// the config in lockstep - check (a) below fails on drift.
+export const CLASS_FALLBACKS = {
+  small: ['speed'],
+  speed: ['workhorse', 'summit', 'specialist'],
+  workhorse: ['scout', 'specialist'],
+  summit: ['specialist'],
+  specialist: [],
+  scout: ['workhorse'],
+  background: ['workhorse'],
+};
+const CLASS_FALLBACK_PAIRS = new Set(
+  Object.entries(CLASS_FALLBACKS).flatMap(([from, targets]) => targets.map((to) => `${from}->${to}`)),
+);
+
+function routeTargetIds(route, modelRoutes) {
+  if (!isObject(route) || !Array.isArray(route.targets)) return [];
+  const ids = [];
+  for (const target of route.targets) {
+    const reference = typeof target === 'string' ? target : isObject(target) ? target.model : null;
+    if (typeof reference !== 'string') continue;
+    const parsed = splitModelReference(reference);
+    if (parsed && parsed.provider === 'opencode-route' && isObject(modelRoutes?.[parsed.model])) {
+      ids.push(parsed.model);
+    }
+  }
+  return ids;
+}
+
+function cycleKey(cyclePath) {
+  return [...new Set(cyclePath)].sort().join(',');
+}
+
+// Validates the class fallback layout (checks a-c) and the static
+// composition graph (check d) for a parsed model_routes map.
+// fallbacks defaults to CLASS_FALLBACKS; tests pass doctored tables to
+// prove the reachability/walk checks fire. reportedCycleKeys holds
+// canonical keys of cycles the tier resolver already reported, so a
+// composition cycle is never double-reported.
+export function inspectFallbackLayout(modelRoutes, fallbacks = CLASS_FALLBACKS, reportedCycleKeys = new Set()) {
+  const issues = [];
+  if (!isObject(modelRoutes)) return issues;
+  const fallbackPairs = new Set(
+    Object.entries(fallbacks).flatMap(([from, targets]) => targets.map((to) => `${from}->${to}`)),
+  );
+
+  // (a) Config drift: when every class route exists, each class route's
+  // route-typed targets must END with its declared fallback chain, in
+  // order. Partial configs (unit fixtures) skip the layout checks.
+  const classes = Object.keys(fallbacks);
+  if (classes.every((name) => isObject(modelRoutes[name]))) {
+    for (const name of classes) {
+      const declared = fallbacks[name];
+      const ids = routeTargetIds(modelRoutes[name], modelRoutes);
+      const tail = ids.slice(ids.length - declared.length);
+      if (JSON.stringify(tail) !== JSON.stringify(declared)) {
+        issues.push(
+          `fallback: route "${name}" must end with its class fallback chain [${declared.join(', ')}] as its final route targets (found route targets [${ids.join(', ')}])`,
+        );
+      }
+    }
+
+    // (b) Reachability: every class can reach specialist, the sink,
+    // through the fallback graph.
+    for (const name of classes) {
+      const seen = new Set([name]);
+      const queue = [name];
+      while (queue.length > 0) {
+        const current = queue.shift();
+        for (const next of fallbacks[current] ?? []) {
+          if (!seen.has(next)) {
+            seen.add(next);
+            queue.push(next);
+          }
+        }
+      }
+      if (!seen.has('specialist')) {
+        issues.push(`fallback: class "${name}" cannot reach specialist through the fallback graph`);
+      }
+    }
+
+    // (c) Escalation walk: simulate the router's depth-first walk of
+    // the fallback chains under the per-call visited set. Entering a
+    // class runs its regular chain, then its fallback edges in order;
+    // a class already visited in this call is never re-entered, and
+    // when a fallback subtree yields nothing the walk resumes the
+    // caller's remaining edges (exactly how the appended targets sit
+    // in each class route's target list). The walk must reach
+    // specialist from every class.
+    const walkReachesSpecialist = (start) => {
+      const visited = new Set();
+      const dfs = (current) => {
+        if (current === 'specialist') return true;
+        visited.add(current);
+        for (const next of fallbacks[current] ?? []) {
+          if (visited.has(next)) continue;
+          if (dfs(next)) return true;
+        }
+        return false;
+      };
+      return dfs(start);
+    };
+    for (const name of classes) {
+      if (!walkReachesSpecialist(name)) {
+        issues.push(
+          `fallback: escalation walk from "${name}" never reaches specialist under the per-call visited set`,
+        );
+      }
+    }
+  }
+
+  // (d) Composition cycles: walk every route->route edge EXCEPT the
+  // declared class fallback pairs. A cycle here is a real defect class
+  // (nested composition must be a DAG); fallback pairs are governed by
+  // the per-call visited set instead.
+  const state = new Map(); // route -> 'open' | 'done'
+  const stack = [];
+  const visit = (routeId) => {
+    state.set(routeId, 'open');
+    stack.push(routeId);
+    for (const next of routeTargetIds(modelRoutes[routeId], modelRoutes)) {
+      if (fallbackPairs.has(`${routeId}->${next}`)) continue;
+      if (state.get(next) === 'open') {
+        const cycle = [...stack.slice(stack.indexOf(next)), next];
+        if (!reportedCycleKeys.has(cycleKey(cycle))) {
+          issues.push(`route composition cycle: ${cycle.join(' -> ')}`);
+          reportedCycleKeys.add(cycleKey(cycle));
+        }
+        continue;
+      }
+      if (!state.has(next)) visit(next);
+    }
+    stack.pop();
+    state.set(routeId, 'done');
+  };
+  for (const routeId of Object.keys(modelRoutes).sort()) {
+    if (!state.has(routeId)) visit(routeId);
+  }
+
+  return issues;
+}
 // Keep aligned with bin/opencode-route-proxy.mjs BUILTIN_PROVIDERS. These
 // concrete provider ids take precedence over a same-named provider route.
 const BUILTIN_PROVIDER_IDS = new Set(['opencode-go', 'openai', 'deepseek', 'groq', 'openrouter', 'meta']);
@@ -132,7 +284,14 @@ export function inspectRouteRules(config) {
         return [];
       }
       if (stack.includes(parsed.model)) {
-        addIssue(`${tier}: model-route cycle ${[...stack, parsed.model].join(' -> ')}`);
+        // Re-entry through a declared class fallback edge (e.g.
+        // workhorse -> scout -> workhorse) is the designed per-call
+        // visited-set semantics, not a cycle: the runtime expander
+        // prunes the re-entry. The traversal itself is bounded by
+        // the seen set below either way.
+        if (!CLASS_FALLBACK_PAIRS.has(`${stack.at(-1)}->${parsed.model}`)) {
+          addIssue(`${tier}: model-route cycle ${[...stack, parsed.model].join(' -> ')}`);
+        }
         return [];
       }
       // Match runtime resolveRoute: one shared seen set per tier
@@ -295,6 +454,17 @@ export function inspectRouteRules(config) {
       effort_variants_checked: effortVariantsChecked,
       unknown_catalogs: eligible.filter((candidate) => candidate.catalog === 'unknown').length,
     };
+  }
+
+  // Class fallback layout + whole-graph composition cycle pass.
+  // Cycles the tier resolver already reported are not repeated.
+  const reportedCycleKeys = new Set();
+  for (const issue of issues) {
+    const match = /model-route cycle (.+)$/.exec(issue);
+    if (match) reportedCycleKeys.add(cycleKey(match[1].split(' -> ')));
+  }
+  for (const issue of inspectFallbackLayout(modelRoutes, CLASS_FALLBACKS, reportedCycleKeys)) {
+    addIssue(issue);
   }
 
   return { tiers, issues };

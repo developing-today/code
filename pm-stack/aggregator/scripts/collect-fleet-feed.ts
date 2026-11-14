@@ -44,7 +44,7 @@
 //     section and logs only that it was omitted.
 //   - the AA cost explorer data — Supabase `ainventory` (the AA
 //     import: v_rankings, v_threshold_metrics,
-//     benchmark_results — both the AA Intelligence Index rows and the
+//     measurement_events — both the AA Intelligence Index rows and the
 //     Coding Agent Index rows, kept as separate benchmark families —
 //     the Test_Runs data, and the price event log's v_current_prices),
 //     read through v_latest_import_batch via the Management API SQL endpoint.
@@ -88,7 +88,7 @@ import {
   isAaSection,
   type AaRawPayload,
 } from "../src/aa.ts";
-import { AA_BATCH_INDEX_SQL, AA_PRICES_SQL, aaPayloadSql } from "../src/aa-batch-sql.ts";
+import { AA_BATCH_INDEX_SQL, AA_PAYLOAD_SQL_REVISION, AA_PRICES_SQL, aaPayloadSql } from "../src/aa-batch-sql.ts";
 import {
   aaBatchFingerprint,
   aaCacheFileName,
@@ -109,6 +109,8 @@ import {
 } from "../src/feed.ts";
 import { computeCheckoutDrift } from "../src/checkout-drift.ts";
 import { assembleCollectorFeed } from "../src/feed-contract.ts";
+import { defaultNeedsDrewFile, listAnswers } from "../src/needs-drew.ts";
+import { defaultDecisionsFile, listDecisionResolutions } from "../src/decisions.ts";
 import type {
   AaBatchSummary,
   AaFeedSection,
@@ -126,6 +128,7 @@ import { chargeServiceCatalog } from "../src/charges-catalog.ts";
 import { filterNewUnmatched, mergeChargeRows, parseChargeCandidates } from "../src/charges-collect.ts";
 import { extractQuotaPools } from "../src/quota-extract.ts";
 import { computeChoices } from "../src/quota-guidance.ts";
+import { deriveExhaustionForecasts } from "../src/quota-exhaustion.ts";
 import {
   deriveBurnHistory,
   deriveMeasuredRatesFromPoolTokens,
@@ -149,13 +152,14 @@ import { fetchProjectSnapshot } from "../src/projects.ts";
 import type { ProjectPoolItem } from "../src/model.ts";
 import { REPOS } from "../src/model.ts";
 import { staleIssueSearchQuery, type RepoCensus } from "../src/coverage.ts";
-import { parseLaunchRecords, recordFromSessionEntry } from "../src/registry.ts";
+import { loadLaunchRecords, recordFromSessionEntry } from "../src/registry.ts";
+import { defaultHiddenDir, defaultQuotaViewPath, defaultUsageOutboxPath } from "../src/default-paths.ts";
 import { mapServerSessions, poolBurn } from "../src/sources/opencode.ts";
 import type { FreshnessInput } from "../src/freshness.ts";
 
 const PKG = join(dirname(fileURLToPath(import.meta.url)), "..");
 const HOME = homedir();
-const HIDDEN = join(HOME, "workspace/goals/keep-the-four-repos-healthy/hidden_files");
+const HIDDEN = defaultHiddenDir(HOME);
 
 export type FleetFeedPublication = Readonly<{
   /** Absolute destination path that was replaced. */
@@ -274,12 +278,7 @@ function resolveOutPath(): string {
 }
 
 const outPath = resolveOutPath();
-const quotaViewPath =
-  process.env.QUOTA_VIEW_PATH ??
-  join(
-    HOME,
-    "workspace/goals/stewardship-commission-recurring-review-and-dispatch/hidden_files/visibility/quota-view.md",
-  );
+const quotaViewPath = process.env.QUOTA_VIEW_PATH ?? defaultQuotaViewPath(HOME);
 const freeServicesTrackerPath =
   process.env.PM_AGG_FREE_SERVICES_TRACKER ??
   join(HOME, "hatch-personal/workspace/ai-subscriptions/free-services-to-check.md");
@@ -292,7 +291,7 @@ const dnsRegisterPath =
 const dnsRegisterJsonPath = process.env.DNS_REGISTER_JSON_PATH ?? join(dirname(dnsRegisterPath), "register.json");
 const launchRecordsPath = process.env.CLAUDE_LAUNCH_RECORDS_PATH ?? join(HIDDEN, "claude-launch-records.jsonl");
 const quotaRegistryPath = process.env.QUOTA_REGISTRY_PATH ?? join(HIDDEN, "provider-quota-registry.md");
-const snapshotOutboxPath = process.env.USAGE_SNAPSHOT_OUTBOX_PATH ?? join(HIDDEN, "usage-snapshot-outbox.jsonl");
+const snapshotOutboxPath = process.env.USAGE_SNAPSHOT_OUTBOX_PATH ?? defaultUsageOutboxPath(HOME);
 const chargeCandidatesPath = process.env.CHARGE_CANDIDATES_PATH ?? join(HIDDEN, "charges-candidates.json");
 const chargesSurfacedStatePath = process.env.CHARGES_SURFACED_STATE_PATH ?? join(HIDDEN, "charges-surfaced-state.json");
 const burnHistoryStatePath =
@@ -318,12 +317,15 @@ function poolFor(provider: string, model: string): string | null {
     case "_claude":
       return "anthropic:claude-pro";
     case "openai":
-    case "openai-codex":
-    case "chatgpt":
+    case "_openai":
+    case "_openai.main":
+    case "codex":
       // Keep aligned with the pool IDs in ../src/quota-extract.ts; matching below is exact.
-      return "openai.main";
-    case "openai.alternate":
-      return "openai.alternate";
+      // ("codex" is the pre-rename fork quota id, fork PR #2261; a row
+      // still stamped with it files under the renamed pool.)
+      return "_openai.main";
+    case "_openai.alt":
+      return "_openai.alt";
     case "cline-pass":
       return "cline-pass";
     case "opendesign":
@@ -460,6 +462,8 @@ interface AaLastGood {
   configFingerprint: string;
   /** sha256 of the batch-bound semantic data (aa-batches.ts). */
   fingerprint?: string;
+  /** aaPayloadSql revision the section was built with (#8817). */
+  sqlRevision?: number;
   section: AaSection;
 }
 
@@ -472,6 +476,7 @@ async function readAaLastGood(): Promise<AaLastGood | null> {
       batch: parsed.batch,
       configFingerprint: parsed.configFingerprint,
       fingerprint: typeof parsed.fingerprint === "string" ? parsed.fingerprint : undefined,
+      sqlRevision: typeof parsed.sqlRevision === "number" ? parsed.sqlRevision : undefined,
       section: parsed.section,
     };
   } catch {
@@ -591,6 +596,7 @@ async function collectAaSection(generatedAt: string): Promise<AaFeedSection> {
       configFingerprint: fingerprint,
       fingerprint: contentFingerprint,
       pricesFingerprint: aaPricesFingerprint(section.prices ?? []),
+      sqlRevision: AA_PAYLOAD_SQL_REVISION,
       builtAt: generatedAt,
       section,
     });
@@ -634,15 +640,17 @@ async function collectAaSection(generatedAt: string): Promise<AaFeedSection> {
     return degrade(msg.startsWith("Supabase query failed") ? msg : `Supabase unreachable (${msg})`);
   }
 
-  // Read every batch cache once; a changed config — or a changed
-  // current-price overlay — invalidates all of them.
+  // Read every batch cache once; a changed config, a changed
+  // current-price overlay, or a moved aaPayloadSql revision (#8817)
+  // invalidates all of them.
   const cachedSections = new Map<string, AaSection>();
   for (const row of index) {
     const cached = await readAaBatchCache(row.importBatch);
     if (
       cached &&
       cached.configFingerprint === fingerprint &&
-      (cached.pricesFingerprint ?? null) === currentPricesFingerprint
+      (cached.pricesFingerprint ?? null) === currentPricesFingerprint &&
+      (cached.sqlRevision ?? 0) === AA_PAYLOAD_SQL_REVISION
     ) {
       cacheMeta.set(row.importBatch, { fingerprint: cached.fingerprint, cached: true });
       cachedSections.set(row.importBatch, cached.section);
@@ -660,6 +668,7 @@ async function collectAaSection(generatedAt: string): Promise<AaFeedSection> {
     lastGood &&
     lastGood.batch === latestBatch &&
     lastGood.configFingerprint === fingerprint &&
+    (lastGood.sqlRevision ?? 0) === AA_PAYLOAD_SQL_REVISION &&
     lastGood.fingerprint
   ) {
     // Reuse the last good latest section without re-running the full query.
@@ -669,6 +678,7 @@ async function collectAaSection(generatedAt: string): Promise<AaFeedSection> {
       configFingerprint: fingerprint,
       fingerprint: lastGood.fingerprint,
       pricesFingerprint: aaPricesFingerprint(lastGood.section.prices ?? []),
+      sqlRevision: AA_PAYLOAD_SQL_REVISION,
       builtAt: latestSection.generatedAt,
       section: latestSection,
     });
@@ -688,6 +698,7 @@ async function collectAaSection(generatedAt: string): Promise<AaFeedSection> {
     batch: latestSection.batch,
     configFingerprint: fingerprint,
     fingerprint: cacheMeta.get(latestSection.batch)?.fingerprint ?? undefined,
+    sqlRevision: AA_PAYLOAD_SQL_REVISION,
     section: latestSection,
   });
 
@@ -718,6 +729,7 @@ async function collectAaSection(generatedAt: string): Promise<AaFeedSection> {
     batch: withIndex.batch,
     configFingerprint: fingerprint,
     fingerprint: cacheMeta.get(withIndex.batch)?.fingerprint ?? undefined,
+    sqlRevision: AA_PAYLOAD_SQL_REVISION,
     section: withIndex,
   });
   return withIndex;
@@ -726,8 +738,16 @@ async function collectAaSection(generatedAt: string): Promise<AaFeedSection> {
 async function main(): Promise<void> {
   const now = new Date();
   const sectionStatuses: NonNullable<FleetFeed["meta"]>["sections"] = {};
-  const markSection = (key: string, status: FeedSectionStatus, error?: unknown) => {
-    sectionStatuses[key] = feedSectionStatus(status, new Date().toISOString(), error);
+  const markSection = (
+    key: string,
+    status: FeedSectionStatus,
+    error?: unknown,
+    counts?: { reportedTotal?: number; emittedEntries: number },
+  ) => {
+    sectionStatuses[key] = {
+      ...feedSectionStatus(status, new Date().toISOString(), error),
+      ...(counts ?? {}),
+    };
   };
   const isMissingInput = (error: unknown): boolean =>
     typeof error === "object" && error !== null && "code" in error && error.code === "ENOENT";
@@ -918,14 +938,20 @@ async function main(): Promise<void> {
   // Muse sessions have no server to scrape: they register by
   // appending one JSON line at launch (scripts/record-claude-launch.ts).
   // Absent file = no Muse sessions recorded yet — the normal state
-  // until the helper is used.
-  try {
-    const jsonl = await readFile(launchRecordsPath, "utf8");
-    registry.push(...parseLaunchRecords(jsonl));
-  } catch {
-    /* no launch records yet */
+  // until the helper is used. A file that is present but unreadable is
+  // NOT absent (#8353): it degrades the section to error, like every
+  // other source failure in this collector, instead of letting the
+  // registry mark ok/skipped from its remaining sources alone.
+  const launch = await loadLaunchRecords(launchRecordsPath);
+  registry.push(...launch.records);
+  if (launch.error) {
+    console.error(
+      `collector: launch records unreadable (${sanitizeCollectionError(launch.error)}); registry section marks error`,
+    );
+    markSection("registry", "error", launch.error);
+  } else {
+    markSection("registry", registry.length ? "ok" : "skipped");
   }
-  markSection("registry", registry.length ? "ok" : "skipped");
 
   // --- DNS register (#902's files; #906 §1 owns the view) ----------------
   // Slice 2: register.json is authoritative for the fields it carries;
@@ -1032,6 +1058,10 @@ async function main(): Promise<void> {
       } else {
         markSection("projects", "ok");
       }
+      markSection("projects", "ok", undefined, {
+        reportedTotal: snapshot.counts.reportedTotal,
+        emittedEntries: snapshot.counts.emittedEntries,
+      });
     }
   } catch (err) {
     console.error(`collector: GitHub Project read failed (${sanitizeCollectionError(err)}); projects section omitted`);
@@ -1089,7 +1119,9 @@ async function main(): Promise<void> {
           gateNext = await count(`${base} label:next`);
         } catch (err) {
           failedRepos.add(repo);
-          console.error(`collector: coverage census failed for ${repo} (${sanitizeCollectionError(err)}); backlog counts unavailable`);
+          console.error(
+            `collector: coverage census failed for ${repo} (${sanitizeCollectionError(err)}); backlog counts unavailable`,
+          );
         }
         rows.push({ repo, openIssues, gateNow, gateNext, staleOpenIssues, staleIssuesCollectedAt, staleIssuesError });
       }
@@ -1211,14 +1243,45 @@ async function main(): Promise<void> {
         ratesSet += 1;
       }
     }
+    // Exhaustion intervals (#3983) compose the same observations:
+    // per-pool forecasts ride on the pool like burnTokensPerMin.
+    deriveExhaustionForecasts(pools, mergedObservations, now);
     markSection("burnHistory", burnSegments.length || ratesSet ? "ok" : "skipped");
   } catch (err) {
     console.error("collector: burn-history derivation failed; burn stays empty this run");
     markSection("burnHistory", "error", err);
   }
 
+  // #8568: Drew's answers to needs-Drew questions, from the
+  // aggregator's needs-drew store (same default path logic as
+  // src/config.ts). Fail-soft: an absent store = no answers yet.
+  let answers: NonNullable<FleetFeed["answers"]> = [];
+  try {
+    const answered = await listAnswers(defaultNeedsDrewFile());
+    answers = answered.map((item) => ({
+      ledgerId: item.ledgerId,
+      ...(item.answer?.optionId !== undefined ? { optionId: item.answer.optionId } : {}),
+      ...(item.answer?.freeText !== undefined ? { freeText: item.answer.freeText } : {}),
+      answeredAt: item.answer?.at ?? "",
+      via: item.answer?.via ?? "api",
+    }));
+  } catch {
+    answers = [];
+  }
+
+  // #8766: Drew's decisions-page resolutions (answers + defers), from
+  // the aggregator's decision-set store. Fail-soft like `answers`.
+  let decisionResolutions: NonNullable<FleetFeed["decisionResolutions"]> = [];
+  try {
+    decisionResolutions = await listDecisionResolutions(defaultDecisionsFile());
+  } catch {
+    decisionResolutions = [];
+  }
+
   const feed: FleetFeed = assembleCollectorFeed({
     generatedAt: now.toISOString(),
+    answers,
+    decisionResolutions,
     checkout,
     meta: { sections: sectionStatuses },
     quota: { pools, burn: burnSegments, choices: computeChoices(pools, now.getTime()) },
@@ -1257,7 +1320,9 @@ async function main(): Promise<void> {
         ? `, hub ${saas.length} services / ${payg?.length ?? 0} payg / ${charges?.length ?? 0} charges`
         : ", no hub sections") +
       (dedupedSnapshots.length ? `, snapshots ${dedupedSnapshots.length} records` : "") +
-      (projectAudit ? `, projects ${projectAudit.totalItems} total / ${projects?.length ?? 0} resolvable` : ", no projects section") +
+      (projectAudit
+        ? `, projects ${projectAudit.totalItems} total / ${projects?.length ?? 0} resolvable`
+        : ", no projects section") +
       (coverage ? `, coverage ${coverage.length} repos` : ", no coverage section") +
       (aa.status === "ok"
         ? `, aa ${aa.rankings?.length ?? 0} rankings / ${aa.configs?.length ?? 0} configs / ${aa.testRuns?.length ?? 0} test runs`

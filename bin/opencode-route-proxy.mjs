@@ -59,6 +59,7 @@ import { fileURLToPath } from "node:url";
 import { DatabaseSync } from "node:sqlite";
 import { randomBytes } from "node:crypto";
 import { parseProxyMillis, parseProxyPort } from "./proxy-port.mjs";
+import { createRequestBodyCollector } from "./request-body.mjs";
 
 const PORT = parseProxyPort("OPENCODE_ROUTE_PROXY_PORT", 18750);
 const HOST = process.env.OPENCODE_ROUTE_PROXY_HOST || "127.0.0.1";
@@ -251,8 +252,8 @@ const expandEnv = (s) =>
 // config fields (options included) win key by key; the built-in
 // table only fills what the block omits.
 const mergedDef = (cfg, id) => {
-  const raw = cfg.providers[id];
-  const builtin = BUILTIN_PROVIDERS[id];
+  const raw = Object.hasOwn(cfg.providers, id) ? cfg.providers[id] : undefined;
+  const builtin = Object.hasOwn(BUILTIN_PROVIDERS, id) ? BUILTIN_PROVIDERS[id] : undefined;
   if (!raw) return builtin || null;
   if (!builtin) return raw;
   return {
@@ -723,7 +724,7 @@ const weightedOrder = (targets, weights) => {
 // A concrete provider always wins a reference: an id that names a
 // config provider block (or a built-in) is never treated as a group.
 const providerRouteDef = (cfg, id) => {
-  if (cfg.providers[id] || BUILTIN_PROVIDERS[id]) return null;
+  if (Object.hasOwn(cfg.providers, id) || Object.hasOwn(BUILTIN_PROVIDERS, id)) return null;
   const g = cfg.providerRoutes?.[id];
   if (!g || !Array.isArray(g.providers)) return null;
   return g;
@@ -743,7 +744,7 @@ const expandProviderRoute = (cfg, t, variant, out) => {
     (m) =>
       typeof m === "string" &&
       m !== "opencode-route" &&
-      (cfg.providers[m] || BUILTIN_PROVIDERS[m]) &&
+      (Object.hasOwn(cfg.providers, m) || Object.hasOwn(BUILTIN_PROVIDERS, m)) &&
       !cfg.disabled.has(m),
   );
   let leaves = [];
@@ -1616,15 +1617,29 @@ const server = createServer(async (req, res) => {
       });
     }
     if (req.method === "POST" && url.pathname === "/v1/chat/completions") {
-      let raw = "";
-      for await (const part of req) raw += part;
-      let body = {};
-      try {
-        body = JSON.parse(raw || "{}");
-      } catch {
-        return sendError(res, 400, "invalid JSON body");
-      }
-      return await handleChatCompletions(req, res, body);
+      // Collect the body as bytes and decode UTF-8 once, after the full
+      // body arrives (#4335): per-chunk string coercion corrupts multibyte
+      // characters split across TCP chunks. Cap 50 MB like the sibling
+      // proxies (bin/request-body.mjs collector) with a 413 past the cap.
+      const bodyCollector = createRequestBodyCollector(50 * 1024 * 1024);
+      req.on("data", (chunk) => {
+        if (bodyCollector.tooLarge) return;
+        if (!bodyCollector.push(chunk)) {
+          sendError(res, 413, "request body too large");
+          req.destroy();
+        }
+      });
+      req.on("end", async () => {
+        if (bodyCollector.tooLarge) return;
+        let body = {};
+        try {
+          body = JSON.parse(bodyCollector.text() || "{}");
+        } catch {
+          return sendError(res, 400, "invalid JSON body");
+        }
+        await handleChatCompletions(req, res, body);
+      });
+      return;
     }
     return sendError(res, 404, `no route for ${req.method} ${url.pathname}`);
   } catch (err) {

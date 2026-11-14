@@ -210,11 +210,13 @@ pub fn find_matches(
     let mut matches = Vec::new();
     for entry in &list.entries {
         let basis = match entry {
-            SanctionsEntry::Country { code } => {
-                subject_country.filter(|c| *c == code).map(|_| MatchBasis::StrongIdentifier)
-            }
+            SanctionsEntry::Country { code } => subject_country
+                .filter(|c| *c == code)
+                .map(|_| MatchBasis::StrongIdentifier),
             SanctionsEntry::Entity { native_id, names }
-            | SanctionsEntry::Person { native_id, names, .. } => {
+            | SanctionsEntry::Person {
+                native_id, names, ..
+            } => {
                 if subject_native_ids.contains(native_id) {
                     Some(MatchBasis::StrongIdentifier)
                 } else if names.iter().any(|n| subject_names.contains(n)) {
@@ -366,9 +368,11 @@ pub fn evaluate(
     }
     // The strongest match decides; entry keys are compared so the
     // recorded entry is deterministic for a given match set.
-    let strongest = matches
-        .iter()
-        .max_by(|a, b| a.basis.cmp(&b.basis).then_with(|| a.entry_key.cmp(&b.entry_key)));
+    let strongest = matches.iter().max_by(|a, b| {
+        a.basis
+            .cmp(&b.basis)
+            .then_with(|| a.entry_key.cmp(&b.entry_key))
+    });
     let Some(m) = strongest else {
         return record(DecisionOutcome::Allow, None, None);
     };
@@ -482,7 +486,13 @@ mod tests {
         // references the exact list version applied.
         let l = list(7, vec![SanctionsEntry::Country { code: "CU".into() }]);
         let m = find_matches(&l, Some("CU"), &BTreeSet::new(), &BTreeSet::new());
-        let d = evaluate(&boundary(), &l, EnforcementPoint::AccountCreation, &m, false);
+        let d = evaluate(
+            &boundary(),
+            &l,
+            EnforcementPoint::AccountCreation,
+            &m,
+            false,
+        );
         assert_eq!(d.outcome, DecisionOutcome::Deny);
         assert_eq!(
             d.appeal_path.as_deref(),
@@ -546,8 +556,10 @@ mod tests {
         assert_eq!(d.outcome, DecisionOutcome::Cleared);
         assert_eq!(d.list.version, 3);
         // No prior match: nothing to clear.
-        assert!(cleared_by_removal(&boundary(), &current, EnforcementPoint::Login, false, &[])
-            .is_none());
+        assert!(
+            cleared_by_removal(&boundary(), &current, EnforcementPoint::Login, false, &[])
+                .is_none()
+        );
     }
 
     #[test]

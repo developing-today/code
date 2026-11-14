@@ -22,8 +22,7 @@
 // resolved or posted (#3723).
 import { resolveBwsSecret } from "../src/secrets.ts";
 
-const USAGE =
-  "usage: post-alert.ts --source <s> --key <k> --title <t> [--severity critical|warning|info] [--body <b>]";
+const USAGE = "usage: post-alert.ts --source <s> --key <k> --title <t> [--severity critical|warning|info] [--body <b>]";
 
 function usageError(message: string): never {
   console.error(`post-alert: ${message}`);

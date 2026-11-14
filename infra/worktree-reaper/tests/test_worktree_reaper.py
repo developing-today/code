@@ -26,6 +26,7 @@ synthetic repo; 100000 makes everything active).
 Run on the laptop:  python3 tests/test_worktree_reaper.py
 """
 
+import argparse
 import contextlib
 import fcntl
 import importlib.util
@@ -57,16 +58,26 @@ GIT_ENV = {
 
 def git(repo, *args, check=True, env_extra=None):
     env = {**GIT_ENV, **env_extra} if env_extra else GIT_ENV
-    proc = subprocess.run(["git", "-C", repo, *args], env=env,
-                          stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+    proc = subprocess.run(
+        ["git", "-C", repo, *args],
+        env=env,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
     if check and proc.returncode != 0:
         raise AssertionError(f"git -C {repo} {' '.join(args)} failed: {proc.stderr}")
     return proc
 
 
 def gitto(*args):
-    proc = subprocess.run(["git", *args], env=GIT_ENV,
-                          stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+    proc = subprocess.run(
+        ["git", *args],
+        env=GIT_ENV,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
     if proc.returncode != 0:
         raise AssertionError(f"git {' '.join(args)} failed: {proc.stderr}")
     return proc
@@ -91,8 +102,9 @@ class SyntheticRepo:
         shutil.rmtree(seed)
         gitto("clone", "--quiet", self.origin, self.primary)
         # Sanity: the default-ref machinery the pushed gate relies on.
-        rc, out, _ = wr.run_git(self.primary, "symbolic-ref", "--quiet",
-                                "refs/remotes/origin/HEAD")
+        rc, out, _ = wr.run_git(
+            self.primary, "symbolic-ref", "--quiet", "refs/remotes/origin/HEAD"
+        )
         assert rc == 0 and out.decode().strip() == "refs/remotes/origin/main"
 
     def write(self, repo, rel, content):
@@ -110,8 +122,15 @@ class SyntheticRepo:
         git(tree, "add", ".")
         git(tree, "commit", "--quiet", "-m", f"commit on {branch}")
         if merge_to_main:
-            git(self.primary, "merge", "--quiet", "--no-ff", branch,
-                "-m", f"merge {branch}")
+            git(
+                self.primary,
+                "merge",
+                "--quiet",
+                "--no-ff",
+                branch,
+                "-m",
+                f"merge {branch}",
+            )
             git(self.primary, "push", "--quiet", "origin", "main")
         if push:
             git(self.primary, "push", "--quiet", "-u", "origin", branch)
@@ -119,8 +138,9 @@ class SyntheticRepo:
         return tree
 
     def branch_exists(self, branch):
-        rc, _, _ = wr.run_git(self.primary, "rev-parse", "--verify", "--quiet",
-                              f"refs/heads/{branch}")
+        rc, _, _ = wr.run_git(
+            self.primary, "rev-parse", "--verify", "--quiet", f"refs/heads/{branch}"
+        )
         return rc == 0
 
 
@@ -212,8 +232,13 @@ class GateTests(unittest.TestCase):
         # which would prove containment instead of patch-equivalence.
         t_patch = repo.branch_tree("t/patch-equiv")
         patch_tip = git(repo.primary, "rev-parse", "t/patch-equiv").stdout.strip()
-        git(repo.primary, "cherry-pick", "--quiet", patch_tip,
-            env_extra={"GIT_COMMITTER_DATE": "2020-01-01T00:00:00 +0000"})
+        git(
+            repo.primary,
+            "cherry-pick",
+            "--quiet",
+            patch_tip,
+            env_extra={"GIT_COMMITTER_DATE": "2020-01-01T00:00:00 +0000"},
+        )
         picked = git(repo.primary, "rev-parse", "main").stdout.strip()
         self.assertNotEqual(picked, patch_tip)
         git(repo.primary, "push", "--quiet", "origin", "main")
@@ -229,19 +254,35 @@ class GateTests(unittest.TestCase):
 
         reap = self.tree_pushed_clean
         self.assertFalse(os.path.isdir(reap), "pushed+clean tree should be reaped")
-        self.assertFalse(repo.branch_exists("t/pushed-clean"),
-                         "merged-to-origin branch should be -d deleted")
+        self.assertFalse(
+            repo.branch_exists("t/pushed-clean"),
+            "merged-to-origin branch should be -d deleted",
+        )
         self.assertFalse(os.path.isdir(t_merged))
         self.assertFalse(repo.branch_exists("t/merged"))
-        self.assertFalse(os.path.isdir(t_logs), "allowlisted-dirt tree should be force-reaped")
-        self.assertFalse(os.path.isdir(t_patch), "patch-equivalent tree should be reaped")
-        self.assertTrue(decisions[t_patch]["gates"]["pushed"]["method"].startswith("patch-equivalent"))
-        self.assertTrue(repo.branch_exists("t/patch-equiv"),
-                        "-d must refuse the not-locally-merged branch; reaper keeps it")
+        self.assertFalse(
+            os.path.isdir(t_logs), "allowlisted-dirt tree should be force-reaped"
+        )
+        self.assertFalse(
+            os.path.isdir(t_patch), "patch-equivalent tree should be reaped"
+        )
+        self.assertTrue(
+            decisions[t_patch]["gates"]["pushed"]["method"].startswith(
+                "patch-equivalent"
+            )
+        )
+        self.assertTrue(
+            repo.branch_exists("t/patch-equiv"),
+            "-d must refuse the not-locally-merged branch; reaper keeps it",
+        )
 
-        for tree, reason in ((t_unpushed, "unpushed"), (t_dirty_tracked, "dirty"),
-                             (t_dirty_untracked, "dirty"), (t_detached, "detached"),
-                             (t_denied, "denied:deny-path")):
+        for tree, reason in (
+            (t_unpushed, "unpushed"),
+            (t_dirty_tracked, "dirty"),
+            (t_dirty_untracked, "dirty"),
+            (t_detached, "detached"),
+            (t_denied, "denied:deny-path"),
+        ):
             self.assertTrue(os.path.isdir(tree), f"{tree} must survive")
             self.assertEqual(decisions[tree]["action"], "keep")
             self.assertEqual(decisions[tree]["reason"], reason)
@@ -265,29 +306,39 @@ class GateTests(unittest.TestCase):
         # Ignored-only tree: the CLEAN gate must see the ignored file
         # and keep the tree (#6734 — before the fix, status_entries
         # returned ([], []) for this tree and it reaped as clean).
-        t_ignored = self._tree_with_ignored("t/ignored-only", "local-state.db", "local-state.db")
+        t_ignored = self._tree_with_ignored(
+            "t/ignored-only", "local-state.db", "local-state.db"
+        )
         tracked, untracked, ignored = wr.status_entries(t_ignored)
         self.assertEqual((tracked, untracked), ([], []))
         self.assertEqual(ignored, ["local-state.db"])
 
         # Allowlisted untracked dirt does not launder an unlisted
         # ignored file: the tree is still kept.
-        t_mixed = self._tree_with_ignored("t/untracked-plus-ignored", "notes.db", "notes.db")
+        t_mixed = self._tree_with_ignored(
+            "t/untracked-plus-ignored", "notes.db", "notes.db"
+        )
         self.repo.write(t_mixed, "fleet-feed.json", "{}\n")
 
         # Ignored build output under an allowlisted prefix reaps, and
         # the record names the ignored paths it deleted.
-        t_target = self._tree_with_ignored("t/ignored-target", "target/", "target/build.o")
+        t_target = self._tree_with_ignored(
+            "t/ignored-target", "target/", "target/build.o"
+        )
 
         decisions = self.runner.run()
         for tree in (t_ignored, t_mixed):
             self.assertTrue(os.path.isdir(tree), f"{tree} must survive")
             self.assertEqual(decisions[tree]["action"], "keep")
             self.assertEqual(decisions[tree]["reason"], "dirty")
-        self.assertIn("local-state.db", decisions[t_ignored]["gates"]["clean"]["ignored_other"])
+        self.assertIn(
+            "local-state.db", decisions[t_ignored]["gates"]["clean"]["ignored_other"]
+        )
         self.assertIn("notes.db", decisions[t_mixed]["gates"]["clean"]["ignored_other"])
 
-        self.assertFalse(os.path.isdir(t_target), "allowlisted ignored dirt should reap")
+        self.assertFalse(
+            os.path.isdir(t_target), "allowlisted ignored dirt should reap"
+        )
         self.assertEqual(decisions[t_target]["action"], "reaped")
         self.assertTrue(
             any("target" in p for p in decisions[t_target]["ignored_paths"]),
@@ -338,21 +389,39 @@ class UnitTests(unittest.TestCase):
         self.assertTrue(entries[2]["locked"])
 
     def test_ignored_allowlisted(self):
-        cfg = {"ignored_dirt_prefixes": ["target/", "node_modules/"],
-               "ignored_dirt_files": ["scratch.db"]}
+        cfg = {
+            "ignored_dirt_prefixes": ["target/", "node_modules/"],
+            "ignored_dirt_files": ["scratch.db"],
+        }
         allow, other = wr.ignored_allowlisted(
-            ["target/", "target/build.o", "pkgs/id/target/deps/x.o",
-             "node_modules/pkg/index.js", "data/scratch.db",
-             "pkgs/id/.identity.db", "local-state.db"], cfg)
+            [
+                "target/",
+                "target/build.o",
+                "pkgs/id/target/deps/x.o",
+                "node_modules/pkg/index.js",
+                "data/scratch.db",
+                "pkgs/id/.identity.db",
+                "local-state.db",
+            ],
+            cfg,
+        )
         self.assertEqual(len(allow), 5)
         self.assertEqual(other, ["pkgs/id/.identity.db", "local-state.db"])
 
     def test_dirt_allowlisted(self):
-        cfg = {"generated_dirt_prefixes": ["pkgs/mcpx/internal/cli/logs/"],
-               "generated_dirt_files": ["fleet-feed.json"]}
+        cfg = {
+            "generated_dirt_prefixes": ["pkgs/mcpx/internal/cli/logs/"],
+            "generated_dirt_files": ["fleet-feed.json"],
+        }
         allow, other = wr.dirt_allowlisted(
-            ["pkgs/mcpx/internal/cli/logs/a.log", "fleet-feed.json",
-             "pm-stack/aggregator/fleet-feed.json", "src/real.py"], cfg)
+            [
+                "pkgs/mcpx/internal/cli/logs/a.log",
+                "fleet-feed.json",
+                "pm-stack/aggregator/fleet-feed.json",
+                "src/real.py",
+            ],
+            cfg,
+        )
         self.assertEqual(len(allow), 3)
         self.assertEqual(other, ["src/real.py"])
 
@@ -376,6 +445,105 @@ class UnitTests(unittest.TestCase):
             self.assertAlmostEqual(mtime3, old, delta=2)
         finally:
             shutil.rmtree(root, ignore_errors=True)
+
+
+class ConfigValidationTests(unittest.TestCase):
+    """#6394: load_config validates both config files, naming the file.
+
+    Each invalid case from the issue must yield a clean ConfigError
+    (never a silent disarm, never a raw traceback): a typo'd deny
+    key, a string-typed deny list, a wrong-shaped top level,
+    malformed JSON, and a string-typed numeric. A valid config and
+    a valid overlay merge exactly as before.
+    """
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp(prefix="reaper-config-test-")
+        self.addCleanup(shutil.rmtree, self.tmp, True)
+        self.state_dir = os.path.join(self.tmp, "state")
+        os.makedirs(self.state_dir)
+
+    def _args(self, config_path=None):
+        return argparse.Namespace(
+            config=config_path,
+            state_dir=self.state_dir,
+            quiet_hours=None,
+            max_removals=None,
+            no_fetch=False,
+        )
+
+    def _write(self, name, text):
+        path = os.path.join(self.tmp, name)
+        with open(path, "w") as fh:
+            fh.write(text)
+        return path
+
+    def _load(self, config_path=None):
+        return wr.load_config(self.tmp, self._args(config_path))
+
+    def test_typo_deny_key_is_refused_naming_the_file(self):
+        path = self._write("config.json", json.dumps({"deny_path": ["/x"]}))
+        with self.assertRaises(wr.ConfigError) as ctx:
+            self._load(path)
+        self.assertIn(path, str(ctx.exception))
+        self.assertIn("deny_path", str(ctx.exception))
+
+    def test_string_typed_deny_paths_is_refused(self):
+        path = self._write(
+            "config.json", json.dumps({"deny_paths": "/home/user/git/important"})
+        )
+        with self.assertRaises(wr.ConfigError) as ctx:
+            self._load(path)
+        self.assertIn("deny_paths", str(ctx.exception))
+
+    def test_top_level_list_is_refused_cleanly(self):
+        path = self._write("config.json", json.dumps(["deny_paths"]))
+        with self.assertRaises(wr.ConfigError) as ctx:
+            self._load(path)
+        self.assertIn("must be a JSON object", str(ctx.exception))
+
+    def test_malformed_json_is_refused_naming_the_file(self):
+        path = self._write("bad.json", "{oops")
+        with self.assertRaises(wr.ConfigError) as ctx:
+            self._load(path)
+        self.assertIn(path, str(ctx.exception))
+        self.assertIn("invalid JSON", str(ctx.exception))
+
+    def test_string_typed_quiet_hours_is_refused_at_load(self):
+        path = self._write("config.json", json.dumps({"quiet_hours": "6"}))
+        with self.assertRaises(wr.ConfigError) as ctx:
+            self._load(path)
+        self.assertIn("quiet_hours", str(ctx.exception))
+
+    def test_overlay_typo_key_is_refused_naming_the_overlay(self):
+        overlay = os.path.join(self.state_dir, "config.local.json")
+        with open(overlay, "w") as fh:
+            json.dump({"deny_path": ["/x"]}, fh)
+        with self.assertRaises(wr.ConfigError) as ctx:
+            self._load()
+        self.assertIn(overlay, str(ctx.exception))
+
+    def test_overlay_top_level_list_is_refused_cleanly(self):
+        overlay = os.path.join(self.state_dir, "config.local.json")
+        with open(overlay, "w") as fh:
+            json.dump(["x"], fh)
+        with self.assertRaises(wr.ConfigError) as ctx:
+            self._load()
+        self.assertIn(overlay, str(ctx.exception))
+
+    def test_valid_config_and_overlay_merge_unchanged(self):
+        path = self._write(
+            "config.json",
+            json.dumps({"quiet_hours": 2, "deny_paths": ["/a"], "fetch": False}),
+        )
+        overlay = os.path.join(self.state_dir, "config.local.json")
+        with open(overlay, "w") as fh:
+            json.dump({"deny_paths": ["/b"], "max_removals": 5}, fh)
+        cfg = self._load(path)
+        self.assertEqual(cfg["quiet_hours"], 2)
+        self.assertEqual(cfg["deny_paths"], ["/a", "/b"])
+        self.assertEqual(cfg["max_removals"], 5)
+        self.assertFalse(cfg["fetch"])
 
 
 class ProcScanFailClosedTests(unittest.TestCase):
@@ -413,9 +581,11 @@ class ProcScanFailClosedTests(unittest.TestCase):
                 git_calls.append(args)
                 return 0, "", ""
 
-            with mock.patch("os.listdir", side_effect=OSError("proc gone")), \
-                mock.patch.object(wr, "run_git", fake_run_git), \
-                contextlib.redirect_stdout(io.StringIO()) as out:
+            with (
+                mock.patch("os.listdir", side_effect=OSError("proc gone")),
+                mock.patch.object(wr, "run_git", fake_run_git),
+                contextlib.redirect_stdout(io.StringIO()) as out,
+            ):
                 result = wr.reap_tree("/nonexistent-primary", rec, {})
             self.assertFalse(result)
             self.assertEqual(rec["action"], "keep")
@@ -425,7 +595,6 @@ class ProcScanFailClosedTests(unittest.TestCase):
             self.assertIn("WARNING", out.getvalue())
         finally:
             shutil.rmtree(root, ignore_errors=True)
-
 
 
 class FdOccupancyTests(unittest.TestCase):
@@ -450,11 +619,18 @@ class FdOccupancyTests(unittest.TestCase):
             # cmdline carries no reference to the tree: only the open
             # fd can give it away. Its cwd is outside the tree.
             holder = subprocess.Popen(
-                [sys.executable, "-c",
-                 "import os, time; fh = open(os.environ['WR_HELD']); time.sleep(60)"],
-                cwd="/", env={**os.environ, "WR_HELD": held})
-            self.assertTrue(self._wait_occupied(root),
-                            "a process holding an open file in the tree must occupy it")
+                [
+                    sys.executable,
+                    "-c",
+                    "import os, time; fh = open(os.environ['WR_HELD']); time.sleep(60)",
+                ],
+                cwd="/",
+                env={**os.environ, "WR_HELD": held},
+            )
+            self.assertTrue(
+                self._wait_occupied(root),
+                "a process holding an open file in the tree must occupy it",
+            )
         finally:
             if holder is not None:
                 holder.terminate()
@@ -469,10 +645,12 @@ class FdOccupancyTests(unittest.TestCase):
             # The child never opens the file; the tree path appears
             # only as an argv token in its cmdline.
             holder = subprocess.Popen(
-                [sys.executable, "-c", "import time; time.sleep(60)", target],
-                cwd="/")
-            self.assertTrue(self._wait_occupied(root),
-                            "a cmdline path inside the tree must occupy it")
+                [sys.executable, "-c", "import time; time.sleep(60)", target], cwd="/"
+            )
+            self.assertTrue(
+                self._wait_occupied(root),
+                "a cmdline path inside the tree must occupy it",
+            )
         finally:
             if holder is not None:
                 holder.terminate()
@@ -487,9 +665,14 @@ class FdOccupancyTests(unittest.TestCase):
             with open(held, "w") as fh:
                 fh.write("x")
             holder = subprocess.Popen(
-                [sys.executable, "-c",
-                 "import os, time; fh = open(os.environ['WR_HELD']); time.sleep(60)"],
-                cwd="/", env={**os.environ, "WR_HELD": held})
+                [
+                    sys.executable,
+                    "-c",
+                    "import os, time; fh = open(os.environ['WR_HELD']); time.sleep(60)",
+                ],
+                cwd="/",
+                env={**os.environ, "WR_HELD": held},
+            )
             self.assertTrue(self._wait_occupied(root))
             rec = {"tree": root, "branch": "queue/test", "action": "candidate"}
             git_calls = []
@@ -498,12 +681,16 @@ class FdOccupancyTests(unittest.TestCase):
                 git_calls.append(args)
                 return 0, "", ""
 
-            with mock.patch.object(wr, "run_git", fake_run_git), \
-                    contextlib.redirect_stdout(io.StringIO()):
+            with (
+                mock.patch.object(wr, "run_git", fake_run_git),
+                contextlib.redirect_stdout(io.StringIO()),
+            ):
                 result = wr.reap_tree("/nonexistent-primary", rec, {})
             self.assertFalse(result)
             self.assertEqual(rec["reason"], "occupied-at-removal")
-            self.assertEqual(git_calls, [], "no git call may run while an fd holder lives")
+            self.assertEqual(
+                git_calls, [], "no git call may run while an fd holder lives"
+            )
             self.assertTrue(os.path.isdir(root), "candidate tree must be retained")
         finally:
             if holder is not None:
@@ -534,7 +721,9 @@ class RemovalRecheckTests(unittest.TestCase):
             "state_dir": self.state,
             "quiet_hours": quiet_hours,
             "max_removals": 100,
-            "deny_paths": [], "deny_prefixes": [], "deny_names": [],
+            "deny_paths": [],
+            "deny_prefixes": [],
+            "deny_names": [],
             "generated_dirt_prefixes": ["pkgs/mcpx/internal/cli/logs/"],
             "generated_dirt_files": ["fleet-feed.json"],
             "ignored_dirt_prefixes": ["target/", "node_modules/"],
@@ -544,10 +733,8 @@ class RemovalRecheckTests(unittest.TestCase):
 
     def _candidate(self, branch):
         tree = self.repo.branch_tree(branch, push=True)
-        wt = next(w for w in wr.list_worktrees(self.repo.primary)
-                  if w["path"] == tree)
-        rec = wr.evaluate_tree(self.repo.primary, wt, self._cfg(),
-                               time.time(), [])
+        wt = next(w for w in wr.list_worktrees(self.repo.primary) if w["path"] == tree)
+        rec = wr.evaluate_tree(self.repo.primary, wt, self._cfg(), time.time(), [])
         self.assertEqual(rec["action"], "candidate", rec)
         return tree, rec
 
@@ -606,10 +793,69 @@ class SingleInstanceLockTests(unittest.TestCase):
             self.assertEqual(decisions, {}, "locked run must not even evaluate")
             self.assertTrue(os.path.isdir(tree), "locked run must remove nothing")
             decisions = runner.run()
-            self.assertFalse(os.path.isdir(tree),
-                             "after the lock is released the run must reap")
+            self.assertFalse(
+                os.path.isdir(tree), "after the lock is released the run must reap"
+            )
         finally:
             shutil.rmtree(tmp, ignore_errors=True)
+
+
+class StaleRegistrationTests(unittest.TestCase):
+    """#6547: a stale registration (worktree directory deleted out from
+    under git) is prune work on its own — no same-run candidate reap
+    may be required to trigger `git worktree prune`, and a dry run
+    must report it as would-prune while changing nothing on disk."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.tmp = tempfile.mkdtemp(prefix="wtreaper-stale-")
+        cls.repo = SyntheticRepo(cls.tmp)
+        cls.state = os.path.join(cls.tmp, "state")
+        cls.runner = ReaperRun(cls.repo, cls.state)
+
+    @classmethod
+    def tearDownClass(cls):
+        shutil.rmtree(cls.tmp, ignore_errors=True)
+
+    def registered_paths(self):
+        rc, out, _ = wr.run_git(self.repo.primary, "worktree", "list", "--porcelain")
+        assert rc == 0
+        return [
+            line.split(" ", 1)[1]
+            for line in out.decode().splitlines()
+            if line.startswith("worktree ")
+        ]
+
+    def last_summary(self):
+        with open(os.path.join(self.state, "last-run.json")) as fh:
+            return json.load(fh)
+
+    def test_01_dry_run_reports_would_prune_and_changes_nothing(self):
+        tree = self.repo.branch_tree("t/stale-dry", push=True)
+        shutil.rmtree(tree)
+        assert tree in self.registered_paths()
+        decisions = self.runner.run(dry_run=True)
+        assert decisions[tree]["action"] == "would-prune", decisions[tree]
+        summary = self.last_summary()
+        assert summary["stale_registrations"] == 1, summary
+        assert summary["pruned"] == 0, summary
+        assert "stale-registration" not in summary["kept"], summary
+        assert tree in self.registered_paths()
+
+    def test_02_non_dry_run_prunes_deleted_directory_only_primary(self):
+        tree = self.repo.branch_tree("t/stale-real", push=True)
+        shutil.rmtree(tree)
+        assert tree in self.registered_paths()
+        decisions = self.runner.run()
+        assert decisions[tree]["action"] == "stale-registration", decisions[tree]
+        summary = self.last_summary()
+        # The dry-run test's registration is still stale too (that test
+        # proved a dry run changes nothing), so the count is >= 1; this
+        # run prunes the primary once, clearing both.
+        assert summary["stale_registrations"] >= 1, summary
+        assert summary["pruned"] == 1, summary
+        assert summary["errors"] == [], summary
+        assert tree not in self.registered_paths()
 
 
 if __name__ == "__main__":

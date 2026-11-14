@@ -20,7 +20,7 @@
 let
   fleetPkgs = callPackage ../fleet { inherit sourceRev; };
   definitions = import ./services.nix {
-    fleet = fleetPkgs.fleet;
+    inherit (fleetPkgs) fleet;
     mcpx = callPackage ../mcpx/package.nix { };
     routeProxy = callPackage ./route-proxy.nix { };
     # The existing Cloudflare deploy apps (issue #5767, phase 1) — the

@@ -1021,6 +1021,7 @@ func runDispatched(ctx context.Context, opts Options, d *dispatch) (*Result, err
 				Collect:     opts.CollectLogs,
 				Result:      opts.OnResult,
 				Artifact:    opts.OnArtifact,
+				Final:       opts.OnFinal,
 			})
 		}()
 		// The notice rides the same stream as the script's own stderr,

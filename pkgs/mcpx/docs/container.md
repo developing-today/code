@@ -23,11 +23,11 @@ dependencies are now declared in `container-image.nix`.
 
 The image closure is:
 
-| component | Nix input                 | why                                                |
-| --------- | ------------------------- | -------------------------------------------------- |
-| mcpx      | `pkgs/mcpx/package.nix`    | pure-Go static binary, built from the flake source |
-| JavaScript| pinned flake `bun` package | `mcpx exec` and `mcpx run` need a JS runtime       |
-| TLS       | `cacert`                   | registry and script HTTPS connections             |
+| component  | Nix input                  | why                                                |
+| ---------- | -------------------------- | -------------------------------------------------- |
+| mcpx       | `pkgs/mcpx/package.nix`    | pure-Go static binary, built from the flake source |
+| JavaScript | pinned flake `bun` package | `mcpx exec` and `mcpx run` need a JS runtime       |
+| TLS        | `cacert`                   | registry and script HTTPS connections              |
 
 The root flake lock pins the Nixpkgs revision supplying Bun and the image
 tools. The image tag comes from `pkgs/mcpx/VERSION`; this image is built from
@@ -169,8 +169,8 @@ everywhere else silently.
 | artifact              | static?          | note                                                                                                                                                        |
 | --------------------- | ---------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | Nix package           | yes              | `package.nix` sets `env.CGO_ENABLED = "0"`; the installed `bin/mcpx` is a `makeBinaryWrapper` launcher by design — the binary it launches is the static one |
-| this image's `mcpx`   | yes              | it is built from the same Go package, with the workstation wrapper disabled                                                      |
-| this image as a whole | no               | Bun is dynamically linked; its Nix closure supplies the libraries it needs                                                      |
+| this image's `mcpx`   | yes              | it is built from the same Go package, with the workstation wrapper disabled                                                                                 |
+| this image as a whole | no               | Bun is dynamically linked; its Nix closure supplies the libraries it needs                                                                                  |
 | release tarball       | not decided here | the release pipeline is #1881's; this policy is the input it should consume                                                                                 |
 
 Measured, not assumed (the CGO_ENABLED=0 build, before it became the
@@ -198,14 +198,14 @@ Tier 2 (#1987) means: runs nightly and on pushes to main that touch
 workflow; each leg asserts the surface its image can actually support,
 including mcpx's own clean refusal where a surface is absent:
 
-| leg                         | image                                  | asserts                                                         |
-| --------------------------- | -------------------------------------- | --------------------------------------------------------------- |
-| `alpine-nonexec`            | `alpine:3.21`                          | `--version`; `exec` refuses with "no usable JavaScript runtime" |
-| `alpine-bunmusl-exec`       | alpine + bun's musl build              | `exec` runs a script                                            |
-| `alpine-node-exec`          | `alpine:3.21` + `apk add nodejs`        | `exec` runs a script or gives an actionable transform-types refusal |
-| `scratch-nonexec`           | `FROM scratch` + CA certs              | `--version`; the same clean `exec` refusal                      |
-| `distroless-static-nonexec` | `gcr.io/distroless/static-debian12`    | `--version`; the same clean `exec` refusal                      |
-| `distroless-cc-deno-exec`   | `gcr.io/distroless/cc-debian12` + deno | `exec` runs a script                                            |
+| leg                         | image                                  | asserts                                                             |
+| --------------------------- | -------------------------------------- | ------------------------------------------------------------------- |
+| `alpine-nonexec`            | `alpine:3.21`                          | `--version`; `exec` refuses with "no usable JavaScript runtime"     |
+| `alpine-bunmusl-exec`       | alpine + bun's musl build              | `exec` runs a script                                                |
+| `alpine-node-exec`          | `alpine:3.21` + `apk add nodejs`       | `exec` runs a script or gives an actionable transform-types refusal |
+| `scratch-nonexec`           | `FROM scratch` + CA certs              | `--version`; the same clean `exec` refusal                          |
+| `distroless-static-nonexec` | `gcr.io/distroless/static-debian12`    | `--version`; the same clean `exec` refusal                          |
+| `distroless-cc-deno-exec`   | `gcr.io/distroless/cc-debian12` + deno | `exec` runs a script                                                |
 
 The **alpine + nodejs exec** leg (#2699) guards either a working Node
 TypeScript-transform path or mcpx's actionable refusal when that Node build

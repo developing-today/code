@@ -21,8 +21,11 @@ import sys
 import tempfile
 import unittest
 
-DEPLOY_PATH = sys.argv[1] if len(sys.argv) > 1 else os.path.join(
-    os.path.dirname(os.path.abspath(__file__)), "deploy.py")
+DEPLOY_PATH = (
+    sys.argv[1]
+    if len(sys.argv) > 1
+    else os.path.join(os.path.dirname(os.path.abspath(__file__)), "deploy.py")
+)
 spec = importlib.util.spec_from_file_location("deploy", DEPLOY_PATH)
 deploy = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(deploy)
@@ -66,8 +69,11 @@ class FakeEffects:
         return (True, "HTTP 200") if self.health_ok else (False, "HTTP 500")
 
     def systemctl_steps(self):
-        return [c[2] if c[1] == "--user" else c[1] for c in self.commands
-                if c[0] == "systemctl"]
+        return [
+            c[2] if c[1] == "--user" else c[1]
+            for c in self.commands
+            if c[0] == "systemctl"
+        ]
 
 
 class ActivationTests(unittest.TestCase):
@@ -97,8 +103,15 @@ class ActivationTests(unittest.TestCase):
 
     def do_deploy(self, artifact, fx):
         return deploy.execute_deploy(
-            "svc", self.defn(artifact), self.entries(), base=self.base,
-            state=self.state, scope="user", units=self.units, actor="test")
+            "svc",
+            self.defn(artifact),
+            self.entries(),
+            base=self.base,
+            state=self.state,
+            scope="user",
+            units=self.units,
+            actor="test",
+        )
 
     def test_deploy_success_follows_plan_order(self):
         with FakeEffects() as fx:
@@ -131,9 +144,10 @@ class ActivationTests(unittest.TestCase):
         self.assertIn("--set", nix[0])
         self.assertIn(store_art, nix[0])
         # nix registration precedes daemon-reload in the plan order
-        self.assertLess(fx.commands.index(nix[0]),
-                        min(i for i, c in enumerate(fx.commands)
-                            if c[0] == "systemctl"))
+        self.assertLess(
+            fx.commands.index(nix[0]),
+            min(i for i, c in enumerate(fx.commands) if c[0] == "systemctl"),
+        )
 
     def test_broken_generation_flips_back(self):
         with FakeEffects() as fx:
@@ -185,9 +199,15 @@ class ActivationTests(unittest.TestCase):
         deploy.probe_health = lambda url, timeout=2.0: (False, "HTTP 500")
         try:
             code, lines = deploy.execute_deploy(
-                "svc", self.defn(self.art2), self.entries(), base=self.base,
-                state=self.state, scope="user", units=self.units,
-                actor="test")
+                "svc",
+                self.defn(self.art2),
+                self.entries(),
+                base=self.base,
+                state=self.state,
+                scope="user",
+                units=self.units,
+                actor="test",
+            )
         finally:
             deploy.run_cmd = real_run
             deploy.probe_health = real_probe
@@ -205,9 +225,15 @@ class ActivationTests(unittest.TestCase):
             self.assertEqual(self.do_deploy(self.art1, fx)[0], 0)
             self.assertEqual(self.do_deploy(self.art2, fx)[0], 0)
             code, lines = deploy.execute_rollback(
-                "svc", self.defn(self.art2), self.entries(), base=self.base,
-                state=self.state, scope="user", units=self.units,
-                actor="test")
+                "svc",
+                self.defn(self.art2),
+                self.entries(),
+                base=self.base,
+                state=self.state,
+                scope="user",
+                units=self.units,
+                actor="test",
+            )
         self.assertEqual(code, 0, lines)
         self.assertEqual(self.current_artifact(), os.path.realpath(self.art1))
         current, _prev = deploy.current_previous(self.entries())
@@ -218,9 +244,15 @@ class ActivationTests(unittest.TestCase):
         with FakeEffects() as fx:
             self.assertEqual(self.do_deploy(self.art1, fx)[0], 0)
             code, lines = deploy.execute_rollback(
-                "svc", self.defn(self.art1), self.entries(), base=self.base,
-                state=self.state, scope="user", units=self.units,
-                actor="test")
+                "svc",
+                self.defn(self.art1),
+                self.entries(),
+                base=self.base,
+                state=self.state,
+                scope="user",
+                units=self.units,
+                actor="test",
+            )
         self.assertEqual(code, 1)
         self.assertIn("only one generation", lines[0])
 

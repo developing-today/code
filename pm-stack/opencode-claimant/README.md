@@ -5,6 +5,7 @@ This directory contains the slice-1 implementation for the OpenCode execution la
 ## Overview
 
 The claimant/executor is responsible for:
+
 1. **Supervision**: Checking bound sessions for recovery candidates (stuck/zero-message sessions)
 2. **Candidate Discovery**: Finding unbound opencode-lane tasks across four queues
 3. **Session Management**: Creating and binding worker sessions with atomic operations
@@ -76,6 +77,7 @@ binary is `~/.local/bin/repo-queue` (override: `REPO_QUEUE_BIN`).
 ### Makefile
 
 Helper for setup:
+
 ```bash
 make all      # Make scripts executable
 make install  # Create state directory
@@ -93,6 +95,7 @@ If the mode file doesn't exist or is unreadable, defaults to `shadow`.
 ## Queues
 
 The claimant monitors four queues:
+
 - `repo-health-code-pilot`
 - `repo-health-opencode-pilot`
 - `repo-health-openchamber-pilot`
@@ -108,25 +111,32 @@ The claimant monitors four queues:
 ## Recovery Rules (#4758, Phase 3 of #4912)
 
 ### Zero-Message Recovery
+
 For bound sessions with:
+
 - No messages in session
 - No activity markers
 - Silent for >30 minutes (ACTIVE_WINDOW_MS)
 - Attempts remaining (`attempts < max_attempts`)
 
 Process:
-1. Verify zero messages via  (singular — the plural endpoint 404s; see the Session Contract inventory)`GET /api/session/{id}/messages`
+
+1. Verify zero messages via (singular — the plural endpoint 404s; see the Session Contract inventory)`GET /api/session/{id}/messages`
 2. Delete session via `DELETE /api/session/{id}`
 3. Atomically reclaim task via `bind` with `--launched-by opencode-claimant-recovery:zero-message-deleted`
 4. Task becomes unbound and eligible for next fire
 
 ### Gone-Session Recovery
+
 For bound sessions absent from server with attempts remaining:
+
 1. Verify absence via `GET /api/session/{id}`
 2. Atomically reclaim task via `bind` with `--launched-by opencode-claimant-recovery:gone-session`
 
 ### Exhausted Attempts
+
 When attempts exhausted:
+
 1. For zero-message sessions: delete then fail task terminally
 2. For gone sessions: fail task terminally
 3. Use `repo-queue fail` with execution record containing session_id
@@ -154,14 +164,14 @@ here so it survives prompt edits (design #4912; phases 1–3 are
 
 ### Bound-state table
 
-| Bound state | Judged by | Disposition |
-|---|---|---|
-| Alive, messages/activity present | per-id read + active set | Supervision leaves it; never relaunch over a live session |
-| Gone (absent from the proven-complete list; per-id GET fails) | `GET /api/session/{id}` | Attempts remain: reclaim to unbound (`bind --launched-by opencode-claimant-recovery:gone-session`). Exhausted: terminal fail, session id in the execution record |
+| Bound state                                                                    | Judged by                                                                   | Disposition                                                                                                                                                                                                                                         |
+| ------------------------------------------------------------------------------ | --------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Alive, messages/activity present                                               | per-id read + active set                                                    | Supervision leaves it; never relaunch over a live session                                                                                                                                                                                           |
+| Gone (absent from the proven-complete list; per-id GET fails)                  | `GET /api/session/{id}`                                                     | Attempts remain: reclaim to unbound (`bind --launched-by opencode-claimant-recovery:gone-session`). Exhausted: terminal fail, session id in the execution record                                                                                    |
 | Zero messages, no markers, silent > `ACTIVE_WINDOW_MS` (30 min), lease expired | `GET /api/session/{id}/message` — an unreadable read is UNKNOWN, never zero | Attempts remain: DELETE the verified-empty session first (a failed delete keeps the binding), reclaim to unbound, checkpoint `launch_failed` with the prior session id in an audit field. Exhausted: DELETE, then terminal fail with the session id |
-| Created with the wrong `location.directory` | create response, before bind | Never bound; session deleted per-id; creation failure checkpointed |
-| Bind failed after create | bind exit status | Created session deleted per-id; task stays unbound |
-| Prompt POST non-2xx | reconcile via the message read before any resend | Resend once only on a proven-empty list; an inconclusive reconcile never resends — the binding stands and the launch is flagged. Never double-prompt |
+| Created with the wrong `location.directory`                                    | create response, before bind                                                | Never bound; session deleted per-id; creation failure checkpointed                                                                                                                                                                                  |
+| Bind failed after create                                                       | bind exit status                                                            | Created session deleted per-id; task stays unbound                                                                                                                                                                                                  |
+| Prompt POST non-2xx                                                            | reconcile via the message read before any resend                            | Resend once only on a proven-empty list; an inconclusive reconcile never resends — the binding stands and the launch is flagged. Never double-prompt                                                                                                |
 
 ### Server-call inventory (Phase 4, #4916)
 
@@ -169,16 +179,16 @@ Every OpenCode-server call in `poll.py` and every call `prompt.md`
 prescribes (steps 1–6; `claimant.py` is their deterministic
 implementation), dispositioned against the contract:
 
-| Caller | Call | Disposition |
-|---|---|---|
-| `poll.py` `fetch_sessions()` | `GET /api/session?limit=N`, N escalating 1000 → 10000 → 100000 | List read retained ONLY with a completeness proof: the first read whose count is below its limit is the whole list by construction; if every read lands exactly at its limit the fetch fails closed (`None` → `cap_room: null`). This is the standing form of rule 1 for this reader — stronger than failing closed at page-size equality on a single read |
-| `poll.py` `fetch_active_ids()` | `GET /api/session/active` | Rule 1: cap counts come from the active id set directly. Unreadable → active count UNKNOWN (`None`), `cap_room: null`, fail closed |
-| `claimant.py` | `GET /api/session/{id}` | Rule 1/3: per-id existence for supervision and gone-session recovery |
-| `claimant.py` `_get_messages()` | `GET /api/session/{id}/message` | Rule 3: per-id; non-2xx, transport failure, or a non-list body returns UNKNOWN (`None`), never an empty list. The v2 endpoint is the singular `/message` — the plural `/messages` 404s with an empty body, the fail-open trap closed after #7760/#3026 |
-| `claimant.py` | `DELETE /api/session/{id}` | Rules 2/3: per-id, and only after a verified-empty read, a wrong-location create, or a failed bind; a failed delete keeps the binding |
-| `claimant.py` step 4b | `POST /api/session` with body `{"location": {"directory": …}, …}` | Rule 2: the v2 create shape (a top-level `directory` is stripped by v2 — #4870); the response's `location.directory` is verified equal to the primary clone before bind |
-| `claimant.py` `_post_prompt()` | `POST /api/session/{id}/prompt` | Verified delivery: 2xx is the only success; a failure reconciles via the message read before any resend |
-| `prompt.md` steps 1, 4b, 4d, 5 | prescribes the calls above | No prescribed call lacks an implementation, and no implemented call is unprescribed |
+| Caller                          | Call                                                              | Disposition                                                                                                                                                                                                                                                                                                                                                |
+| ------------------------------- | ----------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `poll.py` `fetch_sessions()`    | `GET /api/session?limit=N`, N escalating 1000 → 10000 → 100000    | List read retained ONLY with a completeness proof: the first read whose count is below its limit is the whole list by construction; if every read lands exactly at its limit the fetch fails closed (`None` → `cap_room: null`). This is the standing form of rule 1 for this reader — stronger than failing closed at page-size equality on a single read |
+| `poll.py` `fetch_active_ids()`  | `GET /api/session/active`                                         | Rule 1: cap counts come from the active id set directly. Unreadable → active count UNKNOWN (`None`), `cap_room: null`, fail closed                                                                                                                                                                                                                         |
+| `claimant.py`                   | `GET /api/session/{id}`                                           | Rule 1/3: per-id existence for supervision and gone-session recovery                                                                                                                                                                                                                                                                                       |
+| `claimant.py` `_get_messages()` | `GET /api/session/{id}/message`                                   | Rule 3: per-id; non-2xx, transport failure, or a non-list body returns UNKNOWN (`None`), never an empty list. The v2 endpoint is the singular `/message` — the plural `/messages` 404s with an empty body, the fail-open trap closed after #7760/#3026                                                                                                     |
+| `claimant.py`                   | `DELETE /api/session/{id}`                                        | Rules 2/3: per-id, and only after a verified-empty read, a wrong-location create, or a failed bind; a failed delete keeps the binding                                                                                                                                                                                                                      |
+| `claimant.py` step 4b           | `POST /api/session` with body `{"location": {"directory": …}, …}` | Rule 2: the v2 create shape (a top-level `directory` is stripped by v2 — #4870); the response's `location.directory` is verified equal to the primary clone before bind                                                                                                                                                                                    |
+| `claimant.py` `_post_prompt()`  | `POST /api/session/{id}/prompt`                                   | Verified delivery: 2xx is the only success; a failure reconciles via the message read before any resend                                                                                                                                                                                                                                                    |
+| `prompt.md` steps 1, 4b, 4d, 5  | prescribes the calls above                                        | No prescribed call lacks an implementation, and no implemented call is unprescribed                                                                                                                                                                                                                                                                        |
 
 No call is left undispositioned, so the audit files no follow-up
 issues.
@@ -239,8 +249,8 @@ The three seam decisions:
    are the verdict.** Every OpenCode-server call in `claimant.py`
    goes through `_server_request` (Basic auth, status captured
    via curl's `-w` trailer); success is HTTP 2xx plus the
-   expected body shape. *Zero messages* is a 2xx whose `data`
-   list is empty; *gone* is a 404 from the per-id GET. A
+   expected body shape. _Zero messages_ is a 2xx whose `data`
+   list is empty; _gone_ is a 404 from the per-id GET. A
    subprocess exit code is never a verdict.
 3. **Actuation seam — mode is a gate, sequence is verified, the
    log is a measurement.** Shadow mode mutates nothing (checked
@@ -262,16 +272,16 @@ and the calls `prompt.md` prescribes; this inventory owns
 seams. Overlap is cross-referenced, never duplicated
 (disposition (c)).
 
-| Caller | Read/call | Disposition |
-|---|---|---|
-| `poll.py` `_broker_post` / `_fetch_rows` | Queue-broker `POST /list` (`rich: true`, `limit=500`) for `claimed` + `handed_off` rows, token from the broker token file in an `X-Agent-Token` header | The queue seam's one read. Transport/protocol failure raises in `_broker_post`; `_fetch_rows` then contributes **no rows for that queue** — fail-closed for launches (no candidates invented), but see the recorded residual below |
-| `poll.py` `normalize_row` | Lifts `last_checkpoint.stage` → `progress.stage` (only when no live stage), payload → `packet` | Writer-shape bridge for #7706 option A; pinned by `TestFetchClaimedRows` |
-| `poll.py` `_server_get`, `fetch_sessions`, `fetch_active_ids` | OpenCode server GETs | Owned by #4916's inventory (rules 1–3 there); unchanged |
-| `claimant.py` `run_poll` | subprocess `python3 <primary>/pm-stack/opencode-claimant/poll.py`, stdout parsed as JSON | Verified: non-zero exit or non-JSON stdout raises; the gate treats that as discovery-UNKNOWN (fixed this audit — previously logged as an empty queue). Note: runs the **primary clone's** poll.py while `_load_poll_module` loads the sibling copy for cap counting; the claimant is installed to run from the primary, so the two are the same file in practice — recorded, not changed |
-| `claimant.py` `_server_request` + wrappers | All OpenCode-server calls (session GET/DELETE/POST, prompt POST, message GET) | Decision 2 transport; per-call dispositions in #4916's table. This audit fixes its header comments, which cited the contract as "decision 3" — the server seam is Decision 2 |
-| `claimant.py` supervision / launch | `repo-queue bind` (recovery + launch), `repo-queue claim --handoff --platform openchamber` (sink collection) | CLI verbs with `--worker opencode-claimant`; verdicts from exit status + parsed stdout (claim prints the claimed row or `{"task": null}`). A claim/bind failure skips or stops — a binding is never improvised. Sink collection never names a task id (#8097 Rule 1) |
-| `claimant.py` `_github_issue_labels` | `gh issue view --json labels` for the held-label gate (#7670) | Verified read: non-zero exit or a non-list body raises and the candidate is skipped (fail closed) |
-| `claimant.py` `read_mode`, auth files, `log_fire` | Local state files (`mode`, `service-prod.json`, broker token file, `fires.jsonl`) | Local, not seam calls: a missing/unreadable mode file means `shadow`; unreadable auth means the server rejects the call and the caller fails closed; credential values are never logged. Fire-log measurement rules are Decision 3 above |
+| Caller                                                        | Read/call                                                                                                                                              | Disposition                                                                                                                                                                                                                                                                                                                                                                              |
+| ------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `poll.py` `_broker_post` / `_fetch_rows`                      | Queue-broker `POST /list` (`rich: true`, `limit=500`) for `claimed` + `handed_off` rows, token from the broker token file in an `X-Agent-Token` header | The queue seam's one read. Transport/protocol failure raises in `_broker_post`; `_fetch_rows` then contributes **no rows for that queue** — fail-closed for launches (no candidates invented), but see the recorded residual below                                                                                                                                                       |
+| `poll.py` `normalize_row`                                     | Lifts `last_checkpoint.stage` → `progress.stage` (only when no live stage), payload → `packet`                                                         | Writer-shape bridge for #7706 option A; pinned by `TestFetchClaimedRows`                                                                                                                                                                                                                                                                                                                 |
+| `poll.py` `_server_get`, `fetch_sessions`, `fetch_active_ids` | OpenCode server GETs                                                                                                                                   | Owned by #4916's inventory (rules 1–3 there); unchanged                                                                                                                                                                                                                                                                                                                                  |
+| `claimant.py` `run_poll`                                      | subprocess `python3 <primary>/pm-stack/opencode-claimant/poll.py`, stdout parsed as JSON                                                               | Verified: non-zero exit or non-JSON stdout raises; the gate treats that as discovery-UNKNOWN (fixed this audit — previously logged as an empty queue). Note: runs the **primary clone's** poll.py while `_load_poll_module` loads the sibling copy for cap counting; the claimant is installed to run from the primary, so the two are the same file in practice — recorded, not changed |
+| `claimant.py` `_server_request` + wrappers                    | All OpenCode-server calls (session GET/DELETE/POST, prompt POST, message GET)                                                                          | Decision 2 transport; per-call dispositions in #4916's table. This audit fixes its header comments, which cited the contract as "decision 3" — the server seam is Decision 2                                                                                                                                                                                                             |
+| `claimant.py` supervision / launch                            | `repo-queue bind` (recovery + launch), `repo-queue claim --handoff --platform openchamber` (sink collection)                                           | CLI verbs with `--worker opencode-claimant`; verdicts from exit status + parsed stdout (claim prints the claimed row or `{"task": null}`). A claim/bind failure skips or stops — a binding is never improvised. Sink collection never names a task id (#8097 Rule 1)                                                                                                                     |
+| `claimant.py` `_github_issue_labels`                          | `gh issue view --json labels` for the held-label gate (#7670)                                                                                          | Verified read: non-zero exit or a non-list body raises and the candidate is skipped (fail closed)                                                                                                                                                                                                                                                                                        |
+| `claimant.py` `read_mode`, auth files, `log_fire`             | Local state files (`mode`, `service-prod.json`, broker token file, `fires.jsonl`)                                                                      | Local, not seam calls: a missing/unreadable mode file means `shadow`; unreadable auth means the server rejects the call and the caller fails closed; credential values are never logged. Fire-log measurement rules are Decision 3 above                                                                                                                                                 |
 
 Recorded residuals (routed to their owning follow-ups, not
 silently passed):
@@ -305,12 +315,12 @@ silently passed):
 
 Every test stub names the writer whose shape it mirrors:
 
-| Suite | Stub | Writer mirrored | Verdict |
-|---|---|---|---|
-| `test_poll.py` | Row fixtures + `_broker_post` stub (`TestFetchClaimedRows`) | The broker's rich `/list` row (progress incl. `last_checkpoint`, payload column) and the checkpoint verb's progress shape | Conforming; fixtures cite #7706/#8192/#8234 where the shape is non-obvious |
-| `test_poll.py` | Session fixtures (`TestIsActiveRoot`, `TestFetchSessions`) | The v2 server's session objects (`time`/`outcome` markers, `parentID`) and its limit-truncation behaviour | Conforming |
-| `test_claimant.py` (root) | `make_fake_run` curl stub | The claimant transport's own writer: curl `-w` status trailer on every reply, rc 0 even for 401 (as `curl -s` behaves), v2 error bodies | Conforming — the docstring states the shape contract explicitly |
-| `test/test_claimant.py` | `make_fake_run` curl stub | **Was:** the reader's pre-#7770 assumption (bare bodies, no status) — the #7760 defect class; 2 of its 5 tests failed against the verified transport | **Fixed this audit:** replies now carry the status trailer and the session GET answers the v2 server's 404 error body; the stub docstring names the writer |
+| Suite                     | Stub                                                        | Writer mirrored                                                                                                                                      | Verdict                                                                                                                                                    |
+| ------------------------- | ----------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `test_poll.py`            | Row fixtures + `_broker_post` stub (`TestFetchClaimedRows`) | The broker's rich `/list` row (progress incl. `last_checkpoint`, payload column) and the checkpoint verb's progress shape                            | Conforming; fixtures cite #7706/#8192/#8234 where the shape is non-obvious                                                                                 |
+| `test_poll.py`            | Session fixtures (`TestIsActiveRoot`, `TestFetchSessions`)  | The v2 server's session objects (`time`/`outcome` markers, `parentID`) and its limit-truncation behaviour                                            | Conforming                                                                                                                                                 |
+| `test_claimant.py` (root) | `make_fake_run` curl stub                                   | The claimant transport's own writer: curl `-w` status trailer on every reply, rc 0 even for 401 (as `curl -s` behaves), v2 error bodies              | Conforming — the docstring states the shape contract explicitly                                                                                            |
+| `test/test_claimant.py`   | `make_fake_run` curl stub                                   | **Was:** the reader's pre-#7770 assumption (bare bodies, no status) — the #7760 defect class; 2 of its 5 tests failed against the verified transport | **Fixed this audit:** replies now carry the status trailer and the session GET answers the v2 server's 404 error body; the stub docstring names the writer |
 
 ### Required dispositions (Phase 4, #7772)
 
@@ -354,7 +364,6 @@ Every test stub names the writer whose shape it mirrors:
   pinned by a sync check is #8366's question.
 
 ## Hard Rules
-
 
 - **Never work tasks directly**: Only claim/bind/launch/record
 - **No credentials in prompts/logs**: Use broker client tokens

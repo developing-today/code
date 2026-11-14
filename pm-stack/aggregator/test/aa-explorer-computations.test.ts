@@ -2,13 +2,20 @@ import { describe, expect, test } from "bun:test";
 import {
   applyInequalityFilters,
   bandIndex,
+  chartClickSuppressed,
+  clampChartView,
   computeRecommendations,
+  effectiveChartView,
   gapMetrics,
   logEdges,
+  panChartView,
   paretoSet,
+  parseChartViewBox,
   pctRank,
   projectTask,
+  resetChartView,
   scoreEdges,
+  zoomChartView,
 } from "../src/assets/aa-explorer-computations.js";
 
 describe("Cost Explorer browser computations", () => {
@@ -125,5 +132,112 @@ describe("Cost Explorer browser computations", () => {
 
     const missingCacheRate = { name: "GPT-6 Luna", rate: { bands: [{ window: "peak", input: 0.75, output: 4.5 }] } };
     expect(projectTask(missingCacheRate, settings, [point], []).cost).toBeNull();
+  });
+});
+
+// Oracle: the viewBox arithmetic of PR #4154 as specified on issue
+// #9581 — focal anchoring keeps the focal data point fixed, zoom is
+// floored at 1/16 of the base width, zooming back out to the base
+// width clears the zoom state, pan is clamped to the base viewBox,
+// reset restores the base, and a click within 400 ms of a moved
+// drag's pointerup stamp is swallowed while other clicks are not.
+// These drive the same module functions the browser enhancer calls.
+describe("aa chart zoom/pan viewBox behavior (#9581)", () => {
+  const base = [0, 0, 1600, 900];
+  const state = () => ({ base: base.slice(), cur: null as number[] | null });
+
+  test("parseChartViewBox parses a viewBox and rejects malformed values", () => {
+    expect(parseChartViewBox("0 0 1600 900")).toEqual([0, 0, 1600, 900]);
+    expect(parseChartViewBox("10 20 30")).toBeNull();
+    expect(parseChartViewBox("a b c d")).toBeNull();
+    expect(parseChartViewBox("")).toBeNull();
+    expect(parseChartViewBox(null)).toBeNull();
+  });
+
+  test("zoom anchors on the focal point and preserves aspect", () => {
+    const st = state();
+    zoomChartView(st, 0.5, 0.25, 0.5);
+    // focal data point (400, 450) sits at the same fraction after zoom
+    expect(st.cur).toEqual([200, 225, 800, 450]);
+    expect(effectiveChartView(st)).toEqual([200, 225, 800, 450]);
+    const centred = state();
+    zoomChartView(centred, 0.5, null, null);
+    expect(centred.cur).toEqual([400, 225, 800, 450]);
+  });
+
+  test("zoom is floored at 16x (base width / 16)", () => {
+    const st = state();
+    zoomChartView(st, 0.01, null, null);
+    expect(st.cur).toEqual([750, 421.875, 100, 56.25]);
+    zoomChartView(st, 0.01, null, null);
+    expect(st.cur).toEqual([750, 421.875, 100, 56.25]);
+  });
+
+  test("zooming back out to the base width clears the zoom state", () => {
+    const st = state();
+    zoomChartView(st, 0.5, null, null);
+    expect(st.cur).not.toBeNull();
+    zoomChartView(st, 2, null, null);
+    expect(st.cur).toBeNull();
+    expect(effectiveChartView(st)).toEqual(base);
+    const fresh = state();
+    zoomChartView(fresh, 1.25, null, null);
+    expect(fresh.cur).toBeNull();
+  });
+
+  test("pan scales pixels to viewBox units and clamps at the base edges", () => {
+    const st = state();
+    zoomChartView(st, 0.5, null, null); // cur [400, 225, 800, 450]
+    expect(panChartView(st, 80, 45, 800, 450)).toBe(true);
+    expect(st.cur).toEqual([320, 180, 800, 450]);
+    // huge drags clamp to the base corners, never past them
+    expect(panChartView(st, 100000, 100000, 800, 450)).toBe(true);
+    expect(st.cur).toEqual([0, 0, 800, 450]);
+    expect(panChartView(st, -100000, -100000, 800, 450)).toBe(true);
+    expect(st.cur).toEqual([800, 450, 800, 450]);
+  });
+
+  test("pan is a no-op when not zoomed or the element has no size", () => {
+    const st = state();
+    expect(panChartView(st, 10, 10, 800, 450)).toBe(false);
+    expect(st.cur).toBeNull();
+    zoomChartView(st, 0.5, null, null);
+    const before = (st.cur as number[]).slice();
+    expect(panChartView(st, 10, 10, 0, 450)).toBe(false);
+    expect(st.cur).toEqual(before);
+  });
+
+  test("clamp honours a non-zero base origin", () => {
+    const st = { base: [100, 50, 1600, 900], cur: [0, 0, 800, 450] };
+    clampChartView(st);
+    expect(st.cur).toEqual([100, 50, 800, 450]);
+    st.cur = [5000, 5000, 800, 450];
+    clampChartView(st);
+    expect(st.cur).toEqual([900, 500, 800, 450]);
+  });
+
+  test("reset restores the base viewBox after zoom + pan", () => {
+    const st = state();
+    zoomChartView(st, 0.5, 0.25, 0.5);
+    panChartView(st, 40, 20, 800, 450);
+    expect(effectiveChartView(st)).not.toEqual(base);
+    resetChartView(st);
+    expect(st.cur).toBeNull();
+    expect(effectiveChartView(st)).toEqual(base);
+  });
+
+  test("click suppression: post-drag click swallowed, ordinary click passes", () => {
+    const now = 1_700_000_000_000;
+    // a moved drag stamps pointerup time; the click that follows it
+    // inside the 400 ms window is the drag's tail — swallowed
+    expect(chartClickSuppressed(String(now - 399), now)).toBe(true);
+    expect(chartClickSuppressed(String(now), now)).toBe(true);
+    // at/after the window the same stamp no longer suppresses
+    expect(chartClickSuppressed(String(now - 400), now)).toBe(false);
+    expect(chartClickSuppressed(String(now - 60_000), now)).toBe(false);
+    // an ordinary click has no drag, hence no stamp — never swallowed
+    expect(chartClickSuppressed(null, now)).toBe(false);
+    expect(chartClickSuppressed("0", now)).toBe(false);
+    expect(chartClickSuppressed("", now)).toBe(false);
   });
 });

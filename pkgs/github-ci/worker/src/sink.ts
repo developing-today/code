@@ -38,19 +38,13 @@ export function queueNow(d = new Date()): string {
   return d.toISOString().replace(/\.\d{3}Z$/, "Z");
 }
 
-export async function appendAgentEvent(
-  env: SinkEnv,
-  kind: string,
-  detail: Record<string, unknown>,
-): Promise<void> {
+export async function appendAgentEvent(env: SinkEnv, kind: string, detail: Record<string, unknown>): Promise<void> {
   if (env.EVENTS_BROKER_URL) {
     const res = await fetch(`${env.EVENTS_BROKER_URL.replace(/\/$/, "")}/events-append`, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
-        ...(env.EVENTS_BROKER_TOKEN
-          ? { "X-Agent-Token": env.EVENTS_BROKER_TOKEN }
-          : {}),
+        ...(env.EVENTS_BROKER_TOKEN ? { "X-Agent-Token": env.EVENTS_BROKER_TOKEN } : {}),
         ...(env.EVENTS_BROKER_ACCESS_CLIENT_ID && env.EVENTS_BROKER_ACCESS_CLIENT_SECRET
           ? {
               "CF-Access-Client-Id": env.EVENTS_BROKER_ACCESS_CLIENT_ID,
@@ -66,10 +60,12 @@ export async function appendAgentEvent(
     return;
   }
   const q = new Turso(env.TURSO_QUEUE_URL, env.TURSO_QUEUE_TOKEN);
-  await q.execute(
-    "INSERT INTO events (worker_id, task_id, kind, detail, created_at) VALUES (?, NULL, ?, ?, ?)",
-    [tArg("github-webhook"), tArg(kind), tArg(JSON.stringify(detail)), tArg(queueNow())],
-  );
+  await q.execute("INSERT INTO events (worker_id, task_id, kind, detail, created_at) VALUES (?, NULL, ?, ?, ?)", [
+    tArg("github-webhook"),
+    tArg(kind),
+    tArg(JSON.stringify(detail)),
+    tArg(queueNow()),
+  ]);
 }
 
 /**
@@ -92,14 +88,9 @@ export async function advanceSnapshot(
   payloadDefaultBranch?: string | null,
 ): Promise<boolean> {
   const q = new Turso(env.TURSO_QUEUE_URL, env.TURSO_QUEUE_TOKEN);
-  const existing = await q.queryText(
-    "SELECT repo FROM agent_repo_snapshots WHERE repo = ?",
-    [tArg(repo)],
-  );
+  const existing = await q.queryText("SELECT repo FROM agent_repo_snapshots WHERE repo = ?", [tArg(repo)]);
   const storedDef = existing
-    ? await q.queryText("SELECT default_branch FROM agent_repo_snapshots WHERE repo = ?", [
-        tArg(repo),
-      ])
+    ? await q.queryText("SELECT default_branch FROM agent_repo_snapshots WHERE repo = ?", [tArg(repo)])
     : null;
   // #6945: an unknown (NULL) default_branch is NOT every branch. Resolve
   // the default from the stored row first, then the push payload's
@@ -131,21 +122,12 @@ export async function advanceSnapshot(
 }
 
 /** dirty:<repo> watermark into the fleet-queue watermark store. */
-export async function stampDirtyWatermark(
-  env: SinkEnv,
-  repo: string,
-  reason: string,
-  nowIso: string,
-): Promise<void> {
+export async function stampDirtyWatermark(env: SinkEnv, repo: string, reason: string, nowIso: string): Promise<void> {
   const q = new Turso(env.TURSO_QUEUE_URL, env.TURSO_QUEUE_TOKEN);
   await q.execute(
     `INSERT INTO agent_watermarks (key, value, updated_at) VALUES (?, ?, ?)
      ON CONFLICT(key) DO UPDATE SET value = excluded.value,
        updated_at = excluded.updated_at`,
-    [
-      tArg(`dirty:${repo}`),
-      tArg(JSON.stringify({ reason, at: nowIso })),
-      tArg(nowIso),
-    ],
+    [tArg(`dirty:${repo}`), tArg(JSON.stringify({ reason, at: nowIso })), tArg(nowIso)],
   );
 }

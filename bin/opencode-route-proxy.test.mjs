@@ -313,6 +313,7 @@ const startProxy = async (arg = {}) => {
       "grp-ordered": { "providers": ["leafB", "leafA"], "selection": "ordered" },
       "grp-rr": { "providers": ["leafA", "leafB"], "selection": "round-robin" },
       "grp-weighted": { "providers": ["leafA", "leafB"], "selection": "weighted", "weights": { "leafA": 0, "leafB": 1 } },
+      "grp-prototype-spellings": { "providers": ["constructor", "__proto__", "toString", "hasOwnProperty", "valueOf", "leafA"], "selection": "ordered" },
     },
     "model_route_windows": {
       "peak": { "daysOfWeek": ["mon", "tue", "wed", "thu", "fri"], "start": "01:00", "end": "04:00", "timezone": "UTC" },
@@ -347,6 +348,7 @@ const startProxy = async (arg = {}) => {
       "t-group": { "selection": "ordered", "targets": ["grp-ordered/m-g"] },
       "t-group-rr": { "selection": "ordered", "targets": ["grp-rr/m-g"] },
       "t-group-weighted": { "selection": "ordered", "targets": ["grp-weighted/m-g"] },
+      "t-group-prototype-spellings": { "selection": "ordered", "targets": ["grp-prototype-spellings/m-a"] },
       "t-group-skip": { "selection": "ordered", "targets": ["grp-ordered/m-a"] },
       "t-openai-default": { "selection": "ordered", "targets": ["openai/m-gpt"] },
       "t-a-only": { "selection": "ordered", "targets": ["leafA/m-a"] },
@@ -873,8 +875,54 @@ test("unknown route and malformed bodies are rejected", async () => {
     const res = await p.post({ model: "opencode-route/nope", messages: MSGS });
     assert.equal(res.status, 502);
     assert.match((await res.json()).error.message, /unknown route/);
+    for (const provider of ["constructor", "__proto__", "toString", "hasOwnProperty", "valueOf"]) {
+      const proto = await p.post({ model: `${provider}/m-b`, messages: MSGS });
+      assert.equal(proto.status, 502, `prototype spelling ${provider} must miss provider tables`);
+      assert.match((await proto.json()).error.message, /unknown|no credential|provider/i);
+    }
     const bad = await p.post({ model: "opencode-route/t-ordered", messages: "x" });
     assert.equal(bad.status, 400);
+  } finally {
+    await p.cleanup();
+  }
+});
+
+test("chunk boundary inside a multibyte character arrives intact (#4335)", async () => {
+  const p = await startProxy();
+  try {
+    const text = "café ☃ fin";
+    const payload = JSON.stringify({ model: "opencode-route/t-ordered", messages: [{ role: "user", content: text }] });
+    const bytes = Buffer.from(payload, "utf8");
+    // Split inside the é bytes (0xC3 0xA9) and inside the ☃ bytes
+    // (0xE2 0x98 0x83): per-chunk string coercion would emit U+FFFD here.
+    const eAcute = bytes.indexOf(Buffer.from("é", "utf8"));
+    const snowman = bytes.indexOf(Buffer.from("☃", "utf8"));
+    assert.ok(eAcute > 0 && snowman > eAcute);
+    const parts = [bytes.subarray(0, eAcute + 1), bytes.subarray(eAcute + 1, snowman + 2), bytes.subarray(snowman + 2)];
+    const res = await fetch(`${p.base}/v1/chat/completions`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: new ReadableStream({
+        start(c) {
+          for (const part of parts) c.enqueue(part);
+          c.close();
+        },
+      }),
+      duplex: "half",
+    });
+    assert.equal(res.status, 200);
+    assert.equal(p.leafA.last.body.messages[0].content, text);
+  } finally {
+    await p.cleanup();
+  }
+});
+
+test("oversize body is rejected with 413 (#4335)", async () => {
+  const p = await startProxy();
+  try {
+    const big = "x".repeat(51 * 1024 * 1024);
+    const res = await p.post({ model: "opencode-route/t-ordered", messages: [{ role: "user", content: big }] });
+    assert.equal(res.status, 413);
   } finally {
     await p.cleanup();
   }
@@ -1052,6 +1100,18 @@ test("provider route (weighted) honors weights keyed by member provider id", asy
     // leafA carries weight 0 in grp-weighted, leafB weight 1.
     assert.equal(json.choices[0].message.content, "LEAF-B");
     assert.equal(p.attempts()[0].provider_id, "leafB");
+  } finally {
+    await p.cleanup();
+  }
+});
+
+test("provider routes skip prototype-spelling members like other unknown providers", async () => {
+  const p = await startProxy();
+  try {
+    const res = await p.post({ model: "opencode-route/t-group-prototype-spellings", messages: MSGS });
+    assert.equal(res.status, 200);
+    assert.equal((await res.json()).choices[0].message.content, "LEAF-A");
+    assert.deepEqual(p.attempts().map(row => row.provider_id), ["leafA"]);
   } finally {
     await p.cleanup();
   }

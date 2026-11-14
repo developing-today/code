@@ -70,7 +70,10 @@ fn probe_min_above_max_is_rejected() {
     let mut auth = base();
     auth.min_amount = 10_000;
     auth.max_amount = 1;
-    assert!(!folds_live(&auth), "min>max authorisation must not fold Live");
+    assert!(
+        !folds_live(&auth),
+        "min>max authorisation must not fold Live"
+    );
     assert_eq!(
         auth.validate(&issuer_id(&lp_key())),
         Err(ValidateError::MinAmountExceedsMaxAmount)
@@ -96,7 +99,10 @@ fn probe_empty_time_window_is_rejected() {
 fn probe_zero_rate_num_is_rejected_and_every_conversion_is_zero_output() {
     let mut auth = base();
     auth.rate_num = 0;
-    assert!(!folds_live(&auth), "rate_num=0 authorisation must not fold Live");
+    assert!(
+        !folds_live(&auth),
+        "rate_num=0 authorisation must not fold Live"
+    );
     assert_eq!(
         auth.validate(&issuer_id(&lp_key())),
         Err(ValidateError::ZeroRateNumerator)

@@ -240,6 +240,27 @@ func downgrade(result any, version string) any {
 			}
 		}
 	}
+	if Defines(version, FeatStructuredContent) {
+		// 2025-06-18..2025-11-25 define structuredContent as an object
+		// only ("structuredContent?: { [key: string]: unknown }");
+		// 2026-07-28 allows any JSON value and never reaches here (it
+		// defines FeatResultType, which returns above). A non-object
+		// value spelled for an object-only host is a shape its schema
+		// forbids, so it is rendered into content exactly as the
+		// pre-2025-06-18 case renders it: the data survives, and the
+		// field is never sent a value the host must reject.
+		// Conformance rows tools-structured-object-only and
+		// tools-structured-any-json; #1974 headline 7.
+		if sc, present := m["structuredContent"]; present {
+			if _, isObject := sc.(map[string]any); !isObject {
+				delete(m, "structuredContent")
+				if b, err := json.MarshalIndent(sc, "", "  "); err == nil {
+					m["content"] = appendContent(m["content"],
+						map[string]any{"type": "text", "text": string(b)})
+				}
+			}
+		}
+	}
 	if c, present := m["content"]; present {
 		m["content"] = downgradeContent(c, version)
 	}

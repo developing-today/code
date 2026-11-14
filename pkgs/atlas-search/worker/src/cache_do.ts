@@ -88,10 +88,7 @@ export class QueryCache {
       return Response.json({ error: { code: "not_found", message: "no route" } }, { status: 404 });
     } catch (e) {
       const status = (e as { status?: number }).status ?? 500;
-      return Response.json(
-        { error: { code: "query_failed", message: String((e as Error).message ?? e) } },
-        { status },
-      );
+      return Response.json({ error: { code: "query_failed", message: String((e as Error).message ?? e) } }, { status });
     }
   }
 
@@ -110,12 +107,7 @@ export class QueryCache {
 
     if (!row) {
       const now = new Date().toISOString();
-      this.state.storage.sql.exec(
-        "INSERT INTO entry (id, query, k, created_at) VALUES (1, ?, ?, ?)",
-        query,
-        k,
-        now,
-      );
+      this.state.storage.sql.exec("INSERT INTO entry (id, query, k, created_at) VALUES (1, ?, ?, ?)", query, k, now);
       row = this.row()!;
     }
 

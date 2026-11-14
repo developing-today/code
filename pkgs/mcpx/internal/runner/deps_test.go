@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -1992,5 +1993,10 @@ func TestRunTimeoutBoundsFrozenInstall(t *testing.T) {
 	}
 	if elapsed > 15*time.Second {
 		t.Fatalf("Run took %v with a stalled installer and a 1s timeout; the install is not on the timeout context", elapsed)
+	}
+	// The timeout signal survives the killed installer, whose own
+	// error is only "signal: killed" (Codex review, PR #9205).
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("stalled install error = %v, want it to preserve context.DeadlineExceeded", err)
 	}
 }

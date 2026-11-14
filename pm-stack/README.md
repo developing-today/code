@@ -11,7 +11,7 @@ forks of upstream projects.
 | Piece      | Image                                    | Notes                                                                                 |
 | ---------- | ---------------------------------------- | ------------------------------------------------------------------------------------- |
 | Kaneo      | `ghcr.io/usekaneo/kaneo:2.47.0` + digest | Web UI + API on container port 5173, bound to host `127.0.0.1:5173` only              |
-| PostgreSQL | `postgres:16-alpine` + digest             | Kaneo's database; named volume `pm-stack_postgres_data`; never exposed on a host port |
+| PostgreSQL | `postgres:16-alpine` + digest            | Kaneo's database; named volume `pm-stack_postgres_data`; never exposed on a host port |
 
 Phase 2 (2026-10-24) added three layers, each in its own subdirectory
 with the same deploy shape (SOPS → mode-600 env → compose/unit →

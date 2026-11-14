@@ -44,7 +44,6 @@ name: mcpx test
 on:
   push:
     branches: [main]
-  pull_request:
   workflow_dispatch:
 
 concurrency:
@@ -106,6 +105,8 @@ jobs:
           test -f pkgs/mcpx/scripts/tests/test_affected_embeds.py
           command -v git >/dev/null
           python3 -m unittest discover -s pkgs/mcpx/scripts/tests -p 'test_affected_embeds.py' -v
+      - name: Affected run-injection regressions (#5649)
+        run: python3 -m unittest discover -s pkgs/mcpx/scripts/tests -p test_affected_run_injection.py -v
       - name: Run-seed wrapper regressions (#1949)
         run: python3 -m unittest discover -s pkgs/mcpx/scripts/tests -p 'test_mcpx_test_seed.py' -v
       - name: Shard-packer discovery regressions (#6906)
@@ -134,6 +135,9 @@ jobs:
           echo "unit packages:"; echo "$pkgs"
           # shellcheck disable=SC2086
           go test $pkgs -count=1
+      - name: Bounded fuzz smoke (FuzzStripJSONC)
+        working-directory: pkgs/mcpx
+        run: go test ./internal/config -run '^$' -fuzz '^FuzzStripJSONC$' -fuzztime=5s -parallel=1
 
   lint:
     name: "basic: mcpx-test lint"
@@ -155,7 +159,6 @@ jobs:
             echo "gofmt -l is not empty:"; echo "$unformatted"; exit 1
           fi
           go vet ./...
-
 
   plugin-ts:
     name: "basic: mcpx-test plugin-ts"

@@ -18,8 +18,17 @@ NOW = "2026-11-06T00:00:00Z"
 BEFORE = "2026-01-01T00:00:00Z"
 
 
-def stored_record(passed=10, failed=0, total=12, warnings=1, skipped=1,
-                  names=("check-A",), run="previous/1", first=BEFORE, latest=BEFORE):
+def stored_record(
+    passed=10,
+    failed=0,
+    total=12,
+    warnings=1,
+    skipped=1,
+    names=("check-A",),
+    run="previous/1",
+    first=BEFORE,
+    latest=BEFORE,
+):
     r = {
         "first_timestamp": first,
         "latest_timestamp": latest,
@@ -40,16 +49,35 @@ STORED = json.dumps({"best": stored_record(), "largest": stored_record()})
 
 
 class ConformanceRecordTests(unittest.TestCase):
-    def run_record(self, passed=10, failed=0, total=12, warnings=1, skipped=1,
-                   names=("check-A",), stored=STORED):
+    def run_record(
+        self,
+        passed=10,
+        failed=0,
+        total=12,
+        warnings=1,
+        skipped=1,
+        names=("check-A",),
+        stored=STORED,
+    ):
         with tempfile.TemporaryDirectory() as directory:
             root = pathlib.Path(directory)
             summary = root / "summary.md"
             out = root / "new.json"
             args = [
-                "python3", str(SCRIPT), "leg", str(passed), str(failed),
-                "run/2", NOW, stored, str(summary), str(out),
-                str(total), str(warnings), str(skipped), "0",
+                "python3",
+                str(SCRIPT),
+                "leg",
+                str(passed),
+                str(failed),
+                "run/2",
+                NOW,
+                stored,
+                str(summary),
+                str(out),
+                str(total),
+                str(warnings),
+                str(skipped),
+                "0",
             ]
             if names is not None:
                 args.append(json.dumps(sorted(names)))
@@ -84,7 +112,8 @@ class ConformanceRecordTests(unittest.TestCase):
 
     def test_count_increase_still_errors_and_names_the_newly_skipped(self):
         result, summary, state = self.run_record(
-            skipped=2, names=("check-A", "check-B"))
+            skipped=2, names=("check-A", "check-B")
+        )
         self.assertEqual(result.returncode, 3)
         self.assertIn("skipped checks rose from 1 to 2", summary)
         self.assertIn("newly skipped: check-B", summary)
@@ -123,8 +152,13 @@ class ConformanceRecordTests(unittest.TestCase):
         self.assertEqual(state["largest"]["skipped"], [])
 
     def test_legacy_record_without_counts_is_replaced_not_compared(self):
-        legacy = {"passed_count": 9, "failed_count": 1, "run": "old/1",
-                  "first_timestamp": BEFORE, "latest_timestamp": BEFORE}
+        legacy = {
+            "passed_count": 9,
+            "failed_count": 1,
+            "run": "old/1",
+            "first_timestamp": BEFORE,
+            "latest_timestamp": BEFORE,
+        }
         stored = json.dumps({"best": legacy, "largest": legacy})
         result, summary, state = self.run_record(names=("check-B",), stored=stored)
         self.assertEqual(result.returncode, 0)
@@ -152,9 +186,20 @@ class StoredShapeTests(unittest.TestCase):
             summary = root / "summary.md"
             out = root / "new.json"
             args = [
-                "python3", str(SCRIPT), "leg", "10", "0",
-                "run/2", NOW, stored, str(summary), str(out),
-                "12", "1", "1", "0",
+                "python3",
+                str(SCRIPT),
+                "leg",
+                "10",
+                "0",
+                "run/2",
+                NOW,
+                stored,
+                str(summary),
+                str(out),
+                "12",
+                "1",
+                "1",
+                "0",
             ]
             if names_arg is not None:
                 args.append(names_arg)
@@ -170,36 +215,43 @@ class StoredShapeTests(unittest.TestCase):
     def test_stored_top_level_string_is_a_named_error(self):
         self.assert_named_error(
             self.run_raw(json.dumps("hello")),
-            "stored record for leg 'leg'", "must be a JSON object")
+            "stored record for leg 'leg'",
+            "must be a JSON object",
+        )
 
     def test_stored_top_level_list_is_a_named_error(self):
         self.assert_named_error(
             self.run_raw(json.dumps([1, 2])),
-            "stored record for leg 'leg'", "must be a JSON object")
+            "stored record for leg 'leg'",
+            "must be a JSON object",
+        )
 
     def test_stored_invalid_json_is_a_named_error_not_a_traceback(self):
         self.assert_named_error(
-            self.run_raw("{oops"),
-            "stored record for leg 'leg'", "not valid JSON")
+            self.run_raw("{oops"), "stored record for leg 'leg'", "not valid JSON"
+        )
 
     def test_best_as_string_is_a_named_error(self):
         stored = json.dumps({"best": "x", "largest": stored_record()})
         self.assert_named_error(
-            self.run_raw(stored), "field 'best'", "must be an object")
+            self.run_raw(stored), "field 'best'", "must be an object"
+        )
 
     def test_count_field_as_string_is_a_named_error(self):
         bad = stored_record()
         bad["passed_count"] = "10"
         stored = json.dumps({"best": bad, "largest": stored_record()})
         self.assert_named_error(
-            self.run_raw(stored), "'best.passed_count'", "non-negative integer")
+            self.run_raw(stored), "'best.passed_count'", "non-negative integer"
+        )
 
     def test_skipped_count_as_string_is_a_named_error(self):
         bad = stored_record()
         bad["skipped_count"] = "1"
         stored = json.dumps({"best": stored_record(), "largest": bad})
         self.assert_named_error(
-            self.run_raw(stored), "'largest.skipped_count'", "non-negative integer")
+            self.run_raw(stored), "'largest.skipped_count'", "non-negative integer"
+        )
 
     def test_bool_and_negative_counts_are_named_errors(self):
         for value in (True, -1):
@@ -207,14 +259,16 @@ class StoredShapeTests(unittest.TestCase):
             bad["failed_count"] = value
             stored = json.dumps({"best": bad, "largest": stored_record()})
             self.assert_named_error(
-                self.run_raw(stored), "'best.failed_count'", "non-negative integer")
+                self.run_raw(stored), "'best.failed_count'", "non-negative integer"
+            )
 
     def test_skipped_as_int_is_a_named_error(self):
         bad = stored_record()
         bad["skipped"] = 3
         stored = json.dumps({"best": bad, "largest": stored_record()})
         self.assert_named_error(
-            self.run_raw(stored), "'best.skipped'", "list of strings")
+            self.run_raw(stored), "'best.skipped'", "list of strings"
+        )
 
     def test_skipped_as_string_is_a_named_error_not_a_character_set(self):
         # The silent case: best.skipped as a string used to be compared
@@ -223,7 +277,8 @@ class StoredShapeTests(unittest.TestCase):
         bad["skipped"] = "abcde"
         stored = json.dumps({"best": bad, "largest": stored_record()})
         self.assert_named_error(
-            self.run_raw(stored), "'best.skipped'", "list of strings")
+            self.run_raw(stored), "'best.skipped'", "list of strings"
+        )
 
     def test_non_string_timestamp_is_a_named_error(self):
         bad = stored_record()
@@ -235,22 +290,31 @@ class StoredShapeTests(unittest.TestCase):
         # The silent case: skipped became ['a', 'b', 'c'].
         self.assert_named_error(
             self.run_raw(STORED, json.dumps("abc")),
-            "skipped names for leg 'leg'", "list of strings")
+            "skipped names for leg 'leg'",
+            "list of strings",
+        )
 
     def test_names_as_object_is_a_named_error_not_keys(self):
         self.assert_named_error(
             self.run_raw(STORED, json.dumps({"a": 1})),
-            "skipped names for leg 'leg'", "list of strings")
+            "skipped names for leg 'leg'",
+            "list of strings",
+        )
 
     def test_names_as_int_and_list_with_int_are_named_errors(self):
         for arg in ("123", json.dumps(["check-A", 1])):
             self.assert_named_error(
                 self.run_raw(STORED, arg),
-                "skipped names for leg 'leg'", "list of strings")
+                "skipped names for leg 'leg'",
+                "list of strings",
+            )
 
     def test_names_invalid_json_is_a_named_error(self):
         self.assert_named_error(
-            self.run_raw(STORED, "{oops"), "skipped names for leg 'leg'", "not valid JSON")
+            self.run_raw(STORED, "{oops"),
+            "skipped names for leg 'leg'",
+            "not valid JSON",
+        )
 
 
 if __name__ == "__main__":

@@ -2,7 +2,7 @@
 //! for issue #7360.
 //!
 //! Format (v1, #5033 items 1–4):
-//! - The backup blob is the [`crate::key_envelope`] v1 envelope
+//! - The backup blob is the [`id_core::key_envelope`] v1 envelope
 //!   byte-for-byte: `IDKEY` magic, version byte 1, a 60-byte header,
 //!   the 32-byte identity key wrapped with Argon2id + XChaCha20-Poly1305,
 //!   108 bytes total. The server never sees a passphrase and cannot
@@ -52,7 +52,7 @@ use std::fmt;
 use ed25519_dalek::{Signature, Signer as _, SigningKey, VerifyingKey};
 use sha2::{Digest as _, Sha256};
 
-use crate::key_envelope;
+use id_core::key_envelope;
 
 /// Total v1 envelope length: 60-byte header + 32-byte wrapped key +
 /// 16-byte AEAD tag, matching `key_envelope`'s layout.
@@ -498,9 +498,21 @@ fn validate_envelope(envelope: &[u8]) -> Result<(), BackupError> {
             "unsupported envelope cipher",
         ));
     }
-    let memory_kib = u32::from_le_bytes(envelope[8..12].try_into().unwrap());
-    let iterations = u32::from_le_bytes(envelope[12..16].try_into().unwrap());
-    let lanes = u32::from_le_bytes(envelope[16..20].try_into().unwrap());
+    let memory_kib = u32::from_le_bytes(
+        envelope[8..12]
+            .try_into()
+            .map_err(|_| BackupError::MalformedEnvelope("truncated KDF memory parameter"))?,
+    );
+    let iterations = u32::from_le_bytes(
+        envelope[12..16]
+            .try_into()
+            .map_err(|_| BackupError::MalformedEnvelope("truncated KDF iteration parameter"))?,
+    );
+    let lanes = u32::from_le_bytes(
+        envelope[16..20]
+            .try_into()
+            .map_err(|_| BackupError::MalformedEnvelope("truncated KDF lane parameter"))?,
+    );
     if !(MIN_MEMORY_KIB..=MAX_MEMORY_KIB).contains(&memory_kib)
         || !(MIN_ITERATIONS..=MAX_ITERATIONS).contains(&iterations)
         || !(MIN_LANES..=MAX_LANES).contains(&lanes)

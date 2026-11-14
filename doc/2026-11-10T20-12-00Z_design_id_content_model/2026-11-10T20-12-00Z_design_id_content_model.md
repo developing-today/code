@@ -29,7 +29,7 @@ Decisions this record builds on (not re-decided):
 ## D1. The primary unit is the note; blocks live inside it (ADAPT)
 
 ID adopts the page as the unit of identity and adapts the block as
-the unit of *content structure*:
+the unit of _content structure_:
 
 - The **note** (page) is the only content object with identity. It is
   what links target, what citations pin, what permissions attach to,
@@ -175,7 +175,7 @@ the unit of *content structure*:
 - **Canvas/freeform:** rejected for v1 here (D3); if the programme
   wants it, it belongs to #5678 as a redrawn cluster, not as an
   extension of this record.
-- **Block-level comments and reactions:** commenting *on* a block
+- **Block-level comments and reactions:** commenting _on_ a block
   without making the block an object is unspecified here; it is a
   capture/organisation or sharing-cluster concern for #5678 to
   route, and any answer must preserve invariant 1.

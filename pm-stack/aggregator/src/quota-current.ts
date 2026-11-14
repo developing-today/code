@@ -124,9 +124,7 @@ export function parseQuotaCurrent(doc: unknown): QuotaCurrentFile | null {
   // boundary like the provider list — a non-array value is dropped
   // and malformed rows are filtered, so one bad section can never
   // throw in the overlay and suppress the unrelated quota data.
-  const providerAuth = Array.isArray(doc.providerAuth)
-    ? doc.providerAuth.filter(isProviderAuthAlert)
-    : undefined;
+  const providerAuth = Array.isArray(doc.providerAuth) ? doc.providerAuth.filter(isProviderAuthAlert) : undefined;
   return {
     ...doc,
     providers: validProviders,
@@ -274,6 +272,14 @@ function applyEntry(pool: QuotaPool, entry: QuotaCurrentEntry, state: FreshState
   if (state === "error") freshness.error = !entry.error && legError ? legError : errorText(entry);
   if (state === "lapsed") freshness.error = errorText(entry);
   pool.freshness = freshness;
+  // #3983 forecasts are derived from the windows they were computed
+  // against (the collector dated fallback). This overlay replaces,
+  // adopts, or clears those windows from the live gatherer read, so
+  // a forecast calculated for the old values must never ride along
+  // beside the new ones (Codex P2 on PR #8522). The overlay has no
+  // observation history to recompute from: dropping the forecast is
+  // the honest state until the next collector derivation.
+  delete pool.exhaustion;
   if (state === "error") {
     pool.state = "error";
     adoptEntryWindows(pool, entry);
@@ -560,7 +566,7 @@ export function overlayTursoUsage(services: SaasService[], file: QuotaCurrentFil
     const prev = new Map(svc.metrics.map((m) => [m.id, m]));
     const metrics: UsageMetric[] = [];
     for (const w of entry.windows) {
-      const meta = TURSO_WINDOW_META[w.name];
+      const meta = Object.hasOwn(TURSO_WINDOW_META, w.name) ? TURSO_WINDOW_META[w.name] : undefined;
       if (!meta || w.value == null) continue;
       metrics.push({
         id: w.name,

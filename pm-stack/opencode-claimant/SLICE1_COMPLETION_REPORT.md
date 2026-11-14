@@ -11,6 +11,7 @@ The OpenCode lane claimant/executor for slice 1 of issue #3026 has been successf
 ### Core Implementation
 
 **File: `pm-stack/opencode-claimant/claimant.py`**
+
 - Main entry point for the claimant/executor
 - Implements all 6 steps from the specification
 - 556 lines of production-ready Python code
@@ -83,6 +84,7 @@ All 6 hard rules from the specification are followed:
 ## Test Results
 
 ### Basic Execution Test ✅
+
 ```bash
 $ python3 pm-stack/opencode-claimant/claimant.py
 OpenCode claimant starting in shadow mode
@@ -94,6 +96,7 @@ No unbound opencode-lane candidates found. Exiting.
 **Result**: Exit code 0, fire logged successfully
 
 ### Shadow Mode Simulation Test ✅
+
 ```bash
 $ python3 pm-stack/opencode-claimant/test_shadow_simple.py
 ============================================================
@@ -141,27 +144,27 @@ Fire log entries are created in `~/.local/state/opencode-claimant/fires.jsonl`:
 
 ## Compliance Matrix
 
-| Requirement | Specification Section | Implementation Status | Verification |
-|-------------|---------------------|---------------------|--------------|
-| Mode file reading | MODE section | ✅ COMPLIANT | Tested |
-| Shadow mode default | MODE section | ✅ COMPLIANT | Tested |
-| Supervision step | Step 1 | ✅ COMPLIANT | Reports stuck_bound |
-| Gate step | Step 2 | ✅ COMPLIANT | Checks candidates |
-| Cap step | Step 3 | ✅ COMPLIANT | Respects 36 cap |
-| Launch step | Step 4 | ✅ COMPLIANT | Simulates launches |
-| Fire logging | Step 6 | ✅ COMPLIANT | fires.jsonl created |
-| Hard rule 1 | Hard rules | ✅ COMPLIANT | Never work tasks |
-| Hard rule 2 | Hard rules | ✅ COMPLIANT | Lane filtering |
-| Hard rule 3 | Hard rules | ✅ COMPLIANT | 36-session cap |
-| Hard rule 4 | Hard rules | ✅ COMPLIANT | Atomic bind structure |
-| Hard rule 5 | Hard rules | ✅ COMPLIANT | Session verification |
-| Hard rule 6 | Hard rules | ✅ COMPLIANT | No credentials logged |
-| Queues defined | Constants | ✅ COMPLIANT | 4 queues configured |
-| Concurrency cap | Constants | ✅ COMPLIANT | CAP = 36 |
-| Recovery values | Constants | ✅ COMPLIANT | Constants defined |
-| Paths configured | Constants | ✅ COMPLIANT | All paths set |
-| Error handling | Error handling | ✅ COMPLIANT | Fail-closed |
-| Documentation | - | ✅ COMPLIANT | README and checklist |
+| Requirement         | Specification Section | Implementation Status | Verification          |
+| ------------------- | --------------------- | --------------------- | --------------------- |
+| Mode file reading   | MODE section          | ✅ COMPLIANT          | Tested                |
+| Shadow mode default | MODE section          | ✅ COMPLIANT          | Tested                |
+| Supervision step    | Step 1                | ✅ COMPLIANT          | Reports stuck_bound   |
+| Gate step           | Step 2                | ✅ COMPLIANT          | Checks candidates     |
+| Cap step            | Step 3                | ✅ COMPLIANT          | Respects 36 cap       |
+| Launch step         | Step 4                | ✅ COMPLIANT          | Simulates launches    |
+| Fire logging        | Step 6                | ✅ COMPLIANT          | fires.jsonl created   |
+| Hard rule 1         | Hard rules            | ✅ COMPLIANT          | Never work tasks      |
+| Hard rule 2         | Hard rules            | ✅ COMPLIANT          | Lane filtering        |
+| Hard rule 3         | Hard rules            | ✅ COMPLIANT          | 36-session cap        |
+| Hard rule 4         | Hard rules            | ✅ COMPLIANT          | Atomic bind structure |
+| Hard rule 5         | Hard rules            | ✅ COMPLIANT          | Session verification  |
+| Hard rule 6         | Hard rules            | ✅ COMPLIANT          | No credentials logged |
+| Queues defined      | Constants             | ✅ COMPLIANT          | 4 queues configured   |
+| Concurrency cap     | Constants             | ✅ COMPLIANT          | CAP = 36              |
+| Recovery values     | Constants             | ✅ COMPLIANT          | Constants defined     |
+| Paths configured    | Constants             | ✅ COMPLIANT          | All paths set         |
+| Error handling      | Error handling        | ✅ COMPLIANT          | Fail-closed           |
+| Documentation       | -                     | ✅ COMPLIANT          | README and checklist  |
 
 ## What Works Today
 
@@ -212,15 +215,18 @@ The following features are intentionally deferred to future slices:
 ## Files Modified/Created
 
 ### Modified Files
+
 - `pm-stack/opencode-claimant/claimant.py` (replaced with clean implementation)
 
 ### Created Files
+
 - `pm-stack/opencode-claimant/README.md`
 - `pm-stack/opencode-claimant/IMPLEMENTATION_CHECKLIST.md`
 - `pm-stack/opencode-claimant/SLICE1_COMPLETION_REPORT.md`
 - `pm-stack/opencode-claimant/test_shadow_simple.py`
 
 ### Unchanged Files
+
 - `pm-stack/opencode-claimant/poll.py` (existing, no modifications needed)
 
 ## Execution Instructions
@@ -277,21 +283,25 @@ wc -l ~/.local/state/opencode-claimant/fires.jsonl
 ## Future Work
 
 ### Slice 2 Requirements
+
 - Implement live mode supervision recovery
 - Add DELETE /api/session/{id} for zero-message sessions
 - Implement atomic recovery via repo-queue bind
 
 ### Slice 3 Requirements
+
 - Implement live mode session creation
 - Add POST /api/session with location verification
 - Handle wrong location (delete and skip)
 
 ### Slice 4 Requirements
+
 - Implement live mode atomic binding
 - Add repo-queue bind with session-id
 - Verify atomic write to lane ledger
 
 ### Slice 5 Requirements
+
 - Implement live mode prompt delivery
 - Send task-specific instructions to workers
 - Include worker ID in all queue operations
@@ -323,6 +333,6 @@ The claimant/executor is now ready for deployment and future slice development.
 
 ---
 
-*Generated: 2026-11-07*
-*Issue: #3026 - OpenCode lane claimant/executor*
-*Slice: 1 of N*
+_Generated: 2026-11-07_
+_Issue: #3026 - OpenCode lane claimant/executor_
+_Slice: 1 of N_

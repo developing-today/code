@@ -233,7 +233,11 @@ export function watchdogTierItems(inputs: WatchdogInputs): TierItem[] {
         "Check the fleet-feed collector's GitHub Project read and token scope; the card clears itself when a valid audit snapshot is published.",
       ),
     );
-  } else if (!Number.isInteger(audit.totalItems) || audit.totalItems < 0 || !Number.isFinite(Date.parse(audit.generatedAt))) {
+  } else if (
+    !Number.isInteger(audit.totalItems) ||
+    audit.totalItems < 0 ||
+    !Number.isFinite(Date.parse(audit.generatedAt))
+  ) {
     put(
       item(
         "projects",

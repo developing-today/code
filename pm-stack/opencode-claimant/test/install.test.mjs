@@ -1,4 +1,4 @@
-import { describe, expect, test } from "bun:test";
+import { afterAll, describe, expect, test } from "bun:test";
 import { spawnSync } from "node:child_process";
 import {
   mkdir, mkdtemp, readFile, readdir, rm, writeFile,
@@ -17,6 +17,11 @@ const recoveryMigration = await readFile(
   join(here, "..", "migration-0022.sql"), "utf8",
 );
 const installer = join(here, "..", "install.mjs");
+const bunInstallState = await mkdtemp(join(tmpdir(), "opencode-claimant-bun-"));
+
+afterAll(async () => {
+  await rm(bunInstallState, { recursive: true, force: true });
+});
 
 async function makeStores() {
   const home = await mkdtemp(join(tmpdir(), "opencode-claimant-install-"));
@@ -43,7 +48,7 @@ async function makeStores() {
 function runInstaller(home, args) {
   return spawnSync(process.execPath, [installer, ...args], {
     encoding: "utf8",
-    env: { ...process.env, HOME: home },
+    env: { ...process.env, HOME: home, BUN_INSTALL: bunInstallState },
   });
 }
 

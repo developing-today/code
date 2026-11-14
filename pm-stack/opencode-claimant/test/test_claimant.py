@@ -88,10 +88,15 @@ def make_fake_run(events, *, create_rc=0, messages="[]"):
             events.append(("create",))
             if create_rc != 0:
                 return Result(create_rc, "", "server unavailable")
-            return reply(json.dumps({
-                "id": "ses_new1",
-                "location": {"directory": str(claimant.PRIMARY_CLONE)},
-            }), 200)
+            return reply(
+                json.dumps(
+                    {
+                        "id": "ses_new1",
+                        "location": {"directory": str(claimant.PRIMARY_CLONE)},
+                    }
+                ),
+                200,
+            )
         if argv[0] == "curl" and "/api/session/" in joined:
             events.append(("session_get",))
             # The v2 server's shape for a missing session: a 404 with
@@ -130,10 +135,17 @@ CANDIDATE = {
 
 
 def run_launch(events, *, labels=set(), create_rc=0):
-    with patch.object(claimant, "run_poll",
-                      side_effect=lambda: {"candidates": [copy.deepcopy(CANDIDATE)]}), \
-         patch.object(claimant, "_github_issue_labels", return_value=set(labels)), \
-         patch.object(claimant.subprocess, "run", make_fake_run(events, create_rc=create_rc)):
+    with (
+        patch.object(
+            claimant,
+            "run_poll",
+            side_effect=lambda: {"candidates": [copy.deepcopy(CANDIDATE)]},
+        ),
+        patch.object(claimant, "_github_issue_labels", return_value=set(labels)),
+        patch.object(
+            claimant.subprocess, "run", make_fake_run(events, create_rc=create_rc)
+        ),
+    ):
         return claimant.launch_step("live", 3)
 
 
@@ -177,11 +189,17 @@ class TestLaunch(unittest.TestCase):
 
     def test_unreadable_labels_fail_closed(self):
         events = []
-        with patch.object(claimant, "run_poll",
-                          side_effect=lambda: {"candidates": [copy.deepcopy(CANDIDATE)]}), \
-             patch.object(claimant, "_github_issue_labels",
-                          side_effect=RuntimeError("gh down")), \
-             patch.object(claimant.subprocess, "run", make_fake_run(events)):
+        with (
+            patch.object(
+                claimant,
+                "run_poll",
+                side_effect=lambda: {"candidates": [copy.deepcopy(CANDIDATE)]},
+            ),
+            patch.object(
+                claimant, "_github_issue_labels", side_effect=RuntimeError("gh down")
+            ),
+            patch.object(claimant.subprocess, "run", make_fake_run(events)),
+        ):
             launched, skips = claimant.launch_step("live", 3)
         self.assertEqual(launched, [])
         self.assertEqual(len(skips), 1)
@@ -206,15 +224,22 @@ class TestSupervision(unittest.TestCase):
         def fake_fetch(queue):
             return [dict(BOUND_ROW)] if queue == claimant.QUEUES[0] else []
 
-        with patch.object(poll_mod, "fetch_claimed_rows", side_effect=fake_fetch), \
-             patch.object(claimant.subprocess, "run", make_fake_run(events)):
+        with (
+            patch.object(poll_mod, "fetch_claimed_rows", side_effect=fake_fetch),
+            patch.object(claimant.subprocess, "run", make_fake_run(events)),
+        ):
             recovered = claimant.supervision_step("live")
 
-        self.assertEqual(recovered, [{
-            "task_id": 4242,
-            "session_id": "ses_gone",
-            "reason": "zero_message",
-        }])
+        self.assertEqual(
+            recovered,
+            [
+                {
+                    "task_id": 4242,
+                    "session_id": "ses_gone",
+                    "reason": "zero_message",
+                }
+            ],
+        )
         kinds = [e[0] for e in events]
         self.assertLess(kinds.index("messages"), kinds.index("delete"))
         self.assertLess(kinds.index("delete"), kinds.index("bind"))
