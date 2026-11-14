@@ -286,6 +286,13 @@ pub fn decode_meta_exact<T: serde::de::DeserializeOwned>(bytes: &[u8]) -> anyhow
 /// never cancel a non-transactional mutation (e.g. a rename) midway through.
 const META_STREAM_DEADLINE: Duration = Duration::from_secs(60);
 
+/// Overall bound on draining admitted stream handlers after the peer
+/// closes a connection: twice the per-phase stream deadline. A handler's
+/// remaining network phase is bounded by META_STREAM_DEADLINE and its
+/// handling phase does no peer-controlled waiting, so a healthy handler
+/// finishes far inside this bound; only a wedged handler reaches it.
+const META_DRAIN_DEADLINE: Duration = Duration::from_secs(120);
+
 /// Concurrent meta requests allowed on one connection.
 pub const MAX_META_STREAMS_PER_CONNECTION: usize = 16;
 
@@ -1294,14 +1301,11 @@ impl MetaProtocol {
         // of aborting them: shutdown() would cancel a handler at its next
         // suspension point, and a mutating handler cancelled mid-flight
         // (e.g. FileOps::rename, which deletes the source before awaiting
-        // the metadata transfer) can leave partial state behind. Each
-        // handler's network phases stay bounded by the stream deadline,
-        // so this drain terminates.
-        while let Some(result) = streams.join_next().await {
-            if let Err(error) = result {
-                tracing::warn!(%error, "meta stream handler task failed");
-            }
-        }
+        // the metadata transfer) can leave partial state behind. The
+        // drain is bounded overall by META_DRAIN_DEADLINE, so one wedged
+        // handler cannot hang the close forever; see drain_streams for
+        // the trade-off past the deadline.
+        let _ = drain_streams(&mut streams, META_DRAIN_DEADLINE).await;
         Ok(())
     }
 
@@ -1365,10 +1369,59 @@ impl MetaProtocol {
     }
 }
 
+/// Outcome of draining a connection's admitted stream handlers after the
+/// peer closed the connection (see [`MetaProtocol::accept_connection`]).
+#[derive(Debug, PartialEq, Eq)]
+enum DrainOutcome {
+    /// Every admitted handler finished inside the deadline.
+    Drained,
+    /// The deadline expired with handlers still running; they were aborted.
+    TimedOut { remaining: usize },
+}
+
+/// Drain `streams` to completion, bounded by `deadline` overall.
+///
+/// Handlers that finish inside the deadline keep the drain-to-completion
+/// behaviour the close path promises. On expiry the remaining tasks are
+/// aborted and the outcome reports how many were stuck, so the post-close
+/// lifetime of `accept_connection` is finite and observable instead of
+/// hanging silently on one wedged handler. Aborting can cancel a mutating
+/// handler mid-flight — the partial-state risk the drain exists to
+/// avoid — which is accepted only past the deadline: handlers do no
+/// peer-controlled waiting and their network phases carry
+/// `META_STREAM_DEADLINE`, so a handler still alive at the drain deadline
+/// is wedged (e.g. on local lock or store contention), not merely slow.
+async fn drain_streams(streams: &mut JoinSet<()>, deadline: Duration) -> DrainOutcome {
+    let drained = tokio::time::timeout(deadline, async {
+        while let Some(result) = streams.join_next().await {
+            if let Err(error) = result {
+                tracing::warn!(%error, "meta stream handler task failed");
+            }
+        }
+    })
+    .await;
+    match drained {
+        Ok(()) => DrainOutcome::Drained,
+        Err(_) => {
+            let remaining = streams.len();
+            tracing::warn!(
+                remaining,
+                ?deadline,
+                "meta stream drain deadline exceeded; aborting wedged handlers"
+            );
+            streams.abort_all();
+            DrainOutcome::TimedOut { remaining }
+        }
+    }
+}
+
 impl ProtocolHandler for MetaProtocol {
     /// Serves requests on a connection until the peer closes it.
-    /// Individual stream failures are isolated; active streams are stopped when
-    /// the peer closes the connection.
+    /// Individual stream failures are isolated; when the peer closes the
+    /// connection, admitted streams are drained to completion under an
+    /// overall deadline (META_DRAIN_DEADLINE) — a handler still running
+    /// at the deadline is aborted and logged, so the close always
+    /// completes in bounded time.
     async fn accept(&self, conn: Connection) -> Result<(), AcceptError> {
         self.accept_connection(conn, META_STREAM_DEADLINE).await
     }
@@ -1385,6 +1438,56 @@ mod tests {
     };
     use iroh_base::{SecretKey, TransportAddr};
     use std::net::{Ipv4Addr, SocketAddr};
+
+    /// Oracle for the close-drain bound (#10400): handlers that finish
+    /// inside the deadline drain to completion, and the drain reports
+    /// Drained without waiting out the deadline.
+    #[tokio::test]
+    async fn drain_streams_completes_when_handlers_finish() {
+        let mut streams = JoinSet::new();
+        streams.spawn(async {});
+        streams.spawn(async {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        });
+        let outcome = drain_streams(&mut streams, Duration::from_secs(5)).await;
+        assert_eq!(outcome, DrainOutcome::Drained);
+        assert!(streams.is_empty());
+    }
+
+    /// Oracle for the close-drain bound (#10400): a handler still in
+    /// flight when the drain deadline expires is surfaced (TimedOut with
+    /// the stuck count) and aborted, so the drain returns in bounded
+    /// time instead of hanging on the wedged handler.
+    #[tokio::test]
+    async fn drain_streams_times_out_and_aborts_wedged_handler() {
+        struct DropFlag(Arc<std::sync::atomic::AtomicBool>);
+        impl Drop for DropFlag {
+            fn drop(&mut self) {
+                self.0.store(true, std::sync::atomic::Ordering::SeqCst);
+            }
+        }
+        let aborted = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let flag = DropFlag(Arc::clone(&aborted));
+        let mut streams = JoinSet::new();
+        streams.spawn(async {});
+        streams.spawn(async move {
+            let _flag = flag;
+            std::future::pending::<()>().await;
+        });
+        let start = tokio::time::Instant::now();
+        let outcome = drain_streams(&mut streams, Duration::from_millis(50)).await;
+        assert_eq!(outcome, DrainOutcome::TimedOut { remaining: 1 });
+        assert!(start.elapsed() < Duration::from_secs(5));
+        // The abort lands at the wedged task's next suspension point;
+        // yield until its Drop runs, bounded so a regression fails fast.
+        for _ in 0..100 {
+            if aborted.load(std::sync::atomic::Ordering::SeqCst) {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+        assert!(aborted.load(std::sync::atomic::Ordering::SeqCst));
+    }
 
     #[test]
     fn test_find_match_struct() {
