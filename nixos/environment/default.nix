@@ -462,6 +462,16 @@ in
         doCheck = false;
       });
     })
+    # cargo-llvm-cov 0.9.0: its integration tests spawn LLVM-instrumented
+    # test binaries that SIGSEGV under the pinned Rust 1.99 toolchain in
+    # the sandbox (14 tests fail, verified 2026-11-14 against the drv
+    # log); the tool itself builds and runs — the failing suite is
+    # upstreams, not the fleets.
+    (final: prev: {
+      cargo-llvm-cov = prev.cargo-llvm-cov.overrideAttrs (_: {
+        doCheck = false;
+      });
+    })
     # vtk 9.5.2 (FreeCAD's dependency): nixos-unstable 2026-10-10 added a
     # postPatch that renames VTK's vendored pegtl module from VTK::pegtl to
     # VTK::vtkpegtl, but left the 9.5.x CMake switch on the old module name.
