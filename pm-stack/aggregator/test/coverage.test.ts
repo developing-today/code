@@ -336,6 +336,9 @@ describe("snapshot rotation — poisoned anchorAt (#5196)", () => {
         poolItems: 10,
         poolUnsetStatus: 3,
         poolUnsetArea: 4,
+        staleOpenIssues: null,
+        staleIssuesCollectedAt: null,
+        staleIssuesError: null,
       },
     ],
   });
