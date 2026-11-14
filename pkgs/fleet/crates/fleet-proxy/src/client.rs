@@ -1,6 +1,6 @@
 //! The client half: `fleet proxy connect` and `fleet init`.
 //!
-//! Both verbs ensure the broker (spawning `fleet proxy serve`
+//! Both verbs ensure the broker (spawning `fleet serve proxy`
 //! detached when nothing answers at the socket), negotiate the
 //! hello, and regenerate the PATH shim dir from the negotiated
 //! services map. Talking to a pre-hello (legacy, proto 0) broker
@@ -16,7 +16,7 @@ use std::io::Write;
 use std::os::unix::net::UnixStream;
 use std::time::Duration;
 
-use fleet_config::Config;
+use fleet_config::{Config, ConfigError, InitMode, ResolvedHost};
 use fleet_proxy_proto::{
     Hello, HelloResponse, Request, Response, hello_frame, is_proto_too_old, read_frame,
     unwrap_hello, write_frame,
@@ -45,6 +45,12 @@ pub enum ClientError {
     ProtoTooOld,
     /// Bad invocation — exit 2.
     Usage(String),
+    /// The fleet config (file or the `FLEET_HOST_CONFIG` manifest)
+    /// does not parse or fails validation — exit 2, the design's
+    /// loud-malformed rule (#5687 §2). Carries the message in the
+    /// `ConfigError` shape, minus its own `fleet:` prefix (the
+    /// caller adds one).
+    Config(String),
 }
 
 impl std::fmt::Display for ClientError {
@@ -55,6 +61,7 @@ impl std::fmt::Display for ClientError {
                 write!(f, "the broker's protocol is older than this build accepts")
             }
             ClientError::Usage(why) => write!(f, "{why}"),
+            ClientError::Config(why) => write!(f, "{why}"),
         }
     }
 }
@@ -65,6 +72,7 @@ impl ClientError {
             ClientError::Transport(_) => EXIT_TRANSPORT,
             ClientError::ProtoTooOld => EXIT_UNAVAILABLE,
             ClientError::Usage(_) => EXIT_USAGE,
+            ClientError::Config(_) => EXIT_USAGE,
         }
     }
 }
@@ -136,7 +144,7 @@ pub struct Ensured {
 }
 
 /// Ensure a broker answers at the configured socket: connect, and
-/// on failure spawn `fleet proxy serve` detached and wait for it
+/// on failure spawn `fleet serve proxy` detached and wait for it
 /// (the Python client's auto-start, fleet-shaped). The hello is
 /// spoken on the returned stream, so callers own the negotiation
 /// result either way.
@@ -177,8 +185,11 @@ pub fn ensure_broker(
     )))
 }
 
-/// Spawn `fleet proxy serve` detached (setsid, output appended to
-/// broker.log beside the socket — the Python auto-start's shape).
+/// Spawn the proxy serve role detached (setsid, output appended
+/// to broker.log beside the socket — the Python auto-start's
+/// shape). The argv is the post-rename spelling, `fleet serve
+/// proxy` (design #5687 §5); `fleet proxy serve` remains as the
+/// same leaf under the proxy domain.
 fn spawn_serve(config: &Config) -> Result<(), ClientError> {
     use std::os::unix::process::CommandExt;
     let socket = config.broker_socket();
@@ -196,7 +207,7 @@ fn spawn_serve(config: &Config) -> Result<(), ClientError> {
     let exe =
         std::env::current_exe().map_err(|e| ClientError::Transport(format!("current exe: {e}")))?;
     let mut cmd = std::process::Command::new(exe);
-    cmd.args(["proxy", "serve"])
+    cmd.args(["serve", "proxy"])
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::from(log.try_clone().map_err(|e| {
             ClientError::Transport(format!("broker.log: {e}"))
@@ -493,9 +504,13 @@ pub fn run_connect(
 pub const INIT_USAGE: &str = "\
 Usage: fleet init
 
-Autostart the session proxy if it is not running: probe the broker
-socket, sync the PATH shims when a broker answers, and start one
-when none does. A strict no-op when a broker is already running.
+Autostart this host's fleet roles if they are not running. The
+[host] manifest in fleet config (or FLEET_LOCATION /
+FLEET_HOST_CONFIG) names this machine's location and roles: on
+the sandbox that is the session proxy (probe the broker socket,
+sync the PATH shims when a broker answers, start one when none
+does — a strict no-op when a broker is already running). An
+unknown location reports state, starts nothing, and exits 69.
 
 Takes no arguments.";
 
@@ -522,6 +537,195 @@ pub fn run_init(
             argv[0]
         )));
     }
+    // Location resolution (design #5687 §4, impl #6770): exactly
+    // one init implementation lives here, so `fleet init` and
+    // `fleet proxy init` resolve identically (§6 step 4).
+    let resolved = config.resolve_host().map_err(|e| match e {
+        ConfigError::Parse { path, message } => {
+            ClientError::Config(format!("cannot parse config {}: {message}", path.display()))
+        }
+        ConfigError::Read { path, message } => {
+            ClientError::Config(format!("cannot read config {}: {message}", path.display()))
+        }
+    })?;
+    run_init_resolved(resolved, config, client, capabilities)
+}
+
+/// `fleet init` after location resolution. Unknown location is
+/// the design's core failure rule (#5687 §4): report state, start
+/// nothing, exit 69 — never guess-start a role. A resolved
+/// location reports its source, applies the manifest's own skips
+/// and then the `[domains]` kill switch (which wins over the
+/// manifest), and ensures each remaining role per its `init_mode`.
+fn run_init_resolved(
+    resolved: Option<ResolvedHost>,
+    config: &Config,
+    client: &str,
+    capabilities: &[String],
+) -> Result<i32, ClientError> {
+    let Some(host) = resolved else {
+        print_unknown_location_report();
+        return Ok(EXIT_UNAVAILABLE);
+    };
+    println!(
+        "fleet: location {} (source: {})",
+        host.location,
+        host.source.describe(&Config::file_path())
+    );
+    for (role, reason) in &host.skipped_roles {
+        println!("fleet: role {role}: skipped ({reason})");
+    }
+    let mut active: Vec<String> = Vec::new();
+    for role in &host.roles {
+        // The kill switch is keyed by domain: the proxy role is
+        // the proxy domain; the daemon roles live under serve.
+        let domain = if role == "proxy" { "proxy" } else { "serve" };
+        if config.domain_enabled(domain) {
+            active.push(role.clone());
+        } else {
+            println!("fleet: role {role}: skipped (disabled by [domains] on this host)");
+        }
+    }
+    match host.init_mode {
+        InitMode::Spawn => {
+            let mut proxy_active = false;
+            for role in &active {
+                if role == "proxy" {
+                    proxy_active = true;
+                } else {
+                    // v1 spawn semantics exist for the proxy only
+                    // (the sandbox's one role, §5); any other role
+                    // in a spawn manifest is reported, not spawned.
+                    println!(
+                        "fleet: role {role}: not spawn-managed in this build — reported, skipped"
+                    );
+                }
+            }
+            if proxy_active {
+                return run_init_proxy(config, client, capabilities);
+            }
+            Ok(0)
+        }
+        InitMode::Systemd => {
+            for role in &active {
+                ensure_role_systemd(role);
+            }
+            Ok(0)
+        }
+    }
+}
+
+/// The unknown-location report (#5687 §4): every source consulted
+/// and what detection found. Detection informs this report only —
+/// it never selects roles (§3).
+fn print_unknown_location_report() {
+    let path = Config::file_path();
+    println!("fleet: location: unknown — starting nothing");
+    println!(
+        "fleet:   manifest: none (checked $FLEET_HOST_CONFIG, $FLEET_LOCATION, {} [host])",
+        path.display()
+    );
+    println!(
+        "fleet:   detected: hostname={}, os={}, systemd={}, tailnet=unknown",
+        detect_hostname(),
+        detect_os(),
+        if std::path::Path::new("/run/systemd/system").is_dir() {
+            "present"
+        } else {
+            "absent"
+        }
+    );
+    println!(
+        "fleet: to provision this machine, add a [host] section to {} or set FLEET_LOCATION / FLEET_HOST_CONFIG",
+        path.display()
+    );
+}
+
+fn detect_hostname() -> String {
+    if let Ok(h) = std::env::var("HOSTNAME") {
+        if !h.trim().is_empty() {
+            return h.trim().to_string();
+        }
+    }
+    std::fs::read_to_string("/etc/hostname")
+        .ok()
+        .and_then(|text| text.lines().next().map(|l| l.trim().to_string()))
+        .filter(|h| !h.is_empty())
+        .unwrap_or_else(|| "unknown".to_string())
+}
+
+fn detect_os() -> String {
+    if let Ok(text) = std::fs::read_to_string("/etc/os-release") {
+        for key in ["PRETTY_NAME=", "NAME="] {
+            for line in text.lines() {
+                if let Some(value) = line.strip_prefix(key) {
+                    return value.trim_matches('"').to_string();
+                }
+            }
+        }
+    }
+    std::env::consts::OS.to_string()
+}
+
+/// One `systemctl` call: `(success, stdout-or-stderr)`, or `None`
+/// when systemctl cannot be run at all.
+fn systemctl(args: &[&str]) -> Option<(bool, String)> {
+    let out = std::process::Command::new("systemctl")
+        .args(args)
+        .output()
+        .ok()?;
+    let mut text = String::from_utf8_lossy(&out.stdout).into_owned();
+    if text.trim().is_empty() {
+        text = String::from_utf8_lossy(&out.stderr).into_owned();
+    }
+    Some((out.status.success(), text))
+}
+
+/// Ensure one role under `init_mode = "systemd"` (#5687 §5): init
+/// never detached-spawns a daemon systemd owns. It reports the
+/// unit's state; starting a stopped role means asking systemd,
+/// and only for a unit that exists — a missing unit is a report,
+/// not an error (the role may land later).
+fn ensure_role_systemd(role: &str) {
+    let unit = format!("fleet-{role}.service");
+    let Some((_, out)) = systemctl(&["--user", "is-active", &unit]) else {
+        println!(
+            "fleet: role {role}: unit {unit} state unknown (systemctl unavailable) — nothing spawned"
+        );
+        return;
+    };
+    let state = out.trim().to_string();
+    if state == "active" {
+        println!("fleet: role {role}: unit {unit} active — nothing spawned");
+        return;
+    }
+    match systemctl(&["--user", "cat", &unit]) {
+        Some((true, _)) => match systemctl(&["--user", "start", &unit]) {
+            Some((true, _)) => {
+                println!("fleet: role {role}: unit {unit} {state} — started via systemctl --user")
+            }
+            Some((_, err)) => println!(
+                "fleet: role {role}: unit {unit} {state} — start failed: {}",
+                err.lines().next().unwrap_or("unknown error")
+            ),
+            None => println!(
+                "fleet: role {role}: unit {unit} state unknown (systemctl unavailable) — nothing spawned"
+            ),
+        },
+        _ => println!("fleet: role {role}: unit {unit} not found — reported, skipped"),
+    }
+}
+
+/// The proxy role's spawn-mode ensure (the pre-#6770 `fleet init`
+/// body, unchanged): probe first; a live broker (either dialect)
+/// means status + shim sync and out, never a spawn, never a
+/// restart. Only an unanswered socket spawns, and then init
+/// reports what it started.
+fn run_init_proxy(
+    config: &Config,
+    client: &str,
+    capabilities: &[String],
+) -> Result<i32, ClientError> {
     let socket = config.broker_socket();
     // Probe: connect and say hello. A legacy answer still means
     // "running" — init never fights an incumbent broker.
@@ -592,6 +796,69 @@ mod tests {
             .expect_err("a non-help argument must be rejected");
         assert_eq!(err.exit_code(), EXIT_USAGE);
         assert!(err.to_string().contains("--bogus"));
+    }
+
+    #[test]
+    fn init_unknown_location_reports_and_starts_nothing() {
+        // #6770 / design #5687 §4: no manifest resolves to the
+        // report + exit 69, with no socket probe and no spawn —
+        // this call returning at all (instead of a broker wait)
+        // is half the assertion.
+        let config = Config::default();
+        let code = run_init_resolved(None, &config, "test-client", &[]).unwrap();
+        assert_eq!(code, EXIT_UNAVAILABLE);
+    }
+
+    #[test]
+    fn init_systemd_roles_are_reported_never_spawned() {
+        // The laptop map under systemd: init reports unit state
+        // and returns 0 on any machine (unit active, inactive,
+        // missing, or no systemctl at all) — and never spawns a
+        // detached daemon.
+        let host = ResolvedHost {
+            location: "laptop".to_string(),
+            init_mode: InitMode::Systemd,
+            roles: vec!["search".to_string()],
+            skipped_roles: vec![],
+            source: fleet_config::HostSource::EnvContents,
+        };
+        let config = Config::default();
+        let code = run_init_resolved(Some(host), &config, "test-client", &[]).unwrap();
+        assert_eq!(code, 0);
+    }
+
+    #[test]
+    fn init_spawn_mode_reports_non_proxy_roles_without_a_spawn() {
+        let host = ResolvedHost {
+            location: "lab-01".to_string(),
+            init_mode: InitMode::Spawn,
+            roles: vec!["search".to_string()],
+            skipped_roles: vec![("proxy".to_string(), "disabled in [host.roles]".to_string())],
+            source: fleet_config::HostSource::File,
+        };
+        let config = Config::default();
+        let code = run_init_resolved(Some(host), &config, "test-client", &[]).unwrap();
+        assert_eq!(code, 0);
+    }
+
+    #[test]
+    fn init_domains_gate_wins_over_the_manifest() {
+        // [domains] proxy=false + a sandbox spawn manifest: the
+        // proxy role is skipped, so init returns 0 without ever
+        // probing or spawning a broker (a probe of the default
+        // socket would either error or spawn — neither may happen
+        // for a gated-off role).
+        let mut config = Config::default();
+        config.domains.insert("proxy".to_string(), false);
+        let host = ResolvedHost {
+            location: "sandbox".to_string(),
+            init_mode: InitMode::Spawn,
+            roles: vec!["proxy".to_string()],
+            skipped_roles: vec![],
+            source: fleet_config::HostSource::EnvLocation,
+        };
+        let code = run_init_resolved(Some(host), &config, "test-client", &[]).unwrap();
+        assert_eq!(code, 0);
     }
 
     fn parse_err(list: &[&str]) -> String {

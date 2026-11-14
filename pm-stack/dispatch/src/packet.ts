@@ -74,10 +74,10 @@ export function buildPacket(input: PacketInput, dedupeKey: string): Packet {
     ],
     acceptance:
       input.kind === "small_fix"
-        ? [
-            "Session launched and work completed per prompt; close the issue from the session or a follow-up",
-          ]
-        : ["Work described in the task body is triaged/completed per its prompt; findings recorded on the task or its issue"],
+        ? ["Session launched and work completed per prompt; close the issue from the session or a follow-up"]
+        : [
+            "Work described in the task body is triaged/completed per its prompt; findings recorded on the task or its issue",
+          ],
     scope: {
       include: [`${input.repo} — the work described in the task body`],
       exclude: ["Unrelated refactors or changes outside the described work"],
@@ -86,7 +86,7 @@ export function buildPacket(input: PacketInput, dedupeKey: string): Packet {
     risk: { level: "low", flags: [] },
     priority_reason: `Caller-supplied dispatch priority (resolved to ${input.priority} on the queue design scale).`,
     timebox_minutes: isTriage ? 20 : 45,
-    max_attempts: isTriage || input.kind === "ci_investigation" ? 3 : 2,
+    max_attempts: 1000, // #8973: Drew order 2026-11-12 - new tasks default to 1000 on every creation path
     context_refs: input.issue ? [input.issue.url] : [],
     dedupe: {
       checked_at: now,
@@ -166,7 +166,8 @@ export function validatePayload(payload: Record<string, unknown>): string[] {
   const ded = payload.dedupe as Record<string, unknown> | undefined;
   if (!ded || !ded.checked_at || !ded.basis) errs.push("payload.dedupe: must have checked_at and basis");
   const hasIssue =
-    typeof payload.issue === "object" && payload.issue !== null &&
+    typeof payload.issue === "object" &&
+    payload.issue !== null &&
     Number.isInteger((payload.issue as Record<string, unknown>).number);
   const hasDispatch = payload.origin === "dispatch";
   if (!hasIssue && !hasDispatch && !Array.isArray(payload.prs) && typeof payload.set !== "object") {

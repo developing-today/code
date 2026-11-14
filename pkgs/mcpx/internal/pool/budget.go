@@ -73,6 +73,16 @@ func RequestedCallTimeout(ctx context.Context) (time.Duration, bool) {
 // when one is present and smaller. A configured value of zero or less
 // means the operator set no bound, so a per-call request then applies
 // exactly as asked.
+// CallTimeout is the pool's resolved per-call budget for ctx: the
+// configured CallTimeout, lowered by a caller's per-call request when
+// one is present and smaller. It is the same value upstream calls are
+// bounded by, exported so non-pool call paths (a command-backed tool
+// view, #1933 slice 2) inherit the identical budget instead of a
+// package default.
+func (p *Pool) CallTimeout(ctx context.Context) time.Duration {
+	return p.callTimeout(ctx)
+}
+
 func (p *Pool) callTimeout(ctx context.Context) time.Duration {
 	cfg := p.cfg.CallTimeout
 	req, ok := RequestedCallTimeout(ctx)

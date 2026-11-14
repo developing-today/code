@@ -50,7 +50,7 @@ import {
   targetKey,
   writeRemembered,
   type Candidate,
-} from "./mcpx/daemon.ts"
+} from "../core/daemon.ts"
 
 const id = "mcpx-daemon-picker"
 

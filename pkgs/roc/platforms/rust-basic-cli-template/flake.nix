@@ -43,11 +43,11 @@
 
         rocPkgs = roc.packages.${system};
 
-        linuxInputs = with pkgs; lib.optionals stdenv.isLinux [ valgrind ];
+        linuxInputs = with pkgs; lib.optionals stdenv.hostPlatform.isLinux [ valgrind ];
 
         darwinInputs =
           with pkgs;
-          lib.optionals stdenv.isDarwin (with pkgs.darwin.apple_sdk.frameworks; [ Security ]);
+          lib.optionals stdenv.hostPlatform.isDarwin (with pkgs.darwin.apple_sdk.frameworks; [ Security ]);
 
         sharedInputs = with pkgs; [
           rust

@@ -1,6 +1,6 @@
 # Atlas retrieval evaluation harness (#5741)
 
-The harness the #5741 test plan builds *first*, before any signal
+The harness the #5741 test plan builds _first_, before any signal
 (SPLADE included) is adopted or rejected: saved rankings from any
 signal combination are scored offline against judged qrels, so the
 ablation matrix — {dense} / {BM25} / {SPLADE} / {dense+BM25} (today's
@@ -11,14 +11,43 @@ rescore — is measured, not argued.
 - Runner: `cargo run -p atlas-core --bin atlas-eval -- <eval.json> <dev|test>`
 - Smoke fixture: `fixtures/eval-smoke.json`
 
+## Python reference and v3 golden set (#5670)
+
+The repository also keeps the production Python reference and its
+corpus-specific retrieval runner beside the Rust tooling:
+
+- `../atlas_search.py` — copied byte-for-byte from the laptop's
+  `~/atlas/turso-atlas/scripts/atlas_search.py`
+  (SHA-256 `1b805be87b2d08fd5c5f6ed65f45d1c40528c9acc074adeaf0a5665a4cec8d9f`).
+- `eval3.py` — started from the source at
+  `~/atlas/turso-atlas/scripts/eval3.py`; this copy updates only the usage
+  example to point at the checked-in fixture. Source SHA-256:
+  `d121c442566286b6f1ee3327693756bdf0f031f87f00e95ce486582d09d66360`.
+- `fixtures/golden-311.json` — the 311-query v3 set copied byte-for-byte
+  from `~/atlas/v3/golden-queries-v3.json`
+  (SHA-256 `b64bc1905384405c9127c744d3874ffd149a9429b6710b0664c2198505bf291c`).
+  Its header records the source corpus size and fingerprint used to build
+  the set; the source corpus itself is not checked in here.
+
+From this directory, run the corpus-specific FTS baseline with the laptop
+corpus (the runner checks its frozen fingerprint before scoring):
+
+```sh
+~/atlas/v3-venv/bin/python eval3.py --mode fts --corpus ~/atlas/v3/corpus.db --queries fixtures/golden-311.json --out /tmp/golden-311-fts.json
+```
+
+`eval3.py` is the retrieval/reference runner for this frozen set;
+`atlas-eval` above remains the generic offline rank-list scorer. The
+synthetic `eval-smoke.json` fixture is not held-out evaluation evidence.
+
 ## Input format `atlas-eval/v1`
 
 ```json
 {
   "format": "atlas-eval/v1",
-  "queries": [{"id": "q1", "class": "code", "split": "dev", "text": "..."}],
-  "qrels":   [{"query": "q1", "doc": "chunk-1", "grade": 2}],
-  "runs":    [{"signal": "dense", "results": {"q1": ["chunk-2", "chunk-1"]}}]
+  "queries": [{ "id": "q1", "class": "code", "split": "dev", "text": "..." }],
+  "qrels": [{ "query": "q1", "doc": "chunk-1", "grade": 2 }],
+  "runs": [{ "signal": "dense", "results": { "q1": ["chunk-2", "chunk-1"] } }]
 }
 ```
 

@@ -11,7 +11,7 @@
  *   bun test plugin/opencode/v2/picker.test.ts
  */
 import { describe, expect, test } from "bun:test";
-import { targetKey, type Candidate, type Target } from "../mcpx/daemon.ts";
+import { targetKey, type Candidate, type Target } from "../../core/daemon.ts";
 import { buildPickerOptions, renderPickerMenu, runPickerSelection, type PickerScope } from "./picker.ts";
 
 const a: Target = { kind: "socket", path: "/tmp/a.sock" };
@@ -49,9 +49,7 @@ describe("picker menu (the DialogSelect equivalent)", () => {
   test("options carry index, label, config path and the target key", () => {
     const options = buildPickerOptions(two, a);
     expect(options.length).toBe(2);
-    expect(options[1]).toEqual(
-      expect.objectContaining({ index: 1, value: targetKey(b), current: false }),
-    );
+    expect(options[1]).toEqual(expect.objectContaining({ index: 1, value: targetKey(b), current: false }));
     expect(options[1]!.description).toContain("/cfg/b.sock.json");
     expect(options[0]!.description).toContain("3 servers");
     expect(options[0]!.description).toContain("1.2.3");

@@ -190,3 +190,55 @@ func TestConfirmSendHonoursContextCancellation(t *testing.T) {
 		t.Fatal("confirmSend ignored context cancellation and stayed blocked")
 	}
 }
+
+// #1837 (Phase 3 of #1834): a sampling question renders as sampling --
+// the requesting server, the system prompt and the actual messages
+// verbatim -- not as an empty JSON Schema, and the offered answer
+// example is a CreateMessageResult skeleton, not '{}'.
+func TestRenderQuestionSampleShowsPromptAndMessages(t *testing.T) {
+	schema := json.RawMessage(`{"systemPrompt":"You are a poet.","maxTokens":256,"messages":[
+		{"role":"user","content":{"type":"text","text":"Write a haiku about queues."}},
+		{"role":"assistant","content":[{"type":"text","text":"Old pond..."},{"type":"image","data":"AA==","mimeType":"image/png"}]}
+	]}`)
+	out := renderQuestion(elicit.Request{
+		ID: "elc-s1", Message: "You are a poet.", Mode: elicit.Sample,
+		Server: "verses", Schema: schema, Audience: elicit.ToHuman, Reason: "sampling",
+	})
+	for _, want := range []string{
+		"  from     verses\n",
+		"  system    You are a poet.\n",
+		"Write a haiku about queues.",
+		"Old pond...",
+		`"type":"image"`,
+		"  maxTokens 256\n",
+		`"role":"assistant"`,
+		`"stopReason":"endTurn"`,
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("sample rendering missing %q:\n%s", want, out)
+		}
+	}
+	if strings.Contains(out, "answer elc-s1 '{}'") {
+		t.Errorf("sample question still offers the '{}' answer example:\n%s", out)
+	}
+}
+
+// #1837: the offered sampling answer skeleton is itself a valid
+// CreateMessageResult shape -- the oracle is the Phase 2 validator.
+func TestSampleAnswerExamplePassesValidation(t *testing.T) {
+	if err := elicit.ValidateSampleResult(json.RawMessage(sampleAnswerExample()), true, false); err != nil {
+		t.Errorf("answer example fails ValidateSampleResult: %v", err)
+	}
+}
+
+// #1837: an undecodable sampling schema falls back to naming where the
+// full request JSON lives, never to a silent empty rendering.
+func TestRenderQuestionSampleUndecodableSchema(t *testing.T) {
+	out := renderQuestion(elicit.Request{
+		ID: "elc-s2", Message: "srv asks for a model completion", Mode: elicit.Sample,
+		Server: "srv", Schema: json.RawMessage(`{"messages":`),
+	})
+	if !strings.Contains(out, "could not be decoded") {
+		t.Errorf("undecodable sample schema must say so:\n%s", out)
+	}
+}
