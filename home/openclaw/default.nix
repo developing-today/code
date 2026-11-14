@@ -447,6 +447,18 @@ in
           dmPolicy = "allowlist";
           allowFrom = [ "U0CBX163G8Z" ]; # Drew
           groupPolicy = "allowlist";
+          # Channel allowlist (groupPolicy = "allowlist" drops every
+          # channel not named here). #alignment (code#2170): the shared
+          # Muse/Aster room, bound and send/read/reply-verified
+          # 2026-11-03; topology ruled one shared channel, one thread
+          # per dispatch ID (Drew, 2026-11-10). Mention-gated, like
+          # every channel: OpenClaw answers mentions, not chatter.
+          channels = {
+            "C0CBYQR65LL" = {
+              enabled = true;
+              requireMention = true;
+            };
+          };
         };
         # Telegram wired 2026-11-07: bot @shed_openclaw_bot (Shed),
         # created via BotFather from Drew's account; token via env
