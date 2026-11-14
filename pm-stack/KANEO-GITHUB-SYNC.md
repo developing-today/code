@@ -88,3 +88,24 @@ auto-reopens any automation close where the issue still has open
 sub-issues or the closing PR carried no closing keyword. It stays
 useful even with the rule fixed: it catches regressions of this rule
 and task moves to Done made inside Kaneo itself.
+
+## Enforcement — the sync guard (2026-11-14, #10137)
+
+The rule above is asserted continuously, not just documented.
+`pm-stack/kaneo-sync-guard.py` reads every GitHub integration's
+`statusTransitions` from Kaneo's Postgres and checks: no transition
+targets `done`, `onPRMerge` = `in-review`, `onPROpen` = `in-review`,
+`onBranchPush` = `in-progress`. On drift it re-applies the safe map,
+prints the before/after, and exits 1 (healed, but loud).
+
+- Runs at deploy time: `deploy.sh` invokes it after the health check
+  and fails the deploy if it reports drift or error.
+- Runs hourly on the laptop: `pm-kaneo-sync-guard.timer` /
+  `pm-kaneo-sync-guard.service` (unit files in `pm-stack/systemd/`).
+- Verified 2026-11-14: clean run conforms on all 4 integrations; an
+  induced `onPRMerge="done"` drift on the nix integration was detected
+  and healed in one run.
+
+Design rationale: `doc/2026-11-14T17-00-00Z_design_pm-stack-close-authority/note.md`
+(close-authority program #10136). The closure watchdog (#10105, v2)
+remains the outer safety net for any close path the guard cannot see.
