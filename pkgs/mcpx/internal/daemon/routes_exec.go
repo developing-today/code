@@ -208,6 +208,7 @@ func (s *Server) ExecService() *execsvc.Service {
 	lim := execsvc.DefaultLimits()
 	lim.Timeout = set.Duration("exec.timeout")
 	lim.Runtime = set.String("script.runtime")
+	lim.Language = set.String("script.language")
 	lim.Permissions = set.String("script.permissions")
 	lim.Interpreter = set.String("script.interpreter")
 	lim.CwdPolicy = set.String("script.cwd")
