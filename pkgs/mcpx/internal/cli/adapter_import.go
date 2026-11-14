@@ -12,6 +12,7 @@ import (
 	"sort"
 	"strings"
 	"time"
+	"unicode"
 
 	"github.com/developing-today/code/pkgs/mcpx/internal/adapter"
 )
@@ -199,6 +200,11 @@ type importFlag struct {
 	// (--flag[=<value>]): the value binds only attached, as
 	// --flag=value, and rendering it separated changes the operation.
 	EqualsOnly bool
+	// Optional records a positional whose source usage marks it
+	// optional (the bracketed [name] form). Only meaningful for
+	// positionals: shapeToSpec emits Required: !Optional for them.
+	// A positional with no bracket evidence stays required.
+	Optional bool
 }
 
 func (f importFlag) flag() string {
@@ -222,6 +228,19 @@ type importSub struct {
 	Desc        string
 	Flags       []importFlag
 	Positionals []importFlag // Long holds the name; always TakesValue
+	// Path is the full command path below the binary, for a subcommand
+	// nested under other subcommands (git bisect start: Path is
+	// ["bisect", "start"], Name is "bisect_start"). Empty means the
+	// subcommand is top-level: the path is just [Name].
+	Path []string
+}
+
+// path returns the subcommand's full command path below the binary.
+func (s importSub) path() []string {
+	if len(s.Path) > 0 {
+		return s.Path
+	}
+	return []string{s.Name}
 }
 
 // importShape is what any source parses into: subcommands with their own
@@ -256,7 +275,7 @@ func flagParams(flags []importFlag) []adapter.Param {
 		if f.TakesValue {
 			p.Type = "string"
 			p.Equals = f.EqualsOnly
-			if v := strings.ToLower(f.Value); strings.Contains(v, "int") || strings.Contains(v, "num") || strings.Contains(v, "count") {
+			if placeholderIsInteger(f.Value) {
 				p.Type = "integer"
 			}
 		} else {
@@ -269,6 +288,54 @@ func flagParams(flags []importFlag) []adapter.Param {
 		out = append(out, p)
 	}
 	return out
+}
+
+// numericPlaceholderTokens are the complete placeholder tokens that
+// name a numeric type. Integer typing is inferred only when one of
+// them appears as a whole token in the placeholder, never as a
+// substring: ENDPOINT contains "int" but is a string placeholder
+// (#9557), while MAX_COUNT names a count.
+var numericPlaceholderTokens = map[string]bool{
+	"int": true, "integer": true, "num": true, "number": true, "count": true,
+}
+
+// placeholderIsInteger reports whether a value placeholder names a
+// numeric type with a complete token (INT, NUMBER, MAX_COUNT, ...).
+// String is the fallback for every other placeholder.
+func placeholderIsInteger(v string) bool {
+	for _, tok := range strings.FieldsFunc(strings.ToLower(v), func(r rune) bool {
+		return !unicode.IsLetter(r) && !unicode.IsDigit(r)
+	}) {
+		if numericPlaceholderTokens[tok] {
+			return true
+		}
+	}
+	return false
+}
+
+// catchAllParam builds a tool's positional catch-all, renamed until
+// its name is unique among the params already declared (#9558): when
+// the imported help itself declares a positional named `args` or a
+// `--args` flag, appending a second `args` param would pass Validate,
+// be overwritten in Schema, and be rendered twice by buildArgs from
+// the same input — operands passed twice, or a flag value also
+// becoming a trailing operand. The parsed parameter keeps its name;
+// the catch-all takes the first free `args_extra…` variant, the same
+// suffix discipline flagParams applies to duplicate flags.
+func catchAllParam(params []adapter.Param) adapter.Param {
+	used := make(map[string]bool, len(params))
+	for _, p := range params {
+		used[p.Name] = true
+	}
+	name := "args"
+	for used[name] {
+		name += "_extra"
+	}
+	return adapter.Param{
+		Name:        name,
+		Type:        "array",
+		Description: "Additional positional arguments, passed in order.",
+	}
 }
 
 // shapeToSpec renders a parsed shape as a declaration. Global flags of a
@@ -296,22 +363,18 @@ func shapeToSpec(name, command string, shape *importShape, prov *adapter.Provena
 					Name:        pos.Long,
 					Description: pos.Desc,
 					Type:        "string",
-					Required:    true,
+					Required:    !pos.Optional,
 				})
 			}
 			// A subcommand tool without a positional outlet cannot
 			// run the operation it names (toolbox add ITEM), and
 			// buildArgs refuses undeclared arguments — so every
 			// subcommand tool carries the catch-all too.
-			params = append(params, adapter.Param{
-				Name:        "args",
-				Type:        "array",
-				Description: "Additional positional arguments, passed in order.",
-			})
+			params = append(params, catchAllParam(params))
 			spec.Tools = append(spec.Tools, adapter.ToolSpec{
 				Name:        sub.Name,
 				Description: sub.Desc,
-				Args:        []string{sub.Name},
+				Args:        sub.path(),
 				Params:      params,
 			})
 		}
@@ -329,14 +392,10 @@ func shapeToSpec(name, command string, shape *importShape, prov *adapter.Provena
 				Name:        pos.Long,
 				Description: pos.Desc,
 				Type:        "string",
-				Required:    true,
+				Required:    !pos.Optional,
 			})
 		}
-		params = append(params, adapter.Param{
-			Name:        "args",
-			Type:        "array",
-			Description: "Additional positional arguments, passed in order.",
-		})
+		params = append(params, catchAllParam(params))
 		spec.Tools = []adapter.ToolSpec{{
 			Name:        "run",
 			Description: shape.Description,
@@ -474,14 +533,21 @@ func buildCompletionFileImport(o importOptions) (adapter.Spec, []string, error) 
 		return adapter.Spec{}, nil, fmt.Errorf("%s does not look like a bash, zsh or fish completion script; say which with --shell", o.completion)
 	}
 	base := filepath.Base(o.completion)
-	name := o.name
-	if name == "" {
-		name = adapterName(completionName(base, shell))
+	// The program name is kept exactly as written for parsing and
+	// for the spec's command: parsers match completion lines against
+	// it (a fish file's -c value is the real program name), so
+	// normalising it first would filter out every line of a dotted
+	// program's file (toolbox.v2.fish) and store a command that does
+	// not exist. Only the adapter namespace name is sanitised (#9796).
+	program := o.name
+	if program == "" {
+		program = completionName(base, shell)
 	}
+	name := adapterName(program)
 	if name == "" || name == "-" {
 		return adapter.Spec{}, nil, fmt.Errorf("cannot tell which program %s completes; name it with --name", o.completion)
 	}
-	shape := parseCompletion(string(b), shell, name)
+	shape := parseCompletion(string(b), shell, program)
 	if shape.empty() {
 		return adapter.Spec{}, nil, fmt.Errorf("%s yielded no subcommands or flags as a %s completion; nothing to declare", o.completion, shell)
 	}
@@ -491,7 +557,7 @@ func buildCompletionFileImport(o importOptions) (adapter.Spec, []string, error) 
 		GeneratedAt:  time.Now().UTC().Format(time.RFC3339),
 		Generator:    "mcpx adapter import",
 	}
-	spec, notes, err := shapeToSpec(name, name, shape, prov)
+	spec, notes, err := shapeToSpec(name, program, shape, prov)
 	if err != nil {
 		return adapter.Spec{}, nil, err
 	}

@@ -137,7 +137,8 @@ function summaryStrip(a: QuotaAnalytics, display: (n: string) => string): string
     }
   }
   rows.sort((x, y) => x.rank - y.rank);
-  if (!rows.length) return `<div class="card"><strong>At risk</strong> — no pool window is walled, projected to wall, or over 80%.</div>`;
+  if (!rows.length)
+    return `<div class="card"><strong>At risk</strong> — no pool window is walled, projected to wall, or over 80%.</div>`;
   return rows.map((r) => r.html).join("");
 }
 
@@ -150,7 +151,7 @@ function shareTable(title: string, groups: { label: string; calls: number; token
       return `<tr><th scope="row">${esc(g.label)}</th><td>${fmtN(g.calls)}</td><td><meter min="0" max="100" value="${share.toFixed(0)}"></meter> ${share.toFixed(0)}%</td><td>${fmtN(g.tokens)}</td><td>${totalTokens > 0 ? ((g.tokens / totalTokens) * 100).toFixed(0) : "0"}%</td>${g.extra ? `<td>${g.extra}</td>` : ""}</tr>`;
     })
     .join("");
-  return `<h3>${esc(title)}</h3><div class="tblwrap"><table class="table table-zebra"><tr><th scope="col"></th><th scope="col">Calls</th><th scope="col">Call share</th><th scope="col">Tokens</th><th scope="col">Token share</th>${groups[0]?.extra ? "<th scope=\"col\">Detail</th>" : ""}</tr>${rows}</table></div>`;
+  return `<h3>${esc(title)}</h3><div class="tblwrap"><table class="table table-zebra"><tr><th scope="col"></th><th scope="col">Calls</th><th scope="col">Call share</th><th scope="col">Tokens</th><th scope="col">Token share</th>${groups[0]?.extra ? '<th scope="col">Detail</th>' : ""}</tr>${rows}</table></div>`;
 }
 
 function barStrip(values: { label: string; value: number; note?: string }[]): string {
@@ -182,7 +183,9 @@ export function analyticsSectionHtml(a: QuotaAnalytics, display: (n: string) => 
     };
   });
   const effortGroups = a.byEffort7d.map((g) => ({ label: g.label, calls: g.calls, tokens: tokenRatios(g).total }));
-  const legGroups = a.byLeg7d.slice(0, 12).map((g) => ({ label: display(g.label), calls: g.calls, tokens: tokenRatios(g).total }));
+  const legGroups = a.byLeg7d
+    .slice(0, 12)
+    .map((g) => ({ label: display(g.label), calls: g.calls, tokens: tokenRatios(g).total }));
   const act = a.activity7d;
   const activityHtml = act
     ? `<div>sessions (7d): <strong>${fmtN(act.sessions)}</strong> · root ${fmtN(act.rootSessions)} · sub-sessions ${fmtN(act.subSessions)} · user turns ${fmtN(act.turns)}</div>` +

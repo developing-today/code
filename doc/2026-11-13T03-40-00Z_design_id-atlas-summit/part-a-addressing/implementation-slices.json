@@ -11,9 +11,7 @@
       "kind": "contract",
       "version": "V2",
       "tier": "crucial",
-      "statements": [
-        "S3.1-S3.3"
-      ],
+      "statements": ["S3.1-S3.3"],
       "goal": "Add typed shape discriminator and strict version/profile parsing without changing any existing ID bytes.",
       "enables": "Content and array cores can share dispatch while retaining separate identity semantics.",
       "owned_files": [
@@ -61,9 +59,7 @@
       "kind": "contract",
       "version": "V2",
       "tier": "crucial",
-      "statements": [
-        "S3.2-S3.10"
-      ],
+      "statements": ["S3.2-S3.10"],
       "goal": "Dispatch self-describing profile tokens through static/configured code; prohibit per-object translation maps.",
       "enables": "Portable IDs without requiring an extra runtime registry lookup.",
       "owned_files": [
@@ -115,9 +111,7 @@
       "kind": "compatibility",
       "version": "V2",
       "tier": "crucial",
-      "statements": [
-        "S3.4-S3.10"
-      ],
+      "statements": ["S3.4-S3.10"],
       "goal": "Record exact Iroh raw BLAKE3-256 vectors and separately pin legacy SHA-256 artifact serialization/signature bytes, including the docs/code preimage discrepancy.",
       "enables": "Safe new profile parsing without silently changing identifiers or re-signing old artifacts.",
       "owned_files": [
@@ -175,9 +169,7 @@
       "kind": "contract",
       "version": "V2",
       "tier": "recommended",
-      "statements": [
-        "S3.4-S3.10"
-      ],
+      "statements": ["S3.4-S3.10"],
       "goal": "After crosscut 9110-R2 pins the producer profile or records it unavailable, add an explicit Atlas/ID compatibility vector and typed foreign-profile seam without owning the producer investigation.",
       "enables": "Consumers can verify compatible Atlas IDs only when R2 supplies a known-answer vector; otherwise Atlas content_hash remains opaque and cannot be misidentified as raw-byte Iroh BLAKE3.",
       "owned_files": [
@@ -234,9 +226,7 @@
       "kind": "codec",
       "version": "V2",
       "tier": "crucial",
-      "statements": [
-        "S3.11-S3.14"
-      ],
+      "statements": ["S3.11-S3.14"],
       "goal": "Define deterministic CBOR profile, duplicate-key rejection, critical field behavior and cross-language canonical vectors.",
       "enables": "Stable body signatures and envelope IDs across Rust and hosted TypeScript.",
       "owned_files": [
@@ -295,9 +285,7 @@
       "kind": "contract",
       "version": "V2",
       "tier": "crucial",
-      "statements": [
-        "S3.11-S3.20"
-      ],
+      "statements": ["S3.11-S3.20"],
       "goal": "Define PayloadId over raw bytes, canonical Body over payload ID/length/domain/context, signature over domain prefix plus Body, and EnvelopeId over full signed envelope.",
       "enables": "Non-recursive signed snapshots and reusable receipt/assertion envelopes.",
       "owned_files": [
@@ -354,10 +342,7 @@
       "kind": "storage",
       "version": "V2",
       "tier": "crucial",
-      "statements": [
-        "S3.11-S3.14",
-        "S3.18"
-      ],
+      "statements": ["S3.11-S3.14", "S3.18"],
       "goal": "Store complete, scoped signed sidecar snapshots with parent generation and digest-derived snapshot ID.",
       "enables": "Reproducible metadata versioning and location-index reconstruction.",
       "owned_files": [
@@ -414,9 +399,7 @@
       "kind": "storage",
       "version": "V2",
       "tier": "crucial",
-      "statements": [
-        "S3.15-S3.20"
-      ],
+      "statements": ["S3.15-S3.20"],
       "goal": "Update head only from expected generation and snapshot digest; refuse unsupported multiwriter adapters.",
       "enables": "Lost-update safe current snapshot pointer.",
       "owned_files": [
@@ -469,9 +452,7 @@
       "kind": "migration",
       "version": "V2",
       "tier": "recommended",
-      "statements": [
-        "S3.11-S3.22"
-      ],
+      "statements": ["S3.11-S3.22"],
       "goal": "Read old metadata forms and create signed snapshots without modifying content bytes or claiming a consistent source snapshot without evidence.",
       "enables": "Incremental adoption of signed sidecar format.",
       "owned_files": [
@@ -528,9 +509,7 @@
       "kind": "protocol",
       "version": "V2",
       "tier": "crucial",
-      "statements": [
-        "S3.23-S3.25"
-      ],
+      "statements": ["S3.23-S3.25"],
       "goal": "Reuse Part B B19 V2 schema and bind responder, subject digest, scope, verified_present assertion kind, policy epoch and observation time.",
       "enables": "Interoperable evidence without divergent receipt formats or future-retention promises.",
       "owned_files": [
@@ -591,10 +570,7 @@
       "kind": "contract",
       "version": "V2",
       "tier": "crucial",
-      "statements": [
-        "S3.21-S3.22",
-        "S3.26-S3.30"
-      ],
+      "statements": ["S3.21-S3.22", "S3.26-S3.30"],
       "goal": "Represent locations by typed provider and scoped locator fields rather than opaque untyped path strings.",
       "enables": "Safe location resolution, privacy filtering and backend-specific freshness handling.",
       "owned_files": [
@@ -656,9 +632,7 @@
       "kind": "projection",
       "version": "V2",
       "tier": "crucial",
-      "statements": [
-        "S3.26-S3.38"
-      ],
+      "statements": ["S3.26-S3.38"],
       "goal": "Build a rebuildable per-scope index from all authorized visible complete sidecar locations; model stale/delete tombstones and reconciliation cursor.",
       "enables": "Fresh location queries with explicit completeness and version lineage.",
       "owned_files": [
@@ -724,10 +698,7 @@
       "kind": "security",
       "version": "V2",
       "tier": "crucial",
-      "statements": [
-        "S3.21-S3.22",
-        "S3.26-S3.38"
-      ],
+      "statements": ["S3.21-S3.22", "S3.26-S3.38"],
       "goal": "Filter unauthorized locator values and counts before ranking, caching or returning results.",
       "enables": "Privacy-safe location harvesting in shared storage deployments.",
       "owned_files": [
@@ -783,10 +754,7 @@
       "kind": "contract",
       "version": "V2",
       "tier": "crucial",
-      "statements": [
-        "S4.1-S4.7",
-        "S4.19-S4.22"
-      ],
+      "statements": ["S4.1-S4.7", "S4.19-S4.22"],
       "goal": "Bind a server-local namespace name to one of exactly two core IDs and explicit handler/config profiles.",
       "enables": "Stable local resolution while preserving divergent domain-local registries.",
       "owned_files": [
@@ -846,10 +814,7 @@
       "kind": "state",
       "version": "V2",
       "tier": "crucial",
-      "statements": [
-        "S4.2-S4.10",
-        "S4.18"
-      ],
+      "statements": ["S4.2-S4.10", "S4.18"],
       "goal": "Persist local registry generations and authorize mutations without merging unrelated ID world/group authority.",
       "enables": "Version-aware, auditable local namespace configuration.",
       "owned_files": [
@@ -905,9 +870,7 @@
       "kind": "codec",
       "version": "V2",
       "tier": "crucial",
-      "statements": [
-        "S4.11-S4.18"
-      ],
+      "statements": ["S4.11-S4.18"],
       "goal": "Parse required lowercase resolver alias, UTF-8 namespace, v1 shape and typed array/content components without normalization or double decode.",
       "enables": "Unambiguous RFC 3986-compatible local URI resolution.",
       "owned_files": [
@@ -968,9 +931,7 @@
       "kind": "codec",
       "version": "V2",
       "tier": "crucial",
-      "statements": [
-        "S4.11-S4.18"
-      ],
+      "statements": ["S4.11-S4.18"],
       "goal": "Emit lowercase aliases, uppercase percent escapes and settled null/bytes/content syntax; require selected local resolver alias equality.",
       "enables": "Stable URI output without DNS/global resolution behavior.",
       "owned_files": [
@@ -1022,9 +983,7 @@
       "kind": "conformance",
       "version": "V2",
       "tier": "crucial",
-      "statements": [
-        "S4.12-S4.17"
-      ],
+      "statements": ["S4.12-S4.17"],
       "goal": "Use the stdlib reference codec's deterministic random cases and malformed corpus as Rust/TypeScript conformance vectors.",
       "enables": "Cross-edition URI parity and protection against URI parser differentials.",
       "owned_files": [
@@ -1088,9 +1047,7 @@
       "kind": "codec",
       "version": "V2",
       "tier": "crucial",
-      "statements": [
-        "S4.23-S4.28"
-      ],
+      "statements": ["S4.23-S4.28"],
       "goal": "Encode/decode zero-or-more Option<Bytes> slots, preserving null versus empty bytes and slot order.",
       "enables": "General array-address core semantics and URI slot payload model.",
       "owned_files": [
@@ -1138,9 +1095,7 @@
       "kind": "comparator",
       "version": "V2",
       "tier": "crucial",
-      "statements": [
-        "S4.25-S4.28"
-      ],
+      "statements": ["S4.25-S4.28"],
       "goal": "Implement null-before-bytes, unsigned-byte lexicographic, then shorter-prefix ordering.",
       "enables": "Index order and deterministic pagination.",
       "owned_files": [
@@ -1192,9 +1147,7 @@
       "kind": "codec",
       "version": "V2",
       "tier": "recommended",
-      "statements": [
-        "S4.34-S4.40"
-      ],
+      "statements": ["S4.34-S4.40"],
       "goal": "Preserve type ID plus bytes for values and require explicit codec profiles for structured objects.",
       "enables": "Type-sensitive equality and safely extensible object serialization.",
       "owned_files": [
@@ -1251,9 +1204,7 @@
       "kind": "query",
       "version": "V2",
       "tier": "recommended",
-      "statements": [
-        "S4.29-S4.33"
-      ],
+      "statements": ["S4.29-S4.33"],
       "goal": "Expand a bare UTF-8 string into slots using required configured default index; missing policy is an error.",
       "enables": "Compact human query without hard-coding example index 2.",
       "owned_files": [
@@ -1309,9 +1260,7 @@
       "kind": "query",
       "version": "V2",
       "tier": "recommended",
-      "statements": [
-        "S4.41-S4.44"
-      ],
+      "statements": ["S4.41-S4.44"],
       "goal": "Bound each response page while keeping address length/result domain unbounded and exposing truncation, cancellation and cursor state.",
       "enables": "Streaming interfaces that do not silently truncate.",
       "owned_files": [
@@ -1371,10 +1320,7 @@
       "kind": "core",
       "version": "V2",
       "tier": "crucial",
-      "statements": [
-        "S3.4-S3.10",
-        "S4.19-S4.22"
-      ],
+      "statements": ["S3.4-S3.10", "S4.19-S4.22"],
       "goal": "Represent initial content ID as raw exact-byte Iroh BLAKE3-256 while retaining profile token and legacy binary/text forms.",
       "enables": "Portable immutable content core with no metadata or location in identity.",
       "owned_files": [
@@ -1430,9 +1376,7 @@
       "kind": "storage",
       "version": "V2",
       "tier": "crucial",
-      "statements": [
-        "S4.19-S4.22"
-      ],
+      "statements": ["S4.19-S4.22"],
       "goal": "Commit content only after complete exact-byte digest match; preserve existing Iroh storage adapter boundary.",
       "enables": "Uniform immutable content contract without rewriting event/world stores.",
       "owned_files": [
@@ -1484,11 +1428,7 @@
       "kind": "security",
       "version": "V2",
       "tier": "crucial",
-      "statements": [
-        "S1.12-S1.20",
-        "S3.4-S3.10",
-        "S4.19-S4.28"
-      ],
+      "statements": ["S1.12-S1.20", "S3.4-S3.10", "S4.19-S4.28"],
       "goal": "Require signature, signer binding, semantic validation, namespace/tenant authorization and policy checks at every admission path, including local producers after signing.",
       "enables": "One auditable acceptance invariant without trusted-local bypass.",
       "owned_files": [
@@ -1563,9 +1503,7 @@
       "kind": "derived-family",
       "version": "V3",
       "tier": "recommended",
-      "statements": [
-        "S4.45-S4.52"
-      ],
+      "statements": ["S4.45-S4.52"],
       "goal": "Keep original name spelling and all authorized signed target claims; do not silently choose one winner.",
       "enables": "Ambiguity-aware name search and later lens projection.",
       "owned_files": [
@@ -1625,9 +1563,7 @@
       "kind": "projection",
       "version": "V3",
       "tier": "recommended",
-      "statements": [
-        "S4.53-S4.63"
-      ],
+      "statements": ["S4.53-S4.63"],
       "goal": "Project candidate sets through local override, popularity, cohort, standing and selected authority-group lenses with deterministic tie-breaks.",
       "enables": "User-selectable name resolution without a global naming authority.",
       "owned_files": [
@@ -1684,9 +1620,7 @@
       "kind": "codec",
       "version": "V3",
       "tier": "recommended",
-      "statements": [
-        "S4.64-S4.71"
-      ],
+      "statements": ["S4.64-S4.71"],
       "goal": "Add unbounded typed numeric significand/exponent values, canonical positive zero and reject NaN/infinity in ordered profile.",
       "enables": "Infinitely growable numeric registry over array-address core.",
       "owned_files": [
@@ -1739,9 +1673,7 @@
       "kind": "comparator",
       "version": "V3",
       "tier": "recommended",
-      "statements": [
-        "S4.69-S4.73"
-      ],
+      "statements": ["S4.69-S4.73"],
       "goal": "Order kinds by explicit stable type tag and compare values within kind without materializing huge exponent powers.",
       "enables": "Correct range scans over large numeric values without coercion.",
       "owned_files": [
@@ -1796,9 +1728,7 @@
       "kind": "derived-family",
       "version": "V3",
       "tier": "recommended",
-      "statements": [
-        "S4.64-S4.73"
-      ],
+      "statements": ["S4.64-S4.73"],
       "goal": "Apply numeric-kind validation at array writes while distinguishing operational parser limits from numeric domain limits.",
       "enables": "Numeric semantics without a third address core.",
       "owned_files": [
@@ -1854,9 +1784,7 @@
       "kind": "protocol",
       "version": "V3",
       "tier": "recommended",
-      "statements": [
-        "S4.74-S4.82"
-      ],
+      "statements": ["S4.74-S4.82"],
       "goal": "Model addressable open stream with signed chained immutable chunks and one CAS terminal transition.",
       "enables": "Text/chat/voice/video streams that are addressable while in progress.",
       "owned_files": [
@@ -1920,9 +1848,7 @@
       "kind": "query",
       "version": "V3",
       "tier": "recommended",
-      "statements": [
-        "S4.79-S4.82"
-      ],
+      "statements": ["S4.79-S4.82"],
       "goal": "Subscribe/resume by chain cursor and return typed completion target with reauthorization rather than implicit redirect.",
       "enables": "Live and replay consumers with explicit lifecycle outcomes.",
       "owned_files": [
@@ -1983,9 +1909,7 @@
       "kind": "protocol",
       "version": "V4",
       "tier": "contingent",
-      "statements": [
-        "S4.83-S4.92"
-      ],
+      "statements": ["S4.83-S4.92"],
       "goal": "Sign immutable world definition over array coordinates, root reference, profile, signer and version with signer-local authority semantics.",
       "enables": "Portable coordinate resolution without global registry or protocol monopoly.",
       "owned_files": [
@@ -2053,9 +1977,7 @@
       "kind": "verification",
       "version": "V4",
       "tier": "contingent",
-      "statements": [
-        "S4.93"
-      ],
+      "statements": ["S4.93"],
       "goal": "Expose historical/current verification dimensions and define key rotation/revocation resolution seam without deciding SSO.",
       "enables": "Auditable world horizon and compromise response.",
       "owned_files": [

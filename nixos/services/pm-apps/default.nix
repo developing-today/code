@@ -208,6 +208,19 @@ in
         Install.WantedBy = [ "sockets.target" ];
       };
 
+      # The app's own loopback listener as a socket unit (#1822,
+      # slice 1 of task 15848): DEFINED but not enabled — the app
+      # still binds 127.0.0.1:6056 itself today (the tailnet socket
+      # above forwards into that bind). Slice 2 adds LISTEN_FDS
+      # acceptance to ready-for-agent; slice 3 enables this socket
+      # (Install.WantedBy = [ "sockets.target" ]).
+      systemd.user.sockets.ready-for-agent = {
+        Socket = {
+          ListenStream = "127.0.0.1:6056";
+          Service = "ready-for-agent.service";
+        };
+      };
+
       systemd.user.services.ready-for-agent-tailnet = {
         Unit = {
           Description = "ready-for-agent tailnet forward (socket-activated proxy to loopback)";

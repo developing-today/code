@@ -820,7 +820,7 @@ func TestNamedExportKeepsItsResult(t *testing.T) {
 	module := codegen.Module(nil, "http://127.0.0.1:1", "")
 	svc := service(t, store(t))
 	res, err := svc.RunWith(context.Background(), runner.Options{
-		Source: "export function main() { return 42; }\n1",
+		Source:       "export function main() { return 42; }\n1",
 		ClientSource: module, Permissions: "all", Export: "main",
 	}, execsvc.Options{Output: execsvc.OutputStructured}, func(execsvc.Frame) error { return nil })
 	if err != nil {
@@ -884,7 +884,7 @@ func TestLauncherNoneSkipsFinalRewrite(t *testing.T) {
 	module := codegen.Module(nil, "http://127.0.0.1:1", "")
 	svc := service(t, store(t))
 	res, err := svc.RunWith(context.Background(), runner.Options{
-		Source: `console.log(JSON.stringify({ ok: true }));`,
+		Source:       `console.log(JSON.stringify({ ok: true }));`,
 		ClientSource: module, Permissions: "all", Launcher: runner.LauncherNone,
 	}, execsvc.Options{Output: execsvc.OutputStructured}, func(execsvc.Frame) error { return nil })
 	if err != nil {

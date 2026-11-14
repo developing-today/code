@@ -223,9 +223,7 @@ def fetch_ledger_bindings(task_ids):
         + ");\n"
     )
     try:
-        with tempfile.NamedTemporaryFile(
-            "w", suffix=".sql", delete=False
-        ) as f:
+        with tempfile.NamedTemporaryFile("w", suffix=".sql", delete=False) as f:
             f.write(sql)
             sql_path = f.name
         try:

@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"strings"
@@ -199,5 +200,147 @@ func TestRelativeBinaryPathIsStoredAbsolute(t *testing.T) {
 	want := filepath.Join(dir, "bin", "tool")
 	if spec.Command != want {
 		t.Errorf("command: got %q, want absolute %q", spec.Command, want)
+	}
+}
+
+// Oracle: issue #9557, the Codex scenario from PR #9161. Integer
+// typing comes only from complete numeric placeholder tokens;
+// ENDPOINT (which merely contains "int") must generate a string
+// parameter so argument validation accepts a URL value.
+func TestFlagParamsIntegerOnlyFromCompleteNumericTokens(t *testing.T) {
+	cases := []struct{ placeholder, want string }{
+		{"ENDPOINT", "string"},
+		{"POINT", "string"},
+		{"FILENAME", "string"},
+		{"INT", "integer"},
+		{"INTEGER", "integer"},
+		{"NUMBER", "integer"},
+		{"NUM", "integer"},
+		{"COUNT", "integer"},
+		{"MAX_COUNT", "integer"},
+		{"RETRY-NUM", "integer"},
+	}
+	for _, c := range cases {
+		params := flagParams([]importFlag{{Long: "opt", TakesValue: true, Value: c.placeholder}})
+		if len(params) != 1 || params[0].Type != c.want {
+			t.Errorf("placeholder %s: got %+v, want type %s", c.placeholder, params, c.want)
+		}
+	}
+}
+
+func TestParseHelpTextOptionalPositionalFromUsage(t *testing.T) {
+	text := "usage: demo [-h] src [item]\n\npositional arguments:\n  src   the source\n  item  the item\n\noptions:\n  -h, --help  show help\n"
+	shape := parseHelpText(text)
+	if len(shape.Positionals) != 2 {
+		t.Fatalf("positionals: %+v", shape.Positionals)
+	}
+	byName := map[string]importFlag{}
+	for _, f := range shape.Positionals {
+		byName[f.Long] = f
+	}
+	if byName["src"].Optional {
+		t.Errorf("src is unbracketed in the usage and must stay required: %+v", byName["src"])
+	}
+	if !byName["item"].Optional {
+		t.Errorf("item is bracketed [item] in the usage and must be optional: %+v", byName["item"])
+	}
+}
+
+const optionalPositionalToolScript = `#!/bin/sh
+case "$1" in
+  "--help")
+    echo 'usage: optool [-h] [item]'
+    echo
+    echo 'positional arguments:'
+    echo '  item   the item to use'
+    echo
+    echo 'options:'
+    echo '  -h, --help   show this help message and exit'
+    ;;
+  "--version") echo 'optool version 1.0.0' ;;
+  *) echo "ran:$*" ;;
+esac
+exit 0
+`
+
+// The acceptance oracle for #9559: an imported optional positional is
+// not required, and a call omitting it validates and runs with no
+// operand rendered.
+func TestHelpImportOptionalPositionalMayBeOmitted(t *testing.T) {
+	dir := t.TempDir()
+	bin := fakeTool(t, dir, "optool", optionalPositionalToolScript)
+	spec, _, err := buildGeneratedImport(bin, importOptions{source: "help"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(spec.Tools) != 1 {
+		t.Fatalf("tools: %+v", spec.Tools)
+	}
+	found := false
+	for _, p := range spec.Tools[0].Params {
+		if p.Name == "item" {
+			found = true
+			if p.Required {
+				t.Errorf("the optional positional should not be required: %+v", p)
+			}
+		}
+	}
+	if !found {
+		t.Fatalf("params: %+v", spec.Tools[0].Params)
+	}
+	res, err := spec.Call(context.Background(), spec.Tools[0].Name, map[string]any{})
+	if err != nil {
+		t.Fatalf("a call omitting the optional positional must validate: %v", err)
+	}
+	if !strings.Contains(res.Stdout, "ran:") || strings.Contains(res.Stdout, "item") {
+		t.Errorf("the call should run with no operand rendered, got %q", res.Stdout)
+	}
+}
+
+const optionalSubPositionalToolScript = `#!/bin/sh
+case "$1 $2" in
+  "--help ")
+    echo 'Usage:'
+    echo '  toolbox [command]'
+    echo
+    echo 'Available Commands:'
+    echo '  add   Add an item'
+    ;;
+  "add --help")
+    echo 'Usage:'
+    echo '  toolbox add [flags] [item]'
+    echo
+    echo 'Positional Arguments:'
+    echo '  item   the item to add'
+    echo
+    echo 'Flags:'
+    echo '  -f, --force   overwrite existing'
+    ;;
+  "--version ") echo 'toolbox version 1.0.0' ;;
+esac
+exit 0
+`
+
+func TestHelpImportSubcommandOptionalPositional(t *testing.T) {
+	dir := t.TempDir()
+	bin := fakeTool(t, dir, "toolbox", optionalSubPositionalToolScript)
+	spec, _, err := buildGeneratedImport(bin, importOptions{source: "help"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(spec.Tools) != 1 || spec.Tools[0].Name != "add" {
+		t.Fatalf("tools: %+v", spec.Tools)
+	}
+	found := false
+	for _, p := range spec.Tools[0].Params {
+		if p.Name == "item" {
+			found = true
+			if p.Required {
+				t.Errorf("the subcommand branch must preserve optionality too: %+v", p)
+			}
+		}
+	}
+	if !found {
+		t.Errorf("params: %+v", spec.Tools[0].Params)
 	}
 }

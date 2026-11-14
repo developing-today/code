@@ -762,7 +762,7 @@ def _judge_idna_label(label, host):
     # violation the Worker refuses, while at label start the mapped
     # letter is an ordinary first character, closing the former
     # leading-mark over-refusal (#596).
-    # IDNA2008/UTS-46 marks every punctuation, symbol, separator,
+    # IDNA2008/UTS-46 marks every punctuation, separator,
     # private-use and surrogate codepoint DISALLOWED (the CONTEXTO /
     # CONTEXTJ exceptions below are judged by their own rules: the
     # Catalan middle dot and Hebrew punctuation are context-judged
@@ -772,21 +772,36 @@ def _judge_idna_label(label, host):
     # (not Cn), not format characters (not Cf), NFKC leaves most of
     # them unchanged, and the stdlib IDNA-2003 codec's stringprep
     # tables do not prohibit them — so a decoded label carrying
-    # U+00A8, U+00B4, U+037E or a currency/math symbol passed while
-    # the Worker refuses it (#588). Category-based, not an enumerated
-    # table, so it carries no unicodedata version skew of its own.
+    # U+00A8, U+00B4 or U+037E passed while the Worker refuses it
+    # (#588). Category-based, not an enumerated table, so it carries
+    # no unicodedata version skew of its own.
+    # The symbol categories are NOT refused wholesale (#8428): the
+    # Worker judges the WHATWG-parsed host, and WHATWG domainToASCII
+    # accepts the So/Sc/Sm symbols (U+1F600 -> xn--e28h, U+00A4 ->
+    # xn--bba, U+00D7 -> xn--rca, U+20AC -> xn--lzg, all verified
+    # against Node) — #588's premise that the Worker refuses
+    # currency/math symbols does not hold for the URL-parser path.
+    # Parity therefore refuses only what WHATWG refuses in this
+    # family: punctuation and separators as above, and the Sk
+    # modifier symbols (U+00A8/U+00B4 map to space + combining mark
+    # under UTS-46 and domainToASCII returns empty for them).
+    # Accepting So/Sc/Sm is not an SSRF weakening: these labels
+    # resolve through ordinary public DNS to the same A-label form
+    # the Worker certifies, and the private/loopback/link-local
+    # refusals live in the address checks, not in this category rule.
     if any(
         ord(c) > 0x7F
         and ord(c) not in (0x00B7, 0x05F3, 0x05F4, 0x066B, 0x066C, 0x203F, 0x2040)
         and (
-            unicodedata.category(c)[0] in "PSZ"
+            unicodedata.category(c)[0] in "PZ"
+            or unicodedata.category(c) == "Sk"
             or unicodedata.category(c) in ("Co", "Cs")
         )
         for c in label
     ):
         raise ValueError(
             f"refusing to crawl host {host}: label {label!r} "
-            "contains an IDNA-disallowed punctuation, symbol or separator character"
+            "contains an IDNA-disallowed punctuation, separator or modifier-symbol character"
         )
     label = label.translate({0x0345: "ι"})
     if any(_maps_to_label_separator(c) for c in label if ord(c) > 0x7F):

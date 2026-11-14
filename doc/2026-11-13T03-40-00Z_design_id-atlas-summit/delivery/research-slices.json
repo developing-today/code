@@ -14,7 +14,10 @@
       "goal": "Determine whether the original thirty Part B candidate boundaries can be recovered from an authoritative source, separately from the current statement-derived reconstruction.",
       "enables": "A provenance-backed comparison or an explicit unrecovered disposition that prevents the reconstruction from being mislabeled as the original list.",
       "owned_files": [
-        {"path": "doc/2026-11-13T03-40-00Z_design_id-atlas-summit/delivery/original-30-provenance-report.json", "status": "new"}
+        {
+          "path": "doc/2026-11-13T03-40-00Z_design_id-atlas-summit/delivery/original-30-provenance-report.json",
+          "status": "new"
+        }
       ],
       "requires": [],
       "after": [],

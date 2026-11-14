@@ -24,7 +24,9 @@ import (
 
 // fishTokens splits a fish line the way fish would for the simple shapes
 // completion files use: single and double quotes group, backslash
-// escapes inside double quotes and outside quotes.
+// escapes inside double quotes and outside quotes, and inside single
+// quotes backslash escapes only a quote or another backslash (fish
+// semantics) -- an escaped apostrophe must not close the quote early.
 func fishTokens(line string) []string {
 	var out []string
 	var cur strings.Builder
@@ -41,6 +43,9 @@ func fishTokens(line string) []string {
 			if c == quote {
 				quote = 0
 			} else if c == '\\' && quote == '"' && i+1 < len(line) {
+				i++
+				cur.WriteByte(line[i])
+			} else if c == '\\' && quote == '\'' && i+1 < len(line) && (line[i+1] == '\'' || line[i+1] == '\\') {
 				i++
 				cur.WriteByte(line[i])
 			} else {
@@ -243,17 +248,148 @@ func parseZshCompletion(text, name string) *importShape {
 // declared as a string parameter and import says so in a note on the
 // spec (see buildGeneratedImport's caller): wrong for boolean flags,
 // visible in the file, and fixable by editing the declaration.
+// A list means what its enclosing handler says it means: completions
+// name the handler for a nested command after the binary (_git_bisect
+// completes "git bisect ..."), so a nested handler's subcommand list
+// is emitted with its full command path, and a list whose enclosing
+// function establishes no command context is skipped — promoting it
+// would invent top-level commands the binary does not have (#9560).
 
 var bashListRE = regexp.MustCompile(`(?m)(opts|options|commands|subcommands|cmds)\s*=\s*"([^"]*)"|(opts|options|commands|subcommands|cmds)\s*=\s*'([^']*)'`)
 
+var bashFuncHeaderRE = regexp.MustCompile(`(?m)^[ \t]*(?:function[ \t]+)?([A-Za-z_][A-Za-z0-9_-]*)[ \t]*\([ \t]*\)`)
+
+// bashFuncSpan is one function definition's byte span in the source.
+type bashFuncSpan struct {
+	name       string
+	start, end int // end is just past the closing brace, or len(text)
+}
+
+// bashFuncSpans locates the function definitions in a bash completion
+// file. A list assignment only means what its enclosing function says
+// it means, so the parser needs the spans before it reads any list.
+func bashFuncSpans(text string) []bashFuncSpan {
+	var spans []bashFuncSpan
+	for _, loc := range bashFuncHeaderRE.FindAllStringSubmatchIndex(text, -1) {
+		span := bashFuncSpan{name: text[loc[2]:loc[3]], start: loc[0], end: len(text)}
+		if brace := strings.Index(text[loc[1]:], "{"); brace >= 0 {
+			span.end = bashFuncEnd(text, loc[1]+brace)
+		}
+		spans = append(spans, span)
+	}
+	return spans
+}
+
+// bashFuncEnd returns the offset just past the brace that closes the
+// function whose opening brace is at open. Quoted strings and comments
+// are skipped so braces inside them do not count; ${...} expansions
+// outside quotes are balanced, so counting their braces is safe.
+func bashFuncEnd(text string, open int) int {
+	depth := 0
+	for i := open; i < len(text); i++ {
+		switch text[i] {
+		case '\\':
+			i++
+		case '\'':
+			for i++; i < len(text) && text[i] != '\''; i++ {
+			}
+		case '"':
+			for i++; i < len(text); i++ {
+				if text[i] == '\\' {
+					i++
+				} else if text[i] == '"' {
+					break
+				}
+			}
+		case '#':
+			if i == 0 || strings.ContainsRune(" \t\n;|&(", rune(text[i-1])) {
+				for i < len(text) && text[i] != '\n' {
+					i++
+				}
+			}
+		case '{':
+			depth++
+		case '}':
+			depth--
+			if depth == 0 {
+				return i + 1
+			}
+		}
+	}
+	return len(text)
+}
+
+// bashHandlerPrefix maps an enclosing completion function to the
+// command path its lists belong to, relative to the binary. Bash
+// completion convention names the handler for a command path after
+// the binary: _git completes git itself, _git_bisect completes
+// "git bisect ...". A function that does not follow the convention
+// (an internal helper like __git_ps1, or an unrelated function)
+// establishes no context: ok is false and its lists must be skipped
+// rather than promoted to top-level tools the binary does not have.
+func bashHandlerPrefix(fn, name string) (prefix []string, ok bool) {
+	base := strings.NewReplacer("-", "_", ".", "_").Replace(name)
+	switch {
+	case fn == base || fn == "_"+base:
+		return nil, true
+	case strings.HasPrefix(fn, "_"+base+"_"):
+		rest := strings.TrimPrefix(fn, "_"+base+"_")
+		return strings.Split(rest, "_"), true
+	default:
+		return nil, false
+	}
+}
+
 func parseBashCompletion(text, name string) *importShape {
 	shape := &importShape{}
+	spans := bashFuncSpans(text)
+	// contextAt resolves the command path a byte offset's lists belong
+	// to: the innermost enclosing function decides. Outside any
+	// function the lists are the file's own top-level declarations.
+	contextAt := func(pos int) ([]string, bool) {
+		inner := -1
+		for i, sp := range spans {
+			if sp.start <= pos && pos < sp.end && (inner < 0 || spans[inner].start <= sp.start) {
+				inner = i
+			}
+		}
+		if inner < 0 {
+			return nil, true
+		}
+		return bashHandlerPrefix(spans[inner].name, name)
+	}
 	seenFlag := map[string]bool{}
 	seenSub := map[string]bool{}
-	for _, m := range bashListRE.FindAllStringSubmatch(text, -1) {
-		kind, list := m[1], m[2]
-		if kind == "" {
-			kind, list = m[3], m[4]
+	subIndex := map[string]int{}
+	subFlagSeen := map[string]map[string]bool{}
+	// getSub returns the index of the sub for path, creating it if new.
+	// An index, not a pointer: appending to shape.Subs may reallocate
+	// the backing array, which would strand a stored pointer.
+	getSub := func(path []string) int {
+		joined := strings.Join(path, "_")
+		if idx, ok := subIndex[joined]; ok {
+			return idx
+		}
+		sub := importSub{Name: joined}
+		if len(path) > 1 {
+			sub.Path = append([]string(nil), path...)
+		}
+		shape.Subs = append(shape.Subs, sub)
+		subIndex[joined] = len(shape.Subs) - 1
+		subFlagSeen[joined] = map[string]bool{}
+		seenSub[joined] = true
+		return len(shape.Subs) - 1
+	}
+	for _, loc := range bashListRE.FindAllStringSubmatchIndex(text, -1) {
+		kind, list := "", ""
+		if loc[2] >= 0 {
+			kind, list = text[loc[2]:loc[3]], text[loc[4]:loc[5]]
+		} else {
+			kind, list = text[loc[6]:loc[7]], text[loc[8]:loc[9]]
+		}
+		prefix, known := contextAt(loc[0])
+		if !known {
+			continue // no establishable context: never invent top-level tools
 		}
 		for _, w := range strings.Fields(list) {
 			switch {
@@ -261,14 +397,22 @@ func parseBashCompletion(text, name string) *importShape {
 				long := strings.TrimPrefix(w, "--")
 				long = strings.TrimSuffix(long, "=")
 				f := importFlag{Long: long, TakesValue: true}
-				if !seenFlag[f.flag()] {
-					seenFlag[f.flag()] = true
-					shape.Global = append(shape.Global, f)
+				if len(prefix) == 0 {
+					if !seenFlag[f.flag()] {
+						seenFlag[f.flag()] = true
+						shape.Global = append(shape.Global, f)
+					}
+				} else if idx := getSub(prefix); !subFlagSeen[shape.Subs[idx].Name][f.flag()] {
+					subFlagSeen[shape.Subs[idx].Name][f.flag()] = true
+					shape.Subs[idx].Flags = append(shape.Subs[idx].Flags, f)
 				}
 			case (kind == "commands" || kind == "subcommands" || kind == "cmds") && !strings.HasPrefix(w, "-"):
-				if w != "help" && !seenSub[w] {
-					seenSub[w] = true
-					shape.Subs = append(shape.Subs, importSub{Name: w})
+				if w == "help" {
+					continue
+				}
+				path := append(append([]string(nil), prefix...), w)
+				if !seenSub[strings.Join(path, "_")] {
+					getSub(path)
 				}
 			}
 		}
@@ -423,6 +567,43 @@ func firstSentence(s string) string {
 }
 
 var helpRowRE = regexp.MustCompile(`^\s{1,6}(\S+)\s{2,}(\S.*)$`)
+var usageBracketRE = regexp.MustCompile("\\[([^\\[\\]]*)\\]")
+
+// optionalPositionalNames extracts the positional names a help text's
+// usage block marks optional: the bracketed [name] form (argparse
+// [item], cobra add [item]). The usage block is the usage: line plus
+// its continuation lines, up to the first blank line; only bracket
+// groups there count, so a [word] in prose or a description further
+// down cannot flip a positional optional. Inside a group the first
+// field is the candidate: a leading dash makes it an optional flag
+// group ([-h], [--opt <v>]), not a positional.
+func optionalPositionalNames(text string) map[string]bool {
+	out := map[string]bool{}
+	inUsage := false
+	for _, line := range strings.Split(text, "\n") {
+		trimmed := strings.TrimSpace(line)
+		if strings.HasPrefix(strings.ToLower(trimmed), "usage:") {
+			inUsage = true
+		} else if inUsage && trimmed == "" {
+			inUsage = false
+		}
+		if !inUsage {
+			continue
+		}
+		for _, m := range usageBracketRE.FindAllStringSubmatch(line, -1) {
+			fields := strings.Fields(m[1])
+			if len(fields) == 0 || strings.HasPrefix(fields[0], "-") {
+				continue
+			}
+			name := strings.Split(fields[0], "|")[0]
+			name = strings.TrimSuffix(strings.Trim(name, "<>[]"), "...")
+			if name != "" {
+				out[strings.ReplaceAll(name, "-", "_")] = true
+			}
+		}
+	}
+	return out
+}
 
 // parseFlagSpec parses the flag part of one help or man line:
 // "-f, --file <path>", "--output=FILE", "-v". A trailing token that is
@@ -482,6 +663,7 @@ func parseFlagSpec(spec string) []importFlag {
 
 func parseHelpText(text string) *importShape {
 	shape := &importShape{}
+	optional := optionalPositionalNames(text)
 	section := ""
 	seenGlobal := map[string]bool{}
 	var firstUsageLine string
@@ -543,6 +725,7 @@ func parseHelpText(text string) *importShape {
 					Long:       strings.ReplaceAll(name, "-", "_"),
 					Desc:       strings.TrimSpace(m[2]),
 					TakesValue: true,
+					Optional:   strings.HasPrefix(m[1], "[") || optional[strings.ReplaceAll(name, "-", "_")],
 				})
 			}
 		}

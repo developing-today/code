@@ -50,6 +50,38 @@ func TestParseFishCompletion(t *testing.T) {
 	}
 }
 
+// Regression (issue #9795): an escaped apostrophe inside a single-quoted
+// fish description must not close the quote early. With the early close,
+// the quote reopening at "format'" swallowed the trailing -r -F, so
+// fd's --ignore-file lost its required parameter and rendered boolean.
+// Oracle: hand-written expected shape, as with the fixtures above.
+func TestParseFishCompletionEscapedApostrophe(t *testing.T) {
+	text := "complete -c fd -l ignore-file -d 'Add a custom ignore-file in \\'.gitignore\\' format' -r -F\n"
+	shape := parseFishCompletion(text, "fd")
+	if len(shape.Global) != 1 {
+		t.Fatalf("global flags: %+v", shape.Global)
+	}
+	f := shape.Global[0]
+	if f.Long != "ignore-file" || !f.TakesValue {
+		t.Errorf("ignore-file flag: %+v", f)
+	}
+	if f.Desc != "Add a custom ignore-file in '.gitignore' format" {
+		t.Errorf("ignore-file desc: %q", f.Desc)
+	}
+	// Token-level oracle for fish single-quote escapes: \' and \\ are
+	// escapes, any other backslash stays literal.
+	for in, want := range map[string]string{
+		`'it\'s'`: "it's",
+		`'a\\b'`:  `a\b`,
+		`'a\nb'`:  `a\nb`,
+	} {
+		got := fishTokens(in)
+		if len(got) != 1 || got[0] != want {
+			t.Errorf("fishTokens(%q) = %v, want [%q]", in, got, want)
+		}
+	}
+}
+
 const helpFixture = `Toolbox does things with items.
 
 Usage:
@@ -193,6 +225,84 @@ func TestParseBashCompletion(t *testing.T) {
 	}
 }
 
+// gitStyleBashFixture mirrors the installed git completion's shape:
+// a top-level handler, a nested-command handler (_git_bisect), and an
+// internal helper whose lists name no command context at all.
+const gitStyleBashFixture = `_git() {
+  local commands="bisect checkout"
+  local opts="--git-dir --bare"
+}
+_git_bisect() {
+  local subcommands="start bad good reset"
+  local opts="--term-good --term-bad"
+}
+__git_helper() {
+  local commands="bogus"
+}
+complete -F _git git
+`
+
+func TestParseBashCompletionNestedHandlerKeepsContext(t *testing.T) {
+	// Oracle: the completion file's own handler structure. _git_bisect
+	// completes "git bisect ...", so its subcommands list is the word
+	// list of git bisect, never of git itself; __git_helper follows no
+	// handler naming convention, so its list establishes nothing.
+	shape := parseBashCompletion(gitStyleBashFixture, "git")
+	var names []string
+	byName := map[string]importSub{}
+	for _, s := range shape.Subs {
+		names = append(names, s.Name)
+		byName[s.Name] = s
+	}
+	for _, want := range []string{"bisect", "checkout", "bisect_start", "bisect_bad", "bisect_good", "bisect_reset"} {
+		if _, ok := byName[want]; !ok {
+			t.Errorf("missing subcommand %q in %v", want, names)
+		}
+	}
+	for _, banned := range []string{"start", "bad", "good", "reset", "bogus"} {
+		if _, ok := byName[banned]; ok {
+			t.Errorf("context-free subcommand %q promoted to top level: %v", banned, names)
+		}
+	}
+	if path := byName["bisect_start"].Path; len(path) != 2 || path[0] != "bisect" || path[1] != "start" {
+		t.Errorf("bisect_start path: %v", path)
+	}
+	// The nested handler's own flags belong to the nested command, not
+	// to the binary's global flag set.
+	if len(byName["bisect"].Flags) != 2 {
+		t.Errorf("bisect flags: %+v", byName["bisect"].Flags)
+	}
+	if len(shape.Global) != 2 {
+		t.Errorf("global flags: %+v", shape.Global)
+	}
+}
+
+func TestShapeToSpecNestedSubcommandArgs(t *testing.T) {
+	// Oracle: shapeToSpec's fixed-args contract — a tool's Args are the
+	// exact words the binary is invoked with, so the tool for
+	// "git bisect start" must carry both words, in order.
+	shape := parseBashCompletion(gitStyleBashFixture, "git")
+	prov := &adapter.Provenance{Source: "completion", SourceDetail: "fixture", GeneratedAt: "2026-01-01T00:00:00Z", Generator: "test"}
+	spec, _, err := shapeToSpec("git", "git", shape, prov)
+	if err != nil {
+		t.Fatal(err)
+	}
+	byName := map[string]adapter.ToolSpec{}
+	for _, tool := range spec.Tools {
+		byName[tool.Name] = tool
+		if tool.Name == "start" {
+			t.Errorf("bare start tool generated: %+v", tool)
+		}
+	}
+	tool, ok := byName["bisect_start"]
+	if !ok {
+		t.Fatalf("no bisect_start tool in %+v", spec.Tools)
+	}
+	if len(tool.Args) != 2 || tool.Args[0] != "bisect" || tool.Args[1] != "start" {
+		t.Errorf("bisect_start args: %v", tool.Args)
+	}
+}
+
 func TestShapeToSpecSubcommands(t *testing.T) {
 	shape := parseFishCompletion(fishFixture, "toolbox")
 	prov := &adapter.Provenance{Source: "completion", SourceDetail: "fixture", GeneratedAt: "2026-01-01T00:00:00Z", Generator: "test"}
@@ -241,6 +351,68 @@ func TestShapeToSpecSingleTool(t *testing.T) {
 	if last.Name != "args" || last.Type != "array" {
 		t.Errorf("trailing param should be the positional catch-all: %+v", last)
 	}
+}
+
+func TestShapeToSpecCatchAllNameNeverCollides(t *testing.T) {
+	// #9558: imported help that itself declares a positional named
+	// `args` (or a `--args` flag) must not yield two `args` params —
+	// Validate accepts duplicates, Schema overwrites, and buildArgs
+	// would render both from the same input. The parsed param keeps
+	// its name; the catch-all is renamed, in both branches.
+	prov := &adapter.Provenance{Source: "help", GeneratedAt: "2026-01-01T00:00:00Z", Generator: "test"}
+	argsFlag := importFlag{Long: "args", Desc: "the args flag", TakesValue: true}
+	argsPos := importFlag{Long: "args", Desc: "the args positional", TakesValue: true}
+
+	assertUnique := func(t *testing.T, tool adapter.ToolSpec, wantParsed bool) {
+		t.Helper()
+		seen := map[string]int{}
+		var catchAll *adapter.Param
+		for i := range tool.Params {
+			seen[tool.Params[i].Name]++
+			if tool.Params[i].Type == "array" {
+				catchAll = &tool.Params[i]
+			}
+		}
+		for name, n := range seen {
+			if n > 1 {
+				t.Errorf("tool %s: param name %q appears %d times: %+v", tool.Name, name, n, tool.Params)
+			}
+		}
+		if catchAll == nil {
+			t.Fatalf("tool %s: no array catch-all param: %+v", tool.Name, tool.Params)
+		}
+		if wantParsed {
+			if seen["args"] != 1 {
+				t.Errorf("tool %s: parsed `args` param should survive exactly once: %+v", tool.Name, tool.Params)
+			}
+			if catchAll.Name == "args" {
+				t.Errorf("tool %s: catch-all must be renamed off the collision: %+v", tool.Name, tool.Params)
+			}
+		} else if catchAll.Name != "args" {
+			t.Errorf("tool %s: uncollided catch-all keeps the name `args`: %+v", tool.Name, tool.Params)
+		}
+	}
+
+	// Single-tool branch: positional named args, and --args flag.
+	for name, shape := range map[string]*importShape{
+		"positional args": {Description: "d", Positionals: []importFlag{argsPos}},
+		"flag --args":     {Description: "d", Global: []importFlag{argsFlag}},
+		"no collision":    {Description: "d", Positionals: []importFlag{{Long: "item", TakesValue: true}}},
+	} {
+		spec, _, err := shapeToSpec("toolbox", "toolbox", shape, prov)
+		if err != nil {
+			t.Fatalf("%s: %v", name, err)
+		}
+		assertUnique(t, spec.Tools[0], name != "no collision")
+	}
+
+	// Subcommand branch: positional named args on the subcommand.
+	shape := &importShape{Subs: []importSub{{Name: "add", Desc: "add one", Positionals: []importFlag{argsPos}}}}
+	spec, _, err := shapeToSpec("toolbox", "toolbox", shape, prov)
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertUnique(t, spec.Tools[0], true)
 }
 
 func TestParsersRefuseGarbage(t *testing.T) {
@@ -332,6 +504,32 @@ func TestBuildCompletionFileImport(t *testing.T) {
 	}
 	if len(loaded) != 1 || loaded[0].Name != "toolbox" || loaded[0].Provenance == nil {
 		t.Errorf("round trip: %+v", loaded)
+	}
+}
+
+func TestBuildCompletionFileImportDottedProgramName(t *testing.T) {
+	// Issue #9796: a dotted program name must survive for parsing
+	// and for the spec's command; only the adapter namespace name
+	// is sanitised (dots to dashes). Before the fix the import of
+	// this fixture failed as empty, because every `complete` line
+	// is for -c toolbox.v2 while the parser was handed toolbox-v2.
+	dotted := strings.ReplaceAll(fishFixture, "-c toolbox", "-c toolbox.v2")
+	path := filepath.Join(t.TempDir(), "toolbox.v2.fish")
+	if err := os.WriteFile(path, []byte(dotted), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	spec, _, err := buildCompletionFileImport(importOptions{completion: path})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if spec.Name != "toolbox-v2" {
+		t.Errorf("adapter namespace name should be sanitised: %q", spec.Name)
+	}
+	if spec.Command != "toolbox.v2" {
+		t.Errorf("spec command should keep the original program name: %q", spec.Command)
+	}
+	if len(spec.Tools) != 2 {
+		t.Errorf("declaration should be non-empty with both subcommand tools: %+v", spec.Tools)
 	}
 }
 

@@ -191,7 +191,11 @@ describe("buildHealth probes", () => {
     // a sync: lastSyncAt is unknown. The stale provider's measuredAt is
     // its retained last success and stays the last-sync time.
     expect(view.quotaGatherer?.providers[0]).toMatchObject({ providerId: "codex", state: "error", lastSyncAt: null });
-    expect(view.quotaGatherer?.providers[1]).toMatchObject({ providerId: "claude", state: "stale", lastSyncAt: syncedAt });
+    expect(view.quotaGatherer?.providers[1]).toMatchObject({
+      providerId: "claude",
+      state: "stale",
+      lastSyncAt: syncedAt,
+    });
   });
 
   test("a stopped collector is visible on the health page by the next five-minute interval", async () => {

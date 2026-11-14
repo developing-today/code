@@ -73,6 +73,13 @@ const ALLOWED_IMAGE_TYPES: &[&str] = &[
     "image/x-icon",
 ];
 
+/// Default and maximum number of images returned by one browser request.
+const DEFAULT_IMAGE_PAGE_SIZE: usize = 50;
+const MAX_IMAGE_PAGE_SIZE: usize = 100;
+
+/// Maximum number of concurrent metadata or blob-status reads for image pages.
+const IMAGE_LOOKUP_CONCURRENCY: usize = 16;
+
 /// Map an image MIME type to a file extension.
 fn mime_to_extension(mime: &str) -> &'static str {
     match mime {
@@ -726,14 +733,17 @@ async fn files_page_handler(
     State(state): State<AppState>,
     Query(query): Query<FileListQuery>,
     headers: HeaderMap,
-) -> impl IntoResponse {
-    let page = get_file_list_page(&state, &query).await;
+) -> Response {
+    let page = match get_file_list_page(&state, &query).await {
+        Ok(page) => page,
+        Err(error) => return file_list_error_response(error),
+    };
     let content = render_file_list(&page);
     if is_partial_request(&headers) {
         // Partial request - return wrapped content with header/footer
-        Html(render_main_page_wrapper(&content))
+        Html(render_main_page_wrapper(&content)).into_response()
     } else {
-        Html(render_page("Files", &content, "", &state.assets))
+        Html(render_page("Files", &content, "", &state.assets)).into_response()
     }
 }
 
@@ -1079,10 +1089,13 @@ async fn blob_handler(
 async fn files_list_handler(
     State(state): State<AppState>,
     Query(query): Query<FileListQuery>,
-) -> impl IntoResponse {
-    let page = get_file_list_page(&state, &query).await;
+) -> Response {
+    let page = match get_file_list_page(&state, &query).await {
+        Ok(page) => page,
+        Err(error) => return file_list_error_response(error),
+    };
     // Return just the inner content (list + pagination) for partial replacement
-    Html(render_file_list_content(&page))
+    Html(render_file_list_content(&page)).into_response()
 }
 
 /// API handler for peers partial (used by auto-refresh).
@@ -1376,18 +1389,49 @@ async fn blob_size(store: &iroh_blobs::api::Store, hash: iroh_blobs::Hash) -> u6
 /// Files are sorted: primary files first (alphabetically), then auto, then archive.
 /// Internal tags (starting with `.`) are excluded.
 /// Soft-deleted files are included but marked with `is_deleted = true`.
-async fn get_file_list(state: &AppState) -> Vec<FileInfo> {
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum FileListError {
+    MetadataTags,
+    TagList,
+    TagStream,
+    SearchTags,
+}
+
+fn checked_file_list_result<T, E>(
+    result: Result<T, E>,
+    failure: FileListError,
+) -> Result<T, FileListError> {
+    result.map_err(|_| failure)
+}
+
+fn file_list_error_response(error: FileListError) -> Response {
+    tracing::error!(?error, "Failed to build file list");
+    (StatusCode::INTERNAL_SERVER_ERROR, "Failed to list files").into_response()
+}
+
+async fn next_tag_info<S, T, E>(tags: &mut S) -> Result<Option<T>, FileListError>
+where
+    S: futures_lite::Stream<Item = Result<T, E>> + Unpin,
+{
     use futures_lite::StreamExt;
+
+    match tags.next().await {
+        Some(Ok(tag)) => Ok(Some(tag)),
+        Some(Err(_)) => Err(FileListError::TagStream),
+        None => Ok(None),
+    }
+}
+
+async fn get_file_list(state: &AppState) -> Result<Vec<FileInfo>, FileListError> {
     use std::collections::HashMap;
 
     let mut files = Vec::new();
 
     // Load all tags from the global namespace for created/modified/user-tag lookups.
-    let all_meta_tags = state
-        .tag_store
-        .list_all(&state.tag_store.global)
-        .await
-        .unwrap_or_default();
+    let all_meta_tags = checked_file_list_result(
+        state.tag_store.list_all(&state.tag_store.global).await,
+        FileListError::MetadataTags,
+    )?;
     let mut created_map: HashMap<String, u64> = HashMap::new();
     let mut modified_map: HashMap<String, u64> = HashMap::new();
     let mut origin_map: HashMap<String, String> = HashMap::new();
@@ -1444,10 +1488,9 @@ async fn get_file_list(state: &AppState) -> Vec<FileInfo> {
     let mut hash_to_primary: HashMap<String, String> = HashMap::new();
     let mut raw_tags: Vec<(String, String, u64)> = Vec::new();
 
-    let Ok(mut tags) = state.store.tags().list().await else {
-        return files;
-    };
-    while let Some(Ok(tag_info)) = tags.next().await {
+    let mut tags =
+        checked_file_list_result(state.store.tags().list().await, FileListError::TagList)?;
+    while let Some(tag_info) = next_tag_info(&mut tags).await? {
         let name = String::from_utf8_lossy(tag_info.name.as_ref()).to_string();
 
         // Skip internal tags (e.g., .meta)
@@ -1539,7 +1582,7 @@ async fn get_file_list(state: &AppState) -> Vec<FileInfo> {
         })
     });
 
-    files
+    Ok(files)
 }
 
 fn record_display_name(
@@ -1596,8 +1639,11 @@ fn paginate<T: Clone>(
     (page_items, page, per_page)
 }
 
-async fn get_file_list_page(state: &AppState, query: &FileListQuery) -> FileListPage {
-    let mut files = get_file_list(state).await;
+async fn get_file_list_page(
+    state: &AppState,
+    query: &FileListQuery,
+) -> Result<FileListPage, FileListError> {
+    let mut files = get_file_list(state).await?;
 
     let show_deleted = query.show_deleted.unwrap_or(false);
 
@@ -1619,24 +1665,26 @@ async fn get_file_list_page(state: &AppState, query: &FileListQuery) -> FileList
 
         // Collect subjects that match via tags (key or value contains needle)
         let mut tag_matches: std::collections::HashSet<String> = std::collections::HashSet::new();
-        if let Ok(all_tags) = state.tag_store.list_all(&state.tag_store.global).await {
-            for tag in &all_tags {
-                // Skip internal/system tags for search
-                if tag.key.starts_with(b"archive.") {
-                    continue;
-                }
-                if tag
-                    .key
-                    .display_lossy()
-                    .to_lowercase()
-                    .contains(&needle_lower)
-                    || tag
-                        .value
-                        .as_ref()
-                        .is_some_and(|v| v.display_lossy().to_lowercase().contains(&needle_lower))
-                {
-                    tag_matches.insert(tag.subject.display_lossy());
-                }
+        let all_tags = checked_file_list_result(
+            state.tag_store.list_all(&state.tag_store.global).await,
+            FileListError::SearchTags,
+        )?;
+        for tag in &all_tags {
+            // Skip internal/system tags for search
+            if tag.key.starts_with(b"archive.") {
+                continue;
+            }
+            if tag
+                .key
+                .display_lossy()
+                .to_lowercase()
+                .contains(&needle_lower)
+                || tag
+                    .value
+                    .as_ref()
+                    .is_some_and(|v| v.display_lossy().to_lowercase().contains(&needle_lower))
+            {
+                tag_matches.insert(tag.subject.display_lossy());
             }
         }
 
@@ -1700,7 +1748,7 @@ async fn get_file_list_page(state: &AppState, query: &FileListQuery) -> FileList
     let total = files.len();
     let (page_files, page, per_page) = paginate(&files, query.page, query.per_page);
 
-    FileListPage {
+    Ok(FileListPage {
         files: page_files,
         total,
         page,
@@ -1709,7 +1757,7 @@ async fn get_file_list_page(state: &AppState, query: &FileListQuery) -> FileList
         show_deleted,
         sort,
         origin_filter,
-    }
+    })
 }
 
 /// Get the human-readable name for a hash, preferring primary file names.
@@ -1836,6 +1884,22 @@ struct ImageEntry {
     size: u64,
 }
 
+/// Query parameters for one image-browser page.
+#[derive(Debug, Deserialize)]
+struct ImageListQuery {
+    /// URL-safe-base64 tag-name cursor returned by the previous page.
+    after: Option<String>,
+    /// Requested page size, clamped to [`MAX_IMAGE_PAGE_SIZE`].
+    limit: Option<usize>,
+}
+
+/// A bounded page of image-browser entries.
+#[derive(Debug, Serialize)]
+struct ImageListResponse {
+    images: Vec<ImageEntry>,
+    next_cursor: Option<String>,
+}
+
 /// Request body for renaming a file.
 #[derive(Debug, Deserialize)]
 struct RenameRequest {
@@ -1956,6 +2020,18 @@ mod save_publication_tests {
         .await
         .unwrap();
         (state, endpoint, docs)
+    }
+
+    #[tokio::test]
+    async fn empty_store_file_list_remains_a_successful_empty_result() {
+        let (state, _endpoint, _docs) = state().await;
+
+        assert!(get_file_list(&state).await.unwrap().is_empty());
+        let page = get_file_list_page(&state, &FileListQuery::default())
+            .await
+            .unwrap();
+        assert_eq!(page.total, 0);
+        assert!(page.files.is_empty());
     }
 
     async fn save(state: AppState, name: &str, text: &str) -> Response {
@@ -2120,7 +2196,7 @@ mod save_publication_tests {
             }
         }
 
-        let files = get_file_list(&state).await;
+        let files = get_file_list(&state).await.unwrap();
         let mut origins: Vec<String> = files
             .iter()
             .filter(|f| f.hash == hash.to_string())
@@ -2142,7 +2218,8 @@ mod save_publication_tests {
                     ..Default::default()
                 },
             )
-            .await;
+            .await
+            .unwrap();
             assert_eq!(page.total, 1, "origin filter {origin}");
             assert_eq!(page.files[0].name, expected_name, "origin filter {origin}");
         }
@@ -2800,12 +2877,12 @@ mod upload_router_tests {
         (status, String::from_utf8_lossy(&bytes).into_owned())
     }
 
-    async fn list_images(router: Router) -> Vec<serde_json::Value> {
+    async fn list_images_page(router: Router, uri: &str) -> serde_json::Value {
         let response = router
             .oneshot(
                 Request::builder()
                     .method("GET")
-                    .uri("/api/images")
+                    .uri(uri)
                     .body(Body::empty())
                     .unwrap(),
             )
@@ -2814,6 +2891,46 @@ mod upload_router_tests {
         assert_eq!(response.status(), StatusCode::OK);
         let bytes = to_bytes(response.into_body(), usize::MAX).await.unwrap();
         serde_json::from_slice(&bytes).unwrap()
+    }
+
+    async fn list_images(router: Router) -> Vec<serde_json::Value> {
+        let mut images = Vec::new();
+        let mut cursor: Option<String> = None;
+        loop {
+            let uri = cursor
+                .as_deref()
+                .map(|cursor| format!("/api/images?after={cursor}"))
+                .unwrap_or_else(|| "/api/images".to_owned());
+            let page = list_images_page(router.clone(), &uri).await;
+            images.extend(
+                page["images"]
+                    .as_array()
+                    .expect("image page has an images array")
+                    .iter()
+                    .cloned(),
+            );
+            cursor = page["next_cursor"].as_str().map(str::to_owned);
+            if cursor.is_none() {
+                break;
+            }
+        }
+        images
+    }
+
+    async fn add_tagged_blob(state: &AppState, name: &str, content_type: &str, bytes: &[u8]) {
+        let added = state.store.blobs().add_bytes(bytes.to_vec()).await.unwrap();
+        state.store.tags().set(name, added.hash).await.unwrap();
+        state
+            .tag_store
+            .set_tag(
+                &state.tag_store.global,
+                name.as_bytes(),
+                b"content-type",
+                Some(content_type.as_bytes()),
+                b"",
+            )
+            .await
+            .unwrap();
     }
 
     fn multipart_body_noname(content_type: &str, file_bytes: &[u8]) -> Vec<u8> {
@@ -3224,6 +3341,85 @@ mod upload_router_tests {
         };
         assert_eq!(hash_of(&first_name), uploaded_hash(&first));
         assert_eq!(hash_of(&second_name), uploaded_hash(&second));
+    }
+
+    #[tokio::test]
+    async fn image_listing_pages_filter_mixed_tags_in_name_order() {
+        let (router, state, _dir, _endpoint, _docs) = router_with_state().await;
+        add_tagged_blob(&state, "a-image.png", "image/png", b"first-image").await;
+        add_tagged_blob(&state, "b-not-image.txt", "text/plain", b"text").await;
+        add_tagged_blob(&state, ".internal.png", "image/png", b"internal").await;
+        add_tagged_blob(&state, "c-image.jpg", "image/jpeg", b"second-image").await;
+        add_tagged_blob(&state, "z-image.webp", "image/webp", b"third-image").await;
+
+        let first = list_images_page(router.clone(), "/api/images?limit=2").await;
+        let first_images = first["images"].as_array().unwrap();
+        assert_eq!(first_images.len(), 2);
+        assert_eq!(first_images[0]["name"], "a-image.png");
+        assert_eq!(first_images[1]["name"], "c-image.jpg");
+        assert_eq!(first_images[0]["size"], 11);
+        assert!(first["next_cursor"].as_str().is_some());
+
+        let cursor = first["next_cursor"].as_str().unwrap();
+        let second = list_images_page(
+            router.clone(),
+            &format!("/api/images?limit=2&after={cursor}"),
+        )
+        .await;
+        let second_images = second["images"].as_array().unwrap();
+        assert_eq!(second_images.len(), 1);
+        assert_eq!(second_images[0]["name"], "z-image.webp");
+        assert_eq!(second["next_cursor"], serde_json::Value::Null);
+        assert!(
+            second_images[0]["url"]
+                .as_str()
+                .unwrap()
+                .starts_with("/blob/")
+        );
+    }
+
+    #[tokio::test]
+    async fn image_listing_rejects_malformed_cursor_and_clamps_page_size() {
+        let (router, state, _dir, _endpoint, _docs) = router_with_state().await;
+        for index in 0..=MAX_IMAGE_PAGE_SIZE {
+            add_tagged_blob(
+                &state,
+                &format!("image-{index:03}.png"),
+                "image/png",
+                b"image",
+            )
+            .await;
+        }
+
+        let response = router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/api/images?limit=1000")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let bytes = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        let page: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(
+            page["images"].as_array().unwrap().len(),
+            MAX_IMAGE_PAGE_SIZE
+        );
+        assert!(page["next_cursor"].as_str().is_some());
+
+        let response = router
+            .oneshot(
+                Request::builder()
+                    .uri("/api/images?after=not-base64!")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
     }
 
     // #751: a body over UPLOAD_BODY_LIMIT must surface as the clear 413,
@@ -3782,6 +3978,36 @@ async fn identity_update_name_handler(
 mod tests {
     use super::*;
     use proptest::prelude::*;
+
+    #[test]
+    fn file_list_backend_failures_map_to_server_errors() {
+        for failure in [
+            FileListError::MetadataTags,
+            FileListError::TagList,
+            FileListError::SearchTags,
+        ] {
+            let result = checked_file_list_result::<(), _>(Err("injected"), failure);
+            assert_eq!(result, Err(failure));
+            assert_eq!(
+                file_list_error_response(failure).status(),
+                StatusCode::INTERNAL_SERVER_ERROR
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn file_list_stream_failure_does_not_return_partial_success() {
+        let mut tags = futures_lite::stream::iter([
+            Ok::<_, &'static str>("first tag"),
+            Err("injected stream failure"),
+        ]);
+
+        assert_eq!(next_tag_info(&mut tags).await, Ok(Some("first tag")));
+        assert_eq!(
+            next_tag_info(&mut tags).await,
+            Err(FileListError::TagStream)
+        );
+    }
 
     fn raw_doc(blocks: &[&[&str]]) -> serde_json::Value {
         let content: Vec<serde_json::Value> = blocks

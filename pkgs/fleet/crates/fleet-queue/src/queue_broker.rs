@@ -1183,9 +1183,16 @@ fn dispatch(st: &State, path: &str, req: &Value) -> Value {
             };
             let offset =
                 crate::client::list_offset_or_default(req.get("offset").and_then(|o| o.as_i64()));
+            // #9420 parity with the Turso verb_list: omit the queue
+            // predicate when no queue is named (queue=eq. with an
+            // empty value matches nothing and breaks exact readback).
+            let queue_pred = if queue.is_empty() {
+                String::new()
+            } else {
+                format!("&queue=eq.{}", quote(queue, ""))
+            };
             let mut path = format!(
-                "tasks?select={select}&queue=eq.{}&order=priority.asc,created_at.asc,id.asc&limit={limit}&offset={offset}",
-                quote(queue, "")
+                "tasks?select={select}{queue_pred}&order=priority.asc,created_at.asc,id.asc&limit={limit}&offset={offset}"
             );
             // #7871: --task narrows to one task id, so a worker can
             // verify a single recent completion from list output
@@ -1195,6 +1202,10 @@ fn dispatch(st: &State, path: &str, req: &Value) -> Value {
             }
             if let Some(s) = req.get("status").and_then(|s| s.as_str()) {
                 path += &format!("&status=eq.{}", quote(s, ""));
+            }
+            // #9420: dedupe_key narrows to the task carrying that key.
+            if let Some(d) = req.get("dedupe_key").and_then(|d| d.as_str()) {
+                path += &format!("&dedupe_key=eq.{}", quote(d, ""));
             }
             if let Some(nb) = req.get("not_before").and_then(|s| s.as_str()) {
                 path += &format!("&or=(not_before.is.null,not_before.lte.{})", quote(nb, ":"));

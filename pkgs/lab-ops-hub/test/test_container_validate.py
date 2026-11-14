@@ -1015,8 +1015,12 @@ class TestValidateCrawlUrl(unittest.TestCase):
     def test_a_label_must_be_its_uts46_mapped_form_and_disallowed_free(self):
         # #588 residual: a decoded A-label that is not its own UTS-46
         # mapped form, or that carries an IDNA-disallowed punctuation /
-        # symbol / separator character, is refused — the punycode
-        # round-trip alone certifies all of these.
+        # separator / modifier-symbol character, is refused — the
+        # punycode round-trip alone certifies all of these. The Sc
+        # cases #588 originally listed here (cent sign, euro sign)
+        # moved to the accepted controls under the #8428 WHATWG
+        # parity decision: domainToASCII accepts them, so the Worker
+        # certifies these hosts and the container must too.
         # Mapped-form class (the issue's headline hosts):
         self.assertRefused("http://xn--example-yoa.com/")  # ex\u00c0ample (uppercase)
         self.assertRefused(
@@ -1038,12 +1042,8 @@ class TestValidateCrawlUrl(unittest.TestCase):
         self.assertRefused(
             "http://xn--example-f9e.com/"
         )  # ex\u037eample (Greek question mark, Po)
-        self.assertRefused(
-            "http://xn--example-3ha.com/"
-        )  # ex\u00a2ample (cent sign, Sc)
-        self.assertRefused(
-            "http://xn--example-u17c.com/"
-        )  # ex\u20acample (euro sign, Sc)
+        # (The cent-sign and euro-sign A-labels that stood here as
+        # refusals are accepted controls below since #8428.)
         # The raw spellings of the DISALLOWED class are refused too
         # (the check sits in the shared label judge):
         self.assertRefused("http://ex\u00a8ample.com/")
@@ -1057,6 +1057,14 @@ class TestValidateCrawlUrl(unittest.TestCase):
         self.assertAccepted("http://xn--bcher-kva.de/")  # b\u00fccher.de
         self.assertAccepted("http://xn--fsq.com/")  # \u4f8b.com
         self.assertAccepted("http://xn--al-0ea.com/")  # a\u00b7l (Catalan middle dot)
+        # #8428 parity controls: Sc symbols are WHATWG-accepted.
+        self.assertEqual(
+            validate_crawl_url("http://xn--example-3ha.com/"),
+            "http://xn--example-3ha.com/",
+        )  # ex\u00a2ample (cent sign, Sc)
+        self.assertAccepted(
+            "http://xn--example-u17c.com/"
+        )  # ex\u20acample (euro sign, Sc)
 
     def test_judges_length_and_blocked_names_on_the_mapped_form(self):
         # UTS-46 mapping deletes the "ignored" codepoints before any
@@ -1462,6 +1470,41 @@ class TestValidateCrawlUrl(unittest.TestCase):
         }
         for raw, expected in cases.items():
             self.assertEqual(validate_crawl_url(raw), expected, raw)
+
+    def test_symbol_hosts_match_whatwg_parity(self):
+        # #8428: the #588 category check refused every P/S/Z-category
+        # character, but the Worker judges the WHATWG-parsed host and
+        # domainToASCII ACCEPTS the So/Sc/Sm symbols — the two copies
+        # disagreed and this suite failed on clean main. Parity rule:
+        # So/Sc/Sm accepted (values below are Node domainToASCII
+        # returns, re-verified with the fix); Sk modifier symbols and
+        # punctuation/separators stay refused, in raw form (they map
+        # to space + combining mark under UTS-46) and as decoded
+        # A-labels (judged unmapped by _judge_a_label).
+        accepted = {
+            "http://\U0001f600.com/": "http://xn--e28h.com/",
+            "http://\u00a4.com/": "http://xn--bba.com/",
+            "http://\u00d7.com/": "http://xn--rca.com/",
+            "http://\u20ac.com/": "http://xn--lzg.com/",
+            "http://a\U0001f600b.com/": "http://xn--ab-no82a.com/",
+            "http://xn--e28h.com/": "http://xn--e28h.com/",
+        }
+        for raw, expected in accepted.items():
+            self.assertEqual(validate_crawl_url(raw), expected, raw)
+        refused = [
+            # Raw Sk / Po spellings (U+00A8, U+00B4, U+203E).
+            "http://\u00a8.com/",
+            "http://\u00b4.com/",
+            "http://\u203e.com/",
+            # A-labels decoding to U+00A8, U+00B4, U+203E, U+037E.
+            "http://xn--fba.com/",
+            "http://xn--rba.com/",
+            "http://xn--gwg.com/",
+            "http://xn--5va.com/",
+        ]
+        for raw in refused:
+            with self.assertRaises(ValueError, msg=raw):
+                validate_crawl_url(raw)
 
     def test_returns_alabel_derived_from_original_spelling(self):
         # Codex review of PR #3781: deriving the returned A-label

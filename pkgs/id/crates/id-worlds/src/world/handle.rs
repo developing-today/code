@@ -265,7 +265,7 @@ impl WorldHandle {
         let overdue_at_open: BTreeSet<String> = core
             .schedules
             .iter()
-            .filter(|(_, at_ms)| **at_ms <= now)
+            .filter(|(_, schedule)| schedule.at_ms <= now)
             .map(|(id, _)| id.clone())
             .collect();
         let metrics = WorldMetrics::default();
@@ -309,6 +309,7 @@ impl WorldHandle {
             location_fix: None,
             location_fix_received_at: None,
             loc_watches: BTreeMap::new(),
+            schedule_delivery: None,
             auth: crate::directory_auth::DirectoryAuth::default(),
             admission_gate,
         };
@@ -420,6 +421,31 @@ impl WorldHandle {
         let (world_id, snapshot_source, _probe_source, updates) =
             self.replication_feed_snapshot().await?;
         Ok((world_id, snapshot_source, updates))
+    }
+
+    /// The authenticated sidecars for a replication snapshot of this
+    /// world (F12.13 phase 5): the directory facts for `subjects` as
+    /// JSONL entry bytes and the active module hash (whose bytes the
+    /// caller loads from the world's module store). One actor round
+    /// trip, so the facts are the ones in force at the actor's current
+    /// state.
+    ///
+    /// # Errors
+    ///
+    /// Fails when the actor is closed or the directory facts cannot
+    /// be derived for the given subjects.
+    pub async fn replica_sidecars(
+        &self,
+        subjects: std::collections::BTreeSet<String>,
+    ) -> Result<(Vec<u8>, Option<String>)> {
+        let (reply, response) = oneshot::channel();
+        self.commands
+            .send(WorldCommand::ReplicaSidecars { subjects, reply })
+            .await
+            .map_err(|_| anyhow::anyhow!("world actor is closed"))?;
+        response
+            .await
+            .context("world actor dropped replica sidecars response")?
     }
 
     /// One actor round trip: subscribe, capture the journal image, and —
@@ -666,6 +692,85 @@ impl WorldHandle {
         response
             .await
             .context("world actor dropped schedule response")?
+    }
+
+    /// Admin: set this world's schedule-delivery consent for one peer
+    /// world (#1355 part 2): `send` lets this world's schedules target
+    /// the peer, `receive` lets the peer's schedules be delivered here.
+    /// Journaled before it is visible. Returns the full grant map.
+    ///
+    /// # Errors
+    ///
+    /// A malformed peer name or world storage failure.
+    pub async fn admin_set_schedule_grant(
+        &self,
+        peer: String,
+        send: bool,
+        receive: bool,
+    ) -> Result<BTreeMap<String, ScheduleGrant>> {
+        let (reply, response) = oneshot::channel();
+        self.commands
+            .send(WorldCommand::AdminSetScheduleGrant {
+                peer,
+                send,
+                receive,
+                reply,
+            })
+            .await
+            .map_err(|_| anyhow::anyhow!("world actor is closed"))?;
+        response
+            .await
+            .context("world actor dropped schedule grant response")?
+    }
+
+    /// Deliver one cross-world schedule fire arriving from `source`
+    /// (#1355 part 2). True only when this world durably accepted it
+    /// (receive grant, fire journaled, receipt journaled) or already had.
+    ///
+    /// # Errors
+    ///
+    /// Fails only if the world actor is closed; refusal is `Ok(false)`.
+    pub async fn deliver_schedule(
+        &self,
+        source: String,
+        id: String,
+        at_ms: u64,
+        late: bool,
+    ) -> Result<bool> {
+        let (reply, response) = oneshot::channel();
+        self.commands
+            .send(WorldCommand::DeliverSchedule {
+                source,
+                id,
+                at_ms,
+                late,
+                reply,
+            })
+            .await
+            .map_err(|_| anyhow::anyhow!("world actor is closed"))?;
+        response
+            .await
+            .context("world actor dropped schedule delivery response")
+    }
+
+    /// Install the cross-world schedule delivery sink used by this
+    /// world's actor for its own outbound schedule fires (#1355 part 2).
+    ///
+    /// # Errors
+    ///
+    /// Fails if the world actor is closed.
+    pub async fn set_schedule_delivery(
+        &self,
+        delivery: std::sync::Arc<dyn ScheduleDelivery>,
+    ) -> Result<()> {
+        let (reply, response) = oneshot::channel();
+        self.commands
+            .send(WorldCommand::SetScheduleDelivery { delivery, reply })
+            .await
+            .map_err(|_| anyhow::anyhow!("world actor is closed"))?;
+        response
+            .await
+            .context("world actor dropped delivery-install response")
     }
 
     /// Admin: cancel a pending schedule by id (a no-op when absent),

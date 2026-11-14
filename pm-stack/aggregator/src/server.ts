@@ -8,7 +8,7 @@
 // apply actions; the dashboard only records them.
 import { readFile, stat } from "node:fs/promises";
 import { createQuotaRefresher, systemdTrigger } from "./quota-refresh.ts";
-import { buildQuotaAnalytics, type QuotaAnalytics } from "./analytics-store.ts";
+import { buildQuotaAnalytics, primeAttemptAggregates, type QuotaAnalytics } from "./analytics-store.ts";
 import { decodePathSegment } from "./path-segment.ts";
 import { errorBoundaryResponse, notFoundResponse } from "./error-boundary.ts";
 import { ACTION_STATES, ActionsStore, validateNewAction, type DashAction } from "./actions.ts";
@@ -957,8 +957,8 @@ ${submitBtn("submit")}
 </section>`;
   };
   const isSubmittedItem = (i: DecisionItem): boolean => i.questions.every((q) => q.resolution);
-    const submittedCount = set.items.filter(isSubmittedItem).length;
-    const body = groups
+  const submittedCount = set.items.filter(isSubmittedItem).length;
+  const body = groups
     .map((g) => {
       const groupItems = set.items
         .filter((i) => i.group === g)
@@ -1722,8 +1722,9 @@ async function loadTodayContext() {
 
 // #1179: /today?full=1, /frag/today, and /api/today.json all render
 // from this one assembly. Same short-TTL + coalescing contract as the
-// signals cache above; a throwing load is never cached (the fetch
-// error boundary still 500s) and expiry triggers a fresh read.
+// signals cache above; a throwing cold load is never cached (the
+// fetch error boundary still 500s) and expiry serves the stale copy
+// while one background refresh re-reads (#5082 SWR).
 const todayContextCache = new TodayCache<Awaited<ReturnType<typeof loadTodayContext>>>(TODAY_CACHE_TTL_MS);
 async function todayContext(): Promise<Awaited<ReturnType<typeof loadTodayContext>>> {
   return todayContextCache.get(loadTodayContext);
@@ -1777,9 +1778,26 @@ async function overviewContext(): Promise<Awaited<ReturnType<typeof loadOverview
 // acceptance path — in-process recordFreshness, the IPC handler, and
 // the reconciler's synthetic invalidations all publish through the
 // same store.
+//
+// #5082 (2026-11-14): invalidate, don't clear. Notices land every few
+// minutes (115 in the 3 h before steward run 379), and clear() dropped
+// the cached assembly entirely, so the first post-notice request paid
+// the full cold assembly on the request path. That request is
+// routinely an hourly watch arriving after a quiet gap; when the
+// assembly chain inflated past the 10 s dashboard deadline under load
+// (steward runs 378/379: /api/overview.json 503 at 10.42 s, pass 2
+// clean), the deadline's last-good was always older than its 5-minute
+// staleness cap at that cadence, so the fallback was a hard 503.
+// invalidate() keeps the last assembly servable under the ordinary
+// SWR contract — the first post-notice request serves it immediately
+// and refreshes behind it — and the kick below starts that refresh
+// at notice time, so an accepted revision becomes visible one
+// assembly later without any request paying for the rebuild.
 freshnessStore.onNotice(() => {
-  overviewContextCache.clear();
-  todayContextCache.clear();
+  overviewContextCache.invalidate();
+  todayContextCache.invalidate();
+  void overviewContext().catch(() => {});
+  void todayContext().catch(() => {});
 });
 
 /** The live-source half of the /program assembly (#1046 + #1121): the
@@ -2470,12 +2488,31 @@ async function handler(req: Request): Promise<Response> {
       // #9354: the Questions section lives in the SHELL, outside the
       // #today-main fragment div (see the /frag/today note below).
       return html(
-        renderTodayShell(prov(), provDetail(), signals.health, signals.quota, signals.quotaUnavailable, await questionsHtml()),
+        renderTodayShell(
+          prov(),
+          provDetail(),
+          signals.health,
+          signals.quota,
+          signals.quotaUnavailable,
+          await questionsHtml(),
+        ),
       );
     }
     const { today, view, coverage, quota, health, quotaUnavailable, queue, queueStale } = await todayContext();
     return html(
-      renderToday(today, view, quota, coverage, prov(), provDetail(), health, quotaUnavailable, queue, queueStale, await questionsHtml()),
+      renderToday(
+        today,
+        view,
+        quota,
+        coverage,
+        prov(),
+        provDetail(),
+        health,
+        quotaUnavailable,
+        queue,
+        queueStale,
+        await questionsHtml(),
+      ),
     );
   }
   if (path === "/frag/today") {
@@ -4057,6 +4094,41 @@ const servers = cfg.hosts.map((hostname) =>
 for (const server of servers) {
   console.log(`aggregator listening on http://${server.hostname}:${server.port} (source: ${cfg.source})`);
 }
+
+// #5082: warm the quota-analytics aggregates once at boot, and the
+// page assemblies with them. The aggregates warm-up no longer calls
+// buildQuotaAnalytics synchronously: the first build's unsliced scans
+// measure ~12 s of uninterrupted event-loop time over the 21 GB
+// ledger, and a request that arrived during the old warm-up queued
+// behind the whole window — the first /api/program.json after a
+// restart measured 26.4 s against ~0.03 s warm (2026-11-13
+// follow-up). primeAttemptAggregates fills the same cache through
+// the day-sliced stale-while-revalidate refresh instead, so the loop
+// stays responsive; later builds ride that cache as before, and a
+// /quota request landing before the prime settles still pays the
+// synchronous cold build on its own path (unchanged semantics).
+// programSources joins the warmed assemblies in the same follow-up:
+// it was the one major assembly left out, so /program's first
+// post-restart request always paid its cold fan-out on the request
+// path, inside whatever loop backlog the boot window left behind.
+setTimeout(() => {
+  void (async () => {
+    try {
+      primeAttemptAggregates();
+      await Promise.allSettled([boardContext(), overviewContext(), todayContext(), programSources()]);
+      // #9781: warm the briefs' latest comments for the program pool
+      // too — the board briefs read a subset of the same refs, so one
+      // prime covers both pages, and neither page's first post-restart
+      // request pays the per-ref projector fan-out.
+      const warmed = await programSources().catch(() => null);
+      if (warmed?.pool.length) {
+        await briefCommentsFor(warmed.pool.map((p) => p.ref));
+      }
+    } catch {
+      // fail-soft: the first real request retries its own assembly
+    }
+  })();
+}, 0);
 
 // Cross-process publishers get a separate loopback-only listener; never
 // add this port to PM_AGG_HOSTS or expose it through the Cloudflare tunnel.

@@ -270,14 +270,16 @@ let
     CLAUDE_BIN = "${claude-code}/bin/claude";
     CODEX_BIN = "${latestCli.codex}/bin/codex";
     ANTIGRAVITY_BIN = "${pkgs.antigravity-cli}/bin/agy";
-    PATH = lib.makeBinPath [
-      inputs.opencode.packages.${system}.opencode
-      claude-code
-      latestCli.codex
-      pkgs.antigravity-cli
-      pkgs.git
-      pkgs.openssh
-    ] + ":/home/user/.local/bin:/home/user/bin";
+    PATH =
+      lib.makeBinPath [
+        inputs.opencode.packages.${system}.opencode
+        claude-code
+        latestCli.codex
+        pkgs.antigravity-cli
+        pkgs.git
+        pkgs.openssh
+      ]
+      + ":/home/user/.local/bin:/home/user/bin";
   };
   # The daemon's configuration (the former ~/code/.mcpx.json), and the
   # config file the mcpx module renders from it: reproduced here so

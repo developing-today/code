@@ -152,9 +152,6 @@ describe("fetchProjectPool pagination", () => {
     expect(items).toHaveLength(6);
   });
 
-
-
-
   test("returns a single-page pool unchanged", async () => {
     let calls = 0;
     const fetchFn: typeof fetch = Object.assign(

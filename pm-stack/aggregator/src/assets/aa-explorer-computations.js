@@ -262,3 +262,62 @@ export function projectTask(e, settings, aaPoints, caiPoints) {
   if (timing && timing.tps) time = turns * ((timing.ttft || 0) + answer / timing.tps + (Number(settings.overheadSec) || 0));
   return { cost: cost, time: time, band: band };
 }
+
+// --- /aa chart zoom/pan viewBox behavior (#9581) ---------------------------
+// Pure, DOM-free chart-view math shared by the browser enhancer in
+// render.ts (which delegates to these functions — no inline copies)
+// and Bun tests. A chart view state is { base: [x, y, w, h], cur:
+// [x, y, w, h] | null }; cur === null means "show the base viewBox".
+
+export function parseChartViewBox(s) {
+  var p = (s || "").split(/\s+/).map(Number);
+  if (p.length !== 4 || p.some(function (n) { return !isFinite(n); })) return null;
+  return p;
+}
+
+export function effectiveChartView(st) {
+  return st.cur || st.base;
+}
+
+export function clampChartView(st) {
+  if (!st.cur) return;
+  var b = st.base, c = st.cur;
+  c[0] = Math.min(Math.max(c[0], b[0]), b[0] + b[2] - c[2]);
+  c[1] = Math.min(Math.max(c[1], b[1]), b[1] + b[3] - c[3]);
+}
+
+export function zoomChartView(st, factor, fx, fy) {
+  var cur = st.cur ? st.cur.slice() : st.base.slice();
+  var nw = Math.min(Math.max(cur[2] * factor, st.base[2] / 16), st.base[2]);
+  var nh = nw * st.base[3] / st.base[2];
+  var cx = cur[0] + (fx == null ? 0.5 : fx) * cur[2];
+  var cy = cur[1] + (fy == null ? 0.5 : fy) * cur[3];
+  cur[0] = cx - (fx == null ? 0.5 : fx) * nw;
+  cur[1] = cy - (fy == null ? 0.5 : fy) * nh;
+  cur[2] = nw; cur[3] = nh;
+  st.cur = nw >= st.base[2] ? null : cur;
+  if (st.cur) clampChartView(st);
+}
+
+// Returns true when the pan was applied, false when it is a no-op
+// (not zoomed, or the element has no layout size to scale against).
+export function panChartView(st, dx, dy, width, height) {
+  if (!st.cur || !width || !height) return false;
+  st.cur[0] -= dx * st.cur[2] / width;
+  st.cur[1] -= dy * st.cur[3] / height;
+  clampChartView(st);
+  return true;
+}
+
+export function resetChartView(st) {
+  st.cur = null;
+}
+
+// Click-suppression contract (#4154): after a moved drag the enhancer
+// stamps data-zsuppress with the pointerup time; a click arriving
+// within 400 ms of that stamp is the drag's tail and is swallowed,
+// any other click (no stamp, or stamp expired) reaches selection.
+export function chartClickSuppressed(rawStamp, now) {
+  var t = Number(rawStamp || 0);
+  return !!t && now - t < 400;
+}

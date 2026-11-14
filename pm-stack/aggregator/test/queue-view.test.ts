@@ -97,7 +97,17 @@ describe("buildQueueView (#1160)", () => {
         ...fresh,
         feed: {
           ...fresh.feed,
-          sections: [{ key: "projects", present: false, status: "unknown", ageMs: 60_000, behindBy: null, lastSyncAt: null, lagNote: null }],
+          sections: [
+            {
+              key: "projects",
+              present: false,
+              status: "unknown",
+              ageMs: 60_000,
+              behindBy: null,
+              lastSyncAt: null,
+              lagNote: null,
+            },
+          ],
         },
       }),
     ).toBe(true);
@@ -316,9 +326,13 @@ describe("buildQueueView reconciled in-progress parity (#1162)", () => {
   test("a lined-up session puts a Todo pool item in progress with signals and a disagreement badge", () => {
     const view = buildQueueView({
       board: [],
-      pool: [poolItem({ ref: "developing-today/code#42", title: "Session-driven work", status: "Todo", updatedAt: recent })],
+      pool: [
+        poolItem({ ref: "developing-today/code#42", title: "Session-driven work", status: "Todo", updatedAt: recent }),
+      ],
       items: new Map(),
-      orchestration: section([task("Work on developing-today/code#42", "in-progress", "today", { ref: "developing-today/code#42" })]),
+      orchestration: section([
+        task("Work on developing-today/code#42", "in-progress", "today", { ref: "developing-today/code#42" }),
+      ]),
       now: NOW,
     });
     const row = view.inProgress.find((r) => r.ref === "developing-today/code#42");
@@ -357,7 +371,14 @@ describe("buildQueueView reconciled in-progress parity (#1162)", () => {
   test("a Project In Progress item carries the project-status signal", () => {
     const view = buildQueueView({
       board: [],
-      pool: [poolItem({ ref: "developing-today/code#9", title: "Project-driven work", status: "In Progress", updatedAt: recent })],
+      pool: [
+        poolItem({
+          ref: "developing-today/code#9",
+          title: "Project-driven work",
+          status: "In Progress",
+          updatedAt: recent,
+        }),
+      ],
       items: new Map(),
       orchestration: null,
       now: NOW,
@@ -369,7 +390,14 @@ describe("buildQueueView reconciled in-progress parity (#1162)", () => {
     // reconciled set computes for the same input (here the Project status
     // is uncorroborated by any other source, so it reports a clash).
     const shared = reconciledInProgress({
-      pool: [poolItem({ ref: "developing-today/code#9", title: "Project-driven work", status: "In Progress", updatedAt: recent })],
+      pool: [
+        poolItem({
+          ref: "developing-today/code#9",
+          title: "Project-driven work",
+          status: "In Progress",
+          updatedAt: recent,
+        }),
+      ],
       board: [],
       items: new Map(),
       orchestration: null,

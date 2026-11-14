@@ -42,6 +42,12 @@ export interface Config {
   commentsFile: string;
   /** Append-only roadmap annotation store (#1284), separate from comments. */
   roadmapAnnotationsFile: string;
+  /** Checkout of developing-today/code on the aggregator host; the
+   * repo-file roadmap source (#1738) reads planning/roadmaps/*.md here. */
+  codeCheckout: string;
+  /** Checkout of dezren39/darwin-nix on the aggregator host; the
+   * repo-file roadmap source (#1738) reads ROADMAP.md here. */
+  nixCheckout: string;
   /** Dashboard actions store (#1152/#1154/#1156) — triage write path. */
   actionsFile: string;
   /** Saved-views store (#1276) — named per-person filter sets. */
@@ -169,6 +175,8 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
     feedFile: s(env.PM_AGG_FEED_FILE, join(process.cwd(), "fleet-feed.json")),
     commentsFile: s(env.PM_AGG_COMMENTS_FILE, join(process.cwd(), "comments.json")),
     roadmapAnnotationsFile: s(env.PM_AGG_ROADMAP_ANNOTATIONS_FILE, join(process.cwd(), "roadmap-annotations.json")),
+    codeCheckout: s(env.PM_AGG_CODE_CHECKOUT, join(homedir(), "git", "code")),
+    nixCheckout: s(env.PM_AGG_NIX_CHECKOUT, join(homedir(), "code", "dezren39-nix")),
     actionsFile: s(env.PM_AGG_ACTIONS_FILE, join(process.cwd(), "actions.json")),
     viewsFile: s(env.PM_AGG_VIEWS_FILE, join(process.cwd(), "views.json")),
     eventsFile: s(env.PM_AGG_EVENTS_FILE, join(process.cwd(), "events.json")),

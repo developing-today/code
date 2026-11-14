@@ -41,7 +41,10 @@ MARKER="$ROOT/.laptop-state-last-success-epoch"
 LOCK="$ROOT/.laptop-state-backup.lock"
 
 log() { echo "laptop-state-backup: $*"; }
-fail() { echo "laptop-state-backup: FAILED $*" >&2; exit 1; }
+fail() {
+  echo "laptop-state-backup: FAILED $*" >&2
+  exit 1
+}
 trap 'rc=$?; if [ $rc -ne 0 ]; then echo "laptop-state-backup: FAILED exit=$rc" >&2; fi' EXIT
 
 mkdir -p "$ROOT"
@@ -105,8 +108,8 @@ export RESTIC_PASSWORD
 AWS_ACCESS_KEY_ID="$(bws_get cloudflare.r2-backups-access-key-id)"
 AWS_SECRET_ACCESS_KEY="$(bws_get cloudflare.r2-backups-secret-access-key)"
 R2_ENDPOINT="$(bws_get cloudflare.r2-endpoint)"
-[ -n "$AWS_ACCESS_KEY_ID" ] && [ -n "$AWS_SECRET_ACCESS_KEY" ] && [ -n "$R2_ENDPOINT" ] \
-  || fail "R2 credentials incomplete in Bitwarden"
+[ -n "$AWS_ACCESS_KEY_ID" ] && [ -n "$AWS_SECRET_ACCESS_KEY" ] && [ -n "$R2_ENDPOINT" ] ||
+  fail "R2 credentials incomplete in Bitwarden"
 export AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY AWS_EC2_METADATA_DISABLED=true
 R2_REPO="s3:${R2_ENDPOINT}/${R2_BUCKET}/${R2_PREFIX}"
 
@@ -121,8 +124,11 @@ backup_backend() { # $1 label, $2 repo
   local label="$1" repo="$2" out added
   init_if_needed "$repo"
   log "backup start: $label ($repo)"
-  out="$("$RESTIC" -r "$repo" backup "${SOURCES[@]}" --tag "$STATE_TAG" 2>&1)" \
-    || { printf '%s\n' "$out" >&2; fail "restic backup failed for $label"; }
+  out="$("$RESTIC" -r "$repo" backup "${SOURCES[@]}" --tag "$STATE_TAG" 2>&1)" ||
+    {
+      printf '%s\n' "$out" >&2
+      fail "restic backup failed for $label"
+    }
   printf '%s\n' "$out" | grep -E '^(Files:|Dirs:|Added to the repository|Data Blobs|Tree Blobs|total )' || true
   added="$(printf '%s\n' "$out" | grep '^Added to the repository' || true)"
   log "backup done: $label — $added"
@@ -130,8 +136,8 @@ backup_backend() { # $1 label, $2 repo
   log "check ok: $label"
   # retention only ever runs after a successful, verified backup
   "$RESTIC" -r "$repo" forget --tag "$STATE_TAG" \
-    --keep-last 7 --keep-daily 7 --keep-weekly 4 --prune >/dev/null 2>&1 \
-    || fail "restic forget/prune failed for $label"
+    --keep-last 7 --keep-daily 7 --keep-weekly 4 --prune >/dev/null 2>&1 ||
+    fail "restic forget/prune failed for $label"
   log "retention applied: $label (keep-last 7, keep-daily 7, keep-weekly 4)"
 }
 
@@ -139,5 +145,5 @@ backup_backend "local" "$LOCAL_REPO"
 backup_backend "r2" "$R2_REPO"
 backup_backend "drive" "$DRIVE_REPO"
 
-date +%s > "$MARKER"
+date +%s >"$MARKER"
 log "OK laptop state backed up to local + R2 + Drive (restic dedup; marker $MARKER)"

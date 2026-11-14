@@ -69,6 +69,58 @@ openclaw doctor
 openclaw agent --message "Who are you, who do you work with, and what is your default model?"
 ```
 
+## Comment loop watcher (production, #9818)
+
+The `pilot-loop:v1` comment loop piloted on issue #1190 runs in
+production as a **zero-token pre-filter**: an OpenClaw cron
+**command payload** (shell on the Gateway host, no model call)
+polls one designated issue every 2 minutes and wakes an agent
+turn only when a new unanswered round appears. Idle polls print
+the cron silent token `NO_REPLY` and cost ~0 agent tokens (the
+pilot's every-2-minute LLM poll cost 39k–81k tokens per idle
+poll and was killed on cost).
+
+- **Designated issue:** developing-today/code#9818. To re-point
+  the loop, recreate the cron job with a different issue number
+  as the script's argument (or set it as the command argument).
+- **Script:** `comment-loop/pilot-loop-prefilter.sh` here is the
+  source of truth; the deployed copy runs from
+  `~/.local/share/openclaw/comment-loop/pilot-loop-prefilter.sh`
+  (state in `~/.local/state/openclaw/comment-loop/`). Tests:
+  `comment-loop/pilot-loop-prefilter.test.sh` (stubbed gh /
+  openclaw / systemctl; also run in CI's basic tier).
+- **Cron job:** `comment-loop-prefilter`, `--every 2m`,
+  `--command "<deployed script> 9818"`, `--timeout-seconds 1000`.
+  Manage with `openclaw cron list|disable|rm` (the CLI needs
+  `OPENCLAW_GATEWAY_TOKEN` sourced from
+  `/run/secrets/openclaw/gateway-token` in a bare shell).
+- **Wake:** the filter derives answered state from the issue
+  itself (a round `R<n>` is answered by any `REPLY: R<n>`
+  comment) and rate-limits re-wakes of a still-unanswered round
+  to one attempt per 15 minutes. The wake is
+  `openclaw agent --agent main --session-key
+agent:main:comment-loop-9818-r<n>-<wake-epoch> --timeout 900`
+  — a FRESH session per wake (a persistent watcher session
+  accumulates bootstrap + transcripts until turns die on
+  context overflow; the round state lives on the issue, not in
+  the session). The 900s turn timeout is the production floor
+  (the script clamps any configured timeout to >= 600s; the
+  pilot's first turn died at the 150s default on a cold route).
+- **quota_left:** the filter reads the quota gatherer's snapshot
+  (`~/.local/state/pm-aggregator/quota-current.json`, refreshed
+  by `quota-gatherer.timer`) and injects a one-line summary —
+  tightest measured 5h window across healthy providers, with its
+  measurement time — into the wake message; the agent turn
+  copies it verbatim into the SESSION-REPORT, so the field is a
+  real measured value, never `unknown` while the gatherer runs.
+- **Gateway resilience:** the gateway unit is WantedBy
+  `default.target` (see the Install block in `default.nix`) and
+  runs with `Restart=always`; if the filter still finds the
+  gateway inactive it performs the documented start step
+  (`systemctl --user start openclaw-gateway.service`) and
+  surfaces a non-zero failure in cron run history when that does
+  not recover it.
+
 ### Verify tool plugins (bundled + custom) — NOT `openclaw plugins list`
 
 `openclaw plugins list` shows **runtime plugins only** (channels, harnesses,

@@ -10,10 +10,10 @@
   (capability systems, OCAP, Spritely Goblins/OCapN, CRDT shared worlds).
 - **Decision this record watches:** the OCapN deferral recorded in
   [`doc/2026-10-09T09-59-07Z_design_attenuated_capabilities/`](../../2026-10-09T09-59-07Z_design_attenuated_capabilities/2026-10-09T09-59-07Z_design_attenuated_capabilities.md),
-  §"Stages": *"OCapN (trigger: programs in different servers must hold
+  §"Stages": _"OCapN (trigger: programs in different servers must hold
   references to each other's objects). Adds network-transparent references,
   handoffs and distributed GC. It is pre-standard. It is not needed for
-  worlds that are hosted on one server and joined by capability."* The same
+  worlds that are hosted on one server and joined by capability."_ The same
   section states the deferral is revisited **on a trigger, not on a date**.
   This record supplies the dated evidence the issue asks for, and the
   trigger test that decides whether the spike is worth running.
@@ -37,11 +37,11 @@ pre-empting it.
 
 The spike is triggered only when **all three** hold:
 
-| # | Condition | How it is checked |
-| --- | --- | --- |
-| T1 | Spritely's own documentation no longer carries the "do not rely on the protocol being stable" caution, **or** an OCapN specification release is published with a stability/versioning commitment | `https://files.spritely.institute/docs/guile-goblins/latest/OCapN.html`; releases/tags on `ocapn/ocapn` |
-| T2 | A published OCapN protocol version has stopped taking breaking changes across at least one Goblins release cycle | Goblins release notes ("OCapN protocol updates" sections) |
-| T3 | An id-side need exists to hold references to objects in another server's vat — i.e. the deferral trigger in the attenuated-capabilities record has fired for real, not hypothetically | A design or feature issue in the worlds program that requires cross-server object references |
+| #   | Condition                                                                                                                                                                                        | How it is checked                                                                                       |
+| --- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------- |
+| T1  | Spritely's own documentation no longer carries the "do not rely on the protocol being stable" caution, **or** an OCapN specification release is published with a stability/versioning commitment | `https://files.spritely.institute/docs/guile-goblins/latest/OCapN.html`; releases/tags on `ocapn/ocapn` |
+| T2  | A published OCapN protocol version has stopped taking breaking changes across at least one Goblins release cycle                                                                                 | Goblins release notes ("OCapN protocol updates" sections)                                               |
+| T3  | An id-side need exists to hold references to objects in another server's vat — i.e. the deferral trigger in the attenuated-capabilities record has fired for real, not hypothetically            | A design or feature issue in the worlds program that requires cross-server object references            |
 
 T1 and T2 are about the protocol; T3 is about us. A stable protocol with no
 need is still a no-go, and a real need against an unstable protocol is a
@@ -56,21 +56,21 @@ fail; T3 not met).**
 
 Evidence gathered fresh on 2026-11-08:
 
-- **Spritely's docs still warn against relying on CapTP.** The *latest*
+- **Spritely's docs still warn against relying on CapTP.** The _latest_
   guile-goblins OCapN manual page
   (`https://files.spritely.institute/docs/guile-goblins/latest/OCapN.html`,
-  fetched 2026-11-08) still reads: *"CAUTION: CapTP support is still in its
-  early days. Please do not rely on the protocol being stable at this time."*
+  fetched 2026-11-08) still reads: _"CAUTION: CapTP support is still in its
+  early days. Please do not rely on the protocol being stable at this time."_
   This is the same caution the 2026-11-04 prior-art research quoted from the
   0.13.0 page — it has survived into the current docs. **T1 fails.**
 - **The OCapN specification is still a draft taking breaking changes.**
   Goblins 0.18.0 (2026-04-21, `https://spritely.institute/news/spritely-goblins-v0-18-0-sleepy-actors.html`)
-  announces: *"The OCapN draft specification has changed in the time since
+  announces: _"The OCapN draft specification has changed in the time since
   the last Goblins release. The op:deliver-only operation has been dropped in
   favor of a single op:deliver operation. GC operations now accept a list of
   export positions… The protocol version number has thus been bumped, which
   means that applications built with an earlier release of Goblins are
-  incompatible with the OCapN shipped in this release."* A wire-incompatible
+  incompatible with the OCapN shipped in this release."_ A wire-incompatible
   bump between minor releases is the opposite of a stability commitment.
   **T2 fails.**
 - **The spec repository has no released version.** `ocapn/ocapn`
@@ -81,11 +81,11 @@ Evidence gathered fresh on 2026-11-08:
   of a `op:deliver-only` fold. The repository is active (last push
   2026-10-13), not frozen, and not versioned.
 - **Development is moving toward features, not stabilisation.** Spritely's
-  2026-10-15 post, *End-to-end encrypted relays for OCapN*
+  2026-10-15 post, _End-to-end encrypted relays for OCapN_
   (`https://spritely.institute/news/end-to-end-encrypted-relays-for-ocapn.html`),
   adds a Noise-based E2EE relay netlayer and states that an NLnet grant
-  includes *"writing a specification for the OCapN group so that the relay can
-  be broadly supported by other OCapN implementations"* — new spec surface
+  includes _"writing a specification for the OCapN group so that the relay can
+  be broadly supported by other OCapN implementations"_ — new spec surface
   being authored now.
 - **T3 (id-side need) is not met.** No issue in the worlds program requires
   programs in different servers to hold references to each other's objects;

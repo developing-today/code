@@ -1787,6 +1787,7 @@ function roadmapCard(
     .join(" ");
   const cmt = counts ? commentBadge(row.subject, counts) : "";
   const grist = row.gristUrl ? ` <a class="badge" href="${esc(row.gristUrl)}">Grist ↗</a>` : "";
+  const repoFile = row.fileUrl ? ` <a class="badge" href="${esc(row.fileUrl)}">Repo file ↗</a>` : "";
   const expansion = drill ? roadmapDrilldown(drill, row, forecasts, spend) : "";
   const notes = annotations?.get(row.subject) ?? [];
   const annotationHtml = notes.length
@@ -1813,7 +1814,7 @@ function roadmapCard(
       }
     }
   }
-  return `<div class="card"><a href="/item/${encodeURIComponent(row.subject)}">${esc(row.title)}</a>${cmt}<br><span class="badge ${esc(row.status.toLowerCase().replace(/[^a-z]/g, "-"))}">${esc(row.status)}</span> <span class="muted">${esc(row.area)} · ${esc(row.horizon)}</span>${horizonWarning}${statusClash}${refBadges}${grist}${annotationHtml}${expansion}${briefPanels}</div>`;
+  return `<div class="card"><a href="/item/${encodeURIComponent(row.subject)}">${esc(row.title)}</a>${cmt}<br><span class="badge ${esc(row.status.toLowerCase().replace(/[^a-z]/g, "-"))}">${esc(row.status)}</span> <span class="muted">${esc(row.area)} · ${esc(row.horizon)}</span>${horizonWarning}${statusClash}${refBadges}${grist}${repoFile}${annotationHtml}${expansion}${briefPanels}</div>`;
 }
 
 function roadmapAnnotationHtml(annotation: RoadmapAnnotation): string {
@@ -3187,16 +3188,16 @@ export function questionsSectionHtml(
   if (summaries === null) {
     return `<section class="questions-section"><h2 id="questions">Questions</h2><p class="muted">Unavailable — the decision-set store could not be read, so open questions cannot be reported here.</p>${allSetsLink}${footer}</section>`;
   }
-  const open = summaries
-    .filter((s) => s.openQuestions > 0)
-    .sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+  const open = summaries.filter((s) => s.openQuestions > 0).sort((a, b) => b.createdAt.localeCompare(a.createdAt));
   if (!open.length) {
     return `<section class="questions-section"><h2 id="questions">Questions</h2><p class="muted">No open questions right now — the stack is clear.</p>${allSetsLink}${footer}</section>`;
   }
   const totalOpen = open.reduce((n, s) => n + s.openQuestions, 0);
   const rows = open
     .map((s) => {
-      const stamp = Number.isFinite(Date.parse(s.createdAt)) ? QUESTIONS_STAMP.format(new Date(s.createdAt)) : s.createdAt;
+      const stamp = Number.isFinite(Date.parse(s.createdAt))
+        ? QUESTIONS_STAMP.format(new Date(s.createdAt))
+        : s.createdAt;
       return `<div class="card"><a href="${esc(pageUrlFor(s))}"><strong>${esc(s.title)}</strong></a><br><span class="muted">${s.openQuestions} open question${s.openQuestions === 1 ? "" : "s"} · ${s.items} item${s.items === 1 ? "" : "s"} · ${s.questions} question${s.questions === 1 ? "" : "s"} · Raised ${esc(stamp)}</span></div>`;
     })
     .join("");
@@ -3491,7 +3492,12 @@ export function attentionFragment(section: "header" | "queues" | "sessions", inn
  * immediately; the three heavy sections stream in as fragments.
  * Without JS, a meta refresh lands on the full server render.
  */
-export function renderAttentionShell(provenance: Provenance, detail?: ProvenanceDetail, refs?: string, questionsHtml = ""): string {
+export function renderAttentionShell(
+  provenance: Provenance,
+  detail?: ProvenanceDetail,
+  refs?: string,
+  questionsHtml = "",
+): string {
   const refsQuery = refs ? `refs=${encodeURIComponent(refs)}` : "";
   const skel = (label: string) => `<div class="skel">Loading ${label}…</div>`;
   const body = `<h1>Needs you</h1><p class="muted">Loading the Needs User and Needs Orchestrator queues…</p><noscript><meta http-equiv="refresh" content="0; url=/attention?full=1"></noscript>
@@ -4117,7 +4123,7 @@ ${dnsTable(section.entries, renewingSoon, next)}`;
  * Written without template literals on purpose — it lives inside one.
  */
 const AA_EXPLORER_SCRIPT = `<script type="module">
-import { applyInequalityFilters, bandIndex, computeRecommendations, logEdges, normName, paretoSet, pctRank, projectTask, scoreEdges } from "/assets/aa-explorer-computations.js";
+import { applyInequalityFilters, bandIndex, chartClickSuppressed, computeRecommendations, effectiveChartView, logEdges, normName, panChartView, paretoSet, parseChartViewBox, pctRank, projectTask, resetChartView, scoreEdges, zoomChartView } from "/assets/aa-explorer-computations.js";
 (function () {
   var dataEl = document.getElementById("xpl-data");
   if (!dataEl) return;
@@ -4454,11 +4460,7 @@ import { applyInequalityFilters, bandIndex, computeRecommendations, logEdges, no
     if (!svg.getAttribute("data-zkey")) svg.setAttribute("data-zkey", "zx" + Math.random().toString(36).slice(2, 9));
     return svg.getAttribute("data-zkey");
   }
-  function parseViewBox(s) {
-    var p = (s || "").split(/\\s+/).map(Number);
-    if (p.length !== 4 || p.some(function (n) { return !isFinite(n); })) return null;
-    return p;
-  }
+  function parseViewBox(s) { return parseChartViewBox(s); }
   function chartState(svg) {
     var key = chartKeyFor(svg);
     var attr = svg.getAttribute("viewBox") || "";
@@ -4471,45 +4473,32 @@ import { applyInequalityFilters, bandIndex, computeRecommendations, logEdges, no
     return st;
   }
   function applyChartView(svg, st) {
-    var v = st.cur || st.base;
+    var v = effectiveChartView(st);
     var s = v.join(" ");
     svg.setAttribute("viewBox", s);
     st.applied = s;
   }
-  function clampChartView(st) {
-    var b = st.base, c = st.cur;
-    c[0] = Math.min(Math.max(c[0], b[0]), b[0] + b[2] - c[2]);
-    c[1] = Math.min(Math.max(c[1], b[1]), b[1] + b[3] - c[3]);
-  }
+  // The viewBox math itself lives in aa-explorer-computations.js
+  // (#9581, same pattern as #7562): these wrappers only adapt the
+  // module functions to an svg's chart state — no inline copies, so
+  // the Bun tests exercise exactly the code the browser runs.
   function zoomChart(svg, factor, fx, fy) {
     var st = chartState(svg);
     if (!st) return;
-    var cur = st.cur ? st.cur.slice() : st.base.slice();
-    var nw = Math.min(Math.max(cur[2] * factor, st.base[2] / 16), st.base[2]);
-    var nh = nw * st.base[3] / st.base[2];
-    var cx = cur[0] + (fx == null ? 0.5 : fx) * cur[2];
-    var cy = cur[1] + (fy == null ? 0.5 : fy) * cur[3];
-    cur[0] = cx - (fx == null ? 0.5 : fx) * nw;
-    cur[1] = cy - (fy == null ? 0.5 : fy) * nh;
-    cur[2] = nw; cur[3] = nh;
-    st.cur = nw >= st.base[2] ? null : cur;
-    if (st.cur) clampChartView(st);
+    zoomChartView(st, factor, fx, fy);
     applyChartView(svg, st);
   }
   function panChart(svg, dx, dy) {
     var st = chartState(svg);
     if (!st || !st.cur) return;
     var r = svg.getBoundingClientRect();
-    if (!r.width || !r.height) return;
-    st.cur[0] -= dx * st.cur[2] / r.width;
-    st.cur[1] -= dy * st.cur[3] / r.height;
-    clampChartView(st);
+    if (!panChartView(st, dx, dy, r.width, r.height)) return;
     applyChartView(svg, st);
   }
   function resetChart(svg) {
     var st = chartState(svg);
     if (!st) return;
-    st.cur = null;
+    resetChartView(st);
     applyChartView(svg, st);
   }
   function chartHost(svg) { return svg.closest(".chart") || svg.parentElement; }
@@ -4588,8 +4577,7 @@ import { applyInequalityFilters, bandIndex, computeRecommendations, logEdges, no
       drag = null;
     });
     svg.addEventListener("click", function (e) {
-      var t = Number(svg.getAttribute("data-zsuppress") || 0);
-      if (t && Date.now() - t < 400) { e.stopPropagation(); e.preventDefault(); svg.removeAttribute("data-zsuppress"); }
+      if (chartClickSuppressed(svg.getAttribute("data-zsuppress"), Date.now())) { e.stopPropagation(); e.preventDefault(); svg.removeAttribute("data-zsuppress"); }
     }, true);
     svg.addEventListener("wheel", function (e) {
       e.preventDefault();
@@ -6549,6 +6537,42 @@ export function projectsBodyHtml(
       const statusBadge = p.status
         ? `<span class="badge ${p.status === "Done" ? "merged" : p.status === "Todo" ? "closed" : "implementing"}">${esc(p.status)}</span>`
         : `<span class="badge">no status</span>`;
+      const linksLine = `<span class="muted"><a href="${esc(p.issueUrl)}">${esc(p.repo)}#${p.number}</a> · <a href="${esc(p.url)}">Project item</a> · <a href="${esc(p.projectUrl)}">Project #4</a>${p.updatedAt ? ` · updated ${fmtDate(p.updatedAt)}` : ""}</span>`;
+      // #5082: only active work (canonical Project status
+      // In Progress / In Review) and epics
+      // render as a full card — status-request control, derived
+      // brief, rollups. An epic's rollup / forecast / spend ARE its
+      // substance at any status (#3984, #4824) and epics are few
+      // (40 of 1,422). Every other item renders compact: title,
+      // badges, links — the shape the per-project pages already
+      // use. The pool only ever
+      // grows — 725 of 1,422 items were Done at the 2026-11-13
+      // measurement — and at ~2.8 KB per full card (actbox ~1.2 KB +
+      // brief ~0.9 KB of it) the page reached 4.08 MB and grew with
+      // every filed item. A compact row keeps the item's identity,
+      // status, badges and links; the dropped blocks are the ones
+      // whose content is formulaic for a queued/finished item (the
+      // brief's "Next: No action" for Done items) or an action that
+      // belongs to active work. When the derived state disagrees the
+      // ⚠ clash badge still shows on the compact row, so no signal
+      // is lost. Counts, chips and weights use the whole pool either
+      // way; the area filter and saved views filter rows the same.
+      // Action-result badges (a pending / applied status request)
+      // also stay on compact rows — only the form and brief drop.
+      const canonical = canonicalStatusFor("project", p.status);
+      const active = canonical === "In Progress" || canonical === "In Review" || p.kind === "Epic";
+      const objectRef = ghObjectRef(p.ref);
+      const actionBadges = actionBadgesHtml(opts.actionsByObject?.get(objectRef));
+      if (!active) {
+        const metaCompact = [
+          p.area ? `<span class="badge src">${esc(p.area)}</span>` : "",
+          p.horizon ? `<span class="badge src">${esc(p.horizon)}</span>` : "",
+          p.kind ? `<span class="badge src">${esc(p.kind)}</span>` : "",
+          `<span class="badge ${p.state === "open" ? "open" : "closed"}">issue ${esc(p.state)}</span>`,
+        ].join(" ");
+        const compactLinks = `<span class="muted"><a href="${esc(p.issueUrl)}">${esc(p.repo)}#${p.number}</a> · <a href="${esc(p.url)}">Project item</a>${p.updatedAt ? ` · updated ${fmtDate(p.updatedAt)}` : ""}</span>`;
+        return `<div class="card"><strong>${esc(p.title)}</strong>${clashBadge}<br>${statusBadge} ${metaCompact}<br>${compactLinks}${actionBadges}</div>`;
+      }
       const meta = [
         p.area ? `<span class="badge src">${esc(p.area)}</span>` : "",
         p.horizon ? `<span class="badge src">${esc(p.horizon)}</span>` : "",
@@ -6557,9 +6581,8 @@ export function projectsBodyHtml(
         `<span class="badge src">derived: ${esc(derived)}</span>`,
       ].join(" ");
       // #1154: the status-request control + the store's visible state.
-      const objectRef = ghObjectRef(p.ref);
       const statusCtl = opts.identities
-        ? `${actionBadgesHtml(opts.actionsByObject?.get(objectRef))}${statusRequestHtml(objectRef, p.ref, p.status ?? null, { identities: opts.identities })}`
+        ? `${actionBadges}${statusRequestHtml(objectRef, p.ref, p.status ?? null, { identities: opts.identities })}`
         : "";
       const rollup = p.kind === "Epic" ? epicRollups.get(p.ref) : undefined;
       const epicRollup = rollup ? epicRollupHtml(rollup) : "";
@@ -6567,7 +6590,7 @@ export function projectsBodyHtml(
       const spendHtml = spendCard ? spendCardHtml(spendCard) : "";
       const brief = opts.briefs?.get(p.ref) ?? buildItemBrief(p, { pool, orchestration: opts.orchestration });
       const forecastHtml = forecastSummaryHtml(opts.forecasts?.get(p.ref));
-      return `<div class="card"><strong>${esc(p.title)}</strong>${clashBadge}<br>${statusBadge} ${meta}<br><span class="muted"><a href="${esc(p.issueUrl)}">${esc(p.repo)}#${p.number}</a> · <a href="${esc(p.url)}">Project item</a> · <a href="${esc(p.projectUrl)}">Project #4</a>${p.updatedAt ? ` · updated ${fmtDate(p.updatedAt)}` : ""}</span>${epicRollup}${spendHtml}${forecastHtml}${statusCtl}${briefPanelHtml(brief)}</div>`;
+      return `<div class="card"><strong>${esc(p.title)}</strong>${clashBadge}<br>${statusBadge} ${meta}<br>${linksLine}${epicRollup}${spendHtml}${forecastHtml}${statusCtl}${briefPanelHtml(brief)}</div>`;
     })
     .join("");
   const body = `<p class="muted">${pool.length} items from the org Project <a href="${PROJECT_URL}">Developing Today (#4)</a>, read live by the fleet-feed collector (GraphQL, read-only) and carried in the feed. This pool is the resolution source for board/roadmap GitHub items. Where the Project Status and the derived state disagree, the card shows ⚠ with both values. Machine-first: <a href="/api/projects.json">/api/projects.json</a>.</p>

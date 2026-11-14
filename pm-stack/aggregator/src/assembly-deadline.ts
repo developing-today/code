@@ -1,5 +1,14 @@
 const ASSEMBLY_DEADLINE_MS = 10_000;
-const MAX_STALE_AGE_MS = 5 * 60_000;
+// #5082 (2026-11-14): the last-good staleness cap was 5 minutes, but
+// the bounded routes' steadiest reader is an hourly watch — at that
+// cadence the last good response is routinely ~1 h old when an
+// assembly blows the deadline, so the cap converted every slow
+// first pass into a hard 503 instead of the marked-stale serve this
+// fallback exists for (steward runs 378/379). A stale response is
+// explicitly marked (x-aggregator-stale header; stale/staleReason in
+// JSON bodies), so a 30-minute cap stays honest while covering the
+// observed failure windows; anything older still 503s.
+const MAX_STALE_AGE_MS = 30 * 60_000;
 const MAX_CACHED_RESPONSE_BYTES = 2 * 1024 * 1024;
 const MAX_CACHE_ENTRIES = 128;
 
@@ -10,6 +19,10 @@ export const BOUNDED_DASHBOARD_PATHS: ReadonlySet<string> = new Set([
   "/api/overview.json",
   "/frag/overview",
   "/program",
+  // #9781: the JSON twin joins its HTML sibling — pool-quota-steward
+  // run 369 measured an unbounded 17.83 s first pass on this route
+  // while every bounded route at least answered stale-or-503.
+  "/api/program.json",
 ]);
 
 interface CachedResponse {

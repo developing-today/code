@@ -51,26 +51,31 @@ export const parseDaemonUrl = (raw) => {
   try {
     url = new URL(value);
   } catch {
-    throw new Error(`CODEDB_DAEMON_URL="${value}" is not a valid URL`);
+    // No branch of this function interpolates the raw value or any part
+    // of the parsed URL into an error (#9829): the caller prints the
+    // message to stderr, and the value can carry userinfo credentials,
+    // a ?token= query, or a fragment -- all secrets in host logs. Errors
+    // name the rejected component only.
+    throw new Error('CODEDB_DAEMON_URL is not a valid URL (value withheld)');
   }
   if (url.protocol !== 'http:' || (url.pathname !== '/' && url.pathname !== '')) {
     throw new Error(
-      `CODEDB_DAEMON_URL="${value}" must be an http:// origin with no path (the bridge appends /explore/* routes itself)`
+      'CODEDB_DAEMON_URL must be an http:// origin with no path (the bridge appends /explore/* routes itself; value withheld)'
     );
   }
   if (url.search) {
     throw new Error(
-      `CODEDB_DAEMON_URL="${value}" must not carry a query string (query "${url.search}") - a query has no meaning for a daemon origin and would be silently dropped`
+      'CODEDB_DAEMON_URL must not carry a query string - a query has no meaning for a daemon origin and would be silently dropped (query value withheld)'
     );
   }
   if (url.hash) {
     throw new Error(
-      `CODEDB_DAEMON_URL="${value}" must not carry a fragment (fragment "${url.hash}") - a fragment has no meaning for a daemon origin and would be silently dropped`
+      'CODEDB_DAEMON_URL must not carry a fragment - a fragment has no meaning for a daemon origin and would be silently dropped (fragment value withheld)'
     );
   }
   if (url.username || url.password) {
     throw new Error(
-      `CODEDB_DAEMON_URL="${value}" must not carry userinfo (embedded credentials) - the daemon has no authentication, so credentials would be silently dropped`
+      'CODEDB_DAEMON_URL must not carry userinfo (embedded credentials) - the daemon has no authentication, so credentials would be silently dropped (userinfo withheld)'
     );
   }
   return url.origin;

@@ -155,6 +155,22 @@ in
       StartLimitIntervalSec = "600";
       StartLimitBurst = 30;
     };
+    # Boot enablement (#9818): the nix-openclaw module renders this
+    # unit with NO [Install] section, so nothing ever pulled it in:
+    # `systemctl is-enabled` read "linked", the unit was absent from
+    # default.target.wants, and the gateway simply never started at
+    # boot/login — found inactive on 2026-11-14 by the pilot on
+    # issue #1190 (port 18789 refusing) and started by hand.
+    # Restart=always cannot help a unit that was never started.
+    # WantedBy=default.target makes home-manager link it into
+    # default.target.wants, exactly like openclaw-embedding above,
+    # so the gateway starts with the user session and Restart=always
+    # (module default) recovers it from any later death. The
+    # comment-loop pre-filter (comment-loop/) additionally carries
+    # a documented start step as the runtime backstop.
+    Install = {
+      WantedBy = [ "default.target" ];
+    };
     Service = {
       RestartSec = lib.mkForce "5s"; # module default is 1s — the burst spacing that let 2026-11-04 happen
       # Materialize the facade credential at every gateway start

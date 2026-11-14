@@ -1,0 +1,49 @@
+# CI tier policy: see .github/ci-policy.md
+#
+# Runs the pkgs/pkarr-worker vitest suite (pool-workers) on changes to
+# pkgs/pkarr-worker/ and on dispatch, following the house pattern for
+# test workflows (atlas-search-worker-tests.yml). Main tier only: not
+# a merge gate. Filed from issue #6093: the suite previously had no
+# workflow running it at all.
+#
+# The run step first fails if any suite file or the package manifest
+# or lockfile is missing, so a green run can never be a silently
+# skipped suite.
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - "pkgs/pkarr-worker/**"
+      - ".github/workflows/pkarr-worker-tests.yml"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pkarr-worker-tests-${{ github.event_name == 'push' && github.run_id || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  worker-tests:
+    name: "full (main tier): pkarr worker vitest suite"
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+      - name: Set up Node
+        uses: actions/setup-node@v7
+        with:
+          node-version: 24
+      - name: Run the pkarr worker vitest suite
+        working-directory: pkgs/pkarr-worker
+        run: |
+          for f in test/deploy-args.test.ts test/deploy-probe.test.ts test/deploy-verification.test.ts test/deploy-version.test.ts test/worker.test.ts package.json package-lock.json; do
+            if [ ! -f "$f" ]; then
+              echo "::error::pkgs/pkarr-worker/$f is missing — the worker suite was not run."
+              exit 1
+            fi
+          done
+          npm ci
+          npm test

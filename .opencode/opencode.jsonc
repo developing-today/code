@@ -207,6 +207,50 @@
   // one-line targets reorder in haiku-plan, not a switchboard
   // change. Credential: ~/.claude/.credentials.json (native
   // provider reads it in place); live-probed at enable time.
+  // 2026-11-14 (Drew, direct order - code#9549): "_claude" joins the
+  // list below. Its 7-day window is at 100% until 2026-11-18 13:00 CT
+  // and every call returns a rate-limit error; sessions dealt its
+  // leaves (fable-plan, sonnet-plan, opus-plan, haiku-plan,
+  // workhorse-last-resort) do not fail over - they sit in the retry
+  // loop on the dead door (attempt counters past 10, sessions wedged
+  // 40+ minutes; the fleet minder interrupt-stopped 100+ of them on
+  // 2026-11-13/14). Drew's re-login did not revive it (probes:
+  // 236 failures / 0 successes in the trailing 30 minutes). Per the
+  // switchboard rule the definition and every seat stay in place;
+  // deleting this line re-enables it. Re-enable at the 2026-11-18
+  // reset, or sooner if a live probe shows the door answering again.
+  // 2026-11-14 (code#9856): "_antigravity" joins the list below.
+  // Google has disabled the whole Antigravity account for a Terms of
+  // Service violation - this is not a quota wall and not one dead
+  // model: route_attempt probes in the trailing 3 hours at 03:32 CT
+  // on 2026-11-14 show every _antigravity leaf failing with the same
+  // "This service has been disabled in this account for violation of
+  // Terms of Service. Please submit an appeal..." error
+  // (gemini-4-hydrogen 717 failures, gemini-4-argon 332 failures,
+  // claude-opus-5-5 failing too; last _antigravity success ~02:50 CT).
+  // Every _antigravity seat is dead: hydrogen (summit, speed,
+  // workhorse-weighted), argon (summit, specialist), sonnet-5-5
+  // (workhorse-weighted) and opus via antigravity. Per the switchboard
+  // rule the definition and every seat stay in place; deleting this
+  // line re-enables it. Re-enable only when the account is reinstated
+  // on appeal AND a live probe shows the door answering again.
+  // 2026-11-14 (code#9859): "_muse" joins the list below. Its
+  // subscription quota is exhausted - a quota wall, not an account
+  // death: route_attempt probes in the trailing 3 hours at 03:55 CT
+  // on 2026-11-14 show every _muse leaf failing with
+  // "Subscription quota exhausted. Your usage window resets at
+  // 2026-11-16T00:00:00Z." (muse-wonder-1.0-contributor 10 failures,
+  // muse-spark-1.3-contributor 9 failures; no _muse success in
+  // 24h). Sessions dealt its leaves do not fail over - they sit in
+  // the retry loop on the dead door (the fleet minder
+  // interrupt-stopped 9 wedged sessions in run398 alone). Every
+  // _muse seat is inert while it lasts: spark #high
+  // (workhorse-weighted), wonder #xhigh (summit), spark #xhigh
+  // (speed) and the spark-plan reserve leaf. Per the switchboard
+  // rule the definition and every seat stay in place; deleting
+  // this line re-enables it. Re-enable after the window resets at
+  // 2026-11-16T00:00:00Z (Sun 2026-11-15 18:00 CT) AND a live
+  // probe shows the door answering again.
   "disabled_providers": [
     "google",
     "google-vertex",
@@ -220,7 +264,10 @@
     "openrouter",
     "cloudflare-workers-ai",
     "meta",
-    "deepseek"
+    "deepseek",
+    "_claude",
+    "_antigravity",
+    "_muse"
   ],
   // 2026-11-03 (Drew): muse, antigravity-ls, antigravity-agy, code-design,
   // design-code, cloudflare-gateway and chatgpt left this list together with

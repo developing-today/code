@@ -10,8 +10,13 @@
 //     event), stores them in D1 (INSERT OR IGNORE on event_id —
 //     redelivery is a no-op), then hands each set's NEW events to that
 //     set's Durable Object for per-set fan-out.
-//   GET /sets/<setId>/events?limit=<n>&after=<ts>
-//     Authenticated read-back of a set's events from D1, in ts order.
+//   GET /sets/<setId>/events?limit=<n>&after=<cursor>
+//     Authenticated read-back of a set's events from D1, in
+//     (ts, event_id) order. `after` is the composite cursor the
+//     previous page returned as `nextAfter` (<ts>|<eventId>); a bare
+//     <ts> is still accepted with its legacy meaning (ts > after).
+//     The response's `nextAfter` is the cursor for the following
+//     page, or null when the page is empty.
 //   GET /sets/<setId>/state
 //     Authenticated: the set's Durable Object state (events fanned
 //     out, last event, live subscriber count) merged with D1's count.
@@ -27,7 +32,14 @@
 // batches to the set's WebSocket subscribers (hibernatable sockets,
 // so idle sets cost nothing). D1 stays the durable store; the object
 // holds coordination state only.
-import { groupBySet, isAuthorized, parseEventBatch, type DecisionSetEvent } from "./events.ts";
+import {
+  encodeEventsCursor,
+  groupBySet,
+  isAuthorized,
+  parseEventBatch,
+  parseEventsCursor,
+  type DecisionSetEvent,
+} from "./events.ts";
 
 export interface Env {
   DB: D1Database;
@@ -189,12 +201,26 @@ async function handlePostEvents(request: Request, env: Env): Promise<Response> {
 async function handleGetEvents(url: URL, env: Env, setId: string): Promise<Response> {
   const limitRaw = Number(url.searchParams.get("limit") ?? "200");
   const limit = Number.isFinite(limitRaw) ? Math.min(Math.max(Math.trunc(limitRaw), 1), 1000) : 200;
-  const after = url.searchParams.get("after");
-  const query = after
-    ? "SELECT event_id, set_id, question_ref, type, payload, ts FROM decision_set_events WHERE set_id = ? AND ts > ? ORDER BY ts, event_id LIMIT ?"
-    : "SELECT event_id, set_id, question_ref, type, payload, ts FROM decision_set_events WHERE set_id = ? ORDER BY ts, event_id LIMIT ?";
-  const stmt = env.DB.prepare(query);
-  const bound = after ? stmt.bind(setId, after, limit) : stmt.bind(setId, limit);
+  const afterRaw = url.searchParams.get("after");
+  const select = "SELECT event_id, set_id, question_ref, type, payload, ts FROM decision_set_events WHERE set_id = ?";
+  let query = `${select} ORDER BY ts, event_id LIMIT ?`;
+  let bound = env.DB.prepare(query).bind(setId, limit);
+  if (afterRaw) {
+    const parsed = parseEventsCursor(afterRaw);
+    if (!parsed.ok) return jsonError(400, parsed.error);
+    const { ts, eventId } = parsed.value;
+    if (eventId !== null) {
+      // Composite cursor (#9614): resume strictly after the (ts,
+      // event_id) pair, so events sharing the page-boundary ts are
+      // not skipped.
+      query = `${select} AND (ts > ? OR (ts = ? AND event_id > ?)) ORDER BY ts, event_id LIMIT ?`;
+      bound = env.DB.prepare(query).bind(setId, ts, ts, eventId, limit);
+    } else {
+      // Legacy bare-ts cursor: original meaning, ts strictly after.
+      query = `${select} AND ts > ? ORDER BY ts, event_id LIMIT ?`;
+      bound = env.DB.prepare(query).bind(setId, ts, limit);
+    }
+  }
   const { results } = await bound.all<Record<string, unknown>>();
   const events = (results ?? []).map((row) => ({
     eventId: row.event_id,
@@ -204,7 +230,9 @@ async function handleGetEvents(url: URL, env: Env, setId: string): Promise<Respo
     payload: typeof row.payload === "string" ? JSON.parse(row.payload) : row.payload,
     ts: row.ts,
   }));
-  return Response.json({ setId, count: events.length, events });
+  const last = events[events.length - 1];
+  const nextAfter = last ? encodeEventsCursor({ ts: last.ts as string, eventId: last.eventId as string }) : null;
+  return Response.json({ setId, count: events.length, events, nextAfter });
 }
 
 export default {

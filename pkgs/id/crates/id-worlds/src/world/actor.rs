@@ -73,6 +73,9 @@ impl WorldCommand {
             Self::ManifestState { .. } => "ManifestState",
             Self::AdminScheduleAt { .. } => "AdminScheduleAt",
             Self::AdminCancelSchedule { .. } => "AdminCancelSchedule",
+            Self::AdminSetScheduleGrant { .. } => "AdminSetScheduleGrant",
+            Self::DeliverSchedule { .. } => "DeliverSchedule",
+            Self::SetScheduleDelivery { .. } => "SetScheduleDelivery",
             Self::CapsInfo { .. } => "CapsInfo",
             Self::SetIsolation { .. } => "SetIsolation",
             Self::IsolationInfo { .. } => "IsolationInfo",
@@ -84,6 +87,7 @@ impl WorldCommand {
             Self::ProgramHealth { .. } => "ProgramHealth",
             Self::AdminEventHistory { .. } => "AdminEventHistory",
             Self::ReplicationFeed { .. } => "ReplicationFeed",
+            Self::ReplicaSidecars { .. } => "ReplicaSidecars",
             Self::ReplicationCompact { .. } => "ReplicationCompact",
             Self::Shutdown { .. } => "Shutdown",
         }
@@ -310,6 +314,28 @@ pub(crate) enum WorldCommand {
         id: String,
         reply: oneshot::Sender<Result<BTreeMap<String, u64>>>,
     },
+    /// Admin: set this world's schedule-delivery consent for one peer
+    /// (#1355 part 2). Replies with the full grant map after the change.
+    AdminSetScheduleGrant {
+        peer: String,
+        send: bool,
+        receive: bool,
+        reply: oneshot::Sender<Result<BTreeMap<String, ScheduleGrant>>>,
+    },
+    /// A cross-world schedule fire arriving from `source` (#1355 part 2).
+    /// Replies true only when this world durably accepted the fire.
+    DeliverSchedule {
+        source: String,
+        id: String,
+        at_ms: u64,
+        late: bool,
+        reply: oneshot::Sender<bool>,
+    },
+    /// Install the cross-world schedule delivery sink (composition layer).
+    SetScheduleDelivery {
+        delivery: std::sync::Arc<dyn ScheduleDelivery>,
+        reply: oneshot::Sender<()>,
+    },
     /// Admin: read the capability report.
     CapsInfo {
         reply: oneshot::Sender<Result<CapsReport>>,
@@ -377,6 +403,20 @@ pub(crate) enum WorldCommand {
             )>,
         >,
     },
+    /// The authenticated sidecars for one replication snapshot
+    /// (F12.13 phase 5): the directory facts for `subjects` (the
+    /// accounts in the snapshot journal's capability chains) as
+    /// JSONL entry bytes, plus the active module hash whose bytes
+    /// the feed serves from the module store. The feed captures the
+    /// sidecars from the actor immediately after the snapshot image
+    /// in the same session, and the signed batch binds them to that
+    /// snapshot's cursor; facts are derived inside the actor (the
+    /// only place directory changes are applied), never read from a
+    /// file the actor is concurrently appending to.
+    ReplicaSidecars {
+        subjects: std::collections::BTreeSet<String>,
+        reply: oneshot::Sender<Result<(Vec<u8>, Option<String>)>>,
+    },
     /// Serialized forced compaction after an out-of-actor probe found an
     /// oversized legacy entry (#8095). Compaction itself stays an actor
     /// operation; only the scan moved out.
@@ -419,6 +459,10 @@ pub(crate) struct WorldActor {
     pub(crate) auth: crate::directory_auth::DirectoryAuth,
     pub(crate) program: Box<dyn WorldProgram>,
     pub(crate) journal: Option<Box<dyn WorldJournal>>,
+    /// Cross-world schedule delivery sink (#1355 part 2), installed by
+    /// the composition layer. `None` leaves cross-world schedules
+    /// pending: no sink, no delivery.
+    pub(crate) schedule_delivery: Option<std::sync::Arc<dyn ScheduleDelivery>>,
     /// Host metrics registry (F11.7), shared with the handle and the
     /// session layer; see [`WorldMetrics`].
     pub(crate) metrics: WorldMetrics,
@@ -1506,14 +1550,46 @@ impl WorldActor {
             .core
             .schedules
             .iter()
-            .filter(|(_, at_ms)| **at_ms <= now)
-            .map(|(id, at_ms)| (*at_ms, id.clone()))
+            .filter(|(_, schedule)| schedule.at_ms <= now)
+            .map(|(id, schedule)| (schedule.at_ms, id.clone()))
             .collect();
         due.sort_unstable();
         due.truncate(crate::world_caps::MAX_SCHEDULE_FIRES_PER_WAKEUP);
         for (_, id) in due {
             let late = self.overdue_at_open.contains(&id);
-            if !self.deliver(schedule_fired_event(&id, late)).await {
+            let Some(schedule) = self.core.schedules.get(&id).cloned() else {
+                continue;
+            };
+            let delivered = match &schedule.target {
+                None => self.deliver(schedule_fired_event(&id, late)).await,
+                Some(target) => {
+                    // Cross-world (#1355 part 2): consent is re-checked at
+                    // fire time — a grant revoked or an isolation change
+                    // since the set leaves the occurrence pending, exactly
+                    // like an unavailable target.
+                    let consented = self.core.isolation == Isolation::Unisolated
+                        && self
+                            .core
+                            .schedule_grants
+                            .get(target)
+                            .is_some_and(|grant| grant.send);
+                    if !consented {
+                        break;
+                    }
+                    let Some(sink) = self.schedule_delivery.clone() else {
+                        break;
+                    };
+                    sink.deliver_schedule(
+                        &self.core.world_id.clone(),
+                        target,
+                        &id,
+                        schedule.at_ms,
+                        late,
+                    )
+                    .await
+                }
+            };
+            if !delivered {
                 break;
             }
             if self
@@ -1522,7 +1598,10 @@ impl WorldActor {
             {
                 break;
             }
-            self.core.schedules.remove(&id);
+            // One journaled transition, shared with replay: a recurring
+            // schedule re-arms in place (fixed-rate, one slot), a one-shot
+            // is consumed.
+            self.core.apply_schedule_fired(&id);
             self.overdue_at_open.remove(&id);
         }
     }
@@ -2041,9 +2120,63 @@ impl WorldActor {
         }
     }
 
-    /// `schedule.at`: pend one fire of `id` at `at` (unix ms). The schedule is
-    /// journaled before the result is delivered. A refused request changes
-    /// nothing but the usage count.
+    /// Accept (or refuse) one cross-world schedule fire arriving here
+    /// (#1355 part 2). Acceptance requires this world unisolated, a
+    /// receive grant for the source, and no receipt for the same
+    /// (source, id, planned time) — a retry after the receipt is answered
+    /// true without delivering again. The fire's `System` entry is
+    /// journaled by `deliver`; the receipt follows it, so the source
+    /// consumes its occurrence only once both are durable.
+    async fn accept_schedule_delivery(
+        &mut self,
+        source: &str,
+        id: &str,
+        at_ms: u64,
+        late: bool,
+    ) -> bool {
+        if self.read_only {
+            return false;
+        }
+        if self.core.isolation != Isolation::Unisolated {
+            return false;
+        }
+        if !self
+            .core
+            .schedule_grants
+            .get(source)
+            .is_some_and(|grant| grant.receive)
+        {
+            return false;
+        }
+        let key = (source.to_owned(), id.to_owned(), at_ms);
+        if self.core.schedule_receipts.contains(&key) {
+            return true;
+        }
+        if !self
+            .deliver(schedule_fired_event_from(id, late, Some(source)))
+            .await
+        {
+            return false;
+        }
+        if self
+            .persist(JournalEntry::ScheduleReceived {
+                source: source.to_owned(),
+                id: id.to_owned(),
+                at_ms,
+            })
+            .is_err()
+        {
+            return false;
+        }
+        self.core.schedule_receipts.insert(key);
+        true
+    }
+
+    /// `schedule.at`: pend a fire of `id` at `at` (unix ms). With
+    /// `interval_ms` and `count` the schedule is recurring (#1355): it
+    /// re-arms fixed-rate after each fire until `count` total fires have
+    /// happened. The schedule is journaled before the result is delivered.
+    /// A refused request changes nothing but the usage count.
     fn execute_schedule_at(
         &mut self,
         args: &serde_json::Value,
@@ -2056,10 +2189,31 @@ impl WorldActor {
             .get("at")
             .and_then(serde_json::Value::as_u64)
             .ok_or(CapError::bad_args())?;
-        if let Err(error) = self
-            .core
-            .check_schedule(id, at_ms, self.core.clock().now_ms())
-        {
+        let interval_ms = args.get("interval_ms").and_then(serde_json::Value::as_u64);
+        let count = match args.get("count") {
+            None => None,
+            Some(value) => Some(
+                value
+                    .as_u64()
+                    .and_then(|count| u32::try_from(count).ok())
+                    .ok_or(CapError::bad_args())?,
+            ),
+        };
+        if args.get("interval_ms").is_some() && interval_ms.is_none() {
+            return Err(CapError::bad_args());
+        }
+        let target = args.get("world").and_then(serde_json::Value::as_str);
+        if args.get("world").is_some() && target.is_none() {
+            return Err(CapError::bad_args());
+        }
+        if let Err(error) = self.core.check_schedule_targeted(
+            id,
+            at_ms,
+            interval_ms,
+            count,
+            target,
+            self.core.clock().now_ms(),
+        ) {
             tracing::debug!("world {}: schedule refused: {error:#}", self.core.world_id);
             return Err(CapError::bad_args_with(format!("{error:#}")));
         }
@@ -2067,13 +2221,32 @@ impl WorldActor {
             .persist(JournalEntry::ScheduleSet {
                 id: id.to_owned(),
                 at_ms,
+                interval_ms,
+                remaining: count.filter(|_| interval_ms.is_some()),
+                target: target.map(str::to_owned),
             })
             .is_err()
         {
             return Err(CapError::failed());
         }
-        self.core.schedules.insert(id.to_owned(), at_ms);
-        Ok(serde_json::json!({"id": id, "fires_at": at_ms}))
+        self.core.schedules.insert(
+            id.to_owned(),
+            PendingSchedule {
+                at_ms,
+                interval_ms,
+                remaining: count.unwrap_or(1),
+                target: target.map(str::to_owned),
+            },
+        );
+        let mut result = serde_json::json!({"id": id, "fires_at": at_ms});
+        if let (Some(interval), Some(count)) = (interval_ms, count) {
+            result["interval_ms"] = serde_json::json!(interval);
+            result["count"] = serde_json::json!(count);
+        }
+        if let Some(target) = target {
+            result["world"] = serde_json::json!(target);
+        }
+        Ok(result)
     }
 
     /// `schedule.cancel`: drop a pending schedule before it fires. `cancelled`
@@ -3202,7 +3375,7 @@ impl WorldActor {
                 let _ = reply.send(profile);
             }
             WorldCommand::ManifestState { reply } => {
-                let state = (self.core.active_seed, self.core.schedules.clone());
+                let state = (self.core.active_seed, self.core.schedule_times());
                 // No audit record, for the same reason as Metrics below:
                 // the session layer's WorldState frame accepts a
                 // participant capability (only the seed is withheld from
@@ -3214,8 +3387,8 @@ impl WorldActor {
                 let audit_id = id.clone();
                 let result = (|| -> Result<BTreeMap<String, u64>> {
                     self.check_writable()?;
-                    if self.core.schedules.get(&id) == Some(&at_ms) {
-                        return Ok(self.core.schedules.clone());
+                    if self.core.schedules.get(&id) == Some(&PendingSchedule::one_shot(at_ms)) {
+                        return Ok(self.core.schedule_times());
                     }
                     // Validate the replacement before anything is persisted:
                     // a refusal (say, past the horizon) must leave the
@@ -3234,9 +3407,14 @@ impl WorldActor {
                     self.persist(JournalEntry::ScheduleSet {
                         id: id.clone(),
                         at_ms,
+                        interval_ms: None,
+                        remaining: None,
+                        target: None,
                     })?;
-                    self.core.schedules.insert(id, at_ms);
-                    Ok(self.core.schedules.clone())
+                    self.core
+                        .schedules
+                        .insert(id, PendingSchedule::one_shot(at_ms));
+                    Ok(self.core.schedule_times())
                 })();
                 self.audit_admin_result(
                     "admin",
@@ -3255,7 +3433,7 @@ impl WorldActor {
                         self.core.schedules.remove(&id);
                         self.overdue_at_open.remove(&id);
                     }
-                    Ok(self.core.schedules.clone())
+                    Ok(self.core.schedule_times())
                 })();
                 self.audit_admin_result(
                     "admin",
@@ -3264,6 +3442,54 @@ impl WorldActor {
                     result.is_ok(),
                 );
                 let _ = reply.send(result);
+            }
+            WorldCommand::AdminSetScheduleGrant {
+                peer,
+                send,
+                receive,
+                reply,
+            } => {
+                let audit_peer = peer.clone();
+                let result = (|| -> Result<BTreeMap<String, ScheduleGrant>> {
+                    self.check_writable()?;
+                    crate::world_hub::validate_world_name(&peer)?;
+                    self.persist(JournalEntry::ScheduleGrantSet {
+                        peer: peer.clone(),
+                        send,
+                        receive,
+                    })?;
+                    if send || receive {
+                        self.core
+                            .schedule_grants
+                            .insert(peer, ScheduleGrant { send, receive });
+                    } else {
+                        self.core.schedule_grants.remove(&peer);
+                    }
+                    Ok(self.core.schedule_grants.clone())
+                })();
+                self.audit_admin_result(
+                    "admin",
+                    "AdminSetScheduleGrant",
+                    serde_json::json!({"peer": audit_peer, "send": send, "receive": receive}),
+                    result.is_ok(),
+                );
+                let _ = reply.send(result);
+            }
+            WorldCommand::DeliverSchedule {
+                source,
+                id,
+                at_ms,
+                late,
+                reply,
+            } => {
+                let accepted = self
+                    .accept_schedule_delivery(&source, &id, at_ms, late)
+                    .await;
+                let _ = reply.send(accepted);
+            }
+            WorldCommand::SetScheduleDelivery { delivery, reply } => {
+                self.schedule_delivery = Some(delivery);
+                let _ = reply.send(());
             }
             WorldCommand::SetIsolation {
                 authority,
@@ -3418,6 +3644,18 @@ impl WorldActor {
                     }
                     .await
                 };
+                let _ = reply.send(result);
+            }
+            WorldCommand::ReplicaSidecars { subjects, reply } => {
+                let result = (|| -> Result<(Vec<u8>, Option<String>)> {
+                    let facts = self.core.directory().replica_facts_for(&subjects)?;
+                    let mut bytes = Vec::new();
+                    for entry in &facts {
+                        serde_json::to_writer(&mut bytes, entry)?;
+                        bytes.push(b'\n');
+                    }
+                    Ok((bytes, self.core.active_module_hash.clone()))
+                })();
                 let _ = reply.send(result);
             }
             WorldCommand::ReplicationCompact {
@@ -5154,7 +5392,7 @@ impl WorldActor {
         let overdue_at_open: BTreeSet<String> = core
             .schedules
             .iter()
-            .filter(|(_, at_ms)| **at_ms <= core.clock().now_ms())
+            .filter(|(_, schedule)| schedule.at_ms <= core.clock().now_ms())
             .map(|(id, _)| id.clone())
             .collect();
         Self {
@@ -5188,6 +5426,7 @@ impl WorldActor {
             location_fix: None,
             location_fix_received_at: None,
             loc_watches: BTreeMap::new(),
+            schedule_delivery: None,
             auth: crate::directory_auth::DirectoryAuth::default(),
             metrics: WorldMetrics::default(),
         }
