@@ -26,6 +26,8 @@ const HEALTH: BrokerHealthRow[] = [
     handed_off: 1,
     dep_blocked: 2,
     total: 52,
+    terminal_events_24h: 7,
+    terminal_events_7d: 42,
     oldest_queued_at: "2026-11-14T14:30:00Z",
   },
   { queue: "code", queued: 0, total: 8, oldest_queued_at: null },
@@ -130,6 +132,8 @@ describe("projectQueueSnapshot", () => {
     expect(pilot?.queued).toBe(3);
     expect(pilot?.parked).toBe(5);
     expect(pilot?.oldestQueuedAgeMs).toBe(30 * 60_000);
+    expect(pilot?.terminalEvents24h).toBe(7);
+    expect(pilot?.terminalEvents7d).toBe(42);
     const code = snap.queues.find((q) => q.queue === "code");
     expect(code?.oldestQueuedAgeMs).toBeNull();
     expect(snap.tasks).toHaveLength(3);
@@ -212,5 +216,38 @@ describe("read-only by construction", () => {
     }
     expect(src).toContain('"/health"');
     expect(src).toContain('"/list"');
+  });
+});
+
+import { queuePanelHtml } from "../src/render.ts";
+
+describe("queuePanelHtml (#9921)", () => {
+  const fresh = projectQueueSnapshot(HEALTH, TASKS, NOW, NOW);
+  test("fresh snapshot renders streams, counts, age, and claimed id items", () => {
+    const html = queuePanelHtml(fresh);
+    expect(html).toContain("Queue &amp; fleet");
+    expect(html).toContain("repo-health-code-pilot");
+    expect(html).toContain("30m"); // oldest queued age humanized
+    expect(html).toContain("7 / 42"); // terminal 24h / 7d
+    expect(html).toContain("#8580");
+    expect(html).toContain("any-d");
+    expect(html).toContain("2026-11-14T15:00:00.000Z"); // source timestamp
+  });
+  test("stale snapshot: the warning replaces the data", () => {
+    const stale = projectQueueSnapshot(HEALTH, TASKS, NOW - QUEUE_STALE_MS - 1, NOW);
+    const html = queuePanelHtml(stale);
+    expect(html).toContain("Stale source");
+    expect(html).not.toContain("#8580");
+    expect(html).not.toContain("<table>");
+  });
+  test("unavailable snapshot: warning with the read error, no data", () => {
+    const html = queuePanelHtml(unavailableQueueSnapshot(NOW, "broker down"));
+    expect(html).toContain("Stale source");
+    expect(html).toContain("broker down");
+    expect(html).not.toContain("<table>");
+  });
+  test("null snapshot renders the unavailable banner", () => {
+    const html = queuePanelHtml(null);
+    expect(html).toContain("unavailable in the current source");
   });
 });
