@@ -39,6 +39,13 @@ import {
 import { isRecord } from "../validate.ts";
 import { fetchIssueBodySnapshot, type Phase12Snapshot } from "../phase12.ts";
 import { fetchBuildHealthSnapshot, type BuildHealthSnapshot } from "../build-health.ts";
+import {
+  fetchQueueSnapshot,
+  readBrokerToken,
+  unavailableQueueSnapshot,
+  QUEUE_STALE_MS,
+  type QueueSnapshot,
+} from "../queue.ts";
 import { F12_DESIGN_ISSUE_NUMBER, parseF12Items, parseTimelinePrRefs, type F12PrRef } from "../f12-readiness.ts";
 import { buildAttentionFlags, buildQuotaActions, quotaActionFlags } from "../derive.ts";
 import { validateRoadmapHorizon } from "../roadmap-horizon.ts";
@@ -1455,6 +1462,40 @@ export function liveSource(
     return base;
   }
 
+  // #9920: the read-only fleet-queue collector — POST /health +
+  // /list (rich) against the laptop queue-broker with the agent
+  // token from its file, cached 60s and shared in-flight. Fail-soft:
+  // a failed read re-serves the last good snapshot forced stale
+  // (available=false, error named), or the unavailable snapshot
+  // when nothing good exists yet — never a throw into a page.
+  let queueCache: { value: QueueSnapshot; at: number } | null = null;
+  let queueInFlight: Promise<QueueSnapshot> | null = null;
+  async function queueSnapshot(): Promise<QueueSnapshot> {
+    if (queueCache && Date.now() - queueCache.at < 60_000) {
+      const v = queueCache.value;
+      return { ...v, stale: v.stale || Date.now() - v.fetchedAt > QUEUE_STALE_MS };
+    }
+    if (!queueInFlight) {
+      queueInFlight = (async () => {
+        try {
+          const token = await readBrokerToken(cfg.queueBrokerTokenFile);
+          if (!token) throw new Error(`queue broker token file unreadable: ${cfg.queueBrokerTokenFile}`);
+          const snap = await fetchQueueSnapshot(cfg.queueBrokerUrl, token);
+          queueCache = { value: snap, at: Date.now() };
+          return snap;
+        } catch (err) {
+          const msg = err instanceof Error ? err.message : String(err);
+          if (queueCache) {
+            return { ...queueCache.value, available: false, stale: true, errors: [msg] };
+          }
+          return unavailableQueueSnapshot(Date.now(), msg);
+        }
+      })().finally(() => {
+        queueInFlight = null;
+      });
+    }
+    return queueInFlight;
+  }
   return {
     async board() {
       try {
@@ -1707,6 +1748,9 @@ export function liveSource(
     },
     async f12PrRefs(): Promise<Map<number, F12PrRef[]> | null> {
       return f12PrRefsSnapshot();
+    },
+    async queue(): Promise<QueueSnapshot | null> {
+      return queueSnapshot();
     },
     async coverageCensus(): Promise<RepoCensus[] | null> {
       const feed = await getFeed();
