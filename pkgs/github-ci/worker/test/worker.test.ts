@@ -1,4 +1,5 @@
-import { createExecutionContext, env, fetchMock, waitOnExecutionContext } from "cloudflare:test";
+import { createExecutionContext, env, waitOnExecutionContext } from "cloudflare:test";
+import { fetchMock } from "./fetch-mock";
 import { describe, expect, it, beforeAll, afterEach, vi } from "vitest";
 import worker from "../src/index";
 
