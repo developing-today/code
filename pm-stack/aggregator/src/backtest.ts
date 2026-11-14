@@ -197,6 +197,11 @@ export interface CalibrationReport {
   /** Forecasts with no defensible date (p50 null): counted, never
    * scored. */
   unscoredNoDate: number;
+  /** Forecasts whose subject was already complete at the snapshot
+   * cutoff: the completion was known at the forecast origin, so
+   * scoring them would credit the model with predicting the past.
+   * Counted, never scored. */
+  excludedAlreadyComplete: number;
   groups: BacktestGroup[];
   calibration: CalibrationGate;
   quotaWall: { state: "not_evaluated"; reason: string };
@@ -277,6 +282,7 @@ export function evaluateVersion(input: {
   const scored: Scored[] = [];
   let unresolved = 0;
   let unscoredNoDate = 0;
+  let excludedAlreadyComplete = 0;
   for (const s of snapshots) {
     for (const f of s.forecasts) {
       if (f.p50 === null) {
@@ -287,6 +293,15 @@ export function evaluateVersion(input: {
       const completedMs = outcome?.completedAt ? Date.parse(outcome.completedAt) : null;
       if (completedMs === null || completedMs > asOfMs) {
         unresolved++;
+        continue;
+      }
+      if (completedMs <= Date.parse(s.cutoff)) {
+        // Already complete at this snapshot's origin: production
+        // derivation keeps such subjects in later captures with
+        // p50 = p80 = asOf, and scoring them would repeatedly credit
+        // a completion the forecaster already knew about (Codex P2,
+        // PR #8436). Prospective scoring only.
+        excludedAlreadyComplete++;
         continue;
       }
       const base = previousP50.get(`${s.cutoff}\0${f.subjectRef}`);
@@ -313,6 +328,12 @@ export function evaluateVersion(input: {
 
   // Windows: one per distinct cutoff, cumulative for gate/flag maths.
   const cutoffs = [...new Set(snapshots.map((s) => s.cutoff))].sort();
+  // The calibration gate counts weekly cutoffs that contribute SCORED
+  // forecasts, not every captured snapshot: a run of snapshots whose
+  // forecasts are all unavailable (p50 null) is not evidence (Codex
+  // P2, PR #8436).
+  const scoredCutoffs = [...new Set(scored.map((r) => r.cutoff))].sort();
+  const scoredCutoffsSeen = new Set<string>();
   let cumResolved = 0;
   let cumP80Covered = 0;
   let cumP80N = 0;
@@ -320,18 +341,24 @@ export function evaluateVersion(input: {
   const windowWorse: boolean[] = [];
   for (const cutoff of cutoffs) {
     const rows = scored.filter((r) => r.cutoff === cutoff);
+    if (rows.length > 0) scoredCutoffsSeen.add(cutoff);
     cumResolved += rows.length;
     const p80Rows = rows.filter((r) => r.p80Covered !== null);
     cumP80Covered += p80Rows.filter((r) => r.p80Covered).length;
     cumP80N += p80Rows.length;
-    const eligible = cumResolved >= CALIBRATION_MIN_RESOLVED && cutoffs.indexOf(cutoff) + 1 >= CALIBRATION_MIN_CUTOFFS;
+    const eligible = cumResolved >= CALIBRATION_MIN_RESOLVED && scoredCutoffsSeen.size >= CALIBRATION_MIN_CUTOFFS;
     if (eligible && cumP80N > 0) {
       const cov = cumP80Covered / cumP80N;
       windowP80Flags.push(cov < P80_COVERAGE_BAND.low || cov > P80_COVERAGE_BAND.high);
     }
     const baseRows = rows.filter((r) => r.baselineErrorDays !== null);
     if (baseRows.length > 0) {
-      const modelMed = median(rows.map((r) => r.etaErrorDays));
+      // Paired comparison: model and baseline medians over the SAME
+      // subjects (those with a baseline). Mixing first-seen subjects
+      // into the model median only would let the subject mix, not
+      // the model, drive the worse-than-baseline flag (Codex P2,
+      // PR #8436).
+      const modelMed = median(baseRows.map((r) => r.etaErrorDays));
       const baseMed = median(baseRows.map((r) => r.baselineErrorDays!));
       if (modelMed !== null && baseMed !== null) windowWorse.push(modelMed > baseMed);
     }
@@ -341,7 +368,7 @@ export function evaluateVersion(input: {
   const worse = successive(windowWorse);
 
   const allGroup = groupMetrics(scored, "all", "all");
-  const gateMet = scored.length >= CALIBRATION_MIN_RESOLVED && cutoffs.length >= CALIBRATION_MIN_CUTOFFS;
+  const gateMet = scored.length >= CALIBRATION_MIN_RESOLVED && scoredCutoffs.length >= CALIBRATION_MIN_CUTOFFS;
   return {
     reportVersion: BACKTEST_REPORT_VERSION,
     modelVersion,
@@ -351,11 +378,12 @@ export function evaluateVersion(input: {
     resolved: scored.length,
     unresolved,
     unscoredNoDate,
+    excludedAlreadyComplete,
     groups,
     calibration: {
       state: !gateMet ? "not_yet_calibrated" : p80Flag || worse ? "flagged" : "calibrated",
       resolved: scored.length,
-      distinctCutoffs: cutoffs.length,
+      distinctCutoffs: scoredCutoffs.length,
       minResolved: CALIBRATION_MIN_RESOLVED,
       minCutoffs: CALIBRATION_MIN_CUTOFFS,
       p80Coverage: allGroup.p80Coverage,

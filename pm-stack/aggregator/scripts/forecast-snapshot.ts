@@ -6,8 +6,14 @@
 //     --forecasts forecasts.json --out data/forecast-snapshots.jsonl \
 //     --watermark item-history=<cursor> [--cutoff <iso>]
 //
-// --forecasts is a JSON file holding ForecastContract[] (or an object
-// with a `forecasts` array) as served by GET /api/forecasts.json. The
+// --forecasts is a JSON file as served by GET /api/forecasts.json:
+// an object whose `contracts` array holds every forecast contract
+// (epic-completion, quota-exhaustion, and stall-risk). The CLI selects
+// the epic-completion contracts at this boundary; the snapshot store
+// itself keeps refusing anything else. A bare ForecastContract[] (or
+// an object with a `forecasts` array) is also accepted and passed
+// through unfiltered, so a mixed file in those shapes still fails the
+// store's strict validation instead of being silently trimmed. The
 // snapshot freezes the epic-completion forecasts with their model
 // version, the cutoff, and the source watermarks that name exactly
 // what source state they were derived from.
@@ -26,8 +32,23 @@ if (!forecastsPath || !out) {
   console.error("usage: forecast-snapshot.ts --forecasts <json> --out <jsonl> [--cutoff <iso>] [--watermark k=v ...]");
   process.exit(2);
 }
-const parsed = JSON.parse(await readFile(forecastsPath, "utf8")) as ForecastContract[] | { forecasts: ForecastContract[] };
-const forecasts = Array.isArray(parsed) ? parsed : parsed.forecasts;
+const parsed = JSON.parse(await readFile(forecastsPath, "utf8")) as
+  | ForecastContract[]
+  | { forecasts?: ForecastContract[]; contracts?: ForecastContract[] };
+let forecasts: ForecastContract[];
+if (Array.isArray(parsed)) {
+  forecasts = parsed;
+} else if (Array.isArray(parsed.contracts)) {
+  // The actual /api/forecasts.json shape: select the epic-completion
+  // contracts here; createSnapshot keeps its strict validation for
+  // direct callers (Codex P2, PR #8436).
+  forecasts = parsed.contracts.filter((f) => f.type === "epic_completion");
+} else if (Array.isArray(parsed.forecasts)) {
+  forecasts = parsed.forecasts;
+} else {
+  console.error("forecast-snapshot: --forecasts file has no contracts/forecasts array (expected the /api/forecasts.json shape)");
+  process.exit(2);
+}
 const sourceWatermarks: Record<string, string> = {};
 for (let i = 0; i < process.argv.length; i++) {
   if (process.argv[i] === "--watermark") {

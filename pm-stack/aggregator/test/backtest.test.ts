@@ -1,5 +1,5 @@
 import { describe, expect, it } from "bun:test";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -213,5 +213,126 @@ describe("calibration gate (#3986)", () => {
     const report = evaluateVersion({ snapshots, outcomes, asOf, modelVersion: "forecast/v3" });
     expect(report.calibration.state).toBe("not_yet_calibrated");
     expect(report.calibration.recommendUnavailable).toBe(false);
+  });
+});
+
+describe("Codex P2 regressions (PR #8436)", () => {
+  const asOf = "2026-06-01T00:00:00.000Z";
+  const DAY = 86_400_000;
+
+  it("excludes subjects already complete at the forecast origin", () => {
+    const snap = snapshot([
+      // As deriveEpicEta emits for a completed subject: p50 = p80 = asOf.
+      forecast("gh:o/r#done", CUTOFF, CUTOFF, CUTOFF),
+      forecast("gh:o/r#live", CUTOFF, "2026-01-12T00:00:00.000Z", "2026-01-19T00:00:00.000Z"),
+    ]);
+    const report = evaluateVersion({
+      snapshots: [snap],
+      outcomes: [
+        outcome("gh:o/r#done", "2026-01-03T00:00:00.000Z"), // completed BEFORE the Jan 5 cutoff
+        outcome("gh:o/r#live", "2026-01-14T00:00:00.000Z"),
+      ],
+      asOf,
+      modelVersion: "forecast/v3",
+    });
+    expect(report.resolved).toBe(1);
+    expect(report.excludedAlreadyComplete).toBe(1);
+    const all = report.groups.find((g) => g.horizon === "all" && g.confidence === "all")!;
+    expect(all.n).toBe(1);
+    expect(all.medianAbsEtaErrorDays).toBe(2);
+  });
+
+  it("calibration gate counts only cutoffs contributing scored forecasts", () => {
+    const snapshots: ForecastSnapshot[] = [];
+    const outcomes: ForecastOutcome[] = [];
+    const base = Date.parse(CUTOFF);
+    // Seven weekly snapshots whose forecasts are all unavailable.
+    for (let c = 0; c < 7; c++) {
+      const cutoff = new Date(base + c * 7 * DAY).toISOString();
+      snapshots.push(snapshot([forecast(`gh:o/r#u${c}`, cutoff, null, null)], cutoff));
+    }
+    // The eighth carries 30 forecasts that resolve at 80% P80 coverage.
+    const c8ms = base + 7 * 7 * DAY;
+    const c8 = new Date(c8ms).toISOString();
+    const fs: EpicCompletionForecast[] = [];
+    for (let k = 0; k < 30; k++) {
+      const subject = `gh:o/r#g${k}`;
+      fs.push(forecast(subject, c8, new Date(c8ms + 10 * DAY).toISOString(), new Date(c8ms + 20 * DAY).toISOString()));
+      outcomes.push(outcome(subject, new Date(c8ms + (k % 5 !== 4 ? 12 : 25) * DAY).toISOString(), "2026-05-01T00:00:00.000Z"));
+    }
+    snapshots.push(snapshot(fs, c8));
+    const report = evaluateVersion({ snapshots, outcomes, asOf, modelVersion: "forecast/v3" });
+    expect(report.resolved).toBe(30);
+    expect(report.calibration.distinctCutoffs).toBe(1);
+    expect(report.calibration.state).toBe("not_yet_calibrated");
+    expect(report.calibration.recommendUnavailable).toBe(false);
+  });
+
+  it("compares model and baseline errors over the same subjects", () => {
+    const c1 = "2026-01-05T00:00:00.000Z";
+    const c2 = "2026-01-12T00:00:00.000Z";
+    const c3 = "2026-01-19T00:00:00.000Z";
+    const actual = "2026-03-01T00:00:00.000Z";
+    const s1 = snapshot(
+      [forecast("gh:o/r#a", c1, "2026-01-20T00:00:00.000Z", null), forecast("gh:o/r#b", c1, "2026-01-20T00:00:00.000Z", null)],
+      c1,
+    );
+    // Continuing subjects improve (model err 5 vs baseline err 40);
+    // first-seen subjects carry 100d errors and no baseline.
+    const s2 = snapshot(
+      [
+        forecast("gh:o/r#a", c2, "2026-02-24T00:00:00.000Z", null),
+        forecast("gh:o/r#b", c2, "2026-02-24T00:00:00.000Z", null),
+        forecast("gh:o/r#n1", c2, "2026-06-09T00:00:00.000Z", null),
+        forecast("gh:o/r#n2", c2, "2026-06-09T00:00:00.000Z", null),
+      ],
+      c2,
+    );
+    // Continuing subjects improve again (model err 2 vs baseline err 5).
+    const s3 = snapshot(
+      [
+        forecast("gh:o/r#a", c3, "2026-02-27T00:00:00.000Z", null),
+        forecast("gh:o/r#b", c3, "2026-02-27T00:00:00.000Z", null),
+        forecast("gh:o/r#n3", c3, "2026-06-09T00:00:00.000Z", null),
+        forecast("gh:o/r#n4", c3, "2026-06-09T00:00:00.000Z", null),
+      ],
+      c3,
+    );
+    const outcomes = ["a", "b", "n1", "n2", "n3", "n4"].map((x) => outcome(`gh:o/r#${x}`, actual));
+    const report = evaluateVersion({ snapshots: [s1, s2, s3], outcomes, asOf, modelVersion: "forecast/v3" });
+    // Unpaired medians would call both windows worse (medians 52.5 > 40
+    // and 51 > 5); paired, the model beats the baseline in both.
+    expect(report.calibration.persistentlyWorseThanBaseline).toBe(false);
+  });
+
+  it("forecast-snapshot CLI captures the /api/forecasts.json contracts shape", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "backtest-cli-"));
+    try {
+      const api = {
+        contractVersion: "forecast-contract/v1",
+        generatedAt: CUTOFF,
+        contracts: [
+          forecast("gh:o/r#1", CUTOFF, "2026-01-12T00:00:00.000Z", "2026-01-19T00:00:00.000Z"),
+          { type: "quota_exhaustion" },
+          { type: "stall_risk" },
+        ],
+      };
+      const inputPath = join(dir, "forecasts.json");
+      await writeFile(inputPath, JSON.stringify(api));
+      const outPath = join(dir, "snapshots.jsonl");
+      const script = join(import.meta.dir, "../scripts/forecast-snapshot.ts");
+      const proc = Bun.spawn(
+        [process.execPath, "run", script, "--forecasts", inputPath, "--out", outPath, "--watermark", "item-history=fixture"],
+        { stdout: "pipe", stderr: "pipe" },
+      );
+      expect(await proc.exited).toBe(0);
+      const loaded = await loadSnapshots(outPath);
+      expect(loaded).toHaveLength(1);
+      expect(loaded[0].forecasts).toHaveLength(1);
+      expect(loaded[0].forecasts[0].subjectRef).toBe("gh:o/r#1");
+      expect(loaded[0].sourceWatermarks["item-history"]).toBe("fixture");
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
   });
 });
