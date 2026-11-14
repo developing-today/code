@@ -1405,8 +1405,9 @@ impl WorldActor {
                 Decision::Allow => self.arm(sub),
                 Decision::AllowAndGrant => {
                     let granted: Vec<String> = self.core.ledger.granted().iter().cloned().collect();
-                    let _ = self.persist(JournalEntry::CapsGranted { granted });
-                    self.arm(sub);
+                    if self.persist(JournalEntry::CapsGranted { granted }).is_ok() {
+                        self.arm(sub);
+                    }
                 }
                 Decision::Deny(error) => {
                     let spec = sub.spec();
@@ -1628,7 +1629,8 @@ impl WorldActor {
             Decision::Allow => {}
             Decision::AllowAndGrant => {
                 let granted: Vec<String> = self.core.ledger.granted().iter().cloned().collect();
-                let _ = self.persist(JournalEntry::CapsGranted { granted });
+                self.persist(JournalEntry::CapsGranted { granted })
+                    .map_err(|_| CapError::failed_with("capability_grant_persist_failed"))?;
             }
             Decision::Deny(error) => return Err(error),
         }
@@ -2657,10 +2659,20 @@ impl WorldActor {
                 let revoked = self.core.revoke_tree(participant_id);
                 let was_active = !revoked.is_empty();
                 if was_active {
-                    let _ = self.persist(JournalEntry::Revoked { participant_id, by });
+                    // Fail-closed: surface a persist failure rather than
+                    // reporting an audited success (design #835 phase 2).
+                    let persisted = self.persist(JournalEntry::Revoked { participant_id, by });
                     for id in revoked {
                         let _ = self.revocation_sender.send(id);
                     }
+                    self.audit_admin_result(
+                        by.map_or_else(|| "admin".to_owned(), |id| format!("participant:{id}")),
+                        "Revoke",
+                        serde_json::json!({"participant_id": participant_id, "changed": was_active}),
+                        persisted.is_ok(),
+                    );
+                    let _ = reply.send(persisted.is_ok() && was_active);
+                    return;
                 }
                 self.audit_admin_result(
                     by.map_or_else(|| "admin".to_owned(), |id| format!("participant:{id}")),
