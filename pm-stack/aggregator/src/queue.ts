@@ -38,6 +38,8 @@ export interface BrokerHealthRow {
   failed?: number;
   total?: number;
   oldest_queued_at?: string | null;
+  terminal_events_24h?: number;
+  terminal_events_7d?: number;
 }
 
 export interface BrokerTaskRow {
@@ -74,6 +76,10 @@ export interface QueueCounts {
   handedOff: number;
   depBlocked: number;
   total: number;
+  /** Terminal outcomes (done/failed/cancelled events) the broker
+   * counted in the last 24h / 7d — the sweep-outcome signal. */
+  terminalEvents24h: number;
+  terminalEvents7d: number;
   oldestQueuedAt: string | null;
   /** Age of the oldest queued task at projection time; null when
    * nothing is queued or the broker gave no timestamp. */
@@ -195,6 +201,8 @@ export function projectQueueSnapshot(
         handedOff: num(r.handed_off),
         depBlocked: num(r.dep_blocked),
         total: num(r.total),
+        terminalEvents24h: num(r.terminal_events_24h),
+        terminalEvents7d: num(r.terminal_events_7d),
         oldestQueuedAt: oldest,
         oldestQueuedAgeMs: Number.isNaN(oldestMs) ? null : Math.max(0, now - oldestMs),
       };

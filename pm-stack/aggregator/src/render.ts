@@ -137,6 +137,7 @@ import {
   projectNightlyTrend,
   type BuildHealthSnapshot,
 } from "./build-health.ts";
+import type { QueueSnapshot } from "./queue.ts";
 import {
   F12_DESIGN_ISSUE_URL,
   parseF12Designs,
@@ -7246,6 +7247,52 @@ export function f12ReadinessPanelHtml(
   return `${head}${sourceLine}${rows}`;
 }
 
+
+export function queuePanelHtml(snapshot: QueueSnapshot | null): string {
+  const head = `<h2>Queue &amp; fleet \u2014 live from the fleet queue broker</h2>`;
+  if (!snapshot) {
+    return `${head}<div class="banner">The queue-broker snapshot is unavailable in the current source, so no queue state is shown \u2014 this panel never renders hand-kept queue values.</div>`;
+  }
+  const fetchedIso = new Date(snapshot.fetchedAt).toISOString();
+  const sourceLine = `<p class="muted">Source: queue-broker /health + /list (read-only), fetched ${esc(fetchedIso)}.</p>`;
+  if (!snapshot.available || snapshot.stale) {
+    const why = snapshot.errors.length
+      ? ` Last read error: ${esc(snapshot.errors[0])}.`
+      : "";
+    return `${head}${sourceLine}<div class="banner">Stale source: this queue snapshot was fetched at ${esc(fetchedIso)}, outside the freshness window \u2014 queue numbers are withheld rather than shown silently old.${why} They refresh on the next successful broker read.</div>`;
+  }
+  const age = (ms: number | null): string => {
+    if (ms === null) return "\u2014";
+    const mins = Math.floor(ms / 60_000);
+    if (mins < 60) return `${mins}m`;
+    const hours = Math.floor(mins / 60);
+    if (hours < 48) return `${hours}h ${mins % 60}m`;
+    return `${Math.floor(hours / 24)}d ${hours % 24}h`;
+  };
+  const streamRows = snapshot.queues
+    .map(
+      (q) =>
+        `<tr><td>${esc(q.queue)}</td><td>${q.queued}</td><td>${q.claimed}</td><td>${q.parked}</td><td>${q.blocked}</td><td>${q.done}</td><td>${esc(age(q.oldestQueuedAgeMs))}</td><td>${q.terminalEvents24h} / ${q.terminalEvents7d}</td></tr>`,
+    )
+    .join("");
+  const streams = `<table><thead><tr><th>Queue stream</th><th>Queued</th><th>Claimed</th><th>Parked</th><th>Blocked</th><th>Done</th><th>Oldest queued</th><th>Terminal 24h / 7d</th></tr></thead><tbody>${streamRows}</tbody></table>`;
+  const idItems = snapshot.tasks.filter(
+    (task) => task.repo === "developing-today/code" && task.issue !== null && (task.status === "claimed" || task.status === "parked"),
+  );
+  const itemRows = idItems
+    .slice(0, 50)
+    .map((task) => {
+      const who = [task.worker, task.lane].filter(Boolean).join(" / ") || "\u2014";
+      const stage = task.progressStage ? esc(task.progressStage) : "\u2014";
+      return `<tr><td>${task.id}</td><td><a href="https://github.com/developing-today/code/issues/${task.issue}">#${task.issue}</a> ${esc(task.title)}</td><td>${esc(task.status)}</td><td>${esc(who)}</td><td>${stage}</td></tr>`;
+    })
+    .join("");
+  const items = idItems.length
+    ? `<h3>Claimed &amp; parked id items (${idItems.length})</h3><table><thead><tr><th>Task</th><th>Issue</th><th>Status</th><th>Worker / lane</th><th>Stage</th></tr></thead><tbody>${itemRows}</tbody></table>`
+    : `<h3>Claimed &amp; parked id items</h3><p class="muted">None in the current snapshot.</p>`;
+  return `${head}${sourceLine}${streams}${items}`;
+}
+
 export function renderProgramProject(
   detail: ProjectDetail,
   items: Map<RefKey, GhItem>,
@@ -7255,6 +7302,7 @@ export function renderProgramProject(
   phase12?: Phase12Snapshot | null,
   buildHealth?: BuildHealthSnapshot | null,
   f12?: { design: Phase12Snapshot | null; prRefs: Map<number, F12PrRef[]> | null } | null,
+  queueSnap?: QueueSnapshot | null,
 ): string {
   const { config } = detail;
   const linkBits: string[] = [];
@@ -7366,6 +7414,7 @@ export function renderProgramProject(
     config.id === "id" && f12 !== undefined
       ? f12ReadinessPanelHtml(phase12 ?? null, f12?.design ?? null, f12?.prRefs ?? null, items)
       : "";
+  const queueHtml = config.id === "id" && queueSnap !== undefined ? queuePanelHtml(queueSnap) : "";
 
   const ed = config.editorial;
   const editorialHtml = ed
@@ -7386,7 +7435,7 @@ ${poolHtml}
 ${roadmapHtml}
 ${repoCardsHtml}
 ${sweepHealthHtml}
-${phase12Html}${buildHealthHtml}${f12Html}${editorialHtml}`;
+${phase12Html}${buildHealthHtml}${f12Html}${queueHtml}${editorialHtml}`;
   return layout(
     config.title,
     body,
