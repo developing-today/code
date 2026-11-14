@@ -560,9 +560,11 @@ mod tests {
         // Oracle: the host `parse_wants` boundary — oversize args reject
         // the document at parse time, before any per-request evaluation.
         let bridge = Bridge::new(BTreeSet::from(["device.info".to_owned()]));
-        let big = "x".repeat(MAX_ARGS_BYTES + 1);
+        // Args are a JSON object since #7929; an object whose serialized
+        // form exceeds MAX_ARGS_BYTES trips the same parse-time bound.
+        let big = "x".repeat(MAX_ARGS_BYTES);
         let wants = format!(
-            r#"{{"v": 1, "requests": [{{"id": "r1", "cap": "device.info", "args": "{big}"}}]}}"#
+            r#"{{"v": 1, "requests": [{{"id": "r1", "cap": "device.info", "args": {{"pad": "{big}"}}}}]}}"#
         );
         assert!(wants.len() <= MAX_WANTS_BYTES);
         let error = bridge.evaluate_wants(&wants).unwrap_err();
