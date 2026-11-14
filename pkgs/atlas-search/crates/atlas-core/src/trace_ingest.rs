@@ -372,9 +372,14 @@ pub fn days_from_civil(y: i64, m: u32, d: u32) -> i64 {
 /// included. `days_from_civil` silently normalises out-of-range
 /// components (month 99 advances the year count), so callers that
 /// parse a date from text must gate on this first — an invalid
-/// `today` would otherwise age every trace file by years.
+/// `today` would otherwise age every trace file by years. The
+/// year is bounded to the four-digit YYYY range (0..=9999) the
+/// trace file names and the `--today` format carry; the bound
+/// also keeps `days_from_civil`'s era arithmetic far from i64
+/// overflow (an unbounded year such as i64::MAX would overflow
+/// `era * 146_097`).
 pub fn valid_civil_date(y: i64, m: u32, d: u32) -> bool {
-    if !(1..=12).contains(&m) || d == 0 {
+    if !(0..=9999).contains(&y) || !(1..=12).contains(&m) || d == 0 {
         return false;
     }
     let leap = (y % 4 == 0 && y % 100 != 0) || y % 400 == 0;
@@ -474,6 +479,53 @@ fn write_atomic(path: &Path, contents: &str) -> Result<()> {
     Ok(())
 }
 
+/// Rebuild one day's `atlas-trace-compaction/v1` aggregate from
+/// the COMPLETE resulting cold file and write it atomically.
+/// Building from the full cold contents — never from one pass's
+/// lines alone — keeps the aggregate describing every archived
+/// record after any number of passes, including a repair pass
+/// that moves nothing.
+fn write_aggregate(
+    cold_dir: &Path,
+    day: (i64, u32, u32),
+    result_lines: &[String],
+    exempt_records: usize,
+) -> Result<()> {
+    let mut served_total: u64 = 0;
+    let mut merged_total: u64 = 0;
+    let mut surfaces: BTreeMap<String, u64> = BTreeMap::new();
+    let mut hashes: Vec<String> = Vec::new();
+    for line in result_lines {
+        accumulate_aggregate(
+            line,
+            &mut served_total,
+            &mut merged_total,
+            &mut surfaces,
+            &mut hashes,
+        );
+    }
+    let aggregate = json!({
+        "schema": COMPACTION_SCHEMA,
+        "source_id": TRACE_SOURCE_ID,
+        "source_class": TRACE_SOURCE_CLASS,
+        "day": format!("{:04}-{:02}-{:02}", day.0, day.1, day.2),
+        "compacted_records": result_lines.len(),
+        "exempt_records": exempt_records,
+        "served_total": served_total,
+        "merged_total": merged_total,
+        "surfaces": surfaces,
+        "query_text_hashes": hashes,
+    });
+    let aggregate_path = cold_dir.join(format!(
+        "atlas-traces-{:04}-{:02}-{:02}.aggregate.json",
+        day.0, day.1, day.2
+    ));
+    write_atomic(
+        &aggregate_path,
+        &serde_json::to_string_pretty(&aggregate).unwrap_or_default(),
+    )
+}
+
 /// Run the section 4 retention pass over the hot trace files in
 /// `dir`, ageing each file by its name's day stamp against
 /// `today` (a (year, month, day) triple, injected so the pass is
@@ -554,18 +606,6 @@ pub fn run_retention(
             }
             cold_lines.push(line);
         }
-        if cold_lines.is_empty() {
-            // Everything in the file is feedback-referenced: the
-            // file stays hot exactly as written.
-            report.kept_files += 1;
-            continue;
-        }
-        std::fs::create_dir_all(&cold_dir).map_err(|e| {
-            Error::backend(format!(
-                "trace retention: cannot create {}: {e}",
-                cold_dir.display()
-            ))
-        })?;
         let cold_path = cold_dir.join(&name);
         // Idempotent archive merge: records already in the cold
         // file (from an earlier pass, or from a pass that failed
@@ -590,6 +630,33 @@ pub fn run_retention(
                 }
             }
         }
+        if cold_lines.is_empty() {
+            // Everything left in the file is feedback-referenced:
+            // the file stays hot exactly as written. But an
+            // earlier pass may have archived records into the
+            // cold file and then failed before writing the
+            // aggregate — repair that here: rewrite the cold file
+            // deduplicated and rebuild its aggregate, so the
+            // archive is never left without one (or with a stale
+            // one) just because this pass moves nothing.
+            if cold_path.exists() {
+                let mut out = String::new();
+                for line in &result_lines {
+                    out.push_str(line);
+                    out.push('\n');
+                }
+                write_atomic(&cold_path, &out)?;
+                write_aggregate(&cold_dir, day, &result_lines, exempt_lines.len())?;
+            }
+            report.kept_files += 1;
+            continue;
+        }
+        std::fs::create_dir_all(&cold_dir).map_err(|e| {
+            Error::backend(format!(
+                "trace retention: cannot create {}: {e}",
+                cold_dir.display()
+            ))
+        })?;
         for line in &cold_lines {
             if seen.insert(trace_line_key(line)) {
                 result_lines.push((*line).to_string());
@@ -606,39 +673,7 @@ pub fn run_retention(
         // intact so the pass can be retried — the merge above
         // makes that retry a no-op for records already archived.
         write_atomic(&cold_path, &out)?;
-        let mut served_total: u64 = 0;
-        let mut merged_total: u64 = 0;
-        let mut surfaces: BTreeMap<String, u64> = BTreeMap::new();
-        let mut hashes: Vec<String> = Vec::new();
-        for line in &result_lines {
-            accumulate_aggregate(
-                line,
-                &mut served_total,
-                &mut merged_total,
-                &mut surfaces,
-                &mut hashes,
-            );
-        }
-        let aggregate = json!({
-            "schema": COMPACTION_SCHEMA,
-            "source_id": TRACE_SOURCE_ID,
-            "source_class": TRACE_SOURCE_CLASS,
-            "day": format!("{:04}-{:02}-{:02}", day.0, day.1, day.2),
-            "compacted_records": result_lines.len(),
-            "exempt_records": exempt_lines.len(),
-            "served_total": served_total,
-            "merged_total": merged_total,
-            "surfaces": surfaces,
-            "query_text_hashes": hashes,
-        });
-        let aggregate_path = cold_dir.join(format!(
-            "atlas-traces-{:04}-{:02}-{:02}.aggregate.json",
-            day.0, day.1, day.2
-        ));
-        write_atomic(
-            &aggregate_path,
-            &serde_json::to_string_pretty(&aggregate).unwrap_or_default(),
-        )?;
+        write_aggregate(&cold_dir, day, &result_lines, exempt_lines.len())?;
         report.compacted_records += cold_lines.len();
         report.moved_files += 1;
         report
@@ -885,11 +920,15 @@ mod tests {
         assert!(!valid_civil_date(2026, 0, 10));
         assert!(!valid_civil_date(2026, 4, 31));
         assert!(!valid_civil_date(2026, 1, 0));
+        assert!(!valid_civil_date(i64::MAX, 1, 1), "oversized year");
+        assert!(!valid_civil_date(10_000, 1, 1), "five-digit year");
+        assert!(valid_civil_date(9999, 12, 31));
         // An invalid today is a usage error, never a silent
         // normalisation that ages recent traces by years.
         let dir = temp_dir("bad-today");
         assert!(run_retention(&dir, (2026, 99, 14), &HashSet::new()).is_err());
         assert!(run_retention(&dir, (2026, 2, 30), &HashSet::new()).is_err());
+        assert!(run_retention(&dir, (i64::MAX, 1, 1), &HashSet::new()).is_err());
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -926,6 +965,53 @@ mod tests {
         .expect("aggregate parses");
         assert_eq!(aggregate["compacted_records"], 1);
         assert_eq!(aggregate["served_total"], 2);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn retention_rebuilds_missing_aggregate_when_all_remaining_exempt() {
+        // A pass archived record A into the cold file, then failed
+        // before writing the aggregate, leaving the hot file in
+        // place. Feedback then references every record left hot,
+        // so the retry moves nothing — it must still rebuild the
+        // missing aggregate from the existing cold file.
+        let dir = temp_dir("aggregate-repair");
+        let line_a = trace_line(
+            "019abcde-0000-7000-8000-000000000050",
+            "2026-01-01T09:00:00Z",
+            "already archived",
+            "hasharchived",
+        );
+        let line_b = trace_line(
+            "019abcde-0000-7000-8000-000000000051",
+            "2026-01-01T10:00:00Z",
+            "still exempt",
+            "hashexempt",
+        );
+        let aged = write_file(
+            &dir,
+            "atlas-traces-2026-01-01.jsonl",
+            &[line_a.clone(), line_b],
+        );
+        let cold_dir = dir.join(COLD_DIR_NAME);
+        std::fs::create_dir_all(&cold_dir).expect("cold dir");
+        write_file(&cold_dir, "atlas-traces-2026-01-01.jsonl", &[line_a]);
+        // No aggregate file: the earlier pass failed before writing it.
+        let mut refs = HashSet::new();
+        refs.insert("019abcde-0000-7000-8000-000000000050".to_string());
+        refs.insert("019abcde-0000-7000-8000-000000000051".to_string());
+        let report = run_retention(&dir, (2026, 11, 14), &refs).expect("retention");
+        assert_eq!(report.moved_files, 0);
+        assert_eq!(report.kept_files, 1);
+        assert!(aged.exists(), "all-exempt hot file stays hot");
+        let aggregate: Json = serde_json::from_str(
+            &std::fs::read_to_string(cold_dir.join("atlas-traces-2026-01-01.aggregate.json"))
+                .expect("aggregate rebuilt"),
+        )
+        .expect("aggregate parses");
+        assert_eq!(aggregate["compacted_records"], 1);
+        assert_eq!(aggregate["served_total"], 2);
+        assert_eq!(aggregate["query_text_hashes"][0], "hasharchived");
         let _ = std::fs::remove_dir_all(&dir);
     }
 
