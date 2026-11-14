@@ -1890,6 +1890,8 @@ function poolItemLike(item: ProjectPoolItem): ViewItemLike {
     owner: item.author ?? null,
     state: item.state,
     epic: item.epicRef ?? null,
+    status: item.status,
+    kind: item.kind,
   };
 }
 
@@ -2881,6 +2883,10 @@ async function handler(req: Request): Promise<Response> {
     const area = url.searchParams.get("area");
     const keep = new URLSearchParams();
     if (area) keep.set("area", area);
+    for (const facet of ["status", "kind"]) {
+      const v = url.searchParams.get(facet);
+      if (v) keep.set(facet, v);
+    }
     for (const [k, v] of url.searchParams) {
       if (k === "view" || k === "viewer" || k.startsWith("vf.")) keep.set(k, v);
     }
@@ -2970,6 +2976,9 @@ async function handler(req: Request): Promise<Response> {
       renderProgram(data, items, prov(), provDetail(), {
         pool: viewPool,
         area: url.searchParams.get("area"),
+        status: url.searchParams.get("status"),
+        kind: url.searchParams.get("kind"),
+        audit: source.projectAudit ? await source.projectAudit().catch(() => null) : null,
         orchestration,
         coverage,
         actionsByObject,
