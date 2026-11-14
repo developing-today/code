@@ -124,6 +124,7 @@ import type { ProgramData, ProgramEntry, ProgramLive, TrackedIssue } from "./pro
 import type { ProjectDetail, ProjectSummary } from "./project-config.ts";
 import { derivedProjectState, projectDisagreement, PROJECT_URL } from "./projects.ts";
 import { PHASE12_ISSUE_URL, joinPhase12Steps, parsePhase12Steps, phase12IsStale, type Phase12Snapshot } from "./phase12.ts";
+import { BUILD_HEALTH_REPO, buildHealthIsStale, projectLane, projectNightlyTrend, type BuildHealthSnapshot } from "./build-health.ts";
 import {
   CANONICAL_STATUSES,
   STATUS_SOURCE_LABELS,
@@ -7100,6 +7101,56 @@ export function phase12PanelHtml(snapshot: Phase12Snapshot | null, items: Map<Re
   return `${head}${sourceLine}${rows}`;
 }
 
+/** The Build health panel (#9924): current CI lane states + the id
+ * E2E nightly trend, projected from the Actions-API snapshot. A stale
+ * or missing snapshot renders the warning INSTEAD of lane states —
+ * silently old CI state is the defect #1239's rules name. A lane whose
+ * read failed renders unavailable; a failing nightly run keeps its
+ * link, which is the point of the trend. */
+export function buildHealthPanelHtml(snapshot: BuildHealthSnapshot | null): string {
+  const head = `<h2>Build health — live from the GitHub Actions API</h2>`;
+  if (!snapshot) {
+    return `${head}<div class="banner">The Actions API snapshot is unavailable in the current source, so no lane state is shown — this panel never renders hand-kept CI values.</div>`;
+  }
+  const sourceLine = `<p class="muted">Source: GitHub Actions API for ${esc(BUILD_HEALTH_REPO)}, fetched ${esc(snapshot.fetchedAt)}.</p>`;
+  if (buildHealthIsStale(snapshot)) {
+    return `${head}${sourceLine}<div class="banner">Stale source: this snapshot was fetched at ${esc(snapshot.fetchedAt)}, outside the freshness window — lane states are withheld rather than shown silently old. They refresh on the next successful Actions read.</div>`;
+  }
+  const runBadge = (status: string, conclusion: string | null): string => {
+    if (status !== "completed") return `<span class="badge implementing">${esc(status)}</span>`;
+    if (conclusion === "success") return `<span class="badge merged">success</span>`;
+    if (conclusion === "failure") return `<span class="badge closed">failure</span>`;
+    return `<span class="badge">${esc(conclusion ?? "completed")}</span>`;
+  };
+  const laneCards = snapshot.lanes
+    .map((laneRuns) => {
+      if (laneRuns.error) {
+        return `<div class="card"><strong>${esc(laneRuns.lane.label)}</strong><br><span class="badge">unavailable</span><br><span class="muted">Actions read failed: ${esc(laneRuns.error)}</span></div>`;
+      }
+      const proj = projectLane(laneRuns);
+      if (!proj.latest) {
+        return `<div class="card"><strong>${esc(laneRuns.lane.label)}</strong><br><span class="badge">no runs reported</span></div>`;
+      }
+      const history = proj.history
+        .map((r) => `<a href="${esc(r.url)}">${r.conclusion === "success" ? "✓" : r.conclusion === "failure" ? "✗" : "·"}</a>`)
+        .join(" ");
+      return `<div class="card"><strong>${esc(laneRuns.lane.label)}</strong><br>${runBadge(proj.latest.status, proj.latest.conclusion)} <span class="muted">latest: <a href="${esc(proj.latest.url)}">${esc(proj.latest.createdAt)}</a> (${esc(proj.latest.event)})</span>${history ? `<br><span class="muted">recent completed: ${history}</span>` : ""}</div>`;
+    })
+    .join("");
+  let nightlyHtml: string;
+  if (snapshot.nightly.error) {
+    nightlyHtml = `<div class="card"><strong>${esc(snapshot.nightly.lane.label)} — nightly trend</strong><br><span class="badge">unavailable</span><br><span class="muted">Actions read failed: ${esc(snapshot.nightly.error)}</span></div>`;
+  } else {
+    const trend = projectNightlyTrend(snapshot.nightly);
+    nightlyHtml = trend.length
+      ? `<div class="card"><strong>${esc(snapshot.nightly.lane.label)} — nightly trend (oldest → newest)</strong><br>${trend
+          .map((r) => `<a href="${esc(r.url)}">${r.conclusion === "success" ? "✓" : r.conclusion === "failure" ? "✗" : "·"} ${esc(r.createdAt.slice(0, 10))}</a>`)
+          .join(" · ")}</div>`
+      : `<div class="card"><strong>${esc(snapshot.nightly.lane.label)} — nightly trend</strong><br><span class="badge">no completed runs reported</span></div>`;
+  }
+  return `${head}${sourceLine}${laneCards}${nightlyHtml}`;
+}
+
 export function renderProgramProject(
   detail: ProjectDetail,
   items: Map<RefKey, GhItem>,
@@ -7107,6 +7158,7 @@ export function renderProgramProject(
   provDetail?: ProvenanceDetail,
   epicPool: ProjectPoolItem[] = detail.poolItems,
   phase12?: Phase12Snapshot | null,
+  buildHealth?: BuildHealthSnapshot | null,
 ): string {
   const { config } = detail;
   const linkBits: string[] = [];
@@ -7213,6 +7265,7 @@ export function renderProgramProject(
     : "";
 
   const phase12Html = config.id === "id" && phase12 !== undefined ? phase12PanelHtml(phase12, items) : "";
+  const buildHealthHtml = config.id === "id" && buildHealth !== undefined ? buildHealthPanelHtml(buildHealth) : "";
 
   const ed = config.editorial;
   const editorialHtml = ed
@@ -7233,7 +7286,7 @@ ${poolHtml}
 ${roadmapHtml}
 ${repoCardsHtml}
 ${sweepHealthHtml}
-${phase12Html}${editorialHtml}`;
+${phase12Html}${buildHealthHtml}${editorialHtml}`;
   return layout(
     config.title,
     body,

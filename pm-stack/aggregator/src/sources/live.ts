@@ -38,6 +38,7 @@ import {
 } from "../activity.ts";
 import { isRecord } from "../validate.ts";
 import { fetchIssueBodySnapshot, type Phase12Snapshot } from "../phase12.ts";
+import { fetchBuildHealthSnapshot, type BuildHealthSnapshot } from "../build-health.ts";
 import { buildAttentionFlags, buildQuotaActions, quotaActionFlags } from "../derive.ts";
 import { validateRoadmapHorizon } from "../roadmap-horizon.ts";
 import { describeRepoRoadmapSection, mergeRoadmapRows, readRepoRoadmaps } from "./repo-roadmap.ts";
@@ -1197,6 +1198,30 @@ export function liveSource(
     }
     return phase12InFlight;
   }
+  // #9924: the Build health snapshot — Actions API reads for the
+  // id-gating lanes + the e2e nightly, cached for 5 minutes and
+  // shared in-flight (same discipline as the phase12 feed above),
+  // fail-soft to the last good snapshot or null.
+  let buildHealthCache: { value: BuildHealthSnapshot; at: number } | null = null;
+  let buildHealthInFlight: Promise<BuildHealthSnapshot | null> | null = null;
+  async function buildHealthSnapshot(): Promise<BuildHealthSnapshot | null> {
+    if (buildHealthCache && Date.now() - buildHealthCache.at < 5 * 60_000) return buildHealthCache.value;
+    if (!buildHealthInFlight) {
+      buildHealthInFlight = (async () => {
+        try {
+          const token = process.env.PM_AGG_GITHUB_TOKEN ?? process.env.GITHUB_TOKEN ?? null;
+          const snap = await fetchBuildHealthSnapshot(token);
+          buildHealthCache = { value: snap, at: Date.now() };
+          return snap;
+        } catch {
+          return buildHealthCache?.value ?? null;
+        }
+      })().finally(() => {
+        buildHealthInFlight = null;
+      });
+    }
+    return buildHealthInFlight;
+  }
   // #1116: a laptop leg's health, tracked per state file so the
   // attention provenance can say which legs are dead instead of the
   // failure staying silent. Before this, the OpenChamber-managed
@@ -1607,6 +1632,9 @@ export function liveSource(
     },
     async phase12(): Promise<Phase12Snapshot | null> {
       return phase12Snapshot();
+    },
+    async buildHealth(): Promise<BuildHealthSnapshot | null> {
+      return buildHealthSnapshot();
     },
     async coverageCensus(): Promise<RepoCensus[] | null> {
       const feed = await getFeed();
