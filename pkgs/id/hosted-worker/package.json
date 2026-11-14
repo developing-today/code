@@ -6,7 +6,7 @@
   "scripts": {
     "dev": "wrangler dev",
     "typecheck": "tsc --noEmit",
-    "test": "node --test test/routing.test.ts",
+    "test": "node --test test/routing.test.ts test/currency.test.ts",
     "smoke": "node smoke/smoke.mjs"
   },
   "devDependencies": {
