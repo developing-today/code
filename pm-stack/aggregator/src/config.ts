@@ -86,6 +86,10 @@ export interface Config {
   decisionsOutboxFile: string;
   /** Stack-health state written by the sentinel intake extension (#8568). */
   stackHealthFile: string;
+  /** Host-health snapshot written by pm-stack/host-health-collector.py
+   * (#10141): claimant mode + PM unit states the watchdog derives
+   * silent-failure tier items from. Read-only for the aggregator. */
+  hostHealthFile: string;
   /** Versioned item-history JSONL (#3981) the forecast contract
    * (#3984) derives from: one cutoff per line, read via
    * ItemHistoryStore. */
@@ -227,6 +231,10 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
     stackHealthFile: s(
       env.PM_AGG_STACK_HEALTH_FILE,
       join(homedir(), ".local", "state", "pm-aggregator", "stack-health.json"),
+    ),
+    hostHealthFile: s(
+      env.PM_AGG_HOST_HEALTH_FILE,
+      join(homedir(), ".local", "state", "pm-aggregator", "host-health.json"),
     ),
     quotaViewFile: s(
       env.PM_AGG_QUOTA_VIEW,
