@@ -236,19 +236,22 @@ must not push a concurrent interactive session over its ceiling.
 ### 4.3 Component allocation at the reference profile
 
 Each interactive budget is allocated so a failing cell names a layer. The
-network floor is 2×RTT = 60 ms at P2 (one request and one response leg).
-"Broker hop" is an extra RTT when the path traverses a relay; the
-polling row uses the poll interval instead.
+network floor is 1×RTT = 30 ms at P2: a request and its matching response
+traverse the shaped path once (2 × 15 ms one-way), so the pair incurs one
+RTT of network delay, not two. "Broker hop" is broker *processing* only —
+for relayed paths §3.2 splits that same shaped delay across the two legs,
+so traversing a relay adds no second network RTT; the polling row uses
+the poll interval instead.
 
 | Tier | Network floor | Crypto/framing | Broker hop | Queueing/scheduling | Instrumentation error | Headroom | Budget (LB) |
 |---|---|---|---|---|---|---|---|
-| T0 | 60 | 5 | 0 | 5 | 2 | 18 | 90 (LB-1) |
-| T1 | 60 | 5 | 30 | 8 | 2 | 15 | 120 (LB-2) |
-| T2 | 60 | 5 | 0 | 10 | 2 | 43 | 120 (LB-3) |
-| T3a | 60 | 5 | 30 | 15 | 2 | 28 | 140 (LB-4) |
-| T3b-W | 60 | 5 | 30 | 20 | 2 | 63 | 180 (LB-5) |
-| T3b-S | 60 | 5 | 30 | 15 | 2 | 48 | 160 (LB-5a) |
-| T3c | 60 + 250 poll | 5 | 30 | 40 | 2 | 113 | 500 (LB-6) |
+| T0 | 30 | 5 | 0 | 5 | 2 | 48 | 90 (LB-1) |
+| T1 | 30 | 5 | 10 | 8 | 2 | 65 | 120 (LB-2) |
+| T2 | 30 | 5 | 0 | 10 | 2 | 73 | 120 (LB-3) |
+| T3a | 30 | 5 | 10 | 15 | 2 | 78 | 140 (LB-4) |
+| T3b-W | 30 | 5 | 10 | 20 | 2 | 113 | 180 (LB-5) |
+| T3b-S | 30 | 5 | 10 | 15 | 2 | 98 | 160 (LB-5a) |
+| T3c | 30 + 250 poll | 5 | 10 | 40 | 2 | 163 | 500 (LB-6) |
 
 All values are milliseconds. The allocation is a *diagnostic hypothesis*,
 not an excuse: if a run exceeds a component's allocation while total p95
@@ -260,7 +263,9 @@ Per-layer measurement budgets used by the plan:
 - **Proxy/TLS:** CONNECT setup p95 ≤ 1 RTT + 200 ms; TLS handshake
   (including TLS-in-TLS where the topology has it) p95 ≤ 2 RTT + 150 ms;
   certificate validation adds no network round trip.
-- **Broker/framing:** broker forwarding adds ≤ 1 RTT + 10 ms p95 at P2;
+- **Broker/framing:** broker forwarding *processing* adds ≤ 10 ms p95 at P2
+  (the shaped path's network delay is counted once, in the §4.3 network
+  floor — never again as a broker hop);
   per-frame processing ≤ 0.5 ms p95 per 16 KiB DATA frame on one core;
   frame overhead ≤ 64 bytes per wire frame (measurement ceiling; current
   codec is 17 bytes including the length prefix; see
@@ -277,13 +282,29 @@ Bulk is where #5794's boundary matters. Budget:
 
 | ID | Tier | GOODPUT floor (p50) | Completion p95 | Notes |
 |---|---|---|---|---|
-| LB-12 | T0 direct UDP | ≥ 5 MiB/s | ≤ 30 s for 128 MiB | absolute baseline floor at P2 only |
+| LB-12 | T0 direct UDP | ≥ 5 MiB/s | ≤ 30 s for 128 MiB | absolute baseline floor at P2 only (download direction; upload per the direction rule below) |
 | LB-13 | T1 relay-assisted UDP | ≥ 60% of T0 on the same profile | ≤ 2× T0 + 5 s | |
 | LB-14 | T2 TCP direct | ≥ 70% of T0 | ≤ 2× T0 + 5 s | |
 | LB-15 | T3a CONNECT tunnel | ≥ 50% of T0 | ≤ 2× T0 + 5 s | |
 | LB-16 | T3b-W Workers WSS relay | **no SLO** | best effort | #5794: not a bulk pipe |
 | LB-16a | T3b-S self-hosted WSS relay | ≥ 50% of T0 | ≤ 2× T0 + 5 s | |
 | LB-16b | T3c HTTPS polling | rejects bulk class (size > 16 MiB or sustained > 1 MiB/s over 10 s) | — | provisional; ordinary sync remains separately budgeted |
+
+**Direction.** The §4.2 sync targets and the LB-12…LB-16a floors and
+completion targets in this section are stated for the *download* direction
+(peer → client), the direction P2's 100 Mbps downlink bounds. W3 and W4
+run in *both* directions, and the budgets apply per direction. In the
+*upload* direction (client → peer), P2's 20 Mbps uplink (§3.2) caps
+goodput at ≈ 2.38 MiB/s before protocol overhead, so a 5 MiB/s floor or a
+30 s 128 MiB target would be physically impossible and a correct upload
+implementation could never produce a passing reference run. The upload
+budgets at P2 are therefore: T0 goodput floor ≥ 2 MiB/s and 128 MiB
+completion ≤ 64 s, with LB-13…LB-16a relative to the same-direction T0
+result; and LB-7's ordinary-sync target reads ≥ 2 MiB/s with completion
+≤ 6 s in the upload direction (its ≥ 4 MiB/s / ≤ 3 s form is the download
+target). The profile-invalidation rule below applies per direction: a
+direction whose T0 cannot meet its floor is invalid for bulk comparisons
+in that direction and is reported separately.
 
 LB-12's 5 MiB/s and 30 s absolute targets apply at P2 only. At P1/P3/P4,
 LB-12 is a measured direct-path baseline, and LB-13…LB-16a compare goodput
@@ -312,6 +333,11 @@ limitation explicitly. This is the decidable form of #5671's open question
 "is multiplexing over one TCP connection sufficient, or is HOL
 disqualifying for mixed interactive+bulk traffic?"
 
+Percentiles for this rule are computed only from interactive samples
+taken while bulk load is active, and W5 repeats bulk transfers
+back-to-back so the load spans the entire sampling interval (§6.2) — a
+single short transfer followed by an unloaded tail must not dilute the
+measurement into a false pass.
 ### 4.5 Keepalive, idle and reconnection
 
 | ID | Property | Budget |
@@ -351,6 +377,19 @@ to fit additional candidates.
 | T3b-W Workers WSS relay | ≤ 1.5 s | **2.5 s** | **3.5 s** |
 | T3b-S self-hosted WSS relay | ≤ 1.25 s | **2.5 s** | **3.5 s** |
 | T3c HTTPS polling, provisional | ≤ 2 s | **2.5 s** | **3.5 s** |
+
+**P1 and P3 deadlines.** The per-attempt deadlines above are stated for
+P2 and P4, but §6.4 runs W9 per profile and §6.7 gates on P1 (PR gate)
+and P3 (pre-release), so both profiles have explicit bounds here rather
+than leaving timeout policy to the harness implementer. At **P1**, each
+shape's per-attempt hard deadline is its P2 deadline (P1's 2 ms RTT only
+makes attempts faster; the P2 caps remain the pass/fail bounds), LB-25's
+NEG bounds apply unchanged, and LB-27's promoted-attempt cap is the P2
+cap (1.5 s). At **P3**, each shape's per-attempt hard deadline is its P4
+deadline (P3's 120 ms RTT sits between P2 and P4, so the looser P4 caps
+are the conservative bound), the NEG budget is p95 ≤ 9 s to success with
+a hard deadline of **12 s** (LB-26's values), and LB-27's
+promoted-attempt cap is the P4 cap (3.5 s).
 
 | ID | Negotiation budget (NEG) | Value |
 |---|---|---|
@@ -418,7 +457,7 @@ to isolate a component, never as an acceptance profile.
 | **W2** | ID query mix | 1 KiB request / ≤ 4 KiB response, 10 req/s for 3 min | IRTT, TTFB, error rate |
 | **W3** | Ordinary sync | 8 MiB in 64 KiB logical chunks, split into ≤ 16 KiB wire DATA payloads; acknowledged | SYNC, goodput |
 | **W4** | Bulk | 128 MiB sequential in 1 MiB logical chunks, split into ≤ 16 KiB wire DATA payloads | GOODPUT, completion |
-| **W5** | Mixed | W4 saturates the test tier (target 90% of its measured maximum goodput) + W1 concurrently on the same tier | interactive IRTT under load, HOL bound |
+| **W5** | Mixed | W4 saturates the test tier (target 90% of its measured maximum goodput) + W1 concurrently on the same tier; bulk transfers repeat back-to-back for the whole W1 sampling interval, and mixed-load percentiles are computed only from interactive samples taken while a bulk transfer is active | interactive IRTT under load, HOL bound |
 | **W6** | Idle/keepalive | 30 min idle, then W2 for 30 s; repeated 10× | LB-17…LB-21 |
 | **W7** | Reconnect/resume | Kill the carrier at a random point ≥ 30× during W2 and W3/W4 | RESUME, re-sent bytes, retry count/backoff, final failure class, LB-20/22/23/24 |
 | **W8** | Bulk-class edge | 12 MiB logical stream paced at 1.2 MiB/s for 10 s (one finite transaction < 16 MiB) | class decision, selected tier/reason; provisional capability-filter check |
