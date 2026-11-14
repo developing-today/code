@@ -6,8 +6,49 @@ use std::path::Path;
 
 fn dist_has_assets(web_dist: &Path) -> bool {
     match fs::read_dir(web_dist) {
-        Ok(mut entries) => entries.next().is_some(),
+        Ok(entries) => entries
+            .flatten()
+            .any(|entry| entry.file_name() != ".gitkeep"),
         Err(_) => false,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::dist_has_assets;
+    use std::fs;
+    use std::path::PathBuf;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    fn temp_dir(name: &str) -> PathBuf {
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let dir = std::env::temp_dir().join(format!("id-build-test-{name}-{nanos}"));
+        fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    #[test]
+    fn empty_or_gitkeep_only_is_false() {
+        let dir = temp_dir("empty");
+        assert!(!dist_has_assets(&dir));
+
+        fs::write(dir.join(".gitkeep"), "").unwrap();
+        assert!(!dist_has_assets(&dir));
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn real_asset_is_true() {
+        let dir = temp_dir("assets");
+        fs::write(dir.join(".gitkeep"), "").unwrap();
+        fs::write(dir.join("index.html"), "<html></html>").unwrap();
+        assert!(dist_has_assets(&dir));
+
+        let _ = fs::remove_dir_all(&dir);
     }
 }
 
