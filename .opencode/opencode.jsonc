@@ -2851,6 +2851,10 @@
         // Doors: the Command Code free route plus OpenCode Go's beam-free
         // on all three workspaces. Leaves are seated unconditionally: the
         // router skips disabled or quota-empty leaves at runtime.
+        // 2026-11-14: cat-jam-free is the SAME model — Cat Jam was Beam's
+        // stealth codename (revealed 2026-10-16) and the provider renamed
+        // the route to beam-free. Deliberately NOT seated: one model, one
+        // seat. (The Go endpoint no longer serves cat-jam-free at all.)
         "targets": [
           "opencode-go-plans/beam-free"
         ],
@@ -2858,6 +2862,45 @@
         "autonomy": "rules",
         "weights": {
           "opencode-go-plans/beam-free": 3
+        }
+      },
+      "longcat-plan": {
+        "name": "LongCat 2.5 - plan providers",
+        // NEW 2026-11-14 (Drew): LongCat-2.5-Free gets its own plan pool.
+        // Served free on OpenCode Go — the provider's own /models endpoint
+        // lists exactly three free models (beam-free, longcat-2.5-free,
+        // iceman-contributor-free) — and probe-verified live on all three
+        // Go workspaces 2026-11-14 (3/3 real completions). Meituan's
+        // LongCat-2.5-Preview; no Artificial Analysis listing (vendor
+        // claims only), so it is seated in scout behind Beam on probe
+        // evidence, not on a benchmark.
+        "targets": [
+          "opencode-go-plans/longcat-2.5-free"
+        ],
+        "selection": "round-robin",
+        "autonomy": "rules",
+        "weights": {
+          "opencode-go-plans/longcat-2.5-free": 3
+        }
+      },
+      "iceman-plan": {
+        "name": "Iceman Contributor - plan providers",
+        // NEW 2026-11-14 (Drew): Iceman Contributor Free gets its own
+        // plan pool. Served free on OpenCode Go (provider endpoint,
+        // verified 2026-11-14) and probe-verified live on all three Go
+        // workspaces (3/3 real completions). Stealth model — identity
+        // unclaimed (self-identifies as a Microsoft "MAI" model in
+        // probes, ~46 tok/s); no Artificial Analysis listing. Seated in
+        // scout as a free fallback leg, not a primary: unknown identity
+        // means unknown failure modes, so it sits behind Beam and
+        // LongCat in the ordered chain.
+        "targets": [
+          "opencode-go-plans/iceman-contributor-free"
+        ],
+        "selection": "round-robin",
+        "autonomy": "rules",
+        "weights": {
+          "opencode-go-plans/iceman-contributor-free": 3
         }
       },
       "mimo-flash-plan": {
@@ -2957,8 +3000,14 @@
         // dissolved — GLM's ~60 t/s decode never fit a fast tier) and Beam
         // is addressed through its new beam-plan pool instead of the raw
         // Command Code leaf.
+        // 2026-11-14 (Drew): LongCat 2.5 Free and Iceman Contributor Free
+        // join through their own plan pools, directly behind Beam — the
+        // Go provider serves exactly three free models and all three are
+        // now seated in this tier (probe-verified 2026-11-14).
         "targets": [
           "opencode-route/beam-plan",
+          "opencode-route/longcat-plan",
+          "opencode-route/iceman-plan",
           "opencode-route/deepseek-flash-plan#low",
           "opencode-route/haiku-plan#low",
           "opencode-route/workhorse"

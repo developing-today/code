@@ -34,7 +34,7 @@ match this table and the config; the guard fails on drift).
 | workhorse | workhorse-ordered → workhorse-primary (empty stage) → workhorse-weighted → workhorse-last-resort | → scout → specialist | Workhorse's failure mode is quota exhaustion; scout diversifies onto different doors (free Beam via CommandCode, DeepSeek #low, Haiku #low). Scout-first was main's recommendation, wired 2026-11-13 pending Drew's pick. |
 | summit | fable-plan #medium → opus-plan #high → argon-plan #high → Hydrogen #high (direct) → Wonder #xhigh (direct) → sol-plan #xhigh | → specialist | Confirmed: the deliberate tier falls back to the hard-work tier. |
 | specialist | fable-plan #low → sonnet-plan #high → argon-plan #high → spark-plan #xhigh → sol-plan #medium | — (SINK) | No class fallback out of specialist; if every leg is down the call errors. |
-| scout | beam-plan → deepseek-flash-plan #low → haiku-plan #low | → workhorse (PROPOSAL) | Drew has not ruled on scout yet (2026-11-13): routine work that exhausts the free/cheap seats escalates to the standard tier. |
+| scout | beam-plan → longcat-plan → iceman-plan → deepseek-flash-plan #low → haiku-plan #low | → workhorse (PROPOSAL) | Drew has not ruled on scout yet (2026-11-13): routine work that exhausts the free/cheap seats escalates to the standard tier. |
 | background | MiMo Flash / DeepSeek Flash #high, peak-window aware (see config) | → workhorse (PROPOSAL) | Drew has not ruled on background yet (2026-11-13): patient queue work escalates to the standard tier. |
 
 ## Workhorse stages and trial routes (no own class edges — escalation is workhorse's)
@@ -70,7 +70,9 @@ between, in the pool's selection order.
 | spark-plan | OpenCode Go → CommandCode → ClinePass → _muse (ordered) | Meta Spark across four doors. |
 | argon-plan | OpenCode Go → Antigravity (round-robin) | |
 | gemini-hydrogen-plan | Antigravity only | **Single door — no internal failover.** |
-| beam-plan | CommandCode (beam:free) → OpenCode Go (beam-free) (round-robin) | The free-tier pool behind scout. |
+| beam-plan | OpenCode Go (beam-free) (round-robin) | The free-tier pool behind scout. (CommandCode door removed 2026-11-13, #9397; cat-jam-free is the same model — deliberately not seated.) |
+| longcat-plan | OpenCode Go (longcat-2.5-free) (round-robin) | Free LongCat 2.5 pool behind scout (2026-11-14, probe-verified 3/3 workspaces). No AA listing. |
+| iceman-plan | OpenCode Go (iceman-contributor-free) (round-robin) | Free Iceman pool behind scout (2026-11-14, probe-verified 3/3 workspaces). Stealth model, identity unclaimed; no AA listing. |
 | mimo-flash-plan | OpenCode Go → ClinePass → OpenDesign → CommandCode (round-robin) | |
 | glm-5-3-plan | _vibe (Mistral) only | **Single door — no internal failover.** |
 | glm-5-3-flash-plan | _vibe (Mistral) only | **Single door — no internal failover.** |
