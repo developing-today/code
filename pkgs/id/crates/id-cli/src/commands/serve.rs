@@ -1852,7 +1852,7 @@ pub async fn cmd_serve(opts: ServeOptions) -> Result<()> {
     let abuse_handle: Option<std::sync::Arc<std::sync::Mutex<id_core::abuse::AbuseEvaluator>>> =
         None;
 
-    let meta = MetaProtocol::new(
+    let mut meta = MetaProtocol::new(
         &store_handle,
         Some(peer_discovery.clone()),
         Arc::clone(&tag_store),
@@ -1860,6 +1860,11 @@ pub async fn cmd_serve(opts: ServeOptions) -> Result<()> {
         node_id,
         abuse_handle,
     );
+    // Server-to-server transfers (#5345) are initiated from this handler
+    // with the server's own endpoint and identity.
+    if let Some(inner) = Arc::get_mut(&mut meta) {
+        inner.endpoint = Some(endpoint.clone());
+    }
 
     #[cfg(all(feature = "world", feature = "ssh"))]
     let (ssh_tunnel, ssh_tunnel_port) = id_worlds::world_ssh::SshTunnelProtocol::deferred();
