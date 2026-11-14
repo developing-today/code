@@ -168,6 +168,7 @@ impl WorldService {
             outbox: None,
             profile_operation: Arc::new(Mutex::new(())),
             next_session_id: Arc::new(std::sync::atomic::AtomicU64::new(1)),
+            resume_baselines: Arc::new(Mutex::new(super::resume::BaselineCache::default())),
         }
     }
 
