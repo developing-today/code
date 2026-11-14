@@ -40,6 +40,9 @@ pub use id_store::issuer_rotation::{IssuerId, author_id, issuer_id};
 /// Graph-native currency definitions and value-event contracts.
 pub mod graph;
 
+/// Deterministic graph-native currency fold over the graph contracts.
+pub mod fold;
+
 /// The event kind carrying a rate authorisation body.
 pub const RATE_AUTHORISATION_KIND: &str = "currency.rate_authorisation";
 
