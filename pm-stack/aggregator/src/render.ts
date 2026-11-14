@@ -4294,6 +4294,8 @@ import { applyDominanceFilters, applyInequalityFilters, bandIndex, baselineRatio
     bench: latestBench(AA_POINTS),
     efforts: {},
     effortAny: false,
+    providers: {},
+    providerAny: false,
     off: {},
     elig: false,
     pooledOnly: false,
@@ -4344,7 +4346,7 @@ import { applyDominanceFilters, applyInequalityFilters, bandIndex, baselineRatio
     if (!CATALOG) return [];
     return CATALOG.filter(function (e) {
       if (S.q && (e.id + " " + e.name + " " + e.providerName + " " + (e.plan || "")).toLowerCase().indexOf(S.q) < 0) return false;
-      if (S.fam && e.provider !== S.fam) return false;
+      if (S.providerAny && !S.providers[e.provider]) return false;
       if (S.pooledOnly && !e.routes.length) return false;
       if (S.measuredOnly && e.aaScore == null) return false;
       if (S.hideDisabled && e.disabled) return false;
@@ -5503,21 +5505,46 @@ import { applyDominanceFilters, applyInequalityFilters, bandIndex, baselineRatio
       effWrap.appendChild(b);
     });
     buildFamOptions();
+    buildProviderOptions();
   }
   function buildFamOptions() {
     var sel = document.getElementById("xf-fam");
     var label = document.getElementById("xf-fam-label");
-    var opts = [];
-    if (S.tab === "models" && CATALOG) {
-      label.textContent = "Provider";
-      var seen = {};
-      CATALOG.forEach(function (e) { if (!seen[e.provider]) { seen[e.provider] = true; opts.push([e.provider, e.providerName]); } });
-      opts.sort(function (a, b) { return a[1] < b[1] ? -1 : 1; });
-      sel.innerHTML = '<option value="">All providers</option>' + opts.map(function (o) { return '<option value="' + esc(o[0]) + '"' + (S.fam === o[0] ? " selected" : "") + ">" + esc(o[1]) + "</option>"; }).join("");
-    } else {
-      label.textContent = "Family";
-      sel.innerHTML = '<option value="">All families</option>' + famList.slice().sort().map(function (f) { return '<option value="' + esc(f) + '"' + (S.fam === f ? " selected" : "") + ">" + esc(f) + "</option>"; }).join("");
+    var wrap = document.getElementById("xf-fam-wrap");
+    if (S.tab === "models") {
+      // Providers are the chip multi-select in the models filter row
+      // (buildProviderOptions); the family select has no models-tab
+      // role, so its wrap hides instead of doubling as a second,
+      // single-select provider filter.
+      if (wrap) wrap.hidden = true;
+      return;
     }
+    if (wrap) wrap.hidden = false;
+    label.textContent = "Family";
+    sel.innerHTML = '<option value="">All families</option>' + famList.slice().sort().map(function (f) { return '<option value="' + esc(f) + '"' + (S.fam === f ? " selected" : "") + ">" + esc(f) + "</option>"; }).join("");
+  }
+  function buildProviderOptions() {
+    var wrap = document.getElementById("xf-providers");
+    if (!wrap) return;
+    wrap.innerHTML = "";
+    if (!CATALOG) return;
+    var seen = {};
+    var providers = [];
+    CATALOG.forEach(function (e) { if (!seen[e.provider]) { seen[e.provider] = true; providers.push([e.provider, e.providerName]); } });
+    providers.sort(function (a, b) { return a[1] < b[1] ? -1 : 1; });
+    providers.forEach(function (o) {
+      var b = document.createElement("button");
+      b.type = "button";
+      b.className = "xchip" + (S.providerAny && !S.providers[o[0]] ? " off" : "");
+      b.textContent = o[1];
+      b.addEventListener("click", function () {
+        if (!S.providerAny) { S.providerAny = true; S.providers = {}; S.providers[o[0]] = true; }
+        else if (S.providers[o[0]]) { delete S.providers[o[0]]; if (!Object.keys(S.providers).length) S.providerAny = false; }
+        else S.providers[o[0]] = true;
+        render();
+      });
+      wrap.appendChild(b);
+    });
   }
   function applyTab() {
     document.querySelectorAll("[data-xtab]").forEach(function (b) {
@@ -5564,7 +5591,7 @@ import { applyDominanceFilters, applyInequalityFilters, bandIndex, baselineRatio
     if (S.persp === persp) return;
     S.persp = persp;
     POINTS = persp === "cai" ? CAI_POINTS : AA_POINTS;
-    S.creator = ""; S.fam = ""; S.bench = ""; S.effortAny = false; S.efforts = {};
+    S.creator = ""; S.fam = ""; S.bench = ""; S.effortAny = false; S.efforts = {}; S.providerAny = false; S.providers = {};
     S.off = {}; S.hidden = []; S.sel = null; S.baseline = "";
     showDetail(null);
     buildFilterOptions();
@@ -5713,7 +5740,7 @@ import { applyDominanceFilters, applyInequalityFilters, bandIndex, baselineRatio
   function captureSetup() {
     return JSON.parse(JSON.stringify({
       tab: S.tab, persp: S.persp, xp: S.xp, q: S.q, creator: S.creator, fam: S.fam, bench: S.bench,
-      effortAny: S.effortAny, efforts: S.efforts, off: S.off, elig: S.elig, pooledOnly: S.pooledOnly,
+      effortAny: S.effortAny, efforts: S.efforts, providerAny: S.providerAny, providers: S.providers, off: S.off, elig: S.elig, pooledOnly: S.pooledOnly,
       measuredOnly: S.measuredOnly, hideDisabled: S.hideDisabled, hidden: S.hidden, sizeBy: S.sizeBy,
       tasksMode: S.tasksMode, baseline: S.baseline, sortKey: S.sortKey, sortDir: S.sortDir, dom: S.dom, pfCut: S.pfCut, bandCount: S.bandCount,
       bandScale: S.bandScale, rec: S.rec, pj: S.pj, ineq: S.ineq,
@@ -5736,8 +5763,8 @@ import { applyDominanceFilters, applyInequalityFilters, bandIndex, baselineRatio
   }
   function applySetup(st) {
     if (!st || typeof st !== "object") return;
-    ["tab", "persp", "xp", "q", "creator", "fam", "bench", "effortAny", "elig", "pooledOnly", "measuredOnly", "hideDisabled", "tasksMode", "baseline", "pfCut", "bandCount", "bandScale", "sortKey", "sortDir"].forEach(function (k) { if (st[k] !== undefined) S[k] = st[k]; });
-    ["efforts", "off", "hidden", "sizeBy", "rec", "pj", "ineq", "dom"].forEach(function (k) { if (st[k] !== undefined) S[k] = st[k]; });
+    ["tab", "persp", "xp", "q", "creator", "fam", "bench", "effortAny", "providerAny", "elig", "pooledOnly", "measuredOnly", "hideDisabled", "tasksMode", "baseline", "pfCut", "bandCount", "bandScale", "sortKey", "sortDir"].forEach(function (k) { if (st[k] !== undefined) S[k] = st[k]; });
+    ["efforts", "providers", "off", "hidden", "sizeBy", "rec", "pj", "ineq", "dom"].forEach(function (k) { if (st[k] !== undefined) S[k] = st[k]; });
     POINTS = S.persp === "cai" ? CAI_POINTS : AA_POINTS;
     S.sel = null;
     showDetail(null);
@@ -6015,13 +6042,13 @@ ${batchSelector}
 <div class="card xpl-filters" id="xpl-filters">
 <input type="search" id="xf-q" placeholder="Search models, families, providers…" aria-label="Search">
 <label data-tabaa>Creator <select id="xf-creator"></select></label>
-<label><span id="xf-fam-label">Family</span> <select id="xf-fam"></select></label>
+<label id="xf-fam-wrap"><span id="xf-fam-label">Family</span> <select id="xf-fam"></select></label>
 <label data-tabaa>Benchmark <select id="xf-bench"></select></label>
 <span class="xp-seg" role="group" aria-label="Efficiency perspective"><button type="button" data-xp="plan">Plan</button><button type="button" data-xp="api">API</button><button type="button" data-xp="pertask">Per-task</button></span>
 <span class="xp-seg" role="group" aria-label="Benchmark perspective" data-tabaa><button type="button" data-persp="aa">Intelligence &amp; decode</button><button type="button" data-persp="cai">Coding agents</button></span>
 <p class="muted" id="xpl-persp-note" data-tabaa style="flex-basis:100%;margin:2px 0 0"></p>
 <div data-tabaa style="flex-basis:100%"><span class="muted">Efforts:</span> <span id="xf-efforts"></span> <label style="margin-left:10px"><input type="checkbox" id="xf-elig"> Eligible only</label></div>
-<div data-tabmodels hidden style="flex-basis:100%"><label><input type="checkbox" id="xf-pooled"> Pooled only</label> <label><input type="checkbox" id="xf-measured"> AA-measured only</label> <label><input type="checkbox" id="xf-nodis"> Hide disabled providers</label></div>
+<div data-tabmodels hidden style="flex-basis:100%"><span class="muted">Providers:</span> <span id="xf-providers"></span> <label style="margin-left:10px"><input type="checkbox" id="xf-pooled"> Pooled only</label> <label><input type="checkbox" id="xf-measured"> AA-measured only</label> <label><input type="checkbox" id="xf-nodis"> Hide disabled providers</label></div>
 <div data-tabaa style="flex-basis:100%"><details><summary>Model selection and advanced filters — inequality conditions</summary>
 <label>Filter mode <select id="xf-ineq-mode"><option value="off" selected>Off</option><option value="keep">Keep matching models</option><option value="reject">Keep only rejected models</option></select></label>
 <label>Combine conditions <select id="xf-ineq-combine"><option value="and" selected>Match all (AND)</option><option value="or">Match any (OR)</option></select></label>
