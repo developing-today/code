@@ -412,7 +412,7 @@ const AGGREGATES_TTL_MS = 300_000;
 let aggregatesCache: { path: string; at: number; data: AttemptAggregates } | null = null;
 let aggregatesRefreshing = false;
 
-function refreshAttemptAggregates(db: Database, path: string): void {
+function refreshAttemptAggregates(db: Database, path: string, onSettled?: () => void): void {
   if (aggregatesRefreshing) return;
   aggregatesRefreshing = true;
   const now = Date.now();
@@ -474,6 +474,7 @@ function refreshAttemptAggregates(db: Database, path: string): void {
     if (idx >= steps.length) {
       aggregatesCache = { path, at: Date.now(), data: data as AttemptAggregates };
       aggregatesRefreshing = false;
+      onSettled?.();
       return;
     }
     const next = steps[idx++];
@@ -482,6 +483,7 @@ function refreshAttemptAggregates(db: Database, path: string): void {
     } catch {
       // fail-soft: keep serving the stale copy; a later stale read retries
       aggregatesRefreshing = false;
+      onSettled?.();
       return;
     }
     setTimeout(step, 0);
@@ -498,6 +500,45 @@ function loadAttemptAggregates(db: Database, path: string, now: number): Attempt
   const data = computeAttemptAggregates(db, now);
   aggregatesCache = { path, at: now, data };
   return data;
+}
+
+/**
+ * Boot prime (#5082 follow-up, 2026-11-13): fill the aggregates cache
+ * through the SLICED refresh instead of the synchronous first build.
+ * The cold computeAttemptAggregates path measures ~12 s of
+ * uninterrupted event-loop time over the live ledger; when server.ts
+ * paid it inside the boot warm-up, every request that arrived during
+ * the warm-up queued behind it — the first /api/program.json after a
+ * restart measured 26.4 s while every later hit measured ~0.03 s.
+ * Priming runs the same day-sliced steps as a stale refresh (widest
+ * slice ~0.3 s, one per macrotask), so the loop stays responsive and
+ * no request path ever pays the cold build at boot. A /quota request
+ * that lands before the prime settles still takes the synchronous
+ * cold path in loadAttemptAggregates — unchanged semantics, bounded
+ * to that one request.
+ *
+ * Returns true when a prime was started. When there is nothing to do
+ * (cache already populated for this DB, a refresh already in flight,
+ * or no readable DB) it returns false and `onSettled` fires
+ * immediately, so an awaiting caller never hangs; when a prime is
+ * started, `onSettled` fires once it lands or aborts fail-soft.
+ */
+export function primeAttemptAggregates(
+  opencodeDbPath: string = OPENCODE_DB_DEFAULT,
+  onSettled?: () => void,
+): boolean {
+  if (aggregatesCache && aggregatesCache.path === opencodeDbPath) {
+    onSettled?.();
+    return false;
+  }
+  if (aggregatesRefreshing) return false;
+  const db = getDb(opencodeDbPath);
+  if (!db) {
+    onSettled?.();
+    return false;
+  }
+  refreshAttemptAggregates(db, opencodeDbPath, onSettled);
+  return true;
 }
 
 function addInto(into: BurnBucket, r: { calls: number; success: number; input: number; output: number; reasoning: number; cache_read: number; cache_write: number; cost: number; cost_rows: number }): void {

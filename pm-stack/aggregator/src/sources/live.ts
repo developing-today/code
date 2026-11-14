@@ -490,6 +490,111 @@ export function latestPerRef(comments: Comment[]): Comment[] {
   return [...byRef.values()];
 }
 
+/** TTL for the latest-comments cache below (#9781). */
+export const LATEST_COMMENTS_TTL_MS = 60_000;
+
+/**
+ * Per-ref stale-while-revalidate cache for the briefs' latest comments
+ * (#9781). projectorLatestComments fans out one projector read per ref
+ * with an 8 s abort on every fetch, and the board/program/attention
+ * handlers call it on EVERY request — so whenever the projector is
+ * slow (measured 11.2 s for a /comments read while its 15-minute
+ * /reconcile sweep occupies the process), each page assembly pays the
+ * full ~8.2 s abort cliff, and /program's assembly crosses its 10 s
+ * deadline into a 503. This cache gives the read the same contract the
+ * page assemblies already have (#1179/#5082): fresh entries serve
+ * directly; expired entries serve the stale comment immediately and
+ * refresh single-flight in the background; only a never-seen ref pays
+ * a projector read on the request path. A failed fetch never poisons
+ * the cache: a failed refresh keeps serving the stale value, and a
+ * failed cold read falls back (fixtures, in the live source) without
+ * caching the failure, so the next request retries the projector.
+ *
+ * Truthfulness: a brief's "latest comment" can lag reality by at most
+ * the TTL plus one refresh — the same 60 s bound the health probe
+ * cache (#1147) already accepts. Only the latest comment per ref is
+ * cached, never a comment list, so nothing else can be served stale.
+ */
+export class LatestCommentsCache {
+  private entries = new Map<RefKey, { at: number; comment: Comment | null }>();
+  private inFlight = new Set<RefKey>();
+
+  constructor(
+    private readonly fetchLatest: (refs: RefKey[]) => Promise<Comment[] | null>,
+    private readonly fallback: (refs: RefKey[]) => Promise<Comment[]>,
+    private readonly ttlMs: number = LATEST_COMMENTS_TTL_MS,
+    private readonly now: () => number = Date.now,
+  ) {}
+
+  /** The latest comment for each requested ref that has one, in ref order. */
+  async get(refs: RefKey[]): Promise<Comment[]> {
+    const at = this.now();
+    const byRef = new Map<RefKey, Comment>();
+    const missing: RefKey[] = [];
+    const stale: RefKey[] = [];
+    for (const ref of refs) {
+      const hit = this.entries.get(ref);
+      if (hit && at - hit.at < this.ttlMs) {
+        if (hit.comment) byRef.set(ref, hit.comment);
+      } else if (hit) {
+        if (hit.comment) byRef.set(ref, hit.comment);
+        stale.push(ref);
+      } else {
+        missing.push(ref);
+      }
+    }
+    if (stale.length) this.refresh(stale);
+    if (missing.length) {
+      const live = await this.fetchLatest(missing);
+      if (live) {
+        const fetched = new Map(live.map((c) => [c.ref, c]));
+        for (const ref of missing) {
+          const comment = fetched.get(ref) ?? null;
+          this.store(ref, comment);
+          if (comment) byRef.set(ref, comment);
+        }
+      } else {
+        for (const c of await this.fallback(missing)) byRef.set(c.ref, c);
+      }
+    }
+    return refs.flatMap((ref) => {
+      const c = byRef.get(ref);
+      return c ? [c] : [];
+    });
+  }
+
+  /** Background re-read behind expired entries; never throws. */
+  private refresh(refs: RefKey[]): void {
+    const todo = refs.filter((ref) => !this.inFlight.has(ref));
+    if (!todo.length) return;
+    for (const ref of todo) this.inFlight.add(ref);
+    this.fetchLatest(todo).then(
+      (live) => {
+        if (live) {
+          const fetched = new Map(live.map((c) => [c.ref, c]));
+          for (const ref of todo) this.store(ref, fetched.get(ref) ?? null);
+        }
+        // A failed refresh keeps the stale entries; the next expired
+        // read retries.
+        for (const ref of todo) this.inFlight.delete(ref);
+      },
+      () => {
+        for (const ref of todo) this.inFlight.delete(ref);
+      },
+    );
+  }
+
+  private store(ref: RefKey, comment: Comment | null): void {
+    // Soft cap: briefs only ever ask for pool/board/attention refs
+    // (hundreds), so this only trims pathological growth.
+    if (!this.entries.has(ref) && this.entries.size >= 4096) {
+      const oldest = this.entries.keys().next().value;
+      if (oldest !== undefined) this.entries.delete(oldest);
+    }
+    this.entries.set(ref, { at: this.now(), comment });
+  }
+}
+
 /**
  * The latest comment for each ref, one projector read per ref (#1279).
  * The bulk /comments read applies its row limit across every requested
@@ -814,6 +919,20 @@ export function liveSource(
   // In-memory on purpose: a restart re-baselines silently, and the
   // ingestion store's persisted seen set is the durable dedupe.
   let prevKaneoCards: Map<string, KaneoCardSnapshot> | null = null;
+  // #9781: the briefs' latest-comments cache for this source instance.
+  // The fetch seam keeps projectorLatestComments' fail-soft contract
+  // (null = the whole batch failed); the fallback keeps the pre-cache
+  // behaviour for never-seen refs whose projector read failed.
+  const latestCommentsCache = new LatestCommentsCache(
+    async (refs) => {
+      const baseUrl = cfg.projector.baseUrl;
+      if (!baseUrl) return null;
+      const live = await projectorLatestComments(baseUrl, refs);
+      if (live) provenance.comments = "live (projector)";
+      return live;
+    },
+    async (refs) => latestPerRef(await fix.comments(refs)),
+  );
   async function publishKaneoFreshness(board: readonly BoardItem[]): Promise<void> {
     if (!opts?.onFreshness) return;
     const cards = board
@@ -1443,14 +1562,13 @@ export function liveSource(
       return fix.comments(refs);
     },
     async latestComments(refs) {
-      if (cfg.projector.baseUrl) {
-        const live = await projectorLatestComments(cfg.projector.baseUrl, refs);
-        if (live) {
-          provenance.comments = "live (projector)";
-          return live;
-        }
+      if (!cfg.projector.baseUrl) {
+        return latestPerRef(await fix.comments(refs));
       }
-      return latestPerRef(await fix.comments(refs));
+      // #9781: ride the per-ref SWR cache (see LatestCommentsCache) —
+      // the uncached fan-out made /program and /board pay an ~8.2 s
+      // abort cliff on every request whenever the projector was slow.
+      return latestCommentsCache.get(refs);
     },
     async quota() {
       // Slice 1 (#890): quota comes from the fleet feed file produced

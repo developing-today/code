@@ -10,6 +10,10 @@ export const BOUNDED_DASHBOARD_PATHS: ReadonlySet<string> = new Set([
   "/api/overview.json",
   "/frag/overview",
   "/program",
+  // #9781: the JSON twin joins its HTML sibling — pool-quota-steward
+  // run 369 measured an unbounded 17.83 s first pass on this route
+  // while every bounded route at least answered stale-or-503.
+  "/api/program.json",
 ]);
 
 interface CachedResponse {
