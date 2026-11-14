@@ -82,6 +82,7 @@ records.
 - [Draft approval queues, outcomes, and rejected-draft forks](../../doc/2026-11-08T11-06-39Z_design_id_draft_approval_flow/2026-11-08T11-06-39Z_design_id_draft_approval_flow.md)
 - [Chat anchor data model: typed links and durable part selectors](../../doc/2026-11-09T01-27-00Z_design_chat_anchor_data_model/2026-11-09T01-27-00Z_design_chat_anchor_data_model.md)
 - [Atlas chunk-boundary policy v2 — structural first](../../doc/2026-11-09T01-31-29Z_design_atlas_chunk_boundary_policy_v2/2026-11-09T01-31-29Z_design_atlas_chunk_boundary_policy_v2.md)
+- [Benchmark regression gates, waivers, and result retention](../../doc/2026-11-08T23-45-30Z_design_id5897_regression_gates/2026-11-08T23-45-30Z_design_id5897_regression_gates.md)
 
 ## Package architecture docs (living, with the code)
 
