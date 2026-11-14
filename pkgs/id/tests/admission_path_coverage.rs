@@ -1,5 +1,5 @@
 //! Coverage oracle for slice 9110-13 (issue #10177): every normal
-//! retained-data path in `docs/operation-path-inventory.md` must map to
+//! retained-data path in `tests/operation-path-inventory.md` must map to
 //! a fixed gate and a bypass test, and any unmapped path blocks the
 //! completeness claim.
 //!
@@ -20,7 +20,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 /// Canonical path IDs for the 9110-13 inventory. Keep in exact sync
-/// with `docs/operation-path-inventory.md`; the test fails on any
+/// with `tests/operation-path-inventory.md`; the test fails on any
 /// divergence in either direction.
 const CANONICAL_PATH_IDS: &[&str] = &[
     "P-BU-01",
@@ -47,7 +47,7 @@ fn manifest_dir() -> PathBuf {
 }
 
 fn inventory_text() -> String {
-    let path = manifest_dir().join("docs/operation-path-inventory.md");
+    let path = manifest_dir().join("tests/operation-path-inventory.md");
     fs::read_to_string(&path)
         .unwrap_or_else(|e| panic!("inventory must exist at {}: {e}", path.display()))
 }
