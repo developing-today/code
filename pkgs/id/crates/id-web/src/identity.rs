@@ -330,7 +330,7 @@ impl IdentityStore {
             None => (None, None, None),
         };
 
-        tokio::spawn(async move {
+        let registration_task = tokio::spawn(async move {
             let mut clients = clients.write().await;
             if let Some(limit) = max_identities {
                 let registered = clients.len();
@@ -402,9 +402,16 @@ impl IdentityStore {
         let result = result_rx
             .await
             .map_err(|e| anyhow::anyhow!("identity registration task failed: {e}"))??;
-        // No await point between acknowledgement and returning: once the
-        // detached task sees this acknowledgement, the caller owns the result.
+        // Acknowledge receipt: the detached task commits the registration.
         let _ = ack_tx.send(());
+        // Wait for the detached task to exit before returning, so it has
+        // released the clients write lock and its database handle: a caller
+        // that drops this store and reopens the same path immediately must
+        // not race the detached task for the redb lock (Codex P2 on PR
+        // #9105). After the acknowledgement the task has no work left
+        // besides dropping those handles, so this join adds no new
+        // commit window.
+        let _ = registration_task.await;
         Ok(result)
     }
 
