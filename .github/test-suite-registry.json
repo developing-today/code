@@ -1024,7 +1024,7 @@
     {
       "id": "fleet.rust",
       "paths": ["pkgs/fleet/crates/**/src/**", "pkgs/fleet/crates/*/tests/*.rs"],
-      "invocation": "cargo +1.99.0 test --manifest-path pkgs/fleet/Cargo.toml --workspace --all-targets --locked",
+      "invocation": "cargo +1.99.1 test --manifest-path pkgs/fleet/Cargo.toml --workspace --all-targets --locked",
       "venue": {
         "workflow": ".github/workflows/fleet-rust-tests.yml",
         "job_step": "fleet-rust-tests / Test the fleet Rust workspace",
