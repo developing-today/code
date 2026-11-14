@@ -87,6 +87,7 @@ impl WorldCommand {
             Self::ProgramHealth { .. } => "ProgramHealth",
             Self::AdminEventHistory { .. } => "AdminEventHistory",
             Self::ReplicationFeed { .. } => "ReplicationFeed",
+            Self::ReplicaSidecars { .. } => "ReplicaSidecars",
             Self::ReplicationCompact { .. } => "ReplicationCompact",
             Self::Shutdown { .. } => "Shutdown",
         }
@@ -401,6 +402,20 @@ pub(crate) enum WorldCommand {
                 broadcast::Receiver<ReplicationUpdate>,
             )>,
         >,
+    },
+    /// The authenticated sidecars for one replication snapshot
+    /// (F12.13 phase 5): the directory facts for `subjects` (the
+    /// accounts in the snapshot journal's capability chains) as
+    /// JSONL entry bytes, plus the active module hash whose bytes
+    /// the feed serves from the module store. The feed captures the
+    /// sidecars from the actor immediately after the snapshot image
+    /// in the same session, and the signed batch binds them to that
+    /// snapshot's cursor; facts are derived inside the actor (the
+    /// only place directory changes are applied), never read from a
+    /// file the actor is concurrently appending to.
+    ReplicaSidecars {
+        subjects: std::collections::BTreeSet<String>,
+        reply: oneshot::Sender<Result<(Vec<u8>, Option<String>)>>,
     },
     /// Serialized forced compaction after an out-of-actor probe found an
     /// oversized legacy entry (#8095). Compaction itself stays an actor
@@ -3629,6 +3644,18 @@ impl WorldActor {
                     }
                     .await
                 };
+                let _ = reply.send(result);
+            }
+            WorldCommand::ReplicaSidecars { subjects, reply } => {
+                let result = (|| -> Result<(Vec<u8>, Option<String>)> {
+                    let facts = self.core.directory().replica_facts_for(&subjects)?;
+                    let mut bytes = Vec::new();
+                    for entry in &facts {
+                        serde_json::to_writer(&mut bytes, entry)?;
+                        bytes.push(b'\n');
+                    }
+                    Ok((bytes, self.core.active_module_hash.clone()))
+                })();
                 let _ = reply.send(result);
             }
             WorldCommand::ReplicationCompact {

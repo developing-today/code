@@ -21,9 +21,9 @@ use tokio::task::JoinSet;
 use crate::{
     frames::{read_frame, write_frame},
     world::{
-        DurableReceiver, JournalSnapshot, ReceiverProgress, ReplicationCursor, ReplicationEnvelope,
-        ReplicationUpdate, SignedReplicationEnvelope, chain_base_cursor, frame_digest,
-        split_entry_payload,
+        DurableReceiver, JournalSnapshot, MAX_REPLICATION_PAYLOAD_BYTES, ReceiverProgress,
+        ReplicationCursor, ReplicationEnvelope, ReplicationUpdate, SignedReplicationEnvelope,
+        chain_base_cursor, frame_digest, split_entry_payload,
     },
     world_hub::WorldHub,
     world_session::MAX_ADMIN_TOKEN_BYTES,
@@ -149,6 +149,7 @@ async fn serve_stream(
         let snapshot = tokio::task::spawn_blocking(move || snapshot_source.read())
             .await
             .context("initial replication snapshot read task")??;
+        let sidecars = gather_sidecars(&lease, &snapshot.bytes).await?;
         send_snapshot(
             &mut send,
             signing_key,
@@ -156,6 +157,7 @@ async fn serve_stream(
             source,
             request.session_nonce,
             snapshot,
+            &sidecars,
             [0; 32],
         )
         .await?
@@ -186,6 +188,7 @@ async fn serve_stream(
                 prev_frame_digest = digest;
             }
             Ok(ReplicationUpdate::Reset(reset)) => {
+                let sidecars = gather_sidecars(&lease, &reset.bytes).await?;
                 let (after, version, digest) = send_snapshot(
                     &mut send,
                     signing_key,
@@ -193,6 +196,7 @@ async fn serve_stream(
                     source,
                     request.session_nonce,
                     reset,
+                    &sidecars,
                     prev_frame_digest,
                 )
                 .await?;
@@ -222,6 +226,50 @@ fn ensure_nonce(nonce: &[u8; 16]) -> Result<()> {
     Ok(())
 }
 
+/// The authenticated sidecars served inside one snapshot batch
+/// (F12.13 phase 5): the directory facts for the snapshot journal's
+/// subjects, and the active module's bytes when the writer's module
+/// store holds them. Refreshed on every snapshot — the initial sync
+/// and every compaction/header reset — which is the replication
+/// refresh cadence for facts the journal itself does not carry.
+struct SnapshotSidecars {
+    directory: Vec<u8>,
+    module: Option<Vec<u8>>,
+}
+
+/// Capture the sidecars for one snapshot image: subjects are the
+/// accounts appearing in the snapshot's capability chains, the facts
+/// come from the actor in one round trip immediately after the
+/// snapshot image was captured, and the module bytes are loaded from
+/// the service's content-addressed store under the actor's active
+/// module hash — a load failure aborts the stream rather than serving
+/// a journal whose program the replica could never restore.
+async fn gather_sidecars(
+    lease: &crate::world_hub::WorldLease,
+    snapshot_bytes: &[u8],
+) -> Result<SnapshotSidecars> {
+    let mut subjects = std::collections::BTreeSet::new();
+    for line in snapshot_bytes.split_inclusive(|byte| *byte == b'\n') {
+        if let Ok(crate::world::JournalEntry::Issued {
+            subject: Some(subject),
+            ..
+        }) = serde_json::from_slice::<crate::world::JournalEntry>(line)
+        {
+            subjects.insert(subject);
+        }
+    }
+    let service = lease.service();
+    let (directory, active_hash) = service.world().replica_sidecars(subjects).await?;
+    let module = match (active_hash, service.module_dir.as_ref()) {
+        (Some(hash), Some(dir)) => Some(
+            dir.load(&hash)
+                .context("load active module for replication")?,
+        ),
+        _ => None,
+    };
+    Ok(SnapshotSidecars { directory, module })
+}
+
 // Take ownership of each snapshot so its journal buffer cannot escape into
 // the long-lived update loop after the transfer has been sent.
 async fn send_snapshot(
@@ -231,6 +279,7 @@ async fn send_snapshot(
     source: [u8; 32],
     nonce: [u8; 16],
     snapshot: JournalSnapshot,
+    sidecars: &SnapshotSidecars,
     mut prev_frame_digest: [u8; 32],
 ) -> Result<(ReplicationCursor, u32, [u8; 32])> {
     let chunks = split_entry_payload(&snapshot.bytes).context("split journal snapshot")?;
@@ -261,6 +310,41 @@ async fn send_snapshot(
         };
         cursor = envelope.cursor_after;
         prev_frame_digest = write_envelope(send, signing_key, envelope).await?;
+    }
+    // The sidecars ride inside the batch, after the journal reaches
+    // its cursor and before the terminal commits it: the facts frame
+    // is always sent (an empty one replaces the replica's facts with
+    // none), the module only when the writer holds the active bytes.
+    let directory_chunks = if sidecars.directory.is_empty() {
+        vec![Vec::new()]
+    } else {
+        split_entry_payload(&sidecars.directory).context("split directory sidecar")?
+    };
+    for chunk in directory_chunks {
+        let envelope = ReplicationEnvelope::directory(
+            world_id,
+            source,
+            snapshot.header_version,
+            nonce,
+            cursor,
+            prev_frame_digest,
+            chunk,
+        );
+        prev_frame_digest = write_envelope(send, signing_key, envelope).await?;
+    }
+    if let Some(module) = &sidecars.module {
+        for chunk in module.chunks(MAX_REPLICATION_PAYLOAD_BYTES) {
+            let envelope = ReplicationEnvelope::module(
+                world_id,
+                source,
+                snapshot.header_version,
+                nonce,
+                cursor,
+                prev_frame_digest,
+                chunk.to_vec(),
+            );
+            prev_frame_digest = write_envelope(send, signing_key, envelope).await?;
+        }
     }
     prev_frame_digest = send_terminal(
         send,
