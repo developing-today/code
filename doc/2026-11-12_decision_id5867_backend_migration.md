@@ -1,0 +1,50 @@
+# Decision: backend selection and migration for #5867
+
+- Date: 2026-11-12
+- Status: **child decision record** for [#5867](https://github.com/developing-today/code/issues/5867), consuming the landed parent synthesis for [#5681](https://github.com/developing-today/code/issues/5681). This record decides backend selection mechanics and live-data migration; it does not repeat the parent comparison or placement policy, implement a backend, execute a migration, or close #5681.
+- Parent: [PR #8296](https://github.com/developing-today/code/pull/8296), merged as `9602836606d196bfa4c513146f8855d215b64e5e`, adds [`doc/2026-11-10_decision_id5681_serverless_storage.md`](2026-11-10_decision_id5681_serverless_storage.md). Signed journal replication: [#806](https://github.com/developing-today/code/issues/806).
+- Siblings consumed, not re-decided: [#5866](https://github.com/developing-today/code/issues/5866) / [PR #7588](https://github.com/developing-today/code/pull/7588) (contract-level local-dev parity); [#5869](https://github.com/developing-today/code/issues/5869) / [PR #7774](https://github.com/developing-today/code/pull/7774) (open-format export, recovery and exit). The #5863 storage contract and #806 signed-journal guarantees remain governing interfaces.
+
+## 1. Decision in brief
+
+Follow #5681: **both D1 and Turso, with roles**, not a winner-take-all platform choice. A world's primary is selected per deployment (Turso by default); atlas/corpus shards are selected independently per shard, using the parent record's signed-manifest placement policy. This record chooses neither shard thresholds nor tiers anew.
+
+The migration unit is one deployment or one shard. Move it by exporting a complete, committed journal prefix and a contract-level snapshot, verifying the export, replaying into an empty destination, comparing state, and then atomically advancing the authoritative placement manifest. Do not dual-write or let two stores independently accept writes for the same unit during migration.
+
+## 2. Selection and authoritative placement fact
+
+1. **Granularity.** One world's primary uses one selected backend per deployment. Atlas/corpus placement is per shard. A move never silently changes the selection for other shards or deployments.
+2. **Authority.** The signed placement manifest defined by #5681 is the sole authority for each unit's current backend, placement generation, and cutover journal sequence. The manifest record is signed and versioned. Runtime configuration, database-local metadata, caches, and provider control planes are observations or delivery mechanisms, not competing sources of truth.
+3. **Resolution.** A reader or writer must resolve and validate the current manifest generation before accessing the unit. Cache entries are usable only while their generation is current under the contract's freshness rule. A write carries the resolved generation and is rejected if it no longer matches; this prevents stale writers from continuing on the old backend after cutover.
+4. **Failure behavior.** Missing, invalidly signed, conflicting, or too-stale placement data fails closed with a typed unavailable/placement-unknown result. Do not guess a backend, fall back to another store, or write to both. Reads may use an explicitly permitted read-only replica only when it proves it has reached the requested journal watermark and the current placement generation; otherwise they fail closed too. Recovery is operator repair of the signed manifest from its verified history, not inference from whichever database answers.
+5. **Placement changes.** A cooling, split, merge, or capacity-driven move follows #5681's policy. This record adds the migration protocol below, not another temperature policy.
+
+## 3. Export and replay protocol
+
+Use the open-format export bundle and restore invariants in #5869 §4 and §5; the migration process must not invent a backend-native interchange format.
+
+1. **Prepare.** Acquire the unit's migration lease and record its current manifest generation and source. Verify that the destination supports the same #5863 contract/schema version and required #806 journal operations. Allocate a fresh, empty destination; never replay into an unrelated or previously served store.
+2. **Establish a consistent boundary.** Capture a contract-level snapshot at journal sequence `S`, plus every committed journal entry after its snapshot sequence through a named high-water mark `H`. The exporter pins the source view for this range (or uses an equivalent consistent snapshot/delta mechanism). Writes may continue only if a tail can be captured and verified later; otherwise briefly fence writes to establish `H`.
+3. **Completeness and integrity.** The manifest names unit identity, contract/schema and bundle-format versions, source and destination backend IDs, snapshot sequence, inclusive journal range, entry and blob counts, and per-file/content hashes. Include every contract-visible record, journal entry, and referenced blob; reject missing, extra, duplicate, malformed, or lossy values. Verify all checksums, content hashes, signatures, and the #806 hash-chain/ordering rules before replay and again at the destination. A provider-native dump may assist extraction but is never the canonical bundle.
+4. **Ordered, idempotent replay.** Apply entries in canonical journal sequence order, preserving IDs, timestamps, signatures, and sequence numbers. The destination records the last applied sequence and bundle identity atomically with each committed batch. Replaying a batch with the same identity and digest is a no-op; the same identity with different bytes, a gap, conflicting sequence, or invalid signature is a hard error. Retry from the last committed sequence; never skip forward or renumber entries. Rebuild derived indexes from verified journal state.
+5. **Catch up and verify.** Capture and replay the tail through final fence `F`. Verify a contiguous sequence through `F`, signatures/hash chain, counts and blob hashes, schema version, and contract-level world-state equivalence at `F` (the #5866 fixture/replay oracle shape). No traffic is directed to the destination until every check passes. Record evidence and digests in the migration receipt.
+6. **Cut over.** Fence writes at `F`, make the source read-only, and atomically publish a new signed placement-manifest generation naming the destination and cutover sequence `F`. New operations must present that generation; stale-generation writes are refused. Resume writes on the destination only after the new manifest is observable under its consistency contract. If publication or verification fails, leave the source authoritative and writable after explicitly aborting the fence; do not expose a partially cut-over unit.
+7. **Rollback.** Before the destination accepts post-cutover writes, rollback is a manifest-generation change back to the unchanged, verified source. After destination writes begin, the source is stale: rollback requires fencing again, exporting/replaying the complete post-cutover journal tail back to the source, verifying through a new high-water mark, then publishing a new manifest generation. Never roll back by pointing at a stale source or discarding acknowledged journal entries. Retain the source read-only until the destination passes the agreed observation/backup window; teardown is explicit and separate.
+
+## 4. Interaction with signed journal replication (#806)
+
+The signed journal remains the system of record; stores are materialisations. Migration transports the existing signed stream and snapshot state—it does not mint replacement journal entries, change signatures, or make store replication a second journal. Each unit has one write authority at a time. During catch-up, source journal appends continue to define committed history; after fence `F` and manifest cutover, the destination becomes the sole materialisation receiving new appends. Store-native replication may provide availability within a backend, but must not race the signed stream or create a second cross-store writer. If #806 later changes its guarantees, migration must preserve the stronger settled journal guarantee; backend-specific replication is not a workaround.
+
+## 5. Rejected alternatives and invariants
+
+- **One global backend for every unit:** rejected; contradicts #5681's per-shard, both-with-roles direction and needlessly couples independent shards.
+- **Backend-native dump as canonical migration:** rejected; loses portability and can bypass contract, ordering, signature, or type guarantees fixed by #5869.
+- **Dual-write during cutover:** rejected; creates ambiguous commit outcomes and can diverge journal sequence/state. Use a single writer and a fenced, verified manifest transition.
+- **Best-effort or lossy replay / renumbering:** rejected; violates completeness and signature/sequence invariants and makes replay non-deterministic.
+- **Fallback to whichever store is reachable:** rejected; availability does not establish authority and risks split-brain writes or stale reads.
+
+Implementation must preserve: one signed placement authority per unit; one write authority at any instant; monotonic, contiguous, signature-valid journal history; complete and deterministic export; idempotent retry; no traffic to an unverified destination; no rollback that loses acknowledged writes; and contract-level equivalence across supported backends.
+
+## 6. Follow-up boundaries
+
+This record specifies the decision, not code or an operational migration. Implementation follow-ups must separately define and test: #5863 contract hooks for snapshot/delta/replay and placement generation; the signed-manifest schema, signing and freshness/consistency contract; backend adapters and export/replay tooling; crash/retry and fencing behavior; and automated cross-backend equivalence tests. Keep #806's journal protocol and #5681's placement thresholds in their owning scopes. #5867 remains open until this record is landed and linked; #5681 remains open for its other child-owned work.
