@@ -11,9 +11,12 @@ import {
   parseIssueBodyResponse,
   parsePhase12Steps,
   phase12IsStale,
+  phase12QueueByRef,
   type Phase12Snapshot,
 } from "../src/phase12.ts";
+import { phase12PanelHtml } from "../src/render.ts";
 import type { GhItem } from "../src/model.ts";
+import type { QueueSnapshot, QueueTask } from "../src/queue.ts";
 
 const FIXTURE_BODY = `# Path to Phase 12 — the ordered work queue
 
@@ -136,5 +139,96 @@ describe("phase12IsStale", () => {
     expect(phase12IsStale(snap("2026-11-14T12:00:00Z"), now)).toBe(false);
     expect(phase12IsStale(snap("2026-11-14T11:00:00Z"), now)).toBe(true);
     expect(phase12IsStale(snap("not a date"), now)).toBe(true);
+  });
+});
+
+describe("phase12 queue join (#9920 collector)", () => {
+  const steps = parsePhase12Steps(FIXTURE_BODY);
+  const item = (number: number, state: GhItem["state"]): GhItem => ({
+    ref: `${PHASE12_REPO}#${number}`,
+    kind: "issue",
+    url: `https://github.com/${PHASE12_REPO}/issues/${number}`,
+    title: `live title ${number}`,
+    state,
+    labels: [],
+    author: "dezren39",
+    updatedAt: "2026-10-27T00:00:00Z",
+  });
+  const items = new Map([
+    [`${PHASE12_REPO}#229`, item(229, "closed")],
+    [`${PHASE12_REPO}#534`, item(534, "open")],
+  ]);
+  const task = (partial: Partial<QueueTask> & { id: number }): QueueTask => ({
+    queue: "repo-health-code-pilot",
+    title: `task ${partial.id}`,
+    priority: 20,
+    status: "done",
+    dedupeKey: null,
+    repo: PHASE12_REPO,
+    issue: null,
+    join: "dedupe",
+    worker: "repo-worker-code",
+    lane: "code-c",
+    attempts: 1,
+    maxAttempts: 1000,
+    createdAt: "2026-10-26T00:00:00Z",
+    leaseUntil: null,
+    progressStage: null,
+    progressNext: null,
+    progressAt: null,
+    ...partial,
+  });
+  const queue: QueueSnapshot = {
+    fetchedAt: Date.parse("2026-11-14T16:00:00Z"),
+    available: true,
+    stale: false,
+    errors: [],
+    queues: [],
+    tasks: [
+      task({ id: 1259, issue: 1078, status: "done" }),
+      task({ id: 900, issue: 229, status: "done" }),
+      task({ id: 901, issue: 229, status: "completed" }),
+      task({ id: 902, issue: null, repo: null, join: "none", status: "queued" }),
+      task({ id: 903, issue: 9999, status: "queued" }),
+    ],
+  };
+
+  test("phase12QueueByRef groups by ref, newest first, skipping unjoined tasks", () => {
+    const byRef = phase12QueueByRef(queue);
+    expect(byRef.get(`${PHASE12_REPO}#229`)?.map((t) => t.id)).toEqual([901, 900]);
+    expect(byRef.get(`${PHASE12_REPO}#1078`)?.map((t) => t.id)).toEqual([1259]);
+    expect(byRef.get(`${PHASE12_REPO}#9999`)?.map((t) => t.id)).toEqual([903]);
+    expect(byRef.size).toBe(3);
+    expect(phase12QueueByRef(null).size).toBe(0);
+  });
+
+  test("joinPhase12Steps attaches queue tasks to their steps only", () => {
+    const joined = joinPhase12Steps(steps, items, queue);
+    expect(joined[0].queueTasks.map((t) => t.id)).toEqual([901, 900]);
+    expect(joined[1].queueTasks.map((t) => t.id)).toEqual([1259]);
+    expect(joined[2].queueTasks).toEqual([]);
+    // Without a snapshot the join stays empty (GitHub-only rendering).
+    expect(joinPhase12Steps(steps, items)[0].queueTasks).toEqual([]);
+  });
+
+  test("the panel renders queue badges, the no-task complement, and the stale warning", () => {
+    const snap: Phase12Snapshot = {
+      body: FIXTURE_BODY,
+      issueUpdatedAt: "2026-11-14T00:00:00Z",
+      fetchedAt: new Date().toISOString(),
+    };
+    const html = phase12PanelHtml(snap, items, queue);
+    expect(html).toContain("queue: completed");
+    expect(html).toContain("queue: done");
+    expect(html).toContain("no queue task");
+    expect(html).toContain("queue state from the fleet-queue collector");
+    const staleHtml = phase12PanelHtml(snap, items, { ...queue, stale: true });
+    expect(staleHtml).toContain("Stale queue source");
+    const noQueue = phase12PanelHtml(snap, items, null);
+    expect(noQueue).toContain("queue state unavailable in the current source");
+    expect(noQueue).not.toContain("no queue task");
+    const failed = phase12PanelHtml(snap, items, { ...queue, available: false });
+    expect(failed).toContain("queue read failed");
+    expect(failed).not.toContain("no queue task");
   });
 });

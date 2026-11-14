@@ -129,6 +129,7 @@ import {
   parsePhase12Steps,
   phase12IsStale,
   type Phase12Snapshot,
+  type Phase12StepState,
 } from "./phase12.ts";
 import {
   BUILD_HEALTH_REPO,
@@ -7105,24 +7106,57 @@ function epicGraphOneHtml(items: ProjectPoolItem[], entry: ReturnType<typeof epi
 }
 
 /** The Path to Phase 12 panel (#9922): #1235's ordered steps, parsed
- * from its body snapshot and joined to live GitHub item state. A stale
- * or missing snapshot renders the warning INSTEAD of the steps — a
- * silently old step list is the defect #1239's rules name. Queue state
- * joins here once the fleet-queue collector (#9920) lands; until then
- * the panel says so. */
-export function phase12PanelHtml(snapshot: Phase12Snapshot | null, items: Map<RefKey, GhItem>): string {
+ * from its body snapshot and joined to live GitHub item state and to
+ * queue state from the fleet-queue collector (#9920). A stale or
+ * missing body snapshot renders the warning INSTEAD of the steps — a
+ * silently old step list is the defect #1239's rules name. A stale
+ * queue snapshot still renders, but behind its own warning: the step
+ * list is the panel's spine, the task states are the perishable part. */
+export function phase12PanelHtml(
+  snapshot: Phase12Snapshot | null,
+  items: Map<RefKey, GhItem>,
+  queue: QueueSnapshot | null = null,
+): string {
   const head = `<h2>Path to Phase 12 — live from <a href="${PHASE12_ISSUE_URL}">#1235</a></h2>`;
   if (!snapshot) {
     return `${head}<div class="banner">The #1235 body feed is unavailable in the current source, so no step state is shown — a hand-maintained copy would drift, and this panel never renders one.</div>`;
   }
-  const sourceLine = `<p class="muted">Source: <a href="${PHASE12_ISSUE_URL}">developing-today/code#1235</a> body, fetched ${esc(snapshot.fetchedAt)} · issue updated ${esc(snapshot.issueUpdatedAt)} · per-step state is live GitHub state; queue state joins when the fleet-queue collector (#9920) lands.</p>`;
+  const queueSegment =
+    queue === null
+      ? "queue state unavailable in the current source"
+      : !queue.available
+        ? "queue read failed — per-step task state withheld"
+        : `queue state from the fleet-queue collector, fetched ${esc(new Date(queue.fetchedAt).toISOString())}`;
+  const sourceLine = `<p class="muted">Source: <a href="${PHASE12_ISSUE_URL}">developing-today/code#1235</a> body, fetched ${esc(snapshot.fetchedAt)} · issue updated ${esc(snapshot.issueUpdatedAt)} · per-step state is live GitHub state; ${queueSegment}.</p>`;
   if (phase12IsStale(snapshot)) {
     return `${head}${sourceLine}<div class="banner">Stale source: this snapshot was fetched at ${esc(snapshot.fetchedAt)}, outside the freshness window — the step list is withheld rather than shown silently old. It refreshes on the next successful body read.</div>`;
   }
-  const steps = joinPhase12Steps(parsePhase12Steps(snapshot.body), items);
+  const steps = joinPhase12Steps(parsePhase12Steps(snapshot.body), items, queue);
   if (!steps.length) {
     return `${head}${sourceLine}<div class="banner">No ordered steps could be parsed from the current #1235 body, so no step state is shown.</div>`;
   }
+  const queueStale =
+    queue !== null && queue.available && queue.stale
+      ? `<div class="banner">Stale queue source: task states were fetched at ${esc(new Date(queue.fetchedAt).toISOString())}, outside the freshness window — they are shown behind this warning rather than silently old, and refresh on the next successful broker read.</div>`
+      : "";
+  const queueBadge = (s: Phase12StepState): string => {
+    if (queue === null || !queue.available) return "";
+    const [task, ...earlier] = s.queueTasks;
+    if (!task) return ` <span class="badge">no queue task</span>`;
+    const cls =
+      task.status === "claimed"
+        ? "implementing"
+        : task.status === "done" || task.status === "completed"
+          ? "merged"
+          : task.status === "blocked" || task.status === "dep_blocked"
+            ? "closed"
+            : "";
+    const bits = [`task ${task.id}`];
+    if (task.lane) bits.push(`lane ${task.lane}`);
+    if (task.progressStage) bits.push(task.progressStage);
+    const more = earlier.length ? ` <span class="muted">(+${earlier.length} earlier task${earlier.length === 1 ? "" : "s"})</span>` : "";
+    return ` <span class="badge ${cls}">queue: ${esc(task.status)}</span> <span class="muted">${esc(bits.join(" · "))}</span>${more}`;
+  };
   const rows = steps
     .map((s) => {
       const stateBadge =
@@ -7131,10 +7165,10 @@ export function phase12PanelHtml(snapshot: Phase12Snapshot | null, items: Map<Re
           : `<span class="badge ${s.liveState === "open" ? "open" : "closed"}">issue ${esc(s.liveState)}</span>`;
       const box = s.checked ? "☑" : "☐";
       const done = s.doneNote ? `<br><span class="muted">${esc(s.doneNote)}</span>` : "";
-      return `<div class="card"><strong>${box} ${esc(s.label)} — <a href="${esc(s.url)}">#${s.issueNumber}</a> ${esc(s.liveTitle ?? s.title)}</strong><br>${stateBadge}${done}</div>`;
+      return `<div class="card"><strong>${box} ${esc(s.label)} — <a href="${esc(s.url)}">#${s.issueNumber}</a> ${esc(s.liveTitle ?? s.title)}</strong><br>${stateBadge}${queueBadge(s)}${done}</div>`;
     })
     .join("");
-  return `${head}${sourceLine}${rows}`;
+  return `${head}${sourceLine}${queueStale}${rows}`;
 }
 
 /** The Build health panel (#9924): current CI lane states + the id
@@ -7408,7 +7442,7 @@ export function renderProgramProject(
 <p class="muted">Built only from already-published fleet data — the orchestration section this aggregator serves and the fleet's tracked issues. No new data pipeline feeds this section.</p>${programEntries(config.sweepHealth, items)}`
     : "";
 
-  const phase12Html = config.id === "id" && phase12 !== undefined ? phase12PanelHtml(phase12, items) : "";
+  const phase12Html = config.id === "id" && phase12 !== undefined ? phase12PanelHtml(phase12, items, queueSnap ?? null) : "";
   const buildHealthHtml = config.id === "id" && buildHealth !== undefined ? buildHealthPanelHtml(buildHealth) : "";
   const f12Html =
     config.id === "id" && f12 !== undefined
