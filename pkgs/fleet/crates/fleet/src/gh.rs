@@ -43,6 +43,15 @@
 //! prints every rotation source with its core and GraphQL
 //! rate-limit headroom and exits 3 when any source is down.
 //!
+//! Raw mode — `fleet gh --raw <gh args...>` or FLEET_GH_RAW=1 —
+//! is the first-class bypass (Drew, 2026-11-14): the real `gh`
+//! execs directly with the caller's ambient credentials and
+//! environment; no token is resolved or injected and there is
+//! no rotation or failover. It exists so callers that must pin
+//! one identity (and the `gh` -> `fleet gh` PATH shim, whose
+//! escape hatch this is) never have to choose between the
+//! rotation and bypassing fleet entirely.
+//!
 //! Retry-safety rule (the #8887 contract): a WRITE is only repeated
 //! under a fresh token when the failure proves GitHub refused the
 //! request before processing it — rate-limit rejections (the limiter
@@ -72,6 +81,9 @@
 //!   FLEET_GH_DEVTODAY_OWNERS / FLEET_GH_BACKUP_OWNERS
 //!                       comma lists replacing those Apps' owners
 //!   FLEET_GH_TRACE=1    name each attempt's token source on stderr
+//!   FLEET_GH_RAW=1      raw mode (same as a leading `--raw`):
+//!                       exec the real gh with ambient credentials,
+//!                       no rotation, no token injection
 
 use fleet_config::Config;
 use fleet_secrets::Resolver;
@@ -101,13 +113,16 @@ const GITHUB_API: &str = "https://api.github.com";
 const USAGE: &str = "\
 Usage: fleet gh <gh args...>
        fleet gh tiers
+       fleet gh --raw <gh args...>
 
 Run the real `gh` CLI with every argument passed through unchanged,
 under a token selected from the fleet rotation (personal token, then
 the fleet's three GitHub Apps' installation tokens). A rate-limit or
 permission failure fails over to the next token; the caller sees only
 the final attempt's output and exit code. `fleet gh tiers` lists each
-rotation source with its rate-limit headroom. See code#8887.";
+rotation source with its rate-limit headroom. `fleet gh --raw` (or
+FLEET_GH_RAW=1) bypasses the rotation entirely: the real gh runs with
+the caller's ambient credentials, no token injected. See code#8887.";
 
 /// The fleet's GitHub Apps, in rotation order. Each carries its
 /// private key (and, except the fleet App whose ID is a public
@@ -911,7 +926,51 @@ fn run_tiers(config: &Config) -> i32 {
     if any_down { EXIT_UNRESOLVED } else { EXIT_OK }
 }
 
+/// Raw-mode split: returns the arguments to hand the real `gh`
+/// when raw mode is requested — a leading `--raw` (stripped) or
+/// FLEET_GH_RAW=1 (args unchanged) — and None when the call goes
+/// through the rotation. Only a LEADING `--raw` is ours: later
+/// positions belong to `gh` (its own `--raw-field` family lives
+/// further along the command line, never first).
+fn raw_args(args: &[String], raw_env: bool) -> Option<Vec<String>> {
+    if args.first().is_some_and(|a| a == "--raw") {
+        return Some(args[1..].to_vec());
+    }
+    if raw_env {
+        return Some(args.to_vec());
+    }
+    None
+}
+
+/// Raw mode: exec the real `gh` with the caller's ambient
+/// environment untouched — no token resolved, none injected, no
+/// failover. Stdio is inherited (not captured) so interactive
+/// `gh` behaves exactly as it does unwrapped; the exit code is
+/// the child's own.
+fn run_raw(gh_bin: &str, args: &[String]) -> i32 {
+    match Command::new(gh_bin)
+        .args(args)
+        .stdin(Stdio::inherit())
+        .stdout(Stdio::inherit())
+        .stderr(Stdio::inherit())
+        .status()
+    {
+        Ok(status) => status.code().unwrap_or(1),
+        Err(e) => {
+            eprintln!("fleet gh --raw: failed to run '{gh_bin}': {e}");
+            EXIT_UNRESOLVED
+        }
+    }
+}
+
 pub fn run(config: &Config, args: &[String]) -> i32 {
+    // Raw mode comes first: `--raw` with no further args is the
+    // real gh with no args, not this domain's usage text.
+    let raw_env = std::env::var("FLEET_GH_RAW").is_ok_and(|v| v == "1");
+    if let Some(raw) = raw_args(args, raw_env) {
+        let gh_bin = std::env::var("FLEET_GH_BIN").unwrap_or_else(|_| "gh".to_string());
+        return run_raw(&gh_bin, &raw);
+    }
     if args.is_empty()
         || args.first().is_some_and(|a| a == "--help" || a == "-h") && args.len() == 1
     {
@@ -1213,6 +1272,45 @@ mod tests {
             calls.lines().count(),
             1,
             "write attempted exactly once: {calls}"
+        );
+    }
+
+    // oracle: Drew's 2026-11-14 raw-mode contract — a LEADING
+    // `--raw` is fleet's and is stripped; `--raw` anywhere else
+    // is gh's own argument and must not trigger the bypass;
+    // FLEET_GH_RAW=1 selects raw with the args untouched.
+    #[test]
+    fn raw_args_split() {
+        let v = |xs: &[&str]| xs.iter().map(|s| s.to_string()).collect::<Vec<String>>();
+        assert_eq!(
+            raw_args(&v(&["--raw", "api", "user"]), false),
+            Some(v(&["api", "user"]))
+        );
+        assert_eq!(raw_args(&v(&["--raw"]), false), Some(v(&[])));
+        assert_eq!(raw_args(&v(&["api", "--raw-field", "x=1"]), false), None);
+        assert_eq!(raw_args(&v(&["issue", "list"]), false), None);
+        assert_eq!(
+            raw_args(&v(&["issue", "list"]), true),
+            Some(v(&["issue", "list"]))
+        );
+    }
+
+    // oracle: the same contract, at the exec boundary — raw mode
+    // runs the real gh exactly once and hands it NO token: the
+    // fake gh logs the GH_TOKEN it saw, and raw must log an empty
+    // one (ambient test env carries no GH_TOKEN), where every
+    // rotated call above logs a tok-* value.
+    #[test]
+    fn raw_mode_runs_gh_without_token() {
+        let (dir, script) = fake_gh("raw");
+        let log = format!("{dir}/calls.log");
+        let args: Vec<String> = ["issue", "list"].iter().map(|s| s.to_string()).collect();
+        let code = run_raw(&script, &args);
+        assert_eq!(code, 0);
+        let calls = std::fs::read_to_string(&log).unwrap();
+        assert_eq!(
+            calls, "\n",
+            "exactly one call, with no token injected: {calls:?}"
         );
     }
 }
