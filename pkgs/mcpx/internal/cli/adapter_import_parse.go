@@ -24,7 +24,9 @@ import (
 
 // fishTokens splits a fish line the way fish would for the simple shapes
 // completion files use: single and double quotes group, backslash
-// escapes inside double quotes and outside quotes.
+// escapes inside double quotes and outside quotes, and inside single
+// quotes backslash escapes only a quote or another backslash (fish
+// semantics) -- an escaped apostrophe must not close the quote early.
 func fishTokens(line string) []string {
 	var out []string
 	var cur strings.Builder
@@ -41,6 +43,9 @@ func fishTokens(line string) []string {
 			if c == quote {
 				quote = 0
 			} else if c == '\\' && quote == '"' && i+1 < len(line) {
+				i++
+				cur.WriteByte(line[i])
+			} else if c == '\\' && quote == '\'' && i+1 < len(line) && (line[i+1] == '\'' || line[i+1] == '\\') {
 				i++
 				cur.WriteByte(line[i])
 			} else {
