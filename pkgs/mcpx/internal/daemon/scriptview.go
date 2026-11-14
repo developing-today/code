@@ -23,11 +23,6 @@ import (
 	"github.com/developing-today/code/pkgs/mcpx/internal/schemaval"
 )
 
-// scriptWaitDelay bounds how long a script view's call waits on its output
-// pipes after the program exits, so a grandchild that inherited them cannot
-// hold the call open.
-const scriptWaitDelay = 2 * time.Second
-
 // ScriptAnnotations is the behaviour hints a script-backed view declares
 // (#1933 slice 2). A script has no upstream annotations, so the declaration
 // is the only classification input the confirmation and write policy have:
@@ -200,7 +195,10 @@ func callScriptView(ctx context.Context, pl *pool.Pool, tool string, tv *config.
 	stdout := &cappedBuffer{max: defaults.ExecStdoutLimit}
 	stderr := &cappedBuffer{max: defaults.ExecStderrLimit}
 	cmd.Stdout, cmd.Stderr = stdout, stderr
-	cmd.WaitDelay = scriptWaitDelay
+	// WaitDelay is defaults.ScriptWait: how long the call waits on the
+	// output pipes after the program exits, so a grandchild that
+	// inherited them cannot hold the call open.
+	cmd.WaitDelay = defaults.ScriptWait
 	// Dispatch is noted only after the program has actually started:
 	// a command that cannot start (a missing executable, a permission
 	// failure) never ran, so its outcome is known -- it performed no
@@ -340,7 +338,12 @@ func (s *Server) runDeclaredScript(ctx context.Context, tool string, view config
 		cleanup = cf
 	}
 	defer cleanup()
-	res, runErr := s.ExecService().Run(ctx, req, nil)
+	// Script-backed tools run config-declared hooks too: resolve
+	// the model layer onto the service, or their prompt hooks
+	// report no provider configured (Codex review, PR #9021).
+	svc := s.ExecService()
+	s.modelLayerForExec(ctx, svc, opts.Session)
+	res, runErr := svc.Run(ctx, req, nil)
 	if runErr != nil && res == nil {
 		return nil, fmt.Errorf("tool %q: %w", tool, runErr)
 	}
@@ -366,6 +369,19 @@ func (s *Server) runDeclaredScript(ctx context.Context, tool string, view config
 	}
 	for _, e := range res.Emits {
 		content = append(content, map[string]string{"type": "text", "text": string(e)})
+	}
+	// Retained hook frames ride along too: a prompt hook's advice
+	// (and a provider-unavailable warning) lives only in its frame,
+	// and this path runs with a nil sink, so without this the model
+	// was invoked and its entire answer discarded before it could
+	// reach the tool caller (Codex review, PR #9021). The script's
+	// own result above is untouched; frames append after it.
+	for _, f := range res.Hooks {
+		if f.Advice != "" {
+			content = append(content, map[string]string{"type": "text", "text": "hook advice (" + f.Phase + "): " + f.Advice})
+		} else if f.Error != "" {
+			content = append(content, map[string]string{"type": "text", "text": "hook warning (" + f.Phase + "): " + f.Error})
+		}
 	}
 	out := map[string]any{
 		"content": content,

@@ -1129,7 +1129,8 @@ mod tests {
         use crate::world_net::{WORLD_ALPN, WorldProtocol};
         use crate::world_session::WorldService;
 
-        const TIC_TAC_TOE: &[u8] = include_bytes!("../../../apps/tic-tac-toe/program/tic-tac-toe.wasm");
+        const TIC_TAC_TOE: &[u8] =
+            include_bytes!("../../../apps/tic-tac-toe/program/tic-tac-toe.wasm");
 
         /// A tic-tac-toe game as a live instance plays it: a leading install,
         /// one chat line, and five moves. Returns the runner and the fixture a
@@ -1220,7 +1221,8 @@ mod tests {
                 ),
             ];
 
-            let fixture_text = include_str!("../../../tests/fixtures/tic-tac-toe-determinism.jsonl");
+            let fixture_text =
+                include_str!("../../../tests/fixtures/tic-tac-toe-determinism.jsonl");
             let fixture = decode(fixture_text).unwrap();
             check_module(&fixture.header, TIC_TAC_TOE).unwrap();
             let runner = Sandbox::compile(TIC_TAC_TOE, SandboxLimits::default()).unwrap();

@@ -59,7 +59,6 @@ use tokio::fs as afs;
 /// iroh-docs store under `docs/`. Only one process can open it at a time.
 pub const STORE_PATH: &str = ".iroh-store";
 
-
 /// Loads an existing Ed25519 keypair from a file, or creates a new one.
 ///
 /// This function provides lazy initialization for node identity:
@@ -148,37 +147,70 @@ async fn read_key_after_creation_race(path: &str) -> Result<[u8; 32]> {
 
 /// Write `data` to a new file readable only by the owner (`0600` on Unix).
 ///
-/// The mode is set atomically at creation, so the key is never briefly
-/// world-readable. `create_new` prevents concurrent first-run processes from
-/// overwriting each other's identity.
+/// The mode is set atomically at temporary-file creation, so the key is never
+/// briefly world-readable. A complete file is published atomically without
+/// allowing concurrent first-run processes to overwrite each other's identity.
 pub async fn write_private_file(path: &str, data: &[u8]) -> Result<()> {
+    use std::io::Write as _;
+
+    let path = std::path::PathBuf::from(path);
+    let data = data.to_vec();
+    tokio::task::spawn_blocking(move || {
+        write_private_file_sync(&path, &data, |file, data| file.write_all(data))
+    })
+    .await??;
+    Ok(())
+}
+
+/// Write a complete private temporary file, then publish it without replacing
+/// a key another first-run process may have created in the meantime.
+fn write_private_file_sync(
+    path: &std::path::Path,
+    data: &[u8],
+    write: impl FnOnce(&mut std::fs::File, &[u8]) -> std::io::Result<()>,
+) -> std::io::Result<()> {
+    use std::io;
     #[cfg(unix)]
-    {
-        use std::io::Write as _;
-        use std::os::unix::fs::OpenOptionsExt as _;
-        let path = path.to_owned();
-        let data = data.to_vec();
-        tokio::task::spawn_blocking(move || -> std::io::Result<()> {
-            let mut f = std::fs::OpenOptions::new()
-                .write(true)
-                .create_new(true)
-                .mode(0o600)
-                .open(&path)?;
-            f.write_all(&data)
-        })
-        .await??;
-        Ok(())
-    }
-    #[cfg(not(unix))]
-    {
-        use tokio::io::AsyncWriteExt as _;
-        let mut file = tokio::fs::OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(path)
-            .await?;
-        file.write_all(data).await?;
-        Ok(())
+    use std::os::unix::fs::OpenOptionsExt as _;
+
+    static NEXT_TEMP_ID: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+    let (temp_path, mut file) = loop {
+        let id = NEXT_TEMP_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let temp_path =
+            path.with_file_name(format!(".private-key.{}.{}.tmp", std::process::id(), id));
+        let mut options = std::fs::OpenOptions::new();
+        options.write(true).create_new(true);
+        #[cfg(unix)]
+        options.mode(0o600);
+        match options.open(&temp_path) {
+            Ok(file) => break (temp_path, file),
+            Err(error) if error.kind() == io::ErrorKind::AlreadyExists => continue,
+            Err(error) => return Err(error),
+        }
+    };
+
+    let result = write(&mut file, data)
+        .and_then(|()| file.sync_all())
+        // A hard link publishes atomically and fails rather than replacing an
+        // existing winner (unlike rename on Unix).
+        .and_then(|()| std::fs::hard_link(&temp_path, path));
+    drop(file);
+    let cleanup = std::fs::remove_file(&temp_path);
+    match result {
+        Ok(()) => {
+            if let Err(error) = cleanup {
+                tracing::warn!(
+                    "could not remove temporary private key file {:?}: {error}",
+                    temp_path
+                );
+            }
+            Ok(())
+        }
+        Err(error) => {
+            let _ = cleanup;
+            Err(error)
+        }
     }
 }
 
@@ -520,6 +552,27 @@ mod tests {
                 .contains("invalid key length")
         );
         assert_eq!(std::fs::read(&key_path).unwrap(), b"too short");
+    }
+
+    #[test]
+    fn test_private_key_write_failure_never_publishes_partial_file() {
+        use std::io::Write as _;
+
+        let tmp_dir = TempDir::new().unwrap();
+        let key_path = tmp_dir.path().join("key");
+        let error = write_private_file_sync(&key_path, &[1; 32], |file, data| {
+            file.write_all(&data[..8])?;
+            assert!(
+                !key_path.exists(),
+                "a partial temporary write must not be visible at the final path"
+            );
+            Err(std::io::Error::other("injected write failure"))
+        })
+        .unwrap_err();
+
+        assert_eq!(error.to_string(), "injected write failure");
+        assert!(!key_path.exists(), "partial key must never be published");
+        assert_eq!(std::fs::read_dir(tmp_dir.path()).unwrap().count(), 0);
     }
 
     #[tokio::test]

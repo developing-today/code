@@ -10,7 +10,7 @@
       }
     },
     "fff": {
-      "command": "/home/user/.local/bin/fff-mcp",
+      "command": "fff-mcp",
       "args": [],
       "mcpx": {
         "readOnlyTools": ["find_files", "grep", "multi_grep"]
@@ -71,23 +71,9 @@
       "command": "npx",
       "args": ["-y", "mcp-remote", "https://mcp.deepwiki.com/mcp"]
     },
-    "fff-nix": {
-      "command": "/home/user/.local/bin/fff-mcp",
-      "args": ["/home/user/code"],
-      "mcpx": {
-        "readOnlyTools": ["find_files", "grep", "multi_grep"]
-      }
-    },
-    "fff-worktree": {
-      "command": "/home/user/.local/bin/fff-mcp",
-      "args": ["/home/user/.local/share/opencode/worktree"],
-      "mcpx": {
-        "readOnlyTools": ["find_files", "grep", "multi_grep"]
-      }
-    },
     "codedb": {
       "command": "node",
-      "args": ["/home/user/git/code/bin/codedb-bridge.mjs"],
+      "args": ["bin/codedb-bridge.mjs"],
       "env": {
         "CODEDB_NO_TELEMETRY": "1",
         "CODEDB_DAEMON_URL": "http://127.0.0.1:7719"

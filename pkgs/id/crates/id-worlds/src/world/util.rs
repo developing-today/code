@@ -28,16 +28,10 @@ pub(crate) fn constant_time_eq(left: &[u8; 32], right: &[u8; 32]) -> bool {
     bool::from(left.ct_eq(right))
 }
 
-/// Lower-case hex encoding of a byte slice, two characters per byte.
-pub fn hex_encode(bytes: &[u8]) -> String {
-    const HEX: &[u8; 16] = b"0123456789abcdef";
-    let mut encoded = String::with_capacity(bytes.len() * 2);
-    for byte in bytes {
-        encoded.push(char::from(HEX[usize::from(byte >> 4)]));
-        encoded.push(char::from(HEX[usize::from(byte & 0x0f)]));
-    }
-    encoded
-}
+/// Lower-case hex encoding of a byte slice; the definition lives
+/// in `id-core` ([`id_core::hex::hex_encode`], crate split step 6a,
+/// #4409) and is re-exported at its historical path.
+pub use id_core::hex::hex_encode;
 
 /// Publish a new records snapshot through the watch channel when it differs.
 pub fn publish_records(
@@ -53,6 +47,21 @@ pub fn publish_records(
             true
         }
     });
+}
+
+/// Lower-case hex decoding of an arbitrary-length byte string, the
+/// inverse of [`hex_encode`]. `None` on odd length or a non-hex digit.
+pub(crate) fn hex_decode(encoded: &str) -> Option<Vec<u8>> {
+    let bytes = encoded.as_bytes();
+    if bytes.len() % 2 != 0 {
+        return None;
+    }
+    let mut out = Vec::with_capacity(bytes.len() / 2);
+    for pair in bytes.chunks_exact(2) {
+        let nibble = |b: u8| char::from(b).to_digit(16);
+        out.push(u8::try_from(nibble(pair[0])? << 4 | nibble(pair[1])?).ok()?);
+    }
+    Some(out)
 }
 
 pub(crate) fn hex_decode_32(encoded: &str) -> Option<[u8; 32]> {

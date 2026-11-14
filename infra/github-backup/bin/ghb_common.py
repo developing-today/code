@@ -5,6 +5,16 @@ Canonical home: developing-today/code, infra/github-backup/.
 Config lives in ../config.json next to this file's parent directory.
 The backup tree (default ~/backups/github) holds only data + generated
 state (plan.json, MANIFEST.json, logs); all logic lives in the repo.
+
+Pagination contract (#6622): a paged read is complete, bounded, or
+says so. (1) The cursor is validated where read — its type first
+(a present-but-malformed cursor is an error, never end-of-pages)
+and its progress second (it must advance). (2) The volume is
+bounded: every page loop carries a page/result bound whose breach
+is an error naming the listing. (3) Truncation is never silent:
+a read that stops short paginates to completion, fails closed,
+or marks the truncation explicitly. The closing inventory that
+dispositioned every paginated loop in the repo is on issue #6623.
 """
 
 import contextlib, json, os, shutil, subprocess, sys, tempfile

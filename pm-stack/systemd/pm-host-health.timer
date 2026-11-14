@@ -1,0 +1,11 @@
+[Unit]
+Description=PM host-health collector every 5 minutes (code#10141)
+
+[Timer]
+OnCalendar=*-*-* *:00/5:00
+OnBootUSec=1min
+Persistent=true
+Unit=pm-host-health.service
+
+[Install]
+WantedBy=timers.target

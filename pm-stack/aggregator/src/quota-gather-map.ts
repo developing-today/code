@@ -463,8 +463,8 @@ export const META_SESSION_LAPSE_REMEDY =
 
 /**
  * A configured Meta result that failed because the dev.meta.ai portal
- * session lapsed (#8294). The Meta read rides a live browser session
- * on the hub (there is no stored credential — see meta-renewal.ts);
+ * session lapsed (#8294). The Meta read rides the provider-owned
+ * credential the Meta keeper captures and renews (see meta-renewal.ts);
  * when that session expires, the provider leg fails session-class
  * ("unauthorized", or the exporter's "session-expired" shape) rather
  * than with a provider error. A lapsed session has a known remedy
@@ -1098,4 +1098,78 @@ export function markRetained(entries: readonly QuotaCurrentEntry[], failedTickIs
     providerId: canonicalProviderId(e.providerId),
     retainedFromFailedTick: failedTickIso,
   }));
+}
+/** #5928: cross-tick memory for the _claude read. The quota fetcher's
+ * 429 cooldown + last-good cache live inside the long-lived OpenChamber
+ * process; the gatherer is a fresh oneshot every ~15 min, so both reset
+ * every tick. The gatherer therefore persists its own copy —
+ * { lastGoodEntry, cooldownUntil } — as one JSON string value in
+ * quota-gatherer-state.json under this reserved key (the state file is
+ * a flat string map; the key round-trips through readState/writeState
+ * untouched by the snapshot-append bookkeeping). Claude only: every
+ * other provider's finalize/retention behavior is unchanged. */
+export const CLAUDE_CROSS_TICK_STATE_KEY = "claudeCrossTick:v1";
+
+export interface ClaudeCrossTickMemory {
+  lastGoodEntry: QuotaCurrentEntry | null;
+  /** Epoch ms; 0 = no cooldown in force. */
+  cooldownUntil: number;
+}
+
+export const CLAUDE_COOLDOWN_FALLBACK_MS = 5 * 60_000;
+export const CLAUDE_COOLDOWN_CAP_MS = 60 * 60_000;
+
+export function parseClaudeCrossTick(raw: string | undefined): ClaudeCrossTickMemory {
+  if (raw) {
+    try {
+      const parsed: unknown = JSON.parse(raw);
+      if (typeof parsed === "object" && parsed !== null) {
+        const rec = parsed as Record<string, unknown>;
+        const entry = rec.lastGoodEntry;
+        const until = rec.cooldownUntil;
+        return {
+          lastGoodEntry:
+            typeof entry === "object" && entry !== null && typeof (entry as QuotaCurrentEntry).providerId === "string"
+              ? (entry as QuotaCurrentEntry)
+              : null,
+          cooldownUntil: typeof until === "number" && Number.isFinite(until) && until > 0 ? until : 0,
+        };
+      }
+    } catch {
+      // unreadable memory = no memory: the read behaves as a first tick
+    }
+  }
+  return { lastGoodEntry: null, cooldownUntil: 0 };
+}
+
+export function serializeClaudeCrossTick(memory: ClaudeCrossTickMemory): string {
+  return JSON.stringify({ lastGoodEntry: memory.lastGoodEntry, cooldownUntil: memory.cooldownUntil });
+}
+
+/** A claude failure is a rate-limit failure when the failure text says
+ * so (HTTP 429 / rate_limit_error / "Rate limited"). The 401 dead-token
+ * mapping ("Claude session expired") is never a rate limit and must
+ * not engage the cooldown — it is a credential fault, not pressure. */
+export function isClaudeRateLimitFailure(text: string): boolean {
+  if (/session expired/i.test(text)) return false;
+  return /\b429\b|rate.?limit/i.test(text);
+}
+
+/** Retry-After carried in a failure text, in ms. Accepts the header
+ * forms "Retry-After: 120" and "retry after 120s"; null when absent or
+ * unparseable (the caller then applies the fallback). */
+export function retryAfterMsFromFailure(text: string): number | null {
+  const m = /retry[- ]after[:\s]*([0-9]+(?:\.[0-9]+)?)\s*(?:s|sec|secs|second|seconds)?\b/i.exec(text);
+  if (!m) return null;
+  const seconds = Number(m[1]);
+  if (!Number.isFinite(seconds) || seconds < 0) return null;
+  return Math.round(seconds * 1000);
+}
+
+/** Cooldown length for a fresh 429: Retry-After when the failure
+ * carries one, else the fetcher's 5-minute default; always capped at
+ * 60 minutes (the issue #5928 fix shape). */
+export function claudeCooldownMs(failureText: string): number {
+  const fromHeader = retryAfterMsFromFailure(failureText);
+  return Math.min(fromHeader ?? CLAUDE_COOLDOWN_FALLBACK_MS, CLAUDE_COOLDOWN_CAP_MS);
 }

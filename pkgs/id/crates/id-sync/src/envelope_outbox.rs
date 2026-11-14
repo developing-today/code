@@ -244,6 +244,34 @@ impl Outbox {
             .collect()
     }
 
+    /// The due entries at `now`, partitioned by a policy re-check
+    /// (#5529 step 3): `(admitted, denied)`. The check runs at call
+    /// time, so enqueue and every retry re-evaluate it — an entry
+    /// queued while its residency evidence was current is denied at
+    /// retry once the evidence has expired, instead of riding the
+    /// enqueue-time decision. Denied entries stay queued (they are
+    /// not finished); a later call may admit them if the check
+    /// passes again.
+    #[must_use]
+    pub fn due_checked(
+        &self,
+        now: u64,
+        check: impl Fn(&Entry) -> bool,
+    ) -> (Vec<String>, Vec<String>) {
+        let mut admitted = Vec::new();
+        let mut denied = Vec::new();
+        for id in self.due(now) {
+            if let Some(entry) = self.entries.get(&id) {
+                if check(entry) {
+                    admitted.push(id);
+                } else {
+                    denied.push(id);
+                }
+            }
+        }
+        (admitted, denied)
+    }
+
     /// The queued envelope with `id`, finished or not.
     #[must_use]
     pub fn entry(&self, id: &str) -> Option<&Entry> {
@@ -596,16 +624,38 @@ fn replace_journal(temporary: &Path, destination: &Path) -> io::Result<()> {
 /// Fails if an outcome cannot be written. Envelopes already recorded stay
 /// recorded.
 pub async fn flush(outbox: &Mutex<Outbox>, endpoint: &Endpoint, now: u64) -> Result<usize> {
-    let due: Vec<(String, String, Payload)> = {
+    let (attempts, _denied) = flush_checked(outbox, endpoint, now, |_| true).await?;
+    Ok(attempts)
+}
+
+/// Like [`flush`], but every due entry is re-checked at send time
+/// (#5529 step 3): entries the check denies are not attempted and
+/// stay queued — they are not recorded as attempts, so a residency
+/// denial at retry (e.g. the evidence expired while the entry
+/// waited) neither sends the payload nor burns an attempt. Returns
+/// how many attempts were made and how many due entries were denied.
+///
+/// # Errors
+///
+/// Fails if an outcome cannot be written. Envelopes already recorded stay
+/// recorded.
+pub async fn flush_checked(
+    outbox: &Mutex<Outbox>,
+    endpoint: &Endpoint,
+    now: u64,
+    check: impl Fn(&Entry) -> bool,
+) -> Result<(usize, usize)> {
+    let (due, denied_count) = {
         let queue = outbox.lock().await;
-        queue
-            .due(now)
+        let (admitted, denied) = queue.due_checked(now, check);
+        let due: Vec<(String, String, Payload)> = admitted
             .into_iter()
             .filter_map(|id| {
                 let entry = queue.entry(&id)?;
                 Some((id.clone(), entry.target.clone(), entry.payload.clone()))
             })
-            .collect()
+            .collect();
+        (due, denied.len())
     };
     for (id, target, payload) in &due {
         let outcome = match check_target(target) {
@@ -617,7 +667,7 @@ pub async fn flush(outbox: &Mutex<Outbox>, endpoint: &Endpoint, now: u64) -> Res
         };
         outbox.lock().await.record(id, now, outcome)?;
     }
-    Ok(due.len())
+    Ok((due.len(), denied_count))
 }
 
 /// Reads a recipient: an endpoint ticket, or a bare node ID that resolves
@@ -1139,6 +1189,27 @@ mod tests {
             1,
             "is neither an endpoint ticket nor a node ID",
         );
+    }
+
+    #[test]
+    fn due_checked_re_evaluates_the_policy_at_call_time() {
+        // #5529 step 3: an entry queued while its evidence was
+        // current is denied at retry once the evidence has expired;
+        // the entry stays queued and unattempted throughout.
+        let dir = tempfile::tempdir().unwrap();
+        let mut outbox = Outbox::open(path(&dir)).unwrap();
+        outbox.enqueue(&target(), envelope("e1")).unwrap();
+        let evidence_expires_at = NOW + MINUTE;
+        let (admitted, denied) = outbox.due_checked(NOW, |_| NOW < evidence_expires_at);
+        assert_eq!(admitted, vec!["e1".to_owned()]);
+        assert!(denied.is_empty());
+        let retry_at = NOW + 2 * MINUTE;
+        let (admitted, denied) = outbox.due_checked(retry_at, |_| retry_at < evidence_expires_at);
+        assert!(admitted.is_empty());
+        assert_eq!(denied, vec!["e1".to_owned()]);
+        // Denied, not finished: the entry is still queued and due.
+        assert_eq!(outbox.due(retry_at), vec!["e1".to_owned()]);
+        assert!(outbox.entry("e1").unwrap().finish.is_none());
     }
 
     #[test]

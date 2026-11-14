@@ -442,8 +442,10 @@
           doc = mkCheck "doc" "doc";
           cargo-check = mkCheck "cargo-check" "cargo-check";
           # Production module-size guard (#1411): fails when any
-          # production .rs file exceeds 2,500 production lines
-          # (grandfathered: src/web/markdown.rs, split tracked in #1438).
+          # production .rs file exceeds 2,500 production lines.
+          # src/web/markdown.rs was the last id grandfather entry; its
+          # split into web/markdown/ submodules landed under #4704 and
+          # the entry was removed there, completing #1438.
           prod-lines-check = mkCheck "prod-lines-check" "prod-lines-check";
           crash-gate = mkCheck "crash-gate" "crash-gate";
           # PR-gate splits of crash-gate (#551): the aggregate above runs

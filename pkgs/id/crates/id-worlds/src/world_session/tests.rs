@@ -16,6 +16,7 @@ mod tests {
     use crate::world_compile::Compiler;
     use crate::world_hub::WorldHub;
     use crate::world_session::*;
+    use std::collections::BTreeSet;
     use std::sync::Arc;
     use std::time::Duration;
 
@@ -164,6 +165,133 @@ mod tests {
             WorldHandle::spawn(WorldCore::new("lobby", WorldLimits::default()).unwrap()),
             admin.map(str::to_owned),
         )
+    }
+
+    struct FormSessionProgram {
+        token: Arc<std::sync::Mutex<Option<String>>>,
+        results: Arc<std::sync::Mutex<Vec<serde_json::Value>>>,
+    }
+
+    impl crate::world::WorldProgram for FormSessionProgram {
+        fn wants(&mut self) -> anyhow::Result<Option<String>> {
+            Ok(Some(
+                serde_json::json!({
+                    "requests": [{
+                        "id": "present-1",
+                        "cap": "form.present",
+                        "args": {
+                            "form_id": "session-form",
+                            "form": {
+                                "version": 1,
+                                "form_id": "session-form",
+                                "title": "Profile",
+                                "fields": [{"kind":"text","id":"name","label":"Name","required":true,"max_length":32}],
+                                "actions": [{"id":"submit","label":"Save"}]
+                            }
+                        }
+                    }]
+                })
+                .to_string(),
+            ))
+        }
+
+        fn update(&mut self, event: &WorldEvent) -> anyhow::Result<()> {
+            let crate::world::WorldEventKind::System { event } = &event.kind else {
+                return Ok(());
+            };
+            let value: serde_json::Value = serde_json::from_str(event)?;
+            if value["cap"] == "result"
+                && value["id"] == "present-1"
+                && value["ok"] == true
+                && let Some(token) = value["value"]["presentation_token"].as_str()
+            {
+                *self.token.lock().unwrap() = Some(token.to_owned());
+            } else if value["cap"] == "form.result" {
+                self.results.lock().unwrap().push(value);
+            }
+            Ok(())
+        }
+
+        fn view(&mut self, _viewer: &Participant) -> anyhow::Result<Option<String>> {
+            let Some(token) = self.token.lock().unwrap().clone() else {
+                return Ok(None);
+            };
+            Ok(Some(
+                serde_json::json!({
+                    "kind": "form",
+                    "version": 1,
+                    "form_id": "session-form",
+                    "presentation_token": token,
+                    "title": "Profile",
+                    "fields": [{"kind":"text","id":"name","label":"Name","required":true,"max_length":32}],
+                    "actions": [{"id":"submit","label":"Save"}]
+                })
+                .to_string(),
+            ))
+        }
+    }
+
+    #[tokio::test]
+    async fn test_joined_form_result_frame_uses_session_auth_and_reaches_program() {
+        let mut core = WorldCore::new("lobby", WorldLimits::default()).unwrap();
+        core.ledger.set_granted(BTreeSet::from([
+            "form.present".to_owned(),
+            "form.result".to_owned(),
+        ]));
+        let form_token = Arc::new(std::sync::Mutex::new(None));
+        let results = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let world = WorldHandle::spawn_with_device_manifest(
+            core,
+            Box::new(FormSessionProgram {
+                token: Arc::clone(&form_token),
+                results: Arc::clone(&results),
+            }),
+            Some(WorldHandle::host_device_manifest()),
+        );
+        let (_, capability) = world.issue("Ada", WorldScopes::GUEST).await.unwrap();
+        let mut peer = Peer::connect(WorldService::new(world, None), SessionConfig::default());
+        peer.say(serde_json::json!({
+            "type": "join",
+            "capability": capability.expose(),
+        }))
+        .await;
+        assert_eq!(peer.next().await.unwrap()["type"], "snapshot");
+        let view = peer.next().await.unwrap();
+        assert_eq!(view["type"], "view");
+        assert_eq!(view["surface"]["kind"], "form");
+        let presentation_token = view["surface"]["presentation_token"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+
+        peer.say(serde_json::json!({
+            "type": "form_result",
+            "form_id": "session-form",
+            "presentation_token": "00000000000000000000000000000000",
+            "action": "submit",
+            "values": {"name": "Ada"},
+        }))
+        .await;
+        let stale = peer.next().await.unwrap();
+        assert_eq!(stale["type"], "form_result_status");
+        assert_eq!(stale["ok"], false);
+        assert_eq!(stale["error"], "bad_args");
+        assert_eq!(stale["reason"], "stale_presentation");
+        assert!(results.lock().unwrap().is_empty());
+
+        peer.say(serde_json::json!({
+            "type": "form_result",
+            "form_id": "session-form",
+            "presentation_token": presentation_token,
+            "action": "submit",
+            "values": {"name": "Ada"},
+        }))
+        .await;
+        let ack = peer.next().await.unwrap();
+        assert_eq!(ack["type"], "form_result_status");
+        assert_eq!(ack["ok"], true);
+        assert_eq!(results.lock().unwrap()[0]["values"]["name"], "Ada");
+        peer.close().await;
     }
 
     #[tokio::test(start_paused = true)]
@@ -1133,6 +1261,7 @@ mod tests {
             view_revision: 0,
             base_view_revision: None,
             patch: None,
+            resume_token: None,
         })
         .unwrap();
         assert!(view.contains("\"type\":\"view\""));
@@ -1153,6 +1282,7 @@ mod tests {
             view_revision: 1,
             base_view_revision: None,
             patch: None,
+            resume_token: None,
         })
         .unwrap();
         assert!(encoded.contains("\"data\":\"{\\\"kind\\\":\\\"screen\\\""));
@@ -2567,9 +2697,7 @@ mod tests {
     /// A journal the test can inspect, so session tests can assert the
     /// audit records a frame wrote — and, for denials, did not write.
     #[derive(Clone, Default)]
-    struct CapturingJournal(
-        std::sync::Arc<std::sync::Mutex<Vec<crate::world::JournalEntry>>>,
-    );
+    struct CapturingJournal(std::sync::Arc<std::sync::Mutex<Vec<crate::world::JournalEntry>>>);
 
     impl CapturingJournal {
         fn entries(&self) -> Vec<crate::world::JournalEntry> {
@@ -2603,8 +2731,7 @@ mod tests {
         }
 
         fn record_attempt(&self) {
-            self.0
-                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            self.0.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         }
     }
 
@@ -2631,14 +2758,11 @@ mod tests {
         use iroh_blobs::store::mem::MemStore;
 
         let journal = FailingJournal::default();
-        let world = WorldHandle::spawn_durable(
-            core,
-            Box::new(NoProgram),
-            Some(Box::new(journal.clone())),
-        );
+        let world =
+            WorldHandle::spawn_durable(core, Box::new(NoProgram), Some(Box::new(journal.clone())));
         let blobs: Store = MemStore::new().into();
-        let service = WorldService::new(world.clone(), Some("admin".to_owned()))
-            .with_blob_store(blobs);
+        let service =
+            WorldService::new(world.clone(), Some("admin".to_owned())).with_blob_store(blobs);
         (world, service, journal)
     }
 
@@ -2654,8 +2778,8 @@ mod tests {
             Some(Box::new(journal.clone())),
         );
         let blobs: Store = MemStore::new().into();
-        let service = WorldService::new(world.clone(), Some("admin".to_owned()))
-            .with_blob_store(blobs);
+        let service =
+            WorldService::new(world.clone(), Some("admin".to_owned())).with_blob_store(blobs);
         (world, service, journal)
     }
 
@@ -2776,7 +2900,10 @@ mod tests {
         );
 
         // The installed program is live for ordinary participants.
-        let (_, guest) = world.issue("ada".to_owned(), WorldScopes::GUEST).await.unwrap();
+        let (_, guest) = world
+            .issue("ada".to_owned(), WorldScopes::GUEST)
+            .await
+            .unwrap();
         assert!(
             world
                 .view(guest)
@@ -2934,10 +3061,10 @@ mod tests {
         assert_eq!(next_of_type(&mut peer, "metrics").await["type"], "metrics");
 
         assert!(
-            !journal.entries().iter().any(|entry| matches!(
-                entry,
-                crate::world::JournalEntry::BuilderInstalled { .. }
-            )),
+            !journal
+                .entries()
+                .iter()
+                .any(|entry| matches!(entry, crate::world::JournalEntry::BuilderInstalled { .. })),
             "a denied install must not journal a BuilderInstalled entry"
         );
     }
@@ -2974,10 +3101,10 @@ mod tests {
             "mixed credentials is not a role denial: {refused}"
         );
         assert!(
-            !journal.entries().iter().any(|entry| matches!(
-                entry,
-                crate::world::JournalEntry::BuilderInstalled { .. }
-            )),
+            !journal
+                .entries()
+                .iter()
+                .any(|entry| matches!(entry, crate::world::JournalEntry::BuilderInstalled { .. })),
             "a mixed-credentials frame must not install anything"
         );
     }
@@ -3013,10 +3140,10 @@ mod tests {
         let denied = next_of_type(&mut peer, "error").await;
         assert_eq!(denied["code"], "actor_denied", "{denied}");
         assert!(
-            !journal.entries().iter().any(|entry| matches!(
-                entry,
-                crate::world::JournalEntry::BuilderInstalled { .. }
-            )),
+            !journal
+                .entries()
+                .iter()
+                .any(|entry| matches!(entry, crate::world::JournalEntry::BuilderInstalled { .. })),
             "a revoked builder's upload must not activate or journal"
         );
     }
@@ -3054,10 +3181,10 @@ mod tests {
             "Wasm module failed validation or initialization"
         );
         assert!(
-            !journal.entries().iter().any(|entry| matches!(
-                entry,
-                crate::world::JournalEntry::BuilderInstalled { .. }
-            )),
+            !journal
+                .entries()
+                .iter()
+                .any(|entry| matches!(entry, crate::world::JournalEntry::BuilderInstalled { .. })),
             "a native upload must not install or journal"
         );
     }
@@ -3131,10 +3258,7 @@ mod tests {
             journal
                 .entries()
                 .iter()
-                .filter(|entry| matches!(
-                    entry,
-                    crate::world::JournalEntry::Revoked { .. }
-                ))
+                .filter(|entry| matches!(entry, crate::world::JournalEntry::Revoked { .. }))
                 .count(),
             1,
             "a no-op revoke must not journal"
@@ -3218,13 +3342,258 @@ mod tests {
                 "capability": moderator_token.expose(),
             }))
             .await;
-        assert_eq!(next_of_type(&mut mod_peer, "metrics").await["type"], "metrics");
+        assert_eq!(
+            next_of_type(&mut mod_peer, "metrics").await["type"],
+            "metrics"
+        );
         assert!(
-            !journal.entries().iter().any(|entry| matches!(
-                entry,
-                crate::world::JournalEntry::Revoked { .. }
-            )),
+            !journal
+                .entries()
+                .iter()
+                .any(|entry| matches!(entry, crate::world::JournalEntry::Revoked { .. })),
             "a denied revoke must not journal"
         );
+    }
+
+    #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+    mod resume_tests {
+        use std::sync::Arc;
+        use std::sync::atomic::{AtomicU64, Ordering};
+
+        use super::*;
+        use crate::world::{Participant, WorldCore, WorldHandle, WorldLimits, WorldScopes};
+
+        /// A 2x1 screen whose contents the test advances with `step`.
+        struct StepScreen(Arc<AtomicU64>);
+
+        impl crate::world::WorldProgram for StepScreen {
+            fn view(&mut self, _viewer: &Participant) -> anyhow::Result<Option<String>> {
+                let step = self.0.load(Ordering::Relaxed);
+                Ok(Some(format!(
+                    r#"{{"kind":"screen","version":1,"width":2,"height":1,"rows":["{step:02}"]}}"#
+                )))
+            }
+        }
+
+        fn screen_of(frame: &serde_json::Value) -> crate::world_presentation::ScreenSurface {
+            let surface = serde_json::from_value::<crate::world_presentation::WorldSurface>(
+                frame["surface"].clone(),
+            )
+            .expect("a full view carries a typed surface");
+            match surface {
+                crate::world_presentation::WorldSurface::Screen(screen) => screen,
+                other => panic!("expected a screen surface, got {other:?}"),
+            }
+        }
+
+        async fn next_view(peer: &mut Peer) -> serde_json::Value {
+            loop {
+                let frame = peer.next().await.expect("a frame");
+                if frame["type"] == "view" {
+                    return frame;
+                }
+            }
+        }
+
+        #[tokio::test]
+        async fn retained_resume_token_is_a_catch_up_patch_with_full_view_parity() {
+            let step = Arc::new(AtomicU64::new(0));
+            let world = WorldHandle::spawn_with_program(
+                WorldCore::new("lobby", WorldLimits::default()).unwrap(),
+                Box::new(StepScreen(Arc::clone(&step))),
+            );
+            let svc = WorldService::new(world.clone(), None);
+            let scopes = WorldScopes::from_names(["join", "input"]).unwrap();
+            let (_, capability) = world.issue("player".to_owned(), scopes).await.unwrap();
+            let (_, writer) = world
+                .issue("writer".to_owned(), WorldScopes::GUEST)
+                .await
+                .unwrap();
+
+            let mut first = Peer::connect(svc.clone(), SessionConfig::default());
+            first
+                .say(serde_json::json!({
+                    "type": "join",
+                    "capability": capability.expose(),
+                    "screen_patches": true,
+                }))
+                .await;
+            assert_eq!(first.next().await.unwrap()["type"], "snapshot");
+            let opening = next_view(&mut first).await;
+            let mut applied = screen_of(&opening);
+            assert!(opening["patch"].is_null(), "the first frame is a full view");
+            assert!(
+                opening["resume_token"].is_string(),
+                "a patch-aware session receives a resume token"
+            );
+
+            // A redraw under a known viewport refreshes the retained baseline.
+            step.store(1, Ordering::Relaxed);
+            first
+                .say(serde_json::json!({"type": "resize", "width": 2, "height": 1}))
+                .await;
+            let resized = next_view(&mut first).await;
+            assert!(resized["patch"].is_null(), "a resize resets to a full view");
+            applied = screen_of(&resized);
+            assert_eq!(applied.width, 2);
+            let token = resized["resume_token"].as_str().unwrap().to_owned();
+            let base_revision = resized["view_revision"].as_u64().unwrap();
+
+            // A reconnect that presents the token resumes with a catch-up patch.
+            step.store(2, Ordering::Relaxed);
+            let mut resumed = Peer::connect(svc.clone(), SessionConfig::default());
+            resumed
+                .say(serde_json::json!({
+                    "type": "join",
+                    "capability": capability.expose(),
+                    "screen_patches": true,
+                    "resume_token": token,
+                }))
+                .await;
+            assert_eq!(resumed.next().await.unwrap()["type"], "snapshot");
+            let catch_up = next_view(&mut resumed).await;
+            assert!(
+                !catch_up["patch"].is_null(),
+                "a retained token yields a patch, not a snapshot: {catch_up}"
+            );
+            assert_eq!(
+                catch_up["base_view_revision"].as_u64().unwrap(),
+                base_revision
+            );
+            applied = serde_json::from_value::<crate::world_presentation::ScreenPatch>(
+                catch_up["patch"].clone(),
+            )
+            .unwrap()
+            .apply(&applied)
+            .expect("the catch-up patch applies to its base");
+
+            // Parity: the resumed client holds exactly a full-frame client's screen.
+            let mut fresh = Peer::connect(svc, SessionConfig::default());
+            fresh
+                .say(serde_json::json!({"type": "join", "capability": capability.expose()}))
+                .await;
+            assert_eq!(fresh.next().await.unwrap()["type"], "snapshot");
+            let full = next_view(&mut fresh).await;
+            assert!(full["patch"].is_null());
+            assert_eq!(
+                applied,
+                screen_of(&full),
+                "patched client matches a full-frame client"
+            );
+        }
+
+        #[tokio::test]
+        async fn unknown_resume_tokens_fall_back_to_a_full_view() {
+            let world = WorldHandle::spawn_with_program(
+                WorldCore::new("lobby", WorldLimits::default()).unwrap(),
+                Box::new(StepScreen(Arc::new(AtomicU64::new(0)))),
+            );
+            let svc = WorldService::new(world.clone(), None);
+            let (_, capability) = world.issue("player", WorldScopes::GUEST).await.unwrap();
+
+            let tokens = ["", "deadbeef", "00000000000000000000000000000000"]
+                .into_iter()
+                .map(str::to_owned)
+                .chain(std::iter::once(
+                    "x".repeat(crate::world_session::MAX_RESUME_TOKEN_BYTES + 1),
+                ));
+            for token in tokens {
+                let mut peer = Peer::connect(svc.clone(), SessionConfig::default());
+                peer.say(serde_json::json!({
+                    "type": "join",
+                    "capability": capability.expose(),
+                    "screen_patches": true,
+                    "resume_token": token,
+                }))
+                .await;
+                assert_eq!(peer.next().await.unwrap()["type"], "snapshot");
+                let view = next_view(&mut peer).await;
+                assert!(view["patch"].is_null(), "a miss sends a full view: {view}");
+                assert!(view["surface"].is_object());
+                assert!(
+                    view["resume_token"].is_string(),
+                    "a full view issues a fresh token"
+                );
+            }
+        }
+
+        /// A 3x1 program: its default view is 3x1, a 2x1 viewport fits it to 2x1.
+        struct WideScreen;
+
+        impl crate::world::WorldProgram for WideScreen {
+            fn view(&mut self, _viewer: &Participant) -> anyhow::Result<Option<String>> {
+                Ok(Some(
+                    r#"{"kind":"screen","version":1,"width":3,"height":1,"rows":["abc"]}"#
+                        .to_owned(),
+                ))
+            }
+        }
+
+        #[tokio::test]
+        async fn a_wrong_viewport_resume_token_falls_back_to_a_full_view() {
+            let world = WorldHandle::spawn_with_program(
+                WorldCore::new("lobby", WorldLimits::default()).unwrap(),
+                Box::new(WideScreen),
+            );
+            let svc = WorldService::new(world.clone(), None);
+            let (_, capability) = world.issue("player", WorldScopes::GUEST).await.unwrap();
+
+            // The token is issued for the 2x1 viewport this session resized to.
+            let mut first = Peer::connect(svc.clone(), SessionConfig::default());
+            first
+                .say(serde_json::json!({
+                    "type": "join",
+                    "capability": capability.expose(),
+                    "screen_patches": true,
+                }))
+                .await;
+            assert_eq!(first.next().await.unwrap()["type"], "snapshot");
+            assert!(next_view(&mut first).await["patch"].is_null());
+            first
+                .say(serde_json::json!({"type": "resize", "width": 2, "height": 1}))
+                .await;
+            let resized = next_view(&mut first).await;
+            assert_eq!(screen_of(&resized).width, 2);
+            let token = resized["resume_token"].as_str().unwrap().to_owned();
+
+            // Reconnecting without that viewport asks for the default 3x1
+            // view: the retained baseline is the wrong shape, so it is a miss.
+            let mut resumed = Peer::connect(svc, SessionConfig::default());
+            resumed
+                .say(serde_json::json!({
+                    "type": "join",
+                    "capability": capability.expose(),
+                    "screen_patches": true,
+                    "resume_token": token,
+                }))
+                .await;
+            assert_eq!(resumed.next().await.unwrap()["type"], "snapshot");
+            let view = next_view(&mut resumed).await;
+            assert!(
+                view["patch"].is_null(),
+                "a wrong-viewport token gets a full view: {view}"
+            );
+            assert_eq!(screen_of(&view).width, 3);
+            assert!(
+                view["resume_token"].is_string(),
+                "the full view issues a token for the new viewport"
+            );
+        }
+
+        #[tokio::test]
+        async fn a_resume_token_never_bypasses_join_authorization() {
+            let mut peer = Peer::connect(service(None), SessionConfig::default());
+            peer.say(serde_json::json!({
+                "type": "join",
+                "capability": "not-a-capability",
+                "screen_patches": true,
+                "resume_token": "deadbeef",
+            }))
+            .await;
+            let frame = peer.next().await.unwrap();
+            assert_eq!(frame["type"], "error");
+            assert!(frame.get("view").is_none());
+            assert!(peer.next().await.is_none());
+        }
     }
 }

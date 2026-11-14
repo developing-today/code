@@ -4,12 +4,59 @@
 //! library when importable; messages for exotic packets can differ in
 //! wording, but accept/reject semantics match the manual contract and
 //! the database RPCs remain the backstop.)
+//!
+//! THE VALIDATION CONTRACT (design #6448; this statement landed
+//! with the Phase 4 closing inventory, #6449 — a future forwarded
+//! field or flag is added against this stated rule, not ad hoc):
+//!
+//! One rule: the queue validates every value it forwards — its
+//! type, its range, and its agreement with the packet's other
+//! fields — at the boundary, before the task row exists; a value
+//! that cannot be honoured is refused with an error naming the
+//! field, never forwarded verbatim. Reject, never clamp, never
+//! warn-and-forward: warnings keep their existing role (design
+//! defaults, size targets) and never carry a validity verdict.
+//!
+//! Bounds, with the same values enforced at all three points —
+//! validate_packet (packet fields), the client (usage error,
+//! exit 2, naming the flag), and the broker (rejection before
+//! the RPC/SQL call; the broker is the trust boundary for
+//! non-CLI callers):
+//!
+//!   max_attempts (either copy)  integer 1..=1000; the two copies must agree
+//!   not_before (packet + park/revive flags)
+//!                               RFC 3339 string, at most 366 days in the future
+//!   priority                    one of 10, 20, 30, 40, 50, 70, 90
+//!   list --limit                1..=500 (default 20)
+//!   --lease-seconds             1..=86400 (default 2700)
+//!   --extend-seconds            1..=86400 (default 900)
+//!   --delay-seconds             1..=604800 (no default; an explicit 0 is rejected)
+//!   claim --count               1..=5 (batch claim cap)
+//!
+//! Broker-internal dep cadence/TTL values (#8276) are the one
+//! deliberate exception to reject-never-clamp: the broker clamps
+//! them (recheck 300..=3600, TTL 60..=604800) because they tune
+//! its own waits, not a producer's stated intent.
+//!
+//! Four rows diverge from design #6448's original table
+//! (max_attempts ceiling, delay ceiling, the lease/extend floor,
+//! and the creation-outbox retry_after ceiling): the values
+//! above are the implemented, live contract, and reconciling
+//! the two statements is tracked on #9029. The inventory that
+//! dispositioned every forwarded field, client flag, and broker
+//! verb parameter against this contract is recorded on #6449.
 
 use serde_json::{Value, json};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 pub const PRIORITY_SCALE: [i64; 7] = [10, 20, 30, 40, 50, 70, 90];
-pub const KINDS: [&str; 4] = ["pr_shepherd", "triage", "small_fix", "ci_investigation"];
+pub const KINDS: [&str; 5] = [
+    "pr_shepherd",
+    "triage",
+    "small_fix",
+    "ci_investigation",
+    "second_pass",
+];
 // Both the old and the current names of the two repos that moved to the
 // developing-today-forks org (2026-11-04) stay allowlisted: in-flight queue
 // tasks carry dedupe keys with the old names and must keep validating,
@@ -34,7 +81,8 @@ triage:      repo-health:v1:triage:<repo>:issue:<n>\n\
 pr:          repo-health:v1:pr:<repo>:pr:<n>\n\
 pr-set:      repo-health:v1:pr-set:<repo>:<n>-<n>[-...] (sorted)\n\
 set:         repo-health:v1:set:<origin issue>:owed:<repo>\n\
-maintenance: repo-health:v1:maintenance:<repo>:<kind>:<YYYY-Www>";
+maintenance: repo-health:v1:maintenance:<repo>:<kind>:<YYYY-Www>\n\
+second-pass: repo-health:v1:second-pass:<repo>:<issue>:pass-<n>";
 
 fn manual_schema_errors(p: &Value) -> Vec<String> {
     let mut errs = Vec::new();
@@ -137,7 +185,9 @@ fn manual_schema_errors(p: &Value) -> Vec<String> {
     }
     if let Some(value) = get("max_attempts") {
         if !valid_max_attempts(value) {
-            errs.push("payload.max_attempts: must be an integer between 1 and 100".to_string());
+            errs.push(format!(
+                "payload.max_attempts: must be an integer between 1 and {MAX_ATTEMPTS_CEILING}"
+            ));
         }
     }
     let ded_ok = matches!(get("dedupe"), Some(Value::Object(d))
@@ -181,6 +231,94 @@ fn manual_schema_errors(p: &Value) -> Vec<String> {
                 .to_string(),
         );
     }
+    errs.extend(review_errors(p));
+    errs
+}
+
+/// The review payload block (design #2025 section 5.2; #2310): required
+/// for kind second_pass, and shape-checked whenever a packet of any
+/// kind carries one (the Stage B interim representation attaches it to
+/// small_fix packets). gap_list and verdict_note_url are required, and
+/// pass may not exceed pass_cap — the termination cap is enforced
+/// here, in the enqueue code path, not by reviewer restraint.
+fn review_errors(p: &Value) -> Vec<String> {
+    let mut errs = Vec::new();
+    let kind = p.get("kind").and_then(|k| k.as_str()).unwrap_or("");
+    let review = p.get("review");
+    if kind != "second_pass" && review.is_none() {
+        return errs;
+    }
+    let Some(review) = review.and_then(|r| r.as_object()) else {
+        errs.push(
+            "payload.review: required object for kind second_pass (design #2025 section 5.2)"
+                .to_string(),
+        );
+        return errs;
+    };
+    match review.get("verdict_note_url") {
+        Some(Value::String(u)) if !u.is_empty() => {}
+        _ => errs.push(
+            "payload.review.verdict_note_url: required non-empty string for second_pass packets"
+                .to_string(),
+        ),
+    }
+    match review.get("gap_list") {
+        Some(Value::Array(a))
+            if !a.is_empty()
+                && a.iter()
+                    .all(|g| matches!(g, Value::String(s) if !s.is_empty())) => {}
+        _ => errs.push(
+            "payload.review.gap_list: required non-empty list of checkable gap strings for second_pass packets"
+                .to_string(),
+        ),
+    }
+    let pass = review.get("pass").and_then(|v| v.as_i64());
+    let pass_cap = review.get("pass_cap").and_then(|v| v.as_i64());
+    match pass {
+        Some(n) if n >= 1 => {}
+        _ => errs.push(
+            "payload.review.pass: required positive integer (the pass being commissioned; the original work is pass 0)"
+                .to_string(),
+        ),
+    }
+    match pass_cap {
+        Some(n) if n >= 1 => {}
+        _ => errs.push("payload.review.pass_cap: required positive integer".to_string()),
+    }
+    if let (Some(pass), Some(cap)) = (pass, pass_cap) {
+        if pass > cap {
+            errs.push(format!(
+                "payload.review.pass: pass {pass} exceeds pass_cap {cap} — the termination cap is enforced at enqueue (design #2025 section 5.1)"
+            ));
+        }
+    }
+    if let Some(verdict) = review.get("verdict") {
+        if !matches!(verdict, Value::String(_)) {
+            errs.push("payload.review.verdict: must be a string".to_string());
+        }
+    }
+    if let Some(artifact) = review.get("artifact") {
+        if !artifact.is_object() {
+            errs.push("payload.review.artifact: must be an object {pr, issue, merged}".to_string());
+        }
+    }
+    if let Some(producer) = review.get("producer") {
+        if !producer.is_object() {
+            errs.push(
+                "payload.review.producer: must be an object {task_id, session, pr}".to_string(),
+            );
+        }
+    }
+    if let Some(refs) = review.get("goal_context_refs") {
+        if !matches!(refs, Value::Array(a) if a.iter().all(|r| matches!(r, Value::String(_)))) {
+            errs.push("payload.review.goal_context_refs: must be a list of strings".to_string());
+        }
+    }
+    if let Some(floor) = review.get("route_floor") {
+        if !matches!(floor, Value::String(_)) {
+            errs.push("payload.review.route_floor: must be a string".to_string());
+        }
+    }
     errs
 }
 
@@ -199,6 +337,9 @@ pub struct DedupeMatch {
     pub num: Option<i64>,
     pub nums: Option<Vec<i64>>,
     pub origin: Option<i64>,
+    /// The commissioned pass for the second-pass family (#2310);
+    /// None for every other family.
+    pub pass: Option<i64>,
 }
 
 fn all_digits(s: &str) -> bool {
@@ -236,12 +377,20 @@ fn match_dedupe(key: &str) -> Option<DedupeMatch> {
                     num: None,
                     nums: None,
                     origin: Some(origin),
+                    pass: None,
                 });
             }
         }
         return None;
     }
-    for fam in ["fix", "triage", "pr-set", "pr", "maintenance"] {
+    for fam in [
+        "fix",
+        "triage",
+        "pr-set",
+        "pr",
+        "maintenance",
+        "second-pass",
+    ] {
         let Some(after) = rest.strip_prefix(&format!("{fam}:")) else {
             continue;
         };
@@ -259,6 +408,26 @@ fn match_dedupe(key: &str) -> Option<DedupeMatch> {
                                 num: Some(num),
                                 nums: None,
                                 origin: None,
+                                pass: None,
+                            });
+                        }
+                    }
+                }
+                "second-pass" => {
+                    // repo-health:v1:second-pass:<repo>:<issue>:pass-<n>
+                    // (design #2025 section 5.2): one live packet per
+                    // (artifact, pass) by construction.
+                    if let Some((issue_s, pass_s)) = tail.split_once(":pass-") {
+                        if let (Some(num), Some(pass)) =
+                            (canonical_number(issue_s), canonical_number(pass_s))
+                        {
+                            return Some(DedupeMatch {
+                                family: fam.into(),
+                                repo: repo.to_string(),
+                                num: Some(num),
+                                nums: None,
+                                origin: None,
+                                pass: Some(pass),
                             });
                         }
                     }
@@ -272,6 +441,7 @@ fn match_dedupe(key: &str) -> Option<DedupeMatch> {
                                 num: Some(num),
                                 nums: None,
                                 origin: None,
+                                pass: None,
                             });
                         }
                     }
@@ -294,6 +464,7 @@ fn match_dedupe(key: &str) -> Option<DedupeMatch> {
                             num: None,
                             nums: Some(nums),
                             origin: None,
+                            pass: None,
                         });
                     }
                 }
@@ -331,6 +502,7 @@ fn match_dedupe(key: &str) -> Option<DedupeMatch> {
                                 num: None,
                                 nums: None,
                                 origin: None,
+                                pass: None,
                             });
                         }
                     }
@@ -351,6 +523,7 @@ fn kind_families(kind: &str) -> Option<&'static [&'static str]> {
         "triage" => Some(&["triage", "maintenance"]),
         "pr_shepherd" => Some(&["pr", "pr-set", "set"]),
         "ci_investigation" => Some(&["fix", "triage", "pr"]),
+        "second_pass" => Some(&["second-pass"]),
         _ => None,
     }
 }
@@ -433,6 +606,40 @@ fn dedupe_errors(packet: &Value, payload: &Value) -> Vec<String> {
                     errors.push(format!(
                         "packet.dedupe_key: family '{}' requires payload.issue.number {n} matching the key issue, but the payload carries no issue.number (#6446)",
                         m.family
+                    ));
+                }
+            }
+        }
+        "second-pass" => {
+            let n = m.num.unwrap_or(0);
+            match issue_no {
+                Some(ino) if n != ino => {
+                    errors.push(format!(
+                        "packet.dedupe_key: issue {n} in key does not match payload.issue.number {ino}"
+                    ));
+                }
+                Some(_) => {}
+                None => {
+                    errors.push(format!(
+                        "packet.dedupe_key: family 'second-pass' requires payload.issue.number {n} matching the key issue, but the payload carries no issue.number (#6446)"
+                    ));
+                }
+            }
+            let key_pass = m.pass.unwrap_or(0);
+            let review_pass = payload
+                .get("review")
+                .and_then(|r| r.get("pass"))
+                .and_then(|v| v.as_i64());
+            match review_pass {
+                Some(rp) if rp != key_pass => {
+                    errors.push(format!(
+                        "packet.dedupe_key: pass {key_pass} in key does not match payload.review.pass {rp}"
+                    ));
+                }
+                Some(_) => {}
+                None => {
+                    errors.push(format!(
+                        "packet.dedupe_key: family 'second-pass' requires payload.review.pass {key_pass} matching the key pass, but the payload carries no review.pass"
                     ));
                 }
             }
@@ -679,9 +886,28 @@ pub fn validate_not_before(value: &Value, field: &str) -> Result<(), String> {
     validate_not_before_at(value, field, now_epoch_seconds())
 }
 
+/// The max_attempts ceiling, defined in this one place (#9609).
+/// Drew's #8973 order (2026-11-12) raised max_attempts to 1000 on all
+/// non-terminal tasks and made 1000 the producer default; the #6448
+/// validator cap of 100 was never raised to match, so the claim path
+/// quarantined the fleet's own packets. Both max_attempts copies
+/// (packet + payload) validate against this ceiling, and the error
+/// strings name it, so the bound cannot drift between copies again.
+pub(crate) const MAX_ATTEMPTS_CEILING: u64 = 1000;
+
+/// The default max_attempts for a newly created task (#8973).
+/// Drew's 2026-11-12 order made 1000 the producer default
+/// everywhere a task is created, so the default sits at the
+/// ceiling. Every creation path that omits an explicit value
+/// (task_from_packet, the enqueue insert fallback) uses this one
+/// constant so the paths cannot drift apart again.
+pub(crate) const TASK_DEFAULT_MAX_ATTEMPTS: u64 = 1000;
+
 /// validate_packet: returns (errors, warnings).
 fn valid_max_attempts(value: &Value) -> bool {
-    value.as_u64().is_some_and(|n| (1..=100).contains(&n))
+    value
+        .as_u64()
+        .is_some_and(|n| (1..=MAX_ATTEMPTS_CEILING).contains(&n))
 }
 
 pub fn validate_packet(packet: &Value) -> (Vec<String>, Vec<String>) {
@@ -700,7 +926,9 @@ pub fn validate_packet(packet: &Value) -> (Vec<String>, Vec<String>) {
 
     if let Some(value) = obj.get("max_attempts") {
         if !valid_max_attempts(value) {
-            errors.push("packet.max_attempts: must be an integer between 1 and 100".to_string());
+            errors.push(format!(
+                "packet.max_attempts: must be an integer between 1 and {MAX_ATTEMPTS_CEILING}"
+            ));
         } else if let Some(other) = payload.get("max_attempts") {
             if valid_max_attempts(other) && value != other {
                 errors.push("packet.max_attempts: must match payload.max_attempts".to_string());
@@ -776,11 +1004,9 @@ pub fn validate_packet(packet: &Value) -> (Vec<String>, Vec<String>) {
     }
     if let Some(ma) = payload.get("max_attempts").and_then(|v| v.as_i64()) {
         let kind = payload.get("kind").and_then(|k| k.as_str()).unwrap_or("");
-        let want = if kind == "triage" || kind == "ci_investigation" {
-            6
-        } else {
-            4
-        };
+        // #8973: the design default is TASK_DEFAULT_MAX_ATTEMPTS for
+        // every kind since Drew's 2026-11-12 order.
+        let want = TASK_DEFAULT_MAX_ATTEMPTS as i64;
         if ma != want {
             warnings.push(format!(
                 "payload.max_attempts: design default for {kind} is {want}, packet says {ma}"
@@ -799,7 +1025,7 @@ pub fn task_from_packet(packet: &Value, queue: &str) -> Value {
         .filter(|v| !v.is_null())
         .or_else(|| payload.get("max_attempts"))
         .cloned()
-        .unwrap_or(json!(4));
+        .unwrap_or(json!(TASK_DEFAULT_MAX_ATTEMPTS));
     json!({
         "queue": queue,
         "title": packet.get("title").cloned().unwrap_or(Value::Null),
@@ -824,7 +1050,7 @@ mod tests {
         for bad in [
             json!(0),
             json!(-1),
-            json!(101),
+            json!(1001),
             json!(1.5),
             json!("4"),
             json!(null),
@@ -855,7 +1081,7 @@ mod tests {
                 .iter()
                 .any(|e| e.contains("must match"))
         );
-        for n in [1, 4, 100] {
+        for n in [1, 4, 100, 1000] {
             packet["max_attempts"] = json!(n);
             packet["payload"]["max_attempts"] = json!(n);
             assert!(
@@ -876,7 +1102,7 @@ mod tests {
                 .iter()
                 .any(|e| e.contains("max_attempts"))
         );
-        assert_eq!(task_from_packet(&packet, "q")["max_attempts"], 100);
+        assert_eq!(task_from_packet(&packet, "q")["max_attempts"], 1000);
         packet.as_object_mut().unwrap().remove("max_attempts");
         assert!(
             !validate_packet(&packet)
@@ -884,9 +1110,47 @@ mod tests {
                 .iter()
                 .any(|e| e.contains("max_attempts"))
         );
-        assert_eq!(task_from_packet(&packet, "q")["max_attempts"], 4);
+        assert_eq!(task_from_packet(&packet, "q")["max_attempts"], 1000);
         packet["payload"]["max_attempts"] = json!(7);
         assert_eq!(task_from_packet(&packet, "q")["max_attempts"], 7);
+    }
+
+    #[test]
+    fn max_attempts_1000_validates_per_8973_order() {
+        // Oracle (#9609): a repo-task/v1 packet carrying the #8973-ordered
+        // max_attempts=1000 in both copies passes validation with no
+        // max_attempts error, so the claim guard cannot quarantine it;
+        // 1001 (past the MAX_ATTEMPTS_CEILING) still fails both copies.
+        let payload = payload_with(json!({"issue": {"number": 9609}}));
+        let mut packet = json!({"title": "test", "priority": 30, "payload": payload});
+        packet["max_attempts"] = json!(1000);
+        packet["payload"]["max_attempts"] = json!(1000);
+        assert!(
+            !validate_packet(&packet)
+                .0
+                .iter()
+                .any(|e| e.contains("max_attempts")),
+            "{packet}"
+        );
+        assert_eq!(task_from_packet(&packet, "q")["max_attempts"], 1000);
+        let base = packet.clone();
+        for top in [true, false] {
+            let mut packet = base.clone();
+            if top {
+                packet["max_attempts"] = json!(1001);
+            } else {
+                packet["payload"]["max_attempts"] = json!(1001);
+            }
+            let field = if top {
+                "packet.max_attempts"
+            } else {
+                "payload.max_attempts"
+            };
+            assert!(
+                validate_packet(&packet).0.iter().any(|e| e.contains(field)),
+                "{packet}"
+            );
+        }
     }
 
     fn payload_with(identity: serde_json::Value) -> Value {
@@ -1500,5 +1764,137 @@ mod tests {
             let _ = parse_rfc3339_epoch(&s);
             let _ = validate_not_before_at(&json!(s), "packet.not_before", 1_762_700_000);
         }
+    }
+
+    fn second_pass_payload(review: serde_json::Value) -> Value {
+        let mut payload = payload_with(json!({"issue": {"number": 2310}}));
+        let obj = payload.as_object_mut().expect("payload object");
+        obj.insert("kind".to_string(), json!("second_pass"));
+        obj.insert("review".to_string(), review);
+        payload
+    }
+
+    fn valid_review() -> serde_json::Value {
+        json!({
+            "verdict": "second-pass",
+            "verdict_note_url": "https://github.com/developing-today/code/issues/2025#issuecomment-1",
+            "artifact": {"pr": 9001, "issue": 2310, "merged": false},
+            "pass": 1,
+            "pass_cap": 2,
+            "gap_list": ["ring-2 gap: no test pins the cap"],
+            "goal_context_refs": ["https://github.com/developing-today/code/issues/2025"],
+            "producer": {"task_id": 7325, "session": "ses_x", "pr": 9001},
+            "route_floor": "specialist",
+        })
+    }
+
+    #[test]
+    fn second_pass_packet_validates() {
+        let packet = json!({
+            "title": "Second pass 1 on #2310",
+            "priority": 20,
+            "dedupe_key": "repo-health:v1:second-pass:developing-today/code:2310:pass-1",
+            "payload": second_pass_payload(valid_review()),
+        });
+        let (errors, _warnings) = validate_packet(&packet);
+        assert!(
+            errors.is_empty(),
+            "well-formed second_pass packet must validate; got {errors:?}"
+        );
+    }
+
+    #[test]
+    fn second_pass_rejects_missing_gap_list() {
+        let mut review = valid_review();
+        review.as_object_mut().unwrap().remove("gap_list");
+        let errors = manual_schema_errors(&second_pass_payload(review));
+        assert!(
+            errors.iter().any(|e| e.contains("review.gap_list")),
+            "missing gap_list must be rejected; got {errors:?}"
+        );
+    }
+
+    #[test]
+    fn second_pass_rejects_missing_verdict_note_url() {
+        let mut review = valid_review();
+        review.as_object_mut().unwrap().remove("verdict_note_url");
+        let errors = manual_schema_errors(&second_pass_payload(review));
+        assert!(
+            errors.iter().any(|e| e.contains("review.verdict_note_url")),
+            "missing verdict_note_url must be rejected; got {errors:?}"
+        );
+    }
+
+    #[test]
+    fn second_pass_rejects_pass_above_cap() {
+        let mut review = valid_review();
+        review["pass"] = json!(3);
+        let errors = manual_schema_errors(&second_pass_payload(review));
+        assert!(
+            errors.iter().any(|e| e.contains("exceeds pass_cap")),
+            "pass > pass_cap must be rejected at enqueue; got {errors:?}"
+        );
+    }
+
+    #[test]
+    fn second_pass_requires_the_review_block() {
+        let mut payload = payload_with(json!({"issue": {"number": 2310}}));
+        payload
+            .as_object_mut()
+            .unwrap()
+            .insert("kind".to_string(), json!("second_pass"));
+        let errors = manual_schema_errors(&payload);
+        assert!(
+            errors.iter().any(|e| e.contains("payload.review")),
+            "second_pass without a review block must be rejected; got {errors:?}"
+        );
+    }
+
+    #[test]
+    fn second_pass_dedupe_family_matches_issue_and_pass() {
+        let identity = json!({"issue": {"number": 2310}, "review": {"pass": 1}});
+        assert!(
+            dedupe_errs(
+                "repo-health:v1:second-pass:developing-today/code:2310:pass-1",
+                "second_pass",
+                identity.clone(),
+            )
+            .is_empty()
+        );
+        // Same (issue, pass) is the same key by construction: a second
+        // commissioning collides on it instead of double-commissioning.
+        let m = match_dedupe("repo-health:v1:second-pass:developing-today/code:2310:pass-1")
+            .expect("second-pass key parses");
+        assert_eq!(m.family, "second-pass");
+        assert_eq!(m.num, Some(2310));
+        assert_eq!(m.pass, Some(1));
+        // Pass disagreement between key and payload is an error.
+        let errors = dedupe_errs(
+            "repo-health:v1:second-pass:developing-today/code:2310:pass-2",
+            "second_pass",
+            identity,
+        );
+        assert!(
+            errors.iter().any(|e| e.contains("pass 2 in key")),
+            "key pass must match review.pass; got {errors:?}"
+        );
+        // The second-pass family is not valid for other kinds, and
+        // other families are not valid for second_pass.
+        assert!(
+            !dedupe_errs(
+                "repo-health:v1:second-pass:developing-today/code:2310:pass-1",
+                "small_fix",
+                json!({"issue": {"number": 2310}}),
+            )
+            .is_empty()
+        );
+        assert!(
+            !dedupe_errs(
+                "repo-health:v1:fix:developing-today/code:issue:2310",
+                "second_pass",
+                json!({"issue": {"number": 2310}}),
+            )
+            .is_empty()
+        );
     }
 }
