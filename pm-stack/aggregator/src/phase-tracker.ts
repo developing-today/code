@@ -10,18 +10,32 @@
 // Phases 12 and 13 have no validation audit; the panel says so
 // instead of inventing a state.
 //
-// The per-phase F-item PROGRESS half is deliberately not derived
-// here: no uniform machine-readable F-item mapping exists for
-// Phases 0-13 (archaeology on #9923, 2026-11-14), and inventing one
-// in this module would be exactly the hand-maintained input the
-// panel forbids. Progress joins when a phase-mapping source of
-// record exists (proposed: a phases table in planning/roadmaps/id.md,
-// parsed like the repo-roadmap source); until then those phases
-// render validation state only.
+// The per-phase F-item PROGRESS half is derived only where a
+// uniform machine-readable source exists. Today that is Phase 12:
+// the ordered step list in issue #1235's body (parsed and joined by
+// phase12.ts for the Path to Phase 12 panel) is exactly such a
+// source, and derivePhase12Progress below counts its steps against
+// live GhItem state. Phase 11 is NOT derivable from its plan file:
+// only F11.1-F11.3 carry an issue ref in their item header
+// (.opencode/plans/phase-11-foundations.md, verified 2026-11-14);
+// the other items' refs are prose-level and ambiguous (F11.11 names
+// #250 for a done part and #242 for an open part), so a header join
+// would fabricate progress for 15 of 18 items. Phases 0-10 and 13
+// have no F-item source at all. Those phases join when a
+// phase-mapping source of record exists (proposed: a phases table
+// in planning/roadmaps/id.md, parsed like the repo-roadmap source);
+// until then they render validation state only, with the gap stated
+// rather than a percentage invented.
 //
-// Everything in this module is pure: the derivation joins the
-// audit map against the aggregator's GhItem states.
+// Everything in this module is pure: the derivations join their
+// sources against the aggregator's GhItem states.
 import type { GhItem, RefKey } from "./model.ts";
+import {
+  joinPhase12Steps,
+  parsePhase12Steps,
+  phase12IsStale,
+  type Phase12Snapshot,
+} from "./phase12.ts";
 
 export const PHASE_TRACKER_REPO = "developing-today/code";
 export const PHASE_TRACKER_UMBRELLA = 796;
@@ -144,4 +158,52 @@ export function derivePhaseValidation(
         openFollowUps: [],
       },
   );
+}
+
+/** Phase 12 progress, counted from the #1235 ordered step list. */
+export interface Phase12Progress {
+  /** Steps parsed from the current #1235 body. */
+  total: number;
+  /** Steps whose issue is closed in live GitHub state. */
+  done: number;
+  /** Steps whose issue is open in live GitHub state. */
+  open: number;
+  /** Steps whose issue the current items source could not resolve. */
+  unresolved: number;
+  /** done / total as a whole percent; null when total is 0. */
+  percent: number | null;
+}
+
+/** Derive Phase 12 progress from the #1235 body snapshot joined to
+ * live GhItem state. Oracle: a step is done iff its issue is CLOSED
+ * in live GitHub state — completed work is recorded in GitHub
+ * (closed issues, merged PRs), per the roadmap's own rule; the
+ * body's checkbox is the historical record, so a checked step whose
+ * issue has reopened counts as open, never as done. Returns null
+ * when the feed is absent, stale, or parses to no steps: the panel
+ * withholds progress rather than rendering a silently old or
+ * invented percentage. */
+export function derivePhase12Progress(
+  snapshot: Phase12Snapshot | null,
+  items: ReadonlyMap<RefKey, GhItem>,
+): Phase12Progress | null {
+  if (!snapshot) return null;
+  if (phase12IsStale(snapshot)) return null;
+  const steps = joinPhase12Steps(parsePhase12Steps(snapshot.body), items);
+  if (!steps.length) return null;
+  let done = 0;
+  let open = 0;
+  let unresolved = 0;
+  for (const step of steps) {
+    if (step.liveState === "closed") done++;
+    else if (step.liveState === "open") open++;
+    else unresolved++;
+  }
+  return {
+    total: steps.length,
+    done,
+    open,
+    unresolved,
+    percent: Math.round((done / steps.length) * 100),
+  };
 }

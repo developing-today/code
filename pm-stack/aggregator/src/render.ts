@@ -134,6 +134,7 @@ import {
 import {
   PHASE_TRACKER_REPO,
   PHASE_TRACKER_UMBRELLA,
+  derivePhase12Progress,
   derivePhaseValidation,
 } from "./phase-tracker.ts";
 import {
@@ -7234,14 +7235,19 @@ export function phase12PanelHtml(
  * Phases 0-13, derived live from the items source (the four #796
  * validation audits, #1075-#1078, already in the id project's tracked
  * refs). No hand-maintained values: a reopened audit or a new open
- * follow-up changes the panel without an edit. Per-phase F-item
- * progress is withheld — no machine-readable F-item mapping source
- * exists yet (#9923), and a fabricated percentage is worse than the
- * stated gap. */
-export function phaseTrackerPanelHtml(items: Map<RefKey, GhItem>): string {
+ * follow-up changes the panel without an edit. Phase 12 also shows
+ * F-item progress counted from #1235's ordered step list (the one
+ * uniform machine-readable F-item source); the other phases withhold
+ * progress — no such source exists for them yet (#9923), and a
+ * fabricated percentage is worse than the stated gap. */
+export function phaseTrackerPanelHtml(
+  items: Map<RefKey, GhItem>,
+  phase12: Phase12Snapshot | null = null,
+): string {
   const umbrellaUrl = `https://github.com/${PHASE_TRACKER_REPO}/issues/${PHASE_TRACKER_UMBRELLA}`;
   const head = `<h2>Phase tracker — validation by phase, live from <a href="${umbrellaUrl}">#${PHASE_TRACKER_UMBRELLA}</a></h2>`;
-  const sourceLine = `<p class="muted">Source: the validation audits <a href="https://github.com/${PHASE_TRACKER_REPO}/issues/1075">#1075</a>–<a href="https://github.com/${PHASE_TRACKER_REPO}/issues/1078">#1078</a> under umbrella <a href="${umbrellaUrl}">#${PHASE_TRACKER_UMBRELLA}</a>, resolved from the same live GitHub items as the tracked-issues table above (the page provenance stamp applies). Per-phase F-item progress is not shown: no machine-readable F-item mapping source exists yet, so no percentage is rendered rather than an invented one.</p>`;
+  const progress = derivePhase12Progress(phase12, items);
+  const sourceLine = `<p class="muted">Source: the validation audits <a href="https://github.com/${PHASE_TRACKER_REPO}/issues/1075">#1075</a>–<a href="https://github.com/${PHASE_TRACKER_REPO}/issues/1078">#1078</a> under umbrella <a href="${umbrellaUrl}">#${PHASE_TRACKER_UMBRELLA}</a>, resolved from the same live GitHub items as the tracked-issues table above (the page provenance stamp applies). Phase 12 progress counts the ordered steps in <a href="${PHASE12_ISSUE_URL}">#1235</a> against live issue state${phase12 ? ` (body fetched ${esc(phase12.fetchedAt)})` : ""}; other phases show no percentage — no machine-readable F-item mapping source exists for them yet, so the gap is stated rather than a number invented.</p>`;
   const rows = derivePhaseValidation(items)
     .map((r) => {
       const badge =
@@ -7261,10 +7267,16 @@ export function phaseTrackerPanelHtml(items: Map<RefKey, GhItem>): string {
             .map((f) => `<a href="${esc(f.url)}">#${f.issueNumber}</a>`)
             .join(" ")
         : `<span class="muted">—</span>`;
-      return `<tr><th scope="row">Phase ${r.phase}</th><td>${badge}</td><td>${audit}</td><td>${followUps}</td></tr>`;
+      const progressCell =
+        r.phase !== 12
+          ? `<span class="muted">not derived — no F-item source yet</span>`
+          : progress
+            ? `<strong>${progress.done}/${progress.total} steps done (${progress.percent}%)</strong><br><span class="muted">${progress.open} open${progress.unresolved ? ` · ${progress.unresolved} not resolved in the current source` : ""} — from <a href="${PHASE12_ISSUE_URL}">#1235</a></span>`
+            : `<span class="muted">withheld — #1235 feed unavailable or stale</span>`;
+      return `<tr><th scope="row">Phase ${r.phase}</th><td>${badge}</td><td>${audit}</td><td>${followUps}</td><td>${progressCell}</td></tr>`;
     })
     .join("");
-  return `${head}${sourceLine}<div class="tblwrap"><table class="table table-zebra"><caption>Validation state per id-program phase, derived from live audit issue state</caption><thead><tr><th scope="col">Phase</th><th scope="col">Validation</th><th scope="col">Audit</th><th scope="col">Open follow-ups</th></tr></thead><tbody>${rows}</tbody></table></div>`;
+  return `${head}${sourceLine}<div class="tblwrap"><table class="table table-zebra"><caption>Validation state per id-program phase, derived from live audit issue state</caption><thead><tr><th scope="col">Phase</th><th scope="col">Validation</th><th scope="col">Audit</th><th scope="col">Open follow-ups</th><th scope="col">Progress</th></tr></thead><tbody>${rows}</tbody></table></div>`;
 }
 
 /** The Build health panel (#9924): current CI lane states + the id
@@ -7538,7 +7550,7 @@ export function renderProgramProject(
 <p class="muted">Built only from already-published fleet data — the orchestration section this aggregator serves and the fleet's tracked issues. No new data pipeline feeds this section.</p>${programEntries(config.sweepHealth, items)}`
     : "";
 
-  const phaseTrackerHtml = config.id === "id" ? phaseTrackerPanelHtml(items) : "";
+  const phaseTrackerHtml = config.id === "id" ? phaseTrackerPanelHtml(items, phase12 ?? null) : "";
   const phase12Html = config.id === "id" && phase12 !== undefined ? phase12PanelHtml(phase12, items, queueSnap ?? null) : "";
   const buildHealthHtml = config.id === "id" && buildHealth !== undefined ? buildHealthPanelHtml(buildHealth) : "";
   const f12Html =

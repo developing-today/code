@@ -6,9 +6,11 @@
 import { describe, expect, test } from "bun:test";
 import {
   PHASE_TRACKER_REPO,
+  derivePhase12Progress,
   derivePhaseValidation,
   openFollowUpsFor,
 } from "../src/phase-tracker.ts";
+import type { Phase12Snapshot } from "../src/phase12.ts";
 import type { GhItem } from "../src/model.ts";
 
 const item = (number: number, state: GhItem["state"], title?: string): GhItem => ({
@@ -103,5 +105,65 @@ describe("derivePhaseValidation (#9923)", () => {
     const rows = derivePhaseValidation(items);
     expect(rows[9].openFollowUps).toEqual([]);
     expect(rows[9].state).toBe("validation-open");
+  });
+});
+
+// Fixture body in #1235's real checklist grammar (see phase12.test.ts).
+const PHASE12_BODY = `# Path to Phase 12 — the ordered work queue
+
+- [x] Step 1 — #229 Stabilize shared-state failures in Firefox E2E CI — DONE 2026-10-26 (queue worker, PR #987, issue auto-closed on merge)
+- [x] Step 7 — #1078 Validate the delivered Phase 11 items (audit + tests) — DONE 2026-10-27 (queue task 1259 audit complete, issue closed with the closeout table)
+- [x] Step 14 — #544 F11.16 replay self-check — DONE 2026-10-27 (issue closed)
+- [ ] Continuous — #534 Phase 12 design workflow (designs land ahead of each F12 item's implementation)
+`;
+
+const snapshot = (body: string, fetchedAt: string): Phase12Snapshot => ({
+  body,
+  issueUpdatedAt: "2026-11-14T00:00:00Z",
+  fetchedAt,
+});
+
+const freshSnapshot = (body: string): Phase12Snapshot =>
+  snapshot(body, new Date().toISOString());
+
+describe("derivePhase12Progress (#9923 step 2)", () => {
+  test("counts steps by live issue state: closed is done, open is not", () => {
+    const items = new Map<string, GhItem>([
+      [`${PHASE_TRACKER_REPO}#229`, item(229, "closed")],
+      [`${PHASE_TRACKER_REPO}#1078`, item(1078, "closed")],
+      [`${PHASE_TRACKER_REPO}#544`, item(544, "closed")],
+      [`${PHASE_TRACKER_REPO}#534`, item(534, "open")],
+    ]);
+    const progress = derivePhase12Progress(freshSnapshot(PHASE12_BODY), items);
+    expect(progress).toEqual({ total: 4, done: 3, open: 1, unresolved: 0, percent: 75 });
+  });
+
+  test("a checked step whose issue reopened counts as open — live state wins", () => {
+    const items = new Map<string, GhItem>([
+      [`${PHASE_TRACKER_REPO}#229`, item(229, "open")],
+      [`${PHASE_TRACKER_REPO}#1078`, item(1078, "closed")],
+      [`${PHASE_TRACKER_REPO}#544`, item(544, "closed")],
+      [`${PHASE_TRACKER_REPO}#534`, item(534, "closed")],
+    ]);
+    const progress = derivePhase12Progress(freshSnapshot(PHASE12_BODY), items);
+    expect(progress?.done).toBe(3);
+    expect(progress?.open).toBe(1);
+  });
+
+  test("a step whose issue is missing from the source counts as unresolved, never done", () => {
+    const items = new Map<string, GhItem>([
+      [`${PHASE_TRACKER_REPO}#229`, item(229, "closed")],
+    ]);
+    const progress = derivePhase12Progress(freshSnapshot(PHASE12_BODY), items);
+    expect(progress).toEqual({ total: 4, done: 1, open: 0, unresolved: 3, percent: 25 });
+  });
+
+  test("absent, stale, or step-less feeds withhold progress (null)", () => {
+    const items = allClosed();
+    expect(derivePhase12Progress(null, items)).toBeNull();
+    expect(
+      derivePhase12Progress(snapshot(PHASE12_BODY, "2026-11-14T00:00:00Z"), items),
+    ).toBeNull();
+    expect(derivePhase12Progress(freshSnapshot("## no steps here\n"), items)).toBeNull();
   });
 });
