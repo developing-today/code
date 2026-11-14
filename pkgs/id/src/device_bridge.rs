@@ -14,7 +14,7 @@
 //! * The manifest is the only retained document. A retained `wants` replays
 //!   a stale request, so the bridge rejects it.
 //! * Wire bounds match the host protocol: 64 KiB `wants` documents and
-//!   events, 8 KiB request args ([`id_core::world_caps`] constants).
+//!   events, 8 KiB request args ([`id_caps::world_caps`] constants).
 //! * Authentication is fail-closed: unknown device or wrong credential
 //!   refuses the connection, and nothing is published or delivered.
 //! * Firmware stays in the closed subset: `device.info`, small
@@ -28,7 +28,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use anyhow::{Context, Result, bail, ensure};
 
-use id_core::world_caps::{self, DeviceManifest, MAX_ARGS_BYTES, MAX_EVENT_BYTES, MAX_WANTS_BYTES};
+use id_caps::world_caps::{self, DeviceManifest, MAX_ARGS_BYTES, MAX_EVENT_BYTES, MAX_WANTS_BYTES};
 
 /// Protocol marker published alongside every PoC document.
 pub const PROTOCOL_VERSION: &str = "id.device.v1";
