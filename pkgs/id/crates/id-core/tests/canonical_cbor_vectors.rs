@@ -12,7 +12,7 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
 use id_core::canonical_cbor::{
-    decode_canonical, encode_canonical, validate_record, CborError, RecordSpec, Value,
+    CborError, RecordSpec, Value, decode_canonical, encode_canonical, validate_record,
 };
 
 fn hex(bytes: &[u8]) -> String {
@@ -63,7 +63,10 @@ fn golden_vectors() -> Vec<(Value, &'static str)> {
         // Insertion order does not matter: keys sort by encoded
         // bytes, so {"b":2,"a":1} encodes exactly as {"a":1,"b":2}.
         (
-            Value::Map(vec![(text("b"), Value::UInt(2)), (text("a"), Value::UInt(1))]),
+            Value::Map(vec![
+                (text("b"), Value::UInt(2)),
+                (text("a"), Value::UInt(1)),
+            ]),
             "a2616101616202",
         ),
         // A sidecar-shaped record: nested map, bytes, negative
@@ -89,7 +92,11 @@ fn golden_vectors_encode_and_decode_byte_exactly() {
         // that is key-sorted order regardless of construction
         // order, so compare re-encodings as well as values where
         // construction order already was canonical.
-        assert_eq!(hex(&encode_canonical(&decoded).unwrap()), want_hex, "round-trip {want_hex}");
+        assert_eq!(
+            hex(&encode_canonical(&decoded).unwrap()),
+            want_hex,
+            "round-trip {want_hex}"
+        );
     }
 }
 
@@ -119,7 +126,11 @@ fn ambiguous_encodings_reject_with_typed_errors() {
         ("61ff", CborError::InvalidUtf8),
     ];
     for (input, want) in cases {
-        assert_eq!(decode_canonical(&unhex(input)).unwrap_err(), want, "reject {input}");
+        assert_eq!(
+            decode_canonical(&unhex(input)).unwrap_err(),
+            want,
+            "reject {input}"
+        );
     }
 }
 

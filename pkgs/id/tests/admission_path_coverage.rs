@@ -137,8 +137,10 @@ fn every_row_is_complete_and_anchored_to_source() {
             );
         }
         assert!(
-            ["ingress", "read", "write", "sync", "query", "stream", "bucket"]
-                .contains(&row.class.as_str()),
+            [
+                "ingress", "read", "write", "sync", "query", "stream", "bucket"
+            ]
+            .contains(&row.class.as_str()),
             "{}: unknown path class {}",
             row.id,
             row.class
