@@ -23,7 +23,7 @@
 //! the RPC/SQL call; the broker is the trust boundary for
 //! non-CLI callers):
 //!
-//!   max_attempts (either copy)  integer 1..=100; the two copies must agree
+//!   max_attempts (either copy)  integer 1..=1000; the two copies must agree
 //!   not_before (packet + park/revive flags)
 //!                               RFC 3339 string, at most 366 days in the future
 //!   priority                    one of 10, 20, 30, 40, 50, 70, 90
@@ -185,7 +185,9 @@ fn manual_schema_errors(p: &Value) -> Vec<String> {
     }
     if let Some(value) = get("max_attempts") {
         if !valid_max_attempts(value) {
-            errs.push("payload.max_attempts: must be an integer between 1 and 100".to_string());
+            errs.push(format!(
+                "payload.max_attempts: must be an integer between 1 and {MAX_ATTEMPTS_CEILING}"
+            ));
         }
     }
     let ded_ok = matches!(get("dedupe"), Some(Value::Object(d))
@@ -876,9 +878,20 @@ pub fn validate_not_before(value: &Value, field: &str) -> Result<(), String> {
     validate_not_before_at(value, field, now_epoch_seconds())
 }
 
+/// The max_attempts ceiling, defined in this one place (#9609).
+/// Drew's #8973 order (2026-11-12) raised max_attempts to 1000 on all
+/// non-terminal tasks and made 1000 the producer default; the #6448
+/// validator cap of 100 was never raised to match, so the claim path
+/// quarantined the fleet's own packets. Both max_attempts copies
+/// (packet + payload) validate against this ceiling, and the error
+/// strings name it, so the bound cannot drift between copies again.
+pub(crate) const MAX_ATTEMPTS_CEILING: u64 = 1000;
+
 /// validate_packet: returns (errors, warnings).
 fn valid_max_attempts(value: &Value) -> bool {
-    value.as_u64().is_some_and(|n| (1..=100).contains(&n))
+    value
+        .as_u64()
+        .is_some_and(|n| (1..=MAX_ATTEMPTS_CEILING).contains(&n))
 }
 
 pub fn validate_packet(packet: &Value) -> (Vec<String>, Vec<String>) {
@@ -897,7 +910,9 @@ pub fn validate_packet(packet: &Value) -> (Vec<String>, Vec<String>) {
 
     if let Some(value) = obj.get("max_attempts") {
         if !valid_max_attempts(value) {
-            errors.push("packet.max_attempts: must be an integer between 1 and 100".to_string());
+            errors.push(format!(
+                "packet.max_attempts: must be an integer between 1 and {MAX_ATTEMPTS_CEILING}"
+            ));
         } else if let Some(other) = payload.get("max_attempts") {
             if valid_max_attempts(other) && value != other {
                 errors.push("packet.max_attempts: must match payload.max_attempts".to_string());
@@ -1021,7 +1036,7 @@ mod tests {
         for bad in [
             json!(0),
             json!(-1),
-            json!(101),
+            json!(1001),
             json!(1.5),
             json!("4"),
             json!(null),
@@ -1052,7 +1067,7 @@ mod tests {
                 .iter()
                 .any(|e| e.contains("must match"))
         );
-        for n in [1, 4, 100] {
+        for n in [1, 4, 100, 1000] {
             packet["max_attempts"] = json!(n);
             packet["payload"]["max_attempts"] = json!(n);
             assert!(
@@ -1073,7 +1088,7 @@ mod tests {
                 .iter()
                 .any(|e| e.contains("max_attempts"))
         );
-        assert_eq!(task_from_packet(&packet, "q")["max_attempts"], 100);
+        assert_eq!(task_from_packet(&packet, "q")["max_attempts"], 1000);
         packet.as_object_mut().unwrap().remove("max_attempts");
         assert!(
             !validate_packet(&packet)
@@ -1084,6 +1099,44 @@ mod tests {
         assert_eq!(task_from_packet(&packet, "q")["max_attempts"], 4);
         packet["payload"]["max_attempts"] = json!(7);
         assert_eq!(task_from_packet(&packet, "q")["max_attempts"], 7);
+    }
+
+    #[test]
+    fn max_attempts_1000_validates_per_8973_order() {
+        // Oracle (#9609): a repo-task/v1 packet carrying the #8973-ordered
+        // max_attempts=1000 in both copies passes validation with no
+        // max_attempts error, so the claim guard cannot quarantine it;
+        // 1001 (past the MAX_ATTEMPTS_CEILING) still fails both copies.
+        let payload = payload_with(json!({"issue": {"number": 9609}}));
+        let mut packet = json!({"title": "test", "priority": 30, "payload": payload});
+        packet["max_attempts"] = json!(1000);
+        packet["payload"]["max_attempts"] = json!(1000);
+        assert!(
+            !validate_packet(&packet)
+                .0
+                .iter()
+                .any(|e| e.contains("max_attempts")),
+            "{packet}"
+        );
+        assert_eq!(task_from_packet(&packet, "q")["max_attempts"], 1000);
+        let base = packet.clone();
+        for top in [true, false] {
+            let mut packet = base.clone();
+            if top {
+                packet["max_attempts"] = json!(1001);
+            } else {
+                packet["payload"]["max_attempts"] = json!(1001);
+            }
+            let field = if top {
+                "packet.max_attempts"
+            } else {
+                "payload.max_attempts"
+            };
+            assert!(
+                validate_packet(&packet).0.iter().any(|e| e.contains(field)),
+                "{packet}"
+            );
+        }
     }
 
     fn payload_with(identity: serde_json::Value) -> Value {
