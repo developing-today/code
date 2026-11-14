@@ -1,0 +1,15 @@
+[package]
+name = "rust-counter"
+version = "0.1.0"
+edition = "2021"
+description = "Playable Rust Plaza world: the F12.8 (#1065) twin of examples/roc-counter, built on the plaza-sdk crate in ../rust-world."
+license = "MIT OR Apache-2.0"
+
+# Standalone crate: intentionally not a member of the pkgs/id workspace.
+[workspace]
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+plaza-sdk = { path = "../rust-world" }

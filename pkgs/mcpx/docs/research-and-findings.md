@@ -2,15 +2,18 @@
 
 ```
 created:      2026-11-01T01:30:00-05:00
-last-updated: 2026-11-01T01:30:00-05:00
-increment:    1
+last-updated: 2026-11-14T07:00:00-06:00
+increment:    2
 status:       draft
 tags:         area:docs, area:compendium, topic:research
 description:  what was learned while building mcpx, and while doing anything
               else in this repository, collected by topic and tagged with its
               provenance so it is not lost in session transcripts. First slice
               of #1871: the section outline, the seed findings that already
-              exist in the repository, and the harvesting process.
+              exist in the repository, and the harvesting process. Second
+              slice: the standalone Nix section and the Containers and CI
+              harvest, with the placement answer recorded in the Nix
+              section.
 ```
 
 This chapter is the compendium's research chapter (#1871). It holds research
@@ -233,25 +236,165 @@ model providers, and the credential/OAuth providers that hand out tokens.
 
 ## Containers and CI
 
-Outline only in this slice: the container and CI seeds (static Go builds,
-image-size anatomy, `actions/setup-go` in a monorepo, stopping test
-daemons) are harvested with the Nix slice below, because several were
-recorded alongside it (#182) and splitting them twice would fork them.
-The seeds themselves are listed on #1871 and in `docs/container.md`
-sections 4–5.
+- **Static Go builds: `CGO_ENABLED=0` is a behaviour change on Linux, and
+  nearly free.** `os/user` and `net` pull in libc only under cgo; with cgo
+  off, pure-Go `os/user` reads `/etc/passwd` instead of NSS and the pure-Go
+  resolver ignores `nsswitch.conf`. The measured cost was nothing: a fully
+  static linux binary within ~100 bytes of the cgo build (14 811 298
+  against 14 811 401) that still runs `exec`, verified `not a dynamic
+executable` under `ldd`. The policy that came out of it (#1987): the
+  artifacts that ship as a bare binary ship static, and `package.nix` sets
+  `env.CGO_ENABLED = "0"`. On macOS, since Go 1.20, `net` and `os/user`
+  use the system libraries without cgo, so the flag changes nothing there.
+  _(measured — `docs/container.md` section 4)_
+- **Where image size goes: `git` outweighs the runtime.** In the retired
+  Debian prototype (historical measurements, linux/arm64, not the current
+  Nix image), `debian:bookworm-slim` plus `git` with
+  `--no-install-recommends` cost a 105 MB apt layer — more than bun at
+  79.4 MB — because Debian's `git` depends on perl outright. Dropping git
+  took the image from 413 MB to 288 MB of disk usage. _(measured —
+  `docs/container.md` section 5)_
+- **`actions/setup-go` in a monorepo needs `cache-dependency-path`.**
+  Without it, setup-go looks for `go.sum` at the repository root, logs
+  "Restore cache failed: Dependencies file is not found" on every run,
+  and never restores a cache. Every setup-go step in the mcpx workflow now
+  passes `cache-dependency-path: pkgs/mcpx/go.sum`, with the reason in the
+  comment above it. _(read-from-source — `.github/workflows/mcpx.yml`
+  setup-go steps; fixed in #182)_
+- **Test daemons must be stopped the way they record themselves.** Plain
+  `stop` recomputes the socket path from the environment, which a long
+  state path moves elsewhere, so e2e daemons once survived for hours
+  (#52). The fix stops daemons through the info files they write
+  (`stop --all` builds its client from the daemon's own record), and the
+  e2e harness sets a short idle exit as a backstop for anything that
+  escapes cleanup entirely. _(read-from-source —
+  `internal/cli/client.go`; `internal/cli/stopall_test.go`;
+  `internal/e2e/e2e_test.go`; #52, harvested in #182)_
 
 ## Nix
 
-**Later slice, named rather than dropped.** The standalone Nix section —
-a section that does not need to mention mcpx — is the second slice of
-#1871, not part of this one. Its seeds are already recorded on #1871:
-`vendorHash` repair in the mcpx workflow, the sandbox-test package list in
-`package.nix`, pure-Go SQLite, `wrapProgram` PATH suffixes, generated man
-pages and completions, the flake layout and patch maintenance for this
-repository, and the macOS findings. Open question 2 on #1871 (does this
-section live in this book, or in a book for the whole repository that this
-one links to?) is still open and should be answered before the slice is
-written, not after.
+This section is standalone by design: it does not need to mention the
+project the book belongs to, and most entries below do not. **Placement,
+recorded so the question does not reopen:** this section lives in this
+book (open question 2 on #1871, answered). The note that commissioned
+the chapter scoped it that way — the compendium "can have an entire
+section on nix that is a hundred pages and doesnt mention mcpx at all" —
+and the seeds are this repository's Nix findings, harvested alongside
+the Containers and CI seeds they were recorded with. If a
+repository-wide book ever exists, this book links to it then; there is
+no pre-emptive split.
+
+**Go on Nix.**
+
+- **`vendorHash` repair is a workflow job, because the bot cannot do
+  it.** Renovate can bump `go.mod` but cannot compute the vendored-tree
+  hash, so every Go dependency bump used to break the Nix build and
+  merge silently. The workflow's `vendorhash-repair` job runs only on
+  bot branches: it blanks `vendorHash` in `package.nix`, reads the
+  `got: sha256-...` line from the failed build, commits the repaired
+  hash back to the bot branch, and fails the PR if the build still does
+  not pass. A human changing dependencies deliberately gets no repair —
+  they see the failure and fix it themselves. _(read-from-source —
+  `.github/workflows/mcpx.yml`, `vendorhash-repair` job)_
+- **The sandbox test list is computed now, not listed.** The seed form
+  of this finding was an explicit package list in `package.nix`:
+  `subPackages = [ "cmd/mcpx" ]` confines `go test` to a package with no
+  tests, so `checkPhase` listed the internal packages by hand and a new
+  package was untested in the sandbox until someone added it. The
+  current form inverts the default: `checkPhase` computes every package
+  with test files, minus a `checkExclude` list whose every entry needs
+  a comment saying why it cannot run in the sandbox, with
+  `internal/buildcheck` enforcing both halves. The lesson survives the
+  inversion: a Nix sandbox runs only the tests the derivation says it
+  runs, so say it in a way a new package cannot silently fall out of.
+  _(read-from-source — `package.nix`, `checkPhase` and the comment
+  above it; seed form on #1871)_
+- **Pure-Go SQLite keeps the derivation free of a C toolchain.**
+  `modernc.org/sqlite` is a pure-Go translation of SQLite rather than a
+  binding; the usual cgo driver would require a C toolchain in the
+  derivation, break cross-compilation (no Linux binary from a Mac), and
+  fail `CGO_ENABLED=0` builds outright. _(read-from-source —
+  `docs/dependencies.md`, "Why this driver"; `package.nix` comment at
+  the dependency)_
+
+**Wrapping and generated artefacts.**
+
+- **`wrapProgram --suffix PATH`, so behaviour does not depend on the
+  calling shell.** The installed binary is wrapped with git, deno,
+  `bun-bin` and nodejs appended to PATH. Git is the load-bearing one:
+  the `repo` and `worktree` scopes degrade to `cwd` — silently weaker —
+  when git is missing, so the wrapper makes its presence a property of
+  the package, not of the caller's environment. _(read-from-source —
+  `package.nix`, `postInstall`; `docs/dependencies.md`, "External
+  programs")_
+- **The man page and shell completions are generated by the just-built
+  binary in `postInstall`** — the man page, the Markdown reference
+  tree, and the bash/zsh/fish completions all come from the binary's
+  own declarations at install time. "A man page maintained separately
+  is wrong within two releases" is the reason recorded in the source.
+  _(read-from-source — `package.nix`, `postInstall`)_
+
+**Beyond one package: this repository.**
+
+- **One flake carries the whole estate.** This repository's
+  `flake.nix` is a nix-darwin + NixOS + home-manager flake: the
+  nix-darwin input, `machines/`, `nixos/`, `modules/`, `home/`, and a
+  `pkgs/` tree of custom packages (dozens, from `bun-bin`-style runtime
+  pins to whole tools) all build from the one flake. A finding about
+  "the Nix setup" here is a finding about that monorepo flake, not
+  about any single package in it. _(read-from-source — `flake.nix`;
+  `pkgs/`)_
+- **Homebrew is the flake's macOS escape hatch, recorded as a seed.**
+  The seed names the nix-darwin Homebrew layer — brews, casks and
+  `masApps` for what Nix does not package — as part of this section's
+  territory. Harvest note, 2026-11-14: no Homebrew declaration was
+  found in `home/`, `machines/`, `modules/` or `nixos/` on current
+  `main`, so the layer's current home needs naming here by whoever
+  next touches the darwin configuration; the seed stands as recorded.
+  _(reported — #1871 seed list)_
+- **Patching a fork from the flake, and keeping the patches alive.**
+  This flake does not patch its opencode input with loose patch files:
+  the `opencode` flake input is the maintained fork
+  (`developing-today-forks/opencode`), the openchamber input follows
+  the same opencode so there is one opencode source in the whole
+  module chain, and the `flake-inputs-update` workflow bumps,
+  validates and merges those inputs daily. The patch-maintenance
+  skills the seed names (`update-opencode`, `fix-opencode-patches`)
+  belong to that fork-and-update workflow; the three root-level patch
+  files an earlier harvest named are no longer on `main` (see Token
+  providers above). _(read-from-source — `flake.nix`, opencode input;
+  `.github/workflows/flake-inputs-update.yml`; seed on #1871)_
+- **Renovate on a flake: delegate what a workflow owns.** Renovate
+  runs against this repository, but its `renovate.json` disables the
+  nix manager for the opencode and openchamber flake inputs, because
+  the dedicated `flake-inputs-update` workflow owns them. Two bots
+  racing the same pin produce broken bumps; one owner per input is
+  the rule the config records. _(read-from-source — `renovate.json`)_
+- **The justfile is the human entry point.** The repository root
+  `justfile` imports `root.just` and per-package recipe modules
+  (`mod id 'pkgs/id/justfile'`), so the commands a person runs day to
+  day are just recipes over the flake, not memorised `nix` invocations.
+  _(read-from-source — `justfile` at the repository root)_
+
+**macOS findings.**
+
+- **The temp-dir sweep eats worktrees, silently.** The per-user temp
+  directory `/var/folders/.../T/` is swept by the OS; a sweep destroyed
+  ~3,000 tracked files across several active worktrees in a single
+  session, while `git status` kept reporting a clean tree from a stale
+  fsmonitor index. Worktrees belong on durable storage, never under
+  `/var` — the "pre-approved" temp path is a permission, not a
+  durability promise. _(read-from-source — `doc/platform/worktrees.md`;
+  seed on #1871)_
+- **Platform-only tests cut both ways.** Two tests once passed only on
+  macOS (#35, as recorded on #1871). The current tree carries the
+  inverse in the open: the Nix `checkPhase` names twenty Linux-only
+  takeover/handoff tests that the darwin run skips by name, because
+  they exercise `/proc` and systemd mechanics darwin does not have.
+  A named skip list with the reason attached is how a platform-only
+  test stays a fact instead of becoming a surprise. _(reported —
+  #1871 seed list, #35; read-from-source — `package.nix`,
+  `darwinSkip`)_
 
 ## Harvesting: how findings get here
 

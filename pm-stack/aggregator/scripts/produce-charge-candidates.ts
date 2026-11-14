@@ -108,7 +108,8 @@ export function stagedManifestPeriod(manifest: { start?: unknown; end?: unknown 
 /** Plaid categories that are money movement, not merchant charges. */
 const EXCLUDED_CATEGORIES = new Set(["Transfer", "Payment", "Interest", "Bank Fees"]);
 
-const USAGE = "usage: bun run scripts/produce-charge-candidates.ts [--start YYYY-MM-DD] [--end YYYY-MM-DD] [--out <path>] [--skip-gmail]";
+const USAGE =
+  "usage: bun run scripts/produce-charge-candidates.ts [--start YYYY-MM-DD] [--end YYYY-MM-DD] [--out <path>] [--skip-gmail]";
 
 // Reject unknown, misspelled, joined, duplicated, or positional
 // arguments BEFORE any connector call, staged-file read, or file
@@ -473,11 +474,15 @@ async function main(): Promise<void> {
     ({ start, end } = stagedManifestPeriod(manifest));
   } else {
     if (explicitStart !== undefined && !isRealCalendarDate(explicitStart)) {
-      console.error(`producer: --start value ${JSON.stringify(explicitStart)} is not a real calendar date (expected YYYY-MM-DD)`);
+      console.error(
+        `producer: --start value ${JSON.stringify(explicitStart)} is not a real calendar date (expected YYYY-MM-DD)`,
+      );
       process.exit(2);
     }
     if (explicitEnd !== undefined && !isRealCalendarDate(explicitEnd)) {
-      console.error(`producer: --end value ${JSON.stringify(explicitEnd)} is not a real calendar date (expected YYYY-MM-DD)`);
+      console.error(
+        `producer: --end value ${JSON.stringify(explicitEnd)} is not a real calendar date (expected YYYY-MM-DD)`,
+      );
       process.exit(2);
     }
     if (end < start) {

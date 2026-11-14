@@ -28,6 +28,7 @@ func AskMCPBinary(t *testing.T) string {
 			askErr = err
 			return
 		}
+		registerBuildTempDir(dir)
 		askBin = filepath.Join(dir, "askmcp")
 		cmd := exec.Command("go", "build", "-o", askBin, "./internal/testsupport/askmcp")
 		cmd.Dir = repoRoot()

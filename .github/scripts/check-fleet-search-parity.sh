@@ -12,8 +12,9 @@
 # break the contract.
 #
 # server.rs is held the same way: the service must behave identically
-# whether it runs as `atlas-search serve` or `fleet serve search`, so
-# its two copies differ only in their own pinned header.
+# whether it runs as `atlas-search serve` or `fleet serve search`. The
+# only intentional body difference is the binary name in the HOME error
+# (#5640); the guard pins and normalizes exactly that diagnostic.
 #
 # Rule: after removing each file's parity header -- the four `//!`
 # lines at lines 2-5, directly after the shared first line -- the two
@@ -58,6 +59,21 @@ trap 'rm -rf "$TMP"' EXIT
 
 fail=0
 
+normalize_server_home_error() { # <file> <binary-name>
+  local file="$1" binary="$2"
+  local expected="HOME is not set or is empty: $binary requires a non-empty HOME to resolve its state/config paths (issue #5640)"
+  local normalized="HOME is not set or is empty: search service requires a non-empty HOME to resolve its state/config paths (issue #5640)"
+  local count
+  # -o counts every occurrence, including two occurrences on one line.
+  count="$(grep -F -o "$expected" "$file" | wc -l || true)"
+  count="${count//[[:space:]]/}"
+  if [ "$count" != "1" ]; then
+    echo "::error::check-fleet-search-parity: expected exactly one #5640 HOME diagnostic for $binary in $file (found $count)"
+    return 1
+  fi
+  sed -i "s|$expected|$normalized|" "$file"
+}
+
 # check_pair <name> <atlas-header> <fleet-header> : compare
 # $ATLAS_DIR/<name> with $FLEET_DIR/<name>.
 check_pair() {
@@ -88,6 +104,12 @@ check_pair() {
   # Everything except the parity header (line 1 + lines 6+) must match.
   sed '2,5d' "$atlas" >"$TMP/$name.atlas"
   sed '2,5d' "$fleet" >"$TMP/$name.fleet"
+  if [ "$name" = "server.rs" ]; then
+    # #5640 intentionally names the binary in its HOME diagnostic. Pin
+    # each exact variant above, then compare the rest of the service.
+    normalize_server_home_error "$TMP/$name.atlas" atlas-search || return 1
+    normalize_server_home_error "$TMP/$name.fleet" fleet-search || return 1
+  fi
   if ! diff -u "$TMP/$name.atlas" "$TMP/$name.fleet" >"$TMP/$name.diff"; then
     echo "::error::check-fleet-search-parity: $name diverged between atlas-search and fleet-search beyond the parity header -- the #5433/#5604 byte-parity contract is broken; mirror the change in both copies (#5920)"
     cat "$TMP/$name.diff"

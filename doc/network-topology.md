@@ -57,7 +57,7 @@
 │NIC ││NIC ││NIC ││NIC ││NIC ││NIC ││NIC ││NIC ││NIC ││NIC ││NIC ││NIC │
 └────┘└────┘└────┘└────┘└────┘└────┘└────┘└────┘└────┘└────┘└────┘└────┘
                      ~12 Kubernetes Nodes (LINSTOR/DRBD/Cozystack)
-                     Default GW: 10.0.200.1 (Mono 2/3 VRRP VIP via DHCP)
+                     Default GW: 10.30.0.1 (Mono 2/3 VRRP VIP)
 ```
 
 ## Switch Port Map
@@ -102,14 +102,46 @@ Switch requirements: ≥ 6 SFP+ 10G + 11 RJ45 1G, hybrid/general port mode,
 ## VLAN Summary
 
 ```
-┌──────────────┬───────────────┬───────────────────────────────────────────────────┐
-│  VLAN        │ MTU           │ Purpose                                           │
-├──────────────┼───────────────┼───────────────────────────────────────────────────┤
-│  10 (WAN)    │ 1500          │ ONT ↔ Mono 1. ISP-facing.                        │
-│  20 (Transit)│ 1500          │ Mono mesh. Always tagged, never a PVID.           │
-│  30 (Internal│ 9216 (jumbo)  │ Nodes ↔ Mono 2/3. DRBD/storage traffic.          │
-└──────────────┴───────────────┴───────────────────────────────────────────────────┘
+┌────────────────┬────────────────┬─────────────────────────────────────────────────┐
+│  VLAN          │  MTU           │  Purpose                                        │
+├────────────────┼────────────────┼─────────────────────────────────────────────────┤
+│  10 (WAN)      │  1500          │  ONT ↔ Mono 1. ISP-facing.                      │
+│  20 (Transit)  │  1500          │  Mono mesh. Always tagged, never a PVID.        │
+│  30 (Internal) │  9216 (jumbo)  │  Nodes ↔ Mono 2/3. DRBD/storage traffic.        │
+└────────────────┴────────────────┴─────────────────────────────────────────────────┘
 ```
+
+## Addressing and Segmentation Plan (proposed, not deployed)
+
+This is the target IPv4 plan for the VLANs above, replacing addresses from the
+torn-down 01b.us test cluster. It is a design, not a record of configured
+devices or physical acceptance. Before configuration, confirm the private
+ranges do not overlap the home LAN, VPN/tailnet routes, or any cloud networks;
+also confirm the gateway and DHCP failover choices below. No per-machine
+addresses are assigned until the inventory and NIC facts in #1080/#1097 are
+verified.
+
+| VLAN          | IPv4 allocation                                                              | Gateway and assignment policy                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
+| ------------- | ---------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 10 — WAN      | ISP-provided address on the ONT/Mono 1 WAN handoff; no locally chosen subnet | Mono 1 is the only WAN-facing router. Obtain addressing from the ISP/ONT as provisioned; never serve node DHCP or bridge nodes directly onto this VLAN.                                                                                                                                                                                                                                                                                                                       |
+| 20 — Transit  | `172.20.0.0/29` (`172.20.0.0` network, `.7` broadcast)                       | Static router addresses: Mono 1 `172.20.0.1`, Mono 2 `172.20.0.2`, Mono 3 `172.20.0.3`. Mono 2/3 send upstream traffic to Mono 1; no DHCP clients or non-router endpoints.                                                                                                                                                                                                                                                                                                    |
+| 30 — Internal | `10.30.0.0/24` (`10.30.0.0` network, `10.30.0.255` broadcast)                | VRRP default-gateway VIP `10.30.0.1`; Mono 2 `10.30.0.2`; Mono 3 `10.30.0.3`. Router addresses are static. Use DHCP reservations for cluster nodes after their MAC/NIC inventory is verified; reserve `.16–.63` for those nodes. Keep `.4–.15` for confirmed network infrastructure, `.64–.127` for statically managed cluster/service addresses, `.128–.191` unallocated growth, and `.192–.239` as a bounded temporary/provisioning DHCP pool. `.240–.254` remain reserved. |
+
+VLAN 30 remains one internal L2 subnet for the current node/storage fabric; the
+address ranges above are allocation conventions, not extra VLANs or security
+boundaries. The edge firewall and internal gateways enforce the routed
+boundaries: nodes reach the WAN only through Mono 2/3 → VLAN 20 → Mono 1, and
+VLAN 10 has no direct node attachment. Keep the service-address range out of
+DHCP. Do not assign BMC/KVM addresses or put management interfaces on VLAN 30
+by assumption: the management VLAN/subnet and per-machine reachability remain
+gated on the verified inventory and physical work in #1080/#1097.
+
+Mono 2/3 provide the VLAN 30 gateway, DNS, and DHCP roles. DHCP reservations
+for nodes are created only after inventory; dynamic leases are limited to the
+temporary pool. The pair must use one explicit, tested lease-coordination or
+active/standby failover design before both gateways serve DHCP—never run
+independent overlapping scopes. Static routes and the VRRP VIP are configured
+on the routers, not obtained from DHCP. VLAN 20 remains statically addressed.
 
 ## Bonding Detail
 
@@ -161,7 +193,7 @@ Switch requirements: ≥ 6 SFP+ 10G + 11 RJ45 1G, hybrid/general port mode,
 ├─────────────────────┴───────────────────────────┤
 │  Functions: DHCP, DNS, default gateway          │
 │  Default: LAN (VLAN 30). Transit is explicit.   │
-│  VRRP VIP: 10.0.200.1                          │
+│  VRRP VIP: 10.30.0.1                           │
 │  Mono 2: priority 120 (master)                  │
 │  Mono 3: priority 110 (backup)                  │
 │  track_interface:                               │
@@ -183,7 +215,7 @@ NODE-TO-INTERNET (e.g., node pulls container image):
               Intermediate Switch (access port)
                     │
                     ▼ VLAN 30 (untagged on Mono hybrid port)
-              Mono 2 or 3  (VRRP VIP 10.0.200.1)
+              Mono 2 or 3  (VRRP VIP 10.30.0.1)
               ┌─ MTU boundary: 9216 → 1500 ─┐
               │  Routes + sends ICMP         │
               │  "Frag Needed" for PMTUD     │
@@ -221,6 +253,41 @@ MONO-TO-MONO (transit, e.g., Mono 2 → Mono 1 for NAT):
                                  Mono 1 bond-sfp.20
                                  (or bond-rj45.20 if SFP+ down)
 ```
+
+## Internet Egress Policy (design constraints, not deployed configuration)
+
+The roadmap records a **2 Gbps symmetric Brightspeed service**. Treat that as
+the shared WAN ceiling, not measured throughput or a promise of application
+bandwidth. All node internet traffic follows VLAN 30 → Mono 2/3 → VLAN 20 →
+Mono 1 NAT/firewall → VLAN 10/ONT. Node-to-node storage traffic stays on the
+internal fabric and does not consume this WAN capacity. No direct node-to-WAN
+path or unsolicited inbound port-forward is part of this design. Any shaping,
+priority, or rate limit must be configured and measured after the real link and
+hardware are verified; this document does not claim that such controls exist.
+
+- **Cloudflare Tunnel:** use only for explicitly approved public HTTP(S)
+  services. The connector initiates outbound connections; do not treat that as
+  a general network route or publish admin/BMC interfaces. Limit hostnames and
+  origins to the intended service.
+- **Turso:** clients use outbound TLS to the managed database service. Turso is
+  not a LAN tunnel; database traffic is still WAN egress. Keep replication,
+  exports, and other bulk transfers bounded, and do not route them through a
+  second overlay unless a separate design requires it.
+- **Tailscale:** use the overlay for private administration and private
+  service access, not as the default public-ingress path. Prefer direct
+  peer-to-peer paths when available; DERP relay fallback adds latency and
+  consumes WAN capacity. Do not assume every connection is direct or that
+  relay traffic is free of the Brightspeed limit.
+- **Compression:** no compression is assumed at the tunnel or TLS layer.
+  Compress/deduplicate bulk data at the application or file-transfer layer
+  only where supported and measured; skip already-compressed or encrypted
+  content. Consider CPU cost and compression ratio, and schedule or rate-limit
+  bulk transfers so they cannot starve interactive and control-plane traffic.
+
+These are design constraints and operating options, not a statement that
+Cloudflare, Turso, or Tailscale connectivity or traffic shaping is deployed.
+Physical uplink, NIC/switch, and per-machine management verification remain
+gated on #1080/#1097.
 
 ## Cold Spares
 

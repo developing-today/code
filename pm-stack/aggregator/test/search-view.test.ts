@@ -1,5 +1,16 @@
 import { describe, expect, test } from "bun:test";
-import type { BoardItem, DnsSection, GhItem, Provenance, ProvenanceDetail, RefKey, RoadmapRow, SaasService, SessionRecord, TierItem } from "../src/model.ts";
+import type {
+  BoardItem,
+  DnsSection,
+  GhItem,
+  Provenance,
+  ProvenanceDetail,
+  RefKey,
+  RoadmapRow,
+  SaasService,
+  SessionRecord,
+  TierItem,
+} from "../src/model.ts";
 import { renderDns, renderSearch } from "../src/render.ts";
 import { searchWork } from "../src/search-view.ts";
 
@@ -81,7 +92,9 @@ describe("global search first slice", () => {
     const results = searchWork(board, rows, projected, "1212");
     const html = renderSearch("1212", results, projected, provenance, detail);
     expect(html).toContain('action="/search"');
-    expect(html).toContain("Search board items, roadmap rows, registry sessions, DNS domains, services, and tier items");
+    expect(html).toContain(
+      "Search board items, roadmap rows, registry sessions, DNS domains, services, and tier items",
+    );
     expect(html).toContain("Add global search");
     expect(html).toContain("developing-today/code#1212");
     expect(html).toContain("items · live");
@@ -183,10 +196,7 @@ describe("global search slice 2 (#1212)", () => {
   test("board and roadmap results keep their /item/ detail links", () => {
     const results = searchWork(board, rows, projected, "1212", extras);
     const work = results.filter((r) => r.kind === "board" || r.kind === "roadmap");
-    expect(work.map((r) => r.href)).toEqual([
-      "/item/kaneo%3Apm-stack%2Ftask-1",
-      "/item/grist%3Aprogram%2Froadmap%2F7",
-    ]);
+    expect(work.map((r) => r.href)).toEqual(["/item/kaneo%3Apm-stack%2Ftask-1", "/item/grist%3Aprogram%2Froadmap%2F7"]);
   });
 
   test("renders the new kinds with their home freshness facets", () => {
@@ -218,7 +228,14 @@ describe("global search slice 2 - Codex findings on PR #7331", () => {
 
   test("P1: renderSearch survives a hand-built result carrying a non-GitHub ref", () => {
     const results = [
-      { kind: "tier" as const, id: "tier-x", title: "Hand built", summary: "s", refs: ["goal_b647ff5c92f5" as RefKey], href: "/discuss/orch%3Atier-x" },
+      {
+        kind: "tier" as const,
+        id: "tier-x",
+        title: "Hand built",
+        summary: "s",
+        refs: ["goal_b647ff5c92f5" as RefKey],
+        href: "/discuss/orch%3Atier-x",
+      },
     ];
     const html = renderSearch("Hand built", results, projected, provenance, detail);
     expect(html).toContain("goal_b647ff5c92f5");
@@ -228,7 +245,9 @@ describe("global search slice 2 - Codex findings on PR #7331", () => {
     const oddRegistry: SessionRecord[] = [
       { ...registry[0], id: "ses_odd", label: "Odd session", model: 7 as unknown as string, directory: "needle-dir" },
     ];
-    expect(searchWork([], [], projected, "needle-dir", { registry: oddRegistry }).map((r) => r.kind)).toEqual(["registry"]);
+    expect(searchWork([], [], projected, "needle-dir", { registry: oddRegistry }).map((r) => r.kind)).toEqual([
+      "registry",
+    ]);
     const oddDns: DnsSection = {
       ...dns,
       entries: [{ ...dns.entries[0], domain: "odd.example", registrar: 7 as unknown as string, plan: "needle plan" }],

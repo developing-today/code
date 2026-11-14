@@ -83,7 +83,6 @@ OUT="$(serve "/static/nope.txt")"
 [[ $OUT == *"404"* ]]
 check "handler: missing asset returns 404" $?
 
-
 # --- property coverage: generated paths vs an independent oracle -------
 # Invariant: a request succeeds only when its fully-resolved target is a
 # regular file beneath the canonical static root. The oracle below is an
