@@ -37,6 +37,7 @@ pub mod fusion;
 pub mod local;
 pub mod search;
 pub mod shards;
+pub mod shingles;
 pub mod stage;
 pub mod trace;
 pub mod turso;
