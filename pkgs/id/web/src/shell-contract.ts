@@ -183,7 +183,11 @@ export function parseShellContract(value: unknown): ShellContract {
       ) {
         throw new Error(`${frameName}: phases must be an array of phase names`);
       }
-      if (frame.opens !== undefined && frame.opens !== null && (typeof frame.opens !== "string" || !PHASES.has(frame.opens))) {
+      if (
+        frame.opens !== undefined &&
+        frame.opens !== null &&
+        (typeof frame.opens !== "string" || !PHASES.has(frame.opens))
+      ) {
         throw new Error(`${frameName}: opens must be a phase name`);
       }
       if (

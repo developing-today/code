@@ -144,7 +144,8 @@ export function dnsSectionFromRegisterJson(
     // malformation like any other — return null and let the caller
     // fall back to the Markdown parse instead of minting a section
     // the gate will discard whole (#4883). Zero stays valid.
-    if (price !== null && price !== undefined && (typeof price !== "number" || !Number.isFinite(price) || price < 0)) return null;
+    if (price !== null && price !== undefined && (typeof price !== "number" || !Number.isFinite(price) || price < 0))
+      return null;
     if (autoRenew !== null && autoRenew !== undefined && typeof autoRenew !== "boolean") return null;
     seen.add(domain);
     const md = mdByDomain.get(domain);

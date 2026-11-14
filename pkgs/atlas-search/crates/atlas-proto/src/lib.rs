@@ -10,6 +10,8 @@
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value as Json;
+use sha2::{Digest, Sha256};
+use std::sync::OnceLock;
 
 /// The sensitivity ladder, least to most restricted. The ordering
 /// is the security ordering used by the server-side clamp.
@@ -137,11 +139,60 @@ pub struct FilterSpec {
 }
 
 fn default_k() -> usize {
-    10
+    SearchParametersV1::default_k()
 }
 
 fn default_pool() -> usize {
-    100
+    SearchParametersV1::default_pool()
+}
+
+fn default_expand() -> usize {
+    SearchParametersV1::default_expand()
+}
+
+fn query_defaults() -> &'static Json {
+    static DEFAULTS: OnceLock<Json> = OnceLock::new();
+    DEFAULTS.get_or_init(|| {
+        serde_json::from_str(include_str!("../query-parameters-v1.json"))
+            .expect("query-parameters-v1.json must be valid JSON")
+    })
+}
+
+fn default_usize(name: &str) -> usize {
+    query_defaults()[name]
+        .as_u64()
+        .and_then(|value| usize::try_from(value).ok())
+        .expect("query-parameters-v1.json is missing an unsigned default")
+}
+
+fn default_u32(name: &str) -> u32 {
+    query_defaults()[name]
+        .as_u64()
+        .and_then(|value| u32::try_from(value).ok())
+        .expect("query-parameters-v1.json is missing a u32 default")
+}
+
+fn default_f64(name: &str) -> f64 {
+    query_defaults()[name]
+        .as_f64()
+        .expect("query-parameters-v1.json is missing a numeric default")
+}
+
+fn default_bool(name: &str) -> bool {
+    query_defaults()[name]
+        .as_bool()
+        .expect("query-parameters-v1.json is missing a boolean default")
+}
+
+fn default_query_hint() -> Option<String> {
+    query_defaults()["query_class_hint"]
+        .as_str()
+        .map(str::to_string)
+}
+
+fn default_variant() -> QueryVariant {
+    serde_json::from_value(query_defaults()["variant"].clone())
+        .expect("query-parameters-v1.json has an invalid variant default")
 }
 
 fn default_model() -> String {
@@ -150,6 +201,284 @@ fn default_model() -> String {
 
 fn default_embedder() -> String {
     "auto".to_string()
+}
+
+/// Query-time controls shared by the CLI, raw JSON request and atlas-core.
+/// The shape and provisional production defaults are versioned together in
+/// `query-parameters-v1.json`. Controls for stages not implemented yet
+/// remain representable but are rejected when set to non-default values.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct SearchParametersV1 {
+    #[serde(default = "default_parameters_version")]
+    pub parameters_version: u32,
+    #[serde(default = "default_shard_top_k")]
+    pub shard_top_k: usize,
+    #[serde(default = "default_global_top_k")]
+    pub global_top_k: usize,
+    #[serde(default = "default_fts_weight")]
+    pub fts_weight: f64,
+    #[serde(default = "default_vector_weight")]
+    pub vector_weight: f64,
+    #[serde(default = "default_jaccard_depth")]
+    pub jaccard_depth: usize,
+    #[serde(default = "default_jaccard_threshold")]
+    pub jaccard_threshold: f64,
+    #[serde(default = "default_rrf_k")]
+    pub rrf_k: usize,
+    #[serde(default = "default_planner_enabled")]
+    pub planner_enabled: bool,
+    #[serde(default = "default_spell_enabled")]
+    pub spell_enabled: bool,
+    #[serde(default = "default_query_hint")]
+    pub query_class_hint: Option<String>,
+    #[serde(default = "default_variant")]
+    pub variant: QueryVariant,
+    #[serde(default = "default_raw")]
+    pub raw: bool,
+    /// #5668 slice 2 (issue #9942): bypass cache reads; results
+    /// still land in the cache (refresh semantics).
+    #[serde(default = "default_no_cache")]
+    pub no_cache: bool,
+    /// #5668 slice 2: block for the full fused result instead of
+    /// returning a job handle + first page. The service protocol
+    /// default is false; the CLI one-shot sets it (its mode
+    /// implies --wait) unless --no-wait is passed.
+    #[serde(default = "default_wait")]
+    pub wait: bool,
+    /// #5668 slice 2: hydrate the top N results to full content
+    /// from the content store. 0 = details as today. --expand
+    /// keeps its shipped neighbor-chunks meaning (the 2026-11-11
+    /// contract on #5668); hydration is this field only.
+    #[serde(default = "default_hydrate")]
+    pub hydrate: usize,
+    /// #5668 slice 2: ungrouped output rows (see RawMode). Named
+    /// raw_mode, not raw: `raw` above is the shipped verbatim-query
+    /// flag and is not repurposed, exactly as --expand was not.
+    #[serde(default = "default_raw_mode")]
+    pub raw_mode: RawMode,
+}
+
+fn default_parameters_version() -> u32 {
+    default_u32("parameters_version")
+}
+fn default_shard_top_k() -> usize {
+    default_usize("shard_top_k")
+}
+fn default_global_top_k() -> usize {
+    default_usize("global_top_k")
+}
+fn default_fts_weight() -> f64 {
+    default_f64("fts_weight")
+}
+fn default_vector_weight() -> f64 {
+    default_f64("vector_weight")
+}
+fn default_jaccard_depth() -> usize {
+    default_usize("jaccard_depth")
+}
+fn default_jaccard_threshold() -> f64 {
+    default_f64("jaccard_threshold")
+}
+fn default_rrf_k() -> usize {
+    default_usize("rrf_k")
+}
+fn default_planner_enabled() -> bool {
+    default_bool("planner_enabled")
+}
+fn default_spell_enabled() -> bool {
+    default_bool("spell_enabled")
+}
+fn default_raw() -> bool {
+    default_bool("raw")
+}
+fn default_no_cache() -> bool {
+    default_bool("no_cache")
+}
+fn default_wait() -> bool {
+    default_bool("wait")
+}
+fn default_hydrate() -> usize {
+    default_usize("hydrate")
+}
+fn default_raw_mode() -> RawMode {
+    serde_json::from_value(query_defaults()["raw_mode"].clone())
+        .expect("query-parameters-v1.json has an invalid raw_mode default")
+}
+
+/// Ungrouped-output mode (#5668 slice 2, design 2026-11-04 s3.3).
+/// `Off` is the shipped grouped/fused rendering. `Ungrouped`
+/// returns flat fused rows with no session grouping. `Branches`
+/// returns the pre-fusion branch rows exactly as the branches
+/// produced them (the design's --raw=branches).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum RawMode {
+    #[default]
+    Off,
+    Ungrouped,
+    Branches,
+}
+
+impl RawMode {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            RawMode::Off => "off",
+            RawMode::Ungrouped => "ungrouped",
+            RawMode::Branches => "branches",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum QueryVariant {
+    #[default]
+    Raw,
+    Rewritten,
+    Both,
+}
+
+impl Default for SearchParametersV1 {
+    fn default() -> Self {
+        serde_json::from_str(include_str!("../query-parameters-v1.json"))
+            .expect("query-parameters-v1.json must match SearchParametersV1")
+    }
+}
+
+impl SearchParametersV1 {
+    pub fn default_k() -> usize {
+        default_usize("k")
+    }
+
+    pub fn default_pool() -> usize {
+        default_usize("pool")
+    }
+
+    pub fn default_expand() -> usize {
+        default_usize("expand")
+    }
+
+    /// Validate controls available on this implementation. Unsupported
+    /// non-default controls fail explicitly rather than being ignored.
+    pub fn validate(&self, expand: usize) -> Result<(), String> {
+        if self.parameters_version != 1 {
+            return Err(format!(
+                "parameters_version {} is unsupported (expected 1)",
+                self.parameters_version
+            ));
+        }
+        for (name, value) in [
+            ("shard_top_k", self.shard_top_k),
+            ("global_top_k", self.global_top_k),
+        ] {
+            if !(1..=400).contains(&value) {
+                return Err(format!("{name} must be between 1 and 400"));
+            }
+        }
+        if self.rrf_k == 0 || self.rrf_k > 10_000 {
+            return Err("rrf_k must be between 1 and 10000".to_string());
+        }
+        for (name, value) in [
+            ("fts_weight", self.fts_weight),
+            ("vector_weight", self.vector_weight),
+        ] {
+            if !value.is_finite() || value < 0.0 {
+                return Err(format!("{name} must be a finite non-negative number"));
+            }
+        }
+        if self.fts_weight == 0.0 && self.vector_weight == 0.0 {
+            return Err("at least one of fts_weight or vector_weight must be positive".to_string());
+        }
+        if !self.jaccard_threshold.is_finite()
+            || self.jaccard_threshold < 0.0
+            || self.jaccard_threshold > 1.0
+        {
+            return Err("jaccard_threshold must be a finite number in [0, 1]".to_string());
+        }
+        if self.planner_enabled || self.spell_enabled {
+            return Err("planner/spell stages are not implemented yet".to_string());
+        }
+        if self.query_class_hint.is_some() {
+            return Err("query_class_hint is not implemented yet".to_string());
+        }
+        if self.variant != QueryVariant::Raw {
+            return Err("rewritten/both query variants are not implemented yet".to_string());
+        }
+        if self.raw && expand != 0 {
+            return Err("raw mode cannot be combined with non-zero expand".to_string());
+        }
+        if self.hydrate > 1000 {
+            return Err("hydrate must be at most 1000".to_string());
+        }
+        Ok(())
+    }
+}
+
+impl SearchParametersV1 {
+    /// The canonical key material for every cache keyed by a
+    /// search's outcome (#5668 s3.2/s3.3): all of the parameters
+    /// plus the request-level result-shaping controls (expand,
+    /// group_by_session, with_message) in a fixed order with
+    /// explicit labels, so two searches that could render
+    /// differently never share key material. This is THE
+    /// constructor: the service dedupe key stores it verbatim and
+    /// the result cache hashes it (see result_cache_key); a flag
+    /// added here must be added to this string, and the flag
+    /// sensitivity tests below fail until it is.
+    pub fn canonical_key_material(
+        &self,
+        expand: usize,
+        group_by_session: bool,
+        with_message: bool,
+    ) -> String {
+        format!(
+            "pv={}|shard_top_k={}|global_top_k={}|fts_weight={}|vector_weight={}|jaccard_depth={}|jaccard_threshold={}|rrf_k={}|planner={}|spell={}|hint={}|variant={:?}|raw={}|no_cache={}|wait={}|hydrate={}|raw_mode={}|expand={}|group={}|with_message={}",
+            self.parameters_version,
+            self.shard_top_k,
+            self.global_top_k,
+            self.fts_weight,
+            self.vector_weight,
+            self.jaccard_depth,
+            self.jaccard_threshold,
+            self.rrf_k,
+            self.planner_enabled,
+            self.spell_enabled,
+            self.query_class_hint.as_deref().unwrap_or(""),
+            self.variant,
+            self.raw,
+            self.no_cache,
+            self.wait,
+            self.hydrate,
+            self.raw_mode.as_str(),
+            expand,
+            group_by_session,
+            with_message,
+        )
+    }
+
+    /// The design's result-cache key (#5668 s3.2):
+    /// sha256(query_text || snapshot_id || ceiling || flags),
+    /// hex-encoded. `snapshot_id` names the corpus state (the
+    /// publish-manifest hash; the result-cache slice supplies
+    /// it); `ceiling` is the EFFECTIVE (clamped) ceiling name,
+    /// so a lower-ceiling request can never be served from a
+    /// higher-ceiling entry.
+    pub fn result_cache_key(
+        &self,
+        query: &str,
+        snapshot_id: &str,
+        ceiling: &str,
+        expand: usize,
+        group_by_session: bool,
+        with_message: bool,
+    ) -> String {
+        let material = format!(
+            "atlas-result-cache/v1|query={query}|snapshot={snapshot_id}|ceiling={ceiling}|{}",
+            self.canonical_key_material(expand, group_by_session, with_message)
+        );
+        let digest = Sha256::digest(material.as_bytes());
+        digest.iter().map(|b| format!("{b:02x}")).collect()
+    }
 }
 
 /// A search job submission. This is the complete one-shot CLI
@@ -177,8 +506,12 @@ pub struct SearchRequest {
     pub pool: usize,
     #[serde(default)]
     pub group_by_session: bool,
-    #[serde(default)]
+    #[serde(default = "default_expand")]
     pub expand: usize,
+    /// Flattened on the wire so each JSON parameter name matches its CLI
+    /// spelling without the leading `--`.
+    #[serde(flatten)]
+    pub parameters: SearchParametersV1,
     #[serde(default)]
     pub with_message: bool,
     #[serde(default = "default_model")]
@@ -206,7 +539,8 @@ impl Default for SearchRequest {
             k: default_k(),
             pool: default_pool(),
             group_by_session: false,
-            expand: 0,
+            expand: default_expand(),
+            parameters: SearchParametersV1::default(),
             with_message: false,
             model: default_model(),
             embedder: default_embedder(),
@@ -489,6 +823,64 @@ mod tests {
         assert_eq!(req.k, 10);
         assert_eq!(req.pool, 100);
         assert_eq!(req.vector_backend, VectorBackend::Scan);
+        assert_eq!(req.parameters, SearchParametersV1::default());
+    }
+
+    #[test]
+    fn query_parameters_are_flattened_and_keep_cli_json_names() {
+        let raw = r#"{
+            "query":"atlas",
+            "parameters_version":1,
+            "shard_top_k":32,
+            "global_top_k":8,
+            "fts_weight":1.5,
+            "vector_weight":0.75,
+            "jaccard_depth":0,
+            "jaccard_threshold":0.0,
+            "rrf_k":20,
+            "planner_enabled":false,
+            "spell_enabled":false,
+            "query_class_hint":null,
+            "variant":"raw",
+            "raw":true
+        }"#;
+        let req: SearchRequest = serde_json::from_str(raw).unwrap();
+        assert_eq!(req.parameters.shard_top_k, 32);
+        assert_eq!(req.parameters.global_top_k, 8);
+        assert_eq!(req.parameters.rrf_k, 20);
+        assert!(req.parameters.raw);
+        let wire = serde_json::to_value(req).unwrap();
+        assert_eq!(wire["shard_top_k"], 32);
+        assert_eq!(wire["global_top_k"], 8);
+        assert_eq!(wire["rrf_k"], 20);
+        assert_eq!(wire["raw"], true);
+        assert!(wire.get("parameters").is_none());
+    }
+
+    #[test]
+    fn unsupported_or_invalid_query_parameters_are_rejected() {
+        let defaults = SearchParametersV1::default();
+        assert!(defaults.validate(0).is_ok());
+        // Jaccard controls are implemented (#5733): depth is a plain
+        // count, and the threshold is range-checked instead.
+        let mut p = defaults.clone();
+        p.jaccard_depth = 10;
+        assert!(p.validate(0).is_ok());
+        let mut p = defaults.clone();
+        p.jaccard_threshold = 1.5;
+        assert!(p.validate(0).unwrap_err().contains("jaccard_threshold"));
+        let mut p = defaults.clone();
+        p.planner_enabled = true;
+        assert!(p.validate(0).unwrap_err().contains("not implemented"));
+        let mut p = defaults.clone();
+        p.rrf_k = 0;
+        assert!(p.validate(0).unwrap_err().contains("rrf_k"));
+        let mut p = defaults.clone();
+        p.fts_weight = f64::NAN;
+        assert!(p.validate(0).unwrap_err().contains("finite"));
+        let mut p = defaults;
+        p.raw = true;
+        assert!(p.validate(1).unwrap_err().contains("raw mode"));
     }
 
     #[test]
@@ -502,5 +894,132 @@ mod tests {
             serde_json::to_string(&JobStatus::Queued).unwrap(),
             "\"queued\""
         );
+    }
+
+    #[test]
+    fn flag_defaults_come_from_the_versioned_json() {
+        let p = SearchParametersV1::default();
+        assert!(!p.no_cache);
+        assert!(!p.wait);
+        assert_eq!(p.hydrate, 0);
+        assert_eq!(p.raw_mode, RawMode::Off);
+        // A request JSON that predates slice 2 (no flag fields)
+        // still parses, with the same defaults.
+        let old: SearchParametersV1 =
+            serde_json::from_str("{\"raw\": false}").expect("old shape parses");
+        assert_eq!(old, p);
+    }
+
+    #[test]
+    fn every_flag_changes_the_result_cache_key() {
+        let base = SearchParametersV1::default();
+        let key = |p: &SearchParametersV1, expand: usize, group: bool, wm: bool| {
+            p.result_cache_key("query", "snap1", "personal", expand, group, wm)
+        };
+        let base_key = key(&base, 0, false, false);
+        // Deterministic: same inputs, same key.
+        assert_eq!(base_key, key(&base, 0, false, false));
+        assert_eq!(base_key.len(), 64);
+        // Query / snapshot / ceiling sensitivity.
+        assert_ne!(
+            base_key,
+            base.result_cache_key("other", "snap1", "personal", 0, false, false)
+        );
+        assert_ne!(
+            base_key,
+            base.result_cache_key("query", "snap2", "personal", 0, false, false)
+        );
+        assert_ne!(
+            base_key,
+            base.result_cache_key("query", "snap1", "local-only", 0, false, false)
+        );
+        // Each slice-2 flag, flipped one at a time.
+        let mut p = base.clone();
+        p.no_cache = true;
+        assert_ne!(
+            base_key,
+            key(&p, 0, false, false),
+            "no_cache must be in the key"
+        );
+        let mut p = base.clone();
+        p.wait = true;
+        assert_ne!(
+            base_key,
+            key(&p, 0, false, false),
+            "wait must be in the key"
+        );
+        let mut p = base.clone();
+        p.hydrate = 3;
+        assert_ne!(
+            base_key,
+            key(&p, 0, false, false),
+            "hydrate must be in the key"
+        );
+        let mut p = base.clone();
+        p.raw_mode = RawMode::Ungrouped;
+        assert_ne!(
+            base_key,
+            key(&p, 0, false, false),
+            "raw_mode must be in the key"
+        );
+        let mut p = base.clone();
+        p.raw_mode = RawMode::Branches;
+        assert_ne!(
+            base_key,
+            key(&p, 0, false, false),
+            "raw_mode=branches must be in the key"
+        );
+        // Request-level shaping controls.
+        assert_ne!(
+            base_key,
+            key(&base, 2, false, false),
+            "expand must be in the key"
+        );
+        assert_ne!(
+            base_key,
+            key(&base, 0, true, false),
+            "group_by_session must be in the key"
+        );
+        assert_ne!(
+            base_key,
+            key(&base, 0, false, true),
+            "with_message must be in the key"
+        );
+    }
+
+    proptest::proptest! {
+        /// Property: the key is a function of exactly the inputs
+        /// it claims -- two parameter sets that differ in any
+        /// single rendered field produce different keys, and
+        /// identical inputs always produce the same key.
+        #[test]
+        fn result_cache_key_is_flag_sensitive(
+            no_cache in proptest::prelude::any::<bool>(),
+            wait in proptest::prelude::any::<bool>(),
+            hydrate in 0usize..5,
+            raw_mode_idx in 0usize..3,
+            expand in 0usize..4,
+            group in proptest::prelude::any::<bool>(),
+        ) {
+            let modes = [RawMode::Off, RawMode::Ungrouped, RawMode::Branches];
+            let mut p = SearchParametersV1::default();
+            p.no_cache = no_cache;
+            p.wait = wait;
+            p.hydrate = hydrate;
+            p.raw_mode = modes[raw_mode_idx];
+            let k1 = p.result_cache_key("q", "s", "personal", expand, group, false);
+            let k2 = p.result_cache_key("q", "s", "personal", expand, group, false);
+            proptest::prop_assert_eq!(&k1, &k2);
+            // Flip exactly one component: the key must move.
+            let mut q = p.clone();
+            q.no_cache = !q.no_cache;
+            proptest::prop_assert_ne!(&k1, &q.result_cache_key("q", "s", "personal", expand, group, false));
+            let mut q = p.clone();
+            q.hydrate += 1;
+            proptest::prop_assert_ne!(&k1, &q.result_cache_key("q", "s", "personal", expand, group, false));
+            let mut q = p.clone();
+            q.raw_mode = modes[(raw_mode_idx + 1) % 3];
+            proptest::prop_assert_ne!(&k1, &q.result_cache_key("q", "s", "personal", expand, group, false));
+        }
     }
 }

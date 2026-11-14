@@ -151,3 +151,61 @@ and end-to-end acknowledgements averaged 1,523.1/s versus the scheduled
 latency criterion remains open for follow-up. The matching measurement is
 appended to `baseline.txt`; the four existing F11.8 baselines above are
 unchanged.
+
+Re-measurement (2026-11-14; rustc 1.99.0, cargo 1.99.0; AMD Ryzen 7
+7840U, 16 threads, Linux 6.18.60, NixOS; the laptop was under shared
+fleet load during the run), at `main` a824f622ae, after the #8316
+restore fix (PR #9995) unblocked a clean run:
+
+```text
+bench many_worlds unit=ms_per_command median=1065.462 min=4.841 reps=1 p50_ms=1065.462 p95_ms=3602.663 p99_ms=4549.272 target_p99_ms=50 target_met=false idle_worlds=1000 active_worlds=100 events_per_second=20 duration_secs=10 commands=20000 load_elapsed_secs=12.784 completed_events_per_second=1564.5 checkpoint_triggers=100 checkpoints=100 evicted=100 reopened=100
+```
+
+The checkpoint/reopen assertions passed again for all 100 active
+worlds (checkpoints=100, evicted=100, reopened=100). The latency
+target still did **not** pass: p99 was 4,549.272 ms versus the 50 ms
+target — an improvement of 1,101.520 ms (−19.5%) against the
+2026-11-02 reference above, with completed throughput up slightly
+(1,564.5/s versus 1,523.1/s) — but queueing behind per-append
+fdatasync still dominates, exactly as the #7064 profiling recorded
+(journal_append_fsync this run: median 5,443.164 us, in line with the
+5,180 us reference). The remaining gap is the group-commit work,
+split to #8239 (journal `append_batch` + actor-side drain), which is
+the next phase; #557 stays open until a recorded run shows
+target_met=true. The matching measurement is appended to
+`baseline.txt` under its own dated comment; the 2026-11-02 line is
+unchanged.
+
+## Fuel-spin isolation measurement (#1067, F12.10 exit criterion)
+
+The `fuel_spin_isolation` workload measures one victim counter world
+accepting inputs at 100 commands/s in two 3-second phases (300 scheduled
+inputs each): first calm, then while hostile Wasm worlds spin. Each
+hostile world runs a guest whose update loops until its fuel budget
+(20,000,000 per spin) is exhausted and traps; a trapping call poisons
+the instance, so every spin runs in a freshly instantiated world, and
+the harness asserts that every spin ended in fuel exhaustion. Samples
+are deadline-to-acknowledgement latencies, so a late acknowledgement
+stays in the sample. `--quick` is a smoke configuration only (750 ms
+phases, at most 4 spinners); its output is never a baseline - it passed
+on 2026-11-10 with 75/75 samples in both phases and 556 exhausted
+spins.
+
+Reference measurement (2026-11-10; rustc 1.99.0, cargo 1.99.0; AMD
+Ryzen 7 7840U, 16 threads, Linux 6.18.60, NixOS; the laptop was under
+shared fleet load during the run):
+
+```text
+bench fuel_spin_isolation unit=ms_per_command median=2.084 min=0.428 reps=1 victim_p99_ms_calm=3.159 victim_p99_ms_spinning=7.952 ratio=2.517 target_ratio=1.10 target_met=false calm_samples=300 spinning_samples=300 spins=1821 spinners=15 phase_ms=3000 commands_per_second=100 spin_fuel=20000000 calm_elapsed_secs=3.041 spinning_elapsed_secs=3.116
+```
+
+The F12.10 target did **not** pass: with 15 spinners saturating the
+remaining worker threads, the victim's p99 rose from 3.159 ms calm to
+7.952 ms spinning - a ratio of 2.517 against `target_ratio=1.10`, with
+1,821 fuel-exhausted spins observed during the phase and all 300
+scheduled victim inputs acknowledged in each phase. This records the
+gap the fair-scheduling work in #1067 has to close; the workload
+implements no scheduler, quota, or back-pressure, and this result is
+recorded rather than reported as acceptance. The matching measurement
+is appended to `baseline.txt`; the existing baselines above are
+unchanged.

@@ -19,24 +19,24 @@
 
 ## Decision summary
 
-| Question | Decision |
-| --- | --- |
-| Where a custom presentation lives | In the **target's override map**, never in the semantic source: a named, versioned **presentation override** bound to a semantic element (§2) |
-| What it binds to | A binding key: a specific element instance, or an element kind + variant/emphasis role + state set — the same key shape the parent's override maps already use (§2.1) |
-| Presentation kinds | Two, only: **asset presentation** (image / sprite / themed asset pack, with per-state assets) and **drawn presentation** (a target-side renderer registered in the override pack that implements the element's interaction contract) (§2.2) |
-| Semantics | The override changes **presentation only**. Role, accessible name, value, state, focus order, and the activation/event contract come from the semantic element and are identical with and without the override (§3) |
-| States | An override must cover **every** interaction state of the element (default, hover, focus, active, disabled, error where applicable), by an explicit per-state asset/renderer or a declared derivation; a partial override is a build-time error, not a runtime gap (§2.3) |
-| Fallback | Every override declares the **standard rendering as its fallback**; a missing asset, or a registered renderer that fails to load, falls back and warns at build time, and an unregistered renderer name is a build-time error (§2.2) — either way an element never renders as nothing (§2.4) |
-| Essential content | **Never in the asset.** Labels, values, and text live in the semantic layer; text baked into an image is decorative only (§3, invariant 5) |
-| Which targets | Custom-rendered targets (the GUI target, and the web target where the author declares it). **Native targets do not apply presentation overrides** to standard controls — they keep OS-standard controls per the parent; only content assets (icons, images that *are* content) carry over (§4) |
-| Conflict order | Instance binding beats kind+variant+state binding beats kind default; two bindings at the same specificity for one target are a build-time conflict error, never a silent pick (§2.5) |
+| Question                          | Decision                                                                                                                                                                                                                                                                                       |
+| --------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Where a custom presentation lives | In the **target's override map**, never in the semantic source: a named, versioned **presentation override** bound to a semantic element (§2)                                                                                                                                                  |
+| What it binds to                  | A binding key: a specific element instance, or an element kind + variant/emphasis role + state set — the same key shape the parent's override maps already use (§2.1)                                                                                                                          |
+| Presentation kinds                | Two, only: **asset presentation** (image / sprite / themed asset pack, with per-state assets) and **drawn presentation** (a target-side renderer registered in the override pack that implements the element's interaction contract) (§2.2)                                                    |
+| Semantics                         | The override changes **presentation only**. Role, accessible name, value, state, focus order, and the activation/event contract come from the semantic element and are identical with and without the override (§3)                                                                            |
+| States                            | An override must cover **every** interaction state of the element (default, hover, focus, active, disabled, error where applicable), by an explicit per-state asset/renderer or a declared derivation; a partial override is a build-time error, not a runtime gap (§2.3)                      |
+| Fallback                          | Every override declares the **standard rendering as its fallback**; a missing asset, or a registered renderer that fails to load, falls back and warns at build time, and an unregistered renderer name is a build-time error (§2.2) — either way an element never renders as nothing (§2.4)   |
+| Essential content                 | **Never in the asset.** Labels, values, and text live in the semantic layer; text baked into an image is decorative only (§3, invariant 5)                                                                                                                                                     |
+| Which targets                     | Custom-rendered targets (the GUI target, and the web target where the author declares it). **Native targets do not apply presentation overrides** to standard controls — they keep OS-standard controls per the parent; only content assets (icons, images that _are_ content) carry over (§4) |
+| Conflict order                    | Instance binding beats kind+variant+state binding beats kind default; two bindings at the same specificity for one target are a build-time conflict error, never a silent pick (§2.5)                                                                                                          |
 
 ## 1. What the parent already fixed (not re-decided here)
 
 Issue #5679 fixes, and this record takes as given:
 
 1. **Two layers.** Raw HTML/CSS is always supported and is never gated by
-   the semantic layer; semantic markup describes *intent and structure*,
+   the semantic layer; semantic markup describes _intent and structure_,
    not presentation, and carries its accessibility role by construction
    on every target.
 2. **Style assertions, not presentation values.** Styling is expressed
@@ -57,7 +57,7 @@ Issue #5679 fixes, and this record takes as given:
    re-implement — and break — platform behaviour there.
 
 Nothing in §2–§4 changes a parent decision. §5 says so explicitly, and
-names the one question that *would* change a parent decision if it is
+names the one question that _would_ change a parent decision if it is
 ever wanted (native custom controls) and is therefore left out.
 
 ## 2. The chosen shape: presentation overrides in the override map
@@ -95,7 +95,7 @@ shape, with the middle rendering now specified instead of sketched.
   override pack** — target-side code, never code carried in the content
   source — that draws the element inside its declared layout box and
   implements the element's full interaction contract (§3). Registration
-  is the gate: an unregistered renderer name is a build-time error. That is a *reference* error (the name is absent from the pack); it is distinct from a registered renderer that fails to load at build time, which is not an error — it exercises the fallback (§2.4).
+  is the gate: an unregistered renderer name is a build-time error. That is a _reference_ error (the name is absent from the pack); it is distinct from a registered renderer that fails to load at build time, which is not an error — it exercises the fallback (§2.4).
 
 There is no third kind in v1. In particular there is no "inline custom
 markup" kind (§4, alternative 1).
@@ -163,7 +163,7 @@ for one target can never change another target's rendering.
 
 Conformance follows the parent's model: the per-target expected-output
 suite gains, for each overridden element in its fixtures, the
-accessibility-tree and event-sequence expectations of the *standard*
+accessibility-tree and event-sequence expectations of the _standard_
 element — the invariants above are the oracle those tests check.
 
 ## 4. Alternatives considered and rejected
@@ -174,7 +174,7 @@ element — the invariants above are the oracle those tests check.
    standard rendering — and with it the fallback — disappear exactly
    where the presentation is most custom.
 2. **Raw HTML/CSS as the only escape hatch.** Rejected: the parent
-   keeps raw HTML/CSS as a supported layer, but as the *only* route to
+   keeps raw HTML/CSS as a supported layer, but as the _only_ route to
    an image button it is web-only, has no GUI/native analogue, and is
    precisely "a hack around the standard renderings" that issue #5853
    is filed to end.
@@ -200,7 +200,7 @@ element — the invariants above are the oracle those tests check.
 
 This record changes **no** decision in issue #5679. The binding key
 reuses the parent's override-map shape; the native exclusion (§2,
-§4.6) *follows* the parent's native rule rather than revisiting it;
+§4.6) _follows_ the parent's native rule rather than revisiting it;
 the cascade the parent left open is touched only inside the override
 layer (specificity among override entries, §2.5), not between
 assertions, overrides, and raw CSS — that ordering remains the

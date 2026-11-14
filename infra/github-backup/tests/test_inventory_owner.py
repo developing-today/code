@@ -204,4 +204,90 @@ for case, malformed_cursor in [
 
 ghb_common.run = saved_run
 
+
+# ------------------------------------------------------------ #6840 shapes
+# Oracle: ghb_common.run stubbed with canned GraphQL pages (the same
+# oracle as every case above); the expected outcomes are the #6840
+# acceptance criteria — a malformed node is named and skipped, never a
+# raw TypeError/KeyError that fails the owner's whole inventory, and a
+# server inventing a fresh advancing cursor forever hits the hard
+# page bound (MAX_INVENTORY_PAGES, shrunk to 3 here) as a named
+# owner-level RuntimeError.
+def shape_stub_factory(case):
+    def stub(cmd, **kw):
+        good = node("some-owner/repo1")
+        if case == "null-node":
+            return R(0, payload([None, good]))
+        if case == "missing-field-node":
+            bad = node("some-owner/bad")
+            del bad["nameWithOwner"]
+            return R(0, payload([bad, good]))
+        if case == "nonstring-field-node":
+            bad = node("some-owner/bad")
+            bad["nameWithOwner"] = 42
+            return R(0, payload([bad, good]))
+        raise AssertionError(f"unknown node shape case: {case}")
+
+    return stub
+
+
+for case in ["null-node", "missing-field-node", "nonstring-field-node"]:
+    ghb_common.run = shape_stub_factory(case)
+    repos, errors = ghb_common.inventory(["some-owner"])
+    check(
+        f"{case}: good repo still inventoried",
+        [r["repo"] for r in repos.values()] == ["some-owner/repo1"],
+    )
+    check(f"{case}: no owner error (node skipped, not fatal)", errors == {})
+    ghb_common.run = shape_stub_factory(case)
+    direct = ghb_common.inventory_owner("some-owner")
+    check(
+        f"{case}: inventory_owner returns only the good repo",
+        [r["repo"] for r in direct] == ["some-owner/repo1"],
+    )
+
+page_calls = []
+
+
+def advancing_cursor_stub(cmd, **kw):
+    page_calls.append(cmd)
+    return R(
+        0,
+        payload(
+            [node("some-owner/repo1")],
+            has_next=True,
+            cursor=f"cur{len(page_calls)}",
+        ),
+    )
+
+
+saved_max_pages = ghb_common.MAX_INVENTORY_PAGES
+ghb_common.MAX_INVENTORY_PAGES = 3
+try:
+    ghb_common.run = advancing_cursor_stub
+    try:
+        ghb_common.inventory_owner("some-owner")
+        bound_raised = False
+        bound_message = ""
+    except RuntimeError as e:
+        bound_raised = True
+        bound_message = str(e)
+    check("page-bound: inventory_owner raises RuntimeError", bound_raised)
+    check(
+        "page-bound: exception names owner and the bound",
+        "some-owner" in bound_message and "3" in bound_message,
+    )
+    check("page-bound: transport calls stop at the bound", len(page_calls) == 3)
+    page_calls.clear()
+    repos, errors = ghb_common.inventory(["some-owner"])
+    check("page-bound: no repos returned for failed owner", repos == {})
+    check(
+        "page-bound: owner-level error recorded",
+        "some-owner" in errors and bool(errors["some-owner"]),
+    )
+    check("page-bound: inventory transport calls bounded", len(page_calls) == 3)
+finally:
+    ghb_common.MAX_INVENTORY_PAGES = saved_max_pages
+    ghb_common.run = saved_run
+
 print(f"\n{sum(1 for _, ok in PASS if ok)}/{len(PASS)} checks passed")

@@ -28,7 +28,8 @@ function validDate(year: number, month: number, day: number): boolean {
 export function validateRoadmapHorizon(value: unknown): RoadmapHorizonValidation {
   if (typeof value !== "string") return { valid: false, error: `Horizon must be text. ${GRAMMAR}` };
   const trimmed = value.trim();
-  if (!trimmed) return { valid: false, error: `Horizon is blank; use Unscheduled for an intentionally undated row. ${GRAMMAR}` };
+  if (!trimmed)
+    return { valid: false, error: `Horizon is blank; use Unscheduled for an intentionally undated row. ${GRAMMAR}` };
 
   const quarter = QUARTER.exec(trimmed);
   if (quarter) {

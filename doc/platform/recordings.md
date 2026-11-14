@@ -33,7 +33,7 @@ Any time you feel the need to say something like:
 - "It deleted its own test after finding it could never fail"
 
 Concretely: a significant discovery, a mistake you made, a number you got wrong,
-a subagent that ignored its brief *or* followed it too literally, a review
+a subagent that ignored its brief _or_ followed it too literally, a review
 finding that was wrong, a fix that made things worse, a tool that lied. Surprise,
 guilt, irritation and relief are all signals — if you want to flag it to the
 user, it belongs in the file too.
@@ -51,7 +51,7 @@ and quarantines whatever it cannot normalise rather than dropping it.
 A reasonable starting shape — add or drop fields freely:
 
 ```json
-{"ts":"2026-09-30T22:41:00Z","pwd":"/path/where/it/happened","repo":"operations-portal","origin":"git@github.com:org/repo.git","kind":"short-slug","sentiment":{"positive":["measured instead of trusting the brief"],"negative":["my framing sent it to the wrong layer"]},"note":"What happened, with the evidence.","lesson":"What to do differently."}
+{ "ts": "2026-09-30T22:41:00Z", "pwd": "/path/where/it/happened", "repo": "operations-portal", "origin": "git@github.com:org/repo.git", "kind": "short-slug", "sentiment": { "positive": ["measured instead of trusting the brief"], "negative": ["my framing sent it to the wrong layer"] }, "note": "What happened, with the evidence.", "lesson": "What to do differently." }
 ```
 
 `sentiment` is **any** — a dict of arrays, a bare string like `"good"`, a list of

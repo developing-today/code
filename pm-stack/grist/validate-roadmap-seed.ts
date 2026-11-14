@@ -7,7 +7,9 @@ const invalid = seed.rows.flatMap((row, index) => {
 });
 
 if (invalid.length) {
-  console.error(`Invalid roadmap Horizon values in seed/roadmap.json:\n${invalid.map((line) => `- ${line}`).join("\n")}`);
+  console.error(
+    `Invalid roadmap Horizon values in seed/roadmap.json:\n${invalid.map((line) => `- ${line}`).join("\n")}`,
+  );
   process.exitCode = 1;
 } else {
   console.log(`Validated ${seed.rows.length} roadmap seed Horizon values.`);

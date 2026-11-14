@@ -1,0 +1,64 @@
+{
+  "cases": [
+    {
+      "name": "CJK wide character",
+      "width": 2,
+      "height": 1,
+      "expected_valid": true,
+      "cells": [
+        { "symbol": "界", "fg": 0, "bg": 0, "bold": false, "columns": 2 },
+        { "symbol": "", "fg": 0, "bg": 0, "bold": false, "columns": 0 }
+      ]
+    },
+    {
+      "name": "astral-plane emoji",
+      "width": 2,
+      "height": 1,
+      "expected_valid": true,
+      "cells": [
+        { "symbol": "😀", "fg": 0, "bg": 0, "bold": false, "columns": 2 },
+        { "symbol": "", "fg": 0, "bg": 0, "bold": false, "columns": 0 }
+      ]
+    },
+    {
+      "name": "ZWJ emoji sequence",
+      "width": 2,
+      "height": 1,
+      "expected_valid": true,
+      "cells": [
+        { "symbol": "👩‍💻", "fg": 0, "bg": 0, "bold": false, "columns": 2 },
+        { "symbol": "", "fg": 0, "bg": 0, "bold": false, "columns": 0 }
+      ]
+    },
+    {
+      "name": "warning sign with emoji variation selector",
+      "width": 2,
+      "height": 1,
+      "expected_valid": true,
+      "cells": [
+        { "symbol": "⚠️", "fg": 0, "bg": 0, "bold": false, "columns": 2 },
+        { "symbol": "", "fg": 0, "bg": 0, "bold": false, "columns": 0 }
+      ]
+    },
+    {
+      "name": "non-empty continuation cell",
+      "width": 2,
+      "height": 1,
+      "expected_valid": false,
+      "cells": [
+        { "symbol": "界", "fg": 0, "bg": 0, "bold": false, "columns": 2 },
+        { "symbol": "x", "fg": 0, "bg": 0, "bold": false, "columns": 0 }
+      ]
+    },
+    {
+      "name": "wide character declared with the wrong width",
+      "width": 2,
+      "height": 1,
+      "expected_valid": false,
+      "cells": [
+        { "symbol": "界", "fg": 0, "bg": 0, "bold": false, "columns": 1 },
+        { "symbol": "x", "fg": 0, "bg": 0, "bold": false, "columns": 1 }
+      ]
+    }
+  ]
+}

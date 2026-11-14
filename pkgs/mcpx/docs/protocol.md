@@ -887,10 +887,15 @@ access-control decision.
 
 Named, because a gap nobody wrote down is a gap somebody rediscovers.
 
-- **Cancelling an interruptible call does not stop it.** On a direct call,
-  `notifications/cancelled` (stdio, legacy HTTP session) and a closed stream
-  (2026-07-28 HTTP, sessionless legacy) cancel the upstream request. A call on
-  the ask path runs as a daemon task and keeps running (§3.5).
+- **Cancelling an interruptible call stops it, on both paths.** On a direct
+  call, `notifications/cancelled` (stdio, legacy HTTP session) and a closed
+  stream (2026-07-28 HTTP, sessionless legacy) cancel the upstream request.
+  A call on the ask path runs as a daemon task (§3.5), and a
+  `notifications/cancelled` naming its request now cancels that task through
+  the task cancel path (`/v1/ask/{id}/abandon`, the task store's `Cancel` --
+  the same `Cancel` `/v1/tasks/{id}/cancel` reaches). A transport that dies
+  without a cancellation is not read as one: the task keeps running and can
+  still be collected from `/v1/tasks`.
 - **Progress does not extend mcpx's own call timeout.** It is relayed to the
   host (§4.4), so a host's timeout can reset on it; the daemon's
   per-server `callTimeout` still cannot.

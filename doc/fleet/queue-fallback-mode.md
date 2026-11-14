@@ -90,6 +90,6 @@ claim with your lane id as the worker id, work the issue exactly as
 the normal runbook prescribes (§2 revalidation, worktrees,
 checkpoints — checkpoints become heartbeat markers), and finish
 with a release instead of `complete`. Feeders keep filing issues
-with `queue/queued` as usual; in fallback mode the label *is* the
+with `queue/queued` as usual; in fallback mode the label _is_ the
 enqueue, and an enqueue failure is expected, not a blocker. Every
 fallback shift names the mode in its report's first line.
