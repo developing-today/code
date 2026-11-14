@@ -29,6 +29,7 @@ pub mod connectivity;
 pub mod discovery;
 pub mod frames;
 pub mod hex;
+pub mod intranet;
 pub mod ip_evidence;
 pub mod json_unique;
 pub mod key_envelope;
