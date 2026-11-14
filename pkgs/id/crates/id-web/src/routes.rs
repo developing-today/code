@@ -73,6 +73,13 @@ const ALLOWED_IMAGE_TYPES: &[&str] = &[
     "image/x-icon",
 ];
 
+/// Default and maximum number of images returned by one browser request.
+const DEFAULT_IMAGE_PAGE_SIZE: usize = 50;
+const MAX_IMAGE_PAGE_SIZE: usize = 100;
+
+/// Maximum number of concurrent metadata or blob-status reads for image pages.
+const IMAGE_LOOKUP_CONCURRENCY: usize = 16;
+
 /// Map an image MIME type to a file extension.
 fn mime_to_extension(mime: &str) -> &'static str {
     match mime {
@@ -1877,6 +1884,22 @@ struct ImageEntry {
     size: u64,
 }
 
+/// Query parameters for one image-browser page.
+#[derive(Debug, Deserialize)]
+struct ImageListQuery {
+    /// URL-safe-base64 tag-name cursor returned by the previous page.
+    after: Option<String>,
+    /// Requested page size, clamped to [`MAX_IMAGE_PAGE_SIZE`].
+    limit: Option<usize>,
+}
+
+/// A bounded page of image-browser entries.
+#[derive(Debug, Serialize)]
+struct ImageListResponse {
+    images: Vec<ImageEntry>,
+    next_cursor: Option<String>,
+}
+
 /// Request body for renaming a file.
 #[derive(Debug, Deserialize)]
 struct RenameRequest {
@@ -2854,12 +2877,12 @@ mod upload_router_tests {
         (status, String::from_utf8_lossy(&bytes).into_owned())
     }
 
-    async fn list_images(router: Router) -> Vec<serde_json::Value> {
+    async fn list_images_page(router: Router, uri: &str) -> serde_json::Value {
         let response = router
             .oneshot(
                 Request::builder()
                     .method("GET")
-                    .uri("/api/images")
+                    .uri(uri)
                     .body(Body::empty())
                     .unwrap(),
             )
@@ -2868,6 +2891,46 @@ mod upload_router_tests {
         assert_eq!(response.status(), StatusCode::OK);
         let bytes = to_bytes(response.into_body(), usize::MAX).await.unwrap();
         serde_json::from_slice(&bytes).unwrap()
+    }
+
+    async fn list_images(router: Router) -> Vec<serde_json::Value> {
+        let mut images = Vec::new();
+        let mut cursor: Option<String> = None;
+        loop {
+            let uri = cursor
+                .as_deref()
+                .map(|cursor| format!("/api/images?after={cursor}"))
+                .unwrap_or_else(|| "/api/images".to_owned());
+            let page = list_images_page(router.clone(), &uri).await;
+            images.extend(
+                page["images"]
+                    .as_array()
+                    .expect("image page has an images array")
+                    .iter()
+                    .cloned(),
+            );
+            cursor = page["next_cursor"].as_str().map(str::to_owned);
+            if cursor.is_none() {
+                break;
+            }
+        }
+        images
+    }
+
+    async fn add_tagged_blob(state: &AppState, name: &str, content_type: &str, bytes: &[u8]) {
+        let added = state.store.blobs().add_bytes(bytes.to_vec()).await.unwrap();
+        state.store.tags().set(name, added.hash).await.unwrap();
+        state
+            .tag_store
+            .set_tag(
+                &state.tag_store.global,
+                name.as_bytes(),
+                b"content-type",
+                Some(content_type.as_bytes()),
+                b"",
+            )
+            .await
+            .unwrap();
     }
 
     fn multipart_body_noname(content_type: &str, file_bytes: &[u8]) -> Vec<u8> {
@@ -3278,6 +3341,85 @@ mod upload_router_tests {
         };
         assert_eq!(hash_of(&first_name), uploaded_hash(&first));
         assert_eq!(hash_of(&second_name), uploaded_hash(&second));
+    }
+
+    #[tokio::test]
+    async fn image_listing_pages_filter_mixed_tags_in_name_order() {
+        let (router, state, _dir, _endpoint, _docs) = router_with_state().await;
+        add_tagged_blob(&state, "a-image.png", "image/png", b"first-image").await;
+        add_tagged_blob(&state, "b-not-image.txt", "text/plain", b"text").await;
+        add_tagged_blob(&state, ".internal.png", "image/png", b"internal").await;
+        add_tagged_blob(&state, "c-image.jpg", "image/jpeg", b"second-image").await;
+        add_tagged_blob(&state, "z-image.webp", "image/webp", b"third-image").await;
+
+        let first = list_images_page(router.clone(), "/api/images?limit=2").await;
+        let first_images = first["images"].as_array().unwrap();
+        assert_eq!(first_images.len(), 2);
+        assert_eq!(first_images[0]["name"], "a-image.png");
+        assert_eq!(first_images[1]["name"], "c-image.jpg");
+        assert_eq!(first_images[0]["size"], 11);
+        assert!(first["next_cursor"].as_str().is_some());
+
+        let cursor = first["next_cursor"].as_str().unwrap();
+        let second = list_images_page(
+            router.clone(),
+            &format!("/api/images?limit=2&after={cursor}"),
+        )
+        .await;
+        let second_images = second["images"].as_array().unwrap();
+        assert_eq!(second_images.len(), 1);
+        assert_eq!(second_images[0]["name"], "z-image.webp");
+        assert_eq!(second["next_cursor"], serde_json::Value::Null);
+        assert!(
+            second_images[0]["url"]
+                .as_str()
+                .unwrap()
+                .starts_with("/blob/")
+        );
+    }
+
+    #[tokio::test]
+    async fn image_listing_rejects_malformed_cursor_and_clamps_page_size() {
+        let (router, state, _dir, _endpoint, _docs) = router_with_state().await;
+        for index in 0..=MAX_IMAGE_PAGE_SIZE {
+            add_tagged_blob(
+                &state,
+                &format!("image-{index:03}.png"),
+                "image/png",
+                b"image",
+            )
+            .await;
+        }
+
+        let response = router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/api/images?limit=1000")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let bytes = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        let page: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(
+            page["images"].as_array().unwrap().len(),
+            MAX_IMAGE_PAGE_SIZE
+        );
+        assert!(page["next_cursor"].as_str().is_some());
+
+        let response = router
+            .oneshot(
+                Request::builder()
+                    .uri("/api/images?after=not-base64!")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
     }
 
     // #751: a body over UPLOAD_BODY_LIMIT must surface as the clear 413,

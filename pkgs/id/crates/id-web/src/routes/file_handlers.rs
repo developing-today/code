@@ -635,60 +635,200 @@ pub(super) async fn upload_handler(
     .into_response()
 }
 
-/// List all uploaded images.
+/// Map independent image-list lookups concurrently while preserving input
+/// order for stable cursor pagination.
+fn bounded_image_lookups<T, S, F, Fut>(items: S, map: F) -> impl futures::Stream<Item = Fut::Output>
+where
+    S: futures::Stream<Item = T>,
+    F: FnMut(T) -> Fut,
+    Fut: std::future::Future,
+{
+    use futures::stream::StreamExt;
+
+    items.map(map).buffered(IMAGE_LOOKUP_CONCURRENCY)
+}
+
+/// List one bounded page of uploaded images.
 ///
-/// Scans blob tags for entries with image content-type metadata.
-/// Returns a JSON array of `ImageEntry` objects.
-pub(super) async fn images_list_handler(State(state): State<AppState>) -> Response {
-    use futures_lite::StreamExt;
+/// Scans blob tags for entries with image content-type metadata, bounding
+/// per-name lookups and blob-status reads. The opaque cursor resumes after the
+/// last returned tag name.
+pub(super) async fn images_list_handler(
+    State(state): State<AppState>,
+    Query(query): Query<ImageListQuery>,
+) -> Response {
+    use std::ops::Bound::{Excluded, Unbounded};
 
-    let mut images: Vec<ImageEntry> = Vec::new();
+    use base64::Engine as _;
+    use futures::stream::{self, StreamExt};
+    use iroh_blobs::api::tags::ListOptions;
 
-    // List all tags (named blobs) and filter to those with image content-types
-    let mut tags_stream = match state.store.tags().list().await {
-        Ok(s) => s,
+    const MAX_CURSOR_BYTES: usize = 4 * 1024;
+
+    let after = match query.after {
+        Some(encoded) => {
+            if encoded.len() > MAX_CURSOR_BYTES {
+                return (StatusCode::BAD_REQUEST, "Invalid image cursor").into_response();
+            }
+            match base64::engine::general_purpose::URL_SAFE_NO_PAD.decode(encoded) {
+                Ok(cursor) if cursor.len() <= MAX_CURSOR_BYTES => Some(cursor),
+                _ => return (StatusCode::BAD_REQUEST, "Invalid image cursor").into_response(),
+            }
+        }
+        None => None,
+    };
+    let page_size = query
+        .limit
+        .unwrap_or(DEFAULT_IMAGE_PAGE_SIZE)
+        .clamp(1, MAX_IMAGE_PAGE_SIZE);
+
+    let options = match after.as_deref() {
+        Some(cursor) => {
+            let range: (std::ops::Bound<&[u8]>, std::ops::Bound<&[u8]>) =
+                (Excluded(cursor), Unbounded);
+            ListOptions::range::<_, &[u8]>(range)
+        }
+        None => ListOptions::all(),
+    };
+    let tags_stream = match state.store.tags().list_with_opts(options).await {
+        Ok(stream) => stream,
         Err(err) => {
             tracing::error!("[routes] Failed to list tags for images: {}", err);
-            return Json(images).into_response();
+            return StatusCode::INTERNAL_SERVER_ERROR.into_response();
         }
     };
-    while let Some(Ok(tag_info)) = tags_stream.next().await {
-        let name = String::from_utf8_lossy(tag_info.name.as_ref()).to_string();
-        let hash_str = tag_info.hash.to_string();
 
-        // Skip internal tags
-        if id_store::tags::is_internal_tag(&name) {
-            continue;
-        }
-
-        // Check content-type metadata via tag store
-        let ct_tags = state
-            .tag_store
-            .get_by_key(&state.tag_store.global, name.as_bytes(), b"content-type")
-            .await
-            .unwrap_or_default();
-
-        let ct = ct_tags
-            .first()
-            .and_then(|t| t.value.as_ref())
-            .and_then(|v| v.as_str())
-            .unwrap_or("");
-
-        if !ALLOWED_IMAGE_TYPES.contains(&ct) {
-            continue;
-        }
-
-        let url = format!("/blob/{hash_str}?filename={}", urlencoding::encode(&name));
-
-        images.push(ImageEntry {
-            hash: hash_str,
-            name,
-            url,
-            size: blob_size(&state.store, tag_info.hash).await,
-        });
+    struct Candidate {
+        name: String,
+        raw_name: Vec<u8>,
+        hash: iroh_blobs::Hash,
     }
 
-    Json(images).into_response()
+    // Each per-name metadata lookup is independent. Keep at most a small,
+    // explicit number in flight instead of awaiting them serially; `buffered`
+    // preserves tag order so the opaque cursor cannot skip entries.
+    let mut candidate_stream = bounded_image_lookups(tags_stream, |result| async {
+        let tag_info = result.map_err(|err| err.to_string())?;
+        let raw_name = tag_info.name.as_ref().to_vec();
+        let name = String::from_utf8_lossy(&raw_name).to_string();
+        if id_store::tags::is_internal_tag(&name) {
+            return Ok::<Option<Candidate>, String>(None);
+        }
+
+        let content_type_tags = state
+            .tag_store
+            .get_by_key(&state.tag_store.global, &raw_name, b"content-type")
+            .await
+            .map_err(|err| format!("{err:#}"))?;
+        let content_type = content_type_tags
+            .first()
+            .and_then(|tag| tag.value.as_ref())
+            .and_then(|value| value.as_str())
+            .unwrap_or("");
+        if !ALLOWED_IMAGE_TYPES.contains(&content_type) {
+            return Ok(None);
+        }
+
+        Ok(Some(Candidate {
+            name,
+            raw_name,
+            hash: tag_info.hash,
+        }))
+    });
+
+    let mut candidates = Vec::with_capacity(page_size + 1);
+    let mut next_cursor = None;
+    while let Some(result) = candidate_stream.next().await {
+        let candidate = match result {
+            Ok(Some(candidate)) => candidate,
+            Ok(None) => continue,
+            Err(err) => {
+                tracing::error!("[routes] Failed to read image metadata: {err}");
+                return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+            }
+        };
+
+        if candidates.len() == page_size {
+            next_cursor = candidates.last().map(|candidate: &Candidate| {
+                base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(&candidate.raw_name)
+            });
+            break;
+        }
+        candidates.push(candidate);
+    }
+
+    // Blob status is needed only for this bounded page. `buffered` keeps the
+    // tag order while allowing several independent status RPCs in flight.
+    let images = stream::iter(candidates)
+        .map(|candidate| {
+            let store = state.store.clone();
+            async move {
+                let size = blob_size(&store, candidate.hash).await;
+                let hash = candidate.hash.to_string();
+                let url = format!(
+                    "/blob/{hash}?filename={}",
+                    urlencoding::encode(&candidate.name)
+                );
+                ImageEntry {
+                    hash,
+                    name: candidate.name,
+                    url,
+                    size,
+                }
+            }
+        })
+        .buffered(IMAGE_LOOKUP_CONCURRENCY)
+        .collect::<Vec<_>>()
+        .await;
+
+    Json(ImageListResponse {
+        images,
+        next_cursor,
+    })
+    .into_response()
+}
+
+#[cfg(test)]
+mod image_lookup_tests {
+    use std::sync::{
+        Arc,
+        atomic::{AtomicUsize, Ordering},
+    };
+
+    use futures::stream::{self, StreamExt};
+
+    use super::*;
+
+    #[tokio::test]
+    async fn image_lookups_are_parallel_but_bounded() {
+        let in_flight = Arc::new(AtomicUsize::new(0));
+        let max_in_flight = Arc::new(AtomicUsize::new(0));
+        let output = bounded_image_lookups(stream::iter(0..IMAGE_LOOKUP_CONCURRENCY * 2), {
+            let in_flight = in_flight.clone();
+            let max_in_flight = max_in_flight.clone();
+            move |item| {
+                let in_flight = in_flight.clone();
+                let max_in_flight = max_in_flight.clone();
+                async move {
+                    let current = in_flight.fetch_add(1, Ordering::SeqCst) + 1;
+                    max_in_flight.fetch_max(current, Ordering::SeqCst);
+                    tokio::task::yield_now().await;
+                    in_flight.fetch_sub(1, Ordering::SeqCst);
+                    item
+                }
+            }
+        })
+        .collect::<Vec<_>>()
+        .await;
+
+        assert_eq!(
+            output,
+            (0..IMAGE_LOOKUP_CONCURRENCY * 2).collect::<Vec<_>>()
+        );
+        let observed = max_in_flight.load(Ordering::SeqCst);
+        assert!(observed > 1, "image metadata calls ran serially");
+        assert_eq!(observed, IMAGE_LOOKUP_CONCURRENCY);
+    }
 }
 
 /// Rename a file by changing its tag name.
