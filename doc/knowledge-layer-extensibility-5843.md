@@ -52,7 +52,7 @@ consumer.
   reach; per-object reach is still resolved per read through the
   read-authority order, so a token can never widen its holder past
   the policy the holder already has.
-- The API is the *only* extension path to the store. No plugin,
+- The API is the _only_ extension path to the store. No plugin,
   script, or importer reads or writes corpus storage directly
   (invariant 1).
 
@@ -67,7 +67,7 @@ Rejected alternatives:
   alone)** — a capable public API, connections gallery, and
   automations (matrix §3.3), but hosted-only: no on-device surface
   when the vendor service is unreachable. That contradicts the
-  #5838 local-first baseline. (A hosted relay may be *added* later
+  #5838 local-first baseline. (A hosted relay may be _added_ later
   for remote access; it is a transport for this same contract,
   never a second contract.)
 

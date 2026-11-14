@@ -79,7 +79,13 @@ describe("laptop session map caching (#5082)", () => {
     });
     try {
       const source = sourceFor(stub.url);
-      await Promise.all([source.registry(), source.registry(), source.registry(), source.registry(), source.registry()]);
+      await Promise.all([
+        source.registry(),
+        source.registry(),
+        source.registry(),
+        source.registry(),
+        source.registry(),
+      ]);
       // One map attempt = one session-list fetch (the failure stops
       // the walk there), however many callers were waiting on it.
       expect(stub.hits()).toBe(1);

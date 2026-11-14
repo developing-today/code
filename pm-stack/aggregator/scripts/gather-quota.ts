@@ -116,6 +116,12 @@ import { fileURLToPath } from "node:url";
 import type { QuotaCurrentEntry, QuotaCurrentFile, QuotaGatherHeartbeat, SnapshotRecord } from "../src/model.ts";
 import {
   GATHERER_SOURCE,
+  CLAUDE_CROSS_TICK_STATE_KEY,
+  claudeCooldownMs,
+  isClaudeRateLimitFailure,
+  parseClaudeCrossTick,
+  serializeClaudeCrossTick,
+  type ClaudeCrossTickMemory,
   canonicalProviderId,
   entriesWithPoolSplits,
   entryFromResult,
@@ -791,6 +797,50 @@ async function main(): Promise<number> {
   // whole-fetch timeout). Preserve confirmed lapse rows alongside
   // retained siblings: retention must never erase a terminal state
   // reported by this tick.
+  // #5928: cross-tick memory for the _claude read. The fetcher's own
+  // 429 cooldown/cache live in the long-lived OpenChamber process; this
+  // oneshot carries its own across ticks (persisted in the state file,
+  // see quota-gather-map). A success refreshes the last-good entry and
+  // clears the cooldown; a fresh 429 sets the cooldown from
+  // Retry-After (fallback 5 min, cap 60 min) and the tick emits the
+  // last-good entry retained; a tick inside the cooldown likewise
+  // emits the last-good entry retained instead of surfacing the fresh
+  // failure. The bare error surfaces only when no read has ever
+  // succeeded. The 401 dead-token mapping never engages the cooldown.
+  // Claude only - every other provider flows into the #1268 retention
+  // below unchanged. (Seam note: the shared listing subcommand still
+  // performs its own fetch; what the cooldown governs is the
+  // gatherer's consumption of the claude result, which is the
+  // aggregator-side seam this fix owns.)
+  const claudeState = await readState();
+  let claudeMemory = parseClaudeCrossTick(claudeState.get(CLAUDE_CROSS_TICK_STATE_KEY));
+  let claudeMemoryDirty = false;
+  const claudeRun = runs.find((r) => r.id === "_claude");
+  if (claudeRun) {
+    const nowMs = Date.now();
+    const okEntry = claudeRun.entries.find((e) => e.state === "ok" && entryHasMeasuredWindow(e));
+    if (okEntry) {
+      const next: ClaudeCrossTickMemory = {
+        lastGoodEntry: JSON.parse(JSON.stringify(okEntry)) as QuotaCurrentEntry,
+        cooldownUntil: 0,
+      };
+      if (serializeClaudeCrossTick(next) !== serializeClaudeCrossTick(claudeMemory)) {
+        claudeMemory = next;
+        claudeMemoryDirty = true;
+      }
+    } else {
+      const failureText = claudeRun.error ?? claudeRun.entries.find((e) => e.error)?.error ?? "";
+      if (isClaudeRateLimitFailure(failureText) && nowMs >= claudeMemory.cooldownUntil) {
+        claudeMemory = { ...claudeMemory, cooldownUntil: nowMs + claudeCooldownMs(failureText) };
+        claudeMemoryDirty = true;
+      }
+      if (claudeMemory.lastGoodEntry && nowMs < claudeMemory.cooldownUntil) {
+        claudeRun.entries = markRetained([claudeMemory.lastGoodEntry], tickAt);
+        claudeRun.retained = true;
+      }
+    }
+  }
+
   const prevEntries = await readPreviousEntries();
   if (prevEntries.length) {
     for (const run of runs) {
@@ -878,6 +928,7 @@ async function main(): Promise<number> {
   // Snapshot records: append only what moved, to the aggregator's
   // store directly (or the writers' outbox when explicitly routed).
   const lastAppended = await readState();
+  if (claudeMemoryDirty) lastAppended.set(CLAUDE_CROSS_TICK_STATE_KEY, serializeClaudeCrossTick(claudeMemory));
   const { records, appended } = recordsFromEntries(entries, lastAppended, OBSERVED_BY);
   const valid = records.filter(isSnapshotRecord);
   const seen = new Set<string>();
@@ -895,6 +946,12 @@ async function main(): Promise<number> {
       await new SnapshotStore(snapshotsDir).append(fresh);
     }
     for (const [k, v] of appended) lastAppended.set(k, v);
+    await writeAtomic(statePath, JSON.stringify(Object.fromEntries(lastAppended), null, 2) + "\n").catch((err) =>
+      console.error(`quota-gatherer: state write failed (${err}); next tick may re-append`),
+    );
+  }
+
+  if (!fresh.length && claudeMemoryDirty) {
     await writeAtomic(statePath, JSON.stringify(Object.fromEntries(lastAppended), null, 2) + "\n").catch((err) =>
       console.error(`quota-gatherer: state write failed (${err}); next tick may re-append`),
     );

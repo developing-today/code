@@ -124,6 +124,27 @@ import type { ProgramData, ProgramEntry, ProgramLive, TrackedIssue } from "./pro
 import type { ProjectDetail, ProjectSummary } from "./project-config.ts";
 import { derivedProjectState, projectDisagreement, PROJECT_URL } from "./projects.ts";
 import {
+  PHASE12_ISSUE_URL,
+  joinPhase12Steps,
+  parsePhase12Steps,
+  phase12IsStale,
+  type Phase12Snapshot,
+} from "./phase12.ts";
+import {
+  BUILD_HEALTH_REPO,
+  buildHealthIsStale,
+  projectLane,
+  projectNightlyTrend,
+  type BuildHealthSnapshot,
+} from "./build-health.ts";
+import {
+  F12_DESIGN_ISSUE_URL,
+  parseF12Designs,
+  parseF12Items,
+  projectF12Readiness,
+  type F12PrRef,
+} from "./f12-readiness.ts";
+import {
   CANONICAL_STATUSES,
   STATUS_SOURCE_LABELS,
   STATUS_TAXONOMY,
@@ -6528,7 +6549,8 @@ export function projectsBodyHtml(
   const unsetCount = pool.filter((p) => !p.area).length;
   const area =
     opts.area === UNSET_AREA && unsetCount > 0 ? UNSET_AREA : opts.area && areas.includes(opts.area) ? opts.area : null;
-  const shownByArea = area === UNSET_AREA ? pool.filter((p) => !p.area) : area ? pool.filter((p) => p.area === area) : pool;
+  const shownByArea =
+    area === UNSET_AREA ? pool.filter((p) => !p.area) : area ? pool.filter((p) => p.area === area) : pool;
   // #1208: Status and Kind are pool fields too — facet-filter them like
   // Area (the saved-view dimensions in views.ts carry the same pair, so
   // a view and the chips agree). "(no status)" / "(no kind)" are the
@@ -6537,7 +6559,8 @@ export function projectsBodyHtml(
   const UNSET_KIND = "(no kind)";
   const statuses = [...new Set(pool.map((p) => p.status).filter((s): s is string => Boolean(s)))].sort();
   const kinds = [...new Set(pool.map((p) => p.kind).filter((s): s is string => Boolean(s)))].sort();
-  const statusSel = opts.status === UNSET_STATUS ? UNSET_STATUS : opts.status && statuses.includes(opts.status) ? opts.status : null;
+  const statusSel =
+    opts.status === UNSET_STATUS ? UNSET_STATUS : opts.status && statuses.includes(opts.status) ? opts.status : null;
   const kindSel = opts.kind === UNSET_KIND ? UNSET_KIND : opts.kind && kinds.includes(opts.kind) ? opts.kind : null;
   const shown = shownByArea
     .filter((p) => (statusSel === UNSET_STATUS ? !p.status : statusSel ? p.status === statusSel : true))
@@ -6649,15 +6672,29 @@ export function projectsBodyHtml(
   const body = `<p class="muted">${pool.length} items from the org Project <a href="${PROJECT_URL}">Developing Today (#4)</a>, read live by the fleet-feed collector (GraphQL, read-only) and carried in the feed. This pool is the resolution source for board/roadmap GitHub items. Where the Project Status and the derived state disagree, the card shows ⚠ with both values. Machine-first: <a href="/api/projects.json">/api/projects.json</a>.</p>
 <div class="chips">${chips}</div>
 <div class="chips"><span class="muted">Status:</span> ${[
-       `<a href="${facetHref({ status: null })}"${!statusSel ? ' class="active"' : ""}>any</a>`,
-       ...statuses.map((s) => `<a href="${facetHref({ status: s })}"${s === statusSel ? ' class="active"' : ""}>${esc(s)} (${pool.filter((p) => p.status === s).length})</a>`),
-       ...(pool.some((p) => !p.status) ? [`<a href="${facetHref({ status: UNSET_STATUS })}"${statusSel === UNSET_STATUS ? ' class="active"' : ""}>${UNSET_STATUS} (${pool.filter((p) => !p.status).length})</a>`] : []),
-     ].join("")}</div>
+    `<a href="${facetHref({ status: null })}"${!statusSel ? ' class="active"' : ""}>any</a>`,
+    ...statuses.map(
+      (s) =>
+        `<a href="${facetHref({ status: s })}"${s === statusSel ? ' class="active"' : ""}>${esc(s)} (${pool.filter((p) => p.status === s).length})</a>`,
+    ),
+    ...(pool.some((p) => !p.status)
+      ? [
+          `<a href="${facetHref({ status: UNSET_STATUS })}"${statusSel === UNSET_STATUS ? ' class="active"' : ""}>${UNSET_STATUS} (${pool.filter((p) => !p.status).length})</a>`,
+        ]
+      : []),
+  ].join("")}</div>
 <div class="chips"><span class="muted">Kind:</span> ${[
-       `<a href="${facetHref({ kind: null })}"${!kindSel ? ' class="active"' : ""}>any</a>`,
-       ...kinds.map((k) => `<a href="${facetHref({ kind: k })}"${k === kindSel ? ' class="active"' : ""}>${esc(k)} (${pool.filter((p) => p.kind === k).length})</a>`),
-       ...(pool.some((p) => !p.kind) ? [`<a href="${facetHref({ kind: UNSET_KIND })}"${kindSel === UNSET_KIND ? ' class="active"' : ""}>${UNSET_KIND} (${pool.filter((p) => !p.kind).length})</a>`] : []),
-     ].join("")}</div>
+    `<a href="${facetHref({ kind: null })}"${!kindSel ? ' class="active"' : ""}>any</a>`,
+    ...kinds.map(
+      (k) =>
+        `<a href="${facetHref({ kind: k })}"${k === kindSel ? ' class="active"' : ""}>${esc(k)} (${pool.filter((p) => p.kind === k).length})</a>`,
+    ),
+    ...(pool.some((p) => !p.kind)
+      ? [
+          `<a href="${facetHref({ kind: UNSET_KIND })}"${kindSel === UNSET_KIND ? ' class="active"' : ""}>${UNSET_KIND} (${pool.filter((p) => !p.kind).length})</a>`,
+        ]
+      : []),
+  ].join("")}</div>
 ${opts.audit && opts.audit.totalItems > pool.length ? `<div class="banner">Board total ${opts.audit.totalItems} items; this pool renders ${pool.length} linked issue/PR items. ${opts.audit.totalItems - pool.length} board item${opts.audit.totalItems - pool.length === 1 ? " is" : "s are"} draft or unlinked (no issue/PR to link to) and not rendered as cards \u2014 counted in the audit in <a href="/api/projects.json">/api/projects.json</a>, never silently dropped.</div>` : ""}
 ${shown.length !== pool.length ? `<p class="muted">Filters show ${shown.length} of ${pool.length} pool items.</p>` : ""}
 ${unsetCount > 0 ? `<div class="banner">${unsetCount} pool item${unsetCount === 1 ? "" : "s"} carry no Area — they belong to no project page until Area is set on the Project. Setting Area is the orchestrator's reconciliation job; this count keeps the gap visible. <a href="${base}?area=${encodeURIComponent(UNSET_AREA)}">View the (unset) bucket →</a></div>` : ""}
@@ -7066,12 +7103,158 @@ function epicGraphOneHtml(items: ProjectPoolItem[], entry: ReturnType<typeof epi
   return `<section>${heading}${summary}${truncatedHtml}<div class="epic-graph-flex">${svg}<div class="epic-graph-side"><h5>Primary ranking — blockers by downstream open work</h5><p class="muted">Each open epic item is counted once per blocker across its transitive blockedBy ancestry. This measures downstream reach, not a promise that every item is immediately unblocked. Current additional unresolved blockers are listed per item; unsized contributors count separately from known effort weight. The longest dependency chain remains a separate diagnostic.</p>${rankedBlockersHtml}<h5>Open items by their worst blocker's downstream reach</h5>${rankedHtml}<h5>All items — dependency list</h5>${listHtml}</div></div></section>`;
 }
 
+/** The Path to Phase 12 panel (#9922): #1235's ordered steps, parsed
+ * from its body snapshot and joined to live GitHub item state. A stale
+ * or missing snapshot renders the warning INSTEAD of the steps — a
+ * silently old step list is the defect #1239's rules name. Queue state
+ * joins here once the fleet-queue collector (#9920) lands; until then
+ * the panel says so. */
+export function phase12PanelHtml(snapshot: Phase12Snapshot | null, items: Map<RefKey, GhItem>): string {
+  const head = `<h2>Path to Phase 12 — live from <a href="${PHASE12_ISSUE_URL}">#1235</a></h2>`;
+  if (!snapshot) {
+    return `${head}<div class="banner">The #1235 body feed is unavailable in the current source, so no step state is shown — a hand-maintained copy would drift, and this panel never renders one.</div>`;
+  }
+  const sourceLine = `<p class="muted">Source: <a href="${PHASE12_ISSUE_URL}">developing-today/code#1235</a> body, fetched ${esc(snapshot.fetchedAt)} · issue updated ${esc(snapshot.issueUpdatedAt)} · per-step state is live GitHub state; queue state joins when the fleet-queue collector (#9920) lands.</p>`;
+  if (phase12IsStale(snapshot)) {
+    return `${head}${sourceLine}<div class="banner">Stale source: this snapshot was fetched at ${esc(snapshot.fetchedAt)}, outside the freshness window — the step list is withheld rather than shown silently old. It refreshes on the next successful body read.</div>`;
+  }
+  const steps = joinPhase12Steps(parsePhase12Steps(snapshot.body), items);
+  if (!steps.length) {
+    return `${head}${sourceLine}<div class="banner">No ordered steps could be parsed from the current #1235 body, so no step state is shown.</div>`;
+  }
+  const rows = steps
+    .map((s) => {
+      const stateBadge =
+        s.liveState === null
+          ? `<span class="badge">not resolved in the current source</span>`
+          : `<span class="badge ${s.liveState === "open" ? "open" : "closed"}">issue ${esc(s.liveState)}</span>`;
+      const box = s.checked ? "☑" : "☐";
+      const done = s.doneNote ? `<br><span class="muted">${esc(s.doneNote)}</span>` : "";
+      return `<div class="card"><strong>${box} ${esc(s.label)} — <a href="${esc(s.url)}">#${s.issueNumber}</a> ${esc(s.liveTitle ?? s.title)}</strong><br>${stateBadge}${done}</div>`;
+    })
+    .join("");
+  return `${head}${sourceLine}${rows}`;
+}
+
+/** The Build health panel (#9924): current CI lane states + the id
+ * E2E nightly trend, projected from the Actions-API snapshot. A stale
+ * or missing snapshot renders the warning INSTEAD of lane states —
+ * silently old CI state is the defect #1239's rules name. A lane whose
+ * read failed renders unavailable; a failing nightly run keeps its
+ * link, which is the point of the trend. */
+export function buildHealthPanelHtml(snapshot: BuildHealthSnapshot | null): string {
+  const head = `<h2>Build health — live from the GitHub Actions API</h2>`;
+  if (!snapshot) {
+    return `${head}<div class="banner">The Actions API snapshot is unavailable in the current source, so no lane state is shown — this panel never renders hand-kept CI values.</div>`;
+  }
+  const sourceLine = `<p class="muted">Source: GitHub Actions API for ${esc(BUILD_HEALTH_REPO)}, fetched ${esc(snapshot.fetchedAt)}.</p>`;
+  if (buildHealthIsStale(snapshot)) {
+    return `${head}${sourceLine}<div class="banner">Stale source: this snapshot was fetched at ${esc(snapshot.fetchedAt)}, outside the freshness window — lane states are withheld rather than shown silently old. They refresh on the next successful Actions read.</div>`;
+  }
+  const runBadge = (status: string, conclusion: string | null): string => {
+    if (status !== "completed") return `<span class="badge implementing">${esc(status)}</span>`;
+    if (conclusion === "success") return `<span class="badge merged">success</span>`;
+    if (conclusion === "failure") return `<span class="badge closed">failure</span>`;
+    return `<span class="badge">${esc(conclusion ?? "completed")}</span>`;
+  };
+  const laneCards = snapshot.lanes
+    .map((laneRuns) => {
+      if (laneRuns.error) {
+        return `<div class="card"><strong>${esc(laneRuns.lane.label)}</strong><br><span class="badge">unavailable</span><br><span class="muted">Actions read failed: ${esc(laneRuns.error)}</span></div>`;
+      }
+      const proj = projectLane(laneRuns);
+      if (!proj.latest) {
+        return `<div class="card"><strong>${esc(laneRuns.lane.label)}</strong><br><span class="badge">no runs reported</span></div>`;
+      }
+      const history = proj.history
+        .map(
+          (r) =>
+            `<a href="${esc(r.url)}">${r.conclusion === "success" ? "✓" : r.conclusion === "failure" ? "✗" : "·"}</a>`,
+        )
+        .join(" ");
+      return `<div class="card"><strong>${esc(laneRuns.lane.label)}</strong><br>${runBadge(proj.latest.status, proj.latest.conclusion)} <span class="muted">latest: <a href="${esc(proj.latest.url)}">${esc(proj.latest.createdAt)}</a> (${esc(proj.latest.event)})</span>${history ? `<br><span class="muted">recent completed: ${history}</span>` : ""}</div>`;
+    })
+    .join("");
+  let nightlyHtml: string;
+  if (snapshot.nightly.error) {
+    nightlyHtml = `<div class="card"><strong>${esc(snapshot.nightly.lane.label)} — nightly trend</strong><br><span class="badge">unavailable</span><br><span class="muted">Actions read failed: ${esc(snapshot.nightly.error)}</span></div>`;
+  } else {
+    const trend = projectNightlyTrend(snapshot.nightly);
+    nightlyHtml = trend.length
+      ? `<div class="card"><strong>${esc(snapshot.nightly.lane.label)} — nightly trend (oldest → newest)</strong><br>${trend
+          .map(
+            (r) =>
+              `<a href="${esc(r.url)}">${r.conclusion === "success" ? "✓" : r.conclusion === "failure" ? "✗" : "·"} ${esc(r.createdAt.slice(0, 10))}</a>`,
+          )
+          .join(" · ")}</div>`
+      : `<div class="card"><strong>${esc(snapshot.nightly.lane.label)} — nightly trend</strong><br><span class="badge">no completed runs reported</span></div>`;
+  }
+  return `${head}${sourceLine}${laneCards}${nightlyHtml}`;
+}
+
+/** The Phase 12 readiness panel (#9926): F12.1–F12.18 with design
+ * state (from #534's checklist), live issue state, and PR state
+ * (timeline cross-references). The F-item list is parsed from
+ * #1235's body — never hand-typed here. A stale snapshot withholds
+ * the rows behind the warning; missing sub-feeds render their
+ * column as unavailable instead of inventing a state. */
+export function f12ReadinessPanelHtml(
+  phase12: Phase12Snapshot | null,
+  design: Phase12Snapshot | null,
+  prRefs: Map<number, F12PrRef[]> | null,
+  items: Map<RefKey, GhItem>,
+): string {
+  const head = `<h2>Phase 12 readiness — F12.1–F12.18, live</h2>`;
+  if (!phase12) {
+    return `${head}<div class="banner">The #1235 body feed is unavailable in the current source, so no F-item state is shown — the F-item list itself comes from that body, and this panel never renders a hand-typed copy.</div>`;
+  }
+  const sourceLine = `<p class="muted">Sources: F-item list + order from <a href="${PHASE12_ISSUE_URL}">developing-today/code#1235</a> (fetched ${esc(phase12.fetchedAt)}); design state from <a href="${F12_DESIGN_ISSUE_URL}">#534</a>${design ? ` (fetched ${esc(design.fetchedAt)})` : " (feed unavailable — design column withheld)"}; issue state is live GitHub state; PR state from issue-timeline cross-references${prRefs ? "" : " (timeline read unavailable — PR column withheld)"}.</p>`;
+  if (phase12IsStale(phase12) || (design !== null && phase12IsStale(design))) {
+    return `${head}${sourceLine}<div class="banner">Stale source: a body snapshot feeding this panel is outside the freshness window — the F-item rows are withheld rather than shown silently old. They refresh on the next successful body read.</div>`;
+  }
+  const fItems = parseF12Items(phase12.body);
+  if (!fItems.length) {
+    return `${head}${sourceLine}<div class="banner">No F-items could be parsed from the current #1235 body, so no readiness state is shown.</div>`;
+  }
+  const designs = design ? parseF12Designs(design.body) : new Map();
+  const rows = projectF12Readiness(fItems, designs, items, prRefs ?? new Map())
+    .map((r) => {
+      const issueBadge =
+        r.issueState === null
+          ? `<span class="badge">issue not resolved in the current source</span>`
+          : `<span class="badge ${r.issueState === "open" ? "open" : "closed"}">issue ${esc(r.issueState)}</span>`;
+      const designBadge = !design
+        ? `<span class="badge">design feed unavailable</span>`
+        : r.design === null
+          ? `<span class="badge">no design entry in #534</span>`
+          : r.design.done
+            ? `<span class="badge merged">design ${esc(r.design.designId)} done</span>`
+            : `<span class="badge implementing">design ${esc(r.design.designId)} pending</span>`;
+      const prBadge = !prRefs
+        ? `<span class="badge">PR read unavailable</span>`
+        : r.prs.length
+          ? r.prs
+              .map(
+                (p) =>
+                  `<span class="badge ${p.state === "merged" ? "merged" : p.state === "open" ? "open" : "closed"}"><a href="${esc(p.url)}">PR #${p.number} ${esc(p.state)}</a></span>`,
+              )
+              .join(" ")
+          : `<span class="badge">no cross-referenced PR</span>`;
+      return `<div class="card"><strong>${esc(r.f)} — <a href="${esc(r.url)}">#${r.issueNumber}</a> ${esc(r.title ?? "")}</strong><br>${designBadge} ${issueBadge} ${prBadge}</div>`;
+    })
+    .join("");
+  return `${head}${sourceLine}${rows}`;
+}
+
 export function renderProgramProject(
   detail: ProjectDetail,
   items: Map<RefKey, GhItem>,
   provenance: Provenance,
   provDetail?: ProvenanceDetail,
   epicPool: ProjectPoolItem[] = detail.poolItems,
+  phase12?: Phase12Snapshot | null,
+  buildHealth?: BuildHealthSnapshot | null,
+  f12?: { design: Phase12Snapshot | null; prRefs: Map<number, F12PrRef[]> | null } | null,
 ): string {
   const { config } = detail;
   const linkBits: string[] = [];
@@ -7177,6 +7360,13 @@ export function renderProgramProject(
 <p class="muted">Built only from already-published fleet data — the orchestration section this aggregator serves and the fleet's tracked issues. No new data pipeline feeds this section.</p>${programEntries(config.sweepHealth, items)}`
     : "";
 
+  const phase12Html = config.id === "id" && phase12 !== undefined ? phase12PanelHtml(phase12, items) : "";
+  const buildHealthHtml = config.id === "id" && buildHealth !== undefined ? buildHealthPanelHtml(buildHealth) : "";
+  const f12Html =
+    config.id === "id" && f12 !== undefined
+      ? f12ReadinessPanelHtml(phase12 ?? null, f12?.design ?? null, f12?.prRefs ?? null, items)
+      : "";
+
   const ed = config.editorial;
   const editorialHtml = ed
     ? `${ed.done.length ? `<h2>What's built</h2>${programEntries(ed.done, items)}` : ""}${ed.next.length ? `<h2>What's next</h2>${programEntries(ed.next, items)}` : ""}${ed.longTerm.length ? `<h2>Long-term roadmap</h2>${programEntries(ed.longTerm, items)}` : ""}${ed.gaps.length ? `<h2>Known gaps</h2>${programEntries(ed.gaps, items)}` : ""}`
@@ -7196,7 +7386,7 @@ ${poolHtml}
 ${roadmapHtml}
 ${repoCardsHtml}
 ${sweepHealthHtml}
-${editorialHtml}`;
+${phase12Html}${buildHealthHtml}${f12Html}${editorialHtml}`;
   return layout(
     config.title,
     body,

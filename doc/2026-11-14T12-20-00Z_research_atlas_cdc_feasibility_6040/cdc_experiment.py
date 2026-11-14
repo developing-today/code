@@ -31,6 +31,7 @@ Revision classes (deterministic, seeded):
 Stdlib only. Oracle: an unchanged document must give reuse == survival
 == 1.0 for every chunker (asserted in self_check()).
 """
+
 import hashlib, json, random, sys
 from pathlib import Path
 
@@ -50,7 +51,8 @@ def fastcdc(data: bytes):
     while i < n:
         remaining = n - i
         if remaining <= MIN_C:
-            chunks.append(data[i:]); break
+            chunks.append(data[i:])
+            break
         end_limit = min(remaining, MAX_C)
         fp, cut = 0, end_limit
         for j in range(MIN_C, end_limit):
@@ -59,13 +61,13 @@ def fastcdc(data: bytes):
             if fp & mask == 0:
                 cut = j + 1
                 break
-        chunks.append(data[i:i + cut])
+        chunks.append(data[i : i + cut])
         i += cut
     return chunks
 
 
 def fixed(data: bytes, size=AVG_C):
-    return [data[i:i + size] for i in range(0, len(data), size)]
+    return [data[i : i + size] for i in range(0, len(data), size)]
 
 
 def span(data: bytes, target=AVG_C, max_c=MAX_C):
@@ -76,10 +78,13 @@ def span(data: bytes, target=AVG_C, max_c=MAX_C):
     for s in spans:
         if len(s) > max_c:
             if cur:
-                chunks.append(cur); cur = b""
-            chunks.extend(fixed(s, target)); continue
+                chunks.append(cur)
+                cur = b""
+            chunks.extend(fixed(s, target))
+            continue
         if len(cur) + len(s) > target and cur:
-            chunks.append(cur); cur = b""
+            chunks.append(cur)
+            cur = b""
         cur += s
     if cur:
         chunks.append(cur)
@@ -100,7 +105,8 @@ def metrics(v1_chunks, v2_chunks):
     seen, uniq_bytes = set(), 0
     for c in v1_chunks:
         if h(c) not in seen:
-            seen.add(h(c)); uniq_bytes += len(c)
+            seen.add(h(c))
+            uniq_bytes += len(c)
     total2 = sum(len(c) for c in v2_chunks)
     reused = sum(len(c) for c in v2_chunks if h(c) in v1_hashes)
     survived = sum(1 for c in v1_chunks if h(c) in {h(x) for x in v2_chunks})
@@ -127,37 +133,60 @@ def edit_rewrite(data: bytes) -> bytes:
     for k in range(3):
         pos = step * k + 499
         if pos + 200 <= len(out):
-            out[pos:pos + 200] = (b"Revised guidance supersedes the earlier text. " * 5)[:200]
+            out[pos : pos + 200] = (
+                b"Revised guidance supersedes the earlier text. " * 5
+            )[:200]
     return bytes(out)
 
 
 def self_check():
-    doc = (b"# Title\n\n" + b"Some paragraph text about ingestion. " * 200)
+    doc = b"# Title\n\n" + b"Some paragraph text about ingestion. " * 200
     for name, fn in CHUNKERS.items():
         m = metrics(fn(doc), fn(doc))
         assert m["reuse_v2"] == 1.0 and m["survival"] == 1.0, (name, m)
-    print("self-check OK: unchanged document => reuse == survival == 1.0 for all chunkers")
+    print(
+        "self-check OK: unchanged document => reuse == survival == 1.0 for all chunkers"
+    )
 
 
 def main(root: str):
     self_check()
-    files = sorted(p for sub in ("doc", "planning") for p in (Path(root) / sub).rglob("*.md") if p.stat().st_size >= 4096)
+    files = sorted(
+        p
+        for sub in ("doc", "planning")
+        for p in (Path(root) / sub).rglob("*.md")
+        if p.stat().st_size >= 4096
+    )
     files = [p for p in files if "queue-15258" not in str(p)]
     docs = [p.read_bytes() for p in files]
     total = sum(len(d) for d in docs)
-    print(f"corpus: {len(docs)} markdown files >=4KiB under doc/ + planning/, {total} bytes")
+    print(
+        f"corpus: {len(docs)} markdown files >=4KiB under doc/ + planning/, {total} bytes"
+    )
     results = {}
     for name, fn in CHUNKERS.items():
         results[name] = {}
         for edit_name, edit in [("insert15", edit_insert15), ("rewrite", edit_rewrite)]:
-            agg = {"chunks_v1": 0, "dedup_ratio_v1": [], "reuse_v2": [], "survival": [],
-                   "_tot1": 0, "_tot2": 0, "_uniq": 0, "_reused": 0, "_surv": 0, "_cnt": 0}
+            agg = {
+                "chunks_v1": 0,
+                "dedup_ratio_v1": [],
+                "reuse_v2": [],
+                "survival": [],
+                "_tot1": 0,
+                "_tot2": 0,
+                "_uniq": 0,
+                "_reused": 0,
+                "_surv": 0,
+                "_cnt": 0,
+            }
             for d in docs:
                 c1, c2 = fn(d), fn(edit(d))
                 m = metrics(c1, c2)
-                agg["chunks_v1"] += m["chunks_v1"]; agg["_cnt"] += 1
+                agg["chunks_v1"] += m["chunks_v1"]
+                agg["_cnt"] += 1
                 agg["dedup_ratio_v1"].append(m["dedup_ratio_v1"])
-                agg["reuse_v2"].append(m["reuse_v2"]); agg["survival"].append(m["survival"])
+                agg["reuse_v2"].append(m["reuse_v2"])
+                agg["survival"].append(m["survival"])
             avg = lambda xs: round(sum(xs) / max(1, len(xs)), 4)
             results[name][edit_name] = {
                 "chunks_v1_total": agg["chunks_v1"],

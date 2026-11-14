@@ -43,25 +43,25 @@ scale, for CDC or anyone else.
 Cross-version results, per-document means (small documents dominate —
 an insertion in a 5 KB document touches most of its chunks):
 
-| edit | chunker | byte reuse | chunk survival |
-|---|---|---|---|
-| insert15 | fastcdc | 0.279 | 0.347 |
-| insert15 | fixed | 0.000 | 0.000 |
-| insert15 | span | 0.346 | 0.417 |
-| rewrite | fastcdc | 0.454 | 0.529 |
-| rewrite | fixed | 0.549 | 0.590 |
-| rewrite | span | 0.554 | 0.607 |
+| edit     | chunker | byte reuse | chunk survival |
+| -------- | ------- | ---------- | -------------- |
+| insert15 | fastcdc | 0.279      | 0.347          |
+| insert15 | fixed   | 0.000      | 0.000          |
+| insert15 | span    | 0.346      | 0.417          |
+| rewrite  | fastcdc | 0.454      | 0.529          |
+| rewrite  | fixed   | 0.549      | 0.590          |
+| rewrite  | span    | 0.554      | 0.607          |
 
 Byte-weighted (pooled across the whole corpus):
 
-| edit | chunker | byte reuse | chunk survival |
-|---|---|---|---|
-| insert15 | fastcdc | 0.521 | 0.556 |
-| insert15 | fixed | 0.000 | 0.000 |
-| insert15 | span | 0.546 | 0.593 |
-| rewrite | fastcdc | 0.671 | 0.701 |
-| rewrite | fixed | 0.755 | 0.764 |
-| rewrite | span | 0.754 | 0.778 |
+| edit     | chunker | byte reuse | chunk survival |
+| -------- | ------- | ---------- | -------------- |
+| insert15 | fastcdc | 0.521      | 0.556          |
+| insert15 | fixed   | 0.000      | 0.000          |
+| insert15 | span    | 0.546      | 0.593          |
+| rewrite  | fastcdc | 0.671      | 0.701          |
+| rewrite  | fixed   | 0.755      | 0.764          |
+| rewrite  | span    | 0.754      | 0.778          |
 
 Sanity anchor (one 1,195,710-byte document, a single 15-byte insertion):
 fastcdc reuse 0.998 / span 0.999 / fixed 0.003 — the FastCDC

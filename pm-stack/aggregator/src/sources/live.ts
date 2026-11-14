@@ -37,6 +37,9 @@ import {
   type KaneoCardSnapshot,
 } from "../activity.ts";
 import { isRecord } from "../validate.ts";
+import { fetchIssueBodySnapshot, type Phase12Snapshot } from "../phase12.ts";
+import { fetchBuildHealthSnapshot, type BuildHealthSnapshot } from "../build-health.ts";
+import { F12_DESIGN_ISSUE_NUMBER, parseF12Items, parseTimelinePrRefs, type F12PrRef } from "../f12-readiness.ts";
 import { buildAttentionFlags, buildQuotaActions, quotaActionFlags } from "../derive.ts";
 import { validateRoadmapHorizon } from "../roadmap-horizon.ts";
 import { describeRepoRoadmapSection, mergeRoadmapRows, readRepoRoadmaps } from "./repo-roadmap.ts";
@@ -1170,6 +1173,121 @@ export function liveSource(
     };
     return getJson(url, headers);
   });
+  // #9922: the Path to Phase 12 body feed — one GraphQL read of
+  // #1235's body, cached for 5 minutes and shared in-flight (same
+  // discipline as the Needs-Drew sweeper above), fail-soft to the
+  // last good snapshot or null so a GitHub outage renders the panel
+  // unavailable instead of breaking /program/<id>.
+  let phase12Cache: { value: Phase12Snapshot; at: number } | null = null;
+  let phase12InFlight: Promise<Phase12Snapshot | null> | null = null;
+  async function phase12Snapshot(): Promise<Phase12Snapshot | null> {
+    if (phase12Cache && Date.now() - phase12Cache.at < 5 * 60_000) return phase12Cache.value;
+    if (!phase12InFlight) {
+      phase12InFlight = (async () => {
+        const token = process.env.PM_AGG_GITHUB_TOKEN ?? process.env.GITHUB_TOKEN;
+        if (!token) return phase12Cache?.value ?? null;
+        try {
+          const snap = await fetchIssueBodySnapshot(token);
+          phase12Cache = { value: snap, at: Date.now() };
+          return snap;
+        } catch {
+          return phase12Cache?.value ?? null;
+        }
+      })().finally(() => {
+        phase12InFlight = null;
+      });
+    }
+    return phase12InFlight;
+  }
+  // #9924: the Build health snapshot — Actions API reads for the
+  // id-gating lanes + the e2e nightly, cached for 5 minutes and
+  // shared in-flight (same discipline as the phase12 feed above),
+  // fail-soft to the last good snapshot or null.
+  let buildHealthCache: { value: BuildHealthSnapshot; at: number } | null = null;
+  let buildHealthInFlight: Promise<BuildHealthSnapshot | null> | null = null;
+  async function buildHealthSnapshot(): Promise<BuildHealthSnapshot | null> {
+    if (buildHealthCache && Date.now() - buildHealthCache.at < 5 * 60_000) return buildHealthCache.value;
+    if (!buildHealthInFlight) {
+      buildHealthInFlight = (async () => {
+        try {
+          const token = process.env.PM_AGG_GITHUB_TOKEN ?? process.env.GITHUB_TOKEN ?? null;
+          const snap = await fetchBuildHealthSnapshot(token);
+          buildHealthCache = { value: snap, at: Date.now() };
+          return snap;
+        } catch {
+          return buildHealthCache?.value ?? null;
+        }
+      })().finally(() => {
+        buildHealthInFlight = null;
+      });
+    }
+    return buildHealthInFlight;
+  }
+  // #9926: the readiness panel's two extra reads — #534's body
+  // (design checklist) through the phase12 body feed, and PR
+  // cross-references from each F-item issue's timeline. Both cached
+  // for 5 minutes and shared in-flight, fail-soft like the feeds
+  // above: a failed timeline read drops that issue's PRs, never
+  // the panel.
+  let phase12DesignCache: { value: Phase12Snapshot; at: number } | null = null;
+  let phase12DesignInFlight: Promise<Phase12Snapshot | null> | null = null;
+  async function phase12DesignSnapshot(): Promise<Phase12Snapshot | null> {
+    if (phase12DesignCache && Date.now() - phase12DesignCache.at < 5 * 60_000) return phase12DesignCache.value;
+    if (!phase12DesignInFlight) {
+      phase12DesignInFlight = (async () => {
+        const token = process.env.PM_AGG_GITHUB_TOKEN ?? process.env.GITHUB_TOKEN;
+        if (!token) return phase12DesignCache?.value ?? null;
+        try {
+          const snap = await fetchIssueBodySnapshot(token, fetch, () => new Date(), F12_DESIGN_ISSUE_NUMBER);
+          phase12DesignCache = { value: snap, at: Date.now() };
+          return snap;
+        } catch {
+          return phase12DesignCache?.value ?? null;
+        }
+      })().finally(() => {
+        phase12DesignInFlight = null;
+      });
+    }
+    return phase12DesignInFlight;
+  }
+  let f12PrRefsCache: { value: Map<number, F12PrRef[]>; at: number } | null = null;
+  let f12PrRefsInFlight: Promise<Map<number, F12PrRef[]> | null> | null = null;
+  async function f12PrRefsSnapshot(): Promise<Map<number, F12PrRef[]> | null> {
+    if (f12PrRefsCache && Date.now() - f12PrRefsCache.at < 5 * 60_000) return f12PrRefsCache.value;
+    if (!f12PrRefsInFlight) {
+      f12PrRefsInFlight = (async () => {
+        const snap = await phase12Snapshot();
+        if (!snap) return f12PrRefsCache?.value ?? null;
+        const token = process.env.PM_AGG_GITHUB_TOKEN ?? process.env.GITHUB_TOKEN;
+        const headers: Record<string, string> = {
+          Accept: "application/vnd.github+json",
+          "X-GitHub-Api-Version": "2022-11-28",
+          "User-Agent": "pm-aggregator-f12-readiness",
+          ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        };
+        const out = new Map<number, F12PrRef[]>();
+        await Promise.all(
+          parseF12Items(snap.body).map(async (item) => {
+            try {
+              const res = await fetch(
+                `https://api.github.com/repos/developing-today/code/issues/${item.issueNumber}/timeline?per_page=100`,
+                { headers, signal: AbortSignal.timeout(20_000) },
+              );
+              if (!res.ok) return;
+              out.set(item.issueNumber, parseTimelinePrRefs(await res.json()));
+            } catch {
+              // One issue's timeline failing drops only its PR column.
+            }
+          }),
+        );
+        f12PrRefsCache = { value: out, at: Date.now() };
+        return out;
+      })().finally(() => {
+        f12PrRefsInFlight = null;
+      });
+    }
+    return f12PrRefsInFlight;
+  }
   // #1116: a laptop leg's health, tracked per state file so the
   // attention provenance can say which legs are dead instead of the
   // failure staying silent. Before this, the OpenChamber-managed
@@ -1577,6 +1695,18 @@ export function liveSource(
     },
     async needsDrew(): Promise<NeedsDrewCensus | null> {
       return needsDrewSweep();
+    },
+    async phase12(): Promise<Phase12Snapshot | null> {
+      return phase12Snapshot();
+    },
+    async buildHealth(): Promise<BuildHealthSnapshot | null> {
+      return buildHealthSnapshot();
+    },
+    async phase12Design(): Promise<Phase12Snapshot | null> {
+      return phase12DesignSnapshot();
+    },
+    async f12PrRefs(): Promise<Map<number, F12PrRef[]> | null> {
+      return f12PrRefsSnapshot();
     },
     async coverageCensus(): Promise<RepoCensus[] | null> {
       const feed = await getFeed();

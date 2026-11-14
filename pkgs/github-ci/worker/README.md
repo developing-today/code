@@ -75,6 +75,49 @@ Cutover state lives on #5693: deploy dark → replay smoke → one
 repo-level dual-run webhook → (later, separately) org/App flip.
 The Edge Function stays deployed as rollback until then.
 
+## Cutover closeout (2026-11-14, task 16806)
+
+The flip is complete and the Edge Function is retired:
+
+- **Dedupe diff clean.** Every `dedupe_key` in the Postgres
+  `ci.events` ledger (11,203 keys) exists in Turso `ci_events`.
+  The only gap was the Postgres ledger's final 4 rows
+  (2026-11-06T17:47–18:00Z, received after the backfill watermark);
+  those 4 rows were backfilled into Turso and the diff re-ran at
+  zero missing. Turso held 27,648 rows at closeout, 16,445 of them
+  written after the Postgres ledger stopped.
+- **Postgres write-silence verified.** `ci.events` last write is
+  2026-11-06T18:00:26Z — eight days of silence while the fleet
+  produced ~16k Turso events. No sender still reaches the old
+  receiver; every fleet repo's webhook points at this Worker
+  (verified per repo: code, opencode, openchamber, darwin-nix).
+- **Edge Function retired.** `github-ci` (the last Edge Function
+  on muse-dev2, v9) was deleted via the Supabase Management API
+  on 2026-11-14; the project now has zero Edge Functions. The
+  Worker → Turso write path was verified live after the deletion
+  (new `ci_events` rows within a minute). Rollback, if ever
+  needed, is a redeploy of this Worker — its behavior is the
+  behavior-for-behavior port of the Edge Function.
+- **The Postgres table stays.** `ci.events` remains read-only in
+  place for one retention window; dropping it is a separate,
+  separately-approved decision (not part of the cutover).
+
+## Retention (90 days hot)
+
+`ci_events` keeps 90 days hot in Turso, per the #5693 design.
+The prune is `scripts/prune-ci-events.py` in this package:
+
+```sh
+python3 scripts/prune-ci-events.py            # delete past 90 days
+python3 scripts/prune-ci-events.py --dry-run  # count only
+```
+
+It resolves the Turso token by name (`turso.fleet-platform-rw-token`)
+and prints counts only. First run 2026-11-14 deleted 0 rows — the
+ledger's oldest row is the 2026-10-30 backfill head, so the window
+first binds in late January 2027; run the prune on fleet maintenance
+cadence so the window is enforced from then on.
+
 ## GitHub mirror (#8580)
 
 Fleet-repo `issues` / `pull_request` / `issue_comment` deliveries also

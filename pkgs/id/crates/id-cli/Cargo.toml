@@ -52,8 +52,12 @@ toml = "1"
 zeroize = "1"
 
 [dev-dependencies]
-id-core = { path = "../id-core", default-features = false, features = ["test-utils"] }
-id-worlds = { path = "../id-worlds", default-features = false, features = ["test-utils"] }
+id-core = { path = "../id-core", default-features = false, features = [
+  "test-utils",
+] }
+id-worlds = { path = "../id-worlds", default-features = false, features = [
+  "test-utils",
+] }
 proptest = "1.12"
 
 [lints.rust]

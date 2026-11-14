@@ -31,8 +31,9 @@ use atlas_core::filters::{Filters, split_csv};
 use atlas_core::shards::{ShardedBackend, TierCeiling, open_from_spec};
 use atlas_core::turso::{TURSO_HOST, resolve_turso_token};
 use atlas_core::{
-    AtlasEmbedder, Error as CoreError, FixedEmbedder, LocalBackend, QueryEmbedder, SearchBackend,
-    SearchMode, SearchOptions, TursoBackend, VectorBackend, run_get_chunk, run_search,
+    AtlasEmbedder, CachingEmbedder, Error as CoreError, FixedEmbedder, LocalBackend, QueryEmbedder,
+    QueryEmbeddingCache, SearchBackend, SearchMode, SearchOptions, TursoBackend, VectorBackend,
+    run_get_chunk, run_search,
 };
 use atlas_proto::{
     FilterSpec, QueryVariant, SearchMode as ProtoSearchMode, SearchParametersV1, SearchRequest,
@@ -276,6 +277,21 @@ struct SearchArgs {
     /// include the parent message text (truncated at 50000 chars)
     #[arg(long)]
     with_message: bool,
+    /// bypass the service cache reads; the fresh result still lands in the cache (refresh). Service mode only: the local path has no result cache (#9942)
+    #[arg(long)]
+    no_cache: bool,
+    /// block for the full fused result (the one-shot CLI implies --wait; this spells it out)
+    #[arg(long, conflicts_with = "no_wait")]
+    wait: bool,
+    /// do not block: print the service job handle plus an empty first page and return
+    #[arg(long)]
+    no_wait: bool,
+    /// hydrate the top N results to full chunk + message content from the content store (NOT --expand: that keeps its neighbor-chunks meaning)
+    #[arg(long, default_value_t = 0)]
+    hydrate: i64,
+    /// ungrouped output rows: bare --raw-rows for flat fused rows, --raw-rows=branches for pre-fusion branch rows. Distinct from --raw (verbatim query), which is not repurposed
+    #[arg(long, num_args = 0..=1, default_missing_value = "ungrouped", value_parser = ["ungrouped", "branches"])]
+    raw_rows: Option<String>,
     /// human-readable output instead of JSON
     #[arg(long)]
     text: bool,
@@ -442,7 +458,7 @@ fn resolve_ort_lib() -> Option<PathBuf> {
 }
 
 enum LoadedEmbedder {
-    Real(Box<AtlasEmbedder>),
+    Real(Box<CachingEmbedder<AtlasEmbedder>>),
     Fixed(FixedEmbedder),
 }
 
@@ -484,7 +500,13 @@ impl CliEmbedder {
                         })?;
                     return Ok(LoadedEmbedder::Fixed(FixedEmbedder { raw }));
                 }
-                load_embedder(&self.model, self.embedder).map(|e| LoadedEmbedder::Real(Box::new(e)))
+                load_embedder(&self.model, self.embedder).map(|e| {
+                    let cache = QueryEmbeddingCache::from_env(&self.model, fetch_model::MODEL_REV);
+                    LoadedEmbedder::Real(Box::new(CachingEmbedder::new(
+                        e,
+                        std::sync::Arc::new(cache),
+                    )))
+                })
             })
             .as_ref()
             .map_err(|m| CoreError::fatal(m.clone()))
@@ -610,6 +632,16 @@ fn parameters_from_args(args: &SearchArgs) -> SearchParametersV1 {
             VariantChoice::Both => QueryVariant::Both,
         },
         raw: args.raw,
+        no_cache: args.no_cache,
+        // The CLI one-shot implies --wait (design s3.3); only
+        // --no-wait turns it off.
+        wait: !args.no_wait,
+        hydrate: u(args.hydrate),
+        raw_mode: match args.raw_rows.as_deref() {
+            Some("branches") => atlas_proto::RawMode::Branches,
+            Some(_) => atlas_proto::RawMode::Ungrouped,
+            None => atlas_proto::RawMode::Off,
+        },
     }
 }
 
@@ -916,7 +948,11 @@ mod tests {
             "fts_weight":1.5,
             "vector_weight":0.75,
             "rrf_k":20,
-            "raw":true
+            "raw":true,
+            // The CLI one-shot implies --wait (design s3.3), so
+            // the equivalent raw request spells it out; every
+            // other slice-2 flag shares the off default.
+            "wait":true
         }))
         .unwrap();
         assert_eq!(cli_request.parameters, raw_request.parameters);

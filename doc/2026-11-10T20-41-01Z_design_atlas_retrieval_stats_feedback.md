@@ -55,11 +55,11 @@
   printed by the CLI.
 - `result_id`: `query_id` + the chunk's stable identity within that execution:
   `(query_id, chunk_id)`. `chunk_id` already exists (§0); the pair is unique per
-  execution and stable for feedback, because feedback is always about *this
-  result as served for this query*. Cross-query aggregation joins on `chunk_id`
+  execution and stable for feedback, because feedback is always about _this
+  result as served for this query_. Cross-query aggregation joins on `chunk_id`
   (and its file/embed identity, §3), never on `result_id`.
 - File/embed identity for aggregation: each chunk resolves to `(source_file_id,
-  embed_id, embed_content_hash)` via the chunk detail row and the versioning
+embed_id, embed_content_hash)` via the chunk detail row and the versioning
   design's content version. The trace stores these resolved values (§3) so later
   re-embeds do not rewrite history: statistics describe the embed state that was
   actually scored.
@@ -79,34 +79,34 @@ itself as the "statistics and reports" source set (§4). The record:
   "ts": "RFC3339 UTC, execution start",
   "duration_ms": 0,
   "surface": "cli | service-api | ui:<name>",
-  "requester": {"kind": "drew | agent | user", "id": "stable requester id"},
+  "requester": { "kind": "drew | agent | user", "id": "stable requester id" },
   "query_text_hash": "sha256 of the normalised query text",
   "query_text": "present only when the surface's retention class permits it; else null",
   "parameters": {
-    "pool": 0, "top_k": 0,
+    "pool": 0,
+    "top_k": 0,
     "vector_backend": "as in VectorBackend",
-    "weights": {"fts": 0.0, "vector": 0.0, "rescore": "none | jaccard | splade"},
+    "weights": { "fts": 0.0, "vector": 0.0, "rescore": "none | jaccard | splade" },
     "filters": "the effective filter set, serialised"
   },
   "results": [
     {
       "chunk_id": 0,
-      "source_file_id": "...", "embed_id": "...",
+      "source_file_id": "...",
+      "embed_id": "...",
       "embed_content_hash": "hash of the embed content actually scored",
-      "embed_state": {"version": "per the versioning design", "tier": "hot | cold"},
-      "provenance_mark": "...", "sensitivity": "...",
+      "embed_state": { "version": "per the versioning design", "tier": "hot | cold" },
+      "provenance_mark": "...",
+      "sensitivity": "...",
       "stages": {
-        "shard": {"shard_id": "...", "branch": "fts | vector",
-                  "rank_in_shard": 0, "score": 0.0},
-        "merge": {"rank_after_fusion": 0, "fusion_score": 0.0,
-                  "rank_sources": "the FusedEntry rank_sources_json, persisted"},
-        "rescore": {"applied": true, "kind": "jaccard | splade", "score": 0.0},
-        "final": {"rank": 0, "served": true}
+        "shard": { "shard_id": "...", "branch": "fts | vector", "rank_in_shard": 0, "score": 0.0 },
+        "merge": { "rank_after_fusion": 0, "fusion_score": 0.0, "rank_sources": "the FusedEntry rank_sources_json, persisted" },
+        "rescore": { "applied": true, "kind": "jaccard | splade", "score": 0.0 },
+        "final": { "rank": 0, "served": true }
       }
     }
   ],
-  "pool_counts": {"per_shard": {"<shard_id>": {"fts": 0, "vector": 0}},
-                  "merged": 0, "rescored": 0, "served": 0}
+  "pool_counts": { "per_shard": { "<shard_id>": { "fts": 0, "vector": 0 } }, "merged": 0, "rescored": 0, "served": 0 }
 }
 ```
 
@@ -178,7 +178,7 @@ Aggregates are recomputed from raw traces on schema or definition change
 - **Per result**: thumbs up / thumbs down, one action from whatever surface
   returned the result (requirement 4):
   - CLI: `atlas feedback --query <query_id> --chunk <chunk_id> --up|--down
-    [--comment <text | @file>]`, and an interactive post-search prompt that is
+[--comment <text | @file>]`, and an interactive post-search prompt that is
     a single keypress per result.
   - Service API: `POST /feedback` with `{query_id, chunk_id, vote, comment?}`
     and the same fields accepted inline on any surface that already talks to
@@ -194,7 +194,7 @@ Aggregates are recomputed from raw traces on schema or definition change
   capture field imposes no practical length pressure (minimum supported
   64 KiB); long-form feedback is explicitly welcomed in the affordance copy.
 - A feedback record: `{feedback_id, query_id, chunk_id | null, vote: up|down,
-  comment: verbatim | null, requester (§6.3), ts, opened: bool (§6.4)}`.
+comment: verbatim | null, requester (§6.3), ts, opened: bool (§6.4)}`.
 
 ### 6.2 Normalisation (our job, not the user's — requirement 5)
 
@@ -241,7 +241,7 @@ Aggregates are recomputed from raw traces on schema or definition change
 - **Agent self-feedback loops**: an agent may not cast a weighted vote on a
   result served to a query that same agent (same session lineage) issued
   in the course of work it is itself evaluating — such votes are recorded
-  with weight 0 and flagged `self-feedback`. Agents judging *other*
+  with weight 0 and flagged `self-feedback`. Agents judging _other_
   sessions' retrievals is ordinary 0.25-weight signal.
 - **Brigading by volume**: aggregates use unique-requester counts next to
   raw counts; a decision input (§7) requires the unique-requester figure,
@@ -249,16 +249,16 @@ Aggregates are recomputed from raw traces on schema or definition change
 
 ## 7. Decision map — what each signal changes
 
-| Signal (source) | Decision it feeds | Acting rule |
-|---|---|---|
-| Embed with high pool entry, near-zero survival + near-zero final-rank presence over 28 days (§5.1–5.3) | **Retention**: candidate for the versioning design's deletion/demotion triggers | Surfaced in the weekly statistics report; deletion still goes through the retention design's own gates — statistics nominate, they do not delete |
-| Embed with sustained final-rank 1–3 presence (§5.2) | **Retention**: protected from demotion triggers | Demotion requires contradicting feedback evidence, not statistics alone |
-| Weighted down-vote concentration on one embed (§5.4) with normalised category `stale-content` / `wrong-content` | **Retention + re-ingestion**: re-embed or retire the source | Category-specific: `stale-content` → re-ingest first; `wrong-content` → human review before any deletion |
-| Category `ranking-too-low` recurring for a query class (§6.2) | **Ranking**: weight / rescore-parameter change candidates (#5774 parameters) | Tested through the eval harness (`eval.rs` qrels) before adoption; production feedback nominates, offline eval disposes |
-| Branch survival skew (FTS vs vector, §5.1) shifting materially between windows | **Search patterns**: pool sizes, fusion weights, expansion policy | Same eval-gated path as ranking changes |
-| Per-query down-votes with `missing-result` comments (§6.2) | **Product/ingestion**: new source candidates for the #6018 program | Filed as ingestion candidates with the comment as evidence |
-| Agent self-feedback flags (§6.4) clustering in one workflow | **Product/process**: that workflow's retrieval step is redesigned, not re-weighted | Surfaced in the weekly report as a process finding |
-| Any aggregate with no consumer after two reporting cycles | **This design**: aggregate is deleted (invariant 6) | Named in the weekly report before removal |
+| Signal (source)                                                                                                 | Decision it feeds                                                                  | Acting rule                                                                                                                                      |
+| --------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------ |
+| Embed with high pool entry, near-zero survival + near-zero final-rank presence over 28 days (§5.1–5.3)          | **Retention**: candidate for the versioning design's deletion/demotion triggers    | Surfaced in the weekly statistics report; deletion still goes through the retention design's own gates — statistics nominate, they do not delete |
+| Embed with sustained final-rank 1–3 presence (§5.2)                                                             | **Retention**: protected from demotion triggers                                    | Demotion requires contradicting feedback evidence, not statistics alone                                                                          |
+| Weighted down-vote concentration on one embed (§5.4) with normalised category `stale-content` / `wrong-content` | **Retention + re-ingestion**: re-embed or retire the source                        | Category-specific: `stale-content` → re-ingest first; `wrong-content` → human review before any deletion                                         |
+| Category `ranking-too-low` recurring for a query class (§6.2)                                                   | **Ranking**: weight / rescore-parameter change candidates (#5774 parameters)       | Tested through the eval harness (`eval.rs` qrels) before adoption; production feedback nominates, offline eval disposes                          |
+| Branch survival skew (FTS vs vector, §5.1) shifting materially between windows                                  | **Search patterns**: pool sizes, fusion weights, expansion policy                  | Same eval-gated path as ranking changes                                                                                                          |
+| Per-query down-votes with `missing-result` comments (§6.2)                                                      | **Product/ingestion**: new source candidates for the #6018 program                 | Filed as ingestion candidates with the comment as evidence                                                                                       |
+| Agent self-feedback flags (§6.4) clustering in one workflow                                                     | **Product/process**: that workflow's retrieval step is redesigned, not re-weighted | Surfaced in the weekly report as a process finding                                                                                               |
+| Any aggregate with no consumer after two reporting cycles                                                       | **This design**: aggregate is deleted (invariant 6)                                | Named in the weekly report before removal                                                                                                        |
 
 The weekly statistics report is itself an artifact in the "statistics and
 reports" source class: decisions taken from it cite the aggregate and window,
