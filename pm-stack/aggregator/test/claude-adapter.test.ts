@@ -255,12 +255,12 @@ describe("parseClaudeUsagePayload / collectClaudeAdapter properties (#1163, Code
 
   test("property: failed collection retains the previous entry, never zeros", async () => {
     const failureModes = [
-      () => ({ httpStatus: 401, payload: null }),
-      () => ({ httpStatus: 403, payload: null }),
-      () => ({ httpStatus: 500, payload: null }),
-      () => ({ httpStatus: 200, payload: { drifted: true } }),
-      () => ({ httpStatus: 200, payload: { five_hour: { utilization: "0x10" } } }),
-      () => {
+      async () => ({ httpStatus: 401, payload: null }),
+      async () => ({ httpStatus: 403, payload: null }),
+      async () => ({ httpStatus: 500, payload: null }),
+      async () => ({ httpStatus: 200, payload: { drifted: true } }),
+      async () => ({ httpStatus: 200, payload: { five_hour: { utilization: "0x10" } } }),
+      async () => {
         throw new Error("network down");
       },
     ];
