@@ -888,7 +888,7 @@ const SCHEMA: [&str; 17] = [
         priority INTEGER, status TEXT NOT NULL DEFAULT 'queued', \
         not_before TEXT, worker_id TEXT, claimed_at TEXT, lease_until TEXT, \
         lane_id TEXT, platform TEXT, attempts INTEGER NOT NULL DEFAULT 0, \
-        max_attempts INTEGER NOT NULL DEFAULT 4, \
+        max_attempts INTEGER NOT NULL DEFAULT 1000, \
         claim_provider TEXT, claim_model TEXT, claim_variant TEXT, claim_session_id TEXT, \
         progress TEXT NOT NULL DEFAULT '{}', result TEXT NOT NULL DEFAULT '{}', \
         last_error TEXT, park_kind TEXT, wait_kind TEXT, ready_condition TEXT, \
@@ -2074,7 +2074,9 @@ fn verb_enqueue(t: &TursoBackend, req: &Value) -> Value {
                 task.get("max_attempts")
                     .and_then(|v| v.as_i64())
                     .map(Arg::Int)
-                    .unwrap_or(Arg::Int(4)),
+                    .unwrap_or(Arg::Int(
+                        crate::validate::TASK_DEFAULT_MAX_ATTEMPTS as i64,
+                    )),
                 arg_str(platform.as_deref()),
                 Arg::Text(now.clone()),
                 Arg::Text(now),
@@ -7718,6 +7720,73 @@ pub fn dispatch(t: &TursoBackend, path: &str, req: &Value) -> Value {
 mod tests {
     use super::*;
     use proptest::prelude::*;
+
+    #[test]
+    fn task_creation_defaults_max_attempts_1000_per_8973() {
+        // #8973 oracle: every task-creation default in this crate is
+        // 1000 (Drew order 2026-11-12) - the tasks schema default
+        // and the enqueue insert fallback (which reads the one
+        // TASK_DEFAULT_MAX_ATTEMPTS constant in validate.rs; the
+        // task_from_packet default is covered in validate tests).
+        // The creation_outbox retry cap is a different domain and
+        // intentionally stays at its own DEFAULT_MAX_ATTEMPTS.
+        let src = include_str!("turso_queue.rs");
+        assert!(
+            src.contains("max_attempts INTEGER NOT NULL DEFAULT 1000"),
+            "tasks schema default is 1000"
+        );
+        assert!(
+            src.contains("crate::validate::TASK_DEFAULT_MAX_ATTEMPTS as i64"),
+            "enqueue insert fallback uses the shared task default"
+        );
+        // The stale-default needle is built with format! so this
+        // test file does not itself contain the literal it bans.
+        let stale = format!("max_attempts INTEGER NOT NULL DEFAULT {}", 4);
+        assert!(!src.contains(&stale), "no stale tasks schema default");
+    }
+
+    #[test]
+    fn enqueue_dry_run_defaults_max_attempts_1000_per_8973() {
+        // #8973 acceptance, enqueue path: a valid packet that omits
+        // max_attempts in BOTH copies enqueues with the default
+        // applied. Dry-run returns the exact row shape the insert
+        // consumes, so this is a readback of the creation default
+        // without a live store; the insert fallback and the schema
+        // default are covered by the source-oracle test above.
+        let backend = TursoBackend::new(
+            "http://127.0.0.1:0".to_string(),
+            "test".to_string(),
+            ureq::agent(),
+        );
+        let packet = json!({
+            "title": "probe", "priority": 30,
+            "dedupe_key": "repo-health:v1:fix:developing-today/code:issue:8973",
+            "payload": {
+                "schema": "repo-task/v1",
+                "kind": "small_fix",
+                "repo": "developing-today/code",
+                "problem": "p",
+                "priority_reason": "r",
+                "evidence": ["e"],
+                "acceptance": ["a"],
+                "tests": ["t"],
+                "context_refs": [],
+                "scope": {"include": ["x"], "exclude": ["y"] },
+                "risk": {"level": "low", "flags": [] },
+                "timebox_minutes": 45,
+                "issue": {"number": 8973 },
+                "dedupe": {"checked_at": "2026-11-14T00:00:00Z", "basis": "test" }
+            }
+        });
+        let req = json!({
+            "queue": "repo-health-code-pilot",
+            "packet": packet,
+            "dry_run": true
+        });
+        let out = verb_enqueue(&backend, &req);
+        assert_eq!(out["ok"], true, "{out}");
+        assert_eq!(out["task"]["max_attempts"], 1000, "{out}");
+    }
 
     #[test]
     fn model_stamp_detail_9046_carries_session_and_trigger() {

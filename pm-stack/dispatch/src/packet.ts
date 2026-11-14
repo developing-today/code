@@ -86,7 +86,7 @@ export function buildPacket(input: PacketInput, dedupeKey: string): Packet {
     risk: { level: "low", flags: [] },
     priority_reason: `Caller-supplied dispatch priority (resolved to ${input.priority} on the queue design scale).`,
     timebox_minutes: isTriage ? 20 : 45,
-    max_attempts: isTriage || input.kind === "ci_investigation" ? 3 : 2,
+    max_attempts: 1000, // #8973: Drew order 2026-11-12 - new tasks default to 1000 on every creation path
     context_refs: input.issue ? [input.issue.url] : [],
     dedupe: {
       checked_at: now,
