@@ -227,9 +227,21 @@ impl<F: ListenerFactory, M: MountSink> PublicationManager<F, M> {
                     // mount in it; revert the persisted set so the
                     // two never silently disagree, and say so.
                     let mut reverted = self.registry.clone();
-                    let _ = reverted.unpublish(&publication.placement);
-                    let _ = reverted.save(&self.registry_path);
-                    self.registry = reverted;
+                    let revert_result: Result<()> = (|| {
+                        reverted.unpublish(&publication.placement)?;
+                        reverted.save(&self.registry_path)?;
+                        Ok(())
+                    })();
+                    match revert_result {
+                        Ok(()) => self.registry = reverted,
+                        Err(revert_error) => {
+                            return Err(error)
+                                .context(format!(
+                                    "reverting the persisted publications registry failed: {revert_error:#}"
+                                ))
+                                .context("applying the path mount after persisting it");
+                        }
+                    }
                     return Err(error).context("applying the path mount after persisting it");
                 }
                 self.mounted.push(path.clone());
