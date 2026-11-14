@@ -27,7 +27,7 @@ function withFieldType(side: "client" | "server", frameName: string, fieldName: 
 
 /** The world page markup, read from the Rust template so the test cannot drift from it. */
 function worldPageMarkup(): string {
-  const source = readFileSync(resolve(here, "../../src/web/templates.rs"), "utf8");
+  const source = readFileSync(resolve(here, "../../crates/id-web/src/templates.rs"), "utf8");
   const start = source.indexOf("pub fn render_world_page");
   const open = source.indexOf('r#"', start);
   const close = source.indexOf('"#;', open);
