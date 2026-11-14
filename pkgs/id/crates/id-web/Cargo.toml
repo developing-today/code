@@ -17,6 +17,7 @@ license = "MIT OR Apache-2.0"
 
 [features]
 default = []
+sandbox = ["id-worlds/sandbox"]
 
 [dependencies]
 anyhow = "1"
@@ -67,6 +68,7 @@ id-core = { path = "../id-core", default-features = false, features = [
 # (world_hub::testing), as the facade test build did.
 id-worlds = { path = "../id-worlds", default-features = false, features = [
   "test-utils",
+  "sandbox",
 ] }
 iroh = "1"
 iroh-docs = "0.101"
