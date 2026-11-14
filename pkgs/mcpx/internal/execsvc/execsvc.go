@@ -118,13 +118,13 @@ type Options struct {
 	// (flag aliases, env, config) and forwards the result, so a remote
 	// run honours the caller's policy instead of silently substituting
 	// the daemon's.
-	CwdPolicy    string         `json:"cwdPolicy,omitempty"`
+	CwdPolicy string `json:"cwdPolicy,omitempty"`
 	// Devshell is the caller's script.devshell for this run; empty
 	// takes the service's configured one.
-	Devshell     string            `json:"devshell,omitempty"`
-	Timeout      string            `json:"timeout,omitempty"`
-	Permissions  string            `json:"permissions,omitempty"`
-	Placeholders map[string]any    `json:"placeholders,omitempty"`
+	Devshell     string         `json:"devshell,omitempty"`
+	Timeout      string         `json:"timeout,omitempty"`
+	Permissions  string         `json:"permissions,omitempty"`
+	Placeholders map[string]any `json:"placeholders,omitempty"`
 	// BorrowSession marks Session as borrowed from a still-running
 	// caller: this run may use the session's instances but must not
 	// release them when it ends -- the caller owns their lifetime and
