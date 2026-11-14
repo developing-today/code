@@ -400,15 +400,42 @@ mod tests {
         let endpoint = [8; 32];
         let mut abuse = AbuseEvaluator::new(policy, [9; 32]);
 
+        // A 5-byte frame exceeds the byte bucket's burst capacity
+        // (4): the cost can never be admitted, so the crate's design
+        // (abuse module docs; the #3927 oversize oracle) makes the
+        // refusal a permanent RequestTooLarge with no retry offered
+        // (#8354 — this test previously expected BudgetExhausted,
+        // which is the within-capacity refusal; see below).
         let refusal = charge_frame(&mut abuse, endpoint, true, 5, 0).unwrap_err();
         assert_eq!(
             refusal.0.reason,
-            crate::abuse::RefusalReason::BudgetExhausted
+            crate::abuse::RefusalReason::RequestTooLarge
         );
+        assert!(refusal.0.retry_after_ms.is_none());
         assert!(abuse.counters().get(&[9; 32], &endpoint).is_none());
 
         // The refused frame did not consume the frame allowance.
         charge_frame(&mut abuse, endpoint, true, 4, 0).unwrap();
+        assert_eq!(
+            abuse.counters().get(&[9; 32], &endpoint),
+            Some(crate::abuse::Counters {
+                frames: 1,
+                bytes: 4,
+            })
+        );
+
+        // A within-capacity byte refusal — the bucket is momentarily
+        // empty but the cost fits its burst capacity — is the
+        // retryable BudgetExhausted, and it likewise spends neither
+        // the frame token nor the counters.
+        let mut abuse = AbuseEvaluator::new(policy, [9; 32]);
+        charge_frame(&mut abuse, endpoint, true, 4, 0).unwrap();
+        let refusal = charge_frame(&mut abuse, endpoint, true, 1, 0).unwrap_err();
+        assert_eq!(
+            refusal.0.reason,
+            crate::abuse::RefusalReason::BudgetExhausted
+        );
+        assert!(refusal.0.retry_after_ms.is_some());
         assert_eq!(
             abuse.counters().get(&[9; 32], &endpoint),
             Some(crate::abuse::Counters {
