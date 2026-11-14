@@ -22,10 +22,22 @@
 // Usage: bun run scripts/append-usage-snapshots.ts [--from-provider-usage] [--by <name>]
 // Env: QUOTA_VIEW_PATH, QUOTA_REGISTRY_PATH, PROVIDER_USAGE_SNAPSHOT_PATH,
 //      USAGE_SNAPSHOT_OUTBOX_PATH.
+// Defaults: with no env override set, the view/registry resolve to
+// the laptop's ~/hatch-personal mirror of the goal workspaces when
+// present and the outbox to the collector's state dir
+// (~/.local/state/pm-aggregator), falling back to the ~/workspace
+// goal tree (src/default-paths.ts, #4889) — the ~/workspace tree on
+// the laptop is a stub with no quota-view.md, which is what used
+// to kill this step with ENOENT.
 import { appendFile, mkdir, readFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { extractQuotaPools } from "../src/quota-extract.ts";
+import {
+  defaultHiddenDir,
+  defaultQuotaViewPath,
+  defaultUsageOutboxPath,
+} from "../src/default-paths.ts";
 import { extractPaygLines, extractSaasServices } from "../src/saas-extract.ts";
 import {
   recordsFromPaygLines,
@@ -37,16 +49,11 @@ import { isSnapshotRecord, snapshotKey } from "../src/snapshots.ts";
 import type { SnapshotRecord } from "../src/model.ts";
 
 const HOME = homedir();
-const HIDDEN = join(HOME, "workspace/goals/keep-the-four-repos-healthy/hidden_files");
-const quotaViewPath =
-  process.env.QUOTA_VIEW_PATH ??
-  join(
-    HOME,
-    "workspace/goals/stewardship-commission-recurring-review-and-dispatch/hidden_files/visibility/quota-view.md",
-  );
+const HIDDEN = defaultHiddenDir(HOME);
+const quotaViewPath = process.env.QUOTA_VIEW_PATH ?? defaultQuotaViewPath(HOME);
 const registryPath = process.env.QUOTA_REGISTRY_PATH ?? join(HIDDEN, "provider-quota-registry.md");
 const providerUsagePath = process.env.PROVIDER_USAGE_SNAPSHOT_PATH ?? join(HIDDEN, "provider-usage-snapshot.json");
-const outboxPath = process.env.USAGE_SNAPSHOT_OUTBOX_PATH ?? join(HIDDEN, "usage-snapshot-outbox.jsonl");
+const outboxPath = process.env.USAGE_SNAPSHOT_OUTBOX_PATH ?? defaultUsageOutboxPath(HOME);
 
 // Resolve the --by value BEFORE any file is read or written (#3295).
 // A missing, empty, or flag-like value used to flow into every derived
