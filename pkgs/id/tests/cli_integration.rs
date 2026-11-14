@@ -439,6 +439,19 @@ mod cli_tests {
             "PinnedRuntime"
         );
 
+        let original_bytes = std::fs::read(&log_path).unwrap();
+        let mut suffixed_bytes = original_bytes.clone();
+        suffixed_bytes.extend_from_slice(&[0xde, 0xad, 0xbe, 0xef]);
+        std::fs::write(&log_path, suffixed_bytes).unwrap();
+        let suffixed = run_cmd(&["match-audit", "verify", log_path_arg], tmp.path());
+        assert!(!suffixed.status.success());
+        let suffixed_report: serde_json::Value = serde_json::from_slice(&suffixed.stdout).unwrap();
+        assert_eq!(
+            suffixed_report["technical"]["InvalidRecord"]["reason"],
+            "MalformedEncoding"
+        );
+        std::fs::write(&log_path, original_bytes).unwrap();
+
         let mut tampered_input =
             id::match_audit::MatchLogV0::decode(&std::fs::read(&log_path).unwrap()).unwrap();
         let id::match_audit::EntryBodyV0::InputBlock(block) = &mut tampered_input.entries[0].body
@@ -2155,7 +2168,10 @@ mod serve_tests {
             String::from_utf8_lossy(&changed.stderr)
         );
         let changed_report: serde_json::Value = serde_json::from_slice(&changed.stdout).unwrap();
-        assert_eq!(changed_report["report"]["ceiling"], serde_json::json!(["time.now"]));
+        assert_eq!(
+            changed_report["report"]["ceiling"],
+            serde_json::json!(["time.now"])
+        );
 
         let read = world.output(&["caps", &world.node, "--capability", &world.capability]);
         assert!(
@@ -4570,6 +4586,51 @@ mod serve_tests {
         }
 
         server.stop();
+    }
+
+    /// A later bind failure aborts startup before any listener is served or
+    /// the serve lock advertises a partial topology.
+    #[test]
+    #[cfg(feature = "web")]
+    fn test_serve_web_later_listener_bind_failure_does_not_leave_partial_startup() {
+        let tmp = TempDir::new().unwrap();
+        let first_reservation = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let first_addr = first_reservation.local_addr().unwrap();
+        drop(first_reservation);
+
+        let occupied = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let occupied_addr = occupied.local_addr().unwrap();
+        let first_addr_text = first_addr.to_string();
+        let occupied_addr_text = occupied_addr.to_string();
+        let output = run_cmd(
+            &[
+                "serve",
+                "--ephemeral",
+                "--no-relay",
+                "--no-gossip",
+                "--no-mdns",
+                "--web",
+                "--web-listen",
+                &first_addr_text,
+                "--web-listen",
+                &occupied_addr_text,
+            ],
+            tmp.path(),
+        );
+
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(!output.status.success(), "startup should fail: {stderr}");
+        assert!(
+            stderr.contains(&format!("failed to bind listener {occupied_addr}")),
+            "error should identify the listener that failed: {stderr}"
+        );
+        assert!(
+            !tmp.path().join(SERVE_LOCK).exists(),
+            "failed startup must not publish a partial listener set"
+        );
+        let reclaimed = std::net::TcpListener::bind(first_addr)
+            .expect("the listener bound before the failure must be released");
+        drop(reclaimed);
     }
 
     /// Explicit legacy flags conflict with `--web-listen` through the real

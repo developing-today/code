@@ -21,6 +21,7 @@ import (
 	"time"
 
 	"github.com/developing-today/code/pkgs/mcpx/internal/defaults"
+	"github.com/developing-today/code/pkgs/mcpx/internal/homeutil"
 	"github.com/developing-today/code/pkgs/mcpx/internal/progspec"
 )
 
@@ -154,8 +155,11 @@ func StateDir() string {
 	if v := os.Getenv("XDG_STATE_HOME"); v != "" {
 		return filepath.Join(v, "mcpx")
 	}
-	home, _ := os.UserHomeDir()
-	return filepath.Join(home, ".local", "state", "mcpx")
+	// Home-resolution contract (issues #5762 / #5763): reached only
+	// when neither MCPX_STATE_DIR nor XDG_STATE_HOME names a
+	// directory, so a non-empty HOME must - MustHome panics with the
+	// named error rather than returning a CWD-relative substitute.
+	return filepath.Join(homeutil.MustHome(), ".local", "state", "mcpx")
 }
 
 // tailBuffer is the bounded unattached-output buffer: it keeps the tail

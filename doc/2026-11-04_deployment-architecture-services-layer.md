@@ -10,25 +10,25 @@ code#5362 (fleet-brokers), code#5412 (fleet binary epic), code#5703
 ## 0. The problem, with receipts from 2026-11-04
 
 Everything we run is built with Nix already — or is one hand step away from
-it. What we do not have is a way to *deploy* a service without either
+it. What we do not have is a way to _deploy_ a service without either
 (a) switching the whole operating system, (b) pulling a git checkout under a
 running process, or (c) placing a file by hand and hoping the next switch,
 recycle, or redeploy does not strand it. Today's estate exhibits all three
 failure modes at once:
 
-| Mechanism today | What it carries | Failure mode observed |
-|---|---|---|
-| NixOS system switch (`nixos-rebuild switch --flake ~/git/code#amd`) | The laptop OS **and**, via embedded home-manager, effectively every user service (opencode, openchamber, proxies, brokers, pm-stack, mcpx, atlas-search, openclaw) | A one-service change requires a full system activation; service work queues behind unrelated system work for days |
-| home-manager (as a NixOS module in the code flake) | All laptop user units: `home/common/default.nix` (~25 `systemd.user.services`), `nixos/services/pm-stack`, `nixos/services/pm-apps`, `nixos/home/*.nix` | Unit definitions only move when the system generation moves; HM's rollback granularity is the whole user profile, not the service |
-| Running from the primary checkout | pm-stack aggregator / projector / dispatch / quota-gatherer / fleet-feed run `bun run` straight out of `~/git/code`, kept "current" by pm-git-sync pulling every 30 s and restarting services on subtree changes | The running service is whatever the checkout happens to be; a redeploy once wiped an unmerged gatherer script mid-incident; "deploys from primary" couples every editor of the repo to production |
-| Hand-written unit files in `~/.config/systemd/user/` | `laptop-agent.service` (the Python daemon), `opencode-route-proxy.service`, `rustdesk.service`, charge-producer, codedb-code, opencode-usage-export, and more; dozens of stale `*.backup` predecessors still on disk | **The route-proxy hand unit is broken right now**: `activating/auto-restart`, `ExecMainStatus 127`, because its `ExecStart` script (`~/code/bin/opencode-route-proxy-start.sh`) is not on disk — its retirement was declared in a config comment while the hand unit kept flapping. The laptop-agent's Nix package + module exist (darwin-nix `pkgs/laptop-agent`, PR #1459) but the hand unit is what runs |
-| Dueling declarations | darwin-nix exports `homeManagerModules.fleet-brokers` (`services.fleet-brokers.enable` declares laptop-agent + both brokers) — **enabled by no machine config**; the code flake's `home/common/default.nix` (lines 876/889) declares the same brokers again as raw `systemd.user.services` running `fleet serve …` | Two sources of truth for the same daemons; the canonical module is dead code, the live one is the hand-shaped copy |
-| Sandbox `install.sh` scripts (hatch-personal) | 8 idempotent installers (`scripts/*/install*.sh`) copy unit files into `/etc/systemd/system`; `~/tools/init.sh` re-runs each on every boot because `/etc` does not survive a recycle | Works, but it is eight bespoke shell scripts standing in for a deployment system; every new sandbox service needs a ninth |
-| No installer at all | Sandbox `quota-recorder.service/.timer` exists only as templates in `~/tools/quota-recorder/` | The units vanish on every sandbox recycle and are restored **by hand / agent sweep** (documented 2026-11-01 and 2026-11-02; this boot the `/etc` copies are timestamped ~2 min *after* the init restore batch — a manual catch-up, again) |
-| Not a unit at all | Sandbox `fleet proxy serve` is `setsid nohup` from `init-ensure.sh`; sandbox RustDesk is a manual `launch.sh` (Xvfb + SSH forward + nohup) | Invisible to `systemctl`, no restart policy, no status surface |
-| Manual Cloudflare deploys | `just deploy-<name>` → flake app → `deploy.mjs` for exactly 3 workers (pkarr, developing-today-backup, id-mail — the 2026-10-31 standard); raw `npm run deploy` (`wrangler deploy`) for lab-ops-hub and cf-container-hello; a manual REST PUT for cold-store-rehydrator; **no GitHub Action deploys any Worker; no Workers Builds config exists; the string `wrangler rollback` appears nowhere** | The good pattern exists but covers a third of the estate; id-mail has **no rollback path at all** (plain `wrangler deploy`, no `--deploy-version`); lab-ops-hub's deploy and its container image push are two separate manual steps |
-| Containers, mixed | lab-ops-hub crawler: Nix `dockerTools.buildLayeredImage` → `crane push` → wrangler references the registry digest (the one clean precedent). Same app also has a `Dockerfile` "for Docker machines". mcpx ships a 3-stage `Containerfile` (not Nix). pm-apps runs third-party images digest-pinned via `oci-containers` (grist, pad — correct for software we don't own) while Kaneo/PostgreSQL are compose-managed outside it. **`amd-crd` (Chrome Remote Desktop) has no definition in any repo** — the only trace is a secret *name* in sops | One Nix-built image, several Dockerfile/compose paths, and one production container that exists nowhere as code |
-| VMs | `virtualisation.libvirtd.enable = true` on the laptop profile; **zero** libvirt domain definitions, no nixvirt, no XML in any repo. `microvm.nix` is a flake input with exactly one defined VM (`prometheus`), and the `microvm` profile is commented out for `amd` | The hypervisor runs; nothing declarative runs on it |
+| Mechanism today                                                     | What it carries                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 | Failure mode observed                                                                                                                                                                                                                                                                                                                                                                                       |
+| ------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| NixOS system switch (`nixos-rebuild switch --flake ~/git/code#amd`) | The laptop OS **and**, via embedded home-manager, effectively every user service (opencode, openchamber, proxies, brokers, pm-stack, mcpx, atlas-search, openclaw)                                                                                                                                                                                                                                                                                                                                                                              | A one-service change requires a full system activation; service work queues behind unrelated system work for days                                                                                                                                                                                                                                                                                           |
+| home-manager (as a NixOS module in the code flake)                  | All laptop user units: `home/common/default.nix` (~25 `systemd.user.services`), `nixos/services/pm-stack`, `nixos/services/pm-apps`, `nixos/home/*.nix`                                                                                                                                                                                                                                                                                                                                                                                         | Unit definitions only move when the system generation moves; HM's rollback granularity is the whole user profile, not the service                                                                                                                                                                                                                                                                           |
+| Running from the primary checkout                                   | pm-stack aggregator / projector / dispatch / quota-gatherer / fleet-feed run `bun run` straight out of `~/git/code`, kept "current" by pm-git-sync pulling every 30 s and restarting services on subtree changes                                                                                                                                                                                                                                                                                                                                | The running service is whatever the checkout happens to be; a redeploy once wiped an unmerged gatherer script mid-incident; "deploys from primary" couples every editor of the repo to production                                                                                                                                                                                                           |
+| Hand-written unit files in `~/.config/systemd/user/`                | `laptop-agent.service` (the Python daemon), `opencode-route-proxy.service`, `rustdesk.service`, charge-producer, codedb-code, opencode-usage-export, and more; dozens of stale `*.backup` predecessors still on disk                                                                                                                                                                                                                                                                                                                            | **The route-proxy hand unit is broken right now**: `activating/auto-restart`, `ExecMainStatus 127`, because its `ExecStart` script (`~/code/bin/opencode-route-proxy-start.sh`) is not on disk — its retirement was declared in a config comment while the hand unit kept flapping. The laptop-agent's Nix package + module exist (darwin-nix `pkgs/laptop-agent`, PR #1459) but the hand unit is what runs |
+| Dueling declarations                                                | darwin-nix exports `homeManagerModules.fleet-brokers` (`services.fleet-brokers.enable` declares laptop-agent + both brokers) — **enabled by no machine config**; the code flake's `home/common/default.nix` (lines 876/889) declares the same brokers again as raw `systemd.user.services` running `fleet serve …`                                                                                                                                                                                                                              | Two sources of truth for the same daemons; the canonical module is dead code, the live one is the hand-shaped copy                                                                                                                                                                                                                                                                                          |
+| Sandbox `install.sh` scripts (hatch-personal)                       | 8 idempotent installers (`scripts/*/install*.sh`) copy unit files into `/etc/systemd/system`; `~/tools/init.sh` re-runs each on every boot because `/etc` does not survive a recycle                                                                                                                                                                                                                                                                                                                                                            | Works, but it is eight bespoke shell scripts standing in for a deployment system; every new sandbox service needs a ninth                                                                                                                                                                                                                                                                                   |
+| No installer at all                                                 | Sandbox `quota-recorder.service/.timer` exists only as templates in `~/tools/quota-recorder/`                                                                                                                                                                                                                                                                                                                                                                                                                                                   | The units vanish on every sandbox recycle and are restored **by hand / agent sweep** (documented 2026-11-01 and 2026-11-02; this boot the `/etc` copies are timestamped ~2 min _after_ the init restore batch — a manual catch-up, again)                                                                                                                                                                   |
+| Not a unit at all                                                   | Sandbox `fleet proxy serve` is `setsid nohup` from `init-ensure.sh`; sandbox RustDesk is a manual `launch.sh` (Xvfb + SSH forward + nohup)                                                                                                                                                                                                                                                                                                                                                                                                      | Invisible to `systemctl`, no restart policy, no status surface                                                                                                                                                                                                                                                                                                                                              |
+| Manual Cloudflare deploys                                           | `just deploy-<name>` → flake app → `deploy.mjs` for exactly 3 workers (pkarr, developing-today-backup, id-mail — the 2026-10-31 standard); raw `npm run deploy` (`wrangler deploy`) for lab-ops-hub and cf-container-hello; a manual REST PUT for cold-store-rehydrator; **no GitHub Action deploys any Worker; no Workers Builds config exists; the string `wrangler rollback` appears nowhere**                                                                                                                                               | The good pattern exists but covers a third of the estate; id-mail has **no rollback path at all** (plain `wrangler deploy`, no `--deploy-version`); lab-ops-hub's deploy and its container image push are two separate manual steps                                                                                                                                                                         |
+| Containers, mixed                                                   | lab-ops-hub crawler: Nix `dockerTools.buildLayeredImage` → `crane push` → wrangler references the registry digest (the one clean precedent). Same app also has a `Dockerfile` "for Docker machines". mcpx ships a 3-stage `Containerfile` (not Nix). pm-apps runs third-party images digest-pinned via `oci-containers` (grist, pad — correct for software we don't own) while Kaneo/PostgreSQL are compose-managed outside it. **`amd-crd` (Chrome Remote Desktop) has no definition in any repo** — the only trace is a secret _name_ in sops | One Nix-built image, several Dockerfile/compose paths, and one production container that exists nowhere as code                                                                                                                                                                                                                                                                                             |
+| VMs                                                                 | `virtualisation.libvirtd.enable = true` on the laptop profile; **zero** libvirt domain definitions, no nixvirt, no XML in any repo. `microvm.nix` is a flake input with exactly one defined VM (`prometheus`), and the `microvm` profile is commented out for `amd`                                                                                                                                                                                                                                                                             | The hypervisor runs; nothing declarative runs on it                                                                                                                                                                                                                                                                                                                                                         |
 
 The pattern underneath: **we have build definitions for almost everything
 and deployment definitions for almost nothing.** The gap is not packaging —
@@ -75,7 +75,7 @@ eGPU specialisation), hardware and disk layout, filesystems, base users
 and auth, sshd (incl. the MaxStartups tuning), tailscale, libvirtd/dockerd
 themselves, the sandbox's platform floor — and **the deploy tool itself**
 plus the minimal bootstrap each host needs before `deploy` can run
-(laptop: the fleet proxy path and the secrets/queue brokers' *client*
+(laptop: the fleet proxy path and the secrets/queue brokers' _client_
 floor; sandbox: `init-ensure` reduced to linking the current service
 generation's units, §4.4).
 
@@ -92,7 +92,7 @@ Every daemon and deployable we operate becomes a **deploy target**:
   (route-proxy, codex/claude-code/commandcode/muse proxies), mcpx,
   secrets-broker, queue-broker, laptop-agent, atlas-search serve,
   pm-stack (aggregator, projector, dispatch, quota-gatherer, fleet-feed,
-  digests, pm-git-sync's *payload* services), openclaw gateway/embedding,
+  digests, pm-git-sync's _payload_ services), openclaw gateway/embedding,
   t3code, rustdesk.
 - Sandbox: quota-recorder, fleet-fetch, charge-inputs-fetcher,
   airthings-monitor, resource-sampler, sysstat-collector, the two backup
@@ -102,22 +102,22 @@ Every daemon and deployable we operate becomes a **deploy target**:
   lab-ops-hub, cf-container-hello, cold-store-rehydrator, agent-inbox,
   webhook-gateway + sink, zettel/brain-dump workers as they land) and
   every container image (§5).
-- OpenCode *sessions* ride on the opencode service target: moving the
+- OpenCode _sessions_ ride on the opencode service target: moving the
   server out of home-manager is what "sessions out of home-manager" means
   operationally — a fork bump becomes `deploy opencode`, not a system
   generation.
 
 ### 2.3 Home-manager — its remaining proper role
 
-Home-manager keeps the *user environment*: shell, editor, prompt, dotfiles,
+Home-manager keeps the _user environment_: shell, editor, prompt, dotfiles,
 user packages, git config. **It defines no services.** Rationale, from the
 inventory: HM-as-NixOS-module means user units inherit the system switch's
 cadence and blast radius; HM activation rewrites the whole user profile to
-change one unit; its generations roll back *everything the user has*, not
+change one unit; its generations roll back _everything the user has_, not
 the one service that broke. The service-shaped things HM carries today
 (the `systemd.user.services.*` blocks in `home/common/default.nix`, the
 `nixos/home/*.nix` unit modules, darwin-nix's unenacted fleet-brokers HM
-module) are definitions to be *lifted into* the services layer, renderers
+module) are definitions to be _lifted into_ the services layer, renderers
 and all — not a second deployment system to keep feeding. Where an HM
 module is the canonical definition today (mcpx's `home-manager.nix`
 renderer), the services layer imports its option set and drops the HM
@@ -161,8 +161,8 @@ Renderers consume the option set:
 
 The **target registry** is a flake output of developing-today/code
 (`deployTargets`) merging this repo's definitions with the forks' —
-Drew's rule: plenty belongs in the NixOS flake, and *everything else is in
-that flake somewhere too*. The registry is that "somewhere": one output a
+Drew's rule: plenty belongs in the NixOS flake, and _everything else is in
+that flake somewhere too_. The registry is that "somewhere": one output a
 `deploy` invocation can enumerate (`deploy list`).
 
 ## 4. The `deploy` tool
@@ -222,7 +222,7 @@ Adopts and extends the 2026-10-31 standard verbatim where it works:
   today, the target's renderer says so — the interface doesn't change.)
 - Rollback: create a deployment at the recorded previous version id
   (`deploy <target> rollback` ≡ today's `just deploy-pkarr
-  --deploy-version <id>`, generalized). No rebuild, no re-upload.
+--deploy-version <id>`, generalized). No rebuild, no re-upload.
 - Secrets: set/rotated through the same by-name gathering the current
   deploy apps use; a rollback verifies the target version carries its
   required secret bindings first (the github-backup deploy already does
@@ -234,7 +234,7 @@ Adopts and extends the 2026-10-31 standard verbatim where it works:
 ### 4.4 Sandbox targets
 
 The sandbox's constraint is different: `/etc/systemd/system` is ephemeral
-and there is no user bus, so units are system units — but the *content*
+and there is no user bus, so units are system units — but the _content_
 is persistent (home survives). Design: each sandbox target's generation
 lives in the user nix profile exactly as in §4.1. The only bootstrap the
 platform still owes is a **generic restorer**: `init-ensure` (or a tiny
@@ -243,8 +243,8 @@ of currently-activated sandbox targets, itself a file in the persistent
 home — and links each current generation's rendered unit into
 `/etc/systemd/system`, `daemon-reload`, `enable --now`. The eight
 bespoke `install.sh` scripts collapse into that one restorer plus
-per-service definitions; a service with *no* definition (quota-recorder
-today) becomes impossible to strand, because being a target *is* the
+per-service definitions; a service with _no_ definition (quota-recorder
+today) becomes impossible to strand, because being a target _is_ the
 definition. `fleet proxy serve` gets a unit and a target; RustDesk's
 `launch.sh` becomes a target whose activation does the Xvfb/forward
 setup the script does by hand today.
@@ -279,7 +279,7 @@ binary's closure — from scratch, no base image; `cacert` and `tzdata`
 join the closure only when the binary needs them. The lab-ops-hub
 crawler is the working precedent (`pkgs/lab-ops-hub/container-image.nix`:
 python + cacert + bash + coreutils, absolute `Cmd`, daemon-less crane
-push); this design makes it the *only* pattern:
+push); this design makes it the _only_ pattern:
 
 - The crawler's parallel `Dockerfile` (kept "for Docker machines") is
   deleted once the Nix path is the deploy path — one app, one builder.
@@ -328,12 +328,12 @@ Design:
     sandboxes better than libvirt pets.
   - `deploy vm:<name>` defines/starts the guest from its current
     generation; `rollback` redefines from the previous {XML, image}
-    pair. Data volumes are *attached to* generations, never *in* them.
+    pair. Data volumes are _attached to_ generations, never _in_ them.
 - **Mutable carve-out class (named, finite):** guests whose disks are
   the data (database hosts, the lab cluster's stateful nodes) may drift
   in data but **not** in OS definition — their NixOS config still comes
   from the flake; only their data disks are exempt from generation
-  discipline. Anything that can drift in *both* must be named in the
+  discipline. Anything that can drift in _both_ must be named in the
   design's exception list with a reason and an owner — the list starts
   empty and additions are reviewed like firewall rules. "Mutable" is a
   waiver, never a default.
@@ -346,7 +346,7 @@ removed in the same change that proves it), and **none requires a system
 switch to land** — the only system-flake change in the whole program is
 adding the `deploy` package and the `deployTargets` output. One named
 exception to that additive-only claim: the M2 and M4 ownership handoffs
-below are deliberately *subtractive* system-flake changes — they remove
+below are deliberately _subtractive_ system-flake changes — they remove
 (or durably override) the Home Manager declarations of the migrated
 units in the same change that proves each migration, because replacing
 a live unit file does not relinquish Home Manager's ownership of it
@@ -354,7 +354,7 @@ a live unit file does not relinquish Home Manager's ownership of it
 
 **M1 — route-proxy (the hand unit that is broken today).**
 Define the route proxy as a services-layer target on the laptop; deploy
-it; the rendered unit replaces the hand file. *Acceptance:* `deploy
+it; the rendered unit replaces the hand file. _Acceptance:_ `deploy
 route-proxy status` shows two generations; `:18750` serves a real
 request through the façade route; the hand unit file is removed and a
 reboot of the user session does not resurrect it; `deploy route-proxy
@@ -368,8 +368,8 @@ HM's raw units, the hand laptop-agent unit) into services-layer
 definitions on the code flake (the fleet packages already live there);
 cut over one daemon at a time, brokers first (they have health surfaces
 and the fleet's own clients verify them), laptop-agent last (its client
-surface is the widest — the shim delegates to it). *Acceptance per
-daemon:* health endpoint OK on the new generation; one real client call
+surface is the widest — the shim delegates to it). _Acceptance per
+daemon:_ health endpoint OK on the new generation; one real client call
 end-to-end (a `fleet secrets get` by name, a queue round-trip, an agent
 exec batch) matches the old path's behavior; old unit files archived,
 not deleted, until M2 closes; **an explicit Home Manager
@@ -384,11 +384,11 @@ and the migrated daemon is verified to still serve from its deployed
 services-layer generation (health endpoint OK, unit not restored from
 the Home Manager declaration). This also completes code#5343 phase 3
 (declare the agent in Nix) in its corrected form: declared as a
-*service*, not as a switch passenger.
+_service_, not as a switch passenger.
 
 **M3 — sandbox quota-recorder (first sandbox target).**
 Define quota-recorder as a sandbox target; the generic restorer (§4.4)
-replaces the missing installer. *Acceptance:* recycle the sandbox;
+replaces the missing installer. _Acceptance:_ recycle the sandbox;
 with zero hand steps, the units are present, the timer fires, and ticks
 land with Supabase acks; remove the "reinstalled by an agent sweep"
 entry from the runbook of things-that-happen. Then fold the remaining
@@ -400,7 +400,7 @@ Aggregator, projector, dispatch, quota-gatherer, fleet-feed, digests
 become targets whose generations are built artifacts (bun services
 built by the flake — the packages exist as source; the build becomes a
 derivation with pinned dependencies) instead of a live checkout +
-pm-git-sync's pull-and-restart. *Acceptance:* a gather tick and an
+pm-git-sync's pull-and-restart. _Acceptance:_ a gather tick and an
 aggregator read served from a deployed generation while the primary
 checkout is deliberately moved to a different rev — the running service
 does not notice; pm-git-sync retires or shrinks to a repo-keeping role
@@ -438,7 +438,7 @@ C3 — amd-crd: definition-or-waiver decision executed (§5).
   already a flake input with `machines.user`) is out of scope except
   where it consumes the same definitions.
 - Not a secrets system: the brokers remain the secrets path; the
-  services layer is a *consumer* by name.
+  services layer is a _consumer_ by name.
 
 ## 9. Open questions
 

@@ -664,14 +664,17 @@ func handCommands() []Command {
 		},
 		{
 			Name: "api", Group: "configuration",
-			Local:   "OpenAPI declarations are files the CLI reads; the tools they produce are served over MCP, and are not yet a tool source the daemon owns (#83).",
-			Usage:   "[list|tools|call] [--spec <path-or-url>] [<tool> '<json>']",
+			Usage:   "[list|tools|call|add|remove] [--spec <path-or-url>] [<tool> '<json>' | <name>]",
 			Summary: "HTTP services described by OpenAPI, as tools",
 			Detail: "Declarations named by paths.apis, or one given with --spec, are " +
 				"turned into a tool per operation: read-only methods by default, " +
-				"every method with --methods all.",
+				"every method with --methods all. add and remove go through the " +
+				"daemon (/v1/apis): the declaration is written to a configured " +
+				"file and reloaded, so the change is live at once and survives " +
+				"a restart.",
 			Examples: []string{
 				"mcpx api tools --spec https://example.com/openapi.json",
+				"mcpx api add petstore --spec ./petstore.json",
 			},
 		},
 	}

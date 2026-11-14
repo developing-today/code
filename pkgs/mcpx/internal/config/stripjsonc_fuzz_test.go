@@ -14,8 +14,8 @@ import (
 // JSONC comment stripper every config load passes through — must
 // never panic, never grow its input, and be deterministic. The seed
 // corpus (f.Add below and testdata/fuzz/FuzzStripJSONC) runs as
-// ordinary tests under plain go test ./...; a real -fuzz run is the
-// soak job's business (#1985), not this target's.
+// ordinary tests under plain go test ./...; CI runs a bounded smoke, while
+// longer fuzz campaigns remain the soak job's business (#1985).
 func FuzzStripJSONC(f *testing.F) {
 	f.Add([]byte(`{"a": 1} // trailing comment`))
 	f.Add([]byte("/* block */ {\"url\": \"https://example.com//not-a-comment\"}"))

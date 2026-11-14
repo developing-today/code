@@ -37,11 +37,7 @@ function serviceHeaders(env: ServiceEnv): HeadersInit {
   };
 }
 
-async function postJson(
-  env: ServiceEnv,
-  path: string,
-  body: unknown,
-): Promise<unknown> {
+async function postJson(env: ServiceEnv, path: string, body: unknown): Promise<unknown> {
   let resp: Response;
   try {
     resp = await fetch(`${env.SERVICE_BASE}${path}`, {
@@ -60,19 +56,14 @@ async function postJson(
     throw new ServiceError(502, `search service returned non-JSON (${resp.status})`);
   }
   if (!resp.ok) {
-    const msg =
-      (parsed as { error?: { message?: string } })?.error?.message ??
-      `search service HTTP ${resp.status}`;
+    const msg = (parsed as { error?: { message?: string } })?.error?.message ?? `search service HTTP ${resp.status}`;
     throw new ServiceError(502, msg);
   }
   return parsed;
 }
 
 /** Embed one query in the pinned space; the response is validated. */
-export async function embedQuery(
-  env: ServiceEnv,
-  query: string,
-): Promise<{ embed: EmbedResponse; ms: number }> {
+export async function embedQuery(env: ServiceEnv, query: string): Promise<{ embed: EmbedResponse; ms: number }> {
   const t0 = Date.now();
   const raw = await postJson(env, "/v1/embed", { query });
   const embed = validateEmbed(raw);

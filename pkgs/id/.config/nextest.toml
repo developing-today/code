@@ -1,0 +1,35 @@
+# cargo-nextest configuration for pkgs/id (issue #6378, task 14371).
+#
+# cargo-nextest is already provided by the dev shell and the nix check
+# derivations (pkgs/id/nix-common.nix lists cargo-nextest in
+# nativeBuildInputs); this config is what the test recipes in the
+# justfile run under when they invoke `cargo nextest run`.
+#
+# Coverage rule: nextest never runs doc tests, so every recipe that
+# used to rely on `cargo test` for doc coverage keeps an explicit
+# `cargo test --doc` step (test-rust, and shard 0 of
+# scripts/test-shard-sandbox.sh). No test is dropped by this switch:
+# the filters below only reproduce the pre-existing serve_tests skip
+# that the sandbox recipes already applied.
+
+[profile.default]
+# A failing test never cancels the rest of the suite: the full result
+# set is the feedback (same intent as the old --no-fail-fast runs).
+fail-fast = false
+# No automatic retries: a flaky pass must stay visible as a failure.
+retries = 0
+# One test process per test (nextest default) on all available cores;
+# cargo test ran tests as threads in one process per binary.
+test-threads = "num-cpus"
+# Mark (but do not kill) tests running over a minute: long tests are
+# legitimate here (integration, world compile), termination is not.
+slow-timeout = { period = "60s" }
+
+[profile.ci]
+fail-fast = false
+retries = 0
+test-threads = "num-cpus"
+slow-timeout = { period = "60s" }
+
+[profile.ci.junit]
+path = "junit.xml"

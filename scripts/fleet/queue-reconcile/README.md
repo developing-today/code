@@ -24,15 +24,25 @@ is a task in the `*-shadow` queue.
 
 Two halves, deliberately split:
 
-| Half | Where | Why |
-|---|---|---|
-| The diff | `POST /coverage` on the queue broker | The broker owns the Turso connection; the diff is one query over live tasks, matched on the issue dedupe key. Read-only. |
-| The import | `check_coverage.py` via `fleet queue enqueue` | Packets go through the sanctioned, validating, dedupe-keyed path like every other task. |
+| Half       | Where                                         | Why                                                                                                                      |
+| ---------- | --------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------ |
+| The diff   | `POST /coverage` on the queue broker          | The broker owns the Turso connection; the diff is one query over live tasks, matched on the issue dedupe key. Read-only. |
+| The import | `check_coverage.py` via `fleet queue enqueue` | Packets go through the sanctioned, validating, dedupe-keyed path like every other task.                                  |
 
 The dedupe key `repo-health:v1:triage:<repo>:issue:<n>` makes a re-run
 idempotent by construction: an issue that already holds a live task is
 never uncovered, and an enqueue that races another lane's import dedupes
 onto the live row.
+
+**Open-PR coverage (#4951):** the broker diff only knows tasks, so
+`check_coverage.py` additionally consults the repo's open PRs before
+declaring an issue uncovered (branch `queue/<task>-<issue>-*`, a
+closing keyword, or a trailing `(#n)` title reference). An issue with
+an open fix PR is in-flight: no triage packet. With `--import` it gets
+one merge-watch packet per PR (dedupe
+`repo-health:v1:merge-watch:<repo>:pr:<n>`) — the ~24h recheck that
+re-tests mergibility, refreshes the branch, merges, or closes the PR
+with a salvage note, instead of letting pr_opened work bit-rot.
 
 ## Running it
 

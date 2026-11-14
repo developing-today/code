@@ -46,14 +46,10 @@ export function validateEmbed(raw: unknown): EmbedResponse {
   }
   const r = raw as Record<string, unknown>;
   if (r.model !== EMBED_MODEL) {
-    throw new SpaceError(
-      `embed model ${JSON.stringify(r.model)} is not the pinned space ${EMBED_MODEL}`,
-    );
+    throw new SpaceError(`embed model ${JSON.stringify(r.model)} is not the pinned space ${EMBED_MODEL}`);
   }
   if (r.dims !== EMBED_DIMS) {
-    throw new SpaceError(
-      `embed dims ${JSON.stringify(r.dims)} is not the pinned width ${EMBED_DIMS}`,
-    );
+    throw new SpaceError(`embed dims ${JSON.stringify(r.dims)} is not the pinned width ${EMBED_DIMS}`);
   }
   if (!Array.isArray(r.vector) || r.vector.length !== EMBED_DIMS) {
     throw new SpaceError("embed vector length does not match the pinned width");
