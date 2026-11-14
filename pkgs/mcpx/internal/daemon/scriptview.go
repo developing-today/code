@@ -26,7 +26,7 @@ import (
 // scriptWaitDelay bounds how long a script view's call waits on its output
 // pipes after the program exits, so a grandchild that inherited them cannot
 // hold the call open.
-const scriptWaitDelay = 2 * time.Second
+var scriptWaitDelay = defaults.ScriptWaitDelay
 
 // ScriptAnnotations is the behaviour hints a script-backed view declares
 // (#1933 slice 2). A script has no upstream annotations, so the declaration

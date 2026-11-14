@@ -9,6 +9,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/developing-today/code/pkgs/mcpx/internal/defaults"
 )
 
 // The build temp dirs this test binary created by its fixture builders
@@ -110,9 +112,9 @@ func processesExecutingFrom(dirs []string) []LeftoverProcess {
 // allows the same 10 seconds for the asynchronous exit). Polling inside
 // that budget is not leniency — a survivor past it is not draining, it
 // is leaked.
-var leftoverGracePeriod = 10 * time.Second
+var leftoverGracePeriod = defaults.TestSupportLeftoverGracePeriod
 
-const leftoverPollInterval = 100 * time.Millisecond
+var leftoverPollInterval = defaults.TestSupportLeftoverPollInterval
 
 // SweepBuildTempDirs is the suite-wide sweep of #1971 remainder item 2:
 // it removes this test binary's build temp dirs and reports any process

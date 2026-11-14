@@ -48,9 +48,10 @@ type Defaults struct {
 		Trace    bool     `json:"trace"`
 	} `json:"logging"`
 	Daemon struct {
-		ReapInterval   string `json:"reapInterval"`
-		SaveInterval   string `json:"saveInterval"`
-		TSNetUpTimeout string `json:"tsnetUpTimeout"`
+		ReapInterval    string `json:"reapInterval"`
+		SaveInterval    string `json:"saveInterval"`
+		TSNetUpTimeout  string `json:"tsnetUpTimeout"`
+		ScriptWaitDelay string `json:"scriptWaitDelay"`
 	} `json:"daemon"`
 	Secrets struct {
 		RequestRetention string `json:"requestRetention"`
@@ -141,8 +142,9 @@ type Defaults struct {
 	// CLI governs how the command line renders what it did not write a
 	// formatter for: the commands generated from the /v1 operation table.
 	CLI struct {
-		CellWidth   int `json:"cellWidth"`
-		UsageColumn int `json:"usageColumn"`
+		CellWidth     int    `json:"cellWidth"`
+		UsageColumn   int    `json:"usageColumn"`
+		ImportTimeout string `json:"importTimeout"`
 	} `json:"cli"`
 	Catalog struct {
 		Budget int `json:"budget"`
@@ -396,6 +398,28 @@ type Defaults struct {
 	Proxy struct {
 		Timeout string `json:"timeout"`
 	} `json:"proxy"`
+	// McpAuth is the GitHub identity failover machinery's timing
+	// (internal/mcpauth). The JWT values are bounded by GitHub's own
+	// rules -- an App JWT may live at most ten minutes -- so they are
+	// data here rather than settings: a configuration key that pushed
+	// the lifetime past the cap would only mint tokens GitHub refuses.
+	McpAuth struct {
+		Cooldown    string `json:"cooldown"`
+		RefreshSkew string `json:"refreshSkew"`
+		JWTBackdate string `json:"jwtBackdate"`
+		JWTLifetime string `json:"jwtLifetime"`
+	} `json:"mcpauth"`
+	// TestSupport is the test harness's own timing (internal/
+	// testsupport): how long the leftover-process sweep waits out an
+	// orderly shutdown, and how long the era test server waits for a
+	// reply before calling it dropped. They are here so the constants
+	// guard has exactly one answer for them, not because a user of
+	// the shipped binary can reach them.
+	TestSupport struct {
+		LeftoverGracePeriod  string `json:"leftoverGracePeriod"`
+		LeftoverPollInterval string `json:"leftoverPollInterval"`
+		EraReplyWait         string `json:"eraReplyWait"`
+	} `json:"testsupport"`
 }
 
 // Embeddings defaults.
@@ -403,6 +427,29 @@ var (
 	EmbeddingsRemoteTimeout = mustDur(builtin.Embeddings.RemoteTimeout, "embeddings.remoteTimeout")
 	EmbeddingsSearchTimeout = mustDur(builtin.Embeddings.SearchTimeout, "embeddings.searchTimeout")
 	ProxyUpstreamTimeout    = mustDur(builtin.Proxy.Timeout, "proxy.timeout")
+)
+
+// McpAuth (GitHub identity failover) defaults.
+var (
+	// McpAuthCooldown is the failover cooldown when the config sets
+	// no CooldownSeconds: how long a soft-blocked identity is skipped.
+	McpAuthCooldown = mustDur(builtin.McpAuth.Cooldown, "mcpauth.cooldown")
+	// McpAuthRefreshSkew is how far ahead of expiry a minted App
+	// token stops being reused, so a token never dies mid-request.
+	McpAuthRefreshSkew = mustDur(builtin.McpAuth.RefreshSkew, "mcpauth.refreshSkew")
+	// McpAuthJWTBackdate is how far the App JWT's iat is backdated
+	// for clock skew between this host and GitHub.
+	McpAuthJWTBackdate = mustDur(builtin.McpAuth.JWTBackdate, "mcpauth.jwtBackdate")
+	// McpAuthJWTLifetime is the App JWT's lifetime; GitHub caps it
+	// at ten minutes, and this sits under the cap.
+	McpAuthJWTLifetime = mustDur(builtin.McpAuth.JWTLifetime, "mcpauth.jwtLifetime")
+)
+
+// TestSupport (test harness) defaults.
+var (
+	TestSupportLeftoverGracePeriod  = mustDur(builtin.TestSupport.LeftoverGracePeriod, "testsupport.leftoverGracePeriod")
+	TestSupportLeftoverPollInterval = mustDur(builtin.TestSupport.LeftoverPollInterval, "testsupport.leftoverPollInterval")
+	TestSupportEraReplyWait         = mustDur(builtin.TestSupport.EraReplyWait, "testsupport.eraReplyWait")
 )
 
 // Upstream connection defaults.
@@ -573,7 +620,10 @@ var (
 	SaveInterval = mustDur(builtin.Daemon.SaveInterval, "daemon.saveInterval")
 	// TSNetUpTimeout bounds how long a tsnet node may take to authenticate
 	// and reach Running before its listener is believed.
-	TSNetUpTimeout         = mustDur(builtin.Daemon.TSNetUpTimeout, "daemon.tsnetUpTimeout")
+	TSNetUpTimeout = mustDur(builtin.Daemon.TSNetUpTimeout, "daemon.tsnetUpTimeout")
+	// ScriptWaitDelay bounds how long a script view's call waits on
+	// its output pipes after the program exits.
+	ScriptWaitDelay        = mustDur(builtin.Daemon.ScriptWaitDelay, "daemon.scriptWaitDelay")
 	SecretRequestRetention = mustDur(builtin.Secrets.RequestRetention, "secrets.requestRetention")
 
 	ShutdownGrace        = mustDur(builtin.Plumbing.ShutdownGrace, "plumbing.shutdownGrace")
@@ -721,6 +771,9 @@ var (
 	// description in full turns a table into a wall.
 	OpCellWidth = builtin.CLI.CellWidth
 	UsageColumn = builtin.CLI.UsageColumn
+	// CLIImportTimeout bounds one import probe of a binary (its
+	// --help, its man page): a probe that hangs would hang the import.
+	CLIImportTimeout = mustDur(builtin.CLI.ImportTimeout, "cli.importTimeout")
 
 	Permissions = builtin.Script.Permissions
 	// RuntimeOrder is the order auto tries runtimes in.

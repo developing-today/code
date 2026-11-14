@@ -74,6 +74,7 @@ var allowed = map[string]string{
 	"1<<20": "the definition of a mebibyte, in the size parser",
 	"1<<30": "the definition of a gibibyte, in the size parser",
 	"1<<40": "the definition of a tebibyte, in the size parser",
+	"1<<63": "the int64 sign mask: seed.Shuffle clears the sign bit of a uint64 hash to derive a non-negative int64 (MaxInt63 by arithmetic), in internal/testsupport/seed",
 
 	// A unit boundary in a duration renderer: it decides whether to print
 	// hours or days, which is arithmetic rather than policy.

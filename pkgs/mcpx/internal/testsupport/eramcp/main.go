@@ -39,6 +39,8 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"github.com/developing-today/code/pkgs/mcpx/internal/defaults"
 )
 
 type frame struct {
@@ -223,7 +225,7 @@ func handle(f frame) {
 			select {
 			case <-answered:
 				ok(f.ID, textResult("answered"))
-			case <-time.After(2 * time.Second):
+			case <-time.After(defaults.TestSupportEraReplyWait):
 				ok(f.ID, textResult("dropped"))
 			}
 			return

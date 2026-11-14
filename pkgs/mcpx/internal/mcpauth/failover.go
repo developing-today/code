@@ -44,6 +44,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/developing-today/code/pkgs/mcpx/internal/defaults"
 )
 
 // Identity is one entry in a failover list.
@@ -81,13 +83,13 @@ type Failover struct {
 	StatePath string `json:"statePath,omitempty"`
 
 	// CooldownSeconds is how long a soft-blocked identity is skipped.
-	// A response's Retry-After wins when it is longer. Zero means 60.
+	// A response's Retry-After wins when it is longer. Zero means defaults.McpAuthCooldown.
 	CooldownSeconds int `json:"cooldownSeconds,omitempty"`
 }
 
 func (f *Failover) cooldown() time.Duration {
 	if f == nil || f.CooldownSeconds <= 0 {
-		return 60 * time.Second
+		return defaults.McpAuthCooldown
 	}
 	return time.Duration(f.CooldownSeconds) * time.Second
 }
@@ -270,7 +272,7 @@ func (r *Rotator) Token(ctx context.Context, id Identity, secrets SecretFunc, mi
 		return secrets(id.Secret)
 	case "app":
 		r.mu.Lock()
-		if mt, ok := r.minted[id.Name]; ok && r.now().Before(mt.expires.Add(-5*time.Minute)) {
+		if mt, ok := r.minted[id.Name]; ok && r.now().Before(mt.expires.Add(-defaults.McpAuthRefreshSkew)) {
 			r.mu.Unlock()
 			return mt.token, nil
 		}
@@ -496,8 +498,8 @@ func signAppJWT(keyPEM []byte, appID int64, now time.Time) (string, error) {
 	header := enc([]byte(`{"alg":"RS256","typ":"JWT"}`))
 	claims, _ := json.Marshal(map[string]any{
 		"iss": appID,
-		"iat": now.Add(-60 * time.Second).Unix(),
-		"exp": now.Add(9 * time.Minute).Unix(),
+		"iat": now.Add(-defaults.McpAuthJWTBackdate).Unix(),
+		"exp": now.Add(defaults.McpAuthJWTLifetime).Unix(),
 	})
 	signing := header + "." + enc(claims)
 	sum := sha256.Sum256([]byte(signing))

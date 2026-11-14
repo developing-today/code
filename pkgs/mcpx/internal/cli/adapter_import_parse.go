@@ -7,7 +7,8 @@ import (
 	"regexp"
 	"sort"
 	"strings"
-	"time"
+
+	"github.com/developing-today/code/pkgs/mcpx/internal/defaults"
 )
 
 // The source parsers for adapter import (#1962). Each is a pure function
@@ -441,7 +442,7 @@ func manShape(binary string) (*importShape, error) {
 
 // runCaptureEnv is runCapture with extra environment.
 func runCaptureEnv(env map[string]string, binary string, args ...string) (string, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), defaults.CLIImportTimeout)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, binary, args...)
 	cmd.Env = os.Environ()

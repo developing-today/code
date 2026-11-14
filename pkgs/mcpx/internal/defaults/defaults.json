@@ -22,14 +22,16 @@
   "daemon": {
     "reapInterval": "30s",
     "saveInterval": "5m",
-    "tsnetUpTimeout": "30s"
+    "tsnetUpTimeout": "30s",
+    "scriptWaitDelay": "2s"
   },
   "secrets": {
     "requestRetention": "10m"
   },
   "cli": {
     "cellWidth": 60,
-    "usageColumn": 30
+    "usageColumn": 30,
+    "importTimeout": "10s"
   },
   "catalog": {
     "budget": 2000
@@ -310,5 +312,16 @@
   },
   "hooks": {
     "timeout": "2s"
+  },
+  "mcpauth": {
+    "cooldown": "60s",
+    "refreshSkew": "5m",
+    "jwtBackdate": "60s",
+    "jwtLifetime": "9m"
+  },
+  "testsupport": {
+    "leftoverGracePeriod": "10s",
+    "leftoverPollInterval": "100ms",
+    "eraReplyWait": "2s"
   }
 }
