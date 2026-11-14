@@ -63,6 +63,11 @@ jobs:
           test -f pkgs/identity/provider/core-static-test.sh
           bash pkgs/identity/provider/core-static-test.sh
 
+      - name: Run t3code-seed-providers seed regression tests (#5992)
+        run: |
+          test -f pkgs/t3code-seed-providers/test_seed.py
+          python3 -m unittest discover -s pkgs/t3code-seed-providers -p test_seed.py -v
+
   mcpx-affected-embed-regressions:
     name: "basic: mcpx affected-embed regressions"
     runs-on: ubuntu-latest

@@ -514,11 +514,16 @@
     {
       "id": "t3code.seed-providers",
       "paths": ["pkgs/t3code-seed-providers/test_seed.py"],
-      "invocation": "Python test; exact command not established",
-      "venue": null,
-      "status": "uncovered",
+      "invocation": "python3 -m unittest discover -s pkgs/t3code-seed-providers -p test_seed.py -v",
+      "venue": {
+        "workflow": ".github/workflows/scripts-test.yml",
+        "job_step": "Run t3code-seed-providers seed regression tests (#5992)",
+        "state": "active",
+        "dispatchable": true
+      },
+      "status": "mapped",
       "phase2_issue": 5992,
-      "reason": "Production service invokes seed.sh; no test venue found."
+      "reason": "Phase 2 of #6185 landed by #5992: the active, dispatchable scripts-test workflow names pkgs/t3code-seed-providers/test_seed.py explicitly, asserts the file exists first, and runs the 6-test suite on push to main with no continue-on-error."
     },
     {
       "id": "pm-stack.pm-git-sync",
