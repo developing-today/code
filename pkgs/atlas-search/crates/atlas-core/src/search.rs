@@ -8,7 +8,7 @@
 
 use std::collections::HashMap;
 
-use atlas_proto::SearchParametersV1;
+use atlas_proto::{RawMode, SearchParametersV1};
 use serde_json::{Map, Value as Json, json};
 
 use crate::backend::SearchBackend;
@@ -175,6 +175,19 @@ pub fn run_search_with_executor(
             crate::MAX_EXPAND_NEIGHBORS
         )));
     }
+    // Hydration renders on the flat output; with session grouping
+    // on and raw output off there is no flat row to hydrate.
+    // Rather than silently ignoring the flag, refuse the
+    // combination -- --raw-rows produces the flat rows hydration
+    // attaches to (#9942).
+    if opts.parameters.hydrate > 0
+        && opts.group_by_session
+        && opts.parameters.raw_mode == RawMode::Off
+    {
+        return Err(Error::fatal(
+            "hydrate requires flat output: disable group_by_session or use raw_mode",
+        ));
+    }
     if opts.mode.uses_vector()
         && opts.vector_backend != VectorBackend::Scan
         && backend.name() != "turso"
@@ -234,7 +247,29 @@ pub fn run_search_with_executor(
         }
     }
 
-    let mut out = if opts.group_by_session {
+    let mut out = if opts.parameters.raw_mode == RawMode::Branches {
+        // Pre-fusion branch rows, exactly as the branches
+        // produced them (design s3.3 --raw=branches): no fusion,
+        // no grouping, no detail fetch.
+        let mut rows = Vec::new();
+        for (branch, hits) in [("fts", &pools.fts), ("vector", &pools.vector)] {
+            for (i, hit) in hits.iter().enumerate() {
+                let mut row = Map::new();
+                row.insert("chunk_id".into(), json!(hit.chunk_id));
+                row.insert("branch".into(), json!(branch));
+                row.insert("rank".into(), json!(i + 1));
+                if let Some(dist) = hit.dist {
+                    row.insert("vector_distance".into(), json!(round6(dist)));
+                }
+                rows.push(Json::Object(row));
+            }
+        }
+        let mut env = envelope(backend, opts, filters, Json::Array(rows), &notes);
+        env.as_object_mut()
+            .expect("envelope is an object")
+            .insert("raw".into(), json!("branches"));
+        env
+    } else if opts.group_by_session && opts.parameters.raw_mode == RawMode::Off {
         grouped_output(backend, opts, filters, &ranked, &vec_dist, &notes)?
     } else {
         let keep = &ranked[..opts.k.min(ranked.len())];
@@ -245,9 +280,25 @@ pub fn run_search_with_executor(
             let Some(d) = details.get(&e.chunk_id) else {
                 continue;
             };
-            results.push(result_entry(backend, opts, e, d, &vec_dist)?);
+            let mut entry = result_entry(backend, opts, e, d, &vec_dist)?;
+            // Hydration: the first `hydrate` RENDERED results
+            // (details present) gain full content.
+            if results.len() < opts.parameters.hydrate {
+                let hydrated = hydrate_entry(backend, d)?;
+                entry
+                    .as_object_mut()
+                    .expect("result entry is an object")
+                    .insert("hydrated".into(), hydrated);
+            }
+            results.push(entry);
         }
-        envelope(backend, opts, filters, Json::Array(results), &notes)
+        let mut env = envelope(backend, opts, filters, Json::Array(results), &notes);
+        if opts.parameters.raw_mode == RawMode::Ungrouped {
+            env.as_object_mut()
+                .expect("envelope is an object")
+                .insert("raw".into(), json!("ungrouped"));
+        }
+        env
     };
     if opts.mode.uses_vector() {
         // Provenance: exactly which model/table produced the pool.
@@ -276,6 +327,29 @@ pub fn run_search_with_executor(
             .insert("vector".into(), Json::Object(v));
     }
     Ok(out)
+}
+
+/// One hydrated payload (#9942): the full chunk text plus the
+/// full, UNCAPPED message text from the backend's content store.
+/// This is the explicit full-content path -- unlike
+/// --with-message's display payload, nothing is truncated. (On
+/// the shard path the tier content stores hydrate separately,
+/// #6664; this covers the monolith backends, whose message store
+/// IS the content store.)
+fn hydrate_entry(backend: &dyn SearchBackend, d: &ChunkDetail) -> Result<Json> {
+    let message = match backend.message(&d.message_id)? {
+        Some(m) => json!({
+            "id": m.id,
+            "role": m.role,
+            "text": m.text,
+            "truncated": false,
+        }),
+        None => Json::Null,
+    };
+    Ok(json!({
+        "chunk_text": d.text,
+        "message": message,
+    }))
 }
 
 /// The Python's `run_get_chunk`: a by-id lookup with NO

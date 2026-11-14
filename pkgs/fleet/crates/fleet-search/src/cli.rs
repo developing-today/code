@@ -96,6 +96,13 @@ Search options (mirroring `atlas-search search`):
   --group-by-session    roll chunk hits up to sessions
   --expand N            include N neighboring chunks around each hit
   --with-message        include the parent message text
+  --no-cache            bypass the service cache reads (the fresh
+                        result still lands in the cache)
+  --no-wait             do not block: print the service job handle
+                        and return (the one-shot default waits)
+  --hydrate N           hydrate the top N results to full content
+  --raw-rows[=branches] ungrouped rows: bare for flat fused rows,
+                        =branches for pre-fusion branch rows
   --text                human-readable output instead of JSON
   --model NAME          embedding model (default Snowflake arctic-embed-m-v2.0)
   --embedder NAME       auto | fastembed | st (default auto)
@@ -139,6 +146,10 @@ struct SearchArgs {
     group_by_session: bool,
     expand: i64,
     with_message: bool,
+    no_cache: bool,
+    no_wait: bool,
+    hydrate: i64,
+    raw_rows: Option<String>,
     text: bool,
     model: String,
     embedder: String,
@@ -166,6 +177,10 @@ impl Default for SearchArgs {
             group_by_session: false,
             expand: 0,
             with_message: false,
+            no_cache: false,
+            no_wait: false,
+            hydrate: 0,
+            raw_rows: None,
             text: false,
             model: DEFAULT_MODEL.to_string(),
             embedder: "auto".to_string(),
@@ -262,6 +277,16 @@ fn parse_search_args(args: &[String]) -> Result<SearchArgs, CliError> {
                 out.expand = parse_i64("--expand", &v)?;
             }
             "--with-message" => out.with_message = true,
+            "--no-cache" => out.no_cache = true,
+            "--no-wait" => out.no_wait = true,
+            "--hydrate" => {
+                let v = take_value(args, &mut i, "--hydrate")?;
+                out.hydrate = parse_i64("--hydrate", &v)?;
+            }
+            "--raw-rows" => out.raw_rows = Some("ungrouped".to_string()),
+            other if other.starts_with("--raw-rows=") => {
+                out.raw_rows = Some(other["--raw-rows=".len()..].to_string());
+            }
             "--text" => out.text = true,
             "--model" => out.model = take_value(args, &mut i, "--model")?,
             "--embedder" => out.embedder = take_value(args, &mut i, "--embedder")?,
@@ -331,6 +356,17 @@ fn proto_request(parsed: &SearchArgs) -> Result<SearchRequest, CliError> {
     let k = count("--k", parsed.k, 1, None)?;
     let pool = count("--pool", parsed.pool, 1, Some(400))?;
     let expand = count("--expand", parsed.expand, 0, None)?;
+    let hydrate = count("--hydrate", parsed.hydrate, 0, None)?;
+    let raw_mode = match parsed.raw_rows.as_deref() {
+        None => crate::proto::RawMode::Off,
+        Some("ungrouped") => crate::proto::RawMode::Ungrouped,
+        Some("branches") => crate::proto::RawMode::Branches,
+        Some(other) => {
+            return Err(usage_err(format!(
+                "--raw-rows expects no value (ungrouped) or =branches, got {other:?}"
+            )));
+        }
+    };
     let trunc = count("--trunc", parsed.trunc, 0, None)?;
     let mode = SearchMode::from_name(&parsed.mode)
         .ok_or_else(|| usage_err(format!("--mode: unknown mode {:?}", parsed.mode)))?;
@@ -367,6 +403,12 @@ fn proto_request(parsed: &SearchArgs) -> Result<SearchRequest, CliError> {
         group_by_session: parsed.group_by_session,
         expand,
         with_message: parsed.with_message,
+        no_cache: parsed.no_cache,
+        // The one-shot implies --wait (design s3.3); --no-wait
+        // is the opt-out.
+        wait: !parsed.no_wait,
+        hydrate,
+        raw_mode,
         model: parsed.model.clone(),
         embedder: parsed.embedder.clone(),
         trunc,
