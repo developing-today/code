@@ -982,6 +982,7 @@
     {
       "id": "nixos.home.shell-checks",
       "paths": [
+        "nixos/home/atlas-backup.test.sh",
         "nixos/home/laptop-backups-watchdog.test.sh",
         "nixos/home/pm-dashboard-backup*.test.sh",
         "nixos/home/laptop-autocommit-in-progress.test.sh",
