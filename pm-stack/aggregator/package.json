@@ -13,6 +13,7 @@
     "build:css": "tailwindcss -i src/ui.css -o src/assets/app.css"
   },
   "devDependencies": {
+    "@playwright/test": "1.64.0",
     "@tailwindcss/cli": "^4.3.4",
     "@types/bun": "latest",
     "daisyui": "^5.7.50",

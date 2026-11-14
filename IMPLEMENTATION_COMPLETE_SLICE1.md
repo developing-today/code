@@ -11,6 +11,7 @@ The **slice 1 implementation (#3026)** for the OpenCode execution lane claimant/
 ### Core Components (pm-stack/opencode-claimant/)
 
 #### 1. claimant.py (556 lines)
+
 The main execution script implementing the complete 6-step process:
 
 ```
@@ -49,6 +50,7 @@ Step 6: LOGGING
 ```
 
 #### 2. poll.py (459 lines)
+
 Candidate discovery and system state reporting:
 
 ```
@@ -62,7 +64,9 @@ Candidate discovery and system state reporting:
 ```
 
 #### 3. README.md (205 lines)
+
 Comprehensive documentation covering:
+
 - Overview and architecture
 - File descriptions
 - 6-step process explanation
@@ -76,6 +80,7 @@ Comprehensive documentation covering:
 - Dependencies and testing
 
 #### 4. Supporting Files
+
 - ✅ **Makefile** - Setup helpers
 - ✅ **migration-0021.sql** - Atomic bind operation
 - ✅ **migration-0022.sql** - Atomic recovery operations
@@ -126,6 +131,7 @@ Comprehensive documentation covering:
 ## 🔧 Technical Details
 
 ### Constants
+
 ```python
 CONCURRENCY_CAP = 36                    # Raised from 12→20→36 on 2026-11-05
 LAUNCHED_BY_RECOVERY_ZERO_MESSAGE = "opencode-claimant-recovery:zero-message-deleted"
@@ -133,6 +139,7 @@ LAUNCHED_BY_RECOVERY_GONE_SESSION = "opencode-claimant-recovery:gone-session"
 ```
 
 ### Mode Handling
+
 ```bash
 # Default (safe testing - no mutations)
 echo "shadow" > ~/.local/state/opencode-claimant/mode
@@ -142,6 +149,7 @@ echo "live" > ~/.local/state/opencode-claimant/mode
 ```
 
 ### Usage
+
 ```bash
 # Run claimant
 python3 pm-stack/opencode-claimant/claimant.py
@@ -158,6 +166,7 @@ cd pm-stack/opencode-claimant && make all && make install
 ## 📊 Verification Results
 
 ### Files Check ✅
+
 - claimant.py - 556 lines, syntactically valid
 - poll.py - 459 lines, all functions implemented
 - README.md - 205 lines, comprehensive documentation
@@ -165,6 +174,7 @@ cd pm-stack/opencode-claimant && make all && make install
 - Migrations - 0021 and 0022 present
 
 ### Functions Implemented ✅
+
 - read_mode() - Mode detection
 - supervision_step(mode) - Recovery and supervision
 - gate_step() - Candidate discovery
@@ -175,6 +185,7 @@ cd pm-stack/opencode-claimant && make all && make install
 - run_poll() - Candidate discovery runner
 
 ### Key Features ✅
+
 - Mode handling (shadow/live)
 - Recovery rules (#4758)
 - Concurrency cap (36 sessions)
@@ -189,18 +200,21 @@ cd pm-stack/opencode-claimant && make all && make install
 ## 📈 Performance Characteristics
 
 ### Concurrency Management
+
 - **Cap**: 36 active root sessions
 - **Counting**: Active sessions without terminal markers
 - **Window**: 30-minute activity window (ACTIVE_WINDOW_MS)
 - **Fail-closed**: Unknown cap_room prevents launches
 
 ### Recovery Efficiency
+
 - **Zero-message**: O(1) verification, immediate deletion
 - **Gone-session**: O(1) absence check, immediate recovery
 - **Attempt tracking**: Atomic increment on recovery
 - **No duplicates**: Compare-and-clear guards prevent double-binding
 
 ### Safety Features
+
 - **Atomic operations**: Bind and recovery are transactional
 - **Session verification**: Location check before binding
 - **Task re-verification**: State checked before launch
@@ -224,6 +238,7 @@ cd pm-stack/opencode-claimant && make all && make install
 ## 📚 Documentation
 
 ### Existing Documentation
+
 - ✅ README.md (205 lines) - Comprehensive guide
 - ✅ CHANGELOG.md - Change history
 - ✅ CHANGES.md - Detailed changes
@@ -235,6 +250,7 @@ cd pm-stack/opencode-claimant && make all && make install
 - ✅ VERIFICATION_COMPLETE.md - Completion verification
 
 ### New Documentation Created
+
 - ✅ SLICE1_IMPLEMENTATION_VERIFICATION.md - This verification
 - ✅ IMPLEMENTATION_COMPLETE_SLICE1.md - Executive summary
 
@@ -243,6 +259,7 @@ cd pm-stack/opencode-claimant && make all && make install
 ## 🧪 Testing Status
 
 ### Verification Tests ✅
+
 - ✅ Syntax validation (Python -c check)
 - ✅ Import validation (All dependencies available)
 - ✅ File existence check (All required files present)
@@ -251,6 +268,7 @@ cd pm-stack/opencode-claimant && make all && make install
 - ✅ Documentation completeness check (All sections present)
 
 ### Test Execution
+
 ```bash
 # Test poll.py output
 python3 pm-stack/opencode-claimant/poll.py
@@ -267,6 +285,7 @@ cat ~/.local/state/opencode-claimant/fires.jsonl
 ## 🚀 Deployment Readiness
 
 ### Pre-Deployment Checklist ✅
+
 - [x] All requirements from #3026 implemented
 - [x] Recovery rules (#4758) fully implemented
 - [x] Session location verification (#4870) implemented
@@ -281,6 +300,7 @@ cat ~/.local/state/opencode-claimant/fires.jsonl
 - [x] All dependencies available
 
 ### Deployment Steps
+
 ```bash
 # 1. Set mode to live (if desired)
 echo "live" > ~/.local/state/opencode-claimant/mode
@@ -312,14 +332,18 @@ less ~/.local/state/opencode-claimant/fires.jsonl
 ## 🎯 Next Steps
 
 ### Slice 1 Completion ✅
+
 The slice 1 implementation is **COMPLETE** and ready for:
+
 - Code review
 - Integration testing
 - Staging deployment
 - Production rollout
 
 ### Slice 2 Planning
+
 Future work (separate implementation):
+
 - Parallel-run gate implementation
 - Additional optimizations
 - Enhanced monitoring
@@ -330,6 +354,7 @@ Future work (separate implementation):
 ## 📞 Support & References
 
 ### Issue Tracking
+
 - **Primary**: #3026 - OpenCode lane claimant/executor
 - **Recovery Rules**: #4758 - Zero-message session recovery
 - **Location Verification**: #4870 - Session location bug fix
@@ -337,12 +362,14 @@ Future work (separate implementation):
 - **Design**: #4912 - Recovery rules design
 
 ### Migration References
+
 - **Migration 0021**: bind_repo_task_lane_session
 - **Migration 0022**: Atomic recovery operations
 - **Migration 0023**: (Future - parallel-run gate)
 - **Migration 0024**: (Future - additional features)
 
 ### Documentation Files
+
 - `pm-stack/opencode-claimant/README.md` - Main documentation
 - `pm-stack/opencode-claimant/claimant.py` - Main implementation
 - `pm-stack/opencode-claimant/poll.py` - Discovery implementation
@@ -361,6 +388,7 @@ The **OpenCode lane claimant/executor slice 1 implementation** is:
 ✅ **READY** - Production deployment ready
 
 ### Implementation Quality
+
 - ✅ Follows deterministic specification
 - ✅ Implements all 6 steps correctly
 - ✅ Enforces all hard rules
@@ -371,7 +399,9 @@ The **OpenCode lane claimant/executor slice 1 implementation** is:
 - ✅ Production-ready code
 
 ### What This Means
+
 The OpenCode execution lane now has a fully functional claimant/executor that:
+
 - Supervises bound sessions for recovery
 - Discovers candidates from 4 queues
 - Creates and binds sessions atomically
@@ -385,6 +415,6 @@ The OpenCode execution lane now has a fully functional claimant/executor that:
 
 ---
 
-*Last Updated: 2026-11-07*
-*Implementation Status: ✅ COMPLETE*
-*Slice: 1 of #3026*
+_Last Updated: 2026-11-07_
+_Implementation Status: ✅ COMPLETE_
+_Slice: 1 of #3026_

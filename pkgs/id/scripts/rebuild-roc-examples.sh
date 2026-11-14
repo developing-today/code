@@ -8,6 +8,7 @@ examples=(
   examples/roc-counter
   examples/roc-grid
   examples/roc-screen
+  examples/roc-text-counter
   examples/territory
   apps/tic-tac-toe/program
 )

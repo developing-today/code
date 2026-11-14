@@ -12,8 +12,8 @@
   ("Chat next steps — conversation↔object linking, talk pages, terminal
   participation"). The parent's decisions are **not re-decided here**:
   anchoring is a first-class link (§1 of the parent, including the
-  *resolved-into* link type this record gives mechanics to); a talk page
-  *is* a chat conversation on the #2036 protocol with a permanent object
+  _resolved-into_ link type this record gives mechanics to); a talk page
+  _is_ a chat conversation on the #2036 protocol with a permanent object
   anchor, not a second messaging system (§2); thread visibility never
   leaks an anchored object — or its existence — to non-readers (§1);
   full participation, including resolving threads, is required from a
@@ -56,17 +56,17 @@
 
 ## Decision summary
 
-| Question | Decision |
-| --- | --- |
-| What "resolved" is | A signed event, `chat.resolution.v1`, folded by projection — never a mutable field on the thread (§2) |
-| What a resolution names | The thread root, the resolver, a resolution kind (`edit` / `decision` / `no-action`), and — for `edit` — the object and the exact edit event/revision it produced (§2) |
-| Navigation | Both ways, from the same derived edge set: thread → outcome edit; object revision → the resolution (and thread) that produced it (§2) |
-| What a change proposal is | A signed event, `chat.proposal.v1`, carrying the proposed content by blob link, anchored to (object, base revision) (§3) |
-| Proposal lifecycle | Derived by folding later events: `proposed` → `accepted` / `rejected` / `superseded` / `withdrawn`; acceptance is not a state write — the accepting edit event itself, citing the proposal, is the acceptance (§3) |
-| Who may resolve / accept | Resolve: a thread participant or an object writer. Accept: only an author with write authority on the object, because acceptance *is* an edit (§4) |
-| Audit | The signed event chain itself: edit cites proposal, proposal cites thread, thread is anchored to the object; verifiable by any reader (§4) |
-| Visibility | The parent's rule, applied with the `note_links` mechanism: a resolution/proposal edge that would expose an object a viewer cannot read is dropped whole (§4) |
-| v1 message shape | Unchanged: no new `ChatLinkKind`; resolution and proposal are their own event kinds (§7) |
+| Question                  | Decision                                                                                                                                                                                                           |
+| ------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| What "resolved" is        | A signed event, `chat.resolution.v1`, folded by projection — never a mutable field on the thread (§2)                                                                                                              |
+| What a resolution names   | The thread root, the resolver, a resolution kind (`edit` / `decision` / `no-action`), and — for `edit` — the object and the exact edit event/revision it produced (§2)                                             |
+| Navigation                | Both ways, from the same derived edge set: thread → outcome edit; object revision → the resolution (and thread) that produced it (§2)                                                                              |
+| What a change proposal is | A signed event, `chat.proposal.v1`, carrying the proposed content by blob link, anchored to (object, base revision) (§3)                                                                                           |
+| Proposal lifecycle        | Derived by folding later events: `proposed` → `accepted` / `rejected` / `superseded` / `withdrawn`; acceptance is not a state write — the accepting edit event itself, citing the proposal, is the acceptance (§3) |
+| Who may resolve / accept  | Resolve: a thread participant or an object writer. Accept: only an author with write authority on the object, because acceptance _is_ an edit (§4)                                                                 |
+| Audit                     | The signed event chain itself: edit cites proposal, proposal cites thread, thread is anchored to the object; verifiable by any reader (§4)                                                                         |
+| Visibility                | The parent's rule, applied with the `note_links` mechanism: a resolution/proposal edge that would expose an object a viewer cannot read is dropped whole (§4)                                                      |
+| v1 message shape          | Unchanged: no new `ChatLinkKind`; resolution and proposal are their own event kinds (§7)                                                                                                                           |
 
 ## 1. Scope
 

@@ -17,7 +17,7 @@ confirmed verdict):
 - Issue #6053 is OPEN, `kind/design`, `status/triaged`, no held
   labels. Parent #6024 and relations #5979, #3125 are all OPEN.
 - No ingest license provenance exists: the provenance Atlas records
-  today is *search/model* provenance (e.g. `atlas-core/src/search.rs`
+  today is _search/model_ provenance (e.g. `atlas-core/src/search.rs`
   records which model/table produced a result pool; `atlas-embed`
   fixtures record the ONNX Runtime version). Nothing records, per
   external repo, what license was detected at ingest, whether the
@@ -35,7 +35,7 @@ treatment, and all three are ingest-time observations:
 
 1. the repo's license, as detectable at ingest (it can change later;
    the ingest-time value is the one the ingest decision rested on);
-2. whether the repo *carries a license notice* — the precondition of
+2. whether the repo _carries a license notice_ — the precondition of
    the GitHub ToS §D.6 inbound=outbound argument for its comments
    (contested for comments; see §4 — we record the flag and the
    license version, never a conclusion);
@@ -60,21 +60,21 @@ facts join at query time; denormalizing them onto ~107k chunk rows
 would rewrite the corpus on every re-detection for a fact that
 changes per-repo, not per-chunk.
 
-| Field | Type | Meaning |
-|---|---|---|
-| `repo_id` | text, PK part | Canonical repo identity: `github.com/<owner>/<name>` lowercased. |
-| `ingest_generation` | integer, PK part | Monotonic per-repo ingest counter; a re-ingest under changed facts appends a new generation, never edits history. |
-| `ingested_at` | timestamp (UTC) | When this generation's content was ingested. |
-| `license_spdx` | text, nullable | SPDX *expression* (per #5979's format recommendation), e.g. `MIT`, `MIT OR Apache-2.0`, `LicenseRef-Unidentified`. `NULL` means detection ran and found nothing — distinct from "not yet detected", which is a missing row. |
-| `license_raw` | text, nullable | The verbatim detected license name/notice summary as the detector reported it, kept so a taxonomy change (#5979) can re-map without re-detecting. |
-| `detection_source` | enum | `github_license_api` \| `licensee` \| `scancode` \| `manifest_field` \| `manual`. Which rung of the §3 cascade produced `license_spdx`. |
-| `detection_evidence` | text | Pointer to the evidence: the LICENSE file path + content hash at the ingested commit, or the API response digest. Content-addressed, per #3125's extract model. |
-| `ingested_commit` | text, nullable | The commit SHA ingested (for repo-content ingests); `NULL` for comment-only ingests, where `ingested_at` + the API snapshot window is the anchor. |
-| `has_license_notice` | boolean | The repo contains a license notice (LICENSE/COPYING file or a license header tree) — the §D.6 precondition fact. |
-| `d6_applicable` | enum | `yes` \| `no` \| `contested`. Derived, never hand-set: `no` when `has_license_notice` is false; `contested` when a notice exists (the comments-as-content reading is Lawyer Question 1 under #6024); `yes` is reserved for a future lawyer ruling and is not emitted by any current rule. Recording the flag + license version, not a conclusion, is the issue's requirement. |
-| `license_version` | text, nullable | The version/variant of the noticed license where the detector distinguishes it (e.g. `GPL-3.0-only` vs `GPL-3.0-or-later` is carried in `license_spdx`; this field carries the notice's own version string when it differs, e.g. an unversioned GPL notice). |
-| `zone` | enum | `own` \| `participated_external` \| `general_external` \| `github_docs`. The #6024 Cluster-6 zone assigned at ingest. Zone is a policy input recorded verbatim; re-zoning is a policy-layer act that writes a new generation (§5). |
-| `detector_version` | text | Version of the detection tooling that produced this row, so a detector upgrade can target stale rows for re-detection instead of re-running everything. |
+| Field                | Type             | Meaning                                                                                                                                                                                                                                                                                                                                                                       |
+| -------------------- | ---------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `repo_id`            | text, PK part    | Canonical repo identity: `github.com/<owner>/<name>` lowercased.                                                                                                                                                                                                                                                                                                              |
+| `ingest_generation`  | integer, PK part | Monotonic per-repo ingest counter; a re-ingest under changed facts appends a new generation, never edits history.                                                                                                                                                                                                                                                             |
+| `ingested_at`        | timestamp (UTC)  | When this generation's content was ingested.                                                                                                                                                                                                                                                                                                                                  |
+| `license_spdx`       | text, nullable   | SPDX _expression_ (per #5979's format recommendation), e.g. `MIT`, `MIT OR Apache-2.0`, `LicenseRef-Unidentified`. `NULL` means detection ran and found nothing — distinct from "not yet detected", which is a missing row.                                                                                                                                                   |
+| `license_raw`        | text, nullable   | The verbatim detected license name/notice summary as the detector reported it, kept so a taxonomy change (#5979) can re-map without re-detecting.                                                                                                                                                                                                                             |
+| `detection_source`   | enum             | `github_license_api` \| `licensee` \| `scancode` \| `manifest_field` \| `manual`. Which rung of the §3 cascade produced `license_spdx`.                                                                                                                                                                                                                                       |
+| `detection_evidence` | text             | Pointer to the evidence: the LICENSE file path + content hash at the ingested commit, or the API response digest. Content-addressed, per #3125's extract model.                                                                                                                                                                                                               |
+| `ingested_commit`    | text, nullable   | The commit SHA ingested (for repo-content ingests); `NULL` for comment-only ingests, where `ingested_at` + the API snapshot window is the anchor.                                                                                                                                                                                                                             |
+| `has_license_notice` | boolean          | The repo contains a license notice (LICENSE/COPYING file or a license header tree) — the §D.6 precondition fact.                                                                                                                                                                                                                                                              |
+| `d6_applicable`      | enum             | `yes` \| `no` \| `contested`. Derived, never hand-set: `no` when `has_license_notice` is false; `contested` when a notice exists (the comments-as-content reading is Lawyer Question 1 under #6024); `yes` is reserved for a future lawyer ruling and is not emitted by any current rule. Recording the flag + license version, not a conclusion, is the issue's requirement. |
+| `license_version`    | text, nullable   | The version/variant of the noticed license where the detector distinguishes it (e.g. `GPL-3.0-only` vs `GPL-3.0-or-later` is carried in `license_spdx`; this field carries the notice's own version string when it differs, e.g. an unversioned GPL notice).                                                                                                                  |
+| `zone`               | enum             | `own` \| `participated_external` \| `general_external` \| `github_docs`. The #6024 Cluster-6 zone assigned at ingest. Zone is a policy input recorded verbatim; re-zoning is a policy-layer act that writes a new generation (§5).                                                                                                                                            |
+| `detector_version`   | text             | Version of the detection tooling that produced this row, so a detector upgrade can target stale rows for re-detection instead of re-running everything.                                                                                                                                                                                                                       |
 
 Invariants (property-shaped, per the fleet testing doctrine —
 each is a PBT oracle over the registry):
@@ -125,12 +125,12 @@ them without re-fetching.
 
 ## 4. The D.6 flag — record, don't conclude
 
-ToS §D.6 (verbatim, from the Cluster-6 research): *"Whenever you
+ToS §D.6 (verbatim, from the Cluster-6 research): _"Whenever you
 add Content to a repository containing notice of a license, you
-license that Content under the same terms…"* Whether an issue
+license that Content under the same terms…"_ Whether an issue
 comment is "Content added to a repository" in D.6's sense is
 contested — it is Lawyer Question 1 under #6024 and this design
-does not answer it. What the corpus needs is the *inputs* to that
+does not answer it. What the corpus needs is the _inputs_ to that
 answer, frozen at ingest:
 
 - `has_license_notice` — the D.6 precondition ("a repository
@@ -151,7 +151,7 @@ derivation-rule change (§5), not a data migration.
 ## 5. Re-evaluation: the policy layer's query
 
 A policy change is a pure function over recorded rows. The policy
-layer holds a *rule version* (e.g. `policy-6024 v3`); re-evaluation
+layer holds a _rule version_ (e.g. `policy-6024 v3`); re-evaluation
 for a rule change is:
 
 ```sql
@@ -179,7 +179,7 @@ deletion sync) are purge candidates.
 
 Re-detection (detector or taxonomy upgrade) is the same shape:
 rows with `detector_version < :current` are re-run through the §3
-cascade *against their recorded evidence first* (the content-hashed
+cascade _against their recorded evidence first_ (the content-hashed
 notice file), and only re-fetched when evidence is missing — a
 taxonomy change never requires re-crawling the web.
 
@@ -192,7 +192,7 @@ semantics, as a registry-resident table under #3125. Specifically:
   §5 query shape. Implementation (schema migration in the #3125
   registry, cascade wiring at ingest, `policy_eval` in the policy
   layer) is a separate follow-on issue, filed with this record.
-- No D.6 *conclusion* is recorded anywhere; `yes` stays unemitted
+- No D.6 _conclusion_ is recorded anywhere; `yes` stays unemitted
   until #6024's lawyer answer lands.
 - Zone assignment rules themselves belong to the sibling #6024
   policy packet; this record only reserves the field and the four

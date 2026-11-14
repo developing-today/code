@@ -149,9 +149,7 @@
       "owner": "dezren39",
       "repo": null,
       "status": "handoff-only",
-      "targets": [
-        "*"
-      ],
+      "targets": ["*"],
       "workflow": null
     }
   ],

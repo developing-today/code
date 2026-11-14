@@ -24,10 +24,10 @@ is a task in the `*-shadow` queue.
 
 Two halves, deliberately split:
 
-| Half | Where | Why |
-|---|---|---|
-| The diff | `POST /coverage` on the queue broker | The broker owns the Turso connection; the diff is one query over live tasks, matched on the issue dedupe key. Read-only. |
-| The import | `check_coverage.py` via `fleet queue enqueue` | Packets go through the sanctioned, validating, dedupe-keyed path like every other task. |
+| Half       | Where                                         | Why                                                                                                                      |
+| ---------- | --------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------ |
+| The diff   | `POST /coverage` on the queue broker          | The broker owns the Turso connection; the diff is one query over live tasks, matched on the issue dedupe key. Read-only. |
+| The import | `check_coverage.py` via `fleet queue enqueue` | Packets go through the sanctioned, validating, dedupe-keyed path like every other task.                                  |
 
 The dedupe key `repo-health:v1:triage:<repo>:issue:<n>` makes a re-run
 idempotent by construction: an issue that already holds a live task is

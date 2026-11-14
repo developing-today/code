@@ -220,7 +220,9 @@ def http(
         try:
             payload = json.loads(raw)
         except Exception:
-            die(f"{method} {url} -> HTTP {status}: response body is not JSON: {raw[:300]}")
+            die(
+                f"{method} {url} -> HTTP {status}: response body is not JSON: {raw[:300]}"
+            )
     if not isinstance(payload, expect):
         die(
             f"{method} {url} -> HTTP {status}: expected a JSON "
@@ -398,9 +400,7 @@ def find_by_exact_title(client: AppClient, repo: str, title: str) -> dict | None
     token = client.token_for(repo.split("/")[0])
     q = urllib.parse.quote(f'repo:{repo} type:issue "{title}"')
     for page in range(1, 11):
-        _, data = http(
-            "GET", f"/search/issues?q={q}&per_page=100&page={page}", token
-        )
+        _, data = http("GET", f"/search/issues?q={q}&per_page=100&page={page}", token)
         items = data.get("items", [])
         if not isinstance(items, list):
             die(f"search response items is not a JSON array (got {_shape_name(items)})")
@@ -490,9 +490,7 @@ def cmd_create(args) -> int:
     readback_body = got.get("body")
     if readback_body != body:
         sent_chars = len(body) if isinstance(body, str) else "n/a"
-        readback_chars = (
-            len(readback_body) if isinstance(readback_body, str) else "n/a"
-        )
+        readback_chars = len(readback_body) if isinstance(readback_body, str) else "n/a"
         die(
             f"readback mismatch for {args.repo}#{number}: body sent "
             f"{sent_chars} chars, read back {readback_chars} chars "
@@ -512,8 +510,10 @@ def cmd_create(args) -> int:
             )
         have = set()
         for label in readback_labels:
-            name = label if isinstance(label, str) else (
-                label.get("name") if isinstance(label, dict) else None
+            name = (
+                label
+                if isinstance(label, str)
+                else (label.get("name") if isinstance(label, dict) else None)
             )
             if not isinstance(name, str):
                 die(

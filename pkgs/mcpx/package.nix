@@ -277,7 +277,8 @@ buildGo127Module {
       --zsh <($out/bin/mcpx completion zsh) \
       --fish <($out/bin/mcpx completion fish)
 
-  '' + lib.optionalString wrapWithRuntimes ''
+  ''
+  + lib.optionalString wrapWithRuntimes ''
     wrapProgram $out/bin/mcpx \
       --suffix PATH : ${
         lib.makeBinPath [

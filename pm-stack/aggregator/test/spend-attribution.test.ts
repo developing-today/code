@@ -1,9 +1,20 @@
 import { describe, expect, test } from "bun:test";
 import type { ProjectPoolItem, RefKey } from "../src/model.ts";
-import { ATTRIBUTION_VERSION, projectSpendAttribution, type SpendSession, type SpendTokens } from "../src/spend-attribution.ts";
+import {
+  ATTRIBUTION_VERSION,
+  projectSpendAttribution,
+  type SpendSession,
+  type SpendTokens,
+} from "../src/spend-attribution.ts";
 
 const R = (n: number): RefKey => `developing-today/code#${n}`;
-const tokens = (input: number): SpendTokens => ({ input, output: input + 1, reasoning: input + 2, cacheRead: input + 3, cacheWrite: input + 4 });
+const tokens = (input: number): SpendTokens => ({
+  input,
+  output: input + 1,
+  reasoning: input + 2,
+  cacheRead: input + 3,
+  cacheWrite: input + 4,
+});
 
 function session(partial: Partial<SpendSession> & Pick<SpendSession, "id">): SpendSession {
   return {
@@ -77,7 +88,10 @@ describe("spend attribution projection", () => {
 
     const ambiguous = projectSpendAttribution({
       ...input,
-      pool: [item({ number: 42 }), item({ number: 42, ref: "developing-today/opencode#42", repo: "developing-today/opencode" })],
+      pool: [
+        item({ number: 42 }),
+        item({ number: 42, ref: "developing-today/opencode#42", repo: "developing-today/opencode" }),
+      ],
     });
     expect(ambiguous.facts[0]).toMatchObject({ method: "unattributed", issueRef: null, reason: "no-worktree" });
   });

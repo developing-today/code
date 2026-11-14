@@ -174,7 +174,10 @@ async fn non_object_args_never_reach_the_world() {
     handle.chat(token.clone(), "still here").await.unwrap();
     let report = handle.caps_report().await.unwrap();
     assert!(
-        report.usage.get("records.read").is_none_or(|usage| usage.allowed == 0 && usage.denied == 0),
+        report
+            .usage
+            .get("records.read")
+            .is_none_or(|usage| usage.allowed == 0 && usage.denied == 0),
         "the non-object-args request must never be dispatched: {:?}",
         report.usage.get("records.read")
     );

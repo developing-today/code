@@ -20,8 +20,22 @@ const FULL_NOV: [{ from: string; to: string; status: "ok" }] = [
 ];
 
 const EVENTS: SpendRollupEvent[] = [
-  { ts: "2026-11-04T10:00:00Z", projectId: "proj-a", epicRef: "epic-1", tokensByPool: { meta: 100 }, paygUsd: 3, sharePctByPool: { meta: 1.5 } },
-  { ts: "2026-11-05T10:00:00Z", projectId: "proj-a", epicRef: "epic-1", tokensByPool: { meta: 50, openai: 20 }, paygUsd: 2, sharePctByPool: { meta: 0.5 } },
+  {
+    ts: "2026-11-04T10:00:00Z",
+    projectId: "proj-a",
+    epicRef: "epic-1",
+    tokensByPool: { meta: 100 },
+    paygUsd: 3,
+    sharePctByPool: { meta: 1.5 },
+  },
+  {
+    ts: "2026-11-05T10:00:00Z",
+    projectId: "proj-a",
+    epicRef: "epic-1",
+    tokensByPool: { meta: 50, openai: 20 },
+    paygUsd: 2,
+    sharePctByPool: { meta: 0.5 },
+  },
   { ts: "2026-11-06T10:00:00Z", projectId: null, epicRef: null, tokensByPool: { meta: 7 }, paygUsd: 1 },
 ];
 
@@ -39,9 +53,15 @@ describe("windowRange", () => {
 });
 
 describe("buildSpendRollups", () => {
-  const built = buildSpendRollups(EVENTS, { attributionVersion: "v1", coverageStart: COVERAGE_START, coverage: FULL_NOV });
+  const built = buildSpendRollups(EVENTS, {
+    attributionVersion: "v1",
+    coverageStart: COVERAGE_START,
+    coverage: FULL_NOV,
+  });
   const find = (wk: string, sk: string, sid: string, unit: string, pool: string | null) =>
-    built.find((r) => r.windowKind === wk && r.scopeKind === sk && r.scopeId === sid && r.unit === unit && r.pool === pool);
+    built.find(
+      (r) => r.windowKind === wk && r.scopeKind === sk && r.scopeId === sid && r.unit === unit && r.pool === pool,
+    );
 
   test("project and epic scopes both roll up, per pool, with units unmerged", () => {
     expect(find("week", "project", "proj-a", "tokens", "meta")?.value).toBe(150);
@@ -97,7 +117,11 @@ describe("buildSpendRollups", () => {
       { ts: "2026-11-04T10:00:00Z", projectId: "proj-a", epicRef: null, tokensByPool: { meta: 1 }, paygUsd: 3 },
       { ts: "2026-11-05T10:00:00Z", projectId: "proj-a", epicRef: null, tokensByPool: { meta: 1 }, paygUsd: null },
     ];
-    const out = buildSpendRollups(mixed, { attributionVersion: "v1", coverageStart: COVERAGE_START, coverage: FULL_NOV });
+    const out = buildSpendRollups(mixed, {
+      attributionVersion: "v1",
+      coverageStart: COVERAGE_START,
+      coverage: FULL_NOV,
+    });
     expect(out.find((r) => r.unit === "usd")).toBeUndefined();
     expect(out.find((r) => r.unit === "tokens")?.value).toBe(2);
   });
@@ -138,7 +162,11 @@ describe("generated invariants (seeded, deterministic)", () => {
           paygUsd: Math.floor(rand() * 20),
         });
       }
-      const built = buildSpendRollups(events, { attributionVersion: "v1", coverageStart: COVERAGE_START, coverage: FULL_NOV });
+      const built = buildSpendRollups(events, {
+        attributionVersion: "v1",
+        coverageStart: COVERAGE_START,
+        coverage: FULL_NOV,
+      });
       // Oracle for the month window, tokens, project+unattributed scopes:
       // every event contributes its tokens to exactly one of those scopes.
       const oracle = new Map<string, number>();
@@ -181,7 +209,11 @@ describe("generated invariants (seeded, deterministic)", () => {
         const events: SpendRollupEvent[] = [
           { ts: "2026-11-04T10:00:00Z", projectId: "proj-a", epicRef: null, tokensByPool: { meta: 100 + bump } },
         ];
-        const records = buildSpendRollups(events, { attributionVersion: version, coverageStart: COVERAGE_START, coverage: FULL_NOV });
+        const records = buildSpendRollups(events, {
+          attributionVersion: version,
+          coverageStart: COVERAGE_START,
+          coverage: FULL_NOV,
+        });
         const key = `week|proj-a|${version}`;
         const fingerprint = JSON.stringify(records.map((r) => [r.scopeKind, r.unit, r.value]));
         if (model.has(key) && model.get(key) !== fingerprint) {
@@ -207,7 +239,11 @@ describe("SpendRollupStore", () => {
     const dir = await mkdtemp(join(tmpdir(), "rollups-4823-"));
     try {
       const store = new SpendRollupStore(dir);
-      const v1 = buildSpendRollups(EVENTS, { attributionVersion: "v1", coverageStart: COVERAGE_START, coverage: FULL_NOV });
+      const v1 = buildSpendRollups(EVENTS, {
+        attributionVersion: "v1",
+        coverageStart: COVERAGE_START,
+        coverage: FULL_NOV,
+      });
       expect((await store.append(v1)).appended).toBe(v1.length);
       expect((await store.append(v1)).appended).toBe(0); // identical re-append is a no-op
 
@@ -216,8 +252,15 @@ describe("SpendRollupStore", () => {
       await expect(store.append(changed)).rejects.toThrow(/immutable per attributionVersion/);
 
       // Restatement: same inputs, new version, different values — stored alongside.
-      const v2Events = EVENTS.map((e) => ({ ...e, tokensByPool: { ...e.tokensByPool, meta: (e.tokensByPool?.meta ?? 0) + 1 } }));
-      const v2 = buildSpendRollups(v2Events, { attributionVersion: "v2", coverageStart: COVERAGE_START, coverage: FULL_NOV });
+      const v2Events = EVENTS.map((e) => ({
+        ...e,
+        tokensByPool: { ...e.tokensByPool, meta: (e.tokensByPool?.meta ?? 0) + 1 },
+      }));
+      const v2 = buildSpendRollups(v2Events, {
+        attributionVersion: "v2",
+        coverageStart: COVERAGE_START,
+        coverage: FULL_NOV,
+      });
       await store.append(v2);
       const all = await store.readAll();
       expect(all.filter((r) => r.attributionVersion === "v1").length).toBe(v1.length);
@@ -270,7 +313,11 @@ describe("SpendRollupStore", () => {
     const dir = await mkdtemp(join(tmpdir(), "rollups-4823-"));
     try {
       const store = new SpendRollupStore(dir);
-      const [first] = buildSpendRollups(EVENTS, { attributionVersion: "v1", coverageStart: COVERAGE_START, coverage: FULL_NOV });
+      const [first] = buildSpendRollups(EVENTS, {
+        attributionVersion: "v1",
+        coverageStart: COVERAGE_START,
+        coverage: FULL_NOV,
+      });
       const conflict = { ...first!, value: first!.value + 1 };
       const results = await Promise.allSettled([store.append([first!]), store.append([conflict])]);
       expect(results.filter((r) => r.status === "fulfilled").length).toBe(1);
@@ -285,7 +332,11 @@ describe("SpendRollupStore", () => {
     const dir = await mkdtemp(join(tmpdir(), "rollups-4823-"));
     try {
       const store = new SpendRollupStore(dir);
-      const [first] = buildSpendRollups(EVENTS, { attributionVersion: "v1", coverageStart: COVERAGE_START, coverage: FULL_NOV });
+      const [first] = buildSpendRollups(EVENTS, {
+        attributionVersion: "v1",
+        coverageStart: COVERAGE_START,
+        coverage: FULL_NOV,
+      });
       const merged = { ...first!, totalSpend: 123 } as unknown;
       expect(() => validateSpendRollup(merged)).toThrow(/unexpected field "totalSpend"/);
       await expect(store.append([merged as never])).rejects.toThrow(/unexpected field/);

@@ -1,7 +1,7 @@
 //! Exit proof for #1061 (F12.4, slice 2): a provider added through the
 //! provider registry alone.
 //!
-//! The probe provider lives in `id-core`'s `test-provider` feature, which the
+//! The probe provider lives in `id-caps`'s `test-provider` feature, which the
 //! root package enables through its dev-dependency. Nothing under
 //! `pkgs/id/src/world/` (dispatch, actor, core) learns about it: it is one
 //! manifest entry, and the surfaces below pick it up from the registry.
@@ -16,7 +16,7 @@
 use std::collections::BTreeSet;
 
 use id::world_caps::{
-    CATALOG, CATALOG_ENTRIES, CapLedger, DefaultCeiling, Decision, PROVIDER_REGISTRY,
+    CATALOG, CATALOG_ENTRIES, CapLedger, Decision, DefaultCeiling, PROVIDER_REGISTRY,
     TEST_PROVIDER_NAME, catalog_names, default_ceiling_names,
 };
 use id::world_compile::{CompileSpec, check_imports};

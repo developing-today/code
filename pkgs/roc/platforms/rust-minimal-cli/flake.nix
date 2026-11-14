@@ -49,11 +49,11 @@
           alias testcmd='export ROC=roc && export EXAMPLES_DIR=./examples/ && ./ci/all_tests.sh'
         '';
 
-        linuxInputs = with pkgs; lib.optionals stdenv.isLinux [ valgrind ];
+        linuxInputs = with pkgs; lib.optionals stdenv.hostPlatform.isLinux [ valgrind ];
 
         darwinInputs =
           with pkgs;
-          lib.optionals stdenv.isDarwin (with pkgs.darwin.apple_sdk.frameworks; [ Security ]);
+          lib.optionals stdenv.hostPlatform.isDarwin (with pkgs.darwin.apple_sdk.frameworks; [ Security ]);
 
         sharedInputs = with pkgs; [
           jq
@@ -74,9 +74,9 @@
 
           # nix does not store libs in /usr/lib or /lib
           # for libgcc_s.so.1
-          NIX_LIBGCC_S_PATH = if pkgs.stdenv.isLinux then "${pkgs.stdenv.cc.cc.lib}/lib" else "";
+          NIX_LIBGCC_S_PATH = if pkgs.stdenv.hostPlatform.isLinux then "${pkgs.stdenv.cc.cc.lib}/lib" else "";
           # for crti.o, crtn.o, and Scrt1.o
-          NIX_GLIBC_PATH = if pkgs.stdenv.isLinux then "${pkgs.glibc.out}/lib" else "";
+          NIX_GLIBC_PATH = if pkgs.stdenv.hostPlatform.isLinux then "${pkgs.glibc.out}/lib" else "";
 
           shellHook = ''
             ${aliases}

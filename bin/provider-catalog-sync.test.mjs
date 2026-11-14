@@ -213,6 +213,23 @@ test('makeEntry: a sibling with variants:null is not a clone source - name-only 
   assert.deepEqual(withLimit, { name: 'GPT 1 Terra (codex)', limit: { context: 2000, output: 200 } });
 });
 
+test('makeEntry: non-string sibling names are ignored for the suffix, never thrown on (#6909)', () => {
+  for (const bad of [42, true, { text: 'x' }, ['x']]) {
+    const siblings = { 'gpt-1-luna': { name: bad } };
+    const e = makeEntry('proxy-a', 'gpt-1-terra', siblings, null);
+    assert.deepEqual(e, { name: 'GPT 1 Terra' });
+  }
+});
+
+test('makeEntry: a mixed good+bad sibling set still takes the suffix from the string names (#6909)', () => {
+  const siblings = {
+    'gpt-1-luna': { name: 'GPT-1 Luna (codex)' },
+    'gpt-1-sol': { name: 42 },
+  };
+  const e = makeEntry('proxy-a', 'gpt-1-terra', siblings, null);
+  assert.deepEqual(e, { name: 'GPT 1 Terra (codex)' });
+});
+
 test('insertModelEntry matches the file indentation style', () => {
   const out = insertModelEntry(FIXTURE, 'proxy-a', 'gpt-1-terra', {
     name: 'GPT 1 Terra',

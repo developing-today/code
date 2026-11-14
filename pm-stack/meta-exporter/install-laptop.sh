@@ -10,14 +10,14 @@ DEST_DIR="$HOME/atlas/meta-quota-export"
 UNIT_DIR="$HOME/.config/systemd/user"
 NODE_BIN="$(command -v node || true)"
 
-if [[ -z "$NODE_BIN" ]]; then
+if [[ -z $NODE_BIN ]]; then
   echo "install-laptop: node not found on PATH" >&2
   exit 1
 fi
 
 mkdir -p "$DEST_DIR" "$UNIT_DIR"
 install -m 0755 "$SRC_DIR/meta-quota-export.mjs" "$DEST_DIR/meta-quota-export.mjs"
-sed "s|@NODE@|$NODE_BIN|g" "$SRC_DIR/meta-quota-export.service" > "$UNIT_DIR/meta-quota-export.service"
+sed "s|@NODE@|$NODE_BIN|g" "$SRC_DIR/meta-quota-export.service" >"$UNIT_DIR/meta-quota-export.service"
 install -m 0644 "$SRC_DIR/meta-quota-export.timer" "$UNIT_DIR/meta-quota-export.timer"
 
 systemctl --user daemon-reload

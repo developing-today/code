@@ -44,13 +44,13 @@ format rule, not a storage setting: a shard is written once, never
 modified in place, and replaced wholesale when §8 compaction produces
 a successor. All fixed-width integers are little-endian.
 
-| region | contents |
-|---|---|
-| header | magic `ATLASCLD` (8 bytes), `format_version` u16 (= 1), header length u32 |
-| manifest | one UTF-8 JSON document (§3), length from the header |
-| span section | concatenated span (chunk) bytes, one entry per span-table row |
-| vector section | concatenated embedding vectors, one entry per vector-table row |
-| footer | section offsets/lengths, SHA-256 of each section, SHA-256 of the manifest, trailer magic `ATLASEND` (8 bytes) |
+| region         | contents                                                                                                      |
+| -------------- | ------------------------------------------------------------------------------------------------------------- |
+| header         | magic `ATLASCLD` (8 bytes), `format_version` u16 (= 1), header length u32                                     |
+| manifest       | one UTF-8 JSON document (§3), length from the header                                                          |
+| span section   | concatenated span (chunk) bytes, one entry per span-table row                                                 |
+| vector section | concatenated embedding vectors, one entry per vector-table row                                                |
+| footer         | section offsets/lengths, SHA-256 of each section, SHA-256 of the manifest, trailer magic `ATLASEND` (8 bytes) |
 
 Decisions, with reasons:
 
@@ -70,7 +70,7 @@ Decisions, with reasons:
 - **Span section may be zstd-compressed as a whole** (flagged per
   shard by the manifest's `span_codec`: `none` or `zstd`). Span
   offsets in the span table always name positions in the
-  *decompressed* section, so the table is codec-independent.
+  _decompressed_ section, so the table is codec-independent.
 - **Vectors are stored uncompressed** as little-endian IEEE 754
   f32, `dimensions` consecutive values per vector, in vector-table
   order: directly memory-mappable on restore, no decode step, and
@@ -87,22 +87,22 @@ a reader must ignore unknown fields (additive evolution), and a
 writer must not rename or repurpose a field — a breaking change is
 `format_version` 2.
 
-| field | content |
-|---|---|
-| `format_version` | 1 |
-| `shard_id` | UUID minted at pack time; the shard's name in the cold catalog (§5) |
-| `corpus` / `tier` | corpus name; tier is the literal `cold` |
-| `created_at` | RFC 3339 UTC pack time |
-| `created_by` | writer identity: Atlas build/version + export run id |
-| `source_marks` | one entry per contributing source: source id, source-native coordinates (repo + commit range, store + object range, log + message range) |
-| `versions` | one entry per packed version (§3.1) |
-| `span_table` | one entry per distinct chunk (§3.2) |
-| `vector_model` | embedding model id + revision that produced the vectors |
-| `vector_dimensions` | dimensions per vector (768 for the current corpus model) |
-| `vector_dtype` | `f32le` |
-| `vector_table` | one entry per vector (§3.2) |
-| `retention` | retention state at pack time (§3.3) |
-| `provenance` | hot shard id the versions were exported from + export run id |
+| field               | content                                                                                                                                  |
+| ------------------- | ---------------------------------------------------------------------------------------------------------------------------------------- |
+| `format_version`    | 1                                                                                                                                        |
+| `shard_id`          | UUID minted at pack time; the shard's name in the cold catalog (§5)                                                                      |
+| `corpus` / `tier`   | corpus name; tier is the literal `cold`                                                                                                  |
+| `created_at`        | RFC 3339 UTC pack time                                                                                                                   |
+| `created_by`        | writer identity: Atlas build/version + export run id                                                                                     |
+| `source_marks`      | one entry per contributing source: source id, source-native coordinates (repo + commit range, store + object range, log + message range) |
+| `versions`          | one entry per packed version (§3.1)                                                                                                      |
+| `span_table`        | one entry per distinct chunk (§3.2)                                                                                                      |
+| `vector_model`      | embedding model id + revision that produced the vectors                                                                                  |
+| `vector_dimensions` | dimensions per vector (768 for the current corpus model)                                                                                 |
+| `vector_dtype`      | `f32le`                                                                                                                                  |
+| `vector_table`      | one entry per vector (§3.2)                                                                                                              |
+| `retention`         | retention state at pack time (§3.3)                                                                                                      |
+| `provenance`        | hot shard id the versions were exported from + export run id                                                                             |
 
 ### 3.1 Version entries
 
@@ -145,7 +145,7 @@ version.
 (#6026 §4.2 vocabulary), `state: "cold"`, `cold_since` (RFC 3339),
 `retire_not_before` (the earliest instant any version in the shard
 may be retired — §8), and the trigger snapshot that made the
-versions cold-eligible (§9), so a later reader can see *why* the
+versions cold-eligible (§9), so a later reader can see _why_ the
 shard exists without the rule engine's database. Retention state
 is a statement about pack time; it is never updated in place
 (§2 immutability). A version's current state lives in the hot
@@ -297,19 +297,19 @@ cold defaults are likewise starting values for the engine to tune
 from dry-run reports — not constants in code. A non-head version
 becomes cold-eligible when **either** column fires:
 
-| class | by age since superseded | by increments beyond it |
-|---|---|---|
-| code | 90 d | 10 newer versions |
-| docs | 180 d | 10 newer versions |
-| session logs | 45 d | 5 newer versions |
-| chat logs | 90 d | 5 newer versions |
-| generated reports | 30 d | 3 newer versions |
+| class             | by age since superseded | by increments beyond it |
+| ----------------- | ----------------------- | ----------------------- |
+| code              | 90 d                    | 10 newer versions       |
+| docs              | 180 d                   | 10 newer versions       |
+| session logs      | 45 d                    | 5 newer versions        |
+| chat logs         | 90 d                    | 5 newer versions        |
+| generated reports | 30 d                    | 3 newer versions        |
 
 Reading the table: every threshold sits well inside the matching
 §4.2 retirement threshold of the #6026 design (a version rolls cold
 long before any retirement trigger could fire on it, per #6026
 §6), and the head version of a live file is never cold-eligible.
-Access history (§6026 §4.3) may *defer* cold-eligibility — a
+Access history (§6026 §4.3) may _defer_ cold-eligibility — a
 version surfaced within its class's access window stays hot — but
 never accelerate it: cold movement is a latency decision, and a
 version that keeps being served has earned its latency class.

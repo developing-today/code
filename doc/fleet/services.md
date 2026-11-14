@@ -18,12 +18,12 @@ pins above are kept as the record of what this page was written against.
 
 ## What runs
 
-| Service | launchd label | Program | Listens | Logs |
-|---|---|---|---|---|
-| OpenChamber | `org.nixos.openchamber` (`openchamber.nix`) | `~/.local/state/openchamber/start`, a link to the start script in the store | `127.0.0.1:3000` | `~/Library/Logs/openchamber.log` |
-| OpenCode (the one OpenChamber manages) | none: a child of OpenChamber, left running across OpenChamber restarts (`AbandonProcessGroup = true`) | `~/.local/state/openchamber/bin/opencode`, a link to the wrapped fork build | a random `127.0.0.1` port | `~/.local/share/opencode/log/` |
-| mcpx | `org.nixos.mcpx` (`configuration.nix`) | `/usr/local/libexec/mcpx/mcpx`, a root-owned copy of a store wrapper refreshed at activation (fixed path, so macOS lists it as "mcpx"; activation restarts the agent when the copy changes), that runs `mcpx --config ~/.config/mcpx/config.json stop`, then `exec mcpx daemon --config …` | a unix socket `~/.local/state/mcpx/daemon-<hash>.sock`, plus a loopback HTTP port | `~/Library/Logs/mcpx.log` (was `/tmp/mcpx.err.log`, emptied at boot), `~/.local/state/mcpx/logs/mcpx-<date>.jsonl` |
-| service-monitor | `org.nixos.service-events` (`configuration.nix`) | `service-monitor` from `pkgs/service-events` | nothing | `~/Library/Logs/nix-services/events.jsonl` (see [the service event log](#the-service-event-log)) |
+| Service                                | launchd label                                                                                         | Program                                                                                                                                                                                                                                                                                    | Listens                                                                           | Logs                                                                                                               |
+| -------------------------------------- | ----------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | --------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------ |
+| OpenChamber                            | `org.nixos.openchamber` (`openchamber.nix`)                                                           | `~/.local/state/openchamber/start`, a link to the start script in the store                                                                                                                                                                                                                | `127.0.0.1:3000`                                                                  | `~/Library/Logs/openchamber.log`                                                                                   |
+| OpenCode (the one OpenChamber manages) | none: a child of OpenChamber, left running across OpenChamber restarts (`AbandonProcessGroup = true`) | `~/.local/state/openchamber/bin/opencode`, a link to the wrapped fork build                                                                                                                                                                                                                | a random `127.0.0.1` port                                                         | `~/.local/share/opencode/log/`                                                                                     |
+| mcpx                                   | `org.nixos.mcpx` (`configuration.nix`)                                                                | `/usr/local/libexec/mcpx/mcpx`, a root-owned copy of a store wrapper refreshed at activation (fixed path, so macOS lists it as "mcpx"; activation restarts the agent when the copy changes), that runs `mcpx --config ~/.config/mcpx/config.json stop`, then `exec mcpx daemon --config …` | a unix socket `~/.local/state/mcpx/daemon-<hash>.sock`, plus a loopback HTTP port | `~/Library/Logs/mcpx.log` (was `/tmp/mcpx.err.log`, emptied at boot), `~/.local/state/mcpx/logs/mcpx-<date>.jsonl` |
+| service-monitor                        | `org.nixos.service-events` (`configuration.nix`)                                                      | `service-monitor` from `pkgs/service-events`                                                                                                                                                                                                                                               | nothing                                                                           | `~/Library/Logs/nix-services/events.jsonl` (see [the service event log](#the-service-event-log))                   |
 
 The desktop app (`/Applications/Nix Apps/OpenChamber.app`) is meant to be only a
 window onto the server at port 3000. It decides that from
@@ -49,7 +49,7 @@ first terminal client starts it detached, in its own process group with no
 terminal, so closing that terminal does not stop it; it is reparented to launchd
 and has no idle exit (dezren39/nix#669).
 Both open the one database `~/.local/share/opencode/opencode.db` (`OPENCODE_DB`,
-forced by the wrapper in `flake.nix`). The fleet's *remote* databases are Turso
+forced by the wrapper in `flake.nix`). The fleet's _remote_ databases are Turso
 ones; before creating or converting any of them, read
 [`turso-databases.md`](turso-databases.md) — every new fleet Turso database must
 be created with `--tursodb` at birth, and libsql databases cannot be converted in
@@ -83,7 +83,7 @@ repo file does, and Copilot titles sessions with its free utility model
 2. **home-manager** (about line 1100) re-links the files it manages, then runs
    its activation steps in DAG order.
 
-So an agent whose plist changed is restarted *before* home-manager updates its
+So an agent whose plist changed is restarted _before_ home-manager updates its
 files. Anything an agent reads from a home-manager link is still the previous
 generation's at that moment.
 
@@ -94,9 +94,9 @@ almost never restarts it. A plist change (as when `ExitTimeOut` was added) does,
 once. `home.activation.openchamberDeploy` decides instead:
 
 - The **deploy key** is `<start script store path>:<sha256 of the UI password
-  file>`, compared with `~/.local/state/openchamber/deployed`.
+file>`, compared with `~/.local/state/openchamber/deployed`.
 - Key changed (new OpenChamber, new start script, or new password): `launchctl
-  kickstart -k`. OpenChamber restarts and adopts the running OpenCode.
+kickstart -k`. OpenChamber restarts and adopts the running OpenCode.
 - Key unchanged but the OpenCode link target changed: `launchctl kill SIGHUP`,
   and OpenChamber hands its OpenCode over to the new binary in place.
 - After linking, it checks that `start` resolves to an executable and fails the
@@ -148,7 +148,7 @@ after model routes were saved) and `start (no-state)`.
 - **mcpx.** Only the launchd agent should run a daemon for the user config.
   - `daemon.autostart = false` in `mcpx.config.nix`. With it on, any command
     that found no daemon started a detached one (`daemon --detached --idle-exit
-    4h`) that could hold the socket for hours. Now such a command fails with
+4h`) that could hold the socket for hours. Now such a command fails with
     "disabled by daemon.autostart" and works again once the agent is up. It is a
     client setting, read by every CLI from the user config. A project
     `.mcpx.json` could turn it back on; there are none today.
@@ -171,31 +171,31 @@ launchd gives these agents 5 s between SIGTERM and SIGKILL by default
 (`launchctl print` shows `exit timeout = 5`). That was shorter than both stops,
 so both are now set explicitly:
 
-| Agent | Stop takes up to | `ExitTimeOut` |
-|---|---|---|
-| mcpx | 10 s: HTTP drain (`http.shutdownGrace`, 5 s) and MCP server shutdown, both inside `limits.execDrainTimeout` (10 s; `stopServing`, `internal/daemon/server.go`) | 20 |
-| OpenChamber | 10 s (`SHUTDOWN_TIMEOUT`, `packages/web/server/index.js:185`); OpenCode is left running | 15 |
+| Agent       | Stop takes up to                                                                                                                                               | `ExitTimeOut` |
+| ----------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------- |
+| mcpx        | 10 s: HTTP drain (`http.shutdownGrace`, 5 s) and MCP server shutdown, both inside `limits.execDrainTimeout` (10 s; `stopServing`, `internal/daemon/server.go`) | 20            |
+| OpenChamber | 10 s (`SHUTDOWN_TIMEOUT`, `packages/web/server/index.js:185`); OpenCode is left running                                                                        | 15            |
 
 ## Graceful replacement, and how developing-today/code does it with systemd
 
-| Service | When a switch changes it | Graceful here? |
-|---|---|---|
-| OpenCode | Handover through OpenChamber (above) | Yes, running turns finish |
-| OpenChamber | Restarted; it adopts the running OpenCode | Partly. Sessions survive. Browser, desktop and terminal connections drop, and port 3000 is closed for about 10 s |
-| mcpx | Restarted; every MCP server process restarts | No. Stateful servers, such as browser sessions, are lost. Config-only changes are reloaded in place |
+| Service     | When a switch changes it                     | Graceful here?                                                                                                   |
+| ----------- | -------------------------------------------- | ---------------------------------------------------------------------------------------------------------------- |
+| OpenCode    | Handover through OpenChamber (above)         | Yes, running turns finish                                                                                        |
+| OpenChamber | Restarted; it adopts the running OpenCode    | Partly. Sessions survive. Browser, desktop and terminal connections drop, and port 3000 is closed for about 10 s |
+| mcpx        | Restarted; every MCP server process restarts | No. Stateful servers, such as browser sessions, are lost. Config-only changes are reloaded in place              |
 
 developing-today/code's home-manager config (`home/common/default.nix`) runs the
 same services as systemd user units. A review of it on 2026-10-19 (not
 re-checked line by line since) found these differences:
 
-| Mechanism there | What it buys | Here |
-|---|---|---|
-| `openchamber.socket` (socket activation; OpenChamber reads `LISTEN_FDS`) | Port 3000 stays open across restarts; connections wait instead of being refused | Absent. launchd's `Sockets` would need a small shim that calls `launch_activate_socket` and passes the fd as `LISTEN_FDS`. Not built |
+| Mechanism there                                                          | What it buys                                                                                                                                | Here                                                                                                                                                                                                                             |
+| ------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `openchamber.socket` (socket activation; OpenChamber reads `LISTEN_FDS`) | Port 3000 stays open across restarts; connections wait instead of being refused                                                             | Absent. launchd's `Sockets` would need a small shim that calls `launch_activate_socket` and passes the fd as `LISTEN_FDS`. Not built                                                                                             |
 | mcpx `Type=notify`, `NotifyAccess=all`; `ExecReload` runs `mcpx upgrade` | New binary with no dropped call: sockets, connections and MCP server processes are passed to a successor that takes over systemd's main PID | Not possible as is. launchd cannot adopt a new main PID, and the handover code reads Linux's `/proc/<pid>/stat` (`mcpclient/handoff.go`). On macOS all 12 takeover tests fail (7 on `/proc`, 5 "takeover: EOF"). See `flake.nix` |
-| `X-RestartIfChanged=false` plus a deploy key for mcpx | A switch touches mcpx only when its binary or environment changed | Partly: a plist change restarts it; config changes reload in place |
-| OpenChamber self-handoff (SIGURG) | OpenChamber restart with no gap | Off (`OPENCHAMBER_SELF_HANDOFF=0`): the successor would outlive the pid launchd tracks, and KeepAlive would start a second server |
-| `KillMode=process` | Stopping OpenChamber leaves OpenCode running | Same, via `AbandonProcessGroup = true` |
-| Deploy key for OpenChamber (restart vs reload vs nothing) | — | Same pattern; here it also covers the UI password |
+| `X-RestartIfChanged=false` plus a deploy key for mcpx                    | A switch touches mcpx only when its binary or environment changed                                                                           | Partly: a plist change restarts it; config changes reload in place                                                                                                                                                               |
+| OpenChamber self-handoff (SIGURG)                                        | OpenChamber restart with no gap                                                                                                             | Off (`OPENCHAMBER_SELF_HANDOFF=0`): the successor would outlive the pid launchd tracks, and KeepAlive would start a second server                                                                                                |
+| `KillMode=process`                                                       | Stopping OpenChamber leaves OpenCode running                                                                                                | Same, via `AbandonProcessGroup = true`                                                                                                                                                                                           |
+| Deploy key for OpenChamber (restart vs reload vs nothing)                | —                                                                                                                                           | Same pattern; here it also covers the UI password                                                                                                                                                                                |
 
 A truly graceful mcpx upgrade on macOS needs work in developing-today/code. Replace
 the `/proc` start-time check (for example with `sysctl kern.proc.pid`), then make
@@ -239,7 +239,7 @@ the process table.
     `launchctl setenv`.
 - **A deploy replaces the boot service only when its deploy key changes:** a new
   OpenChamber, a new start script, or a new UI password, through `launchctl
-  kickstart -k`.
+kickstart -k`.
   - Before #663, every mcpx, git or openssh update counted as a new start script.
   - A new OpenCode alone is handed over in place (SIGHUP).
   - A changed plist restarts the agent from nix-darwin's launchd step, which
@@ -280,23 +280,24 @@ every 5 s) and by `service-event` calls in scripts. Read it with `just
 service-events` (the last 50) or `just service-events 500`. It records names,
 pids, ports, exit codes and store paths, never secrets.
 
-| source | event | means |
-|---|---|---|
-| service-monitor | `monitor.start` | the monitor started (`interval_s`, `pid`) |
-| service-monitor | `monitor.error` | a sampling tick failed (`error`, the exception representation truncated to 300 characters) |
-| service-monitor | `service.start`, `service.exit` | a watched launchd job got a new pid or lost one (`label`, `pid`, `previous_pid`, `last_exit_status`) |
-| service-monitor | `service.running`, `process.running` | what was already running when the monitor started |
-| service-monitor | `process.start`, `process.exit` | an OpenChamber server (`openchamber-server`, `openchamber-desktop`, `openchamber-dev`), an `opencode` or `opencode-service`, or an `mcpx-daemon` started or exited, with its parent's role |
-| service-monitor | `conn.drop` | a server exited while clients were connected (`count`, `ports`, `cause: server-exit`) |
-| service-monitor | `conn.reconnect` | a replacement (same role, same parent) took new connections after a drop (`gap_s`) |
-| service-monitor | `conn.close` | connections open 30 s or longer (streams, sockets) closed while the server stayed up |
-| service-monitor | `conn.stats` | every 5 minutes per server: connections opened and closed |
-| service-monitor | `log.rotate` | an agent log passed 20 MB and was rotated (copy, then truncate; 3 kept) |
-| rebuild | `switch.begin`, `switch.activated`, `switch.fail`, `switch.incomplete`, `switch.recorded` | a `just switch`. Activation output goes to `~/Library/Logs/nix-services/switch-<time>.log`; `switch.incomplete` means `/run/current-system` did not move (#656) |
-| openchamber-deploy | `deploy.restart`, `deploy.opencode-handover`, `deploy.unchanged` | what the switch decided for OpenChamber, with `cause` (`first-deploy`, `start-script-changed`, `ui-password-changed`, `opencode-changed`) |
-| openchamber-agent, mcpx-agent | `agent.start` | the agent's start script ran (pid, store path) |
+| source                        | event                                                                                     | means                                                                                                                                                                                      |
+| ----------------------------- | ----------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| service-monitor               | `monitor.start`                                                                           | the monitor started (`interval_s`, `pid`)                                                                                                                                                  |
+| service-monitor               | `monitor.error`                                                                           | a sampling tick failed (`error`, the exception representation truncated to 300 characters)                                                                                                 |
+| service-monitor               | `service.start`, `service.exit`                                                           | a watched launchd job got a new pid or lost one (`label`, `pid`, `previous_pid`, `last_exit_status`)                                                                                       |
+| service-monitor               | `service.running`, `process.running`                                                      | what was already running when the monitor started                                                                                                                                          |
+| service-monitor               | `process.start`, `process.exit`                                                           | an OpenChamber server (`openchamber-server`, `openchamber-desktop`, `openchamber-dev`), an `opencode` or `opencode-service`, or an `mcpx-daemon` started or exited, with its parent's role |
+| service-monitor               | `conn.drop`                                                                               | a server exited while clients were connected (`count`, `ports`, `cause: server-exit`)                                                                                                      |
+| service-monitor               | `conn.reconnect`                                                                          | a replacement (same role, same parent) took new connections after a drop (`gap_s`)                                                                                                         |
+| service-monitor               | `conn.close`                                                                              | connections open 30 s or longer (streams, sockets) closed while the server stayed up                                                                                                       |
+| service-monitor               | `conn.stats`                                                                              | every 5 minutes per server: connections opened and closed                                                                                                                                  |
+| service-monitor               | `log.rotate`                                                                              | an agent log passed 20 MB and was rotated (copy, then truncate; 3 kept)                                                                                                                    |
+| rebuild                       | `switch.begin`, `switch.activated`, `switch.fail`, `switch.incomplete`, `switch.recorded` | a `just switch`. Activation output goes to `~/Library/Logs/nix-services/switch-<time>.log`; `switch.incomplete` means `/run/current-system` did not move (#656)                            |
+| openchamber-deploy            | `deploy.restart`, `deploy.opencode-handover`, `deploy.unchanged`                          | what the switch decided for OpenChamber, with `cause` (`first-deploy`, `start-script-changed`, `ui-password-changed`, `opencode-changed`)                                                  |
+| openchamber-agent, mcpx-agent | `agent.start`                                                                             | the agent's start script ran (pid, store path)                                                                                                                                             |
 
 Limits:
+
 - It samples, so a connection shorter than about 5 s may never be seen.
 - It cannot see inside a connection. Whether a client re-subscribed is in the
   apps' own logs.
@@ -314,15 +315,15 @@ Limits:
   the program, usually because the path in `program =` does not exist. launchd then
   parks the job until the file appears (an `event triggers … Executable` block in
   the print), and `launchctl kickstart` hangs. Fix the path, then `launchctl
-  bootout gui/$(id -u)/<label>` and `launchctl bootstrap gui/$(id -u)
-  ~/Library/LaunchAgents/<label>.plist`.
+bootout gui/$(id -u)/<label>` and `launchctl bootstrap gui/$(id -u)
+~/Library/LaunchAgents/<label>.plist`.
 - **mcpx exiting 1 every ~10 s with "a daemon is already listening on …sock":**
   another process holds the socket. `lsof -t <socket>` shows it. `cd ~ && mcpx
-  stop`, then `launchctl kickstart gui/$(id -u)/org.nixos.mcpx`. After the
+stop`, then `launchctl kickstart gui/$(id -u)/org.nixos.mcpx`. After the
   wrapper change the next agent start clears it by itself.
 - **The CLI says no daemon while the agent is running:** the agent is on a
   different socket than the CLI computes. Compare `lsof -p <agent pid> | grep
-  sock` with the name the CLI reports (`mcpx status`). `mcpx status` exits 0 even
+sock` with the name the CLI reports (`mcpx status`). `mcpx status` exits 0 even
   with no daemon; `mcpx ls` does not.
 - **OpenChamber "Unreachable" / connection refused on 3000:** the agent is not
   running; start with `launchctl print`. 401s are the UI password, not a fault.
@@ -340,7 +341,7 @@ Limits:
   sops-nix to `~/.config/openchamber/ui-password`. It is required before
   OpenChamber will serve a public tunnel, and every client signs in once. It has
   no trailing newline, so zsh prints a `%` after it; copy it with `sops -d
-  --extract '["openchamber_ui_password"]' secrets/openchamber.yaml | pbcopy`.
+--extract '["openchamber_ui_password"]' secrets/openchamber.yaml | pbcopy`.
   Changing it restarts OpenChamber (deploy key).
 - **Managed OpenCode password and OpenChamber's agent tool token:** in
   `~/.config/openchamber/managed-opencode/state.json`. The server only listens on

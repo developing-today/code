@@ -36,7 +36,8 @@
 //!      SECRETS_BROKER_SOCKET (Unix socket dual-bind, #6216; default
 //!      ~/.config/secrets-broker/broker.sock via fleet-config),
 //!      SECRETS_BROKER_TOKEN_FILE (default ~/.config/secrets-broker/token),
-//!      SECRETS_BROKER_TTL_S (default 900).
+//!      SECRETS_BROKER_TTL_S (default 900, minimum 30 — validated
+//!      at startup, #5860).
 
 use std::collections::HashMap;
 use std::process::Command;
@@ -576,24 +577,91 @@ fn handle_request(
     }
 }
 
+/// Default vault-refresh interval when SECRETS_BROKER_TTL_S is unset.
+pub const DEFAULT_TTL_S: u64 = 900;
+
+/// Smallest accepted SECRETS_BROKER_TTL_S. One interval costs a full
+/// vault refresh (one `bws secret list` plus one `bws secret get` per
+/// secret); below this floor the loop spends its life inside bws — at 0
+/// it never sleeps at all (#5860 measured ~110 full refreshes/sec).
+/// Startup refuses smaller values rather than clamping: a broker
+/// silently running at a different rate than configured is its own
+/// surprise on the credential path.
+pub const MIN_TTL_S: u64 = 30;
+
+/// The outcome of parsing SECRETS_BROKER_TTL_S: the interval to run
+/// with, plus a warning the caller must surface when the operator's
+/// value could not be honored as written.
+#[derive(Debug)]
+pub struct TtlParse {
+    pub ttl_s: u64,
+    pub warning: Option<String>,
+}
+
+/// Parse and validate SECRETS_BROKER_TTL_S (#5860). Pure, so the policy
+/// is pinned by unit tests:
+/// - unset -> DEFAULT_TTL_S, no warning (the documented default);
+/// - unparseable -> DEFAULT_TTL_S with a warning naming the value —
+///   never the old silent fallback;
+/// - parsed but below MIN_TTL_S (including 0) -> Err naming the
+///   variable, the value, and the minimum; startup refuses to run.
+pub fn parse_ttl_s(raw: Option<&str>) -> Result<TtlParse, String> {
+    let Some(raw) = raw else {
+        return Ok(TtlParse {
+            ttl_s: DEFAULT_TTL_S,
+            warning: None,
+        });
+    };
+    match raw.trim().parse::<u64>() {
+        Ok(v) if v < MIN_TTL_S => Err(format!(
+            "SECRETS_BROKER_TTL_S={raw:?} is below the minimum of {MIN_TTL_S}s: one interval is a full vault refresh, and 0 spins that loop with no sleep at all (#5860) — refusing to start"
+        )),
+        Ok(v) => Ok(TtlParse {
+            ttl_s: v,
+            warning: None,
+        }),
+        Err(_) => Ok(TtlParse {
+            ttl_s: DEFAULT_TTL_S,
+            warning: Some(format!(
+                "SECRETS_BROKER_TTL_S={raw:?} is not a valid number of seconds; using the default of {DEFAULT_TTL_S}s"
+            )),
+        }),
+    }
+}
+
 pub fn run() -> i32 {
     use std::io::Read as _;
     let bind =
         std::env::var("SECRETS_BROKER_BIND").unwrap_or_else(|_| "100.99.113.103:4800".to_string());
-    let home = crate::home::from_env().unwrap_or_else(|error| {
-        eprintln!("secrets-broker: {error}");
-        std::process::exit(2);
-    });
+    let home = match crate::home::from_env() {
+        Ok(home) => home,
+        Err(error) => {
+            eprintln!("secrets-broker: {error}");
+            return 2;
+        }
+    };
     let token_file = std::env::var("SECRETS_BROKER_TOKEN_FILE")
         .unwrap_or_else(|_| format!("{home}/.config/secrets-broker/token"));
-    let token = crate::token_file::load_token_file(&token_file).unwrap_or_else(|e| {
-        crate::log::info("secrets-broker", &e);
-        std::process::exit(3);
-    });
-    let ttl_s: u64 = std::env::var("SECRETS_BROKER_TTL_S")
-        .ok()
-        .and_then(|v| v.parse().ok())
-        .unwrap_or(900);
+    let token = match crate::token_file::load_token_file(&token_file) {
+        Ok(v) => v,
+        Err(e) => {
+            crate::log::info("secrets-broker", &e);
+            return 3;
+        }
+    };
+    let ttl_s = match parse_ttl_s(std::env::var("SECRETS_BROKER_TTL_S").ok().as_deref()) {
+        Ok(parsed) => {
+            if let Some(warning) = &parsed.warning {
+                crate::log::info("secrets-broker", warning);
+                eprintln!("secrets-broker: {warning}");
+            }
+            parsed.ttl_s
+        }
+        Err(error) => {
+            eprintln!("secrets-broker: {error}");
+            return 2;
+        }
+    };
 
     let state = Arc::new(State {
         secrets: RwLock::new(HashMap::new()),
@@ -607,19 +675,24 @@ pub fn run() -> i32 {
     // and a failed refresh keeps the old values).
     {
         let state = Arc::clone(&state);
-        std::thread::spawn(move || loop {
-            match refresh(&state) {
-                Ok(n) => crate::log::info("secrets-broker", &format!("refreshed {n} secrets")),
-                Err(e) => crate::log::info("secrets-broker", &format!("refresh failed: {e}")),
+        std::thread::spawn(move || {
+            loop {
+                match refresh(&state) {
+                    Ok(n) => crate::log::info("secrets-broker", &format!("refreshed {n} secrets")),
+                    Err(e) => crate::log::info("secrets-broker", &format!("refresh failed: {e}")),
+                }
+                std::thread::sleep(Duration::from_secs(ttl_s));
             }
-            std::thread::sleep(Duration::from_secs(ttl_s));
         });
     }
 
-    let server = Server::http(&bind).unwrap_or_else(|e| {
-        crate::log::info("secrets-broker", &format!("cannot bind {bind}: {e:?}"));
-        std::process::exit(3);
-    });
+    let server = match Server::http(&bind) {
+        Ok(server) => server,
+        Err(e) => {
+            crate::log::info("secrets-broker", &format!("cannot bind {bind}: {e:?}"));
+            return 3;
+        }
+    };
     crate::log::info("secrets-broker", &format!("listening on {bind}"));
 
     // Dual-bind (#6216): the same handler over a Unix socket. A bind
@@ -769,8 +842,9 @@ fn url_decode(s: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        fetch_through_with, handle_request, install_refresh, now_unix, parse_list_entries,
-        pre_body_refusal, resolve_list_id, url_decode, CachedSecret, State,
+        CachedSecret, DEFAULT_TTL_S, MIN_TTL_S, State, fetch_through_with, handle_request,
+        install_refresh, now_unix, parse_list_entries, parse_ttl_s, pre_body_refusal,
+        resolve_list_id, url_decode,
     };
 
     #[test]
@@ -1119,6 +1193,44 @@ mod tests {
                 Some(pairs) => prop_assert_eq!(parse_list_entries(&list).unwrap(), pairs),
                 None => prop_assert!(parse_list_entries(&list).is_err()),
             }
+        }
+    }
+
+    #[test]
+    fn ttl_unset_uses_the_documented_default() {
+        let parsed = parse_ttl_s(None).expect("unset is valid");
+        assert_eq!(parsed.ttl_s, DEFAULT_TTL_S);
+        assert_eq!(parsed.warning, None);
+    }
+
+    #[test]
+    fn ttl_valid_values_are_honored() {
+        for (raw, want) in [("900", 900), ("60", 60), ("30", MIN_TTL_S), (" 120 ", 120)] {
+            let parsed = parse_ttl_s(Some(raw)).expect("valid value");
+            assert_eq!(parsed.ttl_s, want, "raw={raw:?}");
+            assert_eq!(parsed.warning, None);
+        }
+    }
+
+    #[test]
+    fn ttl_zero_and_below_minimum_are_refused() {
+        // #5860: TTL_S=0 spun the refresh loop at ~110 full vault
+        // refreshes/sec. The refusal names the variable and the value.
+        for raw in ["0", "1", "29"] {
+            let err = parse_ttl_s(Some(raw)).expect_err("below-minimum must refuse");
+            assert!(err.contains("SECRETS_BROKER_TTL_S"), "error: {err}");
+            assert!(err.contains(raw), "error: {err}");
+        }
+    }
+
+    #[test]
+    fn ttl_garbage_defaults_with_a_warning_naming_the_value() {
+        for raw in ["abc", "60s", "-5", ""] {
+            let parsed = parse_ttl_s(Some(raw)).expect("garbage falls back, never refuses");
+            assert_eq!(parsed.ttl_s, DEFAULT_TTL_S, "raw={raw:?}");
+            let warning = parsed.warning.expect("the fallback must not be silent");
+            assert!(warning.contains("SECRETS_BROKER_TTL_S"), "warning: {warning}");
+            assert!(warning.contains(raw), "warning: {warning}");
         }
     }
 }

@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   identityNeedsRefresh,
+  meResponseCarriesName,
   parseIdentityMeResponse,
   parseIdentityNameResponse,
   parseIdentityRegisterResponse,
@@ -45,6 +46,26 @@ describe("identityNeedsRefresh", () => {
 // saveIdentity/updateStoredName can run — i.e. localStorage stays unchanged
 // and no identity is returned. A returned value of the wrong type, or a
 // coerced string, is the failure these tests pin against.
+describe("meResponseCarriesName (#7838)", () => {
+  it("is false when the payload carries no name field", () => {
+    // The {} case from the #7838 probe: applying it as a name change
+    // wiped the stored display name.
+    expect(meResponseCarriesName({})).toBe(false);
+    expect(meResponseCarriesName({ token: "tok" })).toBe(false);
+  });
+
+  it("is true for an explicit name, including null", () => {
+    expect(meResponseCarriesName({ name: "Ada" })).toBe(true);
+    expect(meResponseCarriesName({ name: null })).toBe(true);
+  });
+
+  it("is false for non-object bodies", () => {
+    expect(meResponseCarriesName(null)).toBe(false);
+    expect(meResponseCarriesName("abc")).toBe(false);
+    expect(meResponseCarriesName(42)).toBe(false);
+  });
+});
+
 describe("parseIdentityRegisterResponse (#7839)", () => {
   it("accepts a well-shaped registration", () => {
     expect(parseIdentityRegisterResponse({ token: "tok", client_id: "cid", name: "Ada" })).toEqual({

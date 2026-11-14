@@ -206,8 +206,8 @@ describe("recordsFromProviderUsage", () => {
     const recs = recordsFromProviderUsage(answered, "check-usage");
     expect(recs.map((r) => `${r.serviceId}/${r.metricId}=${r.value}`)).toEqual([
       "opencode-server/sessions-listed=0",
-      "openai.main/7-day=12",
-      "openai.main/5-hour=3",
+      "_openai.main/7-day=12",
+      "_openai.main/5-hour=3",
     ]);
     expect(recordsFromProviderUsage(null, "check-usage")).toEqual([]);
     expect(recordsFromProviderUsage({ sessions: [] }, "check-usage")).toEqual([]);
@@ -241,7 +241,7 @@ describe("recordsFromProviderUsage", () => {
 
     expect(
       recordsFromProviderUsage(snapshot, "check-usage").map((r) => `${r.serviceId}/${r.metricId}=${r.value}`),
-    ).toEqual(["opencode-server/sessions-listed=1", "openai.main/5-hour=100"]);
+    ).toEqual(["opencode-server/sessions-listed=1", "_openai.main/5-hour=100"]);
   });
 
   test("skips percentages above 100 and non-finite values", () => {
@@ -278,7 +278,7 @@ describe("recordsFromProviderUsage", () => {
 
     expect(
       recordsFromProviderUsage(snapshot, "check-usage").map((r) => `${r.serviceId}/${r.metricId}=${r.value}`),
-    ).toEqual(["openai.main/7-day=0", "openai.main/5-hour=100"]);
+    ).toEqual(["_openai.main/7-day=0", "_openai.main/5-hour=100"]);
   });
 });
 

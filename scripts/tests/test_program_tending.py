@@ -53,9 +53,7 @@ class ProgramTendingScaffoldTest(unittest.TestCase):
     def test_cli_run_prints_valid_log(self):
         buf = io.StringIO()
         with mock.patch.object(pt, "_gh_api", return_value=[]), redirect_stdout(buf):
-            self.assertEqual(
-                pt.main(["--run", "--repo", "developing-today/code"]), 0
-            )
+            self.assertEqual(pt.main(["--run", "--repo", "developing-today/code"]), 0)
         log = json.loads(buf.getvalue())
         self.assertEqual(log["job"], "program-tending")
         self.assertEqual(len(log["sections"]), 5)
@@ -98,6 +96,42 @@ class ProgramTendingScaffoldTest(unittest.TestCase):
         self.assertEqual(proc.returncode, 0, proc.stderr[-2000:])
         log = json.loads(proc.stdout)
         self.assertEqual(len(log["sections"]), 5)
+
+
+class FleetReposTest(unittest.TestCase):
+    def test_default_fleet_repos_are_the_canonical_four(self):
+        self.assertEqual(
+            pt.FLEET_REPOS,
+            (
+                "developing-today/code",
+                "developing-today-forks/opencode",
+                "developing-today-forks/openchamber",
+                "dezren39/darwin-nix",
+            ),
+        )
+
+    def test_stub_stalled_prs_queries_every_default_repo(self):
+        queried = []
+
+        def fake_api(path):
+            queried.append(path)
+            return []
+
+        with mock.patch.object(pt, "_gh_api", side_effect=fake_api):
+            section = pt.stub_stalled_prs(list(pt.FLEET_REPOS))
+        for repo in pt.FLEET_REPOS:
+            self.assertIn(f"/repos/{repo}/pulls?state=open&per_page=100", queried)
+        self.assertEqual(
+            [entry["repo"] for entry in section["checked"]], list(pt.FLEET_REPOS)
+        )
+
+    def test_default_run_log_names_darwin_nix_not_the_nonexistent_repo(self):
+        buf = io.StringIO()
+        with mock.patch.object(pt, "_gh_api", return_value=[]), redirect_stdout(buf):
+            self.assertEqual(pt.main(["--run"]), 0)
+        out = buf.getvalue()
+        self.assertIn("dezren39/darwin-nix", out)
+        self.assertNotIn("developing-today/nix", out)
 
 
 class GhApiAuthHeaderTest(unittest.TestCase):
@@ -151,8 +185,6 @@ class GhApiAuthHeaderTest(unittest.TestCase):
         self.assertIsNone(captured["req"].get_header("Authorization"))
 
 
-
-
 class Slice2EpicsTest(unittest.TestCase):
     """Slice 2 epics: child progress, silence check-ins, completion."""
 
@@ -189,14 +221,14 @@ class Slice2EpicsTest(unittest.TestCase):
             102: {"number": 102, "state": "closed", "title": "Done", "labels": []},
         }
         with mock.patch.object(pt, "_gh_api", self.fake_api(epic, children)):
-            section = pt.section_epics(
-                ["developing-today/code"], False, self.now, 12
-            )
+            section = pt.section_epics(["developing-today/code"], False, self.now, 12)
         self.assertEqual(len(section["actions"]), 1)
         self.assertEqual(section["actions"][0]["kind"], "epic-status-comment")
         self.assertFalse(section["actions"][0]["live"])
         entry = section["checked"][0]
-        self.assertEqual(entry["children"], {"total": 2, "open": 1, "closed": 1, "unverified": 0})
+        self.assertEqual(
+            entry["children"], {"total": 2, "open": 1, "closed": 1, "unverified": 0}
+        )
         self.assertEqual(entry["body_vs_reality_mismatches"], 0)
         self.assertGreaterEqual(entry["silent_days"], 7)
 
@@ -212,9 +244,7 @@ class Slice2EpicsTest(unittest.TestCase):
             101: {"number": 101, "state": "open", "title": "First", "labels": []},
         }
         with mock.patch.object(pt, "_gh_api", self.fake_api(epic, children)):
-            section = pt.section_epics(
-                ["developing-today/code"], False, self.now, 12
-            )
+            section = pt.section_epics(["developing-today/code"], False, self.now, 12)
         self.assertEqual(section["checked"][0]["body_vs_reality_mismatches"], 1)
         self.assertEqual(section["actions"], [])
 
@@ -230,9 +260,7 @@ class Slice2EpicsTest(unittest.TestCase):
             102: {"number": 102, "state": "closed", "title": "Done", "labels": []},
         }
         with mock.patch.object(pt, "_gh_api", self.fake_api(epic, children)):
-            section = pt.section_epics(
-                ["developing-today/code"], False, self.now, 12
-            )
+            section = pt.section_epics(["developing-today/code"], False, self.now, 12)
         self.assertEqual(len(section["actions"]), 1)
         self.assertEqual(section["actions"][0]["kind"], "epic-completion-comment")
 
@@ -245,9 +273,7 @@ class Slice2EpicsTest(unittest.TestCase):
             "body": "- [ ] #101 first child",
         }
         with mock.patch.object(pt, "_gh_api", self.fake_api(epic, {})):
-            section = pt.section_epics(
-                ["developing-today/code"], False, self.now, 12
-            )
+            section = pt.section_epics(["developing-today/code"], False, self.now, 12)
         self.assertEqual(section["actions"], [])
         self.assertIn("hard-stop", section["checked"][0]["disposition"])
 
@@ -268,12 +294,8 @@ class Slice2EpicsTest(unittest.TestCase):
                 "created_at": "2026-11-10T00:00:00Z",
             }
         ]
-        with mock.patch.object(
-            pt, "_gh_api", self.fake_api(epic, children, comments)
-        ):
-            section = pt.section_epics(
-                ["developing-today/code"], False, self.now, 12
-            )
+        with mock.patch.object(pt, "_gh_api", self.fake_api(epic, children, comments)):
+            section = pt.section_epics(["developing-today/code"], False, self.now, 12)
         self.assertEqual(section["actions"], [])
         self.assertIn("tended within 7 days", section["checked"][0]["disposition"])
 
@@ -294,31 +316,41 @@ class Slice2EpicsTest(unittest.TestCase):
                 "created_at": "2026-11-10T00:00:00Z",
             }
         ]
-        with mock.patch.object(
-            pt, "_gh_api", self.fake_api(epic, children, comments)
-        ):
-            section = pt.section_epics(
-                ["developing-today/code"], False, self.now, 12
-            )
+        with mock.patch.object(pt, "_gh_api", self.fake_api(epic, children, comments)):
+            section = pt.section_epics(["developing-today/code"], False, self.now, 12)
         self.assertEqual(section["actions"], [])
         self.assertIn("tended within 7 days", section["checked"][0]["disposition"])
 
     def test_write_failure_isolated_per_repo(self):
         epics = {
             "aaa/one": {
-                "number": 100, "title": "Epic A",
-                "updated_at": "2026-10-20T00:00:00Z", "labels": [],
+                "number": 100,
+                "title": "Epic A",
+                "updated_at": "2026-10-20T00:00:00Z",
+                "labels": [],
                 "body": "- [ ] #101 first child",
             },
             "bbb/two": {
-                "number": 200, "title": "Epic B",
-                "updated_at": "2026-10-20T00:00:00Z", "labels": [],
+                "number": 200,
+                "title": "Epic B",
+                "updated_at": "2026-10-20T00:00:00Z",
+                "labels": [],
                 "body": "- [ ] #201 first child",
             },
         }
         kids = {
-            ("aaa/one", 101): {"number": 101, "state": "open", "title": "First", "labels": []},
-            ("bbb/two", 201): {"number": 201, "state": "open", "title": "First", "labels": []},
+            ("aaa/one", 101): {
+                "number": 101,
+                "state": "open",
+                "title": "First",
+                "labels": [],
+            },
+            ("bbb/two", 201): {
+                "number": 201,
+                "state": "open",
+                "title": "First",
+                "labels": [],
+            },
         }
 
         def api(path):
@@ -339,9 +371,7 @@ class Slice2EpicsTest(unittest.TestCase):
 
         with mock.patch.object(pt, "_gh_api", api):
             with mock.patch.object(pt, "_gh_write", write):
-                section = pt.section_epics(
-                    ["aaa/one", "bbb/two"], True, self.now, 12
-                )
+                section = pt.section_epics(["aaa/one", "bbb/two"], True, self.now, 12)
         by_repo = {a["repo"]: a for a in section["actions"]}
         self.assertIn("write failed", by_repo["aaa/one"]["error"])
         self.assertEqual(by_repo["bbb/two"]["comment_id"], 999)
@@ -361,9 +391,7 @@ class Slice2EpicsTest(unittest.TestCase):
             101: {"number": 101, "state": "open", "title": "First", "labels": []},
         }
         with mock.patch.object(pt, "_gh_api", self.fake_api(epic, children)):
-            with mock.patch.object(
-                pt, "_gh_write", return_value={"id": 555}
-            ) as write:
+            with mock.patch.object(pt, "_gh_write", return_value={"id": 555}) as write:
                 section = pt.section_epics(
                     ["developing-today/code"], True, self.now, 12
                 )
@@ -449,9 +477,7 @@ class Slice2RoadmapsTest(unittest.TestCase):
                     section = pt.section_roadmaps(
                         ["developing-today/code"], True, self.now, 12, self.root
                     )
-        flag = next(
-            a for a in section["actions"] if a["kind"] == "roadmap-drift-flag"
-        )
+        flag = next(a for a in section["actions"] if a["kind"] == "roadmap-drift-flag")
         self.assertTrue(flag["live"])
         self.assertEqual(flag["comment_id"], 777)
         self.assertTrue(any("/comments" in c for c in calls))
@@ -498,9 +524,7 @@ class GhApiSingleObjectTest(unittest.TestCase):
             def read(self):
                 return b'{"number": 7, "state": "open"}'
 
-        with mock.patch.object(
-            pt.urllib.request, "urlopen", return_value=FakeResp()
-        ):
+        with mock.patch.object(pt.urllib.request, "urlopen", return_value=FakeResp()):
             self.assertEqual(
                 pt._gh_api("/repos/x/y/issues/7"),
                 [{"number": 7, "state": "open"}],
@@ -515,9 +539,7 @@ class RefsInTest(unittest.TestCase):
             "[#42](https://github.com/other/repo/issues/42) and #43",
             "developing-today/code",
         )
-        self.assertEqual(
-            refs, [("other/repo", 42), ("developing-today/code", 43)]
-        )
+        self.assertEqual(refs, [("other/repo", 42), ("developing-today/code", 43)])
 
     def test_bare_and_url_refs_still_found(self):
         refs = pt._refs_in(
@@ -543,20 +565,20 @@ class DriftPrGitIdentityTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             (root / "ROADMAP.md").write_text("# Roadmap\nold line\n")
-            certain = [{
-                "file": "ROADMAP.md", "line": 2, "text": "old line",
-                "refs": ["developing-today/code#1:closed"],
-            }]
+            certain = [
+                {
+                    "file": "ROADMAP.md",
+                    "line": 2,
+                    "text": "old line",
+                    "refs": ["developing-today/code#1:closed"],
+                }
+            ]
             with mock.patch.object(pt, "_run_cmd", fake_run_cmd):
-                with mock.patch.object(
-                    pt.subprocess, "run", return_value=proc
-                ):
+                with mock.patch.object(pt.subprocess, "run", return_value=proc):
                     pt._open_drift_pr(root, certain, "2026-11-11")
         commit = next(a for a in calls if "commit" in a)
         self.assertIn("user.name=github-actions[bot]", commit)
-        self.assertTrue(
-            any(x.startswith("user.email=") for x in commit), commit
-        )
+        self.assertTrue(any(x.startswith("user.email=") for x in commit), commit)
 
 
 if __name__ == "__main__":

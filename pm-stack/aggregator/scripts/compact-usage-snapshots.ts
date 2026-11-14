@@ -40,7 +40,9 @@ function rejectUnknownArgs(): void {
       continue;
     }
     console.error(
-      "compact-usage-snapshots: unknown argument '" + arg + "' " +
+      "compact-usage-snapshots: unknown argument '" +
+        arg +
+        "' " +
         "(usage: [--apply] [--months <n>]); refusing to run, store untouched",
     );
     process.exit(2);

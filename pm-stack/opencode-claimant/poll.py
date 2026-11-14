@@ -4,7 +4,7 @@
 Prints one JSON object:
   {
     "queues": {<queue>: {"claimed": n, "candidates": [...],
-               "stuck_bound": [...]}, ...},
+               "stuck_bound": [...], "stale_binding": [...]}, ...},
     "candidates": [ {id, queue, status, priority, worker_id, lane_id,
                      lease_until, lane, stage, session_id, issue,
                      issue_number, packet, attempts, max_attempts,
@@ -28,6 +28,23 @@ Prints one JSON object:
                                               # recovery rule ONLY -- the
                                               # claimant must still verify
                                               # zero messages before acting.
+    "stale_binding": [ {id, queue, ..., ledger_session_id,
+                        ledger_readable} ... ],
+                                              # candidate-shaped rows whose
+                                              # progress.session_id is clear
+                                              # but whose lane-ledger row
+                                              # still binds a session
+                                              # (#5508), plus — with
+                                              # ledger_readable false —
+                                              # candidate-shaped rows whose
+                                              # binding could not be read at
+                                              # all. Never launch candidates:
+                                              # re-offering a ledger-bound
+                                              # task double-executes it.
+    "ledger_readable": bool                  # the lane-ledger read
+                                              # behind stale_binding;
+                                              # false fails every candidate
+                                              # closed (see fetch below)
     "live_root_sessions": int | null,        # all root sessions;
                                               # null = server unreadable
     "active_root_sessions": int | null,      # roots still active
@@ -41,7 +58,9 @@ Prints one JSON object:
 Read-only by construction: claimed rows come from the queue-broker's
 `/list` endpoint with `rich: true` (the same broker the repo-queue
 binary fronts; the binary's list verb prints a human table, so the
-JSON rows the classifiers read only exist on this route — #7325) and
+JSON rows the classifiers read only exist on this route — #7325),
+lane-ledger rows from a SELECT via the turso-exec helper (#5508;
+the broker's /lane route assigns and is never used as a read), and
 session state from GETs to the laptop OpenCode server. The claimant treats a null cap_room as NO
 launch room: an unreadable session list or active set must never
 become a launch decision.
@@ -52,12 +71,14 @@ are the contract test_poll.py pins; claimant.py counts through the
 same functions so the two entry points cannot diverge in shape.
 """
 
+import ast
 import base64
 import json
 import os
 import re
 import subprocess
 import sys
+import tempfile
 import time
 import urllib.request
 from datetime import datetime, timezone
@@ -103,6 +124,15 @@ BROKER_TOKEN_FILE = Path.home() / ".config" / "queue-broker" / "token"
 # could only ever under-report candidates, never invent one.
 LIST_LIMIT = 500
 
+# Read-only lane-ledger read for the #5508 stale-binding check: the
+# turso-exec helper (the same credential-free read path pr-diff-review
+# uses for agent_repo_snapshots) runs a SELECT against the fleet-queue
+# database. The broker's own /lane route ASSIGNS a lane — it is a
+# write, and poll.py is read-only by construction, so the ledger is
+# never read through it (Codex finding on PR #7059).
+TURSO_EXEC = Path.home() / "tools" / "turso-exec.py"
+LEDGER_DB = "fleet-queue"
+
 OPENCODE_URL = os.environ.get("OPENCODE_URL", "http://127.0.0.1:13420")
 AUTH_FILE = os.environ.get(
     "OPENCODE_AUTH_FILE",
@@ -147,6 +177,111 @@ def is_candidate(row):
     return True
 
 
+def is_stale_binding(row, binding):
+    """True iff a candidate-shaped row's lane-ledger row still binds a
+    session (#5508).
+
+    progress.session_id and the ledger binding are cleared together by
+    the correct terminal paths, so a row whose progress reads unbound
+    while repo_task_lane_ledger still carries a session_id is the
+    divergence the claimant used to re-offer forever: it would launch
+    a session the ledger (and any #8210 transfer) still treats as
+    bound. `binding` is the task's ledger dict, or None when the task
+    has no ledger row (never bound — not stale). Ledger UNREADABILITY
+    is a fetch-level fact (fetch_ledger_bindings returns None), never
+    decided here."""
+    prog = row.get("progress") or {}
+    if prog.get("lane") != "opencode" or prog.get("session_id"):
+        return False
+    if not isinstance(binding, dict):
+        return False
+    return bool(binding.get("session_id"))
+
+
+def fetch_ledger_bindings(task_ids):
+    """task id -> lane-ledger dict for the given tasks, read-only.
+
+    One SELECT against repo_task_lane_ledger via the turso-exec
+    helper (see TURSO_EXEC above). Returns {} when no task has a
+    ledger row, and None when the read fails in any way — transport,
+    non-200, unparseable output, a row of the wrong shape: the
+    claimant fails closed on an unreadable ledger rather than launch
+    a task it cannot prove unbound. Ids are coerced to int before
+    they reach the SQL text; anything uncoercible is skipped."""
+    ids = []
+    for task_id in task_ids or []:
+        try:
+            ids.append(int(task_id))
+        except (TypeError, ValueError):
+            continue
+    if not ids:
+        return {}
+    sql = (
+        "select task_id, session_id, assigned_lane, executed_lane, "
+        "updated_at from repo_task_lane_ledger where task_id in ("
+        + ",".join(str(i) for i in sorted(set(ids)))
+        + ");\n"
+    )
+    try:
+        with tempfile.NamedTemporaryFile("w", suffix=".sql", delete=False) as f:
+            f.write(sql)
+            sql_path = f.name
+        try:
+            result = subprocess.run(
+                [sys.executable, str(TURSO_EXEC), LEDGER_DB, sql_path],
+                capture_output=True,
+                text=True,
+                timeout=60,
+            )
+        finally:
+            os.unlink(sql_path)
+        if result.returncode != 0:
+            return None
+        line = next(
+            (ln for ln in result.stdout.splitlines() if "rows=" in ln),
+            None,
+        )
+        if line is None or not line.startswith("[0] ok"):
+            return None
+        raw_rows = ast.literal_eval(line.split("rows=", 1)[1])
+        bindings = {}
+        for raw in raw_rows:
+            cells = [c.get("value") for c in raw]
+            task_id = int(cells[0])
+            bindings[task_id] = {
+                "session_id": cells[1],
+                "assigned_lane": cells[2],
+                "executed_lane": cells[3],
+                "updated_at": cells[4],
+            }
+        return bindings
+    except Exception:
+        return None
+
+
+def apply_ledger_filter(rows, bindings):
+    """Split candidate-shaped rows into (launchable, stale) by ledger.
+
+    `rows` are rows already shaped like candidates (is_candidate or
+    is_handoff_waiting true). bindings is fetch_ledger_bindings'
+    result: a dict (possibly empty) when the ledger was read, None
+    when it was not. Fail closed: with bindings None, NOTHING is
+    launchable — every candidate-shaped row is reported stale with
+    ledger_readable False, because an unreadable ledger can never
+    prove a task unbound. With a read ledger, a row is stale iff its
+    ledger row still binds a session (is_stale_binding)."""
+    if bindings is None:
+        return [], list(rows)
+    launchable, stale = [], []
+    for row in rows:
+        binding = bindings.get(row.get("id"))
+        if is_stale_binding(row, binding):
+            stale.append(row)
+        else:
+            launchable.append(row)
+    return launchable, stale
+
+
 def parse_lease_ms(value):
     """ISO-8601 lease_until -> epoch ms, or None when unparseable.
 
@@ -163,6 +298,39 @@ def parse_lease_ms(value):
     if dt.tzinfo is None:
         dt = dt.replace(tzinfo=timezone.utc)
     return int(dt.timestamp() * 1000)
+
+
+def _session_timing(session):
+    """(idle, updated_ms) for a session entry, or None when its timing
+    cannot be read (#6868).
+
+    Readable: `time` absent/None (timeless: updated_ms 0, matching the
+    pinned timeless-entry behaviour), or a dict whose present
+    updated/created values are numbers (bool is not a number here).
+    The updated/created choice keeps the historical `or` chain: the
+    first present non-zero numeric value wins, absent stamps read 0.
+
+    Unreadable (None): `time` present but not an object, or a present
+    updated/created value of a non-numeric shape (string, list, dict,
+    bool). Callers fail closed on None: the entry is never counted as
+    known-inactive (cap counts go unknown instead) and never
+    classified stuck-bound on timing evidence it does not have."""
+    t = session.get("time")
+    if t is None:
+        t = {}
+    if not isinstance(t, dict):
+        return None
+    updated = 0
+    for key in ("updated", "created"):
+        v = t.get(key)
+        if v is None:
+            continue
+        if isinstance(v, bool) or not isinstance(v, (int, float)):
+            return None
+        if v:
+            updated = v
+            break
+    return t.get("idle"), updated
 
 
 def is_stuck_bound(row, session, active_ids, now_ms):
@@ -195,10 +363,12 @@ def is_stuck_bound(row, session, active_ids, now_ms):
         return False
     if active_ids is None or session_id in active_ids:
         return False
-    t = session.get("time") or {}
-    if t.get("idle") or session.get("outcome"):
+    timing = _session_timing(session)
+    if timing is None:
         return False
-    updated = t.get("updated") or t.get("created") or 0
+    idle, updated = timing
+    if idle or session.get("outcome"):
+        return False
     return now_ms - updated >= ACTIVE_WINDOW_MS
 
 
@@ -206,7 +376,10 @@ def is_root_session(s):
     return isinstance(s, dict) and not s.get("parentID") and not s.get("parent_id")
 
 
-def is_active_root(s, now_ms, active_ids=None):
+def _active_root_state(s, now_ms, active_ids=None):
+    """True (proven active), False (proven inactive), or None (the
+    entry's timing cannot be read, so its activity is UNKNOWN — see
+    _session_timing; #6868)."""
     if not is_root_session(s):
         return False
     # The server's active set is authoritative: a RESUMED session keeps
@@ -216,15 +389,36 @@ def is_active_root(s, now_ms, active_ids=None):
     # counts the root no matter what its stored markers say.
     if active_ids is not None and s.get("id") in active_ids:
         return True
-    t = s.get("time") or {}
-    if t.get("idle") or s.get("outcome"):
+    # Terminal markers are decidable without a readable clock
+    # (#8853): a finished root stays finished even when its
+    # timestamps are malformed — checking timing first made one
+    # such root report the whole cap unknown and block every
+    # launch. A root with malformed timing and NO terminal marker
+    # still falls through to the fail-closed None below.
+    t = s.get("time")
+    if (isinstance(t, dict) and t.get("idle")) or s.get("outcome"):
         return False
-    updated = t.get("updated") or t.get("created") or 0
+    timing = _session_timing(s)
+    if timing is None:
+        return None
+    idle, updated = timing
+    if idle or s.get("outcome"):
+        return False
     return now_ms - updated < ACTIVE_WINDOW_MS
 
 
+def is_active_root(s, now_ms, active_ids=None):
+    return _active_root_state(s, now_ms, active_ids) is True
+
+
 def count_active_roots(sessions, now_ms, active_ids=None):
-    return sum(1 for s in sessions if is_active_root(s, now_ms, active_ids))
+    """Count of proven-active roots, or None when any root's activity
+    is unknown (#6868): an unreadable entry must never be silently
+    counted as inactive, which would manufacture cap room."""
+    states = [_active_root_state(s, now_ms, active_ids) for s in sessions]
+    if any(state is None for state in states):
+        return None
+    return sum(1 for state in states if state)
 
 
 def summarize_cap(sessions, active_ids, now_ms):
@@ -243,6 +437,8 @@ def summarize_cap(sessions, active_ids, now_ms):
     if active_ids is None:
         return len(roots), None, None
     active = count_active_roots(roots, now_ms, active_ids)
+    if active is None:
+        return len(roots), None, None
     return len(roots), active, max(0, CAP - active)
 
 
@@ -316,20 +512,21 @@ def _broker_post(path, body):
     if not url:
         url = BROKER_URL_FILE.read_text().strip()
     token_file = os.environ.get("REPO_QUEUE_TOKEN_FILE", "").strip()
-    token = Path(token_file).read_text().strip() if token_file \
+    token = (
+        Path(token_file).read_text().strip()
+        if token_file
         else BROKER_TOKEN_FILE.read_text().strip()
+    )
     req = urllib.request.Request(
         url.rstrip("/") + path,
         data=json.dumps(body).encode(),
-        headers={"X-Agent-Token": token,
-                 "Content-Type": "application/json"},
+        headers={"X-Agent-Token": token, "Content-Type": "application/json"},
         method="POST",
     )
     with urllib.request.urlopen(req, timeout=30) as res:
         data = json.loads(res.read() or "null")
     if isinstance(data, dict) and data.get("ok") is False:
-        raise RuntimeError(
-            f"broker {path} failed: {str(data.get('error'))[:200]}")
+        raise RuntimeError(f"broker {path} failed: {str(data.get('error'))[:200]}")
     return data
 
 
@@ -343,12 +540,15 @@ def _fetch_rows(queue, status):
     rows, and the cap still fails closed via the session reads, so a
     partial view can never cause a launch by itself."""
     try:
-        data = _broker_post("/list", {
-            "queue": queue,
-            "status": status,
-            "rich": True,
-            "limit": LIST_LIMIT,
-        })
+        data = _broker_post(
+            "/list",
+            {
+                "queue": queue,
+                "status": status,
+                "rich": True,
+                "limit": LIST_LIMIT,
+            },
+        )
     except Exception as e:
         print(f"Warning: Could not poll queue {queue}: {e}", file=sys.stderr)
         return []
@@ -474,7 +674,8 @@ def _candidate_entry(row, queue):
 
 def _stuck_entry(row, queue, session):
     prog = row.get("progress") or {}
-    sess_t = (session or {}).get("time") or {}
+    timing = _session_timing(session) if isinstance(session, dict) else None
+    sess_updated = timing[1] if timing and timing[1] else None
     issue = prog.get("issue_number") or prog.get("issue") or ""
     return {
         "id": row.get("id"),
@@ -486,7 +687,38 @@ def _stuck_entry(row, queue, session):
         "lane": prog.get("lane"),
         "stage": prog.get("stage"),
         "session_id": prog.get("session_id"),
-        "session_updated": sess_t.get("updated") or sess_t.get("created"),
+        "session_updated": sess_updated,
+        "issue": issue,
+        "issue_number": prog.get("issue_number"),
+        "attempts": row.get("attempts"),
+        "max_attempts": row.get("max_attempts"),
+    }
+
+
+def _stale_binding_entry(row, queue, binding, ledger_readable):
+    prog = row.get("progress") or {}
+    cleared = prog.get("session_cleared")
+    issue = prog.get("issue_number") or prog.get("issue") or ""
+    return {
+        "id": row.get("id"),
+        "queue": queue,
+        "priority": row.get("priority"),
+        "worker_id": row.get("worker_id"),
+        "lane_id": row.get("lane_id"),
+        "lease_until": row.get("lease_until"),
+        "lane": prog.get("lane"),
+        "stage": prog.get("stage"),
+        "session_id": None,
+        "ledger_session_id": (
+            binding.get("session_id") if isinstance(binding, dict) else None
+        ),
+        "ledger_updated_at": (
+            binding.get("updated_at") if isinstance(binding, dict) else None
+        ),
+        "ledger_readable": bool(ledger_readable),
+        "cleared_session_id": (
+            cleared.get("session_id") if isinstance(cleared, dict) else None
+        ),
         "issue": issue,
         "issue_number": prog.get("issue_number"),
         "attempts": row.get("attempts"),
@@ -527,7 +759,8 @@ def get_active_root_session_count():
     active_ids = fetch_active_ids()
     if active_ids is None:
         return -1
-    return count_active_roots(sessions, int(time.time() * 1000), active_ids)
+    count = count_active_roots(sessions, int(time.time() * 1000), active_ids)
+    return -1 if count is None else count
 
 
 def main():
@@ -542,16 +775,38 @@ def main():
         for s in sessions:
             if isinstance(s, dict) and s.get("id"):
                 session_by_id[s["id"]] = s
-    out = {"queues": {}, "candidates": [], "stuck_bound": []}
+    out = {"queues": {}, "candidates": [], "stuck_bound": [], "stale_binding": []}
+    # Fetch every queue's rows first so the lane ledger is read ONCE
+    # for the whole poll (#5508): candidate-shaped rows from claimed
+    # and handed_off rows alike are decided against the same ledger
+    # snapshot.
+    per_queue = {}
+    shaped_ids = []
     for q in QUEUES:
         rows = fetch_claimed_rows(q)
-        cands = [_candidate_entry(r, q) for r in get_candidates(rows)]
         handed_off_rows = fetch_handed_off_rows(q)
-        cands.extend(
-            _candidate_entry(r, q) for r in get_handed_off_candidates(handed_off_rows)
-        )
+        shaped = get_candidates(rows) + get_handed_off_candidates(handed_off_rows)
+        per_queue[q] = (rows, handed_off_rows, shaped)
+        shaped_ids.extend(r.get("id") for r in shaped)
+    bindings = fetch_ledger_bindings(shaped_ids)
+    out["ledger_readable"] = bindings is not None
+    for q in QUEUES:
+        rows, handed_off_rows, shaped = per_queue[q]
+        launchable, stale_rows = apply_ledger_filter(shaped, bindings)
+        cands = [_candidate_entry(r, q) for r in launchable]
+        stale = [
+            _stale_binding_entry(
+                r,
+                q,
+                bindings.get(r.get("id")) if bindings is not None else None,
+                bindings is not None,
+            )
+            for r in stale_rows
+        ]
         stuck = [
-            _stuck_entry(r, q, session_by_id.get((r.get("progress") or {}).get("session_id")))
+            _stuck_entry(
+                r, q, session_by_id.get((r.get("progress") or {}).get("session_id"))
+            )
             for r in get_stuck_bound(rows, session_by_id, active_ids, now_ms)
         ]
         out["queues"][q] = {
@@ -559,11 +814,14 @@ def main():
             "handed_off": len(handed_off_rows),
             "candidates": cands,
             "stuck_bound": stuck,
+            "stale_binding": stale,
         }
         out["candidates"].extend(cands)
         out["stuck_bound"].extend(stuck)
+        out["stale_binding"].extend(stale)
     out["candidates"].sort(key=lambda c: (c["priority"] is None, c["priority"] or 0))
     out["stuck_bound"].sort(key=lambda c: (c["priority"] is None, c["priority"] or 0))
+    out["stale_binding"].sort(key=lambda c: (c["priority"] is None, c["priority"] or 0))
     live, active, room = summarize_cap(sessions, active_ids, now_ms)
     out["live_root_sessions"] = live
     out["active_root_sessions"] = active
