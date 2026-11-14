@@ -172,6 +172,24 @@ in
       default = 7801;
       description = "Port the pm-projector listens on (loopback only).";
     };
+
+    aggregatorPort = lib.mkOption {
+      type = lib.types.port;
+      default = 4870;
+      description = "Port the pm-aggregator listens on (its PM_AGG_PORT default; the deployed state .env may override it — the #1822 socket unit mirrors this value, so keep the two in step).";
+    };
+
+    dispatchPort = lib.mkOption {
+      type = lib.types.port;
+      default = 4879;
+      description = "Port pm-dispatch listens on (its DISPATCH_PORT default; the deployed env files may override it — the #1822 socket unit mirrors this value, so keep the two in step).";
+    };
+
+    tailnetAddress = lib.mkOption {
+      type = lib.types.str;
+      default = "100.99.113.103";
+      description = "The host's tailnet address; the aggregator and dispatch bind it alongside loopback (via their env files today), so their #1822 socket units listen on it too. Mirrors services.pm-apps.tailnetAddress.";
+    };
   };
 
   config = lib.mkIf cfg.enable {
@@ -594,6 +612,54 @@ in
             Unit = "pm-tunnel-watchdog.service";
           };
           Install.WantedBy = [ "timers.target" ];
+        };
+      };
+
+      # Socket activation for the PM HTTP services (#1822, slice 1 of
+      # task 15848): the socket units are DEFINED here but deliberately
+      # NOT enabled (no Install.WantedBy) — today each service still
+      # binds its own ports, and enabling a socket for a port the
+      # service also binds would race it. Slice 2 teaches each service
+      # to accept the systemd-passed fd (LISTEN_FDS); slice 3 enables
+      # these sockets (Install.WantedBy = [ "sockets.target" ]) and
+      # drops each service's own bind in the same switch. Listen
+      # addresses mirror the services' live binds, verified on the
+      # laptop 2026-11-14: projector 127.0.0.1:7801; aggregator
+      # 127.0.0.1:4870 + tailnet:4870 + 127.0.0.1:4871 (the freshness
+      # publisher listener, PM_AGG_FRESHNESS_PORT in the unit env);
+      # dispatch 127.0.0.1:4879 + tailnet:4879.
+      systemd.user.sockets = {
+        pm-projector = {
+          Unit.Description = "PM projector listener (#1822; inactive until slice 3)";
+          Socket = {
+            ListenStream = "127.0.0.1:${toString cfg.projectorPort}";
+            Service = "pm-projector.service";
+          };
+        };
+
+        pm-aggregator = {
+          Unit.Description = "PM aggregator listeners (#1822; inactive until slice 3)";
+          Socket = {
+            ListenStream = [
+              "127.0.0.1:${toString cfg.aggregatorPort}"
+              "${cfg.tailnetAddress}:${toString cfg.aggregatorPort}"
+              # The freshness publisher listener (loopback only);
+              # mirrors PM_AGG_FRESHNESS_PORT in the service env above.
+              "127.0.0.1:4871"
+            ];
+            Service = "pm-aggregator.service";
+          };
+        };
+
+        pm-dispatch = {
+          Unit.Description = "pm-dispatch listeners (#1822; inactive until slice 3)";
+          Socket = {
+            ListenStream = [
+              "127.0.0.1:${toString cfg.dispatchPort}"
+              "${cfg.tailnetAddress}:${toString cfg.dispatchPort}"
+            ];
+            Service = "pm-dispatch.service";
+          };
         };
       };
     };
