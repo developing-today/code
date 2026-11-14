@@ -343,7 +343,7 @@ Status column: **mcpx @ 05c78b2**. Legend and citation conventions: [../README.m
   a `resources/read`.
 - **Effort.** S.
 - **Risk.** Med: the plugin's `mcpx_exec` never declares `artifacts`, so its images are not intercepted and must be
-  printed as base64 to be seen (inferred from `plugin/opencode/mcpx/daemon.ts:452-455`).
+  printed as base64 to be seen (inferred from `plugin/core/daemon.ts:452-455`).
 - **Detail.** Artifacts are served by a random 128-bit id, not the content hash, because a hash is guessable
   (`docs/exec.md:200-207`).
 - **Sources.** `v1:packages/opencode/src/tool/code-mode.ts:89-100`; `v2:packages/core/src/codemode/tool.ts:139-147`; `docs/exec.md:259-275`
