@@ -30,7 +30,11 @@ tick polls the authoritative surface,
   (`session_v2` in `~/.local/share/opencode/opencode.db` — the
   #2072 source), keyed by the run's `lastSessionId`. When the
   session row is absent, `tokens` stays null: absence is recorded,
-  never invented.
+  never invented. Enrichment is refreshed on every poll while the
+  session row exists — the outcome freezes at terminal, but a
+  session can keep accumulating tokens after its run is first seen,
+  so usage fields follow the session store rather than freezing at
+  first sight.
 
 ## Store
 

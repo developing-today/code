@@ -21,7 +21,11 @@ fields. Polling it on a short tick and keying runs by
 - token/cost fields are enriched from the OpenCode session store
   (session_v2 in the opencode.db the #2072 exporter reads), keyed by
   the run's session id, whenever that row exists; otherwise they
-  stay null — absence is recorded, never invented.
+  stay null — absence is recorded, never invented. Enrichment is
+  refreshed on every poll, independently of the outcome freeze: a
+  session can keep accumulating tokens after its run is first seen
+  (and after the scheduler marks the run terminal), so first-sight
+  values must not freeze the usage fields.
 
 The store is one JSON document (rows keyed by run key) written
 atomically (tmp file + os.replace). At fleet scale (tens of tasks,
@@ -167,7 +171,12 @@ def reconcile(rows, tasks, project_dir, clock=None, lookup=None):
                 row["finished_at"] = datetime.fromtimestamp(
                     start.timestamp() + row["duration_ms"] / 1000, tz=timezone.utc
                 ).isoformat()
-        if lookup is not None and row.get("tokens") is None and row.get("session_id"):
+        # Enrichment refreshes on every poll (Codex P1 on PR #8437):
+        # a still-running session keeps accumulating tokens after the
+        # first poll, so gating on tokens-is-None would freeze partial
+        # usage forever. The outcome fields freeze at terminal; the
+        # usage fields follow the session store while it has the row.
+        if lookup is not None and row.get("session_id"):
             got = lookup(row["session_id"])
             if got:
                 row.update(got)
@@ -193,9 +202,12 @@ def load_store(path):
 
 
 def save_store(path, rows):
-    os.makedirs(os.path.dirname(path), exist_ok=True)
+    # Resolve the parent absolutely (Codex P2 on PR #8437): a bare
+    # relative filename has dirname "" and makedirs("") raises.
+    store_dir = os.path.dirname(os.path.abspath(path))
+    os.makedirs(store_dir, exist_ok=True)
     doc = {"schema": "scheduled-history/v1", "rows": rows}
-    fd, tmp = tempfile.mkstemp(dir=os.path.dirname(path), suffix=".tmp")
+    fd, tmp = tempfile.mkstemp(dir=store_dir, suffix=".tmp")
     try:
         with os.fdopen(fd, "w") as f:
             json.dump(doc, f, indent=1, sort_keys=True)
@@ -225,16 +237,43 @@ def cmd_collect(args):
     return 0
 
 
+def parse_instant(text):
+    """Parse an ISO-8601 timestamp to an aware UTC datetime, or None.
+
+    Accepts a trailing Z and non-UTC offsets (Codex P2 on PR #8437:
+    string comparison would compare representations, not instants,
+    because stored timestamps always carry +00:00). Naive values are
+    read as UTC.
+    """
+    if not text:
+        return None
+    try:
+        dt = datetime.fromisoformat(text.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt.astimezone(timezone.utc)
+
+
 def cmd_list(args):
     rows = load_store(args.store)
+    since_dt = parse_instant(args.since) if args.since else None
+    until_dt = parse_instant(args.until) if args.until else None
+    if args.since and since_dt is None:
+        print(f"error: --since is not an ISO-8601 timestamp: {args.since}", file=sys.stderr)
+        return 2
+    if args.until and until_dt is None:
+        print(f"error: --until is not an ISO-8601 timestamp: {args.until}", file=sys.stderr)
+        return 2
     out = []
     for row in rows.values():
         if args.task and row.get("task_id") != args.task:
             continue
-        started = row.get("started_at") or ""
-        if args.since and started < args.since:
+        started_dt = parse_instant(row.get("started_at"))
+        if since_dt is not None and (started_dt is None or started_dt < since_dt):
             continue
-        if args.until and started > args.until:
+        if until_dt is not None and (started_dt is None or started_dt > until_dt):
             continue
         out.append(row)
     out.sort(key=lambda r: r.get("started_at") or "")

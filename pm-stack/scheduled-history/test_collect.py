@@ -79,4 +79,52 @@ collect.reconcile(rows, [task()], "/proj")
 collect.save_store(p, rows)
 check("store: round-trip", collect.load_store(p) == rows)
 
+# 8. enrichment refreshes on later polls (Codex P1 on PR #8437): a
+# session still accumulating tokens must not freeze at first sight,
+# even after the run's outcome is terminal
+rows = {}
+vals = {"input": 10}
+lookup = lambda sid: {"cost": 0.5, "tokens": {"input": vals["input"], "output": 3, "reasoning": 0, "cache_read": 0, "cache_write": 0}, "session_created_at": None, "session_updated_at": None, "token_source": "opencode session_v2"}
+collect.reconcile(rows, [task()], "/proj", lookup=lookup)
+check("refresh: first poll enriches", rows["task-1@%d" % T0]["tokens"]["input"] == 10)
+vals["input"] = 25
+collect.reconcile(rows, [task()], "/proj", lookup=lookup)
+check("refresh: later poll updates tokens on a terminal row", rows["task-1@%d" % T0]["tokens"]["input"] == 25)
+
+# 9. a bare relative store filename saves (Codex P2 on PR #8437)
+import tempfile
+cwd = os.getcwd()
+os.chdir(tempfile.mkdtemp())
+try:
+    rows = {}
+    collect.reconcile(rows, [task()], "/proj")
+    collect.save_store("history.json", rows)
+    check("store: bare relative filename round-trips", collect.load_store("history.json") == rows)
+finally:
+    os.chdir(cwd)
+
+# 10. list window compares instants, not strings (Codex P2 on PR #8437):
+# a bound at 13:00+01:00 is 12:00 UTC, so a 12:30 UTC run is inside
+# --since 13:00+01:00 but outside --until 13:00+01:00
+import argparse, contextlib, io
+sp = os.path.join(tempfile.mkdtemp(), "history.json")
+srows = {"k": {"run_key": "k", "task_id": "task-1", "task_name": "Lane",
+               "started_at": "2026-11-11T12:30:00+00:00", "outcome": "success",
+               "outcome_terminal": True, "session_id": "ses_1", "tokens": None}}
+collect.save_store(sp, srows)
+def run_list(**kw):
+    a = argparse.Namespace(store=sp, task=None, since=None, until=None, json=True)
+    for k, v in kw.items():
+        setattr(a, k, v)
+    buf = io.StringIO()
+    with contextlib.redirect_stdout(buf):
+        rc = collect.cmd_list(a)
+    return rc, json.loads(buf.getvalue())
+rc, out = run_list(since="2026-11-11T13:00:00+01:00")
+check("window: offset --since compares instants (included)", rc == 0 and len(out) == 1)
+rc, out = run_list(until="2026-11-11T13:00:00+01:00")
+check("window: offset --until compares instants (excluded)", rc == 0 and len(out) == 0)
+rc, out = run_list(since="2026-11-11T12:00:00Z")
+check("window: Z --since parses (included)", rc == 0 and len(out) == 1)
+
 print(f"\n{sum(1 for _, ok in PASS if ok)}/{len(PASS)} checks passed")
