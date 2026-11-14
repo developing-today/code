@@ -39,7 +39,13 @@ The check already exists: a shell records a session against
 shell-contract v1 (`pkgs/id/contract/shell-contract.v1.json`,
 printed by `id world contract`) and runs the conformance command;
 the contract is strict about what a shell *sends* and tolerant
-about what it *reads*. Every shell below — phone, native,
+about what it *reads*. Conformance is necessary but not
+sufficient (review finding, PR #8243): the checker validates
+recorded frames, so a shell could pass on a thin transcript
+without completing its required workflow. Each v1 shell must
+also pass behavioral completion checks for the workflow its
+section below requires — offline reading, reconnect recovery,
+and presentation of its claimed subset — before it is done. Every shell below — phone, native,
 ESP32-class — is specified as a **capability statement against
 that contract**: the set of frames it sends, the server frames it
 presents, and the capability providers it declares. A shell that
@@ -69,9 +75,18 @@ asks for:
 - **Reconnect and catch-up.** On reconnect the shell presents its
   last applied sequence; the host streams the missed journal
   suffix; the shell applies it in order and resumes live frames.
-  Divergence (host journal rewritten past the shell's sequence)
-  resolves by re-snapshot, never by merge — the journal's
-  total order is the design's answer to conflict.
+  Two corrections from review (PR #8243) bind this design:
+  catch-up events can omit journal entries and redact install
+  seeds, so the rendered view is reconstructed from the client
+  projection and the host view, never from the event suffix
+  alone; and a sequence number alone cannot establish journal
+  continuity — a host restored or rewritten to a different
+  history at the same sequence is indistinguishable by sequence,
+  so reconnect requires a history-identity check, and wherever
+  continuity cannot be established the shell takes a fresh
+  snapshot. Divergence (host journal rewritten past the shell's
+  sequence) resolves by re-snapshot, never by merge — the
+  journal's total order is the design's answer to conflict.
 - **Push/notify** arrives through the F12.5 provider mechanism as
   a capability provider (below): a notification is a hint to
   re-sync, carrying no world content of its own.
@@ -135,6 +150,13 @@ for v1:
   an ambient platform API the shell happens to reach.
 - The host learns a shell's powers from its declarations at
   session start; undeclared powers do not exist for that session.
+  Mechanism correction from review (PR #8243): the v1 `join`
+  frame has no provider-declaration field, and the contract
+  reserves in-band client-provider requests behind the F12.4 /
+  F12.6 gates — so in v1 the declaration rides the F12.4
+  registry/manifest out of band, and any in-band negotiation
+  waits for the contract revision that names it. A v1 shell
+  must not invent a private in-band declaration.
 - The ceiling model binds: a provider can only narrow what the
   shell's session is allowed, never widen it past the world
   host's own grants.
@@ -171,6 +193,27 @@ for v1:
 5. Conformance-suite packaging: one command runs every v1
    shell's recorded session (the suite is the product, per
    #6279).
+
+## Review findings recorded (2026-11-14, PR #8243)
+
+Four review findings against this record were verified against
+the contract and the code and are recorded here as binding
+constraints on the follow-on slices, with the corrections
+applied inline above:
+
+1. Conformance alone is not a completion gate: behavioral
+   checks for each shell's required workflow are also required
+   ("The one gate").
+2. Catch-up reconstructs the rendered view from the client
+   projection and host view; the journal event suffix alone can
+   omit entries and redact seeds ("Reconnect and catch-up").
+3. Reconnect must detect a rewritten journal: sequence alone
+   cannot establish continuity, so a history-identity check (or
+   a fresh snapshot when continuity is unprovable) is required
+   ("Reconnect and catch-up").
+4. Provider declaration has no v1 in-band mechanism: v1 uses
+   the F12.4 registry/manifest out of band; in-band negotiation
+   is gated on a contract revision ("Capability providers").
 
 ## What this record does not decide
 
