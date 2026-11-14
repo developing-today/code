@@ -219,6 +219,36 @@ export function projectQueueSnapshot(
   };
 }
 
+
+const ACTIVE_RANK: Record<string, number> = {
+  claimed: 0,
+  parked: 1,
+  handed_off: 2,
+  queued: 3,
+  blocked: 4,
+  dep_blocked: 5,
+};
+
+/** The representative queue task for one GitHub issue (#9922's
+ * queue-state join): an active task wins over a terminal one
+ * (claimed first, then parked / handed off / queued / blocked),
+ * ties break to the newest task id; with no active task, the
+ * newest task overall represents the issue's queue history.
+ * Null when the snapshot carries no task for the issue. */
+export function queueTaskForIssue(
+  snapshot: QueueSnapshot,
+  repo: string,
+  issue: number,
+): QueueTask | null {
+  const mine = snapshot.tasks.filter((task) => task.repo === repo && task.issue === issue);
+  if (!mine.length) return null;
+  const active = mine
+    .filter((task) => task.status in ACTIVE_RANK)
+    .sort((a, b) => ACTIVE_RANK[a.status] - ACTIVE_RANK[b.status] || b.id - a.id);
+  if (active.length) return active[0];
+  return [...mine].sort((a, b) => b.id - a.id)[0];
+}
+
 /** The snapshot for a broker read that failed with no prior good
  * read: unavailable + stale, empty data, the error named. */
 export function unavailableQueueSnapshot(now: number, error: string): QueueSnapshot {

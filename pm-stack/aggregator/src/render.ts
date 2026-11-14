@@ -123,7 +123,7 @@ import { KEY_HINT, KEYBOARD_SCRIPT, paletteHtml } from "./keyboard.ts";
 import type { ProgramData, ProgramEntry, ProgramLive, TrackedIssue } from "./program.ts";
 import type { ProjectDetail, ProjectSummary } from "./project-config.ts";
 import { derivedProjectState, projectDisagreement, PROJECT_URL } from "./projects.ts";
-import {
+import { PHASE12_REPO,
   PHASE12_ISSUE_URL,
   joinPhase12Steps,
   parsePhase12Steps,
@@ -137,7 +137,7 @@ import {
   projectNightlyTrend,
   type BuildHealthSnapshot,
 } from "./build-health.ts";
-import type { QueueSnapshot } from "./queue.ts";
+import { queueTaskForIssue, type QueueSnapshot } from "./queue.ts";
 import {
   F12_DESIGN_ISSUE_URL,
   parseF12Designs,
@@ -7110,12 +7110,22 @@ function epicGraphOneHtml(items: ProjectPoolItem[], entry: ReturnType<typeof epi
  * silently old step list is the defect #1239's rules name. Queue state
  * joins here once the fleet-queue collector (#9920) lands; until then
  * the panel says so. */
-export function phase12PanelHtml(snapshot: Phase12Snapshot | null, items: Map<RefKey, GhItem>): string {
+export function phase12PanelHtml(
+  snapshot: Phase12Snapshot | null,
+  items: Map<RefKey, GhItem>,
+  queueSnap?: QueueSnapshot | null,
+): string {
   const head = `<h2>Path to Phase 12 — live from <a href="${PHASE12_ISSUE_URL}">#1235</a></h2>`;
   if (!snapshot) {
     return `${head}<div class="banner">The #1235 body feed is unavailable in the current source, so no step state is shown — a hand-maintained copy would drift, and this panel never renders one.</div>`;
   }
-  const sourceLine = `<p class="muted">Source: <a href="${PHASE12_ISSUE_URL}">developing-today/code#1235</a> body, fetched ${esc(snapshot.fetchedAt)} · issue updated ${esc(snapshot.issueUpdatedAt)} · per-step state is live GitHub state; queue state joins when the fleet-queue collector (#9920) lands.</p>`;
+  const queueFresh = !!queueSnap && queueSnap.available && !queueSnap.stale;
+  const queueNote = queueSnap
+    ? queueFresh
+      ? ` · queue state from the fleet-queue collector (#9920), fetched ${esc(new Date(queueSnap.fetchedAt).toISOString())}`
+      : ` · queue state withheld (collector snapshot stale or unavailable)`
+    : ` · queue state unavailable in the current source`;
+  const sourceLine = `<p class="muted">Source: <a href="${PHASE12_ISSUE_URL}">developing-today/code#1235</a> body, fetched ${esc(snapshot.fetchedAt)} · issue updated ${esc(snapshot.issueUpdatedAt)} · per-step state is live GitHub state${queueNote}.</p>`;
   if (phase12IsStale(snapshot)) {
     return `${head}${sourceLine}<div class="banner">Stale source: this snapshot was fetched at ${esc(snapshot.fetchedAt)}, outside the freshness window — the step list is withheld rather than shown silently old. It refreshes on the next successful body read.</div>`;
   }
@@ -7131,7 +7141,15 @@ export function phase12PanelHtml(snapshot: Phase12Snapshot | null, items: Map<Re
           : `<span class="badge ${s.liveState === "open" ? "open" : "closed"}">issue ${esc(s.liveState)}</span>`;
       const box = s.checked ? "☑" : "☐";
       const done = s.doneNote ? `<br><span class="muted">${esc(s.doneNote)}</span>` : "";
-      return `<div class="card"><strong>${box} ${esc(s.label)} — <a href="${esc(s.url)}">#${s.issueNumber}</a> ${esc(s.liveTitle ?? s.title)}</strong><br>${stateBadge}${done}</div>`;
+      let queueBadge = "";
+      if (queueFresh && queueSnap) {
+        const task = queueTaskForIssue(queueSnap, PHASE12_REPO, s.issueNumber);
+        if (task) {
+          const who = [task.worker, task.lane].filter(Boolean).join("/");
+          queueBadge = ` <span class="badge">queue: ${esc(task.status)}${who ? ` · ${esc(who)}` : ""} (task ${task.id})</span>`;
+        }
+      }
+      return `<div class="card"><strong>${box} ${esc(s.label)} — <a href="${esc(s.url)}">#${s.issueNumber}</a> ${esc(s.liveTitle ?? s.title)}</strong><br>${stateBadge}${queueBadge}${done}</div>`;
     })
     .join("");
   return `${head}${sourceLine}${rows}`;
@@ -7408,7 +7426,7 @@ export function renderProgramProject(
 <p class="muted">Built only from already-published fleet data — the orchestration section this aggregator serves and the fleet's tracked issues. No new data pipeline feeds this section.</p>${programEntries(config.sweepHealth, items)}`
     : "";
 
-  const phase12Html = config.id === "id" && phase12 !== undefined ? phase12PanelHtml(phase12, items) : "";
+  const phase12Html = config.id === "id" && phase12 !== undefined ? phase12PanelHtml(phase12, items, queueSnap) : "";
   const buildHealthHtml = config.id === "id" && buildHealth !== undefined ? buildHealthPanelHtml(buildHealth) : "";
   const f12Html =
     config.id === "id" && f12 !== undefined

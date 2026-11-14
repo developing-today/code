@@ -251,3 +251,76 @@ describe("queuePanelHtml (#9921)", () => {
     expect(html).toContain("unavailable in the current source");
   });
 });
+
+import { queueTaskForIssue } from "../src/queue.ts";
+import { phase12PanelHtml } from "../src/render.ts";
+import type { Phase12Snapshot } from "../src/phase12.ts";
+
+describe("queueTaskForIssue (#9922 join)", () => {
+  const snap = projectQueueSnapshot(
+    HEALTH,
+    [
+      { id: 10, queue: "repo-health-code-pilot", status: "done", dedupe_key: "repo-health:v1:fix:developing-today/code:issue:229", payload: null },
+      { id: 11, queue: "repo-health-code-pilot", status: "parked", dedupe_key: "repo-health:v1:fix:developing-today/code:issue:229", payload: null },
+      { id: 12, queue: "repo-health-code-pilot", status: "claimed", worker_id: "repo-worker-code", lane_id: "any-a", dedupe_key: "repo-health:v1:fix:developing-today/code:issue:229", payload: null },
+      { id: 13, queue: "repo-health-code-pilot", status: "done", dedupe_key: "repo-health:v1:fix:developing-today/code:issue:544", payload: null },
+      { id: 14, queue: "repo-health-code-pilot", status: "done", dedupe_key: "repo-health:v1:fix:developing-today/code:issue:544", payload: null },
+    ],
+    NOW,
+    NOW,
+  );
+  test("an active task represents the issue, claimed ahead of parked and done", () => {
+    const t = queueTaskForIssue(snap, "developing-today/code", 229);
+    expect(t?.id).toBe(12);
+    expect(t?.status).toBe("claimed");
+  });
+  test("with no active task, the newest terminal task represents the issue", () => {
+    const t = queueTaskForIssue(snap, "developing-today/code", 544);
+    expect(t?.id).toBe(14);
+  });
+  test("no task for the issue -> null; wrong repo -> null", () => {
+    expect(queueTaskForIssue(snap, "developing-today/code", 9999)).toBeNull();
+    expect(queueTaskForIssue(snap, "dezren39/darwin-nix", 229)).toBeNull();
+  });
+});
+
+describe("phase12PanelHtml queue join (#9922)", () => {
+  const body = [
+    "- [ ] Step 1 — #229 Stabilize shared-state failures",
+    "- [x] Step 2 — #544 Replay self-check — DONE 2026-10-27",
+  ].join("\n");
+  const snap: Phase12Snapshot = {
+    body,
+    issueUpdatedAt: "2026-11-14T00:00:00Z",
+    // Real now: phase12IsStale reads the wall clock, unlike the
+    // queue projection whose staleness is baked in at projection.
+    fetchedAt: new Date().toISOString(),
+  };
+  const queueSnap = projectQueueSnapshot(
+    HEALTH,
+    [
+      { id: 12, queue: "repo-health-code-pilot", status: "claimed", worker_id: "repo-worker-code", lane_id: "any-a", dedupe_key: "repo-health:v1:fix:developing-today/code:issue:229", payload: null },
+    ],
+    NOW,
+    NOW,
+  );
+  test("a fresh collector snapshot joins queue state onto the step card", () => {
+    const html = phase12PanelHtml(snap, new Map(), queueSnap);
+    expect(html).toContain("queue: claimed");
+    expect(html).toContain("task 12");
+    expect(html).toContain("queue state from the fleet-queue collector");
+    // The step with no queue task gets no queue badge.
+    expect(html).not.toContain("queue: done");
+  });
+  test("a stale collector snapshot withholds queue state and says so", () => {
+    const stale = projectQueueSnapshot(HEALTH, [], NOW - QUEUE_STALE_MS - 1, NOW);
+    const html = phase12PanelHtml(snap, new Map(), stale);
+    expect(html).toContain("queue state withheld");
+    expect(html).not.toContain("queue: claimed");
+  });
+  test("no collector in the source: panel renders, queue state marked unavailable", () => {
+    const html = phase12PanelHtml(snap, new Map());
+    expect(html).toContain("queue state unavailable in the current source");
+    expect(html).toContain("#229");
+  });
+});
