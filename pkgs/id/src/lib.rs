@@ -218,6 +218,7 @@ pub use id_store::chat;
 pub mod conversion;
 pub mod currency;
 pub mod currency_poc;
+pub mod device_bridge;
 #[cfg(feature = "world")]
 pub use id_directory::directory;
 #[cfg(feature = "world")]
