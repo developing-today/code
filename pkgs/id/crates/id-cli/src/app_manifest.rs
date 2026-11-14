@@ -92,6 +92,9 @@
 //! why the read/execute-time confinements above are assigned to
 //! the steps that will.
 
+#[cfg(test)]
+use std::cell::Cell;
+use std::collections::HashMap;
 use std::fs;
 use std::path::{Component, Path, PathBuf};
 
@@ -283,6 +286,122 @@ pub fn parse_app_manifest(source: &str, folder_name: &str) -> Result<AppManifest
     Ok(manifest)
 }
 
+#[derive(Default)]
+struct WebBindingIndex {
+    route_owners: HashMap<String, usize>,
+    socket_owners: HashMap<String, usize>,
+    #[cfg(test)]
+    lookups: Cell<usize>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum WebBindingConflict<'a> {
+    DuplicateRoute { owner_index: usize },
+    RouteWithSocket { owner_index: usize },
+    DuplicateSocket { owner_index: usize, socket: &'a str },
+    SocketWithRoute { owner_index: usize, socket: &'a str },
+}
+
+impl WebBindingConflict<'_> {
+    fn owner_index(self) -> usize {
+        match self {
+            Self::DuplicateRoute { owner_index }
+            | Self::RouteWithSocket { owner_index }
+            | Self::DuplicateSocket { owner_index, .. }
+            | Self::SocketWithRoute { owner_index, .. } => owner_index,
+        }
+    }
+
+    fn diagnostic(
+        self,
+        manifest_path: &Path,
+        app_id: &str,
+        web: &WebInterface,
+        owner_id: &str,
+    ) -> String {
+        match self {
+            Self::DuplicateRoute { .. } => format!(
+                "{}: app {:?} duplicates interfaces.web.route {:?} already registered by app {:?}; app not registered",
+                manifest_path.display(),
+                app_id,
+                web.route,
+                owner_id
+            ),
+            Self::RouteWithSocket { .. } => format!(
+                "{}: app {:?} route {:?} (interfaces.web.route) collides with interfaces.web.socket already registered by app {:?}; app not registered",
+                manifest_path.display(),
+                app_id,
+                web.route,
+                owner_id
+            ),
+            Self::DuplicateSocket { socket, .. } => format!(
+                "{}: app {:?} duplicates interfaces.web.socket {:?} already registered by app {:?}; app not registered",
+                manifest_path.display(),
+                app_id,
+                socket,
+                owner_id
+            ),
+            Self::SocketWithRoute { socket, .. } => format!(
+                "{}: app {:?} socket {:?} (interfaces.web.socket) collides with interfaces.web.route already registered by app {:?}; app not registered",
+                manifest_path.display(),
+                app_id,
+                socket,
+                owner_id
+            ),
+        }
+    }
+}
+
+impl WebBindingIndex {
+    fn route_owner(&self, route: &str) -> Option<usize> {
+        #[cfg(test)]
+        self.lookups.set(self.lookups.get() + 1);
+        self.route_owners.get(route).copied()
+    }
+
+    fn socket_owner(&self, socket: &str) -> Option<usize> {
+        #[cfg(test)]
+        self.lookups.set(self.lookups.get() + 1);
+        self.socket_owners.get(socket).copied()
+    }
+
+    fn first_conflict<'a>(&self, web: &'a WebInterface) -> Option<WebBindingConflict<'a>> {
+        if let Some(owner_index) = self.route_owner(&web.route) {
+            return Some(WebBindingConflict::DuplicateRoute { owner_index });
+        }
+        if let Some(owner_index) = self.socket_owner(&web.route) {
+            return Some(WebBindingConflict::RouteWithSocket { owner_index });
+        }
+        if let Some(socket) = web.socket.as_deref() {
+            if let Some(owner_index) = self.socket_owner(socket) {
+                return Some(WebBindingConflict::DuplicateSocket {
+                    owner_index,
+                    socket,
+                });
+            }
+            if let Some(owner_index) = self.route_owner(socket) {
+                return Some(WebBindingConflict::SocketWithRoute {
+                    owner_index,
+                    socket,
+                });
+            }
+        }
+        None
+    }
+
+    fn register(&mut self, web: &WebInterface, owner_index: usize) {
+        self.route_owners.insert(web.route.clone(), owner_index);
+        if let Some(socket) = &web.socket {
+            self.socket_owners.insert(socket.clone(), owner_index);
+        }
+    }
+
+    #[cfg(test)]
+    fn lookup_count(&self) -> usize {
+        self.lookups.get()
+    }
+}
+
 /// Scan immediate child folders for `app.toml`, isolating errors to each app.
 pub fn discover_apps(root: impl AsRef<Path>) -> AppDiscovery {
     let root = root.as_ref();
@@ -300,6 +419,7 @@ pub fn discover_apps(root: impl AsRef<Path>) -> AppDiscovery {
             return discovery;
         }
     };
+    let mut web_bindings = WebBindingIndex::default();
     let entries = match fs::read_dir(root) {
         Ok(entries) => entries,
         Err(error) => {
@@ -379,81 +499,17 @@ pub fn discover_apps(root: impl AsRef<Path>) -> AppDiscovery {
                     }
                 }
                 if let Some(web) = manifest.interfaces.web.as_ref() {
-                    if let Some(existing) = discovery.apps.iter().find(|app| {
-                        app.manifest
-                            .interfaces
-                            .web
-                            .as_ref()
-                            .map(|existing| existing.route.as_str())
-                            == Some(web.route.as_str())
-                    }) {
-                        discovery.errors.push(format!(
-                            "{}: app {:?} duplicates interfaces.web.route {:?} already registered by app {:?}; app not registered",
-                            manifest_path.display(),
-                            manifest.app.id,
-                            web.route,
-                            existing.manifest.app.id
+                    if let Some(conflict) = web_bindings.first_conflict(web) {
+                        let owner = &discovery.apps[conflict.owner_index()];
+                        discovery.errors.push(conflict.diagnostic(
+                            &manifest_path,
+                            &manifest.app.id,
+                            web,
+                            &owner.manifest.app.id,
                         ));
                         continue;
                     }
-                    // Cross-kind (#6454): routes and sockets share one
-                    // binding namespace, so a new route must also differ
-                    // from every registered app's socket.
-                    if let Some(existing) = discovery.apps.iter().find(|app| {
-                        app.manifest
-                            .interfaces
-                            .web
-                            .as_ref()
-                            .and_then(|existing| existing.socket.as_deref())
-                            == Some(web.route.as_str())
-                    }) {
-                        discovery.errors.push(format!(
-                            "{}: app {:?} route {:?} (interfaces.web.route) collides with interfaces.web.socket already registered by app {:?}; app not registered",
-                            manifest_path.display(),
-                            manifest.app.id,
-                            web.route,
-                            existing.manifest.app.id
-                        ));
-                        continue;
-                    }
-                    if let Some(socket) = &web.socket {
-                        if let Some(existing) = discovery.apps.iter().find(|app| {
-                            app.manifest
-                                .interfaces
-                                .web
-                                .as_ref()
-                                .and_then(|existing| existing.socket.as_deref())
-                                == Some(socket.as_str())
-                        }) {
-                            discovery.errors.push(format!(
-                                "{}: app {:?} duplicates interfaces.web.socket {:?} already registered by app {:?}; app not registered",
-                                manifest_path.display(),
-                                manifest.app.id,
-                                socket,
-                                existing.manifest.app.id
-                            ));
-                            continue;
-                        }
-                        // Cross-kind (#6454): a new socket must also
-                        // differ from every registered app's route.
-                        if let Some(existing) = discovery.apps.iter().find(|app| {
-                            app.manifest
-                                .interfaces
-                                .web
-                                .as_ref()
-                                .map(|existing| existing.route.as_str())
-                                == Some(socket.as_str())
-                        }) {
-                            discovery.errors.push(format!(
-                                "{}: app {:?} socket {:?} (interfaces.web.socket) collides with interfaces.web.route already registered by app {:?}; app not registered",
-                                manifest_path.display(),
-                                manifest.app.id,
-                                socket,
-                                existing.manifest.app.id
-                            ));
-                            continue;
-                        }
-                    }
+                    web_bindings.register(web, discovery.apps.len());
                 }
                 discovery.apps.push(DiscoveredApp {
                     path: folder,
@@ -693,9 +749,13 @@ route = "/tic-tac-toe"
         assert_eq!(discovery.apps.len(), 1);
         assert_eq!(discovery.apps[0].manifest.app.id, "a-first");
         assert_eq!(discovery.errors.len(), 1);
-        assert!(discovery.errors[0].contains("b-second"));
-        assert!(discovery.errors[0].contains("interfaces.web.route"));
-        assert!(discovery.errors[0].contains("/same"));
+        assert_eq!(
+            discovery.errors[0],
+            format!(
+                "{}: app \"b-second\" duplicates interfaces.web.route \"/same\" already registered by app \"a-first\"; app not registered",
+                root.path().join("b-second/app.toml").display()
+            )
+        );
     }
 
     #[test]
@@ -717,9 +777,13 @@ route = "/tic-tac-toe"
         assert_eq!(discovery.apps.len(), 1);
         assert_eq!(discovery.apps[0].manifest.app.id, "a-first");
         assert_eq!(discovery.errors.len(), 1);
-        assert!(discovery.errors[0].contains("b-second"));
-        assert!(discovery.errors[0].contains("interfaces.web.socket"));
-        assert!(discovery.errors[0].contains("/ws/shared"));
+        assert_eq!(
+            discovery.errors[0],
+            format!(
+                "{}: app \"b-second\" duplicates interfaces.web.socket \"/ws/shared\" already registered by app \"a-first\"; app not registered",
+                root.path().join("b-second/app.toml").display()
+            )
+        );
     }
 
     #[test]
@@ -756,9 +820,13 @@ route = "/tic-tac-toe"
         assert_eq!(discovery.apps.len(), 1);
         assert_eq!(discovery.apps[0].manifest.app.id, "a-first");
         assert_eq!(discovery.errors.len(), 1);
-        assert!(discovery.errors[0].contains("b-second"));
-        assert!(discovery.errors[0].contains("interfaces.web.route"));
-        assert!(discovery.errors[0].contains("/shared"));
+        assert_eq!(
+            discovery.errors[0],
+            format!(
+                "{}: app \"b-second\" route \"/shared\" (interfaces.web.route) collides with interfaces.web.socket already registered by app \"a-first\"; app not registered",
+                root.path().join("b-second/app.toml").display()
+            )
+        );
     }
 
     #[test]
@@ -782,9 +850,37 @@ route = "/tic-tac-toe"
         assert_eq!(discovery.apps.len(), 1);
         assert_eq!(discovery.apps[0].manifest.app.id, "a-first");
         assert_eq!(discovery.errors.len(), 1);
-        assert!(discovery.errors[0].contains("b-second"));
-        assert!(discovery.errors[0].contains("interfaces.web.socket"));
-        assert!(discovery.errors[0].contains("/shared"));
+        assert_eq!(
+            discovery.errors[0],
+            format!(
+                "{}: app \"b-second\" socket \"/shared\" (interfaces.web.socket) collides with interfaces.web.route already registered by app \"a-first\"; app not registered",
+                root.path().join("b-second/app.toml").display()
+            )
+        );
+    }
+
+    #[test]
+    fn web_binding_index_uses_constant_lookups_with_large_registry() {
+        let mut index = WebBindingIndex::default();
+        for owner_index in 0..10_000 {
+            let web = WebInterface {
+                mode: "adapter".to_owned(),
+                route: format!("/apps/{owner_index}"),
+                socket: Some(format!("/ws/{owner_index}")),
+            };
+            index.register(&web, owner_index);
+        }
+
+        let candidate = WebInterface {
+            mode: "adapter".to_owned(),
+            route: "/apps/candidate".to_owned(),
+            socket: Some("/ws/candidate".to_owned()),
+        };
+        assert_eq!(index.first_conflict(&candidate), None);
+        // Oracle: each checked map access increments the test-only counter.
+        // A route and socket candidate use exactly four lookups regardless
+        // of the number of already-registered apps; there is no timing bound.
+        assert_eq!(index.lookup_count(), 4);
     }
 
     proptest! {
