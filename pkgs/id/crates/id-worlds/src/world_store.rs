@@ -629,8 +629,10 @@ pub async fn open_world(
 /// The replica directory holds the verified journal at
 /// `journal.jsonl` (written by [`crate::world::DurableReceiver`]), an
 /// optional `directory.jsonl` carrying the directory facts the replicated
-/// capabilities depend on (replayed without rewriting it), and an optional
-/// `modules/` store. Opening never invents history: the committed journal
+/// capabilities depend on (replayed without rewriting it; installed by
+/// the receiver from the stream's signed Directory sidecar frames), and
+/// an optional `modules/` store (populated by the receiver from signed
+/// Module sidecar frames, content-addressed by hash). Opening never invents history: the committed journal
 /// entries are re-validated and restored presence-preserving (no header
 /// bumps, no entry synthesis, no compaction), and the actor spawns
 /// read-only with no journal to append to — every local mutation and
