@@ -166,6 +166,19 @@ function item(partial: Partial<ProjectPoolItem> & { number: number }): ProjectPo
 }
 
 describe("Projects pool cards render spend beside progress (#4824)", () => {
+  test("empty Projects pool still renders stack-level unattributed spend", () => {
+    const spend = buildSpendCards(
+      rollups([{ ts: NOV, projectId: null, epicRef: null, tokensByPool: { main: 7 } }]),
+      { unattributedReasons: [{ reason: "no-binding", text: "7 tokens" }] },
+    );
+
+    const html = projectsBodyHtml([], { spend });
+
+    expect(html).toContain("No Project pool in the current fleet feed");
+    expect(html).toContain("Unattributed spend");
+    expect(html).toContain("no-binding: 7 tokens");
+  });
+
   test("epic card shows its rollup and its spend; unattributed row is visible", () => {
     const pool = [
       item({ number: 100, title: "Epic one", kind: "Epic" }),
