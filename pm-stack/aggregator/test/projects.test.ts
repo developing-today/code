@@ -698,4 +698,47 @@ describe("renderProjects", () => {
     const noUnset = renderProjects([pool[0]], PROV, {});
     expect(noUnset).not.toContain("(unset)");
   });
+
+  test("status/kind facets filter the pool, with counts that reconcile (#1208)", () => {
+    // Oracle: a facet filter shows exactly the pool items carrying that
+    // field value, and each chip count equals the number of pool items
+    // carrying it — the same numbers /api/projects.json carries.
+    const pool = parseProjectItems(GQL);
+    const html = renderProjects(pool, PROV, {});
+    expect(html).toContain("In Progress (1)");
+    expect(html).toContain("Done (1)");
+    expect(html).toContain("Epic (1)");
+    expect(html).toContain("/projects?status=In+Progress");
+    expect(html).toContain("/projects?kind=Epic");
+    const byStatus = renderProjects(pool, PROV, { status: "In Progress" });
+    expect(byStatus).toContain("EPIC: Basement cluster");
+    expect(byStatus).not.toContain("Stage 5");
+    expect(byStatus).toContain("Filters show 1 of 2 pool items.");
+    const byKind = renderProjects(pool, PROV, { kind: "Epic" });
+    expect(byKind).toContain("EPIC: Basement cluster");
+    expect(byKind).not.toContain("Stage 5");
+    // Facets compose with Area and survive in each other's links.
+    const composed = renderProjects(pool, PROV, { area: "lab-cluster", status: "In Progress" });
+    expect(composed).toContain("EPIC: Basement cluster");
+    expect(composed).toContain("status=In+Progress");
+    const none = renderProjects(pool, PROV, { area: "lab-cluster", status: "Done" });
+    expect(none).not.toContain("EPIC: Basement cluster");
+    expect(none).toContain("Filters show 0 of 2 pool items.");
+  });
+
+  test("audit gap renders the draft/unlinked caveat instead of dropping it silently (#1208)", () => {
+    // The fixture board has 3 items; one is an unlinked draft the parser
+    // cannot resolve to a ref. Oracle: the rendered pool reconciles its
+    // count against the audit board total and names the gap.
+    const pool = parseProjectItems(GQL);
+    const audit = parseProjectAudit(GQL, GQL.data.node.items.nodes, new Date().toISOString());
+    expect(audit.totalItems).toBe(3);
+    expect(pool).toHaveLength(2);
+    const html = renderProjects(pool, PROV, { audit });
+    expect(html).toContain("Board total 3 items");
+    expect(html).toContain("draft or unlinked");
+    expect(html).toContain("never silently dropped");
+    const noAudit = renderProjects(pool, PROV, {});
+    expect(noAudit).not.toContain("Board total");
+  });
 });

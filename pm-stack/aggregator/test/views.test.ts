@@ -380,6 +380,8 @@ const items: ViewItemLike[] = [
     owner: "dezren39",
     state: "open",
     epic: "developing-today/code#100",
+    status: "In Progress",
+    kind: "Epic",
   },
   {
     ref: "developing-today/code#2",
@@ -398,6 +400,8 @@ const items: ViewItemLike[] = [
     owner: "dezren39",
     state: "open",
     epic: null,
+    status: "Todo",
+    kind: "Task",
   },
 ];
 
@@ -413,6 +417,18 @@ describe("view filter matching (#1276)", () => {
     expect(applyView(items, { epic: "developing-today/code#100" }).map((i) => i.ref)).toEqual([
       "developing-today/code#1",
     ]);
+  });
+
+  test("status and kind are filter dimensions too (#1208)", () => {
+    // Oracle: a status/kind filter matches exactly the items whose pool
+    // fields carry that value, case-insensitively, like every other
+    // dimension — Project Status and Kind are pool fields, so a saved
+    // view can pin them.
+    expect(applyView(items, { status: "in progress" }).map((i) => i.ref)).toEqual(["developing-today/code#1"]);
+    expect(applyView(items, { kind: "task" }).map((i) => i.ref)).toEqual(["dezren39/nix#3"]);
+    expect(applyView(items, { status: "Todo", kind: "Epic" })).toHaveLength(0);
+    expect(validateViewFilters({ status: "Todo" }).ok).toBe(true);
+    expect(validateViewFilters({ kind: "Epic" }).ok).toBe(true);
   });
 
   test("republish survival: reordering the feed does not change the matched set", () => {

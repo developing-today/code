@@ -93,6 +93,7 @@ import {
   type GhItem,
   type OrchestrationSection,
   type PaygLine,
+  type ProjectAudit,
   type ProjectPoolItem,
   type Provenance,
   type ProvenanceDetail,
@@ -6473,6 +6474,11 @@ export function projectsBodyHtml(
   pool: ProjectPoolItem[],
   opts: {
     area?: string | null;
+    /** Pool facet filters (#1208): Project Status / Kind single-select values, or the "(no status)" / "(no kind)" unset buckets. */
+    status?: string | null;
+    kind?: string | null;
+    /** Project #4 audit snapshot (#1208): reconciles the rendered pool count against the board total (draft/unlinked caveat). */
+    audit?: ProjectAudit | null;
     orchestration?: OrchestrationSection | null;
     detail?: ProvenanceDetail;
     actionsByObject?: Map<string, DashAction[]>;
@@ -6500,16 +6506,41 @@ export function projectsBodyHtml(
   const unsetCount = pool.filter((p) => !p.area).length;
   const area =
     opts.area === UNSET_AREA && unsetCount > 0 ? UNSET_AREA : opts.area && areas.includes(opts.area) ? opts.area : null;
-  const shown = area === UNSET_AREA ? pool.filter((p) => !p.area) : area ? pool.filter((p) => p.area === area) : pool;
+  const shownByArea = area === UNSET_AREA ? pool.filter((p) => !p.area) : area ? pool.filter((p) => p.area === area) : pool;
+  // #1208: Status and Kind are pool fields too — facet-filter them like
+  // Area (the saved-view dimensions in views.ts carry the same pair, so
+  // a view and the chips agree). "(no status)" / "(no kind)" are the
+  // explicit unset buckets, mirroring the Area "(unset)" bucket (#1143).
+  const UNSET_STATUS = "(no status)";
+  const UNSET_KIND = "(no kind)";
+  const statuses = [...new Set(pool.map((p) => p.status).filter((s): s is string => Boolean(s)))].sort();
+  const kinds = [...new Set(pool.map((p) => p.kind).filter((s): s is string => Boolean(s)))].sort();
+  const statusSel = opts.status === UNSET_STATUS ? UNSET_STATUS : opts.status && statuses.includes(opts.status) ? opts.status : null;
+  const kindSel = opts.kind === UNSET_KIND ? UNSET_KIND : opts.kind && kinds.includes(opts.kind) ? opts.kind : null;
+  const shown = shownByArea
+    .filter((p) => (statusSel === UNSET_STATUS ? !p.status : statusSel ? p.status === statusSel : true))
+    .filter((p) => (kindSel === UNSET_KIND ? !p.kind : kindSel ? p.kind === kindSel : true));
+  /** Facet link builder: change one facet, keep the others. */
+  const facetHref = (patch: { area?: string | null; status?: string | null; kind?: string | null }): string => {
+    const q = new URLSearchParams();
+    const a = patch.area !== undefined ? patch.area : area;
+    const s = patch.status !== undefined ? patch.status : statusSel;
+    const k = patch.kind !== undefined ? patch.kind : kindSel;
+    if (a) q.set("area", a);
+    if (s) q.set("status", s);
+    if (k) q.set("kind", k);
+    const qs = q.toString();
+    return qs ? `${base}?${qs}` : base;
+  };
   const chips = [
-    `<a href="${base}"${!area ? ' class="active"' : ""}>all (${pool.length})</a>`,
+    `<a href="${facetHref({ area: null })}"${!area ? ' class="active"' : ""}>all (${pool.length})</a>`,
     ...areas.map(
       (a) =>
-        `<a href="${base}?area=${encodeURIComponent(a)}"${a === area ? ' class="active"' : ""}>${esc(a)} (${pool.filter((p) => p.area === a).length})</a>`,
+        `<a href="${facetHref({ area: a })}"${a === area ? ' class="active"' : ""}>${esc(a)} (${pool.filter((p) => p.area === a).length})</a>`,
     ),
     ...(unsetCount > 0
       ? [
-          `<a href="${base}?area=${encodeURIComponent(UNSET_AREA)}"${area === UNSET_AREA ? ' class="active"' : ""}>${UNSET_AREA} (${unsetCount})</a>`,
+          `<a href="${facetHref({ area: UNSET_AREA })}"${area === UNSET_AREA ? ' class="active"' : ""}>${UNSET_AREA} (${unsetCount})</a>`,
         ]
       : []),
   ].join("");
@@ -6595,6 +6626,18 @@ export function projectsBodyHtml(
     .join("");
   const body = `<p class="muted">${pool.length} items from the org Project <a href="${PROJECT_URL}">Developing Today (#4)</a>, read live by the fleet-feed collector (GraphQL, read-only) and carried in the feed. This pool is the resolution source for board/roadmap GitHub items. Where the Project Status and the derived state disagree, the card shows ⚠ with both values. Machine-first: <a href="/api/projects.json">/api/projects.json</a>.</p>
 <div class="chips">${chips}</div>
+<div class="chips"><span class="muted">Status:</span> ${[
+       `<a href="${facetHref({ status: null })}"${!statusSel ? ' class="active"' : ""}>any</a>`,
+       ...statuses.map((s) => `<a href="${facetHref({ status: s })}"${s === statusSel ? ' class="active"' : ""}>${esc(s)} (${pool.filter((p) => p.status === s).length})</a>`),
+       ...(pool.some((p) => !p.status) ? [`<a href="${facetHref({ status: UNSET_STATUS })}"${statusSel === UNSET_STATUS ? ' class="active"' : ""}>${UNSET_STATUS} (${pool.filter((p) => !p.status).length})</a>`] : []),
+     ].join("")}</div>
+<div class="chips"><span class="muted">Kind:</span> ${[
+       `<a href="${facetHref({ kind: null })}"${!kindSel ? ' class="active"' : ""}>any</a>`,
+       ...kinds.map((k) => `<a href="${facetHref({ kind: k })}"${k === kindSel ? ' class="active"' : ""}>${esc(k)} (${pool.filter((p) => p.kind === k).length})</a>`),
+       ...(pool.some((p) => !p.kind) ? [`<a href="${facetHref({ kind: UNSET_KIND })}"${kindSel === UNSET_KIND ? ' class="active"' : ""}>${UNSET_KIND} (${pool.filter((p) => !p.kind).length})</a>`] : []),
+     ].join("")}</div>
+${opts.audit && opts.audit.totalItems > pool.length ? `<div class="banner">Board total ${opts.audit.totalItems} items; this pool renders ${pool.length} linked issue/PR items. ${opts.audit.totalItems - pool.length} board item${opts.audit.totalItems - pool.length === 1 ? " is" : "s are"} draft or unlinked (no issue/PR to link to) and not rendered as cards \u2014 counted in the audit in <a href="/api/projects.json">/api/projects.json</a>, never silently dropped.</div>` : ""}
+${shown.length !== pool.length ? `<p class="muted">Filters show ${shown.length} of ${pool.length} pool items.</p>` : ""}
 ${unsetCount > 0 ? `<div class="banner">${unsetCount} pool item${unsetCount === 1 ? "" : "s"} carry no Area — they belong to no project page until Area is set on the Project. Setting Area is the orchestrator's reconciliation job; this count keeps the gap visible. <a href="${base}?area=${encodeURIComponent(UNSET_AREA)}">View the (unset) bucket →</a></div>` : ""}
 ${coverageSectionHtml(opts.coverage)}
 ${statusTaxonomyHtml()}
@@ -6612,6 +6655,11 @@ export function renderProjects(
   provenance: Provenance,
   opts: {
     area?: string | null;
+    /** Pool facet filters (#1208): Project Status / Kind single-select values, or the "(no status)" / "(no kind)" unset buckets. */
+    status?: string | null;
+    kind?: string | null;
+    /** Project #4 audit snapshot (#1208): reconciles the rendered pool count against the board total (draft/unlinked caveat). */
+    audit?: ProjectAudit | null;
     orchestration?: OrchestrationSection | null;
     detail?: ProvenanceDetail;
     actionsByObject?: Map<string, DashAction[]>;
@@ -6714,6 +6762,9 @@ export function renderProgram(
   poolSection?: {
     pool: ProjectPoolItem[];
     area?: string | null;
+    status?: string | null;
+    kind?: string | null;
+    audit?: ProjectAudit | null;
     coverage?: CoverageSnapshotFile | null;
     orchestration?: OrchestrationSection | null;
     actionsByObject?: Map<string, DashAction[]>;
@@ -6730,7 +6781,7 @@ export function renderProgram(
   const poolSectionHtml = poolSection
     ? `<h2 id="projects-pool">Projects pool</h2>
 <p class="muted">The Projects page, merged into Program status by the #1497 curation — the raw org Project pool with its Project-vs-derived disagreements. <code>/projects</code> redirects to this section; the machine twin <a href="/api/projects.json">/api/projects.json</a> is unchanged.</p>
-${projectsBodyHtml(poolSection.pool, { area: poolSection.area, orchestration: poolSection.orchestration, actionsByObject: poolSection.actionsByObject, identities: poolSection.identities, coverage: poolSection.coverage, basePath: "/program", briefs: poolSection.briefs, forecasts: poolSection.forecasts, spend: poolSection.spend })}`
+${projectsBodyHtml(poolSection.pool, { area: poolSection.area, status: poolSection.status, kind: poolSection.kind, audit: poolSection.audit, orchestration: poolSection.orchestration, actionsByObject: poolSection.actionsByObject, identities: poolSection.identities, coverage: poolSection.coverage, basePath: "/program", briefs: poolSection.briefs, forecasts: poolSection.forecasts, spend: poolSection.spend })}`
     : "";
   const { program, live } = data;
   const projects = data.projects ?? [];
