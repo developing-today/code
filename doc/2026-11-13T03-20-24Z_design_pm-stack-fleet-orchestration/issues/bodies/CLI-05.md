@@ -54,7 +54,8 @@ This batch creates design/research/validation handoff issues only. After PR #922
 - **P-R040 — design-only (candidate)**; occurrences `P-1414`; full trace: census/requirements-crosswalk.jsonl
 - **P-R054 — design-only (candidate)**; occurrences `P-1705, P-1706, P-1707, P-1708, P-1709, P-1710, P-1711, P-1712, P-1713, P-1714, P-1715`; full trace: census/requirements-crosswalk.jsonl
 - **P-R069 — design-only (candidate)**; occurrences `P-1705, P-1706, P-1707, P-1708, P-1709, P-1710, P-1711, P-1712, P-1713, P-1714, P-1715`; full trace: census/requirements-crosswalk.jsonl
-Deliver this bounded slice only. It enables downstream work only after its stated contracts and prerequisites are accepted; it does not imply that other component specs, closed parent issues, source code, tests, deployments, or runtime behavior are complete.
+  Deliver this bounded slice only. It enables downstream work only after its stated contracts and prerequisites are accepted; it does not imply that other component specs, closed parent issues, source code, tests, deployments, or runtime behavior are complete.
+
 ## Owned files and boundaries
 
 - `pkgs/fleet/crates/fleet-queue/src/work/lifecycle.rs`
@@ -70,9 +71,6 @@ Hard blockers named by the source slice, after granular-key normalization: No in
 File-collision sequencing edges added by stable topological serialization: none.
 Existing issue references retained as non-blocking runtime/evidence gates: none.
 Domain-starter parent references are never emitted as hard native blockers. Source parents normalized to granular slices or runtime gates: none.
-
-
-
 
 Use only granular issue-key edges after all keys are resolved. Never make a whole domain starter a hard blocker when it creates a cycle. File collisions are hard sequencing edges. Parent integration adds native parent/blocker edges in a later pass after the command map, requirements IDs, and acyclic graph are verified.
 
@@ -114,8 +112,8 @@ Negative coverage: stale input, duplicate/replay, ambiguous resource, unauthoriz
 
 | `CLI-05` Lifecycle transition + checkpoint/park/resume/handoff receipts | #9206 for command contract; #9207 checkpoint; #9209 fence; #9203 handoff | `work.block/unblock/park/resume/release/handoff/checkpoint`, `--reason/--checkpoint/--release-lease`, agent receipt; REQ H-SURVIVE-B, C-10/C-15, P-13 | Shared lifecycle service and existing queue/agent APIs; no new scheduler. | `CLI-01/02`, #9178/#9179, #9203/#9207/#9209 | **Failing test:** future `work_park_requires_durable_checkpoint_before_release`. **Done:** `cargo test --manifest-path pkgs/fleet/Cargo.toml -p fleet-queue --lib --features client,queue-broker work_park_requires_durable_checkpoint_before_release` passes; every transition defines partial recovery and receipts separate delivery/ack/start. |
 
-
 ## Shared-file sequencing
 
 Added hard sequencing edges (the predecessor owns the same exact writable file):
+
 - blocked by `CLI-04` — `shared-file:pkgs/fleet/crates/fleet-queue/src/work/lifecycle.rs`

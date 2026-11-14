@@ -62,14 +62,13 @@ Domain-starter parent references are never emitted as hard native blockers. Sour
 
 Source-local candidate aliases normalized for this packet: PRI-TRIAGE-01 → PRI-05a; DST-REASON-01 → DST-01; PRI-05 → PRI-05a, PRI-05b, PRI-05c, PRI-05d.
 
-
 Use only granular issue-key edges after all keys are resolved. Never make a whole domain starter a hard blocker when it creates a cycle. File collisions are hard sequencing edges. Parent integration adds native parent/blocker edges in a later pass after the command map, requirements IDs, and acyclic graph are verified.
 
 ## Starting failing test, oracle, and done check
 
 - **First failing test:** `pmo_priority_opportunity_expiry_retriages_without_base_mutation; pmo_priority_opportunity_expiry_never_changes_protected_expedite`
 - **Oracle:** The source slice’s stated reference model, golden fixture, or invariant; compare expected and observed state explicitly. No mock-only claim of deployed/live behavior.
-- **Done command:** `cargo test --manifest-path pkgs/fleet/Cargo.toml -p fleet-queue --lib --features client,queue-broker pmo_priority_opportunity_expiry_retriages_without_base_mutation (verify exact name appears with -- --list before running). Also verify `pmo_priority_opportunity_expiry_never_changes_protected_expedite` is listed with `cargo test --manifest-path pkgs/fleet/Cargo.toml -p fleet-queue --lib --features client,queue-broker -- --list`, then run `cargo test --manifest-path pkgs/fleet/Cargo.toml -p fleet-queue --lib --features client,queue-broker pmo_priority_opportunity_expiry_never_changes_protected_expedite`.`
+- **Done command:** `cargo test --manifest-path pkgs/fleet/Cargo.toml -p fleet-queue --lib --features client,queue-broker pmo_priority_opportunity_expiry_retriages_without_base_mutation (verify exact name appears with -- --list before running). Also verify `pmo_priority_opportunity_expiry_never_changes_protected_expedite`is listed with`cargo test --manifest-path pkgs/fleet/Cargo.toml -p fleet-queue --lib --features client,queue-broker -- --list`, then run `cargo test --manifest-path pkgs/fleet/Cargo.toml -p fleet-queue --lib --features client,queue-broker pmo_priority_opportunity_expiry_never_changes_protected_expedite`.`
 - Tests must first be listed by exact name in the owning target (`-- --list`); assert the test exists before execution. A zero-test filter passing is not acceptance.
 
 ## Acceptance and negative cases
@@ -109,13 +108,12 @@ Consume the existing #7030 protected expedite membership/value and the dated `pm
 
 Split refinement: Temporary boost has explicit start/expiry and expiryAction=retriage; expiry removes only the temporary factor and retains searchable cold backlog.
 
-
 ## Merged source-key/facade acceptance
 
 - `PRI-05` → `PRI-05b`: Composite source key split into four independently testable triage behaviors. Exact command rows allocated here: no direct command rows.
 
-
 ## Shared-file sequencing
 
 Added hard sequencing edges (the predecessor owns the same exact writable file):
+
 - blocked by `PRI-05a` — `shared-file:pkgs/fleet/crates/fleet-queue/src/work/priority.rs`

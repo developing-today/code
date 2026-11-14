@@ -9,17 +9,9 @@
       "kind": "implementation",
       "version": "V2",
       "tier": "crucial",
-      "statements": [
-        "S2.1",
-        "S2.2",
-        "S2.3",
-        "S2.16"
-      ],
+      "statements": ["S2.1", "S2.2", "S2.3", "S2.16"],
       "goal": "Own the benchmark crate manifest/result schema and the design-only adapter plan, synthetic workload fixture and reference oracle. The fixture verifies operation mappings, computes the exact fixture digest, rejects ordinary put after Tombstoned(g), and allows only explicit resurrection to g+1 with a new non-reused physical key and unchanged canonical ContentId.",
-      "enables": [
-        "all engine adapter slices",
-        "local and cloud evidence follow-ups"
-      ],
+      "enables": ["all engine adapter slices", "local and cloud evidence follow-ups"],
       "owned_files": [
         {
           "path": "pkgs/id/benchmarks/Cargo.toml",
@@ -90,17 +82,9 @@
       "kind": "implementation",
       "version": "V2",
       "tier": "recommended",
-      "statements": [
-        "S2.1",
-        "S2.2",
-        "S2.3",
-        "S2.16"
-      ],
+      "statements": ["S2.1", "S2.2", "S2.3", "S2.16"],
       "goal": "Implement D1 mapping for supported logical operations and capture rows read/written, duration and DB size.",
-      "enables": [
-        "D1 parity runs",
-        "cloud evidence"
-      ],
+      "enables": ["D1 parity runs", "cloud evidence"],
       "owned_files": [
         {
           "path": "pkgs/id/benchmarks/src/adapters/d1.rs",
@@ -141,17 +125,9 @@
       "kind": "implementation",
       "version": "V2",
       "tier": "recommended",
-      "statements": [
-        "S2.1",
-        "S2.2",
-        "S2.3",
-        "S2.16"
-      ],
+      "statements": ["S2.1", "S2.2", "S2.3", "S2.16"],
       "goal": "Implement R2 object get/put/checksum and native counters. Parent-verified primary R2 conditional operations cover writes (Put/Multipart/Copy), not DeleteObject. Do not claim conditional delete. GC may plain-delete a captured immutable generation-qualified key only after the #9084 owner fence and non-reuse are proven; otherwise delete is unsupported/disabled.",
-      "enables": [
-        "R2 parity runs",
-        "cloud evidence"
-      ],
+      "enables": ["R2 parity runs", "cloud evidence"],
       "owned_files": [
         {
           "path": "pkgs/id/benchmarks/src/adapters/r2.rs",
@@ -192,16 +168,9 @@
       "kind": "implementation",
       "version": "V2",
       "tier": "recommended",
-      "statements": [
-        "S2.1",
-        "S2.2",
-        "S2.3",
-        "S2.16"
-      ],
+      "statements": ["S2.1", "S2.2", "S2.3", "S2.16"],
       "goal": "Implement local redb operations using current pinned crate and report transaction/correctness data.",
-      "enables": [
-        "redb local measurement"
-      ],
+      "enables": ["redb local measurement"],
       "owned_files": [
         {
           "path": "pkgs/id/benchmarks/src/adapters/redb.rs",
@@ -242,16 +211,9 @@
       "kind": "implementation",
       "version": "V2",
       "tier": "recommended",
-      "statements": [
-        "S2.1",
-        "S2.2",
-        "S2.3",
-        "S2.16"
-      ],
+      "statements": ["S2.1", "S2.2", "S2.3", "S2.16"],
       "goal": "Implement local Turso operations and report local revision/push/pull/network state separately from query timing.",
-      "enables": [
-        "Turso local measurement"
-      ],
+      "enables": ["Turso local measurement"],
       "owned_files": [
         {
           "path": "pkgs/id/benchmarks/src/adapters/turso.rs",
@@ -292,17 +254,9 @@
       "kind": "research",
       "version": "V2",
       "tier": "recommended",
-      "statements": [
-        "S2.1",
-        "S2.2",
-        "S2.3",
-        "S2.16"
-      ],
+      "statements": ["S2.1", "S2.2", "S2.3", "S2.16"],
       "goal": "Run redb/Turso on identical corpus bytes and digest; capture named laptop/runtime/network/cache/storage-shard conditions in validated result-v1 record. Keep local results separate from cloud results.",
-      "enables": [
-        "S2.1 local comparison evidence",
-        "later placement research"
-      ],
+      "enables": ["S2.1 local comparison evidence", "later placement research"],
       "owned_files": [
         {
           "path": "pkgs/id/benchmarks/run_local.py",
@@ -371,16 +325,9 @@
       "kind": "research",
       "version": "V4",
       "tier": "contingent",
-      "statements": [
-        "S2.1",
-        "S2.2",
-        "S2.3",
-        "S2.16"
-      ],
+      "statements": ["S2.1", "S2.2", "S2.3", "S2.16"],
       "goal": "Execute approved D1/R2 cloud storage workloads and publish raw measurements, dated price, durability and source metadata. Does not evaluate recall or recommend shards.",
-      "enables": [
-        "evidence inputs to #9134/#9135 placement research"
-      ],
+      "enables": ["evidence inputs to #9134/#9135 placement research"],
       "owned_files": [
         {
           "path": "pkgs/id/benchmarks/run_cloud.py",
@@ -428,8 +375,8 @@
         "command": "python3 -I pkgs/id/benchmarks/validate_results.py --input doc/2026-11-13T03-40-00Z_design_id-atlas-summit/part-c/results/cloud-run.v1.json",
         "oracle": {
           "kind": "research-matrix",
-        "expected": "Cloud result includes provider/region/corpus digest, raw D1/R2 storage samples, provider-native operation units, dated price-source, durability/RPO, replica semantics and errors; no search/shard recommendation. The separate preflight fixture rejects malformed runner arguments before side effects.",
-        "verifier": "Owned provider-results validator checks D1 row billing fields and R2 Class A/B/storage units, dated prices, durability and raw samples; owned fixture preflight test uses a fake side-effect recorder to verify parser rejection before credentials/network/locks/writes/spend, with zero provider calls."
+          "expected": "Cloud result includes provider/region/corpus digest, raw D1/R2 storage samples, provider-native operation units, dated price-source, durability/RPO, replica semantics and errors; no search/shard recommendation. The separate preflight fixture rejects malformed runner arguments before side effects.",
+          "verifier": "Owned provider-results validator checks D1 row billing fields and R2 Class A/B/storage units, dated prices, durability and raw samples; owned fixture preflight test uses a fake side-effect recorder to verify parser rejection before credentials/network/locks/writes/spend, with zero provider calls."
         }
       },
       "rollback": "Stop run and revoke run-scoped credentials if a preflight gate fails; retain any completed billable output with invalid/incomplete status and do not claim a winner. No automatic provider-side rollback is assumed.",
@@ -457,16 +404,9 @@
       "kind": "design",
       "version": "V3",
       "tier": "crucial",
-      "statements": [
-        "S2.4",
-        "S2.5",
-        "S2.6",
-        "S2.17"
-      ],
+      "statements": ["S2.4", "S2.5", "S2.6", "S2.17"],
       "goal": "Specify local watermark/policy epoch, bounded corpus staleness, immediate revocation, realtime/cache-disable flags and fail-closed behavior against current indefinite cache.",
-      "enables": [
-        "safe cache implementation"
-      ],
+      "enables": ["safe cache implementation"],
       "owned_files": [
         {
           "path": "pkgs/atlas-search/worker/src/cache_contract.ts",
@@ -511,16 +451,9 @@
       "kind": "implementation",
       "version": "V3",
       "tier": "recommended",
-      "statements": [
-        "S2.4",
-        "S2.5",
-        "S2.6",
-        "S2.17"
-      ],
+      "statements": ["S2.4", "S2.5", "S2.6", "S2.17"],
       "goal": "Implement tenant/auth/policy-bound key, pushed corpus watermark, explicit cache flags, immediate revocation fail-closed and bounded eviction.",
-      "enables": [
-        "tenant-scoped cached search"
-      ],
+      "enables": ["tenant-scoped cached search"],
       "owned_files": [
         {
           "path": "pkgs/atlas-search/worker/src/cache_do.ts",
@@ -566,15 +499,9 @@
       "kind": "research",
       "version": "V2",
       "tier": "crucial",
-      "statements": [
-        "S2.7",
-        "S2.8",
-        "S2.9"
-      ],
+      "statements": ["S2.7", "S2.8", "S2.9"],
       "goal": "Inventory blob/event/world/sync authorities, redb usage, exact-byte Iroh BLAKE3 IDs, world journal and Atlas content_hash producer gap; avoid generalized store migration claims.",
-      "enables": [
-        "backend placement without identity breakage"
-      ],
+      "enables": ["backend placement without identity breakage"],
       "owned_files": [
         {
           "path": "doc/2026-11-13T03-40-00Z_design_id-atlas-summit/part-c/store-placement-research.md",
@@ -641,15 +568,9 @@
       "kind": "test",
       "version": "V2",
       "tier": "crucial",
-      "statements": [
-        "S2.7",
-        "S2.8",
-        "S2.9"
-      ],
+      "statements": ["S2.7", "S2.8", "S2.9"],
       "goal": "Reconcile documented Ed25519 preimage with code SHA256(serde_json::to_vec(SignedBody)); add compatibility vectors without silently changing legacy signature bytes.",
-      "enables": [
-        "safe store/metadata migration"
-      ],
+      "enables": ["safe store/metadata migration"],
       "owned_files": [
         {
           "path": "pkgs/id/crates/id-sync/tests/part_c_profile_compat.rs",
@@ -667,9 +588,7 @@
           "description": "typed ContentId/PayloadId/EnvelopeId identity profile contract"
         }
       ],
-      "after": [
-        "C9135-01"
-      ],
+      "after": ["C9135-01"],
       "test": {
         "file": "pkgs/id/crates/id-sync/tests/part_c_profile_compat.rs",
         "command": "cargo test --manifest-path pkgs/id/Cargo.toml -p id-sync --test part_c_profile_compat",
@@ -691,14 +610,9 @@
       "kind": "research",
       "version": "V4",
       "tier": "contingent",
-      "statements": [
-        "S2.8",
-        "S2.9"
-      ],
+      "statements": ["S2.8", "S2.9"],
       "goal": "Compare Litestream WAL async DR, Turso Sync last-push-wins, D1 and redb against RPO/RTO/conflict and workload needs; select no backend without evidence.",
-      "enables": [
-        "future store adapter decision"
-      ],
+      "enables": ["future store adapter decision"],
       "owned_files": [
         {
           "path": "doc/2026-11-13T03-40-00Z_design_id-atlas-summit/part-c/sqlite-sync-research.md",
@@ -762,17 +676,9 @@
       "kind": "design",
       "version": "V2",
       "tier": "crucial",
-      "statements": [
-        "S2.10",
-        "S2.11",
-        "S2.12",
-        "S2.13",
-        "S2.18"
-      ],
+      "statements": ["S2.10", "S2.11", "S2.12", "S2.13", "S2.18"],
       "goal": "Define trusted/untrusted bucket metadata, opaque locator mapping, broker checks and leakage model without changing global CAS IDs.",
-      "enables": [
-        "encrypted shared-bucket implementation"
-      ],
+      "enables": ["encrypted shared-bucket implementation"],
       "owned_files": [
         {
           "path": "pkgs/id/crates/id-store/src/bucket_locator.rs",
@@ -817,17 +723,9 @@
       "kind": "implementation",
       "version": "V3",
       "tier": "recommended",
-      "statements": [
-        "S2.10",
-        "S2.11",
-        "S2.12",
-        "S2.13",
-        "S2.18"
-      ],
+      "statements": ["S2.10", "S2.11", "S2.12", "S2.13", "S2.18"],
       "goal": "Add per-operation tenant/trust-domain authorization before get/list/head/put/delete; encryption remains separate adapter.",
-      "enables": [
-        "brokered multi-tenant bucket"
-      ],
+      "enables": ["brokered multi-tenant bucket"],
       "owned_files": [
         {
           "path": "pkgs/id/crates/id-store/src/bucket_broker.rs",
@@ -868,15 +766,9 @@
       "kind": "design",
       "version": "V2",
       "tier": "crucial",
-      "statements": [
-        "S2.14",
-        "S2.15",
-        "S2.19"
-      ],
+      "statements": ["S2.14", "S2.15", "S2.19"],
       "goal": "Require #9084 atomic ref-intent/tombstone generation fence plus immutable generation-qualified physical keys that are never reused. Fence g before plain DeleteObject on captured old key; resurrection g+1 receives a new key while canonical ContentId/PayloadId stays unchanged. If fence or non-reuse is unproven, deletion stays disabled.",
-      "enables": [
-        "safe GC implementation"
-      ],
+      "enables": ["safe GC implementation"],
       "owned_files": [
         {
           "path": "pkgs/id/crates/id-store/src/reference_generation.rs",
@@ -895,9 +787,7 @@
           "description": "authoritative transactional ref-intent/tombstone generation fence; if absent, keep deletion disabled"
         }
       ],
-      "after": [
-        "9110-02"
-      ],
+      "after": ["9110-02"],
       "test": {
         "file": "pkgs/id/crates/id-store/tests/reference_generation.rs",
         "command": "cargo test --manifest-path pkgs/id/Cargo.toml -p id-store --test reference_generation",
@@ -919,15 +809,9 @@
       "kind": "implementation",
       "version": "V3",
       "tier": "recommended",
-      "statements": [
-        "S2.14",
-        "S2.15",
-        "S2.19"
-      ],
+      "statements": ["S2.14", "S2.15", "S2.19"],
       "goal": "Implement resumable collection only behind #9084 fence and non-reused immutable generation-qualified keys. Tombstone first, wait grace, then plain-delete captured old key; do not depend on provider conditional-delete. Prioritize largest reclaimable files and independently reclaim chunks. Without fence/non-reuse proof keep delete disabled.",
-      "enables": [
-        "large-object storage reclamation"
-      ],
+      "enables": ["large-object storage reclamation"],
       "owned_files": [
         {
           "path": "pkgs/id/crates/id-store/src/gc.rs",
@@ -972,18 +856,9 @@
       "kind": "research",
       "version": "V2",
       "tier": "crucial",
-      "statements": [
-        "S6.1",
-        "S6.2",
-        "S6.3",
-        "S6.13",
-        "S6.14"
-      ],
+      "statements": ["S6.1", "S6.2", "S6.3", "S6.13", "S6.14"],
       "goal": "Use Snowflake arctic-embed-m-v2.0 as existing model; compare BGE-M3, Voyage, OpenAI text-embedding-3 and Workers AI on cost, self-hostability and mixed corpus; consume only #9092-owned #8627 quality artifacts, do not run/recompute recall.",
-      "enables": [
-        "owner's second-model decision",
-        "vector identity contract"
-      ],
+      "enables": ["owner's second-model decision", "vector identity contract"],
       "owned_files": [
         {
           "path": "doc/2026-11-13T03-40-00Z_design_id-atlas-summit/part-c/embedder-candidates-research.md",
@@ -1011,9 +886,7 @@
           "description": "current model, candidate list, corpus/eval digests and any owner-produced #8627 quality artifact"
         }
       ],
-      "after": [
-        "9110-R2"
-      ],
+      "after": ["9110-R2"],
       "test": {
         "file": "doc/2026-11-13T03-40-00Z_design_id-atlas-summit/part-c/validate_embedder_research.py",
         "command": "python3 -I doc/2026-11-13T03-40-00Z_design_id-atlas-summit/part-c/validate_embedder_research.py --input doc/2026-11-13T03-40-00Z_design_id-atlas-summit/part-c/embedder-candidates-research-report.json",
@@ -1047,17 +920,9 @@
       "kind": "implementation",
       "version": "V3",
       "tier": "recommended",
-      "statements": [
-        "S6.1",
-        "S6.2",
-        "S6.3",
-        "S6.13",
-        "S6.14"
-      ],
+      "statements": ["S6.1", "S6.2", "S6.3", "S6.13", "S6.14"],
       "goal": "Queue accepted content asynchronously with exact provider/model/revision/preprocess identity and idempotent mixed-embedder storage.",
-      "enables": [
-        "built-in ID search"
-      ],
+      "enables": ["built-in ID search"],
       "owned_files": [
         {
           "path": "pkgs/id/crates/id-store/src/vector_job.rs",
@@ -1106,17 +971,9 @@
       "kind": "design",
       "version": "V3",
       "tier": "crucial",
-      "statements": [
-        "S6.4",
-        "S6.5",
-        "S6.6",
-        "S6.7",
-        "S6.15"
-      ],
+      "statements": ["S6.4", "S6.5", "S6.6", "S6.7", "S6.15"],
       "goal": "Specify immutable materialized order score DESC then immutable recommendation ID ASC at pinned cutoff; parent SnapshotId, page position and expiry semantics; each independently retained/transported page has its own signed envelope and EnvelopeId.",
-      "enables": [
-        "DO or durable-store implementation"
-      ],
+      "enables": ["DO or durable-store implementation"],
       "owned_files": [
         {
           "path": "pkgs/atlas-search/worker/src/recommendation_state.ts",
@@ -1173,17 +1030,9 @@
       "kind": "implementation",
       "version": "V3",
       "tier": "recommended",
-      "statements": [
-        "S6.4",
-        "S6.5",
-        "S6.6",
-        "S6.7",
-        "S6.15"
-      ],
+      "statements": ["S6.4", "S6.5", "S6.6", "S6.7", "S6.15"],
       "goal": "Implement per-tenant/subject DO using materialized score-descending/immutable-ID-ascending order; persist parent SnapshotId and cursor position; sign each independently retained/transported page with its own EnvelopeId.",
-      "enables": [
-        "incremental recommendation consumer"
-      ],
+      "enables": ["incremental recommendation consumer"],
       "owned_files": [
         {
           "path": "pkgs/atlas-search/worker/src/recommendation_do.ts",
@@ -1224,19 +1073,9 @@
       "kind": "design",
       "version": "V3",
       "tier": "crucial",
-      "statements": [
-        "S6.8",
-        "S6.9",
-        "S6.10",
-        "S6.11",
-        "S6.12",
-        "S6.16",
-        "S6.17"
-      ],
+      "statements": ["S6.8", "S6.9", "S6.10", "S6.11", "S6.12", "S6.16", "S6.17"],
       "goal": "Separate recommendation snapshots from search history and apply per-class retention/deletion policy. ParentSnapshotId hashes only the complete signed parent envelope of inputs, ranking configuration and cutoff; it excludes pages. Each page has an independently signed envelope and EnvelopeId; cursor binds parent SnapshotId plus position.",
-      "enables": [
-        "snapshot persistence"
-      ],
+      "enables": ["snapshot persistence"],
       "owned_files": [
         {
           "path": "pkgs/id/crates/id-store/src/recommendation_object.rs",
@@ -1281,19 +1120,9 @@
       "kind": "implementation",
       "version": "V4",
       "tier": "recommended",
-      "statements": [
-        "S6.8",
-        "S6.9",
-        "S6.10",
-        "S6.11",
-        "S6.12",
-        "S6.16",
-        "S6.17"
-      ],
+      "statements": ["S6.8", "S6.9", "S6.10", "S6.11", "S6.12", "S6.16", "S6.17"],
       "goal": "Separate recommendation snapshots from search history and apply per-class retention/deletion policy. ParentSnapshotId hashes only the complete signed parent envelope of inputs, ranking configuration and cutoff; it excludes pages. Each page has an independently signed envelope and EnvelopeId; cursor binds parent SnapshotId plus position.",
-      "enables": [
-        "admin before/after views"
-      ],
+      "enables": ["admin before/after views"],
       "owned_files": [
         {
           "path": "pkgs/id/crates/id-store/src/recommendation_store.rs",

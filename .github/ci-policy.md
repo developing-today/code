@@ -65,19 +65,19 @@ The existing guard/build registry remains checked by
 `.github/scripts/check-ci-policy-agreement.sh`; its main-only trigger check
 also scans the full workflow directory. Main and manual venues are explicit:
 
-| Workflow | Automatic venue | Manual |
-| --- | --- | --- |
-| workflow-lint | none | yes |
-| proxy-port-fallbacks | none | yes |
-| fleet-search-parity-guard | none | yes |
-| fleet-rust-tests | main push, path gated | yes |
-| opencode-config-guard | main push | yes |
-| mcpx fix-test guard | main push contract tests | yes |
-| production-line guard | main push, path gated | yes |
-| go modules build | main push, path gated | yes |
-| identity build | main push, path gated | yes |
-| map build | main push, path gated | yes |
-| mcpx nix build | main push, path gated | yes |
+| Workflow                  | Automatic venue          | Manual |
+| ------------------------- | ------------------------ | ------ |
+| workflow-lint             | none                     | yes    |
+| proxy-port-fallbacks      | none                     | yes    |
+| fleet-search-parity-guard | none                     | yes    |
+| fleet-rust-tests          | main push, path gated    | yes    |
+| opencode-config-guard     | main push                | yes    |
+| mcpx fix-test guard       | main push contract tests | yes    |
+| production-line guard     | main push, path gated    | yes    |
+| go modules build          | main push, path gated    | yes    |
+| identity build            | main push, path gated    | yes    |
+| map build                 | main push, path gated    | yes    |
+| mcpx nix build            | main push, path gated    | yes    |
 
 Other former PR venues retain their existing main/manual/nightly venues;
 `deploy-flake-checks` remains manually runnable. Historical `basic:` job
@@ -112,7 +112,7 @@ judged by trigger class (verified against the workflow files on main,
   exact release SHA. An older run never judges newer code (Codex P1 on
   PR #4636).
 - Path-filtered push workflows (`mcpx`, `mcpx conformance`, `mcpx nix
-  build`, `go modules build`, `identity build`, `map build`, `id bench`):
+build`, `go modules build`, `identity build`, `map build`, `id bench`):
   an exact-SHA push run when one exists, else the latest push-to-main
   run — a commit outside their paths legitimately never triggered them.
 - Non-push workflows (`nix ci`, schedule/workflow_dispatch only): the

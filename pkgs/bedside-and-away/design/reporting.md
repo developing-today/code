@@ -18,6 +18,7 @@ Implements a bounded component of #9359. Existing layout and versioned store eve
 Load `public/reporting.js` and `public/reporting-ui.js` with existing assets. Both are plain browser scripts. Helpers are also executable under Node's VM without DOM dependencies. UI uses established `apply`, `dlg`, `current`, `version`, `hub`, `byId`, `decisionContext`, `decisionBoard`, and HTML escaping helpers.
 
 Required parent-owned integration edits:
+
 1. Build/embed/serve both scripts in the same manner as decision.js; load before app startup rendering.
 2. Render map `report: reportingView` instead of `report`.
 3. Inventory action calls `reportingInventory(id)`.
@@ -27,6 +28,7 @@ Required parent-owned integration edits:
 7. Include both new tests in aggregate checks. Preserve native cf deployment; no Wrangler or dependency additions.
 
 Core functions on `BedawayReports`:
+
 - `moneyToMinor(value) -> integer|null` (throws on invalid precision/negative values).
 - `allocateExpense(minor, categoryIds, explicitAllocations?) -> {categoryId,minor}[]`.
 - `stageReceipt(text,{id,store,at,items,currency}) -> pending receipt`.
@@ -40,15 +42,15 @@ Scope descriptors are `{id,label,ancestors,archived}`. Monetary allocations are 
 
 ## Ledger coverage and remaining gaps
 
-|IDs|This component|Still needed|
-|---|---|---|
-|BA-048, BA-092|Manual multi-person ratings, separate required constraints, author/time, unknown handling|Authenticated independent ratings/identity and E2E UI review|
-|BA-052, BA-055|Inventory records and staged receipt transcription, item matching, no-change cancellation, retry dedupe|OCR, external source ingestion, receipt identity across separately staged drafts, unit conversion|
-|BA-053, BA-054|Explicit structured receipt entry only|Contextual phrase inference remains unimplemented; do not claim AI understanding|
-|BA-056, BA-057|Existing budget UX retained, currency-separated bars, explicit exact-cent allocation, author/category grouping|Budget periods/multi-currency budget conversion not chosen|
-|BA-058|IANA time-zone grouping, date-only unknown hour, manual context labels|Holiday calendar integration, inferred busy/slow absent|
-|BA-059–067|Opt-in default application, hierarchy, additive/custom/disabled protection, stale preview guards, uncancelled subset/bulk acceptance|Actual research content generation, file/content pattern scanning, arbitrary graph/text scope UI beyond current scopes|
-|BA-069–073|No change to existing saved-source summaries|Automatic research execution/context derivation and remote parser absent|
+| IDs            | This component                                                                                                                       | Still needed                                                                                                           |
+| -------------- | ------------------------------------------------------------------------------------------------------------------------------------ | ---------------------------------------------------------------------------------------------------------------------- |
+| BA-048, BA-092 | Manual multi-person ratings, separate required constraints, author/time, unknown handling                                            | Authenticated independent ratings/identity and E2E UI review                                                           |
+| BA-052, BA-055 | Inventory records and staged receipt transcription, item matching, no-change cancellation, retry dedupe                              | OCR, external source ingestion, receipt identity across separately staged drafts, unit conversion                      |
+| BA-053, BA-054 | Explicit structured receipt entry only                                                                                               | Contextual phrase inference remains unimplemented; do not claim AI understanding                                       |
+| BA-056, BA-057 | Existing budget UX retained, currency-separated bars, explicit exact-cent allocation, author/category grouping                       | Budget periods/multi-currency budget conversion not chosen                                                             |
+| BA-058         | IANA time-zone grouping, date-only unknown hour, manual context labels                                                               | Holiday calendar integration, inferred busy/slow absent                                                                |
+| BA-059–067     | Opt-in default application, hierarchy, additive/custom/disabled protection, stale preview guards, uncancelled subset/bulk acceptance | Actual research content generation, file/content pattern scanning, arbitrary graph/text scope UI beyond current scopes |
+| BA-069–073     | No change to existing saved-source summaries                                                                                         | Automatic research execution/context derivation and remote parser absent                                               |
 
 ## Verification
 

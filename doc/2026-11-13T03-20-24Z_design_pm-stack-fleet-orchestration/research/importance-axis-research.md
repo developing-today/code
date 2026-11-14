@@ -61,7 +61,7 @@ or historical source statement, usable as a hypothesis seed only.
 - **[fact]** #9204's candidate weighted-selection formula
   (`w_i = exp(-ln(r)*(u_i-u_ref)/d) * n_bucket(i)^(-alpha)`, uniform mixture
   `q_i=(1-epsilon)*Pweighted(i)+epsilon/N`, sampling without replacement
-  over a frozen eligible population) is specified for the *urgency* axis
+  over a frozen eligible population) is specified for the _urgency_ axis
   and for exploration; its own text states: "Importance is null/unavailable
   until distinct data exists. Do not fabricate it from urgency. Any future
   axis mixture is a separate versioned policy with distinct filter and
@@ -79,7 +79,7 @@ or historical source statement, usable as a hypothesis seed only.
   1000 = new ordinary default) show a past design intent to separate
   "how much it matters" from "how soon it is needed" (charter C-052/C-144,
   handoff H-135–H-137 occurrences behind C-R040/C-R105/H-R010). They are
-  evidence that the *distinction* was wanted, not evidence for any
+  evidence that the _distinction_ was wanted, not evidence for any
   particular numeric mapping.
 
 ## 3. prior art
@@ -87,15 +87,15 @@ or historical source statement, usable as a hypothesis seed only.
 Receipts are the two state-of-the-art tracks shipped in this design tree
 (`research/track-a-state-of-art.md`, `research/track-b-state-of-art.md`,
 with `research/track-a-sources.json` / `research/track-b-sources.json`).
-Only precedents that separate *priority* from *share/fairness* or from
-*within-group order* transfer to the importance question:
+Only precedents that separate _priority_ from _share/fairness_ or from
+_within-group order_ transfer to the importance question:
 
-| Precedent (Track A receipt) | Documented mechanism | Lesson for an importance axis |
-|---|---|---|
-| Kubernetes Pod Priority and Preemption | Numeric priority orders scheduling; feasibility is a separate gate. | An axis value must never make a hard-ineligible item eligible; eligibility stays a gate, not a low weight. Preemption is **not** borrowed for leased agent work. |
-| Kubernetes API Priority and Fairness (APF) | Requests classified into priority levels/flows; fair dispatch controls shares of concurrency. | "Which first" (priority) and "who gets a share" (fairness) are different questions. Importance, if it ever mixes, is a third question again — expected value — and must not be conflated with either. |
-| Linear priority groups / Jira ranking (LexoRank) | Categorical priority plus a human-controlled rank *within* a group; rank is a separate field. | Supports categorical importance bands + within-band peer rank as a low-risk mixing shape (option E below); also warns that rank rebalance is a first-class maintenance problem. |
-| Temporal / CloudEvents / Kafka (Track A/B) | Durable command identity, replay with pinned inputs, partition-local ordering only. | Any derived mixture must pin policy version + input snapshot to be explainable/replayable; a mixture computed from unpinned inputs is not auditable. |
+| Precedent (Track A receipt)                      | Documented mechanism                                                                          | Lesson for an importance axis                                                                                                                                                                         |
+| ------------------------------------------------ | --------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Kubernetes Pod Priority and Preemption           | Numeric priority orders scheduling; feasibility is a separate gate.                           | An axis value must never make a hard-ineligible item eligible; eligibility stays a gate, not a low weight. Preemption is **not** borrowed for leased agent work.                                      |
+| Kubernetes API Priority and Fairness (APF)       | Requests classified into priority levels/flows; fair dispatch controls shares of concurrency. | "Which first" (priority) and "who gets a share" (fairness) are different questions. Importance, if it ever mixes, is a third question again — expected value — and must not be conflated with either. |
+| Linear priority groups / Jira ranking (LexoRank) | Categorical priority plus a human-controlled rank _within_ a group; rank is a separate field. | Supports categorical importance bands + within-band peer rank as a low-risk mixing shape (option E below); also warns that rank rebalance is a first-class maintenance problem.                       |
+| Temporal / CloudEvents / Kafka (Track A/B)       | Durable command identity, replay with pinned inputs, partition-local ordering only.           | Any derived mixture must pin policy version + input snapshot to be explainable/replayable; a mixture computed from unpinned inputs is not auditable.                                                  |
 
 What prior art does **not** establish: any validated numeric weight for
 mixing importance with urgency in a work queue. No receipt measures a
@@ -105,20 +105,20 @@ this document; all simulation outcomes would be hypotheses until run).
 
 ## 4. Candidate importance signals (independent of urgency)
 
-Each signal is scored for *independence* (can it be observed without
-looking at urgency?), *evidence quality today*, and *failure mode*.
+Each signal is scored for _independence_ (can it be observed without
+looking at urgency?), _evidence quality today_, and _failure mode_.
 None is adopted; all collection is future, separately scoped work.
 
-| Signal | Definition | Independence | Evidence today | Failure mode |
-|---|---|---|---|---|
-| Expected value / impact note | A triage-time structured judgement (expected value, strategy fit, risk, scope — the C-R040 outcome fields) recorded with reason + confidence + as-of. | High — recorded by a human/triage process that never reads the urgency integer. | **[fact]** No durable field exists (census). | Subjective drift; needs the #9199 adjustment discipline (reason, evidence, confidence, previous/new, next-review) to stay auditable. |
-| Dependency fan-out (unblock count) | Number of items whose hard gates this item clears (typed dependency graph, #9208/FDR-PMO-005). | High — computable from the graph, not from scores. | **[fact]** Graph edges exist as queue dep-blocks; no aggregated fan-out metric is computed. | Gameable by splitting work; measures *leverage*, not value — a proxy, labelled as such wherever used. |
-| Risk / deadline exposure | Verified external deadline, incident, or opportunity-expiry evidence attached to the item. | Medium — deadlines already feed `effectivePressure` in #9199; counting them again as importance would double-count. | Partial: pressure inputs are design-specified, not implemented. | Double-counting with effective pressure; this research recommends risk live in pressure, **not** in importance, unless a future decision explicitly separates the two. |
-| Strategic alignment tag | Membership in a ratified program/epic with an owner-recorded priority of the *program*. | Medium — program membership is a fact; program importance is an owner judgement. | **[anecdote]** Epic labels exist fleet-wide; no owner-recorded program ranking exists. | Label inflation; every epic becomes "strategic". Needs scarcity (a bounded number of top programs) to carry information. |
-| Realized-value backtests | Post-completion outcomes (merged PRs, closed gates, measured effect) aggregated per class of work. | High — observed after the fact. | None collected for calibration purposes. | Survivorship and lag; calibrates *classes*, not individual items; useful for validating the other signals, not as a live input. |
+| Signal                             | Definition                                                                                                                                            | Independence                                                                                                        | Evidence today                                                                              | Failure mode                                                                                                                                                           |
+| ---------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Expected value / impact note       | A triage-time structured judgement (expected value, strategy fit, risk, scope — the C-R040 outcome fields) recorded with reason + confidence + as-of. | High — recorded by a human/triage process that never reads the urgency integer.                                     | **[fact]** No durable field exists (census).                                                | Subjective drift; needs the #9199 adjustment discipline (reason, evidence, confidence, previous/new, next-review) to stay auditable.                                   |
+| Dependency fan-out (unblock count) | Number of items whose hard gates this item clears (typed dependency graph, #9208/FDR-PMO-005).                                                        | High — computable from the graph, not from scores.                                                                  | **[fact]** Graph edges exist as queue dep-blocks; no aggregated fan-out metric is computed. | Gameable by splitting work; measures _leverage_, not value — a proxy, labelled as such wherever used.                                                                  |
+| Risk / deadline exposure           | Verified external deadline, incident, or opportunity-expiry evidence attached to the item.                                                            | Medium — deadlines already feed `effectivePressure` in #9199; counting them again as importance would double-count. | Partial: pressure inputs are design-specified, not implemented.                             | Double-counting with effective pressure; this research recommends risk live in pressure, **not** in importance, unless a future decision explicitly separates the two. |
+| Strategic alignment tag            | Membership in a ratified program/epic with an owner-recorded priority of the _program_.                                                               | Medium — program membership is a fact; program importance is an owner judgement.                                    | **[anecdote]** Epic labels exist fleet-wide; no owner-recorded program ranking exists.      | Label inflation; every epic becomes "strategic". Needs scarcity (a bounded number of top programs) to carry information.                                               |
+| Realized-value backtests           | Post-completion outcomes (merged PRs, closed gates, measured effect) aggregated per class of work.                                                    | High — observed after the fact.                                                                                     | None collected for calibration purposes.                                                    | Survivorship and lag; calibrates _classes_, not individual items; useful for validating the other signals, not as a live input.                                        |
 
 Explicitly rejected signals: any function of the urgency integer, of
-queue age alone, or of label *presence* without owner judgement — each
+queue age alone, or of label _presence_ without owner judgement — each
 either derives importance from urgency/age (forbidden) or carries no
 information.
 
@@ -128,14 +128,14 @@ All options assume the #9199 contract: eligibility is a gate first;
 `importance` is a separate, nullable field; explanations name the policy
 version and pinned inputs. **No option is selected by this research.**
 
-| Option | Shape | Pros | Cons | Data needed before it can even be evaluated |
-|---|---|---|---|---|
-| **A. Urgency only (do nothing)** | Status quo: order by effective/intrinsic urgency, peer rank, created_at, identity (#9199 comparator). | Zero new data, zero new failure modes; fully explainable today. | Importance information, where humans hold it, is invisible to ordering except via urgency edits that corrupt the urgency axis's meaning. | None. This is the baseline every other option must beat *with evidence*. |
-| **B. Lexicographic secondary axis** | Urgency primary; importance breaks ties only *within* an equal-urgency peer group, before peer rank. | Cannot displace a more urgent item; failure is bounded to within-band reordering; null importance degrades exactly to option A. | Effect is small by construction — most groups have one member per urgency value, so the axis rarely fires; may create false confidence that importance "is handled". | Independent importance values on a meaningful share of same-urgency peers (see §7 sufficiency). |
-| **C. Categorical bands + within-band rank** | Importance recorded as a small set of named bands (Linear/Jira prior art); ordering stays urgency-first, bands annotate/explain and order within band via peer rank. | Human-legible; matches how triage actually judges ("much more / slightly more / equal / less" categories in #9199 triage mechanics); no arithmetic on judgements. | Band boundaries become the new argument; still needs the rank-rebalance machinery. | Band definitions with scarcity (bounded top band) and owner agreement on assignment rules. |
-| **D. Weighted mixture score (DRAFT)** | A versioned policy computes a combined score from normalized urgency and normalized importance, e.g. extending the #9204 weight shape with a second axis term. All weights **DRAFT**; none proposed for adoption here. | One comparable number; tunable; the #9204 simulation oracle (frozen population, seeded draws, exact first-draw analytics) can evaluate it offline. | Normalization hides judgement inside arithmetic; on the live 10–90 scale, charter-calibrated constants (e.g. `d=200`) collapse distinctions; a mixed score is the hardest option to explain and the easiest to game; silently becomes "importance inferred from urgency" if importance is imputed for missing items. | Independently sourced importance for a representative population **plus** a live score-distribution census **plus** preregistered simulation acceptance criteria (FDR-PMO-008 pattern). |
-| **E. Importance-weighted exploration only** | Normal selection stays urgency-only (option A); importance may only influence the *exploration* sampler's candidate weights (FDR-PMO-008, disabled by default). | Production ordering is untouched; the axis earns evidence in the lowest-risk surface first; kill switch already designed. | Evidence accrues slowly and only about cold work; does not help head-of-queue choices. | Same signal data as D, but tolerable at far lower coverage because normal selection is unaffected. |
-| **F. Effective-pressure only** | Derive all cross-axis effects through #9199 `effectivePressure` (deadlines, dependency critical path, phase) and keep importance purely as recorded metadata for humans. | One derived quantity to calibrate instead of two; pressure inputs are evidence-based, not judgement-based. | Conflates "valuable" with "time-critical" — exactly the confusion C-R040 exists to prevent; valuable-but-not-urgent work stays invisible. | Pressure policy implementation and its own calibration; does not satisfy the importance requirement, only defers it. |
+| Option                                      | Shape                                                                                                                                                                                                                  | Pros                                                                                                                                                              | Cons                                                                                                                                                                                                                                                                                                                 | Data needed before it can even be evaluated                                                                                                                                             |
+| ------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **A. Urgency only (do nothing)**            | Status quo: order by effective/intrinsic urgency, peer rank, created_at, identity (#9199 comparator).                                                                                                                  | Zero new data, zero new failure modes; fully explainable today.                                                                                                   | Importance information, where humans hold it, is invisible to ordering except via urgency edits that corrupt the urgency axis's meaning.                                                                                                                                                                             | None. This is the baseline every other option must beat _with evidence_.                                                                                                                |
+| **B. Lexicographic secondary axis**         | Urgency primary; importance breaks ties only _within_ an equal-urgency peer group, before peer rank.                                                                                                                   | Cannot displace a more urgent item; failure is bounded to within-band reordering; null importance degrades exactly to option A.                                   | Effect is small by construction — most groups have one member per urgency value, so the axis rarely fires; may create false confidence that importance "is handled".                                                                                                                                                 | Independent importance values on a meaningful share of same-urgency peers (see §7 sufficiency).                                                                                         |
+| **C. Categorical bands + within-band rank** | Importance recorded as a small set of named bands (Linear/Jira prior art); ordering stays urgency-first, bands annotate/explain and order within band via peer rank.                                                   | Human-legible; matches how triage actually judges ("much more / slightly more / equal / less" categories in #9199 triage mechanics); no arithmetic on judgements. | Band boundaries become the new argument; still needs the rank-rebalance machinery.                                                                                                                                                                                                                                   | Band definitions with scarcity (bounded top band) and owner agreement on assignment rules.                                                                                              |
+| **D. Weighted mixture score (DRAFT)**       | A versioned policy computes a combined score from normalized urgency and normalized importance, e.g. extending the #9204 weight shape with a second axis term. All weights **DRAFT**; none proposed for adoption here. | One comparable number; tunable; the #9204 simulation oracle (frozen population, seeded draws, exact first-draw analytics) can evaluate it offline.                | Normalization hides judgement inside arithmetic; on the live 10–90 scale, charter-calibrated constants (e.g. `d=200`) collapse distinctions; a mixed score is the hardest option to explain and the easiest to game; silently becomes "importance inferred from urgency" if importance is imputed for missing items. | Independently sourced importance for a representative population **plus** a live score-distribution census **plus** preregistered simulation acceptance criteria (FDR-PMO-008 pattern). |
+| **E. Importance-weighted exploration only** | Normal selection stays urgency-only (option A); importance may only influence the _exploration_ sampler's candidate weights (FDR-PMO-008, disabled by default).                                                        | Production ordering is untouched; the axis earns evidence in the lowest-risk surface first; kill switch already designed.                                         | Evidence accrues slowly and only about cold work; does not help head-of-queue choices.                                                                                                                                                                                                                               | Same signal data as D, but tolerable at far lower coverage because normal selection is unaffected.                                                                                      |
+| **F. Effective-pressure only**              | Derive all cross-axis effects through #9199 `effectivePressure` (deadlines, dependency critical path, phase) and keep importance purely as recorded metadata for humans.                                               | One derived quantity to calibrate instead of two; pressure inputs are evidence-based, not judgement-based.                                                        | Conflates "valuable" with "time-critical" — exactly the confusion C-R040 exists to prevent; valuable-but-not-urgent work stays invisible.                                                                                                                                                                            | Pressure policy implementation and its own calibration; does not satisfy the importance requirement, only defers it.                                                                    |
 
 **Research recommendation (not a decision):** sequence B/C/E before D —
 options that cannot displace urgent work and degrade exactly to the
@@ -153,7 +153,7 @@ remain **DRAFT** and unused.
   band medians, age, labels, or any other field. An item with null
   importance orders exactly as it would under option A.
 - Any mixture formula must define its null path explicitly: a null axis
-  contributes *no term* (the mixture reduces to the urgency-only result
+  contributes _no term_ (the mixture reduces to the urgency-only result
   for that item), rather than substituting a fabricated neutral value
   that would silently rank the item mid-pack.
 - Explanations must render the absence: `importance: null (unavailable)`
@@ -182,7 +182,7 @@ Falsifiable measurement needs, in dependency order:
    mixture is fitted — below that, results are anecdote, and the
    research conclusion must remain "insufficient data".
 3. **Offline simulation (the #9204/FDR-PMO-008 oracle).** Freeze
-   populations, declare intervals/tolerances *before* running, compare
+   populations, declare intervals/tolerances _before_ running, compare
    candidate mixtures against the urgency-only control on: urgent-work
    delay (must be zero for B/C/E shapes by construction; measured for
    D), cold-work discovery rate, and explanation completeness. A
@@ -196,7 +196,7 @@ Falsifiable measurement needs, in dependency order:
    weights DRAFT.
 5. **Shadow mode before any live use.** Any adopted-in-principle
    mixture first runs read-only/shadow (#9199 PRI-02 pattern): it
-   publishes what it *would* order, humans compare against actual
+   publishes what it _would_ order, humans compare against actual
    claim order, and divergence is reviewed before activation is even
    proposed. Activation remains a separate approval; nothing in this
    research activates anything.
@@ -210,7 +210,7 @@ Falsifiable measurement needs, in dependency order:
   proof.
 - No queue distribution census, importance dataset, or simulation was
   run for this document — those are §7's future work items, so all
-  mixing evaluations here are structural (what *could* be tested and
+  mixing evaluations here are structural (what _could_ be tested and
   what would falsify it), not empirical rankings of the options.
 - The #7030 taxonomy facts are taken from the design package's cited
   readbacks (comments 6715673367 and 6786217364 on #7030); #7030's
@@ -236,7 +236,7 @@ Falsifiable measurement needs, in dependency order:
   importance remains null/unfabricated until evidence exists and is
   never urgency-derived (§6).
 - **C-R105** — when separate importance scores exist, a tunable
-  urgency-versus-importance mixture may be *evaluated*: option D (§5),
+  urgency-versus-importance mixture may be _evaluated_: option D (§5),
   gated on §7's sufficiency and calibration path; the urgency-only
   comparator remains the control.
 - **H-R010** — the weighted-selection formula and candidate defaults

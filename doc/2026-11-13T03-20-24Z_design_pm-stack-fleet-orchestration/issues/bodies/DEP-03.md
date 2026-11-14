@@ -61,9 +61,6 @@ File-collision sequencing edges added by stable topological serialization: none.
 Existing issue references retained as non-blocking runtime/evidence gates: #9178 (upstream claim/manual/takeover/resume semantics must be verified before mutation/cutover; offline compatibility models may proceed), #9179 (upstream park/resume safety semantics must be verified before mutation/cutover; offline fixtures may proceed).
 Domain-starter parent references are never emitted as hard native blockers. Source parents normalized to granular slices or runtime gates: none.
 
-
-
-
 Use only granular issue-key edges after all keys are resolved. Never make a whole domain starter a hard blocker when it creates a cycle. File collisions are hard sequencing edges. Parent integration adds native parent/blocker edges in a later pass after the command map, requirements IDs, and acyclic graph are verified.
 
 ## Starting failing test, oracle, and done check
@@ -106,8 +103,8 @@ Negative coverage: imported cycles quarantined; incomplete traversal cannot retu
 
 **Tier:** crucial. **Goal:** serialize each hard-edge insertion against its reachable path and expose readiness over all active hard blockers; graph cycles require `u=v` or existing path `v→u`, not broad domain lock. **Owns:** `src/work/relations.rs` evaluator/model and `src/turso_queue.rs` transaction integration only after schema approval. **Hard blockers:** DEP-02; granular #9178 claim-eligibility hook; Queue Table Improvements migration gate. #9179 only for park-transition compatibility. **First failing oracle:** `pmo_dep_opposite_concurrent_edges_cannot_both_commit` executes opposite inserts under concurrent writers; assert one CAS loses. **Done command:** list test, then `cargo test --manifest-path pkgs/fleet/Cargo.toml -p fleet-queue --lib --features client,queue-broker pmo_dep_opposite_concurrent_edges_cannot_both_commit`. **Negative:** imported cycles quarantined; incomplete traversal cannot return ready; unresolved external hard ref blocks; hierarchy/parent does not block. **Migration/rollback:** additive versioned migration, rollback reader/writer switch preserving raw legacy data. **Docs:** repair quarantined cycle procedure.
 
-
 ## Shared-file sequencing
 
 Added hard sequencing edges (the predecessor owns the same exact writable file):
+
 - blocked by `DEP-02` — `shared-file:pkgs/fleet/crates/fleet-queue/src/work/relations.rs`

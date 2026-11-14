@@ -122,7 +122,10 @@ is_non_push() {
   return 1
 }
 
-die() { echo "release-gate: error: $*" >&2; exit 2; }
+die() {
+  echo "release-gate: error: $*" >&2
+  exit 2
+}
 verdict_fail() { echo "release-gate: REFUSED: $*"; }
 verdict_pass() { echo "release-gate: ALLOWED: $*"; }
 
@@ -155,7 +158,8 @@ is_ancestor_or_equal() {
 self_test() {
   local failures=0
   check() { # check <desc> <expected_exit> -- <args...>
-    local desc="$1" expected="$2"; shift 2
+    local desc="$1" expected="$2"
+    shift 2
     [ "${1:-}" = "--" ] && shift
     local got=0
     "$@" >/dev/null 2>&1 || got=$?
@@ -256,7 +260,7 @@ FAKE_GH
   parent_sha="$(git -C "$gtmp" rev-parse HEAD)"
   echo b >"$gtmp/b" && git -C "$gtmp" add b && git -C "$gtmp" commit -qm two
   child_sha="$(git -C "$gtmp" rev-parse HEAD)"
-  in_repo_ancestor() { ( cd "$gtmp" && is_ancestor_or_equal "$1" "$2" ); }
+  in_repo_ancestor() { (cd "$gtmp" && is_ancestor_or_equal "$1" "$2"); }
   check "run at release SHA is at-or-before" 0 -- in_repo_ancestor "$child_sha" "$child_sha"
   check "run at parent commit is at-or-before" 0 -- in_repo_ancestor "$parent_sha" "$child_sha"
   check "run at child is NOT at-or-before parent" 1 -- in_repo_ancestor "$child_sha" "$parent_sha"
@@ -271,9 +275,9 @@ FAKE_GH
     local fixture="$1" expected="$2" main_sha="$3" anc_sha="$4" release_sha="$5" got=0
     local script_path
     script_path="$(cd "$(dirname "$0")" && pwd)/$(basename "$0")"
-    ( cd "$gtmp" && GH_FIXTURE="$fixture" RELEASE_GATE_FAKE_MAIN_SHA="$main_sha" \
-        RELEASE_GATE_FAKE_ANCESTOR_SHA="$anc_sha" GH_TOKEN=fake-token GH_REPO=owner/repo \
-        GITHUB_EVENT_NAME=push PATH="$tmp/bin:$PATH" bash "$script_path" "$release_sha" ) \
+    (cd "$gtmp" && GH_FIXTURE="$fixture" RELEASE_GATE_FAKE_MAIN_SHA="$main_sha" \
+      RELEASE_GATE_FAKE_ANCESTOR_SHA="$anc_sha" GH_TOKEN=fake-token GH_REPO=owner/repo \
+      GITHUB_EVENT_NAME=push PATH="$tmp/bin:$PATH" bash "$script_path" "$release_sha") \
       >"$tmp/output" 2>&1 || got=$?
     if [ "$got" = "$expected" ]; then
       echo "ok: full gate non-push fixture $fixture (exit $got)"
@@ -310,11 +314,24 @@ SHA=""
 
 while [ $# -gt 0 ]; do
   case "$1" in
-    --audit) AUDIT=1; shift ;;
-    --self-test) self_test; exit $? ;;
-    --help|-h) sed -n '2,30p' "$0"; exit 0 ;;
-    --*) die "unknown flag $1" ;;
-    *) [ -z "$SHA" ] || die "only one SHA argument is accepted"; SHA="$1"; shift ;;
+  --audit)
+    AUDIT=1
+    shift
+    ;;
+  --self-test)
+    self_test
+    exit $?
+    ;;
+  --help | -h)
+    sed -n '2,30p' "$0"
+    exit 0
+    ;;
+  --*) die "unknown flag $1" ;;
+  *)
+    [ -z "$SHA" ] || die "only one SHA argument is accepted"
+    SHA="$1"
+    shift
+    ;;
   esac
 done
 
@@ -322,7 +339,7 @@ GH_REPO="${GH_REPO:-${GITHUB_REPOSITORY:-}}"
 [ -n "$GH_REPO" ] || die "GH_REPO (or GITHUB_REPOSITORY) is required"
 command -v gh >/dev/null 2>&1 || die "the gh CLI is required"
 command -v jq >/dev/null 2>&1 || die "the jq CLI is required"
-[ -n "${GH_TOKEN:-}" ] || die "GH_TOKEN is required (in CI: \${{ github.token }})"
+[ -n "${GH_TOKEN:-}" ] || die 'GH_TOKEN is required (in CI: ${{ github.token }})'
 
 if [ -z "$SHA" ]; then
   if [ -n "${GITHUB_SHA:-}" ]; then
@@ -334,7 +351,7 @@ fi
 
 refuse() {
   verdict_fail "$*"
-  echo "release-gate: override path: see .github/ci-policy.md \"Release gate\" —"
+  echo 'release-gate: override path: see .github/ci-policy.md "Release gate" —'
   echo "release-gate: fix forward on main, wait for green, re-tag the new head."
   if [ "$AUDIT" = 1 ]; then
     echo "release-gate: audit mode: not blocking (exit 0)."
@@ -345,8 +362,8 @@ refuse() {
 
 echo "release-gate: checking $SHA in $GH_REPO (main-gate: ${#WATCHED_WORKFLOWS[@]} watched workflows)"
 
-main_head="$(gh api "repos/$GH_REPO/branches/$MAIN_BRANCH" | jq -r '.commit.sha')" \
-  || die "could not read the current $MAIN_BRANCH head"
+main_head="$(gh api "repos/$GH_REPO/branches/$MAIN_BRANCH" | jq -r '.commit.sha')" ||
+  die "could not read the current $MAIN_BRANCH head"
 echo "release-gate: $MAIN_BRANCH head is $main_head"
 
 if ! verdict_for_event "${GITHUB_EVENT_NAME:-push}" "$SHA" "$main_head"; then
@@ -354,8 +371,8 @@ if ! verdict_for_event "${GITHUB_EVENT_NAME:-push}" "$SHA" "$main_head"; then
 fi
 
 failures=0
-workflows_json="$(gh api "repos/$GH_REPO/actions/workflows?per_page=100")" \
-  || die "could not list repository workflows"
+workflows_json="$(gh api "repos/$GH_REPO/actions/workflows?per_page=100")" ||
+  die "could not list repository workflows"
 for wf in "${WATCHED_WORKFLOWS[@]}"; do
   wid="$(jq -r --arg name "$wf" '.workflows[] | select(.name == $name) | .id' <<<"$workflows_json" | head -n 1)"
   if [ -z "${wid:-}" ]; then
@@ -366,8 +383,8 @@ for wf in "${WATCHED_WORKFLOWS[@]}"; do
   if is_non_push "$wf"; then
     # No push trigger: judge the latest completed run on main (any
     # event) whose head SHA is the release SHA or an ancestor of it.
-    runs_json="$(gh api "repos/$GH_REPO/actions/workflows/$wid/runs?branch=$MAIN_BRANCH&per_page=100")" \
-      || die "could not list runs for $wf"
+    runs_json="$(gh api "repos/$GH_REPO/actions/workflows/$wid/runs?branch=$MAIN_BRANCH&per_page=100")" ||
+      die "could not list runs for $wf"
     run_json=""
     while IFS= read -r cand; do
       [ -n "$cand" ] || continue
@@ -395,8 +412,8 @@ for wf in "${WATCHED_WORKFLOWS[@]}"; do
     fi
     continue
   fi
-  runs_json="$(gh api "repos/$GH_REPO/actions/workflows/$wid/runs?branch=$MAIN_BRANCH&event=push&per_page=100")" \
-    || die "could not list runs for $wf"
+  runs_json="$(gh api "repos/$GH_REPO/actions/workflows/$wid/runs?branch=$MAIN_BRANCH&event=push&per_page=100")" ||
+    die "could not list runs for $wf"
   run_json="$(jq -c --arg sha "$SHA" '[.workflow_runs[] | select(.head_sha == $sha)] | sort_by(.created_at) | last // empty' <<<"$runs_json")"
   basis="exact-SHA run"
   if [ -z "$run_json" ]; then

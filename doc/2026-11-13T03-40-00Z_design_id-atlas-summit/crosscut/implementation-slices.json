@@ -8,14 +8,7 @@
       "kind": "design",
       "version": "V2",
       "tier": "crucial",
-      "statements": [
-        "S0.1",
-        "S0.2",
-        "S0.3",
-        "S0.4",
-        "S0.7",
-        "S0.14"
-      ],
+      "statements": ["S0.1", "S0.2", "S0.3", "S0.4", "S0.7", "S0.14"],
       "goal": "Establish a source-accurate seam map that keeps blob, event, world, and sync stores distinct and gives port design an explicit ownership baseline.",
       "enables": "Document and type the existing blob, event, world, and sync store seams without merging their authority; identify consumer-owned files and compatibility adapters.",
       "owned_files": [
@@ -59,15 +52,7 @@
       "kind": "implementation",
       "version": "V2",
       "tier": "crucial",
-      "statements": [
-        "S0.2",
-        "S0.7",
-        "S0.10",
-        "S0.13",
-        "S0.14",
-        "S0.15",
-        "S0.16"
-      ],
+      "statements": ["S0.2", "S0.7", "S0.10", "S0.13", "S0.14", "S0.15", "S0.16"],
       "goal": "Phase 1 root owner: land the common interface and private module-root skeletons before consumer adapters add leaf modules. Do not declare or export absent leaf modules. After this PR merges, this slice relinquishes shared-root writes; consumers do not edit roots.",
       "enables": "Introduce separate store, blob, event-log, world, object-bucket, stream, and request-transport contract types with capability declarations, semantic guarantees, limits, and typed unsupported errors. Include a Kafka-like ordered-stream test double to verify additive supportability without selecting or implementing Kafka. This is the sole owner of common crate root exports/Cargo manifests and the shared test-vector schema; consumers add distinct module files and do not edit those roots. Owns stable crate-root exports/Cargo manifests and shared test-vector schema. The `federation/mod.rs`, `graph/mod.rs`, and `triples/mod.rs` files define roots only; they do NOT unconditionally export absent future feature modules. V2/V3 feature exports are wired by 9110-09 after exact module outputs exist, with a release gate. Consumers own distinct child modules and do not edit roots. The Kafka-like ordered-stream double is in-memory contract coverage only, not a Kafka adapter or deployment choice. The B registry inventory is exactly b01_key_lifecycle, b02_key_revocation, b03_replay_guard, b04_signature_suites, b05_signer_binding, b06_rejection_events, b07_conflict_report, b08_sync_scope, b09_anti_entropy, b15_peer_priority, b16_fanout_budget, b17_query_grants, b18_query_privacy, b19_signed_receipt, b20_request_identity, b21_result_dedup, b22_loop_inform, b23_routing_state, b24_topology_probe, b25_local_reputation, b27_claim_log, b28_takeover_response, b29_receipt_contradiction, b30_search_integrity, b31_peer_classes, and b32_ingest_gate under federation/slices/. The registry file records these exact paths but leaves not-yet-built modules unexported.",
       "owned_files": [
@@ -201,11 +186,7 @@
       "kind": "implementation",
       "version": "V2",
       "tier": "crucial",
-      "statements": [
-        "S0.5",
-        "S0.6",
-        "S0.16"
-      ],
+      "statements": ["S0.5", "S0.6", "S0.16"],
       "goal": "Provide honest redb and Turso/libSQL capability profiles, including bounded atomic scope and explicit timeout/unknown-commit behavior.",
       "enables": "Implement required port profiles for redb and Turso/libSQL; state transaction, durability, scan, retry, and timeout ambiguity semantics without claiming identical atomicity.",
       "owned_files": [
@@ -258,11 +239,7 @@
       "kind": "test",
       "version": "V2",
       "tier": "crucial",
-      "statements": [
-        "S0.5",
-        "S0.6",
-        "S0.16"
-      ],
+      "statements": ["S0.5", "S0.6", "S0.16"],
       "goal": "Make adapter behavior decidable through a shared state-machine corpus and machine-readable capability reports.",
       "enables": "Create portable conformance vectors and machine-readable required/optional capability reports; run the suite against redb and Turso/SQLite, with IndexedDB profile reserved for its verdict.",
       "owned_files": [
@@ -313,11 +290,7 @@
       "kind": "prototype",
       "version": "V2; V4 if adopted",
       "tier": "recommended",
-      "statements": [
-        "S0.6",
-        "S0.7",
-        "S0.16"
-      ],
+      "statements": ["S0.6", "S0.7", "S0.16"],
       "goal": "Implement an isolated IndexedDB request-batch prototype that exercises the declared browser-store capability subset without deciding product adoption.",
       "enables": "Produce browser conformance results for transaction lifetime, quota/eviction, upgrades, and reopen behavior. #9082 owns the adopt/defer/reject decision; this prototype remains disabled by default.",
       "owned_files": [
@@ -373,13 +346,7 @@
       "kind": "implementation",
       "version": "V2; V3",
       "tier": "crucial",
-      "statements": [
-        "S0.12",
-        "S0.17",
-        "S1.114",
-        "S1.115",
-        "S1.118"
-      ],
+      "statements": ["S0.12", "S0.17", "S1.114", "S1.115", "S1.118"],
       "goal": "Route every retained-data ingress through the fixed signed/validated gate and deterministic extension lifecycle, including commit-time policy reauthorization.",
       "enables": "Add typed prepare/commit/outbox lifecycle hooks with deterministic order, bounded context, reentrancy policy, typed errors, and an unbypassable signature/validation/replay/tenant authorization gate; local producers sign before admission. Enumerate all normal paths before claiming completeness; see 9110-13.",
       "owned_files": [
@@ -449,11 +416,7 @@
       "kind": "implementation",
       "version": "V2; V4 operations",
       "tier": "recommended",
-      "statements": [
-        "S0.12",
-        "S0.15",
-        "S0.17"
-      ],
+      "statements": ["S0.12", "S0.15", "S0.17"],
       "goal": "Recover post-commit event delivery safely across restart with stable IDs and at-least-once semantics.",
       "enables": "Persist post-commit events within advertised transaction scope, replay by stable ID after restart, and expose quarantine/reconciliation when store and stream cannot commit atomically.",
       "owned_files": [
@@ -504,12 +467,7 @@
       "kind": "prototype",
       "version": "V2 proof; V4 production consideration",
       "tier": "contingent",
-      "statements": [
-        "S0.2",
-        "S0.9",
-        "S0.13",
-        "S0.15"
-      ],
+      "statements": ["S0.2", "S0.9", "S0.13", "S0.15"],
       "goal": "Prove a second ordered-stream adapter can fit the stable port without changing core semantics; do not build a Kafka product adapter.",
       "enables": "Demonstrate a second stream/transport adapter using existing stable contracts and document ack, ordering, redelivery, replay, retention, and limits; do not promise exactly-once.",
       "owned_files": [
@@ -561,16 +519,7 @@
       "kind": "integration-and-test",
       "version": "V2 foundation; V3 interop",
       "tier": "crucial",
-      "statements": [
-        "S0.5",
-        "S1.114",
-        "S1.115",
-        "S1.116",
-        "S1.117",
-        "S1.118",
-        "S1.119",
-        "S1.120"
-      ],
+      "statements": ["S0.5", "S1.114", "S1.115", "S1.116", "S1.117", "S1.118", "S1.119", "S1.120"],
       "goal": "Phase 2 root owner after 9110-02 and required V2 leaf PRs merge: perform the sole V2 public module/export wiring, then demonstrate Rust and TypeScript agreement with independent golden vectors. No consumer edits the shared roots before this serial handoff.",
       "enables": "Run common signed-envelope, config, operation, and failure fixtures in native Rust and hosted TypeScript implementations; compare behavior without requiring identical internals. V2 public release cannot pass until all listed module outputs are wired. V3 additions repeat this same integration gate additively; do not require any V4 module.",
       "owned_files": [
@@ -806,12 +755,7 @@
       "kind": "implementation",
       "version": "V4",
       "tier": "contingent",
-      "statements": [
-        "S0.7",
-        "S0.8",
-        "S0.13",
-        "S0.15"
-      ],
+      "statements": ["S0.7", "S0.8", "S0.13", "S0.15"],
       "goal": "When selected by an owning deployment, add a Postgres profile as an additive adapter without changing core ports.",
       "enables": "Implement an optional Postgres adapter against stable ports and publish its capability/conformance report; only proceed when an owning deployment chooses it.",
       "owned_files": [
@@ -859,13 +803,7 @@
       "kind": "schema-and-test",
       "version": "V2",
       "tier": "crucial",
-      "statements": [
-        "S7.1",
-        "S7.10",
-        "S7.11",
-        "S7.12",
-        "S7.13"
-      ],
+      "statements": ["S7.1", "S7.10", "S7.11", "S7.12", "S7.13"],
       "goal": "Establish the minimum validated V2 config contract needed before admission gates consume configuration.",
       "enables": "Specify canonical versioned ConfigDocument, hard non-overridable ceilings, config validation errors, mechanism-versus-behavior classification, and secure unknown-field policy. This minimal schema is a V2 prerequisite for core gates.",
       "owned_files": [
@@ -926,13 +864,7 @@
       "kind": "implementation",
       "version": "V3",
       "tier": "recommended",
-      "statements": [
-        "S7.1",
-        "S7.4",
-        "S7.14",
-        "S7.15",
-        "S7.16"
-      ],
+      "statements": ["S7.1", "S7.4", "S7.14", "S7.15", "S7.16"],
       "goal": "Resolve mode and scoped behavioral defaults deterministically while enforcing invariant, authority, and resource ceilings.",
       "enables": "Resolve deployment mode defaults with documented precedence through tenant, peer/link/storage scopes and permitted operation overrides; ensure scopes remain distinct and non-special.",
       "owned_files": [
@@ -983,17 +915,7 @@
       "kind": "implementation",
       "version": "V3",
       "tier": "recommended",
-      "statements": [
-        "S0.11",
-        "S7.2",
-        "S7.3",
-        "S7.5",
-        "S7.6",
-        "S7.7",
-        "S7.8",
-        "S7.9",
-        "S7.15"
-      ],
+      "statements": ["S0.11", "S7.2", "S7.3", "S7.5", "S7.6", "S7.7", "S7.8", "S7.9", "S7.15"],
       "goal": "Keep peer, link, storage, tier, and namespace settings as distinct typed planes with explicit composition rules.",
       "enables": "Define typed references and validation rules so peer class, link kind, storage capability/durability, data tier, and namespace registry can compose without implying one another.",
       "owned_files": [
@@ -1052,13 +974,7 @@
       "kind": "implementation",
       "version": "V3",
       "tier": "recommended",
-      "statements": [
-        "S1.118",
-        "S7.10",
-        "S7.11",
-        "S7.13",
-        "S7.16"
-      ],
+      "statements": ["S1.118", "S7.10", "S7.11", "S7.13", "S7.16"],
       "goal": "Negotiate only mutually supported protocol/capability versions and reject security-weakening downgrades.",
       "enables": "Negotiate highest mutually allowed version and required capabilities, bind negotiation to authenticated identities, and reject downgrade that removes mandatory security/correctness semantics.",
       "owned_files": [
@@ -1113,11 +1029,7 @@
       "kind": "implementation",
       "version": "V3; V4 operational hardening",
       "tier": "recommended",
-      "statements": [
-        "S7.1",
-        "S7.10",
-        "S7.14"
-      ],
+      "statements": ["S7.1", "S7.10", "S7.14"],
       "goal": "Activate configuration revisions only after capability validation and provide rollback to prior configuration without rollback fiction for external effects.",
       "enables": "Validate new config against all selected adapter capabilities before activation, expose resolved digest/provenance, retain prior revision for rollback, and document non-rollbackable external effects.",
       "owned_files": [
@@ -1160,9 +1072,7 @@
       "design_source": "doc/2026-11-13T03-40-00Z_design_id-atlas-summit/crosscut/versioned-design.md",
       "design_section": "Failure, recovery, and version rules",
       "owner": "9111-05",
-      "research_evidence": [
-        "doc/2026-11-13T03-40-00Z_design_id-atlas-summit/crosscut/versioned-design.md"
-      ]
+      "research_evidence": ["doc/2026-11-13T03-40-00Z_design_id-atlas-summit/crosscut/versioned-design.md"]
     },
     {
       "id": "9110-11",
@@ -1171,11 +1081,7 @@
       "kind": "test-and-compatibility",
       "version": "V2",
       "tier": "crucial",
-      "statements": [
-        "S0.7",
-        "S0.13",
-        "S0.15"
-      ],
+      "statements": ["S0.7", "S0.13", "S0.15"],
       "goal": "Preserve legacy signed artifact bytes exactly and introduce any corrected canonical record profile as an explicit additive version.",
       "enables": "Test exact existing serde JSON bytes against compatibility vectors; define deterministic-CBOR profile as a separate new format; do not silently re-sign or change legacy bytes.",
       "owned_files": [
@@ -1231,12 +1137,7 @@
       "kind": "test-and-compatibility",
       "version": "V2",
       "tier": "crucial",
-      "statements": [
-        "S0.12",
-        "S0.17",
-        "S1.114",
-        "S1.118"
-      ],
+      "statements": ["S0.12", "S0.17", "S1.114", "S1.118"],
       "goal": "Produce a complete path-to-gate inventory and test oracle before claiming hook/admission extensibility coverage.",
       "enables": "Track every ingress/read/write/sync/query/stream/bucket path, gate/hooks, bypass test and recovery semantics; leave explicit unmigrated entries and block completeness claim until covered.",
       "owned_files": [
@@ -1280,74 +1181,47 @@
   "file_collisions": [
     {
       "path": "pkgs/id/crates/id-core/src/lib.rs",
-      "slices": [
-        "9110-02",
-        "9110-09"
-      ],
+      "slices": ["9110-02", "9110-09"],
       "reason": "9110-02 owns the common interface/root and creates no absent feature exports; 9110-09 is the sole version-gated integration writer after concrete consumer modules exist."
     },
     {
       "path": "pkgs/id/crates/id-sync/src/lib.rs",
-      "slices": [
-        "9110-02",
-        "9110-09"
-      ],
+      "slices": ["9110-02", "9110-09"],
       "reason": "9110-02 owns the common interface/root and creates no absent feature exports; 9110-09 is the sole version-gated integration writer after concrete consumer modules exist."
     },
     {
       "path": "pkgs/id/crates/id-events/src/lib.rs",
-      "slices": [
-        "9110-02",
-        "9110-09"
-      ],
+      "slices": ["9110-02", "9110-09"],
       "reason": "9110-02 owns the common interface/root and creates no absent feature exports; 9110-09 is the sole version-gated integration writer after concrete consumer modules exist."
     },
     {
       "path": "pkgs/id/crates/id-store/src/lib.rs",
-      "slices": [
-        "9110-02",
-        "9110-09"
-      ],
+      "slices": ["9110-02", "9110-09"],
       "reason": "9110-02 owns the common interface/root and creates no absent feature exports; 9110-09 is the sole version-gated integration writer after concrete consumer modules exist."
     },
     {
       "path": "pkgs/id/crates/id-worlds/src/lib.rs",
-      "slices": [
-        "9110-02",
-        "9110-09"
-      ],
+      "slices": ["9110-02", "9110-09"],
       "reason": "9110-02 owns the common interface/root and creates no absent feature exports; 9110-09 is the sole version-gated integration writer after concrete consumer modules exist."
     },
     {
       "path": "pkgs/id/crates/id-core/src/graph/mod.rs",
-      "slices": [
-        "9110-02",
-        "9110-09"
-      ],
+      "slices": ["9110-02", "9110-09"],
       "reason": "9110-02 owns the common interface/root and creates no absent feature exports; 9110-09 is the sole version-gated integration writer after concrete consumer modules exist."
     },
     {
       "path": "pkgs/id/crates/id-core/src/triples/mod.rs",
-      "slices": [
-        "9110-02",
-        "9110-09"
-      ],
+      "slices": ["9110-02", "9110-09"],
       "reason": "9110-02 owns the common interface/root and creates no absent feature exports; 9110-09 is the sole version-gated integration writer after concrete consumer modules exist."
     },
     {
       "path": "pkgs/id/crates/id-sync/src/federation/mod.rs",
-      "slices": [
-        "9110-02",
-        "9110-09"
-      ],
+      "slices": ["9110-02", "9110-09"],
       "reason": "9110-02 owns the common interface/root and creates no absent feature exports; 9110-09 is the sole version-gated integration writer after concrete consumer modules exist."
     },
     {
       "path": "pkgs/id/crates/id-sync/src/federation/slices/mod.rs",
-      "slices": [
-        "9110-02",
-        "9110-09"
-      ],
+      "slices": ["9110-02", "9110-09"],
       "reason": "9110-02 owns the common interface/root and creates no absent feature exports; 9110-09 is the sole version-gated integration writer after concrete consumer modules exist."
     }
   ]

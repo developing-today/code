@@ -1503,10 +1503,8 @@ fn derive_claim_model_stamp(session_id: &str) -> Option<(String, String, Option<
         std::env::var("OPENCODE_SERVER_URL").ok().as_deref(),
     );
     let home = crate::home::from_env().ok()?;
-    let auth_file = resolve_opencode_auth_file(
-        std::env::var("OPENCODE_AUTH_FILE").ok().as_deref(),
-        &home,
-    );
+    let auth_file =
+        resolve_opencode_auth_file(std::env::var("OPENCODE_AUTH_FILE").ok().as_deref(), &home);
     let state = std::fs::read_to_string(auth_file).ok()?;
     let state: Value = serde_json::from_str(&state).ok()?;
     let password = state.get("password")?.as_str()?;
@@ -5845,7 +5843,10 @@ mod tests {
             resolve_opencode_base_url(Some("  "), Some("")),
             "http://127.0.0.1:13420"
         );
-        assert_eq!(resolve_opencode_base_url(None, None), "http://127.0.0.1:13420");
+        assert_eq!(
+            resolve_opencode_base_url(None, None),
+            "http://127.0.0.1:13420"
+        );
     }
 
     #[test]

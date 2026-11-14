@@ -12,8 +12,8 @@ It is the thinnest roadmap in the repo. The open issues I read (the 30 most rece
 
 ## Now
 
-| Title                              | Status      | Intent                                                            | Links                                          |
-| ---------------------------------- | ----------- | ----------------------------------------------------------------- | ---------------------------------------------- |
+| Title | Status | Intent | Links |
+| ----- | ------ | ------ | ----- |
 
 ## Next
 

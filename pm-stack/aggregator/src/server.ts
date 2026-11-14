@@ -957,8 +957,8 @@ ${submitBtn("submit")}
 </section>`;
   };
   const isSubmittedItem = (i: DecisionItem): boolean => i.questions.every((q) => q.resolution);
-    const submittedCount = set.items.filter(isSubmittedItem).length;
-    const body = groups
+  const submittedCount = set.items.filter(isSubmittedItem).length;
+  const body = groups
     .map((g) => {
       const groupItems = set.items
         .filter((i) => i.group === g)
@@ -2488,12 +2488,31 @@ async function handler(req: Request): Promise<Response> {
       // #9354: the Questions section lives in the SHELL, outside the
       // #today-main fragment div (see the /frag/today note below).
       return html(
-        renderTodayShell(prov(), provDetail(), signals.health, signals.quota, signals.quotaUnavailable, await questionsHtml()),
+        renderTodayShell(
+          prov(),
+          provDetail(),
+          signals.health,
+          signals.quota,
+          signals.quotaUnavailable,
+          await questionsHtml(),
+        ),
       );
     }
     const { today, view, coverage, quota, health, quotaUnavailable, queue, queueStale } = await todayContext();
     return html(
-      renderToday(today, view, quota, coverage, prov(), provDetail(), health, quotaUnavailable, queue, queueStale, await questionsHtml()),
+      renderToday(
+        today,
+        view,
+        quota,
+        coverage,
+        prov(),
+        provDetail(),
+        health,
+        quotaUnavailable,
+        queue,
+        queueStale,
+        await questionsHtml(),
+      ),
     );
   }
   if (path === "/frag/today") {

@@ -37,9 +37,6 @@ File-collision sequencing edges added by stable topological serialization: none.
 Existing issue references retained as non-blocking runtime/evidence gates: none.
 Domain-starter parent references are never emitted as hard native blockers. Source parents normalized to granular slices or runtime gates: none.
 
-
-
-
 Use only granular issue-key edges after all keys are resolved. Never make a whole domain starter a hard blocker when it creates a cycle. File collisions are hard sequencing edges. Parent integration adds native parent/blocker edges in a later pass after the command map, requirements IDs, and acyclic graph are verified.
 
 ## Starting failing test, oracle, and done check
@@ -86,4 +83,3 @@ Negative coverage: do not choose thresholds post hoc or mark exploration enabled
 - **First failing oracle:** `test_report_marks_missing_measurement_and_does_not_claim_production_benefit` in `validation/test_report.py` rejects missing run ID, seed, sample count, oracle, uncertainty, fixture provenance or unmeasured threshold; verifies synthetic simulation is not called production result.
 - **Done check:** report reproduces input/result digest, separates external source facts, measured model outputs, inference and recommendation; a reviewer can regenerate it from the immutable artifact.
 - **Negative / rollback:** do not choose thresholds post hoc or mark exploration enabled from simulated benefit alone. Remove/replace report only with a new versioned artifact and preserve prior run provenance.
-

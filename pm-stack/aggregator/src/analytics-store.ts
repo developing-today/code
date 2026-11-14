@@ -273,7 +273,10 @@ function queryModelRows(db: Database, now: number): DayModelRow[] {
 }
 
 function queryCoverage(db: Database): { f: number; t: number } {
-  return db.query(`SELECT MIN(time_started) AS f, MAX(time_started) AS t FROM route_attempt`).get() as { f: number; t: number };
+  return db.query(`SELECT MIN(time_started) AS f, MAX(time_started) AS t FROM route_attempt`).get() as {
+    f: number;
+    t: number;
+  };
 }
 
 function queryHourRows(db: Database, now: number): DayModelRow[] {
@@ -290,7 +293,9 @@ function queryHourRows(db: Database, now: number): DayModelRow[] {
 
 function queryCredentialCoverageRange(db: Database, from: number, to: number | null): { n: number; c: number } {
   return db
-    .query(`SELECT COUNT(*) AS n, COUNT(credential_id) AS c FROM route_attempt WHERE time_started >= ? AND (? IS NULL OR time_started < ?)`)
+    .query(
+      `SELECT COUNT(*) AS n, COUNT(credential_id) AS c FROM route_attempt WHERE time_started >= ? AND (? IS NULL OR time_started < ?)`,
+    )
     .get(from, to, to) as { n: number; c: number };
 }
 
@@ -299,7 +304,11 @@ function queryCredentialCoveragePct(db: Database, now: number): number | null {
   return credCov.n > 0 ? (credCov.c / credCov.n) * 100 : null;
 }
 
-function queryHourly7dRange(db: Database, from: number, to: number | null): { hour: number; calls: number; tokens: number }[] {
+function queryHourly7dRange(
+  db: Database,
+  from: number,
+  to: number | null,
+): { hour: number; calls: number; tokens: number }[] {
   return db
     .query(
       `SELECT CAST(strftime('%H', time_started/1000, 'unixepoch', 'localtime') AS INTEGER) AS hour,
@@ -314,7 +323,11 @@ function queryHourly7d(db: Database, now: number): { hour: number; calls: number
   return queryHourly7dRange(db, now - 7 * DAY_MS, null);
 }
 
-function queryDowHistoryRange(db: Database, from: number, to: number): { dow: number; calls: number; tokens: number }[] {
+function queryDowHistoryRange(
+  db: Database,
+  from: number,
+  to: number,
+): { dow: number; calls: number; tokens: number }[] {
   return db
     .query(
       `SELECT CAST(strftime('%w', time_started/1000, 'unixepoch', 'localtime') AS INTEGER) AS dow,
@@ -336,7 +349,11 @@ function queryDowHistory(db: Database): { dow: number; calls: number; tokens: nu
     .all() as { dow: number; calls: number; tokens: number }[];
 }
 
-function queryDaily21dRange(db: Database, from: number, to: number | null): { day: string; calls: number; tokens: number }[] {
+function queryDaily21dRange(
+  db: Database,
+  from: number,
+  to: number | null,
+): { day: string; calls: number; tokens: number }[] {
   return db
     .query(
       `SELECT ${DAY_SELECT} AS day,
@@ -423,10 +440,16 @@ function refreshAttemptAggregates(db: Database, path: string, onSettled?: () => 
   const cred = { n: 0, c: 0 };
   const steps: Array<() => void> = [];
   for (const [from, to] of daySliceBounds(now - 15 * DAY_MS, until)) {
-    steps.push(() => { data.legRows!.push(...queryLegRowsRange(db, from, to)); });
-    steps.push(() => { data.modelRows!.push(...queryModelRowsRange(db, from, to)); });
+    steps.push(() => {
+      data.legRows!.push(...queryLegRowsRange(db, from, to));
+    });
+    steps.push(() => {
+      data.modelRows!.push(...queryModelRowsRange(db, from, to));
+    });
   }
-  steps.push(() => { data.hourRows = queryHourRows(db, now); });
+  steps.push(() => {
+    data.hourRows = queryHourRows(db, now);
+  });
   for (const [from, to] of daySliceBounds(now - 7 * DAY_MS, until)) {
     steps.push(() => {
       const part = queryCredentialCoverageRange(db, from, to);
@@ -443,7 +466,9 @@ function refreshAttemptAggregates(db: Database, path: string, onSettled?: () => 
     });
   }
   for (const [from, to] of daySliceBounds(now - 21 * DAY_MS, until)) {
-    steps.push(() => { data.daily21d!.push(...queryDaily21dRange(db, from, to)); });
+    steps.push(() => {
+      data.daily21d!.push(...queryDaily21dRange(db, from, to));
+    });
   }
   steps.push(() => {
     data.coverage = queryCoverage(db);
@@ -523,10 +548,7 @@ function loadAttemptAggregates(db: Database, path: string, now: number): Attempt
  * immediately, so an awaiting caller never hangs; when a prime is
  * started, `onSettled` fires once it lands or aborts fail-soft.
  */
-export function primeAttemptAggregates(
-  opencodeDbPath: string = OPENCODE_DB_DEFAULT,
-  onSettled?: () => void,
-): boolean {
+export function primeAttemptAggregates(opencodeDbPath: string = OPENCODE_DB_DEFAULT, onSettled?: () => void): boolean {
   if (aggregatesCache && aggregatesCache.path === opencodeDbPath) {
     onSettled?.();
     return false;
@@ -541,7 +563,20 @@ export function primeAttemptAggregates(
   return true;
 }
 
-function addInto(into: BurnBucket, r: { calls: number; success: number; input: number; output: number; reasoning: number; cache_read: number; cache_write: number; cost: number; cost_rows: number }): void {
+function addInto(
+  into: BurnBucket,
+  r: {
+    calls: number;
+    success: number;
+    input: number;
+    output: number;
+    reasoning: number;
+    cache_read: number;
+    cache_write: number;
+    cost: number;
+    cost_rows: number;
+  },
+): void {
   into.calls += r.calls;
   into.success += r.success;
   into.input += r.input;
@@ -696,7 +731,10 @@ function activityComputePlan(db: Database, now: number): { steps: Array<() => vo
         .filter((n) => byName.has(n))
         .map((n) => ({ name: n, count: byName.get(n) as number })),
       executeGateway: byName.get("execute") ?? 0,
-      fleetInferred: [...fleet.entries()].sort((a, b) => b[1] - a[1]).slice(0, 12).map(([subcommand, count]) => ({ subcommand, count })),
+      fleetInferred: [...fleet.entries()]
+        .sort((a, b) => b[1] - a[1])
+        .slice(0, 12)
+        .map(([subcommand, count]) => ({ subcommand, count })),
       fleetInferredTotal: fleetTotal,
     };
   };
@@ -747,7 +785,10 @@ function loadActivity(db: Database, now: number): ActivityCounts | null {
  * legs are matched by provider_id (the label says so in the UI).
  * "shared-credential": both Antigravity pools ride ONE credential —
  * both cards show the same burn, labelled shared. */
-const POOL_LEG_BASIS: Record<string, { basis: NonNullable<PoolAnalytics["legBasis"]>; gathererProviders?: string[]; providerIds?: string[] }> = {
+const POOL_LEG_BASIS: Record<
+  string,
+  { basis: NonNullable<PoolAnalytics["legBasis"]>; gathererProviders?: string[]; providerIds?: string[] }
+> = {
   "_openai.main": { basis: "credential", gathererProviders: ["_openai.main"] },
   "_openai.alt": { basis: "credential", gathererProviders: ["_openai.alt"] },
   "opencode-go.drewrypope": { basis: "credential", gathererProviders: ["opencode-go.drewrypope"] },
@@ -760,8 +801,14 @@ const POOL_LEG_BASIS: Record<string, { basis: NonNullable<PoolAnalytics["legBasi
   // 21.8k rows, all NULL) — the credential join can never match, so
   // both pools attribute by provider id over the same leg set (the
   // two pools share those legs; each card says so via its label).
-  "_antigravity.gemini": { basis: "provider-id", providerIds: ["antigravity-direct", "_antigravity", "antigravity-ls", "antigravity-agy"] },
-  "_antigravity.claude-gpt": { basis: "provider-id", providerIds: ["antigravity-direct", "_antigravity", "antigravity-ls", "antigravity-agy"] },
+  "_antigravity.gemini": {
+    basis: "provider-id",
+    providerIds: ["antigravity-direct", "_antigravity", "antigravity-ls", "antigravity-agy"],
+  },
+  "_antigravity.claude-gpt": {
+    basis: "provider-id",
+    providerIds: ["antigravity-direct", "_antigravity", "antigravity-ls", "antigravity-agy"],
+  },
   opendesign: { basis: "provider-id", providerIds: ["opendesign"] },
   "anthropic:claude-pro": { basis: "provider-id", providerIds: ["_claude", "claude-code"] },
   meta: { basis: "provider-id", providerIds: ["_muse", "muse-direct"] },
@@ -813,7 +860,12 @@ function seriesForWindow(history: UsageView["history"], pool: QuotaPool, windowN
     if (ns !== poolSvc && !ns.startsWith(`${poolSvc}.`)) continue;
     for (const r of records as SnapshotRecord[]) {
       if (typeof r.value !== "number" || r.unit !== "pct") continue;
-      if (!metrics.has(r.metricId) && !r.metricId.endsWith(`:${windowName}`) && !r.metricId.endsWith(`:${WINDOW_METRIC_ALIASES[windowName]?.[0] ?? windowName}`)) continue;
+      if (
+        !metrics.has(r.metricId) &&
+        !r.metricId.endsWith(`:${windowName}`) &&
+        !r.metricId.endsWith(`:${WINDOW_METRIC_ALIASES[windowName]?.[0] ?? windowName}`)
+      )
+        continue;
       const ts = Date.parse(r.ts);
       if (!Number.isFinite(ts)) continue;
       const key = `${ts}|${r.value}`;
@@ -881,8 +933,16 @@ export function buildQuotaAnalytics(args: {
     base.totals.last7d = sumWhere(modelRows, (d) => last7.has(d));
     base.totals.prev7d = sumWhere(modelRows, (d) => prev7.has(d));
     base.totalsWowTokens = wowDelta(
-      base.totals.last7d.input + base.totals.last7d.output + base.totals.last7d.cacheRead + base.totals.last7d.cacheWrite + base.totals.last7d.reasoning,
-      base.totals.prev7d.input + base.totals.prev7d.output + base.totals.prev7d.cacheRead + base.totals.prev7d.cacheWrite + base.totals.prev7d.reasoning,
+      base.totals.last7d.input +
+        base.totals.last7d.output +
+        base.totals.last7d.cacheRead +
+        base.totals.last7d.cacheWrite +
+        base.totals.last7d.reasoning,
+      base.totals.prev7d.input +
+        base.totals.prev7d.output +
+        base.totals.prev7d.cacheRead +
+        base.totals.prev7d.cacheWrite +
+        base.totals.prev7d.reasoning,
     );
     base.totals.lastHour = sumWhere(aggregates.hourRows, () => true);
 
@@ -919,7 +979,10 @@ export function buildQuotaAnalytics(args: {
 
     // ---- pools -------------------------------------------------------------
     const credMap = readCredentialMap(args.quotaCurrentPath);
-    const legBurn = (poolId: string, pred: (day: string) => boolean): { burn: BurnBucket | null; basis: PoolAnalytics["legBasis"]; label: string | null } => {
+    const legBurn = (
+      poolId: string,
+      pred: (day: string) => boolean,
+    ): { burn: BurnBucket | null; basis: PoolAnalytics["legBasis"]; label: string | null } => {
       const spec = POOL_LEG_BASIS[poolId];
       if (!spec) return { burn: null, basis: null, label: null };
       const credIds = new Set((spec.gathererProviders ?? []).map((p) => credMap.get(p)).filter(Boolean) as string[]);
@@ -929,7 +992,10 @@ export function buildQuotaAnalytics(args: {
       let any = false;
       for (const r of legRows) {
         if (!pred(r.day)) continue;
-        const match = spec.basis === "provider-id" ? provIds.has(r.provider_id) : r.credential_id != null && credIds.has(r.credential_id);
+        const match =
+          spec.basis === "provider-id"
+            ? provIds.has(r.provider_id)
+            : r.credential_id != null && credIds.has(r.credential_id);
         if (match) {
           addInto(b, r);
           any = true;
@@ -938,7 +1004,8 @@ export function buildQuotaAnalytics(args: {
       const label =
         spec.basis === "provider-id"
           ? [...provIds].join(", ")
-          : [...(spec.gathererProviders ?? [])].join(", ") + (spec.basis === "shared-credential" ? " (one credential, both Antigravity pools)" : "");
+          : [...(spec.gathererProviders ?? [])].join(", ") +
+            (spec.basis === "shared-credential" ? " (one credential, both Antigravity pools)" : "");
       return { burn: any ? b : null, basis: spec.basis, label };
     };
 
@@ -957,7 +1024,12 @@ export function buildQuotaAnalytics(args: {
           const past = series.filter((p) => p.ts <= then);
           if (past.length) {
             const last = past[past.length - 1];
-            const pastProjection = projectWindow({ points: past, pctNow: last.pct, resetsAt: last.resetsAt, now: then });
+            const pastProjection = projectWindow({
+              points: past,
+              pctNow: last.pct,
+              resetsAt: last.resetsAt,
+              now: then,
+            });
             if (pastProjection.state === "projected" && pastProjection.durationUntilWallMs != null) {
               wow = wowDelta(projection.durationUntilWallMs / HOUR_MS, pastProjection.durationUntilWallMs / HOUR_MS);
             }
@@ -974,7 +1046,9 @@ export function buildQuotaAnalytics(args: {
       });
       const binding =
         windows.find((w) => w.projection.state === "walled") ??
-        windows.filter((w) => w.projection.projectedWallAt != null).sort((a, b) => (a.projection.projectedWallAt as number) - (b.projection.projectedWallAt as number))[0] ??
+        windows
+          .filter((w) => w.projection.projectedWallAt != null)
+          .sort((a, b) => (a.projection.projectedWallAt as number) - (b.projection.projectedWallAt as number))[0] ??
         windows.slice().sort((a, b) => b.percent - a.percent)[0] ??
         null;
       const unlock = binding

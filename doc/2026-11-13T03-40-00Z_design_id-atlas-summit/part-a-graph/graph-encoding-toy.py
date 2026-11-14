@@ -55,11 +55,11 @@ def decode_framed(blob):
         for _ in range(3):
             if pos + 4 > len(blob):
                 raise ValueError("truncated length")
-            size = struct.unpack(">I", blob[pos:pos + 4])[0]
+            size = struct.unpack(">I", blob[pos : pos + 4])[0]
             pos += 4
             if pos + size > len(blob):
                 raise ValueError("truncated field")
-            row.append(blob[pos:pos + size])
+            row.append(blob[pos : pos + size])
             pos += size
         rows.append(tuple(row))
     return rows
@@ -77,13 +77,13 @@ def decode_map(blob):
     rows = []
     pos = 0
     while pos < len(blob):
-        key_size = struct.unpack(">I", blob[pos:pos + 4])[0]
+        key_size = struct.unpack(">I", blob[pos : pos + 4])[0]
         pos += 4
-        key = blob[pos:pos + key_size]
+        key = blob[pos : pos + key_size]
         pos += key_size
-        value_size = struct.unpack(">I", blob[pos:pos + 4])[0]
+        value_size = struct.unpack(">I", blob[pos : pos + 4])[0]
         pos += 4
-        value = blob[pos:pos + value_size]
+        value = blob[pos : pos + value_size]
         pos += value_size
         if value:
             raise ValueError("toy map value must be empty")
@@ -93,9 +93,9 @@ def decode_map(blob):
             if key[key_pos] != 1:
                 raise ValueError("unknown toy term tag")
             key_pos += 1
-            size = struct.unpack(">I", key[key_pos:key_pos + 4])[0]
+            size = struct.unpack(">I", key[key_pos : key_pos + 4])[0]
             key_pos += 4
-            row.append(key[key_pos:key_pos + size])
+            row.append(key[key_pos : key_pos + size])
             key_pos += size
         if key_pos != len(key):
             raise ValueError("trailing composite-key bytes")
@@ -111,7 +111,9 @@ def sqlite_jsonb(rows):
     connection = sqlite3.connect(":memory:")
     try:
         blob = connection.execute("SELECT jsonb(?)", (source,)).fetchone()[0]
-        decoded = json.loads(connection.execute("SELECT json(?)", (blob,)).fetchone()[0])
+        decoded = json.loads(
+            connection.execute("SELECT json(?)", (blob,)).fetchone()[0]
+        )
     finally:
         connection.close()
     invalid_terms = (
@@ -160,7 +162,10 @@ def main(argv):
 
     # Equality checks run in every mode. Do not use Python `assert`: `-O`
     # removes assert statements and must never turn a mismatch into PASS.
-    decoded_json = [tuple(value.encode("utf-8") for value in row) for row in json.loads(compact_json)]
+    decoded_json = [
+        tuple(value.encode("utf-8") for value in row)
+        for row in json.loads(compact_json)
+    ]
     require_equal(decoded_json, rows, "compact JSON")
     require_equal(decode_framed(framed), rows, "framed binary")
     require_equal(decode_framed(zlib.decompress(compressed)), rows, "compressed binary")
@@ -193,8 +198,13 @@ def main(argv):
         )
     )
     print(f"sqlite_version={sqlite3.sqlite_version}; sqlite_jsonb_available=yes")
-    print("roundtrip=PASS for compact JSON, framed binary, compressed binary, byte map, and SQLite JSONB; mismatch=0")
-    print("arbitrary_non_utf8_typed_bytes=PASS (00 ff / 80 / fe 00); probe_bytes=" + str(len(arbitrary_jsonb)))
+    print(
+        "roundtrip=PASS for compact JSON, framed binary, compressed binary, byte map, and SQLite JSONB; mismatch=0"
+    )
+    print(
+        "arbitrary_non_utf8_typed_bytes=PASS (00 ff / 80 / fe 00); probe_bytes="
+        + str(len(arbitrary_jsonb))
+    )
     print("mutation_rejection=PASS")
     if args.check_oracles:
         print("check_oracles=PASS; explicit equality and mutation-rejection checks ran")

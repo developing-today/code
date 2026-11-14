@@ -99,7 +99,7 @@ poll and was killed on cost).
   comment) and rate-limits re-wakes of a still-unanswered round
   to one attempt per 15 minutes. The wake is
   `openclaw agent --agent main --session-key
-  agent:main:comment-loop-9818-r<n>-<wake-epoch> --timeout 900`
+agent:main:comment-loop-9818-r<n>-<wake-epoch> --timeout 900`
   — a FRESH session per wake (a persistent watcher session
   accumulates bootstrap + transcripts until turns die on
   context overflow; the round state lives on the issue, not in

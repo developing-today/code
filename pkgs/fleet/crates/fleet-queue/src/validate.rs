@@ -304,7 +304,9 @@ fn review_errors(p: &Value) -> Vec<String> {
     }
     if let Some(producer) = review.get("producer") {
         if !producer.is_object() {
-            errs.push("payload.review.producer: must be an object {task_id, session, pr}".to_string());
+            errs.push(
+                "payload.review.producer: must be an object {task_id, session, pr}".to_string(),
+            );
         }
     }
     if let Some(refs) = review.get("goal_context_refs") {
@@ -381,7 +383,14 @@ fn match_dedupe(key: &str) -> Option<DedupeMatch> {
         }
         return None;
     }
-    for fam in ["fix", "triage", "pr-set", "pr", "maintenance", "second-pass"] {
+    for fam in [
+        "fix",
+        "triage",
+        "pr-set",
+        "pr",
+        "maintenance",
+        "second-pass",
+    ] {
         let Some(after) = rest.strip_prefix(&format!("{fam}:")) else {
             continue;
         };
@@ -409,10 +418,9 @@ fn match_dedupe(key: &str) -> Option<DedupeMatch> {
                     // (design #2025 section 5.2): one live packet per
                     // (artifact, pass) by construction.
                     if let Some((issue_s, pass_s)) = tail.split_once(":pass-") {
-                        if let (Some(num), Some(pass)) = (
-                            canonical_number(issue_s),
-                            canonical_number(pass_s),
-                        ) {
+                        if let (Some(num), Some(pass)) =
+                            (canonical_number(issue_s), canonical_number(pass_s))
+                        {
                             return Some(DedupeMatch {
                                 family: fam.into(),
                                 repo: repo.to_string(),
@@ -456,7 +464,7 @@ fn match_dedupe(key: &str) -> Option<DedupeMatch> {
                             num: None,
                             nums: Some(nums),
                             origin: None,
-                                pass: None,
+                            pass: None,
                         });
                     }
                 }
@@ -1783,7 +1791,10 @@ mod tests {
             "payload": second_pass_payload(valid_review()),
         });
         let (errors, _warnings) = validate_packet(&packet);
-        assert!(errors.is_empty(), "well-formed second_pass packet must validate; got {errors:?}");
+        assert!(
+            errors.is_empty(),
+            "well-formed second_pass packet must validate; got {errors:?}"
+        );
     }
 
     #[test]
@@ -1863,17 +1874,21 @@ mod tests {
         );
         // The second-pass family is not valid for other kinds, and
         // other families are not valid for second_pass.
-        assert!(!dedupe_errs(
-            "repo-health:v1:second-pass:developing-today/code:2310:pass-1",
-            "small_fix",
-            json!({"issue": {"number": 2310}}),
-        )
-        .is_empty());
-        assert!(!dedupe_errs(
-            "repo-health:v1:fix:developing-today/code:issue:2310",
-            "second_pass",
-            json!({"issue": {"number": 2310}}),
-        )
-        .is_empty());
+        assert!(
+            !dedupe_errs(
+                "repo-health:v1:second-pass:developing-today/code:2310:pass-1",
+                "small_fix",
+                json!({"issue": {"number": 2310}}),
+            )
+            .is_empty()
+        );
+        assert!(
+            !dedupe_errs(
+                "repo-health:v1:fix:developing-today/code:issue:2310",
+                "second_pass",
+                json!({"issue": {"number": 2310}}),
+            )
+            .is_empty()
+        );
     }
 }

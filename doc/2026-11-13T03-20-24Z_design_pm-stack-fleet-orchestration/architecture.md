@@ -66,12 +66,12 @@ the actual seams: source retrieval, remote mutation, artifact persistence and se
 
 ## Version layers
 
-| Version | Meaning | Completion evidence |
-|---|---|---|
-| V1 | What pinned code, tests, documented authority and separately dated live observations actually establish | Bounded census claim with source/test link; deployment not inferred |
-| V2 | Reviewed identity, authority, priority, lifecycle, command, hydration and reliability contracts | Schemas/fixtures, decisions, crosswalk and independent design review |
-| V3 | Dependency-ordered implementation slices over the existing modules | Each issue's tests, migration/rollback evidence, then separately authorized rollout |
-| V4 | Same semantics in the hosted PM/Fleet surfaces #9079/#9081 | Identical conformance inputs/results, plus separate deployment/live proof |
+| Version | Meaning                                                                                                 | Completion evidence                                                                 |
+| ------- | ------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------- |
+| V1      | What pinned code, tests, documented authority and separately dated live observations actually establish | Bounded census claim with source/test link; deployment not inferred                 |
+| V2      | Reviewed identity, authority, priority, lifecycle, command, hydration and reliability contracts         | Schemas/fixtures, decisions, crosswalk and independent design review                |
+| V3      | Dependency-ordered implementation slices over the existing modules                                      | Each issue's tests, migration/rollback evidence, then separately authorized rollout |
+| V4      | Same semantics in the hosted PM/Fleet surfaces #9079/#9081                                              | Identical conformance inputs/results, plus separate deployment/live proof           |
 
 Later versions add capabilities; they do not erase V1 limitations or the preserved source
 mechanisms. An implementation slice can be useful before the entire program is implemented.
@@ -134,7 +134,7 @@ Result {
   a different request digest is a conflict. Separate command identity, transport delivery
   identity, per-item revision, relay lease generation and cross-item read snapshot.
 - Deduplicate `delivery_id` independently from `(source_ref, source_event_ref,
-  source_revision)` and normalized command identity. Broker-assigned accepted item revisions
+source_revision)` and normalized command identity. Broker-assigned accepted item revisions
   are monotone: older observations cannot overwrite newer accepted state; a duplicate of
   the same revision and payload is a no-op, while divergent payloads at that revision are
   a conflict. A missing accepted revision triggers reconciliation. A delayed source event
@@ -189,11 +189,11 @@ digest(domain, dto) = "sha256:" + lower_hex(
 There is one NUL byte, no length prefix, BOM, newline or other whitespace outside the
 canonical JSON bytes. `domain` is selected only from this registry, never arbitrary client text:
 
-| Purpose | Exact ASCII domain | Canonical DTO |
-|---|---|---|
-| Request fingerprint | `fleet.command-intent/v1` | Exact intent object below |
-| Hydration manifest | `fleet.context-manifest/v1` | Full manifest, omitting only `integrity.manifest_digest` |
-| Cross-target selection order | `fleet.selection-order/v1` | Exact order object below |
+| Purpose                      | Exact ASCII domain          | Canonical DTO                                            |
+| ---------------------------- | --------------------------- | -------------------------------------------------------- |
+| Request fingerprint          | `fleet.command-intent/v1`   | Exact intent object below                                |
+| Hydration manifest           | `fleet.context-manifest/v1` | Full manifest, omitting only `integrity.manifest_digest` |
+| Cross-target selection order | `fleet.selection-order/v1`  | Exact order object below                                 |
 
 The intent object has **exactly** these top-level keys; nullable fields are present as `null`
 and fixed schema defaults are expanded before JCS. Do not inject current wall-clock or newly

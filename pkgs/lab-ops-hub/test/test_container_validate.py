@@ -1482,20 +1482,20 @@ class TestValidateCrawlUrl(unittest.TestCase):
         # to space + combining mark under UTS-46) and as decoded
         # A-labels (judged unmapped by _judge_a_label).
         accepted = {
-            "http://\U0001F600.com/": "http://xn--e28h.com/",
-            "http://\u00A4.com/": "http://xn--bba.com/",
-            "http://\u00D7.com/": "http://xn--rca.com/",
-            "http://\u20AC.com/": "http://xn--lzg.com/",
-            "http://a\U0001F600b.com/": "http://xn--ab-no82a.com/",
+            "http://\U0001f600.com/": "http://xn--e28h.com/",
+            "http://\u00a4.com/": "http://xn--bba.com/",
+            "http://\u00d7.com/": "http://xn--rca.com/",
+            "http://\u20ac.com/": "http://xn--lzg.com/",
+            "http://a\U0001f600b.com/": "http://xn--ab-no82a.com/",
             "http://xn--e28h.com/": "http://xn--e28h.com/",
         }
         for raw, expected in accepted.items():
             self.assertEqual(validate_crawl_url(raw), expected, raw)
         refused = [
             # Raw Sk / Po spellings (U+00A8, U+00B4, U+203E).
-            "http://\u00A8.com/",
-            "http://\u00B4.com/",
-            "http://\u203E.com/",
+            "http://\u00a8.com/",
+            "http://\u00b4.com/",
+            "http://\u203e.com/",
             # A-labels decoding to U+00A8, U+00B4, U+203E, U+037E.
             "http://xn--fba.com/",
             "http://xn--rba.com/",

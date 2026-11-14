@@ -33,9 +33,6 @@ File-collision sequencing edges added by stable topological serialization: none.
 Existing issue references retained as non-blocking runtime/evidence gates: none.
 Domain-starter parent references are never emitted as hard native blockers. Source parents normalized to granular slices or runtime gates: #9198→CEN-04.
 
-
-
-
 Use only granular issue-key edges after all keys are resolved. Never make a whole domain starter a hard blocker when it creates a cycle. File collisions are hard sequencing edges. Parent integration adds native parent/blocker edges in a later pass after the command map, requirements IDs, and acyclic graph are verified.
 
 ## Starting failing test, oracle, and done check
@@ -78,8 +75,8 @@ Negative coverage: ambiguous ref, cycle, missing principal, telemetry mislabeled
 
 **Tier:** crucial release validation. **Goal:** validate additive graph/journal migration/backfill, rollback, cycle quarantine, event preservation, privacy and Project ownership. **Owns:** migration logic tests in `src/work/relations.rs`/`journal.rs`; actual versioned migration file remains at existing path established by #9198. **Hard blockers:** Queue Table Improvements, #9198 schema owner, DEP/JRN/AUTH contracts; #9073/#9074 only if metadata schema touched. **First failing oracle:** `pmo_val_legacy_blockers_and_events_migrate_or_quarantine_with_rollback` tests ambiguous links/events, upgrade, write, disable/rollback and prior-data read. **Done command:** confirm test listed, then `cargo test --manifest-path pkgs/fleet/Cargo.toml -p fleet-queue --lib --features client,queue-broker pmo_val_legacy_blockers_and_events_migrate_or_quarantine_with_rollback`; actual DB migration target must separately pass the owner-documented upgrade/rollback command before rollout (not guessed here). **Negative:** ambiguous ref, cycle, missing principal, telemetry mislabeled journal, private leak, rollback after remote effect. **Acceptance:** source tests, DB migration, staging, deployed canary and live remote verification separately.
 
-
 ## Shared-file sequencing
 
 Added hard sequencing edges (the predecessor owns the same exact writable file):
+
 - blocked by `PRI-04` — `shared-file:pkgs/fleet/crates/fleet-queue/src/work/relations.rs`

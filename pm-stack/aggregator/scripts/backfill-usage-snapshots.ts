@@ -78,8 +78,7 @@ function parseStoreDirArg(): string | undefined {
 const dirValue = parseStoreDirArg();
 const storeDir = dirValue ?? process.env.PM_AGG_SNAPSHOTS_DIR ?? join(PKG, "snapshots");
 const quotaViewPath = process.env.QUOTA_VIEW_PATH ?? defaultQuotaViewPath(HOME);
-const registryPath =
-  process.env.QUOTA_REGISTRY_PATH ?? join(defaultHiddenDir(HOME), "provider-quota-registry.md");
+const registryPath = process.env.QUOTA_REGISTRY_PATH ?? join(defaultHiddenDir(HOME), "provider-quota-registry.md");
 
 const BY_VIEW = "backfill:quota-view.md";
 const BY_REGISTRY = "backfill:provider-quota-registry.md";

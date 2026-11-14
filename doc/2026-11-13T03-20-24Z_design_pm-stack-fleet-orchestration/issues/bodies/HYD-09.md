@@ -35,9 +35,6 @@ File-collision sequencing edges added by stable topological serialization: none.
 Existing issue references retained as non-blocking runtime/evidence gates: none.
 Domain-starter parent references are never emitted as hard native blockers. Source parents normalized to granular slices or runtime gates: #9198→CEN-04.
 
-
-
-
 Use only granular issue-key edges after all keys are resolved. Never make a whole domain starter a hard blocker when it creates a cycle. File collisions are hard sequencing edges. Parent integration adds native parent/blocker edges in a later pass after the command map, requirements IDs, and acyclic graph are verified.
 
 ## Starting failing test, oracle, and done check
@@ -80,8 +77,8 @@ Negative coverage: partial migration, pointer/object mismatch, API drift, delete
 
 **Tier:** recommended release gate. **Goal:** validate cursor/artifact migration/rollback and hosted contract parity. **Owns:** `src/work/context.rs` model/unit tests and component docs; actual storage migration remains existing owner path defined by #9198 (no new DB). **Hard blockers:** #9198 storage authority, Queue Table Improvements, HYD-01–08. **First failing oracle:** `pmo_hyd_migration_rollback_preserves_generation_and_unknown_cursor` models upgrade→write→disable/rollback→read prior generation. **Done command:** confirm exact test listed, then `cargo test --manifest-path pkgs/fleet/Cargo.toml -p fleet-queue --lib --features client,queue-broker pmo_hyd_migration_rollback_preserves_generation_and_unknown_cursor`. A separate DB migration command must be cited by the actual migration owner before rollout; do not guess it. **Negative:** partial migration, pointer/object mismatch, API drift, deleted referenced artifact. **Acceptance split:** unit/model, DB migration, staging, deployed observation, authenticated live read and hosted parity separately recorded. No recurring schedule without registry update.
 
-
 ## Shared-file sequencing
 
 Added hard sequencing edges (the predecessor owns the same exact writable file):
+
 - blocked by `HYD-08` — `shared-file:pkgs/fleet/crates/fleet-queue/src/work/context.rs`

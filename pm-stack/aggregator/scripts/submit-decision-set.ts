@@ -125,9 +125,12 @@ async function main(): Promise<void> {
     console.error(`submit-decision-set: submit API returned HTTP ${res.status}: ${text.slice(0, 300)}`);
     process.exit(1);
   }
-  const out = (await res.json().catch(() => null)) as
-    | { setId?: string; pageUrl?: string; created?: boolean; refreshed?: boolean }
-    | null;
+  const out = (await res.json().catch(() => null)) as {
+    setId?: string;
+    pageUrl?: string;
+    created?: boolean;
+    refreshed?: boolean;
+  } | null;
   if (!out?.setId || !out?.pageUrl) {
     console.error("submit-decision-set: submit API response carried no setId/pageUrl");
     process.exit(1);

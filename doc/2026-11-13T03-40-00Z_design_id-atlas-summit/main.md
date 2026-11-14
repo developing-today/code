@@ -1,7 +1,6 @@
 # ID/Atlas summit: extensible signed primitives, federation, namespaces
 
-Program [#9106](https://github.com/developing-today/code/issues/9106), queue task
-15354. Summit owner: `ses_e5e2d06f0ccffefg2Z4FGyW3mW`, intended head
+Program [#9106](https://github.com/developing-today/code/issues/9106), queue task 15354. Summit owner: `ses_e5e2d06f0ccffefg2Z4FGyW3mW`, intended head
 `opencode-route/summit`. Workhorse workers produce bounded inventories, evidence,
 drafts and verification; the summit owns cross-part decisions and final language.
 
@@ -15,19 +14,19 @@ stage records are committed here and posted as `agent-note` comments on #9106.
 
 ## 1. Reading order and acceptance evidence
 
-| Record | Purpose | Acceptance state |
-|---|---|---|
-| [Baseline](baseline/v1-audit.md), [seams](baseline/seam-map.md) | Source-audited V1 and existing owner boundaries | Source profiles pinned; external Atlas snapshot checked, producer-source gap retained |
-| [Inventory](inventory/audit.md) | Deterministic statement extraction and expanded issue map | Independent judge agrees: 384 IDs, zero unmapped homes; 14 regression cases pass |
-| [Live homes](inventory-live/semantic-audit.md) | Live issue homes, hierarchy, Part B candidate provenance | 52 issue snapshots; 42 program hierarchy edges; original-30 gap explicitly documented |
-| [Crosscut](crosscut/versioned-design.md), [sequence](crosscut/sequencing-draft.md) | Extensibility, modes, sequencing: #9110–#9112 | Frozen draft; verifier passes 39 slots and DAG/config/file oracles |
-| [Addressing](part-a-addressing/versioned-design.md) | ID shapes and namespace families: #9113–#9124 | Frozen 35-slice draft; URI reference passes 10,000 array and 10,000 content round trips |
-| [Graph](part-a-graph/versioned-design.md) | Triples, attributes, social substrate: #9125–#9132 | Frozen 17-slice set; feed-cursor and typed-byte evidence reproduced |
-| [Federation](part-b/versioned-design.md), [repairs](part-b/repair-disposition.md) | Federation and trust: #9141–#9148 | Frozen 32-slice set; bounded findings applied; allocation model passes 2,000 traces |
-| [Atlas](part-c/versioned-design.md), [repairs](part-c/repair-disposition.md) | Storage economics, search, recommendations: #9133–#9140 | Frozen 22-slice set; executable 16-transition reference fixture; empirical runs are explicit follow-ups |
-| [Answers](answers.md), [integration check](review/integration-check.md) | Summit rulings, conservative defaults, readiness boundaries | Concrete checkpoint; no repeated reviewer-wait loop |
-| [Verification](verification.md) | Copyable narrow commands, observed results and evidence limits | Runtime/production claims explicitly excluded |
-| [Delivery preparation](delivery/delivery-plan.md) | Individually workable issue drafts and native/queue readback gate | 126-row gate passes all 384 statements; guarded publisher requires merged-tree and exact report approval |
+| Record                                                                             | Purpose                                                           | Acceptance state                                                                                         |
+| ---------------------------------------------------------------------------------- | ----------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------- |
+| [Baseline](baseline/v1-audit.md), [seams](baseline/seam-map.md)                    | Source-audited V1 and existing owner boundaries                   | Source profiles pinned; external Atlas snapshot checked, producer-source gap retained                    |
+| [Inventory](inventory/audit.md)                                                    | Deterministic statement extraction and expanded issue map         | Independent judge agrees: 384 IDs, zero unmapped homes; 14 regression cases pass                         |
+| [Live homes](inventory-live/semantic-audit.md)                                     | Live issue homes, hierarchy, Part B candidate provenance          | 52 issue snapshots; 42 program hierarchy edges; original-30 gap explicitly documented                    |
+| [Crosscut](crosscut/versioned-design.md), [sequence](crosscut/sequencing-draft.md) | Extensibility, modes, sequencing: #9110–#9112                     | Frozen draft; verifier passes 39 slots and DAG/config/file oracles                                       |
+| [Addressing](part-a-addressing/versioned-design.md)                                | ID shapes and namespace families: #9113–#9124                     | Frozen 35-slice draft; URI reference passes 10,000 array and 10,000 content round trips                  |
+| [Graph](part-a-graph/versioned-design.md)                                          | Triples, attributes, social substrate: #9125–#9132                | Frozen 17-slice set; feed-cursor and typed-byte evidence reproduced                                      |
+| [Federation](part-b/versioned-design.md), [repairs](part-b/repair-disposition.md)  | Federation and trust: #9141–#9148                                 | Frozen 32-slice set; bounded findings applied; allocation model passes 2,000 traces                      |
+| [Atlas](part-c/versioned-design.md), [repairs](part-c/repair-disposition.md)       | Storage economics, search, recommendations: #9133–#9140           | Frozen 22-slice set; executable 16-transition reference fixture; empirical runs are explicit follow-ups  |
+| [Answers](answers.md), [integration check](review/integration-check.md)            | Summit rulings, conservative defaults, readiness boundaries       | Concrete checkpoint; no repeated reviewer-wait loop                                                      |
+| [Verification](verification.md)                                                    | Copyable narrow commands, observed results and evidence limits    | Runtime/production claims explicitly excluded                                                            |
+| [Delivery preparation](delivery/delivery-plan.md)                                  | Individually workable issue drafts and native/queue readback gate | 126-row gate passes all 384 statements; guarded publisher requires merged-tree and exact report approval |
 
 [Final design judge](review/final-design-judge.md) agrees. The three issue readers cover all 126 rows; their bounded repairs are recorded under `review/issue-reader-*.md`. This does not substitute for remote publication readback.
 
@@ -109,12 +108,12 @@ evaluation; its candidate set is not a preselected model.
 
 ## 3. Version layering
 
-| Layer | Meaning | Must not be claimed |
-|---|---|---|
-| V1 | Source-audited current implementations, domain-local namespace/sync/relay and storage mechanisms, plus separately labeled existing designs | That all deployments run every source feature, or that general federation is already implemented |
-| V2 | Stable adapter/admission contracts, both cores, identity profiles, signed sidecars/location indexing, safe peer classes/conflict reports, evidence harnesses | Unmeasured performance/economics superiority or universal compatibility without conformance |
-| V3 | Bounded federated queries, names/lenses/streams, append/social surfaces, ID search and incremental recommendations built on V2 contracts | Global completeness, unrestricted public metadata or special first-party authority |
-| V4 | Evidence-gated merge/reputation/world/graph-language horizons and long-tail adapters | That horizon work has been dropped or that research outcomes are predetermined |
+| Layer | Meaning                                                                                                                                                      | Must not be claimed                                                                              |
+| ----- | ------------------------------------------------------------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------ |
+| V1    | Source-audited current implementations, domain-local namespace/sync/relay and storage mechanisms, plus separately labeled existing designs                   | That all deployments run every source feature, or that general federation is already implemented |
+| V2    | Stable adapter/admission contracts, both cores, identity profiles, signed sidecars/location indexing, safe peer classes/conflict reports, evidence harnesses | Unmeasured performance/economics superiority or universal compatibility without conformance      |
+| V3    | Bounded federated queries, names/lenses/streams, append/social surfaces, ID search and incremental recommendations built on V2 contracts                     | Global completeness, unrestricted public metadata or special first-party authority               |
+| V4    | Evidence-gated merge/reputation/world/graph-language horizons and long-tail adapters                                                                         | That horizon work has been dropped or that research outcomes are predetermined                   |
 
 The proto's V1 shorthand is not rewritten in place: the baseline adds precision.
 ID already has domain-specific namespace, sync and relay mechanisms; absence of

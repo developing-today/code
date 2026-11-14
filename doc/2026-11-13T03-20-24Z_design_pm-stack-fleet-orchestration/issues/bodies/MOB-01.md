@@ -36,16 +36,13 @@ File-collision sequencing edges added by stable topological serialization: none.
 Existing issue references retained as non-blocking runtime/evidence gates: none.
 Domain-starter parent references are never emitted as hard native blockers. Source parents normalized to granular slices or runtime gates: none.
 
-
-
-
 Use only granular issue-key edges after all keys are resolved. Never make a whole domain starter a hard blocker when it creates a cycle. File collisions are hard sequencing edges. Parent integration adds native parent/blocker edges in a later pass after the command map, requirements IDs, and acyclic graph are verified.
 
 ## Starting failing test, oracle, and done check
 
 - **First failing test:** `Done`
 - **Oracle:** deterministic model-based matrix over independent GitHub/Project/queue/session states; output equals golden `pm-work-view/v1` fixtures, each fact has a source/revision/freshness; unknown remains absent; stale/errors are not zero. Command: `cd pm-stack/aggregator && bun test test/work-projection.test.ts` (`package.json` declares `test: bun test`). -
-- **Done command:** `deterministic model-based matrix over independent GitHub/Project/queue/session states; output equals golden `pm-work-view/v1` fixtures, each fact has a source/revision/freshness; unknown remains absent; stale/errors are not zero. Command: `cd pm-stack/aggregator && bun test test/work-projection.test.ts` (`package.json` declares `test: bun test`). -`
+- **Done command:** `deterministic model-based matrix over independent GitHub/Project/queue/session states; output equals golden `pm-work-view/v1`fixtures, each fact has a source/revision/freshness; unknown remains absent; stale/errors are not zero. Command:`cd pm-stack/aggregator && bun test test/work-projection.test.ts` (`package.json`declares`test: bun test`). -`
 - Tests must first be listed by exact name in the owning target (`-- --list`); assert the test exists before execution. A zero-test filter passing is not acceptance.
 
 ## Acceptance and negative cases

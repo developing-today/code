@@ -8,11 +8,7 @@
       "kind": "research",
       "version": "V2",
       "tier": "crucial",
-      "statements": [
-        "S0.7",
-        "S0.13",
-        "S0.15"
-      ],
+      "statements": ["S0.7", "S0.13", "S0.15"],
       "goal": "Produce a byte-accurate, reviewable compatibility finding and known-answer evidence for the legacy signature profile and any distinct new profile.",
       "enables": "A follow-on implementation can preserve all existing serde JSON signature bytes while adding deterministic-CBOR records without implicit re-signing or rehashing.",
       "owned_files": [
@@ -106,11 +102,7 @@
         "pkgs/atlas-search/atlas_search.py",
         "doc/2026-11-13T03-40-00Z_design_id-atlas-summit/answers.md"
       ],
-      "statements": [
-        "S0.7",
-        "S0.13",
-        "S1.118"
-      ]
+      "statements": ["S0.7", "S0.13", "S1.118"]
     }
   ]
 }

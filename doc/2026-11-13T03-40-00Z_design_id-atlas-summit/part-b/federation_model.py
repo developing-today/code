@@ -6,6 +6,7 @@ The scoped vector model assumes authenticated scope IDs and local metering;
 it proves neither fairness nor Byzantine/global budget enforcement.
 CLI contract: no arguments; reject all extra arguments before running checks.
 """
+
 from __future__ import annotations
 
 from dataclasses import dataclass, field
@@ -37,7 +38,9 @@ class Ledger:
         return amount
 
     def consume(self, amount: int) -> None:
-        if amount < 0 or amount > self.total - self.spent - sum(self.reservations.values()):
+        if amount < 0 or amount > self.total - self.spent - sum(
+            self.reservations.values()
+        ):
             raise ValueError("work exceeds unreserved local budget")
         self.spent += amount
 
@@ -63,10 +66,21 @@ class ScopedLedger:
     limits: dict[tuple[str, str], int]
     held: dict[tuple[str, str], int] = field(default_factory=dict)
     spent: dict[tuple[str, str], int] = field(default_factory=dict)
-    reservations: dict[str, tuple[dict[str, int], tuple[str, ...], int]] = field(default_factory=dict)
-    finished: dict[str, tuple[dict[str, int], tuple[str, ...], int, dict[str, int]]] = field(default_factory=dict)
+    reservations: dict[str, tuple[dict[str, int], tuple[str, ...], int]] = field(
+        default_factory=dict
+    )
+    finished: dict[str, tuple[dict[str, int], tuple[str, ...], int, dict[str, int]]] = (
+        field(default_factory=dict)
+    )
 
-    def reserve(self, reservation_id: str, vector: dict[str, int], scopes: tuple[str, ...], expires: int, now: int) -> dict[str, int]:
+    def reserve(
+        self,
+        reservation_id: str,
+        vector: dict[str, int],
+        scopes: tuple[str, ...],
+        expires: int,
+        now: int,
+    ) -> dict[str, int]:
         if len(set(scopes)) != len(scopes):
             raise ValueError("duplicate accounting scope")
         done = self.finished.get(reservation_id)
@@ -109,7 +123,10 @@ class ScopedLedger:
         vector, scopes, expires = self.reservations[reservation_id]
         # Caller supplies locally measured actual use. Expiry closes the
         # reservation; it refunds only vector minus measured use, never spent work.
-        if set(used) - set(vector) or any(used.get(dim, 0) < 0 or used.get(dim, 0) > amount for dim, amount in vector.items()):
+        if set(used) - set(vector) or any(
+            used.get(dim, 0) < 0 or used.get(dim, 0) > amount
+            for dim, amount in vector.items()
+        ):
             raise ValueError("actual use exceeds reserved vector")
         spent_before = dict(self.spent)
         for scope in scopes:
@@ -119,7 +136,9 @@ class ScopedLedger:
                 self.spent[key] = self.spent.get(key, 0) + used.get(dim, 0)
         self.finished[reservation_id] = (dict(vector), scopes, expires, dict(used))
         del self.reservations[reservation_id]
-        assert all(self.spent.get(key, 0) >= amount for key, amount in spent_before.items())
+        assert all(
+            self.spent.get(key, 0) >= amount for key, amount in spent_before.items()
+        )
         self._assert_caps()
 
     def _assert_caps(self) -> None:
@@ -128,9 +147,20 @@ class ScopedLedger:
             assert self.held.get(key, 0) + self.spent.get(key, 0) <= cap
 
 
-def origin_request_id(origin_key: str, nonce: str, query: str, scope: str, issued: int, expires: int, limits: tuple[int, ...]) -> str:
+def origin_request_id(
+    origin_key: str,
+    nonce: str,
+    query: str,
+    scope: str,
+    issued: int,
+    expires: int,
+    limits: tuple[int, ...],
+) -> str:
     """Deterministic model ID. Production canonical CBOR/hash profile is separate."""
-    body = json.dumps([origin_key, nonce, query, scope, issued, expires, limits], separators=(",", ":")).encode()
+    body = json.dumps(
+        [origin_key, nonce, query, scope, issued, expires, limits],
+        separators=(",", ":"),
+    ).encode()
     return hashlib.sha256(b"ID/Atlas/OriginQuery/v1\0" + body).hexdigest()
 
 
@@ -138,8 +168,12 @@ def check_fixed_oracles() -> None:
     ledger = Ledger("r1", ("digest", "scope-A", 10, "nonce-a"), 20, 10)
     assert ledger.reserve("child-a", 6) == 6
     assert ledger.reserve("child-a", 6) == 6  # retry reuses allocation
-    assert ledger.reserve("child-a", 99) == 6  # even a changed retry request cannot mint
-    assert origin_request_id("origin", "nonce-1", "q", "s", 1, 20, (3, 5)) != origin_request_id("origin", "nonce-2", "q", "s", 1, 20, (3, 5))
+    assert (
+        ledger.reserve("child-a", 99) == 6
+    )  # even a changed retry request cannot mint
+    assert origin_request_id(
+        "origin", "nonce-1", "q", "s", 1, 20, (3, 5)
+    ) != origin_request_id("origin", "nonce-2", "q", "s", 1, 20, (3, 5))
     assert ledger.reserve("child-b", 4) == 4
     try:
         ledger.reserve("child-c", 1)
@@ -163,14 +197,32 @@ def check_fixed_oracles() -> None:
     assert ledger.release_cached("peer", 11) == "reauthorization-denied"
     assert ledger.release_cached("peer", 20) == "expired-no-rerun"
 
-    scopes = ("query:q1", "client:client-key", "peer:peer-key", "tenant:tenant-7", "node:node-1")
-    limits = {(scope, dim): cap for scope in scopes for dim, cap in {"peers": 5, "work": 12, "bytes": 1024}.items()}
+    scopes = (
+        "query:q1",
+        "client:client-key",
+        "peer:peer-key",
+        "tenant:tenant-7",
+        "node:node-1",
+    )
+    limits = {
+        (scope, dim): cap
+        for scope in scopes
+        for dim, cap in {"peers": 5, "work": 12, "bytes": 1024}.items()
+    }
     scoped = ScopedLedger(limits)
     vector = {"peers": 2, "work": 4, "bytes": 300}
     assert scoped.reserve("reservation-1", vector, scopes, expires=30, now=10) == vector
-    assert scoped.reserve("reservation-1", vector, scopes, expires=30, now=11) == vector  # retry idempotent
+    assert (
+        scoped.reserve("reservation-1", vector, scopes, expires=30, now=11) == vector
+    )  # retry idempotent
     try:
-        scoped.reserve("reservation-1", {"peers": 3, "work": 4, "bytes": 300}, scopes, expires=30, now=11)
+        scoped.reserve(
+            "reservation-1",
+            {"peers": 3, "work": 4, "bytes": 300},
+            scopes,
+            expires=30,
+            now=11,
+        )
     except ValueError:
         pass
     else:
@@ -178,7 +230,9 @@ def check_fixed_oracles() -> None:
     held_before = dict(scoped.held)
     spent_before = dict(scoped.spent)
     try:
-        scoped.reserve("duplicate-scope", {"work": 1}, ("node:node-1", "node:node-1"), 30, 11)
+        scoped.reserve(
+            "duplicate-scope", {"work": 1}, ("node:node-1", "node:node-1"), 30, 11
+        )
     except ValueError:
         pass
     else:
@@ -205,28 +259,80 @@ def check_fixed_oracles() -> None:
     assert scoped.held[("node:node-1", "work")] == 0
     scoped.reserve("reservation-2", vector, scopes, expires=20, now=12)
     scoped.finish("reservation-2", {"peers": 0, "work": 1, "bytes": 0}, now=20)
-    assert scoped.spent[("node:node-1", "work")] == 3  # expiry refunded only unused amount
+    assert (
+        scoped.spent[("node:node-1", "work")] == 3
+    )  # expiry refunded only unused amount
 
-    scopes_a = ("query:q1", "query:q2", "client:c1", "client:c2", "peer:p1", "peer:p2", "tenant:t1", "tenant:t2", "node:n")
+    scopes_a = (
+        "query:q1",
+        "query:q2",
+        "client:c1",
+        "client:c2",
+        "peer:p1",
+        "peer:p2",
+        "tenant:t1",
+        "tenant:t2",
+        "node:n",
+    )
     limits_a = {(scope, "work"): 10 for scope in scopes_a}
     limits_a[("client:c2", "work")] = 5
     isolated = ScopedLedger(limits_a)
-    isolated.reserve("c1-r", {"work": 4}, ("query:q1", "client:c1", "peer:p1", "tenant:t1", "node:n"), 30, 1)
-    isolated.reserve("c2-r", {"work": 4}, ("query:q2", "client:c2", "peer:p2", "tenant:t2", "node:n"), 30, 1)
+    isolated.reserve(
+        "c1-r",
+        {"work": 4},
+        ("query:q1", "client:c1", "peer:p1", "tenant:t1", "node:n"),
+        30,
+        1,
+    )
+    isolated.reserve(
+        "c2-r",
+        {"work": 4},
+        ("query:q2", "client:c2", "peer:p2", "tenant:t2", "node:n"),
+        30,
+        1,
+    )
     try:
-        isolated.reserve("c2-extra", {"work": 2}, ("query:q2", "client:c2", "peer:p2", "tenant:t2", "node:n"), 30, 1)
+        isolated.reserve(
+            "c2-extra",
+            {"work": 2},
+            ("query:q2", "client:c2", "peer:p2", "tenant:t2", "node:n"),
+            30,
+            1,
+        )
     except ValueError:
         pass
     else:
         raise AssertionError("authenticated requester cap was exceeded")
 
-    scopes_b = ("query:q1", "query:q2", "client:c1", "client:c2", "peer:p1", "peer:p2", "tenant:t1", "tenant:t2", "node:n")
+    scopes_b = (
+        "query:q1",
+        "query:q2",
+        "client:c1",
+        "client:c2",
+        "peer:p1",
+        "peer:p2",
+        "tenant:t1",
+        "tenant:t2",
+        "node:n",
+    )
     limits_b = {(scope, "work"): 20 for scope in scopes_b}
     limits_b[("node:n", "work")] = 10
     node_caps = ScopedLedger(limits_b)
-    node_caps.reserve("first", {"work": 6}, ("query:q1", "client:c1", "peer:p1", "tenant:t1", "node:n"), 30, 1)
+    node_caps.reserve(
+        "first",
+        {"work": 6},
+        ("query:q1", "client:c1", "peer:p1", "tenant:t1", "node:n"),
+        30,
+        1,
+    )
     try:
-        node_caps.reserve("second", {"work": 6}, ("query:q2", "client:c2", "peer:p2", "tenant:t2", "node:n"), 30, 1)
+        node_caps.reserve(
+            "second",
+            {"work": 6},
+            ("query:q2", "client:c2", "peer:p2", "tenant:t2", "node:n"),
+            30,
+            1,
+        )
     except ValueError:
         pass
     else:
@@ -245,13 +351,22 @@ def check_seeded_graphs() -> None:
         while queue:
             node, ledger, depth = queue.pop(0)
             if ledger.total - ledger.spent - sum(ledger.reservations.values()) > 0:
-                ledger.consume(rng.randrange(ledger.total - ledger.spent - sum(ledger.reservations.values()) + 1))
+                ledger.consume(
+                    rng.randrange(
+                        ledger.total
+                        - ledger.spent
+                        - sum(ledger.reservations.values())
+                        + 1
+                    )
+                )
             if depth >= 5:
                 continue
             count = rng.randrange(0, 4)
             for i in range(count):
                 child = f"{node}/{i}"
-                remaining = ledger.total - ledger.spent - sum(ledger.reservations.values())
+                remaining = (
+                    ledger.total - ledger.spent - sum(ledger.reservations.values())
+                )
                 grant = rng.randrange(remaining + 1) if remaining else 0
                 ledger.reserve(child, grant)
                 edges += 1
@@ -259,7 +374,9 @@ def check_seeded_graphs() -> None:
                 ledgers[child] = child_ledger
                 queue.append((child, child_ledger, depth + 1))
                 if rng.random() < 0.1:
-                    assert ledger.reserve(child, rng.randrange(total + 1)) == grant  # duplicate delivery/retry
+                    assert (
+                        ledger.reserve(child, rng.randrange(total + 1)) == grant
+                    )  # duplicate delivery/retry
         assert sum(item.spent for item in ledgers.values()) <= total
         assert edges == sum(len(item.reservations) for item in ledgers.values())
 

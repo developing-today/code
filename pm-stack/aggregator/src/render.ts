@@ -3188,16 +3188,16 @@ export function questionsSectionHtml(
   if (summaries === null) {
     return `<section class="questions-section"><h2 id="questions">Questions</h2><p class="muted">Unavailable — the decision-set store could not be read, so open questions cannot be reported here.</p>${allSetsLink}${footer}</section>`;
   }
-  const open = summaries
-    .filter((s) => s.openQuestions > 0)
-    .sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+  const open = summaries.filter((s) => s.openQuestions > 0).sort((a, b) => b.createdAt.localeCompare(a.createdAt));
   if (!open.length) {
     return `<section class="questions-section"><h2 id="questions">Questions</h2><p class="muted">No open questions right now — the stack is clear.</p>${allSetsLink}${footer}</section>`;
   }
   const totalOpen = open.reduce((n, s) => n + s.openQuestions, 0);
   const rows = open
     .map((s) => {
-      const stamp = Number.isFinite(Date.parse(s.createdAt)) ? QUESTIONS_STAMP.format(new Date(s.createdAt)) : s.createdAt;
+      const stamp = Number.isFinite(Date.parse(s.createdAt))
+        ? QUESTIONS_STAMP.format(new Date(s.createdAt))
+        : s.createdAt;
       return `<div class="card"><a href="${esc(pageUrlFor(s))}"><strong>${esc(s.title)}</strong></a><br><span class="muted">${s.openQuestions} open question${s.openQuestions === 1 ? "" : "s"} · ${s.items} item${s.items === 1 ? "" : "s"} · ${s.questions} question${s.questions === 1 ? "" : "s"} · Raised ${esc(stamp)}</span></div>`;
     })
     .join("");
@@ -3492,7 +3492,12 @@ export function attentionFragment(section: "header" | "queues" | "sessions", inn
  * immediately; the three heavy sections stream in as fragments.
  * Without JS, a meta refresh lands on the full server render.
  */
-export function renderAttentionShell(provenance: Provenance, detail?: ProvenanceDetail, refs?: string, questionsHtml = ""): string {
+export function renderAttentionShell(
+  provenance: Provenance,
+  detail?: ProvenanceDetail,
+  refs?: string,
+  questionsHtml = "",
+): string {
   const refsQuery = refs ? `refs=${encodeURIComponent(refs)}` : "";
   const skel = (label: string) => `<div class="skel">Loading ${label}…</div>`;
   const body = `<h1>Needs you</h1><p class="muted">Loading the Needs User and Needs Orchestrator queues…</p><noscript><meta http-equiv="refresh" content="0; url=/attention?full=1"></noscript>

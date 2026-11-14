@@ -93,7 +93,9 @@ let
   );
   openclawPkg = pkgs.writeShellScriptBin "openclaw-backup" (builtins.readFile ./openclaw-backup.sh);
   atlasPkg = pkgs.writeShellScriptBin "atlas-backup" (builtins.readFile ./atlas-backup.sh);
-  statePkg = pkgs.writeShellScriptBin "laptop-state-backup" (builtins.readFile ./laptop-state-backup.sh);
+  statePkg = pkgs.writeShellScriptBin "laptop-state-backup" (
+    builtins.readFile ./laptop-state-backup.sh
+  );
   watchdogPkg = pkgs.writeShellScriptBin "laptop-backups-watchdog" (
     builtins.readFile ./laptop-backups-watchdog.sh
   );

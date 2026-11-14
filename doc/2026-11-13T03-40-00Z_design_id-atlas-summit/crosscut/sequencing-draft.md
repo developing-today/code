@@ -6,14 +6,14 @@ The machine-readable per-component map in [`sequencing.json`](sequencing.json) i
 
 Waves describe **implementation readiness**. A hard edge names the minimum output/interface needed, not completion of an entire sibling program; research and design have separately recorded slots and can proceed in parallel while a prerequisite interface is being settled. The map uses these layers:
 
-| Wave | Readiness |
-|---|---|
-| 0 | Living #9112 integration plus primitive boundary, identity profiles, namespace/address cores, triple representation, and benchmark harness. |
-| 1 | Direct consumers of wave-0 contracts: sidecars, URI, shorthand, graph/attribute representation, benchmark-informed choices, acceptance gate, and duplicate/request identity. |
-| 2 | Location index, derived address families, config integration, GC, conflict reports, and routing validation. |
-| 3 | Social model after versioning; moderation after GC; identity/delegation; search after location contract; enabled fan-out after duplicate safety; signed worlds/evidence extensions. |
-| 5 | Review-dated horizon items: signed worlds, recommendation runtime/objects, CRDT research/adoption, advanced takeover evidence. |
-| 6 | Advanced reputation synthesis after comparable evidence semantics. |
+| Wave | Readiness                                                                                                                                                                           |
+| ---- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 0    | Living #9112 integration plus primitive boundary, identity profiles, namespace/address cores, triple representation, and benchmark harness.                                         |
+| 1    | Direct consumers of wave-0 contracts: sidecars, URI, shorthand, graph/attribute representation, benchmark-informed choices, acceptance gate, and duplicate/request identity.        |
+| 2    | Location index, derived address families, config integration, GC, conflict reports, and routing validation.                                                                         |
+| 3    | Social model after versioning; moderation after GC; identity/delegation; search after location contract; enabled fan-out after duplicate safety; signed worlds/evidence extensions. |
+| 5    | Review-dated horizon items: signed worlds, recommendation runtime/objects, CRDT research/adoption, advanced takeover evidence.                                                      |
+| 6    | Advanced reputation synthesis after comparable evidence semantics.                                                                                                                  |
 
 No `wave 4` is currently needed; gaps in wave numbers are labels for ordering, not missing work. #9145's stable request/dedup identity is a hard prerequisite to enabling #9144 fan-out; protocol design can proceed concurrently against that contract, but fan-out release cannot. #9146's routing-state research/design needs authenticated peer updates but not an already-implemented fan-out. #9148's advanced takeover work is later; minimum key disable/revocation and replay-window controls are V2 work in #9141.
 

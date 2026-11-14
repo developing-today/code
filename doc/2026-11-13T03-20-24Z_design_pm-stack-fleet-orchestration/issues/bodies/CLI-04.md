@@ -58,9 +58,6 @@ File-collision sequencing edges added by stable topological serialization: none.
 Existing issue references retained as non-blocking runtime/evidence gates: none.
 Domain-starter parent references are never emitted as hard native blockers. Source parents normalized to granular slices or runtime gates: none.
 
-
-
-
 Use only granular issue-key edges after all keys are resolved. Never make a whole domain starter a hard blocker when it creates a cycle. File collisions are hard sequencing edges. Parent integration adds native parent/blocker edges in a later pass after the command map, requirements IDs, and acyclic graph are verified.
 
 ## Starting failing test, oracle, and done check
@@ -101,9 +98,9 @@ Negative coverage: stale input, duplicate/replay, ambiguous resource, unauthoriz
 
 | `CLI-04` Shared service composition for work next/open | #9206 with #9204/#9209/#9207 seams | `work.next/open`, `--ready`, `--claim`, `--hydrate full|incremental`; REQ C-9/C-10, P-5/P-7/P-8 | Adapter calls existing selection (#9204), claim (#9209/#9178), hydrate (#9207); no duplicate rank/eligibility. | `CLI-02`, `CLI-03`, upstream claim/capability review | **Failing test:** future `work_next_revalidates_eligibility_through_shared_claim_path`. **Done:** `cargo test --manifest-path pkgs/fleet/Cargo.toml -p fleet-queue --lib --features client,queue-broker work_next_revalidates_eligibility_through_shared_claim_path` passes; selection and sugar use same service, partial receipt preserved. |
 
-
 ## Shared-file sequencing
 
 Added hard sequencing edges (the predecessor owns the same exact writable file):
+
 - blocked by `REL-01` — `shared-file:pkgs/fleet/crates/fleet-queue/src/work/lifecycle.rs`
 - blocked by `SEL-01` — `shared-file:pkgs/fleet/crates/fleet-queue/src/work/selection.rs`

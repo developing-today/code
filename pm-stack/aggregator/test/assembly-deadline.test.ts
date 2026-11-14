@@ -1,7 +1,14 @@
 import { describe, expect, it } from "bun:test";
 import { BOUNDED_DASHBOARD_PATHS, createDashboardResponseDeadline } from "../src/assembly-deadline.ts";
 
-const routes = ["/board", "/api/board.json", "/api/overview.json", "/frag/overview", "/program", "/api/program.json"] as const;
+const routes = [
+  "/board",
+  "/api/board.json",
+  "/api/overview.json",
+  "/frag/overview",
+  "/program",
+  "/api/program.json",
+] as const;
 
 describe("dashboard assembly deadline (#5664)", () => {
   it("covers only the six routes whose complete assembly can outlive Bun's request window", () => {

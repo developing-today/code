@@ -41,7 +41,7 @@ The parts build up together into **the decision pool**, which is the one used by
 
 ## 4. LLM-as-decider protocol
 
-- **Don't use `small`.** Only Luna small / **Luna 100k** as the last-resort decision model. Maybe there is a super-fast free one that doesn't need to be smart at all — Beam might be too slow *and* too smart; consider Beam or one of the really, really fast ones that are just not decision-API fast.
+- **Don't use `small`.** Only Luna small / **Luna 100k** as the last-resort decision model. Maybe there is a super-fast free one that doesn't need to be smart at all — Beam might be too slow _and_ too smart; consider Beam or one of the really, really fast ones that are just not decision-API fast.
 - An LLM decider uses **up to its context limit without compaction, or less when possible**, to review the input and possibly do a few quick scans of files, then produces valid JSON matching the schema.
 - **Invalid JSON handling:** feed back the invalid JSON, the decision schema, the prompt, and suggestions; the result must be valid JSON **after two tries**. Then move on to the next LLM or pool; if all pool routes are exhausted, **set a default answer**.
 
@@ -57,7 +57,7 @@ Later we compare model outcomes to cost, speed, etc. Capture, per decision and p
 
 Effort overlaps two related but technically distinct concepts:
 
-1. **Tie-break lean** — when using a decision API to determine a routing direction: low/medium/high add a *very slight* boost toward the lowest / closest to the middle (workhorse/scout) / closest to specialist-and-summit. Not an absolute amount, not a plain multiplication. An appropriate mechanism slightly prefers one direction, e.g. when the two highest results are within some distance of each other. Low/medium/high might also change **which default is used when auto is used**.
+1. **Tie-break lean** — when using a decision API to determine a routing direction: low/medium/high add a _very slight_ boost toward the lowest / closest to the middle (workhorse/scout) / closest to specialist-and-summit. Not an absolute amount, not a plain multiplication. An appropriate mechanism slightly prefers one direction, e.g. when the two highest results are within some distance of each other. Low/medium/high might also change **which default is used when auto is used**.
 2. **Fallback pool choice** — the pool to use if all decision models fail.
 
 For now, especially for the UI, leave it this way to avoid new widgets. In the API and on tasks we can distinguish the two. Later refinement — low/medium/high for **quality, speed, and cost** as separate axes: if they all match, their ratio is identical, so what does changing low→high mean? Working answer to test: choose the best all-around at a given overall capability band and pass to the appropriate pool without an effort level. Consider extensions supporting such steering for other decision types, dynamically at runtime, or both.

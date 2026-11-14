@@ -913,7 +913,14 @@ describe("aa chart expand + zoom/pan (#3298)", () => {
     // the zoom/pan behavior the executable tests in
     // aa-explorer-computations.test.ts drive is the module's — the
     // page must import it, not carry an inline copy that could drift
-    for (const name of ["parseChartViewBox", "effectiveChartView", "zoomChartView", "panChartView", "resetChartView", "chartClickSuppressed"]) {
+    for (const name of [
+      "parseChartViewBox",
+      "effectiveChartView",
+      "zoomChartView",
+      "panChartView",
+      "resetChartView",
+      "chartClickSuppressed",
+    ]) {
       expect(imported).toContain(name);
       expect(html).not.toMatch(new RegExp("function " + name + "\\s*\\("));
     }

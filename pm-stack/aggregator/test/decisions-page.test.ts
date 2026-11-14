@@ -49,7 +49,10 @@ function makeSet(setId: string, items: unknown[]): DecisionSet {
 const multiSet = makeSet("page-multi", [
   item("multi-item", [q("page-multi", 1, { recommendedOptionIds: ["opt-1"] }), q("page-multi", 2), q("page-multi", 3)]),
 ]);
-const singleSet = makeSet("page-single", [item("single-a", [q("page-single", 1)]), item("single-b", [q("page-single", 1)] )]);
+const singleSet = makeSet("page-single", [
+  item("single-a", [q("page-single", 1)]),
+  item("single-b", [q("page-single", 1)]),
+]);
 const doneSet = makeSet("page-done", [
   item("done-item", [
     q("page-done", 1, { resolution: { kind: "answered", optionLabel: "Yes", at: NOW, via: "test" } }),
@@ -93,7 +96,9 @@ beforeAll(async () => {
     try {
       const res = await fetch(`${base}/decisions/page-multi?t=tok-page-multi`);
       if (res.status === 200) break;
-    } catch { /* not up yet */ }
+    } catch {
+      /* not up yet */
+    }
     if (Date.now() > deadline) throw new Error("aggregator did not come up");
     await Bun.sleep(250);
   }
@@ -125,7 +130,7 @@ describe("decisions page — submitted items hide by default", () => {
   test("a fully-resolved item renders as a submitted card behind the toggle, with its recorded lines", async () => {
     const html = await getPage("page-done");
     expect(html).toContain('class="item submitted"');
-    expect(html).toContain("data-submitted=\"1\"");
+    expect(html).toContain('data-submitted="1"');
     expect(html).toContain('id="submittedCount">1<');
     expect(html).toContain("submitted-group");
     expect(html).toContain("Show submitted items");

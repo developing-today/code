@@ -61,7 +61,11 @@ def _pct_decode(component: str) -> bytes:
     while i < len(component):
         ch = component[i]
         if ch == "%":
-            if i + 2 >= len(component) or component[i + 1] not in _HEX or component[i + 2] not in _HEX:
+            if (
+                i + 2 >= len(component)
+                or component[i + 1] not in _HEX
+                or component[i + 2] not in _HEX
+            ):
                 raise UriError("malformed_percent_escape")
             out.append(int(component[i + 1 : i + 3], 16))
             i += 3
@@ -189,7 +193,9 @@ def self_test() -> int:
         "id://local/main/v1/array/~": ArrayId("local", "main", (None,)),
         "id://local/main/v1/array/b.": ArrayId("local", "main", (b"",)),
         "id://local/main/v1/array/b.%2F": ArrayId("local", "main", (b"/",)),
-        "id://local/wiki/v1/array/b.us%20president.md": ArrayId("local", "wiki", (b"us president.md",)),
+        "id://local/wiki/v1/array/b.us%20president.md": ArrayId(
+            "local", "wiki", (b"us president.md",)
+        ),
         "id://local/%E9%9B%AA%2F%C3%A9/v1/array": ArrayId("local", "雪/é", ()),
     }
     for uri, expected in vectors.items():
@@ -198,8 +204,7 @@ def self_test() -> int:
         assert format_array(got) == uri
 
     empty_blake3 = bytes.fromhex(
-        "af1349b9f5f9a1a6a0404dea36dcc949"
-        "9bcb25c9adc112b7cc9a93cae41f3262"
+        "af1349b9f5f9a1a6a0404dea36dcc9499bcb25c9adc112b7cc9a93cae41f3262"
     )
     content_uri = (
         "id://local/main/v1/content/raw-blake3-256."
@@ -244,7 +249,9 @@ def self_test() -> int:
         )
         count = rng.randrange(0, 10)
         slots = tuple(
-            rng.choice(alphabet) if rng.randrange(0, 3) else rng.randbytes(rng.randrange(0, 17))
+            rng.choice(alphabet)
+            if rng.randrange(0, 3)
+            else rng.randbytes(rng.randrange(0, 17))
             for _ in range(count)
         )
         address = ArrayId("local", namespace, slots)

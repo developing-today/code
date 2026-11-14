@@ -39,24 +39,24 @@ Expose a versioned read operation over the existing fleet-feed/PM Stack sources;
 {
   "schema_version": "pm_work_view/v1",
   "generated_at": "<ISO-8601>",
-  "work": {"authority_id":"fleet-authority","work_id":"842"},
-  "source_refs": [{"kind":"github_issue","repository_id":"…","resource_id":"…"}],
-  "revisions": {"fleet_work_version":"…","github_revision":"…","project_revision":"…","activity_snapshot_ref":"…"},
+  "work": { "authority_id": "fleet-authority", "work_id": "842" },
+  "source_refs": [{ "kind": "github_issue", "repository_id": "…", "resource_id": "…" }],
+  "revisions": { "fleet_work_version": "…", "github_revision": "…", "project_revision": "…", "activity_snapshot_ref": "…" },
   "facts": {
-    "intrinsic_urgency": {"value":"20","source":"fleet-policy","revision":"…"},
-    "importance": {"state":"absent"},
-    "effective_pressure": {"state":"not_yet_defined_by_9200"},
-    "dispatch_directive": {"value":"normal","source":"fleet"},
-    "workflow_state": {"value":"open","source":"fleet-lifecycle"},
-    "eligibility": {"state":"eligible","hard_blocker_refs":[]},
-    "claim": {"state":"unclaimed"},
-    "session": {"state":"none"},
-    "project": {"status":"Todo","source":"github_project_4"},
-    "relations": {"parent_refs":[],"hard_blocker_refs":[],"advisory_refs":[]}
+    "intrinsic_urgency": { "value": "20", "source": "fleet-policy", "revision": "…" },
+    "importance": { "state": "absent" },
+    "effective_pressure": { "state": "not_yet_defined_by_9200" },
+    "dispatch_directive": { "value": "normal", "source": "fleet" },
+    "workflow_state": { "value": "open", "source": "fleet-lifecycle" },
+    "eligibility": { "state": "eligible", "hard_blocker_refs": [] },
+    "claim": { "state": "unclaimed" },
+    "session": { "state": "none" },
+    "project": { "status": "Todo", "source": "github_project_4" },
+    "relations": { "parent_refs": [], "hard_blocker_refs": [], "advisory_refs": [] }
   },
-  "projection": {"column":"Ready","reason_codes":["…"],"conflicts":[]},
-  "available_actions": [{"verb":"request_triage","enabled":true,"reason_code":null}],
-  "freshness": {"state":"live","facets":{}}
+  "projection": { "column": "Ready", "reason_codes": ["…"], "conflicts": [] },
+  "available_actions": [{ "verb": "request_triage", "enabled": true, "reason_code": null }],
+  "freshness": { "state": "live", "facets": {} }
 }
 ```
 
@@ -78,13 +78,19 @@ Use the single shared `Command`/`Result` contract in `architecture.md`; do not i
 
 ```json
 {
-  "schema_version":"fleet.command/v1", "operation_id":"op-…",
-  "idempotency_key":"…", "request_digest":"…",
-  "work":{"authority_id":"fleet-authority","work_id":"842"},
-  "kind":"work.park", "arguments":{"reason":"…","checkpoint_ref":"…"},
-  "actor_ref":"access-principal-reference", "source_ref":"mobile_action/…",
-  "expected_work_version":"…", "observed_snapshot_ref":"…",
-  "reason":{"code":"user_requested_park","evidence_refs":[]}, "dry_run":false
+  "schema_version": "fleet.command/v1",
+  "operation_id": "op-…",
+  "idempotency_key": "…",
+  "request_digest": "…",
+  "work": { "authority_id": "fleet-authority", "work_id": "842" },
+  "kind": "work.park",
+  "arguments": { "reason": "…", "checkpoint_ref": "…" },
+  "actor_ref": "access-principal-reference",
+  "source_ref": "mobile_action/…",
+  "expected_work_version": "…",
+  "observed_snapshot_ref": "…",
+  "reason": { "code": "user_requested_park", "evidence_refs": [] },
+  "dry_run": false
 }
 ```
 
@@ -111,30 +117,30 @@ These are **acceptance targets**, not measured V1 performance or an assertion th
 
 ### 3.5 Conflicts, stale state, and recovery
 
-| Condition | UI and service behavior | Durable evidence / recovery |
-|---|---|---|
-| One source stale/unavailable | Render available facts with facet-level stale/error label; disable mutations depending on that facet | Read freshness/source timestamp; retry read, never report absent as zero |
-| Revision changed after preview | Return `conflict`; include current state/diff | User reviews and reconfirms; do not auto-rebase consequential intent |
-| Project/GitHub write pending | Show `pending_sync`, target field, owning writer, next retry/recovery | Existing outbox/result source; UI never claims verified completion until readback |
-| Claimed item lacks verified session | Show `claimed / binding unknown`, not active session or “working” | Request reconciliation; don't dispatch another worker blindly |
-| Parked/blocked item has active binding | Preserve parked/blocked plus binding discrepancy; disable new start until #9179/#9178 recovery policy resolves | Existing owner-run reconciliation; never hide as Backlog or duplicate-dispatch |
-| Offline or stale client | Read-only; keep draft as unsubmitted local intent | Re-fetch, preview changed target/revision, explicit re-confirm; discard remains possible |
-| Unauthorized actor/expired role | Reject before effect; explain required role without leaking private data | Audit denied operation; refresh Access identity |
-| Duplicate submit / retry | Same operation key returns original status/result | Idempotency lookup; no second external effect |
-| Project column cannot encode lifecycle facets | Show Project Status and Fleet/queue/PR/session facets separately, plus mapping explanation | Projection conflict/desired-vs-observed revision; no silent collapse |
+| Condition                                     | UI and service behavior                                                                                        | Durable evidence / recovery                                                              |
+| --------------------------------------------- | -------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------- |
+| One source stale/unavailable                  | Render available facts with facet-level stale/error label; disable mutations depending on that facet           | Read freshness/source timestamp; retry read, never report absent as zero                 |
+| Revision changed after preview                | Return `conflict`; include current state/diff                                                                  | User reviews and reconfirms; do not auto-rebase consequential intent                     |
+| Project/GitHub write pending                  | Show `pending_sync`, target field, owning writer, next retry/recovery                                          | Existing outbox/result source; UI never claims verified completion until readback        |
+| Claimed item lacks verified session           | Show `claimed / binding unknown`, not active session or “working”                                              | Request reconciliation; don't dispatch another worker blindly                            |
+| Parked/blocked item has active binding        | Preserve parked/blocked plus binding discrepancy; disable new start until #9179/#9178 recovery policy resolves | Existing owner-run reconciliation; never hide as Backlog or duplicate-dispatch           |
+| Offline or stale client                       | Read-only; keep draft as unsubmitted local intent                                                              | Re-fetch, preview changed target/revision, explicit re-confirm; discard remains possible |
+| Unauthorized actor/expired role               | Reject before effect; explain required role without leaking private data                                       | Audit denied operation; refresh Access identity                                          |
+| Duplicate submit / retry                      | Same operation key returns original status/result                                                              | Idempotency lookup; no second external effect                                            |
+| Project column cannot encode lifecycle facets | Show Project Status and Fleet/queue/PR/session facets separately, plus mapping explanation                     | Projection conflict/desired-vs-observed revision; no silent collapse                     |
 
 ### 3.6 Authority and source-compatibility matrix
 
-| Fact/action | Authority / owner | UI role |
-|---|---|---|
-| Project #4 fields, especially Status/Kind/Area/Horizon | Existing orchestrator single writer; Project #4 actual fields | Preview request, show desired vs observed; no direct write |
-| Issue/PR canonical state, description/comments/reviews/checks | GitHub, mutated through the existing Fleet `gh.rs` binary/API owner and its established operation discipline | Read; explicit public action request with conflict check |
-| Queue item, eligibility, claim/lease, checkpoint | Existing fleet-queue broker/validated fleet command layer | Show broker read with revision; request allowed transition only |
-| Intrinsic urgency and label normalization | #9200 policy; avoid guessing while unresolved | Show score+label provenance; submit policy-mediated request |
-| Importance/effective pressure/dependencies | Future typed Fleet metadata + #9199/#9200 contract | Display absent/unavailable if not sourced; no fabricated fallback |
-| Session id, state, adapter capabilities, acknowledgment | Provider adapter / bound task readback | Send only advertised supported operations; distinguish posted, delivered, acknowledged, progressed |
-| Private note | Fleet-owned private note/journal path, if available; explicit authorization | Private by default; explicit preview/consent for public mirror |
-| Dispatch directive / launch receipt | Existing validated dispatch service and queue/session binding protocol | Request, display reservation/launch/bind/ack/verification stages distinctly |
+| Fact/action                                                   | Authority / owner                                                                                            | UI role                                                                                            |
+| ------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------ | -------------------------------------------------------------------------------------------------- |
+| Project #4 fields, especially Status/Kind/Area/Horizon        | Existing orchestrator single writer; Project #4 actual fields                                                | Preview request, show desired vs observed; no direct write                                         |
+| Issue/PR canonical state, description/comments/reviews/checks | GitHub, mutated through the existing Fleet `gh.rs` binary/API owner and its established operation discipline | Read; explicit public action request with conflict check                                           |
+| Queue item, eligibility, claim/lease, checkpoint              | Existing fleet-queue broker/validated fleet command layer                                                    | Show broker read with revision; request allowed transition only                                    |
+| Intrinsic urgency and label normalization                     | #9200 policy; avoid guessing while unresolved                                                                | Show score+label provenance; submit policy-mediated request                                        |
+| Importance/effective pressure/dependencies                    | Future typed Fleet metadata + #9199/#9200 contract                                                           | Display absent/unavailable if not sourced; no fabricated fallback                                  |
+| Session id, state, adapter capabilities, acknowledgment       | Provider adapter / bound task readback                                                                       | Send only advertised supported operations; distinguish posted, delivered, acknowledged, progressed |
+| Private note                                                  | Fleet-owned private note/journal path, if available; explicit authorization                                  | Private by default; explicit preview/consent for public mirror                                     |
+| Dispatch directive / launch receipt                           | Existing validated dispatch service and queue/session binding protocol                                       | Request, display reservation/launch/bind/ack/verification stages distinctly                        |
 
 Current adjacent work does not establish the full owner model. #3424/#8579 and #8581 may materially affect durable queue facts and operation-intent design; #8580 mirror remains open. QTI identity recovery is now tracked as research #9241 under #9198, but its answer is not a prerequisite for V2 read-only projection design, mobile UX, or compatibility adapters. This proposal introduces no new data store and gates schema-coupled persistence only on the #9241 crosswalk plus the audited contracts.
 

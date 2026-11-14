@@ -3,6 +3,7 @@
 
 CLI contract: no arguments. Reject extras before fixture file I/O.
 """
+
 import hashlib
 import json
 import sys
@@ -39,9 +40,14 @@ def deterministic_cbor(value):
         data = value.encode("utf-8")
         return cbor_head(3, len(data)) + data
     if isinstance(value, list):
-        return cbor_head(4, len(value)) + b"".join(deterministic_cbor(item) for item in value)
+        return cbor_head(4, len(value)) + b"".join(
+            deterministic_cbor(item) for item in value
+        )
     if isinstance(value, dict):
-        entries = [(deterministic_cbor(key), deterministic_cbor(item)) for key, item in value.items()]
+        entries = [
+            (deterministic_cbor(key), deterministic_cbor(item))
+            for key, item in value.items()
+        ]
         entries.sort(key=lambda pair: (len(pair[0]), pair[0]))
         return cbor_head(5, len(entries)) + b"".join(k + v for k, v in entries)
     raise TypeError(f"unsupported fixture CBOR type: {type(value).__name__}")
@@ -60,7 +66,9 @@ body = parent_spec["body"]
 parent = signed_envelope(body, parent_spec["signature_hex"])
 parent_id = digest_id(parent)
 assert parent_id == fixture["expected_parent_snapshot_id"]
-assert not any(key in body for key in ("pages", "page_envelope_ids", "page_ids")), "parent preimage must not include page IDs"
+assert not any(key in body for key in ("pages", "page_envelope_ids", "page_ids")), (
+    "parent preimage must not include page IDs"
+)
 
 cutoff = body["cutoff_sequence"]
 ordered = sorted(
@@ -74,7 +82,7 @@ assert late["arrival_sequence"] > cutoff and late not in ordered
 def make_page(position, signature_hex):
     if position < 0 or position > len(ordered) or position % body["page_size"]:
         raise ValueError("InvalidPagePosition")
-    entries = ordered[position:position + body["page_size"]]
+    entries = ordered[position : position + body["page_size"]]
     page_body = {
         "parent_snapshot_id": parent_id,
         "position": position,
@@ -95,18 +103,26 @@ actual_pages = []
 for expected in fixture["expected_pages"]:
     envelope, envelope_id = make_page(expected["position"], expected["signature_hex"])
     assert envelope_id == expected["expected_envelope_id"]
-    assert [item["id"] for item in envelope["body"]["entries"]] == expected["expected_ids"]
+    assert [item["id"] for item in envelope["body"]["entries"]] == expected[
+        "expected_ids"
+    ]
     assert envelope["body"]["done"] is expected["done"]
     actual_pages.append({"envelope": envelope, "envelope_id": envelope_id})
 
 first = fixture["expected_pages"][0]
 cursor = {"parent_snapshot_id": parent_id, "position": first["position"]}
 replayed, replayed_id = page_from_cursor(cursor, first["signature_hex"])
-assert replayed_id == fixture["expected_restart_envelope_id"] == actual_pages[0]["envelope_id"]
+assert (
+    replayed_id
+    == fixture["expected_restart_envelope_id"]
+    == actual_pages[0]["envelope_id"]
+)
 assert replayed == actual_pages[0]["envelope"]
 
-next_cursor = {"parent_snapshot_id": parent_id,
-               "position": first["position"] + len(replayed["body"]["entries"])}
+next_cursor = {
+    "parent_snapshot_id": parent_id,
+    "position": first["position"] + len(replayed["body"]["entries"]),
+}
 assert next_cursor == fixture["expected_next_cursor"]
 wrong = fixture["wrong_parent_cursor"]
 try:
@@ -116,15 +132,21 @@ except ValueError as error:
 else:
     raise AssertionError("wrong-parent cursor was accepted")
 
-print(json.dumps({
-    "fixture": fixture["format"],
-    "production_state_claim": False,
-    "cryptographic_signature_verification": False,
-    "parent_snapshot_id": parent_id,
-    "page_envelope_ids": [page["envelope_id"] for page in actual_pages],
-    "cursor_parent_and_position": "matched",
-    "restart_same_page_envelope": "matched",
-    "wrong_parent_cursor": "rejected",
-    "post_cutoff_candidate": "excluded",
-    "tie_order": "score DESC, immutable ID ASC",
-}, indent=2, sort_keys=True))
+print(
+    json.dumps(
+        {
+            "fixture": fixture["format"],
+            "production_state_claim": False,
+            "cryptographic_signature_verification": False,
+            "parent_snapshot_id": parent_id,
+            "page_envelope_ids": [page["envelope_id"] for page in actual_pages],
+            "cursor_parent_and_position": "matched",
+            "restart_same_page_envelope": "matched",
+            "wrong_parent_cursor": "rejected",
+            "post_cutoff_candidate": "excluded",
+            "tie_order": "score DESC, immutable ID ASC",
+        },
+        indent=2,
+        sort_keys=True,
+    )
+)

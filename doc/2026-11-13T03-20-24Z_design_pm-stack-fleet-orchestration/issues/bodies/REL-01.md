@@ -65,7 +65,8 @@ pin #9178 claim/manual/takeover/resume and one-queue semantics, produce transiti
 - **P-R062 — design-only (candidate)**; occurrences `P-1486, P-1487, P-1488, P-1489`; full trace: census/requirements-crosswalk.jsonl
 - **P-R063 — design-only (candidate)**; occurrences `P-1490, P-1491, P-1492`; full trace: census/requirements-crosswalk.jsonl
 - **P-R068 — design-only (candidate)**; occurrences `P-1698, P-1699, P-1700, P-1701, P-1702, P-1703, P-1704`; full trace: census/requirements-crosswalk.jsonl
-Deliver this bounded slice only. It enables downstream work only after its stated contracts and prerequisites are accepted; it does not imply that other component specs, closed parent issues, source code, tests, deployments, or runtime behavior are complete.
+  Deliver this bounded slice only. It enables downstream work only after its stated contracts and prerequisites are accepted; it does not imply that other component specs, closed parent issues, source code, tests, deployments, or runtime behavior are complete.
+
 ## Owned files and boundaries
 
 - `pkgs/fleet/crates/fleet-queue/src/work/lifecycle.rs`
@@ -81,16 +82,13 @@ File-collision sequencing edges added by stable topological serialization: none.
 Existing issue references retained as non-blocking runtime/evidence gates: #9178 (upstream claim/manual/takeover/resume semantics must be verified before mutation/cutover; offline compatibility models may proceed).
 Domain-starter parent references are never emitted as hard native blockers. Source parents normalized to granular slices or runtime gates: #9198→CEN-04, #9206→CLI-01.
 
-
-
-
 Use only granular issue-key edges after all keys are resolved. Never make a whole domain starter a hard blocker when it creates a cycle. File collisions are hard sequencing edges. Parent integration adds native parent/blocker edges in a later pass after the command map, requirements IDs, and acyclic graph are verified.
 
 ## Starting failing test, oracle, and done check
 
 - **First failing test:** `pmo_rel_claim_requires_requirements_and_filter`
 - **Oracle:** The source slice’s stated reference model, golden fixture, or invariant; compare expected and observed state explicitly. No mock-only claim of deployed/live behavior.
-- **Done command:** `verify both tests listed, then run package test filtered `pmo_rel_claim_` and `pmo_rel_manual_only_is_eligibility_not_directive`.`
+- **Done command:** `verify both tests listed, then run package test filtered `pmo_rel_claim_`and`pmo_rel_manual_only_is_eligibility_not_directive`.`
 - Tests must first be listed by exact name in the owning target (`-- --list`); assert the test exists before execution. A zero-test filter passing is not acceptance.
 
 ## Acceptance and negative cases
@@ -126,8 +124,8 @@ Negative coverage: expired but unreclaimed, manual-only/parked/blocked, empty fi
 
 **Tier:** crucial. **Goal:** pin #9178 claim/manual/takeover/resume and one-queue semantics, produce transition compatibility table and state-model tests. **Owns:** this design's requirement crosswalk plus `pkgs/fleet/crates/fleet-queue/src/work/lifecycle.rs` pure eligibility fixtures; no CLI glue. **Hard blockers:** #9178 semantics/FDR verification; #9198 pinned source/store ownership; shared #9206 `contracts.rs` identity envelope. **First failing oracle:** `pmo_rel_claim_requires_requirements_and_filter` proves BOTH task requirements and claim-time filter predicates (AND), with defaults true; `pmo_rel_manual_only_is_eligibility_not_directive` separates manual-only from Do Now. **Done command:** verify both tests listed, then run package test filtered `pmo_rel_claim_` and `pmo_rel_manual_only_is_eligibility_not_directive`. **Negative:** expired but unreclaimed, manual-only/parked/blocked, empty filters, preserve unresolved `BATCH_CLAIM_MAX`. **Migration/rollback:** no schema change; contract keeps existing semantics. Source, deployment and live claim evidence distinct.
 
-
 ## Shared-file sequencing
 
 Added hard sequencing edges (the predecessor owns the same exact writable file):
+
 - blocked by `CLI-03` — `shared-file:pkgs/fleet/crates/fleet-queue/src/work/lifecycle.rs`

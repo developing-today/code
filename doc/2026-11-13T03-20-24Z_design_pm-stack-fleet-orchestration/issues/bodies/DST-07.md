@@ -35,7 +35,6 @@ Domain-starter parent references are never emitted as hard native blockers. Sour
 
 Source-local candidate aliases normalized for this packet: DST-CMD-01 → DST-01, CLI-02; DST-SNAPSHOT-01 → DST-05.
 
-
 Use only granular issue-key edges after all keys are resolved. Never make a whole domain starter a hard blocker when it creates a cycle. File collisions are hard sequencing edges. Parent integration adds native parent/blocker edges in a later pass after the command map, requirements IDs, and acyclic graph are verified.
 
 ## Starting failing test, oracle, and done check
@@ -77,8 +76,8 @@ Negative coverage: stale input, duplicate/replay, ambiguous resource, unauthoriz
 | `DST-07` / contingent | Typed degraded/unsupported/stale behavior and payload limits. Owns proposed `src/work/distribution.rs`, `src/work/contracts.rs`, and the same crate's fixture tests. | `DST-CMD-01`, `DST-SNAPSHOT-01`; #9209 granular receipt contract | Stale/unsupported never reports fresh/applied; oversize/unknown version is typed and retains authorized recovery intent. |
 **Future red-first test commands / oracles per issue:** Exact future Rust test commands are: DST-01 `cargo test --manifest-path pkgs/fleet/Cargo.toml -p fleet-queue --lib --features client,queue-broker pmo_distribution_command_identity_reason_and_version`; DST-03 `cargo test --manifest-path pkgs/fleet/Cargo.toml -p fleet-queue --lib --features client,queue-broker pmo_distribution_atomic_intent_revision`; DST-05 `cargo test --manifest-path pkgs/fleet/Cargo.toml -p fleet-queue --lib --features client,queue-broker pmo_distribution_projection_replay`; DST-06 `cargo test --manifest-path pkgs/fleet/Cargo.toml -p fleet-queue --lib --features client,queue-broker pmo_distribution_host_order_hash`; DST-07 `cargo test --manifest-path pkgs/fleet/Cargo.toml -p fleet-queue --lib --features client,queue-broker pmo_distribution_unknown_version_degrades`. Before each, run that exact command with `-- --list` and assert the named test exists; zero-test success is not acceptance. DST-01 oracle enumerates each reason code and checks field-effect class/no mutation on rejection or unsupported code. DST-02: `cd pm-stack/dispatch && bun test test/validate.test.ts` proves 15/25 round-trip exactly, not current snapping. DST-04 first asserts `test -f pm-stack/projector/test/priority-webhook.test.ts`, then runs `cd pm-stack/projector && bun test test/priority-webhook.test.ts`; DST-05 likewise asserts `test -f pm-stack/projector/test/priority-reconcile.test.ts` before `cd pm-stack/projector && bun test test/priority-reconcile.test.ts`. Both projector oracles cover replay, stale revision, partial effects and readback repair. These are future red-first specs, not current tests. No test may trust `actor_ref` or client-supplied authorization. Hard blockers are granular keys above; #9079/#9081 hosted and #9201 mobile are soft consumers.
 
-
 ## Shared-file sequencing
 
 Added hard sequencing edges (the predecessor owns the same exact writable file):
+
 - blocked by `DST-04` — `shared-file:pkgs/fleet/crates/fleet-queue/src/work/distribution.rs`

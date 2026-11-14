@@ -59,16 +59,13 @@ File-collision sequencing edges added by stable topological serialization: none.
 Existing issue references retained as non-blocking runtime/evidence gates: none.
 Domain-starter parent references are never emitted as hard native blockers. Source parents normalized to granular slices or runtime gates: none.
 
-
-
-
 Use only granular issue-key edges after all keys are resolved. Never make a whole domain starter a hard blocker when it creates a cycle. File collisions are hard sequencing edges. Parent integration adds native parent/blocker edges in a later pass after the command map, requirements IDs, and acyclic graph are verified.
 
 ## Starting failing test, oracle, and done check
 
 - **First failing test:** `work_cli_rejects_unknown_args_before_side_effects; pmo_command_jcs_digest_conformance_cross_lang`
 - **Oracle:** The source slice’s stated reference model, golden fixture, or invariant; compare expected and observed state explicitly. No mock-only claim of deployed/live behavior.
-- **Done command:** `Verify both exact tests appear in `cargo test --manifest-path pkgs/fleet/Cargo.toml -p fleet-queue --lib --features client,queue-broker -- --list`; then run filters `work_cli_rejects_unknown_args_before_side_effects` and `pmo_command_jcs_digest_conformance_cross_lang`. The conformance test compares RFC 8785 canonical bytes/hash against independent cross-language golden vectors and negative input cases.`
+- **Done command:** `Verify both exact tests appear in `cargo test --manifest-path pkgs/fleet/Cargo.toml -p fleet-queue --lib --features client,queue-broker -- --list`; then run filters `work_cli_rejects_unknown_args_before_side_effects`and`pmo_command_jcs_digest_conformance_cross_lang`. The conformance test compares RFC 8785 canonical bytes/hash against independent cross-language golden vectors and negative input cases.`
 - Tests must first be listed by exact name in the owning target (`-- --list`); assert the test exists before execution. A zero-test filter passing is not acceptance.
 
 ## Acceptance and negative cases
@@ -107,7 +104,6 @@ The validated, default-expanded intent DTO has exactly `schema_version`, `comman
 ### Original slice text (preserved)
 
 | `CLI-02` Shared command contract and strict parser | #9206 | `fleet work` root, per-operation argv grammar, shared identity/output/safety flags; REQ C-10, P-2/P-4, O-PART2 | `pkgs/fleet/crates/fleet-queue/src/work/contracts.rs` and proposed parser `src/work/cli.rs`; no registry, `client.rs`, `lib.rs`, main or resolver ownership. Shared envelope follows `architecture.md`. | `CLI-01`, `DST-01`; FDR-PMO-001 namespace check | **Failing test:** `work_cli_rejects_unknown_args_before_side_effects`. **Done:** unique test-list check and `cargo test --manifest-path pkgs/fleet/Cargo.toml -p fleet-queue --lib --features client,queue-broker work_cli_rejects_unknown_args_before_side_effects` pass, alongside golden result/error schema cases. |
-
 
 ## Merged source-key/facade acceptance
 

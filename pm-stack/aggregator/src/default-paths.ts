@@ -17,8 +17,7 @@
 import { existsSync } from "node:fs";
 import { join } from "node:path";
 
-const KEEP_FOUR_HIDDEN =
-  "workspace/goals/keep-the-four-repos-healthy/hidden_files";
+const KEEP_FOUR_HIDDEN = "workspace/goals/keep-the-four-repos-healthy/hidden_files";
 const STEWARDSHIP_VIEW =
   "workspace/goals/stewardship-commission-recurring-review-and-dispatch/hidden_files/visibility/quota-view.md";
 

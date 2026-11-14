@@ -103,9 +103,7 @@ test("pmo_mob_03/04_mobile_queue_keyboard_and_viewport_contract", async ({ page,
   };
   const before = await dismissedCount();
   expect(before).toBeGreaterThanOrEqual(0);
-  const dismissButton = page
-    .locator('form.aform[data-verb="dismiss"] button[type="submit"]')
-    .first();
+  const dismissButton = page.locator('form.aform[data-verb="dismiss"] button[type="submit"]').first();
   await expect(dismissButton).toBeVisible();
   const actionResponse = page.waitForResponse(
     (r) => r.url().includes("/api/actions") && r.request().method() === "POST",

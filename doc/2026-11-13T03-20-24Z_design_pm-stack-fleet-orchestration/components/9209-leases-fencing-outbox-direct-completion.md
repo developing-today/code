@@ -56,7 +56,7 @@ Clock: one DB-authoritative time function for lease writes/eligibility. Client t
 
 ### 3.2 Fence boundary limitation
 
-Fence generation prevents stale *local* writes because Fleet storage checks it. GitHub does not accept this token; a request authorized locally may be paused, lease expires, and request later takes effect. For a side effect, first create immutable, policy-authorized operation intent tied to fence, aggregate version and request digest. Once sent, that intent is a saga action, not a continuing grant for worker to issue arbitrary future writes. If worker is stale at acknowledgment, it cannot mutate lifecycle or create new operations; recorder may append the remote result to that exact operation as evidence, then reconciler/authorized current owner evaluates it. Outbox worker's own claim has independent generation/fence so old relay cannot overwrite newer relay state.
+Fence generation prevents stale _local_ writes because Fleet storage checks it. GitHub does not accept this token; a request authorized locally may be paused, lease expires, and request later takes effect. For a side effect, first create immutable, policy-authorized operation intent tied to fence, aggregate version and request digest. Once sent, that intent is a saga action, not a continuing grant for worker to issue arbitrary future writes. If worker is stale at acknowledgment, it cannot mutate lifecycle or create new operations; recorder may append the remote result to that exact operation as evidence, then reconciler/authorized current owner evaluates it. Outbox worker's own claim has independent generation/fence so old relay cannot overwrite newer relay state.
 
 Remote constraints are effect-specific. PR merge can carry expected head SHA; issue/comment APIs reviewed here do not document Fleet fence or universal idempotency key. For non-CAS managed body/comment writes, #9208 chooses conflict-safe policy; this design must not claim the lease makes them fenced. Existing Fleet local ownership must serialize Fleet-managed operations per resource, but external GitHub writers still race.
 
@@ -68,7 +68,7 @@ Suggested states: `pending`, `delivering`, `confirmed`, `retryable_failure`, `co
 
 ### Supersede / stale operation policy (must be explicit)
 
-An old durable operation can outlive the worker lease. Never silently drop it: accepted/sent remote effects may already exist. New owner may (a) wait and reconcile operation, (b) mark it superseded *before send* via CAS and record actor/reason, (c) create compensating/new operation after observing result, or (d) re-authorize/replay same operation ID if intended state remains valid. Once remote send may have occurred, status moves to `unknown` and supersede requires remote readback; no cancellation fiction. For a newer desired state, preserve order: reconcile older op first, then enqueue correction. Security/policy revocation can stop future send, but does not undo in-flight effect. Stale sender's late success records operation-scoped effect and cannot finalize unrelated work state.
+An old durable operation can outlive the worker lease. Never silently drop it: accepted/sent remote effects may already exist. New owner may (a) wait and reconcile operation, (b) mark it superseded _before send_ via CAS and record actor/reason, (c) create compensating/new operation after observing result, or (d) re-authorize/replay same operation ID if intended state remains valid. Once remote send may have occurred, status moves to `unknown` and supersede requires remote readback; no cancellation fiction. For a newer desired state, preserve order: reconcile older op first, then enqueue correction. Security/policy revocation can stop future send, but does not undo in-flight effect. Stale sender's late success records operation-scoped effect and cannot finalize unrelated work state.
 
 Retry classes: deterministic validation/auth/permission/invalid target are terminal pending operator; SHA/version mismatch or body baseline conflict is `conflict`, refresh/re-authorize; network timeout after request send is `unknown`, read back before retry; rate limit/transient server errors use provider-specified retry-after/backoff and caller deadline, without hard-coded count/ceiling invented here; 5xx before write may be retryable but effect uncertainty depends on API guarantees. Retry budgets derive existing fleet policy and endpoint rate limits, retain attempt history, and return exact next attempt/owner. No unbounded immediate retry loop.
 
@@ -106,29 +106,29 @@ Lifecycle and GitHub state remain separate. `completed` means policy-required ef
 
 ## 8. Failure matrix
 
-| Race/cut | Required result |
-|---|---|
-| Two claimers select same item | Atomic eligibility revalidation permits one; loser reselects/returns conflict, never double holder. |
-| Takeover after lease expiry while old process alive | Increment fence; all old local writes fail; remote in-flight side effect remains possible and is operation-reconciled. |
-| Worker clock ahead/behind DB | DB time controls expiry; client timestamp cannot claim authority. |
-| Crash before prepare transaction commit | No completing transition/effects; retry same key starts once. |
-| Crash after prepare before send | Durable pending operation retried. |
-| Remote write applied, HTTP response lost | `unknown`; GET and correlate before retry; no false failure or duplicate. |
-| Relay lease reclaimed, old relay returns success | Old relay cannot update row state due relay fence; records effect only against its immutable operation; new relay readbacks. |
-| Newer desired op arrives while old op unresolved | Per-target ordering; old is reconciled or safely superseded pre-send; later correction not sent out of order. |
-| Lease expires after merge before local finalize | Completion operation can finish direct local receipt if still authorized/current completing; stale worker cannot issue next action. |
-| Newer worker changes/cancels work while old completion returns | Conditional operation-scoped finalize checks current `completing` state/revocation; retain remote receipt, do not clobber newer state. |
-| PR head changes just before merge | Expected-SHA precondition fails; conflict, rehydrate/review, no implicit new-head merge. |
-| Check/review changes without head change | Re-fetch immediately before merge; branch protection/API is final gate; still no cross-system atomic snapshot. |
-| Late comment after refresh | Watermark and policy disclosed; hold if observed before finalize, post-completion activity policy if afterward; no magical lock. |
-| Async merge accepted but not merged | `pending`; await/read eventual result; no direct queue close. |
-| Squash/rebase result | Verify `merged` and appropriate merge result fields/strategy; don't require expected head ancestry for squash. |
-| Merge succeeds, issue close fails | Preserve merge receipt; `completing` partial; retry authorized closure, no auto-reopen. |
-| One of many designated issues closes, next fails | Record individual effect receipts; no all-or-nothing claim. |
-| Two comment creators race | Local same-target serialization; remote marker recovery; duplicates discovered/conflict, no exactly-once promise. |
-| Managed body edit races with human | Potential lost update exists absent API CAS; do not claim protected; preserve snapshot and surface conflict per #9208. |
-| Duplicate webhook for own completion | Delivery ID dedupe + operation/effect idempotence; no double lifecycle transition. |
-| Epic or component issue closes incidentally | Only explicit refs/policy effects apply; never infer parent/epic/component closure. #9196 must not be completed by bot epic closure absent active-task and completion-proof gates. |
+| Race/cut                                                       | Required result                                                                                                                                                                    |
+| -------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Two claimers select same item                                  | Atomic eligibility revalidation permits one; loser reselects/returns conflict, never double holder.                                                                                |
+| Takeover after lease expiry while old process alive            | Increment fence; all old local writes fail; remote in-flight side effect remains possible and is operation-reconciled.                                                             |
+| Worker clock ahead/behind DB                                   | DB time controls expiry; client timestamp cannot claim authority.                                                                                                                  |
+| Crash before prepare transaction commit                        | No completing transition/effects; retry same key starts once.                                                                                                                      |
+| Crash after prepare before send                                | Durable pending operation retried.                                                                                                                                                 |
+| Remote write applied, HTTP response lost                       | `unknown`; GET and correlate before retry; no false failure or duplicate.                                                                                                          |
+| Relay lease reclaimed, old relay returns success               | Old relay cannot update row state due relay fence; records effect only against its immutable operation; new relay readbacks.                                                       |
+| Newer desired op arrives while old op unresolved               | Per-target ordering; old is reconciled or safely superseded pre-send; later correction not sent out of order.                                                                      |
+| Lease expires after merge before local finalize                | Completion operation can finish direct local receipt if still authorized/current completing; stale worker cannot issue next action.                                                |
+| Newer worker changes/cancels work while old completion returns | Conditional operation-scoped finalize checks current `completing` state/revocation; retain remote receipt, do not clobber newer state.                                             |
+| PR head changes just before merge                              | Expected-SHA precondition fails; conflict, rehydrate/review, no implicit new-head merge.                                                                                           |
+| Check/review changes without head change                       | Re-fetch immediately before merge; branch protection/API is final gate; still no cross-system atomic snapshot.                                                                     |
+| Late comment after refresh                                     | Watermark and policy disclosed; hold if observed before finalize, post-completion activity policy if afterward; no magical lock.                                                   |
+| Async merge accepted but not merged                            | `pending`; await/read eventual result; no direct queue close.                                                                                                                      |
+| Squash/rebase result                                           | Verify `merged` and appropriate merge result fields/strategy; don't require expected head ancestry for squash.                                                                     |
+| Merge succeeds, issue close fails                              | Preserve merge receipt; `completing` partial; retry authorized closure, no auto-reopen.                                                                                            |
+| One of many designated issues closes, next fails               | Record individual effect receipts; no all-or-nothing claim.                                                                                                                        |
+| Two comment creators race                                      | Local same-target serialization; remote marker recovery; duplicates discovered/conflict, no exactly-once promise.                                                                  |
+| Managed body edit races with human                             | Potential lost update exists absent API CAS; do not claim protected; preserve snapshot and surface conflict per #9208.                                                             |
+| Duplicate webhook for own completion                           | Delivery ID dedupe + operation/effect idempotence; no double lifecycle transition.                                                                                                 |
+| Epic or component issue closes incidentally                    | Only explicit refs/policy effects apply; never infer parent/epic/component closure. #9196 must not be completed by bot epic closure absent active-task and completion-proof gates. |
 
 ## 9. Testing requirements and named oracles
 

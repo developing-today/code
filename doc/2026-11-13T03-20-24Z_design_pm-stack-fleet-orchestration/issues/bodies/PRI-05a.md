@@ -62,14 +62,13 @@ Domain-starter parent references are never emitted as hard native blockers. Sour
 
 Source-local candidate aliases normalized for this packet: PRI-TRIAGE-01 → PRI-05a; DST-REASON-01 → DST-01; PRI-05 → PRI-05a, PRI-05b, PRI-05c, PRI-05d.
 
-
 Use only granular issue-key edges after all keys are resolved. Never make a whole domain starter a hard blocker when it creates a cycle. File collisions are hard sequencing edges. Parent integration adds native parent/blocker edges in a later pass after the command map, requirements IDs, and acyclic graph are verified.
 
 ## Starting failing test, oracle, and done check
 
 - **First failing test:** `pmo_priority_aging_moves_both_directions_with_evidence; pmo_priority_aging_skips_protected_expedite_set`
 - **Oracle:** The source slice’s stated reference model, golden fixture, or invariant; compare expected and observed state explicitly. No mock-only claim of deployed/live behavior.
-- **Done command:** `cargo test --manifest-path pkgs/fleet/Cargo.toml -p fleet-queue --lib --features client,queue-broker pmo_priority_aging_moves_both_directions_with_evidence (verify exact name appears with -- --list before running). Also verify `pmo_priority_aging_skips_protected_expedite_set` is listed with `cargo test --manifest-path pkgs/fleet/Cargo.toml -p fleet-queue --lib --features client,queue-broker -- --list`, then run `cargo test --manifest-path pkgs/fleet/Cargo.toml -p fleet-queue --lib --features client,queue-broker pmo_priority_aging_skips_protected_expedite_set`.`
+- **Done command:** `cargo test --manifest-path pkgs/fleet/Cargo.toml -p fleet-queue --lib --features client,queue-broker pmo_priority_aging_moves_both_directions_with_evidence (verify exact name appears with -- --list before running). Also verify `pmo_priority_aging_skips_protected_expedite_set`is listed with`cargo test --manifest-path pkgs/fleet/Cargo.toml -p fleet-queue --lib --features client,queue-broker -- --list`, then run `cargo test --manifest-path pkgs/fleet/Cargo.toml -p fleet-queue --lib --features client,queue-broker pmo_priority_aging_skips_protected_expedite_set`.`
 - Tests must first be listed by exact name in the owning target (`-- --list`); assert the test exists before execution. A zero-test filter passing is not acceptance.
 
 ## Acceptance and negative cases
@@ -109,13 +108,12 @@ Consume the existing #7030 protected expedite membership/value and the dated `pm
 
 Split refinement: Rise and de-escalation use meaningful triage age, freshness, pivots, effort, deadlines and evidence; age alone never escalates to Critical.
 
-
 ## Merged source-key/facade acceptance
 
 - `PRI-05` → `PRI-05a`: Composite source key split into four independently testable triage behaviors. Exact command rows allocated here: no direct command rows.
 
-
 ## Shared-file sequencing
 
 Added hard sequencing edges (the predecessor owns the same exact writable file):
+
 - blocked by `PRI-01` — `shared-file:pkgs/fleet/crates/fleet-queue/src/work/priority.rs`

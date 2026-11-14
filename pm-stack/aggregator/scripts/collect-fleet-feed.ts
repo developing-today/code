@@ -153,11 +153,7 @@ import type { ProjectPoolItem } from "../src/model.ts";
 import { REPOS } from "../src/model.ts";
 import { staleIssueSearchQuery, type RepoCensus } from "../src/coverage.ts";
 import { loadLaunchRecords, recordFromSessionEntry } from "../src/registry.ts";
-import {
-  defaultHiddenDir,
-  defaultQuotaViewPath,
-  defaultUsageOutboxPath,
-} from "../src/default-paths.ts";
+import { defaultHiddenDir, defaultQuotaViewPath, defaultUsageOutboxPath } from "../src/default-paths.ts";
 import { mapServerSessions, poolBurn } from "../src/sources/opencode.ts";
 import type { FreshnessInput } from "../src/freshness.ts";
 

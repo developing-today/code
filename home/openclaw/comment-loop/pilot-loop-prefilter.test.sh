@@ -206,7 +206,7 @@ check "re-wake window: still exactly one wake" [ "$(wake_count)" -eq 1 ]
 check "re-wake window: prints NO_REPLY" grep -qx NO_REPLY "$CASE_DIR/out2.txt"
 
 # 5. after the re-wake window the still-unanswered round wakes again
-printf '2 %s\n' "$(( $(date +%s) - 7200 ))" >"$CASE_DIR/state/issue-9818.wake"
+printf '2 %s\n' "$(($(date +%s) - 7200))" >"$CASE_DIR/state/issue-9818.wake"
 rc="$(run_script "$comments_open_r2" "$CASE_DIR/out3.txt")"
 check "after window: exit 0" [ "$rc" -eq 0 ]
 check "after window: second wake happens" [ "$(wake_count)" -eq 2 ]

@@ -52,9 +52,6 @@ File-collision sequencing edges added by stable topological serialization: none.
 Existing issue references retained as non-blocking runtime/evidence gates: none.
 Domain-starter parent references are never emitted as hard native blockers. Source parents normalized to granular slices or runtime gates: #9206→CLI-05, #9207→HYD-01, #9209→REL-03.
 
-
-
-
 Use only granular issue-key edges after all keys are resolved. Never make a whole domain starter a hard blocker when it creates a cycle. File collisions are hard sequencing edges. Parent integration adds native parent/blocker edges in a later pass after the command map, requirements IDs, and acyclic graph are verified.
 
 ## Starting failing test, oracle, and done check
@@ -97,8 +94,8 @@ Negative coverage: stale checkpoint silently current, secret path, no commit ide
 
 **Tier:** recommended. **Goal:** journal checkpoint reference includes objective, done/remaining, paths, branch/commit, test state, blocker edges, hydration/cursor refs and next action; handoff never implies completion. **Owns:** `src/work/journal.rs` checkpoint schema/projection; lifecycle command remains #9206. **Hard blockers:** granular #9206 checkpoint/lifecycle contract; #9207 bundle/cursor schema; #9209 receipt refs; JRN-01. **First failing oracle:** `pmo_journal_checkpoint_round_trip_preserves_cursor_and_commit_refs` plus private-visibility assertion. **Done command:** confirm test listed then run exact package filter `pmo_journal_checkpoint_round_trip_preserves_cursor_and_commit_refs`. **Negative:** stale checkpoint silently current, secret path, no commit identity, pending test shown passed. **Migration:** old checkpoints readable; no transcript ingestion. **Docs:** resumption shape/freshness.
 
-
 ## Shared-file sequencing
 
 Added hard sequencing edges (the predecessor owns the same exact writable file):
+
 - blocked by `JRN-02` — `shared-file:pkgs/fleet/crates/fleet-queue/src/work/journal.rs`

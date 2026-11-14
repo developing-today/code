@@ -101,7 +101,6 @@ function statusMatches(status: string | null | undefined, choices: string[]): bo
   return choices.includes(norm(status));
 }
 
-
 export type InProgressSignal = "project-status" | "active-session" | "open-pr";
 
 export interface ReconciledInProgressItem {

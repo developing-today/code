@@ -7785,7 +7785,10 @@ mod tests {
         // PostgREST /list handler carries the same contract.
         let src = include_str!("turso_queue.rs");
         let seg = seg8217(src, "fn verb_list(", "\nfn verb_health");
-        assert!(seg.contains("req_i64(req, \"task\")"), "task filter present");
+        assert!(
+            seg.contains("req_i64(req, \"task\")"),
+            "task filter present"
+        );
         assert!(seg.contains("AND id = ?"), "task filter narrows by id");
         assert!(
             seg.contains("req_str(req, \"dedupe_key\")") && seg.contains("AND dedupe_key = ?"),

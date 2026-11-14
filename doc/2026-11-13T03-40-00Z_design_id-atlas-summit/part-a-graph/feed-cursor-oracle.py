@@ -19,7 +19,9 @@ def require(condition, message):
 
 
 class FeedLedger:
-    def __init__(self, server, tenant, query, generation, durable_high_water=0, entries=()):
+    def __init__(
+        self, server, tenant, query, generation, durable_high_water=0, entries=()
+    ):
         self.server = server
         self.tenant = tenant
         self.query = query
@@ -28,8 +30,16 @@ class FeedLedger:
         self.entries = list(entries)
         self.seen_sources = {entry["source_key"] for entry in self.entries}
 
-    def append(self, authority, source_attribute, epoch, source_sequence, source_object_id):
-        source_key = (authority, source_attribute, epoch, source_sequence, source_object_id)
+    def append(
+        self, authority, source_attribute, epoch, source_sequence, source_object_id
+    ):
+        source_key = (
+            authority,
+            source_attribute,
+            epoch,
+            source_sequence,
+            source_object_id,
+        )
         if source_key in self.seen_sources:
             for entry in self.entries:
                 if entry["source_key"] == source_key:
@@ -55,7 +65,9 @@ class FeedLedger:
     def complete_snapshot(self, cutoff_frontier):
         visible = []
         for entry in self.entries:
-            cutoff = cutoff_frontier.get((entry["source_authority"], entry["source_attribute"]))
+            cutoff = cutoff_frontier.get(
+                (entry["source_authority"], entry["source_attribute"])
+            )
             source_position = (entry["source_epoch"], entry["source_sequence"])
             if cutoff is not None and source_position <= cutoff:
                 visible.append(entry)
@@ -103,25 +115,50 @@ def run_cases():
         ("authority-c", "attribute-c"): (3, 1),
     }
     complete = ledger.complete_snapshot(cutoffs)
-    require([e["entry_id"] for e in complete] == [first["entry_id"], second["entry_id"], third["entry_id"]],
-            "complete feed dropped or reordered identical-source-sequence entries")
-    require([e["projection_seq"] for e in complete] == [1, 2, 3],
-            "projection ledger did not allocate a unique ordered sequence")
-    require(beyond_cutoff["entry_id"] not in {e["entry_id"] for e in complete},
-            "entry beyond pinned source frontier leaked into the complete snapshot")
+    require(
+        [e["entry_id"] for e in complete]
+        == [first["entry_id"], second["entry_id"], third["entry_id"]],
+        "complete feed dropped or reordered identical-source-sequence entries",
+    )
+    require(
+        [e["projection_seq"] for e in complete] == [1, 2, 3],
+        "projection ledger did not allocate a unique ordered sequence",
+    )
+    require(
+        beyond_cutoff["entry_id"] not in {e["entry_id"] for e in complete},
+        "entry beyond pinned source frontier leaked into the complete snapshot",
+    )
 
-    middle_cursor = ledger.cursor(complete, cutoffs, after=(first["projection_seq"], first["entry_id"]))
-    require([e["entry_id"] for e in ledger.since(middle_cursor)] == [second["entry_id"], third["entry_id"]],
-            "since cursor omitted an entry from another source")
-    latest_cursor = ledger.cursor(complete, cutoffs, after=(third["projection_seq"], third["entry_id"]))
-    require([e["entry_id"] for e in ledger.before(latest_cursor)] == [first["entry_id"], second["entry_id"]],
-            "before cursor order is not stable by projection sequence/entry ID")
+    middle_cursor = ledger.cursor(
+        complete, cutoffs, after=(first["projection_seq"], first["entry_id"])
+    )
+    require(
+        [e["entry_id"] for e in ledger.since(middle_cursor)]
+        == [second["entry_id"], third["entry_id"]],
+        "since cursor omitted an entry from another source",
+    )
+    latest_cursor = ledger.cursor(
+        complete, cutoffs, after=(third["projection_seq"], third["entry_id"])
+    )
+    require(
+        [e["entry_id"] for e in ledger.before(latest_cursor)]
+        == [first["entry_id"], second["entry_id"]],
+        "before cursor order is not stable by projection sequence/entry ID",
+    )
 
     # Restart restores the durable feed high-water mark; no projection sequence
     # can be reused even though source sequences are in a separate namespace.
-    restarted = FeedLedger(*scope, generation=4, durable_high_water=ledger.high_water, entries=ledger.entries)
+    restarted = FeedLedger(
+        *scope,
+        generation=4,
+        durable_high_water=ledger.high_water,
+        entries=ledger.entries,
+    )
     fourth = restarted.append("authority-a", "attribute-a", 3, 2, "object-a-2")
-    require(fourth["projection_seq"] == 5, "restart reused or skipped durable projection sequence")
+    require(
+        fourth["projection_seq"] == 5,
+        "restart reused or skipped durable projection sequence",
+    )
 
     # Policy/access changes create a new projection generation and invalidate
     # old cursors. The feed-wide high-water mark remains monotonic.
@@ -131,11 +168,18 @@ def run_cases():
     except CursorInvalidated:
         pass
     else:
-        raise AssertionError("policy generation change did not invalidate the old cursor")
+        raise AssertionError(
+            "policy generation change did not invalidate the old cursor"
+        )
     fifth = changed.append("authority-b", "attribute-b", 7, 3, "object-b-3")
-    require(fifth["projection_seq"] == 6, "new projection generation reused a prior sequence")
+    require(
+        fifth["projection_seq"] == 6,
+        "new projection generation reused a prior sequence",
+    )
     print("feed_cursor_cases=PASS")
-    print("cases=two_source_attributes_same_sequence_and_distinct_epochs,complete_cutoff,since,before,restart_high_water,policy_generation_invalidation")
+    print(
+        "cases=two_source_attributes_same_sequence_and_distinct_epochs,complete_cutoff,since,before,restart_high_water,policy_generation_invalidation"
+    )
     print("runtime_claims=NONE; deterministic in-memory model oracle only")
 
 
