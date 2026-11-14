@@ -231,6 +231,54 @@ func Ops() []Op {
 				"a session is a later operation (#1931).",
 		},
 		{
+			Name: "plugin_sessions_open", Method: "POST", Path: "/v1/plugin-sessions",
+			Mutating: true, Permission: PermissionRun,
+			Summary: "Open a plugin session and be issued its id",
+			Description: "A plugin connecting over /v1 opens a session and the daemon issues " +
+				"the session id. The plugin's manifest declarations travel with the open: " +
+				"its capabilities (decision 0003: declared, recorded and reportable, not " +
+				"enforced) and its hook subscriptions (decision 0001: hooks come from the " +
+				"manifest and are owned by the session -- there is no hook-registration " +
+				"route). Everything the session declares or later owns is keyed to this " +
+				"id and dropped atomically when the session ends. A plugin session is " +
+				"not the leasing session a caller names with MCPX_SESSION_ID.",
+			Params: []Param{
+				{Name: "plugin", In: InBody, Type: "string", Required: true, Desc: "the plugin's name, from its manifest"},
+				{Name: "capabilities", In: InBody, Type: "array", Schema: `{"type":"array","items":{"type":"string"}}`, Desc: "capabilities the plugin's manifest declares it intends to use; recorded, never enforced"},
+				{Name: "hooks", In: InBody, Type: "array", Schema: `{"type":"array","items":{"type":"string"}}`, Desc: "hook subscriptions the plugin's manifest declares; owned by the session"},
+			},
+		},
+		{
+			Name: "plugin_sessions_list", Method: "GET", Path: "/v1/plugin-sessions",
+			Permission: PermissionRead,
+			Summary:    "Live plugin sessions and what each one owns",
+			Description: "One entry per live plugin session: its id, its plugin, the " +
+				"capabilities and hook subscriptions its manifest declared, everything " +
+				"registered to it since, and when it opened. The same list /v1/status " +
+				"embeds as pluginSessions. An empty daemon lists an empty list.",
+		},
+		{
+			Name: "plugin_session_get", Method: "GET", Path: "/v1/plugin-sessions/{id}",
+			Permission: PermissionRead,
+			Summary:    "One live plugin session",
+			Description: "The session with this id, or a 404 when it is not live -- a " +
+				"closed session is gone, not parked.",
+			Params: []Param{
+				{Name: "id", In: InPath, Type: "string", Required: true, Desc: "the plugin session id"},
+			},
+		},
+		{
+			Name: "plugin_session_close", Method: "DELETE", Path: "/v1/plugin-sessions/{id}",
+			Mutating: true, Permission: PermissionRun,
+			Summary: "End a plugin session, dropping everything it owns",
+			Description: "The clean end of a plugin session, and the teardown every exit " +
+				"path funnels into: the session and everything it owns are dropped in " +
+				"one atomic step, and the answer is the dropped record.",
+			Params: []Param{
+				{Name: "id", In: InPath, Type: "string", Required: true, Desc: "the plugin session id"},
+			},
+		},
+		{
 			Name: "authz_decisions", Method: "GET", Path: "/v1/authz/decisions",
 			Permission: PermissionRead,
 			Summary:    "The permissive authorisation decision report",
