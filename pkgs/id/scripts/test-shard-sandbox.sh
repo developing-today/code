@@ -60,7 +60,6 @@ count="$(decimal_in_bash_range "$2")" || invalid 'COUNT exceeds the supported in
 shard=$((10#${shard}))
 count=$((10#${count}))
 
-
 targets=()
 shopt -s nullglob
 for f in tests/*.rs; do
