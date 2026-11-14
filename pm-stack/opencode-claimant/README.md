@@ -56,7 +56,11 @@ Candidate discovery and system state reporting:
 
 Per-task launch trigger (#8187): performs claimant.py's launch
 sequence (prompt.md step 4) for ONE named task, immediately, instead
-of waiting for the next claimant fire.
+of waiting for the next claimant fire. Pass the exact broker queue or
+stream that holds the task. For the one-queue `code` stream, use
+`code:<task_id>` or `--queue code` with `send_to_opencode.py` and
+`dispatch_batch.py`. The legacy pilot names are still supported for
+tasks actually in those queues.
 
 ```bash
 # Read-only: is this task a launch candidate, and what would happen?
