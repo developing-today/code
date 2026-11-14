@@ -30,6 +30,7 @@ use iroh_blobs::{ALPN as BLOBS_ALPN, BlobsProtocol, api::Store};
 use iroh_docs::protocol::Docs;
 use iroh_gossip::net::Gossip;
 
+use crate::blob_gate::{BlobPolicy, RefreshingWorlds};
 use crate::protocol::{MetaProtocol, MetaRequest, MetaResponse};
 use id_core::access::AccessPolicy;
 use id_core::access::blobs_events;
@@ -52,6 +53,8 @@ pub struct LocalNode {
     endpoint: Endpoint,
     meta: Arc<MetaProtocol>,
     node_id: EndpointId,
+    /// The blob membership gate the embedder supplied, if any (#173).
+    blob_gate: Option<(Arc<RefreshingWorlds>, BlobPolicy)>,
 }
 
 impl LocalNode {
@@ -145,7 +148,19 @@ impl LocalNode {
             endpoint,
             meta,
             node_id,
+            blob_gate: None,
         })
+    }
+
+    /// Supplies the blob membership gate [`LocalNode::serve`] enforces (#173).
+    ///
+    /// `LocalNode` holds no group log or event store of its own, so the embedder —
+    /// which owns the worlds and documents — builds the gate (see
+    /// [`crate::blob_gate::RefreshingWorlds`]) and keeps it refreshed. Without a
+    /// gate, `serve` keeps its historical behavior: pushes are policy-checked and
+    /// reads are open.
+    pub fn set_blob_gate(&mut self, gate: Arc<RefreshingWorlds>, policy: BlobPolicy) {
+        self.blob_gate = Some((gate, policy));
     }
 
     /// Handle to the blob store (cheap to clone).
@@ -205,7 +220,20 @@ impl LocalNode {
             self.node_id,
             None,
         );
-        let blobs = BlobsProtocol::new(&self.blobs, Some(blobs_events(access)));
+        // With a gate, blob fetches and observes are membership-checked (#173) and
+        // pushes keep this policy; without one, pushes alone are gated, as before.
+        let blobs = match &self.blob_gate {
+            Some((gate, policy)) => BlobsProtocol::new(
+                &self.blobs,
+                Some(crate::blob_gate::blob_events(
+                    Arc::clone(gate),
+                    policy.clone(),
+                    access,
+                    std::collections::BTreeSet::from([self.node_id]),
+                )),
+            ),
+            None => BlobsProtocol::new(&self.blobs, Some(blobs_events(access))),
+        };
         Router::builder(self.endpoint.clone())
             .accept(META_ALPN, meta)
             .accept(BLOBS_ALPN, blobs)
