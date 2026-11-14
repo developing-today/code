@@ -200,6 +200,7 @@ import { recordSwProbe, swProbeSummary, VAPID_PUBLIC_KEY } from "./push.ts";
 import { resolveBwsSecret, resolveBwsSecretLookup } from "./secrets.ts";
 import { SW_SOURCE } from "./sw-source.ts";
 import { renderAlerts, renderNotificationPreferences, renderNotifications, renderDigest, esc } from "./render.ts";
+import type { QueueSnapshot } from "./queue.ts";
 import {
   deriveSoleDoorPoolIds,
   isNotificationTestClass,
@@ -3034,6 +3035,13 @@ async function handler(req: Request): Promise<Response> {
     if (config.id === "id" && source.buildHealth) {
       buildHealth = await source.buildHealth().catch(() => null);
     }
+    // #9921: the id page's Queue & fleet panel — the read-only
+    // fleet-queue collector snapshot (#9920), when the source
+    // carries one.
+    let queueSnap: QueueSnapshot | null = null;
+    if (config.id === "id" && source.queue) {
+      queueSnap = await source.queue().catch(() => null);
+    }
     // #9926: the id page's Phase 12 readiness panel — #534's body
     // (design checklist) and the F-item issues' timeline PR
     // cross-references, when the source carries them; the F-item
@@ -3064,6 +3072,7 @@ async function handler(req: Request): Promise<Response> {
         phase12,
         buildHealth,
         f12,
+        queueSnap,
       ),
     );
   }
