@@ -2274,6 +2274,12 @@
         // ($9.95 of $10 used, no reset in the quota record; every call answers
         // "insufficient credits"; last success on the provider 2026-11-10).
         // Re-seat only after credits are verified back with a live completion.
+        // 2026-11-14 (performance cut, code#9950 follow-up): the mistral-plan
+        // leg is REMOVED from this pool — the mistral Flash-1017 cell recorded
+        // 0 successes in 699 attempts in the 2026-11-14 per-model cut, the
+        // fleet's worst dead leaf. The mistral-plan group keeps its other
+        // models; only this model's seat goes. Re-seat only on a live
+        // completion through the mistral API leg.
         
         // 2026-10-26: per-leaf variant remaps (honored by expansion since
         // developing-today/opencode#541). ClinePass has no medium/xhigh; OpenDesign tops at
@@ -2396,18 +2402,6 @@
           {
             "model": "opendesign/deepseek-v4.1-flash",
             "variants": { "xhigh": "high", "max": "high" }
-          },
-          {
-            "model": "mistral-plan/deepseek-v4-1-flash-1017",
-            // Variant remap: the pool's effort rungs map onto the two
-            // variants both mistral-plan legs can produce (none /
-            // high — see the vibe-direct model note). The remap keys
-            // are what let the pool keep offering its rungs with this
-            // member seated; the values keep the plan leg in front at
-            // every rung (a #low draw runs the group at "none", a
-            // #high draw at "high", both producible by vibe-direct
-            // first and the API leg alike).
-            "variants": { "low": "low", "medium": "high", "high": "high", "xhigh": "max", "max": "max" }
           }
         ],
         "selection": "round-robin",
@@ -2418,8 +2412,7 @@
         "weights": {
           "opencode-go-plans/deepseek-v4.1-flash": 2,
           "cline-pass/deepseek-v4.1-flash": 1,
-          "opendesign/deepseek-v4.1-flash": 1,
-          "mistral-plan/deepseek-v4-1-flash-1017": 1
+          "opendesign/deepseek-v4.1-flash": 1
         },
         // #7927 (task 14574): the 10s default first-output deadline mass-killed
         // scheduled lane waves (81 sessions in 8h) when doors queued past 10s.
@@ -3106,6 +3099,11 @@
         // ($9.95 of $10 used, no reset in the quota record; every call answers
         // "insufficient credits"; last success on the provider 2026-11-10).
         // Re-seat only after credits are verified back with a live completion.
+        // 2026-11-14 (performance cut, code#9950 follow-up): the cline-pass
+        // leg is REMOVED from this pool — its MiMo v2.6 Flash cell recorded
+        // 0 successes in 131 attempts in the 2026-11-14 per-model cut. The
+        // Go, OpenDesign and Zen leaves carry the pool. Re-seat only on a
+        // live completion through ClinePass.
         
         // NEW 2026-10-27 (pool redesign): MiMo-V2.6-Flash (AA v5:
         // II 27 at ~$0.13/task — the cheapest workhorse-adjacent
@@ -3120,7 +3118,6 @@
         // Zen free models carry limited context).
         "targets": [
           "opencode-go-plans/mimo-v2.6-flash",
-          "cline-pass/mimo-v2.6-flash",
           "opendesign/mimo-v2.6-flash",
           "opencode-plans/mimo-v2.6-flash-free"
         ],
@@ -3929,8 +3926,14 @@
         // renamed gemini-hydrogen-plan and now seats Gemini 4
         // Hydrogen, so this leg serves Hydrogen #high - AA v5.0.1
         // II 51 at $1.87/task, up from Flash #high II 30.8.
+        // 2026-11-14 (performance cut, code#9950 follow-up): the direct
+        // _muse Spark #xhigh seat is REMOVED — the muse-direct Spark
+        // #xhigh cell recorded 0 successes in 141 attempts in the
+        // 2026-11-14 per-model cut. Spark keeps its deliberate-tier seats
+        // (workhorse #high, spark-plan); this pool leads with the
+        // deepseek-flash-plan leg instead. Re-seat only on a live
+        // completion at #xhigh through the Meta door.
         "targets": [
-          "_muse/muse-spark-1.3-contributor#xhigh",
           "opencode-route/deepseek-flash-plan#high",
           "opencode-route/gemini-hydrogen-plan#high",
           "opencode-route/haiku-plan#high",
