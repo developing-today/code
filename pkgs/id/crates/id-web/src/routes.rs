@@ -726,14 +726,17 @@ async fn files_page_handler(
     State(state): State<AppState>,
     Query(query): Query<FileListQuery>,
     headers: HeaderMap,
-) -> impl IntoResponse {
-    let page = get_file_list_page(&state, &query).await;
+) -> Response {
+    let page = match get_file_list_page(&state, &query).await {
+        Ok(page) => page,
+        Err(error) => return file_list_error_response(error),
+    };
     let content = render_file_list(&page);
     if is_partial_request(&headers) {
         // Partial request - return wrapped content with header/footer
-        Html(render_main_page_wrapper(&content))
+        Html(render_main_page_wrapper(&content)).into_response()
     } else {
-        Html(render_page("Files", &content, "", &state.assets))
+        Html(render_page("Files", &content, "", &state.assets)).into_response()
     }
 }
 
@@ -1079,10 +1082,13 @@ async fn blob_handler(
 async fn files_list_handler(
     State(state): State<AppState>,
     Query(query): Query<FileListQuery>,
-) -> impl IntoResponse {
-    let page = get_file_list_page(&state, &query).await;
+) -> Response {
+    let page = match get_file_list_page(&state, &query).await {
+        Ok(page) => page,
+        Err(error) => return file_list_error_response(error),
+    };
     // Return just the inner content (list + pagination) for partial replacement
-    Html(render_file_list_content(&page))
+    Html(render_file_list_content(&page)).into_response()
 }
 
 /// API handler for peers partial (used by auto-refresh).
@@ -1376,18 +1382,49 @@ async fn blob_size(store: &iroh_blobs::api::Store, hash: iroh_blobs::Hash) -> u6
 /// Files are sorted: primary files first (alphabetically), then auto, then archive.
 /// Internal tags (starting with `.`) are excluded.
 /// Soft-deleted files are included but marked with `is_deleted = true`.
-async fn get_file_list(state: &AppState) -> Vec<FileInfo> {
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum FileListError {
+    MetadataTags,
+    TagList,
+    TagStream,
+    SearchTags,
+}
+
+fn checked_file_list_result<T, E>(
+    result: Result<T, E>,
+    failure: FileListError,
+) -> Result<T, FileListError> {
+    result.map_err(|_| failure)
+}
+
+fn file_list_error_response(error: FileListError) -> Response {
+    tracing::error!(?error, "Failed to build file list");
+    (StatusCode::INTERNAL_SERVER_ERROR, "Failed to list files").into_response()
+}
+
+async fn next_tag_info<S, T, E>(tags: &mut S) -> Result<Option<T>, FileListError>
+where
+    S: futures_lite::Stream<Item = Result<T, E>> + Unpin,
+{
     use futures_lite::StreamExt;
+
+    match tags.next().await {
+        Some(Ok(tag)) => Ok(Some(tag)),
+        Some(Err(_)) => Err(FileListError::TagStream),
+        None => Ok(None),
+    }
+}
+
+async fn get_file_list(state: &AppState) -> Result<Vec<FileInfo>, FileListError> {
     use std::collections::HashMap;
 
     let mut files = Vec::new();
 
     // Load all tags from the global namespace for created/modified/user-tag lookups.
-    let all_meta_tags = state
-        .tag_store
-        .list_all(&state.tag_store.global)
-        .await
-        .unwrap_or_default();
+    let all_meta_tags = checked_file_list_result(
+        state.tag_store.list_all(&state.tag_store.global).await,
+        FileListError::MetadataTags,
+    )?;
     let mut created_map: HashMap<String, u64> = HashMap::new();
     let mut modified_map: HashMap<String, u64> = HashMap::new();
     let mut origin_map: HashMap<String, String> = HashMap::new();
@@ -1444,10 +1481,9 @@ async fn get_file_list(state: &AppState) -> Vec<FileInfo> {
     let mut hash_to_primary: HashMap<String, String> = HashMap::new();
     let mut raw_tags: Vec<(String, String, u64)> = Vec::new();
 
-    let Ok(mut tags) = state.store.tags().list().await else {
-        return files;
-    };
-    while let Some(Ok(tag_info)) = tags.next().await {
+    let mut tags =
+        checked_file_list_result(state.store.tags().list().await, FileListError::TagList)?;
+    while let Some(tag_info) = next_tag_info(&mut tags).await? {
         let name = String::from_utf8_lossy(tag_info.name.as_ref()).to_string();
 
         // Skip internal tags (e.g., .meta)
@@ -1539,7 +1575,7 @@ async fn get_file_list(state: &AppState) -> Vec<FileInfo> {
         })
     });
 
-    files
+    Ok(files)
 }
 
 fn record_display_name(
@@ -1596,8 +1632,11 @@ fn paginate<T: Clone>(
     (page_items, page, per_page)
 }
 
-async fn get_file_list_page(state: &AppState, query: &FileListQuery) -> FileListPage {
-    let mut files = get_file_list(state).await;
+async fn get_file_list_page(
+    state: &AppState,
+    query: &FileListQuery,
+) -> Result<FileListPage, FileListError> {
+    let mut files = get_file_list(state).await?;
 
     let show_deleted = query.show_deleted.unwrap_or(false);
 
@@ -1619,24 +1658,26 @@ async fn get_file_list_page(state: &AppState, query: &FileListQuery) -> FileList
 
         // Collect subjects that match via tags (key or value contains needle)
         let mut tag_matches: std::collections::HashSet<String> = std::collections::HashSet::new();
-        if let Ok(all_tags) = state.tag_store.list_all(&state.tag_store.global).await {
-            for tag in &all_tags {
-                // Skip internal/system tags for search
-                if tag.key.starts_with(b"archive.") {
-                    continue;
-                }
-                if tag
-                    .key
-                    .display_lossy()
-                    .to_lowercase()
-                    .contains(&needle_lower)
-                    || tag
-                        .value
-                        .as_ref()
-                        .is_some_and(|v| v.display_lossy().to_lowercase().contains(&needle_lower))
-                {
-                    tag_matches.insert(tag.subject.display_lossy());
-                }
+        let all_tags = checked_file_list_result(
+            state.tag_store.list_all(&state.tag_store.global).await,
+            FileListError::SearchTags,
+        )?;
+        for tag in &all_tags {
+            // Skip internal/system tags for search
+            if tag.key.starts_with(b"archive.") {
+                continue;
+            }
+            if tag
+                .key
+                .display_lossy()
+                .to_lowercase()
+                .contains(&needle_lower)
+                || tag
+                    .value
+                    .as_ref()
+                    .is_some_and(|v| v.display_lossy().to_lowercase().contains(&needle_lower))
+            {
+                tag_matches.insert(tag.subject.display_lossy());
             }
         }
 
@@ -1700,7 +1741,7 @@ async fn get_file_list_page(state: &AppState, query: &FileListQuery) -> FileList
     let total = files.len();
     let (page_files, page, per_page) = paginate(&files, query.page, query.per_page);
 
-    FileListPage {
+    Ok(FileListPage {
         files: page_files,
         total,
         page,
@@ -1709,7 +1750,7 @@ async fn get_file_list_page(state: &AppState, query: &FileListQuery) -> FileList
         show_deleted,
         sort,
         origin_filter,
-    }
+    })
 }
 
 /// Get the human-readable name for a hash, preferring primary file names.
@@ -1958,6 +1999,18 @@ mod save_publication_tests {
         (state, endpoint, docs)
     }
 
+    #[tokio::test]
+    async fn empty_store_file_list_remains_a_successful_empty_result() {
+        let (state, _endpoint, _docs) = state().await;
+
+        assert!(get_file_list(&state).await.unwrap().is_empty());
+        let page = get_file_list_page(&state, &FileListQuery::default())
+            .await
+            .unwrap();
+        assert_eq!(page.total, 0);
+        assert!(page.files.is_empty());
+    }
+
     async fn save(state: AppState, name: &str, text: &str) -> Response {
         save_handler(
             State(state),
@@ -2120,7 +2173,7 @@ mod save_publication_tests {
             }
         }
 
-        let files = get_file_list(&state).await;
+        let files = get_file_list(&state).await.unwrap();
         let mut origins: Vec<String> = files
             .iter()
             .filter(|f| f.hash == hash.to_string())
@@ -2142,7 +2195,8 @@ mod save_publication_tests {
                     ..Default::default()
                 },
             )
-            .await;
+            .await
+            .unwrap();
             assert_eq!(page.total, 1, "origin filter {origin}");
             assert_eq!(page.files[0].name, expected_name, "origin filter {origin}");
         }
@@ -3782,6 +3836,36 @@ async fn identity_update_name_handler(
 mod tests {
     use super::*;
     use proptest::prelude::*;
+
+    #[test]
+    fn file_list_backend_failures_map_to_server_errors() {
+        for failure in [
+            FileListError::MetadataTags,
+            FileListError::TagList,
+            FileListError::SearchTags,
+        ] {
+            let result = checked_file_list_result::<(), _>(Err("injected"), failure);
+            assert_eq!(result, Err(failure));
+            assert_eq!(
+                file_list_error_response(failure).status(),
+                StatusCode::INTERNAL_SERVER_ERROR
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn file_list_stream_failure_does_not_return_partial_success() {
+        let mut tags = futures_lite::stream::iter([
+            Ok::<_, &'static str>("first tag"),
+            Err("injected stream failure"),
+        ]);
+
+        assert_eq!(next_tag_info(&mut tags).await, Ok(Some("first tag")));
+        assert_eq!(
+            next_tag_info(&mut tags).await,
+            Err(FileListError::TagStream)
+        );
+    }
 
     fn raw_doc(blocks: &[&[&str]]) -> serde_json::Value {
         let content: Vec<serde_json::Value> = blocks
