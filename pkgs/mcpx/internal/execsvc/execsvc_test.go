@@ -514,55 +514,48 @@ func TestAFailedScriptExplainsItself(t *testing.T) {
 func TestTheSinkIsNeverCalledConcurrently(t *testing.T) {
 	needRuntime(t)
 	svc := service(t, store(t))
-	var overlaps atomic.Int32
-	// The premise (stdout split over several frames) depends on how the
-	// runtime's writes and the copier's reads line up. The script pauses
-	// every 20 lines so they usually land in separate reads, but a loaded
-	// builder can still deliver all of stdout in one read (darwin-nix
-	// build, 1 stdout frame), so a run that misses the premise is retried
-	// rather than failed. Overlaps count across every attempt.
-	const attempts = 5
-	var emits, stdouts int32
-	for attempt := 1; attempt <= attempts; attempt++ {
-		var inFlight, emitCount, stdoutCount atomic.Int32
-		_, err := svc.RunWith(context.Background(), runner.Options{
-			Source: `
+	var inFlight, overlaps, emits, stdouts atomic.Int32
+	// The premise -- stdout split over several frames -- is established
+	// by construction, not timing. The script writes ~200 KB of stdout
+	// (200 lines padded to ~1 KB each), and os/exec delivers a child's
+	// stdout to the sink writer in writes of at most 32 KB, so stdout
+	// cannot arrive as a single frame no matter how the two processes
+	// are scheduled. The earlier shape of this test wrote ~1.6 KB,
+	// which a loaded builder could deliver in one read (darwin-nix
+	// system build: 200 emit, 1 stdout), failing the premise without
+	// testing anything. Retrying until the premise held is not an
+	// option (internal/AGENTS.md: never retry to get green), so the
+	// fixture makes the premise unavoidable instead.
+	_, err := svc.RunWith(context.Background(), runner.Options{
+		Source: `
 import { emit } from "./mcpx-client.ts";
-for (let i = 0; i < 200; i++) {
-  console.log("out " + i);
-  emit({ i });
-  if (i % 20 === 19) await new Promise((resolve) => setTimeout(resolve, 10));
-}
+const pad = "x".repeat(1000);
+for (let i = 0; i < 200; i++) { console.log("out " + i + " " + pad); emit({ i }); }
 `,
-			ClientSource: minimalClient,
-			Permissions:  "all",
-		}, execsvc.Options{}, func(f execsvc.Frame) error {
-			switch f.Type {
-			case execsvc.FrameEmit:
-				emitCount.Add(1)
-			case execsvc.FrameStdout:
-				stdoutCount.Add(1)
-			}
-			if inFlight.Add(1) > 1 {
-				overlaps.Add(1)
-			}
-			// Widens the window, so an unserialised sink is caught every run
-			// rather than occasionally.
-			time.Sleep(200 * time.Microsecond)
-			inFlight.Add(-1)
-			return nil
-		})
-		if err != nil {
-			t.Fatal(err)
+		ClientSource: minimalClient,
+		Permissions:  "all",
+	}, execsvc.Options{}, func(f execsvc.Frame) error {
+		switch f.Type {
+		case execsvc.FrameEmit:
+			emits.Add(1)
+		case execsvc.FrameStdout:
+			stdouts.Add(1)
 		}
-		emits, stdouts = emitCount.Load(), stdoutCount.Load()
-		if emits >= 200 && stdouts >= 2 {
-			break
+		if inFlight.Add(1) > 1 {
+			overlaps.Add(1)
 		}
+		// Widens the window, so an unserialised sink is caught every run
+		// rather than occasionally.
+		time.Sleep(200 * time.Microsecond)
+		inFlight.Add(-1)
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
 	}
-	if emits < 200 || stdouts < 2 {
-		t.Fatalf("premise: frames must come from both streams; %d emit, %d stdout after %d attempts",
-			emits, stdouts, attempts)
+	if emits.Load() < 200 || stdouts.Load() < 2 {
+		t.Fatalf("premise: frames must come from both streams; %d emit, %d stdout",
+			emits.Load(), stdouts.Load())
 	}
 	if n := overlaps.Load(); n > 0 {
 		t.Fatalf("the sink was entered concurrently %d times", n)
