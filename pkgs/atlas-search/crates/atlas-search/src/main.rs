@@ -250,10 +250,10 @@ struct SearchArgs {
     /// reciprocal-rank-fusion multiplier for vectors (default 1)
     #[arg(long = "vector_weight", default_value_t = parameter_defaults().vector_weight)]
     vector_weight: f64,
-    /// candidate depth for Jaccard rescoring (unsupported unless 0)
+    /// candidate depth for Jaccard rescoring over the fused union (0 = off; #5733)
     #[arg(long = "jaccard_depth", default_value_t = parameter_defaults().jaccard_depth as i64)]
     jaccard_depth: i64,
-    /// threshold for Jaccard rescoring (unsupported unless 0)
+    /// near-exact Jaccard threshold in (0, 1] (0 = the design default 0.60; #5733)
     #[arg(long = "jaccard_threshold", default_value_t = parameter_defaults().jaccard_threshold)]
     jaccard_threshold: f64,
     /// reciprocal-rank-fusion constant (default 10)
