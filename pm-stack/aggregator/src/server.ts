@@ -143,6 +143,7 @@ import {
   projectConfigById,
 } from "./project-config.ts";
 import { PHASE12_REPO, parsePhase12Steps, type Phase12Snapshot } from "./phase12.ts";
+import { PHASE_MAPPING_REPO, type PhaseMappingSnapshot } from "./phase-mapping.ts";
 import type { BuildHealthSnapshot } from "./build-health.ts";
 import { parseF12Items, type F12PrRef } from "./f12-readiness.ts";
 import { identitiesFromRecords, type AuthorIdentity } from "./registry.ts";
@@ -3069,6 +3070,22 @@ async function handler(req: Request): Promise<Response> {
         }
       }
     }
+    // #9923 step 3: the Phase tracker's F-item mapping snapshot
+    // (planning/roadmaps/id.md via the source), when the source
+    // carries one, with the mapped refs resolved into the items map
+    // like the phase12 steps above.
+    let phaseMapping: PhaseMappingSnapshot | null = null;
+    if (config.id === "id" && source.phaseMapping) {
+      phaseMapping = await source.phaseMapping().catch(() => null);
+      if (phaseMapping) {
+        const mapRefs = [...new Set(phaseMapping.entries.map((e) => `${PHASE_MAPPING_REPO}#${e.number}`))];
+        const missing = mapRefs.filter((r) => !items.has(r));
+        if (missing.length) {
+          const resolved = await source.items(missing).catch(() => new Map());
+          for (const [k, v] of resolved) items.set(k, v);
+        }
+      }
+    }
     return html(
       renderProgramProject(
         buildProjectDetail(config, items, pool, rows),
@@ -3080,6 +3097,7 @@ async function handler(req: Request): Promise<Response> {
         buildHealth,
         f12,
         queueSnap,
+        phaseMapping,
       ),
     );
   }
