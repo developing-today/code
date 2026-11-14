@@ -379,9 +379,7 @@ def main():
     }
     changed = {
         p
-        for p in run(["git", "diff", "--name-only", "-z", args.base], root).split(
-            "\0"
-        )
+        for p in run(["git", "diff", "--name-only", "-z", args.base], root).split("\0")
         if p
     }
     changed |= untracked
@@ -422,7 +420,12 @@ def main():
         commands.append(("T0", f"gofmt -l {files}", argv, root))
     for p in unit_pkgs:
         commands.append(
-            ("T0", f"(cd pkgs/mcpx && go vet {pkg_arg(p)})", ["go", "vet", pkg_arg(p)], mcpx)
+            (
+                "T0",
+                f"(cd pkgs/mcpx && go vet {pkg_arg(p)})",
+                ["go", "vet", pkg_arg(p)],
+                mcpx,
+            )
         )
 
     if embed_owners:

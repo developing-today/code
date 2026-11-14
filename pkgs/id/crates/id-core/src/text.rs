@@ -25,3 +25,15 @@ mod tests {
         assert_eq!(sanitize_chat(text), "hello\n\t\u{200d}world");
     }
 }
+
+/// Truncate `s` to at most `max` bytes **on a character boundary**, appending `…`.
+pub fn truncate_on_char_boundary(s: &str, max: usize) -> String {
+    if s.len() <= max {
+        return s.to_owned();
+    }
+    let mut end = max;
+    while end > 0 && !s.is_char_boundary(end) {
+        end -= 1;
+    }
+    format!("{}…", &s[..end])
+}

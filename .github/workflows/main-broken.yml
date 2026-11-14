@@ -323,7 +323,6 @@ jobs:
           gh issue comment "$INUM" --repo "$GH_REPO" \
             --body "agent-note:v1 — holder: chain (filing), at $TS. Breakage-ID: $BID"
 
-
       - name: Scout - post the classification note and route (#2176)
         if: (steps.identify.outputs.action == 'create' || steps.identify.outputs.action == 'append') && steps.scout.outputs.classification != ''
         continue-on-error: true
@@ -442,6 +441,7 @@ jobs:
           title: ${{ steps.identify.outputs.title }}
           prompt: ${{ steps.identify.outputs.prompt }}
           issue_number: ${{ steps.identify.outputs.existing_number }}
+          dedupe_key: main-broken-${{ github.run_id }}-${{ github.run_attempt }}-${{ github.job }}-dispatch-append
 
       - name: Append a recurrence comment to the existing issue
         if: steps.identify.outputs.action == 'append' && (steps.scout.outputs.route == '' || steps.scout.outputs.route == 'fix')

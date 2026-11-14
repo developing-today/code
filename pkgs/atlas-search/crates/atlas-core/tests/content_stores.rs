@@ -18,9 +18,9 @@ use std::sync::{Arc, Mutex};
 use atlas_core::backend::SearchBackend;
 use atlas_core::filters::Filters;
 use atlas_core::shards::{
-    DiscoveryOptions, LocalShardTransport, ShardConnector, ShardEndpoint, ShardLocation,
-    ShardSet, ShardTransport, ShardedBackend, StaticLister, Tier, TierCeiling,
-    content_store_name, discover, discover_content_stores, parse_content_store_name,
+    DiscoveryOptions, LocalShardTransport, ShardConnector, ShardEndpoint, ShardLocation, ShardSet,
+    ShardTransport, ShardedBackend, StaticLister, Tier, TierCeiling, content_store_name, discover,
+    discover_content_stores, parse_content_store_name,
 };
 use atlas_core::types::{
     BranchPools, BranchQuery, ChunkDetail, DEFAULT_VEC_TABLE, MessageRow, NeighborRow,
@@ -153,8 +153,14 @@ fn content_store_names_parse_and_round_trip() {
         Some(Tier::Secret)
     );
     // Scan shards and other names are not content stores.
-    assert_eq!(parse_content_store_name("atlas-core-internal-main-01"), None);
-    assert_eq!(parse_content_store_name("atlas-core-internal-content-01"), None);
+    assert_eq!(
+        parse_content_store_name("atlas-core-internal-main-01"),
+        None
+    );
+    assert_eq!(
+        parse_content_store_name("atlas-core-internal-content-01"),
+        None
+    );
     assert_eq!(parse_content_store_name("something-else"), None);
     assert_eq!(
         content_store_name(Tier::Public),
@@ -167,12 +173,9 @@ fn hydration_reads_messages_and_sessions_from_the_admitted_tier_store() {
     let dir = temp_dir("hydrate");
     let ep = write_content_store(&dir, Tier::Internal, &internal_plant());
     let conn = LogConnector::new(vec![]);
-    let stores = discover_content_stores(
-        &StaticLister(vec![ep]),
-        &conn,
-        TierCeiling(Tier::Internal),
-    )
-    .unwrap();
+    let stores =
+        discover_content_stores(&StaticLister(vec![ep]), &conn, TierCeiling(Tier::Internal))
+            .unwrap();
     assert_eq!(stores.stores().len(), 1);
     assert!(stores.rejections.is_empty());
 
@@ -192,10 +195,7 @@ fn hydration_reads_messages_and_sessions_from_the_admitted_tier_store() {
     assert!(stores.message("absent").unwrap().is_none());
 
     let nb = stores.neighbors("m1", 0, 1).unwrap();
-    assert_eq!(
-        nb.iter().map(|r| r.chunk_id).collect::<Vec<_>>(),
-        [7, 8]
-    );
+    assert_eq!(nb.iter().map(|r| r.chunk_id).collect::<Vec<_>>(), [7, 8]);
 }
 
 #[test]
@@ -208,20 +208,14 @@ fn above_ceiling_content_store_is_never_connected() {
     // The connector COULD open secret (it has every credential);
     // the ceiling alone must keep the secret store unconnected.
     let conn = LogConnector::new(vec![]);
-    let stores = discover_content_stores(
-        &StaticLister(eps),
-        &conn,
-        TierCeiling(Tier::Internal),
-    )
-    .unwrap();
+    let stores =
+        discover_content_stores(&StaticLister(eps), &conn, TierCeiling(Tier::Internal)).unwrap();
     assert_eq!(conn.connected(), ["atlas-core-internal-content"]);
     assert_eq!(stores.stores().len(), 1);
     assert!(
-        stores
-            .rejections
-            .iter()
-            .any(|r| r.name == "atlas-core-secret-content"
-                && r.reason.contains("above the ceiling")),
+        stores.rejections.iter().any(
+            |r| r.name == "atlas-core-secret-content" && r.reason.contains("above the ceiling")
+        ),
         "{:?}",
         stores.rejections
     );
@@ -239,12 +233,8 @@ fn tier_without_credential_is_rejected_without_connecting() {
         write_content_store(&dir, Tier::Internal, &internal_plant()),
     ];
     let conn = LogConnector::new(vec![Tier::Public]);
-    let stores = discover_content_stores(
-        &StaticLister(eps),
-        &conn,
-        TierCeiling(Tier::Internal),
-    )
-    .unwrap();
+    let stores =
+        discover_content_stores(&StaticLister(eps), &conn, TierCeiling(Tier::Internal)).unwrap();
     assert_eq!(conn.connected(), ["atlas-core-internal-content"]);
     assert!(
         stores
@@ -286,8 +276,7 @@ fn broken_content_stores_degrade_explicitly() {
         stores
             .rejections
             .iter()
-            .any(|r| r.name == "atlas-core-public-content"
-                && r.reason.contains("unreadable")),
+            .any(|r| r.name == "atlas-core-public-content" && r.reason.contains("unreadable")),
         "{:?}",
         stores.rejections
     );
@@ -443,12 +432,14 @@ fn sharded_backend_hydrates_from_content_stores_only_when_enabled() {
     );
 
     // Enabled: hydration comes from the content store.
-    let be = ShardedBackend::new(Monolith, set.clone())
-        .with_content_stores(stores.clone(), true);
+    let be = ShardedBackend::new(Monolith, set.clone()).with_content_stores(stores.clone(), true);
     let details = be.chunk_details(&[7]).unwrap();
     assert_eq!(details.len(), 1);
     assert_eq!(details[0].text, "chunk seven text");
-    assert_eq!(be.message("m1").unwrap().unwrap().text, "full internal message");
+    assert_eq!(
+        be.message("m1").unwrap().unwrap().text,
+        "full internal message"
+    );
     assert_eq!(
         be.neighbors("m1", 0, 1)
             .unwrap()

@@ -28,10 +28,17 @@ func TestRealFetchServerTools(t *testing.T) {
 	defer page.Close()
 
 	e := newEnv(t, realConfig(server, "fetch", "the real mcp-server-fetch, pinned by the flake", "--ignore-robots-txt", "--allow-private-ips"))
-	// The pinned fetch tool's own annotations say it can write
-	// (destructiveHint), so mcpx's destructive-confirmation floor stops
-	// the call unless the test confirms the way the filesystem test does.
-	e.setenv("MCPX_ELICIT_CONFIRM_DESTRUCTIVE=true", "MCPX_ELICIT_ASK_TIMEOUT=60s")
+	// The pinned fetch tool's own annotations say it is a read
+	// (readOnlyHint=true, destructiveHint=false — verified against the
+	// flake-pinned server's tools/list on 2026-11-12), so no
+	// confirmation floor stops the call and it is driven directly, the
+	// way the time test drives its reads. An earlier pin annotated
+	// fetch destructive, and this test confirmed through
+	// realConfirmedCall; when the nixpkgs pin moved, the question the
+	// helper waits for stopped existing and the test timed out with
+	// "no question was raised" (#8929). The destructive-confirmation
+	// floor's real-server coverage lives in the filesystem round-trip
+	// (write_file is still annotated destructive).
 	out := e.run("ls")
 	if !strings.Contains(out, "fetch") {
 		t.Fatalf("namespace missing from ls:\n%s", out)
@@ -40,7 +47,7 @@ func TestRealFetchServerTools(t *testing.T) {
 	if !strings.Contains(out, "fetch") {
 		t.Fatalf("types output missing real tool %q:\n%s", "fetch", out)
 	}
-	out = realConfirmedCall(t, e, "call", "fetch.fetch", `{"url":`+jsonString(page.URL)+`}`)
+	out = e.run("call", "fetch.fetch", `{"url":`+jsonString(page.URL)+`}`)
 	if !strings.Contains(out, "real software, pinned by the flake") {
 		t.Fatalf("fetch did not return the test page's content:\n%s", out)
 	}

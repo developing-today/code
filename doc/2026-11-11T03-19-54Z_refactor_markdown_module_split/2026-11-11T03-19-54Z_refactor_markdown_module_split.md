@@ -100,7 +100,7 @@ with these resolutions:
   main's panic-safe char read in `escape_code_span_pipes_in_line` was
   ported into `parse_helpers.rs`.
 - Re-verified after the merge: `cargo test --lib --features web
-  web::markdown` — 267 passed, 0 failed (266 + the ported #1002 test);
+web::markdown` — 267 passed, 0 failed (266 + the ported #1002 test);
   guard contract tests all pass; the guard over the merged tree flags
   only the four over-limit files that current main itself already
   fails on (fleet-queue `client.rs` and `turso_queue.rs`, id

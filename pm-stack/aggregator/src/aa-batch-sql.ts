@@ -552,15 +552,31 @@ select coalesce((
  *
  * Tranche 2 of code#4401 (2026-11-11): the 'configs' and 'cai' sections no
  * longer read the frozen ainventory.benchmark_results table; they read the
- * canonical ainventory.measurement_events store. Canonical events carry no
- * sheet import_batch identity, so those two sections ignore the batch
- * expression and scope to the latest workbook-import ingest batch — the
- * events' own equivalent of the latest import batch — with the filters that
- * reproduce the retired table's latest-batch rows exactly (verified by
- * full-row EXCEPT comparison before the table was dropped: configs 35/35,
- * cai 27/27, zero differences either way). benchmark_results is dropped;
+ * canonical ainventory.measurement_events store, with the filters that
+ * reproduce the retired table's rows exactly (verified by full-row EXCEPT
+ * comparison before the table was dropped: configs 35/35, cai 27/27, zero
+ * differences either way). benchmark_results is dropped;
  * measurement_events is the one canonical read path for benchmark facts.
+ *
+ * code#8817: measurement events ARE keyed by workbook import —
+ * ingest_batch_id is the importing batch's ainventory.sources.import_batch
+ * (verified live 2026-11-12) — but not every workbook import produces
+ * benchmark events (the imports after 2026-10-26 have none yet). The two
+ * sections therefore scope AS-OF the selected batch: the newest
+ * workbook-import event batch imported at or before it. For the latest
+ * batch that is exactly the newest event batch (the previous behaviour);
+ * for a historical batch it reconstructs that batch's own sections
+ * instead of silently mixing the newest sections into a payload cached
+ * under the historical UUID; a batch older than every event batch gets
+ * empty sections rather than another batch's data.
  */
+/** Revision of the aaPayloadSql semantics. The collector validity-keys
+ * every cached batch payload with this number: entries built under older
+ * SQL carry no revision (read as 0) and are rebuilt, never served as
+ * current, once the payload semantics move. Bump when a change alters
+ * what a cached payload means. (#8817: configs/cai scoping.) */
+export const AA_PAYLOAD_SQL_REVISION = 1;
+
 export function aaPayloadSql(batch: string | null): string {
   const b = batchExpression(batch);
   const rankings = RANKINGS_BODY.replace("{{BATCH}}", b);
@@ -605,8 +621,13 @@ select jsonb_build_object(
       'intelligence', value_num, 'costPerTaskUsd', cost_per_task_usd, 'speedTps', output_tps
     ) order by model_name, effort)
     from ainventory.measurement_events br
-    where br.ingest_batch_id = (select ingest_batch_id from ainventory.measurement_events
-      where source_kind = 'workbook-import' order by ingested_at desc limit 1)
+    where br.ingest_batch_id = (select me.ingest_batch_id from ainventory.measurement_events me
+      where me.source_kind = 'workbook-import'
+        and me.ingest_batch_id in (select s.import_batch from ainventory.sources s
+          where s.kind = 'drive-workbook'
+            and s.imported_at <= (select max(s2.imported_at) from ainventory.sources s2
+              where s2.import_batch = ${b} and s2.kind = 'drive-workbook'))
+      order by me.ingested_at desc limit 1)
       and br.benchmark like 'AA Intelligence Index%'
       and br.metric = 'intelligence_index'
       and br.benchmark_version is null
@@ -631,8 +652,13 @@ select jsonb_build_object(
       'snapshotDate', nullif(raw->>'snapshot_date', ''), 'sourceUrl', nullif(raw->>'source_url', '')
     ) order by value_num desc nulls last, model_name)
     from ainventory.measurement_events br
-    where br.ingest_batch_id = (select ingest_batch_id from ainventory.measurement_events
-      where source_kind = 'workbook-import' order by ingested_at desc limit 1)
+    where br.ingest_batch_id = (select me.ingest_batch_id from ainventory.measurement_events me
+      where me.source_kind = 'workbook-import'
+        and me.ingest_batch_id in (select s.import_batch from ainventory.sources s
+          where s.kind = 'drive-workbook'
+            and s.imported_at <= (select max(s2.imported_at) from ainventory.sources s2
+              where s2.import_batch = ${b} and s2.kind = 'drive-workbook'))
+      order by me.ingested_at desc limit 1)
       and br.benchmark like 'Artificial Analysis Coding Agent Index%'
       and br.metric = 'cai_index_score'
       and br.raw->>'benchmark_version' is not null

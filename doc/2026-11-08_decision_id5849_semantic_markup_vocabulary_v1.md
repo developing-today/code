@@ -30,7 +30,7 @@
   parent #5679 OPEN; siblings #5850, #5851, #5855 OPEN, #5852, #5853,
   #5854 CLOSED with their records on `main`; issue #5849 has no linked
   PR and no decision record. `git grep -iE 'semantic (markup|element)|
-  element kind|programs-as-websites'` over `pkgs/id/src` and
+element kind|programs-as-websites'` over `pkgs/id/src` and
   `pkgs/id/crates` returns no registry, parser, or vocabulary type, so
   this record is the first decision for this follow-on rather than a
   description of existing code. Source issue #2146 (closed) supplies
@@ -38,23 +38,23 @@
 
 ## Decision summary
 
-| Question | Decision |
-| --- | --- |
-| Authoring syntax | **HTML-shaped source from a closed registry**: element names and attributes follow HTML vocabulary where an HTML equivalent exists, values are always quoted attributes, and content is text. One semantic dialect, no second syntax to learn (§2) |
-| How raw HTML coexists | Raw HTML is admitted **only inside an explicit `<raw kind="html">` region** (and raw CSS in `<raw kind="css">`); a tag outside the registry is a **build-time error naming the nearest registry entries**, never an implicit raw pass-through (§3) |
-| Element set | **Closed v1 registry of 32 elements** in four groups — document/structure, inline text, forms/actions, application chrome (§4) |
-| Versioning | Source declares `version="1"` on `document`; adding, renaming, or removing an element is a version change, and v1 parsers reject unknown versions (§2.4) |
-| Target coverage | Every registry element must be renderable on **web, custom-GUI, and native targets** in its standard rendering; no element is web-only. Elements that could not be given a defensible native/GUI meaning are **deferred**, not shipped as web-only (§5) |
-| Accessibility | Role, accessible-name source, allowed states, and keyboard contract are **properties of the element kind**, not attributes an author may omit. Authoring checks them at build time (§6) |
-| Styling seam | Style assertions attach through **one `assert` attribute slot per element**; the assertion grammar and vocabulary are #5850's, the cascade is #5854's. The vocabulary never names a colour, size, or variant (§7) |
-| State and actions | A fixed set of **binding slots** (`bind`, `items`, `show`, `disabled-when`, `action`, `on-*`) whose values are names in the program's declared state/action table. No expressions, no code, no target-specific syntax in source (§8) |
-| Data safety | Every value the vocabulary carries enters only a text, quoted-attribute, or sanitized-URL context per #5785 §1; **no script context exists in the vocabulary**, and guest-emitted output is never parsed as source (§3.3) |
-| Deferred | Trees, charts, carousels, rich-text editing, canvas/drawing, maps, spreadsheets, command palettes, drag-and-drop, regex validation, and i18n interpolation are named out of v1 with reasons (§9) |
+| Question              | Decision                                                                                                                                                                                                                                                |
+| --------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Authoring syntax      | **HTML-shaped source from a closed registry**: element names and attributes follow HTML vocabulary where an HTML equivalent exists, values are always quoted attributes, and content is text. One semantic dialect, no second syntax to learn (§2)      |
+| How raw HTML coexists | Raw HTML is admitted **only inside an explicit `<raw kind="html">` region** (and raw CSS in `<raw kind="css">`); a tag outside the registry is a **build-time error naming the nearest registry entries**, never an implicit raw pass-through (§3)      |
+| Element set           | **Closed v1 registry of 32 elements** in four groups — document/structure, inline text, forms/actions, application chrome (§4)                                                                                                                          |
+| Versioning            | Source declares `version="1"` on `document`; adding, renaming, or removing an element is a version change, and v1 parsers reject unknown versions (§2.4)                                                                                                |
+| Target coverage       | Every registry element must be renderable on **web, custom-GUI, and native targets** in its standard rendering; no element is web-only. Elements that could not be given a defensible native/GUI meaning are **deferred**, not shipped as web-only (§5) |
+| Accessibility         | Role, accessible-name source, allowed states, and keyboard contract are **properties of the element kind**, not attributes an author may omit. Authoring checks them at build time (§6)                                                                 |
+| Styling seam          | Style assertions attach through **one `assert` attribute slot per element**; the assertion grammar and vocabulary are #5850's, the cascade is #5854's. The vocabulary never names a colour, size, or variant (§7)                                       |
+| State and actions     | A fixed set of **binding slots** (`bind`, `items`, `show`, `disabled-when`, `action`, `on-*`) whose values are names in the program's declared state/action table. No expressions, no code, no target-specific syntax in source (§8)                    |
+| Data safety           | Every value the vocabulary carries enters only a text, quoted-attribute, or sanitized-URL context per #5785 §1; **no script context exists in the vocabulary**, and guest-emitted output is never parsed as source (§3.3)                               |
+| Deferred              | Trees, charts, carousels, rich-text editing, canvas/drawing, maps, spreadsheets, command palettes, drag-and-drop, regex validation, and i18n interpolation are named out of v1 with reasons (§9)                                                        |
 
 ## 1. What is already fixed (not re-decided here)
 
 1. **Parent #5679:** two layers — raw HTML/CSS always supported, never
-   gated; semantic markup describes *intent and structure*, not
+   gated; semantic markup describes _intent and structure_, not
    presentation; accessibility role is intrinsic per element; one
    content/semantic source per programme; authoring ergonomics mean
    "writable by hand, diff-friendly, a strict subset in spirit of what
@@ -230,41 +230,41 @@ raise (all events are actions in the program's action table, §8).
 
 ### 4.1 Document and structure
 
-| Element | Purpose | Required | Role | States |
-| --- | --- | --- | --- | --- |
-| `document` | Root; declares `version` | `version` | document | — |
-| `page` | One routable screen/window | `title` | main region | — |
-| `section` | Thematic group | `title` (omit only if the sole section of its page) | region with label | — |
-| `nav` | Navigation group | `title` | navigation | — |
-| `heading` | Heading at a level | `level` (1–6) | heading, level | — |
-| `card` | Grouped content with a subject | `title` | group | — |
-| `list` | Ordered/unordered/description collection | `kind` (`unordered`/`ordered`/`description`) | list | — |
-| `item` | One list entry | — | listitem | selected (in a selectable list) |
-| `table` | Tabular data | `title` | table | — |
-| `row` | Table row | — | row | selected |
-| `cell` | Table cell | `kind` (`header`/`data`) | columnheader/cell | — |
-| `image` | Content image | `src`, `alt` (`alt=""` only when decorative) | img | — |
-| `link` | Navigation to an address | `to` | link | visited, focus |
-| `master-detail` | Two-pane list/detail layout | `title` | region with label | — |
-| `detail` | The detail pane of `master-detail` | — | region | — |
+| Element         | Purpose                                  | Required                                            | Role              | States                          |
+| --------------- | ---------------------------------------- | --------------------------------------------------- | ----------------- | ------------------------------- |
+| `document`      | Root; declares `version`                 | `version`                                           | document          | —                               |
+| `page`          | One routable screen/window               | `title`                                             | main region       | —                               |
+| `section`       | Thematic group                           | `title` (omit only if the sole section of its page) | region with label | —                               |
+| `nav`           | Navigation group                         | `title`                                             | navigation        | —                               |
+| `heading`       | Heading at a level                       | `level` (1–6)                                       | heading, level    | —                               |
+| `card`          | Grouped content with a subject           | `title`                                             | group             | —                               |
+| `list`          | Ordered/unordered/description collection | `kind` (`unordered`/`ordered`/`description`)        | list              | —                               |
+| `item`          | One list entry                           | —                                                   | listitem          | selected (in a selectable list) |
+| `table`         | Tabular data                             | `title`                                             | table             | —                               |
+| `row`           | Table row                                | —                                                   | row               | selected                        |
+| `cell`          | Table cell                               | `kind` (`header`/`data`)                            | columnheader/cell | —                               |
+| `image`         | Content image                            | `src`, `alt` (`alt=""` only when decorative)        | img               | —                               |
+| `link`          | Navigation to an address                 | `to`                                                | link              | visited, focus                  |
+| `master-detail` | Two-pane list/detail layout              | `title`                                             | region with label | —                               |
+| `detail`        | The detail pane of `master-detail`       | —                                                   | region            | —                               |
 
 ### 4.2 Inline text
 
-| Element | Purpose | Required | Role | States |
-| --- | --- | --- | --- | --- |
-| `text` | A paragraph of prose | — | paragraph | — |
-| `strong` | Strong importance inside `text` | — | strong | — |
-| `emphasis` | Stress emphasis inside `text` | — | emphasis | — |
+| Element    | Purpose                         | Required | Role      | States |
+| ---------- | ------------------------------- | -------- | --------- | ------ |
+| `text`     | A paragraph of prose            | —        | paragraph | —      |
+| `strong`   | Strong importance inside `text` | —        | strong    | —      |
+| `emphasis` | Stress emphasis inside `text`   | —        | emphasis  | —      |
 
 ### 4.3 Forms and actions
 
-| Element | Purpose | Required | Role | States |
-| --- | --- | --- | --- | --- |
-| `form` | Submission boundary | `action` | form | invalid, submitting |
-| `field` | One labelled input | `kind`, `label` | per kind (§4.3.1) | default, focus, invalid, disabled, required |
-| `alert` | Validation/status message | `kind` (`error`/`warning`/`info`/`success`) | alert (live region) | — |
-| `button` | Action trigger | `action` | button | default, hover, focus, active, disabled, busy |
-| `dialog` | Modal confirmation/content | `title`, `show` | dialog | open, closed |
+| Element  | Purpose                    | Required                                    | Role                | States                                        |
+| -------- | -------------------------- | ------------------------------------------- | ------------------- | --------------------------------------------- |
+| `form`   | Submission boundary        | `action`                                    | form                | invalid, submitting                           |
+| `field`  | One labelled input         | `kind`, `label`                             | per kind (§4.3.1)   | default, focus, invalid, disabled, required   |
+| `alert`  | Validation/status message  | `kind` (`error`/`warning`/`info`/`success`) | alert (live region) | —                                             |
+| `button` | Action trigger             | `action`                                    | button              | default, hover, focus, active, disabled, busy |
+| `dialog` | Modal confirmation/content | `title`, `show`                             | dialog              | open, closed                                  |
 
 #### 4.3.1 Field kinds and their constraints
 
@@ -272,14 +272,14 @@ raise (all events are actions in the program's action table, §8).
 `date`, `file`. Constraints are declarative and every constraint must
 be enforceable on every target in the element's standard rendering:
 
-| Constraint | Applies to | Meaning |
-| --- | --- | --- |
-| `required` | all | value must be present |
-| `min-length`, `max-length` | text, password | character counts |
-| `min`, `max` | number, date | inclusive bounds |
-| `options` | choice | collection of allowed values, bound by `items` |
-| `multiple` | choice, file | more than one value allowed |
-| `accept` | file | media/type list |
+| Constraint                 | Applies to     | Meaning                                        |
+| -------------------------- | -------------- | ---------------------------------------------- |
+| `required`                 | all            | value must be present                          |
+| `min-length`, `max-length` | text, password | character counts                               |
+| `min`, `max`               | number, date   | inclusive bounds                               |
+| `options`                  | choice         | collection of allowed values, bound by `items` |
+| `multiple`                 | choice, file   | more than one value allowed                    |
+| `accept`                   | file           | media/type list                                |
 
 Arbitrary regular-expression validation is **not** in v1 (§9): a regex
 has no native control meaning, so exposing one would let a web-only
@@ -288,17 +288,17 @@ three targets.
 
 ### 4.4 Application chrome
 
-| Element | Purpose | Required | Role | States |
-| --- | --- | --- | --- | --- |
-| `menu` | Command menu | `title` | menu | open, closed |
-| `menu-item` | One command | `action` | menuitem | default, hover, focus, disabled, checked (for toggling items) |
-| `toolbar` | Group of frequent actions | `title` | toolbar | — |
-| `sidebar` | Persistent secondary region | `title` | complementary | collapsed, expanded |
-| `tabs` | Tab set | `title` | tablist | — |
-| `tab` | One tab and its panel | `title` | tab | selected, focus |
-| `settings` | Settings/preferences group | `title` | region with label | — |
-| `preference` | One setting | `kind`, `label`, `bind` | per kind (§4.4.1) | default, focus, disabled |
-| `note` | Non-essential annotation tied to nearby content | — | note | — |
+| Element      | Purpose                                         | Required                | Role              | States                                                        |
+| ------------ | ----------------------------------------------- | ----------------------- | ----------------- | ------------------------------------------------------------- |
+| `menu`       | Command menu                                    | `title`                 | menu              | open, closed                                                  |
+| `menu-item`  | One command                                     | `action`                | menuitem          | default, hover, focus, disabled, checked (for toggling items) |
+| `toolbar`    | Group of frequent actions                       | `title`                 | toolbar           | —                                                             |
+| `sidebar`    | Persistent secondary region                     | `title`                 | complementary     | collapsed, expanded                                           |
+| `tabs`       | Tab set                                         | `title`                 | tablist           | —                                                             |
+| `tab`        | One tab and its panel                           | `title`                 | tab               | selected, focus                                               |
+| `settings`   | Settings/preferences group                      | `title`                 | region with label | —                                                             |
+| `preference` | One setting                                     | `kind`, `label`, `bind` | per kind (§4.4.1) | default, focus, disabled                                      |
+| `note`       | Non-essential annotation tied to nearby content | —                       | note              | —                                                             |
 
 #### 4.4.1 Preference kinds
 
@@ -402,14 +402,14 @@ The vocabulary exposes exactly one styling attachment:
 Binding is a fixed set of slots whose values are **names**, never
 expressions or code:
 
-| Slot | Applies to | Meaning |
-| --- | --- | --- |
-| `bind` | `field`, `preference`, `link`, `image`, `text` | dotted path into the program's declared state table; read/write for inputs, read-only elsewhere |
-| `items` | `list`, `table`, `choice` field, `tabs` | path to a collection; children are instantiated per entry with the entry as scope |
-| `show` | any element | boolean state path; false means the element is not rendered |
-| `disabled-when` | `button`, `field`, `menu-item`, `preference`, `link` | boolean state path; true means the element is present but not operable |
-| `action` | `form`, `button`, `menu-item` | name in the program's action table |
-| `on-change`, `on-submit`, `on-open`, `on-close` | where the element raises that event | name in the program's action table; at most one per event |
+| Slot                                            | Applies to                                           | Meaning                                                                                         |
+| ----------------------------------------------- | ---------------------------------------------------- | ----------------------------------------------------------------------------------------------- |
+| `bind`                                          | `field`, `preference`, `link`, `image`, `text`       | dotted path into the program's declared state table; read/write for inputs, read-only elsewhere |
+| `items`                                         | `list`, `table`, `choice` field, `tabs`              | path to a collection; children are instantiated per entry with the entry as scope               |
+| `show`                                          | any element                                          | boolean state path; false means the element is not rendered                                     |
+| `disabled-when`                                 | `button`, `field`, `menu-item`, `preference`, `link` | boolean state path; true means the element is present but not operable                          |
+| `action`                                        | `form`, `button`, `menu-item`                        | name in the program's action table                                                              |
+| `on-change`, `on-submit`, `on-open`, `on-close` | where the element raises that event                  | name in the program's action table; at most one per event                                       |
 
 Rules:
 
@@ -435,20 +435,20 @@ Rules:
 
 Named here so that the omission is a decision rather than a gap:
 
-| Deferred | Why not v1 |
-| --- | --- |
-| Tree views | Selection semantics, expansion state, and keyboard contract differ irreconcilably across web/GUI/native without a larger state model; `list` + `detail` covers the common case |
-| Charts and data visualisation | No standard control on any target; belongs to a future vocabulary with its own assertion dimensions and accessibility story |
-| Carousels, animation, transitions | Presentation-only; raw HTML/web CSS or a #5853 presentation override expresses them today |
-| Rich-text editing | Needs an editing model (selection, undo, paste sanitisation) larger than markup; `text` is read-only prose |
-| Canvas/drawing surfaces | Guest-drawn content is inert screen data under #2146; embedding it as vocabulary would blur authored source and emitted output (§3.3) |
-| Maps, calendars, spreadsheets | Each is a product-sized widget with its own accessibility model; `table`/`image` plus raw HTML cover v1 needs |
-| Command palette | Composition of `dialog` + `list` + `field`; a dedicated element would freeze one interaction style |
-| Drag-and-drop | Needs a pointer-model and reorder contract the parent has not settled; also poorly accessible without a keyboard equivalent |
-| Regex validation | Not enforceable on native controls without divergence (§4.3.1) |
-| i18n string interpolation in `text` | Interpolation is a program-model/state concern; `text` accepts bound values through child elements, not string templates |
-| `include`/`template` composition | Untrusted composition is excluded by #5785 §3; trusted build-time composition belongs to the pipeline (#5855) |
-| Named anchors and deep links inside a page | Routing is page-level in v1; intra-page anchors need a routing decision the parent has not made |
+| Deferred                                   | Why not v1                                                                                                                                                                     |
+| ------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| Tree views                                 | Selection semantics, expansion state, and keyboard contract differ irreconcilably across web/GUI/native without a larger state model; `list` + `detail` covers the common case |
+| Charts and data visualisation              | No standard control on any target; belongs to a future vocabulary with its own assertion dimensions and accessibility story                                                    |
+| Carousels, animation, transitions          | Presentation-only; raw HTML/web CSS or a #5853 presentation override expresses them today                                                                                      |
+| Rich-text editing                          | Needs an editing model (selection, undo, paste sanitisation) larger than markup; `text` is read-only prose                                                                     |
+| Canvas/drawing surfaces                    | Guest-drawn content is inert screen data under #2146; embedding it as vocabulary would blur authored source and emitted output (§3.3)                                          |
+| Maps, calendars, spreadsheets              | Each is a product-sized widget with its own accessibility model; `table`/`image` plus raw HTML cover v1 needs                                                                  |
+| Command palette                            | Composition of `dialog` + `list` + `field`; a dedicated element would freeze one interaction style                                                                             |
+| Drag-and-drop                              | Needs a pointer-model and reorder contract the parent has not settled; also poorly accessible without a keyboard equivalent                                                    |
+| Regex validation                           | Not enforceable on native controls without divergence (§4.3.1)                                                                                                                 |
+| i18n string interpolation in `text`        | Interpolation is a program-model/state concern; `text` accepts bound values through child elements, not string templates                                                       |
+| `include`/`template` composition           | Untrusted composition is excluded by #5785 §3; trusted build-time composition belongs to the pipeline (#5855)                                                                  |
+| Named anchors and deep links inside a page | Routing is page-level in v1; intra-page anchors need a routing decision the parent has not made                                                                                |
 
 ## 10. Invariants implementation must hold
 

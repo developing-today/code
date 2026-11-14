@@ -370,7 +370,9 @@ describe("renderBoard in-flight lane", () => {
     const html = renderBoard([...lane, ...existing], items, provenance);
 
     expect(html).toContain('href="https://github.com/developing-today-forks/openchamber/issues/492"');
-    expect(html.match(/href="https:\/\/github.com\/developing-today-forks\/openchamber\/issues\/492"/g)).toHaveLength(1);
+    expect(html.match(/href="https:\/\/github.com\/developing-today-forks\/openchamber\/issues\/492"/g)).toHaveLength(
+      1,
+    );
     expect(html.match(/href="https:\/\/github.com\/developing-today\/code\/issues\/944"/g)).toHaveLength(1);
   });
 

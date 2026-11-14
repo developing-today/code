@@ -20,10 +20,7 @@ import { join } from "node:path";
 
 const HOME = homedir();
 const CACHE_TTL_MS = 5 * 60_000;
-export type BwsSecretLookup =
-  | { status: "found"; value: string }
-  | { status: "missing" }
-  | { status: "unavailable" };
+export type BwsSecretLookup = { status: "found"; value: string } | { status: "missing" } | { status: "unavailable" };
 
 const cache = new Map<string, { result: BwsSecretLookup; at: number }>();
 

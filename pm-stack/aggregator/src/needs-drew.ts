@@ -318,9 +318,7 @@ export function defaultNeedsDrewFile(env: Record<string, string | undefined> = p
 }
 
 /** Validate the intake `needsDrew` extension object (#8568 wire contract). */
-export function validateNeedsDrew(
-  value: unknown,
-): { ok: true; value: NeedsDrewInput } | { ok: false; error: string } {
+export function validateNeedsDrew(value: unknown): { ok: true; value: NeedsDrewInput } | { ok: false; error: string } {
   if (!value || typeof value !== "object" || Array.isArray(value)) {
     return { ok: false, error: "needsDrew must be an object" };
   }

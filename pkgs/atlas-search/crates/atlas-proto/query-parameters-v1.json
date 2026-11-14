@@ -14,5 +14,9 @@
   "spell_enabled": false,
   "query_class_hint": null,
   "variant": "raw",
-  "raw": false
+  "raw": false,
+  "no_cache": false,
+  "wait": false,
+  "hydrate": 0,
+  "raw_mode": "off"
 }

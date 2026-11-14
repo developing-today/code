@@ -41,7 +41,7 @@ for f in "${MUTATED_FILES[@]}"; do
   fi
 done
 
-cd "$ID_DIR"
+cd "$ID_DIR" || exit 2
 
 # Suites per mutation. The voiding suites judge grants/removals in the groups
 # engine; the frontier unit tests pin the mapping directly and the membership

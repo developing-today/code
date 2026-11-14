@@ -42,7 +42,10 @@ use crate::filters::Sensitivity;
 use crate::turso::{HttpTransport, PipelineTransport};
 use crate::types::Stmt;
 
-pub use content::{ContentStore, ContentStores, content_store_name, discover_content_stores, parse_content_store_name};
+pub use content::{
+    ContentStore, ContentStores, content_store_name, discover_content_stores,
+    parse_content_store_name,
+};
 pub use local::{DirLister, LocalShardTransport};
 pub use scan::{FanoutQuery, FanoutResult, ShardHit, ShardedBackend, fanout_scan, merge_top_k};
 

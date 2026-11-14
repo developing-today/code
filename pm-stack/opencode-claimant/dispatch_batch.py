@@ -79,7 +79,8 @@ def _load_sibling(name):
     send_to_opencode.py from this file's own directory — the
     sibling in THIS checkout, as launch_one loads its siblings."""
     spec = importlib.util.spec_from_file_location(
-        f"dispatch_{name}", HERE / f"{name}.py")
+        f"dispatch_{name}", HERE / f"{name}.py"
+    )
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
@@ -98,6 +99,7 @@ TARGET_FAMILY = {"opencode": "openchamber", "Muse": "muse"}
 
 # --- seams (patched by tests) ------------------------------------------------
 
+
 def queue(*args, timeout=120):
     """Run a repo-queue verb through launch_one's runner."""
     return launch_one.queue(*args, timeout=timeout)
@@ -115,12 +117,12 @@ def queue_json(*args, timeout=120):
     return rc, data, err
 
 
-def run_send(queue_name, task_id, worker, from_session, reason,
-             notes, worktree):
+def run_send(queue_name, task_id, worker, from_session, reason, notes, worktree):
     """One opencode send via send_to_opencode.send() — the #8210
     launcher, reused whole (no third launcher). Returns its record."""
-    return send_mod.send(queue_name, task_id, worker, from_session,
-                         reason, notes, worktree)
+    return send_mod.send(
+        queue_name, task_id, worker, from_session, reason, notes, worktree
+    )
 
 
 def fetch_task_row(queue_name, task_id):
@@ -129,8 +131,9 @@ def fetch_task_row(queue_name, task_id):
     for status in ("claimed", "queued", "parked"):
         try:
             data = poll._broker_post(
-                "/list", {"queue": queue_name, "status": status,
-                          "rich": True, "limit": 500})
+                "/list",
+                {"queue": queue_name, "status": status, "rich": True, "limit": 500},
+            )
         except Exception:
             continue
         rows = data.get("rows") if isinstance(data, dict) else data
@@ -141,12 +144,17 @@ def fetch_task_row(queue_name, task_id):
 
 
 def git(primary, *args, timeout=120):
-    p = subprocess.run(["git", "-C", str(primary), *args],
-                       capture_output=True, text=True, timeout=timeout)
+    p = subprocess.run(
+        ["git", "-C", str(primary), *args],
+        capture_output=True,
+        text=True,
+        timeout=timeout,
+    )
     return p.returncode, p.stdout.strip(), p.stderr.strip()
 
 
 # --- worktrees ---------------------------------------------------------------
+
 
 def worktree_for(primary, task_id, issue):
     """The item's dedicated worktree (runbook SS3 naming):
@@ -158,14 +166,16 @@ def worktree_for(primary, task_id, issue):
     branch = f"queue/{task_id}-{issue}-dispatch"
     if path.exists():
         rc, out, _ = git(primary, "worktree", "list", "--porcelain")
-        known = {ln.split()[1] for ln in out.splitlines()
-                 if ln.startswith("worktree ")} if rc == 0 else set()
+        known = (
+            {ln.split()[1] for ln in out.splitlines() if ln.startswith("worktree ")}
+            if rc == 0
+            else set()
+        )
         if str(path) in known:
             return str(path), False, None
         return None, False, f"{path} exists but is not a worktree of {primary}"
     FLEET_WORKTREE_ROOT.mkdir(parents=True, exist_ok=True)
-    rc, _out, err = git(primary, "worktree", "add", "-b", branch,
-                        str(path), "main")
+    rc, _out, err = git(primary, "worktree", "add", "-b", branch, str(path), "main")
     if rc != 0:
         # Branch may already exist from a prior dispatch of this
         # task: attach it instead of failing.
@@ -177,16 +187,34 @@ def worktree_for(primary, task_id, issue):
 
 # --- batch claim -------------------------------------------------------------
 
-def claim_batch(queue_name, worker, lane, count, family,
-                session_id, lease_seconds):
+
+def claim_batch(queue_name, worker, lane, count, family, session_id, lease_seconds):
     """The broker batch claim. Returns (rows, error)."""
-    args = ["claim", "--queue", queue_name, "--worker", worker,
-            "--count", str(count), "--platform", family,
-            "--lease-seconds", str(lease_seconds)]
+    args = [
+        "claim",
+        "--queue",
+        queue_name,
+        "--worker",
+        worker,
+        "--count",
+        str(count),
+        "--platform",
+        family,
+        "--lease-seconds",
+        str(lease_seconds),
+    ]
     if lane:
         args += ["--lane", lane]
     if session_id:
         args += ["--session-id", session_id]
+    if family == "muse":
+        # #8176: a batch claimed for the Muse family is held by a
+        # Muse lane surface — the design's non-session marker
+        # (muse-lane) instead of a fabricated model. Opencode
+        # batches name their dispatching session (--session-id)
+        # and the queue client derives that session's own model
+        # for the stamp.
+        args += ["--model-provider", "muse-lane", "--model-id", "muse-lane"]
     rc, data, err = queue_json(*args)
     if data is None:
         return [], f"batch claim unparseable (rc={rc}): {err.strip()[:200]}"
@@ -206,8 +234,8 @@ def claim_batch(queue_name, worker, lane, count, family,
 
 def release_task(task_id, worker, reason):
     rc, _data, err = queue_json(
-        "release", str(task_id), "--worker", worker,
-        "--reason", reason)
+        "release", str(task_id), "--worker", worker, "--reason", reason
+    )
     return rc == 0, err.strip()[:200]
 
 
@@ -218,15 +246,29 @@ def lane_direct(task_id, worker):
 
 def checkpoint(task_id, worker, stage, progress):
     rc, _data, err = queue_json(
-        "checkpoint", str(task_id), "--worker", worker,
-        "--stage", stage, "--progress", json.dumps(progress))
+        "checkpoint",
+        str(task_id),
+        "--worker",
+        worker,
+        "--stage",
+        stage,
+        "--progress",
+        json.dumps(progress),
+    )
     return rc == 0, err.strip()[:200]
 
 
 def bind_session(task_id, worker, session_id):
     rc, _data, err = queue_json(
-        "bind", str(task_id), "--worker", worker,
-        "--session-id", session_id, "--launched-by", worker)
+        "bind",
+        str(task_id),
+        "--worker",
+        worker,
+        "--session-id",
+        session_id,
+        "--launched-by",
+        worker,
+    )
     return rc == 0, err.strip()[:200]
 
 
@@ -240,8 +282,10 @@ def bound_session_id(queue_name, task_id):
 
 # --- per-item dispatch -------------------------------------------------------
 
-def dispatch_opencode_item(queue_name, row, worker, from_session,
-                           reason, notes, release_failures):
+
+def dispatch_opencode_item(
+    queue_name, row, worker, from_session, reason, notes, release_failures
+):
     task_id = row["id"]
     ref = task_ref(row)
     primary = REPOS[queue_name][1]
@@ -251,28 +295,31 @@ def dispatch_opencode_item(queue_name, row, worker, from_session,
         return fail_item(rec, "worktree", werr, row, worker, release_failures)
     rec["worktree"] = worktree
     rec["worktree_created"] = created
-    srec = run_send(queue_name, task_id, worker, from_session,
-                    reason, notes, worktree)
+    srec = run_send(queue_name, task_id, worker, from_session, reason, notes, worktree)
     if not srec or not srec.get("ok"):
         why = (srec or {}).get("reason") or "send failed"
         phase = (srec or {}).get("phase") or "send"
-        return fail_item(rec, phase, str(why), row, worker,
-                         release_failures)
+        return fail_item(rec, phase, str(why), row, worker, release_failures)
     sid = srec.get("session_id")
     rec["session_id"] = sid
     bound, _row2 = bound_session_id(queue_name, task_id)
     if bound != sid:
         return fail_item(
-            rec, "verify",
+            rec,
+            "verify",
             f"bind not visible in live queue state (want {sid}, read {bound})",
-            row, worker, release_failures)
+            row,
+            worker,
+            release_failures,
+        )
     rec["ok"] = True
     rec["outcome"] = "bound"
     return rec
 
 
-def dispatch_claude_item(queue_name, row, worker, reason, notes,
-                         binds, release_failures):
+def dispatch_claude_item(
+    queue_name, row, worker, reason, notes, binds, release_failures
+):
     task_id = row["id"]
     ref = task_ref(row)
     primary = REPOS[queue_name][1]
@@ -286,23 +333,32 @@ def dispatch_claude_item(queue_name, row, worker, reason, notes,
     if not ok_lane:
         return fail_item(rec, "lane", lerr, row, worker, release_failures)
     ok_cp, cperr = checkpoint(
-        task_id, worker, "dispatched",
-        {"dispatch_mode": "batch", "dispatch_reason": reason,
-         "worktree": worktree, "notes": notes,
-         "target": "Muse"})
+        task_id,
+        worker,
+        "dispatched",
+        {
+            "dispatch_mode": "batch",
+            "dispatch_reason": reason,
+            "worktree": worktree,
+            "notes": notes,
+            "target": "Muse",
+        },
+    )
     if not ok_cp:
-        return fail_item(rec, "checkpoint", cperr, row, worker,
-                         release_failures)
+        return fail_item(rec, "checkpoint", cperr, row, worker, release_failures)
     sid = binds.get(task_id)
     if not sid:
         rec["ok"] = False
         rec["outcome"] = "prepared_unbound"
-        rec["reason"] = ("no --bind <task>:<session> for this item: "
-                         "the lane must spawn its dedicated sub-session "
-                         "and bind it before letting go")
+        rec["reason"] = (
+            "no --bind <task>:<session> for this item: "
+            "the lane must spawn its dedicated sub-session "
+            "and bind it before letting go"
+        )
         rec["bind_command"] = (
             f"fleet queue bind {task_id} --worker {worker} "
-            f"--session-id <sub-session id>")
+            f"--session-id <sub-session id>"
+        )
         return rec
     ok_bind, berr = bind_session(task_id, worker, sid)
     if not ok_bind:
@@ -310,9 +366,13 @@ def dispatch_claude_item(queue_name, row, worker, reason, notes,
     bound, _row2 = bound_session_id(queue_name, task_id)
     if bound != sid:
         return fail_item(
-            rec, "verify",
+            rec,
+            "verify",
             f"bind not visible in live queue state (want {sid}, read {bound})",
-            row, worker, release_failures)
+            row,
+            worker,
+            release_failures,
+        )
     rec["session_id"] = sid
     rec["ok"] = True
     rec["outcome"] = "bound"
@@ -328,9 +388,10 @@ def fail_item(rec, phase, why, row, worker, release_failures):
     rec["reason"] = why
     if release_failures:
         ok_rel, rerr = release_task(
-            rec["task"], worker,
-            f"dispatch failed ({phase}: {why}); released by "
-            f"dispatch_batch (#8217)")
+            rec["task"],
+            worker,
+            f"dispatch failed ({phase}: {why}); released by dispatch_batch (#8217)",
+        )
         rec["outcome"] = "released_to_queue" if ok_rel else "release_failed"
         if not ok_rel:
             rec["release_error"] = rerr
@@ -351,23 +412,47 @@ def task_ref(row):
 
 # --- main --------------------------------------------------------------------
 
-def dispatch(queue_name, count, target, worker, lane, reason, notes,
-             session_id, binds, release_failures, lease_seconds,
-             dry_run=False):
+
+def dispatch(
+    queue_name,
+    count,
+    target,
+    worker,
+    lane,
+    reason,
+    notes,
+    session_id,
+    binds,
+    release_failures,
+    lease_seconds,
+    dry_run=False,
+):
     family = TARGET_FAMILY[target]
-    rows, err = claim_batch(queue_name, worker, lane, count, family,
-                            session_id, lease_seconds)
+    rows, err = claim_batch(
+        queue_name, worker, lane, count, family, session_id, lease_seconds
+    )
     if err:
-        return [{"kind": "dispatch_batch", "ok": False,
-                 "phase": "claim", "reason": err}], False
+        return [
+            {"kind": "dispatch_batch", "ok": False, "phase": "claim", "reason": err}
+        ], False
     if not rows:
-        return [{"kind": "dispatch_batch", "ok": False,
-                 "phase": "claim",
-                 "reason": "no claimable task for this batch"}], False
-    summary = {"kind": "dispatch_batch", "queue": queue_name,
-               "target": target, "family": family,
-               "requested": count, "claimed": len(rows),
-               "reason": reason}
+        return [
+            {
+                "kind": "dispatch_batch",
+                "ok": False,
+                "phase": "claim",
+                "reason": "no claimable task for this batch",
+            }
+        ], False
+    summary = {
+        "kind": "dispatch_batch",
+        "queue": queue_name,
+        "target": target,
+        "family": family,
+        "requested": count,
+        "claimed": len(rows),
+        "reason": reason,
+    }
     if dry_run:
         summary["ok"] = True
         summary["dry_run"] = True
@@ -378,62 +463,89 @@ def dispatch(queue_name, count, target, worker, lane, reason, notes,
     for row in rows:
         if target == "opencode":
             rec = dispatch_opencode_item(
-                queue_name, row, worker, session_id, reason, notes,
-                release_failures)
+                queue_name, row, worker, session_id, reason, notes, release_failures
+            )
         else:
             rec = dispatch_claude_item(
-                queue_name, row, worker, reason, notes, binds,
-                release_failures)
+                queue_name, row, worker, reason, notes, binds, release_failures
+            )
         records.append(rec)
         all_ok = all_ok and bool(rec.get("ok"))
     summary["ok"] = all_ok
-    summary["bound"] = sum(1 for r in records[1:]
-                            if r.get("outcome") == "bound")
+    summary["bound"] = sum(1 for r in records[1:] if r.get("outcome") == "bound")
     return records, all_ok
 
 
 def main(argv):
     ap = argparse.ArgumentParser(
-        description="Batch claim + per-item dedicated sub-task "
-                    "dispatch (#8217).")
+        description="Batch claim + per-item dedicated sub-task dispatch (#8217)."
+    )
     ap.add_argument("--queue", required=True, choices=sorted(REPOS))
     ap.add_argument("--count", type=int, required=True)
-    ap.add_argument("--to", required=True,
-                    choices=sorted(TARGET_FAMILY), dest="target")
-    ap.add_argument("--worker", required=True,
-                    help="the dispatching lane's queue worker id")
+    ap.add_argument("--to", required=True, choices=sorted(TARGET_FAMILY), dest="target")
+    ap.add_argument(
+        "--worker", required=True, help="the dispatching lane's queue worker id"
+    )
     ap.add_argument("--lane", help="the dispatching lane id")
-    ap.add_argument("--reason", required=True,
-                    help="the stated batch dispatch reason, recorded "
-                         "on every item")
-    ap.add_argument("--notes", default="",
-                    help="the lane's notes, carried into every item")
-    ap.add_argument("--session-id",
-                    help="the dispatching session's own id (the "
-                         "holder mark the opencode transfer names)")
-    ap.add_argument("--bind", action="append", default=[],
-                    metavar="TASK:SESSION",
-                    help="for --to Muse: the dedicated sub-session "
-                         "id the lane spawned for that task")
-    ap.add_argument("--release-failures", action="store_true",
-                    help="release failed items back to queued "
-                         "instead of leaving them with the lane")
+    ap.add_argument(
+        "--reason",
+        required=True,
+        help="the stated batch dispatch reason, recorded on every item",
+    )
+    ap.add_argument(
+        "--notes", default="", help="the lane's notes, carried into every item"
+    )
+    ap.add_argument(
+        "--session-id",
+        help="the dispatching session's own id (the "
+        "holder mark the opencode transfer names)",
+    )
+    ap.add_argument(
+        "--bind",
+        action="append",
+        default=[],
+        metavar="TASK:SESSION",
+        help="for --to Muse: the dedicated sub-session "
+        "id the lane spawned for that task",
+    )
+    ap.add_argument(
+        "--release-failures",
+        action="store_true",
+        help="release failed items back to queued "
+        "instead of leaving them with the lane",
+    )
     ap.add_argument("--lease-seconds", type=int, default=2700)
-    ap.add_argument("--dry-run", action="store_true",
-                    help="claim the batch and report it, dispatch "
-                         "nothing (items stay the lane's own claim)")
+    ap.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="claim the batch and report it, dispatch "
+        "nothing (items stay the lane's own claim)",
+    )
     args = ap.parse_args(argv[1:])
 
     if not (1 <= args.count <= BATCH_MAX):
-        print(json.dumps({"ok": False, "phase": "validate",
-                          "reason": f"--count must be 1..{BATCH_MAX} "
-                                    f"(the batch cap, #8217)"}))
+        print(
+            json.dumps(
+                {
+                    "ok": False,
+                    "phase": "validate",
+                    "reason": f"--count must be 1..{BATCH_MAX} (the batch cap, #8217)",
+                }
+            )
+        )
         return 2
     if args.target == "opencode" and not args.session_id:
-        print(json.dumps({"ok": False, "phase": "validate",
-                          "reason": "--session-id is required for "
-                                    "--to opencode (the transfer "
-                                    "names the holding session)"}))
+        print(
+            json.dumps(
+                {
+                    "ok": False,
+                    "phase": "validate",
+                    "reason": "--session-id is required for "
+                    "--to opencode (the transfer "
+                    "names the holding session)",
+                }
+            )
+        )
         return 2
     binds = {}
     for b in args.bind:
@@ -441,15 +553,30 @@ def main(argv):
             t, s = b.split(":", 1)
             binds[int(t)] = s
         except ValueError:
-            print(json.dumps({"ok": False, "phase": "validate",
-                              "reason": f"bad --bind {b!r} "
-                                        f"(want TASK:SESSION)"}))
+            print(
+                json.dumps(
+                    {
+                        "ok": False,
+                        "phase": "validate",
+                        "reason": f"bad --bind {b!r} (want TASK:SESSION)",
+                    }
+                )
+            )
             return 2
     records, ok = dispatch(
-        args.queue, args.count, args.target, args.worker, args.lane,
-        args.reason, args.notes, args.session_id, binds,
-        args.release_failures, args.lease_seconds,
-        dry_run=args.dry_run)
+        args.queue,
+        args.count,
+        args.target,
+        args.worker,
+        args.lane,
+        args.reason,
+        args.notes,
+        args.session_id,
+        binds,
+        args.release_failures,
+        args.lease_seconds,
+        dry_run=args.dry_run,
+    )
     for rec in records:
         print(json.dumps(rec))
     return 0 if ok else 1

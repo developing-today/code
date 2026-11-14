@@ -251,7 +251,7 @@ Three DaisyUI terminal-inspired themes with `#000000` black backgrounds. Switch 
 | `/api/copy`           | POST   | Copy file to new name               |
 | `/api/download`       | POST   | Download file content               |
 | `/api/delete`         | POST   | Soft-delete file                    |
-| `/api/restore`        | POST   | Restore deleted file                |
+| `/api/restore`        | POST   | Restore deleted file (404 if missing, 409 if not deleted) |
 | `/api/hard-delete`    | POST   | Permanently delete file             |
 | `/api/tags`           | GET    | Get tags for a file                 |
 | `/api/tags`           | POST   | Set a tag                           |

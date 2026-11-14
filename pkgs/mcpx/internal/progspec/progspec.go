@@ -169,6 +169,12 @@ func ResolveInDir(ctx context.Context, raw, dir string) (Resolved, error) {
 	return resolveNixFlight(ctx, spec, dir, key)
 }
 
+// flightResultExecutable revalidates a flight's build output at
+// completion time. It is a var so tests can simulate an output
+// deleted mid-flight deterministically; production always runs
+// isExecutable.
+var flightResultExecutable = isExecutable
+
 // resolveNixFlight resolves a nix spec through the per-key flight
 // map: the first caller for a key leads the build, and concurrent
 // callers for the same key wait for and share its outcome instead of
@@ -179,7 +185,11 @@ func ResolveInDir(ctx context.Context, raw, dir string) (Resolved, error) {
 // context, so if that fails, every waiter sees the leader's error and
 // nothing is stored. On success the leader stores its own fresh
 // result, and only if the path is still executable: an output deleted
-// mid-flight must not be resurrected into the memo.
+// mid-flight must not be resurrected into the memo -- and must not be
+// handed to the flight's own callers as a success either (#9945):
+// a result that fails the completion check becomes an error for the
+// leader and every waiter, exactly as the memo-read path treats a
+// dead memoised path.
 func resolveNixFlight(ctx context.Context, spec Spec, dir, key string) (Resolved, error) {
 	memoMu.Lock()
 	if f, ok := flights[key]; ok {
@@ -198,7 +208,16 @@ func resolveNixFlight(ctx context.Context, spec Spec, dir, key string) (Resolved
 	r, err := resolveNix(ctx, spec, dir)
 
 	memoMu.Lock()
-	if err == nil && isExecutable(r.Path) {
+	if err == nil && !flightResultExecutable(r.Path) {
+		// The build produced a path that is already gone or no
+		// longer executable (deleted mid-flight, store GC, a test
+		// stub's temp dir dying). That is not a resolution: fail
+		// the flight for the leader and every waiter rather than
+		// hand them a dead executable with a nil error (#9945).
+		err = fmt.Errorf("progspec: resolving %q: build output %q is no longer executable (removed mid-flight)", spec.Raw, r.Path)
+		r = Resolved{}
+	}
+	if err == nil {
 		memo[key] = r
 	}
 	delete(flights, key)

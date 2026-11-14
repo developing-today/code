@@ -189,6 +189,10 @@ export interface FeedSectionCollectionStatus {
   at: string;
   /** Sanitized diagnostic for an error outcome only. */
   error?: string;
+  /** Provider-reported expected entry count, when comparable to emittedEntries. */
+  reportedTotal?: number;
+  /** Number of entries actually emitted for this section. */
+  emittedEntries?: number;
 }
 
 export interface FeedMetadata {
@@ -254,7 +258,15 @@ export function sanitizeFeedMetadata(value: unknown): FeedMetadata | undefined {
     ) {
       continue;
     }
-    sections[key] = feedSectionStatus(raw.status, at, raw.error);
+    sections[key] = {
+      ...feedSectionStatus(raw.status, at, raw.error),
+      ...(Number.isSafeInteger(raw.reportedTotal) && (raw.reportedTotal as number) >= 0
+        ? { reportedTotal: raw.reportedTotal as number }
+        : {}),
+      ...(Number.isSafeInteger(raw.emittedEntries) && (raw.emittedEntries as number) >= 0
+        ? { emittedEntries: raw.emittedEntries as number }
+        : {}),
+    };
   }
   return Object.keys(sections).length ? { sections } : undefined;
 }
@@ -304,8 +316,7 @@ function isLinedUpElement(v: unknown): boolean {
     // its blockers were silently dropped by the canonical layer
     // (asBlockers), rendering a blocked task as unblocked. Absence is
     // fine; a present value must be an array of dependency elements.
-    (v.blockedBy === undefined ||
-      (Array.isArray(v.blockedBy) && v.blockedBy.every(isDependencyElement)))
+    (v.blockedBy === undefined || (Array.isArray(v.blockedBy) && v.blockedBy.every(isDependencyElement)))
   );
 }
 

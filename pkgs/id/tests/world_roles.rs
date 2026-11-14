@@ -89,6 +89,15 @@ fn builder_and_moderator_bits_add_no_capability_effect_authority() {
         );
     }
 
+    // Network, file, and process access are not participant scope bits and
+    // cannot be added through the role/scope wire parser.
+    for external_authority in ["network", "file", "process"] {
+        assert!(
+            WorldScopes::from_names([external_authority]).is_none(),
+            "{external_authority} must not be a grantable participant scope"
+        );
+    }
+
     // A scope holding only the authority bit, without JOIN or CHAT, causes
     // nothing: authority does not stand in for presence or chat.
     let builder_only = WorldScopes::from_names(["builder"]).unwrap();

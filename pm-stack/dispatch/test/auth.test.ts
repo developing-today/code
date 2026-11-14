@@ -251,7 +251,8 @@ describe("JWKS body shape (#7565)", () => {
   test("fetchGithubJwks rejects a wrong-shape 200 body as AuthError", async () => {
     resetJwksCacheForTests();
     const originalFetch = globalThis.fetch;
-    globalThis.fetch = (async () => ({ ok: true, json: async () => ({}) }) as unknown as Response) as unknown as typeof fetch;
+    globalThis.fetch = (async () =>
+      ({ ok: true, json: async () => ({}) }) as unknown as Response) as unknown as typeof fetch;
     try {
       await expect(fetchGithubJwks()).rejects.toBeInstanceOf(AuthError);
     } finally {

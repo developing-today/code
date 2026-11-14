@@ -38,7 +38,7 @@ a follow-up (below), (c) not a trust boundary, with the reason.
   gather-quota.ts, produce-charge-candidates.ts, and the rest of
   `pm-stack/aggregator/**`): the aggregator is the surface #3068's
   phases and the #2576 contract program already worked; this phase's
-  scope is pm-stack's *non*-aggregator handlers. The contract
+  scope is pm-stack's _non_-aggregator handlers. The contract
   statement now lands in the aggregator README (this branch).
 - **pkgs/lab-ops-hub**: already compliant as-built — `lib.ts` routes
   crawl results through `parseCrawlResult` and its comment at line 454
@@ -106,7 +106,7 @@ a follow-up (below), (c) not a trust boundary, with the reason.
   the normal case, treated identically to an empty one by
   construction. `cloudflare-quota-export.mjs:526`
   (`gql.body?.errors ?? []`) is optional-by-design: absent `errors`
-  *is* no errors. The one absence-as-emptiness case is the network
+  _is_ no errors. The one absence-as-emptiness case is the network
   response at `bin/sync-models.mjs:127` — item (b)1.
 
 ## #2608 ownership decision

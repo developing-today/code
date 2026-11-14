@@ -71,8 +71,7 @@
 // derived from; beside the charges-surfaced state by default),
 // CHARGE_CANDIDATES_PATH / CHARGES_SURFACED_STATE_PATH (#1057: the
 // producer's candidates file and the collector's surfaced-once state),
-// SUPABASE_PROJECT_REF (else the Bitwarden supabase.muse-dev2.project-ref secret;
-// fallback default: the muse-dev2 project),
+// SUPABASE_PROJECT_REF (else the canonical Bitwarden supabase.project-ref pointer),
 // AA_OPENCODE_CONFIG_PATH (default: the repo's .opencode/opencode.jsonc).
 import { execFile } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
@@ -88,7 +87,7 @@ import {
   isAaSection,
   type AaRawPayload,
 } from "../src/aa.ts";
-import { AA_BATCH_INDEX_SQL, AA_PRICES_SQL, aaPayloadSql } from "../src/aa-batch-sql.ts";
+import { AA_BATCH_INDEX_SQL, AA_PAYLOAD_SQL_REVISION, AA_PRICES_SQL, aaPayloadSql } from "../src/aa-batch-sql.ts";
 import {
   aaBatchFingerprint,
   aaCacheFileName,
@@ -128,6 +127,7 @@ import { chargeServiceCatalog } from "../src/charges-catalog.ts";
 import { filterNewUnmatched, mergeChargeRows, parseChargeCandidates } from "../src/charges-collect.ts";
 import { extractQuotaPools } from "../src/quota-extract.ts";
 import { computeChoices } from "../src/quota-guidance.ts";
+import { deriveExhaustionForecasts } from "../src/quota-exhaustion.ts";
 import {
   deriveBurnHistory,
   deriveMeasuredRatesFromPoolTokens,
@@ -152,12 +152,14 @@ import type { ProjectPoolItem } from "../src/model.ts";
 import { REPOS } from "../src/model.ts";
 import { staleIssueSearchQuery, type RepoCensus } from "../src/coverage.ts";
 import { loadLaunchRecords, recordFromSessionEntry } from "../src/registry.ts";
+import { defaultHiddenDir, defaultQuotaViewPath, defaultUsageOutboxPath } from "../src/default-paths.ts";
 import { mapServerSessions, poolBurn } from "../src/sources/opencode.ts";
+import { resolveSupabaseProjectRef } from "../src/supabase.ts";
 import type { FreshnessInput } from "../src/freshness.ts";
 
 const PKG = join(dirname(fileURLToPath(import.meta.url)), "..");
 const HOME = homedir();
-const HIDDEN = join(HOME, "workspace/goals/keep-the-four-repos-healthy/hidden_files");
+const HIDDEN = defaultHiddenDir(HOME);
 
 export type FleetFeedPublication = Readonly<{
   /** Absolute destination path that was replaced. */
@@ -276,12 +278,7 @@ function resolveOutPath(): string {
 }
 
 const outPath = resolveOutPath();
-const quotaViewPath =
-  process.env.QUOTA_VIEW_PATH ??
-  join(
-    HOME,
-    "workspace/goals/stewardship-commission-recurring-review-and-dispatch/hidden_files/visibility/quota-view.md",
-  );
+const quotaViewPath = process.env.QUOTA_VIEW_PATH ?? defaultQuotaViewPath(HOME);
 const freeServicesTrackerPath =
   process.env.PM_AGG_FREE_SERVICES_TRACKER ??
   join(HOME, "hatch-personal/workspace/ai-subscriptions/free-services-to-check.md");
@@ -294,7 +291,7 @@ const dnsRegisterPath =
 const dnsRegisterJsonPath = process.env.DNS_REGISTER_JSON_PATH ?? join(dirname(dnsRegisterPath), "register.json");
 const launchRecordsPath = process.env.CLAUDE_LAUNCH_RECORDS_PATH ?? join(HIDDEN, "claude-launch-records.jsonl");
 const quotaRegistryPath = process.env.QUOTA_REGISTRY_PATH ?? join(HIDDEN, "provider-quota-registry.md");
-const snapshotOutboxPath = process.env.USAGE_SNAPSHOT_OUTBOX_PATH ?? join(HIDDEN, "usage-snapshot-outbox.jsonl");
+const snapshotOutboxPath = process.env.USAGE_SNAPSHOT_OUTBOX_PATH ?? defaultUsageOutboxPath(HOME);
 const chargeCandidatesPath = process.env.CHARGE_CANDIDATES_PATH ?? join(HIDDEN, "charges-candidates.json");
 const chargesSurfacedStatePath = process.env.CHARGES_SURFACED_STATE_PATH ?? join(HIDDEN, "charges-surfaced-state.json");
 const burnHistoryStatePath =
@@ -465,6 +462,8 @@ interface AaLastGood {
   configFingerprint: string;
   /** sha256 of the batch-bound semantic data (aa-batches.ts). */
   fingerprint?: string;
+  /** aaPayloadSql revision the section was built with (#8817). */
+  sqlRevision?: number;
   section: AaSection;
 }
 
@@ -477,6 +476,7 @@ async function readAaLastGood(): Promise<AaLastGood | null> {
       batch: parsed.batch,
       configFingerprint: parsed.configFingerprint,
       fingerprint: typeof parsed.fingerprint === "string" ? parsed.fingerprint : undefined,
+      sqlRevision: typeof parsed.sqlRevision === "number" ? parsed.sqlRevision : undefined,
       section: parsed.section,
     };
   } catch {
@@ -596,6 +596,7 @@ async function collectAaSection(generatedAt: string): Promise<AaFeedSection> {
       configFingerprint: fingerprint,
       fingerprint: contentFingerprint,
       pricesFingerprint: aaPricesFingerprint(section.prices ?? []),
+      sqlRevision: AA_PAYLOAD_SQL_REVISION,
       builtAt: generatedAt,
       section,
     });
@@ -605,13 +606,8 @@ async function collectAaSection(generatedAt: string): Promise<AaFeedSection> {
 
   const token = await resolveBwsSecret("supabase.muse-dev2.access-token-muse-cli");
   if (!token) return degrade("no Supabase management token available (bws)");
-  // Project ref: env override, else the Bitwarden supabase.muse-dev2.project-ref
-  // secret (the same resolve-by-name discipline as the token), else the
-  // muse-dev2 project — never the retired muse-dev project.
-  const ref =
-    process.env.SUPABASE_PROJECT_REF ??
-    (await resolveBwsSecret("supabase.muse-dev2.project-ref")) ??
-    "keihfchslgjetkmnmzra";
+  const ref = await resolveSupabaseProjectRef(resolveBwsSecret);
+  if (!ref) return degrade("no Supabase project ref available (bws)");
 
   // The workbook index is the complete sources register; ingest_batches is
   // optional metadata and a missing join row does not hide a batch.
@@ -639,15 +635,17 @@ async function collectAaSection(generatedAt: string): Promise<AaFeedSection> {
     return degrade(msg.startsWith("Supabase query failed") ? msg : `Supabase unreachable (${msg})`);
   }
 
-  // Read every batch cache once; a changed config — or a changed
-  // current-price overlay — invalidates all of them.
+  // Read every batch cache once; a changed config, a changed
+  // current-price overlay, or a moved aaPayloadSql revision (#8817)
+  // invalidates all of them.
   const cachedSections = new Map<string, AaSection>();
   for (const row of index) {
     const cached = await readAaBatchCache(row.importBatch);
     if (
       cached &&
       cached.configFingerprint === fingerprint &&
-      (cached.pricesFingerprint ?? null) === currentPricesFingerprint
+      (cached.pricesFingerprint ?? null) === currentPricesFingerprint &&
+      (cached.sqlRevision ?? 0) === AA_PAYLOAD_SQL_REVISION
     ) {
       cacheMeta.set(row.importBatch, { fingerprint: cached.fingerprint, cached: true });
       cachedSections.set(row.importBatch, cached.section);
@@ -665,6 +663,7 @@ async function collectAaSection(generatedAt: string): Promise<AaFeedSection> {
     lastGood &&
     lastGood.batch === latestBatch &&
     lastGood.configFingerprint === fingerprint &&
+    (lastGood.sqlRevision ?? 0) === AA_PAYLOAD_SQL_REVISION &&
     lastGood.fingerprint
   ) {
     // Reuse the last good latest section without re-running the full query.
@@ -674,6 +673,7 @@ async function collectAaSection(generatedAt: string): Promise<AaFeedSection> {
       configFingerprint: fingerprint,
       fingerprint: lastGood.fingerprint,
       pricesFingerprint: aaPricesFingerprint(lastGood.section.prices ?? []),
+      sqlRevision: AA_PAYLOAD_SQL_REVISION,
       builtAt: latestSection.generatedAt,
       section: latestSection,
     });
@@ -693,6 +693,7 @@ async function collectAaSection(generatedAt: string): Promise<AaFeedSection> {
     batch: latestSection.batch,
     configFingerprint: fingerprint,
     fingerprint: cacheMeta.get(latestSection.batch)?.fingerprint ?? undefined,
+    sqlRevision: AA_PAYLOAD_SQL_REVISION,
     section: latestSection,
   });
 
@@ -723,6 +724,7 @@ async function collectAaSection(generatedAt: string): Promise<AaFeedSection> {
     batch: withIndex.batch,
     configFingerprint: fingerprint,
     fingerprint: cacheMeta.get(withIndex.batch)?.fingerprint ?? undefined,
+    sqlRevision: AA_PAYLOAD_SQL_REVISION,
     section: withIndex,
   });
   return withIndex;
@@ -731,8 +733,16 @@ async function collectAaSection(generatedAt: string): Promise<AaFeedSection> {
 async function main(): Promise<void> {
   const now = new Date();
   const sectionStatuses: NonNullable<FleetFeed["meta"]>["sections"] = {};
-  const markSection = (key: string, status: FeedSectionStatus, error?: unknown) => {
-    sectionStatuses[key] = feedSectionStatus(status, new Date().toISOString(), error);
+  const markSection = (
+    key: string,
+    status: FeedSectionStatus,
+    error?: unknown,
+    counts?: { reportedTotal?: number; emittedEntries: number },
+  ) => {
+    sectionStatuses[key] = {
+      ...feedSectionStatus(status, new Date().toISOString(), error),
+      ...(counts ?? {}),
+    };
   };
   const isMissingInput = (error: unknown): boolean =>
     typeof error === "object" && error !== null && "code" in error && error.code === "ENOENT";
@@ -1043,6 +1053,10 @@ async function main(): Promise<void> {
       } else {
         markSection("projects", "ok");
       }
+      markSection("projects", "ok", undefined, {
+        reportedTotal: snapshot.counts.reportedTotal,
+        emittedEntries: snapshot.counts.emittedEntries,
+      });
     }
   } catch (err) {
     console.error(`collector: GitHub Project read failed (${sanitizeCollectionError(err)}); projects section omitted`);
@@ -1100,7 +1114,9 @@ async function main(): Promise<void> {
           gateNext = await count(`${base} label:next`);
         } catch (err) {
           failedRepos.add(repo);
-          console.error(`collector: coverage census failed for ${repo} (${sanitizeCollectionError(err)}); backlog counts unavailable`);
+          console.error(
+            `collector: coverage census failed for ${repo} (${sanitizeCollectionError(err)}); backlog counts unavailable`,
+          );
         }
         rows.push({ repo, openIssues, gateNow, gateNext, staleOpenIssues, staleIssuesCollectedAt, staleIssuesError });
       }
@@ -1222,6 +1238,9 @@ async function main(): Promise<void> {
         ratesSet += 1;
       }
     }
+    // Exhaustion intervals (#3983) compose the same observations:
+    // per-pool forecasts ride on the pool like burnTokensPerMin.
+    deriveExhaustionForecasts(pools, mergedObservations, now);
     markSection("burnHistory", burnSegments.length || ratesSet ? "ok" : "skipped");
   } catch (err) {
     console.error("collector: burn-history derivation failed; burn stays empty this run");
@@ -1296,7 +1315,9 @@ async function main(): Promise<void> {
         ? `, hub ${saas.length} services / ${payg?.length ?? 0} payg / ${charges?.length ?? 0} charges`
         : ", no hub sections") +
       (dedupedSnapshots.length ? `, snapshots ${dedupedSnapshots.length} records` : "") +
-      (projectAudit ? `, projects ${projectAudit.totalItems} total / ${projects?.length ?? 0} resolvable` : ", no projects section") +
+      (projectAudit
+        ? `, projects ${projectAudit.totalItems} total / ${projects?.length ?? 0} resolvable`
+        : ", no projects section") +
       (coverage ? `, coverage ${coverage.length} repos` : ", no coverage section") +
       (aa.status === "ok"
         ? `, aa ${aa.rankings?.length ?? 0} rankings / ${aa.configs?.length ?? 0} configs / ${aa.testRuns?.length ?? 0} test runs`

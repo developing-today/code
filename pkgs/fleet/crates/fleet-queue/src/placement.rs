@@ -40,7 +40,7 @@
 //! in the output): --assume-owner-load owner=N[,owner=N...] and
 //! --assume-blacksmith-used MINUTES.
 
-use serde_json::{json, Map, Value};
+use serde_json::{Map, Value, json};
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -216,13 +216,7 @@ pub trait Gh {
             ))
         })
     }
-    fn api(
-        &self,
-        method: &str,
-        path: &str,
-        token: &str,
-        body: Option<&Value>,
-    ) -> R<(u16, Value)>;
+    fn api(&self, method: &str, path: &str, token: &str, body: Option<&Value>) -> R<(u16, Value)>;
     /// `gh codespace list --json name,repository,state`, parsed.
     fn codespace_list(&self) -> R<Vec<Value>>;
     /// `gh codespace ssh -c NAME -- COMMAND`; returns the exit code.
@@ -292,17 +286,13 @@ impl Gh for RealGh {
         if tok.is_empty() {
             return None;
         }
-        self.tokens.borrow_mut().insert(repo.to_string(), tok.clone());
+        self.tokens
+            .borrow_mut()
+            .insert(repo.to_string(), tok.clone());
         Some(tok)
     }
 
-    fn api(
-        &self,
-        method: &str,
-        path: &str,
-        token: &str,
-        body: Option<&Value>,
-    ) -> R<(u16, Value)> {
+    fn api(&self, method: &str, path: &str, token: &str, body: Option<&Value>) -> R<(u16, Value)> {
         let url = if path.starts_with("http") {
             path.to_string()
         } else {
@@ -459,9 +449,7 @@ impl StoreLock {
                 Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
                     let stale = std::fs::metadata(&dir)
                         .and_then(|m| m.modified())
-                        .map(|t| {
-                            t.elapsed().map(|d| d.as_secs() > 120).unwrap_or(false)
-                        })
+                        .map(|t| t.elapsed().map(|d| d.as_secs() > 120).unwrap_or(false))
                         .unwrap_or(false);
                     if stale {
                         let _ = std::fs::remove_dir_all(&dir);
@@ -510,9 +498,9 @@ fn commit_new_session(rec: &Value, blacksmith_entry: Option<&Value>) -> R<()> {
         }
         if let Some(entry) = blacksmith_entry {
             if let Some(arr) = store["blacksmith_dispatches"].as_array_mut() {
-                let exists = arr.iter().any(|d| {
-                    d.get("handle").and_then(|h| h.as_str()) == Some(handle.as_str())
-                });
+                let exists = arr
+                    .iter()
+                    .any(|d| d.get("handle").and_then(|h| h.as_str()) == Some(handle.as_str()));
                 if !exists {
                     arr.push(entry.clone());
                 }
@@ -665,10 +653,7 @@ pub trait Adapter {
 fn base_eligible(surface: &Value, job: &Job) -> (bool, String) {
     let status = surf_str(surface, "status");
     if status != "active" {
-        return (
-            false,
-            format!("surface status is '{status}', not 'active'"),
-        );
+        return (false, format!("surface status is '{status}', not 'active'"));
     }
     let targets = surf_targets(surface);
     if !targets.iter().any(|t| t == "*") && !targets.iter().any(|t| t == &job.repo) {
@@ -720,7 +705,10 @@ impl GithubActionsAdapter {
         let mut inputs = Map::new();
         if !cache.is_empty() {
             entry.insert("cache".into(), Value::Object(cache));
-            inputs.insert("jobs".into(), json!(Value::Array(vec![Value::Object(entry)]).to_string()));
+            inputs.insert(
+                "jobs".into(),
+                json!(Value::Array(vec![Value::Object(entry)]).to_string()),
+            );
             // org-run.yml declares the top-level `repo` input
             // required even when `jobs` is given (Codex P2 on
             // PR #8325) — retain it alongside the jobs payload.
@@ -734,10 +722,7 @@ impl GithubActionsAdapter {
             // pin it to this dispatch's provider so a GitHub-only
             // dispatch does not silently consume Blacksmith
             // minutes outside the budget/ledger (Codex P2).
-            inputs.insert(
-                "setup_runner".into(),
-                json!(self.runner_name(job)),
-            );
+            inputs.insert("setup_runner".into(), json!(self.runner_name(job)));
         }
         if self.runner_name(job) == "blacksmith" {
             inputs.insert("runner".into(), json!("blacksmith"));
@@ -870,7 +855,7 @@ impl GithubActionsAdapter {
                     .get("state")
                     .and_then(|s| s.as_str())
                     .unwrap_or("unknown")
-                    .to_string()
+                    .to_string();
             }
         };
         let repo = surf_str(&self.surface, "repo");
@@ -881,10 +866,15 @@ impl GithubActionsAdapter {
                     .get("state")
                     .and_then(|s| s.as_str())
                     .unwrap_or("unknown")
-                    .to_string()
+                    .to_string();
             }
         };
-        match gh.api("GET", &format!("/repos/{repo}/actions/runs/{run_id}"), &token, None) {
+        match gh.api(
+            "GET",
+            &format!("/repos/{repo}/actions/runs/{run_id}"),
+            &token,
+            None,
+        ) {
             Ok((200, run)) => map_run_state(&run),
             _ => session
                 .get("state")
@@ -932,11 +922,7 @@ impl Adapter for GithubActionsAdapter {
     }
     fn capacity(&self, _job: &Job, ctx: &Ctx) -> Capacity {
         let owner = surf_str(&self.surface, "owner");
-        let (running, queued) = ctx
-            .owner_load
-            .get(owner)
-            .copied()
-            .unwrap_or((0, 0));
+        let (running, queued) = ctx.owner_load.get(owner).copied().unwrap_or((0, 0));
         let cap = ctx.owner_cap(owner);
         let active = running + queued;
         let free = (cap - active).max(0);
@@ -978,7 +964,12 @@ pub struct BlacksmithAdapter {
 
 impl BlacksmithAdapter {
     fn budget(&self, job: &Job, ctx: &Ctx) -> (f64, f64, f64) {
-        let b = self.inner.surface.get("budget").cloned().unwrap_or(json!({}));
+        let b = self
+            .inner
+            .surface
+            .get("budget")
+            .cloned()
+            .unwrap_or(json!({}));
         let free = b
             .get("free_minutes_monthly")
             .and_then(|v| v.as_f64())
@@ -1011,10 +1002,7 @@ impl Adapter for BlacksmithAdapter {
             return (ok, why);
         }
         if job.runner == "github" {
-            return (
-                false,
-                "job pins runner=github".to_string(),
-            );
+            return (false, "job pins runner=github".to_string());
         }
         let repo = surf_str(&self.inner.surface, "repo");
         if gh.mint_token(repo).is_none() {
@@ -1141,12 +1129,12 @@ impl Adapter for CodespaceAdapter {
         }
     }
     fn dispatch(&self, job: &Job, gh: &dyn Gh) -> R<DispatchResult> {
-        let spaces = gh.codespace_list().map_err(|_| {
-            Die("codespace list failed at dispatch time (scope lost?)".to_string())
-        })?;
-        let space = spaces.iter().find(|c| {
-            c.get("repository").and_then(|r| r.as_str()) == Some(job.repo.as_str())
-        });
+        let spaces = gh
+            .codespace_list()
+            .map_err(|_| Die("codespace list failed at dispatch time (scope lost?)".to_string()))?;
+        let space = spaces
+            .iter()
+            .find(|c| c.get("repository").and_then(|r| r.as_str()) == Some(job.repo.as_str()));
         let space = match space {
             Some(s) => s,
             None => {
@@ -1155,7 +1143,7 @@ impl Adapter for CodespaceAdapter {
                      to reuse — fleet-place never creates codespaces; create one \
                      deliberately, then resubmit",
                     job.repo
-                ))
+                ));
             }
         };
         let name = space
@@ -1170,8 +1158,7 @@ impl Adapter for CodespaceAdapter {
         // records.
         if !job.git_ref.is_empty() {
             let esc = job.git_ref.replace('\'', "'\\''");
-            let (hcode, head) =
-                gh.codespace_ssh_capture(&name, "git rev-parse HEAD")?;
+            let (hcode, head) = gh.codespace_ssh_capture(&name, "git rev-parse HEAD")?;
             let (tcode, target) = gh.codespace_ssh_capture(
                 &name,
                 &format!(
@@ -1205,9 +1192,7 @@ impl Adapter for CodespaceAdapter {
             )),
             // The ssh call IS the execution: its exit code is the
             // terminal outcome (Codex P2 on PR #8325).
-            terminal_state: Some(
-                if code == 0 { "succeeded" } else { "failed" }.to_string(),
-            ),
+            terminal_state: Some(if code == 0 { "succeeded" } else { "failed" }.to_string()),
             ..Default::default()
         })
     }
@@ -1469,9 +1454,8 @@ pub fn decide(
         let surface = find_surface(registry, &sid).unwrap().clone();
         return Ok((adapter_for(&surface), reasoning));
     }
-    reasoning.push(
-        "tier1 exhausted: no eligible GitHub-hosted surface has a free slot".to_string(),
-    );
+    reasoning
+        .push("tier1 exhausted: no eligible GitHub-hosted surface has a free slot".to_string());
 
     // Tier 2 — Blacksmith within budget (org surfaces only).
     for s in &surfaces {
@@ -1529,7 +1513,12 @@ fn refresh_session(store: &mut Value, handle: &str, registry: &Value, gh: &dyn G
         .get("sessions")
         .and_then(|s| s.get(handle))
         .cloned()
-        .ok_or_else(|| Die(format!("no session with handle {handle} in {}", state_file())))?;
+        .ok_or_else(|| {
+            Die(format!(
+                "no session with handle {handle} in {}",
+                state_file()
+            ))
+        })?;
     let run_id = rec.get("run_id").and_then(|r| r.as_i64());
     let surface_id = rec
         .get("surface")
@@ -1571,8 +1560,7 @@ fn refresh_session(store: &mut Value, handle: &str, registry: &Value, gh: &dyn G
                                     .and_then(|d| d.as_array_mut())
                                 {
                                     for d in arr.iter_mut() {
-                                        if d.get("handle").and_then(|h| h.as_str())
-                                            == Some(handle)
+                                        if d.get("handle").and_then(|h| h.as_str()) == Some(handle)
                                         {
                                             d["minutes"] = json!(minutes);
                                             // Mark reconciliation itself,
@@ -1838,10 +1826,10 @@ fn run_dispatch(args: &[String]) -> R<i32> {
             "--assume-blacksmith-used" => {
                 i += 1;
                 let v = need(&rest, i, "--assume-blacksmith-used")?;
-                assume_blacksmith_used = Some(
-                    v.parse::<f64>()
-                        .map_err(|_| Die(format!("--assume-blacksmith-used: not a number: {v}")))?,
-                );
+                assume_blacksmith_used =
+                    Some(v.parse::<f64>().map_err(|_| {
+                        Die(format!("--assume-blacksmith-used: not a number: {v}"))
+                    })?);
             }
             "--dispatch" => dispatch = true,
             "-h" | "--help" => {
@@ -1895,10 +1883,12 @@ fn run_dispatch(args: &[String]) -> R<i32> {
     out.insert("job".into(), job.to_json_compact());
     out.insert(
         "decision".into(),
-        json!(adapter
-            .as_ref()
-            .map(|a| surf_str(a.surface(), "id").to_string())
-            .unwrap_or_else(|| "queued".to_string())),
+        json!(
+            adapter
+                .as_ref()
+                .map(|a| surf_str(a.surface(), "id").to_string())
+                .unwrap_or_else(|| "queued".to_string())
+        ),
     );
     out.insert("reasoning".into(), json!(reasoning));
     if !ctx.owner_load_overridden.is_empty() {
@@ -2047,9 +2037,7 @@ fn run_session(args: &[String]) -> R<i32> {
                         r.get("surface")
                             .map(|v| v.to_string())
                             .unwrap_or_else(|| "null".to_string()),
-                        r.get("run_url")
-                            .and_then(|v| v.as_str())
-                            .unwrap_or("None"),
+                        r.get("run_url").and_then(|v| v.as_str()).unwrap_or("None"),
                     )
                 });
             } else {
@@ -2068,12 +2056,8 @@ fn run_session(args: &[String]) -> R<i32> {
                         "{}: {} (terminal={}) run={}",
                         r.get("handle").and_then(|v| v.as_str()).unwrap_or(""),
                         r.get("state").and_then(|v| v.as_str()).unwrap_or(""),
-                        r.get("terminal")
-                            .and_then(|v| v.as_bool())
-                            .unwrap_or(false),
-                        r.get("run_url")
-                            .and_then(|v| v.as_str())
-                            .unwrap_or("None"),
+                        r.get("terminal").and_then(|v| v.as_bool()).unwrap_or(false),
+                        r.get("run_url").and_then(|v| v.as_str()).unwrap_or("None"),
                     )
                 });
             }
@@ -2095,8 +2079,9 @@ fn run_session(args: &[String]) -> R<i32> {
                     .cmp(a.get("created_at").and_then(|v| v.as_str()).unwrap_or(""))
             });
             if mine {
-                sessions
-                    .retain(|s| s.get("submitted_by").and_then(|v| v.as_str()) == Some(me.as_str()));
+                sessions.retain(|s| {
+                    s.get("submitted_by").and_then(|v| v.as_str()) == Some(me.as_str())
+                });
             }
             let out = json!({ "sessions": sessions });
             print_out(&out, cli.json, |o| {
@@ -2117,9 +2102,7 @@ fn run_session(args: &[String]) -> R<i32> {
                             r.get("surface")
                                 .map(|v| v.to_string())
                                 .unwrap_or_else(|| "null".to_string()),
-                            r.get("run_url")
-                                .and_then(|v| v.as_str())
-                                .unwrap_or("None"),
+                            r.get("run_url").and_then(|v| v.as_str()).unwrap_or("None"),
                         )
                     })
                     .collect::<Vec<_>>()
@@ -2331,10 +2314,7 @@ mod tests {
     fn ctx(load: &[(&str, (i64, i64))], blacksmith_used: f64, laptop_busy: bool) -> Ctx {
         Ctx {
             owners: registry()["owners"].clone(),
-            owner_load: load
-                .iter()
-                .map(|(k, v)| (k.to_string(), *v))
-                .collect(),
+            owner_load: load.iter().map(|(k, v)| (k.to_string(), *v)).collect(),
             owner_load_overridden: vec![],
             load_read_errors: vec![],
             laptop_busy,
@@ -2353,8 +2333,15 @@ mod tests {
         let reg = registry();
         let gh = FakeGh::default();
         // Personal copy has 40 free, org-run 20 free -> personal wins.
-        let c = ctx(&[("dezren39", (0, 0)), ("developing-today", (0, 0))], 0.0, false);
-        assert_eq!(pick(&reg, &job(), &c, &gh).as_deref(), Some("fleet-personal"));
+        let c = ctx(
+            &[("dezren39", (0, 0)), ("developing-today", (0, 0))],
+            0.0,
+            false,
+        );
+        assert_eq!(
+            pick(&reg, &job(), &c, &gh).as_deref(),
+            Some("fleet-personal")
+        );
         // Personal saturated, org partially loaded -> org-run.
         let c = ctx(
             &[("dezren39", (40, 0)), ("developing-today", (5, 0))],
@@ -2370,7 +2357,11 @@ mod tests {
         let gh = FakeGh::default();
         let mut j = job();
         j.repo = "developing-today/opencode".to_string();
-        let c = ctx(&[("dezren39", (0, 0)), ("developing-today", (0, 0))], 0.0, false);
+        let c = ctx(
+            &[("dezren39", (0, 0)), ("developing-today", (0, 0))],
+            0.0,
+            false,
+        );
         // fleet-personal does not target opencode; org-run does.
         assert_eq!(pick(&reg, &j, &c, &gh).as_deref(), Some("org-run"));
     }
@@ -2404,10 +2395,12 @@ mod tests {
         );
         let (ad, reasoning) = decide(&reg, &job(), &c, &gh).unwrap();
         assert!(ad.is_none());
-        assert!(reasoning
-            .last()
-            .map(|r| r.contains("stays queued"))
-            .unwrap_or(false));
+        assert!(
+            reasoning
+                .last()
+                .map(|r| r.contains("stays queued"))
+                .unwrap_or(false)
+        );
     }
 
     #[test]
@@ -2454,7 +2447,11 @@ mod tests {
         let gh = FakeGh::default();
         let mut j = job();
         j.runner = "blacksmith".to_string();
-        let c = ctx(&[("dezren39", (0, 0)), ("developing-today", (0, 0))], 0.0, false);
+        let c = ctx(
+            &[("dezren39", (0, 0)), ("developing-today", (0, 0))],
+            0.0,
+            false,
+        );
         assert_eq!(
             pick(&reg, &j, &c, &gh).as_deref(),
             Some("fleet-org-blacksmith")
@@ -2514,11 +2511,13 @@ mod tests {
         let ad = ad.unwrap();
         assert_eq!(surf_str(ad.surface(), "id"), "laptop");
         let result = ad.dispatch(&j, &gh).unwrap();
-        assert!(result
-            .note
-            .as_deref()
-            .unwrap_or("")
-            .contains("handoff recorded"));
+        assert!(
+            result
+                .note
+                .as_deref()
+                .unwrap_or("")
+                .contains("handoff recorded")
+        );
     }
 
     #[test]
@@ -2586,7 +2585,11 @@ mod tests {
         assert_eq!(result.run_id, Some(4242));
         let posts = gh.posts.borrow();
         assert_eq!(posts.len(), 1);
-        assert!(posts[0].0.contains("/repos/dezren39/fleet/actions/workflows/fleet-run.yml/dispatches"));
+        assert!(
+            posts[0]
+                .0
+                .contains("/repos/dezren39/fleet/actions/workflows/fleet-run.yml/dispatches")
+        );
     }
 
     #[test]
@@ -2723,7 +2726,11 @@ mod tests {
             tokens_ok: false,
             ..Default::default()
         };
-        let c = ctx(&[("dezren39", (0, 0)), ("developing-today", (0, 0))], 0.0, false);
+        let c = ctx(
+            &[("dezren39", (0, 0)), ("developing-today", (0, 0))],
+            0.0,
+            false,
+        );
         let picked = pick(&reg, &job(), &c, &gh);
         assert_eq!(picked, None);
     }
@@ -2757,10 +2764,8 @@ mod tests {
     #[test]
     fn commit_new_session_merges_without_dropping_other_sessions() {
         let _store_env_guard = STORE_ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
-        let dir = std::env::temp_dir().join(format!(
-            "fleet-place-test-merge-{}",
-            std::process::id()
-        ));
+        let dir =
+            std::env::temp_dir().join(format!("fleet-place-test-merge-{}", std::process::id()));
         unsafe { std::env::set_var("FLEET_PLACE_STATE", &dir) };
         let mut store = load_store();
         store["sessions"]["fp_other"] = json!({ "handle": "fp_other", "state": "running" });
@@ -2805,7 +2810,10 @@ mod tests {
         });
         let mut handles = blacksmith_reconcile_handles(&store, &reg);
         handles.sort();
-        assert_eq!(handles, vec!["fp_done_unrec".to_string(), "fp_live".to_string()]);
+        assert_eq!(
+            handles,
+            vec!["fp_done_unrec".to_string(), "fp_live".to_string()]
+        );
     }
 
     #[test]
@@ -2840,10 +2848,7 @@ mod tests {
     #[test]
     fn store_roundtrip_preserves_sessions() {
         let _store_env_guard = STORE_ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
-        let dir = std::env::temp_dir().join(format!(
-            "fleet-place-test-{}",
-            std::process::id()
-        ));
+        let dir = std::env::temp_dir().join(format!("fleet-place-test-{}", std::process::id()));
         // SAFETY: this test owns the variable for its duration and
         // no other test reads the placement state path.
         unsafe { std::env::set_var("FLEET_PLACE_STATE", &dir) };

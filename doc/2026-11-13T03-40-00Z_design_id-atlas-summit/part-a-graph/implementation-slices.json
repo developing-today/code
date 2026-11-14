@@ -1,0 +1,678 @@
+{
+  "schema_version": 3,
+  "design_source": "doc/2026-11-13T03-40-00Z_design_id-atlas-summit/part-a-graph/versioned-design.md",
+  "slices": [
+    {
+      "id": "A-GRAPH-9125-01",
+      "parent": 9125,
+      "title": "Typed triple identity and canonical signed records",
+      "kind": "implementation",
+      "version": "V2",
+      "tier": "crucial",
+      "statements": ["S5.1", "S5.2", "S5.3", "S5.4", "S5.5", "S5.6", "S5.7", "S5.11"],
+      "goal": "Define general typed-byte triple terms, object references, LogicalGraphId, source_record provenance and exact ContentId/PayloadId/EnvelopeId preimages. Own only term.rs, record.rs and their test; do not create or edit graph/mod.rs or crate-root exports.",
+      "enables": "Graph and attribute surfaces share typed bytes and non-self-referential signed identities; adapters can add indexes without changing signed truth.",
+      "owned_files": [
+        { "path": "pkgs/id/crates/id-core/src/graph/term.rs", "status": "new", "owner": "A-GRAPH-9125-01" },
+        { "path": "pkgs/id/crates/id-core/src/graph/record.rs", "status": "new", "owner": "A-GRAPH-9125-01" },
+        { "path": "pkgs/id/crates/id-core/tests/graph_term_codec.rs", "status": "new", "owner": "A-GRAPH-9125-01" }
+      ],
+      "requires": [
+        {
+          "ref": "9110-02",
+          "description": "Creates the common graph/mod.rs skeleton and shared profile/vector interfaces, without exporting absent leaf modules. This slice uses direct-path leaf imports in its integration test. Final public module/export wiring is owned by 9110-09 after this slice completes."
+        },
+        {
+          "ref": "9110-11",
+          "description": "Consume the additive identity-profile/legacy compatibility contract; do not edit or re-sign legacy artifact bytes."
+        }
+      ],
+      "after": [
+        {
+          "ref": "9110-R2",
+          "description": "Consume any later Atlas ContentId mapping only in an Atlas-specific adapter; the typed-byte graph core does not own or block on the producer investigation."
+        }
+      ],
+      "test": {
+        "file": "pkgs/id/crates/id-core/tests/graph_term_codec.rs",
+        "command": "cargo test -p id-core --test graph_term_codec",
+        "oracle": {
+          "kind": "reference",
+          "expected": "Reference encoder and independent verifier agree on exact canonical Body, raw PayloadId, profile-byte ContentId, complete signed-envelope EnvelopeId, source_record provenance, and arbitrary typed-byte round trips; self-referential IDs and ambiguous encodings reject.",
+          "verifier": "graph_term_codec.rs imports ../src/graph/term.rs and ../src/graph/record.rs with explicit #[path] modules until 9110-09 performs public wiring. Independent reference codec and known-answer vectors compare exact outputs; no vector hashes an ID into its own preimage."
+        }
+      },
+      "rollback": "Remove only the new graph module and test files; keep crosscut-owned crate-root exports/profile vectors and all existing signed bytes unchanged.",
+      "design_source": "doc/2026-11-13T03-40-00Z_design_id-atlas-summit/part-a-graph/versioned-design.md",
+      "design_section": "## 4. #9125 — triples encoding and storage",
+      "owner": "A-GRAPH-9125-01"
+    },
+    {
+      "id": "A-GRAPH-9125-02",
+      "parent": 9125,
+      "title": "Rebuildable ordered triple indexes and streaming scans",
+      "kind": "implementation",
+      "version": "V2",
+      "tier": "recommended",
+      "statements": ["S5.4", "S5.6", "S5.7", "S5.11"],
+      "goal": "Add an initial redb materialization with rebuildable SPO/POS/OSP indexes and bounded continuation scans; index bytes remain derived and outside signed authority.",
+      "enables": "Bounded graph patterns and pages execute without loading the entire LogicalGraphId.",
+      "owned_files": [
+        { "path": "pkgs/id/crates/id-store/src/graph_index.rs", "status": "new", "owner": "A-GRAPH-9125-02" },
+        { "path": "pkgs/id/crates/id-store/tests/graph_index_rebuild.rs", "status": "new", "owner": "A-GRAPH-9125-02" }
+      ],
+      "requires": [
+        { "ref": "A-GRAPH-9125-01", "description": "Typed terms, AssertionId and graph record boundary." },
+        {
+          "ref": "A-GRAPH-9125-03",
+          "description": "Measured candidate-engine bake-off and selected V2 backend/profile recommendation."
+        },
+        {
+          "ref": "9110-02",
+          "description": "Common id-store crate-root export/port registration; graph index remains a separate module."
+        }
+      ],
+      "after": [],
+      "test": {
+        "file": "pkgs/id/crates/id-store/tests/graph_index_rebuild.rs",
+        "command": "cargo test -p id-store --test graph_index_rebuild",
+        "oracle": {
+          "kind": "reference",
+          "expected": "Index rebuild and all supported leading-component scans return exactly the same assertion IDs as the pure typed-set matcher at a fixed frontier, including shuffled ingestion, missing-index and corruption cases.",
+          "verifier": "Independent in-memory typed-set matcher and rebuild-from-signed-evidence pass."
+        }
+      },
+      "rollback": "Drop only the new graph index module and tests; signed record bytes remain authoritative and can be rescanned without an index.",
+      "design_source": "doc/2026-11-13T03-40-00Z_design_id-atlas-summit/part-a-graph/versioned-design.md",
+      "design_section": "## 4. #9125 — triples encoding and storage",
+      "owner": "A-GRAPH-9125-02"
+    },
+    {
+      "id": "A-GRAPH-9125-03",
+      "parent": 9125,
+      "title": "Benchmark real graph encoding and storage candidates",
+      "kind": "research/benchmark",
+      "version": "V2",
+      "tier": "recommended",
+      "statements": ["S5.3", "S5.4", "S5.5", "S5.6", "S5.7", "S5.11"],
+      "research_scope": "real-encoding-bakeoff",
+      "goal": "Measure actual candidate engines on one shared typed-byte corpus: deterministic chunked binary, current redb tuple-key materialization, SQLite JSONB, and normalized SQLite BLOB rows; report storage, indexed query, streaming/page and write costs without choosing from the toy serialization result.",
+      "enables": "A measured V2 storage recommendation with raw artifacts, engine/version/config metadata, repeatable fixture and explicit limits.",
+      "owned_files": [
+        {
+          "path": "pkgs/id/crates/id-store/tests/graph_encoding_bakeoff.rs",
+          "status": "new",
+          "owner": "A-GRAPH-9125-03"
+        },
+        {
+          "path": "doc/2026-11-13T03-40-00Z_design_id-atlas-summit/part-a-graph/real-encoding-bakeoff.md",
+          "status": "new",
+          "owner": "A-GRAPH-9125-03"
+        },
+        {
+          "path": "doc/2026-11-13T03-40-00Z_design_id-atlas-summit/part-a-graph/real-encoding-bakeoff-results.json",
+          "status": "new",
+          "owner": "A-GRAPH-9125-03"
+        },
+        {
+          "path": "doc/2026-11-13T03-40-00Z_design_id-atlas-summit/part-a-graph/validate_real_encoding_bakeoff.py",
+          "status": "new",
+          "owner": "A-GRAPH-9125-03"
+        }
+      ],
+      "requires": [
+        {
+          "ref": "A-GRAPH-9125-01",
+          "description": "Canonical typed-byte terms and shared deterministic corpus/reference oracle."
+        }
+      ],
+      "after": [],
+      "research_evidence": [
+        "https://www.rfc-editor.org/rfc/rfc8949 — CBOR typed bytes, canonical/profile considerations and streaming items (retrieved 2026-11-12).",
+        "https://www.sqlite.org/json1.html — SQLite JSONB is engine-private; documented JSONB size/operation properties (retrieved 2026-11-12).",
+        "pkgs/id/crates/id-core/src/tuple.rs — current typed ordered tuple-key codec.",
+        "pkgs/id/crates/id-store/src/tag_index.rs — current prefix/range indexes and index-order alternatives.",
+        "doc/2026-11-13T03-40-00Z_design_id-atlas-summit/part-a-graph/graph-encoding-toy.py and experiment-output.txt — deterministic serialization-only toy, explicitly not candidate-engine evidence."
+      ],
+      "test": {
+        "file": "doc/2026-11-13T03-40-00Z_design_id-atlas-summit/part-a-graph/validate_real_encoding_bakeoff.py",
+        "command": "python3 -I doc/2026-11-13T03-40-00Z_design_id-atlas-summit/part-a-graph/validate_real_encoding_bakeoff.py --run-and-check",
+        "oracle": {
+          "kind": "research-matrix",
+          "expected": "Runner executes the candidate-engine harness, then emits and validates raw results covering every engine/workload cell, engine/schema/index versions, byte/type round-trip oracle, repeated runs, query/page/write/storage measures and limits; missing, inconsistent or unrepeatable cells fail. No universal winner is asserted.",
+          "verifier": "Strictly parsed runner invokes the exact redb/SQLite candidate harness before validation; independent artifact validator recomputes fixture hashes, checks matrix completeness/report consistency, and compares query outputs to the reference model."
+        }
+      },
+      "rollback": "Remove only the benchmark test, report, results and validator; no production codec/schema/index is modified by this research slice.",
+      "design_source": "doc/2026-11-13T03-40-00Z_design_id-atlas-summit/part-a-graph/versioned-design.md",
+      "design_section": "## 4. #9125 — triples encoding and storage",
+      "owner": "A-GRAPH-9125-03",
+      "trigger": "Run before freezing the V2 candidate storage/encoding choice; do not treat the existing stdlib toy as this candidate-engine benchmark."
+    },
+    {
+      "id": "A-GRAPH-9126-01",
+      "parent": 9126,
+      "title": "Bounded read-only triple-pattern API and cursors",
+      "kind": "implementation",
+      "version": "V2",
+      "tier": "crucial",
+      "statements": ["S5.8", "S5.10", "S5.11"],
+      "goal": "Expose conjunctive patterns over TermPattern and LogicalGraphId with stable ordering, opaque snapshot cursor, mandatory page limit, server-side authorization and an operator-validated resource profile.",
+      "enables": "Attributes, social projections and optional visualization share one authorized graph-read path and source_record provenance.",
+      "owned_files": [
+        { "path": "pkgs/id/crates/id-core/src/graph/query.rs", "status": "new", "owner": "A-GRAPH-9126-01" },
+        { "path": "pkgs/id/crates/id-core/src/graph/cursor.rs", "status": "new", "owner": "A-GRAPH-9126-01" },
+        { "path": "pkgs/id/crates/id-core/tests/graph_query_reference.rs", "status": "new", "owner": "A-GRAPH-9126-01" }
+      ],
+      "requires": [
+        { "ref": "A-GRAPH-9125-01", "description": "Typed terms, LogicalGraphId and source_record provenance." },
+        {
+          "ref": "9110-02",
+          "description": "Common crate-root export and interface registration; no graph ownership of lib.rs."
+        }
+      ],
+      "after": [
+        {
+          "ref": "A-GRAPH-9125-02",
+          "description": "Prefer the measured index adapter when available; API contract remains backend-independent."
+        }
+      ],
+      "test": {
+        "file": "pkgs/id/crates/id-core/tests/graph_query_reference.rs",
+        "command": "cargo test -p id-core --test graph_query_reference",
+        "oracle": {
+          "kind": "reference",
+          "expected": "Reference matcher and paged query agree at a fixed frontier; cursor pages concatenate without omission/duplication, and unauthorized or over-budget queries never report complete.",
+          "verifier": "Independent pure matcher over canonical typed-triple fixtures and cursor-page concatenation checker."
+        }
+      },
+      "rollback": "Remove only graph query/cursor modules and test; no event bytes or existing query-local/remote API is rewritten.",
+      "design_source": "doc/2026-11-13T03-40-00Z_design_id-atlas-summit/part-a-graph/versioned-design.md",
+      "design_section": "## 5. #9126 — graph query and visualization",
+      "owner": "A-GRAPH-9126-01"
+    },
+    {
+      "id": "A-GRAPH-9126-02",
+      "parent": 9126,
+      "title": "Bounded graph viewer over query pages",
+      "kind": "implementation",
+      "version": "V4",
+      "tier": "contingent",
+      "statements": ["S5.9", "S5.12"],
+      "goal": "Build an optional native-shell graph viewer over the same authorized paged query API, marking cycles, provenance, missing references and truncation.",
+      "enables": "Humans can inspect graph neighborhoods without a second graph store or false-complete whole-graph picture.",
+      "owned_files": [
+        {
+          "path": "pkgs/id/crates/id-native-shell/src/commands/graph_view.rs",
+          "status": "new",
+          "owner": "A-GRAPH-9126-02"
+        },
+        { "path": "pkgs/id/crates/id-native-shell/tests/graph_view.rs", "status": "new", "owner": "A-GRAPH-9126-02" }
+      ],
+      "requires": [{ "ref": "A-GRAPH-9126-01", "description": "Authorized QueryPage and provenance contract." }],
+      "after": [],
+      "test": {
+        "file": "pkgs/id/crates/id-native-shell/tests/graph_view.rs",
+        "command": "cargo test -p id-native-shell --test graph_view",
+        "oracle": {
+          "kind": "golden",
+          "expected": "Golden cyclic/over-budget fixture visibly includes a back-reference, provenance, missing-reference state and truncation; rendered node/edge set equals authorized QueryPage rows.",
+          "verifier": "Independent golden graph fixture and exact row-set comparison."
+        }
+      },
+      "rollback": "Remove the optional viewer command/test; the query API and graph data model remain usable without UI.",
+      "design_source": "doc/2026-11-13T03-40-00Z_design_id-atlas-summit/part-a-graph/versioned-design.md",
+      "design_section": "## 5. #9126 — graph query and visualization",
+      "owner": "A-GRAPH-9126-02",
+      "trigger": "Only when a human-facing graph inspection surface is prioritized; not required for V2 query conformance."
+    },
+    {
+      "id": "A-GRAPH-9126-03",
+      "parent": 9126,
+      "title": "Evaluate query-language options without selecting one by default",
+      "kind": "research-and-decision",
+      "version": "V4",
+      "tier": "contingent",
+      "statements": ["S5.8", "S5.9", "S5.10"],
+      "goal": "Compare typed patterns, SPARQL subset, SQL/PGQ, and traversal/API alternatives against concrete interoperability and safety needs; recommendation may adopt none and no parser is implied.",
+      "enables": "Any later syntax remains an adapter over the typed API with explicitly bounded semantics, or the project records that no named language is justified.",
+      "owned_files": [
+        {
+          "path": "doc/2026-11-13T03-40-00Z_design_id-atlas-summit/part-a-graph/query-language-options.md",
+          "status": "new",
+          "owner": "A-GRAPH-9126-03"
+        },
+        {
+          "path": "doc/2026-11-13T03-40-00Z_design_id-atlas-summit/part-a-graph/query-language-options.json",
+          "status": "new",
+          "owner": "A-GRAPH-9126-03"
+        },
+        {
+          "path": "doc/2026-11-13T03-40-00Z_design_id-atlas-summit/part-a-graph/validate_query_language_options.py",
+          "status": "new",
+          "owner": "A-GRAPH-9126-03"
+        }
+      ],
+      "requires": [{ "ref": "A-GRAPH-9126-01", "description": "Typed API semantics form the comparison baseline." }],
+      "after": [],
+      "research_evidence": [
+        "https://www.w3.org/TR/sparql11-query/ — SPARQL 1.1 feature and graph-pattern semantics (retrieved 2026-11-12).",
+        "https://www.w3.org/TR/rdf11-concepts/ — RDF term and graph model; triples alone do not imply RDF (retrieved 2026-11-12).",
+        "doc/2026-11-08_decision_id5909_sql_pgq_capability.md — typed pattern IR, PGQ options and backend limits.",
+        "doc/2026-11-08_design_id5837.md and doc/2026-11-08T08-10-00Z_design_id5782_graphical_client_tooling.md — bounded graph reads and truthful visualization limits."
+      ],
+      "test": {
+        "file": "doc/2026-11-13T03-40-00Z_design_id-atlas-summit/part-a-graph/validate_query_language_options.py",
+        "command": "python3 -I doc/2026-11-13T03-40-00Z_design_id-atlas-summit/part-a-graph/validate_query_language_options.py --check",
+        "oracle": {
+          "kind": "research-matrix",
+          "expected": "Decision report compares each named option on concrete semantics, RDF need, portability, limits and risks; the matrix permits `none` as the result and contains no unrequested parser/API selection.",
+          "verifier": "Independent validator compares the report claims to machine-readable option matrix and cited source inventory; unsupported feature claims fail."
+        }
+      },
+      "rollback": "Remove only the option matrix, decision report and validator; no parser or runtime query API is implemented by this research slice.",
+      "design_source": "doc/2026-11-13T03-40-00Z_design_id-atlas-summit/part-a-graph/versioned-design.md",
+      "design_section": "## 5. #9126 — graph query and visualization",
+      "owner": "A-GRAPH-9126-03",
+      "trigger": "Only if an external RDF/interoperability consumer or a product requirement makes language selection actionable; the default outcome may be no named language."
+    },
+    {
+      "id": "A-GRAPH-9127-01",
+      "parent": 9127,
+      "title": "Signed user-attribute definitions and policy",
+      "kind": "implementation",
+      "version": "V2",
+      "tier": "crucial",
+      "statements": ["S5.13", "S5.14", "S5.15", "S5.16", "S5.17", "S5.18", "S5.19", "S5.22", "S5.23", "S5.24", "S5.29"],
+      "goal": "Define signed attribute objects, target scope and explicit closed/open/moderated policy, distinct from Atlas and content-location metadata.",
+      "enables": "Append admission can apply a verified attribute policy before publishing accepted values.",
+      "owned_files": [
+        { "path": "pkgs/id/crates/id-core/src/graph/attribute.rs", "status": "new", "owner": "A-GRAPH-9127-01" },
+        { "path": "pkgs/id/crates/id-core/tests/attribute_definition.rs", "status": "new", "owner": "A-GRAPH-9127-01" }
+      ],
+      "requires": [
+        { "ref": "A-GRAPH-9125-01", "description": "Typed terms, LogicalGraphId and signed object identities." },
+        {
+          "issue": 9083,
+          "description": "Tenant-scope authorization interface for attribute definition and resolution; consume its owned boundary only."
+        }
+      ],
+      "after": [],
+      "test": {
+        "file": "pkgs/id/crates/id-core/tests/attribute_definition.rs",
+        "command": "cargo test -p id-core --test attribute_definition",
+        "oracle": {
+          "kind": "reference",
+          "expected": "Canonical attribute definitions round-trip; malformed scope, unauthorized policy edits and cross-tenant references reject under the independent schema and tenancy model.",
+          "verifier": "Reference attribute schema validator plus #9083 tenant-authority interface fixture."
+        }
+      },
+      "rollback": "Remove only new attribute schema/module/test; no Atlas metadata or content-location records are rewritten.",
+      "design_source": "doc/2026-11-13T03-40-00Z_design_id-atlas-summit/part-a-graph/versioned-design.md",
+      "design_section": "## 6. #9127 — user attributes and append-list protocol",
+      "owner": "A-GRAPH-9127-01"
+    },
+    {
+      "id": "A-GRAPH-9127-02",
+      "parent": 9127,
+      "title": "Append submission, mandatory pending gate and atomic approval",
+      "kind": "implementation",
+      "version": "V2",
+      "tier": "crucial",
+      "statements": ["S5.20", "S5.21", "S5.22", "S5.25", "S5.26", "S5.27", "S5.28"],
+      "goal": "Verify signatures before pending/admission; force every non-group submitter to Pending even when open; directly accept only eligible in-group submitters; approve by CAS after membership, policy and revocation recheck.",
+      "enables": "The accepted list is published only after its signed-evidence and moderation gate, with immutable authoritative order.",
+      "owned_files": [
+        { "path": "pkgs/id/crates/id-core/src/graph/append_list.rs", "status": "new", "owner": "A-GRAPH-9127-02" },
+        { "path": "pkgs/id/crates/id-events/src/graph_admission.rs", "status": "new", "owner": "A-GRAPH-9127-02" },
+        {
+          "path": "pkgs/id/crates/id-events/tests/append_list_state_machine.rs",
+          "status": "new",
+          "owner": "A-GRAPH-9127-02"
+        }
+      ],
+      "requires": [
+        { "ref": "A-GRAPH-9127-01", "description": "Signed attribute and open/closed/moderated policy." },
+        {
+          "issue": 9083,
+          "description": "Current tenant/membership authorization interface used by admission CAS; no policy is copied into graph code."
+        }
+      ],
+      "after": [],
+      "test": {
+        "file": "pkgs/id/crates/id-events/tests/append_list_state_machine.rs",
+        "command": "cargo test -p id-events --test append_list_state_machine",
+        "oracle": {
+          "kind": "model",
+          "expected": "Invalid signatures never enter pending/accepted; non-group submission remains pending on open attributes; approval CAS rechecks current membership/policy/revocation; same idempotency key with different bytes conflicts; order never rewrites or wraps.",
+          "verifier": "Independent model-based state machine with concurrent policy changes, duplicate submissions, restart/replay and epoch/sequence exhaustion."
+        }
+      },
+      "rollback": "Disable only the new append protocol adapter; retain validated signed submission evidence and never project Pending as accepted during rollback.",
+      "design_source": "doc/2026-11-13T03-40-00Z_design_id-atlas-summit/part-a-graph/versioned-design.md",
+      "design_section": "## 6. #9127 — user attributes and append-list protocol",
+      "owner": "A-GRAPH-9127-02"
+    },
+    {
+      "id": "A-GRAPH-9128-01",
+      "parent": 9128,
+      "title": "Nested topic/comment objects and bounded feed projections",
+      "kind": "implementation",
+      "version": "V3",
+      "tier": "recommended",
+      "statements": ["S5.30", "S5.31", "S5.32", "S5.33", "S5.34", "S5.35", "S5.36", "S5.40"],
+      "goal": "Define immutable topic/comment/reaction/feed references and iterative bounded traversal without prescribing a specific app's ranking.",
+      "enables": "Feeds, profiles and bulletin-board projections compose over signed graph objects.",
+      "owned_files": [
+        { "path": "pkgs/id/crates/id-core/src/graph/social.rs", "status": "new", "owner": "A-GRAPH-9128-01" },
+        {
+          "path": "pkgs/id/crates/id-core/tests/social_graph_traversal.rs",
+          "status": "new",
+          "owner": "A-GRAPH-9128-01"
+        }
+      ],
+      "requires": [
+        { "ref": "A-GRAPH-9125-01", "description": "Typed terms, logical graph IDs and signed provenance." },
+        { "ref": "A-GRAPH-9127-01", "description": "Attribute object/policy vocabulary." },
+        { "ref": "A-GRAPH-9127-02", "description": "Append acceptance projection and authoritative sequence." }
+      ],
+      "after": [],
+      "test": {
+        "file": "pkgs/id/crates/id-core/tests/social_graph_traversal.rs",
+        "command": "cargo test -p id-core --test social_graph_traversal",
+        "oracle": {
+          "kind": "model",
+          "expected": "Iterative traversal of nested and cyclic fixtures obeys the selected deployment profile and returns exact authorized relations with explicit back-reference/truncation state.",
+          "verifier": "Independent reference traversal model over the signed relation set and resource profile."
+        }
+      },
+      "rollback": "Remove the social projection adapter without deleting underlying signed graph objects or accepted append records.",
+      "design_source": "doc/2026-11-13T03-40-00Z_design_id-atlas-summit/part-a-graph/versioned-design.md",
+      "design_section": "## 7. #9128 — social object graph",
+      "owner": "A-GRAPH-9128-01"
+    },
+    {
+      "id": "A-GRAPH-9128-02",
+      "parent": 9128,
+      "title": "Scoped social-feed freshness cursor and delta pages",
+      "kind": "implementation",
+      "version": "V3",
+      "tier": "recommended",
+      "statements": ["S5.37", "S5.38", "S5.39"],
+      "goal": "Allocate a durable projection-ledger sequence for each complete `(tenant, query, generation)` feed entry, while retaining each source authority/epoch/sequence and pinned frontier; cursor `last_projection_seq` drives latest/since/before pages.",
+      "enables": "Clients check latest/since/before without a full forum rescan and expired cursors never claim no changes.",
+      "owned_files": [
+        { "path": "pkgs/id/crates/id-core/src/graph/feed_cursor.rs", "status": "new", "owner": "A-GRAPH-9128-02" },
+        { "path": "pkgs/id/crates/id-events/tests/feed_cursor_model.rs", "status": "new", "owner": "A-GRAPH-9128-02" }
+      ],
+      "requires": [
+        { "ref": "A-GRAPH-9127-02", "description": "Accepted server epoch/sequence log." },
+        { "ref": "A-GRAPH-9128-01", "description": "Feed projection and query scope." }
+      ],
+      "after": [],
+      "test": {
+        "file": "pkgs/id/crates/id-events/tests/feed_cursor_model.rs",
+        "command": "cargo test -p id-events --test feed_cursor_model",
+        "oracle": {
+          "kind": "model",
+          "expected": "Two source authorities with identical source epoch/sequence yield distinct, ordered projection entries; latest/since/before use stable projection sequence plus entry ID at a pinned frontier; access/moderation generation changes invalidate; reset, retention gap, bad MAC and query/tenant replay return typed expired/mismatch states.",
+          "verifier": "Independent complete-feed projection-ledger model interleaving two source authorities, restart, deletion/moderation, generation changes and retention gaps."
+        }
+      },
+      "rollback": "Invalidate the new cursor generation and require a full scoped refresh; do not change accepted event ordering or claim global replica freshness.",
+      "design_source": "doc/2026-11-13T03-40-00Z_design_id-atlas-summit/part-a-graph/versioned-design.md",
+      "design_section": "## 7. #9128 — social object graph",
+      "owner": "A-GRAPH-9128-02"
+    },
+    {
+      "id": "A-GRAPH-9129-01",
+      "parent": 9129,
+      "title": "Canonical v1-succeeds-v2 version DAG and branch projection",
+      "kind": "implementation",
+      "version": "V2",
+      "tier": "crucial",
+      "statements": ["S5.41", "S5.42", "S5.43"],
+      "goal": "Store `(predecessor_v1, succeeds, successor_v2)`, validate same logical object and acyclic lineage, adapt equivalent Supersede records explicitly, and preserve competing heads.",
+      "enables": "Immutable edits and branch-aware current-version views without silent last-writer-wins.",
+      "owned_files": [
+        { "path": "pkgs/id/crates/id-core/src/graph/version.rs", "status": "new", "owner": "A-GRAPH-9129-01" },
+        { "path": "pkgs/id/crates/id-core/tests/succeeds_dag.rs", "status": "new", "owner": "A-GRAPH-9129-01" }
+      ],
+      "requires": [{ "ref": "A-GRAPH-9125-01", "description": "Assertion identity and source_record provenance." }],
+      "after": [],
+      "test": {
+        "file": "pkgs/id/crates/id-core/tests/succeeds_dag.rs",
+        "command": "cargo test -p id-core --test succeeds_dag",
+        "oracle": {
+          "kind": "model",
+          "expected": "Stored relation direction is v1→v2; complete cycles reject, incomplete ancestry remains pending, and every valid concurrent head remains observable.",
+          "verifier": "Independent version-DAG model and explicit legacy Supersede mapping fixtures."
+        }
+      },
+      "rollback": "Disable new version projection while preserving signed v1/v2 objects and their original edge/evidence bytes.",
+      "design_source": "doc/2026-11-13T03-40-00Z_design_id-atlas-summit/part-a-graph/versioned-design.md",
+      "design_section": "## 8. #9129 — `succeeds` versioning",
+      "owner": "A-GRAPH-9129-01"
+    },
+    {
+      "id": "A-GRAPH-9129-02",
+      "parent": 9129,
+      "title": "Default ancestor-comment carry with origin marker",
+      "kind": "implementation",
+      "version": "V3",
+      "tier": "recommended",
+      "statements": ["S5.44", "S5.45"],
+      "goal": "In the V3 social projection, carry eligible ancestor comments into the default descendant view with an old-version marker and transitive origin while retaining the original target and branch identity.",
+      "enables": "Social readers see historical discussion on v2 without implying comments were authored against revised content; V2 only stores/version-checks succeeds edges.",
+      "owned_files": [
+        {
+          "path": "pkgs/id/crates/id-core/src/graph/comment_projection.rs",
+          "status": "new",
+          "owner": "A-GRAPH-9129-02"
+        },
+        {
+          "path": "pkgs/id/crates/id-core/tests/carried_comment_projection.rs",
+          "status": "new",
+          "owner": "A-GRAPH-9129-02"
+        }
+      ],
+      "requires": [
+        { "ref": "A-GRAPH-9129-01", "description": "Version DAG and selected branch ancestry." },
+        { "ref": "A-GRAPH-9128-01", "description": "Comment object identities and relation model." }
+      ],
+      "after": [],
+      "test": {
+        "file": "pkgs/id/crates/id-core/tests/carried_comment_projection.rs",
+        "command": "cargo test -p id-core --test carried_comment_projection",
+        "oracle": {
+          "kind": "model",
+          "expected": "Each eligible ancestor comment appears once with immutable original target/origin and old-version marker; access/moderation/deletion filters still apply and sibling branches do not leak.",
+          "verifier": "Independent version-DAG comment projection model keyed by immutable comment ID."
+        }
+      },
+      "rollback": "Disable carried-comment view projection; retain comments on their original versions and leave all signed targets unchanged.",
+      "design_source": "doc/2026-11-13T03-40-00Z_design_id-atlas-summit/part-a-graph/versioned-design.md",
+      "design_section": "## 8. #9129 — `succeeds` versioning",
+      "owner": "A-GRAPH-9129-02"
+    },
+    {
+      "id": "A-GRAPH-9130-01",
+      "parent": 9130,
+      "title": "Deletion requests, moderation queue and local true-delete states",
+      "kind": "implementation",
+      "version": "V3",
+      "tier": "recommended",
+      "statements": ["S5.46", "S5.47", "S5.49", "S5.50", "S5.51", "S5.52"],
+      "goal": "Represent author/group deletion request, moderation queue, projection hide and server-policy true-delete as distinct signed states and bounded batch transitions.",
+      "enables": "A server moderates locally without rewriting signed identity or claiming global erasure.",
+      "owned_files": [
+        { "path": "pkgs/id/crates/id-core/src/graph/deletion.rs", "status": "new", "owner": "A-GRAPH-9130-01" },
+        {
+          "path": "pkgs/id/crates/id-events/tests/deletion_state_machine.rs",
+          "status": "new",
+          "owner": "A-GRAPH-9130-01"
+        }
+      ],
+      "requires": [
+        { "ref": "A-GRAPH-9125-01", "description": "Signed assertion and source evidence identities." },
+        { "ref": "A-GRAPH-9127-01", "description": "Owner/group attribute authority boundaries." }
+      ],
+      "after": [],
+      "test": {
+        "file": "pkgs/id/crates/id-events/tests/deletion_state_machine.rs",
+        "command": "cargo test -p id-events --test deletion_state_machine",
+        "oracle": {
+          "kind": "model",
+          "expected": "Request/queue/hide/physical-delete remain distinct; batch retries are idempotent, retained evidence follows policy, and local actions do not mutate another replica's signed set.",
+          "verifier": "Independent deletion-state model with retention and two-replica fixtures."
+        }
+      },
+      "rollback": "Disable the new local moderation/deletion projection; keep signed requests and evidence intact and restore prior serving policy only where allowed.",
+      "design_source": "doc/2026-11-13T03-40-00Z_design_id-atlas-summit/part-a-graph/versioned-design.md",
+      "design_section": "## 9. #9130 — moderation, deletion, and GC",
+      "owner": "A-GRAPH-9130-01"
+    },
+    {
+      "id": "A-GRAPH-9130-02",
+      "parent": 9130,
+      "title": "Fenced reference-aware graph garbage collection",
+      "kind": "implementation",
+      "version": "V3",
+      "tier": "contingent",
+      "statements": ["S5.48", "S5.53"],
+      "goal": "Fence references with a deletion-generation tombstone and CAS against reference-index generation/retention; consume #9137 and #9084 semantics before physical shared-object removal.",
+      "enables": "GC cannot race a fresh reference or let an older worker delete after a newer retain/reference generation.",
+      "owned_files": [
+        { "path": "pkgs/id/crates/id-store/src/graph_gc.rs", "status": "new", "owner": "A-GRAPH-9130-02" },
+        { "path": "pkgs/id/crates/id-store/tests/graph_gc_fencing.rs", "status": "new", "owner": "A-GRAPH-9130-02" }
+      ],
+      "requires": [
+        { "ref": "A-GRAPH-9130-01", "description": "Distinct deletion/retention state machine." },
+        {
+          "ref": "A-GRAPH-9125-02",
+          "description": "Rebuildable reference-index generation and storage transaction boundary."
+        },
+        { "issue": 9137, "description": "GC retention/large-object collection policy and fencing interface." },
+        { "issue": 9084, "description": "Reference-vs-copy semantics and authority boundary for shared objects." }
+      ],
+      "after": [],
+      "test": {
+        "file": "pkgs/id/crates/id-store/tests/graph_gc_fencing.rs",
+        "command": "cargo test -p id-store --test graph_gc_fencing",
+        "oracle": {
+          "kind": "model",
+          "expected": "Interleaved reference creation, stale GC worker, restart and policy retention never remove referenced/retained bytes; an old fence cannot delete after generation advance.",
+          "verifier": "Independent concurrent reference/GC state model with CAS/fence generation oracle."
+        }
+      },
+      "rollback": "Keep physical GC disabled and preserve all existing objects; remove only the new planner/executor and fencing index.",
+      "design_source": "doc/2026-11-13T03-40-00Z_design_id-atlas-summit/part-a-graph/versioned-design.md",
+      "design_section": "## 9. #9130 — moderation, deletion, and GC",
+      "owner": "A-GRAPH-9130-02",
+      "trigger": "Do not enable shared-object physical deletion until #9137 and #9084 contracts are available and the adapter has fenced atomic compare-and-delete."
+    },
+    {
+      "id": "A-GRAPH-9131-01",
+      "parent": 9131,
+      "title": "Immutable signer-bound space address and local petnames",
+      "kind": "implementation",
+      "version": "V2",
+      "tier": "crucial",
+      "statements": ["S5.54", "S5.55", "S5.62"],
+      "goal": "Verify the canonical typed `[null, public-key-bytes]` binding offline; keep its address immutable and petnames local; successor control uses a verified chain there or an explicit signed redirect to a new address.",
+      "enables": "Clients attribute a space binding to a signer without trusting its server or silently replacing the original key at the same coordinates.",
+      "owned_files": [
+        { "path": "pkgs/id/crates/id-core/src/graph/space_binding.rs", "status": "new", "owner": "A-GRAPH-9131-01" },
+        { "path": "pkgs/id/crates/id-core/tests/signer_bound_space.rs", "status": "new", "owner": "A-GRAPH-9131-01" },
+        { "path": "pkgs/id/crates/id-core/src/petname.rs", "status": "existing", "owner": "A-GRAPH-9131-01" }
+      ],
+      "requires": [
+        {
+          "ref": "A-GRAPH-9125-01",
+          "description": "Typed byte terms, ObjectRef and canonical signed-record verification."
+        }
+      ],
+      "after": [],
+      "test": {
+        "file": "pkgs/id/crates/id-core/tests/signer_bound_space.rs",
+        "command": "cargo test -p id-core --test signer_bound_space",
+        "oracle": {
+          "kind": "reference",
+          "expected": "Independent offline verifier accepts exact canonical binding and rejects wrong signer/position/version; transfer cannot mutate original address; new-address redirect needs old-key proof; petname changes neither ID nor authorization.",
+          "verifier": "Independent signature verifier and canonical address decoder; existing petname locality contract is regression-tested."
+        }
+      },
+      "rollback": "Remove new binding module and tests; preserve existing petname storage and all canonical addresses already issued.",
+      "design_source": "doc/2026-11-13T03-40-00Z_design_id-atlas-summit/part-a-graph/versioned-design.md",
+      "design_section": "## 10. #9131 — signer-bound spaces and petnames",
+      "owner": "A-GRAPH-9131-01"
+    },
+    {
+      "id": "A-GRAPH-9132-01",
+      "parent": 9132,
+      "title": "Bounded delegation chains and two-key control transfer",
+      "kind": "implementation",
+      "version": "V3",
+      "tier": "recommended",
+      "statements": ["S5.56", "S5.57", "S5.61", "S5.64"],
+      "goal": "Implement scoped attenuation and distinct accepted transfer with replay protection, signed expiry, cycle rejection, finite chain budget and latest-frontier revocation freshness.",
+      "enables": "A location write can be delegated without conflating a continuing grant with replacement ownership.",
+      "owned_files": [
+        { "path": "pkgs/id/crates/id-core/src/graph/delegation.rs", "status": "new", "owner": "A-GRAPH-9132-01" },
+        { "path": "pkgs/id/crates/id-core/tests/delegation_model.rs", "status": "new", "owner": "A-GRAPH-9132-01" }
+      ],
+      "requires": [
+        { "ref": "A-GRAPH-9131-01", "description": "Immutable signer-bound address and successor presentation." },
+        { "ref": "A-GRAPH-9125-01", "description": "Canonical signed identities and typed array-address terms." }
+      ],
+      "after": [],
+      "test": {
+        "file": "pkgs/id/crates/id-core/tests/delegation_model.rs",
+        "command": "cargo test -p id-core --test delegation_model",
+        "oracle": {
+          "kind": "model",
+          "expected": "No grant exceeds parent scope; nonce replay, cycles, expiry, stale frontier and over-depth chains fail closed; transfer requires both keys over identical transfer/scope/challenge/domain/expiry bytes.",
+          "verifier": "Independent authority-chain model with nonce uniqueness and signed-time/frontier rules."
+        }
+      },
+      "rollback": "Disable delegation/transfer authorization and require original controller authorization; preserve all signed grant/transfer evidence.",
+      "design_source": "doc/2026-11-13T03-40-00Z_design_id-atlas-summit/part-a-graph/versioned-design.md",
+      "design_section": "## 11. #9132 — delegation, transfer, and cross-signing",
+      "owner": "A-GRAPH-9132-01"
+    },
+    {
+      "id": "A-GRAPH-9132-02",
+      "parent": 9132,
+      "title": "Mutual cross-signed key-link challenge",
+      "kind": "implementation",
+      "version": "V3",
+      "tier": "recommended",
+      "statements": ["S5.58", "S5.59", "S5.60", "S5.63"],
+      "goal": "Represent mutual key-link claims over the same challenge bytes binding ordered pair, purpose/domain, scope, nonce and expiry; do not merge identity, account or authority from link status alone.",
+      "enables": "Clients can display a verified mutual key claim without silently merging accounts or privileges.",
+      "owned_files": [
+        { "path": "pkgs/id/crates/id-core/src/graph/cross_signing.rs", "status": "new", "owner": "A-GRAPH-9132-02" },
+        {
+          "path": "pkgs/id/crates/id-core/tests/cross_signing_challenge.rs",
+          "status": "new",
+          "owner": "A-GRAPH-9132-02"
+        }
+      ],
+      "requires": [{ "ref": "A-GRAPH-9131-01", "description": "Signer-bound key identities and local trust display." }],
+      "after": [],
+      "test": {
+        "file": "pkgs/id/crates/id-core/tests/cross_signing_challenge.rs",
+        "command": "cargo test -p id-core --test cross_signing_challenge",
+        "oracle": {
+          "kind": "invariant",
+          "expected": "Only both valid signatures over identical challenge bytes become mutual; unilateral, unrelated, mismatched-scope/nonce/domain/expiry or revoked claims stay pending/invalid and never merge account or authorization state.",
+          "verifier": "Independent signature verification and exact challenge-field equality checker."
+        }
+      },
+      "rollback": "Disable mutual-link projection; retain signed statements and keep both keys independently addressable.",
+      "design_source": "doc/2026-11-13T03-40-00Z_design_id-atlas-summit/part-a-graph/versioned-design.md",
+      "design_section": "## 11. #9132 — delegation, transfer, and cross-signing",
+      "owner": "A-GRAPH-9132-02"
+    }
+  ]
+}

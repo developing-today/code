@@ -17,7 +17,7 @@ schema they compile to, and how compilation, overriding, and re-sync work.
   the personal layer of per-viewer hides/mutes).
 - Moderation authority is the `MODERATOR` world scope (#6004); the
   reserved/delegable split there is untouched by this design — presets
-  configure *when the machinery acts*, never *who holds authority*.
+  configure _when the machinery acts_, never _who holds authority_.
 - There is today: no report flow, no quarantine state, no content
   filter, no pack format. The tier table below therefore marks each
   lever **exists** or **new**, and quarantine is expressed through the
@@ -28,17 +28,17 @@ schema they compile to, and how compilation, overriding, and re-sync work.
 A compiled rules record is a flat, versioned struct — deliberately few
 fields, each mechanically checkable:
 
-| Field | Values | Mechanism |
-|---|---|---|
-| `filter_mode` | `off` / `flag` / `hold` | **new** wordlist filter: `flag` marks matches in the view layer for moderator attention; `hold` keeps matches out of the board view until a moderator releases them |
-| `wordlist_pack` | pack hash or `none` | **new**: named, hash-pinned wordlist packs (contents are a separate governance question, below) |
-| `report_autohide_threshold` | integer or `off` | **new**: distinct-author reports within the window that trigger an automatic hide |
-| `report_window_hours` | integer | **new** |
-| `preapproval` | `none` / `new_authors` / `all` | **new**: posts in scope are held from the board view until moderator release |
-| `link_hold` | `none` / `new_authors` / `all` | **new**: posts containing links are held for release under the same hold machinery |
-| `hold_release_scope` | fixed: `MODERATOR` | **exists** (#6004 scope): only moderator-scope signers release holds |
+| Field                       | Values                         | Mechanism                                                                                                                                                           |
+| --------------------------- | ------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `filter_mode`               | `off` / `flag` / `hold`        | **new** wordlist filter: `flag` marks matches in the view layer for moderator attention; `hold` keeps matches out of the board view until a moderator releases them |
+| `wordlist_pack`             | pack hash or `none`            | **new**: named, hash-pinned wordlist packs (contents are a separate governance question, below)                                                                     |
+| `report_autohide_threshold` | integer or `off`               | **new**: distinct-author reports within the window that trigger an automatic hide                                                                                   |
+| `report_window_hours`       | integer                        | **new**                                                                                                                                                             |
+| `preapproval`               | `none` / `new_authors` / `all` | **new**: posts in scope are held from the board view until moderator release                                                                                        |
+| `link_hold`                 | `none` / `new_authors` / `all` | **new**: posts containing links are held for release under the same hold machinery                                                                                  |
+| `hold_release_scope`        | fixed: `MODERATOR`             | **exists** (#6004 scope): only moderator-scope signers release holds                                                                                                |
 
-Holds are not a new object type: a hold is the *absence* of view-layer
+Holds are not a new object type: a hold is the _absence_ of view-layer
 inclusion until release, and an auto-hide is a `Hide` log entry signed
 by the world itself with `reason` naming the rule that fired
 (`report_threshold`, `filter_hold`, `preapproval`, `link_hold`).
@@ -54,14 +54,14 @@ the rules are part of the world's published pack (below).
 Three tiers. Names are user-facing vocabulary; world browsers display
 them, so they are plain words, not internal codenames.
 
-| Field | **Open** | **Standard** | **Strict** |
-|---|---|---|---|
-| `filter_mode` | `off` | `flag` | `hold` |
-| `wordlist_pack` | `none` | baseline pack | baseline pack |
-| `report_autohide_threshold` | `off` | 5 | 3 |
-| `report_window_hours` | — | 24 | 24 |
-| `preapproval` | `none` | `none` | `new_authors` |
-| `link_hold` | `none` | `new_authors` | `all` |
+| Field                       | **Open** | **Standard**  | **Strict**    |
+| --------------------------- | -------- | ------------- | ------------- |
+| `filter_mode`               | `off`    | `flag`        | `hold`        |
+| `wordlist_pack`             | `none`   | baseline pack | baseline pack |
+| `report_autohide_threshold` | `off`    | 5             | 3             |
+| `report_window_hours`       | —        | 24            | 24            |
+| `preapproval`               | `none`   | `none`        | `new_authors` |
+| `link_hold`                 | `none`   | `new_authors` | `all`         |
 
 - **Open** — for worlds that moderate by hand. The log and human
   Hide/Restore work exactly as today; nothing automatic fires.

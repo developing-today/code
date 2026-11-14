@@ -138,6 +138,35 @@ impl WorldHandle {
         Ok(Self::spawn_inner(core, program, None, true, presence, None))
     }
 
+    /// As [`Self::spawn_read_only`], with a policy-B admission gate
+    /// (F12.13 phase 5): the actor checks the gate before admitting a
+    /// spectator who was not present at the verified cursor. A `None`
+    /// gate is exactly [`Self::spawn_read_only`].
+    pub(crate) fn spawn_read_only_with_admission(
+        core: WorldCore,
+        program: Box<dyn WorldProgram>,
+        restored_presence: BTreeMap<u64, u64>,
+        admission_gate: Option<ReplicaAdmissionGate>,
+    ) -> Result<Self> {
+        if !core.replica_mode {
+            anyhow::bail!("read-only actors require a replica-restored core");
+        }
+        let presence = restored_presence
+            .into_iter()
+            .map(|(id, count)| (id, usize::try_from(count).map_or(usize::MAX, |count| count)))
+            .collect();
+        Ok(Self::spawn_durable_inner_gated(
+            core,
+            program,
+            None,
+            true,
+            presence,
+            None,
+            false,
+            admission_gate,
+        ))
+    }
+
     /// Whether this handle fronts a read-only replica actor.
     #[must_use]
     pub const fn is_read_only(&self) -> bool {
@@ -184,12 +213,35 @@ impl WorldHandle {
 
     fn spawn_durable_inner(
         core: WorldCore,
+        program: Box<dyn WorldProgram>,
+        journal: Option<Box<dyn WorldJournal>>,
+        read_only: bool,
+        presence: HashMap<u64, usize>,
+        device_manifest: Option<DeviceManifest>,
+        restored: bool,
+    ) -> Self {
+        Self::spawn_durable_inner_gated(
+            core,
+            program,
+            journal,
+            read_only,
+            presence,
+            device_manifest,
+            restored,
+            None,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn spawn_durable_inner_gated(
+        core: WorldCore,
         mut program: Box<dyn WorldProgram>,
         journal: Option<Box<dyn WorldJournal>>,
         read_only: bool,
         presence: HashMap<u64, usize>,
         device_manifest: Option<DeviceManifest>,
         restored: bool,
+        admission_gate: Option<ReplicaAdmissionGate>,
     ) -> Self {
         let (commands, receiver) = mpsc::channel(256);
         let (events, _) = broadcast::channel(256);
@@ -213,7 +265,7 @@ impl WorldHandle {
         let overdue_at_open: BTreeSet<String> = core
             .schedules
             .iter()
-            .filter(|(_, at_ms)| **at_ms <= now)
+            .filter(|(_, schedule)| schedule.at_ms <= now)
             .map(|(id, _)| id.clone())
             .collect();
         let metrics = WorldMetrics::default();
@@ -245,6 +297,7 @@ impl WorldHandle {
             presence,
             active_subs: BTreeSet::new(),
             handled_requests: BTreeSet::new(),
+            pending_forms: BTreeMap::new(),
             denied_subs: BTreeSet::new(),
             ticks: BTreeMap::new(),
             overdue_at_open,
@@ -252,9 +305,15 @@ impl WorldHandle {
             acting: None,
             acting_session: None,
             device_manifest,
+            location_consent: crate::world_caps::LocationConsent::ConsentRequired,
+            location_fix: None,
+            location_fix_received_at: None,
+            loc_watches: BTreeMap::new(),
+            schedule_delivery: None,
             auth: crate::directory_auth::DirectoryAuth::default(),
+            admission_gate,
         };
-        tokio::spawn(actor.run(receiver));
+        tokio::spawn(actor.run(receiver, restored));
         Self {
             commands,
             events,
@@ -364,6 +423,31 @@ impl WorldHandle {
         Ok((world_id, snapshot_source, updates))
     }
 
+    /// The authenticated sidecars for a replication snapshot of this
+    /// world (F12.13 phase 5): the directory facts for `subjects` as
+    /// JSONL entry bytes and the active module hash (whose bytes the
+    /// caller loads from the world's module store). One actor round
+    /// trip, so the facts are the ones in force at the actor's current
+    /// state.
+    ///
+    /// # Errors
+    ///
+    /// Fails when the actor is closed or the directory facts cannot
+    /// be derived for the given subjects.
+    pub async fn replica_sidecars(
+        &self,
+        subjects: std::collections::BTreeSet<String>,
+    ) -> Result<(Vec<u8>, Option<String>)> {
+        let (reply, response) = oneshot::channel();
+        self.commands
+            .send(WorldCommand::ReplicaSidecars { subjects, reply })
+            .await
+            .map_err(|_| anyhow::anyhow!("world actor is closed"))?;
+        response
+            .await
+            .context("world actor dropped replica sidecars response")?
+    }
+
     /// One actor round trip: subscribe, capture the journal image, and —
     /// for a journal above the per-entry payload bound — capture a second
     /// source for the caller to probe outside the actor (#8095).
@@ -450,6 +534,62 @@ impl WorldHandle {
                 joined,
             })
             .await;
+    }
+
+    /// Submit a deferred form answer from a trusted device presenter.
+    ///
+    /// The result is correlated against the pending `form_id`, validated, and
+    /// delivered as a `form.result` system event. Rejections and unavailable
+    /// forms are represented by [`FormSubmissionStatus`], not by the outer
+    /// `Result`; callers must match the status rather than treating `Ok` as
+    /// acceptance. A rejected answer remains pending with a fresh presentation
+    /// token for the host to re-present, without a server-side retry loop.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the actor is closed, delivery fails, or the
+    /// serialized event exceeds [`crate::world_caps::MAX_EVENT_BYTES`]. An
+    /// unknown or cancelled form returns `Ok(FormSubmissionStatus::Unavailable)`
+    /// with reason `form_cancelled`.
+    pub async fn submit_form_result(
+        &self,
+        result: id_core::world_presentation::FormResult,
+    ) -> Result<FormSubmissionStatus> {
+        self.submit_form_result_with_session(None, None, result)
+            .await
+    }
+
+    /// Submit a form result from a joined session. The actor revalidates the
+    /// session capability and the global `form.result` grant/ceiling.
+    pub async fn submit_form_result_for_session(
+        &self,
+        token: JoinCapability,
+        session_id: crate::world::SessionId,
+        result: id_core::world_presentation::FormResult,
+    ) -> Result<FormSubmissionStatus> {
+        self.submit_form_result_with_session(Some(token), Some(session_id), result)
+            .await
+    }
+
+    async fn submit_form_result_with_session(
+        &self,
+        token: Option<JoinCapability>,
+        session_id: Option<crate::world::SessionId>,
+        result: id_core::world_presentation::FormResult,
+    ) -> Result<FormSubmissionStatus> {
+        let (reply, response) = oneshot::channel();
+        self.commands
+            .send(WorldCommand::SubmitFormResult {
+                token,
+                session_id,
+                result,
+                reply,
+            })
+            .await
+            .map_err(|_| anyhow::anyhow!("world actor is closed"))?;
+        response
+            .await
+            .context("world actor dropped form result response")?
     }
 
     /// Grant and revoke capabilities for this world, and return the report.
@@ -552,6 +692,85 @@ impl WorldHandle {
         response
             .await
             .context("world actor dropped schedule response")?
+    }
+
+    /// Admin: set this world's schedule-delivery consent for one peer
+    /// world (#1355 part 2): `send` lets this world's schedules target
+    /// the peer, `receive` lets the peer's schedules be delivered here.
+    /// Journaled before it is visible. Returns the full grant map.
+    ///
+    /// # Errors
+    ///
+    /// A malformed peer name or world storage failure.
+    pub async fn admin_set_schedule_grant(
+        &self,
+        peer: String,
+        send: bool,
+        receive: bool,
+    ) -> Result<BTreeMap<String, ScheduleGrant>> {
+        let (reply, response) = oneshot::channel();
+        self.commands
+            .send(WorldCommand::AdminSetScheduleGrant {
+                peer,
+                send,
+                receive,
+                reply,
+            })
+            .await
+            .map_err(|_| anyhow::anyhow!("world actor is closed"))?;
+        response
+            .await
+            .context("world actor dropped schedule grant response")?
+    }
+
+    /// Deliver one cross-world schedule fire arriving from `source`
+    /// (#1355 part 2). True only when this world durably accepted it
+    /// (receive grant, fire journaled, receipt journaled) or already had.
+    ///
+    /// # Errors
+    ///
+    /// Fails only if the world actor is closed; refusal is `Ok(false)`.
+    pub async fn deliver_schedule(
+        &self,
+        source: String,
+        id: String,
+        at_ms: u64,
+        late: bool,
+    ) -> Result<bool> {
+        let (reply, response) = oneshot::channel();
+        self.commands
+            .send(WorldCommand::DeliverSchedule {
+                source,
+                id,
+                at_ms,
+                late,
+                reply,
+            })
+            .await
+            .map_err(|_| anyhow::anyhow!("world actor is closed"))?;
+        response
+            .await
+            .context("world actor dropped schedule delivery response")
+    }
+
+    /// Install the cross-world schedule delivery sink used by this
+    /// world's actor for its own outbound schedule fires (#1355 part 2).
+    ///
+    /// # Errors
+    ///
+    /// Fails if the world actor is closed.
+    pub async fn set_schedule_delivery(
+        &self,
+        delivery: std::sync::Arc<dyn ScheduleDelivery>,
+    ) -> Result<()> {
+        let (reply, response) = oneshot::channel();
+        self.commands
+            .send(WorldCommand::SetScheduleDelivery { delivery, reply })
+            .await
+            .map_err(|_| anyhow::anyhow!("world actor is closed"))?;
+        response
+            .await
+            .context("world actor dropped delivery-install response")
     }
 
     /// Admin: cancel a pending schedule by id (a no-op when absent),
@@ -733,11 +952,7 @@ impl WorldHandle {
     /// capability" for every denial cause. Session paths use this as
     /// the early check before receiving upload bytes — the authorized
     /// operation commands still re-check at the effect boundary.
-    pub async fn authorize(
-        &self,
-        token: JoinCapability,
-        required: WorldScopes,
-    ) -> Result<u64> {
+    pub async fn authorize(&self, token: JoinCapability, required: WorldScopes) -> Result<u64> {
         let (reply, response) = oneshot::channel();
         self.commands
             .send(WorldCommand::AuthorizeScope {
@@ -1125,7 +1340,7 @@ impl WorldHandle {
 
     /// Return the admin-only snapshot and presentation for a read-only host
     /// view. The caller must authenticate the world admin before invoking it.
-    pub(crate) async fn host_view(&self) -> Result<(WorldSnapshot, Option<String>)> {
+    pub async fn host_view(&self) -> Result<(WorldSnapshot, Option<String>)> {
         let (reply, response) = oneshot::channel();
         self.commands
             .send(WorldCommand::HostView { reply })

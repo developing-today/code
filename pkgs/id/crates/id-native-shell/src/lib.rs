@@ -16,6 +16,10 @@
 //! machine-readable contract. Step 2 adds the window/render plugins and
 //! the live contract-parity session harness.
 
+mod session;
+
+pub use session::{ServerUpdate, SessionState, SessionView, join_frame};
+
 use id::world_presentation::WorldSurface;
 use serde_json::{Value, json};
 

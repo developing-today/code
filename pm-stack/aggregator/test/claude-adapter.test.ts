@@ -59,7 +59,11 @@ describe("parseClaudeUsagePayload", () => {
   test("fresh windows parse: 5h + weekly with resets; unknown windows skipped", () => {
     const reading = parseClaudeUsagePayload(DOCUMENTED);
     expect(reading.windows.map((w) => w.name)).toEqual(["5h", "weekly"]);
-    expect(reading.windows[0]).toMatchObject({ usedPct: 43, windowSeconds: 18000, resetsAt: "2026-11-02T17:00:00.000Z" });
+    expect(reading.windows[0]).toMatchObject({
+      usedPct: 43,
+      windowSeconds: 18000,
+      resetsAt: "2026-11-02T17:00:00.000Z",
+    });
     expect(reading.windows[1]).toMatchObject({ usedPct: 17, windowSeconds: 604800 });
   });
 
@@ -159,7 +163,10 @@ describe("organizationUuidOf / credential config / gatherClaude", () => {
 
   test("credential config is references only", () => {
     expect(claudeCredentialRefFromConfig(undefined)).toBeNull();
-    expect(claudeCredentialRefFromConfig("bitwarden:claude-session")).toEqual({ kind: "bitwarden", name: "claude-session" });
+    expect(claudeCredentialRefFromConfig("bitwarden:claude-session")).toEqual({
+      kind: "bitwarden",
+      name: "claude-session",
+    });
     expect(() => claudeCredentialRefFromConfig("sk-raw-value")).toThrow(AdapterError);
   });
 

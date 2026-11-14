@@ -329,20 +329,72 @@ describe("digest archive", () => {
     try {
       const valid = buildDigest(inputs());
       const breakers: [string, (d: Record<string, unknown>) => void][] = [
-        ["sections contains null", (d) => { d.sections = [null]; }],
-        ["section items missing", (d) => { delete (d.sections as Record<string, unknown>[])[0]!.items; }],
-        ["section items not an array", (d) => { (d.sections as Record<string, unknown>[])[0]!.items = 42; }],
-        ["section item is null", (d) => { (d.sections as Record<string, unknown>[])[0]!.items = [null]; }],
+        [
+          "sections contains null",
+          (d) => {
+            d.sections = [null];
+          },
+        ],
+        [
+          "section items missing",
+          (d) => {
+            delete (d.sections as Record<string, unknown>[])[0]!.items;
+          },
+        ],
+        [
+          "section items not an array",
+          (d) => {
+            (d.sections as Record<string, unknown>[])[0]!.items = 42;
+          },
+        ],
+        [
+          "section item is null",
+          (d) => {
+            (d.sections as Record<string, unknown>[])[0]!.items = [null];
+          },
+        ],
         [
           "item ref not a string",
-          (d) => { (d.sections as Record<string, unknown>[])[0]!.items = [{ ref: 1, title: "t", url: "u", note: "n" }]; },
+          (d) => {
+            (d.sections as Record<string, unknown>[])[0]!.items = [{ ref: 1, title: "t", url: "u", note: "n" }];
+          },
         ],
-        ["freshness missing", (d) => { delete d.freshness; }],
-        ["freshness entry is null", (d) => { d.freshness = [null]; }],
-        ["freshness ageMs not a number", (d) => { d.freshness = [{ facet: "items", state: "live", ageMs: "old" }]; }],
-        ["generatedAt missing", (d) => { delete d.generatedAt; }],
-        ["windowHours not a number", (d) => { d.windowHours = "24"; }],
-        ["kind not a digest kind", (d) => { d.kind = "monthly"; }],
+        [
+          "freshness missing",
+          (d) => {
+            delete d.freshness;
+          },
+        ],
+        [
+          "freshness entry is null",
+          (d) => {
+            d.freshness = [null];
+          },
+        ],
+        [
+          "freshness ageMs not a number",
+          (d) => {
+            d.freshness = [{ facet: "items", state: "live", ageMs: "old" }];
+          },
+        ],
+        [
+          "generatedAt missing",
+          (d) => {
+            delete d.generatedAt;
+          },
+        ],
+        [
+          "windowHours not a number",
+          (d) => {
+            d.windowHours = "24";
+          },
+        ],
+        [
+          "kind not a digest kind",
+          (d) => {
+            d.kind = "monthly";
+          },
+        ],
       ];
       for (const [name, spoil] of breakers) {
         const raw = JSON.parse(JSON.stringify(valid)) as Record<string, unknown>;
@@ -356,8 +408,17 @@ describe("digest archive", () => {
       const back = await readDigestArchive(dir, "2026-11-02");
       expect(back).not.toBeNull();
       const prov: Provenance = {
-        board: "test", roadmap: "test", items: "test", comments: "test", quota: "test",
-        usage: "test", attention: "test", orchestration: "test", dns: "test", registry: "test", aa: "test",
+        board: "test",
+        roadmap: "test",
+        items: "test",
+        comments: "test",
+        quota: "test",
+        usage: "test",
+        attention: "test",
+        orchestration: "test",
+        dns: "test",
+        registry: "test",
+        aa: "test",
       };
       expect(() => digestText(back!)).not.toThrow();
       expect(() => renderDigest(back!, [], prov)).not.toThrow();

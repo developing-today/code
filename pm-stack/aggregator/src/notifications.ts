@@ -36,6 +36,7 @@ export const NOTIFICATION_CLASS_DEFAULTS: Record<string, boolean> = {
   "needs-drew": true,
   "quota-wall": true,
   "quota-near-wall": true,
+  "section-risk": true,
   "stack-health": true,
   "blocked-age": true,
 };
@@ -74,6 +75,12 @@ export const NOTIFICATION_CLASSES: NotificationClassMeta[] = [
     blurb: "A sole-door pool crosses 85% of a window.",
   },
   {
+    id: "section-risk",
+    label: "Section failure / severe risk",
+    blurb:
+      "A whole route section (workhorse, speed, specialist, summit, small) fails or is at severe risk. Shows the pools pending wall, which are walled, and the soonest resets.",
+  },
+  {
     id: "stack-health",
     label: "Stack health",
     blurb: "A monitored stack service starts failing its probe.",
@@ -81,7 +88,8 @@ export const NOTIFICATION_CLASSES: NotificationClassMeta[] = [
   {
     id: "blocked-age",
     label: "Blocked-age reminders",
-    blurb: "A needs-Drew item stays unacted for 24/48 hours, then weekly (digest-only except the 48-hour breakthrough).",
+    blurb:
+      "A needs-Drew item stays unacted for 24/48 hours, then weekly (digest-only except the 48-hour breakthrough).",
   },
 ];
 
@@ -121,6 +129,7 @@ export function notificationTestLanding(
       return `${origin}/alerts#incident-test`;
     case "quota-wall":
     case "quota-near-wall":
+    case "section-risk":
       return `${origin}/quota`;
     case "stack-health":
       return `${origin}/health`;
@@ -141,7 +150,7 @@ export const BLOCKED_AGE_BREAKTHROUGH_MS = 48 * 60 * 60_000;
 export const QUOTA_WELL_BEFORE_RESET_MS = 24 * 60 * 60_000;
 
 export interface NotificationCandidate {
-  class: "needs-drew" | "blocked-age" | "quota-wall" | "quota-near-wall" | "stack-health";
+  class: "needs-drew" | "blocked-age" | "quota-wall" | "quota-near-wall" | "section-risk" | "stack-health";
   objectRef: string;
   stateFingerprint: string;
   title: string;
@@ -191,6 +200,10 @@ export interface NotificationSnapshot {
   health: Pick<HealthView, "services">;
   /** Pool ids identified as having no alternative route. */
   soleDoorPoolIds?: ReadonlySet<string>;
+  /** #8882: route section -> quota pool ids serving it, joined from
+   * the deployed OpenCode config's route leaf sets (server.ts via
+   * aa.ts sectionPoolIdsFromConfig). Absent = no section derivation. */
+  sectionPools?: Readonly<Record<string, readonly string[]>>;
   /** Drew-authored dashboard actions/comments, with their event times. */
   drewActivity?: Array<{ objectRef: string; at: string }>;
   /** #8568: open needs-Drew questions (unanswered, < 7 days old). */
@@ -223,7 +236,13 @@ function localClock(at: number, timeZone: string): LocalClock {
     hourCycle: "h23",
   }).formatToParts(new Date(at));
   const value = (type: Intl.DateTimeFormatPartTypes) => Number(parts.find((part) => part.type === type)?.value);
-  return { year: value("year"), month: value("month"), day: value("day"), hour: value("hour"), minute: value("minute") };
+  return {
+    year: value("year"),
+    month: value("month"),
+    day: value("day"),
+    hour: value("hour"),
+    minute: value("minute"),
+  };
 }
 
 function localTimeToInstant(clock: LocalClock, timeZone: string): number {
@@ -255,7 +274,8 @@ export function nextNotificationDigestAt(
   };
   const start = toMinute(quiet.start);
   const end = toMinute(quiet.end);
-  const inQuiet = quiet.enabled !== false && (start <= end ? minute >= start && minute < end : minute >= start || minute < end);
+  const inQuiet =
+    quiet.enabled !== false && (start <= end ? minute >= start && minute < end : minute >= start || minute < end);
   const useEndToday = minute < end;
   const dayOffset = inQuiet ? (minute >= start && start > end ? 1 : 0) : minute < 12 * 60 ? 0 : useEndToday ? 0 : 1;
   const day = new Date(Date.UTC(clock.year, clock.month - 1, clock.day + dayOffset));
@@ -291,12 +311,10 @@ function tierItemCandidate(item: TierItem | TieredEntry, now: number): Notificat
     : itemRef && /^[-\w.]+\/[-\w.]+#\d+$/.test(itemRef)
       ? `https://github.com/${itemRef.replace("#", "/issues/")}`
       : `/attention#${encodeURIComponent(itemId ?? "unknown")}`;
-  const observedAt = isTierItem ? item.since : item.tierSince ?? item.lastActivityAt ?? item.createdAt ?? new Date(now).toISOString();
-  const actedRefs = [
-    objectRef,
-    ...(itemId ? [`orch:${itemId}`] : []),
-    ...(itemRef ? [`gh:${itemRef}`] : []),
-  ];
+  const observedAt = isTierItem
+    ? item.since
+    : (item.tierSince ?? item.lastActivityAt ?? item.createdAt ?? new Date(now).toISOString());
+  const actedRefs = [objectRef, ...(itemId ? [`orch:${itemId}`] : []), ...(itemRef ? [`gh:${itemRef}`] : [])];
   const entry = candidate({
     class: "needs-drew",
     objectRef,
@@ -305,7 +323,11 @@ function tierItemCandidate(item: TierItem | TieredEntry, now: number): Notificat
     url,
     observedAt,
     actedRefs,
-    state: { tier: "needs-drew", state: "state" in item ? item.state : undefined, kind: isTierItem ? item.kind : undefined },
+    state: {
+      tier: "needs-drew",
+      state: "state" in item ? item.state : undefined,
+      kind: isTierItem ? item.kind : undefined,
+    },
   });
   const since = Date.parse(observedAt);
   if (!Number.isFinite(since) || now - since < BLOCKED_AGE_REMINDER_MS) return [entry];
@@ -361,7 +383,10 @@ export function decideNotification(
   // for this class+object suppress a recurrence of the same state.
   const recoveredAt =
     history
-      .filter((entry) => entry.outcome === "recovered" && entry.class === candidate.class && entry.objectRef === candidate.objectRef)
+      .filter(
+        (entry) =>
+          entry.outcome === "recovered" && entry.class === candidate.class && entry.objectRef === candidate.objectRef,
+      )
       .map((entry) => Date.parse(entry.at))
       .filter(Number.isFinite)
       .sort((a, b) => b - a)[0] ?? -Infinity;
@@ -389,12 +414,31 @@ export function decideNotification(
   return "send";
 }
 
+/** #8882: the major route sections Drew named for the section-risk
+ * class — exactly these, no scout. Keep in sync with
+ * SECTION_RISK_SECTIONS in aa.ts (the config-side join). */
+export const SECTION_RISK_SECTIONS = ["workhorse", "speed", "specialist", "summit", "small"] as const;
+/** Pending wall = a measured window at or over this percent (the
+ * existing near-wall threshold), on a pool that is not walled. */
+export const SECTION_RISK_PENDING_PERCENT = 85;
+
+const resetCompactFmt = new Intl.DateTimeFormat("en-US", {
+  timeZone: "America/Chicago",
+  weekday: "short",
+  hour: "numeric",
+  minute: "2-digit",
+  timeZoneName: "short",
+});
+
+/** Compact Central reset stamp for push bodies: "Fri 8:28 AM CST"
+ * (#9553: no UTC on Drew-facing quota/reset surfaces). */
+export function formatResetCompact(ms: number): string {
+  return resetCompactFmt.format(new Date(ms)).replace(",", "");
+}
+
 /** Derive stable, fixture-testable notifications from the same views the UI serves. */
 export function buildNotificationCandidates(snapshot: NotificationSnapshot, now = Date.now()): NotificationCandidate[] {
-  const attentionItems: Array<TierItem | TieredEntry> = [
-    ...snapshot.attention.drew,
-    ...snapshot.attention.drewExtra,
-  ];
+  const attentionItems: Array<TierItem | TieredEntry> = [...snapshot.attention.drew, ...snapshot.attention.drewExtra];
   const attentionCandidates = attentionItems.flatMap((item) => tierItemCandidate(item, now));
   const drewActivity = snapshot.drewActivity ?? [];
   const candidates = attentionCandidates.filter((entry) => {
@@ -422,7 +466,10 @@ export function buildNotificationCandidates(snapshot: NotificationSnapshot, now 
       const wallLifts = pool.wallLiftsAt ? Date.parse(pool.wallLiftsAt) : NaN;
       const resetAt = Number.isFinite(wallLifts)
         ? wallLifts
-        : (exhausted.length ? exhausted : windows).map((w) => Date.parse(w.resetsAt ?? "")).filter(Number.isFinite).sort((a, b) => a - b)[0];
+        : (exhausted.length ? exhausted : windows)
+            .map((w) => Date.parse(w.resetsAt ?? ""))
+            .filter(Number.isFinite)
+            .sort((a, b) => a - b)[0];
       const wellBeforeReset = resetAt !== undefined && resetAt - now >= QUOTA_WELL_BEFORE_RESET_MS;
       if (soleDoor || wellBeforeReset) {
         candidates.push(
@@ -451,6 +498,110 @@ export function buildNotificationCandidates(snapshot: NotificationSnapshot, now 
         }),
       );
     }
+  }
+
+  // #8882: section-risk — one candidate per major route section, and
+  // only when the section as a whole has FAILED (every serving pool
+  // walled) or is at SEVERE RISK (every non-walled serving pool is
+  // pending wall). Membership comes from the snapshot (the aa.ts leaf
+  // join over the deployed config); pools in error/stale/lapsed state
+  // never count as serving, exactly as in the per-pool quota loop.
+  for (const section of SECTION_RISK_SECTIONS) {
+    const memberIds = snapshot.sectionPools?.[section];
+    if (!memberIds || memberIds.length === 0) continue;
+    const memberSet = new Set(memberIds);
+    interface ServingPool {
+      id: string;
+      walled: boolean;
+      wallResetAt: number | null;
+      pendingPct: number | null;
+      pendingResetAt: number | null;
+    }
+    const serving: ServingPool[] = [];
+    for (const pool of snapshot.quota.pools) {
+      if (!memberSet.has(pool.id)) continue;
+      if (pool.state === "error" || pool.state === "stale" || pool.state === "lapsed") continue;
+      const windows = pool.windows.filter((w) => w.limit !== null);
+      const percentOf = (w: (typeof windows)[number]) => w.percent ?? (w.used / (w.limit || 1)) * 100;
+      const walled = pool.state === "walled" || windows.some((w) => percentOf(w) >= 100);
+      let wallResetAt: number | null = null;
+      let pendingPct: number | null = null;
+      let pendingResetAt: number | null = null;
+      if (walled) {
+        // Same wall-lift computation as the quota-wall candidate: the
+        // pool's authoritative wallLiftsAt, else the soonest reset of
+        // the exhausted windows.
+        const lifts = pool.wallLiftsAt ? Date.parse(pool.wallLiftsAt) : NaN;
+        if (Number.isFinite(lifts)) {
+          wallResetAt = lifts;
+        } else {
+          const exhausted = windows.filter((w) => percentOf(w) >= 100);
+          const resets = (exhausted.length ? exhausted : windows)
+            .map((w) => Date.parse(w.resetsAt ?? ""))
+            .filter(Number.isFinite)
+            .sort((a, b) => a - b);
+          wallResetAt = resets[0] ?? null;
+        }
+      } else {
+        for (const w of windows) {
+          const pct = percentOf(w);
+          if (pct >= SECTION_RISK_PENDING_PERCENT && (pendingPct === null || pct > pendingPct)) {
+            pendingPct = Math.floor(pct);
+            const reset = Date.parse(w.resetsAt ?? "");
+            pendingResetAt = Number.isFinite(reset) ? reset : null;
+          }
+        }
+      }
+      serving.push({ id: pool.id, walled, wallResetAt, pendingPct, pendingResetAt });
+    }
+    if (serving.length === 0) continue;
+    const walledPools = serving.filter((entry) => entry.walled);
+    const pendingPools = serving.filter((entry) => !entry.walled && entry.pendingPct !== null);
+    const failed = walledPools.length === serving.length;
+    const severeRisk =
+      !failed && pendingPools.length > 0 && pendingPools.length === serving.length - walledPools.length;
+    if (!failed && !severeRisk) continue;
+    const resetSort = (a: number | null, b: number | null) => (a ?? Infinity) - (b ?? Infinity);
+    const walledPart = walledPools
+      .slice()
+      .sort((a, b) => resetSort(a.wallResetAt, b.wallResetAt))
+      .map(
+        (entry) =>
+          `${entry.id}${entry.wallResetAt !== null ? ` (resets ${formatResetCompact(entry.wallResetAt)})` : ""}`,
+      )
+      .join(", ");
+    const pendingPart = pendingPools
+      .slice()
+      .sort((a, b) => resetSort(a.pendingResetAt, b.pendingResetAt))
+      .map(
+        (entry) =>
+          `${entry.id} ${entry.pendingPct}%${entry.pendingResetAt !== null ? ` (resets ${formatResetCompact(entry.pendingResetAt)})` : ""}`,
+      )
+      .join(", ");
+    const body = [walledPart ? `walled: ${walledPart}` : "", pendingPart ? `pending: ${pendingPart}` : ""]
+      .filter(Boolean)
+      .join(" \u00b7 ");
+    const soonestReset =
+      [...walledPools.map((entry) => entry.wallResetAt), ...pendingPools.map((entry) => entry.pendingResetAt)]
+        .filter((value): value is number => value !== null)
+        .sort((a, b) => a - b)[0] ?? null;
+    candidates.push(
+      candidate({
+        class: "section-risk",
+        objectRef: `section:${section}`,
+        title: failed ? `Section failed: ${section}` : `Section at risk: ${section}`,
+        body,
+        url: "/quota",
+        observedAt: new Date(now).toISOString(),
+        state: {
+          state: failed ? "failed" : "severe-risk",
+          walled: walledPools.map((entry) => entry.id).sort(),
+          pending: pendingPools.map((entry) => [entry.id, entry.pendingPct]).sort(),
+          soonestReset: soonestReset !== null ? new Date(soonestReset).toISOString() : null,
+        },
+        breakthrough: failed,
+      }),
+    );
   }
 
   for (const service of snapshot.health.services) {

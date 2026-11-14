@@ -363,9 +363,7 @@ class ReceiptTests(Fixture):
                 self.assertEqual(count, 1)
                 note_path.write_bytes(content.encode("utf-8"))
                 error = self.resolve(ok=False)
-                self.assertIn(
-                    f"{note_path}: note marker must be a JSON object", error
-                )
+                self.assertIn(f"{note_path}: note marker must be a JSON object", error)
                 self.assertNotIn("AttributeError", error)
 
     def test_resolve_note_rejects_non_object_resolution_blocks_with_named_errors(self):

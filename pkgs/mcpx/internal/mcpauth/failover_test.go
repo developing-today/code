@@ -47,7 +47,7 @@ func twoTokens() *mcpauth.Failover {
 // identity #2, with the session-visible result being plain success.
 func TestSoftBlockFailsOverToSecondIdentity(t *testing.T) {
 	soft := map[string]*mcpauth.APIError{
-		"429": {Status: 429, Body: `{"message":"too many requests"}`},
+		"429":       {Status: 429, Body: `{"message":"too many requests"}`},
 		"secondary": {Status: 403, Body: `{"message":"You have exceeded a secondary rate limit. You have been submitted too quickly."}`},
 	}
 	for name, blockErr := range soft {
@@ -88,10 +88,10 @@ func TestSoftBlockFailsOverToSecondIdentity(t *testing.T) {
 // surface with their real error and trigger no rotation.
 func TestHardBlockSurfacesImmediatelyWithNoRotation(t *testing.T) {
 	hard := map[string]*mcpauth.APIError{
-		"401": {Status: 401, Body: `{"message":"Bad credentials"}`},
+		"401":            {Status: 401, Body: `{"message":"Bad credentials"}`},
 		"403-no-markers": {Status: 403, Body: `{"message":"Resource not accessible by integration"}`},
-		"404": {Status: 404, Body: `{"message":"Not Found"}`},
-		"422": {Status: 422, Body: `{"message":"Validation Failed"}`},
+		"404":            {Status: 404, Body: `{"message":"Not Found"}`},
+		"422":            {Status: 422, Body: `{"message":"Validation Failed"}`},
 	}
 	for name, blockErr := range hard {
 		t.Run(name, func(t *testing.T) {

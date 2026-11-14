@@ -22,6 +22,7 @@
 
 pub use id_groups::blob_gate::{
     BlobPolicy, Request, blob_events, blob_events_with_blocks, decide, decide_with_blocks,
+    decide_with_local,
 };
 
 /// The two questions the gate asks of the world graph, re-exported at
@@ -30,4 +31,7 @@ pub use id_events::world_access::WorldAccess;
 
 /// [`WorldAccess`] over the folded worlds; the implementation lives
 /// in `id_worlds::blob_gate`.
-pub use id_worlds::blob_gate::FoldedWorlds;
+pub use id_worlds::blob_gate::{
+    FoldedWorlds, RefreshingWorlds, build_reference_index, fold_group_events, hashseq_children,
+    world_key,
+};

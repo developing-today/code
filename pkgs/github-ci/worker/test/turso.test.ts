@@ -24,10 +24,7 @@ function replyOnce(body: string, contentType = "application/json") {
 const client = () => new Turso(DB, "test-token");
 
 const okEnvelope = JSON.stringify({
-  results: [
-    { type: "ok", response: { result: { rows: [[{ type: "text", value: "main" }]] } } },
-    { type: "ok" },
-  ],
+  results: [{ type: "ok", response: { result: { rows: [[{ type: "text", value: "main" }]] } } }, { type: "ok" }],
 });
 
 describe("Turso pipeline response envelope", () => {
@@ -68,9 +65,7 @@ describe("Turso pipeline response envelope", () => {
 
   it("rejects a non-JSON body in contract form, not a raw SyntaxError", async () => {
     replyOnce("<html>bad gateway</html>", "text/html");
-    await expect(client().execute("SELECT 1")).rejects.toThrow(
-      "turso pipeline failed: malformed response (not JSON)",
-    );
+    await expect(client().execute("SELECT 1")).rejects.toThrow("turso pipeline failed: malformed response (not JSON)");
   });
 
   it("rejects an envelope whose results lack the statement result", async () => {

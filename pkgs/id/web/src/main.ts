@@ -701,6 +701,22 @@ async function init(): Promise<void> {
       ws.onopen = () => {
         console.log("[id] Tags WS connected");
         this.tagsWsReconnectAttempts = 0;
+
+        // Reconnection cannot replay missed broadcast events. Refresh the
+        // visible views after every connection so a server close after lag
+        // restores the current state rather than only resuming future events.
+        const fileListContent = document.getElementById("file-list-content");
+        if (fileListContent) {
+          const qs = currentFileListParams().toString();
+          const url = qs ? `/api/files?${qs}` : "/api/files";
+          fetchPartial(url, "#file-list-content");
+        }
+        const editorContainer = document.getElementById("editor-container");
+        if (editorContainer) {
+          const filenameEncoded = editorContainer.dataset.filename;
+          const filename = filenameEncoded ? decodeURIComponent(filenameEncoded) : null;
+          if (filename) this.loadFileTags(filename);
+        }
       };
 
       ws.onmessage = (event: MessageEvent) => {

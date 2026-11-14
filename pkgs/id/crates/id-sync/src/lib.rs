@@ -26,6 +26,7 @@ pub mod dht;
 pub mod envelope;
 pub mod envelope_net;
 pub mod envelope_outbox;
+pub mod federation;
 pub mod fileops;
 pub(crate) mod hex;
 pub mod host;

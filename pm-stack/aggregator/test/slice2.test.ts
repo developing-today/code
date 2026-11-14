@@ -10,7 +10,13 @@ import {
   sessionRoots,
   timeline,
 } from "../src/derive.ts";
-import { type BoardItem, type OrchestrationSection, type RoadmapRow, type SessionFeedEntry, type TierItem } from "../src/model.ts";
+import {
+  type BoardItem,
+  type OrchestrationSection,
+  type RoadmapRow,
+  type SessionFeedEntry,
+  type TierItem,
+} from "../src/model.ts";
 import { renderAttention, renderRoadmap, renderToday } from "../src/render.ts";
 import {
   FIXTURE_ATTENTION,
@@ -266,9 +272,9 @@ describe("roadmap grains (#898 §3)", () => {
       links: [],
     };
     const html = renderRoadmap([...FIXTURE_ROADMAP, row], await src.items([]), src.provenance(), "today");
-      expect(html).toContain("Next 3 days");
-      expect(html).toContain("Dated today row");
-      expect(html).toContain("Undated or coarse horizons");
+    expect(html).toContain("Next 3 days");
+    expect(html).toContain("Dated today row");
+    expect(html).toContain("Undated or coarse horizons");
   });
 });
 
@@ -382,9 +388,13 @@ describe("today view (#898 §4)", () => {
       links: [],
     });
     const derivedOrder = (priorities: string[]) =>
-      deriveToday(priorities.map((priority) => item(priority, priority)), [], new Map(), null, new Date(NOW)).objectives.map(
-        (objective) => objective.title,
-      );
+      deriveToday(
+        priorities.map((priority) => item(priority, priority)),
+        [],
+        new Map(),
+        null,
+        new Date(NOW),
+      ).objectives.map((objective) => objective.title);
 
     for (const key of ["constructor", "__proto__", "toString", "hasOwnProperty", "valueOf"]) {
       const prototypeOrder = derivedOrder([key, "urgent"]);

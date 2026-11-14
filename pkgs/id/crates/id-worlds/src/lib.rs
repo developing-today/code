@@ -38,22 +38,22 @@
 //! modules' `crate::` paths resolve exactly as they did in the
 //! facade; they name the lower crates that own those modules.
 
+/// The port contract (`world-store` port kind) this crate's adapters
+/// advertise against, owned by `id-core` (slice 9110-02, #10160).
+pub use id_core::port;
+
 pub mod blob_gate;
-pub mod directory;
-pub mod directory_auth;
-pub mod directory_mail;
-pub mod directory_view;
 pub mod groups;
 #[cfg(feature = "sandbox")]
 pub mod sandbox;
 mod session_host;
 pub mod shell_contract;
 pub mod world;
+pub mod world_cache;
+pub mod world_compile;
 #[cfg(feature = "sandbox")]
 pub mod world_dev;
 pub mod world_doctor;
-pub mod world_cache;
-pub mod world_compile;
 pub mod world_fixture;
 pub mod world_hub;
 pub mod world_line;
@@ -67,22 +67,26 @@ pub mod world_ssh;
 pub mod world_store;
 pub mod world_terminal;
 
-pub use id_sync::artifact;
+pub use id_caps::world_caps;
+pub use id_caps::world_limits;
 pub use id_core::abuse;
-pub use id_store::chain;
 pub use id_core::connectivity;
-pub use id_sync::envelope_outbox;
-pub use id_events::event_store;
 pub use id_core::frames;
 pub(crate) use id_core::is_format_char;
 pub use id_core::petname;
-pub use id_store::store;
-pub use id_store::tags;
 pub(crate) use id_core::text;
 pub(crate) use id_core::time;
-pub use id_caps::world_caps;
-pub use id_caps::world_limits;
 pub use id_core::world_presentation;
+pub use id_directory::directory;
+pub use id_directory::directory_auth;
+pub use id_directory::directory_mail;
+pub use id_directory::directory_view;
+pub use id_events::event_store;
+pub use id_store::chain;
+pub use id_store::store;
+pub use id_store::tags;
+pub use id_sync::artifact;
+pub use id_sync::envelope_outbox;
 
 #[cfg(test)]
 pub(crate) use id_core::test_forgeries;

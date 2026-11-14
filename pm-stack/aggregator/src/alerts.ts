@@ -214,7 +214,7 @@ export function mergeQuiet(input: unknown): QuietPrefs {
  * only the original incident class defaults on for old rows; new rows
  * receive the reviewed defaults from mergeClasses at creation. */
 export function classEnabled(sub: { classes: Record<string, boolean> }, cls: string): boolean {
-  return sub.classes?.[cls] ?? (cls === "incident");
+  return sub.classes?.[cls] ?? cls === "incident";
 }
 
 /** Is `now` inside the quiet window (evaluated in the prefs' timezone)?
@@ -803,7 +803,7 @@ export function createAlertsStoreGetter(
       );
     }
     return storePromise;
-  }
+  };
 }
 
 /** The shared store; null when the Supabase path is unavailable. */
@@ -891,15 +891,17 @@ async function runDashboardNotificationTick(
   const [snapshot, history] = await Promise.all([options.dashboardSnapshot(), historyStore.read()]);
   const candidates = buildNotificationCandidates(snapshot, now);
 
-  const keyOf = (entry: Pick<NotificationHistoryEntry, "class" | "objectRef" | "stateFingerprint" | "subscriptionId">) =>
-    `${entry.subscriptionId ?? ""}\u0000${entry.class}\u0000${entry.objectRef}\u0000${entry.stateFingerprint}`;
+  const keyOf = (
+    entry: Pick<NotificationHistoryEntry, "class" | "objectRef" | "stateFingerprint" | "subscriptionId">,
+  ) => `${entry.subscriptionId ?? ""}\u0000${entry.class}\u0000${entry.objectRef}\u0000${entry.stateFingerprint}`;
   const pendingFor = (subId: string): Map<string, NotificationHistoryEntry> => {
     const pending = new Map<string, NotificationHistoryEntry>();
     for (const entry of history) {
       if (entry.subscriptionId !== subId) continue;
       const key = keyOf(entry);
       if (entry.outcome === "queued") pending.set(key, entry);
-      else if (entry.outcome === "queue-cancelled" || entry.outcome === "sent" || entry.outcome === "gone") pending.delete(key);
+      else if (entry.outcome === "queue-cancelled" || entry.outcome === "sent" || entry.outcome === "gone")
+        pending.delete(key);
     }
     return pending;
   };
@@ -1083,7 +1085,9 @@ async function runDashboardNotificationTick(
     }
 
     const due = [...pending.entries()].filter(([, entry]) => Date.parse(entry.dueAt ?? "") <= now);
-    const digestCandidates = due.map(([, entry]) => entry.candidate).filter((candidate): candidate is NonNullable<typeof candidate> => !!candidate);
+    const digestCandidates = due
+      .map(([, entry]) => entry.candidate)
+      .filter((candidate): candidate is NonNullable<typeof candidate> => !!candidate);
     if (digestCandidates.length === 0) continue;
     // #7193 Codex: revalidate the CURRENT quiet window before draining —
     // the persisted dueAt was computed under an earlier window (or the

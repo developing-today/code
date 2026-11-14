@@ -18,13 +18,13 @@ run_resolver() {
 
 expect_success() {
   local name="$1" expected="$2" actual
-  if [[ "$RC" -ne 0 ]]; then
+  if [[ $RC -ne 0 ]]; then
     echo "FAIL: $name should succeed (exit $RC)" >&2
     cat "$TMP/err" >&2
     exit 1
   fi
   actual="$(cat "$TMP/out")"
-  if [[ "$actual" != "$expected" ]]; then
+  if [[ $actual != "$expected" ]]; then
     printf 'FAIL: %s output mismatch\nexpected:\n%s\nactual:\n%s\n' \
       "$name" "$expected" "$actual" >&2
     exit 1
@@ -34,7 +34,7 @@ expect_success() {
 
 expect_invalid() {
   local name="$1" message="$2"
-  if [[ "$RC" -eq 0 ]]; then
+  if [[ $RC -eq 0 ]]; then
     echo "FAIL: $name should fail" >&2
     exit 1
   fi
@@ -125,16 +125,16 @@ for ((case_no = 1; case_no <= valid_property_cases; case_no++)); do
     input+="${before}${token}${after}"
     expected_tasks+="$token"
     case "$token" in
-      bolt) expected_bolt=true ;;
-      palette) expected_palette=true ;;
-      suggestions) expected_suggestions=true ;;
+    bolt) expected_bolt=true ;;
+    palette) expected_palette=true ;;
+    suggestions) expected_suggestions=true ;;
     esac
   done
 
   run_resolver "unknown schedule" "$input"
   expected=$'tasks='"$expected_tasks"$'\nhas_bolt='"$expected_bolt"$'\nhas_palette='"$expected_palette"$'\nhas_suggestions='"$expected_suggestions"
   actual="$(cat "$TMP/out")"
-  if [[ "$RC" -ne 0 || "$actual" != "$expected" ]]; then
+  if [[ $RC -ne 0 || $actual != "$expected" ]]; then
     printf 'FAIL: valid generated case %d violated normalization/flag oracle\ninput: %q\nexpected:\n%s\nactual:\n%s\n' \
       "$case_no" "$input" "$expected" "$actual" >&2
     cat "$TMP/err" >&2
@@ -172,7 +172,7 @@ for ((case_no = 1; case_no <= invalid_property_cases; case_no++)); do
   done
 
   run_resolver "unknown schedule" "$input"
-  if [[ "$RC" -eq 0 || -s "$TMP/out" ]]; then
+  if [[ $RC -eq 0 || -s "$TMP/out" ]]; then
     printf 'FAIL: generated invalid case %d was accepted or emitted partial stdout\ninput: %q\nexit: %d\nstdout:\n' \
       "$case_no" "$input" "$RC" >&2
     cat "$TMP/out" >&2

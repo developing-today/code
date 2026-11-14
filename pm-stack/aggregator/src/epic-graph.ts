@@ -328,23 +328,23 @@ export function epicGraph(
       return blocker === undefined || blocker.state === "open";
     });
   const blockedCount = members.filter((m) => m.state === "open" && unresolvedBlockersOf(m).length > 0).length;
-  
+
   // Compute rankedBlocked with transitive downstream open work ranking
   const rankedBlocked = members
     .filter((m) => m.ref !== epicRef && m.state === "open")
     .map((m) => {
       const blockers = unresolvedBlockersOf(m);
-      
+
       // For each blocker, compute its downstream open epic descendant count
       const blockerScores = blockers.map((blockerRef) => {
         // Distinct open epic items in the transitive blockedBy ancestry of this
         // blocker; they are both the count and the contributing items.
         const downstream = openEpicsReachableFrom(blockerRef, byRef);
-        
+
         // Get effort weight of the blocker
         const blockerItem = byRef.get(blockerRef);
         const weight = blockerItem ? effortWeight(blockerItem.labels) : null;
-        
+
         return {
           ref: blockerRef,
           downstreamCount: downstream.size,
@@ -352,16 +352,17 @@ export function epicGraph(
           contributingItems: Array.from(downstream),
         };
       });
-      
+
       return {
         ref: m.ref,
         issueUrl: m.issueUrl,
         blockers: blockers,
         // Sort blockers by downstreamCount (desc), then effortWeight (desc), then ref
-        sortedBlockers: [...blockerScores].sort((a, b) => 
-          b.downstreamCount - a.downstreamCount || 
-          (b.effortWeight === null ? -1 : b.effortWeight) - (a.effortWeight === null ? -1 : a.effortWeight) ||
-          byRefOrder(a.ref, b.ref)
+        sortedBlockers: [...blockerScores].sort(
+          (a, b) =>
+            b.downstreamCount - a.downstreamCount ||
+            (b.effortWeight === null ? -1 : b.effortWeight) - (a.effortWeight === null ? -1 : a.effortWeight) ||
+            byRefOrder(a.ref, b.ref),
         ),
       };
     })
@@ -372,7 +373,8 @@ export function epicGraph(
       const bWorst = b.sortedBlockers[0];
       return (
         (bWorst?.downstreamCount ?? 0) - (aWorst?.downstreamCount ?? 0) ||
-        (bWorst?.effortWeight === null ? -1 : bWorst.effortWeight) - (aWorst?.effortWeight === null ? -1 : aWorst.effortWeight) ||
+        (bWorst?.effortWeight === null ? -1 : bWorst.effortWeight) -
+          (aWorst?.effortWeight === null ? -1 : aWorst.effortWeight) ||
         byRefOrder(a.ref, b.ref)
       );
     })
@@ -381,8 +383,8 @@ export function epicGraph(
       issueUrl: r.issueUrl,
       downstreamCount: r.sortedBlockers[0]?.downstreamCount ?? 0,
       effortWeight: r.sortedBlockers[0]?.effortWeight ?? null,
-      blockers: r.sortedBlockers.map(b => b.ref),
-      contributingItems: [...new Set(r.sortedBlockers.flatMap(b => b.contributingItems))],
+      blockers: r.sortedBlockers.map((b) => b.ref),
+      contributingItems: [...new Set(r.sortedBlockers.flatMap((b) => b.contributingItems))],
     }));
 
   // For each open member, walk its complete unresolved blockedBy ancestry.
@@ -436,9 +438,7 @@ export function epicGraph(
     })
     .sort(
       (a, b) =>
-        b.downstreamCount - a.downstreamCount ||
-        b.knownEffortWeight - a.knownEffortWeight ||
-        byRefOrder(a.ref, b.ref),
+        b.downstreamCount - a.downstreamCount || b.knownEffortWeight - a.knownEffortWeight || byRefOrder(a.ref, b.ref),
     );
 
   const nodes: EpicGraphNode[] = shown.map(({ item, ref }) => {

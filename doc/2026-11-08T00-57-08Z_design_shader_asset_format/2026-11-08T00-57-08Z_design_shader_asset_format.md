@@ -49,12 +49,12 @@ The trusted adapter supplies the wrapper and target. V1 excludes vertex and comp
 
 The v1 declared inputs are:
 
-| Input | Meaning | Boundary |
-|---|---|---|
-| `iResolution` | Width and height of the effect's bounded render target | Supplied by the adapter; not a source for arbitrary screen or device inspection |
-| `iTime` | Elapsed time for this effect instance | Relative and adapter-controlled; no wall-clock/date access |
-| `iChannel0`–`iChannel3` | Optional textures named by the asset's input declaration | Each reference resolves only to an asset the world and viewer may already see; no URL, filesystem, or implicit cross-world fetch |
-| `iChannelResolution[0..3]` | Dimensions of the corresponding declared texture | Supplied only for bound channels |
+| Input                      | Meaning                                                  | Boundary                                                                                                                         |
+| -------------------------- | -------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------- |
+| `iResolution`              | Width and height of the effect's bounded render target   | Supplied by the adapter; not a source for arbitrary screen or device inspection                                                  |
+| `iTime`                    | Elapsed time for this effect instance                    | Relative and adapter-controlled; no wall-clock/date access                                                                       |
+| `iChannel0`–`iChannel3`    | Optional textures named by the asset's input declaration | Each reference resolves only to an asset the world and viewer may already see; no URL, filesystem, or implicit cross-world fetch |
+| `iChannelResolution[0..3]` | Dimensions of the corresponding declared texture         | Supplied only for bound channels                                                                                                 |
 
 The declaration names each channel's semantic purpose and whether it is required. An absent optional channel is bound to transparent black. A missing required or unauthorized reference makes the effect unavailable and selects its authored fallback; it does not widen access. V1 does not expose pointer coordinates, keyboard state, camera, microphone/audio samples, absolute time/date, or ambient device data. A later input needs an explicit capability and consent decision, not merely a new uniform.
 
@@ -78,12 +78,12 @@ An effect reference uses #5970's authored fallback chain. The author may supply 
 
 ## 4. Coordination and dependency edges
 
-| Work | Relationship to this record |
-|---|---|
-| [#5955](https://github.com/developing-today/code/issues/5955) — worlds design program | Parent for asset/program semantics and licensing policy. This record provides the shader-format seam; licensing classification and publish eligibility remain there and its licensing children. |
-| [#5970](https://github.com/developing-today/code/issues/5970) — presentation assets | Owns per-world capability enablement, authored fallback chain, presentation tiers, and the boundary between asset effects and world behavior. Shader use must compose with its policy. |
-| [#6012](https://github.com/developing-today/code/issues/6012) — visual-feature cost ranking | Owns measurements-to-rank mapping, gates, viewer minimums, and substitution rules. V1 exposes measurable dimensions but defines no rank thresholds. |
-| [#6013](https://github.com/developing-today/code/issues/6013) — this format | Owns the named v1 GLSL fragment unit, declared input vocabulary, format-version rule, and the asset metadata seam. |
+| Work                                                                                        | Relationship to this record                                                                                                                                                                     |
+| ------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| [#5955](https://github.com/developing-today/code/issues/5955) — worlds design program       | Parent for asset/program semantics and licensing policy. This record provides the shader-format seam; licensing classification and publish eligibility remain there and its licensing children. |
+| [#5970](https://github.com/developing-today/code/issues/5970) — presentation assets         | Owns per-world capability enablement, authored fallback chain, presentation tiers, and the boundary between asset effects and world behavior. Shader use must compose with its policy.          |
+| [#6012](https://github.com/developing-today/code/issues/6012) — visual-feature cost ranking | Owns measurements-to-rank mapping, gates, viewer minimums, and substitution rules. V1 exposes measurable dimensions but defines no rank thresholds.                                             |
+| [#6013](https://github.com/developing-today/code/issues/6013) — this format                 | Owns the named v1 GLSL fragment unit, declared input vocabulary, format-version rule, and the asset metadata seam.                                                                              |
 
 The design record can land independently. Runtime implementation must wait until #5970's policy and #6012's ranking interface are stable enough to enforce, and must use #5955's accepted licensing policy before enabling public sharing. These are implementation dependencies, not reasons to block this format decision.
 

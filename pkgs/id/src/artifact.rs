@@ -37,10 +37,10 @@ mod tests {
     use crate::directory_auth::Caller;
     use crate::directory_view::DirectoryAction;
     use crate::envelope_outbox::Outcome;
-    use crate::world::hex_encode;
-    use crate::world_hub::WorldHub;
     use crate::test_forgeries::{IDENTITY_KEY, identity_forgery, with_non_canonical_s};
+    use crate::world::hex_encode;
     use crate::world::{WorldCore, WorldHandle, WorldLimits};
+    use crate::world_hub::WorldHub;
     use crate::world_session::WorldService;
     fn key(seed: u8) -> SigningKey {
         SigningKey::from_bytes(&[seed; 32])

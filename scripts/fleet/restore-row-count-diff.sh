@@ -40,24 +40,46 @@ live=""
 inventory=""
 while [ $# -gt 0 ]; do
   case "$1" in
-    --manifest) manifest="$2"; shift 2 ;;
-    --live) live="$2"; shift 2 ;;
-    --inventory) inventory="$2"; shift 2 ;;
-    *) echo "unknown argument: $1" >&2; exit 2 ;;
+  --manifest)
+    manifest="$2"
+    shift 2
+    ;;
+  --live)
+    live="$2"
+    shift 2
+    ;;
+  --inventory)
+    inventory="$2"
+    shift 2
+    ;;
+  *)
+    echo "unknown argument: $1" >&2
+    exit 2
+    ;;
   esac
 done
 [ -n "$manifest" ] && [ -n "$live" ] || {
   echo "usage: restore-row-count-diff.sh --manifest M.tsv --live L.tsv [--inventory I.txt]" >&2
   exit 2
 }
-[ -f "$manifest" ] && [ -f "$live" ] || { echo "input file missing" >&2; exit 2; }
+[ -f "$manifest" ] && [ -f "$live" ] || {
+  echo "input file missing" >&2
+  exit 2
+}
 # An empty counts export must never reach the comparison: with no live
 # rows at all the gate has nothing to verify, and a failed export would
 # otherwise be indistinguishable from a pass (Codex review, PR #8406).
-[ -s "$live" ] || { echo "live counts file is empty: $live" >&2; exit 2; }
-[ -s "$manifest" ] || { echo "manifest file is empty: $manifest" >&2; exit 2; }
+[ -s "$live" ] || {
+  echo "live counts file is empty: $live" >&2
+  exit 2
+}
+[ -s "$manifest" ] || {
+  echo "manifest file is empty: $manifest" >&2
+  exit 2
+}
 if [ -n "$inventory" ] && [ ! -f "$inventory" ]; then
-  echo "inventory file missing: $inventory" >&2; exit 2
+  echo "inventory file missing: $inventory" >&2
+  exit 2
 fi
 
 # The whole comparison is one awk pass: manifest and live counts are

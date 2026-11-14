@@ -9,7 +9,7 @@
   "id: design: selective sharing + foreign data-store adapters",
   decomposition item 9 (its §B4 and §B5). Programme epic:
   [#2056](https://github.com/developing-today/code/issues/2056).
-- Sibling designs this record is written *against*:
+- Sibling designs this record is written _against_:
   [#5799](https://github.com/developing-today/code/issues/5799) (selective-sharing
   grants model, closed), [#5801](https://github.com/developing-today/code/issues/5801)
   (encrypted shares & key distribution, closed),
@@ -41,7 +41,7 @@
   corners (expiry/TTL, ordering, huge keys) are documented **in the export
   report**.
 - §B5 fixes the query path's shape: an ad-hoc form of §B4 — run a
-  query/selection against a live Redis instance and receive the result *as*
+  query/selection against a live Redis instance and receive the result _as_
   a SQLite database (file or ID-hosted), shaped by the query. **Read-only
   against Redis by definition; no mutation path smuggled in.**
 - Part B's preamble fixes the adapter-contract questions every adapter must
@@ -74,7 +74,8 @@ adopts renames this surface; it does not change the decisions below.
 ## 2. The chosen shape: one core, two operations
 
 Both operations are the same pipeline — *select → scan → map → write SQLite
-+ report* — differing only in how the selection is made:
+
+- report* — differing only in how the selection is made:
 
 1. **Export** (`export`): the selection defaults to a whole logical database
    (one Redis DB index), optionally narrowed by a key pattern and/or type
@@ -92,7 +93,7 @@ Decisions:
   (§6): it needs filesystem access to the Redis host and cannot express a
   selection. It remains a legitimate future bulk path, not v1.
 - **Honest snapshot semantics.** `SCAN` gives no point-in-time snapshot.
-  The export is a *scan-window view*: it records start/end timestamps, the
+  The export is a _scan-window view_: it records start/end timestamps, the
   source identity (Redis `run_id`, host fingerprint, DB index), and
   `DBSIZE` at start and end in the report. A key mutated during the window
   may appear in its before or after state; a key visited twice by rehashing
@@ -105,6 +106,7 @@ Decisions:
   with a read-only user / replica where available is deployment guidance;
   the command allowlist is the design-level guarantee, auditable in one
   place in the implementation.
+
 ## 3. Output schema and type mapping
 
 One schema version, shared verbatim by export and query results
@@ -124,25 +126,25 @@ SQLite is typed. The mapping rule that resolves every case below:
   (for `query`), source identity (run_id, host fingerprint, DB index — no
   credentials, §5.3), scan start/end timestamps, `DBSIZE` at start/end.
 - `keys(key_bytes BLOB PRIMARY KEY, key_text TEXT, type TEXT NOT NULL,
-  ttl_ms INTEGER, expires_at_ms INTEGER)` — one row per **exported** key.
+ttl_ms INTEGER, expires_at_ms INTEGER)` — one row per **exported** key.
   `type` is the Redis `TYPE` string (`string`, `hash`, `list`, `set`,
   `zset`). TTL columns are both NULL for persistent keys (§4.1).
 - `string_values(key_bytes BLOB PRIMARY KEY REFERENCES keys, value BLOB
-  NOT NULL, value_text TEXT)`.
+NOT NULL, value_text TEXT)`.
 - `hash_entries(key_bytes BLOB REFERENCES keys, field BLOB NOT NULL,
-  field_text TEXT, value BLOB NOT NULL, value_text TEXT,
-  PRIMARY KEY (key_bytes, field))`.
+field_text TEXT, value BLOB NOT NULL, value_text TEXT,
+PRIMARY KEY (key_bytes, field))`.
 - `list_items(key_bytes BLOB REFERENCES keys, idx INTEGER NOT NULL,
-  value BLOB NOT NULL, value_text TEXT, PRIMARY KEY (key_bytes, idx))` —
+value BLOB NOT NULL, value_text TEXT, PRIMARY KEY (key_bytes, idx))` —
   `idx` is the Redis list index, so order is data, not scan order.
 - `set_members(key_bytes BLOB REFERENCES keys, member BLOB NOT NULL,
-  member_text TEXT, PRIMARY KEY (key_bytes, member))`.
+member_text TEXT, PRIMARY KEY (key_bytes, member))`.
 - `zset_members(key_bytes BLOB REFERENCES keys, member BLOB NOT NULL,
-  member_text TEXT, score REAL NOT NULL, score_text TEXT NOT NULL,
-  PRIMARY KEY (key_bytes, member))` — `score_text` preserves the exact
+member_text TEXT, score REAL NOT NULL, score_text TEXT NOT NULL,
+PRIMARY KEY (key_bytes, member))` — `score_text` preserves the exact
   score string Redis returned; `score` is its REAL projection (§4.4).
 - `export_skips(key_bytes BLOB, key_text TEXT, reason TEXT NOT NULL,
-  detail TEXT)` — every selected key that was **not** exported, with a
+detail TEXT)` — every selected key that was **not** exported, with a
   reason from the closed vocabulary in §4. Nothing selected is ever
   silently absent: it is in `keys` or in `export_skips`.
 
@@ -325,7 +327,7 @@ overall deadline, likewise recorded.
 - The general foreign-adapter contract (#5803, open) — §1.2's assumptions
   are re-read against it when it lands.
 - Stream and module-type mapping (follow-on design, if wanted; §3.2).
-- How ID *imports* an export file beyond "importable as a snapshot" —
+- How ID _imports_ an export file beyond "importable as a snapshot" —
   import semantics belong to the ID data-layer design (#2048 lineage), not
   to this export record.
 - Write-back in any form (parent non-goal; would need its own design).

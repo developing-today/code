@@ -697,7 +697,7 @@ describe("pages manifest + slice-3 renders", () => {
       // (dns-<domain>, the next-renewal card's link target) and as the
       // row's cell text — count rows, not raw string occurrences.
       expect(html.split('id="dns-' + entry.domain + '"').length - 1).toBe(1);
-      expect(html.split('>' + entry.domain + '</strong>').length - 1).toBe(1);
+      expect(html.split(">" + entry.domain + "</strong>").length - 1).toBe(1);
     }
     expect(html).toContain('data-dns-filter="active"');
     expect(html).toContain('data-dns-filter="earmarked"');
@@ -1035,7 +1035,9 @@ describe("slice-3 routes", () => {
             ready = true;
             break;
           }
-        } catch { /* not up yet */ }
+        } catch {
+          /* not up yet */
+        }
         await Bun.sleep(120);
       }
       expect(ready).toBe(true);

@@ -93,6 +93,18 @@ export const PAGES: PageDef[] = [
     nav: "primary",
   },
   {
+    id: "decisions",
+    title: "Decision sets",
+    route: "/decisions",
+    blurb:
+      "Every raised decision set (#8867): new today, this week, or all — with open-question counts. Each row opens the set's own page.",
+    group: "overview",
+    // Promoted to primary in #9354 (Drew 2026-11-13): at dropdown
+    // tier the index was invisible in practice — no visible nav
+    // anchor on any page Drew uses.
+    nav: "primary",
+  },
+  {
     id: "board",
     title: "Board",
     route: "/board",

@@ -34,7 +34,7 @@ Slice 2 added the command logic that does not itself activate anything:
   from the Linux fleet and stays a rendering/planning stub.
 
 The registry is JSON baked into the package at build time (the Nix
-expression renders the attrset definitions, replacing each 
+expression renders the attrset definitions, replacing each
 derivation with its store path). `--registry PATH` (or $DEPLOY_REGISTRY)
 points the CLI at another registry file, which is how the flake checks
 exercise the malformed-definition path. `--state-dir PATH` (or
@@ -155,10 +155,7 @@ def validate(registry):
             errors.append(
                 f"{where}: secrets must be a list of secret names (names only, never values)"
             )
-        elif (
-            "secrets" in defn
-            and len(set(defn["secrets"])) != len(defn["secrets"])
-        ):
+        elif "secrets" in defn and len(set(defn["secrets"])) != len(defn["secrets"]):
             errors.append(f"{where}: secrets must not repeat a secret name")
         if "user" in defn and not (isinstance(defn["user"], str) and defn["user"]):
             errors.append(f"{where}: user must be a non-empty string")
@@ -207,10 +204,7 @@ def validate(registry):
             errors.append(
                 f"{where}: targets must be a non-empty list of host/class names"
             )
-        elif (
-            "targets" in defn
-            and len(set(defn["targets"])) != len(defn["targets"])
-        ):
+        elif "targets" in defn and len(set(defn["targets"])) != len(defn["targets"]):
             errors.append(f"{where}: targets must not repeat a target")
         # Targets are printed verbatim by `deploy list`, so restrict them to
         # the same single-line identifier shape as service names.
@@ -584,7 +578,6 @@ def format_status(name, defn, entries, health=None):
     return "\n".join(lines)
 
 
-
 # --- Real activation (slice 3) -------------------------------------------
 #
 # Oracle: design §4.1 plan order, as printed by plan_deploy /
@@ -659,9 +652,13 @@ def install_generation(name, artifact, generation, base=None):
     os.symlink(artifact, current)
     if artifact.startswith("/nix/store/") and _which("nix-env"):
         _run_step(
-            ["nix-env", "--profile",
-             os.path.join(base_dir, f"{name}.nix-env-profile"),
-             "--set", artifact],
+            [
+                "nix-env",
+                "--profile",
+                os.path.join(base_dir, f"{name}.nix-env-profile"),
+                "--set",
+                artifact,
+            ],
             "nix-env profile install",
         )
     link = profile_link(name, base)
@@ -698,8 +695,9 @@ def wait_health(url, attempts=10, interval=0.5):
     return False, detail
 
 
-def _activate(name, defn, *, artifact, generation, base, state, scope,
-              units, action, actor):
+def _activate(
+    name, defn, *, artifact, generation, base, state, scope, units, action, actor
+):
     """Shared tail of deploy/rollback: unit write, daemon-reload,
     restart, health check. Raises ActivationError on any failure."""
     if defn["class"] != "systemd":
@@ -707,11 +705,12 @@ def _activate(name, defn, *, artifact, generation, base, state, scope,
             f"real activation for class {defn['class']!r} is not implemented "
             "in this slice (systemd only; launchd remains a rendering stub)"
         )
-    write_text(os.path.join(units, unit_name(name)),
-               render_unit(name, defn, base))
+    write_text(os.path.join(units, unit_name(name)), render_unit(name, defn, base))
     _run_step(systemctl_argv(scope, "daemon-reload"), "daemon-reload")
-    _run_step(systemctl_argv(scope, "restart", unit_name(name)),
-              f"restart of {unit_name(name)}")
+    _run_step(
+        systemctl_argv(scope, "restart", unit_name(name)),
+        f"restart of {unit_name(name)}",
+    )
     if defn["healthCheck"] is not None:
         ok, detail = wait_health(defn["healthCheck"])
         if not ok:
@@ -732,19 +731,28 @@ def _flip_back(name, defn, *, previous, base, scope, units):
             os.unlink(link)
         return "stopped (no previous generation)"
     try:
-        repoint_profile(name, previous["artifact"], previous["generation"],
-                        base)
+        repoint_profile(name, previous["artifact"], previous["generation"], base)
         run_cmd(systemctl_argv(scope, "reset-failed", unit_name(name)))
-        _run_step(systemctl_argv(scope, "restart", unit_name(name)),
-                  f"restart of {unit_name(name)} on flip-back")
+        _run_step(
+            systemctl_argv(scope, "restart", unit_name(name)),
+            f"restart of {unit_name(name)} on flip-back",
+        )
     except ActivationError as exc:
-        return (f"flip-back to generation {previous['generation']} "
-                f"INCOMPLETE: {exc}")
+        return f"flip-back to generation {previous['generation']} INCOMPLETE: {exc}"
     return f"flipped back to generation {previous['generation']}"
 
 
-def execute_deploy(name, defn, entries, *, base=None, state=None,
-                   scope="system", units=None, actor=None):
+def execute_deploy(
+    name,
+    defn,
+    entries,
+    *,
+    base=None,
+    state=None,
+    scope="system",
+    units=None,
+    actor=None,
+):
     """Real (non-dry-run) deploy, in plan_deploy's order. Returns
     (exit_code, lines). On failure the profile is flipped back to the
     previously current generation and a non-folding failure entry is
@@ -758,32 +766,66 @@ def execute_deploy(name, defn, entries, *, base=None, state=None,
     lines = []
     try:
         install_generation(name, artifact, generation, base)
-        lines.append(f"installed generation {generation} into the profile "
-                     f"{profile_link(name, base)}")
-        _activate(name, defn, artifact=artifact, generation=generation,
-                  base=base, state=state, scope=scope, units=units,
-                  action="deploy", actor=actor)
+        lines.append(
+            f"installed generation {generation} into the profile "
+            f"{profile_link(name, base)}"
+        )
+        _activate(
+            name,
+            defn,
+            artifact=artifact,
+            generation=generation,
+            base=base,
+            state=state,
+            scope=scope,
+            units=units,
+            action="deploy",
+            actor=actor,
+        )
     except ActivationError as exc:
-        outcome = _flip_back(name, defn, previous=current, base=base,
-                             scope=scope, units=units)
-        record_generation(name, artifact=artifact, source_rev=_source_rev(),
-                          actor=actor, action="deploy_failed",
-                          generation=generation,
-                          result=f"failed: {exc}; {outcome}",
-                          explicit_state=state)
+        outcome = _flip_back(
+            name, defn, previous=current, base=base, scope=scope, units=units
+        )
+        record_generation(
+            name,
+            artifact=artifact,
+            source_rev=_source_rev(),
+            actor=actor,
+            action="deploy_failed",
+            generation=generation,
+            result=f"failed: {exc}; {outcome}",
+            explicit_state=state,
+        )
         lines.append(f"deploy {name}: FAILED: {exc}; {outcome}")
         return 1, lines
-    entry = record_generation(name, artifact=artifact,
-                              source_rev=_source_rev(), actor=actor,
-                              action="deploy", generation=generation,
-                              result="activated", explicit_state=state)
-    lines.append(f"deploy {name}: generation {entry['generation']} activated "
-                 f"(artifact {artifact})")
+    entry = record_generation(
+        name,
+        artifact=artifact,
+        source_rev=_source_rev(),
+        actor=actor,
+        action="deploy",
+        generation=generation,
+        result="activated",
+        explicit_state=state,
+    )
+    lines.append(
+        f"deploy {name}: generation {entry['generation']} activated "
+        f"(artifact {artifact})"
+    )
     return 0, lines
 
 
-def execute_rollback(name, defn, entries, *, base=None, state=None,
-                     scope="system", units=None, actor=None):
+def execute_rollback(
+    name,
+    defn,
+    entries,
+    *,
+    base=None,
+    state=None,
+    scope="system",
+    units=None,
+    actor=None,
+):
     """Real rollback: repoint at the previous distinct generation and
     restart on it (design §4.1/§4.6 — never a rebuild). On health
     failure, flip back to the generation that was current."""
@@ -795,34 +837,54 @@ def execute_rollback(name, defn, entries, *, base=None, state=None,
         return 1, [f"deploy: {error}"]
     lines = []
     try:
-        repoint_profile(name, previous["artifact"], previous["generation"],
-                        base)
-        _activate(name, defn, artifact=previous["artifact"],
-                  generation=previous["generation"], base=base, state=state,
-                  scope=scope, units=units, action="rollback", actor=actor)
+        repoint_profile(name, previous["artifact"], previous["generation"], base)
+        _activate(
+            name,
+            defn,
+            artifact=previous["artifact"],
+            generation=previous["generation"],
+            base=base,
+            state=state,
+            scope=scope,
+            units=units,
+            action="rollback",
+            actor=actor,
+        )
     except ActivationError as exc:
-        outcome = _flip_back(name, defn, previous=current, base=base,
-                             scope=scope, units=units)
-        record_generation(name, artifact=previous["artifact"],
-                          source_rev=_source_rev(), actor=actor,
-                          action="rollback_failed",
-                          generation=previous["generation"],
-                          result=f"failed: {exc}; {outcome}",
-                          explicit_state=state)
+        outcome = _flip_back(
+            name, defn, previous=current, base=base, scope=scope, units=units
+        )
+        record_generation(
+            name,
+            artifact=previous["artifact"],
+            source_rev=_source_rev(),
+            actor=actor,
+            action="rollback_failed",
+            generation=previous["generation"],
+            result=f"failed: {exc}; {outcome}",
+            explicit_state=state,
+        )
         lines.append(f"deploy {name} rollback: FAILED: {exc}; {outcome}")
         return 1, lines
-    record_generation(name, artifact=previous["artifact"],
-                      source_rev=_source_rev(), actor=actor,
-                      action="rollback", generation=previous["generation"],
-                      result="rolled-back", explicit_state=state)
-    lines.append(f"deploy {name}: rolled back to generation "
-                 f"{previous['generation']} (artifact {previous['artifact']})")
+    record_generation(
+        name,
+        artifact=previous["artifact"],
+        source_rev=_source_rev(),
+        actor=actor,
+        action="rollback",
+        generation=previous["generation"],
+        result="rolled-back",
+        explicit_state=state,
+    )
+    lines.append(
+        f"deploy {name}: rolled back to generation "
+        f"{previous['generation']} (artifact {previous['artifact']})"
+    )
     return 0, lines
 
 
 def _source_rev():
     return os.environ.get("DEPLOY_SOURCE_REV") or "working-tree"
-
 
 
 # --- Command dispatch ------------------------------------------------------
@@ -850,8 +912,13 @@ def main(argv):
         flag = next(
             (
                 f
-                for f in ("--registry", "--state-dir", "--profile-base",
-                          "--unit-dir", "--scope")
+                for f in (
+                    "--registry",
+                    "--state-dir",
+                    "--profile-base",
+                    "--unit-dir",
+                    "--scope",
+                )
                 if arg == f or arg.startswith(f + "=")
             ),
             None,
@@ -872,11 +939,9 @@ def main(argv):
     explicit_state = flag_values.get("--state-dir")
     explicit_base = flag_values.get("--profile-base")
     explicit_units = flag_values.get("--unit-dir")
-    scope = flag_values.get("--scope") or os.environ.get("DEPLOY_SCOPE") \
-        or "system"
+    scope = flag_values.get("--scope") or os.environ.get("DEPLOY_SCOPE") or "system"
     if scope not in ("system", "user"):
-        print(f"deploy: --scope must be system or user, got {scope!r}",
-              file=sys.stderr)
+        print(f"deploy: --scope must be system or user, got {scope!r}", file=sys.stderr)
         return 2
     dry_run = "--dry-run" in args
     args = [a for a in args if a != "--dry-run"]
@@ -948,9 +1013,14 @@ def main(argv):
                 print(f"deploy: {NOT_IMPLEMENTED}", file=sys.stderr)
                 return 2
             code, lines = execute_deploy(
-                name, defn, entries, base=explicit_base,
-                state=explicit_state, scope=scope,
-                units=unit_dir(explicit_units, scope))
+                name,
+                defn,
+                entries,
+                base=explicit_base,
+                state=explicit_state,
+                scope=scope,
+                units=unit_dir(explicit_units, scope),
+            )
             for line in lines:
                 print(line, file=sys.stderr if code else sys.stdout)
             return code
@@ -968,9 +1038,14 @@ def main(argv):
             print(f"deploy: {NOT_IMPLEMENTED}", file=sys.stderr)
             return 2
         code, lines = execute_rollback(
-            name, defn, entries, base=explicit_base,
-            state=explicit_state, scope=scope,
-            units=unit_dir(explicit_units, scope))
+            name,
+            defn,
+            entries,
+            base=explicit_base,
+            state=explicit_state,
+            scope=scope,
+            units=unit_dir(explicit_units, scope),
+        )
         for line in lines:
             print(line, file=sys.stderr if code else sys.stdout)
         return code

@@ -131,13 +131,18 @@ class DispatchBatchTests(unittest.TestCase):
         ]
         return rc, records, fake_q
 
-    def base_argv(self, *extra):
+    def base_argv(self, *extra, queue=QUEUE):
         return [
-            "--queue", QUEUE,
-            "--worker", WORKER,
-            "--count", "2",
-            "--reason", "batch dispatch for the test bundle",
-            "--notes", "lane notes for the batch",
+            "--queue",
+            queue,
+            "--worker",
+            WORKER,
+            "--count",
+            "2",
+            "--reason",
+            "batch dispatch for the test bundle",
+            "--notes",
+            "lane notes for the batch",
             *extra,
         ]
 
@@ -149,8 +154,7 @@ class DispatchBatchTests(unittest.TestCase):
     def test_dry_run_claims_and_dispatches_nothing(self):
         rows = [row(101, 555), row(102, 556)]
         rc, records, fake_q = self.run_main(
-            self.base_argv("--to", "opencode", "--session-id", "ses_lane",
-                           "--dry-run"),
+            self.base_argv("--to", "opencode", "--session-id", "ses_lane", "--dry-run"),
             rows,
             send_impl=lambda *a: self.fail("dry run must not send"),
         )
@@ -171,19 +175,27 @@ class DispatchBatchTests(unittest.TestCase):
         rows = [row(101, 555), row(102, 556)]
         sends = []
 
-        def send_impl(queue_name, task_id, worker, from_session,
-                      reason, notes, worktree):
-            sends.append({
-                "task": task_id, "from": from_session,
-                "reason": reason, "notes": notes, "worktree": worktree,
-            })
+        def send_impl(
+            queue_name, task_id, worker, from_session, reason, notes, worktree
+        ):
+            sends.append(
+                {
+                    "task": task_id,
+                    "from": from_session,
+                    "reason": reason,
+                    "notes": notes,
+                    "worktree": worktree,
+                }
+            )
             sid = f"ses_item_{task_id}"
             self.bound[task_id] = sid
             return {"ok": True, "session_id": sid, "task": task_id}
 
         rc, records, _ = self.run_main(
             self.base_argv("--to", "opencode", "--session-id", "ses_lane"),
-            rows, send_impl=send_impl)
+            rows,
+            send_impl=send_impl,
+        )
         self.assertEqual(rc, 0)
         items = self.items(records)
         self.assertEqual([r["outcome"] for r in items], ["bound", "bound"])
@@ -193,26 +205,54 @@ class DispatchBatchTests(unittest.TestCase):
         self.assertEqual(len(set(worktrees)), 2, "one worktree per item")
         for s in sends:
             self.assertEqual(s["from"], "ses_lane")
-            self.assertEqual(s["reason"],
-                             "batch dispatch for the test bundle")
+            self.assertEqual(s["reason"], "batch dispatch for the test bundle")
             self.assertEqual(s["notes"], "lane notes for the batch")
             self.assertIn(str(s["task"]), s["worktree"])
+
+    def test_one_queue_code_batch_preserves_stream_and_repo(self):
+        sends = []
+
+        def send_impl(queue_name, task_id, *rest):
+            sends.append((queue_name, task_id))
+            self.bound[task_id] = f"ses_item_{task_id}"
+            return {"ok": True, "session_id": self.bound[task_id], "task": task_id}
+
+        rc, records, fake_q = self.run_main(
+            self.base_argv("--to", "opencode", "--session-id", "ses_lane", queue="code"),
+            [dict(row(101, 555), queue="code"), dict(row(102, 556), queue="code")],
+            send_impl=send_impl,
+        )
+        self.assertEqual(rc, 0)
+        self.assertEqual([r["outcome"] for r in self.items(records)], ["bound", "bound"])
+        self.assertEqual(sends, [("code", 101), ("code", 102)])
+        claim, = fake_q.verbs("claim")
+        self.assertEqual(claim[claim.index("--queue") + 1], "code")
+        self.assertEqual(
+            [primary for primary, _, _ in self.worktree_calls],
+            ["/home/user/git/code", "/home/user/git/code"],
+        )
 
     def test_failed_send_releases_item_with_flag(self):
         rows = [row(101, 555), row(102, 556)]
 
         def send_impl(queue_name, task_id, *rest):
             if task_id == 102:
-                return {"ok": False, "phase": "create",
-                        "reason": "session create refused"}
+                return {
+                    "ok": False,
+                    "phase": "create",
+                    "reason": "session create refused",
+                }
             sid = "ses_item_101"
             self.bound[task_id] = sid
             return {"ok": True, "session_id": sid}
 
         rc, records, fake_q = self.run_main(
-            self.base_argv("--to", "opencode", "--session-id", "ses_lane",
-                           "--release-failures"),
-            rows, send_impl=send_impl)
+            self.base_argv(
+                "--to", "opencode", "--session-id", "ses_lane", "--release-failures"
+            ),
+            rows,
+            send_impl=send_impl,
+        )
         self.assertEqual(rc, 1)
         by_task = {r["task"]: r for r in self.items(records)}
         self.assertEqual(by_task[101]["outcome"], "bound")
@@ -226,29 +266,44 @@ class DispatchBatchTests(unittest.TestCase):
         rows = [row(101, 555)]
 
         def send_impl(queue_name, task_id, *rest):
-            return {"ok": False, "phase": "pool",
-                    "reason": "opencode session pool is full"}
+            return {
+                "ok": False,
+                "phase": "pool",
+                "reason": "opencode session pool is full",
+            }
 
         rc, records, fake_q = self.run_main(
-            self.base_argv("--to", "opencode", "--session-id", "ses_lane",
-                           "--count", "1"),
-            rows, send_impl=send_impl)
+            self.base_argv(
+                "--to", "opencode", "--session-id", "ses_lane", "--count", "1"
+            ),
+            rows,
+            send_impl=send_impl,
+        )
         self.assertEqual(rc, 1)
         item = self.items(records)[0]
         self.assertEqual(item["outcome"], "held_by_lane_direct")
-        self.assertEqual(fake_q.verbs("release"), [],
-                         "no release without the flag")
+        self.assertEqual(fake_q.verbs("release"), [], "no release without the flag")
 
     def test_unverified_bind_releases_item(self):
         rows = [row(101, 555)]
+
         # The send reports a session, but live state never shows it.
         def send_impl(queue_name, task_id, *rest):
             return {"ok": True, "session_id": "ses_ghost"}
 
         rc, records, fake_q = self.run_main(
-            self.base_argv("--to", "opencode", "--session-id", "ses_lane",
-                           "--count", "1", "--release-failures"),
-            rows, send_impl=send_impl)
+            self.base_argv(
+                "--to",
+                "opencode",
+                "--session-id",
+                "ses_lane",
+                "--count",
+                "1",
+                "--release-failures",
+            ),
+            rows,
+            send_impl=send_impl,
+        )
         self.assertEqual(rc, 1)
         item = self.items(records)[0]
         self.assertEqual(item["outcome"], "released_to_queue")
@@ -261,8 +316,9 @@ class DispatchBatchTests(unittest.TestCase):
         rows = [row(101, 555)]
         self.bound[101] = "ses_claude_1"
         rc, records, fake_q = self.run_main(
-            self.base_argv("--to", "Muse", "--count", "1",
-                           "--bind", "101:ses_claude_1"),
+            self.base_argv(
+                "--to", "Muse", "--count", "1", "--bind", "101:ses_claude_1"
+            ),
             rows,
             send_impl=lambda *a: self.fail("Muse items never send"),
         )
@@ -278,13 +334,36 @@ class DispatchBatchTests(unittest.TestCase):
     def test_claude_item_without_bind_is_prepared_unbound(self):
         rows = [row(101, 555)]
         rc, records, fake_q = self.run_main(
-            self.base_argv("--to", "Muse", "--count", "1"),
-            rows)
+            self.base_argv("--to", "Muse", "--count", "1"), rows
+        )
         self.assertEqual(rc, 1, "an unbound Muse item fails the batch")
         item = self.items(records)[0]
         self.assertEqual(item["outcome"], "prepared_unbound")
         self.assertIn("bind_command", item)
         self.assertEqual(fake_q.verbs("bind"), [])
+
+    def test_claude_claim_carries_the_muse_lane_stamp(self):
+        # #8176: a Muse-family batch claim stamps the muse-lane
+        # marker (the lane surfaces carry no session model of
+        # their own); an opencode claim must NOT carry it — its
+        # stamp is derived from the named session by the queue
+        # client instead.
+        rows = [row(101, 555)]
+        _rc, _records, fake_q = self.run_main(
+            self.base_argv("--to", "Muse", "--count", "1"), rows
+        )
+        claim = fake_q.verbs("claim")[0]
+        self.assertEqual(claim[claim.index("--model-provider") + 1], "muse-lane")
+        self.assertEqual(claim[claim.index("--model-id") + 1], "muse-lane")
+
+        rows = [row(101, 555), row(102, 556)]
+        _rc, _records, fake_q = self.run_main(
+            self.base_argv("--to", "opencode", "--session-id", "ses_lane", "--dry-run"),
+            rows,
+        )
+        claim = fake_q.verbs("claim")[0]
+        self.assertNotIn("--model-provider", claim)
+        self.assertIn("ses_lane", claim)
 
     def test_single_item_batch_accepts_bare_row_response(self):
         # Regression (live acceptance, #8217): --count 1 is the
@@ -294,10 +373,20 @@ class DispatchBatchTests(unittest.TestCase):
         db.queue = fake_q
         out = io.StringIO()
         with contextlib.redirect_stdout(out):
-            rc = db.main(["dispatch_batch.py",
-                          *self.base_argv("--to", "opencode",
-                                          "--session-id", "ses_lane",
-                                          "--count", "1", "--dry-run")])
+            rc = db.main(
+                [
+                    "dispatch_batch.py",
+                    *self.base_argv(
+                        "--to",
+                        "opencode",
+                        "--session-id",
+                        "ses_lane",
+                        "--count",
+                        "1",
+                        "--dry-run",
+                    ),
+                ]
+            )
         self.assertEqual(rc, 0)
         summary = json.loads(out.getvalue().strip().splitlines()[-1])
         self.assertEqual(summary["tasks"], [101])
@@ -309,16 +398,21 @@ class DispatchBatchTests(unittest.TestCase):
         db.queue = lambda *a, timeout=120: called.append(a) or (0, "{}", "")
         out = io.StringIO()
         with contextlib.redirect_stdout(out):
-            rc = db.main(["dispatch_batch.py",
-                          *self.base_argv("--to", "opencode",
-                                          "--session-id", "ses_lane",
-                                          "--count", "6")])
+            rc = db.main(
+                [
+                    "dispatch_batch.py",
+                    *self.base_argv(
+                        "--to", "opencode", "--session-id", "ses_lane", "--count", "6"
+                    ),
+                ]
+            )
         self.assertEqual(rc, 2)
         self.assertEqual(called, [], "over-cap never reaches the broker")
 
     def test_opencode_requires_session_id(self):
         rc, records, fake_q = self.run_main(
-            self.base_argv("--to", "opencode"), [row(101, 555)])
+            self.base_argv("--to", "opencode"), [row(101, 555)]
+        )
         self.assertEqual(rc, 2)
         self.assertEqual(fake_q.calls, [])
 

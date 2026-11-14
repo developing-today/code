@@ -188,9 +188,7 @@ describe("reconcileRepos prs stream sources pulls-shaped data (#4528)", () => {
 
   test("merged-first-sight stores merged=1 + merged_at", async () => {
     const repo = "developing-today/prs-merged-first-sight";
-    const { fetchFn } = prsFake(repo, [
-      pullsPr(repo, 8, { state: "closed", merged_at: "2026-10-03T00:00:00Z" }),
-    ]);
+    const { fetchFn } = prsFake(repo, [pullsPr(repo, 8, { state: "closed", merged_at: "2026-10-03T00:00:00Z" })]);
     const result = await reconcileRepos(db, { PM_REPOS: repo, GITHUB_TOKEN: "test-token" }, fetchFn);
     expect(result.ok).toBe(true);
     const items = await getItems(db, [`${repo}#8`]);
@@ -207,19 +205,23 @@ describe("reconcileRepos prs stream sources pulls-shaped data (#4528)", () => {
     // materialized draft=0/merged=0 with no merged_at.
     await upsertItem(
       db,
-      fromIssueOrPr(repo, {
-        number: 9,
-        html_url: `https://github.com/${repo}/pull/9`,
-        url: `https://api.github.com/repos/${repo}/issues/9`,
-        title: "pr 9",
-        state: "open",
-        user: { login: "drew" },
-        labels: [],
-        assignees: [],
-        pull_request: { url: `https://api.github.com/repos/${repo}/pulls/9` },
-        created_at: "2026-10-01T00:00:00Z",
-        updated_at: "2026-10-02T00:00:00Z",
-      }, "pr"),
+      fromIssueOrPr(
+        repo,
+        {
+          number: 9,
+          html_url: `https://github.com/${repo}/pull/9`,
+          url: `https://api.github.com/repos/${repo}/issues/9`,
+          title: "pr 9",
+          state: "open",
+          user: { login: "drew" },
+          labels: [],
+          assignees: [],
+          pull_request: { url: `https://api.github.com/repos/${repo}/pulls/9` },
+          created_at: "2026-10-01T00:00:00Z",
+          updated_at: "2026-10-02T00:00:00Z",
+        },
+        "pr",
+      ),
     );
     expect((await getItems(db, [`${repo}#9`]))[0].draft).toBe(0);
     // A later polls pass with pulls truth heals the row.
@@ -314,7 +316,13 @@ describe("wrong-shape list elements (#7009)", () => {
       if (url.includes("/pulls/1/reviews")) {
         return jsonRes([
           null,
-          { id: 701, body: "ok review", user: { login: "drew" }, state: "APPROVED", submitted_at: "2026-10-05T00:00:00Z" },
+          {
+            id: 701,
+            body: "ok review",
+            user: { login: "drew" },
+            state: "APPROVED",
+            submitted_at: "2026-10-05T00:00:00Z",
+          },
         ]);
       }
       if (url.includes("/pulls?")) {

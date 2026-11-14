@@ -96,10 +96,7 @@ afterEach(() => vi.unstubAllGlobals());
 
 describe("mirror builders (#8580)", () => {
   it("labelsOf returns sorted label names", () => {
-    expect(labelsOf({ labels: [{ name: "b" }, { name: "a" }] })).toEqual([
-      "a",
-      "b",
-    ]);
+    expect(labelsOf({ labels: [{ name: "b" }, { name: "a" }] })).toEqual(["a", "b"]);
     expect(labelsOf({})).toEqual([]);
   });
 
@@ -210,33 +207,23 @@ describe("mirror writers (#8580)", () => {
     expect(sql).toContain("INSERT INTO github_mirror_issues");
     expect(sql).toContain("ON CONFLICT(repo, number) DO UPDATE");
     // Out-of-order deliveries must not overwrite a newer stored snapshot.
-    expect(sql).toContain(
-      "excluded.gh_updated_at >= github_mirror_issues.gh_updated_at",
-    );
+    expect(sql).toContain("excluded.gh_updated_at >= github_mirror_issues.gh_updated_at");
     expect(sql).toContain("INSERT INTO github_mirror_meta");
-    const upsert = stmts.find((s) =>
-      s.sql.includes("INSERT INTO github_mirror_issues"),
-    );
+    const upsert = stmts.find((s) => s.sql.includes("INSERT INTO github_mirror_issues"));
     const values = (upsert?.args ?? []).map((a) => a.value);
     expect(values).toContain(REPO);
     expect(values).toContain("8580");
     expect(values).toContain('["priority/high","task/small-fix"]');
     // body hash is a real SHA-256 of the payload body
-    expect(
-      values.some((v) => typeof v === "string" && /^[0-9a-f]{64}$/.test(v)),
-    ).toBe(true);
+    expect(values.some((v) => typeof v === "string" && /^[0-9a-f]{64}$/.test(v))).toBe(true);
   });
 
   it("mirrorPrEvent upserts the PR row with merged state", async () => {
     const stmts = capturePipeline();
     await mirrorPrEvent(env, prPayload, REPO);
-    const upsert = stmts.find((s) =>
-      s.sql.includes("INSERT INTO github_mirror_pull_requests"),
-    );
+    const upsert = stmts.find((s) => s.sql.includes("INSERT INTO github_mirror_pull_requests"));
     expect(upsert).toBeDefined();
-    expect(upsert?.sql).toContain(
-      "excluded.gh_updated_at >= github_mirror_pull_requests.gh_updated_at",
-    );
+    expect(upsert?.sql).toContain("excluded.gh_updated_at >= github_mirror_pull_requests.gh_updated_at");
     const values = (upsert?.args ?? []).map((a) => a.value);
     expect(values).toContain("8601");
     expect(values).toContain("abc123");
@@ -264,9 +251,7 @@ describe("mirror writers (#8580)", () => {
     expect(sql).toContain("UPDATE github_mirror_issues SET");
     expect(sql).toContain("latest_agent_note_id = CASE");
     expect(sql).toContain("OR ? >= latest_agent_note_id");
-    const update = stmts.find((s) =>
-      s.sql.startsWith("UPDATE github_mirror_issues"),
-    );
+    const update = stmts.find((s) => s.sql.startsWith("UPDATE github_mirror_issues"));
     const values = (update?.args ?? []).map((a) => a.value);
     expect(values).toContain("777");
     expect(values).toContain("4");
@@ -278,9 +263,7 @@ describe("mirror writers (#8580)", () => {
     const sql = stmts.map((s) => s.sql).join("\n");
     // A deleted issue leaves the read model (projector precedent, #4210):
     // no upsert of its final snapshot, and the meta stamp still lands.
-    expect(sql).toContain(
-      "DELETE FROM github_mirror_issues WHERE repo = ? AND number = ?",
-    );
+    expect(sql).toContain("DELETE FROM github_mirror_issues WHERE repo = ? AND number = ?");
     expect(sql).not.toContain("INSERT INTO github_mirror_issues");
     expect(sql).toContain("INSERT INTO github_mirror_meta");
     const del = stmts.find((s) => s.sql.startsWith("DELETE FROM"));
@@ -294,15 +277,9 @@ describe("mirror writers (#8580)", () => {
     // deletion marker at or after the incoming item's source
     // timestamp absorbs the item; only a strictly newer item passes.
     expect(deletionBlocks(null, "2026-11-11T02:00:00Z")).toBe(false);
-    expect(deletionBlocks("2026-11-11T03:00:00Z", "2026-11-11T02:00:00Z")).toBe(
-      true,
-    );
-    expect(deletionBlocks("2026-11-11T03:00:00Z", "2026-11-11T03:00:00Z")).toBe(
-      true,
-    );
-    expect(deletionBlocks("2026-11-11T03:00:00Z", "2026-11-11T04:00:00Z")).toBe(
-      false,
-    );
+    expect(deletionBlocks("2026-11-11T03:00:00Z", "2026-11-11T02:00:00Z")).toBe(true);
+    expect(deletionBlocks("2026-11-11T03:00:00Z", "2026-11-11T03:00:00Z")).toBe(true);
+    expect(deletionBlocks("2026-11-11T03:00:00Z", "2026-11-11T04:00:00Z")).toBe(false);
     // No provable order: a marker absorbs an unversioned item, and a
     // versionless marker still absorbs.
     expect(deletionBlocks("2026-11-11T03:00:00Z", null)).toBe(true);
@@ -313,9 +290,7 @@ describe("mirror writers (#8580)", () => {
   it("mirrorIssueEvent writes a tombstone on an issues deleted delivery", async () => {
     const stmts = capturePipeline();
     await mirrorIssueEvent(env, { ...issuePayload, action: "deleted" }, REPO);
-    const tomb = stmts.find((s) =>
-      s.sql.includes("INSERT INTO github_mirror_tombstones"),
-    );
+    const tomb = stmts.find((s) => s.sql.includes("INSERT INTO github_mirror_tombstones"));
     expect(tomb).toBeDefined();
     const values = (tomb?.args ?? []).map((a) => a.value);
     expect(values).toContain(REPO);
@@ -334,9 +309,7 @@ describe("mirror writers (#8580)", () => {
     // leave the window between them unguarded.
     const stmts = capturePipeline();
     await mirrorIssueEvent(env, { ...issuePayload, action: "deleted" }, REPO);
-    const tombIdx = stmts.findIndex((s) =>
-      s.sql.includes("INSERT INTO github_mirror_tombstones"),
-    );
+    const tombIdx = stmts.findIndex((s) => s.sql.includes("INSERT INTO github_mirror_tombstones"));
     const delIdx = stmts.findIndex((s) => s.sql.startsWith("DELETE FROM"));
     expect(tombIdx).toBeGreaterThanOrEqual(0);
     expect(delIdx).toBeGreaterThanOrEqual(0);
@@ -349,9 +322,7 @@ describe("mirror writers (#8580)", () => {
     // the snapshot upsert and the comment seed + update.
     let stmts = capturePipeline();
     await mirrorIssueEvent(env, issuePayload, REPO);
-    const upsert = stmts.find((s) =>
-      s.sql.includes("INSERT INTO github_mirror_issues"),
-    );
+    const upsert = stmts.find((s) => s.sql.includes("INSERT INTO github_mirror_issues"));
     expect(upsert?.sql).toContain("FROM github_mirror_tombstones");
     expect(upsert?.sql).toContain("m.gh_updated_at >= ?");
     stmts = capturePipeline();
@@ -369,15 +340,9 @@ describe("mirror writers (#8580)", () => {
       },
       REPO,
     );
-    const seed = stmts.find((s) =>
-      s.sql.includes(
-        "INSERT INTO github_mirror_issues (repo, number, mirrored_at)",
-      ),
-    );
+    const seed = stmts.find((s) => s.sql.includes("INSERT INTO github_mirror_issues (repo, number, mirrored_at)"));
     expect(seed?.sql).toContain("FROM github_mirror_tombstones");
-    const update = stmts.find((s) =>
-      s.sql.startsWith("UPDATE github_mirror_issues"),
-    );
+    const update = stmts.find((s) => s.sql.startsWith("UPDATE github_mirror_issues"));
     expect(update?.sql).toContain("FROM github_mirror_tombstones");
   });
 
@@ -397,9 +362,7 @@ describe("mirror writers (#8580)", () => {
       },
       REPO,
     );
-    const update = stmts.find((s) =>
-      s.sql.startsWith("UPDATE github_mirror_issues SET"),
-    );
+    const update = stmts.find((s) => s.sql.startsWith("UPDATE github_mirror_issues SET"));
     // Both pointer fields move only when the incoming note id is at
     // least the stored one, so an older redelivery cannot overwrite
     // the pointer to a newer note.
@@ -430,9 +393,7 @@ describe("mirror writers (#8580)", () => {
       },
       REPO,
     );
-    const update = stmts.find((s) =>
-      s.sql.startsWith("UPDATE github_mirror_issues SET"),
-    );
+    const update = stmts.find((s) => s.sql.startsWith("UPDATE github_mirror_issues SET"));
     // The count moves only when the carrying object's updated_at is
     // at least the stored COUNT version (comments_gh_updated_at),
     // which advances with it — separately from the snapshot version:
@@ -465,23 +426,17 @@ describe("mirror writers (#8580)", () => {
   it("snapshot upserts move the count only under the count-version guard", async () => {
     const stmts = capturePipeline();
     await mirrorIssueEvent(env, issuePayload, REPO);
-    const upsert = stmts.find((s) =>
-      s.sql.includes("INSERT INTO github_mirror_issues"),
-    );
+    const upsert = stmts.find((s) => s.sql.includes("INSERT INTO github_mirror_issues"));
     // The snapshot's count is guarded by the separate count version,
     // not the snapshot version: a snapshot older than the newest
     // comment still applies its state but cannot regress the count.
     expect(upsert?.sql).toContain("comments_gh_updated_at");
     expect(upsert?.sql).toContain("comments = CASE");
-    expect(upsert?.sql).toContain(
-      "OR excluded.gh_updated_at >= github_mirror_issues.comments_gh_updated_at",
-    );
+    expect(upsert?.sql).toContain("OR excluded.gh_updated_at >= github_mirror_issues.comments_gh_updated_at");
     const values = (upsert?.args ?? []).map((a) => a.value);
     // The count version inserted with a fresh row is the object's
     // own updated_at (the count's version at snapshot time).
-    expect(
-      values.filter((v) => v === "2026-11-11T02:00:00Z").length,
-    ).toBeGreaterThan(1);
+    expect(values.filter((v) => v === "2026-11-11T02:00:00Z").length).toBeGreaterThan(1);
   });
 
   it("mirrorCommentEvent clears a pointer naming the deleted note", async () => {
@@ -500,22 +455,16 @@ describe("mirror writers (#8580)", () => {
       },
       REPO,
     );
-    const clear = stmts.find((s) =>
-      s.sql.includes("latest_agent_note_id = NULL"),
-    );
+    const clear = stmts.find((s) => s.sql.includes("latest_agent_note_id = NULL"));
     expect(clear).toBeDefined();
     const clearValues = (clear?.args ?? []).map((a) => a.value);
     expect(clearValues).toContain("777");
     expect(clearValues).toContain("8580");
     // The comments update itself assigns no pointer for a deletion:
     // its CASE note args carry no value.
-    const update = stmts.find((s) =>
-      s.sql.startsWith("UPDATE github_mirror_issues SET"),
-    );
+    const update = stmts.find((s) => s.sql.startsWith("UPDATE github_mirror_issues SET"));
     const updateValues = (update?.args ?? []).map((a) => a.value);
-    expect(updateValues).not.toContain(
-      "https://example.invalid/issues/8580#c777",
-    );
+    expect(updateValues).not.toContain("https://example.invalid/issues/8580#c777");
   });
 
   it("a deleted note leaves a marker the pointer CASE consults (Codex P2)", async () => {
@@ -536,18 +485,14 @@ describe("mirror writers (#8580)", () => {
       REPO,
     );
     // The deletion records a per-comment marker naming the deleted id.
-    const marker = stmts.find((s) =>
-      s.sql.includes("INSERT INTO github_mirror_deleted_notes"),
-    );
+    const marker = stmts.find((s) => s.sql.includes("INSERT INTO github_mirror_deleted_notes"));
     expect(marker).toBeDefined();
     const markerValues = (marker?.args ?? []).map((a) => a.value);
     expect(markerValues).toContain("777");
     expect(markerValues).toContain("8580");
     // The schema ships with every batch, like the other mirror tables.
     const sql = stmts.map((s) => s.sql).join("\n");
-    expect(sql).toContain(
-      "CREATE TABLE IF NOT EXISTS github_mirror_deleted_notes",
-    );
+    expect(sql).toContain("CREATE TABLE IF NOT EXISTS github_mirror_deleted_notes");
     // And the pointer assignment itself refuses a marked id, in the
     // same statement: a delayed created redelivery of comment 777
     // cannot resurrect the pointer through the empty-pointer branch.
@@ -562,9 +507,7 @@ describe("mirror writers (#8580)", () => {
       },
       REPO,
     );
-    const update = created.find((s) =>
-      s.sql.startsWith("UPDATE github_mirror_issues SET"),
-    );
+    const update = created.find((s) => s.sql.startsWith("UPDATE github_mirror_issues SET"));
     expect(update?.sql).toContain("github_mirror_deleted_notes");
     expect(update?.sql).toContain("d.comment_id = ?");
     const updateValues = (update?.args ?? []).map((a) => a.value);

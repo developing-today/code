@@ -46,6 +46,21 @@
 //! entries (e.g. `BuilderInstalled`) are covered by the chain like every
 //! other entry byte; transferring the module bytes themselves is not
 //! part of the phase-1/2 contract this receiver verifies against.
+//!
+//! Phase 5 adds the authenticated sidecars that note deferred:
+//! [`ReplicationKind::Directory`] and [`ReplicationKind::Module`] frames
+//! ride inside a journal batch, chained by the frame digest and bound
+//! to the batch's verified cursor by the tracker. Their payloads stage
+//! alongside the journal bytes and install only at the batch's terminal
+//! commit — the directory facts atomically replace `directory.jsonl`,
+//! the module bytes are stored content-addressed under `modules/` — so
+//! a truncated or refused batch leaves the previous committed sidecars
+//! exactly as they were, and the sidecars on disk always belong to a
+//! verified cursor. The journal remains the commit point: sidecars
+//! install first, and a crash between the two leaves the old journal
+//! paired with sidecars the journal's own subjects/hash filter at open
+//! (facts are selected per journal subject; a module loads only when
+//! its bytes hash to the journal-named hash).
 
 use std::fs::{self, File, OpenOptions};
 use std::io::Write;
@@ -60,6 +75,18 @@ use super::{JOURNAL_VERSION, JournalEntry, MAX_JOURNAL_VERSION};
 /// File name of the committed replica journal inside the receiver's
 /// directory: the exact JSONL bytes the writer's journal stores.
 pub const REPLICA_JOURNAL_FILE: &str = "journal.jsonl";
+
+/// File name of the committed replica directory facts inside the
+/// receiver's directory: the JSONL the replica open path replays
+/// read-only, replaced atomically at a batch commit when the batch
+/// carried [`ReplicationKind::Directory`] frames.
+pub const REPLICA_DIRECTORY_FILE: &str = "directory.jsonl";
+
+/// Scratch file a directory sidecar is staged on disk under while it
+/// is being installed; renamed over [`REPLICA_DIRECTORY_FILE`] once
+/// fully written and fsynced. A leftover at open time is crash debris
+/// and is removed.
+const DIRECTORY_INSTALLING_FILE: &str = "directory.jsonl.installing";
 
 /// Scratch file a snapshot is staged on disk under while it is being
 /// installed; renamed over [`REPLICA_JOURNAL_FILE`] once fully written
@@ -179,6 +206,8 @@ pub struct DurableReceiver {
     session: Option<ReplicationTracker>,
     session_started: bool,
     staged: Option<Staged>,
+    staged_directory: Option<Vec<u8>>,
+    staged_module: Option<Vec<u8>>,
 }
 
 impl DurableReceiver {
@@ -206,6 +235,10 @@ impl DurableReceiver {
         if installing.exists() {
             fs::remove_file(&installing)?;
         }
+        let directory_installing = dir.join(DIRECTORY_INSTALLING_FILE);
+        if directory_installing.exists() {
+            fs::remove_file(&directory_installing)?;
+        }
         let journal_path = dir.join(REPLICA_JOURNAL_FILE);
         let (committed_cursor, header_version) = if journal_path.exists() {
             let bytes = fs::read(&journal_path)?;
@@ -223,6 +256,8 @@ impl DurableReceiver {
             session: None,
             session_started: false,
             staged: None,
+            staged_directory: None,
+            staged_module: None,
         })
     }
 
@@ -288,6 +323,8 @@ impl DurableReceiver {
         .ok();
         self.session_started = false;
         self.staged = None;
+        self.staged_directory = None;
+        self.staged_module = None;
     }
 
     /// Abandon the live session (disconnect): staged bytes are dropped
@@ -296,6 +333,8 @@ impl DurableReceiver {
         self.session = None;
         self.session_started = false;
         self.staged = None;
+        self.staged_directory = None;
+        self.staged_module = None;
     }
 
     /// Verify one encoded frame and stage or commit its payload.
@@ -327,6 +366,16 @@ impl DurableReceiver {
                 }
             }
         }
+        // Directory payloads are validated before the tracker sees the
+        // frame, like the snapshot-first ordering above: a facts chunk
+        // that is not complete directory-entry lines can never commit,
+        // and refusing it here leaves the session state untouched.
+        if let Some(signed) = SignedReplicationEnvelope::decode_frame(frame_bytes) {
+            if signed.envelope.kind == ReplicationKind::Directory {
+                validate_directory_payload(&signed.envelope.payload)
+                    .map_err(|error| ReceiverError::Replication(error))?;
+            }
+        }
         let (accepted, session_cursor, session_version) = {
             let tracker = self.session.as_mut().ok_or(ReceiverError::NoSession)?;
             let accepted = tracker.accept(frame_bytes)?;
@@ -353,11 +402,35 @@ impl DurableReceiver {
                     cursor_after: accepted.cursor_after,
                 })
             }
+            ReplicationKind::Directory => {
+                match self.staged_directory.as_mut() {
+                    Some(staged) => staged.extend_from_slice(&accepted.payload),
+                    None => self.staged_directory = Some(accepted.payload),
+                }
+                self.check_staged_bound()?;
+                Ok(ReceiverProgress::Staged {
+                    kind: accepted.kind,
+                    cursor_after: accepted.cursor_after,
+                })
+            }
+            ReplicationKind::Module => {
+                match self.staged_module.as_mut() {
+                    Some(staged) => staged.extend_from_slice(&accepted.payload),
+                    None => self.staged_module = Some(accepted.payload),
+                }
+                self.check_staged_bound()?;
+                Ok(ReceiverProgress::Staged {
+                    kind: accepted.kind,
+                    cursor_after: accepted.cursor_after,
+                })
+            }
             ReplicationKind::Terminal => {
                 if let Err(error) = self.commit_staged() {
                     self.session = None;
                     self.session_started = false;
                     self.staged = None;
+                    self.staged_directory = None;
+                    self.staged_module = None;
                     return Err(error);
                 }
                 self.committed_cursor = Some(session_cursor);
@@ -373,11 +446,15 @@ impl DurableReceiver {
         let len = self
             .staged
             .as_ref()
-            .map_or(0, |staged| staged.bytes().len());
+            .map_or(0, |staged| staged.bytes().len())
+            + self.staged_directory.as_ref().map_or(0, Vec::len)
+            + self.staged_module.as_ref().map_or(0, Vec::len);
         if len > MAX_STAGED_TRANSFER_BYTES {
             self.session = None;
             self.session_started = false;
             self.staged = None;
+            self.staged_directory = None;
+            self.staged_module = None;
             return Err(ReceiverError::StagedTransferTooLarge);
         }
         Ok(())
@@ -387,6 +464,23 @@ impl DurableReceiver {
     /// atomically (scratch file + fsync + rename + directory fsync);
     /// tail batches append and fsync.
     fn commit_staged(&mut self) -> Result<(), ReceiverError> {
+        // Sidecars install before the journal: the journal is the
+        // commit point, so a crash here leaves the previous committed
+        // journal paired with newer sidecars — a pairing the open path
+        // filters by the journal's own subjects and module hash —
+        // never a new journal silently served with stale facts.
+        if let Some(directory) = self.staged_directory.take() {
+            self.install_directory(&directory)?;
+        }
+        if let Some(module) = self.staged_module.take() {
+            if !module.is_empty() {
+                crate::world_store::ModuleDir::new(self.dir.join("modules"))
+                    .save(&module)
+                    .map_err(|error| {
+                        ReceiverError::Io(std::io::Error::other(format!("{error:#}")))
+                    })?;
+            }
+        }
         let Some(staged) = self.staged.take() else {
             return Ok(());
         };
@@ -452,6 +546,21 @@ impl DurableReceiver {
         Ok(())
     }
 
+    /// Atomically replace the committed directory facts (scratch file
+    /// + fsync + rename + directory fsync), mirroring the snapshot
+    /// journal install.
+    fn install_directory(&self, bytes: &[u8]) -> Result<(), ReceiverError> {
+        let installing = self.dir.join(DIRECTORY_INSTALLING_FILE);
+        {
+            let mut file = File::create(&installing)?;
+            file.write_all(bytes)?;
+            file.sync_all()?;
+        }
+        fs::rename(&installing, self.dir.join(REPLICA_DIRECTORY_FILE))?;
+        self.sync_dir()?;
+        Ok(())
+    }
+
     fn sync_dir(&self) -> Result<(), ReceiverError> {
         File::open(&self.dir)?.sync_all()?;
         Ok(())
@@ -482,6 +591,26 @@ impl DurableReceiver {
         }
         Ok(())
     }
+}
+
+/// A directory sidecar chunk must be complete directory-entry lines:
+/// the writer chunks at entry boundaries, so a chunk that does not end
+/// at a line boundary, or whose lines do not decode as
+/// [`crate::directory::DirectoryEntry`], is malformed in the same way a
+/// journal payload would be.
+fn validate_directory_payload(payload: &[u8]) -> Result<(), super::replication::ReplicationError> {
+    use super::replication::ReplicationError;
+    if payload.is_empty() {
+        return Ok(());
+    }
+    if !payload.ends_with(b"\n") {
+        return Err(ReplicationError::MalformedPayload);
+    }
+    for line in payload.split_inclusive(|byte| *byte == b'\n') {
+        serde_json::from_slice::<crate::directory::DirectoryEntry>(line)
+            .map_err(|_| ReplicationError::MalformedPayload)?;
+    }
+    Ok(())
 }
 
 /// If a previous tail append was interrupted (its append-pending record
@@ -725,6 +854,135 @@ mod tests {
         assert_eq!(receiver.committed_cursor(), Some(expected));
         assert_eq!(receiver.header_version(), Some(1));
         assert_eq!(receiver.read_journal().unwrap(), payload);
+    }
+
+    #[test]
+    fn sidecars_commit_with_the_snapshot_and_only_then() {
+        let dir = TempDir::new().unwrap();
+        let key = signing_key(1);
+        let source = source_of(&key);
+        let mut receiver = receiver(&dir, &key);
+        receiver.begin_session(NONCE);
+        let payload = journal_payload(1);
+        let envelope =
+            ReplicationEnvelope::snapshot(WORLD, source, 1, NONCE, [0; 32], payload.clone())
+                .unwrap();
+        let cursor = envelope.cursor_after;
+        let frame = sign(envelope, &key);
+        let mut prev = frame_digest(&frame);
+        receiver.accept_frame(&frame).unwrap();
+
+        // Directory facts and module bytes ride the batch, chunked.
+        let facts = {
+            let entry = crate::directory::DirectoryEntry::TierSet {
+                tier: crate::directory::Tier::Verified,
+                scopes: 3,
+            };
+            let mut bytes = serde_json::to_vec(&entry).unwrap();
+            bytes.push(b'\n');
+            bytes
+        };
+        let directory =
+            ReplicationEnvelope::directory(WORLD, source, 1, NONCE, cursor, prev, facts.clone());
+        let frame = sign(directory, &key);
+        prev = frame_digest(&frame);
+        receiver.accept_frame(&frame).unwrap();
+
+        let wasm: Vec<u8> = vec![0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00, 0x42];
+        for chunk in wasm.chunks(4) {
+            let module =
+                ReplicationEnvelope::module(WORLD, source, 1, NONCE, cursor, prev, chunk.to_vec());
+            let frame = sign(module, &key);
+            prev = frame_digest(&frame);
+            receiver.accept_frame(&frame).unwrap();
+        }
+
+        // Nothing is durable before the terminal frame.
+        assert!(!dir.path().join(REPLICA_DIRECTORY_FILE).exists());
+        assert!(!dir.path().join("modules").exists());
+        assert_eq!(receiver.committed_cursor(), None);
+
+        let terminal = ReplicationEnvelope::terminal(WORLD, source, 1, NONCE, cursor, prev);
+        assert_eq!(
+            receiver.accept_frame(&sign(terminal, &key)).unwrap(),
+            ReceiverProgress::Committed { cursor }
+        );
+        assert_eq!(receiver.read_journal().unwrap(), payload);
+        assert_eq!(
+            std::fs::read(dir.path().join(REPLICA_DIRECTORY_FILE)).unwrap(),
+            facts
+        );
+        let hash = crate::world_session::module_hash(&wasm);
+        assert_eq!(
+            std::fs::read(dir.path().join("modules").join(format!("{hash}.wasm"))).unwrap(),
+            wasm
+        );
+
+        // A later batch whose sidecars never reach a terminal leaves
+        // the committed sidecars exactly as they were.
+        receiver.begin_session(NONCE);
+        let envelope =
+            ReplicationEnvelope::snapshot(WORLD, source, 1, NONCE, [0; 32], payload.clone())
+                .unwrap();
+        let frame = sign(envelope, &key);
+        let prev = frame_digest(&frame);
+        receiver.accept_frame(&frame).unwrap();
+        let other_facts = {
+            let entry = crate::directory::DirectoryEntry::TierSet {
+                tier: crate::directory::Tier::Verified,
+                scopes: 1,
+            };
+            let mut bytes = serde_json::to_vec(&entry).unwrap();
+            bytes.push(b'\n');
+            bytes
+        };
+        let directory =
+            ReplicationEnvelope::directory(WORLD, source, 1, NONCE, cursor, prev, other_facts);
+        receiver.accept_frame(&sign(directory, &key)).unwrap();
+        receiver.abort_session();
+        assert_eq!(
+            std::fs::read(dir.path().join(REPLICA_DIRECTORY_FILE)).unwrap(),
+            facts
+        );
+    }
+
+    #[test]
+    fn malformed_directory_frame_is_refused_before_the_tracker() {
+        let dir = TempDir::new().unwrap();
+        let key = signing_key(1);
+        let source = source_of(&key);
+        let mut receiver = receiver(&dir, &key);
+        receiver.begin_session(NONCE);
+        let payload = journal_payload(1);
+        let envelope =
+            ReplicationEnvelope::snapshot(WORLD, source, 1, NONCE, [0; 32], payload).unwrap();
+        let cursor = envelope.cursor_after;
+        let frame = sign(envelope, &key);
+        let prev = frame_digest(&frame);
+        receiver.accept_frame(&frame).unwrap();
+
+        let directory = ReplicationEnvelope::directory(
+            WORLD,
+            source,
+            1,
+            NONCE,
+            cursor,
+            prev,
+            b"{\"entry\":\"nope\"}\n".to_vec(),
+        );
+        let error = receiver.accept_frame(&sign(directory, &key)).unwrap_err();
+        assert!(
+            matches!(
+                error,
+                ReceiverError::Replication(
+                    super::super::replication::ReplicationError::MalformedPayload
+                )
+            ),
+            "unexpected error: {error:?}"
+        );
+        // The refusal touched neither the committed state nor the disk.
+        assert_eq!(receiver.committed_cursor(), None);
+        assert!(!dir.path().join(REPLICA_DIRECTORY_FILE).exists());
     }
 
     #[test]

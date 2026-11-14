@@ -179,6 +179,7 @@ pre { max-width: 100%; overflow-x: auto; }
 .qblock .qanswered { color: #3fb950; font-size: 12px; }
 .qblock .qremaining { color: #e3b341; font-size: 12px; }
 .skel { border: 1px dashed #30363d; border-radius: 8px; padding: 14px 12px; margin: 8px 0; color: #8b949e; background: #0d1117; }
+.frag-failed { border: 1px solid #9a6700; border-radius: 8px; padding: 14px 12px; margin: 8px 0; color: #e3b341; background: #0d1117; }
 .orderctl { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin: 8px 0; font-size: 12.5px; color: #8b949e; }
 .bulkbar { border: 1px solid #30363d; border-radius: 8px; padding: 10px 12px; margin: 10px 0; background: #0d1117; display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
 .bulkbar select, .bulkbar input[type="text"] { background: #161b22; color: #e6edf3; border: 1px solid #30363d; border-radius: 6px; padding: 7px 9px; font: inherit; min-height: 44px; }
@@ -290,7 +291,7 @@ body.xp-plan .xpl-costcol { display: none; }
   .dot.off, .dot.unknown { background: #59636e; }
   .dot.fixtures { background: transparent; border-color: #8250df; }
   .cmt { background: #f6f8fa; border-left-color: #d1d9e0; }
-  .cov, .cform, .actbox, .skel { background: #f6f8fa; border-color: #d1d9e0; }
+  .cov, .cform, .actbox, .skel, .frag-failed { background: #f6f8fa; border-color: #d1d9e0; }
   /* Charts keep their authored dark surface in light mode: the SVG
      foregrounds are generated for dark (model labels #c9d1d9, the
      Pareto frontier #e6edf3), so a light chart background would wash
@@ -392,7 +393,7 @@ html[data-theme="light"] .dot.stale, html[data-theme="light"] .dot.absent { back
 html[data-theme="light"] .dot.off, html[data-theme="light"] .dot.unknown { background: #59636e; }
 html[data-theme="light"] .dot.fixtures { background: transparent; border-color: #8250df; }
 html[data-theme="light"] .cmt { background: #f6f8fa; border-left-color: #d1d9e0; }
-html[data-theme="light"] .cov, html[data-theme="light"] .cform, html[data-theme="light"] .actbox, html[data-theme="light"] .skel { background: #f6f8fa; border-color: #d1d9e0; }
+html[data-theme="light"] .cov, html[data-theme="light"] .cform, html[data-theme="light"] .actbox, html[data-theme="light"] .skel, html[data-theme="light"] .frag-failed { background: #f6f8fa; border-color: #d1d9e0; }
 html[data-theme="light"] .chart { background: #0d1117; border-color: #30363d; color: #e6edf3; }
 html[data-theme="light"] .chart .muted { color: #8b949e; }
 html[data-theme="light"] .chart .xpl-ctl button, html[data-theme="light"] .chart .xpl-ctl select { background: #161b22; color: #e6edf3; border-color: #30363d; }

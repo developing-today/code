@@ -753,7 +753,17 @@ func (s *Server) handleTaskCancel(w http.ResponseWriter, r *http.Request) {
 	if reason == "" {
 		reason = "cancelled by client"
 	}
-	t, ok := s.taskStore().CancelWithReason(r.PathValue("id"), reason)
+	// The /v1 tasks surface is the legacy (2025-11-25) one: its
+	// cancel semantics are immediate and sticky — the transition
+	// happens before this response and stands whatever the work
+	// does afterwards (conformance: tasks-cancel-transition-
+	// before-response, tasks-cancelled-sticky; same ruling as
+	// the MCP tasks/cancel path in mcpserver). The cooperative
+	// grace window of CancelWithReason belongs to the modern
+	// extension path only; using it here returned "working" to
+	// the canceller and let a finishing call overwrite the
+	// cancellation (#8457).
+	t, ok := s.taskStore().CancelImmediate(r.PathValue("id"), reason)
 	if !ok {
 		writeErr(w, http.StatusNotFound, tasks.ErrNoTask{ID: r.PathValue("id")})
 		return

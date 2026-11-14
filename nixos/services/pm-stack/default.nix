@@ -51,10 +51,10 @@
 # The Kaneo stack is the exception to the checkout model: pm-kaneo
 # runs deploy.sh from the ~/pm-stack deployment dir, because the
 # rendered .env, the compose project, and the pm-stack_postgres_data
-# volume live there. deploy.sh also renders ~/pm-stack/tunnel.env,
-# which pm-tunnel consumes — systemd expands TUNNEL_TOKEN from that
-# EnvironmentFile in the tunnel's ExecStart, exactly as the
-# hand-written unit relied on. (The tunnel's ingress is managed in
+# volume live there. deploy.sh also renders ~/pm-stack/tunnel.token,
+# which pm-tunnel consumes via cloudflared's --token-file flag
+# (#8933: the token never enters the tunnel's ExecStart argv; the
+# older tunnel.env rendering is kept for rollback only). (The tunnel's ingress is managed in
 # Cloudflare: kaneo.security.cab -> http://localhost:5173 and
 # dispatch.security.cab -> http://localhost:4879.)
 #
@@ -171,6 +171,24 @@ in
       type = lib.types.port;
       default = 7801;
       description = "Port the pm-projector listens on (loopback only).";
+    };
+
+    aggregatorPort = lib.mkOption {
+      type = lib.types.port;
+      default = 4870;
+      description = "Port the pm-aggregator listens on (its PM_AGG_PORT default; the deployed state .env may override it — the #1822 socket unit mirrors this value, so keep the two in step).";
+    };
+
+    dispatchPort = lib.mkOption {
+      type = lib.types.port;
+      default = 4879;
+      description = "Port pm-dispatch listens on (its DISPATCH_PORT default; the deployed env files may override it — the #1822 socket unit mirrors this value, so keep the two in step).";
+    };
+
+    tailnetAddress = lib.mkOption {
+      type = lib.types.str;
+      default = "100.99.113.103";
+      description = "The host's tailnet address; the aggregator and dispatch bind it alongside loopback (via their env files today), so their #1822 socket units listen on it too. Mirrors services.pm-apps.tailnetAddress.";
     };
   };
 
@@ -406,7 +424,6 @@ in
             Type = "oneshot";
             WorkingDirectory = "${repo}/pm-stack/aggregator";
             Environment = [
-              "SUPABASE_PROJECT_REF=keihfchslgjetkmnmzra"
               "BWS_BIN=/run/current-system/sw/bin/bws"
               "BWS_ACCESS_TOKEN_FILE=${home}/.config/bws/access-token"
               "FLEET_FEED_OUT=${aggState}/fleet-feed.json"
@@ -444,11 +461,10 @@ in
           Service = {
             Type = "simple";
             WorkingDirectory = "${stackDir}";
-            # tunnel.env is rendered by the pm-kaneo deploy flow
-            # (deploy.sh); systemd expands TUNNEL_TOKEN from this
-            # EnvironmentFile in ExecStart, exactly as the hand-written
-            # unit relied on.
-            EnvironmentFile = "${stackDir}/tunnel.env";
+            # tunnel.token is rendered by the pm-kaneo deploy flow
+            # (deploy.sh) from the same SOPS secret as the old
+            # tunnel.env; cloudflared reads it via --token-file so
+            # the token stays out of the process argv (#8933).
             # Wait until the edge hostname resolves (#6992).
             TimeoutStartSec = 300;
             ExecStartPre = "${waitForDns}";
@@ -460,7 +476,7 @@ in
             # pm-dispatch callers with 502 ("error code: 502") even
             # though pm-dispatch itself was healthy. HTTP/2 runs over
             # TCP and does not depend on the UDP path QUIC needs.
-            ExecStart = "${cloudflared} tunnel --no-autoupdate --protocol http2 --metrics 127.0.0.1:${toString tunnelMetricsPort} run --token \${TUNNEL_TOKEN}";
+            ExecStart = "${cloudflared} tunnel --no-autoupdate --protocol http2 --metrics 127.0.0.1:${toString tunnelMetricsPort} run --token-file ${stackDir}/tunnel.token";
             Restart = "on-failure";
             RestartSec = 5;
           };
@@ -595,6 +611,54 @@ in
             Unit = "pm-tunnel-watchdog.service";
           };
           Install.WantedBy = [ "timers.target" ];
+        };
+      };
+
+      # Socket activation for the PM HTTP services (#1822, slice 1 of
+      # task 15848): the socket units are DEFINED here but deliberately
+      # NOT enabled (no Install.WantedBy) — today each service still
+      # binds its own ports, and enabling a socket for a port the
+      # service also binds would race it. Slice 2 teaches each service
+      # to accept the systemd-passed fd (LISTEN_FDS); slice 3 enables
+      # these sockets (Install.WantedBy = [ "sockets.target" ]) and
+      # drops each service's own bind in the same switch. Listen
+      # addresses mirror the services' live binds, verified on the
+      # laptop 2026-11-14: projector 127.0.0.1:7801; aggregator
+      # 127.0.0.1:4870 + tailnet:4870 + 127.0.0.1:4871 (the freshness
+      # publisher listener, PM_AGG_FRESHNESS_PORT in the unit env);
+      # dispatch 127.0.0.1:4879 + tailnet:4879.
+      systemd.user.sockets = {
+        pm-projector = {
+          Unit.Description = "PM projector listener (#1822; inactive until slice 3)";
+          Socket = {
+            ListenStream = "127.0.0.1:${toString cfg.projectorPort}";
+            Service = "pm-projector.service";
+          };
+        };
+
+        pm-aggregator = {
+          Unit.Description = "PM aggregator listeners (#1822; inactive until slice 3)";
+          Socket = {
+            ListenStream = [
+              "127.0.0.1:${toString cfg.aggregatorPort}"
+              "${cfg.tailnetAddress}:${toString cfg.aggregatorPort}"
+              # The freshness publisher listener (loopback only);
+              # mirrors PM_AGG_FRESHNESS_PORT in the service env above.
+              "127.0.0.1:4871"
+            ];
+            Service = "pm-aggregator.service";
+          };
+        };
+
+        pm-dispatch = {
+          Unit.Description = "pm-dispatch listeners (#1822; inactive until slice 3)";
+          Socket = {
+            ListenStream = [
+              "127.0.0.1:${toString cfg.dispatchPort}"
+              "${cfg.tailnetAddress}:${toString cfg.dispatchPort}"
+            ];
+            Service = "pm-dispatch.service";
+          };
         };
       };
     };

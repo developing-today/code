@@ -132,12 +132,12 @@ release tooling where the history exists.
 Derivation (nearest `<app>/vX.Y.Z` tag on the build commit's history;
 the app is this workspace's short name, `fleet`):
 
-| build state | reported version |
-| --- | --- |
-| exactly on the tag | `X.Y.Z` |
-| on `main`, N commits after the tag | `X.Y.(Z+1)-dev.N+g<shorthash>` |
-| on a feature branch, N commits after | `X.Y.(Z+1)-dev.N+g<shorthash>.<branch-slug>` |
-| no `<app>/v*` tag yet | `0.1.0-dev.N+g<shorthash>` (bare `0.1.0-dev` if no history is available) |
+| build state                          | reported version                                                         |
+| ------------------------------------ | ------------------------------------------------------------------------ |
+| exactly on the tag                   | `X.Y.Z`                                                                  |
+| on `main`, N commits after the tag   | `X.Y.(Z+1)-dev.N+g<shorthash>`                                           |
+| on a feature branch, N commits after | `X.Y.(Z+1)-dev.N+g<shorthash>.<branch-slug>`                             |
+| no `<app>/v*` tag yet                | `0.1.0-dev.N+g<shorthash>` (bare `0.1.0-dev` if no history is available) |
 
 The `+g<hash>` suffix is what guarantees no two distinct commits ever
 report the same version string; the patch-bump + `-dev.N` form is what
@@ -190,14 +190,14 @@ names (`repo-queue`, `queue-broker`, `secrets-broker`,
 `laptop-agent`, `atlas-search`, `laptop-agent-broker`) route to
 their domain through argv0.
 
-| nix attr               | profile | capabilities                                                           |
-| ---------------------- | ------- | ---------------------------------------------------------------------- |
-| `fleet`                | full    | all ten                                                                |
+| nix attr               | profile | capabilities                                                                    |
+| ---------------------- | ------- | ------------------------------------------------------------------------------- |
+| `fleet`                | full    | all ten                                                                         |
 | `fleet-serve`          | serve   | proxy-connect, proxy-serve, queue-broker, secrets-broker, search-serve, secrets |
-| `fleet-static`         | full    | all nine (musl static; the sandbox's artifact)                         |
-| `fleet-connect`        | connect | proxy-connect (dynamic)                                                |
-| `fleet-connect-static` | connect | proxy-connect (musl static, runs anywhere)                             |
-| `fleet-brokers`        | —       | standalone repo-queue / queue-broker / secrets-broker (rollback)       |
+| `fleet-static`         | full    | all nine (musl static; the sandbox's artifact)                                  |
+| `fleet-connect`        | connect | proxy-connect (dynamic)                                                         |
+| `fleet-connect-static` | connect | proxy-connect (musl static, runs anywhere)                                      |
+| `fleet-brokers`        | —       | standalone repo-queue / queue-broker / secrets-broker (rollback)                |
 
 Every package installs its binary as `bin/fleet`; the hyphen
 variants also get a `bin/fleet-serve` / `bin/fleet-connect` symlink

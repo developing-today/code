@@ -4,11 +4,7 @@
 // and the #3981 throughput unit rule (issues only).
 import { describe, expect, test } from "bun:test";
 import { computeFlowAnalytics, UNSET_STATUS } from "../src/flow-analytics.ts";
-import type {
-  ItemHistoryCoverage,
-  ItemHistoryCutoff,
-  ItemHistoryItem,
-} from "../src/item-history.ts";
+import type { ItemHistoryCoverage, ItemHistoryCutoff, ItemHistoryItem } from "../src/item-history.ts";
 
 const REPO = "developing-today/code";
 const W1 = "2026-10-05T00:00:00Z";
@@ -21,10 +17,7 @@ function coverage(partial: Partial<ItemHistoryCoverage> = {}): ItemHistoryCovera
   return { source: "projects-pool", fetchedAt: W1, complete: true, unavailable: false, ...partial };
 }
 
-function item(
-  number: number,
-  partial: Partial<ItemHistoryItem> = {},
-): ItemHistoryItem {
+function item(number: number, partial: Partial<ItemHistoryItem> = {}): ItemHistoryItem {
   return {
     ref: `${REPO}#${number}`,
     repo: REPO,
@@ -109,9 +102,7 @@ describe("flow analytics (#4829)", () => {
     // the incomplete cutoff accrue nothing.
     expect(epic.timeInStatus).toEqual([{ status: "In Progress", itemDays: 7 }]);
     // The only week is W4 (W1->W2, W2->W3 form no week at all).
-    expect(epic.throughput).toEqual([
-      { cutoffAt: W4, completed: 1, completedRefs: [`${REPO}#1`] },
-    ]);
+    expect(epic.throughput).toEqual([{ cutoffAt: W4, completed: 1, completedRefs: [`${REPO}#1`] }]);
   });
 
   test("unavailable cutoff is a gap, and items seen only there create no group", () => {
@@ -136,10 +127,7 @@ describe("flow analytics (#4829)", () => {
 
   test("throughput counts issues only; PRs still accrue time-in-status", () => {
     const pr = (p: Partial<ItemHistoryItem>) => item(7, { kind: "pr", parentRef: EPIC, ...p });
-    const cutoffs = [
-      cutoff(W1, [pr({})]),
-      cutoff(W2, [pr({ state: "merged", status: "Done" })]),
-    ];
+    const cutoffs = [cutoff(W1, [pr({})]), cutoff(W2, [pr({ state: "merged", status: "Done" })])];
     const out = computeFlowAnalytics(cutoffs);
     const epic = out.groups.find((g) => g.groupRef === EPIC)!;
     expect(epic.throughput).toEqual([{ cutoffAt: W2, completed: 0, completedRefs: [] }]);
@@ -149,10 +137,7 @@ describe("flow analytics (#4829)", () => {
   });
 
   test("unset status is labelled, and empty history yields an empty window", () => {
-    const cutoffs = [
-      cutoff(W1, [item(1, { status: null })]),
-      cutoff(W2, [item(1, { status: null })]),
-    ];
+    const cutoffs = [cutoff(W1, [item(1, { status: null })]), cutoff(W2, [item(1, { status: null })])];
     const out = computeFlowAnalytics(cutoffs);
     expect(out.groups[0]!.timeInStatus).toEqual([{ status: UNSET_STATUS, itemDays: 7 }]);
 
@@ -176,9 +161,6 @@ describe("flow analytics (#4829)", () => {
     expect(epic.throughput.every((w) => w.completed === 0)).toBe(true);
     expect(epic.throughput.flatMap((w) => w.completedRefs)).toEqual([]);
     const unassigned = out.groups.find((g) => g.groupRef === null)!;
-    expect(unassigned.throughput).toEqual([
-      { cutoffAt: W2, completed: 1, completedRefs: [`${REPO}#1`] },
-    ]);
+    expect(unassigned.throughput).toEqual([{ cutoffAt: W2, completed: 1, completedRefs: [`${REPO}#1`] }]);
   });
-
 });

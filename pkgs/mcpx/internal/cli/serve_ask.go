@@ -266,7 +266,16 @@ func (d daemonAsker) Poll(ctx context.Context, callID string, wait time.Duration
 		out.Text, out.IsError = reply.Error, true
 		// The protocol layer relays this as the error itself when the
 		// tool is a pass-through upstream's, and ignores it otherwise.
-		out.Upstream = upstreamError(errors.New(reply.Error))
+		// The structured carriage is the error as it arrived -- code,
+		// message and data. The text heuristic below survives only for
+		// replies without it: it recovers a code and a message from the
+		// rendered string, and data (a -32021's requiredCapabilities,
+		// say) is unrecoverable from text (#2435).
+		if reply.Upstream != nil {
+			out.Upstream = &mcpserver.UpstreamError{Code: reply.Upstream.Code, Message: reply.Upstream.Message, Data: reply.Upstream.Data}
+		} else {
+			out.Upstream = upstreamError(errors.New(reply.Error))
+		}
 		// Classified for the two methods whose failure is a protocol
 		// error; which one applies is the caller's to pick, since the
 		// same upstream -32602 means not-found for a read and a bad

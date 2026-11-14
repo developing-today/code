@@ -6,11 +6,7 @@
 import { describe, expect, test } from "bun:test";
 import { computeFlowAnalytics } from "../src/flow-analytics.ts";
 import { flowChartsHtml } from "../src/flow-charts.ts";
-import type {
-  ItemHistoryCoverage,
-  ItemHistoryCutoff,
-  ItemHistoryItem,
-} from "../src/item-history.ts";
+import type { ItemHistoryCoverage, ItemHistoryCutoff, ItemHistoryItem } from "../src/item-history.ts";
 
 const REPO = "developing-today/code";
 const W1 = "2026-10-05T00:00:00Z";

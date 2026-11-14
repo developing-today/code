@@ -8,17 +8,16 @@ The earlier v1.9-era Talos test cluster (the layout in [`doc/talos-addresses.md`
 
 ## Now
 
-| Title                                       | Status  | Intent                                                                                                                   | Links |
-| ------------------------------------------- | ------- | ------------------------------------------------------------------------------------------------------------------------ | ----- |
-| Hardware inventory and first-node selection | planned | Gather hardware stats for all ~12 machines and pick the first 3–5 cluster nodes.                                         | #1080 |
-| Firmware, BIOS and BMC audit                | planned | Confirm firmware versions and every setting are identical across the core machines, verified by routine KVM screenshots. | #1081 |
+| Title                                       | Status  | Intent                                                                                                                   | Links                                                              |
+| ------------------------------------------- | ------- | ------------------------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------ |
+| Hardware inventory and first-node selection | planned | Gather hardware stats for all ~12 machines and pick the first 3–5 cluster nodes.                                         | #1080                                                              |
+| Firmware, BIOS and BMC audit                | planned | Confirm firmware versions and every setting are identical across the core machines, verified by routine KVM screenshots. | #1081                                                              |
 | Basement power and space                    | planned | Dedicated 20A circuits, cleanup and rack layout, so the first nodes can actually run.                                    | #1083 · [electrician brief](basement-cluster-electrician-brief.md) |
 
 ## Next
 
 | Title                                  | Status  | Intent                                                                                        | Links |
 | -------------------------------------- | ------- | --------------------------------------------------------------------------------------------- | ----- |
-| Network fabric                         | planned | Switching and a new addressing plan, replacing the torn-down 01b.us test layout.              | #1084 |
 | Storage assembly and design validation | planned | Build the HDD RAID 10 pools and NVMe tiers, validated against per-drive records.              | #1085 |
 | TALM and Talos bootstrap               | planned | Prove the declarative bootstrap flow, including per-machine drives that are all different.    | #1086 |
 | Cloud extension                        | planned | The OCI always-free fleet, egress offload, and cold tiering to R2 alongside the home cluster. | #1091 |
