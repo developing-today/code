@@ -79,7 +79,7 @@ async function waitUp(port, tries) {
     check("harness + DO start, lazy create", up);
     let r = await fetch(base + q(A, A, "us"));
     let body = await r.json();
-    check("state reports binding, jurisdiction, schema v1", body.binding_id === A && body.jurisdiction === "us" && body.schema_version === 1, JSON.stringify(body));
+    check("state reports binding, jurisdiction, schema v2", body.binding_id === A && body.jurisdiction === "us" && body.schema_version === 2, JSON.stringify(body));
 
     const many = await Promise.all(Array.from({ length: 8 }, () => fetch(base + q("cccccccccccccccccccccccccccccccc", "cccccccccccccccccccccccccccccccc", "eu"))));
     check("concurrent first requests all 200 (idempotent bootstrap)", many.every((x) => x.status === 200));
@@ -97,6 +97,30 @@ async function waitUp(port, tries) {
     check("mismatched jurisdiction on bound object -> 409", r.status === 409);
     r = await fetch(base + q(A, A, "us", "&routed=no"));
     check("unrouted request -> 403", r.status === 403);
+
+    // Slice A (#9954): blob round-trip via reference indirection,
+    // user isolation by hash, dedup, reference-only delete.
+    const blob = (name, binding, j, hash) => "/v1/blobs" + (hash ? "/" + hash : "") + "?name=" + name + "&binding=" + binding + "&jurisdiction=" + j;
+    const bytes = "hosted blob bytes";
+    r = await fetch(base + blob(A, A, "us"), { method: "PUT", body: bytes });
+    const putBody = await r.json();
+    check("PUT blob on A", r.status === 200 && putBody.size === bytes.length && /^[0-9a-f]{64}$/.test(putBody.hash), JSON.stringify(putBody));
+    const hash = putBody.hash;
+    r = await fetch(base + blob(A, A, "us", hash));
+    check("GET blob on A round-trips", r.status === 200 && (await r.text()) === bytes);
+    r = await fetch(base + blob(B, B, "us", hash));
+    check("B cannot read A's blob by hash (isolation)", r.status === 404);
+    r = await fetch(base + blob(B, B, "us"), { method: "PUT", body: bytes });
+    const putB = await r.json();
+    check("PUT same bytes on B dedups to the same hash", r.status === 200 && putB.hash === hash && putB.deduped === true, JSON.stringify(putB));
+    r = await fetch(base + blob(B, B, "us", hash));
+    check("GET blob on B via its own reference", r.status === 200 && (await r.text()) === bytes);
+    r = await fetch(base + blob(A, A, "us", hash), { method: "DELETE" });
+    check("DELETE blob reference on A", r.status === 200);
+    r = await fetch(base + blob(A, A, "us", hash));
+    check("A can no longer read after delete", r.status === 404);
+    r = await fetch(base + blob(B, B, "us", hash));
+    check("B still reads after A's delete (shared bytes kept)", r.status === 200);
   } finally { await stopDev(dev); }
 }
 
