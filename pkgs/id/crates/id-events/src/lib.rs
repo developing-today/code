@@ -28,5 +28,6 @@ pub mod idset;
 pub mod local_claims;
 pub mod local_events;
 pub mod pull_policy;
+pub mod residency_routes;
 pub mod residency_sync;
 pub mod world_access;
