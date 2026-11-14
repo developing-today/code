@@ -851,6 +851,14 @@ fn parse_http_response(raw: &[u8]) -> Result<TransportResponse, TransportError> 
     let mut transfer_encoding_seen = false;
     let mut chunked = false;
     for line in head.lines().skip(1) {
+        // RFC 9112 section 5.2: obs-fold is deprecated and a folded
+        // continuation would otherwise be skipped here, letting the
+        // unfolded field value smuggle codings past the check below
+        // (e.g. "Transfer-Encoding: chunked" folded with ", gzip").
+        // Reject any folded header line outright.
+        if line.starts_with([' ', '\t']) {
+            return Err(TransportError::Io("folded header field".to_owned()));
+        }
         let Some((name, value)) = line.split_once(':') else {
             continue;
         };
@@ -859,7 +867,11 @@ fn parse_http_response(raw: &[u8]) -> Result<TransportResponse, TransportError> 
         }
         transfer_encoding_seen = true;
         for coding in value.split(',') {
-            if !coding.trim().eq_ignore_ascii_case("chunked") || chunked {
+            // Only HTTP optional whitespace (SP / HTAB) may surround a
+            // transfer coding; str::trim would also strip e.g. VT/FF and
+            // accept a malformed field.
+            let coding = coding.trim_matches(|c| matches!(c, ' ' | '\t'));
+            if !coding.eq_ignore_ascii_case("chunked") || chunked {
                 return Err(TransportError::Io(
                     "unsupported transfer encoding".to_owned(),
                 ));
@@ -1432,6 +1444,30 @@ mod tests {
                 "unsupported transfer coding must error: {coding:?}"
             );
         }
+    }
+
+    #[test]
+    fn test_folded_header_fields_are_rejected() {
+        // A folded continuation line must not let an unsupported coding
+        // ride past the Transfer-Encoding check.
+        let raw = b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n , gzip\r\n\r\n4\r\nWiki\r\n0\r\n\r\n";
+        assert!(parse_http_response(raw).is_err());
+        let raw = b"HTTP/1.1 200 OK\r\nX-Note: a\r\n b\r\n\r\nhello";
+        assert!(parse_http_response(raw).is_err());
+    }
+
+    #[test]
+    fn test_transfer_coding_whitespace_is_ows_only() {
+        // Vertical tab is not HTTP optional whitespace: the field is
+        // malformed and must be rejected, not trimmed into "chunked".
+        let raw =
+            "HTTP/1.1 200 OK\r\nTransfer-Encoding: \u{b}chunked\r\n\r\n4\r\nWiki\r\n0\r\n\r\n";
+        assert!(parse_http_response(raw.as_bytes()).is_err());
+        // SP / HTAB around the coding remain fine.
+        let raw =
+            b"HTTP/1.1 200 OK\r\nTransfer-Encoding:\t chunked \t\r\n\r\n4\r\nWiki\r\n0\r\n\r\n";
+        let response = parse_http_response(raw).expect("OWS-wrapped chunked parses");
+        assert_eq!(response.body, "Wiki");
     }
 
     #[test]
