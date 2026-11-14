@@ -814,6 +814,311 @@ mod tests {
         world.shutdown().await.unwrap();
     }
 
+    struct Writer {
+        world: crate::world::WorldHandle,
+        router: Router,
+        endpoint: Endpoint,
+        addr: EndpointAddr,
+    }
+
+    async fn start_writer(dir: &std::path::Path) -> Writer {
+        let (service, _) = open_world(
+            dir,
+            "lobby",
+            WorldLimits::default(),
+            RuntimeLimits::default(),
+            |world| WorldService::new(world, Some("test-admin".to_owned())),
+        )
+        .await
+        .unwrap();
+        let world = service.world().clone();
+        let hub = WorldHub::single(service);
+        let server_endpoint = endpoint().await;
+        let addr = endpoint_addr(&server_endpoint);
+        let router = Router::builder(server_endpoint.clone())
+            .accept(
+                REPLICATION_ALPN,
+                WorldReplicationProtocol::new(hub, SigningKey::from_bytes(&[7; 32])),
+            )
+            .spawn();
+        Writer {
+            world,
+            router,
+            endpoint: server_endpoint,
+            addr,
+        }
+    }
+
+    async fn stop_writer(writer: Writer) {
+        let _ = writer.router.shutdown().await;
+        writer.endpoint.close().await;
+        writer.world.shutdown().await.unwrap();
+    }
+
+    // Oracle: #806 phase 5 acceptance item 4 — a writer outage on the
+    // durable path loses nothing: a sync against the dead writer does
+    // not succeed and leaves the committed cursor and journal bytes
+    // untouched, and the restarted writer (same directory, same
+    // pinned source) resyncs the replica in place to the identical
+    // verified cursor with no journal drift.
+    #[tokio::test]
+    async fn writer_outage_and_restart_resync_without_journal_drift() {
+        let writer_dir = TempDir::new().unwrap();
+        let writer = start_writer(writer_dir.path()).await;
+        let signing_key = SigningKey::from_bytes(&[7; 32]);
+        let source = *signing_key.verifying_key().as_bytes();
+        let client_endpoint = endpoint().await;
+        let replica_dir = TempDir::new().unwrap();
+        let mut receiver = DurableReceiver::open(replica_dir.path(), "lobby", source).unwrap();
+
+        let cursor = sync_replica_once(
+            &client_endpoint,
+            writer.addr.clone(),
+            None,
+            "test-admin",
+            &mut receiver,
+        )
+        .await
+        .unwrap();
+        let journal = receiver.read_journal().unwrap();
+        assert!(!journal.is_empty());
+
+        // Outage: the writer goes away entirely.
+        let dead_addr = writer.addr.clone();
+        stop_writer(writer).await;
+        let outage = tokio::time::timeout(
+            Duration::from_secs(20),
+            sync_replica_once(
+                &client_endpoint,
+                dead_addr,
+                None,
+                "test-admin",
+                &mut receiver,
+            ),
+        )
+        .await;
+        assert!(
+            !matches!(outage, Ok(Ok(_))),
+            "a sync against a dead writer must not succeed"
+        );
+        assert_eq!(receiver.committed_cursor(), Some(cursor));
+        assert_eq!(
+            receiver.read_journal().unwrap(),
+            journal,
+            "an outage must not move the committed journal"
+        );
+
+        // Restart: same directory, same signing key — the replica
+        // resyncs in place to the identical cursor, byte for byte.
+        let writer = start_writer(writer_dir.path()).await;
+        let resynced = sync_replica_once(
+            &client_endpoint,
+            writer.addr.clone(),
+            None,
+            "test-admin",
+            &mut receiver,
+        )
+        .await
+        .unwrap();
+        assert_eq!(resynced, cursor);
+        assert_eq!(receiver.read_journal().unwrap(), journal);
+
+        drop(receiver);
+        stop_writer(writer).await;
+        client_endpoint.close().await;
+    }
+
+    // Oracle: #806 phase 5 acceptance item 4 — a replica restart
+    // reopens the durable state exactly where the sync left it, and
+    // resyncing an already-current replica is idempotent (the
+    // verified cursor and journal bytes do not drift).
+    #[tokio::test]
+    async fn replica_restart_reopens_synced_state_and_resync_is_idempotent() {
+        let writer_dir = TempDir::new().unwrap();
+        let writer = start_writer(writer_dir.path()).await;
+        let signing_key = SigningKey::from_bytes(&[7; 32]);
+        let source = *signing_key.verifying_key().as_bytes();
+        let client_endpoint = endpoint().await;
+        let replica_dir = TempDir::new().unwrap();
+        let mut receiver = DurableReceiver::open(replica_dir.path(), "lobby", source).unwrap();
+
+        let cursor = sync_replica_once(
+            &client_endpoint,
+            writer.addr.clone(),
+            None,
+            "test-admin",
+            &mut receiver,
+        )
+        .await
+        .unwrap();
+        let journal = receiver.read_journal().unwrap();
+
+        // Replica restart: the durable receiver reopens at the
+        // committed cursor with the journal intact.
+        drop(receiver);
+        let mut receiver = DurableReceiver::open(replica_dir.path(), "lobby", source).unwrap();
+        assert_eq!(receiver.committed_cursor(), Some(cursor));
+        assert_eq!(receiver.read_journal().unwrap(), journal);
+
+        // Resync against the same writer changes nothing.
+        let again = sync_replica_once(
+            &client_endpoint,
+            writer.addr.clone(),
+            None,
+            "test-admin",
+            &mut receiver,
+        )
+        .await
+        .unwrap();
+        assert_eq!(again, cursor);
+        assert_eq!(receiver.read_journal().unwrap(), journal);
+
+        drop(receiver);
+        stop_writer(writer).await;
+        client_endpoint.close().await;
+    }
+
+    async fn stop_writer_active(writer: Writer) {
+        // Endpoint first, so an in-flight session's stream closes
+        // instead of lingering to the frame timeout.
+        writer.endpoint.close().await;
+        writer.world.shutdown().await.unwrap();
+        let _ = writer.router.shutdown().await;
+    }
+
+    // Oracle: #806 phase 5 acceptance item 4 — the follow path
+    // reconnects: a follow session whose writer dies ends with the
+    // commits it already absorbed (not an error, not a hang), and a
+    // fresh follow session against the restarted writer (the CLI
+    // reconnect loop's posture) catches the replica up to the same
+    // verified cursor with no journal drift.
+    #[tokio::test]
+    async fn follow_session_reconnects_after_a_writer_restart() {
+        let writer_dir = TempDir::new().unwrap();
+        let writer = start_writer(writer_dir.path()).await;
+        let signing_key = SigningKey::from_bytes(&[7; 32]);
+        let source = *signing_key.verifying_key().as_bytes();
+        let client_endpoint = endpoint().await;
+        let replica_dir = TempDir::new().unwrap();
+        let mut receiver = DurableReceiver::open(replica_dir.path(), "lobby", source).unwrap();
+
+        // First follow session: absorb the snapshot commit, then the
+        // writer dies mid-session. The follow future and the
+        // writer-killer future run on this one task (the on_commit
+        // callback is &mut dyn FnMut and not Send, so no spawn).
+        let (synced, commits) = {
+            let (commits_tx, mut commits_rx) = tokio::sync::mpsc::unbounded_channel();
+            let mut on_commit = |cursor| {
+                let _ = commits_tx.send(cursor);
+            };
+            let mut follow = Box::pin(follow_replica_session(
+                &client_endpoint,
+                writer.addr.clone(),
+                None,
+                "test-admin",
+                &mut receiver,
+                &mut on_commit,
+            ));
+            let mut pending_writer = Some(writer);
+            let mut killer = Box::pin(async move {
+                let first = commits_rx.recv().await;
+                if let Some(w) = pending_writer.take() {
+                    stop_writer_active(w).await;
+                }
+                first
+            });
+            let mut first = None;
+            let outcome = tokio::time::timeout(Duration::from_secs(60), async {
+                let mut follow_out = None;
+                loop {
+                    if follow_out.is_some() && first.is_some() {
+                        break follow_out.take().expect("follow outcome recorded");
+                    }
+                    tokio::select! {
+                        out = &mut follow, if follow_out.is_none() => {
+                            follow_out = Some(out);
+                        }
+                        done = &mut killer, if first.is_none() => {
+                            first = Some(done);
+                        }
+                    }
+                }
+            })
+            .await
+            .expect("the follow session must end when its writer dies");
+            let synced = first
+                .flatten()
+                .expect("the killer must observe the snapshot commit first");
+            let commits = outcome.expect("a follow session with commits ends Ok");
+            (synced, commits)
+        };
+        assert!(commits >= 1, "the snapshot commit was absorbed");
+        assert_eq!(receiver.committed_cursor(), Some(synced));
+        let journal = receiver.read_journal().unwrap();
+        assert!(!journal.is_empty());
+
+        // Reconnect: the restarted writer (same directory, same
+        // pinned source) serves a fresh follow session that catches
+        // the replica up to the same verified cursor, byte for byte.
+        let writer = start_writer(writer_dir.path()).await;
+        let commits = {
+            let (commits_tx, mut commits_rx) = tokio::sync::mpsc::unbounded_channel();
+            let mut on_commit = |cursor| {
+                let _ = commits_tx.send(cursor);
+            };
+            let mut follow = Box::pin(follow_replica_session(
+                &client_endpoint,
+                writer.addr.clone(),
+                None,
+                "test-admin",
+                &mut receiver,
+                &mut on_commit,
+            ));
+            let mut pending_writer = Some(writer);
+            let mut killer = Box::pin(async move {
+                let first = commits_rx.recv().await;
+                if let Some(w) = pending_writer.take() {
+                    stop_writer_active(w).await;
+                }
+                first
+            });
+            let mut first = None;
+            let outcome = tokio::time::timeout(Duration::from_secs(60), async {
+                let mut follow_out = None;
+                loop {
+                    if follow_out.is_some() && first.is_some() {
+                        break follow_out.take().expect("follow outcome recorded");
+                    }
+                    tokio::select! {
+                        out = &mut follow, if follow_out.is_none() => {
+                            follow_out = Some(out);
+                        }
+                        done = &mut killer, if first.is_none() => {
+                            first = Some(done);
+                        }
+                    }
+                }
+            })
+            .await
+            .expect("the reconnected follow session must end with its writer");
+            let caught_up = first
+                .flatten()
+                .expect("the killer must observe the catch-up commit first");
+            assert_eq!(caught_up, synced);
+            outcome.expect("the reconnected follow session ends Ok")
+        };
+        assert!(commits >= 1, "the catch-up commit was absorbed");
+        assert_eq!(receiver.committed_cursor(), Some(synced));
+        assert_eq!(
+            receiver.read_journal().unwrap(),
+            journal,
+            "a reconnect must not drift the committed journal"
+        );
+
+        drop(receiver);
+        client_endpoint.close().await;
+    }
+
     #[tokio::test]
     async fn default_world_requires_admin_before_replication_frames() {
         let dir = TempDir::new().unwrap();
