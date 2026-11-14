@@ -1,6 +1,5 @@
 //! Integration tests proving all public web routers apply their security policy.
 
-#![cfg(feature = "web")]
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
 use std::{path::PathBuf, sync::Arc};
