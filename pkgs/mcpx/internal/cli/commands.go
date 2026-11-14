@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"github.com/developing-today/code/pkgs/mcpx/internal/defaults"
+	"github.com/developing-today/code/pkgs/mcpx/internal/homeutil"
 	"github.com/developing-today/code/pkgs/mcpx/internal/settings"
 	"github.com/developing-today/code/pkgs/mcpx/plugin/opencode/skills"
 	"io"
@@ -69,6 +70,11 @@ type App struct {
 	// Used by the MCP server, which must return what a script produced
 	// rather than write it to a stream the host is parsing as protocol.
 	stdoutOverride interface{ Write([]byte) (int, error) }
+	// environ is the environment Run was invoked with, recorded at the
+	// entrypoint for stage 2 of #1980 (threading it through ResolvePaths,
+	// settings.Environ and the plumbing source). Nil when the App was
+	// built directly; Environ() then falls back to os.Environ().
+	environ Env
 	settingsState
 }
 
@@ -1007,6 +1013,7 @@ func (a *App) runScript(ctx context.Context, args []string, inline bool) error {
 		Runtime:        runtimePref,
 		Interpreter:    interpreterPref,
 		CwdPolicy:      cwdPolicy,
+		Devshell:       set.String("script.devshell"),
 		ConfigDir:      configDir,
 		Setup:          rtSetup,
 		Timeout:        *timeout,
@@ -1160,7 +1167,7 @@ func (a *App) runScript(ctx context.Context, args []string, inline bool) error {
 	if derr != nil {
 		return derr
 	}
-	svc := a.localService(store, c.Socket())
+	svc := a.localService(store, c.Socket(), cfg)
 	wire := execsvc.Options{
 		Session:   sessionKey,
 		Output:    eo.Output,
@@ -1198,7 +1205,7 @@ func (a *App) runScript(ctx context.Context, args []string, inline bool) error {
 			return err
 		}
 		if res.ExitCode != 0 {
-			os.Exit(res.ExitCode)
+			return &exitStatusError{code: res.ExitCode}
 		}
 		return nil
 	}
@@ -1235,10 +1242,12 @@ func (a *App) runScript(ctx context.Context, args []string, inline bool) error {
 			return err
 		}
 	} else if eo.Output != execsvc.OutputStream {
+		a.reportFinalResult(res)
 		a.reportArtifacts(res)
+		a.reportHooks(res)
 	}
 	if res.ExitCode != 0 {
-		os.Exit(res.ExitCode)
+		return &exitStatusError{code: res.ExitCode}
 	}
 	return nil
 }
@@ -1257,6 +1266,23 @@ func runEnvelope(res *execsvc.Result, stdout string, logs []logging.Record, stre
 	if res.TimedOut {
 		env["timedOut"] = true
 	}
+	if res.Error != "" {
+		env["error"] = res.Error
+	}
+	if res.ErrorKind != "" {
+		// The typed failure kind (CODE-30) travels with the error, so
+		// a CLI consumer can branch on it exactly like an HTTP caller
+		// reading the structured Result (Codex review, PR #9205).
+		env["errorKind"] = res.ErrorKind
+	}
+	// Retained hook frames ride in the envelope: a prompt hook's
+	// advice and warnings live only in its frame, and this path
+	// runs with a nil sink, so without this a --json caller paid
+	// for a model call whose entire effect was discarded (Codex
+	// review, PR #9021).
+	if len(res.Hooks) > 0 {
+		env["hooks"] = res.Hooks
+	}
 	if res.StdoutTruncated {
 		env["stdoutTruncated"] = true
 	}
@@ -1267,6 +1293,15 @@ func runEnvelope(res *execsvc.Result, stdout string, logs []logging.Record, stre
 		if json.Unmarshal([]byte(trimmed), &parsed) == nil {
 			env["result"] = parsed
 		}
+	}
+	// The service's result outranks the envelope's own stdout parse:
+	// a final-expression capture (CODE-19) or a hook replacement is
+	// the run's answer even when stdout parses to something else,
+	// and a deliberate null is an answer too.
+	if res.Result != nil {
+		env["result"] = res.Result
+	} else if res.ResultPresent {
+		env["result"] = nil
 	}
 	if len(streamed) > 0 {
 		values := make([]json.RawMessage, 0, len(streamed))
@@ -1790,7 +1825,10 @@ func (a *App) CmdInit(ctx context.Context, args []string) error {
 	}
 	path := ".mcpx.json"
 	if *global {
-		home, _ := os.UserHomeDir()
+		home, err := homeutil.Home()
+		if err != nil {
+			return err
+		}
 		path = filepath.Join(home, ".config", "mcpx", "config.json")
 	}
 	if _, err := os.Stat(path); err == nil && !*force {
@@ -1996,25 +2034,44 @@ func (a *App) CmdSkills(ctx context.Context, args []string) error {
 
 	if subcmd == "install" {
 		dest := toDir
+		globalDest := func(parts ...string) (string, error) {
+			home, err := homeutil.Home()
+			if err != nil {
+				return "", err
+			}
+			return filepath.Join(append([]string{home}, parts...)...), nil
+		}
 		if dest == "" {
 			switch agent {
 			case "claude":
 				if st, err := os.Stat(".claude"); err == nil && st.IsDir() {
 					dest = ".claude/skills"
 				} else {
-					dest = filepath.Join(os.Getenv("HOME"), ".claude", "skills")
+					gd, err := globalDest(".claude", "skills")
+					if err != nil {
+						return err
+					}
+					dest = gd
 				}
 			case "codex":
 				if st, err := os.Stat(".codex"); err == nil && st.IsDir() {
 					dest = ".codex/skills"
 				} else {
-					dest = filepath.Join(os.Getenv("HOME"), ".codex", "skills")
+					gd, err := globalDest(".codex", "skills")
+					if err != nil {
+						return err
+					}
+					dest = gd
 				}
 			case "agy":
 				if st, err := os.Stat(".agents"); err == nil && st.IsDir() {
 					dest = ".agents/skills"
 				} else {
-					dest = filepath.Join(os.Getenv("HOME"), ".gemini", "antigravity", "skills")
+					gd, err := globalDest(".gemini", "antigravity", "skills")
+					if err != nil {
+						return err
+					}
+					dest = gd
 				}
 			default:
 				if st, err := os.Stat(".opencode"); err == nil && st.IsDir() {
@@ -2022,7 +2079,11 @@ func (a *App) CmdSkills(ctx context.Context, args []string) error {
 				} else if st, err := os.Stat(".agents"); err == nil && st.IsDir() {
 					dest = ".agents/skills"
 				} else {
-					dest = filepath.Join(os.Getenv("HOME"), ".config", "opencode", "skills")
+					gd, err := globalDest(".config", "opencode", "skills")
+					if err != nil {
+						return err
+					}
+					dest = gd
 				}
 			}
 		}

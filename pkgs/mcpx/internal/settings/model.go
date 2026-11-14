@@ -34,9 +34,10 @@ func modelSettings() []Setting {
 				"declare it). openai, anthropic and google are configured " +
 				"providers reached through one OpenAI-compatible client, so " +
 				"model.baseURL can point them at a gateway, LiteLLM, Ollama or " +
-				"LM Studio instead. plugin is the opencode-plugin backend, a " +
-				"later slice that depends on #47; naming it resolves to " +
-				"unavailable until it lands. auto prefers a live sampling " +
+				"LM Studio instead. plugin is the plugin backend: a sampler " +
+				"binding over the same broker, labelled for the plugin " +
+				"answerer; naming it resolves to unavailable when the daemon " +
+				"has no plugin answerer path installed. auto prefers a live sampling " +
 				"path, then a configured provider, then fails cleanly.",
 		},
 		{

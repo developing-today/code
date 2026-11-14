@@ -386,7 +386,7 @@ For porting to codex, claude, pi, manus, this is the part that matters.
 
 The shape that ports: **a small core that speaks the daemon API over a unix
 socket, plus a thin adapter per harness.** The core is
-`plugin/opencode/mcpx/daemon.ts` today, and it is already almost harness-free
+`plugin/core/daemon.ts` today, and it is already almost harness-free
 — it takes `$` only for the rung-4 spawn, which §3 removes. Lifting it into a
 harness-free `core` directory beside `opencode` once a second harness exists
 would make the split explicit.
@@ -452,7 +452,7 @@ Only (1) and (2) are required. Everything else degrades.
 
 ### The socket client
 
-- **What.** `plugin/opencode/mcpx/daemon.ts`: find a daemon, then speak
+- **What.** `plugin/core/daemon.ts`: find a daemon, then speak
   `/v1` to it.
 - **Why.** 0.17 ms against 23 ms for a spawn, on a path that runs for every
   tool call. And in v2 there is no spawn available at all.

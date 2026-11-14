@@ -87,7 +87,12 @@ function addToGroup<K>(groups: Map<K, SpendTokens>, key: K, value: SpendTokens):
 }
 
 function directoryBase(directory: string): string {
-  return directory.replace(/[\\/]+$/, "").split(/[\\/]/).at(-1) ?? directory;
+  return (
+    directory
+      .replace(/[\\/]+$/, "")
+      .split(/[\\/]/)
+      .at(-1) ?? directory
+  );
 }
 
 function fleetIssueNumber(directory: string | null): number | null {
@@ -217,7 +222,8 @@ export function projectSpendAttribution(input: SpendAttributionInput): SpendAttr
 
     let reason: SpendUnattributedReason | null = null;
     if (group.parentLeftPool) reason = "parent-left-pool";
-    else if (!issueRef) reason = root?.directory && fleetIssueNumber(root.directory) !== null ? "no-worktree" : "no-binding";
+    else if (!issueRef)
+      reason = root?.directory && fleetIssueNumber(root.directory) !== null ? "no-worktree" : "no-binding";
     else if (!poolItem || (poolItem.parentRef && !poolByRef.has(poolItem.parentRef))) reason = "parent-left-pool";
 
     // Usage facts are split by provider/model within the root group: a child
@@ -250,7 +256,7 @@ export function projectSpendAttribution(input: SpendAttributionInput): SpendAttr
         method,
         issueRef,
         epicRef: poolItem?.epicRef ?? (poolItem?.kind === "Epic" ? poolItem.ref : null),
-        projectId: issueRef ? input.projectByRef?.get(issueRef) ?? null : null,
+        projectId: issueRef ? (input.projectByRef?.get(issueRef) ?? null) : null,
         reason,
       };
       facts.push(fact);

@@ -116,6 +116,9 @@ class _FakeClient:
     def token_for(self, owner):
         return "test-token"
 
+    def assert_repo_in_scope(self, repo):
+        return None
+
 
 class TestFindByExactTitle(unittest.TestCase):
     """The real find_by_exact_title against stubbed Search-API payloads,
@@ -161,11 +164,113 @@ class TestFindByExactTitle(unittest.TestCase):
         self.assertEqual(hit["number"], 8)
 
     def test_exact_issue_past_first_page_is_found(self):
-        page1 = [{"title": f"{self.TITLE} (mention {i})", "number": i} for i in range(100)]
+        page1 = [
+            {"title": f"{self.TITLE} (mention {i})", "number": i} for i in range(100)
+        ]
         issue = {"title": self.TITLE, "number": 99}
         hit, paths = self.run_lookup({1: page1, 2: [issue]})
         self.assertEqual(hit["number"], 99)
         self.assertEqual(len(paths), 2)
+
+
+class TestCreateReadback(unittest.TestCase):
+    """#6901: the create readback must compare body, state and requested
+    labels against what was sent — not just title and number — so a create
+    whose body was dropped or whose labels were not applied fails loudly."""
+
+    TITLE = "Preserved branch: queue/x — decision needed"
+    BODY = "## Finding\n\nbody that the filer sent\n"
+    REPO = "developing-today/code"
+
+    def run_create(self, readback_overrides, labels=None):
+        """Run cmd_create against stubbed HTTP. Returns (exit_code, paths)."""
+        paths = []
+        created = {"number": 42, "html_url": "https://example.test/42"}
+        readback = {
+            "number": 42,
+            "title": self.TITLE,
+            "body": self.BODY,
+            "state": "open",
+            "labels": [{"name": n} for n in (labels or [])],
+        }
+        readback.update(readback_overrides)
+
+        def fake_http(method, path, token, body=None, expect=dict):
+            paths.append((method, path))
+            if method == "POST":
+                return 200, created
+            return 200, readback
+
+        args = [
+            "create",
+            "--repo",
+            self.REPO,
+            "--title",
+            self.TITLE,
+            "--body",
+            self.BODY,
+            "--no-dedupe",
+            "--pace",
+            "0",
+        ]
+        for label in labels or []:
+            args += ["--label", label]
+
+        with (
+            unittest.mock.patch.object(fp, "AppClient", lambda _s: _FakeClient()),
+            unittest.mock.patch.object(
+                fp, "find_by_exact_title", lambda *_a, **_k: None
+            ),
+            unittest.mock.patch.object(fp, "http", fake_http),
+            unittest.mock.patch.object(fp, "ledger_append"),
+        ):
+            try:
+                code = fp.main(args)
+            except SystemExit as exc:
+                code = exc.code
+        return code, paths
+
+    def test_matching_readback_passes(self):
+        code, paths = self.run_create({})
+        self.assertEqual(code, 0)
+        self.assertEqual([m for m, _ in paths], ["POST", "GET"])
+
+    def test_dropped_body_fails(self):
+        code, _ = self.run_create({"body": ""})
+        self.assertEqual(code, 1)
+
+    def test_mangled_body_fails(self):
+        code, _ = self.run_create({"body": self.BODY.strip()})
+        self.assertEqual(code, 1)
+
+    def test_non_string_body_readback_fails_cleanly(self):
+        code, _ = self.run_create({"body": 42})
+        self.assertEqual(code, 1)
+
+    def test_closed_state_fails(self):
+        code, _ = self.run_create({"state": "closed"})
+        self.assertEqual(code, 1)
+
+    def test_missing_labels_fail(self):
+        """Labels were requested but the readback shows none applied."""
+        code, _ = self.run_create({"labels": []}, labels=["kind/bug"])
+        self.assertEqual(code, 1)
+
+    def test_malformed_label_entry_fails_cleanly(self):
+        code, _ = self.run_create({"labels": [{"name": None}]}, labels=["kind/bug"])
+        self.assertEqual(code, 1)
+
+    def test_applied_labels_pass(self):
+        code, _ = self.run_create({}, labels=["kind/bug", "effort/xs"])
+        self.assertEqual(code, 0)
+
+    def test_extra_labels_are_tolerated(self):
+        """GitHub may add labels on create; only the requested ones matter."""
+        code, _ = self.run_create(
+            {"labels": [{"name": "kind/bug"}, {"name": "auto-added"}]},
+            labels=["kind/bug"],
+        )
+        self.assertEqual(code, 0)
 
 
 class TestGenericCommandArgs(unittest.TestCase):
@@ -245,7 +350,11 @@ class TestResponseShapes(unittest.TestCase):
         self.assertIn("boom-rate", err)
 
     def test_success_body_wrong_shape_dies_naming_shape(self):
-        for raw, shape in [('"weird"', "string"), ('["weird"]', "array"), ("42", "number")]:
+        for raw, shape in [
+            ('"weird"', "string"),
+            ('["weird"]', "array"),
+            ("42", "number"),
+        ]:
             with self.subTest(raw=raw):
                 outcome, err = self.call_http(200, raw)
                 self.assertEqual(outcome, "died")
@@ -305,9 +414,7 @@ class TestResponseShapes(unittest.TestCase):
         client = object.__new__(fp.AppClient)
         client.jwt = "jwt"
         client._installations = None
-        page1 = [
-            {"id": i, "account": {"login": f"owner-{i}"}} for i in range(100)
-        ]
+        page1 = [{"id": i, "account": {"login": f"owner-{i}"}} for i in range(100)]
         page2 = [
             {"id": 100, "account": {"login": "developing-today"}},
             {"id": 101, "account": {"login": "developing-today-forks"}},
@@ -367,14 +474,15 @@ class TestResponseShapes(unittest.TestCase):
 
     def test_assert_repo_in_scope_dies_on_entry_without_full_name(self):
         client = object.__new__(fp.AppClient)
-        with unittest.mock.patch.object(
-            fp.AppClient, "token_for", return_value="tok"
-        ), unittest.mock.patch.object(
-            fp,
-            "http",
-            return_value=(
-                200,
-                {"repositories": [{"name": "no-full-name"}], "total_count": 1},
+        with (
+            unittest.mock.patch.object(fp.AppClient, "token_for", return_value="tok"),
+            unittest.mock.patch.object(
+                fp,
+                "http",
+                return_value=(
+                    200,
+                    {"repositories": [{"name": "no-full-name"}], "total_count": 1},
+                ),
             ),
         ):
             with self.assertRaises(SystemExit):
@@ -382,17 +490,18 @@ class TestResponseShapes(unittest.TestCase):
 
     def test_assert_repo_in_scope_happy_path(self):
         client = object.__new__(fp.AppClient)
-        with unittest.mock.patch.object(
-            fp.AppClient, "token_for", return_value="tok"
-        ), unittest.mock.patch.object(
-            fp,
-            "http",
-            return_value=(
-                200,
-                {
-                    "repositories": [{"full_name": "developing-today/code"}],
-                    "total_count": 1,
-                },
+        with (
+            unittest.mock.patch.object(fp.AppClient, "token_for", return_value="tok"),
+            unittest.mock.patch.object(
+                fp,
+                "http",
+                return_value=(
+                    200,
+                    {
+                        "repositories": [{"full_name": "developing-today/code"}],
+                        "total_count": 1,
+                    },
+                ),
             ),
         ):
             client.assert_repo_in_scope("developing-today/code")  # no SystemExit
@@ -404,7 +513,6 @@ class TestResponseShapes(unittest.TestCase):
         with unittest.mock.patch.object(fp, "http", fake_http):
             hit = fp.find_by_exact_title(_FakeClient(), "developing-today/code", "T")
         self.assertEqual(hit["number"], 5)
-
 
 
 if __name__ == "__main__":
@@ -463,9 +571,12 @@ class TestCmdClosePullRequestGuard(unittest.TestCase):
             return 200, dict(state)
 
         args = _CloseArgs(state["number"], dry_run=dry_run)
-        with unittest.mock.patch.object(
-            fp, "AppClient", lambda sops: _FakeCloseClient()
-        ), unittest.mock.patch.object(fp, "http", fake_http):
+        with (
+            unittest.mock.patch.object(
+                fp, "AppClient", lambda sops: _FakeCloseClient()
+            ),
+            unittest.mock.patch.object(fp, "http", fake_http),
+        ):
             result = fp.cmd_close(args)
         return result, calls, state
 
@@ -483,9 +594,12 @@ class TestCmdClosePullRequestGuard(unittest.TestCase):
             calls.append(method)
             return 200, dict(state)
 
-        with unittest.mock.patch.object(
-            fp, "AppClient", lambda sops: _FakeCloseClient()
-        ), unittest.mock.patch.object(fp, "http", fake_http):
+        with (
+            unittest.mock.patch.object(
+                fp, "AppClient", lambda sops: _FakeCloseClient()
+            ),
+            unittest.mock.patch.object(fp, "http", fake_http),
+        ):
             with self.assertRaises(SystemExit):
                 fp.cmd_close(_CloseArgs(4242))
         self.assertNotIn("PATCH", calls)
@@ -506,9 +620,12 @@ class TestCmdClosePullRequestGuard(unittest.TestCase):
             return 200, dict(state)
 
         args = _CloseArgs(4243, dry_run=True)
-        with unittest.mock.patch.object(
-            fp, "AppClient", lambda sops: _FakeCloseClient()
-        ), unittest.mock.patch.object(fp, "http", fake_http):
+        with (
+            unittest.mock.patch.object(
+                fp, "AppClient", lambda sops: _FakeCloseClient()
+            ),
+            unittest.mock.patch.object(fp, "http", fake_http),
+        ):
             with self.assertRaises(SystemExit):
                 fp.cmd_close(args)
         self.assertNotIn("PATCH", calls)

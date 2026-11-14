@@ -21,6 +21,7 @@ import {
   openPrCommands,
   runSync,
   resolveConfigPath,
+  defaultRuntimeConfigPath,
   deepMergeProviders,
   SYNC_OWNED_PROVIDERS,
 } from './provider-catalog-sync.mjs';
@@ -184,6 +185,12 @@ test('prettifyModelName follows sibling display conventions', () => {
   assert.equal(prettifyModelName('claude-haiku-5-5'), 'Claude Haiku 5.5');
 });
 
+test('prettifyModelName treats prototype-spelling brand ids as ordinary unknown tokens', () => {
+  for (const token of ['constructor', '__proto__', 'toString', 'hasOwnProperty', 'valueOf']) {
+    assert.equal(prettifyModelName(token), token.charAt(0).toUpperCase() + token.slice(1));
+  }
+});
+
 test('makeEntry: name-only block yields a name-only entry with the block suffix', () => {
   const siblings = parseJsonc(FIXTURE).provider['name-only-b'].models;
   const e = makeEntry('name-only-b', 'acme/turbo-3', siblings, null);
@@ -204,6 +211,23 @@ test('makeEntry: a sibling with variants:null is not a clone source - name-only 
   assert.deepEqual(e, { name: 'GPT 1 Terra (codex)' });
   const withLimit = makeEntry('proxy-a', 'gpt-1-terra', siblings, { limit: { context: 2000, output: 200 } });
   assert.deepEqual(withLimit, { name: 'GPT 1 Terra (codex)', limit: { context: 2000, output: 200 } });
+});
+
+test('makeEntry: non-string sibling names are ignored for the suffix, never thrown on (#6909)', () => {
+  for (const bad of [42, true, { text: 'x' }, ['x']]) {
+    const siblings = { 'gpt-1-luna': { name: bad } };
+    const e = makeEntry('proxy-a', 'gpt-1-terra', siblings, null);
+    assert.deepEqual(e, { name: 'GPT 1 Terra' });
+  }
+});
+
+test('makeEntry: a mixed good+bad sibling set still takes the suffix from the string names (#6909)', () => {
+  const siblings = {
+    'gpt-1-luna': { name: 'GPT-1 Luna (codex)' },
+    'gpt-1-sol': { name: 42 },
+  };
+  const e = makeEntry('proxy-a', 'gpt-1-terra', siblings, null);
+  assert.deepEqual(e, { name: 'GPT 1 Terra (codex)' });
 });
 
 test('insertModelEntry matches the file indentation style', () => {
@@ -397,6 +421,17 @@ test('CLI control: dry run exits 3 without writing; --apply exits 0 and writes',
 // #4588: config resolution — OPENCODE_CONFIG_PATH names the runtime overlay
 // since #4544 and must never become this tool's target
 // ---------------------------------------------------------------------------
+
+test('defaultRuntimeConfigPath: home-resolution contract probe matrix (#5762/#5763)', () => {
+  // Oracle: the contract - unset and empty HOME are both a named
+  // error; a set HOME yields exactly the historical path.
+  assert.throws(() => defaultRuntimeConfigPath({}), /HOME is not set or is empty/);
+  assert.throws(() => defaultRuntimeConfigPath({ HOME: '' }), /HOME is not set or is empty/);
+  assert.equal(
+    defaultRuntimeConfigPath({ HOME: '/home/someone' }),
+    path.join('/home/someone', '.local/state/opencode/opencode-runtime.jsonc'),
+  );
+});
 
 test('resolveConfigPath: --config beats env, catalog env beats default, OPENCODE_CONFIG_PATH ignored (#4588)', () => {
   const root = '/repo';

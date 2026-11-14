@@ -15,6 +15,10 @@ if ! bws secret list >/dev/null 2>&1; then
   for f in ~/tools/bws-env.sh ~/hatch/tools/bws-env.sh; do
     if [ -f "$f" ]; then source "$f" || true; fi
   done
+  if ! bws secret list >/dev/null 2>&1; then
+    echo "drain-wrapper: no working Bitwarden (bws) credential: BWS_ACCESS_TOKEN unset, no ~/.config/bws/access-token, and no usable ~/tools/bws-env.sh or ~/hatch/tools/bws-env.sh" >&2
+    exit 1
+  fi
 fi
 eval "$(
   python3 - <<'PY'

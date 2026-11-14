@@ -12,6 +12,11 @@ name: map build
 # go-modules-build.yml since that fix landed, so it is not added here.)
 
 on:
+  push:
+    branches: [main]
+    paths:
+      - "pkgs/map/**"
+      - ".github/workflows/map-build.yml"
   workflow_dispatch:
 
 permissions:

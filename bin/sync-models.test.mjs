@@ -255,10 +255,9 @@ test('keeps a standalone comment when removing the following member', () => {
 // temp target config — never the live config — is the only write candidate.
 const scriptPath = path.join(binDir, 'sync-models.mjs');
 
-function runWithTempConfig(args) {
+function runWithTempConfig(args, before = '{\n  // temp probe config\n  "provider": {}\n}\n') {
   const tmpHome = fs.mkdtempSync(path.join(os.tmpdir(), 'sync-models-test-home-'));
   const configPath = path.join(tmpHome, 'opencode.jsonc');
-  const before = '{\n  // temp probe config\n  "provider": {}\n}\n';
   fs.writeFileSync(configPath, before);
   const result = spawnSync(process.execPath, [scriptPath, ...args], {
     encoding: 'utf-8',
@@ -300,7 +299,14 @@ test('rejects a positional argument non-zero and leaves the target config byte-i
 });
 
 test('--dry-run still exits 0 writing nothing', () => {
-  const { result, before, after, backupExists } = runWithTempConfig(['--dry-run']);
+  // The probe carries the sync target section (empty). Without it the
+  // run is a #7333 absent-provider skip and exits 2 whenever a live
+  // Antigravity catalog is discoverable from this machine - the probe
+  // would test the environment instead of the dry-run contract.
+  const { result, before, after, backupExists } = runWithTempConfig(
+    ['--dry-run'],
+    '{\n  // temp probe config\n  "provider": {\n    "_antigravity": {}\n  }\n}\n',
+  );
   assert.equal(result.status, 0);
   assert.equal(after, before);
   assert.equal(backupExists, false);
@@ -382,4 +388,125 @@ test('removeJsoncPath refuses a non-object intermediate naming the key path (#28
     () => removeJsoncPath(text, ['provider', 'google', 'models', 'm1']),
     /cannot remove provider\/google\/models\/m1: provider\/google is a scalar, expected object/,
   );
+});
+
+// --- #7333: an absent target section is migrated from a legacy id or named
+// as skipped - never silently passed over while the run reports in-sync ---
+
+const legacyIdsStart = source.indexOf('const LEGACY_PROVIDER_IDS = {');
+assert.notEqual(legacyIdsStart, -1, 'LEGACY_PROVIDER_IDS not found in sync-models.mjs');
+const legacyIdsEnd = source.indexOf('};', legacyIdsStart);
+assert.notEqual(legacyIdsEnd, -1, 'LEGACY_PROVIDER_IDS not terminated as expected');
+const defineValueStart = source.indexOf('const defineValue = ');
+assert.notEqual(defineValueStart, -1, 'defineValue not found in sync-models.mjs');
+const defineValueEnd = source.indexOf('};', defineValueStart);
+assert.notEqual(defineValueEnd, -1, 'defineValue not terminated as expected');
+const { resolveTargetProvider } = new Function(
+  `${source.slice(defineValueStart, defineValueEnd + 2)}\n` +
+  `${source.slice(legacyIdsStart, legacyIdsEnd + 2)}\n` +
+  `${extractFunction('resolveTargetProvider')}\n` +
+  'return { resolveTargetProvider };',
+)();
+
+test('resolveTargetProvider: present target is left untouched (#7333)', () => {
+  const config = { provider: { _antigravity: { models: { m1: {} } } } };
+  assert.deepEqual(resolveTargetProvider(config, '_antigravity'), { outcome: 'present' });
+  assert.deepEqual(Object.keys(config.provider), ['_antigravity']);
+});
+
+test('resolveTargetProvider: legacy section migrates onto the renamed target (#7333)', () => {
+  const legacy = { models: { 'gemini-x': { name: 'Gemini X' } } };
+  const config = { provider: { 'antigravity-direct': legacy } };
+  const resolution = resolveTargetProvider(config, '_antigravity');
+  assert.equal(resolution.outcome, 'migrated');
+  assert.equal(resolution.from, 'antigravity-direct');
+  assert.equal(config.provider._antigravity, legacy);
+  assert.equal('antigravity-direct' in config.provider, false);
+});
+
+test('resolveTargetProvider: target present wins over a legacy section (#7333)', () => {
+  const config = { provider: { _antigravity: { models: {} }, 'antigravity-direct': { models: { old: {} } } } };
+  assert.deepEqual(resolveTargetProvider(config, '_antigravity'), { outcome: 'present' });
+  assert.deepEqual(config.provider['antigravity-direct'], { models: { old: {} } });
+});
+
+test('resolveTargetProvider: no target and no legacy is absent, never in sync (#7333)', () => {
+  const config = { provider: { openai: { models: {} } } };
+  assert.deepEqual(resolveTargetProvider(config, '_antigravity'), { outcome: 'absent' });
+  assert.deepEqual(Object.keys(config.provider), ['openai']);
+  assert.deepEqual(resolveTargetProvider({}, '_antigravity'), { outcome: 'absent' });
+});
+
+// --- #1799: existing entries are reconciled on the full desired state —
+// limit.output and variants drift survive no sync, and a converged entry
+// records no edits (no write churn). Oracle: the plan for an entry is
+// exactly the set of keys whose desired value differs from the entry's
+// current value under order-insensitive equality. ---
+
+const { planModelReconciliation } = new Function(
+  `${extractFunction('jsonValueEqual')}\n` +
+  `${extractFunction('planModelReconciliation')}\n` +
+  'return { planModelReconciliation };',
+)();
+
+const desiredLimits = { context: 1048576, output: 65536 };
+const desiredVariants = {
+  high: { options: { reasoning_effort: 'high' } },
+  medium: { options: { reasoning_effort: 'medium' } },
+};
+
+test('reconciliation corrects output-only drift when context already matches (#1799)', () => {
+  const existing = { limit: { context: 1048576, output: 9999 }, variants: desiredVariants };
+  assert.deepEqual(planModelReconciliation(existing, desiredLimits, desiredVariants), [
+    { key: 'limit', value: desiredLimits },
+  ]);
+});
+
+test('reconciliation corrects variants drift: a dropped effort is removed and an added one appears (#1799)', () => {
+  const existing = { limit: desiredLimits, variants: { low: { options: { reasoning_effort: 'low' } } } };
+  assert.deepEqual(planModelReconciliation(existing, desiredLimits, desiredVariants), [
+    { key: 'variants', value: desiredVariants },
+  ]);
+});
+
+test('reconciliation still corrects context drift and a missing limit (#1799)', () => {
+  assert.deepEqual(
+    planModelReconciliation({ limit: { context: 1, output: 65536 }, variants: desiredVariants }, desiredLimits, desiredVariants),
+    [{ key: 'limit', value: desiredLimits }],
+  );
+  assert.deepEqual(
+    planModelReconciliation({ variants: desiredVariants }, desiredLimits, desiredVariants),
+    [{ key: 'limit', value: desiredLimits }],
+  );
+});
+
+test('reconciliation adds variants to an entry that has none (#1799)', () => {
+  const existing = { limit: desiredLimits };
+  assert.deepEqual(planModelReconciliation(existing, desiredLimits, desiredVariants), [
+    { key: 'variants', value: desiredVariants },
+  ]);
+});
+
+test('reconciliation plans both updates when limit and variants both drift (#1799)', () => {
+  const existing = { limit: { context: 1048576, output: 1 }, variants: {} };
+  assert.deepEqual(planModelReconciliation(existing, desiredLimits, desiredVariants), [
+    { key: 'variants', value: desiredVariants },
+    { key: 'limit', value: desiredLimits },
+  ]);
+});
+
+test('an already-correct entry plans no updates, whatever the key order (#1799)', () => {
+  const existing = {
+    limit: { output: 65536, context: 1048576 },
+    variants: {
+      medium: { options: { reasoning_effort: 'medium' } },
+      high: { options: { reasoning_effort: 'high' } },
+    },
+  };
+  assert.deepEqual(planModelReconciliation(existing, desiredLimits, desiredVariants), []);
+});
+
+test('an empty desired variants set never strips existing variants (#1799)', () => {
+  const existing = { limit: desiredLimits, variants: desiredVariants };
+  assert.deepEqual(planModelReconciliation(existing, desiredLimits, {}), []);
 });

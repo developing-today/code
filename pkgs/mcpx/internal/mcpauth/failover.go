@@ -44,6 +44,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/developing-today/code/pkgs/mcpx/internal/defaults"
 )
 
 // Identity is one entry in a failover list.
@@ -87,7 +89,7 @@ type Failover struct {
 
 func (f *Failover) cooldown() time.Duration {
 	if f == nil || f.CooldownSeconds <= 0 {
-		return 60 * time.Second
+		return defaults.FailoverCooldown
 	}
 	return time.Duration(f.CooldownSeconds) * time.Second
 }

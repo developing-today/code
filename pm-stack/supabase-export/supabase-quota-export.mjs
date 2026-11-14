@@ -13,7 +13,7 @@
  * Success document (file-export format the #1151 gatherer ingests):
  *   { service: "supabase", source: "file-export/supabase",
  *     status: "ok" | "partial",
- *     measuredAt: <ISO>, project: "muse-dev2", ref: <project ref>,
+ *     measuredAt: <ISO>, project: <Management API project name>, ref: <project ref>,
  *     metrics: [ { id: "db-size", used: 1.15, limit: 0.5, unit: "gb",
  *                  source: "management-api:/database/query pg_database_size",
  *                  flag?: "approaching-paid-trigger", detail? } ],
@@ -54,7 +54,7 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 export const SOURCE = "file-export/supabase";
-export const DEFAULT_PROJECT_REF = "keihfchslgjetkmnmzra"; // muse-dev2
+export const DEFAULT_PROJECT_REF_SECRET_NAME = "supabase.project-ref";
 export const DEFAULT_SECRET_NAME = "supabase.muse-dev2.access-token-muse-cli";
 export const API_BASE = "https://api.supabase.com/v1";
 
@@ -216,8 +216,12 @@ async function api(fetchImpl, token, path, init) {
   return { status: res.status, text };
 }
 
-export async function run({ token, ref = DEFAULT_PROJECT_REF, fetchImpl = fetch } = {}) {
+export async function run({ token, ref, fetchImpl = fetch } = {}) {
   if (!token) throw new ExportError("no-token", 3, "Bitwarden secret did not resolve");
+  if (typeof ref !== "string" || !ref.trim()) {
+    throw new ExportError("no-project-ref", 3, `Bitwarden secret ${DEFAULT_PROJECT_REF_SECRET_NAME} did not resolve`);
+  }
+  ref = ref.trim();
   const call = (path, init) => api(fetchImpl, token, path, init);
 
   const project = await call(`/projects/${ref}`);
@@ -355,11 +359,10 @@ export async function writeOutputs(outDir, doc) {
   await appendFile(join(outDir, "history.jsonl"), `${JSON.stringify(doc)}\n`, "utf8");
 }
 
-/** Resolve the management token by its Bitwarden NAME — value stays in memory. */
-export async function resolveToken({ secretName = process.env.SUPABASE_TOKEN_SECRET_NAME ?? DEFAULT_SECRET_NAME, bwsBin = process.env.BWS_BIN ?? "bws" } = {}) {
-  if (process.env.SUPABASE_MANAGEMENT_TOKEN) return process.env.SUPABASE_MANAGEMENT_TOKEN;
-  const accessToken = process.env.BWS_ACCESS_TOKEN;
-  const env = { ...process.env, ...(accessToken ? { BWS_ACCESS_TOKEN: accessToken } : {}) };
+/** Resolve a Bitwarden secret by NAME — its value stays in memory. */
+async function resolveBwsSecret(secretName, bwsBin = process.env.BWS_BIN ?? "bws", sourceEnv = process.env) {
+  const accessToken = sourceEnv.BWS_ACCESS_TOKEN;
+  const env = { ...sourceEnv, ...(accessToken ? { BWS_ACCESS_TOKEN: accessToken } : {}) };
   const runBws = (args) =>
     new Promise((resolve, reject) => {
       execFile(bwsBin, args, { env, maxBuffer: 16 << 20, timeout: 30_000 }, (err, stdout) =>
@@ -377,16 +380,80 @@ export async function resolveToken({ secretName = process.env.SUPABASE_TOKEN_SEC
   }
 }
 
-async function main() {
-  const args = process.argv.slice(2);
-  const opt = (name, fallback) => {
-    const i = args.indexOf(name);
-    return i >= 0 && args[i + 1] ? args[i + 1] : fallback;
+/** Resolve the current Supabase project ref, preferring an explicit override. */
+export async function resolveProjectRef({
+  secretName = process.env.SUPABASE_PROJECT_REF_SECRET_NAME ?? DEFAULT_PROJECT_REF_SECRET_NAME,
+  bwsBin = process.env.BWS_BIN ?? "bws",
+  env = process.env,
+} = {}) {
+  const override = env.SUPABASE_PROJECT_REF?.trim();
+  if (override) return override;
+  return resolveBwsSecret(secretName, bwsBin, env);
+}
+
+/** Resolve the management token by its Bitwarden NAME — value stays in memory. */
+export async function resolveToken({ secretName = process.env.SUPABASE_TOKEN_SECRET_NAME ?? DEFAULT_SECRET_NAME, bwsBin = process.env.BWS_BIN ?? "bws" } = {}) {
+  if (process.env.SUPABASE_MANAGEMENT_TOKEN) return process.env.SUPABASE_MANAGEMENT_TOKEN;
+  return resolveBwsSecret(secretName, bwsBin);
+}
+
+/** Strict single-pass argv parsing (#3469). Every value-taking flag must be
+ * followed by a value token that is not itself a flag: a flag token (or
+ * nothing) where a value belongs is a usage error naming the flag, raised
+ * before any directory is created, any token is resolved, or any API call
+ * is made. The parse is single-pass — each value token is consumed once —
+ * so a flag token can never double as both a value and a flag. Unknown
+ * flags and bare positionals are usage errors too: silently ignoring them
+ * is what used to redirect output into a directory named after a flag.
+ * Throws ExportError("usage", 2); main() turns it into stderr + exit 2.
+ * The project-ref flag is returned unresolved: main() applies the env
+ * fallback and resolveProjectRef()'s secret-based resolution to it, in
+ * that order, exactly as the old opt() flow did. */
+const VALUE_FLAGS = new Set(["--out-dir", "--project-ref"]);
+
+function usageError(message) {
+  throw new ExportError("usage", 2, message);
+}
+
+export function parseArgs(argv) {
+  const values = {};
+  for (let i = 0; i < argv.length; i++) {
+    const token = argv[i];
+    if (!VALUE_FLAGS.has(token)) {
+      if (token.startsWith("--")) usageError(`unknown flag ${JSON.stringify(token)}`);
+      else usageError(`unexpected argument ${JSON.stringify(token)} (this exporter takes only --flag value pairs)`);
+    }
+    const value = argv[i + 1];
+    if (typeof value !== "string" || value === "" || value.startsWith("--")) {
+      usageError(
+        `${token} requires a value that is not another flag (got ${value === undefined ? "nothing" : JSON.stringify(value)})`,
+      );
+    }
+    values[token] = value;
+    i++; // consume the value: no token is read twice
+  }
+  return {
+    outDir: values["--out-dir"] ?? join(homedir(), "atlas", "supabase-export"),
+    refOverride: values["--project-ref"],
   };
-  const outDir = opt("--out-dir", join(homedir(), "atlas", "supabase-export"));
-  const ref = opt("--project-ref", process.env.SUPABASE_PROJECT_REF ?? DEFAULT_PROJECT_REF);
+}
+
+async function main() {
+  let options;
+  try {
+    options = parseArgs(process.argv.slice(2));
+  } catch (error) {
+    if (error instanceof ExportError && error.status === "usage") {
+      console.error(`supabase-quota-export: ${error.message}; refusing to run, no output written`);
+      process.exit(2);
+    }
+    throw error;
+  }
+  const outDir = options.outDir;
+  const refOverride = options.refOverride ?? process.env.SUPABASE_PROJECT_REF;
   try {
     const token = await resolveToken();
+    const ref = refOverride?.trim() || await resolveProjectRef();
     const doc = await run({ token, ref });
     await writeOutputs(outDir, doc);
     const flags = doc.metrics.filter((m) => m.flag).map((m) => m.id);

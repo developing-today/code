@@ -1,11 +1,28 @@
 import { describe, expect, it } from "vitest";
 import { applyScreenPatch, renderWorldSurface, type ScreenSurface } from "./world-surface";
+import screenCellParityCorpus from "./test-fixtures/screen-cell-parity.json";
 
 function makeScreen(cells: ScreenSurface["cells"]): ScreenSurface {
   return { kind: "screen", version: 1, width: cells.length, height: 1, cells };
 }
 
 describe("world screen presenter", () => {
+  it("matches the recorded Rust verdicts for the shared screen-cell corpus", () => {
+    for (const testCase of screenCellParityCorpus.cases) {
+      const surface: ScreenSurface = {
+        kind: "screen",
+        version: 1,
+        width: testCase.width,
+        height: testCase.height,
+        cells: testCase.cells,
+      };
+      expect(
+        renderWorldSurface(document.createElement("div"), surface),
+        `web screen presenter verdict for ${testCase.name}`,
+      ).toBe(testCase.expected_valid);
+    }
+  });
+
   it("applies revision-independent cell runs to the same validated surface as a full frame", () => {
     const previous: ScreenSurface = {
       kind: "screen",

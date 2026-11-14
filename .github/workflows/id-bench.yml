@@ -52,6 +52,10 @@ jobs:
         with:
           extra-conf: |
             accept-flake-config = true
+            # #774 recurrence (2026-11-12): when the Magic Nix Cache proxy
+            # throttles (HTTP 418), fall back to building from source
+            # instead of hard-failing the check on the narinfo fetch.
+            fallback = true
 
       # Same store cache as the PR gate, so the bench build starts warm
       # (#288).

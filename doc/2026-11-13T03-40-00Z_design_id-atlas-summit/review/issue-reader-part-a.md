@@ -1,0 +1,18 @@
+# Part A delivery issue-reader review
+
+Review artifact relocated into the summit package during integration.
+
+**Result: AGREE — the previously reported blocker is resolved.** The current normalized report is valid (`valid: true`, no errors; manifest SHA-256 `3b5bce3523945bf5adaa28739f0b90b7b70ff1d6522b4ac827246654e8ff6b06`). This is a targeted recheck of the ownership correction, not a reread of the 52 drafts.
+
+## Previously reported blocker — resolved
+
+The prior finding was that `pkgs/id/crates/id-core/src/graph/mod.rs` appeared owned by `9110-02`, `9110-09`, and `A-GRAPH-9125-01`, leaving its declarations and test imports unclear.
+
+The current Part A manifest assigns `A-GRAPH-9125-01` only `term.rs`, `record.rs`, and its test, explicitly forbids editing `graph/mod.rs`, and gives the integration test direct `#[path]` imports. Its hard-edge description assigns the phase-1 root skeleton to `9110-02` and final public wiring to `9110-09`. The crosscut slices now state that `9110-02` relinquishes shared-root writes after phase 1, `9110-09` owns phase-2 public wiring after required leaves merge, and the sequencing draft declares the serial handoff and hard edges. Thus a worker has a single owner and a test/import route for each phase; no root ownership ambiguity remains.
+
+## Readiness checks
+
+- **Part A sample:** 52/52 drafts fully read; IDs: `A9113-shape-types`, `A9113-profile-dispatch`, `A9113-legacy-hash-vectors`, `A9113-atlas-profile-contract`, `A9114-cbor-profile`, `A9114-envelope-identities`, `A9114-sidecar-snapshot`, `A9114-cas-head`, `A9114-snapshot-migration`, `A9115-existence-receipt`, `A9115-locator-types`, `A9115-complete-harvest`, `A9115-privacy-filter`, `A9116-registry-record`, `A9116-registry-state`, `A9117-uri-parser`, `A9117-uri-format`, `A9117-uri-reference-pbt`, `A9118-array-codec`, `A9118-array-order`, `A9118-typed-values`, `A9119-shorthand-policy`, `A9119-query-cursor`, `A9120-content-id`, `A9120-content-store`, `A9120-signature-gate`, `A9121-name-candidates`, `A9121-lenses-groups`, `A9122-numeric-encoding`, `A9122-numeric-order`, `A9122-numeric-registry`, `A9123-stream-records`, `A9123-stream-subscribe`, `A9124-world-definition`, `A9124-world-key-history`, `A-GRAPH-9125-01`, `A-GRAPH-9125-02`, `A-GRAPH-9125-03`, `A-GRAPH-9126-01`, `A-GRAPH-9126-02`, `A-GRAPH-9126-03`, `A-GRAPH-9127-01`, `A-GRAPH-9127-02`, `A-GRAPH-9128-01`, `A-GRAPH-9128-02`, `A-GRAPH-9129-01`, `A-GRAPH-9129-02`, `A-GRAPH-9130-01`, `A-GRAPH-9130-02`, `A-GRAPH-9131-01`, `A-GRAPH-9132-01`, `A-GRAPH-9132-02`.
+- **Dependencies and tiering:** No Part A hard-dependency cycle found. The `9125-02` → `9125-03` dependency is intentional: the index waits for the actual candidate-engine bake-off; the bake-off itself depends only on `9125-01`. Recommended/contingent work is not a prerequisite to the crucial V2 graph-query gate.
+- **Contracts checked:** Atlas producer uncertainty is correctly owned by `9110-R2`; `A9113-atlas-profile-contract` waits for its pinned result or explicit unavailable disposition and does not infer a hash. `A9115-existence-receipt` consumes B19 (not B11), with `verified_present` and inventory-only `stored_unverified` carried distinctly. `A-GRAPH-9127-02` explicitly preserves mandatory Pending for non-group submitters, including open attributes. `A-GRAPH-9129-02` is V3 projection-only comment carry, separate from V2 version-DAG storage. The bake-off explicitly calls for real redb/SQLite candidate-engine measurements and disclaims the existing toy as evidence.
+- **Test-first scope:** Future test/validator files and commands are owned by their respective issues; they are intentional test-first work, not missing current implementation. No production cloud calls are required by these Part A drafts.
