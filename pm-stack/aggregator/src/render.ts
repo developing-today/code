@@ -335,6 +335,28 @@ document.addEventListener("submit", async (ev) => {
  * inputs carry the payload. A stop form must have its confirm box
  * ticked before the script will send it (two-step confirm).
  */
+/** Shell fragment watchdog (#1503): the shell pages stream their real
+ * content in as Datastar fragments; if a fragment request fails or stalls
+ * there is no error path in the markup, so the page would sit on its
+ * skeleton forever. Ten seconds after the shell renders, any [data-frag]
+ * container still holding its .skel skeleton gets the skeleton swapped for
+ * an inline notice linking the ?full=1 server render (the no-JS path).
+ * A fragment that lands in time removes the skeleton itself, so the
+ * watchdog no-ops; a fragment that lands late replaces the notice. */
+export const FRAG_WATCHDOG_MS = 10_000;
+export const FRAG_WATCHDOG_SCRIPT = `<script>
+setTimeout(function () {
+  document.querySelectorAll("[data-frag]").forEach(function (c) {
+    var skel = c.querySelector(".skel");
+    if (!skel) return;
+    var p = document.createElement("p");
+    p.className = "frag-failed";
+    p.innerHTML = "the live view did not arrive &mdash; <a href="" + location.pathname + "?full=1">load the full page</a>";
+    skel.replaceWith(p);
+  });
+}, ${FRAG_WATCHDOG_MS});
+</script>`;
+
 const ACTION_SCRIPT = `<script>${DASH_AFTER_JS}
 document.addEventListener("submit", async (ev) => {
   const form = ev.target;
@@ -1666,7 +1688,7 @@ export function renderBoardShell(provenance: Provenance, detail?: ProvenanceDeta
     `<h1>Cross-repo WIP board</h1><p class="muted">What is being worked on now is the <strong>in-flight</strong> lane: synthetic entries from the orchestrator's lined-up tasks (the fleet feed's orchestration section), not Kaneo cards.</p><noscript><meta http-equiv="refresh" content="0; url=/board"></noscript><div id="board-main" data-frag data-on-load="@get('${fragBoard}')" data-on:dashrefresh__window="@get('${fragBoard}')"><div class="skel">Loading the board…</div></div>`,
     provenance,
     "/board",
-    ACTION_SCRIPT,
+    ACTION_SCRIPT + FRAG_WATCHDOG_SCRIPT,
     detail ? freshnessChips(detail, ["board", "items", "orchestration"]) : "",
   );
 }
@@ -3509,7 +3531,7 @@ ${attentionFragment("sessions", skel("sessions"), refsQuery)}${questionsHtml}`;
     body,
     provenance,
     "/attention",
-    ACTION_SCRIPT + COMMENT_SCRIPT + BULK_SCRIPT,
+    ACTION_SCRIPT + COMMENT_SCRIPT + BULK_SCRIPT + FRAG_WATCHDOG_SCRIPT,
     detail ? freshnessChips(detail, ["orchestration", "attention", "registry"]) : "",
   );
 }
@@ -3747,7 +3769,7 @@ export function renderTodayShell(
     `<h1>Today</h1><noscript><meta http-equiv="refresh" content="0; url=/today?full=1"></noscript><div id="today-main" data-frag data-on-load="@get('/frag/today')" data-on:dashrefresh__window="@get('/frag/today')">${todayHealthStrip(health, quota, quotaUnavailable)}<div class="skel">Loading today…</div></div>${questionsHtml}`,
     provenance,
     "/today",
-    "",
+    FRAG_WATCHDOG_SCRIPT,
     detail ? freshnessChips(detail, ["orchestration", "quota", "attention"]) : "",
   );
 }
@@ -3824,7 +3846,7 @@ export function renderQueueShell(provenance: Provenance, detail?: ProvenanceDeta
     `<h1>Queue visibility</h1><noscript><meta http-equiv="refresh" content="0; url=/queue?full=1"></noscript><div id="queue-main" data-frag data-on-load="@get('/frag/queue')" data-on:dashrefresh__window="@get('/frag/queue')"><div class="skel">Loading queue…</div></div>`,
     provenance,
     "/queue",
-    "",
+    FRAG_WATCHDOG_SCRIPT,
     detail ? freshnessChips(detail, ["board", "orchestration", "items"]) : "",
   );
 }
@@ -4015,7 +4037,7 @@ export function renderOverviewShell(provenance: Provenance, detail?: ProvenanceD
     `<h1>Overview</h1><noscript><meta http-equiv="refresh" content="0; url=/?full=1"></noscript><div id="overview-main" data-frag data-on-load="@get('/frag/overview')" data-on:dashrefresh__window="@get('/frag/overview')"><div class="skel">Loading the overview…</div></div>`,
     provenance,
     "/",
-    "",
+    FRAG_WATCHDOG_SCRIPT,
     detail ? freshnessChips(detail, ["board", "quota", "attention"]) : "",
   );
 }
