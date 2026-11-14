@@ -971,6 +971,23 @@ impl CircuitBreaker {
     }
 }
 
+/// Releases a half-open probe reservation when the admitted call ends
+/// without recording an outcome — above all when its future is
+/// cancelled while awaiting the transport: HalfOpen has no timed exit,
+/// so a dropped probe would refuse every later call for the alias
+/// forever. The guard re-opens the breaker on drop, which is a no-op
+/// unless the state is still HalfOpen, so calls that did record an
+/// outcome are unaffected.
+struct HalfOpenProbeGuard<'a> {
+    breaker: &'a CircuitBreaker,
+}
+
+impl Drop for HalfOpenProbeGuard<'_> {
+    fn drop(&mut self) {
+        self.breaker.record_probe_failure(Instant::now());
+    }
+}
+
 // ---------------------------------------------------------------------------
 // The adapter
 // ---------------------------------------------------------------------------
@@ -1049,6 +1066,12 @@ impl<T: Transport, C: CredentialResolver> LibsqlAdapter<T, C> {
             if !breaker.allow(Instant::now()) {
                 return Err(AdapterError::CircuitOpen(alias.to_owned()));
             }
+            // Held for the rest of the attempt: if this future is
+            // dropped before the attempt records an outcome (caller
+            // cancellation while awaiting the transport), the guard
+            // re-opens the breaker instead of stranding the half-open
+            // probe reservation.
+            let _probe_guard = HalfOpenProbeGuard { breaker: &breaker };
             // The token is resolved per attempt and never stored.
             let token = match self.credentials.resolve(&alias_config.credential_ref) {
                 Ok(token) => token,
@@ -1752,6 +1775,110 @@ mod tests {
         assert!(breaker.allow(retry_probe_at + BREAKER_HALF_OPEN_AFTER));
         breaker.record_success();
         assert!(breaker.allow(t0));
+    }
+
+    /// Oracle: PR #8848 review finding (Codex and CodeRabbit) — a
+    /// half-open probe dropped before it records an outcome (a
+    /// cancelled query future) must not strand the breaker in
+    /// HalfOpen, which has no timed exit: the probe guard re-opens
+    /// the breaker and the restarted cooldown admits a later probe.
+    #[test]
+    fn test_half_open_probe_guard_reopens_on_drop() {
+        let breaker = CircuitBreaker::new();
+        let t0 = Instant::now();
+        for _ in 0..BREAKER_FAILURE_THRESHOLD {
+            breaker.record_transient_failure(t0);
+        }
+        let probe_at = t0 + BREAKER_HALF_OPEN_AFTER;
+        assert!(breaker.allow(probe_at));
+        {
+            let _guard = HalfOpenProbeGuard { breaker: &breaker };
+            // Dropped here with no outcome recorded, exactly as a
+            // cancelled query future drops it.
+        }
+        // The guard re-opened the breaker at drop time (about t0):
+        // the restarted cooldown refuses a probe until a full delay
+        // after the drop, then admits one.
+        assert!(!breaker.allow(probe_at - Duration::from_millis(1)));
+        assert!(breaker.allow(probe_at + BREAKER_HALF_OPEN_AFTER));
+        breaker.record_success();
+        // A guard dropped after an outcome was recorded is a no-op:
+        // the closed breaker stays closed.
+        drop(HalfOpenProbeGuard { breaker: &breaker });
+        assert!(breaker.allow(t0));
+    }
+
+    /// Transport whose pipeline call never completes, so a test can
+    /// cancel a query while it is awaiting the transport.
+    #[derive(Debug, Default)]
+    struct PendingTransport {
+        attempts: StdMutex<usize>,
+    }
+
+    impl PendingTransport {
+        fn attempts(&self) -> usize {
+            *self.attempts.lock().unwrap()
+        }
+    }
+
+    impl Transport for PendingTransport {
+        fn post_pipeline<'a>(
+            &'a self,
+            base_url: &'a str,
+            token: &'a str,
+            body: &'a str,
+            _connect_timeout: Duration,
+            _deadline: Duration,
+        ) -> Pin<Box<dyn Future<Output = Result<TransportResponse, TransportError>> + Send + 'a>>
+        {
+            *self.attempts.lock().unwrap() += 1;
+            let _ = (base_url, token, body);
+            Box::pin(std::future::pending())
+        }
+    }
+
+    /// Oracle: PR #8848 review finding at the adapter level —
+    /// cancelling the admitted half-open probe while it awaits the
+    /// transport re-opens the breaker (restarted cooldown) instead of
+    /// stranding it in HalfOpen forever.
+    #[tokio::test]
+    async fn test_cancelled_half_open_probe_reopens_breaker() {
+        let adapter = LibsqlAdapter::with_parts(
+            test_config("https://example.invalid"),
+            PendingTransport::default(),
+            StaticCredentials,
+        );
+        // Open the breaker with its cooldown already elapsed, so the
+        // first query is admitted as the half-open probe.
+        let breaker = adapter.breaker_for("main");
+        let past = Instant::now() - BREAKER_HALF_OPEN_AFTER - Duration::from_secs(1);
+        for _ in 0..BREAKER_FAILURE_THRESHOLD {
+            breaker.record_transient_failure(past);
+        }
+        let adapter = Arc::new(adapter);
+        let probe = {
+            let adapter = Arc::clone(&adapter);
+            tokio::spawn(async move { adapter.query("main", &sample_query()).await })
+        };
+        // Wait until the probe is inside the transport, then cancel
+        // it the way a dropped caller future cancels it.
+        for _ in 0..10_000 {
+            if adapter.transport.attempts() > 0 {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+        assert_eq!(adapter.transport.attempts(), 1);
+        probe.abort();
+        let _ = probe.await;
+        // The guard re-opened the breaker: Open with a restarted
+        // cooldown, not HalfOpen with a stranded probe reservation.
+        {
+            let state = breaker.state.lock().unwrap();
+            assert!(matches!(*state, BreakerState::Open { .. }));
+        }
+        let error = adapter.query("main", &sample_query()).await.unwrap_err();
+        assert_eq!(error, AdapterError::CircuitOpen("main".to_owned()));
     }
 
     /// Oracle: record acceptance — the adapter queries a remote libsql
