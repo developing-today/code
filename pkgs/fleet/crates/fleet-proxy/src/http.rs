@@ -46,6 +46,7 @@
 
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::TcpStream;
+use std::os::unix::net::UnixStream;
 
 /// Largest response body this client will accept, on either the
 /// Content-Length or the chunked path (cumulative for chunked).
@@ -141,15 +142,69 @@ pub(crate) fn valid_path(path: &str) -> bool {
     path.starts_with('/') && path.bytes().all(|b| b > 0x20 && b != 0x7f)
 }
 
-/// One HTTP connection to a laptop service, over a tunnel stream.
+/// The byte stream under an [`HttpConn`]: a TCP tunnel stream, or
+/// a colocated service's Unix socket (#6219). Both are plain
+/// Read+Write byte streams once connected; the HTTP exchange does
+/// not care which it rides.
+pub enum ConnStream {
+    Tcp(TcpStream),
+    Unix(UnixStream),
+}
+
+impl ConnStream {
+    fn try_clone(&self) -> std::io::Result<ConnStream> {
+        Ok(match self {
+            ConnStream::Tcp(s) => ConnStream::Tcp(s.try_clone()?),
+            ConnStream::Unix(s) => ConnStream::Unix(s.try_clone()?),
+        })
+    }
+}
+
+impl Read for ConnStream {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        match self {
+            ConnStream::Tcp(s) => s.read(buf),
+            ConnStream::Unix(s) => s.read(buf),
+        }
+    }
+}
+
+impl Write for ConnStream {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        match self {
+            ConnStream::Tcp(s) => s.write(buf),
+            ConnStream::Unix(s) => s.write(buf),
+        }
+    }
+    fn flush(&mut self) -> std::io::Result<()> {
+        match self {
+            ConnStream::Tcp(s) => s.flush(),
+            ConnStream::Unix(s) => s.flush(),
+        }
+    }
+}
+
+/// One HTTP connection to a laptop service, over a tunnel stream
+/// or a colocated Unix socket (#6219).
 pub struct HttpConn {
-    reader: BufReader<TcpStream>,
-    writer: TcpStream,
+    reader: BufReader<ConnStream>,
+    writer: ConnStream,
     reusable: bool,
 }
 
 impl HttpConn {
     pub fn new(stream: TcpStream) -> std::io::Result<HttpConn> {
+        Self::from_stream(ConnStream::Tcp(stream))
+    }
+
+    /// An HTTP connection over a colocated service's Unix socket
+    /// (#6219): the same exchange, dialled locally instead of via
+    /// TCP loopback.
+    pub fn from_unix(stream: UnixStream) -> std::io::Result<HttpConn> {
+        Self::from_stream(ConnStream::Unix(stream))
+    }
+
+    fn from_stream(stream: ConnStream) -> std::io::Result<HttpConn> {
         let writer = stream.try_clone()?;
         Ok(HttpConn {
             reader: BufReader::with_capacity(16 * 1024, stream),
@@ -863,5 +918,39 @@ mod tests {
         assert_eq!(body, b"hello");
         assert!(conn.reusable());
         server.join().unwrap();
+    }
+
+    #[test]
+    fn unix_socket_round_trips_and_stays_reusable() {
+        // #6219: an HttpConn over a UnixStream speaks the same
+        // HTTP exchange as over TCP (the colocated dial path).
+        use std::os::unix::net::UnixListener;
+        let dir =
+            std::env::temp_dir().join(format!("fleet-proxy-http-uds-test-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("svc.sock");
+        let listener = UnixListener::bind(&path).unwrap();
+        let stream = UnixStream::connect(&path).unwrap();
+        let (mut peer, _) = listener.accept().unwrap();
+        let server = std::thread::spawn(move || {
+            let mut buf = [0u8; 1024];
+            let mut seen = Vec::new();
+            while !seen.windows(4).any(|w| w == b"\r\n\r\n") {
+                match peer.read(&mut buf) {
+                    Ok(0) | Err(_) => return,
+                    Ok(n) => seen.extend_from_slice(&buf[..n]),
+                }
+            }
+            let _ = peer.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\n{}");
+            let _ = peer.flush();
+        });
+        let mut conn = HttpConn::from_unix(stream).unwrap();
+        let (status, body) = get(&mut conn).unwrap();
+        assert_eq!(status, 200);
+        assert_eq!(body, b"{}");
+        assert!(conn.reusable());
+        server.join().unwrap();
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

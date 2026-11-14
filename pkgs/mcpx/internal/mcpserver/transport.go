@@ -95,6 +95,21 @@ func (c *Conn) cancelInflight(requestID any) {
 	}
 }
 
+// cancelledFor reports whether the client sent notifications/cancelled
+// naming this request id, and the reason it gave. The key is the
+// canonical JSON id Conn.cancel recorded, so "7" and 7 stay different
+// requests, exactly as idKey keeps them for the in-flight contexts. A
+// cancelled context alone does not prove the client asked for the
+// cancellation -- the transport may have died instead -- which is why
+// the ask path consults this record before stopping work the client
+// may still mean to collect (§6, #1864 item 2).
+func (c *Conn) cancelledFor(id json.RawMessage) (string, bool) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	reason, ok := c.cancelled[idKey(id)]
+	return reason, ok
+}
+
 // ---- batching ----
 
 // isBatch reports whether a frame is a JSON-RPC batch.
@@ -108,9 +123,9 @@ func isBatch(body []byte) bool {
 // them, and the modern revisions define a POST body and a stdio line as one
 // message. An id cannot be named because there are several.
 func batchRefused(version string) *response {
-	return &response{JSONRPC: "2.0", Error: &rpcError{Code: codeInvalidRequest,
+	return &response{JSONRPC: "2.0", Error: withLocalOrigin(&rpcError{Code: codeInvalidRequest,
 		Message: "JSON-RPC batches exist only in 2025-03-26, not in protocol version " + version +
-			", so send one message at a time"}}
+			", so send one message at a time"})}
 }
 
 // runBatch answers every element of a 2025-03-26 batch.
@@ -131,20 +146,20 @@ func (s *Server) runBatch(ctx context.Context, c *Conn, elems []json.RawMessage,
 		var req request
 		if err := json.Unmarshal(raw, &req); err != nil {
 			out[i] = &response{JSONRPC: "2.0",
-				Error: &rpcError{Code: codeInvalidRequest, Message: err.Error()}}
+				Error: withLocalOrigin(&rpcError{Code: codeInvalidRequest, Message: err.Error()})}
 			continue
 		}
 		if req.Method == "initialize" {
 			// 2025-03-26 lifecycle: "The initialization phase MUST be the
 			// first interaction ... the initialize request MUST NOT be part
 			// of a JSON-RPC batch."
-			out[i] = &response{JSONRPC: "2.0", ID: req.ID, Error: &rpcError{
-				Code: codeInvalidRequest, Message: "initialize must not be sent in a batch"}}
+			out[i] = &response{JSONRPC: "2.0", ID: req.ID, Error: withLocalOrigin(&rpcError{
+				Code: codeInvalidRequest, Message: "initialize must not be sent in a batch"})}
 			continue
 		}
 		if requestVersion(req.Params) != "" {
-			out[i] = &response{JSONRPC: "2.0", ID: req.ID, Error: &rpcError{
-				Code: codeInvalidRequest, Message: "a per-request-metadata message cannot be batched"}}
+			out[i] = &response{JSONRPC: "2.0", ID: req.ID, Error: withLocalOrigin(&rpcError{
+				Code: codeInvalidRequest, Message: "a per-request-metadata message cannot be batched"})}
 			continue
 		}
 		wg.Add(1)
@@ -487,7 +502,7 @@ func (s *Server) serveGET(w http.ResponseWriter, r *http.Request) {
 	notAllowed := func(why string) {
 		w.Header().Set("Allow", "POST, DELETE")
 		writeJSON(w, http.StatusMethodNotAllowed, response{JSONRPC: "2.0",
-			Error: &rpcError{Code: codeInvalidRequest, Message: why}})
+			Error: withLocalOrigin(&rpcError{Code: codeInvalidRequest, Message: why})})
 	}
 	if modernHeaderVersion(r.Header.Get("MCP-Protocol-Version")) {
 		notAllowed("2026-07-28 has no GET stream; open one with subscriptions/listen")
@@ -502,7 +517,7 @@ func (s *Server) serveGET(w http.ResponseWriter, r *http.Request) {
 	c, ok := s.session(id)
 	if !ok {
 		writeJSON(w, http.StatusNotFound, response{JSONRPC: "2.0",
-			Error: &rpcError{Code: codeInvalidRequest, Message: "no such session"}})
+			Error: withLocalOrigin(&rpcError{Code: codeInvalidRequest, Message: "no such session"})})
 		return
 	}
 	f := asFlusher(w)
@@ -518,7 +533,7 @@ func (s *Server) serveGET(w http.ResponseWriter, r *http.Request) {
 		// broadcasting a message across them, and a second stream a client
 		// opened by accident would silently take half its notifications.
 		writeJSON(w, http.StatusConflict, response{JSONRPC: "2.0",
-			Error: &rpcError{Code: codeInvalidRequest, Message: "this session already has a GET stream open"}})
+			Error: withLocalOrigin(&rpcError{Code: codeInvalidRequest, Message: "this session already has a GET stream open"})})
 		return
 	}
 	c.stream = st

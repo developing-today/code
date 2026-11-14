@@ -102,17 +102,23 @@ describe("end-to-end webhook + read model", () => {
       await send("pull_request_review_comment", { repository, pull_request: pr, comment, action: "created" });
       let rows = await local.execute("SELECT kind, deleted FROM pmp_comments ORDER BY kind");
       expect(rows.rows.map((r) => [r.kind, r.deleted])).toEqual([
-        ["issue_comment", 0], ["review", 0], ["review_comment", 0],
+        ["issue_comment", 0],
+        ["review", 0],
+        ["review_comment", 0],
       ]);
       await send("issue_comment", { repository, issue: pr, comment, action: "deleted" });
       rows = await local.execute("SELECT kind, deleted FROM pmp_comments ORDER BY kind");
       expect(rows.rows.map((r) => [r.kind, r.deleted])).toEqual([
-        ["issue_comment", 1], ["review", 0], ["review_comment", 0],
+        ["issue_comment", 1],
+        ["review", 0],
+        ["review_comment", 0],
       ]);
       await send("pull_request_review_comment", { repository, pull_request: pr, comment, action: "deleted" });
       rows = await local.execute("SELECT kind, deleted FROM pmp_comments ORDER BY kind");
       expect(rows.rows.map((r) => [r.kind, r.deleted])).toEqual([
-        ["issue_comment", 1], ["review", 0], ["review_comment", 1],
+        ["issue_comment", 1],
+        ["review", 0],
+        ["review_comment", 1],
       ]);
     } finally {
       local.close();

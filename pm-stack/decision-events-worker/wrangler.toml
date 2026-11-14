@@ -1,0 +1,24 @@
+# decision-events Worker (#9335 Track B): receives decision-set
+# events on an authenticated webhook, stores them in D1, and fans
+# them out through a Durable Object per set (keyed by setId).
+#
+# Secrets (wrangler secret put; values never in this file):
+#   WEBHOOK_SECRET  shared secret for POST /events and the GET
+#                   read-back endpoints; vaulted in Bitwarden by name
+#                   `cloudflare.decision-events.webhook-secret`.
+name = "decision-events"
+main = "src/index.ts"
+compatibility_date = "2025-09-15"
+workers_dev = true
+
+[[d1_databases]]
+binding = "DB"
+database_name = "decision-events"
+database_id = "68ade85e-6835-46a8-af6a-a9f2f2d966ae"
+
+[durable_objects]
+bindings = [{ name = "SET_EVENTS", class_name = "DecisionSetEvents" }]
+
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["DecisionSetEvents"]

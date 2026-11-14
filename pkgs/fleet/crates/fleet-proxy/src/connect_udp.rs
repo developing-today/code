@@ -58,7 +58,7 @@
 
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{Shutdown, TcpListener, TcpStream, ToSocketAddrs, UdpSocket};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -547,10 +547,61 @@ pub fn listen(listen_addr: &str) -> std::io::Result<TcpListener> {
 /// capability is enabled; also driven directly by the tests and
 /// the proof harness.
 pub fn serve(listener: TcpListener) {
+    serve_with_cap(listener, MAX_SESSIONS);
+}
+
+/// Maximum concurrent CONNECT-UDP sessions per endpoint
+/// listener (#6152). One accepted connection spawns one thread
+/// plus one UDP socket in [`serve_session`], so an unbounded
+/// accept loop lets a burst of one-datagram sources pin
+/// unbounded threads and sockets for the full relay idle
+/// horizon. Past the cap a connection is
+/// refused loudly (closed at accept, peer and cap named in the
+/// log) and no thread spawns for it.
+pub const MAX_SESSIONS: usize = 64;
+
+/// Accept loop with an explicit session cap, sharing one live
+/// count across the loop's spawned sessions: each admitted
+/// session holds one count until [`serve_session`] returns.
+/// Preferred over a process-global counter so tests and
+/// harnesses driving several listeners stay isolated from each
+/// other.
+pub fn serve_with_cap(listener: TcpListener, max_sessions: usize) {
+    let live = Arc::new(AtomicUsize::new(0));
     for stream in listener.incoming() {
         match stream {
             Ok(stream) => {
-                std::thread::spawn(move || serve_session(stream));
+                let mut cur = live.load(Ordering::SeqCst);
+                let admitted = loop {
+                    if cur >= max_sessions {
+                        break false;
+                    }
+                    match live.compare_exchange_weak(
+                        cur,
+                        cur + 1,
+                        Ordering::SeqCst,
+                        Ordering::SeqCst,
+                    ) {
+                        Ok(_) => break true,
+                        Err(next) => cur = next,
+                    }
+                };
+                if !admitted {
+                    let peer = stream
+                        .peer_addr()
+                        .map(|a| a.to_string())
+                        .unwrap_or_else(|_| "<unknown>".to_string());
+                    eprintln!(
+                        "fleet connect-udp: at session cap ({max_sessions} sessions); refusing {peer}: closing without spawning a session"
+                    );
+                    drop(stream);
+                    continue;
+                }
+                let live = Arc::clone(&live);
+                std::thread::spawn(move || {
+                    serve_session(stream);
+                    live.fetch_sub(1, Ordering::SeqCst);
+                });
             }
             Err(_) => continue,
         }
@@ -956,6 +1007,33 @@ mod tests {
         let addr = listener.local_addr().unwrap().to_string();
         std::thread::spawn(move || serve(listener));
         addr
+    }
+
+    /// The endpoint cap (#6152): with two session slots, two
+    /// genuine sessions occupy the cap and a third connection
+    /// is refused — accepted, then closed without a session.
+    #[test]
+    fn session_cap_refuses_excess_connections() {
+        assert_eq!(MAX_SESSIONS, 64);
+        let listener = listen("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        std::thread::spawn(move || serve_with_cap(listener, 2));
+        // Two genuine sessions hold both slots for the rest of
+        // the test (idle horizon far exceeds the test).
+        let _a = UdpProxyClient::connect(&addr.to_string(), "127.0.0.1", 9).unwrap();
+        let _b = UdpProxyClient::connect(&addr.to_string(), "127.0.0.1", 9).unwrap();
+        // The excess connection is closed, not served: a read
+        // sees clean EOF rather than a proxy greeting.
+        let mut third = std::net::TcpStream::connect(addr).unwrap();
+        third
+            .set_read_timeout(Some(Duration::from_secs(5)))
+            .unwrap();
+        let mut one = [0u8; 1];
+        match third.read(&mut one) {
+            Ok(0) => {}
+            Ok(_) => panic!("excess connection received bytes instead of a refusal close"),
+            Err(e) => panic!("excess connection read failed unexpectedly: {e}"),
+        }
     }
 
     #[test]

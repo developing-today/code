@@ -6,6 +6,8 @@ use std::collections::BTreeMap;
 
 use id::chain::{ChainExt, Event, sign};
 use id::event_store::{EventStore, Ingest};
+use id::groups::event::encode as encode_group_event;
+use id::groups::{Body as GroupBody, DeviceOp, Event as GroupEvent, Role as GroupRole};
 use id::membership::AuthId;
 use id::membership::body::encode_body;
 use id::tag_claims::{CLEAR_KIND, SET_KIND, TagOp};
@@ -101,6 +103,20 @@ impl Chains {
         )
     }
 
+    /// A device operation by `who` in `group`, carried as a `group.event` body — the
+    /// channel a device grant or revocation travels to the store by (issue #5656).
+    fn device_op(&mut self, who: char, group: Hash, after: &[Hash], op: DeviceOp) -> EventWithBody {
+        let wire = GroupEvent {
+            id: Hash::digest(format!("device op by {who}: {op:?}").as_bytes()),
+            author: author(who),
+            after: after.to_vec(),
+            group: Some(group),
+            body: GroupBody::Device(op),
+        };
+        let body = encode_group_event(&wire).unwrap();
+        self.sign(who, Some(group), after, "group.event", None, Some(body))
+    }
+
     fn clear(&mut self, who: char, claims: &[Hash], after: &[Hash]) -> EventWithBody {
         self.sign(
             who,
@@ -149,6 +165,71 @@ fn grouped_subject_scenario(clearer: char) -> (tempfile::TempDir, EventStore, Ha
         deliver(&mut store, event);
     }
     (dir, store, claim.event.id, clear.event.id)
+}
+
+/// B's claim on a grouped subject, then a clear signed by the device key `D`, which A —
+/// the group's Admin creator — authorized at `scope`. When `revoke` is set, A revokes the
+/// device again before the clear.
+fn device_clear_scenario(scope: GroupRole, revoke: bool) -> (tempfile::TempDir, EventStore) {
+    let (dir, mut store) = open();
+    let mut chains = Chains::default();
+    let group_create = chains.create_group();
+    let group = group_create.event.id;
+    let subject = chains.sign('B', Some(group), &[group], "test.subject", None, None);
+    let claim = chains.set_tag('B', subject.event.id, &[subject.event.id]);
+    let grant = chains.device_op(
+        'A',
+        group,
+        &[group],
+        DeviceOp::Add {
+            device: author('D'),
+            scope,
+        },
+    );
+    deliver(&mut store, &group_create);
+    deliver(&mut store, &subject);
+    deliver(&mut store, &claim);
+    deliver(&mut store, &grant);
+    if revoke {
+        let revoke = chains.device_op(
+            'A',
+            group,
+            &[grant.event.id],
+            DeviceOp::Revoke {
+                device: author('D'),
+            },
+        );
+        deliver(&mut store, &revoke);
+    }
+    let clear = chains.clear('D', &[claim.event.id], &[claim.event.id]);
+    deliver(&mut store, &clear);
+    (dir, store)
+}
+
+#[test]
+fn test_an_admin_scoped_device_of_an_admin_may_clear_another_authors_tag() {
+    // The device's effective role is the authorizing account's Admin role capped by the
+    // grant's Admin scope: Admin, so its clear hides B's claim (issue #5656).
+    let (_dir, store) = device_clear_scenario(GroupRole::Admin, false);
+    assert!(store.tag_claims().unwrap().is_empty());
+}
+
+#[test]
+fn test_a_lower_scoped_device_may_not_clear_another_authors_tag() {
+    // A Write-scoped device of an Admin account has effective role Write: not Admin, so
+    // its clear is retained but does not hide the claim.
+    let (_dir, store) = device_clear_scenario(GroupRole::Write, false);
+    let claims = store.tag_claims().unwrap();
+    assert_eq!(claims.len(), 1);
+}
+
+#[test]
+fn test_a_revoked_device_may_not_clear_another_authors_tag() {
+    // The grant was revoked before the clear: the device holds no active grant, so its
+    // clear does not hide the claim.
+    let (_dir, store) = device_clear_scenario(GroupRole::Admin, true);
+    let claims = store.tag_claims().unwrap();
+    assert_eq!(claims.len(), 1);
 }
 
 #[test]

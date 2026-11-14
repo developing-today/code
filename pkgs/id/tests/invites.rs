@@ -3,8 +3,6 @@
 //! Nothing here touches the network. The accept goes through an [`AcceptSender`] that records
 //! each send, so a refusal can be checked as "no send happened".
 
-#![allow(clippy::unwrap_used, clippy::expect_used)]
-
 use anyhow::Result;
 use ed25519_dalek::SigningKey;
 use id::groups::Role;
@@ -20,6 +18,7 @@ const EXPIRES: u64 = NOW + 86_400_000;
 const ROLE_AT: usize = 96;
 
 /// A ticket for the endpoint with the given seed, at an address that differs per seed.
+#[allow(clippy::unwrap_used)]
 fn ticket(seed: u8) -> EndpointTicket {
     let id = SecretKey::from_bytes(&[seed; 32]).public();
     let ip = format!("203.0.113.{seed}:4433").parse().unwrap();
@@ -76,6 +75,7 @@ impl AcceptSender for Recorder {
 }
 
 #[test]
+#[allow(clippy::unwrap_used)]
 fn a_pasted_ticket_parses_to_an_unsigned_invitation() {
     let ticket = ticket(7);
     let invitation = Invitation::parse(&ticket.to_string()).unwrap();
@@ -84,6 +84,7 @@ fn a_pasted_ticket_parses_to_an_unsigned_invitation() {
 }
 
 #[test]
+#[allow(clippy::unwrap_used)]
 fn a_pasted_ticket_with_surrounding_whitespace_is_trimmed() {
     let ticket = ticket(7);
     let pasted = format!("  \n{ticket}\t\n");
@@ -92,6 +93,7 @@ fn a_pasted_ticket_with_surrounding_whitespace_is_trimmed() {
 }
 
 #[test]
+#[allow(clippy::unwrap_used)]
 fn a_link_carries_the_inviter_key() {
     let ticket = ticket(7);
     let invitation = Invitation::parse(&link(&ticket, &by(&inviter()))).unwrap();
@@ -103,6 +105,7 @@ fn a_link_carries_the_inviter_key() {
 }
 
 #[test]
+#[allow(clippy::unwrap_used)]
 fn a_link_without_an_inviter_key_is_refused() {
     let text = format!("id:join?group={}&ticket={}", group(0xaa), ticket(7));
     let error = Invitation::parse(&text).unwrap_err();
@@ -110,6 +113,7 @@ fn a_link_without_an_inviter_key_is_refused() {
 }
 
 #[test]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 fn test_a_link_with_duplicate_fields_is_refused() {
     let t7 = ticket(7);
     let dup_ticket = ticket(8);
@@ -169,6 +173,7 @@ fn test_a_link_with_duplicate_fields_is_refused() {
 }
 
 #[test]
+#[allow(clippy::expect_used)]
 fn malformed_input_is_refused_with_a_clear_error() {
     let ticket = ticket(7);
     let by = by(&inviter());
@@ -196,6 +201,7 @@ fn malformed_input_is_refused_with_a_clear_error() {
 }
 
 #[test]
+#[allow(clippy::unwrap_used)]
 fn a_bare_ticket_with_no_event_is_unsigned_and_the_accept_is_sent() {
     let invitation = Invitation::parse(&ticket(7).to_string()).unwrap();
     let mut sent = Recorder::default();
@@ -206,6 +212,7 @@ fn a_bare_ticket_with_no_event_is_unsigned_and_the_accept_is_sent() {
 }
 
 #[test]
+#[allow(clippy::unwrap_used)]
 fn a_valid_signed_event_is_checked_and_the_accept_is_sent() {
     let ticket = ticket(7);
     let invitation = Invitation::parse(&link(&ticket, &by(&inviter()))).unwrap();
@@ -217,6 +224,7 @@ fn a_valid_signed_event_is_checked_and_the_accept_is_sent() {
 }
 
 #[test]
+#[allow(clippy::unwrap_used)]
 fn a_bad_event_signature_refuses_the_accept_with_no_send() {
     let ticket = ticket(7);
     let invitation = Invitation::parse(&link(&ticket, &by(&inviter()))).unwrap();
@@ -229,6 +237,7 @@ fn a_bad_event_signature_refuses_the_accept_with_no_send() {
 }
 
 #[test]
+#[allow(clippy::unwrap_used)]
 fn an_event_from_another_key_refuses_the_accept_with_no_send() {
     let ticket = ticket(7);
     let invitation = Invitation::parse(&link(&ticket, &by(&inviter()))).unwrap();
@@ -243,6 +252,7 @@ fn an_event_from_another_key_refuses_the_accept_with_no_send() {
 }
 
 #[test]
+#[allow(clippy::unwrap_used)]
 fn an_event_for_another_ticket_refuses_the_accept_with_no_send() {
     let invitation = Invitation::parse(&link(&ticket(7), &by(&inviter()))).unwrap();
     let event = event(&inviter(), &ticket(8));
@@ -256,6 +266,7 @@ fn an_event_for_another_ticket_refuses_the_accept_with_no_send() {
 }
 
 #[test]
+#[allow(clippy::unwrap_used)]
 fn a_bare_ticket_with_a_valid_event_is_unverified_because_no_key_anchors_it() {
     let ticket = ticket(7);
     let invitation = Invitation::parse(&ticket.to_string()).unwrap();
@@ -276,6 +287,7 @@ fn an_invite_event_names_its_group_role_and_expiry() {
 }
 
 #[test]
+#[allow(clippy::unwrap_used)]
 fn an_invite_event_round_trips_through_its_bytes_for_every_role() {
     for role in [
         Role::Pull,
@@ -292,6 +304,7 @@ fn an_invite_event_round_trips_through_its_bytes_for_every_role() {
 }
 
 #[test]
+#[allow(clippy::unwrap_used)]
 fn a_malformed_invite_event_is_refused() {
     let bytes = event(&inviter(), &ticket(7)).to_bytes();
     let short = &bytes[..bytes.len() - 1];
@@ -308,6 +321,7 @@ fn a_malformed_invite_event_is_refused() {
 }
 
 #[test]
+#[allow(clippy::unwrap_used)]
 fn changing_the_role_or_the_expiry_breaks_the_signature() {
     let ticket = ticket(7);
     let invitation = Invitation::parse(&link(&ticket, &by(&inviter()))).unwrap();
@@ -326,6 +340,7 @@ fn changing_the_role_or_the_expiry_breaks_the_signature() {
 }
 
 #[test]
+#[allow(clippy::unwrap_used)]
 fn an_expired_invite_refuses_the_accept_with_no_send() {
     let ticket = ticket(7);
     let invitation = Invitation::parse(&link(&ticket, &by(&inviter()))).unwrap();
@@ -341,6 +356,7 @@ fn an_expired_invite_refuses_the_accept_with_no_send() {
 }
 
 #[test]
+#[allow(clippy::unwrap_used)]
 fn an_event_for_another_group_refuses_the_accept_with_no_send() {
     let ticket = ticket(7);
     let invitation = Invitation::parse(&link(&ticket, &by(&inviter()))).unwrap();
@@ -352,6 +368,7 @@ fn an_event_for_another_group_refuses_the_accept_with_no_send() {
 }
 
 #[test]
+#[allow(clippy::unwrap_used)]
 fn a_link_is_the_ticket_in_url_form() {
     let ticket = ticket(7);
     let key = inviter().verifying_key().to_bytes();
@@ -378,6 +395,7 @@ fn link_text(ticket: &EndpointTicket) -> String {
 }
 
 #[test]
+#[allow(clippy::unwrap_used)]
 fn the_link_carries_exactly_the_group_ticket_and_inviter() {
     // Address exposure (N30) is documented as this list: a link adds no field beyond these three.
     let link = Invitation::Link {

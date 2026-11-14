@@ -8,8 +8,9 @@
 // Backends in this slice: an OpenAI-compatible configured provider (any
 // base URL, so OpenAI, LiteLLM, Ollama and LM Studio all work through it)
 // and sampling through the broker (the pre-existing path, kept as a
-// backend rather than replaced). The opencode-plugin backend is a later
-// slice; it depends on #47.
+// backend rather than replaced), plus the plugin backend: a second
+// sampler binding over the same broker, labelled for the plugin
+// answerer (#1925).
 //
 // The scope guard from #1925 binds every caller: no mcpx operation may
 // call a model on a path where a deterministic answer exists, and on a

@@ -3,7 +3,6 @@ package testsupport
 import (
 	"os"
 	"path/filepath"
-	"strings"
 	"testing"
 )
 
@@ -60,13 +59,9 @@ func realServerPath(dir, name string) (string, bool) {
 
 // realRequired reports whether a MCPX_TEST_REQUIRE comma list demands the
 // named server: an entry naming the server itself, the subset label, or
-// the wildcard demands it.
+// the wildcard demands it. Case is insignificant; the parsing and the
+// label/wildcard rules live in requireList (require.go), the one parser
+// for the variable (#6904).
 func realRequired(requireList, name string) bool {
-	for _, entry := range strings.Split(requireList, ",") {
-		switch strings.TrimSpace(entry) {
-		case name, "realsoftware", "real", "*":
-			return true
-		}
-	}
-	return false
+	return parseRequireList(requireList).demandsRealServer(name)
 }

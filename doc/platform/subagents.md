@@ -15,12 +15,12 @@
 
 These are the commonly available types — others may be available depending on the session and plugins. Check what's offered before assuming only these exist.
 
-| Type         | Use for                                                                                                                                                                                   |
-| ------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `explore`      | Fast codebase search: find files by pattern, search code for keywords, answer structural questions. Specify thoroughness: "quick", "medium", or "very thorough".                          |
-| `general`      | General-purpose agent for researching complex questions and executing multi-step tasks in parallel. Can use all tools. Use for implementation, bug fixing, refactoring, running commands. |
-| `build`        | Full development agent with all tools enabled. Use for substantial implementation work, file operations, and system commands.                                                             |
-| `plan`         | Analysis and planning agent. Edits and bash require approval. Use for code review, architecture analysis, and creating plans without accidental changes.                                  |
+| Type      | Use for                                                                                                                                                                                   |
+| --------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `explore` | Fast codebase search: find files by pattern, search code for keywords, answer structural questions. Specify thoroughness: "quick", "medium", or "very thorough".                          |
+| `general` | General-purpose agent for researching complex questions and executing multi-step tasks in parallel. Can use all tools. Use for implementation, bug fixing, refactoring, running commands. |
+| `build`   | Full development agent with all tools enabled. Use for substantial implementation work, file operations, and system commands.                                                             |
+| `plan`    | Analysis and planning agent. Edits and bash require approval. Use for code review, architecture analysis, and creating plans without accidental changes.                                  |
 
 <!--
 Disabled agent types — kept for reference / easy re-enable.

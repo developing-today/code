@@ -10,7 +10,14 @@
  *   bun test plugin/opencode/v2/tools.test.ts
  */
 import { describe, expect, test } from "bun:test";
-import { rank, targetKey, type Candidate, type Discovery, type DiscoverOptions, type Target } from "../mcpx/daemon.ts";
+import {
+  rank,
+  targetKey,
+  type Candidate,
+  type Discovery,
+  type DiscoverOptions,
+  type Target,
+} from "../../core/daemon.ts";
 import { resolveOptions } from "./options.ts";
 import { setupMcpxV2, type McpxV2Context } from "./index.ts";
 import { rememberDaemon, type StorageLike } from "./remember.ts";
@@ -106,6 +113,7 @@ describe("registration (tool.transform)", () => {
     expect(editor.namespaces).toEqual([{ name: "mcpx", description: expect.stringContaining("mcpx") }]);
     expect(names.sort()).toEqual([
       "mcpx_daemon_forget",
+      "mcpx_daemon_pick",
       "mcpx_daemon_select",
       "mcpx_daemon_status",
       "mcpx_discover",
@@ -431,5 +439,57 @@ describe("setup: permission gate registration (#1858 item (2))", () => {
     };
     await setupMcpxV2(ctx, { tools: false, daemonTools: false });
     expect(hooks).toEqual(["evaluate"]);
+  });
+});
+
+describe("daemon picker tool (#1858 item (3))", () => {
+  test("with no candidate it renders the menu and marks the daemon in use", async () => {
+    const other: Target = { kind: "url", base: "http://127.0.0.1:9" };
+    const rt = runtime({
+      discoverFn: async () => discoveryWith([candidate(socketTarget), candidate(other)]),
+    });
+    const pick = rt.daemonTools().find((t) => t.name === "daemon_pick")!;
+    const out = await pick.execute({} as never, { sessionID: "s1" });
+    expect(out.content).toContain("daemon picker");
+    expect(out.content).toContain("2 daemons running");
+    // Exactly one row is marked current — whichever index rank() gave
+    // the daemon discovery settled on.
+    expect(out.content).toMatch(/\* \[\d+\]/);
+    expect(out.content).toContain("mcpx_daemon_pick");
+  });
+
+  test("a confirmed pick persists the choice through ctx.storage", async () => {
+    const storage = stubStorage();
+    const other: Target = { kind: "socket", path: "/tmp/other.sock" };
+    const rt = runtime({
+      storage,
+      discoverFn: async () => discoveryWith([candidate(socketTarget), candidate(other)]),
+    });
+    const pick = rt.daemonTools().find((t) => t.name === "daemon_pick")!;
+    const idx = rank([candidate(socketTarget), candidate(other)], "/work").findIndex(
+      (c) => targetKey(c.target) === targetKey(other),
+    );
+    const out = await pick.execute({ candidate: idx, remember: "indefinite" } as never, { sessionID: "s1" });
+    expect(out.content).toContain("Now using");
+    const record = storage.map.get("daemon:/work") as { target?: Target } | undefined;
+    expect(record?.target).toEqual(other);
+  });
+
+  test("a cancelled pick leaves storage and the current daemon untouched", async () => {
+    const storage = stubStorage();
+    const targets: Target[] = [];
+    const rt = runtime({
+      storage,
+      onTarget: (t: Target) => void targets.push(t),
+      assertPermission: async () => {
+        throw new Error("user rejected");
+      },
+    });
+    const pick = rt.daemonTools().find((t) => t.name === "daemon_pick")!;
+    const out = await pick.execute({ candidate: 0, remember: "indefinite" } as never, { sessionID: "s1" });
+    expect(out.content).toContain("not changed");
+    expect(out.content).not.toContain("Now using");
+    expect(storage.map.size).toBe(0);
+    expect(targets).toEqual([]);
   });
 });

@@ -1,6 +1,14 @@
 import { describe, expect, test } from "bun:test";
 import { loadConfig } from "../src/config.ts";
 
+describe("loadConfig projector hot-list credentials", () => {
+  test("trims the optional projector bearer token and leaves it unset by default", () => {
+    expect(loadConfig({ PM_AGG_DEV: "1" }).projector.apiToken).toBeNull();
+    expect(loadConfig({ PM_AGG_DEV: "1", PM_PROJECTOR_API_TOKEN: "  token  " }).projector.apiToken).toBe("token");
+    expect(loadConfig({ PM_AGG_DEV: "1", PM_PROJECTOR_API_TOKEN: "   " }).projector.apiToken).toBeNull();
+  });
+});
+
 describe("loadConfig PM_AGG_PORT", () => {
   test("keeps the existing default for unset and empty values", () => {
     expect(loadConfig({ PM_AGG_DEV: "1" }).port).toBe(4870);

@@ -127,7 +127,26 @@ func toolDecl(t Tool, indent string) string {
 // or use the default `tools` object. The module is written to disk, so the
 // JavaScript runtime's own module cache applies and startup stays at tens of
 // milliseconds.
+// RecipeMeta is one saved script (a recipe), as search() surfaces it
+// beside tools (CODE-36): the script's name, its summary as the
+// description, and its placeholder names. The daemon renders the
+// recipes it loaded into these; codegen itself reads no files.
+type RecipeMeta struct {
+	Name        string
+	Description string
+	Params      []string
+	Required    []string
+}
+
+// Module renders the client with no saved scripts in search().
 func Module(nss []Namespace, endpoint, session string) string {
+	return ModuleWithRecipes(nss, endpoint, session, nil)
+}
+
+// ModuleWithRecipes renders the client with the saved scripts named
+// in recipes searchable from inside a script, as kind: "recipe"
+// matches ranked and paged together with the tools (CODE-36).
+func ModuleWithRecipes(nss []Namespace, endpoint, session string, recipes []RecipeMeta) string {
 	var b strings.Builder
 	b.WriteString(moduleHeader)
 	fmt.Fprintf(&b, "const DEFAULT_ENDPOINT = %s;\n", quote(endpoint))
@@ -194,6 +213,7 @@ func Module(nss []Namespace, endpoint, session string) string {
 	// parameters are called once it is compiled, and the descriptions are
 	// only in comments.
 	b.WriteString(toolMeta(nss))
+	b.WriteString(recipeMeta(recipes))
 	b.WriteString("\nexport default tools;\n")
 	return b.String()
 }
@@ -232,6 +252,37 @@ func toolMeta(nss []Namespace) string {
 	}
 	return "/** Parameter names and descriptions, for search() and describe(). */\n" +
 		"const __toolMeta: Record<string, Record<string, { description: string; params: string[]; required: string[] }>> = " +
+		string(b) + ";\n"
+}
+
+// recipeMeta renders what search() reads for saved scripts, as data
+// beside __toolMeta: name, summary and placeholder names. An empty
+// set still emits the (empty) array, so the generated search() has
+// one shape whether or not any recipe was supplied.
+func recipeMeta(recipes []RecipeMeta) string {
+	type meta struct {
+		Name        string   `json:"name"`
+		Description string   `json:"description"`
+		Params      []string `json:"params"`
+		Required    []string `json:"required"`
+	}
+	sorted := append([]RecipeMeta(nil), recipes...)
+	sort.Slice(sorted, func(i, j int) bool { return sorted[i].Name < sorted[j].Name })
+	out := make([]meta, 0, len(sorted))
+	for _, r := range sorted {
+		out = append(out, meta{
+			Name:        r.Name,
+			Description: firstLine(r.Description),
+			Params:      append([]string{}, r.Params...),
+			Required:    append([]string{}, r.Required...),
+		})
+	}
+	b, err := json.MarshalIndent(out, "", "  ")
+	if err != nil {
+		return "const __recipeMeta: Array<{ name: string; description: string; params: string[]; required: string[] }> = [];\n"
+	}
+	return "/** Saved scripts (recipes), for search(): name, summary, placeholders. */\n" +
+		"const __recipeMeta: Array<{ name: string; description: string; params: string[]; required: string[] }> = " +
 		string(b) + ";\n"
 }
 
@@ -939,7 +990,7 @@ function callSite(): LogAttrs | undefined {
   };
 }
 
-function send(kind: "log" | "result" | "artifact", payload: Record<string, unknown>): void {
+function send(kind: "log" | "result" | "artifact" | "final", payload: Record<string, unknown>): void {
   writeStderr(LOG_SENTINEL + JSON.stringify({ kind, ts: new Date().toISOString(), ...payload }));
 }
 
@@ -1057,6 +1108,61 @@ export function emitResult(value: unknown): void {
 }
 
 export { emitResult as emit };
+
+/**
+ * Report the value of a snippet's final top-level expression
+ * (CODE-19). The runner rewrites that expression to call
+ * __mcpxFinal with its value; the value crosses as a "final"
+ * record, kept apart from stdout and from emit() values. A value
+ * JSON cannot carry degrades to its inspected form rather than
+ * failing the run that produced it.
+ *
+ * An undefined value sends nothing: it means the expression
+ * expressed no result (a void call -- console.log is the common
+ * last line of a print-style snippet), and the ordinary stdout
+ * rule should decide the result instead.
+ */
+// The largest final value carried as itself. The record channel
+// is line-based with an 8 MiB ceiling on the reading side; an
+// unbounded capture could turn a successful script into a failed
+// run, so anything larger crosses in inspected, truncated form.
+const FINAL_VALUE_LIMIT = 1 << 20;
+
+export function captureFinal(value: unknown): void {
+  if (value === undefined) return;
+  try {
+    // JSON.stringify silently drops a function or symbol value
+    // instead of throwing, which would read back as an explicit
+    // null result; inspect those, like the values that throw.
+    if (typeof value === "function" || typeof value === "symbol") {
+      send("final", { value: safeInspect(value) });
+      return;
+    }
+    let raw: string | undefined;
+    try {
+      raw = JSON.stringify(value);
+    } catch {
+      raw = undefined;
+    }
+    if (raw !== undefined && raw.length <= FINAL_VALUE_LIMIT) {
+      send("final", { value });
+      return;
+    }
+    const text = safeInspect(value);
+    send("final", {
+      value: text.length <= FINAL_VALUE_LIMIT ? text : text.slice(0, FINAL_VALUE_LIMIT) + "… [final value truncated]",
+    });
+  } catch {
+    // Even the inspected fallback failed (a hostile toJSON or
+    // inspect): the capture must never fail the run that produced
+    // the value, so report a placeholder and move on.
+    try {
+      send("final", { value: "[final value could not be represented]" });
+    } catch {
+      // Nothing more can be done; the run's own output stands.
+    }
+  }
+}
 
 /**
  * Route console output through the record stream.
@@ -1303,8 +1409,19 @@ function safeInspect(v: unknown): string {
  * work: the launcher installs these before importing the module, and the
  * generated declarations tell an editor they exist.
  */
+/** One saved script, as search returns it (CODE-36). */
+export interface RecipeMatch {
+  kind: "recipe";
+  name: string;
+  description: string;
+  /** Placeholder names, so a caller can check before running it. */
+  params: string[];
+  required: string[];
+}
+
 /** One tool, as search returns it. */
 export interface ToolMatch {
+  kind: "tool";
   namespace: string;
   tool: string;
   /** Call it as tools[namespace][tool](args). */
@@ -1316,7 +1433,8 @@ export interface ToolMatch {
 }
 
 /**
- * Find tools by name or description, from inside a script.
+ * Find tools -- and saved scripts (recipes) -- by name or description,
+ * from inside a script. A match's kind says which it is (CODE-36).
  *
  * Without this, discovering a tool means ending the script, running
  * "mcpx search", reading the result, and writing a new script. That round
@@ -1326,11 +1444,11 @@ export interface ToolMatch {
  * Synchronous, because everything it searches is already in this file. A
  * promise here would only be a promise of work already done.
  */
-export function search(query: string, limit = 20): ToolMatch[] {
+export function search(query: string, limit = 20, offset = 0): Array<ToolMatch | RecipeMatch> {
   const words = String(query).toLowerCase().split(/\s+/).filter(Boolean);
   if (words.length === 0) return [];
 
-  const scored: Array<{ score: number; match: ToolMatch }> = [];
+  const scored: Array<{ score: number; match: ToolMatch | RecipeMatch }> = [];
   for (const [ns, group] of Object.entries(tools)) {
     for (const [name, fn] of Object.entries(group as Record<string, unknown>)) {
       if (typeof fn !== "function") continue;
@@ -1351,6 +1469,7 @@ export function search(query: string, limit = 20): ToolMatch[] {
       scored.push({
         score,
         match: {
+          kind: "tool",
           namespace: ns,
           tool: name,
           call: fn as ToolMatch["call"],
@@ -1361,8 +1480,40 @@ export function search(query: string, limit = 20): ToolMatch[] {
       });
     }
   }
-  scored.sort((a, b) => b.score - a.score || a.match.tool.localeCompare(b.match.tool));
-  return scored.slice(0, limit).map((s) => s.match);
+  for (const r of __recipeMeta) {
+    const hay = (r.name + " " + r.description).toLowerCase();
+    let score = 0;
+    for (const w of words) {
+      if (!hay.includes(w)) {
+        score = -1;
+        break;
+      }
+      // The tools weighting: a word in the name beats a word in prose.
+      score += r.name.toLowerCase().includes(w) ? 10 : 1;
+    }
+    if (score < 0) continue;
+    scored.push({
+      score,
+      match: {
+        kind: "recipe",
+        name: r.name,
+        description: r.description,
+        params: r.params,
+        required: r.required,
+      },
+    });
+  }
+  // One stable order across both kinds, so paging the combined list
+  // with limit/offset is exact (CODE-35): a tool sorts by namespace
+  // then name, a recipe by its name under an empty namespace -- a
+  // recipe wins a tie against a tool, by rule rather than by accident.
+  const sortKey = (m: ToolMatch | RecipeMatch): string =>
+    m.kind === "tool" ? m.namespace + "/" + m.tool : "/" + m.name;
+  scored.sort((a, b) => b.score - a.score ||
+    sortKey(a.match).localeCompare(sortKey(b.match)));
+  const start = Math.max(0, Math.trunc(offset));
+  const count = Math.max(0, Math.trunc(limit));
+  return scored.slice(start, start + count).map((s) => s.match);
 }
 
 /**
@@ -1401,6 +1552,7 @@ export function installGlobals(): void {
   installDenoCompat();
   g.log ??= log;
   g.emit ??= emitResult;
+  g.__mcpxFinal ??= captureFinal;
   g.tools ??= tools;
   g.call ??= call;
   g.batch ??= batch;
@@ -1668,6 +1820,8 @@ func GlobalDeclarations(nss []Namespace) string {
 	b.WriteString("  const log: Logger;\n")
 	b.WriteString("  /** Stream a result before the script finishes. */\n")
 	b.WriteString("  const emit: (value: unknown) => void;\n")
+	b.WriteString("  /** The final-expression capture (CODE-19); installed by the runner, not for direct use. */\n")
+	b.WriteString("  const __mcpxFinal: typeof __mcpx.captureFinal;\n")
 	b.WriteString("  /** Call any tool by name. */\n")
 	b.WriteString("  const call: typeof __mcpx.call;\n")
 	b.WriteString("  /** Execute multiple tool calls in a single turn. */\n")

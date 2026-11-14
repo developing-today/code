@@ -42,7 +42,9 @@ describe("loopback freshness publisher handler", () => {
   });
 
   test("rejects other routes, methods, and oversized request bodies", async () => {
-    expect((await handle(new Request("http://127.0.0.1/not-publish", { method: "POST", body: "{}" }))).status).toBe(404);
+    expect((await handle(new Request("http://127.0.0.1/not-publish", { method: "POST", body: "{}" }))).status).toBe(
+      404,
+    );
     expect((await handle(new Request("http://127.0.0.1/publish"))).status).toBe(405);
     expect(
       (

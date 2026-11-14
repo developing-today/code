@@ -1,0 +1,56 @@
+name: yard-reaper-tests
+
+# Test verification for infra/yard-reaper (#7879).
+#
+# The yard-reaper runs hourly with --apply against the fleet scratch
+# yard: it deletes whole entries. The only thing pinning when it must
+# NOT delete is its 17-test suite (infra/yard-reaper/tests/
+# test_yard_reaper.py, oracle: Drew's 2026-11-07 disposition rule,
+# #7093) -- and until now nothing ran it: no workflow, no flake check,
+# no registry entry. The tool already shipped an apply-loop NameError
+# on its first real run. This workflow runs the suite on every PR and
+# push to main that touches the reaper, so a classification or
+# liveness-gate regression is caught before the timer fires it.
+#
+# The suite is stdlib unittest against the real bin/yard_reaper.py --
+# no network, no credentials, no external CLIs.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "infra/yard-reaper/**"
+      - ".github/workflows/yard-reaper-tests.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# Push-to-main runs each get their own group (keyed by run_id), so a
+# later merge can never cancel -- or displace a pending -- verification
+# run for an earlier merge: every merged tree gets its own completed
+# run. Pull-request runs keep sharing a per-ref group, so a new push
+# to a PR still supersedes its stale run (#392).
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event_name == 'push' && github.run_id || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  python-tests:
+    name: "python: yard-reaper suite"
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Set up Python
+        uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+
+      - name: Assert the suite file exists
+        run: test -f infra/yard-reaper/tests/test_yard_reaper.py
+
+      - name: Run the yard-reaper suite
+        run: python3 -m unittest discover -s infra/yard-reaper/tests -v

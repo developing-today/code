@@ -17,8 +17,8 @@ use id::groups::Role;
 use id::idset::expand::{ExpandError, Expander, SetVersion};
 use id::idset::{Entry, Excludes, WriterSet};
 use id::membership::{AuthId, CausalEvent, Membership, Outcome, Role as MembershipRole};
-use p2panda_auth::group::{GroupAction, GroupMember};
 use p2panda_auth::Access;
+use p2panda_auth::group::{GroupAction, GroupMember};
 use p2panda_core::Hash;
 
 fn author(n: u8) -> [u8; 32] {
@@ -235,10 +235,12 @@ fn test_expand_unchanged_by_later_group_membership_event() {
         },
     );
     // The live roster really did change.
-    assert!(membership
-        .members(group())
-        .iter()
-        .any(|(id, _)| *id == AuthId::Key(author(DAVE))));
+    assert!(
+        membership
+            .members(group())
+            .iter()
+            .any(|(id, _)| *id == AuthId::Key(author(DAVE)))
+    );
 
     let after = expand(&mut membership, &set, vec![group()]);
     assert_eq!(before, after);
