@@ -390,7 +390,10 @@ describe("malformed /api/images payloads", () => {
     ["string body", "abc"],
     ["null element", { images: [null], next_cursor: null }],
     ["wrong-typed field", { images: [{ ...VALID, hash: 123 }], next_cursor: null }],
-    ["missing field", { images: [{ hash: "abc123", name: "cat.png", url: "/blob/abc123?filename=cat.png" }], next_cursor: null }],
+    [
+      "missing field",
+      { images: [{ hash: "abc123", name: "cat.png", url: "/blob/abc123?filename=cat.png" }], next_cursor: null },
+    ],
     ["wrong-typed cursor", { images: [VALID], next_cursor: 123 }],
     ["one bad element among valid ones", { images: [VALID, null], next_cursor: null }],
   ];
