@@ -20,6 +20,10 @@
 //! The facade re-exports each module at its historical `id::` path,
 //! so no call site outside the moved modules changed.
 
+/// The port contract (`event-log` port kind) this crate's adapters
+/// advertise against, owned by `id-core` (slice 9110-02, #10160).
+pub use id_core::port;
+
 pub mod attestation;
 pub mod event_store;
 pub mod event_sync;
