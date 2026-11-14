@@ -6802,7 +6802,9 @@ function epicGraphOneHtml(
           },
         )
         .join("")}</ul>`
-    : `<p class="muted">No open item in this epic is waiting on an unresolved blocker.</p>`;
+    : g.blockedCount > 0
+      ? `<p class="muted">${g.blockedCount} open item${g.blockedCount === 1 ? " is" : "s are"} waiting on an unresolved blocker, but none can be ranked here — members of a dependency cycle are excluded from the unblock ranking until the cycle is broken.</p>`
+      : `<p class="muted">No open item in this epic is waiting on an unresolved blocker.</p>`;
 
   // SVG: hierarchy edges solid grey, dependency edges dashed amber —
   // distinct by dash and color, and named in the legend text.

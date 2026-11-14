@@ -401,10 +401,30 @@ export function epicGraph(
       if (byRef.has(blocked)) poolDependencyEdges.push({ from: blocked, to: item.ref, type: "dependency" });
     }
   }
-  const fullDependencyCycles = cycleComponents(byRef.keys(), poolDependencyEdges, "dependency");
+  // External endpoints join the dependency SCC input with the edges
+  // pool items declare for them (Codex P2 on #7868): a member listing
+  // the same out-of-pool ref in blockedBy and blocks is a real cycle
+  // through that endpoint. Only the SCC input grows — the endpoint
+  // stays unresolved and is never fetched; its status remains unknown
+  // everywhere else.
+  const externalDependencyRefs = new Set<RefKey>();
+  for (const item of pool) {
+    for (const blocker of safeRefs(item.blockedBy)) if (!byRef.has(blocker)) externalDependencyRefs.add(blocker);
+    for (const blocked of safeRefs(item.blocks)) if (!byRef.has(blocked)) externalDependencyRefs.add(blocked);
+  }
+  const sccDependencyEdges = [...poolDependencyEdges];
+  for (const item of pool) {
+    for (const blocker of safeRefs(item.blockedBy)) {
+      if (externalDependencyRefs.has(blocker)) sccDependencyEdges.push({ from: item.ref, to: blocker, type: "dependency" });
+    }
+    for (const blocked of safeRefs(item.blocks)) {
+      if (externalDependencyRefs.has(blocked)) sccDependencyEdges.push({ from: blocked, to: item.ref, type: "dependency" });
+    }
+  }
+  const fullDependencyCycles = cycleComponents([...byRef.keys(), ...externalDependencyRefs], sccDependencyEdges, "dependency");
   const cyclicDependencyRefs = new Set(fullDependencyCycles.flat());
   const dependencyChildren = new Map<RefKey, RefKey[]>();
-  for (const edge of poolDependencyEdges) {
+  for (const edge of sccDependencyEdges) {
     const children = dependencyChildren.get(edge.from) ?? [];
     children.push(edge.to);
     dependencyChildren.set(edge.from, children);

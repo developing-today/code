@@ -251,6 +251,29 @@ describe("epicGraph", () => {
     expect(graph.rankedBlocked.some((row) => row.ref === R(2) || row.ref === R(3))).toBe(false);
     expect(graph.rankedBlocked.find((row) => row.ref === R(4))?.downstreamCount).toBe(0);
   });
+  test('a cycle through an external endpoint is detected and suppresses ranking (Codex P2, #7868)', () => {
+    const pool = [
+      item({ number: 1, title: 'Epic', kind: 'Epic' }),
+      item({ number: 2, epicRef: R(1), blockedBy: [R(99)], blocks: [R(99)] }),
+      item({ number: 3, epicRef: R(1), blockedBy: [R(2)] }),
+    ];
+    const graph = epicGraph(pool, R(1));
+    expect(graph.cycleGroups).toEqual([{ kind: 'dependency', name: 'Dependency cycle 1 (2 items)', members: [R(2), R(99)] }]);
+    expect(graph.rankedBlocked.some((row) => row.ref === R(2))).toBe(false);
+    expect(graph.blockedCount).toBe(2);
+  });
+
+  test('an epic whose only blocked members are cyclic still counts them blocked (Codex P2, #7868)', () => {
+    const pool = [
+      item({ number: 1, title: 'Epic', kind: 'Epic' }),
+      item({ number: 2, epicRef: R(1), blockedBy: [R(3)] }),
+      item({ number: 3, epicRef: R(1), blockedBy: [R(2)] }),
+    ];
+    const graph = epicGraph(pool, R(1));
+    expect(graph.blockedCount).toBe(2);
+    expect(graph.rankedBlocked).toEqual([]);
+    expect(graph.cycleGroups.length).toBe(1);
+  });
 
   test("full-pool dependency cycles that affect this epic are warned even beyond one hop", () => {
     const pool = [
