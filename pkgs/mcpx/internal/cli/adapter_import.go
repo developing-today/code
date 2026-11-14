@@ -15,6 +15,7 @@ import (
 	"unicode"
 
 	"github.com/developing-today/code/pkgs/mcpx/internal/adapter"
+	"github.com/developing-today/code/pkgs/mcpx/internal/defaults"
 )
 
 // Declaration generation for `mcpx adapter import` (#1962 steps 2-5).
@@ -682,7 +683,7 @@ func parseCompletion(text, shell, name string) *importShape {
 // runCapture runs a program for its text output with a bound: import
 // probes binaries, and a probe that hangs would hang the import.
 func runCapture(binary string, args ...string) (string, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), defaults.PreflightProbeTimeout)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, binary, args...)
 	var out strings.Builder
