@@ -38,7 +38,7 @@ const GQL = {
       views: { nodes: [{ id: "PVTV_board", name: "Board", layout: "BOARD_LAYOUT", filter: "Status:open" }] },
       items: {
         totalCount: 3,
-        pageInfo: { hasNextPage: false, endCursor: null },
+        pageInfo: { hasNextPage: false, endCursor: null as string | null },
         nodes: [
           {
             id: "PVTI_1",
