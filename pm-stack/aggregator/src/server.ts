@@ -142,6 +142,7 @@ import {
   projectConfigById,
 } from "./project-config.ts";
 import { PHASE12_REPO, parsePhase12Steps, type Phase12Snapshot } from "./phase12.ts";
+import type { BuildHealthSnapshot } from "./build-health.ts";
 import { identitiesFromRecords, type AuthorIdentity } from "./registry.ts";
 import {
   attentionFragment,
@@ -3026,7 +3027,13 @@ async function handler(req: Request): Promise<Response> {
         }
       }
     }
-    return html(renderProgramProject(buildProjectDetail(config, items, pool, rows), items, prov(), provDetail(), pool, phase12));
+    // #9924: the id page's Build health panel — the Actions-API
+    // snapshot, when the source carries one.
+    let buildHealth: BuildHealthSnapshot | null = null;
+    if (config.id === "id" && source.buildHealth) {
+      buildHealth = await source.buildHealth().catch(() => null);
+    }
+    return html(renderProgramProject(buildProjectDetail(config, items, pool, rows), items, prov(), provDetail(), pool, phase12, buildHealth));
   }
   if (path === "/api/program-project.json") {
     const id = url.searchParams.get("id") ?? "";

@@ -3,6 +3,7 @@
 // the other is a config change (PM_AGG_SOURCE), not a code change.
 import type { SectionDiagnosis } from "./feed.ts";
 import type { Phase12Snapshot } from "./phase12.ts";
+import type { BuildHealthSnapshot } from "./build-health.ts";
 import type { NeedsDrewCensus } from "./needs-drew.ts";
 import type { RepoCensus } from "./coverage.ts";
 import type {
@@ -87,6 +88,11 @@ export interface Source {
    * omit it and the panel renders unavailable instead of inventing
    * a step list. */
   phase12?(): Promise<Phase12Snapshot | null>;
+  /** The Actions-API build-health snapshot for the id section's
+   * Build health panel (#9924); null = not collected / unavailable.
+   * Optional like phase12: sources that cannot read the Actions API
+   * omit it and the panel renders unavailable. */
+  buildHealth?(): Promise<BuildHealthSnapshot | null>;
   /** Which session sources are wired, for the coverage note (slice 2). */
   coverage(): Promise<SourceCoverage[]>;
   provenance(): Provenance;
