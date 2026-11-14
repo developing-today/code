@@ -115,14 +115,29 @@ every append.
 
 - Each ingested table declares a **watermark column** — a monotonically
   increasing key the store itself maintains (rowid, `updated_at` with a
-  tiebreaker key, or an append-only sequence). Detection reads
+  tiebreaker key, or an append-only sequence). The watermark must be
+  **update-sensitive**: it must advance when an existing row is edited,
+  not only when rows are appended. A bare `rowid` (or any append-only
+  sequence) is therefore permitted **only** for tables that are immutable
+  and append-only by construction — an in-place update does not advance
+  a rowid, so the edited row would stay below the landed watermark
+  forever, invisible to hash comparison, and the tombstone sweep cannot
+  catch it either (its key still exists). A mutable table must declare
+  an update-sensitive watermark (`updated_at` with a tiebreaker key, or
+  a store-maintained version/sequence that bumps on update); a mutable
+  table with no such column falls back to §2.2 at row granularity (hash
+  every row), never to a rowid watermark. Detection reads
   `max(watermark)` and the row count cheaply (an index probe, not a
   scan); rows at or below the landed watermark are presumed unchanged.
 - Presumption is verified per row for the boundary region only: rows
   carry a landed row hash (BLAKE3 over the row's canonical encoding).
   Rows after the watermark are hashed and compared — new watermark
   rows with an existing key are *edits* (the row's new version lands;
-  the old row version is retired, not mutated), rows with new keys are
+  the old row version is *superseded*, not mutated — and not retired:
+  supersession alone is not a retirement trigger, so the superseded
+  version is preserved until the retention record (§4.1 of the adopted
+  content-versioning/retention record) permits retirement — a retention
+  trigger fired **and** the class policy allows it), rows with new keys are
   new, and a **tombstone sweep** (keys present in the ledger, absent in
   a full key listing) runs on a slow cadence (daily, or on operator
   request) to catch hard deletes the watermark cannot see. The key
@@ -179,7 +194,13 @@ count in the detection ledger entry.**
   not embedded as a near-duplicate: it is recorded as an *occurrence*
   of the covering spans (the #5733 ≥ 0.9 dedup edge, #3125 occurrence
   semantics) and the version's span list references those spans with
-  this version's offsets. Below 0.9, the non-covered residue is a
+  this version's offsets. The ceiling suppresses only the near-duplicate
+  **whole-span** embedding: the span's non-covered residue — the bytes no
+  covering span carries — is still cut and embedded as a literal span,
+  at any coverage level. A 1,000-byte span that is 95% covered leaves a
+  50-byte residue, and those 50 bytes are genuinely new material: they
+  get their own embed and are searchable as content, not merely
+  reconstructable from version text. Below 0.9, the non-covered residue is a
   literal region for the matcher/cutter and the covered part is
   copy tokens — partial overlap is normal and expected (it is the
   accepted repetition in Drew's requirement), total duplication is
@@ -212,8 +233,10 @@ paragraph it touches). Assembly of one paragraph `P` of version `V`:
    - a gap `c .. S.start` is filled from `V`'s own stored version text
      (the version text is the ground truth; spans are indexes *into*
      it, not replacements for it);
-   - emit `S`'s bytes from `max(S.start, c)` to `S.end`; set
-     `c = S.end`.
+   - emit `S`'s bytes from `max(S.start, c)` to `min(S.end, P.end)` —
+     intersecting spans are clipped to the paragraph extent before
+     emission, so assembly can never write past `P.end` into the next
+     paragraph; set `c = min(S.end, P.end)`.
 3. Any tail gap `c .. P.end` is filled from version text as in step 2.
 
 The version text is always available for a live version (it is the
