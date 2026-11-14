@@ -45,6 +45,9 @@ use fleet_registry::{
 #[cfg(feature = "secrets")]
 mod secrets;
 
+#[cfg(feature = "gh")]
+mod gh;
+
 #[allow(dead_code)]
 // the derivation runs in build.rs (which includes this module by path); the binary itself consumes only the baked FLEET_DERIVED_VERSION value, plus these unit tests
 mod derived_version;
@@ -96,6 +99,9 @@ fn compiled_capabilities() -> CapabilitySet {
     }
     if cfg!(feature = "secrets") {
         caps.insert(Capability::Secrets);
+    }
+    if cfg!(feature = "gh") {
+        caps.insert(Capability::Gh);
     }
     caps
 }
@@ -822,6 +828,13 @@ fn run_domain(surface: &Surface, d: &Domain, args: &[String], invoked_as: &str) 
             #[cfg(feature = "secrets")]
             if d.name == "secrets" {
                 return secrets::run(&surface.config, args);
+            }
+            // code#8887: the gh domain runs for real — the real
+            // `gh` binary as a passthrough under the token
+            // rotation (personal, then App installations).
+            #[cfg(feature = "gh")]
+            if d.name == "gh" {
+                return gh::run(&surface.config, args);
             }
             // Step 5 (#5433): the search domain runs for real —
             // the atlas-search client surface over the live Atlas

@@ -104,8 +104,12 @@ claimant = _load_sibling("claimant")
 STATE_DIR = claimant.STATE_DIR
 CLAIMANT_WORKER = "opencode-claimant"
 
+CODE_CHECKOUT = ("developing-today/code", "/home/user/git/code")
 REPOS = {
-    "repo-health-code-pilot": ("developing-today/code", "/home/user/git/code"),
+    # The one-queue broker uses the stream name verbatim. Its code stream
+    # shares a checkout with the legacy pilot, but not a broker queue key.
+    "code": CODE_CHECKOUT,
+    "repo-health-code-pilot": CODE_CHECKOUT,
     "repo-health-opencode-pilot": (
         "developing-today-forks/opencode",
         "/home/user/git/opencode",
@@ -384,24 +388,30 @@ def post_agent_note(row, ref, repo, sid):
 # --- The launch sequence ----------------------------------------------
 
 
-def collect_sink_claim(queue_name, task_id):
+def collect_sink_claim(queue_name, task_id, model_provider=None, model_id=None):
     """Claim THIS sink row (status 'handed_off') by id, as the
     claimant. Returns (claimed_row, None) or (None, error). The
     claim output is the claimed row itself, a {"task": row}
     wrapper, or {"task": null} when the broker would not hand it
-    over; only a row whose id is the requested task counts."""
+    over; only a row whose id is the requested task counts.
+    #8176: when the caller names the route the session for this
+    task will be created under, the claim carries it as the
+    claim-model stamp."""
+    argv = [
+        "claim",
+        "--queue",
+        queue_name,
+        "--worker",
+        CLAIMANT_WORKER,
+        "--platform",
+        "openchamber",
+        "--task",
+        str(task_id),
+    ]
+    if model_provider and model_id:
+        argv += ["--model-provider", model_provider, "--model-id", model_id]
     try:
-        rc, out, err = queue(
-            "claim",
-            "--queue",
-            queue_name,
-            "--worker",
-            CLAIMANT_WORKER,
-            "--platform",
-            "openchamber",
-            "--task",
-            str(task_id),
-        )
+        rc, out, err = queue(*argv)
     except Exception as e:
         return None, str(e)[:300]
     data = None
@@ -478,7 +488,13 @@ def launch(queue_name, task_id):
         # (status 'handed_off', recorded opencode handoff); the
         # session then works as the claimant, exactly as in
         # claimant.py's sink path.
-        claimed, claim_err = collect_sink_claim(queue_name, task_id)
+        # #8176: stamp the by-id claim with the route the session
+        # created below will run under (route_for on the row in
+        # hand — the same route the create uses).
+        claim_prov, claim_mdl = route_for(row)
+        claimed, claim_err = collect_sink_claim(
+            queue_name, task_id, claim_prov, claim_mdl
+        )
         if claimed is None:
             return {
                 "task": task_id,

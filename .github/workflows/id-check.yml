@@ -46,19 +46,6 @@ name: id
 on:
   push:
     branches: [main]
-  pull_request:
-    paths:
-      - "pkgs/id/**"
-      - ".github/workflows/id-check.yml"
-      - ".github/scripts/id-pr-checks.txt"
-      - ".github/scripts/id-pr-checks-matrix.sh"
-      - ".github/scripts/id-pr-checks-matrix.test.sh"
-      - ".github/scripts/check-id-pr-checks.sh"
-      - ".github/scripts/check-id-pr-checks.test.sh"
-      - ".github/scripts/check-crash-gate-coverage.sh"
-      - ".github/scripts/check-id-source-snapshot.sh"
-      - ".github/scripts/check-id-source-snapshot.test.sh"
-      - ".github/scripts/check-crash-gate-coverage.test.sh"
   schedule:
     # Nightly backstop for the full flake check (main tier, #1781).
     - cron: "41 8 * * *"
@@ -235,7 +222,7 @@ jobs:
           -- --exact
 
   # The issue #3850 regression is not covered by the normal default-feature
-  # matrix: keep a direct no-world build in the PR tier.
+  # matrix: keep a direct no-world build in the basic tier.
   no-world:
     name: "basic: id builds without world feature"
     runs-on: ubuntu-latest

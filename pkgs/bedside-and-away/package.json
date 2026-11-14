@@ -1,0 +1,12 @@
+{
+  "name": "bedside-and-away",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=24"
+  },
+  "scripts": {
+    "test": "node scripts/test.mjs",
+    "build": "node scripts/build.mjs"
+  }
+}

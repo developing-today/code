@@ -46,7 +46,7 @@ describe("packet building", () => {
     expect(packet.payload.model_hint).toEqual({ providerID: "opencode-go", id: "gpt-5.6-luna" });
     expect((packet.payload.issue as { number: number }).number).toBe(952);
     expect(packet.payload.timebox_minutes).toBe(45);
-    expect(packet.payload.max_attempts).toBe(2);
+    expect(packet.payload.max_attempts).toBe(1000);
   });
 
   test("a no-issue triage packet still passes via the dispatch origin identity", () => {
@@ -70,7 +70,7 @@ describe("packet building", () => {
     );
     expect(validatePayload(packet.payload)).toEqual([]);
     expect(packet.payload.timebox_minutes).toBe(20);
-    expect(packet.payload.max_attempts).toBe(3);
+    expect(packet.payload.max_attempts).toBe(1000);
     expect(packet.payload.issue).toBeUndefined();
   });
 });

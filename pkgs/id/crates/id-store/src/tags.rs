@@ -2951,20 +2951,24 @@ mod tests {
         blobs.tags().set(META_TAG, malformed.hash).await.unwrap();
 
         assert!(ts.migrate_legacy_meta(&blobs).await.is_err());
-        assert!(!load_registry(&ts.registry_path)
-            .await
-            .unwrap()
-            .legacy_meta_imported);
+        assert!(
+            !load_registry(&ts.registry_path)
+                .await
+                .unwrap()
+                .legacy_meta_imported
+        );
 
         let mut doc = MetaDoc::default();
         add_tag(&mut doc, "notes.md", "priority", Some("high"), None);
         save_meta(&blobs, &doc).await.unwrap();
 
         assert_eq!(ts.migrate_legacy_meta(&blobs).await.unwrap(), 1);
-        assert!(load_registry(&ts.registry_path)
-            .await
-            .unwrap()
-            .legacy_meta_imported);
+        assert!(
+            load_registry(&ts.registry_path)
+                .await
+                .unwrap()
+                .legacy_meta_imported
+        );
         let tags = ts.get_tags(&ts.global, b"notes.md").await.unwrap();
         assert!(tags.iter().any(|tag| {
             tag.key == "priority"

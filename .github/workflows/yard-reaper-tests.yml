@@ -16,10 +16,6 @@ name: yard-reaper-tests
 # no network, no credentials, no external CLIs.
 
 on:
-  pull_request:
-    paths:
-      - "infra/yard-reaper/**"
-      - ".github/workflows/yard-reaper-tests.yml"
   push:
     branches: [main]
     paths:

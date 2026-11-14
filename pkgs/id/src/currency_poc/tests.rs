@@ -463,7 +463,10 @@ fn in_memory_rejects_the_reserved_id_shapes_like_tigerbeetle() {
     // Reserved debit/credit account IDs are refused with the typed
     // errors, not misreported as "not found".
     let results = ledger.create_transfers(&[funding_transfer(777_001, 0, LP_SRC, 10, SRC)]);
-    assert_eq!(results, vec![Err(TransferError::DebitAccountIdMustNotBeZero)]);
+    assert_eq!(
+        results,
+        vec![Err(TransferError::DebitAccountIdMustNotBeZero)]
+    );
     let results =
         ledger.create_transfers(&[funding_transfer(777_002, USER_SRC, u128::MAX, 10, SRC)]);
     assert_eq!(

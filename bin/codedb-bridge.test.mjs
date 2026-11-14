@@ -36,6 +36,39 @@ test('daemon URL rejects query, fragment and userinfo by name instead of silentl
   assert.throws(() => parseDaemonUrl('http://user@127.0.0.1:7719'), /CODEDB_DAEMON_URL.*userinfo/);
 });
 
+test('daemon URL errors never echo credentials, query values or fragment values (#9829)', () => {
+  const messageOf = (fn) => {
+    try {
+      fn();
+    } catch (err) {
+      return err.message;
+    }
+    throw new Error('expected parseDaemonUrl to throw');
+  };
+  // userinfo branch: neither the username nor the password may appear
+  // (distinctive sentinels -- the word userinfo itself contains user).
+  const userinfo = messageOf(() => parseDaemonUrl('http://svcacct:hunterpass@127.0.0.1:7719/'));
+  assert.match(userinfo, /CODEDB_DAEMON_URL.*userinfo/);
+  assert.ok(!userinfo.includes('hunterpass'), userinfo);
+  assert.ok(!userinfo.includes('svcacct'), userinfo);
+  const userinfoPass = messageOf(() => parseDaemonUrl('http://user:pass@127.0.0.1:7719/'));
+  assert.ok(!userinfoPass.includes('pass'), userinfoPass);
+  // query branch: the token value may not appear.
+  const query = messageOf(() => parseDaemonUrl('http://127.0.0.1:7719/?token=secret'));
+  assert.match(query, /CODEDB_DAEMON_URL.*query/);
+  assert.ok(!query.includes('secret'), query);
+  // fragment branch: the fragment value may not appear.
+  const fragment = messageOf(() => parseDaemonUrl('http://127.0.0.1:7719/#secretfrag'));
+  assert.match(fragment, /CODEDB_DAEMON_URL.*fragment/);
+  assert.ok(!fragment.includes('secretfrag'), fragment);
+  // the pre-existing branches are covered too: a credentialed value that
+  // fails URL parsing or the origin check must not be echoed either.
+  const invalid = messageOf(() => parseDaemonUrl('http://user:pass@127.0.0.1:bad/'));
+  assert.ok(!invalid.includes('pass'), invalid);
+  const nonOrigin = messageOf(() => parseDaemonUrl('https://user:pass@127.0.0.1:7719'));
+  assert.ok(!nonOrigin.includes('pass'), nonOrigin);
+});
+
 test('daemon fetch timeout defaults to a named deadline and accepts a positive integer override', () => {
   assert.equal(DEFAULT_DAEMON_FETCH_TIMEOUT_MS, 10_000);
   assert.equal(parseDaemonFetchTimeoutMs(undefined), DEFAULT_DAEMON_FETCH_TIMEOUT_MS);

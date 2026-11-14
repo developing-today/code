@@ -82,6 +82,8 @@ type Defaults struct {
 		StatsTop             int    `json:"statsTop"`
 		RegistryLimit        int    `json:"registryLimit"`
 		HandoffRetryInterval string `json:"handoffRetryInterval"`
+		ScriptWait           string `json:"scriptWait"`
+		FailoverCooldown     string `json:"failoverCooldown"`
 	} `json:"plumbing"`
 	// Resolve governs GET /v1/resolve, which answers "which daemon serves
 	// this directory" for a caller that has no mcpx binary.
@@ -91,7 +93,8 @@ type Defaults struct {
 	// Preflight governs the resolver's own outbound lookups while it
 	// walks an import graph.
 	Preflight struct {
-		NPMTimeout string `json:"npmTimeout"`
+		NPMTimeout   string `json:"npmTimeout"`
+		ProbeTimeout string `json:"probeTimeout"`
 	} `json:"preflight"`
 	// Elicit governs questions a server asks back.
 	Elicit struct {
@@ -607,6 +610,14 @@ var (
 	// HandoffRetryInterval is how often a takeover re-checks pools that were
 	// busy with in-flight calls.
 	HandoffRetryInterval = mustDur(builtin.Plumbing.HandoffRetryInterval, "plumbing.handoffRetryInterval")
+	// ScriptWait bounds how long a script view's call waits on its output
+	// pipes after the program exits, so a grandchild that inherited them
+	// cannot hold the call open (exec.Cmd.WaitDelay).
+	ScriptWait = mustDur(builtin.Plumbing.ScriptWait, "plumbing.scriptWait")
+	// FailoverCooldown is the fallback skip for a soft-blocked auth
+	// identity whose config names no cooldownSeconds: the Failover
+	// config's own "zero means 60" rule, homed here like every default.
+	FailoverCooldown = mustDur(builtin.Plumbing.FailoverCooldown, "plumbing.failoverCooldown")
 
 	// ResolveDialTimeout bounds the liveness check /v1/resolve makes against
 	// the socket it is about to name. It is a local connect on a unix
@@ -619,6 +630,11 @@ var (
 	// internal bound, so it lives in defaults.json only and is
 	// deliberately absent from the settings registry.
 	PreflightNPMTimeout = mustDur(builtin.Preflight.NPMTimeout, "preflight.npmTimeout")
+	// PreflightProbeTimeout bounds one import probe (a completion dump,
+	// `man`, --help): import probes binaries, and a probe that hangs
+	// would hang the import. Like PreflightNPMTimeout it is an internal
+	// bound, in defaults.json only and absent from the settings registry.
+	PreflightProbeTimeout = mustDur(builtin.Preflight.ProbeTimeout, "preflight.probeTimeout")
 
 	ElicitTTL = mustDur(builtin.Elicit.TTL, "elicit.ttl")
 	// ElicitMaxAge is the absolute ceiling on a question's life under the

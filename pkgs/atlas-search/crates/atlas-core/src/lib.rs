@@ -29,6 +29,7 @@
 
 pub mod backend;
 pub mod embed;
+pub mod embed_cache;
 pub mod error;
 pub mod eval;
 pub mod filters;
@@ -36,7 +37,9 @@ pub mod fusion;
 pub mod local;
 pub mod search;
 pub mod shards;
+pub mod shingles;
 pub mod stage;
+pub mod trace;
 pub mod turso;
 pub mod types;
 
@@ -46,6 +49,10 @@ pub const MAX_EXPAND_NEIGHBORS: usize = 100;
 
 pub use backend::SearchBackend;
 pub use embed::{AtlasEmbedder, FixedEmbedder, QUERY_PROMPT, QueryEmbedder};
+pub use embed_cache::{
+    CachingEmbedder, QueryEmbeddingCache, RawQueryEmbedder, SharedEmbeddingStore,
+    TursoEmbeddingStore, cache_key, normalize_query_text,
+};
 pub use error::{Error, Result};
 pub use eval::{
     EVAL_FORMAT, EvalData, EvalReport, MAX_GRADE, Metric, REPORT_FORMAT, Split, evaluate,
@@ -55,12 +62,13 @@ pub use filters::{Filters, Sensitivity};
 pub use fusion::FusedEntry;
 pub use local::LocalBackend;
 pub use search::{
-    BackendBranchExecutor, BranchPoolExecutor, SearchMode, SearchOptions, run_get_chunk,
-    run_search, run_search_with_executor,
+    BackendBranchExecutor, BranchPoolExecutor, SearchMode, SearchOptions, TraceJob, run_get_chunk,
+    run_search, run_search_traced, run_search_with_executor, run_search_with_executor_traced,
 };
 pub use stage::{
     REGISTRY_V1_DDL, Registry, STAGE_SCHEMA_VERSION, STAGE_V1_DDL, STAGE_V1_TABLES, StagingUnit,
     UnitState, check_stage_schema, provision_staging_db, schema_version,
 };
+pub use trace::{JsonlTraceSink, TRACE_SCHEMA, TraceContext, TraceSink};
 pub use turso::TursoBackend;
 pub use types::{BranchQuery, DEFAULT_MODEL, DEFAULT_VEC_TABLE, VectorBackend};

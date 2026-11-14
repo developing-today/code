@@ -290,7 +290,7 @@ they must, since an enforced row without its case fails test 2.
   The unix socket stays as it is. Then "file permissions are the access
   control" is true of both listeners. The fix is in
   `internal/daemon/server.go` and the clients that read the record
-  (`internal/cli/client.go`, `plugin/opencode/mcpx/daemon.ts`,
+  (`internal/cli/client.go`, `plugin/core/daemon.ts`,
   `docs/plugin-discovery.md`).
 - **`script.permissions`**: a profile other than `all` on a runtime with no
   permission model is refused before anything runs, naming the runtime and the

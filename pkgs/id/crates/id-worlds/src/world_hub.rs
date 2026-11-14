@@ -30,7 +30,7 @@ use serde::Serialize;
 use tokio::sync::{OnceCell, OwnedSemaphorePermit, Semaphore};
 use tokio::task::JoinHandle;
 
-use crate::world::Isolation;
+use crate::world::{Isolation, ScheduleDelivery, ScheduleDeliveryFuture};
 use crate::world_session::WorldService;
 
 /// Longest world name, in bytes.
@@ -488,9 +488,7 @@ impl WorldHub {
     /// on a pinned view, the hub's default otherwise.
     #[must_use]
     pub fn default_world(&self) -> &str {
-        self.pin
-            .as_deref()
-            .unwrap_or(&self.inner.default_world)
+        self.pin.as_deref().unwrap_or(&self.inner.default_world)
     }
 
     /// Whether `token` is the process-wide admin token.
@@ -673,6 +671,17 @@ impl WorldHub {
         slot.leases.store(1, Ordering::Release);
         slots.insert(name.to_owned(), Arc::clone(&slot));
         Ok((slot, evicted))
+    }
+
+    /// The cross-world schedule delivery sink backed by this hub
+    /// (#1355 part 2): install it on a world's handle
+    /// (`WorldHandle::set_schedule_delivery`) and that world's outbound
+    /// schedule fires are delivered through the hub to their target
+    /// worlds. Delivery leases the target (never creates it) and answers
+    /// with the target's durable acceptance.
+    #[must_use]
+    pub fn schedule_delivery(&self) -> Arc<dyn ScheduleDelivery> {
+        Arc::new(HubScheduleDelivery { hub: self.clone() })
     }
 
     /// Open the default world (creating it), for startup.
@@ -866,21 +875,21 @@ impl WorldHub {
     }
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "test-utils"))]
 #[allow(clippy::unwrap_used)]
-pub(crate) mod testing {
+pub mod testing {
     use super::*;
     use crate::world::{WorldCore, WorldHandle, WorldLimits};
 
     /// In-memory worlds; `known` simulates worlds that exist in storage.
-    pub(crate) struct MemoryOpener {
+    pub struct MemoryOpener {
         pub(crate) known: StdMutex<Vec<String>>,
         pub(crate) opens: AtomicUsize,
         pub(crate) durable: bool,
     }
 
     impl MemoryOpener {
-        pub(crate) fn new(durable: bool) -> Arc<Self> {
+        pub fn new(durable: bool) -> Arc<Self> {
             Arc::new(Self {
                 known: StdMutex::new(Vec::new()),
                 opens: AtomicUsize::new(0),
@@ -983,7 +992,10 @@ mod tests {
         drop(lease);
         let listed = hub.list();
         let names: Vec<&str> = listed.iter().map(|info| info.name.as_str()).collect();
-        assert!(names.contains(&"arena") && names.contains(&"vault"), "{names:?}");
+        assert!(
+            names.contains(&"arena") && names.contains(&"vault"),
+            "{names:?}"
+        );
     }
 
     #[test]
@@ -1455,5 +1467,36 @@ mod tests {
         // The cancelled lease must not leak: its slot is gone, so the world
         // is neither stuck open nor un-evictable.
         assert_eq!(hub.open_count(), 0);
+    }
+}
+
+/// [`ScheduleDelivery`] through a [`WorldHub`]: lease the target world
+/// and ask its actor to accept the fire. Any failure — unknown world,
+/// busy hub, closed actor, refusal — is `false`, which leaves the
+/// source occurrence pending for a later retry.
+struct HubScheduleDelivery {
+    hub: WorldHub,
+}
+
+impl ScheduleDelivery for HubScheduleDelivery {
+    fn deliver_schedule<'a>(
+        &'a self,
+        source: &'a str,
+        target: &'a str,
+        id: &'a str,
+        at_ms: u64,
+        late: bool,
+    ) -> ScheduleDeliveryFuture<'a> {
+        Box::pin(async move {
+            let Ok(lease) = self.hub.lease(Some(target), None).await else {
+                return false;
+            };
+            lease
+                .service()
+                .world()
+                .deliver_schedule(source.to_owned(), id.to_owned(), at_ms, late)
+                .await
+                .unwrap_or(false)
+        })
     }
 }

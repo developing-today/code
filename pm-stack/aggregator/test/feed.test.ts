@@ -1277,8 +1277,18 @@ describe("collector section metadata (#1178)", () => {
     writeFileSync(file, JSON.stringify(feed));
     expect(isFleetFeed(baseFeed())).toBe(true);
     expect(isFleetFeed(feed)).toBe(true);
-    expect(sanitizeFeedMetadata({ sections: { legacy: { status: "ok", at: "2026-10-01T00:00:00Z" } } })).toEqual({
-      sections: { legacy: { status: "ok", at: "2026-10-01T00:00:00Z" } },
+    expect(
+      sanitizeFeedMetadata({
+        sections: {
+          legacy: { status: "ok", at: "2026-10-01T00:00:00Z", reportedTotal: 10, emittedEntries: 7 },
+          invalidCounts: { status: "ok", at: "2026-10-01T00:00:00Z", reportedTotal: -1, emittedEntries: 1.5 },
+        },
+      }),
+    ).toEqual({
+      sections: {
+        legacy: { status: "ok", at: "2026-10-01T00:00:00Z", reportedTotal: 10, emittedEntries: 7 },
+        invalidCounts: { status: "ok", at: "2026-10-01T00:00:00Z" },
+      },
     });
     const loaded = await loadFeed(file);
     expect(loaded?.meta?.sections.dns?.status).toBe("error");

@@ -207,6 +207,14 @@ def claim_batch(queue_name, worker, lane, count, family, session_id, lease_secon
         args += ["--lane", lane]
     if session_id:
         args += ["--session-id", session_id]
+    if family == "muse":
+        # #8176: a batch claimed for the Muse family is held by a
+        # Muse lane surface — the design's non-session marker
+        # (muse-lane) instead of a fabricated model. Opencode
+        # batches name their dispatching session (--session-id)
+        # and the queue client derives that session's own model
+        # for the stamp.
+        args += ["--model-provider", "muse-lane", "--model-id", "muse-lane"]
     rc, data, err = queue_json(*args)
     if data is None:
         return [], f"batch claim unparseable (rc={rc}): {err.strip()[:200]}"

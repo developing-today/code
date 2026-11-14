@@ -23,10 +23,10 @@ use super::{
     ACTIONS, APPLIED, DEVICE_OPS, EVENTS, EventStore, FORKS, PROOF_HEADERS, StoreError, corrupt,
     decode_stored,
 };
-use id_store::chat::{CHAT_MESSAGE_KIND, ChatRecord, project, visible_history};
 use crate::groups::policy::{History, Policy};
 use id_core::membership::AuthId;
 use id_core::waiting::AuthorKey;
+use id_store::chat::{CHAT_MESSAGE_KIND, ChatRecord, project, visible_history};
 
 impl EventStore {
     /// The chat records of `group`: each applied `chat.message.v1` event that names the
@@ -253,10 +253,10 @@ fn past_size(id: Hash, parents: &HashMap<Hash, Vec<Hash>>) -> usize {
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
     use super::*;
-    use id_store::chain::{ChainExt, sign};
-    use id_store::chat::ChatMessage;
     use id_core::membership::body::encode_body;
     use id_core::waiting::WaitingLimits;
+    use id_store::chain::{ChainExt, sign};
+    use id_store::chat::ChatMessage;
     use p2panda_core::{SeqNum, SigningKey};
 
     fn key(n: u8) -> SigningKey {

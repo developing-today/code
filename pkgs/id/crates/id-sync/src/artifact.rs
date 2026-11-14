@@ -62,16 +62,16 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use unicode_normalization::is_nfc;
 
-use id_core::connectivity::{DIAL_TIMEOUT, connect, within};
 use id_core::Refusal;
+use id_core::connectivity::{DIAL_TIMEOUT, connect, within};
 
-use crate::hex::{hex_encode, hex_to_array, normalize_key};
-use crate::host::{Availability, SessionHost};
 use crate::envelope_net::{Reply, answer_frames, send};
 use crate::envelope_outbox::{Outcome, check_target};
-use id_events::event_sync::{CLOSE_WAIT, SESSION_DEADLINE};
-use id_core::frames::{read_frame, write_frame};
+use crate::hex::{hex_encode, hex_to_array, normalize_key};
+use crate::host::{Availability, SessionHost};
 use id_core::frames::MAX_FRAME_BYTES;
+use id_core::frames::{read_frame, write_frame};
+use id_events::event_sync::{CLOSE_WAIT, SESSION_DEADLINE};
 
 /// The file, beside `directory.jsonl`, that holds a world's artifacts.
 pub const FILE: &str = "artifacts.jsonl";

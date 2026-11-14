@@ -272,6 +272,14 @@ function applyEntry(pool: QuotaPool, entry: QuotaCurrentEntry, state: FreshState
   if (state === "error") freshness.error = !entry.error && legError ? legError : errorText(entry);
   if (state === "lapsed") freshness.error = errorText(entry);
   pool.freshness = freshness;
+  // #3983 forecasts are derived from the windows they were computed
+  // against (the collector dated fallback). This overlay replaces,
+  // adopts, or clears those windows from the live gatherer read, so
+  // a forecast calculated for the old values must never ride along
+  // beside the new ones (Codex P2 on PR #8522). The overlay has no
+  // observation history to recompute from: dropping the forecast is
+  // the honest state until the next collector derivation.
+  delete pool.exhaustion;
   if (state === "error") {
     pool.state = "error";
     adoptEntryWindows(pool, entry);
