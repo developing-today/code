@@ -826,7 +826,11 @@ pub fn passphrase_warning(passphrase: &[u8]) -> Option<&'static str> {
     .iter()
     .filter(|present| **present)
     .count();
-    if text.chars().count() < 12 || (classes < 2 && text.chars().count() < 20) {
+    let mut chars = text.chars();
+    let first_char = chars.next();
+    let all_same = first_char.is_some() && chars.all(|ch| Some(ch) == first_char);
+    let char_count = text.chars().count();
+    if char_count < 12 || (classes < 2 && (char_count < 20 || all_same)) {
         Some(WEAK_PASSPHRASE_WARNING)
     } else {
         None
@@ -1235,7 +1239,19 @@ mod tests {
             Some(WEAK_PASSPHRASE_WARNING)
         );
         assert_eq!(
+            create_backup(b"aaaaaaaaaaaaaaaaaaaa", &[1; 32])
+                .unwrap()
+                .passphrase_warning,
+            Some(WEAK_PASSPHRASE_WARNING)
+        );
+        assert_eq!(
             create_backup(PASSPHRASE, &[1; 32])
+                .unwrap()
+                .passphrase_warning,
+            None
+        );
+        assert_eq!(
+            create_backup(b"abcdefghijklmnopqrst", &[1; 32])
                 .unwrap()
                 .passphrase_warning,
             None
