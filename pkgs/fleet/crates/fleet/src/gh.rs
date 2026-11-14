@@ -1287,10 +1287,7 @@ mod tests {
             Some(v(&["api", "user"]))
         );
         assert_eq!(raw_args(&v(&["--raw"]), false), Some(v(&[])));
-        assert_eq!(
-            raw_args(&v(&["api", "--raw-field", "x=1"]), false),
-            None
-        );
+        assert_eq!(raw_args(&v(&["api", "--raw-field", "x=1"]), false), None);
         assert_eq!(raw_args(&v(&["issue", "list"]), false), None);
         assert_eq!(
             raw_args(&v(&["issue", "list"]), true),
