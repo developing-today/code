@@ -285,6 +285,15 @@ export function collectFileExportAdapter(opts: {
         `file-export drift: window ${String(w.name)} lacks a name, a finite usedPct, or a usedPct within 0-100`,
       );
     }
+    if (w.usedPct < 0 || w.usedPct > 100) {
+      return retainedOutcome(
+        "unparseable",
+        previous,
+        now,
+        "ok",
+        `file-export drift: window ${String(w.name)} usedPct out of range (expected 0-100)`,
+      );
+    }
   }
   const entry = entryFromFileExport(doc, { fileMtimeIso: opts.fileMtimeIso, stale: false });
   if (entry.state !== "ok") {

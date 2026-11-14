@@ -368,6 +368,112 @@ describe("file-export adapter (the framework's first adapter)", () => {
     expect(out.value?.measuredAt).toBe("2026-10-29T04:30:00Z");
   });
 
+  test("a negative usedPct window is unparseable drift, previous retained", () => {
+    const out = collectFileExportAdapter({
+      now: NOW,
+      previous: PREV_ENTRY,
+      fileMtimeIso: "2026-10-29T04:59:00Z",
+      stale: false,
+      doc: {
+        service: "meta",
+        source: "file-export/meta-laptop",
+        status: "ok",
+        measuredAt: "2026-10-29T04:59:00Z",
+        windows: [{ name: "5h", usedPct: -5, resetAt: "2026-10-29T09:00:00Z" }],
+      },
+    });
+    expect(out.status).toBe("unparseable");
+    expect(out.value?.measuredAt).toBe("2026-10-29T04:30:00Z");
+    expect(out.stale).toBe(true);
+    expect(out.detail).toMatch(/5h/);
+  });
+
+  test("an over-100 usedPct window is unparseable drift, previous retained", () => {
+    const out = collectFileExportAdapter({
+      now: NOW,
+      previous: PREV_ENTRY,
+      fileMtimeIso: "2026-10-29T04:59:00Z",
+      stale: false,
+      doc: {
+        service: "meta",
+        source: "file-export/meta-laptop",
+        status: "ok",
+        measuredAt: "2026-10-29T04:59:00Z",
+        windows: [{ name: "weekly", usedPct: 250, resetAt: "2026-10-29T09:00:00Z" }],
+      },
+    });
+    expect(out.status).toBe("unparseable");
+    expect(out.value?.measuredAt).toBe("2026-10-29T04:30:00Z");
+    expect(out.stale).toBe(true);
+    expect(out.detail).toMatch(/weekly/);
+  });
+
+  test("boundary usedPct 0 and 100 still publish fresh ok with all windows", () => {
+    const out = collectFileExportAdapter({
+      now: NOW,
+      previous: PREV_ENTRY,
+      fileMtimeIso: "2026-10-29T04:59:00Z",
+      stale: false,
+      doc: {
+        service: "meta",
+        source: "file-export/meta-laptop",
+        status: "ok",
+        measuredAt: "2026-10-29T04:59:00Z",
+        windows: [
+          { name: "5h", usedPct: 0, resetAt: "2026-10-29T09:00:00Z" },
+          { name: "weekly", usedPct: 100, resetAt: "2026-11-05T09:00:00Z" },
+        ],
+      },
+    });
+    expect(out.status).toBe("ok");
+    expect(out.stale).toBe(false);
+    expect(out.value?.windows.some((w) => w.name === "5h" && w.pctOfLimit === 0)).toBe(true);
+    expect(out.value?.windows.some((w) => w.name === "weekly" && w.pctOfLimit === 100)).toBe(true);
+  });
+
+  test("a mixed good + out-of-range document is unparseable, never a partial fresh ok", () => {
+    const out = collectFileExportAdapter({
+      now: NOW,
+      previous: PREV_ENTRY,
+      fileMtimeIso: "2026-10-29T04:59:00Z",
+      stale: false,
+      doc: {
+        service: "meta",
+        source: "file-export/meta-laptop",
+        status: "ok",
+        measuredAt: "2026-10-29T04:59:00Z",
+        windows: [
+          { name: "5h", usedPct: -5, resetAt: "2026-10-29T09:00:00Z" },
+          { name: "weekly", usedPct: 10, resetAt: "2026-11-05T09:00:00Z" },
+        ],
+      },
+    });
+    expect(out.status).toBe("unparseable");
+    expect(out.value?.measuredAt).toBe("2026-10-29T04:30:00Z");
+    expect(out.stale).toBe(true);
+    expect(out.detail).toMatch(/5h/);
+  });
+
+  test("a document whose only window is out of range is unparseable, never a fresh empty ok", () => {
+    const out = collectFileExportAdapter({
+      now: NOW,
+      previous: PREV_ENTRY,
+      fileMtimeIso: "2026-10-29T04:59:00Z",
+      stale: false,
+      doc: {
+        service: "meta",
+        source: "file-export/meta-laptop",
+        status: "ok",
+        measuredAt: "2026-10-29T04:59:00Z",
+        windows: [{ name: "5h", usedPct: -5, resetAt: "2026-10-29T09:00:00Z" }],
+      },
+    });
+    expect(out.status).toBe("unparseable");
+    expect(out.value?.measuredAt).toBe("2026-10-29T04:30:00Z");
+    expect(out.stale).toBe(true);
+    expect(out.value?.windows).toHaveLength(1);
+  });
+
   test("a stale producer is transport-unavailable; a missing document is fetch-failed with null", () => {
     const stale = collectFileExportAdapter({
       now: NOW,
