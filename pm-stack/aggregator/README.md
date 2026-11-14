@@ -375,7 +375,7 @@ path as the fleet-feed collector's AA read (`src/supabase.ts`).
   the page-side probe script (`/assets/push-client.js`, loaded by
   every page) unregisters foreign registrations and reports what it
   sees to `/api/sw-probe` (GET returns the running summary).
-- **Subscriptions**: `POST/GET/DELETE /api/push/subscriptions` over
+- **Subscriptions**: `POST/DELETE /api/push/subscriptions` over
   `alerts.push_subscriptions` — per-class map + quiet prefs
   (defaults: `incident` on; quiet 23:00–07:00 America/Chicago).
   A 404/410 from a push service bumps `gone_count`; two consecutive
