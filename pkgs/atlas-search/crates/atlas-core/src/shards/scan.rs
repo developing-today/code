@@ -296,6 +296,13 @@ impl<B: SearchBackend> SearchBackend for ShardedBackend<B> {
         self.inner.name()
     }
 
+    fn snapshot_id(&self) -> Option<String> {
+        // The shard set IS the corpus state for this backend: its
+        // snapshot id moves on every re-shard / promotion, which
+        // is exactly the result-cache invalidation signal (#9943).
+        Some(self.set.snapshot_id())
+    }
+
     fn vec_table(&self) -> &str {
         self.inner.vec_table()
     }
