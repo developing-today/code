@@ -30,6 +30,15 @@ if [ "${RETRYABLE:-false}" = "true" ]; then
     echo "::error::pm-dispatch-queue: retries require a non-empty caller-supplied dedupe_key in the payload" >&2
     exit 1
   fi
+  # Issue creation is NOT idempotent server-side: handleTasks creates the
+  # tracking issue before it deduplicates the queue task, so replaying a
+  # request whose response was lost would create a duplicate issue. Retries
+  # are therefore restricted to requests that attach to an existing issue
+  # (issue_number) or create no issue at all (issue != true).
+  if ! printf '%s' "$PAYLOAD" | jq -e '(.issue != true) or (.issue_number | type == "number")' >/dev/null; then
+    echo "::error::pm-dispatch-queue: retries require an existing issue_number or issue=false; issue creation is not idempotent" >&2
+    exit 1
+  fi
   max_attempts="${PM_DISPATCH_MAX_ATTEMPTS:-3}"
 fi
 delay="${PM_DISPATCH_RETRY_DELAY:-10}"

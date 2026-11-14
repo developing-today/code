@@ -152,8 +152,12 @@ runs:
         # A retry is safe only when the caller supplied an invocation-stable
         # dedupe key; issue_number alone represents a distinct dispatch each
         # time and therefore is not sufficient protection against duplicates.
+        # Issue creation is not idempotent server-side (the issue is created
+        # before the task is deduplicated), so a dedupe key alone is not
+        # enough: retries also require an existing issue_number to attach
+        # to, or issue=false so no issue is created.
         retryable=false
-        if [ -n "$INPUT_DEDUPE_KEY" ]; then
+        if [ -n "$INPUT_DEDUPE_KEY" ] && { [ -n "$INPUT_ISSUE_NUMBER" ] || [ "$INPUT_ISSUE" != "true" ]; }; then
           retryable=true
         fi
         body="$(OIDC_TOKEN="$oidc_token" PAYLOAD="$payload" RETRYABLE="$retryable" \

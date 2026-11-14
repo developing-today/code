@@ -93,6 +93,35 @@ PATH="$TMP/bin:$PATH" FAKE_CURL_SEQ="$TMP/seq" FAKE_CURL_STATE="$TMP/state" \
 grep -Fq 'retries require a non-empty caller-supplied dedupe_key' "$TMP/err" || fail "missing dedupe_key error not explained"
 echo "pass: retries require a caller-supplied dedupe key"
 
+# Issue-creation payloads must never be retried: the server creates the
+# tracking issue before deduplicating the task, so a lost response followed
+# by a retry would create a duplicate issue (Codex P2 on PR #8952).
+rm -f "$TMP/state"
+printf '%s\n' '502|error code: 502' '201|{"task_id":90}' >"$TMP/seq"
+RC=0
+PATH="$TMP/bin:$PATH" FAKE_CURL_SEQ="$TMP/seq" FAKE_CURL_STATE="$TMP/state" \
+  OIDC_TOKEN=test-token RETRYABLE=true PAYLOAD='{"repo":"r","dedupe_key":"test-run-step","issue":true}' \
+  PM_DISPATCH_RETRY_DELAY=0 PM_DISPATCH_MAX_ATTEMPTS=3 \
+  bash "$SCRIPT" >"$TMP/out" 2>"$TMP/err" || RC=$?
+[[ $RC -eq 1 ]] || fail "issue-creation retry should fail"
+[[ ! -e "$TMP/state" ]] || fail "issue-creation payload must not make a request when retries are requested"
+grep -Fq 'retries require an existing issue_number or issue=false' "$TMP/err" || fail "issue-creation refusal not explained"
+echo "pass: retries refused for issue-creation payloads"
+
+# Attaching to an existing issue IS retryable: no issue is created.
+rm -f "$TMP/state"
+printf '%s\n' '502|error code: 502' '201|{"task_id":91}' >"$TMP/seq"
+RC=0
+PATH="$TMP/bin:$PATH" FAKE_CURL_SEQ="$TMP/seq" FAKE_CURL_STATE="$TMP/state" \
+  OIDC_TOKEN=test-token RETRYABLE=true PAYLOAD='{"repo":"r","dedupe_key":"test-run-step","issue":true,"issue_number":8950}' \
+  PM_DISPATCH_RETRY_DELAY=0 PM_DISPATCH_MAX_ATTEMPTS=3 \
+  bash "$SCRIPT" >"$TMP/out" 2>"$TMP/err" || RC=$?
+attempts="$(cat "$TMP/state" 2>/dev/null || echo 0)"
+[[ $RC -eq 0 ]] || fail "existing-issue retry should succeed"
+[[ $attempts -eq 2 ]] || fail "existing-issue retry: $attempts attempts, expected 2"
+grep -Fq '{"task_id":91}' "$TMP/out" || fail "existing-issue retry body not printed"
+echo "pass: retries allowed when attaching to an existing issue"
+
 run_post true '400|bad request' '201|{"task_id":13}'
 expect "retryable 400 is never retried" 1 1
 
@@ -105,6 +134,8 @@ expect "retryable 500 is never retried" 1 1
 grep -Fq 'INPUT_DEDUPE_KEY: ${{ inputs.dedupe_key }}' "$ACTION_YML" || fail "action does not wire the dedupe_key input"
 grep -Fq "jq --arg dedupe_key \"\$INPUT_DEDUPE_KEY\" '. + {dedupe_key: \$dedupe_key}'" "$ACTION_YML" || fail "action does not include the dedupe_key in its POST payload"
 grep -Fq 'dedupe_key: main-broken-${{ github.run_id }}-${{ github.run_attempt }}-${{ github.job }}-dispatch-append' "$WATCHER_YML" || fail "watcher append call does not supply a stable dedupe_key"
+grep -Fq '[ -n "$INPUT_ISSUE_NUMBER" ] || [ "$INPUT_ISSUE" != "true" ]' "$ACTION_YML" || fail "action does not restrict retries to existing-issue or no-issue requests"
+echo "pass: action restricts retries to existing-issue or no-issue requests"
 echo "pass: watcher append supplies the stable key that makes retries idempotent"
 
 echo "pm-dispatch-queue-post.test: all contract tests passed"
