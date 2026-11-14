@@ -296,13 +296,13 @@ pub fn blob_events_with_blocks<A: WorldAccess>(
                     let verdict = admit(peers.get(&m.connection_id), |id| {
                         local_readers.contains(id)
                             || decide_with_blocks(
-                            &*access,
-                            &policy,
-                            blocks.as_deref(),
-                            id,
-                            &m.request.hash,
-                            Request::Fetch,
-                        )
+                                &*access,
+                                &policy,
+                                blocks.as_deref(),
+                                id,
+                                &m.request.hash,
+                                Request::Fetch,
+                            )
                     });
                     let _ = m.tx.send(verdict).await;
                 }
@@ -311,14 +311,14 @@ pub fn blob_events_with_blocks<A: WorldAccess>(
                         local_readers.contains(id)
                             || m.request.hashes.iter().all(|hash| {
                                 decide_with_blocks(
-                                &*access,
-                                &policy,
-                                blocks.as_deref(),
-                                id,
-                                hash,
-                                Request::Fetch,
-                            )
-                        })
+                                    &*access,
+                                    &policy,
+                                    blocks.as_deref(),
+                                    id,
+                                    hash,
+                                    Request::Fetch,
+                                )
+                            })
                     });
                     let _ = m.tx.send(verdict).await;
                 }
@@ -326,13 +326,13 @@ pub fn blob_events_with_blocks<A: WorldAccess>(
                     let verdict = admit(peers.get(&m.connection_id), |id| {
                         local_readers.contains(id)
                             || decide_with_blocks(
-                            &*access,
-                            &policy,
-                            blocks.as_deref(),
-                            id,
-                            &m.request.hash,
-                            Request::Observe,
-                        )
+                                &*access,
+                                &policy,
+                                blocks.as_deref(),
+                                id,
+                                &m.request.hash,
+                                Request::Observe,
+                            )
                     });
                     let _ = m.tx.send(verdict).await;
                 }

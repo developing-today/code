@@ -32,12 +32,12 @@ use iroh_gossip::net::Gossip;
 
 use crate::protocol::{MetaProtocol, MetaRequest, MetaResponse};
 use id_core::access::AccessPolicy;
-use id_groups::blob_gate::BlobPolicy;
-use id_worlds::blob_gate::RefreshingWorlds;
 use id_core::access::blobs_events;
+use id_groups::blob_gate::BlobPolicy;
 use id_store::store::{StoreType, load_or_create_keypair, open_store};
 use id_store::tags::TagStore;
 use id_sync::fileops::FileOps;
+use id_worlds::blob_gate::RefreshingWorlds;
 
 use crate::{KEY_FILE, META_ALPN, STORE_PATH};
 

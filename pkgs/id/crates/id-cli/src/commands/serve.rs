@@ -1367,9 +1367,9 @@ async fn build_blob_gate(
             children.insert(hash, kids);
         }
     }
-    let named = references
-        .into_iter()
-        .filter_map(|(hash, group)| group.map(|group| (hash, id_worlds::blob_gate::world_key(&group))));
+    let named = references.into_iter().filter_map(|(hash, group)| {
+        group.map(|group| (hash, id_worlds::blob_gate::world_key(&group)))
+    });
     let index = id_groups::blob_gate::build_reference_index(named, |hash| {
         children.get(hash).cloned().unwrap_or_default()
     });
@@ -1377,7 +1377,10 @@ async fn build_blob_gate(
         Some(projection) => {
             id_worlds::blob_gate::FoldedWorlds::from_group_projection(projection, index)
         }
-        None => id_worlds::blob_gate::FoldedWorlds::new(id_worlds::groups::worlds::Worlds::empty(), index),
+        None => id_worlds::blob_gate::FoldedWorlds::new(
+            id_worlds::groups::worlds::Worlds::empty(),
+            index,
+        ),
     }
 }
 
@@ -1686,13 +1689,10 @@ pub async fn cmd_serve(opts: ServeOptions) -> Result<()> {
     #[cfg(feature = "web")]
     let blob_gate: Option<Arc<id_worlds::blob_gate::RefreshingWorlds>> = match &event_events {
         Some(events) => {
-            let folded = build_blob_gate(
-                events,
-                &store_handle,
-                &groups_log,
-            )
-            .await;
-            Some(Arc::new(id_worlds::blob_gate::RefreshingWorlds::new(folded)))
+            let folded = build_blob_gate(events, &store_handle, &groups_log).await;
+            Some(Arc::new(id_worlds::blob_gate::RefreshingWorlds::new(
+                folded,
+            )))
         }
         None => None,
     };
