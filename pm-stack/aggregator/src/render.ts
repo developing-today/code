@@ -137,6 +137,7 @@ import {
   derivePhase12Progress,
   derivePhaseValidation,
 } from "./phase-tracker.ts";
+import { deriveMappedProgress, type PhaseMappingSnapshot } from "./phase-mapping.ts";
 import {
   BUILD_HEALTH_REPO,
   buildHealthIsStale,
@@ -7263,18 +7264,21 @@ export function phase12PanelHtml(
  * validation audits, #1075-#1078, already in the id project's tracked
  * refs). No hand-maintained values: a reopened audit or a new open
  * follow-up changes the panel without an edit. Phase 12 also shows
- * F-item progress counted from #1235's ordered step list (the one
- * uniform machine-readable F-item source); the other phases withhold
- * progress — no such source exists for them yet (#9923), and a
- * fabricated percentage is worse than the stated gap. */
+ * F-item progress counted from #1235's ordered step list, and Phases
+ * 11 and 13 count the F-item mapping table in planning/roadmaps/id.md
+ * (the source of record, #9923 step 3) when the source carries it;
+ * Phases 0-10 have no F-item numbering in their plans, so they state
+ * that gap instead of showing a fabricated percentage. */
 export function phaseTrackerPanelHtml(
   items: Map<RefKey, GhItem>,
   phase12: Phase12Snapshot | null = null,
+  phaseMapping: PhaseMappingSnapshot | null = null,
 ): string {
   const umbrellaUrl = `https://github.com/${PHASE_TRACKER_REPO}/issues/${PHASE_TRACKER_UMBRELLA}`;
   const head = `<h2>Phase tracker — validation by phase, live from <a href="${umbrellaUrl}">#${PHASE_TRACKER_UMBRELLA}</a></h2>`;
   const progress = derivePhase12Progress(phase12, items);
-  const sourceLine = `<p class="muted">Source: the validation audits <a href="https://github.com/${PHASE_TRACKER_REPO}/issues/1075">#1075</a>–<a href="https://github.com/${PHASE_TRACKER_REPO}/issues/1078">#1078</a> under umbrella <a href="${umbrellaUrl}">#${PHASE_TRACKER_UMBRELLA}</a>, resolved from the same live GitHub items as the tracked-issues table above (the page provenance stamp applies). Phase 12 progress counts the ordered steps in <a href="${PHASE12_ISSUE_URL}">#1235</a> against live issue state${phase12 ? ` (body fetched ${esc(phase12.fetchedAt)})` : ""}; other phases show no percentage — no machine-readable F-item mapping source exists for them yet, so the gap is stated rather than a number invented.</p>`;
+  const mappedProgress = phaseMapping ? deriveMappedProgress(phaseMapping.entries, items) : null;
+  const sourceLine = `<p class="muted">Source: the validation audits <a href="https://github.com/${PHASE_TRACKER_REPO}/issues/1075">#1075</a>–<a href="https://github.com/${PHASE_TRACKER_REPO}/issues/1078">#1078</a> under umbrella <a href="${umbrellaUrl}">#${PHASE_TRACKER_UMBRELLA}</a>, resolved from the same live GitHub items as the tracked-issues table above (the page provenance stamp applies). Phase 12 progress counts the ordered steps in <a href="${PHASE12_ISSUE_URL}">#1235</a> against live issue state${phase12 ? ` (body fetched ${esc(phase12.fetchedAt)})` : ""}; ${phaseMapping ? `Phases 11 and 13 progress counts the F-item mapping table in <a href="https://github.com/${PHASE_TRACKER_REPO}/blob/main/planning/roadmaps/id.md">planning/roadmaps/id.md</a> (read ${esc(phaseMapping.fetchedAt)}) against live item state; ` : ""}Phases 0–10 have no F-item numbering in their plans, so no percentage is shown for them — the gap is stated rather than a number invented.</p>`;
   const rows = derivePhaseValidation(items)
     .map((r) => {
       const badge =
@@ -7294,12 +7298,17 @@ export function phaseTrackerPanelHtml(
             .map((f) => `<a href="${esc(f.url)}">#${f.issueNumber}</a>`)
             .join(" ")
         : `<span class="muted">—</span>`;
+      const mapped = mappedProgress?.get(r.phase);
       const progressCell =
-        r.phase !== 12
-          ? `<span class="muted">not derived — no F-item source yet</span>`
-          : progress
+        r.phase === 12
+          ? progress
             ? `<strong>${progress.done}/${progress.total} steps done (${progress.percent}%)</strong><br><span class="muted">${progress.open} open${progress.unresolved ? ` · ${progress.unresolved} not resolved in the current source` : ""} — from <a href="${PHASE12_ISSUE_URL}">#1235</a></span>`
-            : `<span class="muted">withheld — #1235 feed unavailable or stale</span>`;
+            : `<span class="muted">withheld — #1235 feed unavailable or stale</span>`
+          : mapped
+            ? `<strong>${mapped.done}/${mapped.total} items done (${mapped.percent}%)</strong><br><span class="muted">${mapped.open} open${mapped.unresolved ? ` · ${mapped.unresolved} not resolved in the current source` : ""} — from the F-item mapping in planning/roadmaps/id.md</span>`
+            : r.phase <= 10
+              ? `<span class="muted">not derived — this phase's plan has no F-item numbering</span>`
+              : `<span class="muted">not derived — F-item mapping unavailable in the current source</span>`;
       return `<tr><th scope="row">Phase ${r.phase}</th><td>${badge}</td><td>${audit}</td><td>${followUps}</td><td>${progressCell}</td></tr>`;
     })
     .join("");
@@ -7472,6 +7481,7 @@ export function renderProgramProject(
   buildHealth?: BuildHealthSnapshot | null,
   f12?: { design: Phase12Snapshot | null; prRefs: Map<number, F12PrRef[]> | null } | null,
   queueSnap?: QueueSnapshot | null,
+  phaseMapping?: PhaseMappingSnapshot | null,
 ): string {
   const { config } = detail;
   const linkBits: string[] = [];
@@ -7577,7 +7587,7 @@ export function renderProgramProject(
 <p class="muted">Built only from already-published fleet data — the orchestration section this aggregator serves and the fleet's tracked issues. No new data pipeline feeds this section.</p>${programEntries(config.sweepHealth, items)}`
     : "";
 
-  const phaseTrackerHtml = config.id === "id" ? phaseTrackerPanelHtml(items, phase12 ?? null) : "";
+  const phaseTrackerHtml = config.id === "id" ? phaseTrackerPanelHtml(items, phase12 ?? null, phaseMapping ?? null) : "";
   const phase12Html = config.id === "id" && phase12 !== undefined ? phase12PanelHtml(phase12, items, queueSnap ?? null) : "";
   const buildHealthHtml = config.id === "id" && buildHealth !== undefined ? buildHealthPanelHtml(buildHealth) : "";
   const f12Html =
