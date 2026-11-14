@@ -66,6 +66,7 @@ export function applyDominanceFilters<T extends { key: string; score?: number | 
   rows: T[],
   opts: { dominated?: boolean; slower?: boolean; dumber?: boolean; pricier?: boolean },
 ): T[];
+export function unpricedScoredPoints<T extends { score?: number | null; cost?: number | null; family?: string; effort?: string | null }>(points: T[]): T[];
 export function projectTask(
   model: any,
   settings: Record<string, number | string>,
