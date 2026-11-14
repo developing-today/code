@@ -2886,8 +2886,13 @@
         // the route to beam-free. Deliberately NOT seated: one model, one
         // seat. (The Go endpoint no longer serves cat-jam-free at all.)
         // 2026-11-14 (Zen pass): the Zen door for the same model joins as
-        // a second leaf at weight 0.5 — last resort behind the Go leaf's
-        // 3 (Drew: Zen free models carry limited context).
+        // a second leaf. Weight RULED 2026-11-14: Drew's limited-context
+        // demotion (0.5) was posed as a question, and the check answered
+        // it — models.dev lists identical context on both doors
+        // (1,048,576), so the Zen leaf sits at full weight 3 beside the
+        // Go leaf. The genuinely limited Zen SKUs (200k: DeepSeek Flash
+        // Free, MiMo Flash Free, GLM Flash Free, Big Pickle) stay
+        // last-resort in their own pools.
         "targets": [
           "opencode-go-plans/beam-free",
           "opencode-zen-plans/beam-free"
@@ -2896,7 +2901,7 @@
         "autonomy": "rules",
         "weights": {
           "opencode-go-plans/beam-free": 3,
-          "opencode-zen-plans/beam-free": 0.5
+          "opencode-zen-plans/beam-free": 3
         }
       },
       "longcat-plan": {
@@ -2917,9 +2922,12 @@
         ],
         "selection": "round-robin",
         "autonomy": "rules",
+        // Weight RULED 2026-11-14: Zen leaf at full weight 3 —
+        // models.dev lists identical context on both doors
+        // (1,000,000). See beam-plan.
         "weights": {
           "opencode-go-plans/longcat-2.5-free": 3,
-          "opencode-zen-plans/longcat-2.5-free": 0.5
+          "opencode-zen-plans/longcat-2.5-free": 3
         }
       },
       "iceman-plan": {
@@ -2941,9 +2949,12 @@
         ],
         "selection": "round-robin",
         "autonomy": "rules",
+        // Weight RULED 2026-11-14: Zen leaf at full weight 3 —
+        // models.dev lists identical context on both doors
+        // (262,144). See beam-plan.
         "weights": {
           "opencode-go-plans/iceman-contributor-free": 3,
-          "opencode-zen-plans/iceman-free": 0.5
+          "opencode-zen-plans/iceman-free": 3
         }
       },
       "flash-free-plan": {
@@ -3086,6 +3097,15 @@
         // Zen) are natural later legs, free-first per the design.
         // Alias note: Drew named this pool "system1"; the mill design
         // supplement calls the same pool "decision".
+        // Paid legs — OFF by Drew's ruling 2026-11-14, kept here in
+        // paste-ready form. To enable, add to targets:
+        //   "opencode-zen-plans/jev-1.13",
+        //   "opencode-zen-plans/gpt-6-luna-decision",
+        //   "opencode-zen-plans/gemini-decision-1"
+        // and to weights:
+        //   "opencode-zen-plans/jev-1.13": 3,
+        //   "opencode-zen-plans/gpt-6-luna-decision": 3,
+        //   "opencode-zen-plans/gemini-decision-1": 3
         "targets": [
           "opencode-zen-plans/jev-1.13-free"
         ],
@@ -3181,10 +3201,10 @@
         // terminates at specialist, the sink. Full layout:
         // .opencode/route-fallbacks.md; guard:
         // bin/check-opencode-route-rules.mjs (CLASS_FALLBACKS).
-        // Scout's own edge (workhorse) is a PROPOSAL (Drew has not
-        // ruled on scout yet, 2026-11-13): routine work that
-        // exhausts the free/cheap seats escalates to the standard
-        // tier rather than erroring.
+        // Scout's edges RULED by Drew 2026-11-14: background first,
+        // then workhorse. Routine work that exhausts the free/cheap
+        // seats escalates to the patient tier, then the standard
+        // tier, rather than erroring.
         // 2026-11-11 (Drew, direct order): ordered selection, haiku-plan leg LAST (last resort).
         // 2026-11-11 (Drew): scout order — Beam ahead of DeepSeek Flash.
         // 2026-10-26 (pool remap review): all three routes addressed at #low — the rung every
@@ -3219,6 +3239,7 @@
           "opencode-route/deepseek-flash-plan#low",
           "opencode-route/haiku-plan#low",
           "opencode-route/inkling-plan",
+          "opencode-route/background",
           "opencode-route/workhorse"
         ],
         "selection": "ordered",
@@ -3234,10 +3255,9 @@
         // terminates at specialist, the sink. Full layout:
         // .opencode/route-fallbacks.md; guard:
         // bin/check-opencode-route-rules.mjs (CLASS_FALLBACKS).
-        // Background's own edge (workhorse) is a PROPOSAL (Drew
-        // has not ruled on background yet, 2026-11-13): patient
-        // queue work that exhausts the value seats escalates to
-        // the standard tier rather than erroring.
+        // Background's own edge (workhorse) RULED by Drew
+        // 2026-11-14: patient queue work that exhausts the value
+        // seats escalates to the standard tier rather than erroring.
         // NEW 2026-10-27 (pool redesign): the tier for machinery-dispatched
         // work no human watches — repo sweeps, issue-queue workers,
         // stewardship cycles, batch classification. Ordered chain in value
