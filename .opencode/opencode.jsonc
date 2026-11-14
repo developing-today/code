@@ -219,6 +219,21 @@
   // switchboard rule the definition and every seat stay in place;
   // deleting this line re-enables it. Re-enable at the 2026-11-18
   // reset, or sooner if a live probe shows the door answering again.
+  // 2026-11-14 (code#9856): "_antigravity" joins the list below.
+  // Google has disabled the whole Antigravity account for a Terms of
+  // Service violation - this is not a quota wall and not one dead
+  // model: route_attempt probes in the trailing 3 hours at 03:32 CT
+  // on 2026-11-14 show every _antigravity leaf failing with the same
+  // "This service has been disabled in this account for violation of
+  // Terms of Service. Please submit an appeal..." error
+  // (gemini-4-hydrogen 717 failures, gemini-4-argon 332 failures,
+  // claude-opus-5-5 failing too; last _antigravity success ~02:50 CT).
+  // Every _antigravity seat is dead: hydrogen (summit, speed,
+  // workhorse-weighted), argon (summit, specialist), sonnet-5-5
+  // (workhorse-weighted) and opus via antigravity. Per the switchboard
+  // rule the definition and every seat stay in place; deleting this
+  // line re-enables it. Re-enable only when the account is reinstated
+  // on appeal AND a live probe shows the door answering again.
   "disabled_providers": [
     "google",
     "google-vertex",
@@ -233,7 +248,8 @@
     "cloudflare-workers-ai",
     "meta",
     "deepseek",
-    "_claude"
+    "_claude",
+    "_antigravity"
   ],
   // 2026-11-03 (Drew): muse, antigravity-ls, antigravity-agy, code-design,
   // design-code, cloudflare-gateway and chatgpt left this list together with
