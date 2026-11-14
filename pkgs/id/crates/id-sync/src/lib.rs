@@ -33,3 +33,4 @@ pub mod host;
 pub mod log_sync;
 pub mod meta_client;
 pub mod protocol;
+pub mod transfer;

@@ -61,7 +61,8 @@
 use std::{sync::Arc, time::Duration};
 
 use futures_lite::StreamExt;
-use iroh::endpoint::Connection;
+use iroh::EndpointAddr;
+use iroh::endpoint::{Connection, Endpoint};
 use iroh::protocol::{AcceptError, ProtocolHandler};
 use iroh_base::EndpointId;
 use iroh_blobs::{Hash, api::Store};
@@ -628,6 +629,31 @@ pub enum MetaRequest {
     /// (a plain serve without a world, or a build without the world
     /// feature) records none and answers with an empty report.
     AbuseCounters,
+    /// Ask this node (the source) to copy one of its files to another node
+    /// (server-to-server transfer, #5345).
+    ///
+    /// The source performs the transfer with its own server identity: it
+    /// pushes the blob to `dest` over the blobs protocol and registers
+    /// `dest_name` (default: `name`) there over this protocol. The
+    /// destination's write policy therefore authorizes the *source server*,
+    /// and the copy's recorded origin is the source server. The initiating
+    /// caller is authorized at the source by the usual write gate
+    /// ([`MetaRequest::is_write`] includes this variant): world membership
+    /// or discovery alone never grants the right to send a file.
+    ///
+    /// A conflicting destination name refuses unless `replace` is set; a
+    /// replacement archives the existing destination file first.
+    Send {
+        /// The file name on the source node.
+        name: String,
+        /// The destination node.
+        dest: EndpointId,
+        /// Name to register on the destination. `None` = same as `name`.
+        dest_name: Option<String>,
+        /// Whether an existing, different destination file may be archived
+        /// and replaced.
+        replace: bool,
+    },
 }
 
 impl MetaRequest {
@@ -642,6 +668,7 @@ impl MetaRequest {
                 | Self::SetTag { .. }
                 | Self::DelTag { .. }
                 | Self::MigrateTags
+                | Self::Send { .. }
         )
     }
 }
@@ -764,6 +791,22 @@ pub enum MetaResponse {
         /// when the node exposes counters without a policy view.
         policy: Option<AbusePolicyView>,
     },
+    /// Response to [`MetaRequest::Send`]: the transfer completed (or was
+    /// already complete) and the destination registered the name.
+    Send {
+        /// The transferred content hash.
+        hash: Hash,
+        /// The name registered on the destination.
+        name: String,
+        /// The destination node.
+        dest: EndpointId,
+        /// The destination already had the name pointing at `hash`;
+        /// nothing was pushed.
+        already_present: bool,
+        /// An existing, different destination file was archived and
+        /// replaced.
+        replaced: bool,
+    },
 }
 
 /// One row of [`MetaResponse::AbuseCounters`]: the frame and byte counters
@@ -850,6 +893,11 @@ pub struct MetaProtocol {
     /// The node's abuse evaluator, when this surface exposes it. `None`
     /// answers [`MetaRequest::AbuseCounters`] with an empty report.
     pub abuse: Option<Arc<std::sync::Mutex<id_core::abuse::AbuseEvaluator>>>,
+    /// This node's own endpoint, when the handler may initiate outbound
+    /// transfers ([`MetaRequest::Send`]). `None` for purely in-process
+    /// handlers: a `Send` request then fails with an explanatory error
+    /// instead of silently doing nothing.
+    pub endpoint: Option<Endpoint>,
 }
 
 impl MetaProtocol {
@@ -872,6 +920,7 @@ impl MetaProtocol {
             node_id,
             blob_wait: DEFAULT_BLOB_WAIT,
             abuse,
+            endpoint: None,
         })
     }
 
@@ -1054,6 +1103,59 @@ impl MetaProtocol {
                     .map(|pd| pd.peers().into_iter().map(|pi| pi.announcement).collect())
                     .unwrap_or_default();
                 MetaResponse::ListPeers { peers }
+            }
+            MetaRequest::Send {
+                name,
+                dest,
+                dest_name,
+                replace,
+            } => {
+                // The write gate above has already authorized the initiator
+                // at this (source) node. The transfer itself is performed
+                // with this node's server identity by the transfer module.
+                let hash = self
+                    .store
+                    .tags()
+                    .get(&name)
+                    .await
+                    .ok()
+                    .flatten()
+                    .map(|t| t.hash);
+                match (hash, &self.endpoint) {
+                    (None, _) => MetaResponse::Error {
+                        message: format!("not found: {name}"),
+                    },
+                    (Some(_), None) => MetaResponse::Error {
+                        message: "this node cannot initiate server-to-server \
+                                  transfers (no endpoint configured)"
+                            .to_owned(),
+                    },
+                    (Some(hash), Some(endpoint)) => {
+                        let dest_name = dest_name.unwrap_or_else(|| name.clone());
+                        match crate::transfer::send_file(
+                            &self.store,
+                            endpoint,
+                            EndpointAddr::from(dest),
+                            &name,
+                            hash,
+                            &dest_name,
+                            replace,
+                        )
+                        .await
+                        {
+                            Ok(receipt) => MetaResponse::Send {
+                                hash: receipt.hash,
+                                name: receipt.dest_name,
+                                dest: receipt.dest,
+                                already_present: receipt.already_present,
+                                replaced: receipt.replaced,
+                            },
+                            Err(e) => MetaResponse::Error {
+                                message: format!("{e:#}"),
+                            },
+                        }
+                    }
+                }
             }
             MetaRequest::Whoami => MetaResponse::Whoami {
                 node_id: self.node_id,
@@ -1777,6 +1879,15 @@ mod tests {
             (MetaRequest::ListPeers, 12),
             (MetaRequest::Whoami, 13),
             (MetaRequest::AbuseCounters, 14),
+            (
+                MetaRequest::Send {
+                    name: s.clone(),
+                    dest: eid(2),
+                    dest_name: None,
+                    replace: false,
+                },
+                15,
+            ),
         ];
         for (req, idx) in &requests {
             let bytes = postcard::to_allocvec(req).unwrap();
@@ -1811,13 +1922,23 @@ mod tests {
                 },
                 13,
             ),
-            (MetaResponse::Error { message: s }, 14),
+            (MetaResponse::Error { message: s.clone() }, 14),
             (
                 MetaResponse::AbuseCounters {
                     rows: vec![],
                     policy: None,
                 },
                 15,
+            ),
+            (
+                MetaResponse::Send {
+                    hash: h,
+                    name: s.clone(),
+                    dest: eid(2),
+                    already_present: false,
+                    replaced: false,
+                },
+                16,
             ),
         ];
         for (resp, idx) in &responses {
@@ -1857,6 +1978,12 @@ mod tests {
                 value: None,
             },
             MetaRequest::MigrateTags,
+            MetaRequest::Send {
+                name: s.clone(),
+                dest: eid(2),
+                dest_name: None,
+                replace: false,
+            },
         ] {
             assert!(req.is_write(), "{req:?} must require write access");
         }
