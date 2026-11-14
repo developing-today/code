@@ -23,3 +23,9 @@ new_sqlite_classes = ["UserDO"]
 [[r2_buckets]]
 binding = "BLOBS"
 bucket_name = "id-hosted-blobs-test"
+
+# Slice B (#9955): a generous ceiling for the harness so the usage
+# read path reports a configured ceiling without tripping it; the
+# at-cap behavior itself is proven in test/usage.test.ts.
+[vars]
+USER_CEILING_BYTES = "1073741824"
