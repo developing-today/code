@@ -38,6 +38,7 @@ pub mod local;
 pub mod search;
 pub mod shards;
 pub mod stage;
+pub mod trace;
 pub mod turso;
 pub mod types;
 
@@ -60,12 +61,13 @@ pub use filters::{Filters, Sensitivity};
 pub use fusion::FusedEntry;
 pub use local::LocalBackend;
 pub use search::{
-    BackendBranchExecutor, BranchPoolExecutor, SearchMode, SearchOptions, run_get_chunk,
-    run_search, run_search_with_executor,
+    BackendBranchExecutor, BranchPoolExecutor, SearchMode, SearchOptions, TraceJob, run_get_chunk,
+    run_search, run_search_traced, run_search_with_executor, run_search_with_executor_traced,
 };
 pub use stage::{
     REGISTRY_V1_DDL, Registry, STAGE_SCHEMA_VERSION, STAGE_V1_DDL, STAGE_V1_TABLES, StagingUnit,
     UnitState, check_stage_schema, provision_staging_db, schema_version,
 };
+pub use trace::{JsonlTraceSink, TRACE_SCHEMA, TraceContext, TraceSink};
 pub use turso::TursoBackend;
 pub use types::{BranchQuery, DEFAULT_MODEL, DEFAULT_VEC_TABLE, VectorBackend};

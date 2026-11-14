@@ -31,9 +31,9 @@ use atlas_core::filters::{Filters, split_csv};
 use atlas_core::shards::{ShardedBackend, TierCeiling, open_from_spec};
 use atlas_core::turso::{TURSO_HOST, resolve_turso_token};
 use atlas_core::{
-    AtlasEmbedder, CachingEmbedder, Error as CoreError, FixedEmbedder, LocalBackend, QueryEmbedder,
-    QueryEmbeddingCache, SearchBackend, SearchMode, SearchOptions, TursoBackend, VectorBackend,
-    run_get_chunk, run_search,
+    AtlasEmbedder, CachingEmbedder, Error as CoreError, FixedEmbedder, JsonlTraceSink,
+    LocalBackend, QueryEmbedder, QueryEmbeddingCache, SearchBackend, SearchMode, SearchOptions,
+    TraceContext, TursoBackend, VectorBackend, run_get_chunk, run_search_traced,
 };
 use atlas_proto::{
     FilterSpec, QueryVariant, SearchMode as ProtoSearchMode, SearchParametersV1, SearchRequest,
@@ -825,7 +825,21 @@ fn cmd_search(args: SearchArgs) -> Result<(), CliError> {
         },
         parameters: parameters_from_args(&args),
     };
-    let mut out = run_search(backend.as_ref(), &embedder, &filters, &opts).map_err(map_err)?;
+    // Trace capture (issue #9973): every executed search persists
+    // an atlas-query-trace/v1 record and returns its query_id in
+    // the envelope; a trace write failure fails the search.
+    let trace_sink = JsonlTraceSink::new(JsonlTraceSink::default_dir());
+    let mut trace_ctx = TraceContext::new("cli", "user", "cli");
+    trace_ctx.retain_query_text = true;
+    let mut out = run_search_traced(
+        backend.as_ref(),
+        &embedder,
+        &filters,
+        &opts,
+        &trace_sink,
+        trace_ctx,
+    )
+    .map_err(map_err)?;
     if let Some(note) = note {
         push_note(&mut out, note);
     }
