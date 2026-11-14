@@ -489,12 +489,18 @@ in
               provider = "default";
               id = "OPENCODE_SERVER_AUTH";
             };
+            # Picker names are plain pool names (Drew order
+            # 2026-11-13, #9551 Part A): no "(OpenCode route pool)"
+            # suffix, and the Small pool is listed with the other
+            # five -- it exists as a route and was the only one not
+            # exposed here.
             models = [
-              (model "workhorse" "Workhorse (OpenCode route pool)")
-              (model "speed" "Speed (OpenCode route pool)")
-              (model "specialist" "Specialist (OpenCode route pool)")
-              (model "summit" "Summit (OpenCode route pool)")
-              (model "scout" "Scout (OpenCode route pool)")
+              (model "workhorse" "Workhorse pool")
+              (model "speed" "Speed pool")
+              (model "specialist" "Specialist pool")
+              (model "summit" "Summit pool")
+              (model "scout" "Scout pool")
+              (model "small" "Small pool")
             ];
           };
         };
@@ -617,7 +623,12 @@ in
           slack.enabled = true;
           telegram.enabled = true;
           codex.enabled = true;
-          copilot.enabled = true;
+          # Hidden from the model picker (Drew order 2026-11-13,
+          # #9551 Part A): the Copilot plugin's only live surface was
+          # its picker provider -- its ACP harness is already not in
+          # acpx allowedAgents above. Re-enable here in settings to
+          # make Copilot visible in the picker again.
+          copilot.enabled = false;
           "memory-lancedb" = {
             enabled = true;
             # Conversation access for the plugin's typed hooks. Without
