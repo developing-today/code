@@ -141,7 +141,7 @@ import {
   buildProjectSummaries,
   projectConfigById,
 } from "./project-config.ts";
-import { identitiesFromRecords } from "./registry.ts";
+import { identitiesFromRecords, type AuthorIdentity } from "./registry.ts";
 import {
   attentionFragment,
   attentionSections,
@@ -530,10 +530,34 @@ async function healthContext(prime = true): Promise<HealthView> {
   });
 }
 
+/** The identities half of the comment form options, behind a
+ *  stale-while-revalidate cache (#5082, 2026-11-14). commentFormOpts
+ *  is awaited on the request path of /program, /api/program.json and
+ *  /board, and the registry read behind the identities merges the
+ *  feed with a live map of the laptop OpenCode server — ~0.5 s when
+ *  that server is healthy, but 6-10.5 s per call when it stalls under
+ *  load (mapServerSessions' sequential fetches burn their 10 s
+ *  aborts; a failed map was not cached, so every assembly paid the
+ *  stall again). Pool-quota-steward run 381 measured the result:
+ *  /program and /api/program.json 503 at ~10.5 s, /board 200 at
+ *  10.5 s, everything else fast. Identities are comment-form picker
+ *  metadata — they change when sessions start or end, on a minutes
+ *  timescale — so they take the same contract as the page
+ *  assemblies: the first load is awaited (and warmed at boot,
+ *  below); an expired entry serves stale behind a single-flight
+ *  background refresh, so no request ever waits on the registry
+ *  merge again. The per-request githubRefs half is never cached. */
+const commentIdentitiesCache = new TodayCache<AuthorIdentity[]>(TODAY_CACHE_TTL_MS);
+async function commentIdentities(): Promise<AuthorIdentity[]> {
+  return commentIdentitiesCache.get(async () => {
+    const records = await source.registry().catch(() => []);
+    return identitiesFromRecords(records);
+  });
+}
+
 /** Author identities for the comment form: standing + registry sessions. */
 async function commentFormOpts(githubRefs: RefKey[] = []): Promise<CommentFormOpts> {
-  const records = await source.registry().catch(() => []);
-  return { githubRefs, identities: identitiesFromRecords(records) };
+  return { githubRefs, identities: await commentIdentities() };
 }
 
 /** Resolve a discuss-page title for any object ref, best-effort. */
@@ -4115,7 +4139,7 @@ setTimeout(() => {
   void (async () => {
     try {
       primeAttemptAggregates();
-      await Promise.allSettled([boardContext(), overviewContext(), todayContext(), programSources()]);
+      await Promise.allSettled([boardContext(), overviewContext(), todayContext(), programSources(), commentIdentities()]);
       // #9781: warm the briefs' latest comments for the program pool
       // too — the board briefs read a subset of the same refs, so one
       // prime covers both pages, and neither page's first post-restart

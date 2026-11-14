@@ -1139,6 +1139,23 @@ export function liveSource(
   // are read from its state file at request time (the port changes
   // across restarts). Mapped sessions are cached for 45 s (#890).
   let laptopCache: { value: MappedSessions; at: number } | null = null;
+  // #5082 (2026-11-14): a failed map is remembered briefly, and one
+  // in-flight map is shared between concurrent callers.
+  // mapServerSessions walks up to ~120 sequential fetches with 10 s
+  // aborts, so when a server stalls, one attempt costs 6-10.5 s
+  // (measured live) — and with success-only caching, EVERY caller
+  // paid that stall again: registry() runs on the request path of
+  // /program, /api/program.json and /board (via commentFormOpts),
+  // and pool-quota-steward run 381 watched three sequential
+  // assemblies each pay ~10.5 s, two of them crossing the dashboard
+  // deadline into 503s. The 15 s negative window matches the
+  // failure's timescale (a stalled server recovers in seconds to
+  // minutes); a null map already reads as "unreachable on the last
+  // read" to the coverage facet, so holding it briefly changes no
+  // one's story, only how often the stall is re-paid.
+  let laptopFailureAt = 0;
+  let laptopInFlight: Promise<MappedSessions | null> | null = null;
+  const LAPTOP_FAILURE_CACHE_MS = 15_000;
   // #1226: the Needs-Drew label census hits the GitHub search API
   // (8 queries per sweep). The sweeper caches for 5 minutes and shares
   // one in-flight sweep between concurrent callers, so the three
@@ -1164,6 +1181,24 @@ export function liveSource(
   };
   async function laptopMapped(): Promise<MappedSessions | null> {
     if (laptopCache && Date.now() - laptopCache.at < 45_000) return laptopCache.value;
+    if (!laptopInFlight) {
+      if (Date.now() - laptopFailureAt < LAPTOP_FAILURE_CACHE_MS) return null;
+      laptopInFlight = (async () => {
+        const mapped = await mapLaptopServers();
+        if (mapped) {
+          laptopCache = { value: mapped, at: Date.now() };
+        } else {
+          laptopFailureAt = Date.now();
+        }
+        return mapped;
+      })().finally(() => {
+        laptopInFlight = null;
+      });
+    }
+    return laptopInFlight;
+  }
+
+  async function mapLaptopServers(): Promise<MappedSessions | null> {
     // Leg 1: the standing OpenCode server (opencode.service) — its own
     // state file carries the current url + password and is rewritten
     // on every restart, so this leg survives the restart churn that
@@ -1178,10 +1213,7 @@ export function liveSource(
           source: "opencode-laptop",
         });
         laptopLegs.standing = mapped !== null;
-        if (mapped) {
-          laptopCache = { value: mapped, at: Date.now() };
-          return mapped;
-        }
+        if (mapped) return mapped;
       } else {
         laptopLegs.standing = false;
       }
@@ -1206,7 +1238,6 @@ export function liveSource(
       );
       laptopLegs.openchamber = mapped !== null;
       if (!mapped) return null;
-      laptopCache = { value: mapped, at: Date.now() };
       return mapped;
     } catch {
       laptopLegs.openchamber = false;
