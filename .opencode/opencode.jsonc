@@ -1282,7 +1282,7 @@
     // Zen account instances (2026-11-14, Drew): mirror the Go instances —
     // one per console workspace, re-enabling the "opencode" provider the
     // same pass (its line leaves disabled_providers above). The bare
-    // opencode provider is NOT a member of opencode-plans below: same
+    // opencode provider is NOT a member of opencode-zen-plans below: same
     // rule as Go — it rides whichever console login is active, so its
     // burn would land on that account unattributed.
     "opencode.drewrypope": {
@@ -2241,12 +2241,20 @@
       },
       // opencode-plans (2026-11-14, Drew): the OpenCode Zen plans as ONE
       // virtual provider, mirroring opencode-go-plans. Consumers name
-      // opencode-plans/<model>. Equal split — the three workspaces are
+      // opencode-zen-plans/<model>. Renamed the same day (Drew): the
+      // aggregate is the OpenCode Zen Plans, and the route id says so —
+      // opencode-zen-plans, display "OpenCode Zen Plans". Equal split —
+      // the three workspaces are
       // peers. Zen keys are per-workspace console keys (OPENCODE_API_KEY
       // per workspace); per-workspace key wiring is verified by live
       // probe after the switch, and a workspace without a working key is
       // demoted by the router's health/quota rules, not by config edits.
-      "opencode-plans": {
+      // 2026-11-14 (Drew, later same day): the Zen free models carry
+      // limited context — they are the LAST RESORT wherever they fit.
+      // In the per-model pools the Zen leaf sits at weight 0.5 behind
+      // its Go/plan doors; in the ordered tiers the Zen routes sit last
+      // before the escalation leg.
+      "opencode-zen-plans": {
         "providers": ["opencode.drewrypope", "opencode.popesdrew", "opencode.developing-today-0"],
         "selection": "weighted",
         "weights": { "opencode.drewrypope": 1, "opencode.popesdrew": 1, "opencode.developing-today-0": 1 }
@@ -2269,6 +2277,12 @@
         // ($9.95 of $10 used, no reset in the quota record; every call answers
         // "insufficient credits"; last success on the provider 2026-11-10).
         // Re-seat only after credits are verified back with a live completion.
+        // 2026-11-14 (performance cut, code#9950 follow-up): the mistral-plan
+        // leg is REMOVED from this pool — the mistral Flash-1017 cell recorded
+        // 0 successes in 699 attempts in the 2026-11-14 per-model cut, the
+        // fleet's worst dead leaf. The mistral-plan group keeps its other
+        // models; only this model's seat goes. Re-seat only on a live
+        // completion through the mistral API leg.
         
         // 2026-10-26: per-leaf variant remaps (honored by expansion since
         // developing-today/opencode#541). ClinePass has no medium/xhigh; OpenDesign tops at
@@ -2391,18 +2405,6 @@
           {
             "model": "opendesign/deepseek-v4.1-flash",
             "variants": { "xhigh": "high", "max": "high" }
-          },
-          {
-            "model": "mistral-plan/deepseek-v4-1-flash-1017",
-            // Variant remap: the pool's effort rungs map onto the two
-            // variants both mistral-plan legs can produce (none /
-            // high — see the vibe-direct model note). The remap keys
-            // are what let the pool keep offering its rungs with this
-            // member seated; the values keep the plan leg in front at
-            // every rung (a #low draw runs the group at "none", a
-            // #high draw at "high", both producible by vibe-direct
-            // first and the API leg alike).
-            "variants": { "low": "low", "medium": "high", "high": "high", "xhigh": "max", "max": "max" }
           }
         ],
         "selection": "round-robin",
@@ -2413,8 +2415,7 @@
         "weights": {
           "opencode-go-plans/deepseek-v4.1-flash": 2,
           "cline-pass/deepseek-v4.1-flash": 1,
-          "opendesign/deepseek-v4.1-flash": 1,
-          "mistral-plan/deepseek-v4-1-flash-1017": 1
+          "opendesign/deepseek-v4.1-flash": 1
         },
         // #7927 (task 14574): the 10s default first-output deadline mass-killed
         // scheduled lane waves (81 sessions in 8h) when doors queued past 10s.
@@ -2885,16 +2886,17 @@
         // the route to beam-free. Deliberately NOT seated: one model, one
         // seat. (The Go endpoint no longer serves cat-jam-free at all.)
         // 2026-11-14 (Zen pass): the Zen door for the same model joins as
-        // a second leaf (opencode-plans/beam-free, default weight behind
-        // the Go leaf's 3).
+        // a second leaf at weight 0.5 — last resort behind the Go leaf's
+        // 3 (Drew: Zen free models carry limited context).
         "targets": [
           "opencode-go-plans/beam-free",
-          "opencode-plans/beam-free"
+          "opencode-zen-plans/beam-free"
         ],
         "selection": "round-robin",
         "autonomy": "rules",
         "weights": {
-          "opencode-go-plans/beam-free": 3
+          "opencode-go-plans/beam-free": 3,
+          "opencode-zen-plans/beam-free": 0.5
         }
       },
       "longcat-plan": {
@@ -2911,12 +2913,13 @@
         // served there too) joins as a second leaf at default weight.
         "targets": [
           "opencode-go-plans/longcat-2.5-free",
-          "opencode-plans/longcat-2.5-free"
+          "opencode-zen-plans/longcat-2.5-free"
         ],
         "selection": "round-robin",
         "autonomy": "rules",
         "weights": {
-          "opencode-go-plans/longcat-2.5-free": 3
+          "opencode-go-plans/longcat-2.5-free": 3,
+          "opencode-zen-plans/longcat-2.5-free": 0.5
         }
       },
       "iceman-plan": {
@@ -2934,12 +2937,13 @@
         // leaf — same stealth model, second door.
         "targets": [
           "opencode-go-plans/iceman-contributor-free",
-          "opencode-plans/iceman-free"
+          "opencode-zen-plans/iceman-free"
         ],
         "selection": "round-robin",
         "autonomy": "rules",
         "weights": {
-          "opencode-go-plans/iceman-contributor-free": 3
+          "opencode-go-plans/iceman-contributor-free": 3,
+          "opencode-zen-plans/iceman-free": 0.5
         }
       },
       "flash-free-plan": {
@@ -2953,12 +2957,12 @@
         // strongest free model on either shelf. Zen's free tier requires
         // OpenCode (Zen docs); our server qualifies.
         "targets": [
-          "opencode-plans/deepseek-v4.1-flash-free"
+          "opencode-zen-plans/deepseek-v4.1-flash-free"
         ],
         "selection": "round-robin",
         "autonomy": "rules",
         "weights": {
-          "opencode-plans/deepseek-v4.1-flash-free": 3
+          "opencode-zen-plans/deepseek-v4.1-flash-free": 3
         }
       },
       "inkling-plan": {
@@ -2968,12 +2972,12 @@
         // reported) — the strongest free generalist after Flash; seated
         // in scout behind the Go free legs.
         "targets": [
-          "opencode-plans/inkling-2-small-free"
+          "opencode-zen-plans/inkling-2-small-free"
         ],
         "selection": "round-robin",
         "autonomy": "rules",
         "weights": {
-          "opencode-plans/inkling-2-small-free": 3
+          "opencode-zen-plans/inkling-2-small-free": 3
         }
       },
       "glm-5-3-flash-zen-plan": {
@@ -2985,12 +2989,12 @@
         // decode speed; this pool is a separate Zen door, not a revival
         // of that seat).
         "targets": [
-          "opencode-plans/glm-5.3-flash-free"
+          "opencode-zen-plans/glm-5.3-flash-free"
         ],
         "selection": "round-robin",
         "autonomy": "rules",
         "weights": {
-          "opencode-plans/glm-5.3-flash-free": 3
+          "opencode-zen-plans/glm-5.3-flash-free": 3
         }
       },
       "minimax-flash-plan": {
@@ -3000,12 +3004,12 @@
         // pull: it rarely abstains — careless for facts — so it serves
         // patient bulk work (background), not fact-facing tiers.
         "targets": [
-          "opencode-plans/minimax-m3.1-flash-free"
+          "opencode-zen-plans/minimax-m3.1-flash-free"
         ],
         "selection": "round-robin",
         "autonomy": "rules",
         "weights": {
-          "opencode-plans/minimax-m3.1-flash-free": 3
+          "opencode-zen-plans/minimax-m3.1-flash-free": 3
         }
       },
       "flint-plan": {
@@ -3014,12 +3018,12 @@
         // model, free on Zen. No AA listing (vendor-claimed SWE-bench
         // only). Seated in background as a coding-leaning free leg.
         "targets": [
-          "opencode-plans/flint-40b-free"
+          "opencode-zen-plans/flint-40b-free"
         ],
         "selection": "round-robin",
         "autonomy": "rules",
         "weights": {
-          "opencode-plans/flint-40b-free": 3
+          "opencode-zen-plans/flint-40b-free": 3
         }
       },
       "big-pickle-plan": {
@@ -3030,12 +3034,12 @@
         // target, so it is seated in background only, behind every
         // measured free leg: bulk capacity of unknown provenance.
         "targets": [
-          "opencode-plans/big-pickle"
+          "opencode-zen-plans/big-pickle"
         ],
         "selection": "round-robin",
         "autonomy": "rules",
         "weights": {
-          "opencode-plans/big-pickle": 3
+          "opencode-zen-plans/big-pickle": 3
         }
       },
       "nemotron-vl-plan": {
@@ -3045,12 +3049,12 @@
         // compilation). Weak as a generalist; its seat exists for
         // vision-carrying bulk work in the background tier.
         "targets": [
-          "opencode-plans/nemotron-3.5-super-vl-free"
+          "opencode-zen-plans/nemotron-3.5-super-vl-free"
         ],
         "selection": "round-robin",
         "autonomy": "rules",
         "weights": {
-          "opencode-plans/nemotron-3.5-super-vl-free": 3
+          "opencode-zen-plans/nemotron-3.5-super-vl-free": 3
         }
       },
       "nemotron-lightning-plan": {
@@ -3060,12 +3064,12 @@
         // the weakest measured model in the fleet. Seated last in
         // background as a free last resort ahead of metered escalation.
         "targets": [
-          "opencode-plans/nemotron-3.5-lightning-free"
+          "opencode-zen-plans/nemotron-3.5-lightning-free"
         ],
         "selection": "round-robin",
         "autonomy": "rules",
         "weights": {
-          "opencode-plans/nemotron-3.5-lightning-free": 3
+          "opencode-zen-plans/nemotron-3.5-lightning-free": 3
         }
       },
       "system1": {
@@ -3083,12 +3087,12 @@
         // Alias note: Drew named this pool "system1"; the mill design
         // supplement calls the same pool "decision".
         "targets": [
-          "opencode-plans/jev-1.13-free"
+          "opencode-zen-plans/jev-1.13-free"
         ],
         "selection": "round-robin",
         "autonomy": "rules",
         "weights": {
-          "opencode-plans/jev-1.13-free": 3
+          "opencode-zen-plans/jev-1.13-free": 3
         }
       },
       "mimo-flash-plan": {
@@ -3098,6 +3102,11 @@
         // ($9.95 of $10 used, no reset in the quota record; every call answers
         // "insufficient credits"; last success on the provider 2026-11-10).
         // Re-seat only after credits are verified back with a live completion.
+        // 2026-11-14 (performance cut, code#9950 follow-up): the cline-pass
+        // leg is REMOVED from this pool — its MiMo v2.6 Flash cell recorded
+        // 0 successes in 131 attempts in the 2026-11-14 per-model cut. The
+        // Go, OpenDesign and Zen leaves carry the pool. Re-seat only on a
+        // live completion through ClinePass.
         
         // NEW 2026-10-27 (pool redesign): MiMo-V2.6-Flash (AA v5:
         // II 27 at ~$0.13/task — the cheapest workhorse-adjacent
@@ -3108,17 +3117,18 @@
         // accounting, and MiMo is ClinePass's best seat), OpenDesign,
         // and Command Code as a minor leaf (weight 0.5, $10 credits/mo).
         // 2026-11-14 (Zen pass): the Zen free door (mimo-v2.6-flash-free)
-        // joins as a fourth leaf at default weight.
+        // joins as a fourth leaf at weight 0.5 — last resort (Drew:
+        // Zen free models carry limited context).
         "targets": [
           "opencode-go-plans/mimo-v2.6-flash",
-          "cline-pass/mimo-v2.6-flash",
           "opendesign/mimo-v2.6-flash",
-          "opencode-plans/mimo-v2.6-flash-free"
+          "opencode-zen-plans/mimo-v2.6-flash-free"
         ],
         "selection": "round-robin",
         "autonomy": "rules",
         "weights": {
-          "opencode-go-plans/mimo-v2.6-flash": 3
+          "opencode-go-plans/mimo-v2.6-flash": 3,
+          "opencode-zen-plans/mimo-v2.6-flash-free": 0.5
         }
       },
       "glm-5-3-plan": {
@@ -3197,15 +3207,18 @@
         // now seated in this tier (probe-verified 2026-11-14).
         // 2026-11-14 (Drew, Zen pass): Inkling 2 Small Free joins through
         // inkling-plan — AA v5 II 31, the strongest free generalist on
-        // either shelf after Flash — behind the Go free legs (Zen key
-        // wiring is verified per workspace after the switch).
+        // either shelf after Flash. Seated LAST in this tier, just ahead
+        // of the workhorse escalation (Drew, later same day: the Zen
+        // free models carry limited context — last resort wherever they
+        // fit). Zen key wiring is verified per workspace after the
+        // switch.
         "targets": [
           "opencode-route/beam-plan",
           "opencode-route/longcat-plan",
           "opencode-route/iceman-plan",
-          "opencode-route/inkling-plan",
           "opencode-route/deepseek-flash-plan#low",
           "opencode-route/haiku-plan#low",
+          "opencode-route/inkling-plan",
           "opencode-route/workhorse"
         ],
         "selection": "ordered",
@@ -3268,6 +3281,9 @@
         // Pickle (stealth, rotating backend — no score can attach), and
         // the two Nemotron free models last (VL 13.6, Lightning 5.5 —
         // the weakest measured seats in the fleet; free last resorts).
+        // Drew (2026-11-14, later): the whole Zen shelf sits in this
+        // last-resort position deliberately — limited context on the
+        // Zen free models means they are never a first-choice leg.
         "targets": [
           {
             "model": "opencode-route/mimo-flash-plan",
@@ -3913,8 +3929,14 @@
         // renamed gemini-hydrogen-plan and now seats Gemini 4
         // Hydrogen, so this leg serves Hydrogen #high - AA v5.0.1
         // II 51 at $1.87/task, up from Flash #high II 30.8.
+        // 2026-11-14 (performance cut, code#9950 follow-up): the direct
+        // _muse Spark #xhigh seat is REMOVED — the muse-direct Spark
+        // #xhigh cell recorded 0 successes in 141 attempts in the
+        // 2026-11-14 per-model cut. Spark keeps its deliberate-tier seats
+        // (workhorse #high, spark-plan); this pool leads with the
+        // deepseek-flash-plan leg instead. Re-seat only on a live
+        // completion at #xhigh through the Meta door.
         "targets": [
-          "_muse/muse-spark-1.3-contributor#xhigh",
           "opencode-route/deepseek-flash-plan#high",
           "opencode-route/gemini-hydrogen-plan#high",
           "opencode-route/haiku-plan#high",

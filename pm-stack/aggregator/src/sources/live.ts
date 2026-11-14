@@ -38,6 +38,7 @@ import {
 } from "../activity.ts";
 import { isRecord } from "../validate.ts";
 import { fetchIssueBodySnapshot, type Phase12Snapshot } from "../phase12.ts";
+import { loadPhaseMapping, type PhaseMappingSnapshot } from "../phase-mapping.ts";
 import { fetchBuildHealthSnapshot, type BuildHealthSnapshot } from "../build-health.ts";
 import {
   fetchQueueSnapshot,
@@ -1206,6 +1207,29 @@ export function liveSource(
     }
     return phase12InFlight;
   }
+  // #9923 step 3: the F-item mapping feed — planning/roadmaps/id.md
+  // in the code checkout, parsed and cached for 5 minutes, shared
+  // in-flight and fail-soft to the last good snapshot or null (same
+  // discipline as the phase12 feed above).
+  let phaseMappingCache: { value: PhaseMappingSnapshot; at: number } | null = null;
+  let phaseMappingInFlight: Promise<PhaseMappingSnapshot | null> | null = null;
+  async function phaseMappingSnapshot(): Promise<PhaseMappingSnapshot | null> {
+    if (phaseMappingCache && Date.now() - phaseMappingCache.at < 5 * 60_000) return phaseMappingCache.value;
+    if (!phaseMappingInFlight) {
+      phaseMappingInFlight = (async () => {
+        try {
+          const snap = await loadPhaseMapping(cfg.codeCheckout);
+          if (snap) phaseMappingCache = { value: snap, at: Date.now() };
+          return snap ?? phaseMappingCache?.value ?? null;
+        } catch {
+          return phaseMappingCache?.value ?? null;
+        }
+      })().finally(() => {
+        phaseMappingInFlight = null;
+      });
+    }
+    return phaseMappingInFlight;
+  }
   // #9924: the Build health snapshot — Actions API reads for the
   // id-gating lanes + the e2e nightly, cached for 5 minutes and
   // shared in-flight (same discipline as the phase12 feed above),
@@ -1739,6 +1763,9 @@ export function liveSource(
     },
     async phase12(): Promise<Phase12Snapshot | null> {
       return phase12Snapshot();
+    },
+    async phaseMapping(): Promise<PhaseMappingSnapshot | null> {
+      return phaseMappingSnapshot();
     },
     async buildHealth(): Promise<BuildHealthSnapshot | null> {
       return buildHealthSnapshot();

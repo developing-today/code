@@ -164,17 +164,45 @@ LAUNCHED_BY_RECOVERY_GONE_SESSION = "opencode-claimant-recovery:gone-session"
 
 
 def read_mode() -> str:
-    """Read the execution mode from the mode file."""
+    """Read the execution mode from the mode file.
+
+    Fail-safe default (#10141, close-authority program #10136 P5):
+    a missing, unreadable, or invalid mode file still defaults to
+    "shadow" — the non-mutating behaviour is the right safety
+    default — but it is NEVER silent about it. Before #10141 a
+    missing file was indistinguishable from an intentional shadow
+    and summit dispatch stalled on it with no signal anywhere; now
+    every such read logs a loud CLAIMANT-MODE-WARNING line, and the
+    aggregator's host-health watchdog surfaces the same fact as a
+    needs-attention tier item.
+    """
     if not MODE_FILE.exists():
+        print(
+            f"CLAIMANT-MODE-WARNING (#10141): mode file {MODE_FILE} is MISSING "
+            "- defaulting to shadow; dispatch will return mode_not_live and "
+            "stall until the file is restored with the intended mode.",
+            file=sys.stderr,
+        )
         return "shadow"
 
     try:
-        mode = MODE_FILE.read_text().strip().lower()
-        if mode in ("shadow", "live"):
-            return mode
+        raw = MODE_FILE.read_text()
+    except Exception as exc:
+        print(
+            f"CLAIMANT-MODE-WARNING (#10141): mode file {MODE_FILE} is "
+            f"UNREADABLE ({exc}) - defaulting to shadow.",
+            file=sys.stderr,
+        )
         return "shadow"
-    except Exception:
-        return "shadow"
+    mode = raw.strip().lower()
+    if mode in ("shadow", "live"):
+        return mode
+    print(
+        f"CLAIMANT-MODE-WARNING (#10141): mode file {MODE_FILE} content "
+        f"{raw.strip()[:40]!r} is not live|shadow - defaulting to shadow.",
+        file=sys.stderr,
+    )
+    return "shadow"
 
 
 def ensure_state_dir() -> None:

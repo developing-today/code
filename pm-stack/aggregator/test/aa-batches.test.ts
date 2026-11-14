@@ -312,6 +312,16 @@ describe("/aa selector", () => {
     expect(html).toContain("current-price overlay");
   });
 
+  test("provider multi-select ships in the explorer filter state (#9852 item 4)", () => {
+    const html = renderAa(section, PROV);
+    // The chip container, the filter-state fields, and the catalog
+    // predicate that filters by the selected provider set.
+    expect(html).toContain('id="xf-providers"');
+    expect(html).toContain("providerAny: false");
+    expect(html).toContain("S.providerAny && !S.providers[e.provider]");
+    expect(html).toContain("buildProviderOptions");
+  });
+
   test("latest default keeps the plain API link", () => {
     const html = renderAa({ ...section, batch: B1 }, PROV);
     expect(html).toContain(`value="${B1}" selected`);
