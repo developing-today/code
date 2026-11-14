@@ -448,9 +448,13 @@ export function tombstoneDeleteStmts(repo: string, number: number): Stmt[] {
  * but it cannot repair a count that a previous sweep wrote with a
  * WRONG count under a NEWER version stamp (the 2026-11-14 truncated
  * list run stamped pulls-list versions onto zeroed counts). The
- * sweep has just read the true count and its true version from the
- * API, so it may overwrite unconditionally — this statement is never
- * used by a webhook path.
+ * write is conditional on the stored comments version still being
+ * the exact stamp the sweep diffed against (guardVersion): if a
+ * webhook has updated the row since, its version differs and this
+ * statement is a no-op — a repair never overwrites a newer webhook
+ * count with an older API count. The sweep re-reads the API count
+ * immediately before repairing, so the value written is current.
+ * Never used by a webhook path.
  */
 export function forceCommentsStmt(
   repo: string,
@@ -458,17 +462,19 @@ export function forceCommentsStmt(
   isPr: boolean,
   comments: number,
   commentsGhUpdatedAt: string | null,
+  guardVersion: string | null,
 ): Stmt {
   const table = isPr ? "github_mirror_pull_requests" : "github_mirror_issues";
   return {
     sql: `UPDATE ${table} SET comments = ?, comments_gh_updated_at = ?, mirrored_at = ?
-          WHERE repo = ? AND number = ?`,
+          WHERE repo = ? AND number = ? AND comments_gh_updated_at IS ?`,
     args: [
       iArg(comments),
       tArg(commentsGhUpdatedAt),
       tArg(queueNow()),
       tArg(repo),
       iArg(number),
+      tArg(guardVersion),
     ],
   };
 }

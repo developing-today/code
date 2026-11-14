@@ -132,23 +132,32 @@ describe("sweep statement builders (#8580 backfill)", () => {
     expect(plain.args?.[13]).toEqual({ type: "text", value: prObj.updated_at });
   });
 
-  it("force-comments targets the right table and binds count + version", () => {
+  it("force-comments targets the right table and is version-guarded", () => {
     const stmt = forceCommentsStmt(
       REPO,
       10056,
       true,
       4,
       "2026-11-14T14:35:00Z",
+      "2026-11-14T15:40:00Z",
     );
     expect(stmt.sql).toContain(
       "UPDATE github_mirror_pull_requests SET comments = ?",
     );
+    // The write only lands if the stored comments version is still
+    // the stamp the sweep diffed against — a newer webhook count is
+    // never overwritten by an older API count.
+    expect(stmt.sql).toContain("comments_gh_updated_at IS ?");
     expect(stmt.args?.[0]).toEqual({ type: "integer", value: "4" });
     expect(stmt.args?.[1]).toEqual({
       type: "text",
       value: "2026-11-14T14:35:00Z",
     });
-    expect(forceCommentsStmt(REPO, 1, false, 0, null).sql).toContain(
+    expect(stmt.args?.[5]).toEqual({
+      type: "text",
+      value: "2026-11-14T15:40:00Z",
+    });
+    expect(forceCommentsStmt(REPO, 1, false, 0, null, null).sql).toContain(
       "UPDATE github_mirror_issues",
     );
   });

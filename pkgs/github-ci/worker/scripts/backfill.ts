@@ -74,12 +74,22 @@ if (!env.TURSO_QUEUE_TOKEN)
  * regularly; a sweep is exactly that, so every call it makes goes
  * through here or through sweepBatch. HTTP 4xx is not retried.
  */
+/** An HTTP error response; retry() never retries a 4xx. */
+class HttpStatusError extends Error {
+  readonly status: number;
+  constructor(status: number, message: string) {
+    super(message);
+    this.status = status;
+  }
+}
+
 const retry = async <T>(label: string, fn: () => Promise<T>): Promise<T> => {
   let lastErr: unknown;
   for (let attempt = 1; attempt <= 5; attempt++) {
     try {
       return await fn();
     } catch (e) {
+      if (e instanceof HttpStatusError && e.status < 500) throw e;
       lastErr = e;
       if (attempt < 5)
         await new Promise((r) => setTimeout(r, 500 * 2 ** attempt));
@@ -108,7 +118,11 @@ const api = async (path: string): Promise<unknown> =>
     });
     if (res.status >= 500)
       throw new Error(`github api ${path}: HTTP ${res.status}`);
-    if (!res.ok) throw new Error(`github api ${path}: HTTP ${res.status}`);
+    if (!res.ok)
+      throw new HttpStatusError(
+        res.status,
+        `github api ${path}: HTTP ${res.status}`,
+      );
     return res.json();
   });
 
@@ -139,7 +153,11 @@ const apiAll = async (path: string): Promise<Obj[]> => {
             "User-Agent": "github-ci-mirror-backfill",
           },
         });
-        if (!res.ok) throw new Error(`github api ${url}: HTTP ${res.status}`);
+        if (!res.ok)
+          throw new HttpStatusError(
+            res.status,
+            `github api ${url}: HTTP ${res.status}`,
+          );
         const link = res.headers.get("link") ?? "";
         const next = /<([^>]+)>; rel="next"/.exec(link);
         return {
@@ -176,6 +194,7 @@ interface StoredRow {
   ghUpdatedAt: string | null;
   bodyHash: string | null;
   comments: number;
+  commentsGhUpdatedAt: string | null;
   agentNoteId: number | null;
 }
 
@@ -186,7 +205,7 @@ const storedRows = async (
 ): Promise<Map<number, StoredRow>> => {
   const r = await retry(`read ${table}`, () =>
     q.execute(
-      `SELECT number, gh_updated_at, body_hash, comments, latest_agent_note_id
+      `SELECT number, gh_updated_at, body_hash, comments, comments_gh_updated_at, latest_agent_note_id
          FROM ${table} WHERE repo = ?`,
       [{ type: "text", value: repo }],
     ),
@@ -207,7 +226,8 @@ const storedRows = async (
       ghUpdatedAt: cell(1),
       bodyHash: cell(2),
       comments: Number(cell(3) ?? 0) || 0,
-      agentNoteId: cell(4) === null ? null : Number(cell(4)),
+      commentsGhUpdatedAt: cell(4),
+      agentNoteId: cell(5) === null ? null : Number(cell(5)),
     });
   }
   return map;
@@ -224,6 +244,8 @@ interface RepoSummary {
   pointers_deferred: number;
   pointers_failed: number;
   counts_forced: number;
+  counts_repair_failed: number;
+  incomplete?: boolean;
   vanished_skipped_live: number;
   unchanged: number;
   error?: string;
@@ -242,6 +264,7 @@ const sweepRepo = async (repo: string): Promise<RepoSummary> => {
     pointers_deferred: 0,
     pointers_failed: 0,
     counts_forced: 0,
+    counts_repair_failed: 0,
     unchanged: 0,
   };
   const q = new Turso(env.TURSO_QUEUE_URL, env.TURSO_QUEUE_TOKEN);
@@ -272,8 +295,8 @@ const sweepRepo = async (repo: string): Promise<RepoSummary> => {
   interface CountRepair {
     number: number;
     isPr: boolean;
-    comments: number;
-    version: string;
+    /** The stored comments version at diff time — the stamp the repair replaces. */
+    guardVersion: string | null;
   }
   const countRepairs: CountRepair[] = [];
   const pending: Pending[] = [];
@@ -305,12 +328,7 @@ const sweepRepo = async (repo: string): Promise<RepoSummary> => {
       countRepairs.push({
         number,
         isPr,
-        comments: apiComments,
-        version: isPr
-          ? String(
-              issueByNumber.get(number)?.updated_at ?? item.updated_at ?? "",
-            )
-          : String(item.updated_at ?? ""),
+        guardVersion: prev.commentsGhUpdatedAt,
       });
     }
     if (isPr) {
@@ -458,9 +476,12 @@ const sweepRepo = async (repo: string): Promise<RepoSummary> => {
     await sweepBatch(env, flush.slice(i, i + 200));
   }
 
-  // Count-repair pass: re-read every row whose count mismatched at
-  // diff time; any the version guard still rejected (a wrong count
-  // carrying a newer stamp) is force-set from the API truth.
+  // Count-repair pass: for every row whose count mismatched at diff
+  // time and that the version guard still rejected, re-fetch the
+  // item's CURRENT count from the API and force-set it — guarded on
+  // the stored comments version still being the diff-time stamp, so
+  // a webhook update that landed in between is never overwritten by
+  // an older list count.
   const afterIssues = countRepairs.some((r) => !r.isPr)
     ? await storedRows(q, "github_mirror_issues", repo)
     : null;
@@ -469,21 +490,42 @@ const sweepRepo = async (repo: string): Promise<RepoSummary> => {
     : null;
   for (const repair of countRepairs) {
     const now = (repair.isPr ? afterPrs : afterIssues)?.get(repair.number);
-    if (now && now.comments !== repair.comments) {
-      await sweepBatch(env, [
-        forceCommentsStmt(
-          repo,
-          repair.number,
-          repair.isPr,
-          repair.comments,
-          repair.version || null,
-        ),
-      ]);
-      summary.counts_forced++;
+    if (!now) continue;
+    try {
+      const fresh = (await api(
+        `/repos/${repo}/issues/${repair.number}`,
+      )) as Obj;
+      const freshCount = Number(fresh.comments ?? 0) || 0;
+      if (
+        now.comments !== freshCount &&
+        now.commentsGhUpdatedAt === repair.guardVersion
+      ) {
+        await sweepBatch(env, [
+          forceCommentsStmt(
+            repo,
+            repair.number,
+            repair.isPr,
+            freshCount,
+            typeof fresh.updated_at === "string" ? fresh.updated_at : null,
+            repair.guardVersion,
+          ),
+        ]);
+        summary.counts_forced++;
+      }
+    } catch {
+      summary.counts_repair_failed++;
     }
   }
 
-  await sweepBatch(env, [backfillStampStmt(repo, queueNow())]);
+  // A run with failed repairs is incomplete: partial progress is
+  // kept (snapshots flushed, successful repairs applied) but the
+  // backfill stamp is withheld and main() reports the repo as failed,
+  // so the next run re-diffs the same items and retries.
+  summary.incomplete =
+    summary.pointers_failed > 0 || summary.counts_repair_failed > 0;
+  if (!summary.incomplete) {
+    await sweepBatch(env, [backfillStampStmt(repo, queueNow())]);
+  }
   return summary;
 };
 
@@ -500,7 +542,9 @@ const main = async (): Promise<void> => {
   let failures = 0;
   for (const repo of repos) {
     try {
-      console.log(JSON.stringify(await sweepRepo(repo)));
+      const s = await sweepRepo(repo);
+      console.log(JSON.stringify(s));
+      if (s.incomplete) failures++;
     } catch (e) {
       failures++;
       console.log(JSON.stringify({ repo, error: String(e) }));
