@@ -4,7 +4,7 @@ import {
   buildCommentTouch,
   buildIssueRow,
   buildPrRow,
-  clearAgentNotePointerStmt,
+  clearAgentNotePointerStmts,
   commentTouchStmts,
   issueUpsertStmt,
   prUpsertStmt,
@@ -88,13 +88,47 @@ describe("sweep statement builders (#8580 backfill)", () => {
     expect(stmts[2].sql).toContain("DELETE FROM github_mirror_pull_requests");
   });
 
-  it("clear-pointer targets the right table per kind", () => {
-    expect(clearAgentNotePointerStmt(REPO, 1, false).sql).toContain(
+  it("clear-pointer is conditional on the inspected note and targets the right table", () => {
+    const issueStmts = clearAgentNotePointerStmts(REPO, 1, false, 777, false);
+    expect(issueStmts).toHaveLength(1);
+    expect(issueStmts[0].sql).toContain(
       "UPDATE github_mirror_issues SET latest_agent_note_id = NULL",
     );
-    expect(clearAgentNotePointerStmt(REPO, 1, true).sql).toContain(
+    // Conditional: a newer pointer installed after the sweep's read survives.
+    expect(issueStmts[0].sql).toContain("latest_agent_note_id = ?");
+    expect(issueStmts[0].args?.[3]).toEqual({ type: "integer", value: "777" });
+    const prStmts = clearAgentNotePointerStmts(REPO, 1, true, 777, false);
+    expect(prStmts[0].sql).toContain(
       "UPDATE github_mirror_pull_requests SET latest_agent_note_id = NULL",
     );
+  });
+
+  it("clear-pointer records the deletion marker first when the comment is gone", () => {
+    const stmts = clearAgentNotePointerStmts(REPO, 1, false, 777, true);
+    expect(stmts).toHaveLength(2);
+    expect(stmts[0].sql).toContain("INSERT INTO github_mirror_deleted_notes");
+    expect(stmts[0].args?.[2]).toEqual({ type: "integer", value: "777" });
+    expect(stmts[1].sql).toContain("UPDATE github_mirror_issues");
+  });
+
+  it("PR comments version comes from comments_updated_at when the sweep joins it", () => {
+    const joined = { ...prObj, comments_updated_at: "2026-11-11T02:30:00Z" };
+    const stmt = prUpsertStmt(
+      buildPrRow({ pull_request: joined }, REPO, "cafe"),
+    );
+    // Bind 13 is the comments_gh_updated_at slot: the count's own version.
+    expect(stmt.args?.[13]).toEqual({
+      type: "text",
+      value: "2026-11-11T02:30:00Z",
+    });
+    expect(stmt.sql).toContain(
+      "excluded.comments_gh_updated_at >= github_mirror_pull_requests.comments_gh_updated_at",
+    );
+    // Without the join field (webhook path) it falls back to updated_at.
+    const plain = prUpsertStmt(
+      buildPrRow({ pull_request: prObj }, REPO, "cafe"),
+    );
+    expect(plain.args?.[13]).toEqual({ type: "text", value: prObj.updated_at });
   });
 
   it("comment touch: plain comment is seed+update; deleted note adds marker+clear", () => {

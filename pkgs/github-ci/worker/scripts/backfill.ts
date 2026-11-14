@@ -37,7 +37,7 @@ import {
   buildCommentTouch,
   buildIssueRow,
   buildPrRow,
-  clearAgentNotePointerStmt,
+  clearAgentNotePointerStmts,
   commentTouchStmts,
   ensureMirrorSchema,
   isAgentNote,
@@ -154,6 +154,23 @@ const apiAll = async (path: string): Promise<Obj[]> => {
   return pages.flat();
 };
 
+/** HTTP status of a single GET (404 is an answer, not an error). */
+const apiStatus = async (path: string): Promise<number> =>
+  retry(`github api ${path}`, async () => {
+    const res = await fetch(`https://api.github.com${path}`, {
+      signal: AbortSignal.timeout(20_000),
+      headers: {
+        Authorization: `Bearer ${GH_TOKEN}`,
+        Accept: "application/vnd.github+json",
+        "X-GitHub-Api-Version": "2022-11-28",
+        "User-Agent": "github-ci-mirror-backfill",
+      },
+    });
+    if (res.status >= 500)
+      throw new Error(`github api ${path}: HTTP ${res.status}`);
+    return res.status;
+  });
+
 interface StoredRow {
   number: number;
   ghUpdatedAt: string | null;
@@ -205,6 +222,8 @@ interface RepoSummary {
   pointers_set: number;
   pointers_cleared: number;
   pointers_deferred: number;
+  pointers_failed: number;
+  vanished_skipped_live: number;
   unchanged: number;
   error?: string;
 }
@@ -216,9 +235,11 @@ const sweepRepo = async (repo: string): Promise<RepoSummary> => {
     prs_seen: 0,
     upserted: 0,
     vanished_deleted: 0,
+    vanished_skipped_live: 0,
     pointers_set: 0,
     pointers_cleared: 0,
     pointers_deferred: 0,
+    pointers_failed: 0,
     unchanged: 0,
   };
   const q = new Turso(env.TURSO_QUEUE_URL, env.TURSO_QUEUE_TOKEN);
@@ -228,6 +249,8 @@ const sweepRepo = async (repo: string): Promise<RepoSummary> => {
   const pullList = await apiAll(
     `/repos/${repo}/pulls?state=all&sort=created&direction=asc`,
   );
+  const issueByNumber = new Map<number, Obj>();
+  for (const item of issueList) issueByNumber.set(Number(item.number), item);
   const commentsByNumber = new Map<number, number>();
   for (const item of issueList) {
     commentsByNumber.set(Number(item.number), Number(item.comments ?? 0) || 0);
@@ -238,8 +261,13 @@ const sweepRepo = async (repo: string): Promise<RepoSummary> => {
   summary.issues_seen = pureIssues.length;
   summary.prs_seen = pullList.length;
 
-  const stmts: Parameters<typeof mirrorSweepBatch>[1] = [];
-  const changed: { item: Obj; isPr: boolean }[] = [];
+  interface Pending {
+    number: number;
+    isPr: boolean;
+    item: Obj;
+    stmt: { sql: string; args?: import("../src/turso").TursoArg[] };
+  }
+  const pending: Pending[] = [];
   const consider = async (
     item: Obj,
     isPr: boolean,
@@ -257,86 +285,148 @@ const sweepRepo = async (repo: string): Promise<RepoSummary> => {
       return;
     }
     if (isPr) {
+      // Join the comment count from the issues-list object and keep
+      // THAT object's updated_at as the count's version: the two
+      // lists are fetched seconds apart, and pairing the count with
+      // the pulls-list version would let a stale count win the
+      // version guard (review finding, PR #10062).
+      const issueObj = issueByNumber.get(number);
       const withComments = {
         ...item,
         comments: commentsByNumber.get(number) ?? Number(item.comments ?? 0),
+        comments_updated_at: issueObj
+          ? String(issueObj.updated_at ?? "")
+          : undefined,
       };
-      stmts.push(
-        prUpsertStmt(buildPrRow({ pull_request: withComments }, repo, hash)),
-      );
+      pending.push({
+        number,
+        isPr,
+        item,
+        stmt: prUpsertStmt(
+          buildPrRow({ pull_request: withComments }, repo, hash),
+        ),
+      });
     } else {
-      stmts.push(issueUpsertStmt(buildIssueRow({ issue: item }, repo, hash)));
+      pending.push({
+        number,
+        isPr,
+        item,
+        stmt: issueUpsertStmt(buildIssueRow({ issue: item }, repo, hash)),
+      });
     }
-    summary.upserted++;
-    changed.push({ item, isPr });
   };
   for (const issue of pureIssues) await consider(issue, false, storedIssues);
   for (const pr of pullList) await consider(pr, true, storedPrs);
 
-  // Vanished: stored numbers (one namespace per repo) the API did
-  // not return at all — deleted on GitHub while no webhook watched.
+  // Vanished: stored numbers (one namespace per repo) the API lists
+  // did not return. Absence from a paginated list is NOT proof of
+  // deletion — an item created after the list was fetched but before
+  // the stored rows were read would look identical, and a NULL
+  // tombstone is permanent. Confirm each candidate against the item
+  // endpoint first; only a 404 tombstones.
   const seen = new Set<number>([
     ...issueList.map((i) => Number(i.number)),
     ...pullList.map((p) => Number(p.number)),
   ]);
+  const flush: Pending["stmt"][] = [];
   for (const number of new Set([...storedIssues.keys(), ...storedPrs.keys()])) {
-    if (!seen.has(number)) {
-      stmts.push(...tombstoneDeleteStmts(repo, number));
+    if (seen.has(number)) continue;
+    if ((await apiStatus(`/repos/${repo}/issues/${number}`)) === 404) {
+      flush.push(...tombstoneDeleteStmts(repo, number));
       summary.vanished_deleted++;
+    } else {
+      summary.vanished_skipped_live++;
     }
   }
-  // Flush snapshot writes in bounded batches before pointer work.
-  for (let i = 0; i < stmts.length; i += 200) {
-    await sweepBatch(env, stmts.slice(i, i + 200));
-  }
 
-  // Pointer re-derivation for changed items that carry comments,
-  // most recently updated first, capped per run: a first sweep of a
-  // large repo changes everything, and one comments listing per item
-  // would exhaust the API budget repairing pointers for items nobody
-  // has touched in years. Deferred items are counted, and any later
-  // change to an item (or a rerun with a raised cap) repairs it.
-  changed.sort((a, b) =>
-    String(b.item.updated_at ?? "").localeCompare(
-      String(a.item.updated_at ?? ""),
-    ),
-  );
+  // Pointer re-derivation runs BEFORE the snapshot flush, and a
+  // failed repair keeps its item out of the flush: the item then
+  // still diffs as changed on the next run, so the repair stays
+  // eligible instead of being hidden by snapshot equality.
+  const failed = new Set<number>();
+  const candidates = pending
+    .filter((p) => {
+      const stored = (p.isPr ? storedPrs : storedIssues).get(p.number);
+      return (
+        (commentsByNumber.get(p.number) ?? 0) > 0 || stored?.agentNoteId != null
+      );
+    })
+    .sort((a, b) =>
+      String(b.item.updated_at ?? "").localeCompare(
+        String(a.item.updated_at ?? ""),
+      ),
+    );
   let pointerBudget = MAX_POINTER_REPAIRS;
-  for (const { item, isPr } of changed) {
-    const number = Number(item.number);
-    if (
-      (commentsByNumber.get(number) ?? 0) === 0 &&
-      Number(item.comments ?? 0) === 0
-    )
-      continue;
+  for (const cand of candidates) {
+    const { number, isPr, item } = cand;
     if (pointerBudget <= 0) {
       summary.pointers_deferred++;
       continue;
     }
     pointerBudget--;
-    const comments = await apiAll(
-      `/repos/${repo}/issues/${number}/comments?sort=created&direction=asc`,
-    );
-    const stored = (isPr ? storedPrs : storedIssues).get(number);
-    const latestNote = [...comments]
-      .reverse()
-      .find((c) => isAgentNote(typeof c.body === "string" ? c.body : null));
-    if (latestNote) {
-      if (!stored || stored.agentNoteId !== Number(latestNote.id)) {
+    try {
+      const comments = await apiAll(
+        `/repos/${repo}/issues/${number}/comments?sort=created&direction=asc`,
+      );
+      const stored = (isPr ? storedPrs : storedIssues).get(number);
+      const isNote = (c: Obj): boolean =>
+        isAgentNote(typeof c.body === "string" ? c.body : null);
+      const latestNote = [...comments].reverse().find(isNote);
+      let pointerNow = stored?.agentNoteId ?? null;
+      if (pointerNow != null) {
+        const pointed = comments.find((c) => Number(c.id) === pointerNow);
+        if (!pointed || !isNote(pointed)) {
+          // Stale pointer: the comment is deleted, or was edited so
+          // it is no longer an agent note. Clear conditionally (a
+          // newer webhook-installed pointer is never erased), and
+          // record the deletion only when the comment is truly gone.
+          await sweepBatch(
+            env,
+            clearAgentNotePointerStmts(
+              repo,
+              number,
+              isPr,
+              pointerNow,
+              !pointed,
+            ),
+          );
+          summary.pointers_cleared++;
+          pointerNow = null;
+        }
+      }
+      if (latestNote && Number(latestNote.id) !== pointerNow) {
+        // buildCommentTouch reads the discriminator + count off the
+        // carrying object: a pulls-list object has neither, so PR
+        // items are adapted (explicit pull_request marker + the
+        // joined count) or the touch would land on the issues table.
+        const touchIssue = isPr
+          ? {
+              ...item,
+              comments: commentsByNumber.get(number) ?? 0,
+              pull_request: { url: String(item.url ?? "") },
+            }
+          : item;
         const touch = buildCommentTouch(
-          { issue: item, comment: latestNote, action: "created" },
+          { issue: touchIssue, comment: latestNote, action: "created" },
           repo,
         );
         await sweepBatch(env, commentTouchStmts(touch));
         summary.pointers_set++;
       }
-    } else if (
-      stored?.agentNoteId != null &&
-      !comments.some((c) => Number(c.id) === stored.agentNoteId)
-    ) {
-      await sweepBatch(env, [clearAgentNotePointerStmt(repo, number, isPr)]);
-      summary.pointers_cleared++;
+    } catch {
+      failed.add(number);
+      summary.pointers_failed++;
     }
+  }
+
+  for (const p of pending) {
+    if (!failed.has(p.number)) {
+      flush.push(p.stmt);
+      summary.upserted++;
+    }
+  }
+  for (let i = 0; i < flush.length; i += 200) {
+    await sweepBatch(env, flush.slice(i, i + 200));
   }
 
   await sweepBatch(env, [backfillStampStmt(repo, queueNow())]);

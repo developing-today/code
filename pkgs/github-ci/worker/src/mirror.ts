@@ -185,6 +185,15 @@ export interface PrRow extends IssueRow {
   head_sha: string | null;
   head_ref: string | null;
   base_ref: string | null;
+  /**
+   * The version of the comments count, kept separate from the
+   * snapshot version (gh_updated_at): the backfill sweep joins the
+   * count from the issues-list object, whose updated_at is the
+   * count's own version. Webhook payloads carry no separate field,
+   * so buildPrRow falls back to the PR's updated_at — the count and
+   * the snapshot then share one object and one version, as before.
+   */
+  comments_gh_updated_at: string | null;
 }
 
 export function buildPrRow(
@@ -196,6 +205,8 @@ export function buildPrRow(
   const base = buildIssueRow({ issue: pr }, repo, bodyHash);
   return {
     ...base,
+    comments_gh_updated_at:
+      str(pr, "comments_updated_at") ?? base.gh_updated_at,
     merged: pr.merged === true || typeof pr.merged_at === "string" ? 1 : 0,
     draft: pr.draft === true ? 1 : 0,
     head_sha: str((pr.head ?? {}) as Obj, "sha"),
@@ -421,24 +432,43 @@ export function tombstoneDeleteStmts(repo: string, number: number): Stmt[] {
 }
 
 /**
- * Clear a stored agent-note pointer the sweep proved stale: the
- * pointed-at comment no longer exists on the item (deleted while the
- * webhooks were down — the deletion the comment path would have
- * recorded in github_mirror_deleted_notes never arrived). The sweep
- * re-derives the surviving latest note separately when one exists.
+ * Clear a stored agent-note pointer the sweep proved stale — the
+ * pointed-at comment was deleted, or edited so it is no longer an
+ * agent note. The clear is CONDITIONAL on the pointer still naming
+ * the inspected comment: a webhook may have installed a newer note
+ * after the sweep listed comments, and stale sweep work must never
+ * erase it. When the comment is gone (not merely edited), its
+ * deletion is also recorded in github_mirror_deleted_notes, so a
+ * delayed created/edited delivery of that comment cannot resurrect
+ * the pointer through the comment path's empty-pointer branch.
  */
-export function clearAgentNotePointerStmt(
+export function clearAgentNotePointerStmts(
   repo: string,
   number: number,
   isPr: boolean,
-): Stmt {
+  noteId: number,
+  recordDeletion: boolean,
+): Stmt[] {
   const table = isPr ? "github_mirror_pull_requests" : "github_mirror_issues";
-  return {
-    sql: `UPDATE ${table} SET latest_agent_note_id = NULL,
-            latest_agent_note_url = NULL, mirrored_at = ?
-          WHERE repo = ? AND number = ?`,
-    args: [tArg(queueNow()), tArg(repo), iArg(number)],
-  };
+  return [
+    ...(recordDeletion
+      ? [
+          {
+            sql: `INSERT INTO github_mirror_deleted_notes
+                    (repo, number, comment_id, mirrored_at)
+                  VALUES (?, ?, ?, ?)
+                  ON CONFLICT(repo, number, comment_id) DO NOTHING`,
+            args: [tArg(repo), iArg(number), iArg(noteId), tArg(queueNow())],
+          },
+        ]
+      : []),
+    {
+      sql: `UPDATE ${table} SET latest_agent_note_id = NULL,
+              latest_agent_note_url = NULL, mirrored_at = ?
+            WHERE repo = ? AND number = ? AND latest_agent_note_id = ?`,
+      args: [tArg(queueNow()), tArg(repo), iArg(number), iArg(noteId)],
+    },
+  ];
 }
 
 /** The issue snapshot upsert as a statement (shared by the webhook path and the sweep). */
@@ -560,15 +590,15 @@ export function prUpsertStmt(row: PrRow): Stmt {
             head_ref = excluded.head_ref, base_ref = excluded.base_ref,
             labels = excluded.labels, assignees = excluded.assignees,
             comments = CASE
-              WHEN excluded.gh_updated_at IS NULL
+              WHEN excluded.comments_gh_updated_at IS NULL
                    OR github_mirror_pull_requests.comments_gh_updated_at IS NULL
-                   OR excluded.gh_updated_at >= github_mirror_pull_requests.comments_gh_updated_at
+                   OR excluded.comments_gh_updated_at >= github_mirror_pull_requests.comments_gh_updated_at
               THEN excluded.comments ELSE github_mirror_pull_requests.comments END,
             comments_gh_updated_at = CASE
-              WHEN excluded.gh_updated_at IS NULL
+              WHEN excluded.comments_gh_updated_at IS NULL
                    OR github_mirror_pull_requests.comments_gh_updated_at IS NULL
-                   OR excluded.gh_updated_at >= github_mirror_pull_requests.comments_gh_updated_at
-              THEN COALESCE(excluded.gh_updated_at, github_mirror_pull_requests.comments_gh_updated_at)
+                   OR excluded.comments_gh_updated_at >= github_mirror_pull_requests.comments_gh_updated_at
+              THEN COALESCE(excluded.comments_gh_updated_at, github_mirror_pull_requests.comments_gh_updated_at)
               ELSE github_mirror_pull_requests.comments_gh_updated_at END,
             author = excluded.author,
             html_url = excluded.html_url,
@@ -592,7 +622,7 @@ export function prUpsertStmt(row: PrRow): Stmt {
       tArg(row.labels),
       tArg(row.assignees),
       iArg(row.comments),
-      tArg(row.gh_updated_at),
+      tArg(row.comments_gh_updated_at),
       tArg(row.author),
       tArg(row.html_url),
       tArg(row.gh_created_at),
