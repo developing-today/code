@@ -158,7 +158,7 @@ Status column: **mcpx @ 05c78b2**. Legend and citation conventions: [../README.m
   process (v1 the server Worker, v2 the daemon).
 - **Where.** opencode v1 and v2.
 - **mcpx @ 05c78b2.** The plugin reaches the daemon socket with Bun's `fetch(url, {unix})`; its own comment notes that
-  Node's fetch ignores the option (`plugin/opencode/mcpx/daemon.ts:348-351`).
+  Node's fetch ignores the option (`plugin/core/daemon.ts:348-351`).
 - **Value to mcpx.** + low: holds for the nix build installed here.
 - **Effort.** S.
 - **Risk.** Low: a Node build of v2 would break unix-socket fetch.
@@ -224,15 +224,15 @@ Status column: **mcpx @ 05c78b2**. Legend and citation conventions: [../README.m
   `create.before` hook).
 - **Where.** opencode v1 only.
 - **mcpx @ 05c78b2.** Already independent of `$`: it spawns with `node:child_process` `execFile`
-  (`plugin/opencode/mcpx/daemon.ts:41`) and talks to the daemon over the unix socket
-  (`plugin/opencode/mcpx/daemon.ts:352`).
+  (`plugin/core/daemon.ts:41`) and talks to the daemon over the unix socket
+  (`plugin/core/daemon.ts:352`).
 - **Value to mcpx.** + low: nothing to port.
 - **Effort.** S.
 - **Risk.** Low.
 - **Detail.** `docs/opencode-plugin.md:103` says mcpx's plugin "uses `$` for exactly two things"; the source at 05c78b2
   uses `execFile` and the socket, and does not destructure `$`. `import("node:child_process")` still works in v2 because
   plugins are imported unsandboxed.
-- **Sources.** `v1:packages/plugin/src/index.ts:65` "$: BunShell"; `v2:packages/plugin/src/promise/shell.ts:12` "readonly \"create.before\": ShellCreateBefore"; `plugin/opencode/mcpx/daemon.ts:41`; `docs/opencode-plugin.md:103`
+- **Sources.** `v1:packages/plugin/src/index.ts:65` "$: BunShell"; `v2:packages/plugin/src/promise/shell.ts:12` "readonly \"create.before\": ShellCreateBefore"; `plugin/core/daemon.ts:41`; `docs/opencode-plugin.md:103`
 
 ## PLG-13 `shell.env` hook vs `shell.hook("create.before")` without session
 
@@ -604,7 +604,7 @@ Status column: **mcpx @ 05c78b2**. Legend and citation conventions: [../README.m
 - **Where.** opencode v1 and v2. mcpx's daemon has an event stream and `/v1/exec` can stream frames, but the plugin does
   not use them; lootbox has nothing.
 - **mcpx @ 05c78b2.** The plugin's `mcpx_exec` makes one blocking POST and publishes nothing; its `execute(args)` does
-  not even take the tool context (`plugin/opencode/mcpx-session.ts:615-625`; `plugin/opencode/mcpx/daemon.ts:451-455`).
+  not even take the tool context (`plugin/opencode/mcpx-session.ts:615-625`; `plugin/core/daemon.ts:451-455`).
 - **Value to mcpx.** + med: a user watching a two-minute browser script sees nothing until it ends.
 - **Effort.** S — read `/v1/exec` with `output: "stream"` and map log and emit frames to metadata.
 - **Risk.** Low.
@@ -619,13 +619,13 @@ Status column: **mcpx @ 05c78b2**. Legend and citation conventions: [../README.m
 - **Where.** opencode v1 and v2. mcpx CLI: a killed CLI process kills its local script's process group. lootbox: the
   CLI's WebSocket closes but the daemon's `deno` keeps running. Cloudflare: unverified.
 - **mcpx @ 05c78b2.** `postRaw` takes only an optional timeout, and `exec()` passes neither timeout nor signal
-  (`plugin/opencode/mcpx/daemon.ts:380-386`, `:452-455`). The daemon would cancel on client disconnect
+  (`plugin/core/daemon.ts:380-386`, `:452-455`). The daemon would cancel on client disconnect
   (`internal/daemon/routes_exec.go:252`), but the plugin never disconnects.
 - **Value to mcpx.** + med: Esc on a runaway browser script should stop it.
 - **Effort.** S — pass the tool context's abort signal to `fetch`.
 - **Risk.** Med: runaway scripts keep holding pooled browsers.
 - **Detail.** The progress-cancellation area records how an HTTP disconnect propagates to the upstream call.
-- **Sources.** `v1:packages/opencode/src/tool/code-mode.ts:262-274`; `v1:packages/opencode/src/tool/code-mode.ts:155` "signal: input.ctx.abort,"; `plugin/opencode/mcpx/daemon.ts:380-386`; `internal/daemon/routes_exec.go:252`
+- **Sources.** `v1:packages/opencode/src/tool/code-mode.ts:262-274`; `v1:packages/opencode/src/tool/code-mode.ts:155` "signal: input.ctx.abort,"; `plugin/core/daemon.ts:380-386`; `internal/daemon/routes_exec.go:252`
 
 ## PLG-39 Harness session and working directory reach the script
 
@@ -635,15 +635,15 @@ Status column: **mcpx @ 05c78b2**. Legend and citation conventions: [../README.m
   directory.
 - **Where.** opencode v2; mcpx bash path yes, plugin tool path no.
 - **mcpx @ 05c78b2.** `exec()` sends only `{source, options: {output: "structured"}}`
-  (`plugin/opencode/mcpx/daemon.ts:452-455`); with `options.session` empty the service falls back to `"exec-"+runID`
+  (`plugin/core/daemon.ts:452-455`); with `options.session` empty the service falls back to `"exec-"+runID`
   (`internal/execsvc/execsvc.go:382`).
 - **Value to mcpx.** + high: with the session, a browser persists across `mcpx_exec` calls in one opencode session, which
   `AGENTS.md:87-89` promises; with `cwd`, `repo` and `cwd` scopes resolve to the right repository.
 - **Effort.** S — pass `ctx.sessionID` and `ctx.directory` as `options.session` and `options.cwd`.
 - **Risk.** High: repo-scoped servers resolve against the daemon's directory, and session-scoped browsers are recreated
   on every call and linger (process-model area).
-- **Detail.** `call()` in the same class already accepts a session (`plugin/opencode/mcpx/daemon.ts:462-467`).
-- **Sources.** `plugin/opencode/mcpx/daemon.ts:452-455`; `internal/execsvc/execsvc.go:382` "session := firstNonEmpty(opts.Session, ropts.Env[\"MCPX_SESSION\"], \"exec-\"+runID)"; `plugin/opencode/mcpx-session.ts:664-670`; `v2:packages/core/src/tool/mcp.ts:69` "sessionID: context.sessionID,"
+- **Detail.** `call()` in the same class already accepts a session (`plugin/core/daemon.ts:462-467`).
+- **Sources.** `plugin/core/daemon.ts:452-455`; `internal/execsvc/execsvc.go:382` "session := firstNonEmpty(opts.Session, ropts.Env[\"MCPX_SESSION\"], \"exec-\"+runID)"; `plugin/opencode/mcpx-session.ts:664-670`; `v2:packages/core/src/tool/mcp.ts:69` "sessionID: context.sessionID,"
 
 ## PLG-40 Plugin `mcpx_exec` reads a field the daemon never returns
 
@@ -652,7 +652,7 @@ Status column: **mcpx @ 05c78b2**. Legend and citation conventions: [../README.m
   the entire envelope instead of the script's stdout.
 - **Where.** mcpx plugin only. opencode's own `execute` returns the value, then warnings, then logs.
 - **mcpx @ 05c78b2.** `plugin/opencode/mcpx-session.ts:619-623`; `Result` fields at `internal/execsvc/execsvc.go:201-213`.
-  The client type even declares `output?: string` (`plugin/opencode/mcpx/daemon.ts:451`).
+  The client type even declares `output?: string` (`plugin/core/daemon.ts:451`).
 - **Value to mcpx.** + med: the model should see stdout, then error, then compact logs, not `runId`, `emits: []`,
   `artifacts: []` and `durationMs` on every call.
 - **Effort.** S — use `out.stdout` (or `out.error`).
