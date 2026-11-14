@@ -189,6 +189,28 @@ export function fmtDate(iso: string | null | undefined): string {
     .replace(/\.\d+Z$/, "Z");
 }
 
+
+/** Central-time stamp for Drew-facing quota/reset surfaces (#9553):
+ * "Sat, Nov 14, 8:00 AM CST". fmtDate above renders raw UTC ISO; the
+ * /quota page (pool resets, wall lifts, freshness, burn windows) must
+ * never show UTC to Drew, so renderQuota uses this formatter. */
+const centralFmt = new Intl.DateTimeFormat("en-US", {
+  timeZone: "America/Chicago",
+  weekday: "short",
+  month: "short",
+  day: "numeric",
+  hour: "numeric",
+  minute: "2-digit",
+  timeZoneName: "short",
+});
+
+export function fmtCentral(iso: string | null | undefined): string {
+  if (!iso) return "—";
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return iso;
+  return centralFmt.format(d);
+}
+
 /* The stylesheet lives in src/ui.css (Tailwind v4 + DaisyUI v5 plus the
    legacy component rules below it) and is built to the committed static
    asset src/assets/app.css by `bun run build:css` — see the README's
@@ -2410,7 +2432,7 @@ export function renderQuota(
   const credentialLifecycle = view.credentialLifecycle?.length
     ? `<h2>Credential lifecycle</h2><div class="card">${view.credentialLifecycle
         .map((credential) => {
-          const expiry = credential.expiresAt ? ` · expires ${fmtDate(credential.expiresAt)}` : " · expiry unknown";
+          const expiry = credential.expiresAt ? ` · expires ${fmtCentral(credential.expiresAt)}` : " · expiry unknown";
           const reason = credential.reason ? ` · ${esc(credential.reason)}` : "";
           const action = credential.userAction
             ? ` · <strong>user action:</strong> ${esc(credential.userAction.title)}`
@@ -2429,9 +2451,9 @@ export function renderQuota(
         .map((a) => {
           const detail =
             a.reporting === "attention"
-              ? `${esc(a.alert ?? a.status ?? "attention")}${a.alertSince ? ` · since ${fmtDate(a.alertSince)}` : ""}${a.sessionExpiresAt ? ` · session expires ${fmtDate(a.sessionExpiresAt)}` : ""}${a.lastGoodAt ? ` · last good ${fmtDate(a.lastGoodAt)}` : ""}`
+              ? `${esc(a.alert ?? a.status ?? "attention")}${a.alertSince ? ` · since ${fmtCentral(a.alertSince)}` : ""}${a.sessionExpiresAt ? ` · session expires ${fmtCentral(a.sessionExpiresAt)}` : ""}${a.lastGoodAt ? ` · last good ${fmtCentral(a.lastGoodAt)}` : ""}`
               : a.reporting === "stale"
-                ? `keeper not reporting · last check ${fmtDate(a.checkedAt)}`
+                ? `keeper not reporting · last check ${fmtCentral(a.checkedAt)}`
                 : a.reporting === "invalid"
                   ? "keeper not reporting · state file invalid"
                   : "keeper not reporting · no state file";
@@ -2446,7 +2468,7 @@ export function renderQuota(
           const pct = windowPercent(w);
           const used = w.unit === "usd" ? `$${w.used.toFixed(2)}` : w.used.toLocaleString();
           const limit = w.limit == null ? "∞" : w.unit === "usd" ? `$${w.limit.toFixed(2)}` : w.limit.toLocaleString();
-          return `<div>${esc(w.name)}: <meter min="0" max="100" value="${pct.toFixed(0)}"></meter> ${pct.toFixed(0)}% · ${used}/${limit} ${esc(w.unit)} · resets ${fmtDate(w.resetsAt)}</div>`;
+          return `<div>${esc(w.name)}: <meter min="0" max="100" value="${pct.toFixed(0)}"></meter> ${pct.toFixed(0)}% · ${used}/${limit} ${esc(w.unit)} · resets ${fmtCentral(w.resetsAt)}</div>`;
         })
         .join("");
       const sessions = (p.activeSessions ?? [])
@@ -2466,20 +2488,20 @@ export function renderQuota(
         })
         .join("");
       const fresh = p.freshness
-        ? `<div class="muted">gatherer · ${esc(p.freshness.state)} · measured ${fmtDate(p.freshness.measuredAt)} · ${esc(p.freshness.source)}${p.freshness.error ? ` · ${esc(p.freshness.error)}` : ""}</div>`
+        ? `<div class="muted">gatherer · ${esc(p.freshness.state)} · measured ${fmtCentral(p.freshness.measuredAt)} · ${esc(p.freshness.source)}${p.freshness.error ? ` · ${esc(p.freshness.error)}` : ""}</div>`
         : "";
       const extractionGap =
         p.extractionHealth?.status === "gap"
           ? ` <span class="badge blocked" title="${esc(p.extractionHealth.reason ?? "extractor miss")}">extraction gap</span>`
           : "";
 
-      return `<div class="card pool"><div><strong>${esc(display(p.provider))}</strong><br><span class="muted">${esc(p.plan)}</span><br><span class="badge ${esc(p.state)}">${esc(p.state)}${p.wallLiftsAt ? ` · lifts ${fmtDate(p.wallLiftsAt)}` : ""}</span>${extractionGap}${p.burnTokensPerMin ? ` <span class="muted">${p.burnTokensPerMin} tok/min</span>` : ""}</div><div>${windows}${credRows}${sessions}${fresh}${p.note ? `<div class="muted">${esc(p.note)}</div>` : ""}</div></div>`;
+      return `<div class="card pool"><div><strong>${esc(display(p.provider))}</strong><br><span class="muted">${esc(p.plan)}</span><br><span class="badge ${esc(p.state)}">${esc(p.state)}${p.wallLiftsAt ? ` · lifts ${fmtCentral(p.wallLiftsAt)}` : ""}</span>${extractionGap}${p.burnTokensPerMin ? ` <span class="muted">${p.burnTokensPerMin} tok/min</span>` : ""}</div><div>${windows}${credRows}${sessions}${fresh}${p.note ? `<div class="muted">${esc(p.note)}</div>` : ""}</div></div>`;
     })
     .join("");
   const burn = view.burn
     .map(
       (b) =>
-        `<tr><td>${esc(display(b.provider))}</td><td>${esc(display(b.pool))}</td><td>${fmtDate(b.from)}</td><td>${fmtDate(b.to)}</td><td>${b.tokens.toLocaleString()}</td></tr>`,
+        `<tr><td>${esc(display(b.provider))}</td><td>${esc(display(b.pool))}</td><td>${fmtCentral(b.from)}</td><td>${fmtCentral(b.to)}</td><td>${b.tokens.toLocaleString()}</td></tr>`,
     )
     .join("");
   const choices = (list: string[]) => (list.length ? list.map((id) => esc(display(id))).join(", ") : "—");
@@ -2491,7 +2513,7 @@ export function renderQuota(
   if (!usage) {
     return layout(
       "Quota + throughput",
-      `<h1>Quota + throughput</h1><p class="muted">All pooled quotas, resets, and burn rates. Machine-first: the same data is at <a href="/api/quota.json">/api/quota.json</a>.</p>
+      `<h1>Quota + throughput</h1><p class="muted">All pooled quotas, resets, and burn rates — all times Central (America/Chicago). Machine-first: the same data is at <a href="/api/quota.json">/api/quota.json</a>.</p>
 ${credentialLifecycle}
 ${providerAuthSection}
 ${quotaRefreshHtml(refresh, view.gatherer?.generatedAt ?? null)}
@@ -2535,7 +2557,7 @@ ${burnAndChoices}`,
     .join("");
   return layout(
     "Usage & billing",
-    `<h1>Usage &amp; billing</h1><p class="muted">Token quotas, PAYG dollars, and SaaS usage vs limits — from dated local records; every card carries its measured-at stamp, and stale cards dim. Machine-first: <a href="/api/quota.json">/api/quota.json</a>.</p>
+    `<h1>Usage &amp; billing</h1><p class="muted">Token quotas, PAYG dollars, and SaaS usage vs limits — from dated local records; every card carries its measured-at stamp, and stale cards dim — all times Central (America/Chicago). Machine-first: <a href="/api/quota.json">/api/quota.json</a>.</p>
 ${attentionStripHtml(usage)}
 ${credentialLifecycle}
 ${providerAuthSection}
