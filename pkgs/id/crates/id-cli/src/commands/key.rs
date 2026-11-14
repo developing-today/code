@@ -6,10 +6,10 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, Result, bail};
 use zeroize::Zeroizing;
 
-use crate::backup::MIN_BACKUP_PASSPHRASE_BYTES;
 use crate::cli::KeyCommand;
 use crate::{CLIENT_KEY_FILE, KEY_FILE};
 use id_core::key_envelope;
+use id_core::key_envelope::MIN_PASSPHRASE_BYTES;
 use id_core::seed_phrase;
 use id_store::store::load_or_create_keypair;
 
@@ -33,8 +33,8 @@ async fn export_key(output: &Path, client: bool) -> Result<()> {
     let key_bytes = Zeroizing::new(key.to_bytes());
 
     let passphrase = Zeroizing::new(rpassword::prompt_password("Export passphrase: ")?);
-    if passphrase.len() < MIN_BACKUP_PASSPHRASE_BYTES {
-        bail!("passphrase must be at least {MIN_BACKUP_PASSPHRASE_BYTES} bytes");
+    if passphrase.len() < MIN_PASSPHRASE_BYTES {
+        bail!("passphrase must be at least {MIN_PASSPHRASE_BYTES} bytes");
     }
     let confirmation = Zeroizing::new(rpassword::prompt_password("Confirm passphrase: ")?);
     if passphrase.as_bytes() != confirmation.as_bytes() {

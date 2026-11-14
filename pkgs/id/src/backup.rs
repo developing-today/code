@@ -58,7 +58,7 @@ use id_core::key_envelope;
 /// 16-byte AEAD tag, matching `key_envelope`'s layout.
 pub const BACKUP_ENVELOPE_LEN: usize = 108;
 /// Minimum passphrase length accepted by every backup creation path.
-pub const MIN_BACKUP_PASSPHRASE_BYTES: usize = 8;
+pub const MIN_BACKUP_PASSPHRASE_BYTES: usize = key_envelope::MIN_PASSPHRASE_BYTES;
 /// Envelope magic, mirroring `key_envelope`'s `IDKEY` header.
 const ENVELOPE_MAGIC: &[u8; 5] = b"IDKEY";
 /// Envelope version byte offset and expected v1 value.
