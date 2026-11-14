@@ -699,6 +699,49 @@ class TestValidateCrawlUrl(unittest.TestCase):
                 "http://example.com/",
             )
 
+    def test_contextj_joiners_judged_by_rfc5892_appendix_a(self):
+        # ZWNJ / ZWJ are CONTEXTJ codepoints (RFC 5892 Appendix A):
+        # valid inside their joining contexts, disallowed outside
+        # them. #530's blanket refusal of both codepoints also
+        # refused the contexts the Worker's WHATWG domain-to-ASCII
+        # accepts — Arabic-script ZWNJ and Indic virama + ZWJ
+        # (#531). The container now judges them per label.
+        # (Accepted hosts return in A-label form, #659.)
+        # ZWJ immediately after a virama (Canonical_Combining_Class
+        # 230), Appendix A.2: क्‍य (ka + virama + ZWJ + ya).
+        self.assertEqual(
+            validate_crawl_url("http://\u0915\u094d\u200d\u092f.com/"),
+            "http://xn--11b6c9d222i.com/",
+        )
+        # ZWNJ between dual-joining and right-joining Arabic-script
+        # letters, Appendix A.1: می‌خواهم (Persian ZWNJ).
+        self.assertEqual(
+            validate_crawl_url(
+                "http://\u0645\u06cc\u200c\u062e\u0648\u0627\u0647\u0645.com/"
+            ),
+            "http://xn--mgbn2ecje63gr19l.com/",
+        )
+        # ZWNJ between two beh (Joining_Type D before, D after).
+        self.assertEqual(
+            validate_crawl_url("http://\u0628\u200c\u0628.com/"),
+            "http://xn--ngba799q.com/",
+        )
+        # Their A-label spellings are accepted too.
+        self.assertAccepted("http://xn--11b6c9d222i.com/")
+        self.assertAccepted("http://xn--mgbn2ecje63gr19l.com/")
+        self.assertAccepted("http://xn--ngba799q.com/")
+        # Outside the Appendix A contexts the joiners stay refused:
+        # ZWNJ between Latin letters (also pinned by the disallowed
+        # set test above), at a label start, and between alefs (a
+        # right-joining preceding character fails Appendix A.1's
+        # {L, D} requirement); ZWJ after a non-virama letter and
+        # after a Latin letter (Appendix A.2).
+        self.assertRefused("http://exam\u200cple.com/")
+        self.assertRefused("http://\u200c\u0628.com/")
+        self.assertRefused("http://\u0627\u200c\u0627.com/")
+        self.assertRefused("http://\u0915\u200d\u092f.com/")
+        self.assertRefused("http://a\u200db.com/")
+
     def test_refuses_arabic_indic_digit_hosts(self):
         # WHATWG's domain-to-ASCII rejects an Arabic-Indic digit
         # (U+0660-U+0669) outside a right-to-left label — even one
