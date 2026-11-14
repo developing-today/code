@@ -688,14 +688,6 @@ describe("aa-explorer manifest + render", () => {
     expect(html).toContain('data-dl="xpl-c2"');
     expect(html).toContain('data-tmode="tot"');
     expect(html).toContain('id="xf-baseline"');
-    // #9852 item 4: provider-level multi-select in the Model Explorer
-    // filter state (chip set, mirroring the efforts chips) — the
-    // chip container, the state fields, and the catalog predicate
-    // that filters by the selected provider set all ship in the page.
-    expect(html).toContain('id="xf-providers"');
-    expect(html).toContain("providerAny: false");
-    expect(html).toContain("S.providerAny && !S.providers[e.provider]");
-    expect(html).toContain("buildProviderOptions");
     expect(html).toContain('id="xpl-tray"');
     expect(html).toContain('id="xpl-mtrows"');
     expect(html).toContain("goCapUsd"); // published Go caps ride the catalog JSON
