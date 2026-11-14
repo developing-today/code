@@ -4172,6 +4172,8 @@ dependencies = [
  "iroh",
  "iroh-base",
  "iroh-blobs",
+ "iroh-docs",
+ "iroh-gossip",
  "iroh-mainline-address-lookup",
  "iroh-tickets",
  "p2panda-auth",
