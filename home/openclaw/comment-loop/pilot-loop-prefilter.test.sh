@@ -192,6 +192,7 @@ rc="$(run_script "$comments_open_r2" "$CASE_DIR/out.txt")"
 check "open R2: exit 0" [ "$rc" -eq 0 ]
 check "open R2: exactly one wake" [ "$(wake_count)" -eq 1 ]
 check "open R2: wake uses the 900s default timeout" grep -q -- "--timeout 900" "$CASE_DIR/wakes.log"
+check "open R2: wake uses a fresh per-round session (no context accumulation)" grep -q -- "--session-key agent:main:comment-loop-9818-r2-" "$CASE_DIR/wakes.log"
 msg="$CASE_DIR/state/wake-9818-R2.md"
 check "open R2: wake message written for R2" [ -f "$msg" ]
 check "open R2: quota line is the fixture's real value (74.5% left)" grep -q "74.5% left on the tightest measured 5h window (fixture-model:5h" "$msg"

@@ -215,7 +215,13 @@ if [ -z "${OPENCLAW_GATEWAY_TOKEN:-}" ] && [ -r /run/secrets/openclaw/gateway-to
   export OPENCLAW_GATEWAY_TOKEN
 fi
 
-if "$OPENCLAW" agent --agent main --session-key "agent:main:comment-loop-$ISSUE" --timeout "$AGENT_TIMEOUT_SECONDS" --message-file "$msg_file" >>"$LOG_FILE" 2>&1; then
+# Fresh session per wake, by design: the pilot ran each round in an
+# isolated session. A persistent watcher session accumulates the
+# gateway bootstrap plus every previous round's transcript until
+# turns die on context overflow (observed live on R3's second wake,
+# 2026-11-14) — and a watcher has no use for cross-round memory,
+# because the round state lives on the issue itself.
+if "$OPENCLAW" agent --agent main --session-key "agent:main:comment-loop-$ISSUE-r$target-$now_epoch" --timeout "$AGENT_TIMEOUT_SECONDS" --message-file "$msg_file" >>"$LOG_FILE" 2>&1; then
   log "agent turn for R$target completed"
   echo "comment-loop: woke agent turn for R$target ($request_type) on $REPO issue #$ISSUE"
   exit 0

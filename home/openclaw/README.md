@@ -99,10 +99,13 @@ poll and was killed on cost).
   comment) and rate-limits re-wakes of a still-unanswered round
   to one attempt per 15 minutes. The wake is
   `openclaw agent --agent main --session-key
-  agent:main:comment-loop-9818 --timeout 900` — the 900s turn
-  timeout is the production floor (the script clamps any
-  configured timeout to >= 600s; the pilot's first turn died at
-  the 150s default on a cold route).
+  agent:main:comment-loop-9818-r<n>-<wake-epoch> --timeout 900`
+  — a FRESH session per wake (a persistent watcher session
+  accumulates bootstrap + transcripts until turns die on
+  context overflow; the round state lives on the issue, not in
+  the session). The 900s turn timeout is the production floor
+  (the script clamps any configured timeout to >= 600s; the
+  pilot's first turn died at the 150s default on a cold route).
 - **quota_left:** the filter reads the quota gatherer's snapshot
   (`~/.local/state/pm-aggregator/quota-current.json`, refreshed
   by `quota-gatherer.timer`) and injects a one-line summary —
