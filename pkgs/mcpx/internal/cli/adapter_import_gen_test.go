@@ -50,6 +50,38 @@ func TestParseFishCompletion(t *testing.T) {
 	}
 }
 
+// Regression (issue #9795): an escaped apostrophe inside a single-quoted
+// fish description must not close the quote early. With the early close,
+// the quote reopening at "format'" swallowed the trailing -r -F, so
+// fd's --ignore-file lost its required parameter and rendered boolean.
+// Oracle: hand-written expected shape, as with the fixtures above.
+func TestParseFishCompletionEscapedApostrophe(t *testing.T) {
+	text := "complete -c fd -l ignore-file -d 'Add a custom ignore-file in \\'.gitignore\\' format' -r -F\n"
+	shape := parseFishCompletion(text, "fd")
+	if len(shape.Global) != 1 {
+		t.Fatalf("global flags: %+v", shape.Global)
+	}
+	f := shape.Global[0]
+	if f.Long != "ignore-file" || !f.TakesValue {
+		t.Errorf("ignore-file flag: %+v", f)
+	}
+	if f.Desc != "Add a custom ignore-file in '.gitignore' format" {
+		t.Errorf("ignore-file desc: %q", f.Desc)
+	}
+	// Token-level oracle for fish single-quote escapes: \' and \\ are
+	// escapes, any other backslash stays literal.
+	for in, want := range map[string]string{
+		`'it\'s'`: "it's",
+		`'a\\b'`:  `a\b`,
+		`'a\nb'`:  `a\nb`,
+	} {
+		got := fishTokens(in)
+		if len(got) != 1 || got[0] != want {
+			t.Errorf("fishTokens(%q) = %v, want [%q]", in, got, want)
+		}
+	}
+}
+
 const helpFixture = `Toolbox does things with items.
 
 Usage:
