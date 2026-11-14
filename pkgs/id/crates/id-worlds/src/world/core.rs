@@ -9,7 +9,7 @@
 
 use super::*;
 
-use anyhow::{Context, Result, ensure};
+use anyhow::{Context, Result, bail, ensure};
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
 use std::sync::Arc;
 
@@ -885,18 +885,60 @@ impl WorldCore {
                     // input has aged out of the retained window under
                     // compaction, replay falls back to the header checks
                     // (see MoveChain::verify_journaled).
-                    let committed_input = core.events.iter().find_map(|event| {
-                        if event.sequence == record.world_sequence
-                            && event.participant_id == record.participant_id
-                        {
+                    let committed_input = match core
+                        .events
+                        .iter()
+                        .find(|event| event.sequence == record.world_sequence)
+                    {
+                        Some(event) => {
+                            // The referenced sequence is still retained,
+                            // so it must be this participant's input.
+                            // Anything else is a false cross-reference,
+                            // not history that aged out (Codex review on
+                            // PR #9037).
+                            ensure!(
+                                event.participant_id == record.participant_id,
+                                "journal signed move references world sequence {} \
+                                 committed by participant {}, not {}",
+                                record.world_sequence,
+                                event.participant_id,
+                                record.participant_id
+                            );
                             match &event.kind {
                                 WorldEventKind::Input(input) => Some(input.clone()),
-                                _ => None,
+                                _ => bail!(
+                                    "journal signed move references world sequence {} \
+                                     which is not a committed input",
+                                    record.world_sequence
+                                ),
                             }
-                        } else {
+                        }
+                        None => {
+                            // Header-only verification is legitimate only
+                            // for an input that genuinely aged out of the
+                            // retained window: its sequence must already
+                            // have committed at this point in the replay
+                            // AND have fallen off the front of the window.
+                            ensure!(
+                                record.world_sequence >= 1
+                                    && record.world_sequence <= core.sequence,
+                                "journal signed move references world sequence {} \
+                                 beyond the restored sequence {}",
+                                record.world_sequence,
+                                core.sequence
+                            );
+                            if let Some(front) = core.events.front() {
+                                ensure!(
+                                    record.world_sequence < front.sequence,
+                                    "journal signed move references world sequence {} \
+                                     inside the retained window, but no input event \
+                                     is retained for it",
+                                    record.world_sequence
+                                );
+                            }
                             None
                         }
-                    });
+                    };
                     let world_id = core.world_id.clone();
                     let chain = core.move_chains.entry(record.participant_id).or_default();
                     let event = match &committed_input {
@@ -2586,6 +2628,30 @@ impl WorldCore {
         event: &WorldEvent,
         signed: &crate::chain::Event,
     ) -> Result<signed::SignedMoveRecord> {
+        let record = self.signed_move_record(event, signed)?;
+        let chain = self.move_chains.entry(record.participant_id).or_default();
+        chain.accept(signed);
+        self.signed_moves.push(record.clone());
+        Ok(record)
+    }
+
+    /// Compute the journal record for a signed move WITHOUT applying it:
+    /// validate the move against the author's bound key and current chain
+    /// position and build the record the journal persists. The actor
+    /// persists this record atomically with the committed input (one
+    /// journal transaction) BEFORE applying either in memory, then calls
+    /// [`WorldCore::record_signed_move`] to apply — which recomputes the
+    /// same record from unchanged state and advances the chain.
+    ///
+    /// # Errors
+    ///
+    /// Fails if the participant has no bound author key, or the signed
+    /// move is not the author's expected next move.
+    pub(crate) fn signed_move_record(
+        &self,
+        event: &WorldEvent,
+        signed: &crate::chain::Event,
+    ) -> Result<signed::SignedMoveRecord> {
         let participant_id = event.participant_id;
         let author = self
             .author_keys
@@ -2594,22 +2660,23 @@ impl WorldCore {
             .ok_or_else(|| {
                 anyhow::anyhow!("participant {participant_id} has no bound author key")
             })?;
-        let chain = self.move_chains.entry(participant_id).or_default();
+        let chain = self
+            .move_chains
+            .get(&participant_id)
+            .cloned()
+            .unwrap_or_default();
         ensure!(
             signed.header.seq_num == chain.next_seq() && signed.header.backlink == chain.frontier(),
             "signed move is no longer the author's expected next move at commit"
         );
-        chain.accept(signed);
-        let record = signed::SignedMoveRecord {
+        Ok(signed::SignedMoveRecord {
             world_sequence: event.sequence,
             participant_id,
             author,
             author_seq: signed.header.seq_num,
             event_id: signed.id,
             bytes: signed.bytes.clone(),
-        };
-        self.signed_moves.push(record.clone());
-        Ok(record)
+        })
     }
 
     /// Commit a player-signed game input (#2814): the move is verified

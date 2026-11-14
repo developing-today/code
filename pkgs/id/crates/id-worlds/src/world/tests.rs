@@ -7903,6 +7903,44 @@ mod tests {
     }
 
     #[test]
+    fn journal_restore_refuses_a_signed_move_referencing_a_future_sequence() {
+        let (core, ..) = signed_game();
+        let mut entries = signed_journal(&core);
+        // Point the last accepted move at a world sequence that has not
+        // committed at that point in the replay: header-only verification
+        // must not treat a future reference as aged-out history.
+        let last = entries
+            .iter_mut()
+            .rev()
+            .find_map(|entry| match entry {
+                JournalEntry::SignedMoveAccepted { record } => Some(record),
+                _ => None,
+            })
+            .unwrap();
+        last.world_sequence = 999;
+        assert!(WorldCore::restore("ttt-journal", WorldLimits::default(), entries).is_err());
+    }
+
+    #[test]
+    fn journal_restore_refuses_a_signed_move_referencing_another_participants_input() {
+        let (core, ..) = signed_game();
+        let mut entries = signed_journal(&core);
+        // The first accepted move is x's at world sequence 1; sequence 2
+        // is o's committed input. Pointing x's record at it is a false
+        // cross-reference, not an input that aged out of the window.
+        let first = entries
+            .iter_mut()
+            .find_map(|entry| match entry {
+                JournalEntry::SignedMoveAccepted { record } => Some(record),
+                _ => None,
+            })
+            .unwrap();
+        assert_eq!(first.world_sequence, 1);
+        first.world_sequence = 2;
+        assert!(WorldCore::restore("ttt-journal", WorldLimits::default(), entries).is_err());
+    }
+
+    #[test]
     fn signed_play_entries_require_journal_version_9() {
         // Issue #4346: signed-play kinds are the first entries a
         // version-8 binary cannot read, so they pin the header to
