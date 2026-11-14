@@ -56,13 +56,15 @@ export function parseIssueBodyResponse(json: unknown): { body: string; issueUpda
   return { body: issue.body, issueUpdatedAt: issue.updatedAt };
 }
 
-/** Fetch #1235's body via GraphQL with a caller-supplied token.
- * Throws on HTTP/GraphQL errors (never logs the token), mirroring
- * fetchProjectPool in projects.ts. */
+/** Fetch an issue's body via GraphQL with a caller-supplied token
+ * (#1235 by default; #9926's readiness panel reads #534's body
+ * through the same feed). Throws on HTTP/GraphQL errors (never logs
+ * the token), mirroring fetchProjectPool in projects.ts. */
 export async function fetchIssueBodySnapshot(
   token: string,
   fetchFn: typeof fetch = fetch,
   now: () => Date = () => new Date(),
+  issueNumber: number = PHASE12_ISSUE_NUMBER,
 ): Promise<Phase12Snapshot> {
   const [owner, name] = PHASE12_REPO.split("/");
   const res = await fetchFn("https://api.github.com/graphql", {
@@ -74,7 +76,7 @@ export async function fetchIssueBodySnapshot(
     },
     body: JSON.stringify({
       query: ISSUE_BODY_QUERY,
-      variables: { owner, name, number: PHASE12_ISSUE_NUMBER },
+      variables: { owner, name, number: issueNumber },
     }),
     signal: AbortSignal.timeout(20_000),
   });

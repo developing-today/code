@@ -4,6 +4,7 @@
 import type { SectionDiagnosis } from "./feed.ts";
 import type { Phase12Snapshot } from "./phase12.ts";
 import type { BuildHealthSnapshot } from "./build-health.ts";
+import type { F12PrRef } from "./f12-readiness.ts";
 import type { NeedsDrewCensus } from "./needs-drew.ts";
 import type { RepoCensus } from "./coverage.ts";
 import type {
@@ -93,6 +94,14 @@ export interface Source {
    * Optional like phase12: sources that cannot read the Actions API
    * omit it and the panel renders unavailable. */
   buildHealth?(): Promise<BuildHealthSnapshot | null>;
+  /** The #534 issue-body snapshot for the Phase 12 readiness panel's
+   * design column (#9926); null = unavailable. Optional like
+   * phase12: sources that cannot read issue bodies omit it. */
+  phase12Design?(): Promise<Phase12Snapshot | null>;
+  /** PR cross-references per issue number, from issue timelines, for
+   * the readiness panel's PR column (#9926); null = the timeline
+   * read is unavailable. Optional like phase12Design. */
+  f12PrRefs?(): Promise<Map<number, F12PrRef[]> | null>;
   /** Which session sources are wired, for the coverage note (slice 2). */
   coverage(): Promise<SourceCoverage[]>;
   provenance(): Provenance;

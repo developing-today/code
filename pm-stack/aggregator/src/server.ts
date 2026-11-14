@@ -143,6 +143,7 @@ import {
 } from "./project-config.ts";
 import { PHASE12_REPO, parsePhase12Steps, type Phase12Snapshot } from "./phase12.ts";
 import type { BuildHealthSnapshot } from "./build-health.ts";
+import { parseF12Items, type F12PrRef } from "./f12-readiness.ts";
 import { identitiesFromRecords, type AuthorIdentity } from "./registry.ts";
 import {
   attentionFragment,
@@ -3033,7 +3034,27 @@ async function handler(req: Request): Promise<Response> {
     if (config.id === "id" && source.buildHealth) {
       buildHealth = await source.buildHealth().catch(() => null);
     }
-    return html(renderProgramProject(buildProjectDetail(config, items, pool, rows), items, prov(), provDetail(), pool, phase12, buildHealth));
+    // #9926: the id page's Phase 12 readiness panel — #534's body
+    // (design checklist) and the F-item issues' timeline PR
+    // cross-references, when the source carries them; the F-item
+    // refs join the items map so the projection sees live states.
+    let f12: { design: Phase12Snapshot | null; prRefs: Map<number, F12PrRef[]> | null } | null = null;
+    if (config.id === "id") {
+      const [design, prRefs] = await Promise.all([
+        source.phase12Design ? source.phase12Design().catch(() => null) : Promise.resolve(null),
+        source.f12PrRefs ? source.f12PrRefs().catch(() => null) : Promise.resolve(null),
+      ]);
+      f12 = { design, prRefs };
+      if (phase12) {
+        const fRefs = parseF12Items(phase12.body).map((s) => `${PHASE12_REPO}#${s.issueNumber}`);
+        const missing = fRefs.filter((r) => !items.has(r));
+        if (missing.length) {
+          const resolved = await source.items(missing).catch(() => new Map());
+          for (const [k, v] of resolved) items.set(k, v);
+        }
+      }
+    }
+    return html(renderProgramProject(buildProjectDetail(config, items, pool, rows), items, prov(), provDetail(), pool, phase12, buildHealth, f12));
   }
   if (path === "/api/program-project.json") {
     const id = url.searchParams.get("id") ?? "";
