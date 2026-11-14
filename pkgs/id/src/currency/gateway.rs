@@ -669,14 +669,22 @@ pub fn authorize(
     }
 }
 
+/// A registered currency, whether or not it still accepts movement.
+fn registered_currency(
+    registry: &impl CurrencyRegistry,
+    currency: &[u8; 32],
+) -> Result<CurrencyRecord, GatewayError> {
+    registry
+        .currency(currency)
+        .ok_or(GatewayError::UnknownCurrency)
+}
+
 /// A registered, active currency.
 fn active_currency(
     registry: &impl CurrencyRegistry,
     currency: &[u8; 32],
 ) -> Result<CurrencyRecord, GatewayError> {
-    let record = registry
-        .currency(currency)
-        .ok_or(GatewayError::UnknownCurrency)?;
+    let record = registered_currency(registry, currency)?;
     if !record.active {
         return Err(GatewayError::InactiveCurrency);
     }
@@ -684,13 +692,17 @@ fn active_currency(
 }
 
 /// Reads are allowed on the caller's own account, and to the issuer.
+/// A frozen or sunset currency restricts new writes (control-plane
+/// design §2.2), not reads: holders and the issuer keep inspecting
+/// existing balances and history (§4.2 gates reads by ownership or
+/// role), so this lookup does not require the currency to be active.
 fn read_check(
     registry: &impl CurrencyRegistry,
     currency: &[u8; 32],
     subject: &str,
     account: &str,
 ) -> Result<(), GatewayError> {
-    let record = active_currency(registry, currency)?;
+    let record = registered_currency(registry, currency)?;
     if registry.controls_account(currency, account, subject) || record.issuer_id == account {
         Ok(())
     } else {
@@ -984,5 +996,192 @@ mod tests {
             idempotency_id("account", &first),
             idempotency_id("other-account", &first)
         );
+    }
+
+    #[test]
+    fn inactive_currency_reads_stay_authorized_but_writes_stay_refused() {
+        // Oracle: control-plane design §2.2/§4.2 — frozen/sunset
+        // restricts new writes; reads stay gated by ownership/issuer.
+        let mut reg = registry("issuer-account", &[]);
+        reg.currencies.get_mut(&[9; 32]).unwrap().active = false;
+        let balance = CurrencyOp::Balance(Balance {
+            currency: [9; 32],
+            account: "holder-account".to_owned(),
+        });
+        let history = CurrencyOp::History(History {
+            currency: [9; 32],
+            account: "holder-account".to_owned(),
+        });
+        assert!(authorize(&reg, "holder-account", &balance).is_ok());
+        assert!(authorize(&reg, "holder-account", &history).is_ok());
+        assert!(authorize(&reg, "issuer-account", &balance).is_ok());
+        assert!(matches!(
+            authorize(&reg, "stranger-account", &balance),
+            Err(GatewayError::NotOwner)
+        ));
+        let transfer = CurrencyOp::Transfer(Transfer {
+            currency: [9; 32],
+            from: "holder-account".to_owned(),
+            to: "other-account".to_owned(),
+            amount: 1,
+        });
+        assert!(matches!(
+            authorize(&reg, "holder-account", &transfer),
+            Err(GatewayError::InactiveCurrency)
+        ));
+    }
+
+    // Property-based coverage for the gateway protocol invariants
+    // (Codex P1 on PR #7650). Oracles: (1) decode is the inverse of
+    // encode for every operation schema and full-width u128 field;
+    // (2) the canonical encoding is a fixed point — re-encoding a
+    // decoded request yields the identical bytes; (3) the
+    // idempotency ID is stable for identical requests and separates
+    // on account, client_request_id, and op.
+    fn arb_currency_id() -> impl proptest::strategy::Strategy<Value = [u8; 32]> {
+        use proptest::prelude::*;
+        proptest::collection::vec(any::<u8>(), 32).prop_map(|bytes| {
+            let mut id = [0_u8; 32];
+            id.copy_from_slice(&bytes);
+            id
+        })
+    }
+
+    fn arb_text(min: usize, max: usize) -> impl proptest::strategy::Strategy<Value = String> {
+        use proptest::prelude::*;
+        proptest::collection::vec(proptest::char::range('a', 'z'), min..=max)
+            .prop_map(|chars| chars.into_iter().collect())
+    }
+
+    fn arb_op() -> impl proptest::strategy::Strategy<Value = CurrencyOp> {
+        use proptest::prelude::*;
+        prop_oneof![
+            (arb_text(1, 12), arb_text(0, 4), any::<u8>(), any::<u128>()).prop_map(
+                |(name, symbol, scale, cap)| {
+                    CurrencyOp::RegisterCurrency(RegisterCurrency {
+                        name,
+                        symbol: symbol.to_uppercase(),
+                        scale,
+                        cap,
+                    })
+                }
+            ),
+            (arb_currency_id(), arb_text(1, 12)).prop_map(|(currency, minter)| {
+                CurrencyOp::GrantMinter(GrantMinter { currency, minter })
+            }),
+            (arb_currency_id(), any::<u128>(), arb_text(1, 12)).prop_map(
+                |(currency, amount, to)| {
+                    CurrencyOp::Issue(Issue {
+                        currency,
+                        amount,
+                        to,
+                    })
+                }
+            ),
+            (arb_currency_id(), arb_text(1, 12), arb_text(1, 12), any::<u128>()).prop_map(
+                |(currency, from, to, amount)| {
+                    CurrencyOp::Transfer(Transfer {
+                        currency,
+                        from,
+                        to,
+                        amount,
+                    })
+                }
+            ),
+            (arb_currency_id(), arb_currency_id(), arb_text(1, 12), any::<u128>()).prop_map(
+                |(source, dest, from, amount)| {
+                    CurrencyOp::Convert(Convert {
+                        source,
+                        dest,
+                        from,
+                        amount,
+                    })
+                }
+            ),
+            (arb_currency_id(), arb_text(1, 12)).prop_map(|(currency, account)| {
+                CurrencyOp::Balance(Balance { currency, account })
+            }),
+            (arb_currency_id(), arb_text(1, 12)).prop_map(|(currency, account)| {
+                CurrencyOp::History(History { currency, account })
+            }),
+            arb_currency_id().prop_map(|currency| CurrencyOp::Freeze(Freeze { currency })),
+            arb_currency_id().prop_map(|currency| CurrencyOp::Sunset(Sunset { currency })),
+        ]
+    }
+
+    fn arb_request() -> impl proptest::strategy::Strategy<Value = CurrencyRequest> {
+        use proptest::prelude::*;
+        (any::<u128>(), arb_op()).prop_map(|(client_request_id, op)| CurrencyRequest {
+            client_request_id,
+            op,
+        })
+    }
+
+    proptest::proptest! {
+        #![proptest::proptest_config(proptest::test_runner::Config::with_cases(128))]
+
+        #[test]
+        fn prop_request_body_round_trips_for_all_ops(req in arb_request()) {
+            let body = req.body().unwrap();
+            proptest::prop_assert_eq!(CurrencyRequest::from_body(&body).unwrap(), req);
+        }
+
+        #[test]
+        fn prop_canonical_encoding_is_a_fixed_point(req in arb_request()) {
+            let body = req.body().unwrap();
+            let decoded = CurrencyRequest::from_body(&body).unwrap();
+            proptest::prop_assert_eq!(decoded.body().unwrap(), body);
+        }
+
+        #[test]
+        fn prop_idempotency_id_is_stable(req in arb_request(), account in arb_text(1, 12)) {
+            proptest::prop_assert_eq!(
+                idempotency_id(&account, &req),
+                idempotency_id(&account, &req.clone())
+            );
+        }
+
+        #[test]
+        fn prop_idempotency_id_separates_on_request_id(
+            req in arb_request(),
+            other_id in proptest::prelude::any::<u128>(),
+        ) {
+            proptest::prop_assume!(other_id != req.client_request_id);
+            let mut other = req.clone();
+            other.client_request_id = other_id;
+            proptest::prop_assert_ne!(
+                idempotency_id("account", &req),
+                idempotency_id("account", &other)
+            );
+        }
+
+        #[test]
+        fn prop_idempotency_id_separates_on_account_and_op(
+            currency in arb_currency_id(),
+            account in arb_text(1, 12),
+        ) {
+            let balance = CurrencyRequest {
+                client_request_id: 7,
+                op: CurrencyOp::Balance(Balance {
+                    currency,
+                    account: account.clone(),
+                }),
+            };
+            let history = CurrencyRequest {
+                client_request_id: 7,
+                op: CurrencyOp::History(History {
+                    currency,
+                    account: account.clone(),
+                }),
+            };
+            proptest::prop_assert_ne!(
+                idempotency_id(&account, &balance),
+                idempotency_id(&account, &history)
+            );
+            proptest::prop_assert_ne!(
+                idempotency_id(&account, &balance),
+                idempotency_id("other-account", &balance)
+            );
+        }
     }
 }
