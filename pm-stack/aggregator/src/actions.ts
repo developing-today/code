@@ -27,10 +27,14 @@
 //   itself and its run log names "requested via dashboard, action
 //   da-…".
 // - kind "session" — routed by the action's sessionSource: the
-//   orchestration pass consumes the OpenCode sources
-//   ("opencode-sandbox", "opencode-laptop") for poke/answer/stop.
-//   Sources with no live control channel (claude-code, cron) render
-//   no enabled controls.
+//   fast session-action consumer (a dedicated minutely cron,
+//   #10118) consumes the OpenCode laptop source
+//   ("opencode-laptop") for poke/answer/stop, so an answer lands
+//   inside the question tool's ~600 s live window; it also rejects
+//   "opencode-sandbox" actions (that server is retired). The
+//   orchestration pass no longer polls this slice. Sources with no
+//   live control channel (claude-code, cron) render no enabled
+//   controls.
 // - kind "preference" — the orchestration pass: set-delegation-default
 //   records the standing auto toggle (#1290; Drew's 2026-10-27 decision
 //   is the initial record). The aggregator also reads these records to
