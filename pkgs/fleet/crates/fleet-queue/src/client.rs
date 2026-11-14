@@ -1022,6 +1022,31 @@ pub(crate) fn list_rows(resp: &Value) -> Result<Vec<Value>, String> {
         })
 }
 
+/// The total in a PostgREST `Content-Range` header (#10376):
+/// `0-49/237` -> 237, `*/0` -> 0. A `*` total (no count was
+/// requested) or an unparseable header yields None — unknown,
+/// never a fabricated zero.
+pub(crate) fn content_range_total(content_range: &str) -> Option<i64> {
+    content_range.rsplit('/').next()?.trim().parse::<i64>().ok()
+}
+
+/// The /list reply envelope (#10376; contract #6622 rule 3 —
+/// complete, bounded, or say so): alongside the rows, the total
+/// number of matching tasks when the backend knows it (null when
+/// it does not) and whether this window is a strict prefix of the
+/// matching set. Additive: existing consumers read only `rows`.
+pub(crate) fn list_envelope(rows: Value, total: Option<i64>, offset: i64) -> Value {
+    let returned = rows.as_array().map(|a| a.len() as i64).unwrap_or(0);
+    let truncated = total.map(|t| offset + returned < t).unwrap_or(false);
+    json!({"rows": rows, "total": total, "truncated": truncated})
+}
+
+/// The total a /list reply carries (#10376), when the broker
+/// reported one. Absent on replies from a pre-#10376 broker.
+pub(crate) fn list_total(resp: &Value) -> Option<i64> {
+    resp.get("total").and_then(|t| t.as_i64())
+}
+
 /// The accepted ranges for the queue duration flags (#6420; design
 /// #6448 Phase 3 pin, same as `list --limit`: out-of-range is
 /// REJECTED, never clamped, at both the client and the broker).
@@ -1747,6 +1772,7 @@ fn cmd_list(rest: &[String]) -> i32 {
     // verify a just-completed task's status from list output even
     // when the done list is thousands of rows long.
     let mut rows: Vec<Value> = Vec::new();
+    let mut total: Option<i64> = None;
     for (offset, page_limit) in list_pages(limit) {
         let resp = call(
             "/list",
@@ -1762,6 +1788,9 @@ fn cmd_list(rest: &[String]) -> i32 {
             }),
         );
         let resp = unwrap_ok(resp);
+        if let Some(t) = list_total(&resp) {
+            total = Some(t);
+        }
         let page = match list_rows(&resp) {
             Ok(page) => page,
             Err(e) => die(3, &e),
@@ -1782,6 +1811,19 @@ fn cmd_list(rest: &[String]) -> i32 {
         .collect();
     let str_rows: Vec<Vec<String>> = rows.iter().map(list_row_cells).collect();
     print_table(&cols, &str_rows);
+    // #10376: name the completeness of the listing — a limited
+    // window must never read as the whole matching set.
+    if let Some(t) = total {
+        if (rows.len() as i64) < t {
+            println!(
+                "(truncated: showing {} of {} matching tasks — raise --limit to see more)",
+                rows.len(),
+                t
+            );
+        } else {
+            println!("({} matching tasks)", t);
+        }
+    }
     0
 }
 
@@ -6246,6 +6288,32 @@ mod tests {
             list_rows(&json!({"ok": true, "rows": [{"id": 7}]})),
             Ok(vec![json!({"id": 7})])
         );
+    }
+
+    #[test]
+    fn list_envelope_reports_total_and_truncation() {
+        // #10376 oracle (contract #6622 rule 3): a listing whose
+        // limit is below the matching count says so; an exhaustive
+        // listing reports completeness; an unknown total is null,
+        // never a fabricated zero.
+        assert_eq!(content_range_total("0-49/237"), Some(237));
+        assert_eq!(content_range_total("*/0"), Some(0));
+        assert_eq!(content_range_total("0-49/*"), None);
+        assert_eq!(content_range_total("garbage"), None);
+        let rows = json!([{"id": 1}, {"id": 2}]);
+        let limited = list_envelope(rows.clone(), Some(5), 0);
+        assert_eq!(limited["total"], json!(5));
+        assert_eq!(limited["truncated"], json!(true));
+        assert_eq!(list_rows(&limited).map(|r| r.len()), Ok(2));
+        let exhaustive = list_envelope(rows.clone(), Some(2), 0);
+        assert_eq!(exhaustive["truncated"], json!(false));
+        let windowed = list_envelope(rows.clone(), Some(5), 3);
+        assert_eq!(windowed["truncated"], json!(false));
+        let unknown = list_envelope(rows, None, 0);
+        assert_eq!(unknown["total"], Value::Null);
+        assert_eq!(unknown["truncated"], json!(false));
+        assert_eq!(list_total(&limited), Some(5));
+        assert_eq!(list_total(&json!({"rows": []})), None);
     }
 
     #[test]

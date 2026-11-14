@@ -6430,46 +6430,46 @@ fn verb_list(t: &TursoBackend, req: &Value) -> Value {
     // an unnamed queue must not become `queue = ''`, which by
     // construction returns zero rows and breaks exact-task readback
     // ({"task": id} / {"dedupe_key": key} with no queue).
-    let mut sql = format!("SELECT {select} FROM tasks WHERE 1 = 1");
+    let mut conds = String::from(" WHERE 1 = 1");
     let mut args: Vec<Arg> = vec![];
     if !queue.is_empty() {
-        sql += " AND queue = ?";
+        conds += " AND queue = ?";
         args.push(Arg::Text(queue));
     }
     if let Some(s) = req_str(req, "status") {
-        sql += " AND status = ?";
+        conds += " AND status = ?";
         args.push(Arg::Text(s.to_string()));
     }
     // #5444: recover a lane's or worker's live claims before lease
     // expiry — list filters end-to-end (client -> broker -> here).
     if let Some(l) = req_str(req, "lane") {
-        sql += " AND lane_id = ?";
+        conds += " AND lane_id = ?";
         args.push(Arg::Text(l.to_string()));
     }
     if let Some(w) = req_str(req, "worker") {
-        sql += " AND worker_id = ?";
+        conds += " AND worker_id = ?";
         args.push(Arg::Text(w.to_string()));
     }
     if let Some(nb) = req_str(req, "not_before") {
-        sql += " AND (not_before IS NULL OR not_before <= ?)";
+        conds += " AND (not_before IS NULL OR not_before <= ?)";
         args.push(Arg::Text(nb.to_string()));
     }
     // #7871: --task narrows to one task id (the PostgREST /list
     // path applies the same filter), and the client's paged fetch
     // advances OFFSET page by page.
     if let Some(id) = req_i64(req, "task") {
-        sql += " AND id = ?";
+        conds += " AND id = ?";
         args.push(Arg::Int(id));
     }
     // #9420: dedupe_key narrows to the task carrying that key (the
     // delivery publisher's enqueue readback verifies by dedupe key).
     if let Some(d) = req_str(req, "dedupe_key") {
-        sql += " AND dedupe_key = ?";
+        conds += " AND dedupe_key = ?";
         args.push(Arg::Text(d.to_string()));
     }
     let offset = crate::client::list_offset_or_default(req_i64(req, "offset"));
-    sql += &format!(
-        " ORDER BY (priority IS NULL), priority ASC, created_at ASC, id ASC LIMIT {limit} OFFSET {offset}"
+    let sql = format!(
+        "SELECT {select} FROM tasks{conds} ORDER BY (priority IS NULL), priority ASC, created_at ASC, id ASC LIMIT {limit} OFFSET {offset}"
     );
     let json_cols: &[&str] = if rich {
         &["progress", "payload", "blocked_deps"]
@@ -6477,7 +6477,18 @@ fn verb_list(t: &TursoBackend, req: &Value) -> Value {
         &[]
     };
     match t.query_objs(&sql, &args, json_cols) {
-        Ok(rows) => ok(json!({"rows": rows})),
+        Ok(rows) => {
+            // #10376 parity with the PostgREST /list: name the
+            // total matching count so a limited listing cannot
+            // read as complete. A failed count leaves the total
+            // unknown (null), never a fabricated number.
+            let count_sql = format!("SELECT COUNT(*) AS n FROM tasks{conds}");
+            let total = t
+                .query_objs(&count_sql, &args, &[])
+                .ok()
+                .and_then(|rs| rs.first().and_then(|r| r.get("n")).and_then(|v| v.as_i64()));
+            ok(crate::client::list_envelope(json!(rows), total, offset))
+        }
         Err(e) => terr(e),
     }
 }
