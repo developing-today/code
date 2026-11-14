@@ -112,6 +112,7 @@ import {
 import { manifestRouteFor } from "./pages.ts";
 import { conflictInbox, type ConflictInbox } from "./conflicts.ts";
 import { watchdogTierItems, WATCHDOG_PROBE_SERVICE_IDS } from "./watchdog.ts";
+import { readHostHealthSnapshot } from "./host-health.ts";
 import {
   allRefs,
   buildAttention,
@@ -1558,9 +1559,14 @@ const enqueueWatchdogGapSync = createWatchdogGapSyncQueue();
 // registry age from the source's already-loaded feed.
 async function deriveWatchdogItems(diagnosis?: ReturnType<NonNullable<Source["diagnostics"]>>["orchestration"]) {
   if (cfg.source !== "live") return [];
-  const [health, projectAudit] = await Promise.all([
+  const [health, projectAudit, hostHealth] = await Promise.all([
     healthContext(false),
     source.projectAudit ? source.projectAudit().catch(() => null) : Promise.resolve(null),
+    // #10141: the host-health collector's snapshot (claimant mode +
+    // PM unit states). A read failure yields null, which the watchdog
+    // surfaces as the snapshot-absent item — the surfacer's own
+    // silence is a breach, never a pass.
+    readHostHealthSnapshot(cfg.hostHealthFile).catch(() => null),
   ]);
   const items = watchdogTierItems({
     now: Date.now(),
@@ -1578,6 +1584,7 @@ async function deriveWatchdogItems(diagnosis?: ReturnType<NonNullable<Source["di
         detail: s.detail,
         ...(s.probedAt ? { probedAt: s.probedAt } : {}),
       })),
+    hostHealth,
   });
   // #3321: every derivation is also an ingestion pass — the current
   // breach episodes go to the stream (dedupe makes re-derivation a
