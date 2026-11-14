@@ -542,10 +542,14 @@
       "id": "opencode-config-normalize",
       "paths": ["pkgs/opencode-config-normalize/normalize_test.sh"],
       "invocation": "bash pkgs/opencode-config-normalize/normalize_test.sh",
-      "venue": null,
-      "status": "uncovered",
-      "phase2_issue": 6065,
-      "reason": "No test venue found."
+      "venue": {
+        "workflow": ".github/workflows/opencode-config-normalize-test.yml",
+        "job_step": "normalize-suite / Run normalize regression suite",
+        "state": "active",
+        "dispatchable": true
+      },
+      "status": "mapped",
+      "phase2_issue": 6065
     },
     {
       "id": "id-mail.deploy",
