@@ -1282,7 +1282,7 @@
     // Zen account instances (2026-11-14, Drew): mirror the Go instances —
     // one per console workspace, re-enabling the "opencode" provider the
     // same pass (its line leaves disabled_providers above). The bare
-    // opencode provider is NOT a member of opencode-plans below: same
+    // opencode provider is NOT a member of opencode-zen-plans below: same
     // rule as Go — it rides whichever console login is active, so its
     // burn would land on that account unattributed.
     "opencode.drewrypope": {
@@ -2241,7 +2241,10 @@
       },
       // opencode-plans (2026-11-14, Drew): the OpenCode Zen plans as ONE
       // virtual provider, mirroring opencode-go-plans. Consumers name
-      // opencode-plans/<model>. Equal split — the three workspaces are
+      // opencode-zen-plans/<model>. Renamed the same day (Drew): the
+      // aggregate is the OpenCode Zen Plans, and the route id says so —
+      // opencode-zen-plans, display "OpenCode Zen Plans". Equal split —
+      // the three workspaces are
       // peers. Zen keys are per-workspace console keys (OPENCODE_API_KEY
       // per workspace); per-workspace key wiring is verified by live
       // probe after the switch, and a workspace without a working key is
@@ -2251,7 +2254,7 @@
       // In the per-model pools the Zen leaf sits at weight 0.5 behind
       // its Go/plan doors; in the ordered tiers the Zen routes sit last
       // before the escalation leg.
-      "opencode-plans": {
+      "opencode-zen-plans": {
         "providers": ["opencode.drewrypope", "opencode.popesdrew", "opencode.developing-today-0"],
         "selection": "weighted",
         "weights": { "opencode.drewrypope": 1, "opencode.popesdrew": 1, "opencode.developing-today-0": 1 }
@@ -2887,13 +2890,13 @@
         // 3 (Drew: Zen free models carry limited context).
         "targets": [
           "opencode-go-plans/beam-free",
-          "opencode-plans/beam-free"
+          "opencode-zen-plans/beam-free"
         ],
         "selection": "round-robin",
         "autonomy": "rules",
         "weights": {
           "opencode-go-plans/beam-free": 3,
-          "opencode-plans/beam-free": 0.5
+          "opencode-zen-plans/beam-free": 0.5
         }
       },
       "longcat-plan": {
@@ -2910,13 +2913,13 @@
         // served there too) joins as a second leaf at default weight.
         "targets": [
           "opencode-go-plans/longcat-2.5-free",
-          "opencode-plans/longcat-2.5-free"
+          "opencode-zen-plans/longcat-2.5-free"
         ],
         "selection": "round-robin",
         "autonomy": "rules",
         "weights": {
           "opencode-go-plans/longcat-2.5-free": 3,
-          "opencode-plans/longcat-2.5-free": 0.5
+          "opencode-zen-plans/longcat-2.5-free": 0.5
         }
       },
       "iceman-plan": {
@@ -2934,13 +2937,13 @@
         // leaf — same stealth model, second door.
         "targets": [
           "opencode-go-plans/iceman-contributor-free",
-          "opencode-plans/iceman-free"
+          "opencode-zen-plans/iceman-free"
         ],
         "selection": "round-robin",
         "autonomy": "rules",
         "weights": {
           "opencode-go-plans/iceman-contributor-free": 3,
-          "opencode-plans/iceman-free": 0.5
+          "opencode-zen-plans/iceman-free": 0.5
         }
       },
       "flash-free-plan": {
@@ -2954,12 +2957,12 @@
         // strongest free model on either shelf. Zen's free tier requires
         // OpenCode (Zen docs); our server qualifies.
         "targets": [
-          "opencode-plans/deepseek-v4.1-flash-free"
+          "opencode-zen-plans/deepseek-v4.1-flash-free"
         ],
         "selection": "round-robin",
         "autonomy": "rules",
         "weights": {
-          "opencode-plans/deepseek-v4.1-flash-free": 3
+          "opencode-zen-plans/deepseek-v4.1-flash-free": 3
         }
       },
       "inkling-plan": {
@@ -2969,12 +2972,12 @@
         // reported) — the strongest free generalist after Flash; seated
         // in scout behind the Go free legs.
         "targets": [
-          "opencode-plans/inkling-2-small-free"
+          "opencode-zen-plans/inkling-2-small-free"
         ],
         "selection": "round-robin",
         "autonomy": "rules",
         "weights": {
-          "opencode-plans/inkling-2-small-free": 3
+          "opencode-zen-plans/inkling-2-small-free": 3
         }
       },
       "glm-5-3-flash-zen-plan": {
@@ -2986,12 +2989,12 @@
         // decode speed; this pool is a separate Zen door, not a revival
         // of that seat).
         "targets": [
-          "opencode-plans/glm-5.3-flash-free"
+          "opencode-zen-plans/glm-5.3-flash-free"
         ],
         "selection": "round-robin",
         "autonomy": "rules",
         "weights": {
-          "opencode-plans/glm-5.3-flash-free": 3
+          "opencode-zen-plans/glm-5.3-flash-free": 3
         }
       },
       "minimax-flash-plan": {
@@ -3001,12 +3004,12 @@
         // pull: it rarely abstains — careless for facts — so it serves
         // patient bulk work (background), not fact-facing tiers.
         "targets": [
-          "opencode-plans/minimax-m3.1-flash-free"
+          "opencode-zen-plans/minimax-m3.1-flash-free"
         ],
         "selection": "round-robin",
         "autonomy": "rules",
         "weights": {
-          "opencode-plans/minimax-m3.1-flash-free": 3
+          "opencode-zen-plans/minimax-m3.1-flash-free": 3
         }
       },
       "flint-plan": {
@@ -3015,12 +3018,12 @@
         // model, free on Zen. No AA listing (vendor-claimed SWE-bench
         // only). Seated in background as a coding-leaning free leg.
         "targets": [
-          "opencode-plans/flint-40b-free"
+          "opencode-zen-plans/flint-40b-free"
         ],
         "selection": "round-robin",
         "autonomy": "rules",
         "weights": {
-          "opencode-plans/flint-40b-free": 3
+          "opencode-zen-plans/flint-40b-free": 3
         }
       },
       "big-pickle-plan": {
@@ -3031,12 +3034,12 @@
         // target, so it is seated in background only, behind every
         // measured free leg: bulk capacity of unknown provenance.
         "targets": [
-          "opencode-plans/big-pickle"
+          "opencode-zen-plans/big-pickle"
         ],
         "selection": "round-robin",
         "autonomy": "rules",
         "weights": {
-          "opencode-plans/big-pickle": 3
+          "opencode-zen-plans/big-pickle": 3
         }
       },
       "nemotron-vl-plan": {
@@ -3046,12 +3049,12 @@
         // compilation). Weak as a generalist; its seat exists for
         // vision-carrying bulk work in the background tier.
         "targets": [
-          "opencode-plans/nemotron-3.5-super-vl-free"
+          "opencode-zen-plans/nemotron-3.5-super-vl-free"
         ],
         "selection": "round-robin",
         "autonomy": "rules",
         "weights": {
-          "opencode-plans/nemotron-3.5-super-vl-free": 3
+          "opencode-zen-plans/nemotron-3.5-super-vl-free": 3
         }
       },
       "nemotron-lightning-plan": {
@@ -3061,12 +3064,12 @@
         // the weakest measured model in the fleet. Seated last in
         // background as a free last resort ahead of metered escalation.
         "targets": [
-          "opencode-plans/nemotron-3.5-lightning-free"
+          "opencode-zen-plans/nemotron-3.5-lightning-free"
         ],
         "selection": "round-robin",
         "autonomy": "rules",
         "weights": {
-          "opencode-plans/nemotron-3.5-lightning-free": 3
+          "opencode-zen-plans/nemotron-3.5-lightning-free": 3
         }
       },
       "system1": {
@@ -3084,12 +3087,12 @@
         // Alias note: Drew named this pool "system1"; the mill design
         // supplement calls the same pool "decision".
         "targets": [
-          "opencode-plans/jev-1.13-free"
+          "opencode-zen-plans/jev-1.13-free"
         ],
         "selection": "round-robin",
         "autonomy": "rules",
         "weights": {
-          "opencode-plans/jev-1.13-free": 3
+          "opencode-zen-plans/jev-1.13-free": 3
         }
       },
       "mimo-flash-plan": {
@@ -3119,13 +3122,13 @@
         "targets": [
           "opencode-go-plans/mimo-v2.6-flash",
           "opendesign/mimo-v2.6-flash",
-          "opencode-plans/mimo-v2.6-flash-free"
+          "opencode-zen-plans/mimo-v2.6-flash-free"
         ],
         "selection": "round-robin",
         "autonomy": "rules",
         "weights": {
           "opencode-go-plans/mimo-v2.6-flash": 3,
-          "opencode-plans/mimo-v2.6-flash-free": 0.5
+          "opencode-zen-plans/mimo-v2.6-flash-free": 0.5
         }
       },
       "glm-5-3-plan": {

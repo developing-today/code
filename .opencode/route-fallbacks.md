@@ -93,7 +93,7 @@ between, in the pool's selection order.
 | openai-plan | _openai.alt, _openai.main (server-side round-robin) |
 | mistral-plan | _vibe, mistral |
 | opencode-go-plans | opencode-go.drewrypope, opencode-go.popesdrew, opencode-go.developing-today-0 |
-| opencode-plans | opencode.drewrypope, opencode.popesdrew, opencode.developing-today-0 |
+| opencode-zen-plans | opencode.drewrypope, opencode.popesdrew, opencode.developing-today-0 |
 
 ## Guard
 
