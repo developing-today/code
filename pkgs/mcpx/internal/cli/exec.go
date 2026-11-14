@@ -180,6 +180,7 @@ func (a *App) localService(store *artifacts.Store, socket string, cfg *config.Co
 	lim := execsvc.DefaultLimits()
 	lim.Interpreter = set.String("script.interpreter")
 	lim.CwdPolicy = set.String("script.cwd")
+	lim.Devshell = set.String("script.devshell")
 	lim.Delivery = set.String("artifacts.delivery")
 	lim.InlineMaxBytes = set.Bytes("artifacts.inlineMaxBytes")
 	lim.ChunkBytes = set.Bytes("artifacts.chunkBytes")
@@ -703,6 +704,7 @@ func (a *App) execOnDaemon(ctx context.Context, c *Client, fs *flag.FlagSet, inl
 		// none. Without this a caller's --script-cwd (or env/config
 		// value) was silently ignored by remote runs.
 		CwdPolicy: a.Settings().String("script.cwd"),
+		Devshell:  a.Settings().String("script.devshell"),
 		Session:   session,
 		// The caller's context, not the daemon's. A remote daemon has a
 		// different working directory and a different environment, and a
