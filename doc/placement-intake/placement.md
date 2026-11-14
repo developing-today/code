@@ -17,15 +17,15 @@ Companion pieces, all in this repo:
 
 ## The surfaces
 
-| Surface id | Kind | Host | What it is |
-|---|---|---|---|
-| `fleet-personal` | github-actions | `dezren39/fleet` | The original personal copy of the umbrella. |
-| `fleet-org` | github-actions | `developing-today/fleet` | This fork, in the org. |
-| `fleet-forks` | github-actions | `developing-today-forks/fleet` | The forks-org copy — absorbed as registry data only, no dispatcher change. |
-| `org-run` | github-actions | `developing-today/code` | The org-level generic runner in the code repo (pre-registered; activates when `org-run.yml` lands on code main). |
-| `fleet-org-blacksmith` | blacksmith | `developing-today/fleet` | The org fork's fleet-run with `runner: blacksmith` — a variant, not a separate workflow. |
-| `codespace-overflow` | codespace | — | Start/reuse a codespace on the target repo; hand the job to a session inside it. |
-| `laptop` | laptop | — | Recorded handoff only; laptop execution belongs to pm-dispatch / repo-queue lanes. |
+| Surface id             | Kind           | Host                           | What it is                                                                                                       |
+| ---------------------- | -------------- | ------------------------------ | ---------------------------------------------------------------------------------------------------------------- |
+| `fleet-personal`       | github-actions | `dezren39/fleet`               | The original personal copy of the umbrella.                                                                      |
+| `fleet-org`            | github-actions | `developing-today/fleet`       | This fork, in the org.                                                                                           |
+| `fleet-forks`          | github-actions | `developing-today-forks/fleet` | The forks-org copy — absorbed as registry data only, no dispatcher change.                                       |
+| `org-run`              | github-actions | `developing-today/code`        | The org-level generic runner in the code repo (pre-registered; activates when `org-run.yml` lands on code main). |
+| `fleet-org-blacksmith` | blacksmith     | `developing-today/fleet`       | The org fork's fleet-run with `runner: blacksmith` — a variant, not a separate workflow.                         |
+| `codespace-overflow`   | codespace      | —                              | Start/reuse a codespace on the target repo; hand the job to a session inside it.                                 |
+| `laptop`               | laptop         | —                              | Recorded handoff only; laptop execution belongs to pm-dispatch / repo-queue lanes.                               |
 
 Every dispatch goes through the **developing-today GitHub App** —
 both installations (org `174792676`, personal `175747567`, which
@@ -33,14 +33,14 @@ covers `dezren39/fleet`, so even the personal copy dispatches as the
 app). Tokens are minted by the existing fleet-paperwork machinery
 (`infra/fleet-paperwork/fleet_paperwork.py token --repo <host>` in
 the code repo). There is no user-token dispatch path; a surface the
-app cannot reach is *ineligible* until it can, and the dispatcher
+app cannot reach is _ineligible_ until it can, and the dispatcher
 says so in its decision output rather than falling back.
 
 Status at writing (2026-11-04): `fleet-personal` is fully active.
 `fleet-org` and `fleet-org-blacksmith` wait on one org-owner grant
 (add this repo to the app installation — the API refuses non-owners)
 plus repo secrets (below). `org-run` is live (its workflow landed on code main, with the `runner` input added for parity).
-`codespace-overflow` waits on the `codespace` OAuth scope for `gh`. `fleet-forks` waits on the app being *installed* on `developing-today-forks` at all.
+`codespace-overflow` waits on the `codespace` OAuth scope for `gh`. `fleet-forks` waits on the app being _installed_ on `developing-today-forks` at all.
 
 ## The registry is the system
 
@@ -48,11 +48,7 @@ A location exists exactly when it has an entry in
 `tools/fleet-surfaces.json`:
 
 ```json
-{ "id": "fleet-org", "kind": "github-actions",
-  "owner": "developing-today", "repo": "developing-today/fleet",
-  "workflow": "fleet-run.yml", "app_installation": 174792676,
-  "targets": ["developing-today/code", "..."],
-  "status": "active", "notes": "..." }
+{ "id": "fleet-org", "kind": "github-actions", "owner": "developing-today", "repo": "developing-today/fleet", "workflow": "fleet-run.yml", "app_installation": 174792676, "targets": ["developing-today/code", "..."], "status": "active", "notes": "..." }
 ```
 
 Owner capacity posture lives beside the surfaces under `owners`
@@ -171,34 +167,34 @@ Unless a job pins a surface (`--surface`), placement walks:
    minutes on any plan; concurrency is the binding limit.
 2. **Blacksmith, org surfaces only, inside budget.** The provider is
    orgs-only and charges for public-repo minutes past its free tier,
-   so this tier spends a *budget*, not spare capacity (below).
+   so this tier spends a _budget_, not spare capacity (below).
 3. **Codespaces, last resort** — only when every Actions tier is
    tapped **and the laptop is saturated** (registry `laptop.busy` or
    `--laptop-busy`, fed from pm-dispatch/queue depth where a caller
    can read it, else set by hand — deliberately not scraped
-   telemetry). Reuse-only: fleet-place never *creates* a codespace.
+   telemetry). Reuse-only: fleet-place never _creates_ a codespace.
 4. **Otherwise the job stays queued.** The decision is recorded as a
    session with state `queued`; repo-queue remains the system of
    record for queued work. Nothing is ever dropped for lack of a
    surface.
 
-A job may also pin a *runner* (`--runner blacksmith` skips tier 1;
-`--runner github` skips tier 2) or a *surface* (`--surface`), which
+A job may also pin a _runner_ (`--runner blacksmith` skips tier 1;
+`--runner github` skips tier 2) or a _surface_ (`--surface`), which
 bypasses the cascade but never eligibility: a pinned surface that is
 ineligible fails loudly with the reason.
 
 ### Capacity accounting
 
-| Owner / pool | Plan | Concurrent jobs | Private minutes/mo | Public minutes |
-|---|---|---|---|---|
-| `dezren39` (personal) | Pro | 40 (macOS 5) | 3,000 included | unlimited |
-| `developing-today` (org) | Free | 20 (macOS 5) | 2,000 included | unlimited |
-| Blacksmith (org) | — | provider pool | 3,000 **free**, then paid | 3,000 free, then **paid** |
-| Codespaces (`dezren39`) | Pro | ≤3 live (fleet posture) | 180 **core-hours**/mo | — |
+| Owner / pool             | Plan | Concurrent jobs         | Private minutes/mo        | Public minutes            |
+| ------------------------ | ---- | ----------------------- | ------------------------- | ------------------------- |
+| `dezren39` (personal)    | Pro  | 40 (macOS 5)            | 3,000 included            | unlimited                 |
+| `developing-today` (org) | Free | 20 (macOS 5)            | 2,000 included            | unlimited                 |
+| Blacksmith (org)         | —    | provider pool           | 3,000 **free**, then paid | 3,000 free, then **paid** |
+| Codespaces (`dezren39`)  | Pro  | ≤3 live (fleet posture) | 180 **core-hours**/mo     | —                         |
 
 GitHub numbers: Actions limits reference
 (docs.github.com/en/actions/reference/limits), verified 2026-11-04.
-The private budgets bind only when a *target* repo is private — all
+The private budgets bind only when a _target_ repo is private — all
 five current fleet targets are public, so today the concurrency caps
 and the two provider budgets are what placement actually spends.
 
@@ -229,7 +225,7 @@ curl -X POST -H "Authorization: Bearer $TOK" \
 ```
 
 `gh workflow run fleet-run.yml --repo <host>` works too, but files
-the dispatch under the *user* token — fine for a human poking their
+the dispatch under the _user_ token — fine for a human poking their
 own copy, not the fleet's dispatch path.
 
 ## Caching: build once, test anywhere
@@ -240,9 +236,9 @@ revision accepts entries carrying `cache` and ignores the field —
 the options take effect on surfaces running the fork revision.
 
 Dispatched jobs run in the fleet-build container, which already
-*reads* the fleet's caches (R2 + `developing-today` cachix
+_reads_ the fleet's caches (R2 + `developing-today` cachix
 substituters are baked into the image). Two opt-ins let a job also
-*write* for its follow-ups:
+_write_ for its follow-ups:
 
 - **Nix results → R2** (`--push-nix-cache`, or `"cache":{"push_nix":true}`
   in a jobs entry): the job leaves a `./result` symlink; after the
@@ -258,7 +254,7 @@ substituters are baked into the image). Two opt-ins let a job also
   or `"actions_key"`/`"actions_path"` in an entry): a plain
   `actions/cache@v4` restore/save of a workspace-relative path.
   Per-repo cache (10 GB, 7-day eviction) — unlike R2 it does not
-  cross surfaces; prefer R2 for anything a follow-up on *another*
+  cross surfaces; prefer R2 for anything a follow-up on _another_
   surface needs.
 
 This fork still needs its secrets provisioned before either write

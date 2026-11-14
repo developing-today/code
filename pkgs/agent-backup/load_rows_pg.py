@@ -24,6 +24,7 @@ Unchanged rows are not touched (the upsert carries a hash-difference WHERE).
 Exit 0 on success (prints "loaded N rows into <table>"), 1 on failure
 (prints the error tail to stderr). A failed call changes nothing else.
 """
+
 import hashlib
 import json
 import os
@@ -33,8 +34,16 @@ import tempfile
 
 SUPABASE_EXEC = os.path.expanduser("~/tools/supabase-exec.py")
 PROXY_ENV_FILE = os.path.expanduser("~/tools/secrets.d/mcpx-daemon.env")
-PROXY_KEYS = ("HTTPS_PROXY", "https_proxy", "HTTP_PROXY", "http_proxy",
-              "ALL_PROXY", "all_proxy", "NO_PROXY", "no_proxy")
+PROXY_KEYS = (
+    "HTTPS_PROXY",
+    "https_proxy",
+    "HTTP_PROXY",
+    "http_proxy",
+    "ALL_PROXY",
+    "all_proxy",
+    "NO_PROXY",
+    "no_proxy",
+)
 
 
 def flush_env():
@@ -66,9 +75,13 @@ def run_sql(sql):
     try:
         with os.fdopen(fd, "w") as f:
             f.write(sql)
-        p = subprocess.run([sys.executable, SUPABASE_EXEC, fname],
-                           capture_output=True, text=True, timeout=300,
-                           env=flush_env())
+        p = subprocess.run(
+            [sys.executable, SUPABASE_EXEC, fname],
+            capture_output=True,
+            text=True,
+            timeout=300,
+            env=flush_env(),
+        )
         if p.returncode != 0:
             tail = (p.stderr or "").strip().splitlines()
             head = (p.stdout or "").strip().splitlines()
@@ -83,8 +96,10 @@ def run_sql(sql):
 
 def main():
     spec = json.load(sys.stdin)
-    rows = [{k: v for k, v in r.items() if not k.startswith("_")}
-            for r in (spec.get("rows") or [])]
+    rows = [
+        {k: v for k, v in r.items() if not k.startswith("_")}
+        for r in (spec.get("rows") or [])
+    ]
     table = spec["table"]
     if not rows:
         print(f"loaded 0 rows into {table} (empty page)")
@@ -111,8 +126,9 @@ def main():
                 if epoch_maps[c][1] == 86400:
                     # pin to UTC: the Supabase session TZ otherwise shifts
                     # the date one day early (found in the 2026-10-29 build)
-                    parts.append(f"(to_timestamp({int(v)} * 86400)"
-                                 " AT TIME ZONE 'UTC')::date")
+                    parts.append(
+                        f"(to_timestamp({int(v)} * 86400) AT TIME ZONE 'UTC')::date"
+                    )
                 else:
                     parts.append(f"to_timestamp({int(v)} * {epoch_maps[c][1]})")
             elif c in jsonb_cols:
@@ -133,8 +149,8 @@ def main():
 WITH incoming AS (SELECT * FROM (VALUES
 {values}
 ) AS v({col_list}))
-INSERT INTO {hist} ({', '.join(conflict)}, payload, payload_hash, valid_from, valid_to)
-SELECT {', '.join('m.' + k for k in conflict)}, m.payload, m.payload_hash, m.exported_at, now()
+INSERT INTO {hist} ({", ".join(conflict)}, payload, payload_hash, valid_from, valid_to)
+SELECT {", ".join("m." + k for k in conflict)}, m.payload, m.payload_hash, m.exported_at, now()
 FROM {table} m JOIN incoming i ON {join}
 WHERE m.payload_hash <> md5(i.payload::text);
 """
@@ -159,8 +175,8 @@ WITH incoming AS (SELECT * FROM (VALUES
 ) AS v({col_list}))
 INSERT INTO {table} ({col_list}{extra_cols})
 SELECT {select_cols} FROM incoming
-ON CONFLICT ({', '.join(conflict)}) DO UPDATE SET
-  {', '.join(f"{c} = EXCLUDED.{c}" for c in cols if c not in conflict)},
+ON CONFLICT ({", ".join(conflict)}) DO UPDATE SET
+  {", ".join(f"{c} = EXCLUDED.{c}" for c in cols if c not in conflict)},
   payload_hash = EXCLUDED.payload_hash, exported_at = now()
 WHERE {table}.payload_hash <> EXCLUDED.payload_hash;
 """
@@ -169,7 +185,7 @@ WHERE {table}.payload_hash <> EXCLUDED.payload_hash;
 INSERT INTO {table} ({col_list}{extra_cols})
 VALUES
 {values}
-ON CONFLICT ({', '.join(conflict)}) DO NOTHING;
+ON CONFLICT ({", ".join(conflict)}) DO NOTHING;
 """
         if extra_cols:
             # rebuild values with the extra columns appended per-tuple
@@ -185,8 +201,8 @@ ON CONFLICT ({', '.join(conflict)}) DO NOTHING;
             upsert_sql = f"""
 INSERT INTO {table} ({col_list}{extra_cols})
 VALUES
-{', '.join(tup)}
-ON CONFLICT ({', '.join(conflict)}) DO NOTHING;
+{", ".join(tup)}
+ON CONFLICT ({", ".join(conflict)}) DO NOTHING;
 """
     else:
         set_cols = [c for c in cols if c not in conflict]
@@ -209,8 +225,8 @@ ON CONFLICT ({', '.join(conflict)}) DO NOTHING;
         upsert_sql = f"""
 INSERT INTO {table} ({col_list}{extra_cols})
 VALUES
-{', '.join(tup)}
-ON CONFLICT ({', '.join(conflict)}) DO UPDATE SET {assignments};
+{", ".join(tup)}
+ON CONFLICT ({", ".join(conflict)}) DO UPDATE SET {assignments};
 """
     run_sql(upsert_sql)
     print(f"loaded {len(rows)} rows into {table}")

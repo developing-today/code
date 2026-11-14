@@ -254,9 +254,7 @@ export async function applyEvent(
       // tombstones, not item markers — skipping the tombstone here
       // would let an in-flight reconcile resurrect the deleted comment.
       if (event === "issue_comment" && payload.action === "deleted") {
-        await store.markCommentDeleted(
-          commentCommon(comment, repo, itemRef(repo, issue.number), "issue_comment"),
-        );
+        await store.markCommentDeleted(commentCommon(comment, repo, itemRef(repo, issue.number), "issue_comment"));
         wrote = true;
       }
       return;

@@ -2,7 +2,7 @@
 
 `pkgs/mcpx/pkg/client` is the public Go client for the mcpx daemon's
 /v1 API (#1877, rung 1). Its calls are derived at run time from the
-daemon's operation table (`internal/api.Ops`) — method, path, and
+daemon's operation table (the `Ops` function in `internal/api`) — method, path, and
 parameter placement come from the table, never from hand-written
 per-operation code — so the client cannot drift from the daemon the
 way a hand-maintained client would.

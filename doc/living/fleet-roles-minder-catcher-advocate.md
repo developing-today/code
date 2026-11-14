@@ -11,6 +11,7 @@ Living document · Status: shipped (2026-11-08) · Register entry F4.7 · Tracki
 - Source: Drew's structural rulings, 2026-11-08 ~18:19 CST.
 
 Drew's rulings as recorded:
+
 1. Exactly ONE Muse minder job survives — checks ALL sessions and tasks,
    and must actively KICK, not just watch.
 2. Issue-making / priority / design functions: build ONE Muse version and

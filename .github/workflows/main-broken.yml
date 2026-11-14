@@ -323,7 +323,6 @@ jobs:
           gh issue comment "$INUM" --repo "$GH_REPO" \
             --body "agent-note:v1 — holder: chain (filing), at $TS. Breakage-ID: $BID"
 
-
       - name: Scout - post the classification note and route (#2176)
         if: (steps.identify.outputs.action == 'create' || steps.identify.outputs.action == 'append') && steps.scout.outputs.classification != ''
         continue-on-error: true

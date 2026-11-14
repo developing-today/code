@@ -11,14 +11,14 @@
 
 GitHub state checked **2026-11-10 06:54 UTC**:
 
-| Issue | State | Decision record |
-| --- | --- | --- |
-| #5674 (parent) | OPEN | no parent record landed; shared envelope/adapter choices still delegated |
-| #5808 (postcard schema) | OPEN/blocked | none |
-| #5809 (versioning/negotiation) | OPEN/parked | none |
-| #5810 (framing/fragmentation) | OPEN/in review | proposal in PR #7980, not merged |
-| #5795 (broker trust contract) | OPEN/blocked | none |
-| #5815 (security binding) | OPEN/in review | proposal in PR #7863, not merged |
+| Issue                          | State          | Decision record                                                          |
+| ------------------------------ | -------------- | ------------------------------------------------------------------------ |
+| #5674 (parent)                 | OPEN           | no parent record landed; shared envelope/adapter choices still delegated |
+| #5808 (postcard schema)        | OPEN/blocked   | none                                                                     |
+| #5809 (versioning/negotiation) | OPEN/parked    | none                                                                     |
+| #5810 (framing/fragmentation)  | OPEN/in review | proposal in PR #7980, not merged                                         |
+| #5795 (broker trust contract)  | OPEN/blocked   | none                                                                     |
+| #5815 (security binding)       | OPEN/in review | proposal in PR #7863, not merged                                         |
 
 None of these is a landed decision. The original record's rule therefore still applies: relay control/data messages use the canonical envelope, negotiation, and framing selected by the parent and siblings, and this record allocates no discriminants, byte layout, or independent framing.
 

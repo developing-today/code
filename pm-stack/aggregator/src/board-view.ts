@@ -22,6 +22,8 @@ export function ghItemLike(item: GhItem, pool?: ProjectPoolItem | null): ViewIte
     owner: item.author,
     state: item.state,
     epic: pool?.epicRef ?? null,
+    status: pool?.status ?? null,
+    kind: pool?.kind ?? null,
   };
 }
 
@@ -59,9 +61,7 @@ export function filterBoardForView(
   const keptRefs = new Set<string>();
   for (const b of keptBoard) for (const l of b.links) keptRefs.add(l.ref);
   const keptItems = new Map(
-    [...items].filter(
-      ([ref, it]) => keptRefs.has(ref) || itemMatchesView(ghItemLike(it, poolByRef.get(ref)), filters),
-    ),
+    [...items].filter(([ref, it]) => keptRefs.has(ref) || itemMatchesView(ghItemLike(it, poolByRef.get(ref)), filters)),
   );
   return { board: keptBoard, items: keptItems };
 }
@@ -94,9 +94,7 @@ export function filterRoadmapForView(
   const keptRefs = new Set<string>();
   for (const r of keptRows) for (const l of r.links) keptRefs.add(l.ref);
   const keptItems = new Map(
-    [...items].filter(
-      ([ref, it]) => keptRefs.has(ref) || itemMatchesView(ghItemLike(it, poolByRef.get(ref)), filters),
-    ),
+    [...items].filter(([ref, it]) => keptRefs.has(ref) || itemMatchesView(ghItemLike(it, poolByRef.get(ref)), filters)),
   );
   return { rows: keptRows, items: keptItems };
 }

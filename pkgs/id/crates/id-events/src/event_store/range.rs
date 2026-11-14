@@ -29,7 +29,7 @@ use std::collections::HashSet;
 
 use anyhow::{Result, bail, ensure};
 
-pub use id_store::range::{Id, Key, KEY_LEN};
+pub use id_store::range::{Id, KEY_LEN, Key};
 
 /// The default fan-out.
 pub const DEFAULT_K: usize = 16;

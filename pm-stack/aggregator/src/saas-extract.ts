@@ -15,6 +15,7 @@
 import type {
   ChargeRow,
   DatedRead,
+  ExtractionHealth,
   PaygEstimate,
   PaygLine,
   SaasGroup,
@@ -39,7 +40,6 @@ function capUnits(t: string, max: number): string {
   if (before >= 0xd800 && before <= 0xdbff && after >= 0xdc00 && after <= 0xdfff) end--;
   return t.slice(0, end);
 }
-
 
 /** Every ISO date in a text, ascending. */
 function datesIn(text: string): string[] {
@@ -182,7 +182,7 @@ function allowance(text: string, after: RegExp): number | null {
 
 // --- per-service metric extractors ----------------------------------------
 
-type MetricExtractor = (section: string, doc: string) => UsageMetric[];
+type MetricExtractor = (section: string, doc: string) => UsageMetric[] | null;
 
 const cloudflareMetrics: MetricExtractor = (section) => {
   const allowances = bullet(section, /\*\*Monthly allowances:\*\*/);
@@ -349,7 +349,8 @@ const cloudflareMetrics: MetricExtractor = (section) => {
       metric({ id: "queues-count", label: "Queues", unit: "count", used: Number(counts[5].replace(/,/g, "")) }),
     );
   }
-  return out.filter((m) => m.used != null || m.limit != null);
+  const metrics = out.filter((m) => m.used != null || m.limit != null);
+  return metrics.length ? metrics : null;
 };
 
 const tursoMetrics: MetricExtractor = (section) => {
@@ -357,7 +358,7 @@ const tursoMetrics: MetricExtractor = (section) => {
   const usage = bullet(section, /\*\*Usage \/ dates:\*\*/);
   const db = /([\d,]+) DB/.exec(usage);
   const zero = /0 B, 0 usage/.test(usage);
-  return [
+  const metrics = [
     metric({
       id: "databases",
       label: "Databases",
@@ -397,6 +398,7 @@ const tursoMetrics: MetricExtractor = (section) => {
       highlight: true,
     }),
   ].filter((m) => m.used != null || m.limit != null);
+  return metrics.length ? metrics : null;
 };
 
 const supabaseMetrics: MetricExtractor = () => [
@@ -470,6 +472,7 @@ const githubMetrics: MetricExtractor = (section) => {
       }),
     );
   }
+  if (!out.some((m) => m.used != null || m.limit != null)) return null;
   return out.filter((m) => m.used != null || m.limit != null || m.id === "actions-billable-minutes");
 };
 
@@ -489,6 +492,7 @@ const modalMetrics: MetricExtractor = (section) => {
     /used[:\s]+\$([\d,]+(?:\.\d+)?)/i.exec(usage) ??
     /used[:\s]+([\d,]+(?:\.\d+)?)\s*credits?\b/i.exec(usage);
   const used = usedMatch ? Number(usedMatch[1].replace(/,/g, "")) : null;
+  if (!credits && used == null) return null;
   return [
     metric({
       id: "compute-credits",
@@ -511,9 +515,10 @@ const modalMetrics: MetricExtractor = (section) => {
  * read 2026-10-26)". No metrics until a dated count is recorded. */
 const bitwardenMetrics: MetricExtractor = (section) => {
   const usage = bullet(section, /\*\*Usage \/ dates:\*\*/);
+
   const secrets = /([\d,]+)\s*secrets?/i.exec(usage);
   const projects = /([\d,]+)\s*projects?/i.exec(usage);
-  return [
+  const metrics = [
     metric({
       id: "secrets-count",
       label: "Secrets",
@@ -531,11 +536,12 @@ const bitwardenMetrics: MetricExtractor = (section) => {
       note: "bws count-only read (§2.2); names/values never enter the hub.",
     }),
   ].filter((m) => m.used != null);
+  return metrics.length ? metrics : null;
 };
 
 const ociMetrics: MetricExtractor = (section) => {
   const plan = bullet(section, /\*\*Plan \/ price \/ allowance:\*\*/);
-  return [
+  const metrics = [
     metric({
       id: "ocpu-hours",
       label: "A1 OCPU-hours / month",
@@ -562,6 +568,7 @@ const ociMetrics: MetricExtractor = (section) => {
       limit: allowance(plan, /([\d,.]+) GB object storage/),
     }),
   ].filter((m) => m.limit != null);
+  return metrics.length ? metrics : null;
 };
 
 // --- service table ----------------------------------------------------------
@@ -576,6 +583,8 @@ interface ServiceSpec {
   cadenceDays: number;
   metrics: MetricExtractor;
   shellNote: string;
+  /** False when this service intentionally has no local metric extractor. */
+  instrumented?: boolean;
 }
 
 const SERVICE_SPECS: ServiceSpec[] = [
@@ -610,6 +619,11 @@ const SERVICE_SPECS: ServiceSpec[] = [
     status: "active",
     cadenceDays: 7,
     metrics: supabaseMetrics,
+    // supabaseMetrics returns fixed placeholders (no pattern extraction
+    // from the section), so the service is intentionally uninstrumented
+    // for extraction-health purposes; live numbers arrive through the
+    // supabase-export overlay instead (Codex P2 on PR #3957).
+    instrumented: false,
     shellNote: "Free plan (muse-dev); numerical quotas unknown in local records.",
   },
   {
@@ -633,6 +647,7 @@ const SERVICE_SPECS: ServiceSpec[] = [
     cadenceDays: 7,
     metrics: () => [],
     shellNote: "In use for web deploys; tier, price and caps unknown — the first read establishes the baseline (§2.2).",
+    instrumented: false,
   },
   {
     id: "modal",
@@ -679,6 +694,7 @@ const SERVICE_SPECS: ServiceSpec[] = [
     metrics: () => [],
     shellNote:
       "Candidate — not held: no account exists (§1.4); evaluated in free-services-to-check.md. Listed so it is never silently absent (#1058).",
+    instrumented: false,
   },
   {
     id: "fly-io",
@@ -691,6 +707,7 @@ const SERVICE_SPECS: ServiceSpec[] = [
     metrics: () => [],
     shellNote:
       "Candidate — not held: no account, no meter, no renewal date. Listed so it is never silently absent (#1058).",
+    instrumented: false,
   },
   {
     id: "baseten",
@@ -703,6 +720,7 @@ const SERVICE_SPECS: ServiceSpec[] = [
     metrics: () => [],
     shellNote:
       "Candidate — not held: no account, no meter, no renewal date. Listed so it is never silently absent (#1058).",
+    instrumented: false,
   },
 ];
 
@@ -729,10 +747,7 @@ export function extractSaasServices(doc: string): SaasService[] {
         // regex anchors, then unescape regex escapes (Fly.io's heading is
         // /^### Fly\.io$/ - without the unescape it renders a section name
         // that does not exist in quota-view.md; #6848).
-        quotaViewSection: spec.heading.source
-          .replace(/^\^/, "")
-          .replace(/\$$/, "")
-          .replace(/\\(.)/g, "$1"),
+        quotaViewSection: spec.heading.source.replace(/^\^/, "").replace(/\$$/, "").replace(/\\(.)/g, "$1"),
         trackerRow: row?.[0] ?? null,
         baselineDoc: "evidence-and-interpretation-baseline-2026-10-20.md (~/workspace/ai-subscriptions/)",
       },
@@ -742,12 +757,25 @@ export function extractSaasServices(doc: string): SaasService[] {
       reads: [],
       usageNote: spec.shellNote,
     };
+    const intentional: ExtractionHealth = {
+      status: "intentional",
+      matched: null,
+      reason: "uninstrumented",
+      count: 0,
+    };
     if (!section) {
-      services.push(shell);
+      services.push({
+        ...shell,
+        extractionHealth:
+          spec.instrumented === false
+            ? intentional
+            : { status: "gap", matched: false, reason: "section-missing", count: 0 },
+      });
       continue;
     }
     try {
       const payg = paygOf(section);
+      const metrics = spec.metrics(section, doc);
       const usageText = bullet(section, /\*\*Usage \/ dates:\*\*/).replace(/^\*\*Usage \/ dates:\*\*\s*/, "");
       // measuredAt = the freshest date in the section's own "Last
       // checked" record — NOT the freshest date anywhere in the
@@ -756,7 +784,13 @@ export function extractSaasServices(doc: string): SaasService[] {
       const measuredAt = freshestDate(bullet(section, /\*\*Last checked:\*\*/)) ?? freshestDate(section);
       services.push({
         ...shell,
-        metrics: spec.metrics(section, doc),
+        metrics: metrics ?? [],
+        extractionHealth:
+          metrics === null
+            ? { status: "gap", matched: false, reason: "extractor-null", count: 0 }
+            : spec.instrumented === false
+              ? intentional
+              : { status: "matched", matched: true, count: metrics.length },
         paygEstimate: payg.estimate,
         paygNote: payg.note,
         measuredAt,
@@ -766,7 +800,10 @@ export function extractSaasServices(doc: string): SaasService[] {
         billedUsd: spec.id === "supabase" ? 0 : undefined,
       });
     } catch {
-      services.push(shell);
+      services.push({
+        ...shell,
+        extractionHealth: { status: "gap", matched: false, reason: "extractor-threw", count: 0 },
+      });
     }
   }
   // The Cloudflare zone is part of the one Cloudflare card (Q6): fold
@@ -831,13 +868,13 @@ export function extractUninstrumentedServices(doc: string): UninstrumentedSaasSe
     const rawStatus = cells[columns.status] ?? "";
     if (!name || !rawStatus) continue;
 
-    const checkedAt = [...rawStatus.matchAll(DATE_RE)]
-      .map((match) => match[0])
-      .find((date) => parseIsoDate(date) !== null) ?? null;
-    const status = (checkedAt ? rawStatus.replace(checkedAt, "") : rawStatus)
-      .replace(/^\s*[—–-]\s*/, "")
-      .replace(/\s+/g, " ")
-      .trim() || (checkedAt ? "checked" : "unknown");
+    const checkedAt =
+      [...rawStatus.matchAll(DATE_RE)].map((match) => match[0]).find((date) => parseIsoDate(date) !== null) ?? null;
+    const status =
+      (checkedAt ? rawStatus.replace(checkedAt, "") : rawStatus)
+        .replace(/^\s*[—–-]\s*/, "")
+        .replace(/\s+/g, " ")
+        .trim() || (checkedAt ? "checked" : "unknown");
 
     rows.push({
       name,

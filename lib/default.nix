@@ -1182,6 +1182,7 @@ let
         "laptop-autocommit-in-progress"
         "laptop-autocommit-merge-abort"
         "laptop-backups-watchdog"
+        "laptop-state-backup"
         "laptop-repo-keeper"
         "laptop-untracked-review"
         "openclaw-backup"
@@ -1417,7 +1418,7 @@ let
     in
     {
       packages.deploy = deployPkgs.deploy;
-      deployTargets = deployPkgs.deployTargets;
+      inherit (deployPkgs) deployTargets;
       checks = {
         deploy-list =
           pkgs.runCommandLocal "check-deploy-list"

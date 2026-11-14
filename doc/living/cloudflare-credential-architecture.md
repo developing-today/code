@@ -9,6 +9,7 @@ Living document · Status: shipped (2026-10-07) · Register entry C2 · Tracking
 - Keep the most privileged credential out of Worker secrets and runtime env.
 
 First asked 2026-10-07:
+
 - "put all secrets on the disk in there"
 - "generate creds for a different purpose that just have access to cf Ai gateway
   and workers Ai for inference, read, etc"

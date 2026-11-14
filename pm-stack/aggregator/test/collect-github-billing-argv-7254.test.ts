@@ -21,7 +21,7 @@ async function setupStubGh(dir: string): Promise<string> {
   const stub = join(binDir, "gh");
   await writeFile(
     stub,
-    "#!/bin/sh\necho \"$@\" >> \"$GH_STUB_LOG\"\nprintf '{\"usageItems\":[{\"date\":\"2026-11-05\",\"product\":\"actions\",\"unitType\":\"minutes\",\"quantity\":42,\"grossAmount\":1.5,\"netAmount\":1.5}]}\\n'",
+    '#!/bin/sh\necho "$@" >> "$GH_STUB_LOG"\nprintf \'{"usageItems":[{"date":"2026-11-05","product":"actions","unitType":"minutes","quantity":42,"grossAmount":1.5,"netAmount":1.5}]}\\n\'',
   );
   await chmod(stub, 0o755);
   return logPath;
@@ -89,13 +89,7 @@ describe("collect-github-billing unknown arguments (#7254)", () => {
     try {
       const logPath = await setupStubGh(dir);
       const outboxPath = join(dir, "outbox.jsonl");
-      const { code, stdout } = await runScript(dir, logPath, outboxPath, [
-        "--year",
-        "2024",
-        "--month",
-        "3",
-        "--print",
-      ]);
+      const { code, stdout } = await runScript(dir, logPath, outboxPath, ["--year", "2024", "--month", "3", "--print"]);
       expect(code).toBe(0);
       expect(await ghCalls(logPath)).toContain("api users/dezren39/settings/billing/usage?year=2024&month=3");
       expect(stdout).toContain("3 record(s) (dry run, outbox untouched)");

@@ -1355,15 +1355,31 @@ class ResearchWorkflowTests(unittest.TestCase):
         package = self.init()
         original = self.state(package)
         cases = [
-            ("transcript string", lambda s: s.update(transcript="transcript.txt"), "transcript"),
-            ("transcript missing sha256", lambda s: s.update(transcript={"path": "transcript.txt"}), "transcript"),
+            (
+                "transcript string",
+                lambda s: s.update(transcript="transcript.txt"),
+                "transcript",
+            ),
+            (
+                "transcript missing sha256",
+                lambda s: s.update(transcript={"path": "transcript.txt"}),
+                "transcript",
+            ),
             ("transcript missing", lambda s: s.pop("transcript"), "transcript"),
             ("concepts object", lambda s: s.update(concepts={}), "concepts"),
             ("concepts string entries", lambda s: s.update(concepts=["x"]), "concepts"),
             ("concepts missing", lambda s: s.pop("concepts"), "concepts"),
             ("dependencies missing", lambda s: s.pop("dependencies"), "dependencies"),
-            ("dependencies string", lambda s: s.update(dependencies="x"), "dependencies"),
-            ("dependencies string edge", lambda s: s.update(dependencies=["x"]), "dependencies"),
+            (
+                "dependencies string",
+                lambda s: s.update(dependencies="x"),
+                "dependencies",
+            ),
+            (
+                "dependencies string edge",
+                lambda s: s.update(dependencies=["x"]),
+                "dependencies",
+            ),
         ]
         for name, mutate, field in cases:
             with self.subTest(name=name):

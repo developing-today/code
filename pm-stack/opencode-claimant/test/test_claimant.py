@@ -88,10 +88,15 @@ def make_fake_run(events, *, create_rc=0, messages="[]"):
             events.append(("create",))
             if create_rc != 0:
                 return Result(create_rc, "", "server unavailable")
-            return reply(json.dumps({
-                "id": "ses_new1",
-                "location": {"directory": str(claimant.PRIMARY_CLONE)},
-            }), 200)
+            return reply(
+                json.dumps(
+                    {
+                        "id": "ses_new1",
+                        "location": {"directory": str(claimant.PRIMARY_CLONE)},
+                    }
+                ),
+                200,
+            )
         if argv[0] == "curl" and "/api/session/" in joined:
             events.append(("session_get",))
             # The v2 server's shape for a missing session: a 404 with
@@ -130,10 +135,17 @@ CANDIDATE = {
 
 
 def run_launch(events, *, labels=set(), create_rc=0):
-    with patch.object(claimant, "run_poll",
-                      side_effect=lambda: {"candidates": [copy.deepcopy(CANDIDATE)]}), \
-         patch.object(claimant, "_github_issue_labels", return_value=set(labels)), \
-         patch.object(claimant.subprocess, "run", make_fake_run(events, create_rc=create_rc)):
+    with (
+        patch.object(
+            claimant,
+            "run_poll",
+            side_effect=lambda: {"candidates": [copy.deepcopy(CANDIDATE)]},
+        ),
+        patch.object(claimant, "_github_issue_labels", return_value=set(labels)),
+        patch.object(
+            claimant.subprocess, "run", make_fake_run(events, create_rc=create_rc)
+        ),
+    ):
         return claimant.launch_step("live", 3)
 
 
@@ -177,11 +189,17 @@ class TestLaunch(unittest.TestCase):
 
     def test_unreadable_labels_fail_closed(self):
         events = []
-        with patch.object(claimant, "run_poll",
-                          side_effect=lambda: {"candidates": [copy.deepcopy(CANDIDATE)]}), \
-             patch.object(claimant, "_github_issue_labels",
-                          side_effect=RuntimeError("gh down")), \
-             patch.object(claimant.subprocess, "run", make_fake_run(events)):
+        with (
+            patch.object(
+                claimant,
+                "run_poll",
+                side_effect=lambda: {"candidates": [copy.deepcopy(CANDIDATE)]},
+            ),
+            patch.object(
+                claimant, "_github_issue_labels", side_effect=RuntimeError("gh down")
+            ),
+            patch.object(claimant.subprocess, "run", make_fake_run(events)),
+        ):
             launched, skips = claimant.launch_step("live", 3)
         self.assertEqual(launched, [])
         self.assertEqual(len(skips), 1)
@@ -206,20 +224,73 @@ class TestSupervision(unittest.TestCase):
         def fake_fetch(queue):
             return [dict(BOUND_ROW)] if queue == claimant.QUEUES[0] else []
 
-        with patch.object(poll_mod, "fetch_claimed_rows", side_effect=fake_fetch), \
-             patch.object(claimant.subprocess, "run", make_fake_run(events)):
+        with (
+            patch.object(poll_mod, "fetch_claimed_rows", side_effect=fake_fetch),
+            patch.object(claimant.subprocess, "run", make_fake_run(events)),
+        ):
             recovered = claimant.supervision_step("live")
 
-        self.assertEqual(recovered, [{
-            "task_id": 4242,
-            "session_id": "ses_gone",
-            "reason": "zero_message",
-        }])
+        self.assertEqual(
+            recovered,
+            [
+                {
+                    "task_id": 4242,
+                    "session_id": "ses_gone",
+                    "reason": "zero_message",
+                }
+            ],
+        )
         kinds = [e[0] for e in events]
         self.assertLess(kinds.index("messages"), kinds.index("delete"))
         self.assertLess(kinds.index("delete"), kinds.index("bind"))
         bind_argv = next(e[1] for e in events if e[0] == "bind")
         self.assertIn(claimant.LAUNCHED_BY_RECOVERY_ZERO_MESSAGE, bind_argv)
+
+
+class ReadModeLoudDefaultTests(unittest.TestCase):
+    """#10141: read_mode() keeps shadow as the fail-safe default for a
+    missing/unreadable/invalid mode file, but logs a loud
+    CLAIMANT-MODE-WARNING line on every such read — the silence was
+    the bug, not the default. Oracle: captured stderr."""
+
+    def _read_with_file(self, tmp: Path, content):
+        mode_file = tmp / "mode"
+        if content is not None:
+            mode_file.write_text(content)
+        import io
+        from contextlib import redirect_stderr
+
+        buf = io.StringIO()
+        with patch.object(claimant, "MODE_FILE", mode_file), redirect_stderr(buf):
+            result = claimant.read_mode()
+        return result, buf.getvalue()
+
+    def test_missing_file_defaults_shadow_and_warns_loudly(self):
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as td:
+            result, err = self._read_with_file(Path(td), None)
+        self.assertEqual(result, "shadow")
+        self.assertIn("CLAIMANT-MODE-WARNING", err)
+        self.assertIn("MISSING", err)
+
+    def test_invalid_content_defaults_shadow_and_warns_loudly(self):
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as td:
+            result, err = self._read_with_file(Path(td), "banana\n")
+        self.assertEqual(result, "shadow")
+        self.assertIn("CLAIMANT-MODE-WARNING", err)
+
+    def test_valid_modes_are_returned_quietly(self):
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as td:
+            for content, want in (("live\n", "live"), ("shadow", "shadow"),
+                                  (" LIVE ", "live")):
+                result, err = self._read_with_file(Path(td), content)
+                self.assertEqual(result, want)
+                self.assertNotIn("CLAIMANT-MODE-WARNING", err)
 
 
 if __name__ == "__main__":

@@ -17,7 +17,7 @@ registry / stewardship log where the feeds have no series (named as such).
 
 Fleet context (mirror_token_usage_daily, dimension=agent, input tokens/day): Oct 20 0.40B →
 Oct 24 1.42B → Oct 26 1.90B → Oct 27 2.84B → Oct 28 5.07B → Oct 29 partial (to ~07:30Z) 2.12B.
-Demand is not the constraint — the fleet burns more every day. The constraint is *which pool*
+Demand is not the constraint — the fleet burns more every day. The constraint is _which pool_
 each token lands on, and several pools will end their periods far from 100% in opposite
 directions at once.
 
@@ -30,6 +30,7 @@ is unstable I give the scenario range instead of a fake single number.
 ## 1. Per-pool state, rates, projections (largest window each)
 
 ### OpenCode Go — Lab workspace (the active one) — MONTHLY per-model caps
+
 - **Now: 87.17%** (gatherer series, 2026-10-29T05:30Z; the quota module's combined Go row read
   lower, 77.28% at 01:30Z — the two computations disagree; the continuous series is used as
   primary). Weekly sub-window 49.37% (resets Nov 2 00:00Z), 5h sub-window ~49%.
@@ -42,15 +43,17 @@ is unstable I give the scenario range instead of a fake single number.
   50%, monthly = cap). The Nov 2 weekly reset does **not** reopen a monthly-exhausted model.
 
 ### OpenCode Go — Personal workspace — MONTHLY
+
 - **Now: ~84%** (console read, 2026-10-28 19:33 CDT — single read, no series; registry series
   last showed 80% @ Oct 27 12:00Z). Plan CANCELLED, **plan ends 2026-11-02 21:02 CT**
-  (Nov 3 03:02Z) — after that the quota does not reset, it *disappears*.
+  (Nov 3 03:02Z) — after that the quota does not reset, it _disappears_.
 - **Burn rate: ~0/day** — Personal is not the active workspace on the laptop (Lab is), so it
   is not being burned at all.
 - **Projection: ~16 pts (≈$9.60 of $60 list) stranded forever** unless the active workspace is
   rotated to Personal and the remainder burned before Nov 2 21:02 CT. **#1 under-use flag.**
 
 ### OpenAI plan (openai.main) — WEEKLY
+
 - **Now: 27%** (gatherer, 2026-10-29T07:15Z). **Reset: 2026-11-04T06:35:38Z** (Nov 4 00:35 CT).
   73 pts left, 5.96 days → needs **12.2 pts/day** to land at 100%.
 - **Burn rate:** +5.9 pts/day (72h average) but +6 pts in the last 5.75h alone (21% @ 01:30Z →
@@ -62,6 +65,7 @@ is unstable I give the scenario range instead of a fake single number.
   Next reset after Nov 4: Nov 11 06:35Z.
 
 ### Meta — Muse API High Usage (via `meta` provider only) — WEEKLY
+
 - **Now: 23.2%** (file-export series, 2026-10-29T04:00Z; the 07:30Z gatherer tick errored on
   this provider — "file-export status: unparseable" — so the freshest read is ~3.5h old).
   **Reset: 2026-11-02T00:00:00Z** (Sun Nov 1 18:00 CT). 76.8 pts left, 3.70 days → needs
@@ -74,6 +78,7 @@ is unstable I give the scenario range instead of a fake single number.
   for the Nov 2–5 DeepSeek trough (see cascade). Next reset: Nov 9 00:00Z.
 
 ### ClinePass — MONTHLY (largest window)
+
 - **Now: 91%** (quota-current, 2026-10-29T07:30Z, corroborated by series 91% @ 00:15Z).
   **Reset: 2026-11-06T01:22Z** (Nov 5 19:22 CT). Weekly sub-window 69%, resets Oct 31 09:20Z.
 - **Burn rate (monthly):** +6.1 pts/day (3.6d), +11.4 (72h), +25 (24h) — accelerating; the pool
@@ -83,6 +88,7 @@ is unstable I give the scenario range instead of a fake single number.
   ~100% right around its Oct 31 reset — on-track for the weekly, moot against the monthly cap.
 
 ### Command Code — Go $1 plan — MONTHLY
+
 - **Now: 69%** (console read, 2026-10-27 10:05 CDT — **stale, 2 days**; gatherer auth is
   currently failing for this provider, and the console sign-in is a known pending item).
   Period ends **Nov 2** (series reset 2026-11-02T23:04Z). Weekly 14% (series, resets Oct 31
@@ -93,26 +99,31 @@ is unstable I give the scenario range instead of a fake single number.
   firm projection; flagged in §4.
 
 ### OpenRouter — MONTHLY
+
 - **100% — CLOSED until Oct 31 19:00 CDT** (known state, current). Reopens at the monthly
   reset ~Nov 1. Small free-tier pool; its reopening is a minor cascade event (scout seats).
 
 ### Open Design (opendesign) — 7-DAY (largest window)
+
 - **Last read 2026-10-28 06:40 CDT: 7-day 97% LEFT (3% used)**, 5h 100% left. No live feed
   (not in quota-current). ~301 usage records/7d. **Under-used but tiny**; data ~1 day stale.
 
 ### Antigravity — WEEKLY buckets (per model family)
+
 - **Last reads 2026-10-27T06:00Z: Gemini family 2% used (reset Oct 31 13:11Z), Claude/GPT
   family 50% used (reset Nov 1 09:23Z). The gatherer has emitted no antigravity rows since
   Oct 27.** These buckets matter — sonnet-plan and opus-plan route through antigravity-ls, so
   specialist/summit capacity depends on them. **Too stale to project (§4).**
 
 ### Claude (claude-code provider) — NOT CURRENTLY A BURNABLE POOL
+
 - Plan is on the **free tier** since 2026-10-27 and the provider is **disabled in the fleet
   config**. Gatherer reads error ("Rate limited"). The old anthropic:claude-pro series (68% @
   Oct 27 12:00Z, window reset Oct 28 14:00 CT) predates the free-tier state. Drew's "eventually
   Claude again" is a future cascade position, not a current one. **Not projectable.**
 
 ### Assistant's own subscription (Maximum) — tracked, NOT a session pool
+
 - Weekly **24%** @ 2026-10-29T07:33Z (quota_records; 20% @ 02:30Z the same night). Reset
   **Nov 3 00:59 CST**. Slope Oct 27 15:31 (8%) → Oct 29 07:33 (24%) ≈ +9.6 pts/day; 76 pts
   left over 5.97 days needs 12.7/day → **projects to land ~81–85%** — modestly under, and the
@@ -120,6 +131,7 @@ is unstable I give the scenario range instead of a fake single number.
   because the recorder series exists; per the pool map this is never a routing input.
 
 ### Excluded by policy
+
 - DeepSeek direct API and openai.alternate: PAYG/reserve and a stale-read second credential
   (weekly 0% @ Oct 27, resets Nov 3 06:15Z) respectively — not plan pools to schedule against.
 
@@ -144,7 +156,7 @@ rotates laterally (registry ladder). Projected sequence at current rates:
    From here to Nov 7 the only Go workspace is Lab, monthly-exhausted.
 5. **Nov 2–5 — THE TROUGH.** DeepSeek-family plan capacity ≈ opendesign (tiny) only. Work must
    ride Meta (fresh Nov 2), OpenAI plan (until its Nov 4 reset), and Antigravity Claude seats
-   (unmeasured — §4). Queue classes that only fit DeepSeek seats should be *held*, not forced
+   (unmeasured — §4). Queue classes that only fit DeepSeek seats should be _held_, not forced
    onto PAYG (NEVER FUNDS).
 6. **Nov 4 06:35Z — OpenAI plan weekly resets** (fresh ~100 pts; the Nov 4–11 week then needs
    ~14 pts/day sustained — queue Luna/Sol-fit work accordingly).
@@ -152,11 +164,11 @@ rotates laterally (registry ladder). Projected sequence at current rates:
    **Nov 7 05:55Z — Go Lab monthly resets** → full DeepSeek capacity returns. Second-cycle
    anchors after that: Meta weekly Nov 9 00:00Z, OpenAI plan weekly Nov 11 06:35Z, ClinePass weekly
    Nov 7 09:20Z / monthly Dec 5, Go Lab monthly Dec 7.
-   Second-cycle warning: if the Nov 2–5 trough just *defers* the DeepSeek backlog, Nov 5–7 will
+   Second-cycle warning: if the Nov 2–5 trough just _defers_ the DeepSeek backlog, Nov 5–7 will
    spike ClinePass/Go burn the same way this week did — the plan for the second cycle is to
    pre-spread that backlog across Nov 5–14 (~10 pts/day each) instead of another 3-day binge.
 
-Over-pace scenario branch: if the OpenAI plan's recent ~25 pts/day persists, it exhausts ~Nov 1, *before*
+Over-pace scenario branch: if the OpenAI plan's recent ~25 pts/day persists, it exhausts ~Nov 1, _before_
 the trough — the trough then leans entirely on Meta (post-Nov 2) and Antigravity. The 4–6h
 check (§5) is what detects which branch we're on.
 
@@ -168,21 +180,21 @@ Target trajectory = the constant daily rate from now that lands the pool at ~100
 reset (for windows already nearly spent, the trajectory is "finish cleanly, subsessions only
 near the wall" per the registry caveat).
 
-| Pool (largest window) | Now → reset | Needed rate | Measured rate | Verdict |
-|---|---|---|---|---|
-| Go Lab monthly | 87.2% → Nov 7 05:55Z | 1.4/day | +12.5 to +18.6/day | Exhausts ~Oct 30–31 (over) |
-| Go Personal monthly | ~84% → plan ends Nov 2 21:02 CT | 3.3/day | ~0/day | ~16 pts stranded (under) |
-| OpenAI plan weekly | 27% → Nov 4 06:35Z | 12.2/day | +5.9 (72h) / ~25 (active) | Base ~62% land (under); over scenario |
-| Meta weekly | 23.2% → Nov 2 00:00Z | 20.8/day | +6.6/day | Lands ~48% (under) |
-| ClinePass monthly | 91% → Nov 6 01:22Z | 1.2/day | +6.1 to +25/day | Exhausts ~Oct 29–30 (over, deliberate) |
-| Command Code monthly | 69% → Nov 2 | ~9/day | ~+0.4/day | Lands ~71% (under, stale data) |
-| Open Design 7-day | 3% used → ~Nov 3–4 | ~14/day | ~0.4/day | Lands ~5% (under, tiny) |
-| Assistant subscription (not a pool) | 24% → Nov 3 06:59Z | 12.7/day | +9.6/day | Lands ~81–85% (watch) |
+| Pool (largest window)               | Now → reset                     | Needed rate | Measured rate             | Verdict                                |
+| ----------------------------------- | ------------------------------- | ----------- | ------------------------- | -------------------------------------- |
+| Go Lab monthly                      | 87.2% → Nov 7 05:55Z            | 1.4/day     | +12.5 to +18.6/day        | Exhausts ~Oct 30–31 (over)             |
+| Go Personal monthly                 | ~84% → plan ends Nov 2 21:02 CT | 3.3/day     | ~0/day                    | ~16 pts stranded (under)               |
+| OpenAI plan weekly                  | 27% → Nov 4 06:35Z              | 12.2/day    | +5.9 (72h) / ~25 (active) | Base ~62% land (under); over scenario  |
+| Meta weekly                         | 23.2% → Nov 2 00:00Z            | 20.8/day    | +6.6/day                  | Lands ~48% (under)                     |
+| ClinePass monthly                   | 91% → Nov 6 01:22Z              | 1.2/day     | +6.1 to +25/day           | Exhausts ~Oct 29–30 (over, deliberate) |
+| Command Code monthly                | 69% → Nov 2                     | ~9/day      | ~+0.4/day                 | Lands ~71% (under, stale data)         |
+| Open Design 7-day                   | 3% used → ~Nov 3–4              | ~14/day     | ~0.4/day                  | Lands ~5% (under, tiny)                |
+| Assistant subscription (not a pool) | 24% → Nov 3 06:59Z              | 12.7/day    | +9.6/day                  | Lands ~81–85% (watch)                  |
 
 **Dated audibles (planned now, executed by the check in §5 or escalated per its rules):**
 
 - **A1 — Oct 30 (or the first check where Go Lab monthly ≥ 95%): rotate the laptop's active Go
-  workspace Lab → Personal** (existing runtime operation: activate the Personal *oauth*
+  workspace Lab → Personal** (existing runtime operation: activate the Personal _oauth_
   credential row) and pre-queue Flash-fit work against it, so Personal's remaining ~16 pts burn
   before the plan ends Nov 2 21:02 CT. If Lab monthly exhausts before Oct 30, rotate
   immediately at that check instead.
@@ -201,11 +213,12 @@ near the wall" per the registry caveat).
 - **A5 — standing, from the first check: Command Code + Open Design micro-burn.** Route the
   small CLI-shaped job class (one-shot probes, small fixes) through the Command Code resident
   proxy and opendesign seats at a steady trickle (~9 pts/day Command Code) — worth ~28 pts
-  before Nov 2 — *after* a fresh Command Code read exists (§4); do not burn blind.
+  before Nov 2 — _after_ a fresh Command Code read exists (§4); do not burn blind.
 
 ## 4. Flags
 
 **Projected to finish UNDER-used (queue work against these):**
+
 - **Go Personal (~16 pts, expires Nov 2 21:02 CT)** — work class: the Flash task queue
   (repo-queue worker shifts and issue-creator lanes are Flash-shaped). Rescued by A1.
 - **Meta weekly (~52 pts stranded at Nov 2 reset)** — work class: workhorse/specialist sessions
@@ -217,25 +230,27 @@ near the wall" per the registry caveat).
   for completeness.
 
 **Projected OVER-pace (the Drew flag: slow down or keep progressing?):**
+
 - **Go Lab monthly** — exhausts ~Oct 30–31, ~7 days early. Not really slow-down-able (the work
-  is useful and Personal rotation + the trough plan absorb the consequence), but the *trough
-  itself* is the cost to flag.
+  is useful and Personal rotation + the trough plan absorb the consequence), but the _trough
+  itself_ is the cost to flag.
 - **ClinePass monthly** — exhausts ~Oct 29–30, ~6–7 days early; deliberate finishing mode.
 - **OpenAI plan weekly (scenario)** — if the ~25 pts/day active rate persists across two
   consecutive checks, it exhausts ~Nov 1. This is the one genuine slow-down-or-push question:
   pushing is Drew's stated bias, but it deepens the Nov 2–5 trough.
 - **The Nov 2–5 trough is the composite flag**: three DeepSeek doors closed at once. The plan
   above treats it as survivable (Meta + OpenAI plan + Antigravity carry it); if Drew wants zero
-  trough, the only lever is slowing Go/ClinePass burn *now* — at the cost of stranding quota
+  trough, the only lever is slowing Go/ClinePass burn _now_ — at the cost of stranding quota
   if the slowdown overshoots. Recommendation in-plan: keep progressing, execute A1–A3.
 
 **Too stale / missing to project (named, not guessed):**
+
 - **Antigravity weekly buckets** — no gatherer rows since 2026-10-27T06:00Z; last values
   (Gemini 2%, Claude/GPT 50%) are 2 days old and their resets (Oct 31 / Nov 1) are imminent.
   Blocks trough planning for sonnet/opus seats. Fix: restore the antigravity feed or a daily
   console read.
 - **Go Personal burn rate** — % known from one console read (Oct 28 19:33 CDT); no series
-  exists because the gatherer only reads the *active* workspace (openchamber#736's
+  exists because the gatherer only reads the _active_ workspace (openchamber#736's
   per-workspace gap). A1 is sized on the % alone.
 - **Command Code** — freshest good read Oct 27 10:05 CDT; gatherer auth failing Oct 29;
   console sign-in pending (standing item). Projection is provisional.
@@ -276,10 +291,10 @@ and the slow-down-or-keep-progressing question; (b) a pool that goes **unmeasura
 24h) — like Antigravity today; (c) an audible that needs a route-config change beyond the
 watch's authority.
 
-**Audible execution split:** the check *executes directly* the audibles that are pure
+**Audible execution split:** the check _executes directly_ the audibles that are pure
 operations with standing authorization — queueing more work from the named backlogs against
 an under-paced pool, Go workspace rotation at the A1 trigger (oauth row activation is a
-documented runtime operation), holding a queue class at a pool wall. It *escalates* anything
+documented runtime operation), holding a queue class at a pool wall. It _escalates_ anything
 that changes route-pool weights/priorities in the deployed config (a code change via PR,
 per the fleet's config rules) — A2/A3's weight components are therefore pre-filed as dated
 PRs by the check's first runs, ready to merge on the audible date, rather than improvised at
@@ -291,7 +306,6 @@ the second consecutive check. If A1 fires, it is also the acceptance criterion's
 under-pace pool caught by the check" (Go Personal), with the rotation + queued work as the
 receipt.
 
-
 ---
 
 ## Addendum 2026-10-29 ~03:10 CDT — Command Code quota reads RESTORED
@@ -299,6 +313,7 @@ receipt.
 **Root cause:** every stored Command Code API key had been invalidated server-side. Three distinct key copies existed — the CLI login key in `~/.commandcode/auth.json` (minted 2026-10-23, == the Bitwarden `commandcode.api-key` copy), a second, different key in OpenCode's credential store (`commandcode` integration), and the 1Password copy (same value as the CLI key) — and ALL of them return HTTP 401 `Invalid 'Authorization' header or token` from `api.commandcode.ai/alpha/whoami`. The account itself is healthy: a fresh sign-in minted a working key immediately. The last steady reads were 2026-10-27, with intermittent successes into 2026-10-28 ~14:30Z before the failure became total (aggregator entry: `state: error`, "Command Code authentication failed", via the OpenChamber quota provider reading OpenCode's credential store). This is also the 401 that hit the OpenClaw `commandcode/...` route. The server-side trigger for the invalidation is not visible from here; no local config had changed.
 
 **Fix (per Drew's OAuth rule — agents click through themselves, laptop desktop, no waiting on the pending sign-in card):**
+
 1. `commandcode logout` + fresh `commandcode login` in a tmux TTY on the laptop (the login TUI needs a real terminal; it prints a `commandcode.ai/studio/auth/cli` link with a localhost callback listener).
 2. Opened the link in the laptop's headed Helium (staged profile copy, CDP-driven) → Command Code sign-in via GitHub → GitHub demanded Vertex Incorporated org SSO (Microsoft SAML); used the authorize URL's `skip_sso=true` continuation instead (the OAuth app only requests `read:user user:email`, no org data) → signed in → clicked **Authorize** on Command Code's "Authorize CLI Access" page → callback landed, CLI wrote a fresh `auth.json` (2026-10-29T08:01:52Z).
 3. New key verified directly: `whoami` 200, `billing/credits` 200. Replaced the OpenCode credential-store row for `commandcode` via the OpenCode server API (create new active row, delete the dead row; verified by hash match).

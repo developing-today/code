@@ -9,19 +9,8 @@ import { createClient, type Client } from "@libsql/client";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import {
-  migrate,
-  appendHotEvents,
-  getConsumerCheckpoint,
-  type HotEventInput,
-} from "../src/store";
-import {
-  buildQueueView,
-  claimOrder,
-  consumeHotList,
-  taskRef,
-  type QueueTaskRecord,
-} from "../src/queue-view";
+import { migrate, appendHotEvents, getConsumerCheckpoint, type HotEventInput } from "../src/store";
+import { buildQueueView, claimOrder, consumeHotList, taskRef, type QueueTaskRecord } from "../src/queue-view";
 import type { HotEventRow } from "../src/store";
 
 const SINCE = "2026-11-10T00:00:00Z";
@@ -86,7 +75,12 @@ describe("queue-view: refs and claim order", () => {
 describe("queue-view: buildQueueView", () => {
   const tasks = [
     task({ id: 11, priority: 20, created_at: "2026-11-09T02:00:00Z" }),
-    task({ id: 12, priority: 10, created_at: "2026-11-09T01:00:00Z", payload: { repo: "developing-today/code", kind: "triage", issue: { number: 200 } } }),
+    task({
+      id: 12,
+      priority: 10,
+      created_at: "2026-11-09T01:00:00Z",
+      payload: { repo: "developing-today/code", kind: "triage", issue: { number: 200 } },
+    }),
     task({
       id: 13,
       status: "claimed",
@@ -103,7 +97,11 @@ describe("queue-view: buildQueueView", () => {
       lane_id: "code-a",
       payload: { repo: "developing-today/code", kind: "small_fix", issue: { number: 400 } },
     }),
-    task({ id: 15, status: "done", payload: { repo: "developing-today/code", kind: "small_fix", issue: { number: 500 } } }),
+    task({
+      id: 15,
+      status: "done",
+      payload: { repo: "developing-today/code", kind: "small_fix", issue: { number: 500 } },
+    }),
   ];
   const events = [
     hotRow({ seq: 7, ref: "developing-today/code#100" }),

@@ -21,15 +21,15 @@ The fleet's storage grew store by store: a cold-store on Google Drive, R2 bucket
 ## The design — allocation policy
 
 1. **Tier table (the policy in one place):**
-   | Tier | Home | Holds | Rule |
-   |---|---|---|---|
-   | Hot ledger | Turso | coordination, registries, mirrors, Atlas hot set | named DB per domain; size watched (T5) |
-   | Relational platform | Supabase Postgres (muse-dev) | agent/ci/ideas/ainventory schemas | $30 ceiling; DIY backups on |
-   | Edge operational | R2 (per-tenant buckets) | backups in flight, cache nars, snapshots, payloads | buckets stay separate; no cold bulk by default |
-   | Binary cache | R2 `nix-cache-nars` via nix-cache | nix nars/narinfo | retention GC required (deliverable) |
-   | Cold archive | Google Drive cold-store | sealed 4–16 GB bundles + manifests | 3 TiB project budget; index outside Drive |
-   | Local canonical | laptop / lab machines | atlas.db, nix stores, working trees | never the only copy of anything canonical — a backup path must exist |
-   | Offsite personal | Backblaze (laptop) + B2 (Atlas shards) | machine backup, corpus shards | per X19/A1 |
+   | Tier                | Home                                   | Holds                                              | Rule                                                                 |
+   | ------------------- | -------------------------------------- | -------------------------------------------------- | -------------------------------------------------------------------- |
+   | Hot ledger          | Turso                                  | coordination, registries, mirrors, Atlas hot set   | named DB per domain; size watched (T5)                               |
+   | Relational platform | Supabase Postgres (muse-dev)           | agent/ci/ideas/ainventory schemas                  | $30 ceiling; DIY backups on                                          |
+   | Edge operational    | R2 (per-tenant buckets)                | backups in flight, cache nars, snapshots, payloads | buckets stay separate; no cold bulk by default                       |
+   | Binary cache        | R2 `nix-cache-nars` via nix-cache      | nix nars/narinfo                                   | retention GC required (deliverable)                                  |
+   | Cold archive        | Google Drive cold-store                | sealed 4–16 GB bundles + manifests                 | 3 TiB project budget; index outside Drive                            |
+   | Local canonical     | laptop / lab machines                  | atlas.db, nix stores, working trees                | never the only copy of anything canonical — a backup path must exist |
+   | Offsite personal    | Backblaze (laptop) + B2 (Atlas shards) | machine backup, corpus shards                      | per X19/A1                                                           |
 2. **Placement rule:** new data names its tier, its backup path, and its growth expectation before it is written. "We'll figure out backups later" is not an accepted state (X17's scope ruling is the template: every store gets all its backup forms named).
 3. **Never-delete vs GC:** Drew's never-delete rule binds the nix store and the cold archive (grow-only, monotonic). It does not bind caches: nix-cache nars and edge payloads are reproducible and get retention policy — the one place deletion is designed, with the rule written here before it runs.
 4. **Indexes outside bulk:** every bulk store (Drive bundles, R2 buckets, B2) has its index/manifest in a queryable ledger (Turso/Postgres/D1 projection), content-addressed (SHA-256 in the key/path, X7 pattern), so stores are interchangeable and restores are provable.

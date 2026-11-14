@@ -207,8 +207,14 @@ describe("epicGraph", () => {
     expect(shared.issueUrl).toBe("https://github.com/developing-today/code/issues/99");
     expect(shared.downstreamCount).toBe(3);
     expect(shared.downstreamItems.map((downstream) => downstream.ref)).toEqual([R(2), R(3), R(4)]);
-    expect(shared.downstreamItems.find((downstream) => downstream.ref === R(3))!.additionalBlockers).toEqual([R(2), R(91)]);
-    expect(shared.downstreamItems.find((downstream) => downstream.ref === R(4))!.additionalBlockers).toEqual([R(2), R(3)]);
+    expect(shared.downstreamItems.find((downstream) => downstream.ref === R(3))!.additionalBlockers).toEqual([
+      R(2),
+      R(91),
+    ]);
+    expect(shared.downstreamItems.find((downstream) => downstream.ref === R(4))!.additionalBlockers).toEqual([
+      R(2),
+      R(3),
+    ]);
 
     // Ranking summaries cover the complete member set, not only graph nodes.
     expect(epicGraph(pool, R(1), 2).rankedBlockers).toEqual(g.rankedBlockers);

@@ -921,9 +921,7 @@ fn keepalive_loop(broker: Arc<Broker>, idle_exit: bool) {
     loop {
         std::thread::sleep(Duration::from_secs(IDLE_TICK_S));
         let now = now_secs();
-        if idle_exit
-            && now.saturating_sub(broker.last_used.load(Ordering::Relaxed)) > idle
-        {
+        if idle_exit && now.saturating_sub(broker.last_used.load(Ordering::Relaxed)) > idle {
             // The Python exits via os._exit from its keepalive
             // loop; the same abruptness is fine — the broker holds
             // nothing that needs draining. Standalone brokers only:

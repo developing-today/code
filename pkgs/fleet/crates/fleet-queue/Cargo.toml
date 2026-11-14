@@ -13,7 +13,13 @@ description = "The fleet queue domain: the repo-queue client surface plus the qu
 # standalone artifact.
 [features]
 client = ["dep:fleet-config", "dep:ureq"]
-queue-broker = ["client", "dep:tiny_http", "dep:ureq", "dep:fleet-config", "dep:libc"]
+queue-broker = [
+  "client",
+  "dep:tiny_http",
+  "dep:ureq",
+  "dep:fleet-config",
+  "dep:libc",
+]
 secrets-broker = ["dep:tiny_http", "dep:fleet-config", "dep:libc"]
 
 [dependencies]

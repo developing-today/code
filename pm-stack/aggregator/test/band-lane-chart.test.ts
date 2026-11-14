@@ -43,7 +43,14 @@ function sliceFn(script: string, startMarker: string, endMarker: string): string
   return script.slice(a, b);
 }
 
-type BandPoint = { key: string; family: string; effort?: string; cost?: number | null; score?: number | null; time?: number | null };
+type BandPoint = {
+  key: string;
+  family: string;
+  effort?: string;
+  cost?: number | null;
+  score?: number | null;
+  time?: number | null;
+};
 type Band = { label: string; members: BandPoint[]; choices: BandPoint[]; leader?: BandPoint };
 type BandLaneChart = (title: string, metric: string, axisLabel: string, bands: Band[]) => string;
 
@@ -55,7 +62,9 @@ function loadBandLaneChart(): BandLaneChart {
   // famColor is populated from the page's point data at runtime; the
   // chart falls back to a default fill for unmapped families, and the
   // assertions below pin geometry/styling roles, not palette values.
-  const factory = new Function(`"use strict";\nvar famColor = {};\n${labels}\n${helpers}\n${chart}\nreturn bandLaneChart;`);
+  const factory = new Function(
+    `"use strict";\nvar famColor = {};\n${labels}\n${helpers}\n${chart}\nreturn bandLaneChart;`,
+  );
   return factory() as BandLaneChart;
 }
 
@@ -97,7 +106,9 @@ describe("bandLaneChart behavioural (#8600)", () => {
   });
 
   test("the band leader is styled as leader; other choices as near-leaders", () => {
-    const bands: Band[] = [{ label: "Band A", members: [pt("cheap", 0.5), pt("mid", 5)], choices: [pt("cheap", 0.5), pt("mid", 5)] }];
+    const bands: Band[] = [
+      { label: "Band A", members: [pt("cheap", 0.5), pt("mid", 5)], choices: [pt("cheap", 0.5), pt("mid", 5)] },
+    ];
     const svg = bandLaneChart("T", "cost", "USD / task", bands);
     const [leader, other] = circles(svg);
     // No explicit band.leader: choices[0] leads.
@@ -110,7 +121,12 @@ describe("bandLaneChart behavioural (#8600)", () => {
     expect(svg).toContain("— near-leader");
     // An explicit leader by key wins over position.
     const flipped: Band[] = [
-      { label: "Band A", members: [pt("cheap", 0.5), pt("mid", 5)], choices: [pt("cheap", 0.5), pt("mid", 5)], leader: pt("mid", 5) },
+      {
+        label: "Band A",
+        members: [pt("cheap", 0.5), pt("mid", 5)],
+        choices: [pt("cheap", 0.5), pt("mid", 5)],
+        leader: pt("mid", 5),
+      },
     ];
     const svg2 = bandLaneChart("T", "cost", "USD / task", flipped);
     const [first, second] = circles(svg2);

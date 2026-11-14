@@ -298,7 +298,9 @@ class TestDumpRepairFilter(unittest.TestCase):
             "INSERT INTO sqlite_schema(type,name,tbl_name,rootpage,sql) "
             "VALUES('trigger','tr','ft',0,'" + sql + "');\n"
         ).encode()
-        escaped = raw.replace(b"'bad'", b"''bad''").replace(b"VALUES('x')", b"VALUES(''x'')")
+        escaped = raw.replace(b"'bad'", b"''bad''").replace(
+            b"VALUES('x')", b"VALUES(''x'')"
+        )
         for variant in (raw, escaped):
             data = (
                 b"PRAGMA writable_schema=ON;\n"
@@ -308,7 +310,9 @@ class TestDumpRepairFilter(unittest.TestCase):
             out = self.run_filter(data)
             # Mis-escaped input is repaired (quotes doubled); escaped
             # input passes through byte-identical.
-            self.assertEqual(out, data.replace(raw, escaped) if variant is raw else data)
+            self.assertEqual(
+                out, data.replace(raw, escaped) if variant is raw else data
+            )
             db = sqlite3.connect(":memory:")
             db.executescript(
                 "CREATE TABLE ft(x); CREATE TABLE log(v);"
@@ -317,7 +321,9 @@ class TestDumpRepairFilter(unittest.TestCase):
             )
             db.executescript(out.decode())
             self.assertEqual(
-                db.execute("SELECT sql FROM sqlite_schema WHERE name='tr'").fetchone()[0],
+                db.execute("SELECT sql FROM sqlite_schema WHERE name='tr'").fetchone()[
+                    0
+                ],
                 sql,
             )
             db.close()
@@ -344,7 +350,9 @@ class TestDumpRepairFilter(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         return result.stdout
 
-    def test_over_cap_candidate_streams_through_and_following_statement_is_repaired(self):
+    def test_over_cap_candidate_streams_through_and_following_statement_is_repaired(
+        self,
+    ):
         # #6525: a candidate that grows past the buffer cap without
         # terminating is flushed unchanged and streamed, not held;
         # its end is still recognised, so the next statement gets
@@ -430,12 +438,24 @@ class TestDumpRepairFilter(unittest.TestCase):
         # it -- that is where the corruption would appear.
         filler2 = (b"x" * 100 + b"\n") * 20
         data = (
-            opener + filler + fake_complete + b"\n" + fake_candidate
-            + filler2 + b"');\n" + BROKEN_SCHEMA_INSERT
+            opener
+            + filler
+            + fake_complete
+            + b"\n"
+            + fake_candidate
+            + filler2
+            + b"');\n"
+            + BROKEN_SCHEMA_INSERT
         )
         expected = (
-            opener + filler + fake_complete + b"\n" + fake_candidate
-            + filler2 + b"');\n" + ESCAPED_SCHEMA_INSERT
+            opener
+            + filler
+            + fake_complete
+            + b"\n"
+            + fake_candidate
+            + filler2
+            + b"');\n"
+            + ESCAPED_SCHEMA_INSERT
         )
         self.assertEqual(self.run_filter_capped(data, 4096), expected)
 
@@ -462,14 +482,18 @@ class TestDumpRepairFilter(unittest.TestCase):
             proc.stdin.write(opener + filler)
             proc.stdin.flush()
             ready, _, _ = select.select([proc.stdout], [], [], 15)
-            self.assertTrue(ready, "no output before EOF: the candidate is being buffered whole")
+            self.assertTrue(
+                ready, "no output before EOF: the candidate is being buffered whole"
+            )
             first = os.read(proc.stdout.fileno(), 4096)
             self.assertTrue(first.startswith(b"INSERT INTO sqlite_schema("))
             proc.stdin.write(b"');\nPRAGMA writable_schema=OFF;\n")
             proc.stdin.close()
             rest = proc.stdout.read()
             self.assertEqual(proc.wait(timeout=60), 0)
-            self.assertEqual(first + rest, opener + filler + b"');\nPRAGMA writable_schema=OFF;\n")
+            self.assertEqual(
+                first + rest, opener + filler + b"');\nPRAGMA writable_schema=OFF;\n"
+            )
         finally:
             if proc.poll() is None:
                 proc.kill()

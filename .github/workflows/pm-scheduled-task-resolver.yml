@@ -5,12 +5,6 @@ name: pm-scheduled-task-resolver
 # Basic-tier contract coverage for explicit scheduled-task validation.
 
 on:
-  pull_request:
-    paths:
-      - ".github/scripts/resolve-pm-scheduled-tasks.sh"
-      - ".github/scripts/resolve-pm-scheduled-tasks.test.sh"
-      - ".github/workflows/pm-scheduled.yml"
-      - ".github/workflows/pm-scheduled-task-resolver.yml"
   push:
     branches: [main]
     paths:

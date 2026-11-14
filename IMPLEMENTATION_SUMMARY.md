@@ -30,6 +30,7 @@ This document summarizes the implementation of slice 1 for issue #3026: **OpenCo
 ### Six-Step Execution Process
 
 #### Step 1: Supervision (Live Mode Only)
+
 - Checks all bound opencode-lane tasks for recovery candidates
 - **Zero-message recovery**: Tasks bound to sessions with no messages
   - Verifies zero messages via OpenCode server API
@@ -42,6 +43,7 @@ This document summarizes the implementation of slice 1 for issue #3026: **OpenCo
 - **Terminal failure**: When attempts exhausted, fails task terminally
 
 #### Step 2: Gate
+
 - Discovers unbound opencode-lane candidates from four queues
 - Filters for tasks with:
   - `lane: "opencode"`
@@ -50,12 +52,14 @@ This document summarizes the implementation of slice 1 for issue #3026: **OpenCo
 - Returns True if candidates exist
 
 #### Step 3: Cap
+
 - Queries OpenCode server for active root session count
 - Calculates cap_room = `36 - active_count`
 - Returns -1 (unknown) when server unreadable
 - Prevents launches when cap_room <= 0
 
 #### Step 4: Launch
+
 - Respects queue priority (order in QUEUES list)
 - Re-verifies task state before each launch
 - Creates worker sessions via OpenCode server API
@@ -69,10 +73,12 @@ This document summarizes the implementation of slice 1 for issue #3026: **OpenCo
   - Includes execution context with session_id
 
 #### Step 5: Terminal States
+
 - Handled by worker sessions themselves
 - Workers use CLI terminal verbs: complete, park, block, fail
 
 #### Step 6: Logging
+
 - Appends fire log entry to `~/.local/state/opencode-claimant/fires.jsonl`
 - JSON line format with:
   - timestamp
@@ -85,24 +91,28 @@ This document summarizes the implementation of slice 1 for issue #3026: **OpenCo
 ### Key Features
 
 #### Concurrency Management
+
 - **36 active root sessions** cap (raised from 12→20→36 on 2026-11-05)
 - Active sessions counted via OpenCode server API
 - Fail-closed behavior when cap unknown
 - Respects cap during launch loop
 
 #### Recovery Rules (#4758, Phase 3 of #4912)
+
 - **Zero-message recovery**: Sessions with no messages that never received prompts
 - **Gone-session recovery**: Sessions that disappeared from server
 - **Atomic recovery operations**: Compare-and-clear guards prevent race conditions
 - **Attempt tracking**: Recovery consumes one attempt, prevents infinite loops
 
 #### Atomic Operations
+
 - **Bind operation**: Atomic write to both lane ledger and task progress
 - **Recovery operation**: Atomic reclaim of task with session deletion
 - **No double-binding**: Never bind a session you didn't create
 - **Session location verification**: Verify `location.directory` before binding
 
 #### Mode System
+
 - **Shadow mode** (default): Discovery-only, no mutations
 - **Live mode**: Full execution including session creation
 - Mode file: `~/.local/state/opencode-claimant/mode`
@@ -121,6 +131,7 @@ This document summarizes the implementation of slice 1 for issue #3026: **OpenCo
 ## Technical Implementation
 
 ### Dependencies
+
 - Python 3.8+
 - Standard library only (urllib replaces requests)
 - `repo-queue` CLI at `~/fleet-brokers/bin/repo-queue`
@@ -147,7 +158,7 @@ pm-stack/opencode-claimant/
 ```python
 QUEUES = [
     "repo-health-code-pilot",
-    "repo-health-opencode-pilot", 
+    "repo-health-opencode-pilot",
     "repo-health-openchamber-pilot",
     "repo-health-nix-pilot"
 ]
@@ -161,6 +172,7 @@ LAUNCHED_BY_RECOVERY_GONE_SESSION = "opencode-claimant-recovery:gone-session"
 ## Testing and Verification
 
 ### Test Suite (test_slice1.sh)
+
 - ✅ Shadow mode execution
 - ✅ Fire log creation
 - ✅ poll.py functionality
@@ -168,6 +180,7 @@ LAUNCHED_BY_RECOVERY_GONE_SESSION = "opencode-claimant-recovery:gone-session"
 - ✅ Constants verification
 
 ### Verification Suite (verify_slice1.sh)
+
 - ✅ 43/43 verification checks passed
 - ✅ File structure verification
 - ✅ Script executability
@@ -180,6 +193,7 @@ LAUNCHED_BY_RECOVERY_GONE_SESSION = "opencode-claimant-recovery:gone-session"
 - ✅ Documentation verification
 
 ### Execution Results
+
 ```
 Test Suite: 5/5 tests passed
 Verification Suite: 43/43 checks passed
@@ -188,6 +202,7 @@ Verification Suite: 43/43 checks passed
 ## Production Readiness
 
 ### What Works Today
+
 - ✅ Mode-based execution (shadow/live)
 - ✅ Supervision with recovery rules
 - ✅ Candidate discovery from four queues
@@ -197,6 +212,7 @@ Verification Suite: 43/43 checks passed
 - ✅ All verification tests pass
 
 ### Known Limitations (Documented)
+
 1. Session prompt delivery: Documented but not fully implemented (would use session API)
 2. get_stuck_bound(): Placeholder in poll.py (requires server API access)
 3. Error handling: Assumes server API is available and responsive
@@ -206,23 +222,28 @@ These limitations do not affect the core functionality required for slice 1.
 ## Usage
 
 ### Running in Shadow Mode (Default)
+
 ```bash
 python3 pm-stack/opencode-claimant/claimant.py
 ```
+
 - Discovery-only
 - No mutations
 - Safe for testing
 
 ### Running in Live Mode
+
 ```bash
 echo "live" > ~/.local/state/opencode-claimant/mode
 python3 pm-stack/opencode-claimant/claimant.py
 ```
+
 - Full execution
 - Session creation, binding, prompt delivery
 - Production use
 
 ### Testing
+
 ```bash
 # Run test suite
 bash pm-stack/opencode-claimant/test_slice1.sh
@@ -235,6 +256,7 @@ python3 pm-stack/opencode-claimant/poll.py
 ```
 
 ### Helper Commands
+
 ```bash
 # Make scripts executable
 make all
@@ -264,6 +286,7 @@ make live
 The OpenCode lane claimant/executor slice 1 implementation is **COMPLETE and PRODUCTION-READY**. All requirements from the specification have been met, all tests pass, and the implementation follows the deterministic specification in claimant.py.
 
 ### Key Achievements
+
 - ✅ 529 lines of production code
 - ✅ 459 lines of candidate discovery logic
 - ✅ 43/43 verification checks passed

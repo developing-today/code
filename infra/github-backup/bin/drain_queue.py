@@ -45,7 +45,15 @@ import json, os, sys, time, urllib.request, urllib.parse
 from datetime import datetime, timezone
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from ghb_common import load_config, backup_root, load_plan, load_state, report_problems, save_json, state_lock
+from ghb_common import (
+    load_config,
+    backup_root,
+    load_plan,
+    load_state,
+    report_problems,
+    save_json,
+    state_lock,
+)
 import fetch_mirrors
 
 COALESCE_S = 15 * 60
@@ -259,7 +267,11 @@ def _main_locked(cfg, root):
         # never be acked (ack is by id) and must never abort the
         # drain — the #3331 poison pill one level up. Drop it loudly,
         # count it in the summary, and keep draining.
-        if not isinstance(ev, dict) or not isinstance(ev.get("id"), str) or not ev.get("id"):
+        if (
+            not isinstance(ev, dict)
+            or not isinstance(ev.get("id"), str)
+            or not ev.get("id")
+        ):
             dropped_malformed += 1
             log(
                 f"{stamp} DRAIN-DROP malformed event={ev!r:.120} "

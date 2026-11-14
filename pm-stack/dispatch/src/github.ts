@@ -263,9 +263,7 @@ export class GitHubClient {
         try {
           data = bodyObject(await jsonBody(res, endpoint), endpoint);
         } catch (shapeErr) {
-          throw new MalformedCreateBodyError(
-            shapeErr instanceof Error ? shapeErr.message : String(shapeErr),
-          );
+          throw new MalformedCreateBodyError(shapeErr instanceof Error ? shapeErr.message : String(shapeErr));
         }
         let number: number;
         let url: string;
@@ -273,9 +271,7 @@ export class GitHubClient {
           number = reqInt(data, "number", endpoint);
           url = reqString(data, "html_url", endpoint);
         } catch (shapeErr) {
-          throw new MalformedCreateBodyError(
-            shapeErr instanceof Error ? shapeErr.message : String(shapeErr),
-          );
+          throw new MalformedCreateBodyError(shapeErr instanceof Error ? shapeErr.message : String(shapeErr));
         }
         return { number, url };
       } catch (e) {

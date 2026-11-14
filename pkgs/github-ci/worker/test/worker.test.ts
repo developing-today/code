@@ -1,9 +1,4 @@
-import {
-  createExecutionContext,
-  env,
-  fetchMock,
-  waitOnExecutionContext,
-} from "cloudflare:test";
+import { createExecutionContext, env, fetchMock, waitOnExecutionContext } from "cloudflare:test";
 import { describe, expect, it, beforeAll, afterEach } from "vitest";
 import worker from "../src/index";
 
@@ -19,33 +14,17 @@ async function sign(body: string): Promise<string> {
     false,
     ["sign"],
   );
-  const sig = await crypto.subtle.sign(
-    "HMAC",
-    key,
-    new TextEncoder().encode(body),
-  );
-  return (
-    "sha256=" +
-    [...new Uint8Array(sig)]
-      .map((b) => b.toString(16).padStart(2, "0"))
-      .join("")
-  );
+  const sig = await crypto.subtle.sign("HMAC", key, new TextEncoder().encode(body));
+  return "sha256=" + [...new Uint8Array(sig)].map((b) => b.toString(16).padStart(2, "0")).join("");
 }
 
 function tursoOk() {
   return JSON.stringify({
-    results: [
-      { type: "success", response: { type: "execute", result: { rows: [] } } },
-      { type: "success" },
-    ],
+    results: [{ type: "success", response: { type: "execute", result: { rows: [] } } }, { type: "success" }],
   });
 }
 
-async function post(
-  body: string,
-  event: string,
-  sig?: string,
-): Promise<Response> {
+async function post(body: string, event: string, sig?: string): Promise<Response> {
   const req = new Request("https://github-ci.test/", {
     method: "POST",
     headers: {
@@ -55,10 +34,7 @@ async function post(
     body,
   });
   const ctx = createExecutionContext();
-  const res = await worker.fetch(
-    req,
-    env as unknown as Parameters<typeof worker.fetch>[1],
-  );
+  const res = await worker.fetch(req, env as unknown as Parameters<typeof worker.fetch>[1]);
   await waitOnExecutionContext(ctx);
   return res;
 }
@@ -113,7 +89,7 @@ describe("github-ci worker", () => {
   });
 
   it("rejects a signed scalar body with 400 (#6946)", async () => {
-    const body = "\"hello\"";
+    const body = '"hello"';
     const res = await post(body, "push", await sign(body));
     expect(res.status).toBe(400);
   });
@@ -142,15 +118,10 @@ describe("github-ci worker", () => {
   });
 
   it("fails the delivery (500) when Turso answers a results-less 200 for the ci_events insert (#6949)", async () => {
-    fetchMock
-      .get(PLATFORM)
-      .intercept({ path: "/v2/pipeline", method: "POST" })
-      .reply(200, "{}");
+    fetchMock.get(PLATFORM).intercept({ path: "/v2/pipeline", method: "POST" }).reply(200, "{}");
     const res = await post(runPayload, "workflow_run", await sign(runPayload));
     expect(res.status).toBe(500);
-    expect(await res.text()).toContain(
-      "turso pipeline failed: malformed response",
-    );
+    expect(await res.text()).toContain("turso pipeline failed: malformed response");
   });
 
   it("skips non-completed runs without touching Turso", async () => {
@@ -179,12 +150,10 @@ describe("github-ci worker", () => {
     const queueMock = fetchMock.get(QUEUE);
     // snapshot read (1 pipeline) + upsert (1) + event insert (1)
     for (let i = 0; i < 3; i++) {
-      queueMock
-        .intercept({ path: "/v2/pipeline", method: "POST" })
-        .reply(200, (opts) => {
-          seen.push(String(opts.body));
-          return tursoOk();
-        });
+      queueMock.intercept({ path: "/v2/pipeline", method: "POST" }).reply(200, (opts) => {
+        seen.push(String(opts.body));
+        return tursoOk();
+      });
     }
     const p = JSON.stringify({
       ref: "refs/heads/main",
@@ -205,12 +174,10 @@ describe("github-ci worker", () => {
     // sink event insert (1) + watermark (1) + mirror DDL batch (1)
     // + mirror column probe (1) + mirror writes batch (1)
     for (let i = 0; i < 5; i++) {
-      queueMock
-        .intercept({ path: "/v2/pipeline", method: "POST" })
-        .reply(200, (opts) => {
-          seen.push(String(opts.body));
-          return tursoOk();
-        });
+      queueMock.intercept({ path: "/v2/pipeline", method: "POST" }).reply(200, (opts) => {
+        seen.push(String(opts.body));
+        return tursoOk();
+      });
     }
     const p = JSON.stringify({
       action: "opened",
@@ -243,12 +210,10 @@ describe("github-ci worker", () => {
     // sink event insert (1) + watermark (1) + mirror DDL batch (1)
     // + mirror column probe (1) + mirror writes batch (1)
     for (let i = 0; i < 5; i++) {
-      queueMock
-        .intercept({ path: "/v2/pipeline", method: "POST" })
-        .reply(200, (opts) => {
-          seen.push(String(opts.body));
-          return tursoOk();
-        });
+      queueMock.intercept({ path: "/v2/pipeline", method: "POST" }).reply(200, (opts) => {
+        seen.push(String(opts.body));
+        return tursoOk();
+      });
     }
     const p = JSON.stringify({
       action: "created",

@@ -47,7 +47,7 @@ for ((i = 0; i < ${#ARGS_TO_VALIDATE[@]}; i++)); do
   case "${ARGS_TO_VALIDATE[i]}" in
   --item | --field | --secret | --project | --prefix | --format)
     NEXT_VALUE="${ARGS_TO_VALIDATE[i + 1]-}"
-    if [[ -z "$NEXT_VALUE" || "$NEXT_VALUE" == -* ]]; then
+    if [[ -z $NEXT_VALUE || $NEXT_VALUE == -* ]]; then
       echo "Error: Option ${ARGS_TO_VALIDATE[i]} requires a value" >&2
       # `exit` would kill the caller's shell when sourced.
       if is_sourced; then return 1; else exit 1; fi
@@ -219,7 +219,10 @@ b64_encode_value() {
 DECODED_VALUE=""
 b64_decode_value() {
   local tmp
-  tmp="$(jq -jn --arg v "$1" '$v | @base64d'; printf 'x')"
+  tmp="$(
+    jq -jn --arg v "$1" '$v | @base64d'
+    printf 'x'
+  )"
   DECODED_VALUE="${tmp%x}"
 }
 

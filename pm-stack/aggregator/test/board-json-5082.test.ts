@@ -24,12 +24,7 @@ const item = (ref: RefKey): GhItem => ({
   updatedAt: iso(DAY),
 });
 
-const card = (
-  title: string,
-  status: BoardItem["status"],
-  links: string[],
-  updatedAt: string = iso(0),
-): BoardItem => ({
+const card = (title: string, status: BoardItem["status"], links: string[], updatedAt: string = iso(0)): BoardItem => ({
   id: `kaneo:code/${title}`,
   title,
   repo: "developing-today/code",
@@ -39,8 +34,7 @@ const card = (
   links: links.map((ref) => ({ ref, relation: "tracks" as const })),
 });
 
-const itemsMap = (refs: string[]): Map<RefKey, GhItem> =>
-  new Map(refs.map((ref) => [ref, item(ref)] as const));
+const itemsMap = (refs: string[]): Map<RefKey, GhItem> => new Map(refs.map((ref) => [ref, item(ref)] as const));
 
 describe("boardJsonBody (#5082)", () => {
   test("returns every live card and only the items those cards link", () => {
@@ -84,10 +78,7 @@ describe("boardJsonBody (#5082)", () => {
 
     expect(body.board.map((c) => c.title)).toEqual(["live", "recent finish"]);
     // The aged-out and retired-class cards' items must not leak in.
-    expect(body.items.map((i) => i.ref).sort()).toEqual([
-      "developing-today/code#1",
-      "developing-today/code#2",
-    ]);
+    expect(body.items.map((i) => i.ref).sort()).toEqual(["developing-today/code#1", "developing-today/code#2"]);
   });
 
   test("caps the done strip at the render limit, newest first, and bounds items with it", () => {
@@ -104,9 +95,7 @@ describe("boardJsonBody (#5082)", () => {
     expect(body.board.map((c) => c.title)).toContain("done-0");
     expect(body.board.map((c) => c.title)).not.toContain(`done-${DONE_STRIP_RENDER_LIMIT + 4}`);
     expect(body.items).toHaveLength(1 + DONE_STRIP_RENDER_LIMIT);
-    expect(body.items.map((i) => i.ref)).not.toContain(
-      `developing-today/code#d${DONE_STRIP_RENDER_LIMIT + 4}`,
-    );
+    expect(body.items.map((i) => i.ref)).not.toContain(`developing-today/code#d${DONE_STRIP_RENDER_LIMIT + 4}`);
   });
 
   test("showAllDone restores the full done strip and its items (the ?done=all escape hatch)", () => {
@@ -143,8 +132,6 @@ describe("boardJsonBody (#5082)", () => {
 
     expect(bounded.board.length).toBe(DONE_STRIP_RENDER_LIMIT);
     expect(bounded.items.length).toBe(DONE_STRIP_RENDER_LIMIT);
-    expect(JSON.stringify(bounded, null, 2).length).toBeLessThan(
-      JSON.stringify(unbounded, null, 2).length / 10,
-    );
+    expect(JSON.stringify(bounded, null, 2).length).toBeLessThan(JSON.stringify(unbounded, null, 2).length / 10);
   });
 });

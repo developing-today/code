@@ -42,14 +42,17 @@ function capUnits(t: string, max: number): string {
 
 /** Provider errors are useful evidence, but must never turn a credential value into feed data. */
 export function safeProviderReason(reason: string): string {
-  return capUnits(reason
-    .replace(/\bBearer\s+[^\s,;]+/gi, "Bearer [redacted]")
-    .replace(/\beyJ[a-zA-Z0-9_-]{8,}\.[a-zA-Z0-9_-]{8,}(?:\.[a-zA-Z0-9_-]+)?\b/g, "[redacted]")
-    .replace(
-      /\b((?:access|refresh|api|auth)?[_-]?(?:token|secret|password|cookie|api[_-]?key))\s*[:=]\s*["']?[^\s,;"'}]+/gi,
-      "$1=[redacted]",
-    )
-    .replace(/\bsk-[A-Za-z0-9_-]{8,}\b/g, "[redacted]"), 240);
+  return capUnits(
+    reason
+      .replace(/\bBearer\s+[^\s,;]+/gi, "Bearer [redacted]")
+      .replace(/\beyJ[a-zA-Z0-9_-]{8,}\.[a-zA-Z0-9_-]{8,}(?:\.[a-zA-Z0-9_-]+)?\b/g, "[redacted]")
+      .replace(
+        /\b((?:access|refresh|api|auth)?[_-]?(?:token|secret|password|cookie|api[_-]?key))\s*[:=]\s*["']?[^\s,;"'}]+/gi,
+        "$1=[redacted]",
+      )
+      .replace(/\bsk-[A-Za-z0-9_-]{8,}\b/g, "[redacted]"),
+    240,
+  );
 }
 
 export function lifecycleForEntry(entry: QuotaCurrentEntry, now = new Date()): CredentialLifecycleRow {
@@ -85,7 +88,10 @@ export function lifecycleForEntry(entry: QuotaCurrentEntry, now = new Date()): C
     ...(hasExpiry ? { expiresAt } : {}),
     ...(error ? { reason: error } : {}),
   };
-  if ((entry.providerId === "claude" || entry.providerId === "_claude") && (state === "expired" || state === "expiring")) {
+  if (
+    (entry.providerId === "claude" || entry.providerId === "_claude") &&
+    (state === "expired" || state === "expiring")
+  ) {
     const title =
       entry.credentialSource === "opencode"
         ? "Refresh Anthropic authentication in OpenCode"

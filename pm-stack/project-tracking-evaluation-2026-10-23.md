@@ -23,7 +23,7 @@ maintainable by agents, not just by you clicking.
 **Start with GitHub Projects.** It's built out of the issues and PRs that
 already exist, costs nothing extra, has both levels you asked for (board +
 roadmap views over one item pool), and your agents can run it with the `gh`
-tooling they already use. **Linear is the better *product*** — faster, more
+tooling they already use. **Linear is the better _product_** — faster, more
 opinionated, stronger cycle and roadmap mechanics — but it introduces a second
 system of record next to GitHub and a per-seat bill, and its advantages matter
 most to human teams, less to a solo operator whose workforce is agents.
@@ -34,7 +34,7 @@ Choose Linear instead if the deciding factors below flip for you.
 ### Level 1 — work in progress / upcoming (the "what's next" board)
 
 - **GitHub Projects:** a Board view on Status (Todo / In Progress / In Review /
-  Done). Issues *and* PRs are items, so "PR awaiting merge" sits next to the
+  Done). Issues _and_ PRs are items, so "PR awaiting merge" sits next to the
   issue it closes. An Iteration field gives you sprint-style buckets
   (`sprint:@current` filtering), and board columns support soft WIP limits
   (a warning signal, not enforcement). Curation is the auto-add workflow: per
@@ -71,7 +71,7 @@ Choose Linear instead if the deciding factors below flip for you.
 
 ## The deciding differences, for your setup specifically
 
-1. **Source of truth.** Projects adds fields *onto* your GitHub issues; the
+1. **Source of truth.** Projects adds fields _onto_ your GitHub issues; the
    repos stay canonical and nothing can drift. Linear duplicates the tracker:
    even with GitHub sync, statuses and comments live in two places and the
    sync rules become one more thing to debug. With an agent fleet writing to
@@ -94,7 +94,7 @@ Choose Linear instead if the deciding factors below flip for you.
    **$10/user/month billed yearly** (5 teams, unlimited issues), Business
    $16 (unlimited/private teams, Insights). Solo, that's $120/year for the
    tier you'd actually run — small, but it's a new recurring line, and it
-   only pays off if *you* live in the UI enough to feel the UX win.
+   only pays off if _you_ live in the UI enough to feel the UX win.
 5. **Feel.** GitHub Projects is a spreadsheet that learned boards: flexible,
    occasionally clunky, filters are powerful but fiddly. Linear is famously
    fast and keyboard-driven and decides your process for you (cycles,
@@ -123,7 +123,7 @@ Choose Linear instead if the deciding factors below flip for you.
 
 ## What would change the recommendation
 
-- You start planning regularly *with other people* (Linear's initiatives and
+- You start planning regularly _with other people_ (Linear's initiatives and
   updates are built for an audience).
 - The personal/org repo seam starts hiding real work (Linear removes it).
 - The Projects UI friction measurably slows your morning readout — the thing

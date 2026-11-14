@@ -789,7 +789,9 @@ class TestLockReadersWrongShapes(unittest.TestCase):
     def test_well_formed_lock_unchanged_in_both_copies(self):
         for label, script_dir in COPIES.items():
             with self.subTest(copy=label):
-                discover, info, ref, locked_rev = self._readers(self._module(script_dir))
+                discover, info, ref, locked_rev = self._readers(
+                    self._module(script_dir)
+                )
                 self.assertEqual(discover(FLAKE_LOCK, None), ["nixpkgs"])
                 self.assertEqual(
                     info(FLAKE_LOCK, "nixpkgs"),
@@ -846,8 +848,16 @@ class TestLockReadersWrongShapes(unittest.TestCase):
         }
         for label, script_dir in COPIES.items():
             with self.subTest(copy=label):
-                discover, info, ref, locked_rev = self._readers(self._module(script_dir))
-                for name, (node, want_discover, want_info, want_ref, want_rev) in cases.items():
+                discover, info, ref, locked_rev = self._readers(
+                    self._module(script_dir)
+                )
+                for name, (
+                    node,
+                    want_discover,
+                    want_info,
+                    want_ref,
+                    want_rev,
+                ) in cases.items():
                     with self.subTest(shape=name):
                         lock = self._lock(node)
                         self.assertEqual(discover(lock, None), want_discover)
@@ -865,7 +875,9 @@ class TestLockReadersWrongShapes(unittest.TestCase):
         }
         for label, script_dir in COPIES.items():
             with self.subTest(copy=label):
-                discover, info, ref, locked_rev = self._readers(self._module(script_dir))
+                discover, info, ref, locked_rev = self._readers(
+                    self._module(script_dir)
+                )
                 lock = self._lock(node)
                 self.assertEqual(discover(lock, None), ["nixpkgs"])
                 self.assertIsNone(locked_rev(lock, "nixpkgs"))
@@ -885,7 +897,9 @@ class TestLockReadersWrongShapes(unittest.TestCase):
         }
         for label, script_dir in COPIES.items():
             with self.subTest(copy=label):
-                discover, info, ref, locked_rev = self._readers(self._module(script_dir))
+                discover, info, ref, locked_rev = self._readers(
+                    self._module(script_dir)
+                )
                 lock = self._lock(node)
                 self.assertEqual(discover(lock, None), [])
                 self.assertEqual(discover(lock, "master"), [])
@@ -902,7 +916,9 @@ class TestLockReadersWrongShapes(unittest.TestCase):
         )
         for label, script_dir in COPIES.items():
             with self.subTest(copy=label):
-                discover, info, ref, locked_rev = self._readers(self._module(script_dir))
+                discover, info, ref, locked_rev = self._readers(
+                    self._module(script_dir)
+                )
                 for lock in locks:
                     self.assertEqual(discover(lock, None), [])
                     self.assertEqual(
@@ -916,12 +932,8 @@ class TestLockReadersWrongShapes(unittest.TestCase):
             with self.subTest(copy=label):
                 mod = self._module(script_dir)
                 tree = Path(tempfile.mkdtemp(prefix="uni-shape-pin-"))
-                (tree / "flake.lock").write_text(
-                    json.dumps(self._lock("nixpkgs-node"))
-                )
-                self.assertFalse(
-                    mod["pin_input"]("nixpkgs", tree, {"rev": "a" * 40})
-                )
+                (tree / "flake.lock").write_text(json.dumps(self._lock("nixpkgs-node")))
+                self.assertFalse(mod["pin_input"]("nixpkgs", tree, {"rev": "a" * 40}))
 
 
 class _Missing:
@@ -941,17 +953,36 @@ def _random_json(rng, depth):
     if kind == 1:
         return rng.choice([True, False, 0, 1, 7, 123, -1, 2.5])
     if kind == 2:
-        return rng.choice([
-            "", "nixpkgs", "github", "NixOS", "master", "root",
-            "a" * 40, "nixos-unstable",
-        ])
+        return rng.choice(
+            [
+                "",
+                "nixpkgs",
+                "github",
+                "NixOS",
+                "master",
+                "root",
+                "a" * 40,
+                "nixos-unstable",
+            ]
+        )
     if kind == 3:
         return [_random_json(rng, depth + 1) for _ in range(rng.randrange(3))]
-    keys = ["nodes", "root", "inputs", "original", "locked", "type",
-            "owner", "repo", "ref", "rev", "nixpkgs", "nixpkgs-node"]
+    keys = [
+        "nodes",
+        "root",
+        "inputs",
+        "original",
+        "locked",
+        "type",
+        "owner",
+        "repo",
+        "ref",
+        "rev",
+        "nixpkgs",
+        "nixpkgs-node",
+    ]
     return {
-        rng.choice(keys): _random_json(rng, depth + 1)
-        for _ in range(rng.randrange(4))
+        rng.choice(keys): _random_json(rng, depth + 1) for _ in range(rng.randrange(4))
     }
 
 

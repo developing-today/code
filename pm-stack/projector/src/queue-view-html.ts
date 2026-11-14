@@ -62,9 +62,7 @@ export function renderQueueViewHtml(view: QueueView): string {
     .map(([status, n]) => `<tr><td>${escapeHtml(status)}</td><td>${n}</td></tr>`)
     .join("\n          ");
 
-  const queued = view.queued
-    .map((e, i) => `        <tr><td>${i + 1}</td>${entryCells(e)}</tr>`)
-    .join("\n");
+  const queued = view.queued.map((e, i) => `        <tr><td>${i + 1}</td>${entryCells(e)}</tr>`).join("\n");
 
   const claimed = view.claimed
     .map(

@@ -109,8 +109,8 @@ func ScriptEnv() []EnvVar {
 		},
 		{
 			Name:    "MCPX_PARENT_SESSION_ID",
-			SetBy:   []Setter{SetByCLI, SetByPlugin},
-			When:    "the CLI passes through what it was given; the plugin at plugin.env=full, when there is a parent",
+			SetBy:   []Setter{SetByCLI, SetByConsumer, SetByPlugin},
+			When:    "the CLI passes through what it was given; the daemon passes the caller's parent session into a script run's environment; the plugin at plugin.env=full, when there is a parent",
 			Meaning: "the session that spawned this one, so a parent agent and its subagents can share a server",
 			ReadBy:  nested + ", and " + client + " for parent-session scoping",
 		},

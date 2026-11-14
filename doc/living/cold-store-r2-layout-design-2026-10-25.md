@@ -19,13 +19,13 @@ Use the two stores for different jobs:
 
 A live Drive `about.get` check on 2026-10-25, recorded in `~/memory/2026-10-25.md`, reported:
 
-| Measure | Bytes | GiB | Decimal GB | Interpretation |
-|---|---:|---:|---:|---|
-| Account quota | 5,499,705,622,528 | 5,120.00 GiB (5 TiB) | 5,499.71 GB | Google AI Pro storage tier |
-| Total account usage | 785,960,403,110 | 731.98 GiB | 785.96 GB | The verified “~732 GiB used” figure |
-| Usage in Drive files | 191,252,342,752 | 178.12 GiB | 191.25 GB | Only this portion is Drive-resident |
-| Derived non-Drive remainder | 594,708,060,358 | 553.87 GiB | 594.71 GB | Gmail and Photos combined; the split is not established |
-| Remaining quota | 4,713,745,219,418 | 4,388.02 GiB (4.29 TiB) | 4,713.75 GB | Available before other account growth |
+| Measure                     |             Bytes |                     GiB |  Decimal GB | Interpretation                                          |
+| --------------------------- | ----------------: | ----------------------: | ----------: | ------------------------------------------------------- |
+| Account quota               | 5,499,705,622,528 |    5,120.00 GiB (5 TiB) | 5,499.71 GB | Google AI Pro storage tier                              |
+| Total account usage         |   785,960,403,110 |              731.98 GiB |   785.96 GB | The verified “~732 GiB used” figure                     |
+| Usage in Drive files        |   191,252,342,752 |              178.12 GiB |   191.25 GB | Only this portion is Drive-resident                     |
+| Derived non-Drive remainder |   594,708,060,358 |              553.87 GiB |   594.71 GB | Gmail and Photos combined; the split is not established |
+| Remaining quota             | 4,713,745,219,418 | 4,388.02 GiB (4.29 TiB) | 4,713.75 GB | Available before other account growth                   |
 
 Two consequences matter:
 
@@ -34,11 +34,11 @@ Two consequences matter:
 
 ### 1.2 Drive tenants that sources establish
 
-| Tenant | Verified size / state | Evidence | Confidence |
-|---|---:|---|---|
-| **Muse Avatar Backup** | 46 recorded files; 67,013,227 bytes total (63.9 MiB); last successful backup recorded 2026-10-25 09:15:39 UTC | `~/workspace/goals/avatar-backup-to-google-drive/GOAL.md`; `~/workspace/.jarvis/idea-executions/bc7ea377-2b10-4e9a-b966-f417c6cb64c2/scratch/state.json` | High for the recorded backup set |
-| **Cloud/cold-store folder tree** | The prior design records the root, `bundles/`, `manifests/`, `db-backups/` (with `supabase/`, `turso/`, and `d1/`), and `media-cold/` as created; no payload-byte inventory is given there | `~/workspace/google-drive-cold-store/DESIGN.md`, “Build status” | Layout recorded; payload size unverified |
-| **All other Drive files** | At most about 191,185,329,525 bytes (178.06 GiB) after subtracting the recorded avatar set from total Drive usage | Derived from `~/memory/2026-10-25.md` and the avatar state file | **Unattributed.** Personal files, family files, project files, shared files, and any other app folders cannot be separated from the sources read |
+| Tenant                           |                                                                                                                                                                      Verified size / state | Evidence                                                                                                                                                 | Confidence                                                                                                                                       |
+| -------------------------------- | -----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------: | -------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------ |
+| **Muse Avatar Backup**           |                                                                              46 recorded files; 67,013,227 bytes total (63.9 MiB); last successful backup recorded 2026-10-25 09:15:39 UTC | `~/workspace/goals/avatar-backup-to-google-drive/GOAL.md`; `~/workspace/.jarvis/idea-executions/bc7ea377-2b10-4e9a-b966-f417c6cb64c2/scratch/state.json` | High for the recorded backup set                                                                                                                 |
+| **Cloud/cold-store folder tree** | The prior design records the root, `bundles/`, `manifests/`, `db-backups/` (with `supabase/`, `turso/`, and `d1/`), and `media-cold/` as created; no payload-byte inventory is given there | `~/workspace/google-drive-cold-store/DESIGN.md`, “Build status”                                                                                          | Layout recorded; payload size unverified                                                                                                         |
+| **All other Drive files**        |                                                                          At most about 191,185,329,525 bytes (178.06 GiB) after subtracting the recorded avatar set from total Drive usage | Derived from `~/memory/2026-10-25.md` and the avatar state file                                                                                          | **Unattributed.** Personal files, family files, project files, shared files, and any other app folders cannot be separated from the sources read |
 
 That last row is the main inventory gap. No migration should assume the unattributed 178 GiB is project data, disposable data, or in scope for the cold-store. A folder-level inventory is a prerequisite to moving any existing Drive content.
 
@@ -102,14 +102,14 @@ The first four cold-store branches and the three named database subfolders are t
 
 Keep the existing five buckets. Add discipline through prefixes rather than creating a new bucket for every data class.
 
-| Bucket | Target prefixes / role |
-|---|---|
-| `supabase-backups` | Keep the established database-backup layout: `pg/<project>/<yyyy>/<mm>/<sha256>.sql.zst`, plus `pg/<project>/manifest.json` as the mutable pointer. Add immutable manifest snapshots under `pg/<project>/manifests/<utc-timestamp>.json` if the backup tooling later supports them. |
-| `labops-files` | General operational bucket. Use `artifacts/<project>/…`, `media/<project>/…`, `snapshots/<system>/…`, `rehydrated/<class>/…`, and `staging/<yyyy-mm-dd>/…`. Keep staging explicitly temporary. |
-| `nix-cache-nars` | Build/cache data only. No archive role; objects here must be regenerable or re-downloadable. |
-| `agent-inbox-mail` | Existing mail-payload tenant. Keep its current application layout; apply the retention decision in §4 rather than silently converting it into a permanent archive. |
-| `webhook-gateway-payloads` | Existing webhook-payload tenant. Keep payloads hot only for the processing/debugging window, then delete or archive according to §4. |
-| Any existing application bucket not listed above | Its application owner decides the prefix; this design only sets the rule that long-cold, sealed payloads are candidates for Drive bundles and hot/served payloads stay in R2. |
+| Bucket                                           | Target prefixes / role                                                                                                                                                                                                                                                              |
+| ------------------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `supabase-backups`                               | Keep the established database-backup layout: `pg/<project>/<yyyy>/<mm>/<sha256>.sql.zst`, plus `pg/<project>/manifest.json` as the mutable pointer. Add immutable manifest snapshots under `pg/<project>/manifests/<utc-timestamp>.json` if the backup tooling later supports them. |
+| `labops-files`                                   | General operational bucket. Use `artifacts/<project>/…`, `media/<project>/…`, `snapshots/<system>/…`, `rehydrated/<class>/…`, and `staging/<yyyy-mm-dd>/…`. Keep staging explicitly temporary.                                                                                      |
+| `nix-cache-nars`                                 | Build/cache data only. No archive role; objects here must be regenerable or re-downloadable.                                                                                                                                                                                        |
+| `agent-inbox-mail`                               | Existing mail-payload tenant. Keep its current application layout; apply the retention decision in §4 rather than silently converting it into a permanent archive.                                                                                                                  |
+| `webhook-gateway-payloads`                       | Existing webhook-payload tenant. Keep payloads hot only for the processing/debugging window, then delete or archive according to §4.                                                                                                                                                |
+| Any existing application bucket not listed above | Its application owner decides the prefix; this design only sets the rule that long-cold, sealed payloads are candidates for Drive bundles and hot/served payloads stay in R2.                                                                                                       |
 
 A manifest read replica may live at a reserved system prefix such as:
 
@@ -122,16 +122,16 @@ That is a replica for the rehydration path, not the canonical database. The cano
 
 ### 2.3 Assignment by data class
 
-| Data class | Primary home | R2 role | Drive role | Why |
-|---|---|---|---|---|
-| **Database backups** | **Both, by age** | Latest restore points and the active backup stream | Independent cold copies of selected daily/weekly/monthly restore points | R2 gives fast, scriptable restore and already contains the `supabase-backups` system. Drive adds an independent failure domain without paying again for every frequent snapshot. |
-| **Avatar renders and versions** | **Drive, existing folder** | None by default | Permanent version archive with the existing manifest document and tags | Tiny (63.9 MiB recorded), human-browsed, tag-driven, and already protected by a working daily process described in `~/workspace/goals/avatar-backup-to-google-drive/GOAL.md`. Moving it would add risk for no material saving. |
-| **Media originals** | **Drive when cold; R2 when served or recent** | Current/served media, thumbnails, proxies, and rehydrated originals | Sealed bundles of originals that have left the hot set | Drive is the economical permanent home; R2's free egress and CDN adjacency are wasted on originals nobody is requesting. |
-| **Cluster / VM / service snapshots** | **Both, by criticality and age** | Latest boot-critical snapshots and recent operational restore points | Monthly or milestone archives in sealed bundles | A rebuild should start from a fast source. Old snapshots are insurance, not working data. |
-| **Project archives and exports** | **Drive** | Manifest replica, recent exports still being shared or processed | Sealed bundles with a manifest record for every member | Archives are large, immutable, and rarely read—the exact workload Drive is reserved for. |
-| **Build artifacts and caches** | **R2 only** | Current cache/artifacts | None | Churny and regenerable. Sending caches to Drive spends upload/write budget and creates archive clutter. |
-| **Mail and webhook payloads** | **R2 during their useful window** | Processing, replay, debugging, and dispute handling | Only payloads explicitly marked for long retention; otherwise no Drive copy | Payloads can contain sensitive or low-value data. Indefinite retention should be a decision, not an accident of storage layout. |
-| **Manifests and indexes** | **Database first; replicas in both stores** | Read replica for restore/rehydration | Immutable snapshots as disaster recovery for the index itself | If the manifest is lost, Drive becomes opaque bundles. The index must be easier to restore than the data it describes. |
+| Data class                           | Primary home                                  | R2 role                                                              | Drive role                                                                  | Why                                                                                                                                                                                                                            |
+| ------------------------------------ | --------------------------------------------- | -------------------------------------------------------------------- | --------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| **Database backups**                 | **Both, by age**                              | Latest restore points and the active backup stream                   | Independent cold copies of selected daily/weekly/monthly restore points     | R2 gives fast, scriptable restore and already contains the `supabase-backups` system. Drive adds an independent failure domain without paying again for every frequent snapshot.                                               |
+| **Avatar renders and versions**      | **Drive, existing folder**                    | None by default                                                      | Permanent version archive with the existing manifest document and tags      | Tiny (63.9 MiB recorded), human-browsed, tag-driven, and already protected by a working daily process described in `~/workspace/goals/avatar-backup-to-google-drive/GOAL.md`. Moving it would add risk for no material saving. |
+| **Media originals**                  | **Drive when cold; R2 when served or recent** | Current/served media, thumbnails, proxies, and rehydrated originals  | Sealed bundles of originals that have left the hot set                      | Drive is the economical permanent home; R2's free egress and CDN adjacency are wasted on originals nobody is requesting.                                                                                                       |
+| **Cluster / VM / service snapshots** | **Both, by criticality and age**              | Latest boot-critical snapshots and recent operational restore points | Monthly or milestone archives in sealed bundles                             | A rebuild should start from a fast source. Old snapshots are insurance, not working data.                                                                                                                                      |
+| **Project archives and exports**     | **Drive**                                     | Manifest replica, recent exports still being shared or processed     | Sealed bundles with a manifest record for every member                      | Archives are large, immutable, and rarely read—the exact workload Drive is reserved for.                                                                                                                                       |
+| **Build artifacts and caches**       | **R2 only**                                   | Current cache/artifacts                                              | None                                                                        | Churny and regenerable. Sending caches to Drive spends upload/write budget and creates archive clutter.                                                                                                                        |
+| **Mail and webhook payloads**        | **R2 during their useful window**             | Processing, replay, debugging, and dispute handling                  | Only payloads explicitly marked for long retention; otherwise no Drive copy | Payloads can contain sensitive or low-value data. Indefinite retention should be a decision, not an accident of storage layout.                                                                                                |
+| **Manifests and indexes**            | **Database first; replicas in both stores**   | Read replica for restore/rehydration                                 | Immutable snapshots as disaster recovery for the index itself               | If the manifest is lost, Drive becomes opaque bundles. The index must be easier to restore than the data it describes.                                                                                                         |
 
 ## 3. Naming and object conventions
 
@@ -186,17 +186,17 @@ For media, the manifest should also preserve the original filename/path as metad
 
 These are **recommended defaults for a future implementation**, not rules changed by this design pass.
 
-| Class | Hot / R2 rule | Cold / Drive rule | Deletion rule |
-|---|---|---|---|
-| Database backups | Keep the latest successful backup plus the last 30 days in R2. | Copy one sealed restore point per day; retain daily × 30, weekly × 12, monthly × 12. | A source snapshot may leave R2 only after the Drive copy is verified. Permanent deletion follows the retention schedule, with trash grace where the store supports it. |
-| Avatar versions | No routine R2 copy. | Keep all recorded versions indefinitely. “Favorite” versions are never auto-deleted or overwritten. | Manual decision only. This preserves the tag model in `~/workspace/goals/avatar-backup-to-google-drive/GOAL.md`. |
-| Media originals | Keep served/recent originals and derivatives in R2. A rehydrated original may be evicted after 30 days without access. | Keep originals indefinitely unless Drew sets a collection-specific rule. | Do not delete the Drive original merely because a proxy or thumbnail exists. |
-| Cluster/service snapshots | Keep daily snapshots 14 days and weekly snapshots 8 weeks. | Keep monthly snapshots 12 months; keep named milestone snapshots until Drew retires them. | Expire by manifest state, not by filename guesswork. |
-| Project archives | Keep an R2 copy only while actively shared or processed, default 90 days. | Keep according to the project’s own retention; review annually. | Tombstone in the manifest first; remove the physical bundle only when no live members remain or a verified successor bundle exists. |
-| Build/cache objects | Lifecycle-expire after 30–90 days, by cache type and last use. | None. | Safe to expire without Drive verification because the class is regenerable. |
-| Mail/webhook payloads | Default 180 days for processing/debug history. | Archive only items explicitly flagged for legal, financial, or project-history reasons. | Delete unflagged payloads at expiry; do not bundle everything “just in case.” |
-| Manifest snapshots | Keep the current replica and the last 90 days of snapshots in R2. | Keep monthly snapshots indefinitely and daily snapshots for 90 days. | Never delete the last verified manifest snapshot for a bundle that still exists. |
-| Staging / rehydration temp objects | Delete after 7 days unless tied to an active verified restore. | Not applicable. | A failed or abandoned staging object must not be mistaken for an archive copy. |
+| Class                              | Hot / R2 rule                                                                                                          | Cold / Drive rule                                                                                   | Deletion rule                                                                                                                                                          |
+| ---------------------------------- | ---------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Database backups                   | Keep the latest successful backup plus the last 30 days in R2.                                                         | Copy one sealed restore point per day; retain daily × 30, weekly × 12, monthly × 12.                | A source snapshot may leave R2 only after the Drive copy is verified. Permanent deletion follows the retention schedule, with trash grace where the store supports it. |
+| Avatar versions                    | No routine R2 copy.                                                                                                    | Keep all recorded versions indefinitely. “Favorite” versions are never auto-deleted or overwritten. | Manual decision only. This preserves the tag model in `~/workspace/goals/avatar-backup-to-google-drive/GOAL.md`.                                                       |
+| Media originals                    | Keep served/recent originals and derivatives in R2. A rehydrated original may be evicted after 30 days without access. | Keep originals indefinitely unless Drew sets a collection-specific rule.                            | Do not delete the Drive original merely because a proxy or thumbnail exists.                                                                                           |
+| Cluster/service snapshots          | Keep daily snapshots 14 days and weekly snapshots 8 weeks.                                                             | Keep monthly snapshots 12 months; keep named milestone snapshots until Drew retires them.           | Expire by manifest state, not by filename guesswork.                                                                                                                   |
+| Project archives                   | Keep an R2 copy only while actively shared or processed, default 90 days.                                              | Keep according to the project’s own retention; review annually.                                     | Tombstone in the manifest first; remove the physical bundle only when no live members remain or a verified successor bundle exists.                                    |
+| Build/cache objects                | Lifecycle-expire after 30–90 days, by cache type and last use.                                                         | None.                                                                                               | Safe to expire without Drive verification because the class is regenerable.                                                                                            |
+| Mail/webhook payloads              | Default 180 days for processing/debug history.                                                                         | Archive only items explicitly flagged for legal, financial, or project-history reasons.             | Delete unflagged payloads at expiry; do not bundle everything “just in case.”                                                                                          |
+| Manifest snapshots                 | Keep the current replica and the last 90 days of snapshots in R2.                                                      | Keep monthly snapshots indefinitely and daily snapshots for 90 days.                                | Never delete the last verified manifest snapshot for a bundle that still exists.                                                                                       |
+| Staging / rehydration temp objects | Delete after 7 days unless tied to an active verified restore.                                                         | Not applicable.                                                                                     | A failed or abandoned staging object must not be mistaken for an archive copy.                                                                                         |
 
 ### Bundle compaction
 
@@ -268,16 +268,16 @@ Recommended defaults:
 
 Each stage is independently reversible. No stage deletes a source merely because a copy was attempted.
 
-| Stage | Work | Verification gate | Rollback |
-|---:|---|---|---|
-| 0 | **Inventory only.** Produce a folder-level Drive inventory and a byte-accurate R2 bucket/prefix inventory; classify the unattributed Drive data as in scope, out of scope, or unknown. | Drew reviews the classes; unknowns default to out of scope. | Nothing moved. |
-| 1 | **Manifest first.** Stand up or confirm the manifest, restore the manifest from a snapshot in a test, and register existing tenants without moving their payloads. | Manifest opens from backup; avatar and Supabase backup records reconcile to their existing manifests/state. | Remove the test index; original tenants unchanged. |
-| 2 | **Database cold copies.** Copy one selected daily restore point per database from R2 to Drive on the chosen cadence; leave every R2 backup in place. | Hash verification plus one scratch restore per database. | Stop copying; trash the unverified or unwanted Drive copies after review. R2 remains authoritative. |
-| 3 | **Already-cold R2 archives.** Bundle a small pilot set of project archives, verify them in Drive, and keep the R2 originals through a grace period. | 100% member hash verification; one pilot restore from Drive to R2. | Point the manifest back to R2 and stop; no source has been deleted yet. |
-| 4 | **Media originals.** Seed cold originals to Drive in campaigns below the 700 GB/day hard stop recorded in `~/workspace/google-drive-cold-store/schema.sql`; keep hot/served media in R2. | Bundle and member verification; sample playback/restore per collection. | Keep serving from the existing source; Drive bundles remain an extra copy or are trashed after review. |
-| 5 | **Snapshots.** Add monthly/milestone Drive copies while retaining the current R2 restore window. | One cluster/service restore test from the Drive copy into a scratch target. | Continue restoring from R2; Drive copies are additive. |
-| 6 | **Lifecycle automation.** Only after stages 2–5 pass, let verified cold objects age out of R2 under §4. Introduce compaction after lifecycle removal is stable. | At least one quarterly drill passes with the automation enabled. | Disable lifecycle rules; rehydrate or retain objects in R2. Drive archives remain intact. |
-| 7 | **Optional account graduation.** Revisit a dedicated archive-owner Google account only if the triggers in the prior design occur: seeding needs exceed a day’s window, daily deltas routinely exceed roughly 300 GB, or Drew wants the main account credential separated from always-on workers. | A new design decision, not an automatic consequence of this layout. | Stay on the main account layout. |
+| Stage | Work                                                                                                                                                                                                                                                                                             | Verification gate                                                                                           | Rollback                                                                                               |
+| ----: | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ----------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------ |
+|     0 | **Inventory only.** Produce a folder-level Drive inventory and a byte-accurate R2 bucket/prefix inventory; classify the unattributed Drive data as in scope, out of scope, or unknown.                                                                                                           | Drew reviews the classes; unknowns default to out of scope.                                                 | Nothing moved.                                                                                         |
+|     1 | **Manifest first.** Stand up or confirm the manifest, restore the manifest from a snapshot in a test, and register existing tenants without moving their payloads.                                                                                                                               | Manifest opens from backup; avatar and Supabase backup records reconcile to their existing manifests/state. | Remove the test index; original tenants unchanged.                                                     |
+|     2 | **Database cold copies.** Copy one selected daily restore point per database from R2 to Drive on the chosen cadence; leave every R2 backup in place.                                                                                                                                             | Hash verification plus one scratch restore per database.                                                    | Stop copying; trash the unverified or unwanted Drive copies after review. R2 remains authoritative.    |
+|     3 | **Already-cold R2 archives.** Bundle a small pilot set of project archives, verify them in Drive, and keep the R2 originals through a grace period.                                                                                                                                              | 100% member hash verification; one pilot restore from Drive to R2.                                          | Point the manifest back to R2 and stop; no source has been deleted yet.                                |
+|     4 | **Media originals.** Seed cold originals to Drive in campaigns below the 700 GB/day hard stop recorded in `~/workspace/google-drive-cold-store/schema.sql`; keep hot/served media in R2.                                                                                                         | Bundle and member verification; sample playback/restore per collection.                                     | Keep serving from the existing source; Drive bundles remain an extra copy or are trashed after review. |
+|     5 | **Snapshots.** Add monthly/milestone Drive copies while retaining the current R2 restore window.                                                                                                                                                                                                 | One cluster/service restore test from the Drive copy into a scratch target.                                 | Continue restoring from R2; Drive copies are additive.                                                 |
+|     6 | **Lifecycle automation.** Only after stages 2–5 pass, let verified cold objects age out of R2 under §4. Introduce compaction after lifecycle removal is stable.                                                                                                                                  | At least one quarterly drill passes with the automation enabled.                                            | Disable lifecycle rules; rehydrate or retain objects in R2. Drive archives remain intact.              |
+|     7 | **Optional account graduation.** Revisit a dedicated archive-owner Google account only if the triggers in the prior design occur: seeding needs exceed a day’s window, daily deltas routinely exceed roughly 300 GB, or Drew wants the main account credential separated from always-on workers. | A new design decision, not an automatic consequence of this layout.                                         | Stay on the main account layout.                                                                       |
 
 ## 7. Monthly cost model
 
@@ -290,12 +290,12 @@ Each stage is independently reversible. No stage deletes a source merely because
 
 ### 7.2 Storage scenarios
 
-| Scenario | Current payload | If stored in R2 at $0.015/GB-mo | 2× payload | If 2× stored in R2 | Recommended-home cost |
-|---|---:|---:|---:|---:|---|
-| Current Drive-resident files | 191.25 GB | **$2.87/mo** | 382.50 GB | **$5.74/mo** | Incremental **$0** in Drive under the existing AI Pro plan |
-| Entire current Google account usage (counterfactual; Gmail/Photos are not a simple R2 migration) | 785.96 GB | **$11.79/mo** | 1,571.92 GB | **$23.58/mo** | Not applicable as a single class; classify first |
-| Proposed project cold-store budget | 3 TiB = 3,298.53 GB | **$49.48/mo** | 6 TiB = 6,597.07 GB | **$98.96/mo** | Drive incremental **$0** until the cap; **2× exceeds the current free headroom and is not valid without a new quota/plan decision** |
-| Recorded avatar backup set | 0.067 GB | **<$0.01/mo** | 0.134 GB | **<$0.01/mo** | Incremental **$0** in its existing Drive folder |
+| Scenario                                                                                         |     Current payload | If stored in R2 at $0.015/GB-mo |          2× payload | If 2× stored in R2 | Recommended-home cost                                                                                                               |
+| ------------------------------------------------------------------------------------------------ | ------------------: | ------------------------------: | ------------------: | -----------------: | ----------------------------------------------------------------------------------------------------------------------------------- |
+| Current Drive-resident files                                                                     |           191.25 GB |                    **$2.87/mo** |           382.50 GB |       **$5.74/mo** | Incremental **$0** in Drive under the existing AI Pro plan                                                                          |
+| Entire current Google account usage (counterfactual; Gmail/Photos are not a simple R2 migration) |           785.96 GB |                   **$11.79/mo** |         1,571.92 GB |      **$23.58/mo** | Not applicable as a single class; classify first                                                                                    |
+| Proposed project cold-store budget                                                               | 3 TiB = 3,298.53 GB |                   **$49.48/mo** | 6 TiB = 6,597.07 GB |      **$98.96/mo** | Drive incremental **$0** until the cap; **2× exceeds the current free headroom and is not valid without a new quota/plan decision** |
+| Recorded avatar backup set                                                                       |            0.067 GB |                   **<$0.01/mo** |            0.134 GB |      **<$0.01/mo** | Incremental **$0** in its existing Drive folder                                                                                     |
 
 The economic conclusion is not that R2 is expensive for today's small operational sets—it is not. The conclusion is that **Drive wins decisively at the multi-terabyte cold tier**, while R2's cost remains acceptable for hot data, caches, current backups, and rehydrated objects.
 
@@ -311,44 +311,44 @@ The economic conclusion is not that R2 is expensive for today's small operationa
 All of these can wait for a future build decision. The recommended defaults are chosen so that “no answer” means “keep the safe layout.”
 
 1. **Archive-owner account**  
-   *Decision:* Keep the main Google account as archive owner, or eventually graduate to a dedicated family account?  
-   *Recommended default:* **Main account for now.** Revisit only on the stage-7 triggers. This matches `~/workspace/google-drive-cold-store/DESIGN.md`.
+   _Decision:_ Keep the main Google account as archive owner, or eventually graduate to a dedicated family account?  
+   _Recommended default:_ **Main account for now.** Revisit only on the stage-7 triggers. This matches `~/workspace/google-drive-cold-store/DESIGN.md`.
 
 2. **Project storage cap**  
-   *Decision:* Confirm the project cold-store allocation.  
-   *Recommended default:* **3 TiB cap, alert at 2.7 TiB, 700 GB/day upload hard stop.**
+   _Decision:_ Confirm the project cold-store allocation.  
+   _Recommended default:_ **3 TiB cap, alert at 2.7 TiB, 700 GB/day upload hard stop.**
 
 3. **Existing Drive inventory scope**  
-   *Decision:* Which existing Drive folders are project data, personal data, or out of scope?  
-   *Recommended default:* **Inventory first; unknown means out of scope.** No existing Drive payload moves based on this design alone.
+   _Decision:_ Which existing Drive folders are project data, personal data, or out of scope?  
+   _Recommended default:_ **Inventory first; unknown means out of scope.** No existing Drive payload moves based on this design alone.
 
 4. **Database retention split**  
-   *Decision:* Confirm how long database restore points stay hot and cold.  
-   *Recommended default:* **R2 latest + 30 days; Drive daily × 30, weekly × 12, monthly × 12.**
+   _Decision:_ Confirm how long database restore points stay hot and cold.  
+   _Recommended default:_ **R2 latest + 30 days; Drive daily × 30, weekly × 12, monthly × 12.**
 
 5. **Payload retention**  
-   *Decision:* How long should mail and webhook payloads remain available for replay/debugging?  
-   *Recommended default:* **180 days in R2, then delete unless explicitly flagged.** Do not archive payloads by default.
+   _Decision:_ How long should mail and webhook payloads remain available for replay/debugging?  
+   _Recommended default:_ **180 days in R2, then delete unless explicitly flagged.** Do not archive payloads by default.
 
 6. **Media retention**  
-   *Decision:* Should media originals be permanent, or should collections get individual expiry rules?  
-   *Recommended default:* **Originals permanent in Drive; R2 derivatives/rehydrated copies expire after 30 days without access.**
+   _Decision:_ Should media originals be permanent, or should collections get individual expiry rules?  
+   _Recommended default:_ **Originals permanent in Drive; R2 derivatives/rehydrated copies expire after 30 days without access.**
 
 7. **R2 bucket structure**  
-   *Decision:* Create a new general cold-store bucket, or keep the existing application buckets?  
-   *Recommended default:* **Keep the existing five buckets and use prefixes.** Create a new bucket only for a distinct credential, public-access, or lifecycle boundary.
+   _Decision:_ Create a new general cold-store bucket, or keep the existing application buckets?  
+   _Recommended default:_ **Keep the existing five buckets and use prefixes.** Create a new bucket only for a distinct credential, public-access, or lifecycle boundary.
 
 8. **Avatar tenant**  
-   *Decision:* Fold avatar backups into the cold-store tree, or leave the current tenant alone?  
-   *Recommended default:* **Leave `Muse Avatar Backup` unchanged.** Register it in inventories; do not reorganize a working, tag-based backup.
+   _Decision:_ Fold avatar backups into the cold-store tree, or leave the current tenant alone?  
+   _Recommended default:_ **Leave `Muse Avatar Backup` unchanged.** Register it in inventories; do not reorganize a working, tag-based backup.
 
 9. **Restore service level**  
-   *Decision:* How fast must cold restores be?  
-   *Recommended default:* **Database scratch restore tested quarterly; ordinary cold objects restored to R2 the same day; no minute-level RTO for archives.** Pay for faster recovery only for classes Drew names as operational.
+   _Decision:_ How fast must cold restores be?  
+   _Recommended default:_ **Database scratch restore tested quarterly; ordinary cold objects restored to R2 the same day; no minute-level RTO for archives.** Pay for faster recovery only for classes Drew names as operational.
 
 10. **Permanent deletion authority**  
-    *Decision:* Which classes may a future lifecycle job permanently delete without a fresh prompt?  
-    *Recommended default:* **Only regenerable caches and expired unflagged payloads.** Backups, media originals, snapshots, and archives require manifest tombstoning plus the stated grace period; avatar favorites are manual-only.
+    _Decision:_ Which classes may a future lifecycle job permanently delete without a fresh prompt?  
+    _Recommended default:_ **Only regenerable caches and expired unflagged payloads.** Backups, media originals, snapshots, and archives require manifest tombstoning plus the stated grace period; avatar favorites are manual-only.
 
 ## Source map
 

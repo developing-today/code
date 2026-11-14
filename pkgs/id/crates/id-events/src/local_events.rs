@@ -21,11 +21,12 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use anyhow::{Context, Result, bail};
 use p2panda_core::{Hash, SigningKey};
 
+use crate::event_store::{Block, BlockKind, BlockLookup, EventStore, Ingest, StoreError};
+use crate::local_claims::LocalClaims;
+use id_core::waiting::{AuthorKey, WaitingLimits};
 use id_store::chain::{ChainExt, Event, MAX_AFTER, sign};
 use id_store::chat::{CHAT_MESSAGE_KIND, ChatMessage, ChatRecord, SendRate};
 use id_store::documents::{DOCUMENT_KIND, DocumentRef, REMOVAL_KIND};
-use crate::event_store::{Block, BlockKind, BlockLookup, EventStore, Ingest};
-use crate::local_claims::LocalClaims;
 use id_store::notes::{
     AppliedNote, CREATE_KIND as NOTE_CREATE_KIND, NoteFoldError, NoteOp, NoteRecord,
     REVISE_KIND as NOTE_REVISE_KIND, check_note_op, fold_notes,
@@ -34,7 +35,6 @@ use id_store::search::{Hit, ValueMatch, search_store};
 use id_store::tag_claims::{
     CLEAR_KIND, Claim, LocalClaim, MAX_CLEAR_CLAIMS, SET_KIND, TagOp, TagScope, check_op,
 };
-use id_core::waiting::{AuthorKey, WaitingLimits};
 
 /// The directory the event store lives in, under the data directory, unless `--event-store` names
 /// another.
@@ -230,6 +230,18 @@ impl LocalEvents {
     /// # Errors
     ///
     /// Fails if the store cannot be opened, for example while another process has it open.
+    /// The blob references in this node's event store, for the blob gate's index
+    /// (`EventStore::document_references`).
+    ///
+    /// # Errors
+    ///
+    /// Returns a store error if the read fails.
+    pub fn document_references(
+        &self,
+    ) -> Result<Vec<(iroh_blobs::Hash, Option<p2panda_core::Hash>)>, StoreError> {
+        self.store.document_references()
+    }
+
     pub fn open(dir: &Path, key: SigningKey) -> Result<Self> {
         std::fs::create_dir_all(dir).with_context(|| format!("create {}", dir.display()))?;
         let store = EventStore::open(dir, WaitingLimits::default(), now_ms())?;

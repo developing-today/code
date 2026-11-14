@@ -16,13 +16,13 @@ keeps its existing owner and source of truth; Atlas holds the unified
 search index (chunks + vectors + metadata), never a fork of the
 content.
 
-| Corpus | Source of truth today | Content indexed |
-|---|---|---|
-| Agent memory (OpenClaw) | memory-lancedb store behind `plugins.slots.memory` (Phase 1, #1300/#6167) | Memory entries the gateway writes/recalls |
-| Fleet memory files | The Muse memory tree (`MEMORY.md`, topic files, daily logs) | Memory notes, decisions, standing facts |
-| Zettelkasten / Emanote notes | The notes vault | Notes, links, backlinks context |
-| Repo docs | The four fleet repos' doc trees (`doc/`, `docs/`, package docs) | Design records, runbooks, READMEs |
-| Research reports | Prior fleet research outputs (goal files, briefs) | Reports and briefings |
+| Corpus                       | Source of truth today                                                     | Content indexed                           |
+| ---------------------------- | ------------------------------------------------------------------------- | ----------------------------------------- |
+| Agent memory (OpenClaw)      | memory-lancedb store behind `plugins.slots.memory` (Phase 1, #1300/#6167) | Memory entries the gateway writes/recalls |
+| Fleet memory files           | The Muse memory tree (`MEMORY.md`, topic files, daily logs)               | Memory notes, decisions, standing facts   |
+| Zettelkasten / Emanote notes | The notes vault                                                           | Notes, links, backlinks context           |
+| Repo docs                    | The four fleet repos' doc trees (`doc/`, `docs/`, package docs)           | Design records, runbooks, READMEs         |
+| Research reports             | Prior fleet research outputs (goal files, briefs)                         | Reports and briefings                     |
 
 Later corpora (post-#6052, see §5) join by the same connector
 contract; the corpus set above is the complete pre-ratification scope.

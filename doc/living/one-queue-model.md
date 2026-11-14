@@ -30,12 +30,14 @@ Registry before-image: `lanes-table-before-one-queue-2026-11-10.md` (same folder
 ## Designated filtered sets (chosen from ENABLED registrations; disabled rows untouched)
 
 ### Muse surface (named lanes; designation = the filter expression in the lane's shift-job instructions)
+
 - Code-only (5) — claim `--filter 'repo = code'`: **code-b, code-d, code-e, code-f, code-g**
 - Not-code (3) — claim `--filter 'repo != code'`: **nix-a, opencode-a, code-h**
 - Unfiltered (13 enabled): code-j, code-k, code-l, code-m, code-n, code-o, code-p, code-t, code-u, code-v, code-w, code-x, code-y
 - Disabled, unchanged: code-a, code-c, code-i, code-q, code-r, code-s, code-z, nix-b, opencode-b
 
 ### OpenChamber surface (UUID registrations; designation = the filter expression in the OC scheduled-task definitions)
+
 - Code-only (5) — `repo = code`: 02cafe76-eafd-4d0b-aaa6-2b7a737d68dc, 1a180ae5-384f-4e71-8d77-08f7b1652c75, 262eb403-3347-4a7c-ba6b-e7bc263ca853, 335a5d1f-bfc1-4831-99ea-850c8939a727, 7b47536b-c162-444c-be8a-3a9538cc4cb5
 - Not-code (3) — `repo != code`: 46984602-51a3-438c-b3a5-f2857811adb1 (repo-worker-openchamber), 3fe37e8a-c61b-419c-9e97-769ecd264d5d (repo-worker-opencode), 8ac61616-3815-4e7b-b33d-840a3829154a (repo-worker-code UUID)
 - Unfiltered (6 enabled): 9aca43b4-5439-4939-9f71-323f5d32521b, aea12c82-c5af-4e5a-9b66-f8e360f87177, bf419306-c4ef-470f-a553-beabf93239de, c29174f1-48e0-4b13-b4ff-9b73ab67e9ab, c8b9355e-319a-4640-8096-7ad19480d151, ec118cad-0fd3-4652-91c4-27432f2f2efd

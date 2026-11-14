@@ -2,10 +2,6 @@ name: cargo target janitor
 
 # CI tier policy: see .github/ci-policy.md
 on:
-  pull_request:
-    paths:
-      - "infra/cargo-target-janitor/**"
-      - ".github/workflows/cargo-target-janitor.yml"
   push:
     branches: [main]
     paths:

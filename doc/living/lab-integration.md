@@ -21,20 +21,21 @@ X5 stands the cluster up. This design is the other half of Drew's 2026-11-12 ord
 
 Integration proceeds in phases; each phase names what lands, where, and the proof.
 
-**Phase 0 — Declarative ground (X5.2/X5.3, in progress).** Inventory + BMC audit complete; TALM per-node configs harvested and committed; Talos + Cozystack up on the first 3–5 machines; platform services (CNPG, RustFS tiers, NATS, FluxCD, cloudflared, Tailscale) running from GitOps only — nothing hand-built. *Proof: a node can be wiped and rebuilt from config alone.*
+**Phase 0 — Declarative ground (X5.2/X5.3, in progress).** Inventory + BMC audit complete; TALM per-node configs harvested and committed; Talos + Cozystack up on the first 3–5 machines; platform services (CNPG, RustFS tiers, NATS, FluxCD, cloudflared, Tailscale) running from GitOps only — nothing hand-built. _Proof: a node can be wiped and rebuilt from config alone._
 
-**Phase 1 — The first workload is ours.** FluxCD runs the ID app (X5.2's day-one list) — the cluster's first real tenant is the fleet's own flagship (P1), not a demo. The ID hosted backstop (P4's ID face) gets its self-hosted reference deployment here. *Proof: ID served from the cluster, reachable via the C7 tunnel + tailnet dual exposure (C9).*
+**Phase 1 — The first workload is ours.** FluxCD runs the ID app (X5.2's day-one list) — the cluster's first real tenant is the fleet's own flagship (P1), not a demo. The ID hosted backstop (P4's ID face) gets its self-hosted reference deployment here. _Proof: ID served from the cluster, reachable via the C7 tunnel + tailnet dual exposure (C9)._
 
 **Phase 2 — Fleet services land.** The services the fleet already runs elsewhere get cluster homes, one at a time, each replacing (not duplicating) its current host where that host is a constraint:
+
 - Atlas serve mode (A1.12) — the search service on cluster compute, reading the Turso hot copy; the laptop stays canonical.
 - Fleet coordination consumers — queue workers / brokers that today contend for the laptop run as cluster workloads against the same Turso ledger (P6 pattern: ledger in Turso, compute wherever it fits).
 - PM stack surfaces — the aggregator/projector class of services, with the coordinated-switch discipline (ports hand over, sessions survive) as the deployment rule.
 - Build/compute overflow — cluster nodes join the dynamic-compute placement table (P7) for heavy, parallel, non-latency-sensitive work that today saturates the laptop.
-*Proof per service: it runs on the cluster for a week with its old home off, and nobody pages.*
+  _Proof per service: it runs on the cluster for a week with its old home off, and nobody pages._
 
-**Phase 3 — Storage integrates (with P8).** RustFS tiers on the HDD/NVMe pools become a named tier in the storage program's allocation policy: cluster-local S3 for working sets and replicas, cold bundles still sealing to Drive, R2 still the edge tier. Cluster backup/observability epic (#1080s family) closes the loop: the cluster backs up into the cold-store like every other store. *Proof: a restore from cluster-held backup media, recorded.*
+**Phase 3 — Storage integrates (with P8).** RustFS tiers on the HDD/NVMe pools become a named tier in the storage program's allocation policy: cluster-local S3 for working sets and replicas, cold bundles still sealing to Drive, R2 still the edge tier. Cluster backup/observability epic (#1080s family) closes the loop: the cluster backs up into the cold-store like every other store. _Proof: a restore from cluster-held backup media, recorded._
 
-**Phase 4 — The other machines are first-class.** Laptop, sandbox, and work machines appear in the same inventory/placement view as cluster nodes (what runs where, and why); the sandbox stays orchestration-only; the laptop keeps canonical Atlas + ingest; overflow flows both ways (cluster → Codespaces/Blacksmith per P7, machines → cluster per Phase 2). *Proof: one placement table (this doc, kept current) accounts for every fleet workload.*
+**Phase 4 — The other machines are first-class.** Laptop, sandbox, and work machines appear in the same inventory/placement view as cluster nodes (what runs where, and why); the sandbox stays orchestration-only; the laptop keeps canonical Atlas + ingest; overflow flows both ways (cluster → Codespaces/Blacksmith per P7, machines → cluster per Phase 2). _Proof: one placement table (this doc, kept current) accounts for every fleet workload._
 
 ## Deliverables
 

@@ -17,16 +17,16 @@ Builds on: the design register (`pm-stack/design-register-2026-11-11.md`, 117 en
 
 ### Band map (fleet queue design scale 10/20/30/40/50/70/90)
 
-| Band | Contents |
-|---|---|
-| 90 | Drew's expedite set (his alone) |
-| 10 | Fleet-stalling breakage only |
-| 20 | P1 ID · P2 Atlas · P3 Fleet (core products) |
-| 30 | P4 SaaS service · P5 PM stack · P6 Turso + Cloudflare |
-| 40 | P7 GitHub + dynamic compute · P8 Storage · P9 Lab build-out |
-| 50 | (reserved — composable-claim mid band; unused by this program) |
-| 70 | Non-blocking small fixes |
-| — | Blocking small fixes ride the band of what they block (default 30) |
+| Band | Contents                                                           |
+| ---- | ------------------------------------------------------------------ |
+| 90   | Drew's expedite set (his alone)                                    |
+| 10   | Fleet-stalling breakage only                                       |
+| 20   | P1 ID · P2 Atlas · P3 Fleet (core products)                        |
+| 30   | P4 SaaS service · P5 PM stack · P6 Turso + Cloudflare              |
+| 40   | P7 GitHub + dynamic compute · P8 Storage · P9 Lab build-out        |
+| 50   | (reserved — composable-claim mid band; unused by this program)     |
+| 70   | Non-blocking small fixes                                           |
+| —    | Blocking small fixes ride the band of what they block (default 30) |
 
 Priority mechanics: where an issue has a fleet-queue task, the task is re-banded to the target band. Where it doesn't, grouping + labels + milestone carry the signal, and this doc records the band the group claims at when it enters the queue.
 
@@ -35,7 +35,9 @@ Priority mechanics: where an issue has a fleet-queue task, the task is re-banded
 Each program ends with: design(s) on file · a project/board view · a milestone · labels · explicit deliverables recorded on the epic/milestone.
 
 ### P1 — ID (band 20)
+
 Major improvements to the ID binary/program.
+
 - Register: F1 ID platform program (design mill) + F1.x sub-designs.
 - Epic home: the ID program's standing issues in developing-today/code (register F1; census confirms the current epic issue).
 - Labels: `design` + `epic/id-program` + `design/<name>` for multi-issue F1 designs.
@@ -44,7 +46,9 @@ Major improvements to the ID binary/program.
 - Deliverables: recorded on the epic — the current F1 design-mill fronts (per register §F1) each with their tracking issues.
 
 ### P2 — Atlas (band 20) — ROLLING, indefinite
+
 Major improvements to Atlas; follow-on work never ends, so the program structures are standing, not one-shot.
+
 - Register: A1 Atlas program (PARENT) + A2.
 - Epic home: dezren39/hatch-personal Atlas issues (#35–#45 family).
 - Milestone: "Atlas program" in hatch-personal (exists; rolling — its description states follow-on work lands there indefinitely).
@@ -52,46 +56,58 @@ Major improvements to Atlas; follow-on work never ends, so the program structure
 - Board: Project #4 view "Designs — Atlas" exists but stays empty of the hatch-personal items — see the Drew ruling below; Atlas's tracking home is labels + milestones + the register.
 
 ### P3 — Fleet (band 20)
+
 Major improvements to the fleet binaries and orchestration.
+
 - Register: F2 mcpx platform · F3 OpenCode platform · F4 fleet orchestration & dispatch.
 - Labels: `epic/fleet-orchestration`, `epic/mcpx-platform`, `epic/opencode-platform` + per-design labels.
 - Milestones: "OpenCode 2 fleet migration" (opencode, exists); fleet-orchestration/mcpx milestones in code per the sibling-lane scheme (own milestone for big epics, roll up small ones).
 - Board: "Designs — ID & fleet" view + per-repo roadmaps.
 
 ### P4 — SaaS service for ID/Atlas/fleet (band 30)
+
 The hosted service side: the Supabase muse-dev platform and its successors.
+
 - Register: X8 Supabase agent schema + coordination platform · X7 Supabase DIY backups + $30 ceiling · goal `supabase-muse-dev-platform-backups`.
 - Gap: no single design describes the SaaS service as the service counterpart of P1–P3 → **drafted in phase 2** as a living doc, marked as a draft for Drew's ratification.
 - Labels: `epic/saas-service`. Milestone: "SaaS service" in the home repo the draft lands in (code, unless the draft's home is hatch-personal — decided in phase 2 and recorded here).
 
 ### P5 — PM stack (band 30)
+
 - Register: P1 PM stack program (single URL) · P2 decisions system · plus tonight's board-family work.
 - Epic home: code#8805 (register) + the PM program's standing issues; tie-in issue code#8864 carries the board-family page work.
 - Labels: `epic/pm-stack` + `app/pm-stack` where it already exists. Milestone: "Design register 2026-11" covers the register slice; a standing "PM stack" milestone is created if the sibling lane hasn't.
 - Board: "Designs — PM stack" view exists.
 
 ### P6 — Turso (SaaS) + Cloudflare integration (band 30)
+
 - Register: T1–T5 (Turso) · C1–C9 (Cloudflare) · T3 idea engine is the joint vehicle.
 - Milestones: "nix-cache program" (nix-cache, exists, Cloudflare side); a Turso-side milestone in hatch-personal ("Turso platform") if the sibling lane hasn't created one.
 - Labels: `epic/turso-cloudflare` + existing per-design labels. Board views "Designs — Cloudflare" and "Designs — Turso" exist.
 - Gap check in phase 2: whether one integration design ties the Turso↔Cloudflare pattern (ledger-in-Turso, edge-on-Cloudflare) together; draft if missing.
 
 ### P7 — GitHub + dynamic compute (band 40)
+
 Better use of GitHub (Actions, runners, merge machinery) and dynamic compute (Codespaces, Blacksmith, ephemeral runners).
+
 - Register: X9 CI program (2026-10-18) is the ancestor; goals `efficient-use-of-codespaces-actions-and-blacksmith`, `github-actions-usage-review-trim-to-what-s-needed`, `github-pro-bots-runners-what-can-we-actually-use`, `github-rulesets-audit-for-all-worked-in-repos` hold the pieces.
 - Gap: no single design → **drafted in phase 2**.
 - Labels: `epic/github-dynamic-compute`. Milestone: "GitHub + dynamic compute" in code. Board: program view in phase 5.
 
 ### P8 — Storage (band 40)
+
 Better use of storage: cold-store, R2 layout, nix store, backups.
+
 - Register: X6 cold-store backup design · X19 backups family · X1 nix persistence · X17 fleet backups provisioning.
 - Gap: pieces exist (cold-store living doc committed) but no single storage-program design ties allocation policy across R2 / nix store / Turso / backups → **drafted in phase 2** if the phase-2 check confirms no existing doc does this.
 - Labels: `epic/storage`. Milestone: "Storage program" in code. Board: program view in phase 5.
 
 ### P9 — Lab build-out + integration (band 40)
+
 THE major item: build out the lab and integrate existing work, fully using the k8s cluster (Talos/Cozystack) and the other machines.
+
 - Register: X5 lab cluster program (PARENT); epic home code#1817 (basement cluster roadmap, code `planning/roadmaps/basement-cluster.md`); goal `stand-up-lab-cluster-talm-talos-cozystack-postgres-rustfs`.
-- Gap: X5 covers standing the cluster up; the *integration* design — how existing fleet work (ID, Atlas, fleet services, storage, PM stack) lands on the cluster and the other machines, and what "fully using" means in deliverables — is implied by Drew's order but not on file → **drafted in phase 2**.
+- Gap: X5 covers standing the cluster up; the _integration_ design — how existing fleet work (ID, Atlas, fleet services, storage, PM stack) lands on the cluster and the other machines, and what "fully using" means in deliverables — is implied by Drew's order but not on file → **drafted in phase 2**.
 - Labels: `epic/lab-cluster`. Milestone: "Lab cluster" in code (create if missing). Board: program view in phase 5.
 
 ## Classification rubric (census)
@@ -136,20 +152,20 @@ The lanes adopted pre-existing sibling names instead of creating duplicates; the
 
 developing-today/code — 1,039 rows (`census-code-a.md` #171–#5805: 518 · `census-code-b.md` #5806–#8873: 521; repo stood at 1,034 open at start, 1,038 at end after the 5 design filings and one unrelated closure):
 
-| Class | A | B | Total |
-|---|---|---|---|
-| P1 ID | 161 | 155 | 316 |
-| P2 Atlas | 9 | 61 | 70 |
-| P3 Fleet | 164 | 116 | 280 |
-| P4 SaaS | 4 | 2 | 6 |
-| P5 PM stack | 82 | 33 | 115 |
-| P6 Turso+CF | 8 | 8 | 16 |
-| P7 GitHub/compute | 6 | 21 | 27 |
-| P8 Storage | 6 | 5 | 11 |
-| P9 Lab | 30 | 11 | 41 |
-| BLOCKING | 13 | 24 | 37 |
-| SMALL (band 70) | 24 | 63 | 87 |
-| RECORD | 11 | 22 | 33 |
+| Class             | A   | B   | Total |
+| ----------------- | --- | --- | ----- |
+| P1 ID             | 161 | 155 | 316   |
+| P2 Atlas          | 9   | 61  | 70    |
+| P3 Fleet          | 164 | 116 | 280   |
+| P4 SaaS           | 4   | 2   | 6     |
+| P5 PM stack       | 82  | 33  | 115   |
+| P6 Turso+CF       | 8   | 8   | 16    |
+| P7 GitHub/compute | 6   | 21  | 27    |
+| P8 Storage        | 6   | 5   | 11    |
+| P9 Lab            | 30  | 11  | 41    |
+| BLOCKING          | 13  | 24  | 37    |
+| SMALL (band 70)   | 24  | 63  | 87    |
+| RECORD            | 11  | 22  | 33    |
 
 Other repos — 188 rows (one census file per repo): opencode 62 (P3 47 · SMALL 14 · BLOCKING 1) · openchamber 61 (P3 23 · SMALL 33 · BLOCKING 3 · RECORD 2) · darwin-nix 32 (P3 7 · P8 4 · P7 3 · P4 1 · P5 1 · BLOCKING 1 · SMALL 13 · RECORD 2 — classify + label only, HOLD respected, zero milestone/band changes) · nix-cache 5 (all P6) · hatch-personal 21 (P2 15 · P4 2 · P6 1 · BLOCKING 1 · RECORD 2) · hatch 7 (P3 3 · P8 2 · RECORD 2).
 
@@ -169,14 +185,14 @@ Other repos — 188 rows (one census file per repo): opencode 62 (P3 47 · SMALL
 
 Created 2026-11-12 on org Project #4 via the Projects v2 GraphQL route (`github.project-token`), each verified by a second read-back of name + filter. P2, P5 and P6 needed no new view — the existing Area views already isolate them ("Designs — Atlas", "Designs — PM stack", "Designs — Cloudflare" + "Designs — Turso"). Item counts are board items matching the filter, counted via the API at creation time (763 items on the project then): label filters only match items already on Project #4, so these counts understate the census totals — most censused issues are not board items.
 
-| View | Filter | Items on board (observed) | URL |
-|---|---|---|---|
-| Program — P1 ID | `label:epic/id-program` | 80 | https://github.com/orgs/developing-today/projects/4/views/16 |
-| Program — P4 SaaS service | `label:epic/saas-service` | 5 | https://github.com/orgs/developing-today/projects/4/views/17 |
-| Program — P7 GitHub + dynamic compute | `label:epic/github-dynamic-compute` | 6 | https://github.com/orgs/developing-today/projects/4/views/18 |
-| Program — P8 Storage | `label:epic/storage` | 3 | https://github.com/orgs/developing-today/projects/4/views/19 |
-| Program — P9 Lab | `label:epic/lab-cluster` | 41 | https://github.com/orgs/developing-today/projects/4/views/20 |
-| Program — P3 Fleet | `label:epic/fleet-orchestration,epic/mcpx-platform,epic/opencode-platform` | 66 | https://github.com/orgs/developing-today/projects/4/views/21 |
+| View                                  | Filter                                                                     | Items on board (observed) | URL                                                          |
+| ------------------------------------- | -------------------------------------------------------------------------- | ------------------------- | ------------------------------------------------------------ |
+| Program — P1 ID                       | `label:epic/id-program`                                                    | 80                        | https://github.com/orgs/developing-today/projects/4/views/16 |
+| Program — P4 SaaS service             | `label:epic/saas-service`                                                  | 5                         | https://github.com/orgs/developing-today/projects/4/views/17 |
+| Program — P7 GitHub + dynamic compute | `label:epic/github-dynamic-compute`                                        | 6                         | https://github.com/orgs/developing-today/projects/4/views/18 |
+| Program — P8 Storage                  | `label:epic/storage`                                                       | 3                         | https://github.com/orgs/developing-today/projects/4/views/19 |
+| Program — P9 Lab                      | `label:epic/lab-cluster`                                                   | 41                        | https://github.com/orgs/developing-today/projects/4/views/20 |
+| Program — P3 Fleet                    | `label:epic/fleet-orchestration,epic/mcpx-platform,epic/opencode-platform` | 66                        | https://github.com/orgs/developing-today/projects/4/views/21 |
 
 **P3 verdict — view kept, on the OR filter.** The three P3 epic labels are mutually exclusive on board items (`epic/fleet-orchestration` 36 · `epic/mcpx-platform` 11 · `epic/opencode-platform` 19; no board item carries two of them), so the space-separated form — which GitHub ANDs — matches **0** items and would have been deleted under the near-nothing rule. The comma form is GitHub's OR-within-a-qualifier syntax and returns the full union: **66 items**, a sane non-trivial set against the census's ~280 P3 issues in code plus the fork repos. The view therefore stands with the comma-OR filter, and P3 is additionally covered by the "Designs — ID & fleet" view and the per-repo roadmaps, as before.
 

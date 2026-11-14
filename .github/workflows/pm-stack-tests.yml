@@ -3,6 +3,7 @@ name: pm-stack tests
 on:
   workflow_dispatch:
   push:
+    branches: [main]
     paths:
       - "pm-stack/external-comms/**"
       - "pm-stack/opencode-claimant/**"
@@ -15,20 +16,6 @@ on:
       - "pm-stack/grist/**"
       - "pm-stack/scripts/**"
       - ".github/workflows/pm-stack-tests.yml"
-  pull_request:
-    paths:
-      - "pm-stack/external-comms/**"
-      - "pm-stack/opencode-claimant/**"
-      - "pm-stack/opencode-usage-export/**"
-      - "pm-stack/cloudflare-export/**"
-      - "pm-stack/supabase-export/**"
-      - "pm-stack/meta-exporter/**"
-      - "pm-stack/dispatch/**"
-      - "pm-stack/pad/**"
-      - "pm-stack/grist/**"
-      - "pm-stack/scripts/**"
-      - ".github/workflows/pm-stack-tests.yml"
-
 permissions:
   contents: read
 
@@ -146,6 +133,20 @@ jobs:
             exit 1
           fi
           echo "pm-stack Python suites: test_poll.py + test_claimant.py + test/test_claimant.py (#7670) + grist discovery passed."
+
+      # Required inputs are explicit so discovery cannot silently drop a suite.
+      - name: Test claimant launch, handoff, and batch dispatch (#9877)
+        working-directory: pm-stack/opencode-claimant
+        run: |
+          set -euo pipefail
+          set -- test_launch_one.py test_send_to_opencode.py test_dispatch_batch.py
+          for suite in "$@"; do
+            if [ ! -f "$suite" ]; then
+              echo "::error::Missing claimant suite file $suite; launch, handoff, and batch dispatch tests did not run."
+              exit 1
+            fi
+          done
+          python3 -m unittest "$@"
 
       # Bun suite for #6091: pm-stack/opencode-claimant/
       # test/install.test.mjs (13 tests, the #3278 typo'd-flag

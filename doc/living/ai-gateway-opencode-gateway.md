@@ -9,6 +9,7 @@ Living document · Status: shipped (2026-10-07) · Register entry C4 · Tracking
 - Created by Drew himself in the Cloudflare dashboard on 2026-10-07.
 
 Context from the register entry:
+
 - Drew created the gateway, then asked Muse: "what's the ai gateway name BTW?"
 - He stood it up for the fleet's inference traffic and confirmed the setup
   with Muse the same morning.

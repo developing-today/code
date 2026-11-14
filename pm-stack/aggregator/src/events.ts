@@ -427,9 +427,12 @@ export function archivePartitionName(atIso: string): string {
  *  legitimately breaks contiguity while its own hash still proves
  *  it unaltered. `linksVerified` reports how much of the chain the
  *  archive proves continuous. */
-export function verifyArchivedRecords(
-  records: readonly AuditEvent[],
-): { ok: boolean; records: number; linksVerified: number; error?: string } {
+export function verifyArchivedRecords(records: readonly AuditEvent[]): {
+  ok: boolean;
+  records: number;
+  linksVerified: number;
+  error?: string;
+} {
   let linksVerified = 0;
   for (let i = 0; i < records.length; i++) {
     const e = records[i]!;
@@ -753,7 +756,9 @@ export class EventsStore {
         }
         if (archiveReadable && !anchorArchived) {
           this.missingAnchorDetail =
-            "the loaded chain's retention anchor (prevHash " + loadAnchor.slice(0, 12) + "…) names a predecessor " +
+            "the loaded chain's retention anchor (prevHash " +
+            loadAnchor.slice(0, 12) +
+            "…) names a predecessor " +
             "that no archive partition holds — history before the anchor is outside the retained+archived set " +
             "(pruned before the #3322 archive contract, or a lost partition)";
         }
@@ -962,15 +967,9 @@ export class EventsStore {
       throw err;
     }
     const records: AuditEvent[] = [];
-    for (const name of names
-      .filter((n) => n.startsWith("events-archive-") && n.endsWith(".json"))
-      .sort()) {
+    for (const name of names.filter((n) => n.startsWith("events-archive-") && n.endsWith(".json")).sort()) {
       const parsed: unknown = JSON.parse(await readFile(join(this.archiveDir, name), "utf8"));
-      if (
-        typeof parsed !== "object" ||
-        parsed === null ||
-        !Array.isArray((parsed as EventArchivePartition).records)
-      ) {
+      if (typeof parsed !== "object" || parsed === null || !Array.isArray((parsed as EventArchivePartition).records)) {
         throw new Error(`archive partition ${name} does not have the expected { records: [...] } shape`);
       }
       // Iterate, never spread: a monthly partition has no record-count
@@ -1110,9 +1109,7 @@ export class EventsStore {
   /** The archive side of health(): record count, the archive's own
    *  integrity verdict, and the visible-gap report for the hot
    *  chain's retention anchor. */
-  private async archiveHealth(): Promise<
-    Pick<EventsHealth, "archivedRecords" | "archive" | "historyGap">
-  > {
+  private async archiveHealth(): Promise<Pick<EventsHealth, "archivedRecords" | "archive" | "historyGap">> {
     let archived: AuditEvent[] = [];
     let readError: string | null = null;
     try {
@@ -1148,7 +1145,8 @@ export class EventsStore {
     } else if (archived.some((e) => e.hash === first.prevHash)) {
       historyGap = {
         present: false,
-        detail: "the hot chain's retention anchor is the last archived record — retained + archived history is continuous",
+        detail:
+          "the hot chain's retention anchor is the last archived record — retained + archived history is continuous",
       };
     } else {
       historyGap = {
@@ -1263,10 +1261,7 @@ export class EventsStore {
     // 1ms past the newest stamp already in the stream (record calls
     // are serialized on recordChain, so this is race-free) makes
     // the snapshot boundary exact.
-    const lastIngestedMs = this.events.reduce(
-      (latest, e) => Math.max(latest, Date.parse(e.ingestedAt) || 0),
-      0,
-    );
+    const lastIngestedMs = this.events.reduce((latest, e) => Math.max(latest, Date.parse(e.ingestedAt) || 0), 0);
     const ingestedAt = new Date(Math.max(Date.now(), lastIngestedMs + 1)).toISOString();
     const event: AuditEvent = {
       ...parsed.value,

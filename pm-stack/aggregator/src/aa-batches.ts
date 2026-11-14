@@ -97,8 +97,7 @@ export function parseBatchIndex(raw: unknown): AaBatchIndexRow[] {
  */
 export function aaPricesFingerprint(prices: unknown): string {
   const rows = Array.isArray(prices) ? prices : [];
-  const numOrNull = (v: unknown): number | null =>
-    typeof v === "number" && Number.isFinite(v) ? v : null;
+  const numOrNull = (v: unknown): number | null => (typeof v === "number" && Number.isFinite(v) ? v : null);
   const norm = rows
     .map((p) => {
       const r = (p ?? {}) as Record<string, unknown>;
@@ -217,9 +216,7 @@ export function isAaBatchCacheEntry(v: unknown): v is AaBatchCacheEntry {
     isBatchUuid(e.batch) &&
     typeof e.configFingerprint === "string" &&
     typeof e.fingerprint === "string" &&
-    (e.pricesFingerprint === undefined ||
-      e.pricesFingerprint === null ||
-      typeof e.pricesFingerprint === "string") &&
+    (e.pricesFingerprint === undefined || e.pricesFingerprint === null || typeof e.pricesFingerprint === "string") &&
     (e.sqlRevision === undefined || typeof e.sqlRevision === "number") &&
     typeof e.builtAt === "string" &&
     typeof e.section === "object" &&

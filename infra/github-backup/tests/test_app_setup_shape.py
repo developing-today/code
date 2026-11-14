@@ -53,14 +53,24 @@ class ValidateConfigTests(unittest.TestCase):
 
     def test_wrong_shapes_name_the_field(self):
         cases = []
-        cfg = good_config(); del cfg["app"]; cases.append((cfg, "'app'"))
-        cfg = good_config(); cfg["app"] = [1]; cases.append((cfg, "'app'"))
-        cfg = good_config(); cfg["app"]["bitwarden_secret_names"] = "names"
+        cfg = good_config()
+        del cfg["app"]
+        cases.append((cfg, "'app'"))
+        cfg = good_config()
+        cfg["app"] = [1]
+        cases.append((cfg, "'app'"))
+        cfg = good_config()
+        cfg["app"]["bitwarden_secret_names"] = "names"
         cases.append((cfg, "bitwarden_secret_names"))
-        cfg = good_config(); del cfg["app"]["bitwarden_secret_names"]["pem" if False else "private_key"]
+        cfg = good_config()
+        del cfg["app"]["bitwarden_secret_names"]["pem" if False else "private_key"]
         cases.append((cfg, "private_key"))
-        cfg = good_config(); cfg["app"]["events"] = "push"; cases.append((cfg, "app.events"))
-        cfg = good_config(); cfg["worker"] = {}; cases.append((cfg, "webhook_path"))
+        cfg = good_config()
+        cfg["app"]["events"] = "push"
+        cases.append((cfg, "app.events"))
+        cfg = good_config()
+        cfg["worker"] = {}
+        cases.append((cfg, "webhook_path"))
         cases.append(([1, 2], "top level"))
         for cfg, needle in cases:
             clean, problems = ghb_common.validate_config(cfg)
@@ -94,9 +104,7 @@ class AppSetupImportTests(unittest.TestCase):
 
 
 def fake_run(result):
-    return patch.object(
-        __import__("app_setup").subprocess, "run", return_value=result
-    )
+    return patch.object(__import__("app_setup").subprocess, "run", return_value=result)
 
 
 class BwsReaderTests(unittest.TestCase):
@@ -106,7 +114,9 @@ class BwsReaderTests(unittest.TestCase):
         self.app_setup = app_setup
 
     def test_bws_list_error_object_is_named_shape_error(self):
-        with fake_run(SimpleNamespace(returncode=0, stdout='{"error": "x"}', stderr="")):
+        with fake_run(
+            SimpleNamespace(returncode=0, stdout='{"error": "x"}', stderr="")
+        ):
             with self.assertRaises(RuntimeError) as cm:
                 self.app_setup._bws_list()
         self.assertIn("unexpected shape", str(cm.exception))
@@ -126,7 +136,9 @@ class BwsReaderTests(unittest.TestCase):
     def test_project_id_failure_reports_bws_not_no_projects(self):
         with patch.dict(os.environ, {}, clear=False):
             os.environ.pop("GHB_BWS_PROJECT_ID", None)
-            with fake_run(SimpleNamespace(returncode=1, stdout="", stderr="bws exploded")):
+            with fake_run(
+                SimpleNamespace(returncode=1, stdout="", stderr="bws exploded")
+            ):
                 with self.assertRaises(RuntimeError) as cm:
                     self.app_setup._project_id()
         self.assertIn("bws exploded", str(cm.exception))
@@ -142,7 +154,9 @@ class BwsReaderTests(unittest.TestCase):
 
     def test_bws_get_failure_is_runtime_not_json_error(self):
         seq = [
-            SimpleNamespace(returncode=0, stdout='[{"id": "1", "key": "k"}]', stderr=""),
+            SimpleNamespace(
+                returncode=0, stdout='[{"id": "1", "key": "k"}]', stderr=""
+            ),
             SimpleNamespace(returncode=1, stdout="", stderr="get failed hard"),
         ]
         with patch.object(self.app_setup.subprocess, "run", side_effect=seq):
@@ -173,7 +187,9 @@ class ConversionTests(unittest.TestCase):
         with (
             patch.object(urllib.request, "urlopen", return_value=Resp()),
             patch.object(
-                self.app_setup, "bws_set", side_effect=lambda n, v: stored.append((n, v))
+                self.app_setup,
+                "bws_set",
+                side_effect=lambda n, v: stored.append((n, v)),
             ),
             contextlib.redirect_stdout(io.StringIO()),
         ):
@@ -195,9 +211,7 @@ class ConversionTests(unittest.TestCase):
             "slug": "my-app",
         }
         stored = self.run_convert(conv)
-        self.assertEqual(
-            [v for _, v in stored], ["42", "cid", "sec", "PEM"]
-        )
+        self.assertEqual([v for _, v in stored], ["42", "cid", "sec", "PEM"])
 
     def test_installations_shape_validated_before_indexing(self):
         bad = [{"id": 1, "account": "not-an-object"}]

@@ -208,7 +208,10 @@ describe("request-info, comments, filled-answers-win (#8766 follow-up)", () => {
     expect(progress.deferred).toBe(0);
     expect(decisionSetOpenState(res!.set).items.find((i) => i.ledgerId === "item-a")?.openQids).toEqual([]);
     const records = await listDecisionResolutions(file);
-    expect(records.find((r) => r.qid === "item-a#1")).toMatchObject({ kind: "request-info", note: "need the cost numbers" });
+    expect(records.find((r) => r.qid === "item-a#1")).toMatchObject({
+      kind: "request-info",
+      note: "need the cost numbers",
+    });
     expect(records.find((r) => r.qid === "item-a#2")?.note).toBeUndefined();
     // First resolution still wins inside one set: a later answer in the
     // SAME set does not overwrite the request-info.
@@ -223,11 +226,19 @@ describe("request-info, comments, filled-answers-win (#8766 follow-up)", () => {
     await recordResolutions(file, "set-test-1", [
       { ledgerId: "item-a", qid: "item-a#1", kind: "answered", optionId: "opt-1" },
     ]);
-    const out = await requestInfoOpenQuestions(file, "set-test-1", { ledgerIds: ["item-a", "item-b"] }, "missing the timeline");
+    const out = await requestInfoOpenQuestions(
+      file,
+      "set-test-1",
+      { ledgerIds: ["item-a", "item-b"] },
+      "missing the timeline",
+    );
     expect(out?.requestedCount).toBe(2); // item-a#2 + item-b#1; item-a#1 already answered
     const records = await listDecisionResolutions(file);
     expect(records.find((r) => r.qid === "item-a#1")?.kind).toBe("answered");
-    expect(records.find((r) => r.qid === "item-b#1")).toMatchObject({ kind: "request-info", note: "missing the timeline" });
+    expect(records.find((r) => r.qid === "item-b#1")).toMatchObject({
+      kind: "request-info",
+      note: "missing the timeline",
+    });
   });
 
   test("re-raise: an enriched question returns in a later set carrying infoProvided and can be answered there", async () => {
@@ -262,7 +273,13 @@ describe("request-info, comments, filled-answers-win (#8766 follow-up)", () => {
       "set-test-1",
       [
         { ledgerId: "item-a", qid: "item-a#1", kind: "answered", optionId: "opt-2" },
-        { ledgerId: "item-a", qid: "item-a#2", kind: "deferred", lean: "skeptical", comment: "not without the numbers" },
+        {
+          ledgerId: "item-a",
+          qid: "item-a#2",
+          kind: "deferred",
+          lean: "skeptical",
+          comment: "not without the numbers",
+        },
       ],
       { allRemaining: true },
       "none",
@@ -278,7 +295,11 @@ describe("request-info, comments, filled-answers-win (#8766 follow-up)", () => {
     // The filled-in answer is an answer resolution, never a deferral.
     expect(byQid.get("item-a#1")).toMatchObject({ kind: "answered", optionId: "opt-2" });
     // The per-question defer kept its own lean and comment.
-    expect(byQid.get("item-a#2")).toMatchObject({ kind: "deferred", lean: "skeptical", comment: "not without the numbers" });
+    expect(byQid.get("item-a#2")).toMatchObject({
+      kind: "deferred",
+      lean: "skeptical",
+      comment: "not without the numbers",
+    });
     // The bulk defer took the bulk lean and bulk comment.
     expect(byQid.get("item-b#1")).toMatchObject({ kind: "deferred", lean: "none", comment: "bulk note" });
     expect(isDecisionSetFullyResolved(out!.set)).toBe(true);
@@ -338,7 +359,14 @@ describe("guided defer + mixed flavors (#8766 follow-up)", () => {
       file,
       "set-test-1",
       [
-        { ledgerId: "item-a", qid: "item-a#1", kind: "deferred", lean: "approve", optionId: "opt-2", comment: "if we must" },
+        {
+          ledgerId: "item-a",
+          qid: "item-a#1",
+          kind: "deferred",
+          lean: "approve",
+          optionId: "opt-2",
+          comment: "if we must",
+        },
         { ledgerId: "item-a", qid: "item-a#2", kind: "answered", freeText: "Rockbot was the 2024 prototype" },
       ],
       { allRemaining: true },
@@ -375,7 +403,14 @@ describe("bulk default flavor (#8766 follow-up)", () => {
       file,
       "set-test-1",
       [
-        { ledgerId: "item-a", qid: "item-a#1", kind: "deferred", lean: "approve", optionId: "opt-1", comment: "guidance" },
+        {
+          ledgerId: "item-a",
+          qid: "item-a#1",
+          kind: "deferred",
+          lean: "approve",
+          optionId: "opt-1",
+          comment: "guidance",
+        },
         { ledgerId: "item-a", qid: "item-a#2", kind: "answered", freeText: "the answer" },
       ],
       { allRemaining: true },
@@ -383,7 +418,12 @@ describe("bulk default flavor (#8766 follow-up)", () => {
     );
     expect(out?.deferredCount).toBe(1); // only the untouched question is bulk-deferred
     const byQid = new Map((await listDecisionResolutions(file)).map((r) => [r.qid, r]));
-    expect(byQid.get("item-a#1")).toMatchObject({ kind: "deferred", lean: "approve", optionId: "opt-1", comment: "guidance" });
+    expect(byQid.get("item-a#1")).toMatchObject({
+      kind: "deferred",
+      lean: "approve",
+      optionId: "opt-1",
+      comment: "guidance",
+    });
     expect(byQid.get("item-a#2")).toMatchObject({ kind: "answered", freeText: "the answer" });
     expect(byQid.get("item-b#1")).toMatchObject({ kind: "deferred", lean: "skeptical" });
   });
@@ -527,9 +567,7 @@ describe("decisions server drafts", () => {
 
   test("an unknown set reads back null", async () => {
     expect(await getDecisionDrafts(file, "no-such-set")).toBeNull();
-    expect(
-      await upsertDecisionDrafts(file, "no-such-set", { questions: {} }),
-    ).toBeNull();
+    expect(await upsertDecisionDrafts(file, "no-such-set", { questions: {} })).toBeNull();
   });
 
   test("validateDecisionDraftUpsert rejects malformed payloads", () => {

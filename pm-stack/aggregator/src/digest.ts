@@ -346,7 +346,9 @@ function quotaPoolNote(pool: QuotaPool, now: Date): string | null {
   // derives only utilization — without this, a failed pool with low
   // windows would vanish from the outlook and a stale high reading
   // would read as a current forecast.
-  const degraded = pool.freshness?.state ?? (pool.state === "error" || pool.state === "stale" || pool.state === "lapsed" ? pool.state : null);
+  const degraded =
+    pool.freshness?.state ??
+    (pool.state === "error" || pool.state === "stale" || pool.state === "lapsed" ? pool.state : null);
   if (degraded === "error") {
     parts.push(
       `provider read error${pool.freshness?.error ? `: ${pool.freshness.error}` : ""} — current readings unavailable; any figures below are the last successful read`,

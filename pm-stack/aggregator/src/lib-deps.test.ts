@@ -8,7 +8,11 @@ async function fakeCheckout(opts: { installed?: boolean } = {}): Promise<{ root:
   const root = await mkdtemp(join(tmpdir(), "lib-deps-checkout-"));
   const libDir = join(root, "packages/web/server/lib");
   await mkdir(libDir, { recursive: true });
-  await writeFile(join(root, "package.json"), JSON.stringify({ dependencies: { yaml: "^2.8.1", "@scope/pkg": "1.0.0" } }), "utf8");
+  await writeFile(
+    join(root, "package.json"),
+    JSON.stringify({ dependencies: { yaml: "^2.8.1", "@scope/pkg": "1.0.0" } }),
+    "utf8",
+  );
   await writeFile(join(root, "bun.lock"), "", "utf8");
   if (opts.installed) {
     await mkdir(join(root, "node_modules/yaml"), { recursive: true });
@@ -66,7 +70,12 @@ test("optional and peer dependencies are not mandatory (Codex P2, PR #8764)", as
     // but optional/peer, so nothing is missing and no install runs.
     expect(checkLibDependencies(libDir).missing).toEqual([]);
     let installs = 0;
-    await ensureLibDependencies({ libDir, install: async () => { installs++; } });
+    await ensureLibDependencies({
+      libDir,
+      install: async () => {
+        installs++;
+      },
+    });
     expect(installs).toBe(0);
   } finally {
     await rm(root, { recursive: true, force: true });
@@ -99,7 +108,12 @@ test("ensure does not install when everything already resolves", async () => {
   const { root, libDir } = await fakeCheckout({ installed: true });
   try {
     let installs = 0;
-    const result = await ensureLibDependencies({ libDir, install: async () => { installs++; } });
+    const result = await ensureLibDependencies({
+      libDir,
+      install: async () => {
+        installs++;
+      },
+    });
     expect(installs).toBe(0);
     expect(result.missing).toEqual([]);
   } finally {
@@ -110,7 +124,9 @@ test("ensure does not install when everything already resolves", async () => {
 test("ensure throws an explicit error naming packages still missing after install", async () => {
   const { root, libDir } = await fakeCheckout();
   try {
-    await expect(ensureLibDependencies({ libDir, install: async () => {} })).rejects.toThrow("still missing after install");
+    await expect(ensureLibDependencies({ libDir, install: async () => {} })).rejects.toThrow(
+      "still missing after install",
+    );
     await expect(ensureLibDependencies({ libDir, install: async () => {} })).rejects.toThrow("yaml");
   } finally {
     await rm(root, { recursive: true, force: true });
@@ -121,7 +137,12 @@ test("ensure is a no-op outside an installable checkout", async () => {
   const dir = await mkdtemp(join(tmpdir(), "lib-deps-nocheckout-"));
   try {
     let installs = 0;
-    const result = await ensureLibDependencies({ libDir: dir, install: async () => { installs++; } });
+    const result = await ensureLibDependencies({
+      libDir: dir,
+      install: async () => {
+        installs++;
+      },
+    });
     expect(result.root).toBeNull();
     expect(installs).toBe(0);
   } finally {

@@ -4,7 +4,7 @@ Design record for issue #5675 ("id: design: Querying local and remote ID
 servers v1"). Written per `doc/DOCUMENTATION_PROTOCOL.md` (dated record in
 `doc/<UTC>_design_<name>/`). Origin issue: #5675. Sibling and dependent
 records/contracts: #2048 (ID data/zettelkasten layer — the tables being
-queried), #5732 (ID recommendations — *depends on* this record; its §3
+queried), #5732 (ID recommendations — _depends on_ this record; its §3
 "extends #5675"), #5683 (residency & boundaries — sensitivity /
 selective-sharing grants), #5669 (atlas staging tier). Status: v1 design,
 settled at the parent level except the items in §10, which are owned by
@@ -26,7 +26,7 @@ ID servers hold data in tables. There should be a first-class, designed way
 to **query** those tables — on a local server and on remote servers — from
 scripts, from agents, and from the human CLI, with the same semantics in all
 three. Remote queries are filtered by the data's sensitivity classification;
-the owner of a server keeps a deliberate override for their *own* server's
+the owner of a server keeps a deliberate override for their _own_ server's
 unencrypted data. This design defines the query surfaces, the filtering model
 and its hard boundary, and result shaping; it does not design the individual
 mechanisms (those are the children in §9).
@@ -53,7 +53,7 @@ separate surface with separate permissions and audit (or an explicit v1
   embedded where possible, no network round trip, full local performance.
 - **Remote queries:** querying tables on a remote ID server over ID transport
   (including over fallback transports), with the **remote server executing
-  the query**. "Replicate everything and query locally" is *not* the only
+  the query**. "Replicate everything and query locally" is _not_ the only
   option and is not the remote model — it contradicts server-side filtering
   (§4).
 - **Query shape (v1):** table selection; filters; projections; ordering;
@@ -81,8 +81,8 @@ separate surface with separate permissions and audit (or an explicit v1
 - **Audit:** remote queries (who, what query, what levels were touched /
   withheld) are logged on the **serving** server, visible to its owner.
   Mechanics are **#5818**'s.
-- **Composition with grants:** selective-sharing grants decide *whether* a
-  peer may reach data; sensitivity filtering decides *what a query returns*.
+- **Composition with grants:** selective-sharing grants decide _whether_ a
+  peer may reach data; sensitivity filtering decides _what a query returns_.
   Their composition when they disagree is a **parent open question** (§10,
   deny-wins is the working assumption); the decided rule is recorded by the
   child that owns it.
@@ -155,15 +155,15 @@ The parent's decomposition (as fixed in #5675) and current child state at
 `origin/main` (2026-11-08). Parent-fixed decisions each child must honour are
 named; no child re-decides a parent decision.
 
-| Child | Scope | Status | Parent-fixed input it inherits |
-|---|---|---|---|
-| #5816 | ID query language/shape v1 (local + remote execution model, parity) | **CLOSED** — decision record landed 2026-11-05 (record on the issue) | §3 shape rules; §4 remote-is-server-side; §5 boundary; §7 read-only |
-| #5817 | Sensitivity classification model (levels, assignment, defaults, field vs. row) | OPEN — queued | §4 model + safe default |
-| #5818 | Server-side filtered remote query execution + withheld-result honesty + audit | OPEN (parked/assigned) | §4 model; §3 parity; composition rule (§10) |
-| #5819 | Owner override mechanics (scope, audit, multi-principal) & encryption boundary | OPEN (in-progress/claimed) | §5 boundary (verbatim) |
-| #5820 | Client surfaces parity — scripting/API, agent, CLI over one model | OPEN (parked/assigned) | §6 + outputs of #5816/#5818/#5821/#5822 |
-| #5821 | Result shaping & cursor pagination (formats, truncation honesty, cost limits) | OPEN | §8 requirements + #5816's shape |
-| #5822 | Mutating surface separation (permissions, audit) — or an explicit v1 "read-only only" decision record | OPEN | §7 read-only-by-construction |
+| Child | Scope                                                                                                 | Status                                                               | Parent-fixed input it inherits                                      |
+| ----- | ----------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------- | ------------------------------------------------------------------- |
+| #5816 | ID query language/shape v1 (local + remote execution model, parity)                                   | **CLOSED** — decision record landed 2026-11-05 (record on the issue) | §3 shape rules; §4 remote-is-server-side; §5 boundary; §7 read-only |
+| #5817 | Sensitivity classification model (levels, assignment, defaults, field vs. row)                        | OPEN — queued                                                        | §4 model + safe default                                             |
+| #5818 | Server-side filtered remote query execution + withheld-result honesty + audit                         | OPEN (parked/assigned)                                               | §4 model; §3 parity; composition rule (§10)                         |
+| #5819 | Owner override mechanics (scope, audit, multi-principal) & encryption boundary                        | OPEN (in-progress/claimed)                                           | §5 boundary (verbatim)                                              |
+| #5820 | Client surfaces parity — scripting/API, agent, CLI over one model                                     | OPEN (parked/assigned)                                               | §6 + outputs of #5816/#5818/#5821/#5822                             |
+| #5821 | Result shaping & cursor pagination (formats, truncation honesty, cost limits)                         | OPEN                                                                 | §8 requirements + #5816's shape                                     |
+| #5822 | Mutating surface separation (permissions, audit) — or an explicit v1 "read-only only" decision record | OPEN                                                                 | §7 read-only-by-construction                                        |
 
 **Ordering (from the design's own dependencies).** #5817 (classification
 levels/defaults) and #5816 (query shape) are foundational and independent of
@@ -197,8 +197,8 @@ implementation timing is a separate decision.
 ## 11. Dependencies and composition
 
 - **Composes with #5683** (residency & boundaries / sensitivity rules) and
-  the selective-sharing grants model: grants decide *reach*, classification
-  decides *content returned* (§4; §10 composition rule).
+  the selective-sharing grants model: grants decide _reach_, classification
+  decides _content returned_ (§4; §10 composition rule).
 - **Depends on #2048** (ID data/zettelkasten layer): this design queries the
   tables that layer defines.
 - **Is a hard prerequisite of #5732** (recommendations): #5732's v1 record

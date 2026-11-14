@@ -5,6 +5,16 @@ Canonical home: developing-today/code, infra/github-backup/.
 Config lives in ../config.json next to this file's parent directory.
 The backup tree (default ~/backups/github) holds only data + generated
 state (plan.json, MANIFEST.json, logs); all logic lives in the repo.
+
+Pagination contract (#6622): a paged read is complete, bounded, or
+says so. (1) The cursor is validated where read — its type first
+(a present-but-malformed cursor is an error, never end-of-pages)
+and its progress second (it must advance). (2) The volume is
+bounded: every page loop carries a page/result bound whose breach
+is an error naming the listing. (3) Truncation is never silent:
+a read that stops short paginates to completion, fails closed,
+or marks the truncation explicitly. The closing inventory that
+dispositioned every paginated loop in the repo is on issue #6623.
 """
 
 import contextlib, json, os, shutil, subprocess, sys, tempfile
@@ -42,34 +52,26 @@ def validate_config(cfg, source="config.json"):
     sections pass through untouched.
     """
     if not isinstance(cfg, dict):
-        return {}, [
-            f"{source}: top level is {_shape(cfg)}, expected an object"
-        ]
+        return {}, [f"{source}: top level is {_shape(cfg)}, expected an object"]
     problems = []
     app = cfg.get("app")
     if not isinstance(app, dict):
-        problems.append(
-            f"{source}: 'app' is {_shape(app)}, expected an object"
-        )
+        problems.append(f"{source}: 'app' is {_shape(app)}, expected an object")
     else:
         name = app.get("name")
         if not isinstance(name, str) or not name:
             problems.append(
-                f"{source}: 'app.name' is {_shape(name)}, "
-                f"expected a non-empty string"
+                f"{source}: 'app.name' is {_shape(name)}, expected a non-empty string"
             )
         events = app.get("events")
-        if not isinstance(events, list) or not all(
-            isinstance(e, str) for e in events
-        ):
+        if not isinstance(events, list) or not all(isinstance(e, str) for e in events):
             problems.append(
                 f"{source}: 'app.events' is {_shape(events)}, "
                 f"expected a list of strings"
             )
         names = app.get("bitwarden_secret_names")
         if not isinstance(names, dict) or not all(
-            isinstance(k, str) and isinstance(v, str) and v
-            for k, v in names.items()
+            isinstance(k, str) and isinstance(v, str) and v for k, v in names.items()
         ):
             problems.append(
                 f"{source}: 'app.bitwarden_secret_names' is "
@@ -85,9 +87,7 @@ def validate_config(cfg, source="config.json"):
                     )
     worker = cfg.get("worker")
     if not isinstance(worker, dict):
-        problems.append(
-            f"{source}: 'worker' is {_shape(worker)}, expected an object"
-        )
+        problems.append(f"{source}: 'worker' is {_shape(worker)}, expected an object")
     else:
         path = worker.get("webhook_path")
         if not isinstance(path, str) or not path:
@@ -331,9 +331,7 @@ def _atomic_replace(path, text):
     reader only ever observes the previous complete file or the new
     complete file — never a partial one."""
     directory = os.path.dirname(os.path.abspath(path))
-    fd, tmp = tempfile.mkstemp(
-        dir=directory, prefix=".ghb-", suffix=".tmp"
-    )
+    fd, tmp = tempfile.mkstemp(dir=directory, prefix=".ghb-", suffix=".tmp")
     try:
         with os.fdopen(fd, "w") as f:
             f.write(text)
@@ -402,12 +400,9 @@ def load_json_tolerant(path, default, source):
             return value, problems
         except (OSError, ValueError) as e:
             problems.append(
-                f"{source}: last-good copy also unusable "
-                f"({type(e).__name__}: {e})"
+                f"{source}: last-good copy also unusable ({type(e).__name__}: {e})"
             )
-    problems.append(
-        f"{source}: {os.path.basename(path)} treated as empty"
-    )
+    problems.append(f"{source}: {os.path.basename(path)} treated as empty")
     return default, problems
 
 
@@ -552,8 +547,7 @@ def validate_state(state, source="state.json"):
             not repo.startswith("drain_")
             and last_fetch is not None
             and (
-                not isinstance(last_fetch, (int, float))
-                or isinstance(last_fetch, bool)
+                not isinstance(last_fetch, (int, float)) or isinstance(last_fetch, bool)
             )
         ):
             problems.append(

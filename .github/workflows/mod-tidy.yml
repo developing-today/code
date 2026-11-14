@@ -6,10 +6,6 @@ on:
     paths:
       - "pkgs/graph/**"
       - ".github/workflows/mod-tidy.yml"
-  pull_request:
-    paths:
-      - "pkgs/graph/**"
-      - ".github/workflows/mod-tidy.yml"
   workflow_dispatch:
 concurrency:
   group: ${{ github.workflow }}-${{ github.event_name == 'push' && github.run_id || github.ref }}

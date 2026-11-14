@@ -1183,9 +1183,16 @@ fn dispatch(st: &State, path: &str, req: &Value) -> Value {
             };
             let offset =
                 crate::client::list_offset_or_default(req.get("offset").and_then(|o| o.as_i64()));
+            // #9420 parity with the Turso verb_list: omit the queue
+            // predicate when no queue is named (queue=eq. with an
+            // empty value matches nothing and breaks exact readback).
+            let queue_pred = if queue.is_empty() {
+                String::new()
+            } else {
+                format!("&queue=eq.{}", quote(queue, ""))
+            };
             let mut path = format!(
-                "tasks?select={select}&queue=eq.{}&order=priority.asc,created_at.asc,id.asc&limit={limit}&offset={offset}",
-                quote(queue, "")
+                "tasks?select={select}{queue_pred}&order=priority.asc,created_at.asc,id.asc&limit={limit}&offset={offset}"
             );
             // #7871: --task narrows to one task id, so a worker can
             // verify a single recent completion from list output
@@ -1195,6 +1202,10 @@ fn dispatch(st: &State, path: &str, req: &Value) -> Value {
             }
             if let Some(s) = req.get("status").and_then(|s| s.as_str()) {
                 path += &format!("&status=eq.{}", quote(s, ""));
+            }
+            // #9420: dedupe_key narrows to the task carrying that key.
+            if let Some(d) = req.get("dedupe_key").and_then(|d| d.as_str()) {
+                path += &format!("&dedupe_key=eq.{}", quote(d, ""));
             }
             if let Some(nb) = req.get("not_before").and_then(|s| s.as_str()) {
                 path += &format!("&or=(not_before.is.null,not_before.lte.{})", quote(nb, ":"));
@@ -1283,7 +1294,7 @@ fn dispatch(st: &State, path: &str, req: &Value) -> Value {
                 Err(e) => fail(e.exit, e.msg),
             }
         }
-        "/stack-record" | "/stack-list" => fail(
+        "/stack-record" | "/stack-list" | "/stack-restack" => fail(
             2,
             "merge-intent stack verbs require the turso queue backend (#8582)".to_string(),
         ),
@@ -1640,20 +1651,33 @@ mod tests {
         // error text the client would replay into a second claim
         // after the first claim already committed.
         let src = include_str!("queue_broker.rs");
-        let start = src.find("\"/claim-flow\" => {").expect("claim-flow handler");
-        let end = src[start..].find("\"/lane\" =>").expect("lane handler follows") + start;
+        let start = src
+            .find("\"/claim-flow\" => {")
+            .expect("claim-flow handler");
+        let end = src[start..]
+            .find("\"/lane\" =>")
+            .expect("lane handler follows")
+            + start;
         let flow = &src[start..end];
         assert_eq!(
             flow.matches("\"claim_flow_partial\"").count(),
             2,
             "lane and bind failures both carry claim_flow_partial"
         );
-        assert!(flow.contains("\"step\": \"lane\""), "lane partial names its step");
-        assert!(flow.contains("\"step\": \"bind\""), "bind partial names its step");
+        assert!(
+            flow.contains("\"step\": \"lane\""),
+            "lane partial names its step"
+        );
+        assert!(
+            flow.contains("\"step\": \"bind\""),
+            "bind partial names its step"
+        );
         // The claim RPC's own `return fail(...)` is pre-commit and
         // legitimate; the invariant binds everything from the lane
         // RPC onward (post-commit).
-        let lane_at = flow.find("assign_repo_task_lane").expect("lane RPC present");
+        let lane_at = flow
+            .find("assign_repo_task_lane")
+            .expect("lane RPC present");
         assert!(
             !flow[lane_at..].contains("return fail(e.exit, e.msg)"),
             "no post-claim step returns the raw retryable error"

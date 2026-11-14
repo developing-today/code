@@ -79,7 +79,7 @@ Rules:
   (Decision 3) and is always flagged degraded.
 - Ads name brokers by identity fingerprint (above), so broker
   authorization from #5671 §4 composes: the client knows which
-  broker the *server* authorizes for it before connecting.
+  broker the _server_ authorizes for it before connecting.
 
 ## Decision 2 — substrate selection: well-known HTTPS is authoritative, Workers is the hosted mirror, DNS is bootstrap-only
 

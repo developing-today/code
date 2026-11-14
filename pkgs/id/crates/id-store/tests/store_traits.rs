@@ -26,7 +26,6 @@ use id_store::event_types::{
 };
 use id_store::store_traits::{ChainLog, LogEntries, SharedEventStore, TraitStoreError};
 
-
 /// One `[[package]]` entry of the lock: its name and the names it
 /// depends on. Dependency entries are `"name"`, `"name version"` or
 /// `"name version (source)"`; the name is the first word.
@@ -75,9 +74,7 @@ fn dep_section_dev(section: &str) -> Option<bool> {
         "dev-dependencies" => Some(true),
         "dependencies" | "build-dependencies" => Some(false),
         _ if section.starts_with("dev-dependencies.") => Some(true),
-        _ if section.starts_with("dependencies.")
-            || section.starts_with("build-dependencies.") =>
-        {
+        _ if section.starts_with("dependencies.") || section.starts_with("build-dependencies.") => {
             Some(false)
         }
         _ => None,
@@ -241,8 +238,7 @@ fn test_the_lock_has_no_sqlite_with_logsync_wired() {
     }
 
     let vendored =
-        std::fs::read_to_string(format!("{root_dir}/vendor/p2panda-sync/Cargo.toml"))
-            .unwrap();
+        std::fs::read_to_string(format!("{root_dir}/vendor/p2panda-sync/Cargo.toml")).unwrap();
     let store_line = vendored
         .lines()
         .find(|line| line.starts_with("p2panda-store = {"))
@@ -505,8 +501,7 @@ async fn test_log_entries_stream_each_position_once_in_order() {
     let who = author_of(&alice);
     let events = chain_of(&alice, 5, None);
     ingest_all(&store, &events);
-    let stream =
-        |after, until| LogEntries::new(store.clone(), *who.as_bytes(), after, until, 2);
+    let stream = |after, until| LogEntries::new(store.clone(), *who.as_bytes(), after, until, 2);
 
     // A page of two makes the stream cross page boundaries.
     let all = drain(stream(None, None)).await;
@@ -558,8 +553,7 @@ async fn test_a_topic_resolves_to_the_authors_applied_in_it() {
     ingest_all(&store, &chain_of(&alice, 3, Some(topic)));
     ingest_all(&store, &chain_of(&bob, 1, Some(topic)));
     ingest_all(&store, &chain_of(&carol, 2, Some(other_topic)));
-    let (who_alice, who_bob, who_carol) =
-        (author_of(&alice), author_of(&bob), author_of(&carol));
+    let (who_alice, who_bob, who_carol) = (author_of(&alice), author_of(&bob), author_of(&carol));
 
     assert_eq!(
         store.resolve(&topic).await.unwrap(),

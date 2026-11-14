@@ -83,8 +83,10 @@ class ValidatePlanTests(unittest.TestCase):
         # A non-string branch crashes manifest head_sha for a present
         # mirror; parent is copied into MANIFEST.json verbatim.
         entries, problems = ghb_common.validate_plan(
-            [{"repo": "a/b", "branch": 7, "parent": ["x/y"]},
-             {"repo": "c/d", "branch": ["main"], "parent": {"x": 1}}]
+            [
+                {"repo": "a/b", "branch": 7, "parent": ["x/y"]},
+                {"repo": "c/d", "branch": ["main"], "parent": {"x": 1}},
+            ]
         )
         self.assertEqual(len(entries), 2)
         for entry in entries:
@@ -96,10 +98,8 @@ class ValidatePlanTests(unittest.TestCase):
 
     def test_string_and_null_fields_pass_unchanged(self):
         plan = [
-            {"repo": "a/b", "reference": "c/d", "branch": "main",
-             "parent": "x/y"},
-            {"repo": "c/d", "reference": None, "branch": None,
-             "parent": None},
+            {"repo": "a/b", "reference": "c/d", "branch": "main", "parent": "x/y"},
+            {"repo": "c/d", "reference": None, "branch": None, "parent": None},
             {"repo": "e/f"},
         ]
         entries, problems = ghb_common.validate_plan(plan)
@@ -181,9 +181,7 @@ class ValidateStateTests(unittest.TestCase):
 
     def test_numeric_last_fetch_passes_unchanged(self):
         for good in [1762000000, 1762000000.5, 0]:
-            clean, problems = ghb_common.validate_state(
-                {"a/b": {"last_fetch": good}}
-            )
+            clean, problems = ghb_common.validate_state({"a/b": {"last_fetch": good}})
             self.assertEqual(problems, [])
             self.assertEqual(clean["a/b"]["last_fetch"], good)
 
@@ -270,9 +268,7 @@ class FetchMirrorsShapeTests(unittest.TestCase):
             patch.object(
                 fetch_mirrors.subprocess,
                 "run",
-                return_value=SimpleNamespace(
-                    returncode=1, stdout="", stderr="boom"
-                ),
+                return_value=SimpleNamespace(returncode=1, stdout="", stderr="boom"),
             ),
             contextlib.redirect_stderr(io.StringIO()) as err,
         ):
@@ -354,9 +350,7 @@ class ManifestShapeTests(unittest.TestCase):
                 ],
                 {},
             )
-            self.assertEqual(
-                sorted(manifest["mirrors"]), ["a/b", "c/d", "e/f", "g/h"]
-            )
+            self.assertEqual(sorted(manifest["mirrors"]), ["a/b", "c/d", "e/f", "g/h"])
             self.assertIsNone(manifest["mirrors"]["a/b"]["reference"])
             self.assertIsNone(manifest["mirrors"]["e/f"]["reference"])
             self.assertIsNone(manifest["mirrors"]["g/h"]["default_branch"])
@@ -372,9 +366,7 @@ class ManifestShapeTests(unittest.TestCase):
         # head_sha concatenates "refs/heads/" + branch — only reached
         # for present mirrors, so patch valid_mirror on.
         with tempfile.TemporaryDirectory() as root:
-            write_json(
-                root, "plan.json", [{"repo": "a/b", "branch": ["main"]}]
-            )
+            write_json(root, "plan.json", [{"repo": "a/b", "branch": ["main"]}])
             write_json(root, "state.json", {})
             with (
                 patch.object(manifest_mod, "load_config", return_value={}),
@@ -481,9 +473,7 @@ class ShapePropertyTests(unittest.TestCase):
         if not isinstance(plan, list):
             return [], 1
         valid = [
-            e
-            for e in plan
-            if isinstance(e, dict) and isinstance(e.get("repo"), str)
+            e for e in plan if isinstance(e, dict) and isinstance(e.get("repo"), str)
         ]
         return valid, len(plan) - len(valid)
 

@@ -64,12 +64,6 @@ on:
       - ".opencode/plugin/**"
       # Keep the workflow self-tested, including this trigger restoration.
       - ".github/workflows/mcpx.yml"
-  pull_request:
-    paths:
-      - "pkgs/mcpx/**"
-      - "!pkgs/mcpx/testdata/seeds/**"
-      - ".opencode/plugin/**"
-      - ".github/workflows/mcpx.yml"
   schedule:
     # Nightly full-suite stress (#1973). Odd minute, off the hour.
     - cron: "23 3 * * *"
@@ -451,6 +445,18 @@ jobs:
       - name: bun test
         working-directory: pkgs/mcpx
         run: bun test plugin/opencode/mcpx/ plugin/core/
+
+      # The opencode plugin v2 suite (#6092). Run by directory so new test
+      # files are covered automatically; the six files registered today are
+      # named and asserted to exist, so a rename cannot silently shrink
+      # the suite the registry row counts.
+      - name: bun test (opencode plugin v2)
+        working-directory: pkgs/mcpx
+        run: |
+          for f in permission.test.ts picker.test.ts sampling.test.ts tool-filter.test.ts tools.test.ts v2.test.ts; do
+            test -f "plugin/opencode/v2/" || { echo "registered v2 test file missing: plugin/opencode/v2/"; exit 1; }
+          done
+          bun test plugin/opencode/v2/
 
   vendorhash-repair:
     name: vendorHash repair (bot dependency bumps only)

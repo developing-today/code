@@ -160,7 +160,7 @@ describe("config-gated Access author derivation (#1253)", () => {
     expect(audience).toMatchObject({ ok: false, status: 401 });
   });
 
-  test("a request enforcer verifies the JWT once, even when the certs endpoint is down", async () => {
+  test("a 100-entry batch shares one failed JWT verification when the certs endpoint is down", async () => {
     let fetches = 0;
     const downFetch = (async () => {
       fetches += 1;
@@ -172,12 +172,55 @@ describe("config-gated Access author derivation (#1253)", () => {
       accessEnv(),
       downFetch,
     );
-    // Three batch items, one shared request: the same 401 must come
-    // back for each, with exactly ONE JWKS fetch attempt — per-item
-    // verification would stack one 5 s timeout per action (PR #8645).
-    for (const asserted of [assertedAgent, assertedDrew, assertedAgent]) {
+    // Every entry gets the same 401 from one shared request verification;
+    // per-item verification would stack one 5 s timeout per action.
+    for (let index = 0; index < 100; index += 1) {
+      const asserted = index % 2 === 0 ? assertedAgent : assertedDrew;
       const result = await enforce(asserted);
       expect(result).toMatchObject({ ok: false, status: 401 });
+    }
+    expect(fetches).toBe(1);
+  });
+
+  test("a 100-entry batch does not refresh JWKS per entry for an unknown kid", async () => {
+    let fetches = 0;
+    const countedFetch = (async () => {
+      fetches += 1;
+      return new Response(JSON.stringify(jwks), { status: 200 });
+    }) as unknown as typeof fetch;
+    const jwt = token(undefined, { kid: "unknown-key" });
+    const enforce = createAccessAuthorEnforcer(
+      new Request("https://aggregator/api/actions/batch", { headers: { [ACCESS_JWT_HEADER]: jwt } }),
+      accessEnv(),
+      countedFetch,
+    );
+    for (let index = 0; index < 100; index += 1) {
+      const result = await enforce(assertedAgent);
+      expect(result).toMatchObject({ ok: false, status: 401 });
+    }
+    // Initial load + one rotation refresh for the single verification;
+    // without request-level memoization, each entry forces another refresh.
+    expect(fetches).toBe(2);
+  });
+
+  test("a 100-entry batch still checks asserted-author contradictions per entry", async () => {
+    let fetches = 0;
+    const countedFetch = (async () => {
+      fetches += 1;
+      return new Response(JSON.stringify(jwks), { status: 200 });
+    }) as unknown as typeof fetch;
+    const enforce = createAccessAuthorEnforcer(
+      new Request("https://aggregator/api/actions/batch", { headers: { [ACCESS_JWT_HEADER]: token() } }),
+      accessEnv(),
+      countedFetch,
+    );
+    for (let index = 0; index < 100; index += 1) {
+      const result = await enforce(index % 2 === 0 ? assertedAgent : assertedDrew);
+      if (index % 2 === 0) {
+        expect(result).toMatchObject({ ok: true, author: { kind: "agent", id: NON_OWNER_SUB } });
+      } else {
+        expect(result).toMatchObject({ ok: false, status: 403 });
+      }
     }
     expect(fetches).toBe(1);
   });

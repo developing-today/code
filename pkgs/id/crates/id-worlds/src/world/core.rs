@@ -9,7 +9,7 @@
 
 use super::*;
 
-use anyhow::{Context, Result, ensure};
+use anyhow::{Context, Result, bail, ensure};
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
 use std::sync::Arc;
 
@@ -175,8 +175,18 @@ pub struct WorldCore {
     /// This world's own capability ceiling. The ledger allows the intersection
     /// of this and the server's `limits.server_caps`.
     pub(crate) caps_ceiling: BTreeSet<String>,
-    /// Pending `schedule.at` fires: id to due time, in unix milliseconds.
-    pub(crate) schedules: BTreeMap<String, u64>,
+    /// Pending `schedule.at` fires by id (#1355): each record carries its
+    /// next due time and, for a recurring schedule, its interval and the
+    /// fires remaining. A schedule occupies one slot however many fires
+    /// remain.
+    pub(crate) schedules: BTreeMap<String, PendingSchedule>,
+    /// Schedule-delivery consent by peer world (#1355 part 2): this
+    /// world's half of the reciprocal F12.14 grant pair.
+    pub(crate) schedule_grants: BTreeMap<String, ScheduleGrant>,
+    /// Cross-world schedule fires this world has durably accepted, keyed
+    /// by (source world, schedule id, planned due time): the receipts a
+    /// source retry is answered from (#1355 part 2).
+    pub(crate) schedule_receipts: BTreeSet<(String, String, u64)>,
     pub(crate) isolation: Isolation,
     pub(crate) cross_world_write: bool,
     pub(crate) cross_world_forced: bool,
@@ -221,8 +231,9 @@ pub struct WorldCore {
     /// Author keys bound to participants for signed move capture (#2814):
     /// participant id to the player's ed25519 verifying key bytes. A bound
     /// participant's inputs must arrive player-signed (see
-    /// [`signed`](super::signed)). Runtime state in this first pass;
-    /// journal persistence of bindings is a follow-up.
+    /// [`signed`](super::signed)). Journaled since #4346: bindings,
+    /// chain positions, and accepted records are rebuilt by journal
+    /// replay and preserved across compaction by `checkpoint_entries`.
     pub(crate) author_keys: HashMap<u64, [u8; 32]>,
     /// Each bound participant's expected signed-move chain position.
     pub(crate) move_chains: HashMap<u64, signed::MoveChain>,
@@ -451,6 +462,8 @@ impl WorldCore {
             memory_budget: crate::world_limits::WorldMemoryBudget::default(),
             caps_ceiling: crate::world_caps::default_ceiling_names(),
             schedules: BTreeMap::new(),
+            schedule_grants: BTreeMap::new(),
+            schedule_receipts: BTreeSet::new(),
             isolation: Isolation::default(),
             cross_world_write: false,
             cross_world_forced: false,
@@ -822,6 +835,127 @@ impl WorldCore {
                         );
                     }
                 }
+                JournalEntry::AuthorKeyBound {
+                    participant_id,
+                    author,
+                } => {
+                    let author =
+                        hex_decode_32(&author).context("malformed author key in journal")?;
+                    ensure!(
+                        core.capabilities.contains_key(&participant_id),
+                        "journal binds an author key to unknown participant {participant_id}"
+                    );
+                    if let Some(bound) = core.author_keys.get(&participant_id) {
+                        ensure!(
+                            *bound == author,
+                            "journal binds a different author key to participant {participant_id}"
+                        );
+                    } else {
+                        core.author_keys.insert(participant_id, author);
+                        core.move_chains.entry(participant_id).or_default();
+                    }
+                }
+                JournalEntry::SignedMoveAccepted { record } => {
+                    let record = record
+                        .to_record()
+                        .context("malformed signed move in journal")?;
+                    ensure!(
+                        core.capabilities.contains_key(&record.participant_id),
+                        "journal accepts a signed move for unknown participant {}",
+                        record.participant_id
+                    );
+                    let author = core
+                        .author_keys
+                        .get(&record.participant_id)
+                        .copied()
+                        .ok_or_else(|| {
+                            anyhow::anyhow!(
+                                "journal accepts a signed move for participant {} with no bound author key",
+                                record.participant_id
+                            )
+                        })?;
+                    ensure!(
+                        author == record.author,
+                        "journal signed move author does not match the bound key for participant {}",
+                        record.participant_id
+                    );
+                    // Cross-reference the committed input while it is
+                    // retained: with it, replay recomputes the payload
+                    // commitment exactly as the live seam did. Once the
+                    // input has aged out of the retained window under
+                    // compaction, replay falls back to the header checks
+                    // (see MoveChain::verify_journaled).
+                    let committed_input = match core
+                        .events
+                        .iter()
+                        .find(|event| event.sequence == record.world_sequence)
+                    {
+                        Some(event) => {
+                            // The referenced sequence is still retained,
+                            // so it must be this participant's input.
+                            // Anything else is a false cross-reference,
+                            // not history that aged out (Codex review on
+                            // PR #9037).
+                            ensure!(
+                                event.participant_id == record.participant_id,
+                                "journal signed move references world sequence {} \
+                                 committed by participant {}, not {}",
+                                record.world_sequence,
+                                event.participant_id,
+                                record.participant_id
+                            );
+                            match &event.kind {
+                                WorldEventKind::Input(input) => Some(input.clone()),
+                                _ => bail!(
+                                    "journal signed move references world sequence {} \
+                                     which is not a committed input",
+                                    record.world_sequence
+                                ),
+                            }
+                        }
+                        None => {
+                            // Header-only verification is legitimate only
+                            // for an input that genuinely aged out of the
+                            // retained window: its sequence must already
+                            // have committed at this point in the replay
+                            // AND have fallen off the front of the window.
+                            ensure!(
+                                record.world_sequence >= 1
+                                    && record.world_sequence <= core.sequence,
+                                "journal signed move references world sequence {} \
+                                 beyond the restored sequence {}",
+                                record.world_sequence,
+                                core.sequence
+                            );
+                            if let Some(front) = core.events.front() {
+                                ensure!(
+                                    record.world_sequence < front.sequence,
+                                    "journal signed move references world sequence {} \
+                                     inside the retained window, but no input event \
+                                     is retained for it",
+                                    record.world_sequence
+                                );
+                            }
+                            None
+                        }
+                    };
+                    let world_id = core.world_id.clone();
+                    let chain = core.move_chains.entry(record.participant_id).or_default();
+                    let event = match &committed_input {
+                        Some(input) => chain
+                            .verify(&record.bytes, &world_id, input, &author)
+                            .context("journal signed move does not re-verify")?,
+                        None => chain
+                            .verify_journaled(&record.bytes, &world_id, &author)
+                            .context("journal signed move does not re-verify")?,
+                    };
+                    ensure!(
+                        event.id == record.event_id && event.header.seq_num == record.author_seq,
+                        "journal signed move record does not match its signed bytes"
+                    );
+                    chain.accept(&event);
+                    core.signed_moves.push(record);
+                }
                 JournalEntry::CapsGranted { granted } => {
                     for name in &granted {
                         ensure!(
@@ -855,7 +989,13 @@ impl WorldCore {
                 }
                 JournalEntry::FileScope { scope } => core.file_scope = scope,
                 JournalEntry::FileWriteOverride { enabled } => core.file_write_override = enabled,
-                JournalEntry::ScheduleSet { id, at_ms } => {
+                JournalEntry::ScheduleSet {
+                    id,
+                    at_ms,
+                    interval_ms,
+                    remaining,
+                    target,
+                } => {
                     crate::world_caps::validate_schedule_id(&id)
                         .context("invalid schedule id in journal")?;
                     ensure!(
@@ -867,9 +1007,57 @@ impl WorldCore {
                         "journal holds more than {} pending schedules",
                         crate::world_caps::MAX_PENDING_SCHEDULES
                     );
+                    // Recurrence invariants the writer holds: at least one
+                    // fire remaining, a positive interval when one is named,
+                    // and an interval whenever more than one fire remains
+                    // (a mid-series record legitimately pairs an interval
+                    // with a single remaining fire).
+                    let remaining = remaining.unwrap_or(1);
+                    ensure!(
+                        remaining >= 1,
+                        "journal schedule {id:?} has no fires remaining"
+                    );
+                    if let Some(interval) = interval_ms {
+                        ensure!(interval >= 1, "journal schedule {id:?} has a zero interval");
+                    }
+                    ensure!(
+                        remaining == 1 || interval_ms.is_some(),
+                        "journal schedule {id:?} has {remaining} fires but no interval"
+                    );
                     // No clock here: the due time is what the request set, and
                     // a restore never judges it against now.
-                    core.schedules.insert(id, at_ms);
+                    if let Some(target) = &target {
+                        crate::world_hub::validate_world_name(target)
+                            .context("invalid schedule target in journal")?;
+                    }
+                    core.schedules.insert(
+                        id,
+                        PendingSchedule {
+                            at_ms,
+                            interval_ms,
+                            remaining,
+                            target,
+                        },
+                    );
+                }
+                JournalEntry::ScheduleGrantSet {
+                    peer,
+                    send,
+                    receive,
+                } => {
+                    crate::world_hub::validate_world_name(&peer)
+                        .context("invalid schedule grant peer in journal")?;
+                    if send || receive {
+                        core.schedule_grants
+                            .insert(peer, ScheduleGrant { send, receive });
+                    } else {
+                        core.schedule_grants.remove(&peer);
+                    }
+                }
+                JournalEntry::ScheduleReceived { source, id, at_ms } => {
+                    crate::world_caps::validate_schedule_id(&id)
+                        .context("invalid received schedule id in journal")?;
+                    core.schedule_receipts.insert((source, id, at_ms));
                 }
                 JournalEntry::ScheduleCancelled { id } => {
                     ensure!(
@@ -879,7 +1067,7 @@ impl WorldCore {
                 }
                 JournalEntry::ScheduleFired { id } => {
                     ensure!(
-                        core.schedules.remove(&id).is_some(),
+                        core.apply_schedule_fired(&id),
                         "journal fires schedule {id:?}, which is not pending"
                     );
                 }
@@ -1070,25 +1258,43 @@ impl WorldCore {
                         matches!(&event.kind, WorldEventKind::System { .. }),
                         "journal system entry has a non-system payload"
                     );
-                    if let WorldEventKind::System { event: text } = &event.kind
-                        && let Some((participant, joined)) = presence_change(text)
-                    {
-                        ensure!(
-                            core.capabilities.contains_key(&participant),
-                            "journal presence event names an unknown participant"
-                        );
-                        // Replica restore also needs per-participant
-                        // session counts (F12.13): `open_presence` records
-                        // only that a participant is present, not how many
-                        // sessions hold them there.
-                        let count = present.entry(participant).or_insert(0);
-                        if joined {
-                            *count += 1;
-                        } else {
-                            *count = count.saturating_sub(1);
+                    if let WorldEventKind::System { event: text } = &event.kind {
+                        // Deferred form answers are system events so their
+                        // values stay out of the public participant event
+                        // stream. The authenticated submitter id in the
+                        // event payload lets replay spend the same bounded
+                        // capability use that the live actor spent.
+                        if let Ok(payload) = serde_json::from_str::<serde_json::Value>(text)
+                            && payload["cap"] == "form.result"
+                            && let Some(submitter) = payload
+                                .get("participant_id")
+                                .and_then(serde_json::Value::as_u64)
+                            && submitter != 0
+                        {
+                            let mut attributed = event.clone();
+                            attributed.participant_id = submitter;
+                            core.validate_restored_event_author(&attributed, false)?;
+                            core.ensure_uses_left(submitter)?;
+                            core.spend(submitter);
                         }
-                        if *count == 0 {
-                            present.remove(&participant);
+                        if let Some((participant, joined)) = presence_change(text) {
+                            ensure!(
+                                core.capabilities.contains_key(&participant),
+                                "journal presence event names an unknown participant"
+                            );
+                            // Replica restore also needs per-participant
+                            // session counts (F12.13): `open_presence` records
+                            // only that a participant is present, not how many
+                            // sessions hold them there.
+                            let count = present.entry(participant).or_insert(0);
+                            if joined {
+                                *count += 1;
+                            } else {
+                                *count = count.saturating_sub(1);
+                            }
+                            if *count == 0 {
+                                present.remove(&participant);
+                            }
                         }
                     }
                     replay.push(event.clone());
@@ -1329,7 +1535,20 @@ impl WorldCore {
                     // The writer emits one `ScheduleSet` per pending schedule
                     // before the checkpoint, so the two must agree exactly.
                     let listed = schedules.unwrap_or_default();
-                    let declared: BTreeMap<String, u64> = listed.iter().cloned().collect();
+                    let declared: BTreeMap<String, PendingSchedule> = listed
+                        .iter()
+                        .map(|schedule| {
+                            (
+                                schedule.id.clone(),
+                                PendingSchedule {
+                                    at_ms: schedule.at_ms,
+                                    interval_ms: schedule.interval_ms,
+                                    remaining: schedule.remaining,
+                                    target: schedule.target.clone(),
+                                },
+                            )
+                        })
+                        .collect();
                     ensure!(
                         declared.len() == listed.len() && declared == core.schedules,
                         "journal checkpoint's pending schedules disagree with its schedule entries"
@@ -1533,16 +1752,42 @@ impl WorldCore {
         // One entry per pending schedule, before the checkpoint, mirroring the
         // ceiling: an older binary cannot read `ScheduleSet` and refuses the
         // journal, instead of restoring without the schedules.
-        for (id, at_ms) in &self.schedules {
+        for (id, schedule) in &self.schedules {
             entries.push(JournalEntry::ScheduleSet {
+                id: id.clone(),
+                at_ms: schedule.at_ms,
+                interval_ms: schedule.interval_ms,
+                remaining: (schedule.remaining != 1).then_some(schedule.remaining),
+                target: schedule.target.clone(),
+            });
+        }
+        // Schedule grants and receipts ride along like the schedules:
+        // without them compaction could forget a consent (and re-refuse a
+        // live series) or an acceptance (and deliver a fire twice).
+        for (peer, grant) in &self.schedule_grants {
+            entries.push(JournalEntry::ScheduleGrantSet {
+                peer: peer.clone(),
+                send: grant.send,
+                receive: grant.receive,
+            });
+        }
+        for (source, id, at_ms) in &self.schedule_receipts {
+            entries.push(JournalEntry::ScheduleReceived {
+                source: source.clone(),
                 id: id.clone(),
                 at_ms: *at_ms,
             });
         }
-        let schedules: Option<Vec<(String, u64)>> = (!self.schedules.is_empty()).then(|| {
+        let schedules: Option<Vec<CheckpointSchedule>> = (!self.schedules.is_empty()).then(|| {
             self.schedules
                 .iter()
-                .map(|(id, at_ms)| (id.clone(), *at_ms))
+                .map(|(id, schedule)| CheckpointSchedule {
+                    id: id.clone(),
+                    at_ms: schedule.at_ms,
+                    interval_ms: schedule.interval_ms,
+                    remaining: schedule.remaining,
+                    target: schedule.target.clone(),
+                })
                 .collect()
         });
         // Active handoffs ride on the checkpoint, mirroring the ceiling and
@@ -1621,6 +1866,26 @@ impl WorldCore {
             );
             entries.push(checkpoint);
         }
+        // Signed play rides through compaction behind the checkpoint
+        // itself (issue #4346): bindings first, then every accepted
+        // record in world order, so replay cross-references the
+        // checkpoint's retained events and re-verifies each chain in
+        // sequence. An older binary refuses these entries at the
+        // header (version 8) instead of restoring a world that lost
+        // its chains.
+        let mut bound_ids: Vec<u64> = self.author_keys.keys().copied().collect();
+        bound_ids.sort_unstable();
+        for participant_id in bound_ids {
+            entries.push(JournalEntry::AuthorKeyBound {
+                participant_id,
+                author: hex_encode(&self.author_keys[&participant_id]),
+            });
+        }
+        for record in &self.signed_moves {
+            entries.push(JournalEntry::SignedMoveAccepted {
+                record: JournalSignedMove::from_record(record),
+            });
+        }
         // The compacted journal keeps the rollback contract (see
         // `JOURNAL_VERSION`): when the checkpoint re-emits an entry a
         // version-1 binary cannot read, the new header must say so, or the
@@ -1685,7 +1950,69 @@ impl WorldCore {
     /// A malformed id, a duplicate pending id, a full schedule, or a time past
     /// the horizon.
     pub(crate) fn check_schedule(&self, id: &str, at_ms: u64, now_ms: u64) -> Result<()> {
-        self.check_schedule_inner(id, at_ms, now_ms, false)
+        self.check_schedule_inner(id, at_ms, None, None, None, now_ms, false)
+    }
+
+    /// Whether a recurring `schedule.at` (#1355) may be pended: the one-shot
+    /// checks, the recurrence pair's own bounds, and the whole series —
+    /// first fire plus `interval * (count - 1)` — inside the horizon.
+    pub(crate) fn check_schedule_recurring(
+        &self,
+        id: &str,
+        at_ms: u64,
+        interval_ms: Option<u64>,
+        count: Option<u32>,
+        now_ms: u64,
+    ) -> Result<()> {
+        self.check_schedule_inner(id, at_ms, interval_ms, count, None, now_ms, false)
+    }
+
+    /// Whether a `schedule.at` may be pended for delivery to another
+    /// world (#1355 part 2): the recurring checks, plus the target must
+    /// be a different, validly named world, this world must be
+    /// unisolated, and this world's admin must have granted send consent
+    /// for that peer. The target's receive consent is the target's own
+    /// journal state, checked there at delivery time.
+    pub(crate) fn check_schedule_targeted(
+        &self,
+        id: &str,
+        at_ms: u64,
+        interval_ms: Option<u64>,
+        count: Option<u32>,
+        target: Option<&str>,
+        now_ms: u64,
+    ) -> Result<()> {
+        self.check_schedule_inner(id, at_ms, interval_ms, count, target, now_ms, false)
+    }
+
+    /// Apply one fire of a pending schedule: re-arm it in place while
+    /// fires remain (fixed-rate: the next due time advances by the
+    /// interval from the planned time, never from now), or consume it.
+    /// Returns false when no schedule by that id is pending. Shared by
+    /// journal replay and the actor's fire path, so both derive the same
+    /// next state from the same journaled state.
+    pub(crate) fn apply_schedule_fired(&mut self, id: &str) -> bool {
+        let Some(schedule) = self.schedules.get(id).cloned() else {
+            return false;
+        };
+        match schedule.after_fire() {
+            Some(rearmed) => {
+                self.schedules.insert(id.to_owned(), rearmed);
+            }
+            None => {
+                self.schedules.remove(id);
+            }
+        }
+        true
+    }
+
+    /// The pending schedules as id to next due time: the projection the
+    /// admin layer has always returned, whatever a schedule's recurrence.
+    pub(crate) fn schedule_times(&self) -> BTreeMap<String, u64> {
+        self.schedules
+            .iter()
+            .map(|(id, schedule)| (id.clone(), schedule.at_ms))
+            .collect()
     }
 
     /// Like [`Self::check_schedule`], but for a set that replaces the pending
@@ -1697,17 +2024,40 @@ impl WorldCore {
     /// the existing schedule standing (#807).
     pub(crate) fn check_schedule_replacing(&self, id: &str, at_ms: u64, now_ms: u64) -> Result<()> {
         let replacing = self.schedules.contains_key(id);
-        self.check_schedule_inner(id, at_ms, now_ms, replacing)
+        self.check_schedule_inner(id, at_ms, None, None, None, now_ms, replacing)
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn check_schedule_inner(
         &self,
         id: &str,
         at_ms: u64,
+        interval_ms: Option<u64>,
+        count: Option<u32>,
+        target: Option<&str>,
         now_ms: u64,
         replacing: bool,
     ) -> Result<()> {
         crate::world_caps::validate_schedule_id(id)?;
+        crate::world_caps::validate_schedule_recurrence(interval_ms, count)?;
+        if let Some(target) = target {
+            crate::world_hub::validate_world_name(target)
+                .context("invalid schedule target world")?;
+            ensure!(
+                target != self.world_id,
+                "schedule {id:?} targets its own world; omit the world to schedule it here"
+            );
+            ensure!(
+                self.isolation == Isolation::Unisolated,
+                "schedule {id:?} cannot target another world while this world is isolated"
+            );
+            ensure!(
+                self.schedule_grants
+                    .get(target)
+                    .is_some_and(|grant| grant.send),
+                "schedule {id:?} has no send grant for world {target:?}; an admin must grant it first"
+            );
+        }
         ensure!(
             replacing || !self.schedules.contains_key(id),
             "schedule {id:?} is already pending; cancel it before scheduling it again"
@@ -1724,6 +2074,18 @@ impl WorldCore {
             "schedule {id:?} is more than {} days past the host clock",
             crate::world_caps::MAX_SCHEDULE_HORIZON_DAYS
         );
+        if let (Some(interval), Some(count)) = (interval_ms, count) {
+            // The series' last fire is as much a schedule time as its
+            // first: it must land inside the same horizon.
+            let last_fire = interval
+                .checked_mul(u64::from(count - 1))
+                .and_then(|span| at_ms.checked_add(span));
+            ensure!(
+                last_fire.is_some_and(|last| last <= horizon),
+                "schedule {id:?} series ends more than {} days past the host clock",
+                crate::world_caps::MAX_SCHEDULE_HORIZON_DAYS
+            );
+        }
         Ok(())
     }
 
@@ -1734,7 +2096,7 @@ impl WorldCore {
             .map(|record| JournalEntry::Issued {
                 participant: record.participant.clone(),
                 digest: hex_encode(&record.digest),
-                scopes: record.scopes.0,
+                scopes: record.scopes.bits(),
                 parent: record.parent,
                 expires_at: record.bounds.expires_at,
                 uses: record.bounds.uses,
@@ -1924,7 +2286,7 @@ impl WorldCore {
                 && subject != parent_subject
                 && !self.directory.are_friends(parent_subject, subject)
             {
-                return Some(WorldScopes(0));
+                return Some(WorldScopes::EMPTY);
             }
             current = record.parent;
         }
@@ -2166,17 +2528,36 @@ impl WorldCore {
     /// Fails if the capability does not authorize input, or a different
     /// key is already bound to the participant.
     pub fn bind_author_key(&mut self, token: &JoinCapability, author_key: [u8; 32]) -> Result<u64> {
+        self.bind_author_key_entry(token, author_key)
+            .map(|(participant_id, _entry)| participant_id)
+    }
+
+    /// As [`WorldCore::bind_author_key`], also returning the journal
+    /// entry for a binding this call newly made (`None` for a same-key
+    /// re-bind), so the actor can persist it (#4346).
+    pub(crate) fn bind_author_key_entry(
+        &mut self,
+        token: &JoinCapability,
+        author_key: [u8; 32],
+    ) -> Result<(u64, Option<JournalEntry>)> {
         let participant_id = self.authorize(token, WorldScopes::INPUT)?;
         if let Some(bound) = self.author_keys.get(&participant_id) {
             ensure!(
                 *bound == author_key,
                 "participant {participant_id} already has a different author key bound"
             );
+            Ok((participant_id, None))
         } else {
             self.author_keys.insert(participant_id, author_key);
             self.move_chains.entry(participant_id).or_default();
+            Ok((
+                participant_id,
+                Some(JournalEntry::AuthorKeyBound {
+                    participant_id,
+                    author: hex_encode(&author_key),
+                }),
+            ))
         }
-        Ok(participant_id)
     }
 
     /// Validate a player-signed input and prepare its event, verifying
@@ -2246,7 +2627,31 @@ impl WorldCore {
         &mut self,
         event: &WorldEvent,
         signed: &crate::chain::Event,
-    ) -> Result<()> {
+    ) -> Result<signed::SignedMoveRecord> {
+        let record = self.signed_move_record(event, signed)?;
+        let chain = self.move_chains.entry(record.participant_id).or_default();
+        chain.accept(signed);
+        self.signed_moves.push(record.clone());
+        Ok(record)
+    }
+
+    /// Compute the journal record for a signed move WITHOUT applying it:
+    /// validate the move against the author's bound key and current chain
+    /// position and build the record the journal persists. The actor
+    /// persists this record atomically with the committed input (one
+    /// journal transaction) BEFORE applying either in memory, then calls
+    /// [`WorldCore::record_signed_move`] to apply — which recomputes the
+    /// same record from unchanged state and advances the chain.
+    ///
+    /// # Errors
+    ///
+    /// Fails if the participant has no bound author key, or the signed
+    /// move is not the author's expected next move.
+    pub(crate) fn signed_move_record(
+        &self,
+        event: &WorldEvent,
+        signed: &crate::chain::Event,
+    ) -> Result<signed::SignedMoveRecord> {
         let participant_id = event.participant_id;
         let author = self
             .author_keys
@@ -2255,21 +2660,23 @@ impl WorldCore {
             .ok_or_else(|| {
                 anyhow::anyhow!("participant {participant_id} has no bound author key")
             })?;
-        let chain = self.move_chains.entry(participant_id).or_default();
+        let chain = self
+            .move_chains
+            .get(&participant_id)
+            .cloned()
+            .unwrap_or_default();
         ensure!(
             signed.header.seq_num == chain.next_seq() && signed.header.backlink == chain.frontier(),
             "signed move is no longer the author's expected next move at commit"
         );
-        chain.accept(signed);
-        self.signed_moves.push(signed::SignedMoveRecord {
+        Ok(signed::SignedMoveRecord {
             world_sequence: event.sequence,
             participant_id,
             author,
             author_seq: signed.header.seq_num,
             event_id: signed.id,
             bytes: signed.bytes.clone(),
-        });
-        Ok(())
+        })
     }
 
     /// Commit a player-signed game input (#2814): the move is verified
@@ -2296,6 +2703,31 @@ impl WorldCore {
     #[must_use]
     pub fn signed_moves(&self) -> &[signed::SignedMoveRecord] {
         &self.signed_moves
+    }
+
+    /// Ingest every accepted signed move's bytes into `store`, in world
+    /// sequence order (#4346): the documented hand-off between the world
+    /// and the event store. The store's existing ingest rules do the
+    /// rest — a rival signed move at an already-accepted author sequence
+    /// produces a fork proof there, whether it arrives before or after
+    /// this hand-off. Returns one ingest outcome per record, in the
+    /// same order; re-ingesting the same records is a duplicate, not an
+    /// error.
+    ///
+    /// # Errors
+    ///
+    /// Returns the event store's error if an ingest fails at the
+    /// storage layer. Refusals are outcomes, not errors.
+    pub fn ingest_signed_moves(
+        &self,
+        store: &mut id_events::event_store::EventStore,
+        now_ms: u64,
+    ) -> Result<Vec<id_events::event_store::Ingest>> {
+        let mut outcomes = Vec::with_capacity(self.signed_moves.len());
+        for record in &self.signed_moves {
+            outcomes.push(store.ingest(&record.bytes, now_ms)?);
+        }
+        Ok(outcomes)
     }
 
     pub(crate) fn prepare_input(&self, token: &JoinCapability, input: &[u8]) -> Result<WorldEvent> {
@@ -2481,8 +2913,12 @@ impl WorldCore {
     }
 
     pub(crate) fn commit_prepared(&mut self, event: WorldEvent) -> Result<WorldEvent> {
+        let next_sequence = self
+            .sequence
+            .checked_add(1)
+            .ok_or_else(|| anyhow::anyhow!("world sequence exhausted"))?;
         ensure!(
-            event.sequence == self.sequence.saturating_add(1),
+            event.sequence == next_sequence,
             "prepared world event is stale"
         );
         self.sequence = event.sequence;
@@ -2605,7 +3041,7 @@ impl WorldCore {
 
     pub(crate) fn viewer_scopes(&self, participant_id: u64) -> WorldScopes {
         self.effective_scopes(participant_id)
-            .unwrap_or(WorldScopes(0))
+            .unwrap_or(WorldScopes::EMPTY)
     }
 
     pub(crate) fn viewer(&self, token: &JoinCapability) -> Result<Participant> {

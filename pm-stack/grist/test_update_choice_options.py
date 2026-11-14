@@ -103,9 +103,11 @@ class ApiTimeout(unittest.TestCase):
         calls = {
             "GET columns": lambda base: _mod.api(base, "test", "GET", "/columns"),
             "PATCH columns": lambda base: _mod.api(
-                base, "test", "PATCH", "/columns", {"columns": []}),
+                base, "test", "PATCH", "/columns", {"columns": []}
+            ),
             "read-back GET": lambda base: _mod.get_widget_options(
-                base, "test", "doc", "table", "column"),
+                base, "test", "doc", "table", "column"
+            ),
         }
         for label, invoke in calls.items():
             with self.subTest(call=label):
@@ -128,13 +130,25 @@ class ApiTimeout(unittest.TestCase):
         server_thread.start()
         stderr = io.StringIO()
         try:
-            with patch.object(_mod, "API_TIMEOUT_SECONDS", 0.05), patch.dict(
-                    os.environ, {"GRIST_API_KEY": "test"}), redirect_stderr(stderr):
-                exit_code = _mod.run([
-                    "--base", f"http://127.0.0.1:{server.server_port}",
-                    "--doc", "doc", "--table", "table", "--column", "column",
-                    "--add", "choice",
-                ])
+            with (
+                patch.object(_mod, "API_TIMEOUT_SECONDS", 0.05),
+                patch.dict(os.environ, {"GRIST_API_KEY": "test"}),
+                redirect_stderr(stderr),
+            ):
+                exit_code = _mod.run(
+                    [
+                        "--base",
+                        f"http://127.0.0.1:{server.server_port}",
+                        "--doc",
+                        "doc",
+                        "--table",
+                        "table",
+                        "--column",
+                        "column",
+                        "--add",
+                        "choice",
+                    ]
+                )
 
             self.assertTrue(
                 request_received.wait(1), "stub server did not receive the request"
@@ -192,19 +206,36 @@ class ShapeFailureCli(unittest.TestCase):
             if method == "PATCH":
                 patches.append(body)
                 return None
-            return {"columns": [{"id": "Area", "fields": {"widgetOptions": widget_options_json}}]}
+            return {
+                "columns": [
+                    {"id": "Area", "fields": {"widgetOptions": widget_options_json}}
+                ]
+            }
 
         stderr = io.StringIO()
-        with patch.object(_mod, "api", fake_api), patch.dict(
-                os.environ, {"GRIST_API_KEY": "test"}), redirect_stderr(stderr):
-            exit_code = _mod.run([
-                "--doc", "doc", "--table", "Roadmap", "--column", "Area",
-                "--add", "id",
-            ])
+        with (
+            patch.object(_mod, "api", fake_api),
+            patch.dict(os.environ, {"GRIST_API_KEY": "test"}),
+            redirect_stderr(stderr),
+        ):
+            exit_code = _mod.run(
+                [
+                    "--doc",
+                    "doc",
+                    "--table",
+                    "Roadmap",
+                    "--column",
+                    "Area",
+                    "--add",
+                    "id",
+                ]
+            )
         return exit_code, stderr.getvalue(), patches
 
     def test_string_choices_exit_1_and_no_patch(self):
-        exit_code, stderr, patches = self.run_with_stored(json.dumps({"choices": "code"}))
+        exit_code, stderr, patches = self.run_with_stored(
+            json.dumps({"choices": "code"})
+        )
         self.assertEqual(exit_code, 1)
         self.assertIn("not a list", stderr)
         self.assertNotIn("Traceback", stderr)
@@ -253,8 +284,11 @@ class EnvelopeShape(unittest.TestCase):
                 self.assertIn("not a JSON object", str(raised.exception))
 
     def test_entry_without_fields_refused(self):
-        for col in ({"id": "Area"}, {"id": "Area", "fields": None},
-                    {"id": "Area", "fields": []}):
+        for col in (
+            {"id": "Area"},
+            {"id": "Area", "fields": None},
+            {"id": "Area", "fields": []},
+        ):
             with self.subTest(col=col):
                 with self.assertRaises(_mod.ApiResponseError) as raised:
                     self.get_with_data({"columns": [col]})
@@ -279,8 +313,14 @@ class EnvelopeShape(unittest.TestCase):
         self.assertEqual(self.get_with_data(empty), {})
         no_key = {"columns": [{"id": "Area", "fields": {}}]}
         self.assertEqual(self.get_with_data(no_key), {})
-        valid = {"columns": [{"id": "Area", "fields": {
-            "widgetOptions": json.dumps({"choices": ["id"]})}}]}
+        valid = {
+            "columns": [
+                {
+                    "id": "Area",
+                    "fields": {"widgetOptions": json.dumps({"choices": ["id"]})},
+                }
+            ]
+        }
         self.assertEqual(self.get_with_data(valid), {"choices": ["id"]})
 
     def test_absent_column_still_not_found(self):
@@ -304,12 +344,23 @@ class EnvelopeShapeCli(unittest.TestCase):
             return data
 
         stderr = io.StringIO()
-        with patch.object(_mod, "api", fake_api), patch.dict(
-                os.environ, {"GRIST_API_KEY": "test"}), redirect_stderr(stderr):
-            exit_code = _mod.run([
-                "--doc", "doc", "--table", "Roadmap", "--column", "Area",
-                "--add", "id",
-            ])
+        with (
+            patch.object(_mod, "api", fake_api),
+            patch.dict(os.environ, {"GRIST_API_KEY": "test"}),
+            redirect_stderr(stderr),
+        ):
+            exit_code = _mod.run(
+                [
+                    "--doc",
+                    "doc",
+                    "--table",
+                    "Roadmap",
+                    "--column",
+                    "Area",
+                    "--add",
+                    "id",
+                ]
+            )
         return exit_code, stderr.getvalue(), patches
 
     def test_missing_columns_exit_1_and_no_patch(self):
@@ -320,7 +371,9 @@ class EnvelopeShapeCli(unittest.TestCase):
         self.assertEqual(patches, [])
 
     def test_non_string_widget_options_exit_1_and_no_patch(self):
-        data = {"columns": [{"id": "Area", "fields": {"widgetOptions": {"choices": []}}}]}
+        data = {
+            "columns": [{"id": "Area", "fields": {"widgetOptions": {"choices": []}}}]
+        }
         exit_code, stderr, patches = self.run_with_data(data)
         self.assertEqual(exit_code, 1)
         self.assertIn("is not a string", stderr)
@@ -366,12 +419,24 @@ class NonJsonResponseBody(unittest.TestCase):
         server, thread = self.serve_body("not json at all")
         stderr = io.StringIO()
         try:
-            with patch.dict(os.environ, {"GRIST_API_KEY": "test"}), redirect_stderr(stderr):
-                exit_code = _mod.run([
-                    "--base", f"http://127.0.0.1:{server.server_port}",
-                    "--doc", "doc", "--table", "Roadmap", "--column", "Area",
-                    "--add", "id",
-                ])
+            with (
+                patch.dict(os.environ, {"GRIST_API_KEY": "test"}),
+                redirect_stderr(stderr),
+            ):
+                exit_code = _mod.run(
+                    [
+                        "--base",
+                        f"http://127.0.0.1:{server.server_port}",
+                        "--doc",
+                        "doc",
+                        "--table",
+                        "Roadmap",
+                        "--column",
+                        "Area",
+                        "--add",
+                        "id",
+                    ]
+                )
             self.assertEqual(exit_code, 1)
             self.assertIn("not valid JSON", stderr.getvalue())
             self.assertNotIn("Traceback", stderr.getvalue())

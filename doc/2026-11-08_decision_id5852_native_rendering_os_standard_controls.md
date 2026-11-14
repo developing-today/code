@@ -28,14 +28,14 @@
 
 ## Decision summary
 
-| Question | Decision |
-| --- | --- |
-| What renders on a native target | The platform's **OS-standard control** for the semantic element kind (§2) — never a drawn substitute, never a webview (§6) |
+| Question                           | Decision                                                                                                                                                                                                                                                                         |
+| ---------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| What renders on a native target    | The platform's **OS-standard control** for the semantic element kind (§2) — never a drawn substitute, never a webview (§6)                                                                                                                                                       |
 | What an assertion changes natively | Only what the platform exposes for that control: semantic colour/tint, typography style, control size/density class, spacing in platform units (§3). Everything else the assertion names is an explicit **platform-default** with a coverage warning, never a silent drop (§3.1) |
-| The mapping's source of truth | One table per platform (§§2–3) in the target's theme/token file, keyed by the #5850 role names — content never names a platform control, colour, or class |
-| Platform-conflict rule | **Platform wins for behaviour and accessibility; assertion wins for identity, subject to platform clamps** — stated as a decision in §4, adopting the branch the parent named first and #5850 §8 recorded for the vocabulary layer |
-| States | Platform-standard state behaviour; the #5850 §5 state set and precedence order are the contract the platform behaviour is checked against, and any platform substitution is reported by tooling (§3.8) |
-| Markup vocabulary dependency | Issue #5849 is not settled yet; element kinds here are the parent body's generic kinds (§1, assumption A2). A settled #5849 record that renames kinds re-issues §2's rows, not its decisions |
+| The mapping's source of truth      | One table per platform (§§2–3) in the target's theme/token file, keyed by the #5850 role names — content never names a platform control, colour, or class                                                                                                                        |
+| Platform-conflict rule             | **Platform wins for behaviour and accessibility; assertion wins for identity, subject to platform clamps** — stated as a decision in §4, adopting the branch the parent named first and #5850 §8 recorded for the vocabulary layer                                               |
+| States                             | Platform-standard state behaviour; the #5850 §5 state set and precedence order are the contract the platform behaviour is checked against, and any platform substitution is reported by tooling (§3.8)                                                                           |
+| Markup vocabulary dependency       | Issue #5849 is not settled yet; element kinds here are the parent body's generic kinds (§1, assumption A2). A settled #5849 record that renames kinds re-issues §2's rows, not its decisions                                                                                     |
 
 ## 1. Assumptions against the parent (stated, not silent)
 
@@ -79,21 +79,21 @@ control on a platform renders as that platform's standard container
 for the kind's content and is a platform-default entry (§3.1), never
 a custom-drawn substitute.
 
-| Element kind | Mac | Windows | GNOME |
-| --- | --- | --- | --- |
-| button/action | standard push button (`NSButton` / `Button`) | standard `Button` (WinUI) | standard `GtkButton` |
-| form field (text entry) | standard text field | standard `TextBox` | standard `GtkEntry` / libadwaita row entry |
-| form field (choice) | standard pop-up button / radio group / checkbox | standard `ComboBox` / `RadioButtons` / `CheckBox` | standard `GtkDropDown` / check / radio widgets |
-| form | standard grouped form layout in a window/sheet | standard form layout in window/dialog | libadwaita preferences-style grouped rows (`AdwPreferencesGroup`) |
-| link | standard link-styled button/text | standard `HyperlinkButton` | standard `GtkLinkButton` / link-styled label |
-| dialog | standard alert/sheet | standard `ContentDialog` | standard `GtkAlertDialog` / libadwaita dialog |
-| menu / toolbar | standard menu bar / toolbar | standard `MenuBar` / `CommandBar` | standard `GMenu` popovers / header-bar actions |
-| tabs | standard segmented/tab view | standard `TabView` | libadwaita `AdwViewSwitcher` / `GtkNotebook` |
-| list/table | standard outline/table view | standard `ListView` / data grid control | standard `GtkListView` / column view |
-| navigation / sidebar | standard source-list sidebar | standard `NavigationView` | libadwaita `AdwNavigationSplitView` sidebar |
-| settings/preferences | standard settings window form | standard settings page layout | libadwaita preferences window (`AdwPreferencesWindow`) |
+| Element kind                                | Mac                                                                     | Windows                                                                 | GNOME                                                                       |
+| ------------------------------------------- | ----------------------------------------------------------------------- | ----------------------------------------------------------------------- | --------------------------------------------------------------------------- |
+| button/action                               | standard push button (`NSButton` / `Button`)                            | standard `Button` (WinUI)                                               | standard `GtkButton`                                                        |
+| form field (text entry)                     | standard text field                                                     | standard `TextBox`                                                      | standard `GtkEntry` / libadwaita row entry                                  |
+| form field (choice)                         | standard pop-up button / radio group / checkbox                         | standard `ComboBox` / `RadioButtons` / `CheckBox`                       | standard `GtkDropDown` / check / radio widgets                              |
+| form                                        | standard grouped form layout in a window/sheet                          | standard form layout in window/dialog                                   | libadwaita preferences-style grouped rows (`AdwPreferencesGroup`)           |
+| link                                        | standard link-styled button/text                                        | standard `HyperlinkButton`                                              | standard `GtkLinkButton` / link-styled label                                |
+| dialog                                      | standard alert/sheet                                                    | standard `ContentDialog`                                                | standard `GtkAlertDialog` / libadwaita dialog                               |
+| menu / toolbar                              | standard menu bar / toolbar                                             | standard `MenuBar` / `CommandBar`                                       | standard `GMenu` popovers / header-bar actions                              |
+| tabs                                        | standard segmented/tab view                                             | standard `TabView`                                                      | libadwaita `AdwViewSwitcher` / `GtkNotebook`                                |
+| list/table                                  | standard outline/table view                                             | standard `ListView` / data grid control                                 | standard `GtkListView` / column view                                        |
+| navigation / sidebar                        | standard source-list sidebar                                            | standard `NavigationView`                                               | libadwaita `AdwNavigationSplitView` sidebar                                 |
+| settings/preferences                        | standard settings window form                                           | standard settings page layout                                           | libadwaita preferences window (`AdwPreferencesWindow`)                      |
 | card / media / page-section / master-detail | standard grouped box / image view / split view composition of the above | standard card container / image / split layout composition of the above | libadwaita card style class / picture / split view composition of the above |
-| heading/text | standard label with a §3.3 text style | standard `TextBlock` with a §3.3 style | standard label with a libadwaita typography style class |
+| heading/text                                | standard label with a §3.3 text style                                   | standard `TextBlock` with a §3.3 style                                  | standard label with a libadwaita typography style class                     |
 
 Behaviour of every control in this table — keyboard operation,
 focus traversal, VoiceOver/Narrator/Orca exposure, drag, undo,
@@ -121,13 +121,13 @@ that role on that platform — the same warning contract as #5850 §9.
 
 ### 3.2 Tone — colour roles (#5850 §3)
 
-| Role group | Mac | Windows | GNOME |
-| --- | --- | --- | --- |
-| surface roles (base/raised/sunken/overlay/inverse) | system background / control / window semantic colours per container kind | WinUI theme background/ layer resources per container kind | libadwaita window/card/popover background variables per container kind |
-| content roles (primary/secondary/muted/inverse/link) | label / secondary / tertiary label colours; link colour | primary / secondary text theme resources; hyperlink resource | foreground variables at full / dimmed opacity; link variable |
-| accent + accent-content | the app accent / `controlAccentColor`, with content colour chosen by the platform for legibility | the system accent (`Accent` theme resource) and its on-accent resource | the libadwaita accent background/foreground variable pair |
+| Role group                                                        | Mac                                                                                                                                                                | Windows                                                                                                                                       | GNOME                                                                                                                                                                  |
+| ----------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| surface roles (base/raised/sunken/overlay/inverse)                | system background / control / window semantic colours per container kind                                                                                           | WinUI theme background/ layer resources per container kind                                                                                    | libadwaita window/card/popover background variables per container kind                                                                                                 |
+| content roles (primary/secondary/muted/inverse/link)              | label / secondary / tertiary label colours; link colour                                                                                                            | primary / secondary text theme resources; hyperlink resource                                                                                  | foreground variables at full / dimmed opacity; link variable                                                                                                           |
+| accent + accent-content                                           | the app accent / `controlAccentColor`, with content colour chosen by the platform for legibility                                                                   | the system accent (`Accent` theme resource) and its on-accent resource                                                                        | the libadwaita accent background/foreground variable pair                                                                                                              |
 | status roles (success/warning/danger/info, colour + surface tint) | system semantic colours (green/yellow/red/blue) and tinted control backgrounds where the control supports them, else colour-only with the tint as platform-default | WinUI system semantic colours; banner/message-bar standard severity styles carry the tint, else colour-only with the tint as platform-default | libadwaita success/warning/error/info style classes and variables; tint carried by standard banner/message widgets, else colour-only with the tint as platform-default |
-| border roles (subtle/strong/focus) | separator colour; focus ring is the platform's (§3.8) | border theme resources; focus visual is the platform's (§3.8) | border variables; focus ring is the platform's (§3.8) |
+| border roles (subtle/strong/focus)                                | separator colour; focus ring is the platform's (§3.8)                                                                                                              | border theme resources; focus visual is the platform's (§3.8)                                                                                 | border variables; focus ring is the platform's (§3.8)                                                                                                                  |
 
 State colours are derived by the platform control itself (hover/
 pressed/disabled appearances are the control's), per #5850 §3's
@@ -142,7 +142,7 @@ caption, mono for code); Windows — WinUI text style resources
 (display / title / body / caption, mono theme font for code);
 GNOME — libadwaita typography style classes (`title-1`…`title-4`,
 `body`, `caption`, `monospace` for code). The asserted typeface
-*category* (sans/serif/mono) selects the platform's font in that
+_category_ (sans/serif/mono) selects the platform's font in that
 category; the concrete family is the platform's. Platform text
 scaling (Dynamic Type, Windows text size, GNOME text scaling)
 applies to the whole scale and is never overridden by an

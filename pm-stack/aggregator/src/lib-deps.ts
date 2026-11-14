@@ -123,10 +123,15 @@ async function defaultInstall(root: string): Promise<void> {
     throw new Error("lib dependency preflight needs bun on the exec path to install");
   }
   await new Promise<void>((resolve, reject) => {
-    execFile(process.execPath, ["install"], { cwd: root, timeout: INSTALL_TIMEOUT_MS, maxBuffer: 16 * 1024 * 1024 }, (err) => {
-      if (err) reject(new Error("bun install failed in the OpenChamber lib checkout"));
-      else resolve();
-    });
+    execFile(
+      process.execPath,
+      ["install"],
+      { cwd: root, timeout: INSTALL_TIMEOUT_MS, maxBuffer: 16 * 1024 * 1024 },
+      (err) => {
+        if (err) reject(new Error("bun install failed in the OpenChamber lib checkout"));
+        else resolve();
+      },
+    );
   });
 }
 
@@ -140,7 +145,10 @@ export async function ensureLibDependencies(options: EnsureLibDependenciesOption
   const before = checkLibDependencies(options.libDir, io);
   if (!before.root || before.missing.length === 0) return before;
   options.log?.(
-    "opendesign-renewal: lib dependencies missing in " + before.root + " (" + before.missing.join(", ") +
+    "opendesign-renewal: lib dependencies missing in " +
+      before.root +
+      " (" +
+      before.missing.join(", ") +
       "); installing declared dependencies and re-checking",
   );
   await (options.install ?? defaultInstall)(before.root);

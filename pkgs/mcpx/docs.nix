@@ -55,7 +55,10 @@ let
 in
 runCommand "mcpx-docs"
   {
-    nativeBuildInputs = [ mdbook docsHistory ];
+    nativeBuildInputs = [
+      mdbook
+      docsHistory
+    ];
     meta = {
       description = "mcpx documentation book (mdBook rendering of pkgs/mcpx/docs)";
       homepage = "https://github.com/developing-today/code";

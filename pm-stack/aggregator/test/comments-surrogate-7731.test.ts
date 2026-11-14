@@ -55,7 +55,12 @@ describe("#7731 validateNewComment body cap is surrogate-pair-safe", () => {
   const author = { kind: "drew" as const, id: "d", label: "D" };
 
   test("body straddling the 20,000 cap is dropped whole", () => {
-    const r = validateNewComment({ objectRef: "code#1", kind: "note", author, body: "z".repeat(19_999) + EMOJI + "tail" });
+    const r = validateNewComment({
+      objectRef: "code#1",
+      kind: "note",
+      author,
+      body: "z".repeat(19_999) + EMOJI + "tail",
+    });
     expect(r.ok).toBe(true);
     if (!r.ok) return;
     expect(r.value.body.length).toBe(19_999);

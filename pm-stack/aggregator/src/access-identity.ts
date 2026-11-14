@@ -32,9 +32,7 @@ export interface AccessConfig {
   ownerIds: string[];
 }
 
-export function readAccessConfig(
-  env: Record<string, string | undefined> = process.env,
-): AccessConfig | null {
+export function readAccessConfig(env: Record<string, string | undefined> = process.env): AccessConfig | null {
   const teamDomain = (env.PM_AGG_ACCESS_TEAM_DOMAIN ?? "").trim();
   const aud = (env.PM_AGG_ACCESS_AUD ?? "").trim();
   if (teamDomain === "" || aud === "") return null;
@@ -50,9 +48,7 @@ export interface VerifiedAccessIdentity {
   email: string;
 }
 
-export type AuthorDecision =
-  | { ok: true; author: DashAuthor }
-  | { ok: false; status: 401 | 403; error: string };
+export type AuthorDecision = { ok: true; author: DashAuthor } | { ok: false; status: 401 | 403; error: string };
 
 function base64UrlToBytes(s: string): Uint8Array {
   const padded = s.replace(/-/g, "+").replace(/_/g, "/");
@@ -200,9 +196,7 @@ export function deriveAuthorFromAccess(
   };
 }
 
-type AuthorEnforcement =
-  | { ok: true; author: DashAuthor }
-  | { ok: false; status: 401 | 403; error: string };
+type AuthorEnforcement = { ok: true; author: DashAuthor } | { ok: false; status: 401 | 403; error: string };
 
 /**
  * Build the Access author enforcer for ONE HTTP request. The JWT is
