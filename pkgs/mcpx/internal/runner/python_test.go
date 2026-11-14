@@ -244,6 +244,32 @@ func TestEffectiveScriptLanguage(t *testing.T) {
 	}
 }
 
+// TestClientScriptLanguage is the client-selection rule (Codex review,
+// PR #7818): a shebang decides the interpreter at dispatch rank 1, so
+// it decides the client too -- an explicit typescript selection must
+// not withhold the Python client from a Python-shebang run. With no
+// shebang in charge, the explicit selection applies as in
+// TestEffectiveScriptLanguage.
+func TestClientScriptLanguage(t *testing.T) {
+	cases := []struct {
+		file, source, explicit, want string
+	}{
+		{"", "#!/usr/bin/env python3\nprint(1)\n", "typescript", codegen.Python.Name},
+		{"", "#!/usr/bin/env python3\nprint(1)\n", "", codegen.Python.Name},
+		{"", "#!/usr/bin/env deno\nconsole.log(1)\n", "python", codegen.TypeScript.Name},
+		{"report.ts", "", "python", codegen.Python.Name},
+		{"", "print(1)\n", "python", codegen.Python.Name},
+		{"report.py", "", "typescript", codegen.TypeScript.Name},
+		{"report.py", "", "auto", codegen.Python.Name},
+		{"", "export default () => 1\n", "", ""},
+	}
+	for _, c := range cases {
+		if got := ClientScriptLanguage(c.file, c.source, c.explicit); got != c.want {
+			t.Errorf("ClientScriptLanguage(%q, %q, %q) = %q, want %q", c.file, c.source, c.explicit, got, c.want)
+		}
+	}
+}
+
 // TestExplicitPythonLanguageRunsInlineSnippet is the --language python
 // acceptance case: an inline snippet with no shebang and no extension
 // runs under Python with the Python client installed, purely because the
