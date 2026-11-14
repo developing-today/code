@@ -301,6 +301,27 @@ test("trailing --out-dir: invalid-argument failure document, exit 2 (#6934)", as
   assert.equal(latest.status, "invalid-argument");
 });
 
+test("duplicate scalar value options fail before probing or writing", async () => {
+  const { home } = await fakeHome();
+  const first = join(home, "first-output");
+  const second = join(home, "second-output");
+  const cases = [
+    ["--db", "first.db", "--db", "second.db"],
+    ["--out-dir", first, "--out-dir", second],
+    ["--window-hours", "6", "--window-hours", "12"],
+    ["--fresh-hours", "6", "--fresh-hours", "12"],
+  ];
+  for (const argv of cases) {
+    const { exitCode, doc } = await run({ home, now: NOW, argv });
+    assert.equal(exitCode, 2);
+    assert.equal(doc.status, "invalid-argument");
+    assert.match(doc.detail, new RegExp(`duplicate option ${argv[0]}`));
+  }
+  assert.equal(fs.existsSync(first), false);
+  assert.equal(fs.existsSync(second), false);
+  assert.equal(fs.existsSync(join(home, "atlas/opencode-usage-export")), false);
+});
+
 test("valid --db / --out-dir behave as before (#6934 control)", async () => {
   const { home, outDir } = await fakeHome();
   const dbPath = join(home, "explicit.db");
