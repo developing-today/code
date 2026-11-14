@@ -258,6 +258,22 @@
   // this line re-enables it. Re-enable after the window resets at
   // 2026-11-16T00:00:00Z (Sun 2026-11-15 18:00 CT) AND a live
   // probe shows the door answering again.
+  // 2026-11-14 (Drew, direct order - code#10128): "_commandcode"
+  // joins the list below. Its monthly window has sat at 99.5%+
+  // ($9.95 of the $10 included credits) since 2026-11-10 - 99.513%
+  // on the 2026-11-14 09:15 CT gatherer tick, weekly 64.6%, 5h 0 -
+  // and Drew ruled today that a window at >=99.5% sustained across
+  // reads is WALLED: the residual fraction is not drawable and
+  // the door is not to be retried into new work. Every
+  // _commandcode door was already removed from the plan pools on
+  // 2026-11-13 (code#9397); this flip makes the wall formal at the
+  // switchboard and makes the provider definition's own "STILL in
+  // disabled_providers" note below true. Per the switchboard rule
+  // the definition and every seat stay in place; deleting this
+  // line re-enables it. Re-enable only when a fresh read shows
+  // the monthly window back under 99.5% after its reset AND
+  // restoration is proven by a live completion (the code#9397
+  // re-seat condition).
   "disabled_providers": [
     "google",
     "google-vertex",
@@ -274,7 +290,8 @@
     "deepseek",
     "_claude",
     "_antigravity",
-    "_muse"
+    "_muse",
+    "_commandcode"
   ],
   // 2026-11-03 (Drew): muse, antigravity-ls, antigravity-agy, code-design,
   // design-code, cloudflare-gateway and chatgpt left this list together with
