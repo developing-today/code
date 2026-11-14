@@ -728,6 +728,23 @@
       "reason": "PR #5953 added the step, but no successful post-change run is evidenced. Latest API run is still queued on a non-main branch; prior main runs were cancelled or failed."
     },
     {
+      "id": "pm-stack.claimant.explicit-dispatch",
+      "paths": [
+        "pm-stack/opencode-claimant/test_launch_one.py",
+        "pm-stack/opencode-claimant/test_send_to_opencode.py",
+        "pm-stack/opencode-claimant/test_dispatch_batch.py"
+      ],
+      "invocation": "cd pm-stack/opencode-claimant && python3 -m unittest test_launch_one.py test_send_to_opencode.py test_dispatch_batch.py",
+      "venue": {
+        "workflow": ".github/workflows/pm-stack-tests.yml",
+        "job_step": "Test claimant launch, handoff, and batch dispatch (#9877)",
+        "state": "active",
+        "dispatchable": true
+      },
+      "status": "mapped",
+      "related_issues": [9877, 9103]
+    },
+    {
       "id": "pm-stack.grist.choice-options",
       "paths": ["pm-stack/grist/test_update_choice_options.py"],
       "invocation": "python3 -m unittest discover -s pm-stack/grist -p 'test_*.py'",
