@@ -143,6 +143,22 @@ Two dimensions ride on the adapter axis rather than standing alone:
   proves contract conformance; cross-pairing is the interop claim
   itself — an adapter that only talks to itself is not certified
   interoperable.
+- **Bootstrap (first cells).** The pairing rule has a first-instance
+  problem: when no adapter is certified yet, there is no *another
+  certified adapter* to pair with, and I4 forbids certification on
+  reference-peer testing alone. The bootstrap path is **joint
+  co-certification**: two independent implementations (distinct
+  codebases — not two builds or configurations of one
+  implementation, which would be self-pairing in disguise) that each
+  pass the full shared suite against the reference in-process peer
+  **and** pass cross-pairing against each other in both directions
+  are certified together, atomically, in one reviewed record
+  amendment naming the pair. Neither is certified alone first. The
+  native/UDP baseline of #5674 is the expected seed implementation
+  for the first co-certification. Once any certified adapter exists
+  for a carrier class, later adapters cross-pair against an
+  already-certified adapter as normal; co-certification is not a
+  standing alternative to it.
 - **Direction.** Client-initiated and server-initiated sessions are
   separate legs inside each cell (§2.3), not separate cells.
 
@@ -228,7 +244,11 @@ cell is listed as blocked in the matrix, not silently absent.
   is declared before the run (§6.2); a step whose outcome cannot be
   machine-compared is not a certification step.
 - **I4 — Both pairings, both directions.** No cell is certified on
-  self-pairing alone, or on one session direction alone (§4).
+  self-pairing alone, or on one session direction alone (§4). The
+  §4 bootstrap path (joint co-certification of two independent
+  implementations) defines how the first cells satisfy this when no
+  certified adapter exists yet; it is not certification on
+  self-pairing or on the reference peer alone.
 - **I5 — No silent absence.** A matrix cell that cannot yet run is
   listed blocked with its blocking sibling; a cell that disappears
   from the matrix without a record amendment is a defect.
