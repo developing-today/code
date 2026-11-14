@@ -56,9 +56,13 @@ jobs:
           set -euo pipefail
           repo="${{ github.repository }}"
           cutoff=$(date -u -d "-${THRESHOLD_HOURS} hours" +%Y-%m-%dT%H:%M:%SZ)
-          echo "## stale-run sweeper — $(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_STEP_SUMMARY"
-          echo "repo $repo · threshold ${THRESHOLD_HOURS}h (cutoff $cutoff) · dry_run $DRY_RUN" >> "$GITHUB_STEP_SUMMARY"
-          cancelled=0; kept=0; checked=0
+          summary="$GITHUB_STEP_SUMMARY"
+          echo "## stale-run sweeper — $(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$summary"
+          echo "repo $repo · threshold ${THRESHOLD_HOURS}h (cutoff $cutoff) · dry_run $DRY_RUN" >> "$summary"
+          # Collect candidates across ALL pages BEFORE cancelling any:
+          # cancelling while paginating shrinks the list and skips runs
+          # (found live in the inaugural sweep, task 16678).
+          candidates=$(mktemp)
           declare -A heads=()
           page=1
           while :; do
@@ -67,30 +71,45 @@ jobs:
             [ -z "$runs" ] && break
             while IFS=$'\t' read -r id created branch sha wname; do
               [ -z "$id" ] && continue
-              # Only runs older than the threshold are eligible at all.
               [[ "$created" > "$cutoff" ]] && continue
-              checked=$((checked+1))
               if [ -z "${heads[$branch]+x}" ]; then
                 heads[$branch]=$(gh api "repos/$repo/branches/$branch" --jq '.commit.sha' 2>/dev/null || echo "MISSING")
               fi
-              head="${heads[$branch]}"
-              if [ "$head" = "$sha" ]; then
-                echo "- keep run $id ($wname, $branch @ $sha): still branch head" >> "$GITHUB_STEP_SUMMARY"
-                kept=$((kept+1))
-                continue
-              fi
-              reason="superseded (branch head $head)"
-              [ "$head" = "MISSING" ] && reason="branch $branch no longer exists"
-              if [ "$DRY_RUN" = "true" ]; then
-                echo "- would cancel run $id ($wname, $branch @ $sha, queued since $created): $reason" >> "$GITHUB_STEP_SUMMARY"
+              if [ "${heads[$branch]}" = "$sha" ]; then
+                echo "- keep run $id ($wname, $branch @ $sha): still branch head" >> "$summary"
               else
-                gh api -X POST "repos/$repo/actions/runs/$id/cancel" > /dev/null
-                echo "- cancelled run $id ($wname, $branch @ $sha, queued since $created): $reason" >> "$GITHUB_STEP_SUMMARY"
+                echo "$id|$created|$branch|$sha|$wname" >> "$candidates"
               fi
-              cancelled=$((cancelled+1))
             done <<< "$runs"
             page=$((page+1))
           done
-          echo "" >> "$GITHUB_STEP_SUMMARY"
-          echo "checked $checked stale-aged queued runs · cancelled $cancelled · kept $kept (dry_run $DRY_RUN)" >> "$GITHUB_STEP_SUMMARY"
-          cat "$GITHUB_STEP_SUMMARY"
+          cancelled=0; phantom=0; failed=0; total=0
+          while IFS='|' read -r id created branch sha wname; do
+            [ -z "$id" ] && continue
+            total=$((total+1))
+            # Phantom runs: queued since the 2026-11-11 saturation with
+            # zero jobs materialized. The cancel endpoint refuses them
+            # (409 "Cannot cancel a workflow run that has not been
+            # queued yet") and they hold no runner; only GitHub-side
+            # expiry clears them. Log them as their own class so queue
+            # depth stops being misread as runner demand.
+            jobs=$(gh api "repos/$repo/actions/runs/$id/jobs" --jq '.total_count' 2>/dev/null || echo "?")
+            if [ "$jobs" = "0" ]; then
+              echo "- phantom run $id ($wname, $branch @ $sha, queued since $created): zero jobs, uncancellable via API (409 class); reported, not attempted" >> "$summary"
+              phantom=$((phantom+1))
+              continue
+            fi
+            if [ "$DRY_RUN" = "true" ]; then
+              echo "- would cancel run $id ($wname, $branch @ $sha, queued since $created): superseded" >> "$summary"
+              cancelled=$((cancelled+1))
+            elif gh api -X POST "repos/$repo/actions/runs/$id/cancel" > /dev/null 2>&1; then
+              echo "- cancelled run $id ($wname, $branch @ $sha, queued since $created): superseded" >> "$summary"
+              cancelled=$((cancelled+1))
+            else
+              echo "- cancel FAILED run $id ($wname, $branch @ $sha, queued since $created)" >> "$summary"
+              failed=$((failed+1))
+            fi
+          done < "$candidates"
+          echo "" >> "$summary"
+          echo "superseded stale candidates $total · cancelled $cancelled · phantom (zero-job, API-uncancellable) $phantom · failed $failed (dry_run $DRY_RUN)" >> "$summary"
+          cat "$summary"
