@@ -2,6 +2,7 @@
 // whether they are looking at fixtures or live readers — swapping one for
 // the other is a config change (PM_AGG_SOURCE), not a code change.
 import type { SectionDiagnosis } from "./feed.ts";
+import type { Phase12Snapshot } from "./phase12.ts";
 import type { NeedsDrewCensus } from "./needs-drew.ts";
 import type { RepoCensus } from "./coverage.ts";
 import type {
@@ -80,6 +81,12 @@ export interface Source {
    *  omit it and the attention view renders the census as unavailable
    *  instead of as an empty queue. */
   needsDrew?(): Promise<NeedsDrewCensus | null>;
+  /** The #1235 issue-body snapshot for the Path to Phase 12 panel
+   * (#9922); null = not collected / the body feed could not be read.
+   * Optional like needsDrew: sources that cannot read issue bodies
+   * omit it and the panel renders unavailable instead of inventing
+   * a step list. */
+  phase12?(): Promise<Phase12Snapshot | null>;
   /** Which session sources are wired, for the coverage note (slice 2). */
   coverage(): Promise<SourceCoverage[]>;
   provenance(): Provenance;

@@ -37,6 +37,7 @@ import {
   type KaneoCardSnapshot,
 } from "../activity.ts";
 import { isRecord } from "../validate.ts";
+import { fetchIssueBodySnapshot, type Phase12Snapshot } from "../phase12.ts";
 import { buildAttentionFlags, buildQuotaActions, quotaActionFlags } from "../derive.ts";
 import { validateRoadmapHorizon } from "../roadmap-horizon.ts";
 import { describeRepoRoadmapSection, mergeRoadmapRows, readRepoRoadmaps } from "./repo-roadmap.ts";
@@ -1170,6 +1171,32 @@ export function liveSource(
     };
     return getJson(url, headers);
   });
+  // #9922: the Path to Phase 12 body feed — one GraphQL read of
+  // #1235's body, cached for 5 minutes and shared in-flight (same
+  // discipline as the Needs-Drew sweeper above), fail-soft to the
+  // last good snapshot or null so a GitHub outage renders the panel
+  // unavailable instead of breaking /program/<id>.
+  let phase12Cache: { value: Phase12Snapshot; at: number } | null = null;
+  let phase12InFlight: Promise<Phase12Snapshot | null> | null = null;
+  async function phase12Snapshot(): Promise<Phase12Snapshot | null> {
+    if (phase12Cache && Date.now() - phase12Cache.at < 5 * 60_000) return phase12Cache.value;
+    if (!phase12InFlight) {
+      phase12InFlight = (async () => {
+        const token = process.env.PM_AGG_GITHUB_TOKEN ?? process.env.GITHUB_TOKEN;
+        if (!token) return phase12Cache?.value ?? null;
+        try {
+          const snap = await fetchIssueBodySnapshot(token);
+          phase12Cache = { value: snap, at: Date.now() };
+          return snap;
+        } catch {
+          return phase12Cache?.value ?? null;
+        }
+      })().finally(() => {
+        phase12InFlight = null;
+      });
+    }
+    return phase12InFlight;
+  }
   // #1116: a laptop leg's health, tracked per state file so the
   // attention provenance can say which legs are dead instead of the
   // failure staying silent. Before this, the OpenChamber-managed
@@ -1577,6 +1604,9 @@ export function liveSource(
     },
     async needsDrew(): Promise<NeedsDrewCensus | null> {
       return needsDrewSweep();
+    },
+    async phase12(): Promise<Phase12Snapshot | null> {
+      return phase12Snapshot();
     },
     async coverageCensus(): Promise<RepoCensus[] | null> {
       const feed = await getFeed();

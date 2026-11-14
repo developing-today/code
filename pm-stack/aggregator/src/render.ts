@@ -123,6 +123,7 @@ import { KEY_HINT, KEYBOARD_SCRIPT, paletteHtml } from "./keyboard.ts";
 import type { ProgramData, ProgramEntry, ProgramLive, TrackedIssue } from "./program.ts";
 import type { ProjectDetail, ProjectSummary } from "./project-config.ts";
 import { derivedProjectState, projectDisagreement, PROJECT_URL } from "./projects.ts";
+import { PHASE12_ISSUE_URL, joinPhase12Steps, parsePhase12Steps, phase12IsStale, type Phase12Snapshot } from "./phase12.ts";
 import {
   CANONICAL_STATUSES,
   STATUS_SOURCE_LABELS,
@@ -7066,12 +7067,46 @@ function epicGraphOneHtml(items: ProjectPoolItem[], entry: ReturnType<typeof epi
   return `<section>${heading}${summary}${truncatedHtml}<div class="epic-graph-flex">${svg}<div class="epic-graph-side"><h5>Primary ranking — blockers by downstream open work</h5><p class="muted">Each open epic item is counted once per blocker across its transitive blockedBy ancestry. This measures downstream reach, not a promise that every item is immediately unblocked. Current additional unresolved blockers are listed per item; unsized contributors count separately from known effort weight. The longest dependency chain remains a separate diagnostic.</p>${rankedBlockersHtml}<h5>Open items by their worst blocker's downstream reach</h5>${rankedHtml}<h5>All items — dependency list</h5>${listHtml}</div></div></section>`;
 }
 
+/** The Path to Phase 12 panel (#9922): #1235's ordered steps, parsed
+ * from its body snapshot and joined to live GitHub item state. A stale
+ * or missing snapshot renders the warning INSTEAD of the steps — a
+ * silently old step list is the defect #1239's rules name. Queue state
+ * joins here once the fleet-queue collector (#9920) lands; until then
+ * the panel says so. */
+export function phase12PanelHtml(snapshot: Phase12Snapshot | null, items: Map<RefKey, GhItem>): string {
+  const head = `<h2>Path to Phase 12 — live from <a href="${PHASE12_ISSUE_URL}">#1235</a></h2>`;
+  if (!snapshot) {
+    return `${head}<div class="banner">The #1235 body feed is unavailable in the current source, so no step state is shown — a hand-maintained copy would drift, and this panel never renders one.</div>`;
+  }
+  const sourceLine = `<p class="muted">Source: <a href="${PHASE12_ISSUE_URL}">developing-today/code#1235</a> body, fetched ${esc(snapshot.fetchedAt)} · issue updated ${esc(snapshot.issueUpdatedAt)} · per-step state is live GitHub state; queue state joins when the fleet-queue collector (#9920) lands.</p>`;
+  if (phase12IsStale(snapshot)) {
+    return `${head}${sourceLine}<div class="banner">Stale source: this snapshot was fetched at ${esc(snapshot.fetchedAt)}, outside the freshness window — the step list is withheld rather than shown silently old. It refreshes on the next successful body read.</div>`;
+  }
+  const steps = joinPhase12Steps(parsePhase12Steps(snapshot.body), items);
+  if (!steps.length) {
+    return `${head}${sourceLine}<div class="banner">No ordered steps could be parsed from the current #1235 body, so no step state is shown.</div>`;
+  }
+  const rows = steps
+    .map((s) => {
+      const stateBadge =
+        s.liveState === null
+          ? `<span class="badge">not resolved in the current source</span>`
+          : `<span class="badge ${s.liveState === "open" ? "open" : "closed"}">issue ${esc(s.liveState)}</span>`;
+      const box = s.checked ? "☑" : "☐";
+      const done = s.doneNote ? `<br><span class="muted">${esc(s.doneNote)}</span>` : "";
+      return `<div class="card"><strong>${box} ${esc(s.label)} — <a href="${esc(s.url)}">#${s.issueNumber}</a> ${esc(s.liveTitle ?? s.title)}</strong><br>${stateBadge}${done}</div>`;
+    })
+    .join("");
+  return `${head}${sourceLine}${rows}`;
+}
+
 export function renderProgramProject(
   detail: ProjectDetail,
   items: Map<RefKey, GhItem>,
   provenance: Provenance,
   provDetail?: ProvenanceDetail,
   epicPool: ProjectPoolItem[] = detail.poolItems,
+  phase12?: Phase12Snapshot | null,
 ): string {
   const { config } = detail;
   const linkBits: string[] = [];
@@ -7177,6 +7212,8 @@ export function renderProgramProject(
 <p class="muted">Built only from already-published fleet data — the orchestration section this aggregator serves and the fleet's tracked issues. No new data pipeline feeds this section.</p>${programEntries(config.sweepHealth, items)}`
     : "";
 
+  const phase12Html = config.id === "id" && phase12 !== undefined ? phase12PanelHtml(phase12, items) : "";
+
   const ed = config.editorial;
   const editorialHtml = ed
     ? `${ed.done.length ? `<h2>What's built</h2>${programEntries(ed.done, items)}` : ""}${ed.next.length ? `<h2>What's next</h2>${programEntries(ed.next, items)}` : ""}${ed.longTerm.length ? `<h2>Long-term roadmap</h2>${programEntries(ed.longTerm, items)}` : ""}${ed.gaps.length ? `<h2>Known gaps</h2>${programEntries(ed.gaps, items)}` : ""}`
@@ -7196,7 +7233,7 @@ ${poolHtml}
 ${roadmapHtml}
 ${repoCardsHtml}
 ${sweepHealthHtml}
-${editorialHtml}`;
+${phase12Html}${editorialHtml}`;
   return layout(
     config.title,
     body,

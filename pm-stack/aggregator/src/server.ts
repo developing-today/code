@@ -141,6 +141,7 @@ import {
   buildProjectSummaries,
   projectConfigById,
 } from "./project-config.ts";
+import { PHASE12_REPO, parsePhase12Steps, type Phase12Snapshot } from "./phase12.ts";
 import { identitiesFromRecords, type AuthorIdentity } from "./registry.ts";
 import {
   attentionFragment,
@@ -3009,7 +3010,23 @@ async function handler(req: Request): Promise<Response> {
       source.projects().catch(() => []),
       source.roadmap().catch(() => []),
     ]);
-    return html(renderProgramProject(buildProjectDetail(config, items, pool, rows), items, prov(), provDetail(), pool));
+    // #9922: the id page's Path to Phase 12 panel — fetch the #1235
+    // body snapshot when the source carries one, and resolve the
+    // steps' refs into the items map so the join in render sees live
+    // state for every step, not just the config's tracked refs.
+    let phase12: Phase12Snapshot | null = null;
+    if (config.id === "id" && source.phase12) {
+      phase12 = await source.phase12().catch(() => null);
+      if (phase12) {
+        const stepRefs = parsePhase12Steps(phase12.body).map((s) => `${PHASE12_REPO}#${s.issueNumber}`);
+        const missing = stepRefs.filter((r) => !items.has(r));
+        if (missing.length) {
+          const resolved = await source.items(missing).catch(() => new Map());
+          for (const [k, v] of resolved) items.set(k, v);
+        }
+      }
+    }
+    return html(renderProgramProject(buildProjectDetail(config, items, pool, rows), items, prov(), provDetail(), pool, phase12));
   }
   if (path === "/api/program-project.json") {
     const id = url.searchParams.get("id") ?? "";
