@@ -75,7 +75,10 @@ use id_core::discovery::{PeerAnnouncement, PeerDiscovery};
 /// Archive references are reserved for FileOps-generated metadata. Protocol
 /// peers may neither create nor change them through the general tag API.
 fn is_reserved_archive_reference_key(key: &[u8]) -> bool {
-    matches!(key, b"archive.rename" | b"archive.replace")
+    matches!(
+        key,
+        b"archive.rename" | b"archive.replace" | b"archive.owner"
+    )
 }
 
 #[cfg(test)]
@@ -255,6 +258,7 @@ mod reserved_archive_reference_tests {
     fn archive_reference_keys_are_reserved_for_fileops() {
         assert!(is_reserved_archive_reference_key(b"archive.rename"));
         assert!(is_reserved_archive_reference_key(b"archive.replace"));
+        assert!(is_reserved_archive_reference_key(b"archive.owner"));
         assert!(!is_reserved_archive_reference_key(b"user.label"));
     }
 }
