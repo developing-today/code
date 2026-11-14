@@ -105,7 +105,14 @@ async function main(): Promise<number> {
   const opts = parseArgs();
   const files = opts.files.length > 0 ? [...opts.files] : [defaultDecisionEventsOutboxFile()];
   if (opts.outboxDir) {
-    const entries = await readdir(opts.outboxDir).catch(() => [] as string[]);
+    let entries: string[];
+    try {
+      entries = await readdir(opts.outboxDir);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      console.error(`sync-decision-events: cannot read --outbox-dir ${JSON.stringify(opts.outboxDir)}: ${msg}`);
+      return 1;
+    }
     for (const name of entries.filter((n) => n.endsWith(".jsonl")).sort()) files.push(join(opts.outboxDir, name));
   }
 
