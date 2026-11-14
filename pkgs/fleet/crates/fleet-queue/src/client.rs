@@ -1402,6 +1402,37 @@ fn b64_encode(bytes: &[u8]) -> String {
     out
 }
 
+/// OpenCode server base URL for the claim-stamp lookup (#9409),
+/// resolved consistently with the claimant tooling
+/// (pm-stack/opencode-claimant/claimant.py and poll.py): the
+/// `OPENCODE_URL` override wins, then the legacy
+/// `OPENCODE_SERVER_URL` this lookup originally read, then the
+/// loopback default both sides share. Pure, so the resolution
+/// order is unit-testable.
+fn resolve_opencode_base_url(env_url: Option<&str>, env_server_url: Option<&str>) -> String {
+    for candidate in [env_url, env_server_url] {
+        if let Some(u) = candidate
+            .map(|v| v.trim().trim_end_matches('/'))
+            .filter(|v| !v.is_empty())
+        {
+            return u.to_string();
+        }
+    }
+    "http://127.0.0.1:13420".to_string()
+}
+
+/// OpenCode credential file for the claim-stamp lookup (#9409),
+/// resolved consistently with the claimant tooling: the
+/// `OPENCODE_AUTH_FILE` override wins, then the production state
+/// file under the user's home. Pure, so the resolution is
+/// unit-testable.
+fn resolve_opencode_auth_file(env_file: Option<&str>, home: &str) -> String {
+    match env_file.map(str::trim).filter(|v| !v.is_empty()) {
+        Some(f) => f.to_string(),
+        None => format!("{home}/.local/state/opencode/service-prod.json"),
+    }
+}
+
 /// #8176 (2026-11-12 fix): derive the claim stamp for a claim that
 /// names its claiming session (--session-id) but carries no
 /// explicit --model-* flags. The dispatch surfaces claim on behalf
@@ -1424,14 +1455,16 @@ fn derive_claim_model_stamp(session_id: &str) -> Option<(String, String, Option<
     if session_id.is_empty() {
         return None;
     }
-    let base = std::env::var("OPENCODE_SERVER_URL")
-        .ok()
-        .map(|s| s.trim().trim_end_matches('/').to_string())
-        .filter(|s| !s.is_empty())
-        .unwrap_or_else(|| "http://127.0.0.1:13420".to_string());
+    let base = resolve_opencode_base_url(
+        std::env::var("OPENCODE_URL").ok().as_deref(),
+        std::env::var("OPENCODE_SERVER_URL").ok().as_deref(),
+    );
     let home = crate::home::from_env().ok()?;
-    let state =
-        std::fs::read_to_string(format!("{home}/.local/state/opencode/service-prod.json")).ok()?;
+    let auth_file = resolve_opencode_auth_file(
+        std::env::var("OPENCODE_AUTH_FILE").ok().as_deref(),
+        &home,
+    );
+    let state = std::fs::read_to_string(auth_file).ok()?;
     let state: Value = serde_json::from_str(&state).ok()?;
     let password = state.get("password")?.as_str()?;
     let agent: ureq::Agent = ureq::Agent::config_builder()
@@ -5721,6 +5754,45 @@ mod tests {
     #[test]
     fn default_queue_empty_env_values_use_default() {
         assert_env_resolution(default_queue_from_env, DEFAULT_QUEUE);
+    }
+
+    #[test]
+    fn opencode_base_url_honors_claimant_overrides() {
+        // #9409: OPENCODE_URL (the claimant tooling's override) wins
+        // over the legacy OPENCODE_SERVER_URL; trailing slashes and
+        // blank values are normalized away; the shared loopback
+        // default applies when neither is set.
+        assert_eq!(
+            resolve_opencode_base_url(Some("http://example:9999/"), Some("http://legacy:1")),
+            "http://example:9999"
+        );
+        assert_eq!(
+            resolve_opencode_base_url(None, Some("http://legacy:1/")),
+            "http://legacy:1"
+        );
+        assert_eq!(
+            resolve_opencode_base_url(Some("  "), Some("")),
+            "http://127.0.0.1:13420"
+        );
+        assert_eq!(resolve_opencode_base_url(None, None), "http://127.0.0.1:13420");
+    }
+
+    #[test]
+    fn opencode_auth_file_honors_claimant_override() {
+        // #9409: OPENCODE_AUTH_FILE (the claimant tooling's override)
+        // wins; otherwise the production state file under home.
+        assert_eq!(
+            resolve_opencode_auth_file(Some("/tmp/alt-auth.json"), "/home/x"),
+            "/tmp/alt-auth.json"
+        );
+        assert_eq!(
+            resolve_opencode_auth_file(Some(" "), "/home/x"),
+            "/home/x/.local/state/opencode/service-prod.json"
+        );
+        assert_eq!(
+            resolve_opencode_auth_file(None, "/home/x"),
+            "/home/x/.local/state/opencode/service-prod.json"
+        );
     }
 
     #[test]
