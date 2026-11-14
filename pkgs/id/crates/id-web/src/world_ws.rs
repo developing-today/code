@@ -1658,7 +1658,7 @@ mod tests {
             cookie_secure: false,
         }))
         .await;
-        let wasm = include_bytes!("../../examples/roc-counter/counter.wasm");
+        let wasm = include_bytes!("../../../examples/roc-counter/counter.wasm");
         let (mut uploader, _) = tokio_tungstenite::connect_async(format!("ws://{addr}/ws/world"))
             .await
             .unwrap();
@@ -1742,7 +1742,7 @@ mod tests {
             return;
         };
         let platform_dir =
-            PathBuf::from(concat!(env!("CARGO_MANIFEST_DIR"), "/examples/roc-world"));
+            PathBuf::from(concat!(env!("CARGO_MANIFEST_DIR"), "/../../examples/roc-world"));
         if !platform_dir.join("targets/wasm32/host.wasm").is_file() {
             eprintln!(
                 "skipping: Roc world platform assets unavailable (run examples/roc-world/build-host.sh)"
@@ -1752,7 +1752,7 @@ mod tests {
         let compiler = id_worlds::world_compile::Compiler::new(platform_dir, roc_bin).unwrap();
         let source = std::fs::read_to_string(concat!(
             env!("CARGO_MANIFEST_DIR"),
-            "/examples/roc-counter/main.roc"
+            "/../../examples/roc-counter/main.roc"
         ))
         .unwrap();
         let world = WorldHandle::spawn(WorldCore::new("lobby", WorldLimits::default()).unwrap());
@@ -1826,7 +1826,7 @@ mod tests {
             cookie_secure: false,
         }))
         .await;
-        let wasm = include_bytes!("../../examples/roc-text-counter/text-counter.wasm");
+        let wasm = include_bytes!("../../../examples/roc-text-counter/text-counter.wasm");
         let (mut uploader, _) = tokio_tungstenite::connect_async(format!("ws://{addr}/ws/world"))
             .await
             .unwrap();
@@ -1910,7 +1910,7 @@ mod tests {
             return;
         };
         let platform_dir =
-            PathBuf::from(concat!(env!("CARGO_MANIFEST_DIR"), "/examples/roc-world"));
+            PathBuf::from(concat!(env!("CARGO_MANIFEST_DIR"), "/../../examples/roc-world"));
         if !platform_dir.join("targets/wasm32/host.wasm").is_file() {
             eprintln!(
                 "skipping: Roc world platform assets unavailable (run examples/roc-world/build-host.sh)"
@@ -1920,7 +1920,7 @@ mod tests {
         let compiler = id_worlds::world_compile::Compiler::new(platform_dir, roc_bin).unwrap();
         let source = std::fs::read_to_string(concat!(
             env!("CARGO_MANIFEST_DIR"),
-            "/examples/roc-text-counter/main.roc"
+            "/../../examples/roc-text-counter/main.roc"
         ))
         .unwrap();
         let world = WorldHandle::spawn(WorldCore::new("lobby", WorldLimits::default()).unwrap());
