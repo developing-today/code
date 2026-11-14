@@ -475,6 +475,32 @@ func TestBuildCompletionFileImport(t *testing.T) {
 	}
 }
 
+func TestBuildCompletionFileImportDottedProgramName(t *testing.T) {
+	// Issue #9796: a dotted program name must survive for parsing
+	// and for the spec's command; only the adapter namespace name
+	// is sanitised (dots to dashes). Before the fix the import of
+	// this fixture failed as empty, because every `complete` line
+	// is for -c toolbox.v2 while the parser was handed toolbox-v2.
+	dotted := strings.ReplaceAll(fishFixture, "-c toolbox", "-c toolbox.v2")
+	path := filepath.Join(t.TempDir(), "toolbox.v2.fish")
+	if err := os.WriteFile(path, []byte(dotted), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	spec, _, err := buildCompletionFileImport(importOptions{completion: path})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if spec.Name != "toolbox-v2" {
+		t.Errorf("adapter namespace name should be sanitised: %q", spec.Name)
+	}
+	if spec.Command != "toolbox.v2" {
+		t.Errorf("spec command should keep the original program name: %q", spec.Command)
+	}
+	if len(spec.Tools) != 2 {
+		t.Errorf("declaration should be non-empty with both subcommand tools: %+v", spec.Tools)
+	}
+}
+
 func TestParseImportArgsGenerationFlags(t *testing.T) {
 	o, err := parseImportArgs([]string{"--source", "help", "git", "--out=x.json", "--name", "g"})
 	if err != nil {
