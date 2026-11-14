@@ -25,7 +25,7 @@
 // the #6032 remainder — which calls planEscalation / planRecovery with
 // the tick's pre-decision health record and persists whatever
 // recordEscalation returns.
-import type { FailureClass, SourceHealth } from "./watchdog-state.ts";
+import type { EscalationRecord, FailureClass, SourceHealth } from "./watchdog-state.ts";
 
 /** How long an ordinary escalation stays quiet before it surfaces. */
 export const ESCALATION_NEEDS_DREW_AFTER_MS = 24 * 60 * 60_000;
@@ -150,23 +150,34 @@ export function planEscalation(
   if (!incident || incident.surfacing !== "escalate" || incident.humanBlocked) {
     return { actions: [], deduped: false };
   }
-  const existing = incident.escalation;
-  if (existing && existing.class === health.currentClass) {
-    return { actions: [], deduped: true };
-  }
   const packet = buildEscalationPacket(health, ctx);
+  const openIssue: EscalationAction = {
+    type: "open_issue",
+    repo: ctx.issueRepo,
+    title: issueTitle(health),
+    body: issueBody(health, packet),
+    labels: ["watchdog-incident"],
+  };
+  // Dedupe consults every hand-off this incident carries, not just
+  // the latest (Codex P2 on PR #8357): a failure class that changes
+  // back finds its original pair in `previous` instead of creating a
+  // third hand-off.
+  const existing = incident.escalation;
+  const records: EscalationRecord[] = existing
+    ? [existing, ...(existing.previous ?? [])]
+    : [];
+  const forClass = records.find((r) => r.class === health.currentClass);
+  if (forClass) {
+    // Resume a partial hand-off: plan only the creations that never
+    // confirmed, so a retry cannot duplicate the confirmed half.
+    const actions: EscalationAction[] = [];
+    if (forClass.queueTaskId === null) actions.push({ type: "enqueue_task", packet });
+    if (forClass.issueNumber === null) actions.push(openIssue);
+    return { actions, deduped: actions.length === 0 };
+  }
   return {
     deduped: false,
-    actions: [
-      { type: "enqueue_task", packet },
-      {
-        type: "open_issue",
-        repo: ctx.issueRepo,
-        title: issueTitle(health),
-        body: issueBody(health, packet),
-        labels: ["watchdog-incident"],
-      },
-    ],
+    actions: [{ type: "enqueue_task", packet }, openIssue],
   };
 }
 
@@ -178,18 +189,42 @@ export function recordEscalation(
   at: string,
 ): SourceHealth {
   if (!health.incident) return health;
+  const cls = health.currentClass ?? "unknown";
+  const prev = health.incident.escalation;
+  let escalation: EscalationRecord;
+  if (prev && prev.class === cls) {
+    // Same pair: merge — a confirmed ref is never overwritten by a
+    // later partial result, and the original `since` stands.
+    escalation = {
+      ...prev,
+      queueTaskId: prev.queueTaskId ?? refs.queueTaskId,
+      issueNumber: prev.issueNumber ?? refs.issueNumber,
+    };
+  } else if (prev) {
+    // Class changed: the displaced hand-off stays on the record
+    // (flattened into `previous`) so recovery can close and complete
+    // it and dedupe can find it again (Codex P2 on PR #8357).
+    const { previous: prevPrevious, ...prevFlat } = prev;
+    escalation = {
+      class: cls as EscalationRecord["class"],
+      since: at,
+      queueTaskId: refs.queueTaskId,
+      issueRepo: ctx.issueRepo,
+      issueNumber: refs.issueNumber,
+      previous: [...(prevPrevious ?? []), prevFlat],
+    };
+  } else {
+    escalation = {
+      class: cls as EscalationRecord["class"],
+      since: at,
+      queueTaskId: refs.queueTaskId,
+      issueRepo: ctx.issueRepo,
+      issueNumber: refs.issueNumber,
+    };
+  }
   return {
     ...health,
-    incident: {
-      ...health.incident,
-      escalation: {
-        class: health.currentClass ?? "unknown",
-        since: at,
-        queueTaskId: refs.queueTaskId,
-        issueRepo: ctx.issueRepo,
-        issueNumber: refs.issueNumber,
-      },
-    },
+    incident: { ...health.incident, escalation },
   };
 }
 
@@ -198,11 +233,26 @@ export function recordEscalation(
  * quiet. Human-blocked surfaces the same tick it is marked; an ordinary
  * escalation surfaces only once unresolved for the threshold.
  */
+// Mirrors the human-only challenge pattern recordRungOutcome in
+// watchdog-state.ts uses to mark an incident human-blocked.
+const HUMAN_CHALLENGE_RE = /human[- ]only|2fa|passkey|verify[- ]it/i;
+
 export function surfacingLine(health: SourceHealth, now: number): string | null {
   const incident = health.incident;
   if (!incident) return null;
   if (incident.humanBlocked || incident.surfacing === "human-blocked") {
-    return `NEEDS DREW: ${health.source} quota producer is human-blocked (${health.currentClass ?? "unknown"}: ${health.lastDetail || "human-only challenge"}) — incident ${incident.id}`;
+    // Surface the persisted challenge reason (Codex P2 on PR #8357):
+    // the repair-log entry that tripped the human-blocked mark names
+    // the intervention actually needed. health.lastDetail is the
+    // latest PRODUCER observation and can name a different, earlier
+    // symptom — and later blocked ticks can overwrite it again.
+    const challenge = [...health.repairLog]
+      .reverse()
+      .find((e) => e.outcome === "failed" && HUMAN_CHALLENGE_RE.test(e.detail));
+    const reason = challenge
+      ? challenge.detail
+      : health.lastDetail || "human-only challenge";
+    return `NEEDS DREW: ${health.source} quota producer is human-blocked (${health.currentClass ?? "unknown"}: ${reason}) — incident ${incident.id}`;
   }
   const esc = incident.escalation;
   if (esc) {
@@ -223,24 +273,52 @@ export function surfacingLine(health: SourceHealth, now: number): string | null 
 export function planRecovery(health: SourceHealth, recoveredAt: string): EscalationAction[] {
   const esc = health.incident?.escalation;
   if (!esc) return [];
+  // Close and complete EVERY hand-off the incident carries (Codex P2
+  // on PR #8357): when the failure class changed mid-incident, the
+  // earlier pair in `previous` is just as open as the latest one.
+  const records: EscalationRecord[] = [esc, ...(esc.previous ?? [])];
   const actions: EscalationAction[] = [];
-  if (esc.issueNumber !== null) {
-    actions.push({
-      type: "comment_issue",
-      repo: esc.issueRepo,
-      issueNumber: esc.issueNumber,
-      body: `Recovered: source \`${health.source}\` produced a fresh document at ${recoveredAt}; the watchdog is auto-closing this incident (#6033).`,
-    });
-    actions.push({ type: "close_issue", repo: esc.issueRepo, issueNumber: esc.issueNumber });
-  }
-  if (esc.queueTaskId !== null) {
-    actions.push({ type: "complete_task", queueTaskId: esc.queueTaskId });
+  for (const rec of records) {
+    if (rec.issueNumber !== null) {
+      actions.push({
+        type: "comment_issue",
+        repo: rec.issueRepo,
+        issueNumber: rec.issueNumber,
+        body: `Recovered: source \`${health.source}\` produced a fresh document at ${recoveredAt}; the watchdog is auto-closing this incident (#6033).`,
+      });
+      actions.push({ type: "close_issue", repo: rec.issueRepo, issueNumber: rec.issueNumber });
+    }
+    if (rec.queueTaskId !== null) {
+      actions.push({ type: "complete_task", queueTaskId: rec.queueTaskId });
+    }
   }
   return actions;
 }
 
+/** A planned action failed after earlier actions in the same plan
+ *  had already confirmed effects (Codex P2 on PR #8357). The
+ *  confirmed refs ride on the error so the caller can persist them
+ *  via recordEscalation before retrying — without them, the retry
+ *  plan would re-create the confirmed half and duplicate repair
+ *  work, and recovery could never complete the orphaned task. */
+export class EscalationPartialError extends Error {
+  readonly refs: { queueTaskId: string | null; issueNumber: number | null };
+  constructor(
+    cause: unknown,
+    refs: { queueTaskId: string | null; issueNumber: number | null },
+  ) {
+    super(
+      `escalation action failed after partial progress (queueTaskId=${refs.queueTaskId}, issueNumber=${refs.issueNumber}): ${cause instanceof Error ? cause.message : String(cause)}`,
+    );
+    this.name = "EscalationPartialError";
+    this.refs = refs;
+    this.cause = cause;
+  }
+}
+
 /** Run planned actions through the effectors, in order, collecting the
- *  refs recordEscalation needs. */
+ *  refs recordEscalation needs. On failure the thrown
+ *  EscalationPartialError carries the refs confirmed so far. */
 export async function applyEscalationActions(
   actions: EscalationAction[],
   effectors: EscalationEffectors,
@@ -248,22 +326,26 @@ export async function applyEscalationActions(
   let queueTaskId: string | null = null;
   let issueNumber: number | null = null;
   for (const action of actions) {
-    switch (action.type) {
-      case "enqueue_task":
-        queueTaskId = await effectors.enqueueTask(action.packet);
-        break;
-      case "open_issue":
-        issueNumber = await effectors.openIssue(action);
-        break;
-      case "comment_issue":
-        await effectors.commentIssue(action);
-        break;
-      case "close_issue":
-        await effectors.closeIssue(action);
-        break;
-      case "complete_task":
-        await effectors.completeTask(action);
-        break;
+    try {
+      switch (action.type) {
+        case "enqueue_task":
+          queueTaskId = await effectors.enqueueTask(action.packet);
+          break;
+        case "open_issue":
+          issueNumber = await effectors.openIssue(action);
+          break;
+        case "comment_issue":
+          await effectors.commentIssue(action);
+          break;
+        case "close_issue":
+          await effectors.closeIssue(action);
+          break;
+        case "complete_task":
+          await effectors.completeTask(action);
+          break;
+      }
+    } catch (err) {
+      throw new EscalationPartialError(err, { queueTaskId, issueNumber });
     }
   }
   return { queueTaskId, issueNumber };

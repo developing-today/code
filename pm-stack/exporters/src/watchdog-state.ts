@@ -99,6 +99,13 @@ export interface EscalationRecord {
   issueRepo: string;
   /** Incident issue number, or null if creation has not confirmed. */
   issueNumber: number | null;
+  /** Earlier hand-offs for OTHER failure classes of this same
+   *  incident, displaced as "current" when the class changed but
+   *  still open (Codex P2 on PR #8357): dedupe consults them (a class
+   *  that changes back finds its pair here) and recovery closes and
+   *  completes every one. Flat: entries carry no `previous` of their
+   *  own. Absent = no earlier hand-off. */
+  previous?: EscalationRecord[];
 }
 
 /** What one tick saw for one source. */
@@ -407,24 +414,33 @@ export function coerceHealth(source: string, raw: unknown): SourceHealth {
     }))
     .slice(-REPAIR_LOG_LIMIT);
   const incidentRaw = r.incident as Record<string, unknown> | null | undefined;
-  const escRaw = (incidentRaw?.escalation ?? null) as Record<string, unknown> | null;
-  const escalation: EscalationRecord | null =
-    typeof escRaw === "object" &&
-    escRaw !== null &&
-    FAILURE_CLASSES.includes(escRaw.class as FailureClass) &&
-    typeof escRaw.since === "string" &&
-    typeof escRaw.issueRepo === "string"
+  const coerceEscalation = (raw: unknown): EscalationRecord | null => {
+    const e = raw as Record<string, unknown> | null;
+    return typeof e === "object" &&
+      e !== null &&
+      FAILURE_CLASSES.includes(e.class as FailureClass) &&
+      typeof e.since === "string" &&
+      typeof e.issueRepo === "string"
       ? {
-          class: escRaw.class as FailureClass,
-          since: escRaw.since,
-          queueTaskId: typeof escRaw.queueTaskId === "string" ? escRaw.queueTaskId : null,
-          issueRepo: escRaw.issueRepo,
+          class: e.class as FailureClass,
+          since: e.since,
+          queueTaskId: typeof e.queueTaskId === "string" ? e.queueTaskId : null,
+          issueRepo: e.issueRepo,
           issueNumber:
-            typeof escRaw.issueNumber === "number" && Number.isFinite(escRaw.issueNumber)
-              ? escRaw.issueNumber
+            typeof e.issueNumber === "number" && Number.isFinite(e.issueNumber)
+              ? e.issueNumber
               : null,
         }
       : null;
+  };
+  const escRaw = (incidentRaw?.escalation ?? null) as Record<string, unknown> | null;
+  const escalation: EscalationRecord | null = coerceEscalation(escRaw);
+  if (escalation && Array.isArray(escRaw?.previous)) {
+    const previous = escRaw.previous
+      .map((entry) => coerceEscalation(entry))
+      .filter((entry): entry is EscalationRecord => entry !== null);
+    if (previous.length > 0) escalation.previous = previous;
+  }
   const incident: Incident | null =
     typeof incidentRaw === "object" && incidentRaw !== null && typeof incidentRaw.id === "string"
       ? {

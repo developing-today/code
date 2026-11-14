@@ -5,6 +5,7 @@ import { describe, expect, test } from "bun:test";
 import {
   applyEscalationActions,
   buildEscalationPacket,
+  EscalationPartialError,
   ESCALATION_NEEDS_DREW_AFTER_MS,
   planEscalation,
   planRecovery,
@@ -189,5 +190,103 @@ describe("state coercion keeps the escalation record", () => {
     corrupt.incident.escalation = { class: "not-a-class", since: 5 };
     const dropped = coerceHealth("mistral", corrupt);
     expect(dropped.incident?.escalation).toBeNull();
+  });
+});
+
+describe("Codex findings on PR #8357 (class change, partial progress, surfacing reason)", () => {
+  test("a class change preserves the earlier hand-off; recovery closes both pairs; changing back dedupes", () => {
+    const first = recordEscalation(
+      escalatingHealth(),
+      CTX,
+      { queueTaskId: "task-a", issueNumber: 111 },
+      T0,
+    );
+    const changed: SourceHealth = { ...first, currentClass: "endpoint-changed" };
+    const second = recordEscalation(changed, CTX, { queueTaskId: "task-b", issueNumber: 222 }, T0);
+    expect(second.incident?.escalation?.class).toBe("endpoint-changed");
+    expect(second.incident?.escalation?.previous).toHaveLength(1);
+    expect(second.incident?.escalation?.previous?.[0]).toMatchObject({
+      class: "session-expired",
+      queueTaskId: "task-a",
+      issueNumber: 111,
+    });
+
+    const actions = planRecovery(second, "2026-11-10T06:00:00Z");
+    expect(actions.map((a) => a.type)).toEqual([
+      "comment_issue",
+      "close_issue",
+      "complete_task",
+      "comment_issue",
+      "close_issue",
+      "complete_task",
+    ]);
+    const completes = actions.filter((a) => a.type === "complete_task");
+    expect(completes.map((a) => (a as { queueTaskId: string }).queueTaskId)).toEqual([
+      "task-b",
+      "task-a",
+    ]);
+
+    const backAgain: SourceHealth = { ...second, currentClass: "session-expired" };
+    const plan = planEscalation(backAgain, CTX);
+    expect(plan.deduped).toBe(true);
+    expect(plan.actions).toEqual([]);
+  });
+
+  test("a failed openIssue surfaces the confirmed task id; the retry plans only the missing issue", async () => {
+    const health = escalatingHealth();
+    const plan = planEscalation(health, CTX);
+    const failing: EscalationEffectors = {
+      enqueueTask: async () => "task-4242",
+      openIssue: async () => {
+        throw new Error("gh unavailable");
+      },
+      commentIssue: async () => {},
+      closeIssue: async () => {},
+      completeTask: async () => {},
+    };
+    const err = await applyEscalationActions(plan.actions, failing).catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(EscalationPartialError);
+    expect((err as EscalationPartialError).refs).toEqual({
+      queueTaskId: "task-4242",
+      issueNumber: null,
+    });
+
+    const recorded = recordEscalation(health, CTX, (err as EscalationPartialError).refs, T0);
+    const retry = planEscalation(recorded, CTX);
+    expect(retry.deduped).toBe(false);
+    expect(retry.actions.map((a) => a.type)).toEqual(["open_issue"]);
+
+    const completed = recordEscalation(recorded, CTX, { queueTaskId: null, issueNumber: 777 }, T0);
+    expect(completed.incident?.escalation?.queueTaskId).toBe("task-4242");
+    expect(completed.incident?.escalation?.issueNumber).toBe(777);
+    expect(completed.incident?.escalation?.since).toBe(T0);
+    expect(planEscalation(completed, CTX).deduped).toBe(true);
+  });
+
+  test("human-blocked surfacing names the persisted challenge reason, not the producer detail", () => {
+    const hb = escalatingHealth();
+    hb.lastDetail = "HTTP 401";
+    hb.repairLog = [
+      ...hb.repairLog,
+      { at: T0, rung: 4, outcome: "failed", detail: "passkey required on the laptop" },
+    ];
+    hb.incident = { ...hb.incident!, humanBlocked: true, surfacing: "human-blocked" };
+    const line = surfacingLine(hb, Date.parse(T0));
+    expect(line).toContain("passkey required on the laptop");
+    expect(line).not.toContain("HTTP 401");
+  });
+
+  test("coerceHealth round-trips the previous hand-offs", () => {
+    const first = recordEscalation(
+      escalatingHealth(),
+      CTX,
+      { queueTaskId: "task-a", issueNumber: 111 },
+      T0,
+    );
+    const changed: SourceHealth = { ...first, currentClass: "endpoint-changed" };
+    const second = recordEscalation(changed, CTX, { queueTaskId: "task-b", issueNumber: 222 }, T0);
+    const back = coerceHealth("mistral", JSON.parse(JSON.stringify(second)));
+    expect(back.incident?.escalation?.previous).toHaveLength(1);
+    expect(back.incident?.escalation?.previous?.[0].queueTaskId).toBe("task-a");
   });
 });
