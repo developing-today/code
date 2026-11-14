@@ -67,9 +67,7 @@ def fail(message):
 
 def _concepts(state, owner):
     concepts = state.get("concepts") if isinstance(state, dict) else None
-    if not isinstance(concepts, list) or not all(
-        isinstance(c, dict) for c in concepts
-    ):
+    if not isinstance(concepts, list) or not all(isinstance(c, dict) for c in concepts):
         fail(f"{owner}: concepts must be a list of objects")
     return concepts
 
@@ -233,7 +231,9 @@ def coverage(concepts, lines):
 
 def dependencies(state):
     if not isinstance(state, dict):
-        fail("Workflow state must be a JSON object: dependencies requires an object state")
+        fail(
+            "Workflow state must be a JSON object: dependencies requires an object state"
+        )
     concepts = _concepts(state, "workflow state")
     edges = _dependency_edges(state, "workflow state")
     if any(not isinstance(x.get("id"), str) for x in concepts):
@@ -752,8 +752,7 @@ def read_state(package):
     state = json.loads(matches[0])
     if not isinstance(state, dict):
         fail(
-            f"{package}: workflow state must be a JSON object "
-            "(mapping of state fields)"
+            f"{package}: workflow state must be a JSON object (mapping of state fields)"
         )
     if state.get("version") != 1:
         fail("Unsupported workflow state version")
@@ -771,9 +770,7 @@ def frontier(state):
         fail("workflow state: concepts entries require string id and status")
     finished = {c["id"] for c in concepts if c["status"] in COMPLETE}
     busy = {
-        c["id"]
-        for c in concepts
-        if c["status"] in ACTIVE or c["status"] in COMPLETE
+        c["id"] for c in concepts if c["status"] in ACTIVE or c["status"] in COMPLETE
     }
     blocked = {
         node: [p for p in prereqs if p not in finished]
@@ -781,18 +778,14 @@ def frontier(state):
     }
     return {
         "ready": sorted(
-            c["id"]
-            for c in concepts
-            if c["id"] not in busy and not blocked[c["id"]]
+            c["id"] for c in concepts if c["id"] not in busy and not blocked[c["id"]]
         ),
         "blocked": {
             key: value
             for key, value in blocked.items()
             if value and key not in finished
         },
-        "constraints": [
-            edge for edge in edges if edge.get("kind") != "requires"
-        ],
+        "constraints": [edge for edge in edges if edge.get("kind") != "requires"],
         "dimensions": {
             c["id"]: {
                 k: c.get(k, "unspecified")
@@ -826,9 +819,7 @@ def check_package(package, root, require_resolved=False):
         or not isinstance(transcript_record.get("path"), str)
         or not isinstance(transcript_record.get("sha256"), str)
     ):
-        fail(
-            f"{package}: transcript must be an object with string path and sha256"
-        )
+        fail(f"{package}: transcript must be an object with string path and sha256")
     _concepts(state, package)
     _dependency_edges(state, package)
     transcript = contained(package, state["transcript"]["path"])
@@ -893,10 +884,11 @@ def check_package(package, root, require_resolved=False):
             owners.append((owned, task["owner"]))
     resolutions = {}
     for item in items:
-        for block in RESOLUTION.findall(
-            unfenced(contained(package, item["path"]).read_text())
-        ):
+        document = contained(package, item["path"])
+        for block in RESOLUTION.findall(unfenced(document.read_text())):
             entry = json.loads(block)
+            if not isinstance(entry, dict):
+                fail(f"{document}: resolution block must be a JSON object")
             if entry.get("note") in resolutions:
                 fail("Duplicate note disposition")
             resolutions[entry.get("note")] = (item["id"], entry)
@@ -918,6 +910,8 @@ def check_package(package, root, require_resolved=False):
         if not found:
             fail(f"{path}: expected one immutable note marker")
         note = json.loads(found[1])
+        if not isinstance(note, dict):
+            fail(f"{path}: note marker must be a JSON object")
         body = content[found.end() :]
         if not body.startswith("\n\n") or hashlib.sha256(
             body[2:].encode()

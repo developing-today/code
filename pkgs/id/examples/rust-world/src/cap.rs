@@ -4,7 +4,7 @@
 //! replay, and routes host result events back to the capability that
 //! asked. See `examples/roc-world/ABI.md` for the wire protocol.
 
-use crate::json::{quote, Value};
+use crate::json::{Value, quote};
 
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct CapSession {

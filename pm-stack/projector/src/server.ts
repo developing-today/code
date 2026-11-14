@@ -51,6 +51,7 @@ async function publishFreshness(env: ServerEnv, input: FreshnessNoticeInput): Pr
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify(input),
+    signal: AbortSignal.timeout(10_000),
   });
   if (!response.ok) throw new Error(`freshness publisher returned ${response.status}`);
 }
@@ -125,7 +126,44 @@ function bearerAuthorized(req: Request, env: ServerEnv): boolean {
   return h === `Bearer ${token}`;
 }
 
-export async function handleRequest(req: Request, db: Client, env: ServerEnv): Promise<Response> {
+/**
+ * Optional dedicated DB clients (#9850). The projector's /health stalls
+ * came from sharing one libSQL client between the request handlers and
+ * the reconcile write flood: the client's requests serialize, so a
+ * health query queued behind thousands of reconcile upserts for
+ * minutes at a time while the process stayed alive. Production wiring
+ * (index.ts) passes a dedicated client for /health and one for the
+ * reconcile trigger, so neither waits on the other's traffic; tests
+ * and embedders that pass only `db` keep the previous behaviour.
+ */
+export interface ServerDeps {
+  healthDb?: Client;
+  reconcileDb?: Client;
+}
+
+/** /health's DB probe is bounded: a health answer later than this is a down answer. */
+export const HEALTH_DB_TIMEOUT_MS = 5_000;
+
+async function withTimeout<T>(work: Promise<T>, ms: number, label: string): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      work,
+      new Promise<never>((_resolve, reject) => {
+        timer = setTimeout(() => reject(new Error(label)), ms);
+      }),
+    ]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
+
+export async function handleRequest(
+  req: Request,
+  db: Client,
+  env: ServerEnv,
+  deps: ServerDeps = {},
+): Promise<Response> {
   const url = new URL(req.url);
   const path = url.pathname;
   const method = req.method;
@@ -133,8 +171,12 @@ export async function handleRequest(req: Request, db: Client, env: ServerEnv): P
   // -- health ---------------------------------------------------------------
   if (path === "/health" || path === "/api/health") {
     try {
-      const r = await db.execute(
-        "SELECT (SELECT COUNT(*) FROM pmp_items) AS items, (SELECT COUNT(*) FROM pmp_comments) AS comments, (SELECT COUNT(*) FROM pmp_links) AS links",
+      const r = await withTimeout(
+        (deps.healthDb ?? db).execute(
+          "SELECT (SELECT COUNT(*) FROM pmp_items) AS items, (SELECT COUNT(*) FROM pmp_comments) AS comments, (SELECT COUNT(*) FROM pmp_links) AS links",
+        ),
+        HEALTH_DB_TIMEOUT_MS,
+        "health_db_timeout",
       );
       const row = r.rows[0] as unknown as Record<string, number>;
       return jsonResponse(200, { ok: true, ...row });
@@ -254,12 +296,7 @@ export async function handleRequest(req: Request, db: Client, env: ServerEnv): P
         return jsonResponse(400, { error: "invalid_json" });
       }
       const { subject, ref, relation = "relates", note, createdBy } = body ?? {};
-      if (
-        typeof subject !== "string" ||
-        subject.length === 0 ||
-        typeof ref !== "string" ||
-        !isStorableLinkRef(ref)
-      ) {
+      if (typeof subject !== "string" || subject.length === 0 || typeof ref !== "string" || !isStorableLinkRef(ref)) {
         return jsonResponse(400, { error: "subject (non-empty string) and ref (owner/repo#N) required" });
       }
       // Validate the whole body before any store call (#2974): relation is
@@ -365,14 +402,14 @@ export async function handleRequest(req: Request, db: Client, env: ServerEnv): P
   // -- reconcile trigger ------------------------------------------------------
   if (path === "/reconcile" && method === "POST") {
     if (!bearerAuthorized(req, env)) return jsonResponse(401, { error: "unauthorized" });
-    const result = await reconcileRepos(db, env);
+    const result = await reconcileRepos(deps.reconcileDb ?? db, env);
     return jsonResponse(200, result);
   }
 
   return jsonResponse(404, { error: "not_found" });
 }
 
-export function serve(db: Client, env: ServerEnv, port: number): Bun.Server {
+export function serve(db: Client, env: ServerEnv, port: number, deps: ServerDeps = {}): Bun.Server {
   return Bun.serve({
     port,
     hostname: env.HOSTNAME ?? "127.0.0.1",
@@ -387,7 +424,7 @@ export function serve(db: Client, env: ServerEnv, port: number): Bun.Server {
       // the poll itself was healthy (2026-11-01). Exempt just this
       // route from the idle timeout; every other route keeps 255s.
       if (new URL(req.url).pathname === "/reconcile") server.timeout(req, 0);
-      return handleRequest(req, db, env);
+      return handleRequest(req, db, env, deps);
     },
   });
 }

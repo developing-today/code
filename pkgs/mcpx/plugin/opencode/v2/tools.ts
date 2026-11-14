@@ -55,7 +55,7 @@ import {
   type Discovery,
   type DiscoverOptions,
   type Target,
-} from "../mcpx/daemon.ts";
+} from "../../core/daemon.ts";
 import type { Options } from "./options.ts";
 import { DAEMON_SELECT_ACTION, type PermissionAssertInput } from "./permission.ts";
 import { renderPickerMenu, runPickerSelection, type PickerScope } from "./picker.ts";

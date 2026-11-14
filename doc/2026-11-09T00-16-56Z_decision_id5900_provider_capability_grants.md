@@ -10,16 +10,16 @@
 
 ## Decision summary
 
-| Question | Decision |
-| --- | --- |
-| Grant shape | A signed, ID-native grant object binding capability + provider + consumer, with purpose, rate/volume bounds, sensitivity class, absolute expiry, and use limits as first-class fields (D1) |
-| Encoding | ID-native signed objects with UCAN-isomorphic attenuation semantics; no foreign token wire format in v1 (D1) |
-| Classes | Every capability is declared **observation** or **actuation** in the provider manifest; the class is part of the capability, never inferred at use time (D2) |
+| Question        | Decision                                                                                                                                                                                    |
+| --------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Grant shape     | A signed, ID-native grant object binding capability + provider + consumer, with purpose, rate/volume bounds, sensitivity class, absolute expiry, and use limits as first-class fields (D1)  |
+| Encoding        | ID-native signed objects with UCAN-isomorphic attenuation semantics; no foreign token wire format in v1 (D1)                                                                                |
+| Classes         | Every capability is declared **observation** or **actuation** in the provider manifest; the class is part of the capability, never inferred at use time (D2)                                |
 | Standing grants | Observation may be standing within expiry. Actuation is never ambient and never standing by default; standing actuation requires an explicit standing-grant record under D3 bounds (D2, D3) |
-| Approvals | Scaled by sensitivity class S0-S3: policy-auto, approve-once, per-grant + threshold confirm, per-use (D3) |
-| Delegation | Attenuate-only: subset of capabilities, narrower-or-equal bounds, earlier-or-equal expiry, never a higher sensitivity class (D4) |
-| Revocation | Ledger revocation is immediate wherever a live check happens; offline behaviour is exactly #5904 §5 (D4) |
-| Audit | Issuance, delegation, actuation use, and revocation are journaled with grant id and lineage; observation use is journaled where results are consumed (D4) |
+| Approvals       | Scaled by sensitivity class S0-S3: policy-auto, approve-once, per-grant + threshold confirm, per-use (D3)                                                                                   |
+| Delegation      | Attenuate-only: subset of capabilities, narrower-or-equal bounds, earlier-or-equal expiry, never a higher sensitivity class (D4)                                                            |
+| Revocation      | Ledger revocation is immediate wherever a live check happens; offline behaviour is exactly #5904 §5 (D4)                                                                                    |
+| Audit           | Issuance, delegation, actuation use, and revocation are journaled with grant id and lineage; observation use is journaled where results are consumed (D4)                                   |
 
 ## 1. What the parent already fixed (not re-decided here)
 
@@ -46,30 +46,30 @@ A grant is a signed object in ID's native object model (the same signing and wri
 - `max_uses` — optional use-count limit; required for S3.
 - `standing` — boolean, with the D2/D3 restrictions on when it may be true.
 
-**Encoding verdict:** ID-native signed objects, with attenuation semantics isomorphic to UCAN (a delegation chain of signed, narrowing caveats, verifiable offline). Rejected for v1: adopting UCAN/Biscuit/macaroon wire formats directly — the survey (#5931 §6.4) shows the *pattern* is what matters and it is multiply-implemented; importing a foreign format buys a second object model, a second signature stack, and a mapping layer to our manifests, for interop nobody consumes yet. The isomorphism is deliberate: if a future interop decision needs UCAN on the wire, grants translate field-for-field instead of being redesigned. Also rejected: continuing with ledger-only grants (the `world_caps` ACL shape) as the general model — a ledger entry cannot be delegated, cannot be verified offline by a bridge device, and cannot carry bounds or lineage; the ledger survives in its proper role, the ceiling (§5).
+**Encoding verdict:** ID-native signed objects, with attenuation semantics isomorphic to UCAN (a delegation chain of signed, narrowing caveats, verifiable offline). Rejected for v1: adopting UCAN/Biscuit/macaroon wire formats directly — the survey (#5931 §6.4) shows the _pattern_ is what matters and it is multiply-implemented; importing a foreign format buys a second object model, a second signature stack, and a mapping layer to our manifests, for interop nobody consumes yet. The isomorphism is deliberate: if a future interop decision needs UCAN on the wire, grants translate field-for-field instead of being redesigned. Also rejected: continuing with ledger-only grants (the `world_caps` ACL shape) as the general model — a ledger entry cannot be delegated, cannot be verified offline by a bridge device, and cannot carry bounds or lineage; the ledger survives in its proper role, the ceiling (§5).
 
 ## D2 — Observation vs actuation, and the no-ambient rule
 
 - The provider manifest declares each capability as **observation** (its use returns data and changes nothing outside the journal) or **actuation** (its use changes state outside the journal — an output, a write, a physical effect), reusing #5904 §3's definitions verbatim. The class is a property of the capability in the manifest; neither the consumer nor a grant can reclassify it.
 - **Observation grants may be standing**: issued once, presented or resolved by reference on each use, valid until expiry or revocation. Standing observation is the normal case (sensor feeds, state reads).
-- **Actuation is never ambient.** No actuation happens because a session is open, a device is paired, an OS permission exists, or a grant was approved at some earlier point and forgotten. Every actuation request presents its grant at use time, the grant is validated at use time (signature, expiry, bounds, revocation, ceiling intersection), and the use is journaled. Ambient authority — authority that flows from *context* rather than from a presented grant — is the failure mode this rule exists to exclude; the two-gate composition of #5903 (an `id` grant **and** a platform permission must both pass) is a tightening of this rule, never a substitute for the grant.
+- **Actuation is never ambient.** No actuation happens because a session is open, a device is paired, an OS permission exists, or a grant was approved at some earlier point and forgotten. Every actuation request presents its grant at use time, the grant is validated at use time (signature, expiry, bounds, revocation, ceiling intersection), and the use is journaled. Ambient authority — authority that flows from _context_ rather than from a presented grant — is the failure mode this rule exists to exclude; the two-gate composition of #5903 (an `id` grant **and** a platform permission must both pass) is a tightening of this rule, never a substitute for the grant.
 - **Actuation grants are not standing by default.** The default actuation grant is purpose-bound and short-lived (D3). A **standing actuation grant** exists only as an explicit record with the `standing` flag set at issuance under the D3 approval for its class, its own (tighter) bounds, and a mandatory expiry — there is no indefinite standing actuation at any class.
 
 ## D3 — Sensitivity classes and approval flows
 
 The manifest assigns every capability a sensitivity class; approval requirements scale with it and are properties of issuance, not of individual requests (except S3).
 
-| Class | Meaning | Examples | Approval flow | Standing | Expiry / uses |
-| --- | --- | --- | --- | --- | --- |
-| **S0** — public observation | data the provider publishes to any consumer | public presence, coarse weather | policy-auto: issuance is a configuration fact, no per-grant human approval | yes | long expiry permitted |
-| **S1** — private observation | data about an owner's world/devices | sensor history, device state | approve-once by the grantor (owner or their delegate) at issuance | yes | expiry required |
-| **S2** — reversible actuation | effects that can be undone or expire on their own | set a mode, post a message, queue a job | per-grant approval at issuance; per-use confirmation when a single use exceeds a manifest-declared volume threshold | only as an explicit standing record (D2) | expiry required; bounds required |
-| **S3** — consequential actuation | irreversible, physical-safety, financial, or outward-facing effects | unlock, dispense, send externally, delete | **per-use approval**: every use is approved by the grantor at use time; the grant authorises asking, not doing | **never** | shortest expiry; `max_uses` required; purpose required |
+| Class                            | Meaning                                                             | Examples                                  | Approval flow                                                                                                       | Standing                                 | Expiry / uses                                          |
+| -------------------------------- | ------------------------------------------------------------------- | ----------------------------------------- | ------------------------------------------------------------------------------------------------------------------- | ---------------------------------------- | ------------------------------------------------------ |
+| **S0** — public observation      | data the provider publishes to any consumer                         | public presence, coarse weather           | policy-auto: issuance is a configuration fact, no per-grant human approval                                          | yes                                      | long expiry permitted                                  |
+| **S1** — private observation     | data about an owner's world/devices                                 | sensor history, device state              | approve-once by the grantor (owner or their delegate) at issuance                                                   | yes                                      | expiry required                                        |
+| **S2** — reversible actuation    | effects that can be undone or expire on their own                   | set a mode, post a message, queue a job   | per-grant approval at issuance; per-use confirmation when a single use exceeds a manifest-declared volume threshold | only as an explicit standing record (D2) | expiry required; bounds required                       |
+| **S3** — consequential actuation | irreversible, physical-safety, financial, or outward-facing effects | unlock, dispense, send externally, delete | **per-use approval**: every use is approved by the grantor at use time; the grant authorises asking, not doing      | **never**                                | shortest expiry; `max_uses` required; purpose required |
 
 Rules that cut across the table:
 
 - Approval is by the grantor (the owner of the provider side, or a holder of a delegation whose scope explicitly includes approving — D4). A consumer can never approve its own grant or its own use.
-- An approval flow may be *stricter* than the table for a given world or provider (a world may require per-use approval for an S2 capability); it may never be looser. Loosening a class is a manifest change, reviewed as such.
+- An approval flow may be _stricter_ than the table for a given world or provider (a world may require per-use approval for an S2 capability); it may never be looser. Loosening a class is a manifest change, reviewed as such.
 - Denied or expired approval is a refusal with a stable code, journaled like any other refusal; it is never retried silently under a new identity (#5904 §3's rule for expired requests applies unchanged).
 
 ## D4 — Issuance, attenuation/delegation, revocation, audit
@@ -83,13 +83,13 @@ Rules that cut across the table:
 
 1. **Three-way intersection.** Effective authority at any use = grant scope ∩ provider ceiling (what the provider offers at all, per its manifest and the world's `world_caps` ceiling) ∩ consumer ceiling (what the world permits its consumers to hold). Removing a capability from a ceiling takes effect across every outstanding grant at once, without reissuing them (attenuated-capabilities rule, unchanged).
 2. **Check at use, not at issuance only.** Ceilings move; grants are checked against the current ceilings on every use, alongside signature, expiry, bounds consumption, and revocation state.
-3. **No layer grants what another forbids.** An OS/runtime permission (#5903 two-gate), a platform registry state, a session's presence, or a transport's authentication can each only *subtract* from the intersection or pass it through — never add to it.
+3. **No layer grants what another forbids.** An OS/runtime permission (#5903 two-gate), a platform registry state, a session's presence, or a transport's authentication can each only _subtract_ from the intersection or pass it through — never add to it.
 4. **Refusals are stable and legible.** Every refusal path above (expired, revoked, over bounds, over ceiling, class approval missing, ambient actuation attempted) maps to a stable F11.13 refusal code and a journal entry; a consumer can always distinguish "ask for a grant" from "ask again later" from "never".
 
 ## 6. Boundaries with the sibling decisions (consumed, not duplicated)
 
 - **#5903 (embedded).** The `provider` binding of D1 is to provider identity + instance/manifest version generally; the #5903 rule that engine providers are session-bound and grants bind to the session instance by default is the embedded instantiation of that binding, and stands. The #5903 phone rule — an `id` grant and an Android runtime permission are two gates, both must pass, intersection semantics — is an instance of invariant 5.3 and is not restated as a new mechanism here. Nothing in this record changes any #5903 verdict.
-- **#5904 (offline/degraded).** Grant *shape* is decided here; grant *behaviour while unreachable* belongs to #5904 and is consumed verbatim: actuation is never queued for later execution except where manifest and grant both explicitly declare store-and-forward; cached grant snapshots authorise observation only, until the earlier of grant expiry and the manifest cache TTL, never actuation; expiry is absolute and use never renews it. The expiry and bounds fields #5904 §5 assumed are the `expires_at` and `bounds` fields of D1 — that dependency is now discharged, with no change to #5904 semantics.
+- **#5904 (offline/degraded).** Grant _shape_ is decided here; grant _behaviour while unreachable_ belongs to #5904 and is consumed verbatim: actuation is never queued for later execution except where manifest and grant both explicitly declare store-and-forward; cached grant snapshots authorise observation only, until the earlier of grant expiry and the manifest cache TTL, never actuation; expiry is absolute and use never renews it. The expiry and bounds fields #5904 §5 assumed are the `expires_at` and `bounds` fields of D1 — that dependency is now discharged, with no change to #5904 semantics.
 - **#5898 / #5899 / #5905 (declaration, discovery & negotiation, security model)** remain the decisions of their owning splits; this record assumes declarations carry the class/bounds vocabulary of D1-D3 for #5898 to spell, and takes no position on the #5905 threat model beyond the invariants in §5.
 
 ## Alternatives rejected (summary)

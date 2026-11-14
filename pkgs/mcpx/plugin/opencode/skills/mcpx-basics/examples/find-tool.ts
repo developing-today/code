@@ -15,5 +15,9 @@ const hits = search(words, 5);
 if (hits.length === 0) {
   console.log(`no tool matches ${JSON.stringify(words)}; namespaces: ${Object.keys(tools).join(", ")}`);
 } else {
-  for (const h of hits) console.log(describe(`${h.namespace}.${h.tool}`));
+  // search() returns tools and recipes (CODE-36): a recipe has no
+  // namespace/tool to describe, so name it instead.
+  for (const h of hits) {
+    console.log(h.kind === "recipe" ? `recipe: ${h.name}` : describe(`${h.namespace}.${h.tool}`));
+  }
 }

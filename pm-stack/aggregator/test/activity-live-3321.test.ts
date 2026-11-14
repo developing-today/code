@@ -101,7 +101,11 @@ function installFetch(state: HarnessState): () => void {
 
 describe("live kaneo activity (#3321, PR #5141 codex)", () => {
   test("complete board snapshots publish a stable payload-free freshness invalidation", async () => {
-    const state: HarnessState = { cardStatus: { p1: "in-progress", p2: "in-progress" }, failProjects: new Set(), failAll: false };
+    const state: HarnessState = {
+      cardStatus: { p1: "in-progress", p2: "in-progress" },
+      failProjects: new Set(),
+      failAll: false,
+    };
     const restore = installFetch(state);
     const notices: FreshnessInput[] = [];
     try {

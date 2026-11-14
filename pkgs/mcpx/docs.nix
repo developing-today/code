@@ -15,9 +15,34 @@
   lib,
   runCommand,
   mdbook,
+  buildGo127Module,
   siteUrl ? "/",
 }:
 let
+  # The renderer only uses the Go standard library. Build the small tool
+  # independently of mcpx's runtime dependencies so the book build stays
+  # offline and does not pull the full application into its closure.
+  docsHistory = buildGo127Module {
+    pname = "docs-history";
+    version = "0.0.0";
+    src = lib.fileset.toSource {
+      root = ./.;
+      fileset = lib.fileset.unions [
+        ./go.mod
+        ./go.sum
+        ./tools/docs-history
+      ];
+    };
+    vendorHash = null;
+    # This module is a stdlib-only subset of a larger repository whose
+    # vendor directory is intentionally not in src.
+    proxyVendor = true;
+    subPackages = [ "tools/docs-history" ];
+    env.CGO_ENABLED = "0";
+    # This stdlib-only package must not fetch the unrelated mcpx dependencies.
+    env.GOPROXY = "off";
+  };
+
   # Only the book inputs enter the store: book.toml plus the docs tree.
   # The Go sources next to them are not book content and stay out.
   src = lib.fileset.toSource {
@@ -30,7 +55,10 @@ let
 in
 runCommand "mcpx-docs"
   {
-    nativeBuildInputs = [ mdbook ];
+    nativeBuildInputs = [
+      mdbook
+      docsHistory
+    ];
     meta = {
       description = "mcpx documentation book (mdBook rendering of pkgs/mcpx/docs)";
       homepage = "https://github.com/developing-today/code";

@@ -14,7 +14,7 @@
 - **Inputs cited:**
   - [#5900](https://github.com/developing-today/code/issues/5900)
     (capability grants for providers) — still open. This record decides
-    only the *offline semantics* of grants (caching and expiry, §5); grant
+    only the _offline semantics_ of grants (caching and expiry, §5); grant
     scoping, sensitivity classes, and approval flows remain #5900's to
     settle, and the expiry fields decided here ride on whatever grant
     shape #5900 lands.
@@ -38,15 +38,15 @@
 
 ## Decision summary
 
-| Question | Decision |
-| --- | --- |
-| Presence states | Three — `online`, `degraded`, `offline` — derived from heartbeat/deadline signals (§2), never from a single transport error |
-| Who buffers | The **provider side only**, and only observation data, within manifest bounds (§4). The host never queues requests for an unreachable provider |
+| Question                    | Decision                                                                                                                                                                                                                               |
+| --------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Presence states             | Three — `online`, `degraded`, `offline` — derived from heartbeat/deadline signals (§2), never from a single transport error                                                                                                            |
+| Who buffers                 | The **provider side only**, and only observation data, within manifest bounds (§4). The host never queues requests for an unreachable provider                                                                                         |
 | Actuation while unreachable | **Never queued for later execution.** An actuation that cannot be delivered inside its deadline fails `provider_unavailable`; store-and-forward actuation exists only where the manifest and the grant both explicitly declare it (§3) |
-| Backfill | Provider sequence-numbered; gaps are delivered as explicit gap markers, never silently filled or interpolated (§4) |
-| Cached grants | A provider may act on a cached grant snapshot only for observation, only until the earlier of grant expiry and the manifest cache TTL, and **never for actuation** (§5) |
-| Degraded operation | A *negotiated* reduced agreement (lower rate, coarser data) declared in the manifest's degraded profile — never a silent quality drop (§6) |
-| Discovery while offline | Stale marking and tombstone exactly as the parent's discovery rules; staleness is metadata, it does not extend any grant or deadline (§2) |
+| Backfill                    | Provider sequence-numbered; gaps are delivered as explicit gap markers, never silently filled or interpolated (§4)                                                                                                                     |
+| Cached grants               | A provider may act on a cached grant snapshot only for observation, only until the earlier of grant expiry and the manifest cache TTL, and **never for actuation** (§5)                                                                |
+| Degraded operation          | A _negotiated_ reduced agreement (lower rate, coarser data) declared in the manifest's degraded profile — never a silent quality drop (§6)                                                                                             |
+| Discovery while offline     | Stale marking and tombstone exactly as the parent's discovery rules; staleness is metadata, it does not extend any grant or deadline (§2)                                                                                              |
 
 ## 1. What the parent already fixed (not re-decided here)
 
@@ -76,7 +76,7 @@ From #5686 / F13.7, taken as given:
   inside their deadlines. **Offline:** no heartbeat for 3 intervals, or
   the session ended (tab closed, game quit, device asleep) — the parent's
   tombstone path.
-- Presence is a property of the *session advertisement*, which is
+- Presence is a property of the _session advertisement_, which is
   ephemeral (§1.4). It is never journaled and never, by itself, changes a
   grant, a ceiling, or a deadline.
 - A single failed request or transport error changes nothing: presence
@@ -90,11 +90,11 @@ Actuation = any capability whose use changes state outside the journal
 (an output, a write, a physical effect). Observation = a bounded read or
 a sensor sample whose result is data for `update`.
 
-| Class | Examples | Observation while offline | Actuation while offline |
-| --- | --- | --- | --- |
-| Bridge / store-and-forward | ESP32 over MQTT | Provider buffers samples (§4); delivered as backfill on wake | Refused at the deadline, **unless** manifest declares `offline: queueable` *and* the grant names queued actuation; then the request rides the bridge with its original deadline and is dropped, audited, if the deadline passes before delivery |
-| Session-bound interactive | terminal, web, smartphone | No provider-side buffer exists (the session is gone); consumer sees `provider_unavailable`; subscriptions resume at rejoin with a gap marker (§4) | Refused at the deadline. Never queued — there is no store the request could honestly wait in |
-| In-process | Bevy / engine plugin | Provider and consumer share a process; "offline" means the plugin is disabled or the engine paused — samples are simply not produced; gap marker on resume | Refused immediately; the request's deadline machinery is not involved |
+| Class                      | Examples                  | Observation while offline                                                                                                                                  | Actuation while offline                                                                                                                                                                                                                         |
+| -------------------------- | ------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Bridge / store-and-forward | ESP32 over MQTT           | Provider buffers samples (§4); delivered as backfill on wake                                                                                               | Refused at the deadline, **unless** manifest declares `offline: queueable` _and_ the grant names queued actuation; then the request rides the bridge with its original deadline and is dropped, audited, if the deadline passes before delivery |
+| Session-bound interactive  | terminal, web, smartphone | No provider-side buffer exists (the session is gone); consumer sees `provider_unavailable`; subscriptions resume at rejoin with a gap marker (§4)          | Refused at the deadline. Never queued — there is no store the request could honestly wait in                                                                                                                                                    |
+| In-process                 | Bevy / engine plugin      | Provider and consumer share a process; "offline" means the plugin is disabled or the engine paused — samples are simply not produced; gap marker on resume | Refused immediately; the request's deadline machinery is not involved                                                                                                                                                                           |
 
 The deadline is part of the request (F13.7 wire sketch: `deadline_ms`).
 Offline handling may never extend it. A request that expires undelivered
@@ -158,7 +158,7 @@ against the live host and cache nothing.
 - Degraded is a **negotiated** state, not a failure the consumer
   discovers from bad data. A provider that cannot meet the negotiated
   agreement (rate, resolution, freshness) offers its manifest's
-  **degraded profile** — the reduced rate/quality it *can* hold —
+  **degraded profile** — the reduced rate/quality it _can_ hold —
   through the parent's negotiation path: partial agreement or a clear
   refusal. Silent quality reduction under an unchanged agreement is a
   protocol violation.
@@ -196,7 +196,7 @@ against the live host and cache nothing.
   store-and-forward layer for the one class that needs it.
 - **Queue all actuation on the bridge.** Rejected: a physical effect
   executed minutes after its context vanished is the failure this
-  record exists to prevent; opt-in per manifest *and* per grant keeps
+  record exists to prevent; opt-in per manifest _and_ per grant keeps
   it possible only where a design has explicitly accepted it.
 - **Sliding grant-cache expiry (use renews).** Rejected: a busy device
   would never let a cached grant lapse, which is a revocation bypass

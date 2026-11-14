@@ -12,6 +12,8 @@ import (
 	"path/filepath"
 	"strings"
 	"syscall"
+
+	"github.com/developing-today/code/pkgs/mcpx/internal/homeutil"
 )
 
 // Paths resolves the on-disk locations mcpx uses.
@@ -34,17 +36,31 @@ func firstNonEmpty(v ...string) string {
 // ResolvePaths returns XDG-correct locations, honouring MCPX_STATE_DIR and
 // MCPX_CACHE_DIR for tests and sandboxes.
 func ResolvePaths() Paths {
-	home, _ := os.UserHomeDir()
+	// Home-resolution contract (issues #5762 / #5763): the home
+	// candidate exists only for a non-empty HOME. The old
+	// discarded-error join turned a missing HOME into the relative
+	// path ".local/state/mcpx" - a CWD substitute directory.
+	homeState, homeCache := "", ""
+	if home, err := homeutil.Home(); err == nil {
+		homeState = filepath.Join(home, ".local", "state", "mcpx")
+		homeCache = filepath.Join(home, ".cache", "mcpx")
+	}
 	state := firstNonEmpty(
 		os.Getenv("MCPX_STATE_DIR"),
 		envJoin("XDG_STATE_HOME", "mcpx"),
-		filepath.Join(home, ".local", "state", "mcpx"),
+		homeState,
 	)
 	cache := firstNonEmpty(
 		os.Getenv("MCPX_CACHE_DIR"),
 		envJoin("XDG_CACHE_HOME", "mcpx"),
-		filepath.Join(home, ".cache", "mcpx"),
+		homeCache,
 	)
+	if state == "" || cache == "" {
+		// No override named a directory and HOME cannot either:
+		// fail loudly naming HOME instead of inventing one.
+		_, err := homeutil.Home()
+		panic(err)
+	}
 	return Paths{
 		State:  state,
 		Cache:  cache,
@@ -338,10 +354,9 @@ func ContentFingerprint(paths []string) string {
 // invocation can compute, which is what makes it usable as the place custom
 // state directories mirror their daemon records into (#278).
 func DefaultStateDir() string {
-	home, _ := os.UserHomeDir()
 	return firstNonEmpty(
 		envJoin("XDG_STATE_HOME", "mcpx"),
-		filepath.Join(home, ".local", "state", "mcpx"),
+		filepath.Join(homeutil.MustHome(), ".local", "state", "mcpx"),
 	)
 }
 

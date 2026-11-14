@@ -1,0 +1,58 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Bedside & Away Market Research Brief",
+  "type": "object",
+  "required": [
+    "schema",
+    "version",
+    "id",
+    "storeId",
+    "scope",
+    "createdAt",
+    "steering",
+    "policy",
+    "context",
+    "status",
+    "findings"
+  ],
+  "properties": {
+    "schema": { "const": "bedaway.market-research" },
+    "version": { "const": 1 },
+    "id": { "type": "string", "format": "uuid" },
+    "storeId": { "type": "string" },
+    "createdAt": { "type": "string", "format": "date-time" },
+    "author": { "type": "string" },
+    "scope": {
+      "type": "object",
+      "required": ["kind", "id", "label"],
+      "properties": {
+        "kind": { "enum": ["store", "category", "item", "report"] },
+        "id": { "type": ["string", "null"] },
+        "label": { "type": "string" }
+      }
+    },
+    "steering": { "type": "string" },
+    "policy": {
+      "type": "object",
+      "required": ["execution", "reviewRequired", "includeRelated", "includeComments", "includeHistory"],
+      "properties": {
+        "execution": { "const": "manual" },
+        "reviewRequired": { "const": true },
+        "includeRelated": { "type": "boolean" },
+        "includeComments": { "type": "boolean" },
+        "includeHistory": { "type": "boolean" }
+      }
+    },
+    "context": {
+      "type": "object",
+      "required": ["items", "comments", "history"],
+      "properties": {
+        "items": { "type": "array", "maxItems": 30, "items": { "type": "object" } },
+        "comments": { "type": "array", "maxItems": 20, "items": { "type": "object" } },
+        "history": { "type": "array", "maxItems": 20, "items": { "type": "object" } }
+      }
+    },
+    "status": { "enum": ["pending", "complete", "cancelled"] },
+    "findings": { "type": "string" }
+  }
+}
