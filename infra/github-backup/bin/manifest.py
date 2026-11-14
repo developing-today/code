@@ -9,7 +9,18 @@ its state. Together they rebuild the whole tree (see docs/RUNBOOK.md § DR).
 import json, os, subprocess, sys, time
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from ghb_common import load_config, backup_root, mirror_path, valid_mirror, disk_kb, load_plan, load_state, report_problems, atomic_write_text, save_json
+from ghb_common import (
+    load_config,
+    backup_root,
+    mirror_path,
+    valid_mirror,
+    disk_kb,
+    load_plan,
+    load_state,
+    report_problems,
+    atomic_write_text,
+    save_json,
+)
 
 
 def head_sha(path, branch=None):
@@ -70,9 +81,7 @@ def build(root=None):
     }
     # #3240: MANIFEST.json is the DR source of truth — atomic write
     # via ghb_common, never a truncating open("w").
-    save_json(
-        os.path.join(root, "MANIFEST.json"), manifest, indent=1, sort_keys=True
-    )
+    save_json(os.path.join(root, "MANIFEST.json"), manifest, indent=1, sort_keys=True)
     lines = [
         "# Fork families (git alternates pool)",
         "",

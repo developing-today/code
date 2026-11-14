@@ -189,5 +189,54 @@ class FetchMirrorsFailureStreakTests(unittest.TestCase):
             self.assertIn("timed out", log.lower())
 
 
+class FetchMirrorsLastFetchShapeTests(unittest.TestCase):
+    def test_wrong_shape_last_fetch_does_not_crash_the_loop(self):
+        # Oracle (#6821): a string last_fetch on one repo must not
+        # stop the daily fetch — the poisoned repo is fetched, the
+        # fresh repo coalesce-skips, state is rewritten, and the
+        # manifest is regenerated.
+        import time as time_mod
+
+        with tempfile.TemporaryDirectory(prefix="ghb-fetch-shape-") as root:
+            with open(os.path.join(root, "plan.json"), "w") as plan_file:
+                json.dump(
+                    [{"repo": "owner/poison"}, {"repo": "owner/fresh"}],
+                    plan_file,
+                )
+            initial_state = {
+                "owner/poison": {"last_fetch": "2026-11-01T00:00:00Z"},
+                "owner/fresh": {"last_fetch": time_mod.time()},
+            }
+            with open(os.path.join(root, "state.json"), "w") as state_file:
+                json.dump(initial_state, state_file)
+            success = SimpleNamespace(returncode=0, stdout="", stderr="")
+            with (
+                patch.object(fetch_mirrors, "load_config", return_value={}),
+                patch.object(fetch_mirrors, "backup_root", return_value=root),
+                patch.object(
+                    fetch_mirrors,
+                    "mirror_path",
+                    side_effect=lambda _root, repo: f"/mirror/{repo}",
+                ),
+                patch.object(fetch_mirrors, "valid_mirror", return_value=True),
+                patch.object(fetch_mirrors.manifest_mod, "build") as build_manifest,
+                patch.object(
+                    fetch_mirrors.subprocess, "run", return_value=success
+                ) as run,
+                contextlib.redirect_stdout(io.StringIO()),
+                contextlib.redirect_stderr(io.StringIO()) as err,
+            ):
+                exit_code = fetch_mirrors.main(["fetch_mirrors.py"])
+            self.assertEqual(exit_code, 0)
+            self.assertIn("last_fetch", err.getvalue())
+            self.assertEqual(run.call_count, 1)  # only the poisoned repo fetched
+            self.assertEqual(run.call_args_list[0].args[0][2], "/mirror/owner/poison")
+            build_manifest.assert_called_once_with(root)
+            with open(os.path.join(root, "state.json")) as state_file:
+                state = json.load(state_file)
+            self.assertIsInstance(state["owner/poison"]["last_fetch"], float)
+            self.assertIsInstance(state["owner/fresh"]["last_fetch"], float)
+
+
 if __name__ == "__main__":
     unittest.main()

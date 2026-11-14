@@ -10,6 +10,7 @@ rec {
         hosts = import ./nixos/hosts inputs; # inputs.host?
         configurations = lib.make-nixos-configurations hosts;
         vm-configurations = lib.make-vm-configurations hosts;
+        vmGuests = import ./nixos/vm-guests; # #5772 guest registry + carve-out list
         unattended-installer-configurations = lib.make-unattended-installer-configurations configurations;
         nixosConfigurations = lib.merge [
           configurations
@@ -137,6 +138,15 @@ rec {
       url = "github:edolstra/flake-compat"; # ?shallow=1
       flake = false;
     };
+    crane = {
+      # Splits Rust dependency compilation out of package builds
+      # (craneLib.buildDepsOnly -> cargoArtifacts) so a workspace
+      # source change reuses the dependency layer instead of
+      # recompiling every registry crate (code#8392). Same rev the
+      # lock graph already carries via rust-flake; pkgs/atlas-search's
+      # package flake pins the same rev.
+      url = "github:ipetkov/crane/01bc1d404a51a0a07e9d8759cd50a7903e218c82";
+    };
     waybar = {
       # TODO: use this?
       url = "github:Alexays/Waybar"; # ?shallow=1";
@@ -180,7 +190,6 @@ rec {
       #inputs.nixpkgs.follows = "nixpkgs";
       inputs.nixpkgs.follows = "nixpkgs-unstable";
       inputs.flake-compat.follows = "flake-compat";
-      inputs.flake-utils.follows = "flake-utils";
     };
     nixvim = {
       # url = "github:nix-community/nixvim"; # ?shallow=1";
@@ -210,8 +219,6 @@ rec {
       # TODO: revert to nixpkgs, relates to 26 breaking changings, either impermanence/nix-sops conflict with systemd-mounts change or the breaking wireless hardening changes
       #inputs.nixpkgs.follows = "nixpkgs";
       inputs.nixpkgs.follows = "nixpkgs-unstable";
-      inputs.flake-utils.follows = "flake-utils";
-      inputs.pre-commit-hooks.follows = "pre-commit-hooks";
     };
     pre-commit-hooks = {
       # TODO: use this?
@@ -343,7 +350,6 @@ rec {
       url = "github:nix-community/bun2nix";
       inputs = {
         flake-parts.follows = "id-flake-parts";
-        import-tree.follows = "id-import-tree";
         nixpkgs.follows = "id-nixpkgs";
         systems.follows = "id-systems";
       };

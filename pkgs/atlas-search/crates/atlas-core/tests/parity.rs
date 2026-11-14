@@ -12,6 +12,15 @@
 //! chunk 6 (local-only) is nearly as close — both must be absent
 //! at the default ceiling (filter-before-rank), and chunk 5 must
 //! surface at vector rank 1 under a secret-bearing ceiling.
+//!
+//! Intentional deviation (code#5375, Gate B / code#5356): the Python
+//! builds topics/projects filters as unescaped `LIKE ?` patterns, so
+//! `%`/`_` act as wildcards and a `"` crosses JSON element boundaries.
+//! atlas-core appends ` ESCAPE '\'` to those clauses and escapes the
+//! pattern. For ordinary values (the recorded cases) the params are
+//! identical; only the SQL text differs by that suffix, which
+//! `assert_stmts_eq` normalizes away. The Python is deliberately left
+//! unchanged (out of scope of #5375) and carries the same bug.
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -248,7 +257,8 @@ fn assert_stmts_eq(got: &[Stmt], recorded: &Json, ctx: &str) {
     let recorded = recorded.as_array().unwrap();
     assert_eq!(got.len(), recorded.len(), "{ctx}: statement count");
     for (i, (g, r)) in got.iter().zip(recorded.iter()).enumerate() {
-        assert_eq!(g.sql, r["sql"].as_str().unwrap(), "{ctx}: stmt {i} sql");
+        let sql = g.sql.replace(" LIKE ? ESCAPE '\\'", " LIKE ?");
+        assert_eq!(sql, r["sql"].as_str().unwrap(), "{ctx}: stmt {i} sql");
         assert_eq!(
             g.args,
             json_params_to_values(&r["params"]),

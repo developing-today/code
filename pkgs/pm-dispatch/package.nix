@@ -29,7 +29,7 @@ let
 in
 stdenvNoCC.mkDerivation {
   pname = "pm-dispatch";
-  version = manifest.version;
+  inherit (manifest) version;
   inherit src;
 
   nativeBuildInputs = [ makeWrapper ];

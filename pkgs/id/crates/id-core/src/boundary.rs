@@ -253,12 +253,36 @@ pub enum DeclarationError {
 
 /// A versioned, content-addressed boundary declaration (§2.3). Immutable
 /// once built: every change is a new version with a new id.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 pub struct BoundaryDeclaration {
     /// The content-addressed id, derived from every other field.
     pub id: DeclarationId,
     /// The declaration body the id commits to.
     pub body: BoundaryDeclarationBody,
+}
+
+#[derive(Deserialize)]
+struct BoundaryDeclarationWire {
+    id: DeclarationId,
+    body: BoundaryDeclarationBody,
+}
+
+impl<'de> Deserialize<'de> for BoundaryDeclaration {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        use serde::de::Error;
+
+        let wire = BoundaryDeclarationWire::deserialize(deserializer)?;
+        let declaration = Self::new(wire.body).map_err(D::Error::custom)?;
+        if declaration.id != wire.id {
+            return Err(D::Error::custom(
+                "boundary declaration id does not match its canonical body hash",
+            ));
+        }
+        Ok(declaration)
+    }
 }
 
 impl Default for BoundaryDeclaration {
@@ -597,6 +621,51 @@ mod tests {
     }
 
     #[test]
+    fn serde_round_trip_preserves_the_content_addressed_declaration() {
+        // Oracle: every accepted declaration's id equals the canonical hash
+        // of its body, and valid declarations preserve both fields on round-trip.
+        let declaration = server("s", true, &[EnforcementPoint::AccountCreation]);
+        let encoded = serde_json::to_vec(&declaration).expect("serialize declaration");
+        let decoded: BoundaryDeclaration =
+            serde_json::from_slice(&encoded).expect("deserialize declaration");
+
+        assert_eq!(decoded, declaration);
+        assert_eq!(decoded.id, declaration_id(&decoded.body));
+    }
+
+    #[test]
+    fn serde_rejects_a_changed_body_under_the_old_id() {
+        // Oracle: every accepted declaration's id equals the canonical hash
+        // of its body, so changing any committed field under the old id fails.
+        let declaration = server("s", true, &[EnforcementPoint::AccountCreation]);
+        let mut encoded = serde_json::to_value(&declaration).expect("serialize declaration");
+        encoded["body"]["failure"] = serde_json::json!("warn");
+
+        assert!(serde_json::from_value::<BoundaryDeclaration>(encoded).is_err());
+    }
+
+    #[test]
+    fn serde_rejects_a_mismatched_id_for_an_unchanged_body() {
+        // Oracle: every accepted declaration's id equals the canonical hash
+        // of its body, independently of how the mismatch was introduced.
+        let declaration = server("s", true, &[EnforcementPoint::AccountCreation]);
+        let mut encoded = serde_json::to_value(&declaration).expect("serialize declaration");
+        encoded["id"][0] = serde_json::json!(encoded["id"][0].as_u64().unwrap() ^ 1);
+
+        assert!(serde_json::from_value::<BoundaryDeclaration>(encoded).is_err());
+    }
+
+    #[test]
+    fn serde_rejects_a_body_the_constructor_rejects() {
+        // Oracle: deserialization accepts only bodies accepted by `new()`.
+        let declaration = server("s", false, &[]);
+        let mut encoded = serde_json::to_value(&declaration).expect("serialize declaration");
+        encoded["body"]["version"] = serde_json::json!(0);
+
+        assert!(serde_json::from_value::<BoundaryDeclaration>(encoded).is_err());
+    }
+
+    #[test]
     fn content_addressed_id_changes_with_any_field() {
         let base = server("s", true, &[EnforcementPoint::AccountCreation]);
         let mut changed = base.body.clone();
@@ -741,6 +810,258 @@ mod tests {
         let none = effective(None, None, None).expect("empty composition is off");
         assert_eq!(none.capability, None);
         assert!(none.enforcement.is_empty());
+    }
+
+    mod serde_property {
+        use super::*;
+        use proptest::prelude::*;
+
+        fn scope_strategy() -> impl Strategy<Value = ScopeRef> {
+            (
+                0..=2u8,
+                prop::string::string_regex("[a-z][a-z0-9-]{0,7}").expect("static regex"),
+            )
+                .prop_map(|(kind, id)| match kind {
+                    0 => ScopeRef::Server(id),
+                    1 => ScopeRef::World(id),
+                    _ => ScopeRef::Account(id),
+                })
+        }
+
+        fn enforcement_strategy() -> impl Strategy<Value = BTreeSet<EnforcementPoint>> {
+            prop::collection::vec(
+                prop::sample::select(vec![
+                    EnforcementPoint::AccountCreation,
+                    EnforcementPoint::Login,
+                    EnforcementPoint::WorldMembership,
+                    EnforcementPoint::BlobStorage,
+                    EnforcementPoint::BridgeFederation,
+                    EnforcementPoint::RelayTransit,
+                    EnforcementPoint::CapabilityGrant,
+                ]),
+                0..=7,
+            )
+            .prop_map(|points| points.into_iter().collect())
+        }
+
+        fn sources_strategy() -> impl Strategy<Value = BTreeSet<String>> {
+            prop::collection::vec(prop::sample::select(vec!["a", "b", "c"]), 0..=3)
+                .prop_map(|sources| sources.into_iter().map(str::to_string).collect())
+        }
+
+        fn data_ref_strategy() -> impl Strategy<Value = Option<ListVersionRef>> {
+            prop::option::of(
+                (
+                    prop::string::string_regex("[a-z][a-z0-9-]{0,7}").expect("static regex"),
+                    1..=1_000u64,
+                )
+                    .prop_map(|(id, version)| ListVersionRef { id, version }),
+            )
+        }
+
+        /// Generated bodies always satisfy the constructor rules: version
+        /// at least 1, non-empty identities, and an enabled body names at
+        /// least one enforcement point. The generated space covers every
+        /// capability, scope kind, subject class, assurance level and
+        /// failure behaviour, generated enforcement and source sets,
+        /// optional list references, and a range of versions.
+        fn valid_body_strategy() -> impl Strategy<Value = BoundaryDeclarationBody> {
+            (
+                prop::sample::select(vec![
+                    CapabilityKind::Residency,
+                    CapabilityKind::Citizenship,
+                    CapabilityKind::Sanctions,
+                    CapabilityKind::Network,
+                ]),
+                scope_strategy(),
+                prop::sample::select(vec![
+                    SubjectClass::User,
+                    SubjectClass::Org,
+                    SubjectClass::Server,
+                    SubjectClass::World,
+                ]),
+                prop::sample::select(vec![
+                    AssuranceLevel::SelfDeclared,
+                    AssuranceLevel::OrgAttested,
+                    AssuranceLevel::ProviderVerified,
+                ]),
+                sources_strategy(),
+                enforcement_strategy(),
+                prop::sample::select(vec![
+                    FailureBehaviour::Deny,
+                    FailureBehaviour::Warn,
+                    FailureBehaviour::StepUp,
+                    FailureBehaviour::Quarantine,
+                ]),
+                data_ref_strategy(),
+                any::<bool>(),
+                1..=1_000u64,
+                prop::string::string_regex("[a-z][a-z0-9-]{0,7}").expect("static regex"),
+                0..=1_000_000_000u64,
+            )
+                .prop_map(
+                    |(
+                        capability,
+                        scope,
+                        subject_class,
+                        assurance,
+                        sources,
+                        mut enforcement,
+                        failure,
+                        data_ref,
+                        enabled,
+                        version,
+                        declared_by,
+                        declared_at,
+                    )| {
+                        if enabled && enforcement.is_empty() {
+                            enforcement.insert(EnforcementPoint::AccountCreation);
+                        }
+                        BoundaryDeclarationBody {
+                            capability,
+                            scope,
+                            subject_class,
+                            evidence_req: EvidenceRequirement {
+                                minimum_assurance: assurance,
+                                accepted_sources: sources,
+                            },
+                            enforcement,
+                            failure,
+                            data_ref,
+                            enabled,
+                            version,
+                            declared_by: ActorId(declared_by),
+                            declared_at,
+                        }
+                    },
+                )
+        }
+
+        /// Change exactly one committed field of `original`.
+        fn mutated_body(
+            original: &BoundaryDeclarationBody,
+            mutation: u8,
+        ) -> BoundaryDeclarationBody {
+            let mut body = original.clone();
+            match mutation % 6 {
+                0 => {
+                    body.failure = match body.failure {
+                        FailureBehaviour::Deny => FailureBehaviour::Warn,
+                        _ => FailureBehaviour::Deny,
+                    };
+                }
+                1 => body.version += 1,
+                2 => body.enabled = !body.enabled,
+                3 => {
+                    body.scope = match &body.scope {
+                        ScopeRef::Server(id) => ScopeRef::Server(format!("{id}x")),
+                        ScopeRef::World(id) => ScopeRef::World(format!("{id}x")),
+                        ScopeRef::Account(id) => ScopeRef::Account(format!("{id}x")),
+                    };
+                }
+                4 => body.declared_at += 1,
+                _ => {
+                    body.data_ref = match &body.data_ref {
+                        None => Some(ListVersionRef {
+                            id: "list".into(),
+                            version: 1,
+                        }),
+                        Some(_) => None,
+                    };
+                }
+            }
+            body
+        }
+
+        /// Break exactly one constructor rule of .
+        fn invalid_body(
+            original: &BoundaryDeclarationBody,
+            mutation: u8,
+        ) -> BoundaryDeclarationBody {
+            let mut body = original.clone();
+            match mutation % 5 {
+                0 => body.version = 0,
+                1 => {
+                    body.enabled = true;
+                    body.enforcement.clear();
+                }
+                2 => body.scope = ScopeRef::Server(String::new()),
+                3 => body.declared_by = ActorId("  ".into()),
+                _ => {
+                    body.data_ref = Some(ListVersionRef {
+                        id: String::new(),
+                        version: 1,
+                    });
+                }
+            }
+            body
+        }
+
+        proptest! {
+            /// Oracle: every accepted declaration's id equals the canonical
+            /// hash of its body — so every generated valid declaration
+            /// survives a serde round-trip unchanged, id included.
+            #[test]
+            fn generated_declarations_round_trip_through_serde(body in valid_body_strategy()) {
+                let declaration = BoundaryDeclaration::new(body).expect("generated body is valid");
+                let encoded = serde_json::to_vec(&declaration).expect("serialize declaration");
+                let decoded: BoundaryDeclaration =
+                    serde_json::from_slice(&encoded).expect("deserialize declaration");
+                prop_assert_eq!(&decoded, &declaration);
+                prop_assert_eq!(decoded.id, declaration_id(&decoded.body));
+            }
+
+            /// Oracle: every accepted declaration's id equals the canonical
+            /// hash of its body, so a generated body changed in any committed
+            /// field is rejected when it arrives under the old id.
+            #[test]
+            fn deserialization_rejects_a_changed_body_under_the_old_id(
+                body in valid_body_strategy(),
+                mutation in 0..6u8,
+            ) {
+                let declaration = BoundaryDeclaration::new(body).expect("generated body is valid");
+                let changed = mutated_body(&declaration.body, mutation);
+                prop_assert_ne!(&changed, &declaration.body);
+                let mut encoded =
+                    serde_json::to_value(&declaration).expect("serialize declaration");
+                encoded["body"] = serde_json::to_value(&changed).expect("serialize changed body");
+                prop_assert!(serde_json::from_value::<BoundaryDeclaration>(encoded).is_err());
+            }
+
+            /// Oracle: every accepted declaration's id equals the canonical
+            /// hash of its body, so flipping any single id byte is rejected
+            /// for an unchanged body.
+            #[test]
+            fn deserialization_rejects_a_mismatched_id(
+                body in valid_body_strategy(),
+                byte in 0..32usize,
+            ) {
+                let declaration = BoundaryDeclaration::new(body).expect("generated body is valid");
+                let mut encoded =
+                    serde_json::to_value(&declaration).expect("serialize declaration");
+                let flipped = encoded["id"][byte].as_u64().expect("id byte") ^ 1;
+                encoded["id"][byte] = serde_json::json!(flipped);
+                prop_assert!(serde_json::from_value::<BoundaryDeclaration>(encoded).is_err());
+            }
+
+            /// Oracle: deserialization accepts only bodies `new()` accepts.
+            /// The supplied id here is the invalid body's own canonical
+            /// hash, so the rejection is the constructor's, not the id
+            /// check's.
+            #[test]
+            fn deserialization_rejects_constructor_invalid_bodies(
+                body in valid_body_strategy(),
+                mutation in 0..5u8,
+            ) {
+                let invalid = invalid_body(&body, mutation);
+                prop_assert!(BoundaryDeclaration::new(invalid.clone()).is_err());
+                let encoded = serde_json::json!({
+                    "id": declaration_id(&invalid),
+                    "body": invalid,
+                });
+                prop_assert!(serde_json::from_value::<BoundaryDeclaration>(encoded).is_err());
+            }
+        }
     }
 
     mod narrowing_property {

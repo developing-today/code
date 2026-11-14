@@ -18,10 +18,7 @@
  * request deadline. `showAll` (`?done=all`) deliberately restores the
  * full done strip, matching `/board?done=all`.
  */
-import {
-  applyBoardDonePolicy,
-  selectVisibleDoneCards,
-} from "./board-policy.ts";
+import { applyBoardDonePolicy, selectVisibleDoneCards } from "./board-policy.ts";
 import type { BoardItem, GhItem, RefKey } from "./model.ts";
 
 export interface BoardJsonBody {

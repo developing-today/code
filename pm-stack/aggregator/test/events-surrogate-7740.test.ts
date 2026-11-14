@@ -20,7 +20,13 @@ const loneHighAtEnd = (s: string) => {
 };
 const roundTrips = (s: string) => Buffer.from(s, "utf8").toString("utf8") === s;
 const at = new Date().toISOString();
-const base = { at, actor: "drew", kind: "action-applied", ref: "gh:developing-today/code#7740", summary: "did a thing" };
+const base = {
+  at,
+  actor: "drew",
+  kind: "action-applied",
+  ref: "gh:developing-today/code#7740",
+  summary: "did a thing",
+};
 // The writer shapes from the issue: raw slice at the cap, pair straddling.
 const writerSummary = ("x".repeat(499) + EMOJI + "y".repeat(50)).slice(0, 500);
 const writerActor = ("r".repeat(199) + EMOJI + "z".repeat(10)).slice(0, 200);

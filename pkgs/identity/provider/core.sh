@@ -373,7 +373,6 @@ parseHttpRequest() {
 
 }
 
-
 # resolve_static_path <request-path>
 #
 # Resolve a /static/... request path to the canonical filesystem path it

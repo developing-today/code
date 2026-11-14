@@ -342,12 +342,24 @@ class GenerateTest(unittest.TestCase):
                 gen.decode_pages(json.dumps([entry]), source="cap Y")
         # Control: well-formed fields, and absent html_url/fork,
         # pass exactly as before.
-        self.assertEqual(gen.decode_pages(json.dumps([repo("a/b", fork=True)])), [repo("a/b", fork=True)])
+        self.assertEqual(
+            gen.decode_pages(json.dumps([repo("a/b", fork=True)])),
+            [repo("a/b", fork=True)],
+        )
         self.assertEqual(gen.decode_pages(json.dumps([good])), [good])
 
     def test_newline_full_name_capture_fails_named_end_to_end(self) -> None:
         (self.dir / "org.json").write_text(
-            json.dumps(ORG + [{"full_name": "a/b\n  - name: evil/injected", "html_url": "https://github.com/a/b", "fork": False}])
+            json.dumps(
+                ORG
+                + [
+                    {
+                        "full_name": "a/b\n  - name: evil/injected",
+                        "html_url": "https://github.com/a/b",
+                        "fork": False,
+                    }
+                ]
+            )
         )
         proc = self.run_gen_raw()
         self.assert_wrong_shape_fails_named(proc)

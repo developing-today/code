@@ -146,6 +146,35 @@ func (t *askTable) beginRun(id, run, session string) *askCall {
 	return a
 }
 
+// attachRun associates an additional execution run with the call
+// registered under id: a declared script tool called through an ask
+// surface starts a fresh exec run, and the run's upstream calls join
+// through byRun, so the run must name the same owner or their
+// questions are never attributed to the caller's ask poll (Codex P2
+// on PR #8317). attachRunToRun is the same association one level
+// down, for a file-backed call made from inside a live run.
+func (t *askTable) attachRun(id, run string) bool {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	a, ok := t.byID[id]
+	if !ok || run == "" {
+		return false
+	}
+	t.byRun[run] = a
+	return true
+}
+
+func (t *askTable) attachRunToRun(parent, run string) bool {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	a, ok := t.byRun[parent]
+	if !ok || run == "" {
+		return false
+	}
+	t.byRun[run] = a
+	return true
+}
+
 // join records one in-flight upstream call on (server, key) as a member of
 // run, when that run is live. leave undoes exactly this entry. A call from no
 // live run registers nothing: the pool's in-flight count already sees it.
@@ -186,6 +215,14 @@ func (t *askTable) end(id string) {
 	if a.Run != "" {
 		delete(t.byRun, a.Run)
 	}
+	// Runs attached to this call after registration (declared script
+	// executions, and file-backed calls nested inside them) end with
+	// it too.
+	for run, owner := range t.byRun {
+		if owner == a {
+			delete(t.byRun, run)
+		}
+	}
 	// Every key, not just the call's own: a run's members may still be in
 	// flight after the script is gone (killed on timeout, say), and a
 	// question they raise must not be attributed to a call nobody polls.
@@ -208,6 +245,20 @@ func (t *askTable) get(id string) (*askCall, bool) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	a, ok := t.byID[id]
+	return a, ok
+}
+
+// forRun returns the ask call that owns the given exec run, if one is
+// registered: a run the call began (beginRun) or a run attached to it
+// afterwards (attachRun / attachRunToRun for a declared script tool
+// nested inside it).
+func (t *askTable) forRun(run string) (*askCall, bool) {
+	if run == "" {
+		return nil, false
+	}
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	a, ok := t.byRun[run]
 	return a, ok
 }
 
@@ -288,8 +339,54 @@ func (r *Registry) attach(ctx context.Context, server, key string, req elicit.Re
 	return a.ID, true
 }
 
+// attachSample records one of mcpx's own sampling questions -- a prompt
+// hook's model request, opened by the broker sampler in consumer.go --
+// against the interruptible call active on ctx, if any, and returns
+// whether it did.
+//
+// No (server, key) attribution is needed or possible here, unlike
+// attach: the context names the call itself, and a run's askCall
+// carries no server of its own. Without this, a sampling question a
+// prompt hook raised during an ask (kind: exec) sat only in the
+// broker, handleAskPoll never surfaced it to the host driving the
+// call, and the hook waited out its timeout instead of being answered
+// (Codex review, PR #9021).
+func (r *Registry) attachSample(ctx context.Context, req elicit.Request, params json.RawMessage) bool {
+	var a *askCall
+	if id, ok := ctx.Value(askCallKey{}).(string); ok && id != "" {
+		a, _ = r.asks.get(id)
+	}
+	if a == nil {
+		// No ask id on the context: the nested /v1/call path restores
+		// only the run id (X-Mcpx-Run, server.go), and runDeclaredScript
+		// associates a script-backed tool's fresh run with that parent
+		// run instead of stamping an ask id, so a prompt hook inside
+		// such a tool carries a run but no askCallKey. Resolve the
+		// owning call through the run before abandoning attachment,
+		// or its question is never exposed to the host driving the
+		// interruptible call and waits out its timeout (Codex review,
+		// PR #9021).
+		a, _ = r.asks.forRun(runFrom(ctx))
+	}
+	if a == nil {
+		return false
+	}
+	a.add(mcpserver.Question{
+		ID: req.ID, Method: "sampling/createMessage", Params: params,
+		Mode: string(req.Mode), Server: req.Server,
+	})
+	return true
+}
+
 // CallAsk runs an interruptible call and registers it for correlation.
 func (r *Registry) CallAsk(ctx context.Context, id, server, tool string, cc config.CallContext, args any) (json.RawMessage, error) {
+	// A mounted tool (#1933 slice 3) delegates to its home server
+	// through this same entry point, keeping the call's ask id.
+	if target, targetTool, merged, handled, err := r.mountCall(server, tool, cc, args); err != nil {
+		return nil, err
+	} else if handled {
+		return r.CallAsk(ctx, id, target, targetTool, cc, merged)
+	}
 	p, ok := r.Pool(server)
 	if !ok {
 		return nil, fmt.Errorf("unknown server or namespace %q", server)
@@ -299,10 +396,21 @@ func (r *Registry) CallAsk(ctx context.Context, id, server, tool string, cc conf
 	// between the two. The guard's own questions are mcpx's, not the
 	// server's, and are never attributed through the table.
 
-	rs, effTool, effArgs, err := r.resolveAndGuard(ctx, p, server, tool, cc, args)
+	rs, effTool, effArgs, script, err := r.resolveAndGuard(ctx, p, server, tool, cc, args)
 
 	if err != nil {
 		return nil, err
+	}
+	if script != nil {
+		// A script call registers exactly like an ordinary one, and
+		// carries the ask id on its context: runDeclaredScript reads
+		// it to associate the fresh exec run it starts with this
+		// call, so questions the script's upstream calls raise reach
+		// this caller's ask poll (Codex P2 on PR #8317).
+		r.beginAsk(id, server, rs.Key, cc.SessionID)
+		defer r.endAsk(id)
+		ctx = withRequestedCallTimeout(withAskCall(ctx, id))
+		return r.callScriptWithLedger(withParentSession(ctx, cc.ParentSessionID), p, server, effTool, script, effArgs, cc.SessionID, "ask")
 	}
 	r.beginAsk(id, server, rs.Key, cc.SessionID)
 	defer r.endAsk(id)
@@ -520,8 +628,20 @@ func (s *Server) runAsk(ctx context.Context, id string, cc config.CallContext, r
 	}
 	s.reg.asks.beginRun(id, run, opts.Session)
 	defer s.reg.endAsk(id)
+	// The call's id rides the run's context, as on the other ask
+	// paths: an in-process question the run raises -- a prompt hook's
+	// sampling request -- is attributed through it (Registry.attachSample),
+	// so the host driving this call can answer it from its ask poll
+	// (Codex review, PR #9021).
+	ctx = withAskCall(ctx, id)
 	start := time.Now()
-	res, err := s.ExecService().Run(ctx, execsvc.Request{Source: req.Source, Opts: opts, RunID: run, CallSettings: callSettingsHeaderValue(callSettingsFrom(ctx))}, nil)
+	// An ask with kind: exec runs the same hooks /v1/exec runs,
+	// config-declared prompt hooks included: resolve the model
+	// layer onto the service or they report no provider here
+	// (Codex review, PR #9021).
+	svc := s.ExecService()
+	s.modelLayerForExec(ctx, svc, opts.Session)
+	res, err := svc.Run(ctx, execsvc.Request{Source: req.Source, Opts: opts, RunID: run, CallSettings: callSettingsHeaderValue(callSettingsFrom(ctx))}, nil)
 	if err != nil && res == nil {
 		return nil, &tasks.Fault{Code: http.StatusBadRequest, Message: err.Error()}
 	}

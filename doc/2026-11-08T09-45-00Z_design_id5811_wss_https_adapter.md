@@ -8,7 +8,7 @@
   "id: design: Wire format & transport adapters — postcard schema, non-UDP
   carriers, relays/proxies", decomposition item 4. Programme epic:
   [#2056](https://github.com/developing-today/code/issues/2056).
-- Sibling designs this record is written *against* (see §1.3):
+- Sibling designs this record is written _against_ (see §1.3):
   [#5808](https://github.com/developing-today/code/issues/5808) (postcard
   wire schema v1), [#5809](https://github.com/developing-today/code/issues/5809)
   (versioning/negotiation), [#5810](https://github.com/developing-today/code/issues/5810)
@@ -19,7 +19,7 @@
   [#2036](https://github.com/developing-today/code/issues/2036) messaging
   semantics (`doc/2026-11-01_design_id2036.md`) and
   [#5791](https://github.com/developing-today/code/issues/5791) transport
-  negotiation & fallback *ordering*
+  negotiation & fallback _ordering_
   (`doc/2026-11-05T13-38-00Z_design_id5791_transport_negotiation.md`).
 - Evidence baseline: `origin/main` at `0a27a7f19f`, worktree
   `~/git/fleet/12897-5811-wss-https-adapter`, 2026-11-08. Verified at that
@@ -57,7 +57,7 @@ ID semantics; they only carry frames.**
 HTTP/HTTPS proxy`, the dumb-pipe broker trust model, the E2E boundary, and
 the per-peer/per-network negotiation state machine with failure
 classification. **This record decides what the WebSocket/WSS and HTTPS tiers
-*are* and what they cost — not when the client walks to them.** Candidate
+_are_ and what they cost — not when the client walks to them.** Candidate
 ordering, probing, memory, overrides and failure classification stay with
 #5791.
 
@@ -76,7 +76,7 @@ modes over the same session**, selected by a capability probe, not by two
 different protocols:
 
 1. **Primary mode — WSS (WebSocket over TLS) as a byte-stream carrier.**
-   The adapter is a *stream* carrier in #5810's framing class: it carries
+   The adapter is a _stream_ carrier in #5810's framing class: it carries
    the existing length-prefixed frames (`frames.rs` `u32`-BE length +
    payload) unmodified, one ID frame per WebSocket **binary** message, with
    no ID-level framing added on top. It reuses the `SessionIo`-style seam
@@ -91,8 +91,8 @@ different protocols:
    carries one or more length-prefixed frames, and the response stream
    carries the server→client direction. It is **not** a new protocol; it is
    the same frames with a request-scoped transport envelope.
-3. **The fallback is a degradation of *timing*, never of *semantics* or
-   *identity*.** Durable traffic is unaffected (it is eventual anyway and
+3. **The fallback is a degradation of _timing_, never of _semantics_ or
+   _identity_.** Durable traffic is unaffected (it is eventual anyway and
    range-sync recovers it). Live traffic keeps its session ID, sequence and
    MAC; the adapter never reorders, retries a live frame, or synthesises
    acknowledgements. What changes is latency, head-of-line behaviour and
@@ -100,7 +100,7 @@ different protocols:
 4. **Selection is by probe, then remembered per (peer, network).** The
    adapter offers WSS first; on a classified `upgrade_blocked` /
    `long_lived_socket_blocked` failure it degrades to HTTPS mode for that
-   network. The *ordering* of this within the overall candidate list is
+   network. The _ordering_ of this within the overall candidate list is
    #5791's; the adapter only reports the failure class and the mode it
    supports.
 
@@ -122,17 +122,17 @@ different protocols:
 
 ### 3.2 Connection lifecycle
 
-| Phase | WSS mode | HTTPS mode |
-|---|---|---|
-| Open | `GET` with `Upgrade: websocket`, subprotocol `id.v1` | `POST /id/session/<id>` with the first frame(s) |
-| Authenticate | ID session header frame as the first application frame (never a TLS client cert as identity) | same — first frame in the first POST body |
-| Steady state | full-duplex binary messages | client→server: POST batches; server→client: long-poll or SSE response stream |
-| Keepalive | WebSocket ping/pong **plus** ID-level keepalive frame | ID-level keepalive frame only; the HTTP request itself is the liveness signal |
-| Close | close frame with ID-level reason code mirrored | explicit close frame in a final POST; server ends the stream |
-| Reconnect | new WebSocket, ID session resume by session ID + last-seen sequence | new POST chain, same resume rule |
+| Phase        | WSS mode                                                                                     | HTTPS mode                                                                    |
+| ------------ | -------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------- |
+| Open         | `GET` with `Upgrade: websocket`, subprotocol `id.v1`                                         | `POST /id/session/<id>` with the first frame(s)                               |
+| Authenticate | ID session header frame as the first application frame (never a TLS client cert as identity) | same — first frame in the first POST body                                     |
+| Steady state | full-duplex binary messages                                                                  | client→server: POST batches; server→client: long-poll or SSE response stream  |
+| Keepalive    | WebSocket ping/pong **plus** ID-level keepalive frame                                        | ID-level keepalive frame only; the HTTP request itself is the liveness signal |
+| Close        | close frame with ID-level reason code mirrored                                               | explicit close frame in a final POST; server ends the stream                  |
+| Reconnect    | new WebSocket, ID session resume by session ID + last-seen sequence                          | new POST chain, same resume rule                                              |
 
 - **The ID session outlives the carrier connection.** A dropped WebSocket or
-  an expired long-poll is a *carrier* event; the ID session resumes by
+  an expired long-poll is a _carrier_ event; the ID session resumes by
   presenting its session ID and last accepted sequence. This is what makes
   the two modes interchangeable mid-session.
 - **Idle and lifetime bounds are explicit and configurable** (the
@@ -165,13 +165,13 @@ different protocols:
 
 ### 3.4 Ordering and reliability (what the adapter guarantees upward)
 
-| Guarantee | WSS | HTTPS (long-poll / SSE) |
-|---|---|---|
-| Per-direction ordering | yes (TCP) | yes within one request chain; **no** across a reconnect |
-| Reliable delivery of accepted frames | yes until close | yes for frames the server acknowledged in a response |
-| Backpressure | WebSocket send buffer + TCP window | request/response cadence (a new POST only after the previous response) |
-| Duplicate delivery possible | no | **yes** on retry after an ambiguous response — dedupe by ID sequence |
-| Gap surfacing | connection close / sequence gap → session error | sequence gap after reconnect → session error, same rule |
+| Guarantee                            | WSS                                             | HTTPS (long-poll / SSE)                                                |
+| ------------------------------------ | ----------------------------------------------- | ---------------------------------------------------------------------- |
+| Per-direction ordering               | yes (TCP)                                       | yes within one request chain; **no** across a reconnect                |
+| Reliable delivery of accepted frames | yes until close                                 | yes for frames the server acknowledged in a response                   |
+| Backpressure                         | WebSocket send buffer + TCP window              | request/response cadence (a new POST only after the previous response) |
+| Duplicate delivery possible          | no                                              | **yes** on retry after an ambiguous response — dedupe by ID sequence   |
+| Gap surfacing                        | connection close / sequence gap → session error | sequence gap after reconnect → session error, same rule                |
 
 - The adapter **never reorders** frames it accepted, and **never retries a
   live frame** on its own. Retry of a POST is an ambiguous-outcome case: the
@@ -191,8 +191,8 @@ different protocols:
   this is the #2036 invariant 9 guarantee, and it is the main reason the
   browser path is acceptable at all.
 - **Origin authentication is separate from peer authentication.** The
-  client authenticates the *relay/direct origin* by its TLS certificate
-  (normal web PKI) and authenticates the *peer* by ID crypto. Conflating
+  client authenticates the _relay/direct origin_ by its TLS certificate
+  (normal web PKI) and authenticates the _peer_ by ID crypto. Conflating
   them is the failure mode this record forbids.
 - An #5813 ID-aware relay in front of this adapter sees the same envelope
   metadata #5813 permits and nothing more; the adapter adds no metadata
@@ -214,15 +214,15 @@ record commits to measuring and accepting:
 
 ### 4.1 Latency
 
-| Path | Added latency vs. WSS | Source of the cost |
-|---|---|---|
-| WSS steady state | ~0 (one TCP/TLS round trip at open) | handshake only |
-| HTTPS long-poll | **+1 RTT per client→server batch**, plus poll interval on server→client | request/response cadence; a long-poll only delivers when data or timeout fires |
-| HTTPS SSE | +1 RTT per client→server batch; server→client near-streaming | SSE is one-way streaming; the client→server direction is still POST |
-| Reconnect (either mode) | +TLS handshake (+1–2 RTT) + session resume | new connection, same session |
+| Path                    | Added latency vs. WSS                                                   | Source of the cost                                                             |
+| ----------------------- | ----------------------------------------------------------------------- | ------------------------------------------------------------------------------ |
+| WSS steady state        | ~0 (one TCP/TLS round trip at open)                                     | handshake only                                                                 |
+| HTTPS long-poll         | **+1 RTT per client→server batch**, plus poll interval on server→client | request/response cadence; a long-poll only delivers when data or timeout fires |
+| HTTPS SSE               | +1 RTT per client→server batch; server→client near-streaming            | SSE is one-way streaming; the client→server direction is still POST            |
+| Reconnect (either mode) | +TLS handshake (+1–2 RTT) + session resume                              | new connection, same session                                                   |
 
 - **The honest statement:** HTTPS fallback is acceptable for durable
-  traffic and for *low-rate* live traffic (presence, occasional cursors),
+  traffic and for _low-rate_ live traffic (presence, occasional cursors),
   and **not acceptable for high-rate live input** (keystroke-level
   collaboration, live media) — those degrade to unusable latency and should
   be refused or reduced to checkpoint-only mode by the layer above, not
@@ -238,11 +238,11 @@ record commits to measuring and accepting:
   does **not** turn live traffic into store-and-forward delivery — that
   would be a semantic change, which the parent forbids.
 - **Checkpoints still fire on the same thresholds** (256 frames / 2 s /
-  explicit commit). The fallback changes *when* frames arrive, not *what*
+  explicit commit). The fallback changes _when_ frames arrive, not _what_
   the checkpoint commits to. A long-poll gap can therefore make a segment
   arrive late but never makes it unverifiable.
 - **Ordering across reconnect is not guaranteed**; the session resume rule
-  and per-frame sequence make a gap *detectable*, which is the guarantee
+  and per-frame sequence make a gap _detectable_, which is the guarantee
   #2036 requires (a gap is detectable; a missing tail is not proof of a
   completed action).
 
@@ -257,16 +257,16 @@ record commits to measuring and accepting:
 
 ## 5. Alternatives considered and rejected
 
-| Alternative | Why rejected |
-|---|---|
-| **WebSocket-only, no HTTPS fallback** | Fails exactly the networks the ticket exists for: proxies that block `Upgrade` and TLS-terminating middleboxes that break long-lived sockets. The parent names "most restrictive web environments, corporate proxies" as a required carrier. |
-| **HTTPS-only (no WSS)** | Simpler, but pays the per-batch RTT on every frame even where WebSockets work; needlessly degrades the common case. |
-| **A separate JSON/HTTP API for the browser path** | Would fork the wire format and violate "adapters MUST NOT change ID semantics" and #2036's no-new-chunking rule. The browser path must carry the same frames. |
-| **WebRTC data channel as the browser path** | Lower latency and no relay, but requires signalling, ICE/STUN/TURN, and is blocked in many corporate networks — it is a *different* adapter (parent item 5, #5812), not a substitute for the restrictive-network path. |
-| **Treat TLS client certificates / mTLS as ID identity** | Forbidden by the parent: TLS is transport encryption only; a proxy that terminates TLS would become an identity authority. |
-| **Store-and-forward queue for live frames during a fallback gap** | Turns ephemeral traffic into durable delivery and creates an offline backlog #2036 explicitly forbids. |
-| **Polling with a fixed short interval instead of long-poll/SSE** | Wastes requests and battery, multiplies proxy load, and still cannot beat long-poll latency. |
-| **New chunking format for HTTPS bodies** | #2036 invariant 10 forbids a new chunking wire format; reuse #5810's checked chunk/reassembly. |
+| Alternative                                                       | Why rejected                                                                                                                                                                                                                                 |
+| ----------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **WebSocket-only, no HTTPS fallback**                             | Fails exactly the networks the ticket exists for: proxies that block `Upgrade` and TLS-terminating middleboxes that break long-lived sockets. The parent names "most restrictive web environments, corporate proxies" as a required carrier. |
+| **HTTPS-only (no WSS)**                                           | Simpler, but pays the per-batch RTT on every frame even where WebSockets work; needlessly degrades the common case.                                                                                                                          |
+| **A separate JSON/HTTP API for the browser path**                 | Would fork the wire format and violate "adapters MUST NOT change ID semantics" and #2036's no-new-chunking rule. The browser path must carry the same frames.                                                                                |
+| **WebRTC data channel as the browser path**                       | Lower latency and no relay, but requires signalling, ICE/STUN/TURN, and is blocked in many corporate networks — it is a _different_ adapter (parent item 5, #5812), not a substitute for the restrictive-network path.                       |
+| **Treat TLS client certificates / mTLS as ID identity**           | Forbidden by the parent: TLS is transport encryption only; a proxy that terminates TLS would become an identity authority.                                                                                                                   |
+| **Store-and-forward queue for live frames during a fallback gap** | Turns ephemeral traffic into durable delivery and creates an offline backlog #2036 explicitly forbids.                                                                                                                                       |
+| **Polling with a fixed short interval instead of long-poll/SSE**  | Wastes requests and battery, multiplies proxy load, and still cannot beat long-poll latency.                                                                                                                                                 |
+| **New chunking format for HTTPS bodies**                          | #2036 invariant 10 forbids a new chunking wire format; reuse #5810's checked chunk/reassembly.                                                                                                                                               |
 
 ## 6. Dependencies on sibling designs (explicit interfaces, not assumptions)
 
@@ -282,8 +282,8 @@ differs, this record is amended explicitly — it is not silently forked.
    the subprotocol string. Dependency: #5809 must not require a
    carrier-level version channel this adapter cannot provide (the HTTPS
    mode has no subprotocol negotiation at all).
-3. **#5810 (framing & fragmentation):** WSS is a *stream* carrier (length
-   prefix, no extra framing); HTTPS is a *store-and-forward/chunked*
+3. **#5810 (framing & fragmentation):** WSS is a _stream_ carrier (length
+   prefix, no extra framing); HTTPS is a _store-and-forward/chunked_
    carrier. Dependency: #5810 must define the chunk boundary this adapter
    splits POST bodies at.
 4. **#5813 (relay & proxy):** the relay-backed origin, its auth, and its
@@ -295,7 +295,7 @@ differs, this record is amended explicitly — it is not silently forked.
    carrier downgrade is not an ID-level downgrade.
 
 **Parent-change check (§8 of the #5811 triage):** no decision above changes
-a #5674, #2036 or #5791 decision. Two parent *open questions* are touched
+a #5674, #2036 or #5791 decision. Two parent _open questions_ are touched
 and recorded rather than forked:
 
 - #5674's "do browser-facing adapters need a JSON/CBOR diagnostic variant?"

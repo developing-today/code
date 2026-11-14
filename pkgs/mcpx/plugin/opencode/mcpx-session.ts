@@ -24,6 +24,7 @@ import {
   type DiscoverOptions,
   type Target,
 } from "../core/daemon.ts";
+import { truthy, type Options } from "../core/options.ts";
 // The only reliable way to tell, in v1, whether anyone is looking at a
 // screen. See `headless` below.
 import { isMainThread } from "node:worker_threads";
@@ -75,42 +76,7 @@ import { isMainThread } from "node:worker_threads";
  */
 
 /** Everything this plugin can be told, from config or from the environment. */
-type Options = {
-  /** A daemon named outright. `unix:///path` or `http://host:port`. */
-  endpoint?: string;
-  /** A socket named outright. */
-  socket?: string;
-  /** The mcpx binary, or "" to forbid spawning one. */
-  bin?: string;
-  /** Arguments to put before mcpx's own, as a vector or a string. */
-  binArgs?: string[] | string;
-  /** Where the opt-in tools get their answers: auto, v1 or cli. */
-  backend?: "auto" | "v1" | "cli";
-  /** Default scope for a daemon choice made this session. */
-  remember?: "session" | "until-gone" | "indefinite";
-  /** How much to inject into shell environments. */
-  env?: "minimal" | "standard" | "full";
-  instructions?: boolean;
-  toolTiming?: boolean;
-  tools?: boolean;
-  /** Offer mcpx_daemon_status and mcpx_daemon_select. Default: when unclear. */
-  daemonTools?: boolean;
-  /** Report ambiguity on tool results. Default on. */
-  annotate?: boolean;
-  /** Override the "is anyone looking at this" guess. */
-  headless?: boolean;
-};
-
 type Level = "minimal" | "standard" | "full";
-
-const truthy = (v: unknown): boolean | undefined => {
-  if (v === undefined || v === null || v === "") return undefined;
-  if (typeof v === "boolean") return v;
-  const s = String(v).toLowerCase();
-  if (s === "1" || s === "true" || s === "yes" || s === "on") return true;
-  if (s === "0" || s === "false" || s === "no" || s === "off") return false;
-  return undefined;
-};
 
 /** Set a variable only when it is actually something. */
 const put = (env: Record<string, string>, key: string, value: unknown): void => {

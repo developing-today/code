@@ -5,6 +5,16 @@ Canonical home: developing-today/code, infra/github-backup/.
 Config lives in ../config.json next to this file's parent directory.
 The backup tree (default ~/backups/github) holds only data + generated
 state (plan.json, MANIFEST.json, logs); all logic lives in the repo.
+
+Pagination contract (#6622): a paged read is complete, bounded, or
+says so. (1) The cursor is validated where read — its type first
+(a present-but-malformed cursor is an error, never end-of-pages)
+and its progress second (it must advance). (2) The volume is
+bounded: every page loop carries a page/result bound whose breach
+is an error naming the listing. (3) Truncation is never silent:
+a read that stops short paginates to completion, fails closed,
+or marks the truncation explicitly. The closing inventory that
+dispositioned every paginated loop in the repo is on issue #6623.
 """
 
 import contextlib, json, os, shutil, subprocess, sys, tempfile
@@ -19,9 +29,82 @@ GB_DIR = os.path.dirname(HERE)
 CONFIG_PATH = os.path.join(GB_DIR, "config.json")
 
 
+# The config fields the github-backup tools read, by name (#6849):
+# app_setup indexes app.name / app.events / app.bitwarden_secret_names
+# (the five names below are the ones it stores under) and
+# worker.webhook_path at import time, so those are the shapes
+# validate_config guarantees for every consumer of load_config.
+CONFIG_SECRET_NAME_KEYS = [
+    "app_id",
+    "client_id",
+    "client_secret",
+    "private_key",
+    "webhook_secret",
+]
+
+
+def validate_config(cfg, source="config.json"):
+    """Split a loaded config.json into (clean config, named problems).
+
+    Same contract as validate_plan/validate_state (#6637): every
+    problem names the field and the shape it found. Only the fields
+    the tools actually index are guaranteed (see above); other
+    sections pass through untouched.
+    """
+    if not isinstance(cfg, dict):
+        return {}, [f"{source}: top level is {_shape(cfg)}, expected an object"]
+    problems = []
+    app = cfg.get("app")
+    if not isinstance(app, dict):
+        problems.append(f"{source}: 'app' is {_shape(app)}, expected an object")
+    else:
+        name = app.get("name")
+        if not isinstance(name, str) or not name:
+            problems.append(
+                f"{source}: 'app.name' is {_shape(name)}, expected a non-empty string"
+            )
+        events = app.get("events")
+        if not isinstance(events, list) or not all(isinstance(e, str) for e in events):
+            problems.append(
+                f"{source}: 'app.events' is {_shape(events)}, "
+                f"expected a list of strings"
+            )
+        names = app.get("bitwarden_secret_names")
+        if not isinstance(names, dict) or not all(
+            isinstance(k, str) and isinstance(v, str) and v for k, v in names.items()
+        ):
+            problems.append(
+                f"{source}: 'app.bitwarden_secret_names' is "
+                f"{_shape(names)}, expected an object mapping "
+                f"strings to non-empty strings"
+            )
+        else:
+            for key in CONFIG_SECRET_NAME_KEYS:
+                if key not in names:
+                    problems.append(
+                        f"{source}: 'app.bitwarden_secret_names' is "
+                        f"missing {key!r}, required by app_setup"
+                    )
+    worker = cfg.get("worker")
+    if not isinstance(worker, dict):
+        problems.append(f"{source}: 'worker' is {_shape(worker)}, expected an object")
+    else:
+        path = worker.get("webhook_path")
+        if not isinstance(path, str) or not path:
+            problems.append(
+                f"{source}: 'worker.webhook_path' is {_shape(path)}, "
+                f"expected a non-empty string"
+            )
+    return (cfg if not problems else {}), problems
+
+
 def load_config():
     with open(CONFIG_PATH) as f:
-        return json.load(f)
+        cfg = json.load(f)
+    _, problems = validate_config(cfg)
+    if problems:
+        raise ValueError("; ".join(problems))
+    return cfg
 
 
 def backup_root(cfg=None):
@@ -248,9 +331,7 @@ def _atomic_replace(path, text):
     reader only ever observes the previous complete file or the new
     complete file — never a partial one."""
     directory = os.path.dirname(os.path.abspath(path))
-    fd, tmp = tempfile.mkstemp(
-        dir=directory, prefix=".ghb-", suffix=".tmp"
-    )
+    fd, tmp = tempfile.mkstemp(dir=directory, prefix=".ghb-", suffix=".tmp")
     try:
         with os.fdopen(fd, "w") as f:
             f.write(text)
@@ -319,12 +400,9 @@ def load_json_tolerant(path, default, source):
             return value, problems
         except (OSError, ValueError) as e:
             problems.append(
-                f"{source}: last-good copy also unusable "
-                f"({type(e).__name__}: {e})"
+                f"{source}: last-good copy also unusable ({type(e).__name__}: {e})"
             )
-    problems.append(
-        f"{source}: {os.path.basename(path)} treated as empty"
-    )
+    problems.append(f"{source}: {os.path.basename(path)} treated as empty")
     return default, problems
 
 
@@ -423,6 +501,11 @@ def validate_state(state, source="state.json"):
     same rule. A non-object top level invalidates the whole file as
     a single named problem.
 
+    A per-repo "last_fetch" must be a numeric timestamp (never a
+    bool): fetch_mirrors does arithmetic on it, so a wrong-shape
+    value is dropped under a named problem (#6821) instead of
+    passing through to crash the fetch loop.
+
     Bookkeeping keys written by the webhook drainer are state too,
     under their own shapes: "drain_last::<repo>" is a numeric
     timestamp and "drain_fail::<repo>" is an object. They are
@@ -459,6 +542,19 @@ def validate_state(state, source="state.json"):
                 f"expected a list — reset to []"
             )
             entry["fail_days"] = []
+        last_fetch = entry.get("last_fetch")
+        if (
+            not repo.startswith("drain_")
+            and last_fetch is not None
+            and (
+                not isinstance(last_fetch, (int, float)) or isinstance(last_fetch, bool)
+            )
+        ):
+            problems.append(
+                f"{source}: 'last_fetch' for {repo!r} is "
+                f"{_shape(last_fetch)}, expected a number — dropped"
+            )
+            del entry["last_fetch"]
         clean[repo] = entry
     return clean, problems
 

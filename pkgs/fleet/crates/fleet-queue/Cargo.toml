@@ -12,8 +12,14 @@ description = "The fleet queue domain: the repo-queue client surface plus the qu
 # without the client, and a client-only build is possible for the
 # standalone artifact.
 [features]
-client = ["dep:fleet-config"]
-queue-broker = ["client", "dep:tiny_http", "dep:ureq", "dep:fleet-config", "dep:libc"]
+client = ["dep:fleet-config", "dep:ureq"]
+queue-broker = [
+  "client",
+  "dep:tiny_http",
+  "dep:ureq",
+  "dep:fleet-config",
+  "dep:libc",
+]
 secrets-broker = ["dep:tiny_http", "dep:fleet-config", "dep:libc"]
 
 [dependencies]
@@ -52,6 +58,11 @@ required-features = ["secrets-broker"]
 name = "broker_bin_args"
 path = "tests/broker_bin_args.rs"
 required-features = ["queue-broker", "secrets-broker"]
+
+[[test]]
+name = "chunked_list"
+path = "tests/chunked_list.rs"
+required-features = ["client"]
 
 
 [dev-dependencies]

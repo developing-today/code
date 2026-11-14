@@ -113,8 +113,7 @@ describe("isRepoCensus", () => {
     // the implementation - each count is a non-negative integer or
     // null; the gate-vs-total ordering binds only when both sides are
     // numbers; the stale fields follow their pre-existing rules.
-    const countOk = (v: unknown) =>
-      v === null || (typeof v === "number" && Number.isInteger(v) && v >= 0);
+    const countOk = (v: unknown) => v === null || (typeof v === "number" && Number.isInteger(v) && v >= 0);
     const oracle = (row: Record<string, unknown>): boolean => {
       if (row.repo !== "a/b") return false;
       if (!countOk(row.openIssues) || !countOk(row.gateNow) || !countOk(row.gateNext)) return false;
@@ -124,13 +123,7 @@ describe("isRepoCensus", () => {
       const stale = row.staleOpenIssues;
       if (!(stale === undefined || countOk(stale))) return false;
       const at = row.staleIssuesCollectedAt;
-      if (
-        !(
-          at === undefined ||
-          at === null ||
-          (typeof at === "string" && Number.isFinite(Date.parse(at)))
-        )
-      )
+      if (!(at === undefined || at === null || (typeof at === "string" && Number.isFinite(Date.parse(at)))))
         return false;
       const err = row.staleIssuesError;
       if (!(err === undefined || err === null || typeof err === "string")) return false;
@@ -139,14 +132,39 @@ describe("isRepoCensus", () => {
     // Deterministic LCG so the generated cases are reproducible.
     let seed = 8193;
     const next = () => (seed = (seed * 1103515245 + 12345) % 2147483648);
-    const pick = <T,>(xs: readonly T[]): T => xs[next() % xs.length];
+    const pick = <T>(xs: readonly T[]): T => xs[next() % xs.length];
     const counts: unknown[] = [
-      null, 0, 1, 2, 5, 10, 999, -1, -100, 1.5, 0.5, "3", "0", "", true, false,
-      undefined, NaN, Infinity, [], {},
+      null,
+      0,
+      1,
+      2,
+      5,
+      10,
+      999,
+      -1,
+      -100,
+      1.5,
+      0.5,
+      "3",
+      "0",
+      "",
+      true,
+      false,
+      undefined,
+      NaN,
+      Infinity,
+      [],
+      {},
     ];
     const staleCounts: unknown[] = [undefined, null, 0, 4, 90, -1, 1.5, "4", true];
     const stamps: unknown[] = [
-      undefined, null, "2026-11-01T11:59:00.000Z", "2025-02-28T00:00:00Z", "not-a-date", 7, {},
+      undefined,
+      null,
+      "2026-11-01T11:59:00.000Z",
+      "2025-02-28T00:00:00Z",
+      "not-a-date",
+      7,
+      {},
     ];
     const errors: unknown[] = [undefined, null, "search failed", "", 7, false, []];
     const repos: unknown[] = ["a/b", "a/b", "a/b", "ab", "", "a/", "/b", "a/b/c", 7, null];
@@ -271,8 +289,8 @@ describe("snapshot rotation + delta", () => {
         poolUnsetStatus: 3,
         poolUnsetArea: 4,
         staleOpenIssues: 5,
-          staleIssuesCollectedAt: "2026-11-01T00:00:00Z",
-          staleIssuesError: null,
+        staleIssuesCollectedAt: "2026-11-01T00:00:00Z",
+        staleIssuesError: null,
       },
     ],
   });
@@ -405,8 +423,7 @@ describe("snapshot rotation — poisoned anchorAt (#5196)", () => {
       expect(isValidAnchorAt(stamp)).toBe(expected);
     }
     // Non-string and unparseable shapes never validate.
-    for (const junk of ["", "not-a-date", null, undefined, 0, {}])
-      expect(isValidAnchorAt(junk)).toBe(false);
+    for (const junk of ["", "not-a-date", null, undefined, 0, {}]) expect(isValidAnchorAt(junk)).toBe(false);
   });
 });
 
@@ -444,8 +461,12 @@ describe("stale open-issue census", () => {
       staleIssuesCollectedAt: "2026-10-25T12:00:00.000Z",
       staleIssuesError: null,
     };
-    expect(staleIssueState(repo, new Date(Date.parse(repo.staleIssuesCollectedAt) + STALE_ISSUE_CENSUS_STALE_MS))).toBe("current");
-    expect(staleIssueState(repo, new Date(Date.parse(repo.staleIssuesCollectedAt) + STALE_ISSUE_CENSUS_STALE_MS + 1))).toBe("stale");
+    expect(staleIssueState(repo, new Date(Date.parse(repo.staleIssuesCollectedAt) + STALE_ISSUE_CENSUS_STALE_MS))).toBe(
+      "current",
+    );
+    expect(
+      staleIssueState(repo, new Date(Date.parse(repo.staleIssuesCollectedAt) + STALE_ISSUE_CENSUS_STALE_MS + 1)),
+    ).toBe("stale");
     expect(staleIssueState({ ...repo, staleOpenIssues: null, staleIssuesError: "search failed" }, NOW)).toBe("error");
     expect(staleIssueState({ ...repo, staleOpenIssues: null, staleIssuesCollectedAt: null }, NOW)).toBe("unavailable");
   });
@@ -485,8 +506,8 @@ describe("snapshot rotation anchor (PR #3309 Codex)", () => {
         poolUnsetStatus: 3,
         poolUnsetArea: 4,
         staleOpenIssues: 5,
-          staleIssuesCollectedAt: "2026-11-01T00:00:00Z",
-          staleIssuesError: null,
+        staleIssuesCollectedAt: "2026-11-01T00:00:00Z",
+        staleIssuesError: null,
       },
     ],
   });

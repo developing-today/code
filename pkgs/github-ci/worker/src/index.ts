@@ -17,20 +17,18 @@
  *   - push: advance agent_repo_snapshots.head_sha in fleet-queue
  *     (default-branch pushes only), stamp fetch_source='webhook',
  *     append a 'push' agent event via the #5690 sink.
- *   - pull_request / issues: append an agent event via the sink
- *     and set the agent_watermarks key 'dirty:<repo>' in
- *     fleet-queue.
+ *   - pull_request / issues: append an agent event via the sink,
+ *     set the agent_watermarks key 'dirty:<repo>' in fleet-queue,
+ *     and upsert the #8580 GitHub mirror row (src/mirror.ts).
+ *   - issue_comment: append an agent event, stamp the watermark,
+ *     and refresh the mirror row's comments count / latest
+ *     agent-note pointer.
  * - ping: pong. Everything else: 202 ignored.
  */
 import { Turso, iArg, tArg } from "./turso";
 import { FLEET_REPOS, buildRunRow, skipReason } from "./policy";
-import {
-  advanceSnapshot,
-  appendAgentEvent,
-  queueNow,
-  stampDirtyWatermark,
-  type SinkEnv,
-} from "./sink";
+import { advanceSnapshot, appendAgentEvent, queueNow, stampDirtyWatermark, type SinkEnv } from "./sink";
+import { mirrorCommentEvent, mirrorIssueEvent, mirrorPrEvent } from "./mirror";
 
 export interface Env extends SinkEnv {
   GITHUB_WEBHOOK_SECRET: string;
@@ -85,6 +83,14 @@ export default {
     } catch {
       return new Response("bad json", { status: 400 });
     }
+    // #6946: JSON.parse also succeeds for null/array/scalar bodies, and
+    // dereferencing payload.repository on those threw out of fetch
+    // (outside the receiver-failed envelope below). A webhook payload
+    // is an object by contract; anything else is a deliberate 400 for
+    // every event type, before any dereference.
+    if (typeof payload !== "object" || payload === null || Array.isArray(payload)) {
+      return new Response("bad payload", { status: 400 });
+    }
 
     const eventType = req.headers.get("x-github-event") ?? "workflow_run";
     if (eventType === "ping") return new Response("pong", { status: 200 });
@@ -99,8 +105,7 @@ export default {
       if (eventType === "push" && isFleet) {
         const after = String(payload.after ?? "");
         const ref = String(payload.ref ?? "");
-        const payloadDefaultBranch =
-          typeof repo.default_branch === "string" ? repo.default_branch : null;
+        const payloadDefaultBranch = typeof repo.default_branch === "string" ? repo.default_branch : null;
         await advanceSnapshot(env, repoName, after, ref, nowIso, payloadDefaultBranch);
         await appendAgentEvent(env, "push", { repo: repoName, after, ref });
         return json({ ok: true, repo: repoName, after });
@@ -115,9 +120,30 @@ export default {
           action,
           number: Number(obj.number ?? 0) || null,
           title: (obj.title as string) ?? null,
+          label: ((payload.label as Record<string, unknown> | undefined)?.name as string) ?? null,
         };
         await appendAgentEvent(env, eventType, detail);
         await stampDirtyWatermark(env, repoName, eventType, nowIso);
+        // #8580: the mirror row is the read model; a failed write is
+        // fatal like the ci_events insert (500 -> GitHub retries).
+        if (eventType === "issues") await mirrorIssueEvent(env, payload, repoName);
+        else await mirrorPrEvent(env, payload, repoName);
+        return json({ ok: true, repo: repoName, event: eventType });
+      }
+
+      // ------------------------------------------------ issue_comment ---
+      if (eventType === "issue_comment" && isFleet) {
+        const issue = (payload.issue ?? {}) as Record<string, unknown>;
+        const comment = (payload.comment ?? {}) as Record<string, unknown>;
+        const detail = {
+          repo: repoName,
+          action: String(payload.action ?? ""),
+          number: Number(issue.number ?? 0) || null,
+          comment_id: Number(comment.id ?? 0) || null,
+        };
+        await appendAgentEvent(env, "issue_comment", detail);
+        await stampDirtyWatermark(env, repoName, "issue_comment", nowIso);
+        await mirrorCommentEvent(env, payload, repoName);
         return json({ ok: true, repo: repoName, event: eventType });
       }
 
@@ -126,12 +152,7 @@ export default {
       }
 
       // -------------------------------------------------- workflow_run ---
-      const { row, runId, action, conclusion } = buildRunRow(
-        payload,
-        repoName,
-        eventType,
-        queueNow(),
-      );
+      const { row, runId, action, conclusion } = buildRunRow(payload, repoName, eventType, queueNow());
       const skipped = skipReason(action, conclusion);
       if (skipped) {
         return json({ ok: true, skipped, repo: repoName, run_id: runId });
@@ -165,7 +186,12 @@ export default {
           tArg(row.dedupe_key),
         ],
       );
-      return json({ ok: true, repo: repoName, run_id: runId, conclusion: row.conclusion });
+      return json({
+        ok: true,
+        repo: repoName,
+        run_id: runId,
+        conclusion: row.conclusion,
+      });
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
       console.error(`github-ci worker failed (${eventType} ${repoName}): ${msg}`);

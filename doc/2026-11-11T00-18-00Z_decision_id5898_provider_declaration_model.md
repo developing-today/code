@@ -10,14 +10,14 @@
 
 ## Decision summary
 
-| Question | Decision |
-| --- | --- |
-| The artefact | One signed provider manifest per (provider identity, instance) is the sole declaration artefact for every provider class; platform registries are generated projections of it, never the reverse (D1) |
-| Manifest contents | A fixed signed field set: identity/instance/name/`side`/kind, three version axes, epoch, scope, TTL class, issue/expiry times, and per-capability entries carrying id, contract version, typed argument schema, bounds, required scope, sensitivity class, and observation/actuation class (D2) |
-| Signing | Signed by the provider identity key over the canonical encoding of the whole manifest; verified at admission, on every change, and when a grant binds its tuple. Registry admission is a separate registry record referencing the manifest digest — never a countersignature on the manifest (D3) |
-| Versioning | Three axes, never conflated: `format_version` (declaration format), monotonic integer `manifest_version` (immutable once filed; amendment = new version), per-capability `contract_version` (same-major = compatible). `epoch` generations guard rollback (D4) |
-| Dynamic vs static | The capability **set** is static within one `manifest_version`; **availability** is dynamic (liveness, suspension, which version is live). A changed offer is a new signed `manifest_version`, never a runtime mutation (D5) |
-| Lifecycle | filed → admitted → live → suspended → superseded / stale → tombstoned; withdrawal is itself a signed object, so a bridge or registry cannot forge it (D6) |
+| Question          | Decision                                                                                                                                                                                                                                                                                          |
+| ----------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| The artefact      | One signed provider manifest per (provider identity, instance) is the sole declaration artefact for every provider class; platform registries are generated projections of it, never the reverse (D1)                                                                                             |
+| Manifest contents | A fixed signed field set: identity/instance/name/`side`/kind, three version axes, epoch, scope, TTL class, issue/expiry times, and per-capability entries carrying id, contract version, typed argument schema, bounds, required scope, sensitivity class, and observation/actuation class (D2)   |
+| Signing           | Signed by the provider identity key over the canonical encoding of the whole manifest; verified at admission, on every change, and when a grant binds its tuple. Registry admission is a separate registry record referencing the manifest digest — never a countersignature on the manifest (D3) |
+| Versioning        | Three axes, never conflated: `format_version` (declaration format), monotonic integer `manifest_version` (immutable once filed; amendment = new version), per-capability `contract_version` (same-major = compatible). `epoch` generations guard rollback (D4)                                    |
+| Dynamic vs static | The capability **set** is static within one `manifest_version`; **availability** is dynamic (liveness, suspension, which version is live). A changed offer is a new signed `manifest_version`, never a runtime mutation (D5)                                                                      |
+| Lifecycle         | filed → admitted → live → suspended → superseded / stale → tombstoned; withdrawal is itself a signed object, so a bridge or registry cannot forge it (D6)                                                                                                                                         |
 
 ## 1. Taken as given from the parent and siblings
 
@@ -43,42 +43,42 @@ The signed field set (every field below is inside the signature unless marked ot
 
 **Provider block**
 
-| Field | Content |
-| --- | --- |
-| `format_version` | Version of the declaration format itself (D4, axis 1). The crypto suite is named by the format version, never negotiated per manifest (no downgrade surface). |
-| `provider` | The provider identity (keypair identity in the ID object model, #5905 D1). |
-| `instance` | Instance discriminator: one identity may run several instances; grants and audit bind (provider, instance) as #5905's provider-instance binding requires. |
-| `name` | Human/registry name. A label, never identity: a familiar name under a different key is a different provider, and a registry name collision is a refusal, never a rebind (#5905 D3). Client providers live under the reserved `client.` prefix (parent F13.7). |
-| `side` | Who holds the resource (the parent's F13.7 addition to the F12.4 fields). |
-| `kind` | Provider kind class (host request / subscription / platform module in current code; the kind class discovery cards expose — constrained-device / host / web / engine / phone — derives from it, #5899 tier B). |
-| `manifest_version` | Monotonic integer version of this manifest (D4, axis 2). |
-| `epoch` | Declaration epoch: monotonic per provider identity, incremented on re-declaration after stale/tombstone and on instance re-establishment (D4; required in the artefact by #5899 §3.1/§5.3 — discharged here, not in a sidecar envelope). |
-| `scope` | Where this declaration is filed: world id / server id / federation intent (#5899 §3.1 — discharged here). Promotion between scopes is governed by #5899, not by re-filing a different manifest. |
-| `ttl_class` | Liveness class per #5899 §5 / #5904 presence classes; `static` is the built-in class (D1). |
-| `issued_at`, `expires_at` | Issue time and absolute expiry. Expiry is absolute and use never renews it (the #5904 §5 cached-grant rule, applied to the artefact it was waiting on). |
-| `capabilities` | The capability entries below; the complete set for this version (D1, D5). |
-| `extensions` | Namespaced optional fields. An unknown **optional** extension is ignored; an unknown **required** extension is a refusal with a stable F11.13-class code. No extension may widen bounds, scope, class, or ceiling — extensions describe, they never authorise. |
+| Field                     | Content                                                                                                                                                                                                                                                        |
+| ------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `format_version`          | Version of the declaration format itself (D4, axis 1). The crypto suite is named by the format version, never negotiated per manifest (no downgrade surface).                                                                                                  |
+| `provider`                | The provider identity (keypair identity in the ID object model, #5905 D1).                                                                                                                                                                                     |
+| `instance`                | Instance discriminator: one identity may run several instances; grants and audit bind (provider, instance) as #5905's provider-instance binding requires.                                                                                                      |
+| `name`                    | Human/registry name. A label, never identity: a familiar name under a different key is a different provider, and a registry name collision is a refusal, never a rebind (#5905 D3). Client providers live under the reserved `client.` prefix (parent F13.7).  |
+| `side`                    | Who holds the resource (the parent's F13.7 addition to the F12.4 fields).                                                                                                                                                                                      |
+| `kind`                    | Provider kind class (host request / subscription / platform module in current code; the kind class discovery cards expose — constrained-device / host / web / engine / phone — derives from it, #5899 tier B).                                                 |
+| `manifest_version`        | Monotonic integer version of this manifest (D4, axis 2).                                                                                                                                                                                                       |
+| `epoch`                   | Declaration epoch: monotonic per provider identity, incremented on re-declaration after stale/tombstone and on instance re-establishment (D4; required in the artefact by #5899 §3.1/§5.3 — discharged here, not in a sidecar envelope).                       |
+| `scope`                   | Where this declaration is filed: world id / server id / federation intent (#5899 §3.1 — discharged here). Promotion between scopes is governed by #5899, not by re-filing a different manifest.                                                                |
+| `ttl_class`               | Liveness class per #5899 §5 / #5904 presence classes; `static` is the built-in class (D1).                                                                                                                                                                     |
+| `issued_at`, `expires_at` | Issue time and absolute expiry. Expiry is absolute and use never renews it (the #5904 §5 cached-grant rule, applied to the artefact it was waiting on).                                                                                                        |
+| `capabilities`            | The capability entries below; the complete set for this version (D1, D5).                                                                                                                                                                                      |
+| `extensions`              | Namespaced optional fields. An unknown **optional** extension is ignored; an unknown **required** extension is a refusal with a stable F11.13-class code. No extension may widen bounds, scope, class, or ceiling — extensions describe, they never authorise. |
 
 **Per-capability entry**
 
-| Field | Content |
-| --- | --- |
-| `capability_id` | Stable within the provider across versions; capability identity is the tuple (provider identity, `capability_id`, `manifest_version`) (#5905 D6). |
-| `contract_version` | This capability's contract version (D4, axis 3). |
-| `argument_schema` | Typed argument schema in WIT-shaped typed form (the form #5903 D2 keeps engine providers compatible with); free-form untyped schemas are not a declaration. |
-| `bounds` | The existing bound vocabulary (argument bytes, items, identifier bytes, response bytes, horizon, world limits, rates). |
-| `required_scope` | Participant scope required for the effect (join / chat / chat-read in current code). |
-| `sensitivity_class` | S0–S3, a manifest fact (#5900). |
-| `effect_class` | Observation or actuation (parent: the two are different risk classes, always distinguishable from the declaration alone). |
-| `default_ceiling` | Per-manifest ceiling posture inherited from the provider block's admission state; entries never enter above `excluded` by declaration alone (#5905 D2). |
-| `store_and_forward` | Whether actuation may be queued for later execution; honoured only when the grant also declares it (#5904). Absent = never. |
+| Field               | Content                                                                                                                                                     |
+| ------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `capability_id`     | Stable within the provider across versions; capability identity is the tuple (provider identity, `capability_id`, `manifest_version`) (#5905 D6).           |
+| `contract_version`  | This capability's contract version (D4, axis 3).                                                                                                            |
+| `argument_schema`   | Typed argument schema in WIT-shaped typed form (the form #5903 D2 keeps engine providers compatible with); free-form untyped schemas are not a declaration. |
+| `bounds`            | The existing bound vocabulary (argument bytes, items, identifier bytes, response bytes, horizon, world limits, rates).                                      |
+| `required_scope`    | Participant scope required for the effect (join / chat / chat-read in current code).                                                                        |
+| `sensitivity_class` | S0–S3, a manifest fact (#5900).                                                                                                                             |
+| `effect_class`      | Observation or actuation (parent: the two are different risk classes, always distinguishable from the declaration alone).                                   |
+| `default_ceiling`   | Per-manifest ceiling posture inherited from the provider block's admission state; entries never enter above `excluded` by declaration alone (#5905 D2).     |
+| `store_and_forward` | Whether actuation may be queued for later execution; honoured only when the grant also declares it (#5904). Absent = never.                                 |
 
 **Prohibited contents.** A manifest never carries: credentials or secrets of any kind; grant objects or consumer identities (a declaration is an offer, not an authorisation — the audience is whoever the scope admits, per #5899's tiers); executable code (declarations are data; scripted providers per #5903 D2 declare surfaces, and their code arrives by its own channel); or transport addresses as identity (endpoint hints, where needed, are non-authoritative routing data and are never what a grant or an audit entry binds).
 
 ### D3 — Signing
 
 - The manifest is signed by the provider identity key over the canonical encoding of the complete field set above (the signature field itself is excluded by the canonical form, in the ID object model's usual way). The manifest digest is the content address every other record cites: registry admission, discovery cards, terms records, grants.
-- **Verification points** (fixing *what* is verified where; #5905 D2 already fixed *that* verification happens): (1) at admission — an unsigned, badly signed, or unverifiable manifest is not filed, and the refusal is a stable code, not a silent drop; (2) on every manifest change — a new version is a new signed object, verified independently of its predecessor; (3) at grant issuance — the grant binds the digest-verified tuple, so a manifest substituted after admission cannot inherit grants made against another.
+- **Verification points** (fixing _what_ is verified where; #5905 D2 already fixed _that_ verification happens): (1) at admission — an unsigned, badly signed, or unverifiable manifest is not filed, and the refusal is a stable code, not a silent drop; (2) on every manifest change — a new version is a new signed object, verified independently of its predecessor; (3) at grant issuance — the grant binds the digest-verified tuple, so a manifest substituted after admission cannot inherit grants made against another.
 - **Admission is not a countersignature.** The registry's admission act (admitted-by, ceiling posture, admitted-at) is a separate registry record referencing the manifest digest. The manifest remains single-author — its provider — which keeps provenance and blame exact: the provider answers for what it offered, the registry answers for what it admitted, and neither signature can be mistaken for the other.
 - Transport authentication never substitutes for the signature (#5905 D2): a manifest arriving over an authenticated channel with a bad signature is refused; a correctly signed manifest arriving over a bridge is exactly as valid as a local one (bridges are transport, #5905 D5).
 
@@ -88,17 +88,17 @@ The signed field set (every field below is inside the signature unless marked ot
 2. **`manifest_version`** — a monotonic integer per (provider, instance, epoch). Immutable once filed: any change to any signed field is a new `manifest_version`, never an edit in place. This is the version grants and terms records bind (#5900, #5899 §4.3). Semantic-version strings may be carried as display metadata in `extensions`; the binding is the integer.
 3. **`contract_version`** — per capability. Major = breaking (schema or bounds semantics change incompatibly); minor = compatible narrowing or addition of optional arguments. Compatibility is the parent's rule: same major = compatible; a session advertises (name, version) pairs and is routed only to compatible versions (parent F13.7). Negotiation (#5899 §4) narrows within compatibility; it never manufactures it.
 
-- **Rollback protection.** A registry or discovery view refuses a `manifest_version` lower than the highest seen for its (identity, instance, epoch), and refuses an epoch rollback absolutely. A provider that must return to earlier *contents* files them as a new, higher `manifest_version` with the old contents — history moves forward only.
+- **Rollback protection.** A registry or discovery view refuses a `manifest_version` lower than the highest seen for its (identity, instance, epoch), and refuses an epoch rollback absolutely. A provider that must return to earlier _contents_ files them as a new, higher `manifest_version` with the old contents — history moves forward only.
 - **Superseded versions stay readable.** A superseded manifest version remains fetchable and verifiable until every grant bound to it has expired: audit must be able to reconstruct exactly what was offered when a grant was made (#5905 D4 — behaviour attributable from the journal alone).
 - **Deprecation and removal.** A new version may mark a capability `deprecated` (still invocable, shown as deprecated in discovery) or omit it (removed). Removal takes effect immediately for new terms records and new grants. An invocation under a still-live grant against a removed capability fails with a stable `capability_removed` refusal and is journalled as such — removal is a provider's right over its own offer, exercised in the open, never by silently degrading the capability.
 
 ### D5 — Dynamic vs static: the set is static, availability is dynamic
 
-This is the split the issue names, and the record settles it as a rule about *which layer changes*:
+This is the split the issue names, and the record settles it as a rule about _which layer changes_:
 
 - **Static — the offer.** Within one `manifest_version`, the capability set, schemas, bounds, classes, and required scopes never change. There is no runtime self-modification and no capability appears without a new signed `manifest_version`. (The fully dynamic alternative — runtime registration in the style of a mutable `tools/list` — is rejected in §7: it makes the grant's tuple binding point at a moving target and makes audit reconstruction depend on provider goodwill.)
-- **Dynamic — the liveness.** Everything about *whether* a declared capability can currently be used is dynamic state held outside the signed manifest: presence and heartbeat per `ttl_class`, the #5899 lifecycle (live → suspect → stale → tombstoned), and suspension (e.g. an OS permission is revoked on a phone: the capability is suspended in the registry/discovery view at once per #5903 D3, the manifest is unchanged, and re-declaration on re-grant resumes the same `manifest_version` if its contents are unchanged).
-- **Dynamic — which version is live.** A provider changes its offer at runtime by filing a new signed manifest version; admission re-verifies it and the discovery view updates atomically to the new version (there is never a moment where discovery shows a half-old, half-new offer). Existing grants against the old tuple are not migrated and are not revoked by the version change (the #5899 stale-rule analogue: a version change voids prior *terms records*, not grants); a provider may serve several manifest versions concurrently during a transition, and every invocation is checked against the tuple it cites.
+- **Dynamic — the liveness.** Everything about _whether_ a declared capability can currently be used is dynamic state held outside the signed manifest: presence and heartbeat per `ttl_class`, the #5899 lifecycle (live → suspect → stale → tombstoned), and suspension (e.g. an OS permission is revoked on a phone: the capability is suspended in the registry/discovery view at once per #5903 D3, the manifest is unchanged, and re-declaration on re-grant resumes the same `manifest_version` if its contents are unchanged).
+- **Dynamic — which version is live.** A provider changes its offer at runtime by filing a new signed manifest version; admission re-verifies it and the discovery view updates atomically to the new version (there is never a moment where discovery shows a half-old, half-new offer). Existing grants against the old tuple are not migrated and are not revoked by the version change (the #5899 stale-rule analogue: a version change voids prior _terms records_, not grants); a provider may serve several manifest versions concurrently during a transition, and every invocation is checked against the tuple it cites.
 - **Session advertisement is a reference, not a declaration.** A client session advertising `(name, version)` pairs (parent F13.7) is citing a filed manifest by digest; advertisement never creates, amends, or re-signs a declaration. Session-bound providers (engine, #5903 D4) file their declaration at session start with session scope and a finite `ttl_class` — the static-per-version rule holds unchanged inside the session.
 
 ### D6 — Declaration lifecycle
@@ -140,8 +140,8 @@ This is the split the issue names, and the record settles it as a rule about *wh
 
 These cannot be settled inside this record without forking a parent decision; they are recorded here as explicit open questions for #5686, and nothing in D1–D6 depends on their answers:
 
-1. **Key rotation and provider identity.** #5905 D1 fixes "a provider is its keypair". If an identity key rotates, is the rotated provider the *same* provider (existing grants, epoch, and manifest lineage carry over, under a rotation proof) or a *new* provider that must be re-admitted from `excluded`? This record's machinery works either way (rotation-as-new-provider is the conservative default until the parent rules), but the ruling belongs to the ID object model / #5686, not to the declaration layer.
-2. **Federation-scope admission.** D2 files declarations with federation intent and #5905 D5 bounds what a bridge can do, but whether a declaration admitted in one administrative domain is *admissible* in another on its home admission alone, or needs a local admission act per domain, is a cross-domain trust decision for #5686.
+1. **Key rotation and provider identity.** #5905 D1 fixes "a provider is its keypair". If an identity key rotates, is the rotated provider the _same_ provider (existing grants, epoch, and manifest lineage carry over, under a rotation proof) or a _new_ provider that must be re-admitted from `excluded`? This record's machinery works either way (rotation-as-new-provider is the conservative default until the parent rules), but the ruling belongs to the ID object model / #5686, not to the declaration layer.
+2. **Federation-scope admission.** D2 files declarations with federation intent and #5905 D5 bounds what a bridge can do, but whether a declaration admitted in one administrative domain is _admissible_ in another on its home admission alone, or needs a local admission act per domain, is a cross-domain trust decision for #5686.
 
 ## 6. Conflicts check
 

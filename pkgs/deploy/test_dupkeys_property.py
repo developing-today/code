@@ -33,7 +33,9 @@ KEY_POOL = ["svc", "ports", "environment", "A", "B", "class", "targets", "x", "y
 
 # A JVal is ("obj", [(key, JVal), ...]) | ("arr", [JVal, ...]) | ("leaf", text).
 def gen_tree(rng, depth):
-    kind = rng.choice(["str", "int", "list", "obj"] if depth < 3 else ["str", "int", "list"])
+    kind = rng.choice(
+        ["str", "int", "list", "obj"] if depth < 3 else ["str", "int", "list"]
+    )
     if kind == "str":
         return ("leaf", json.dumps(rng.choice(["v", "systemd", "", "1", "notalist"])))
     if kind == "int":
@@ -78,7 +80,11 @@ def main(argv):
             seed = int(argv[i + 1])
         if a == "--cases":
             cases = int(argv[i + 1])
-    deploy_path = args[0] if args else os.path.join(os.path.dirname(os.path.abspath(__file__)), "deploy.py")
+    deploy_path = (
+        args[0]
+        if args
+        else os.path.join(os.path.dirname(os.path.abspath(__file__)), "deploy.py")
+    )
     spec = importlib.util.spec_from_file_location("deploy", deploy_path)
     deploy = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(deploy)
@@ -109,12 +115,18 @@ def main(argv):
                 load(dup_text)
             except ValueError as exc:
                 if f"duplicate key {key!r}" not in str(exc):
-                    print(f"counterexample (unnamed key) seed={seed} case={case}: {dup_text}\nerror={exc}")
+                    print(
+                        f"counterexample (unnamed key) seed={seed} case={case}: {dup_text}\nerror={exc}"
+                    )
                     return 1
             else:
-                print(f"counterexample (duplicate accepted) seed={seed} case={case}: {dup_text}")
+                print(
+                    f"counterexample (duplicate accepted) seed={seed} case={case}: {dup_text}"
+                )
                 return 1
-    print(f"property holds: {cases} cases (seed {seed}); clean loads match json.loads, duplicates at any depth rejected naming the key")
+    print(
+        f"property holds: {cases} cases (seed {seed}); clean loads match json.loads, duplicates at any depth rejected naming the key"
+    )
     return 0
 
 

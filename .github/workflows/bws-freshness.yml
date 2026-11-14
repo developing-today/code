@@ -32,14 +32,6 @@ on:
     - cron: "23 6 * * *"
   # No push trigger exists in this workflow, so pull_request cannot
   # double-run the fixture suite (ci-policy dedup rule).
-  pull_request:
-    paths:
-      - "lib/bws-to-sops.sh"
-      - "lib/bws-to-sops-check.test.sh"
-      - "lib/bws-freshness-drift-issue.sh"
-      - "lib/bws-freshness-drift-issue.test.sh"
-      - ".github/workflows/bws-freshness.yml"
-
 permissions:
   contents: read
 

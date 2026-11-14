@@ -14,6 +14,16 @@ to it and are never used.
 
 Secrets: client_id / client_secret / refresh_token live in credentials.json
 (mode 600) under the cold-store home. They are loaded, never printed.
+
+Pagination contract (#6622): a paged read is complete, bounded, or
+says so. (1) The cursor/token is validated where read — type and
+progress (a truncated page must hand back a usable, advancing
+token). (2) The volume is bounded: every listing loop carries the
+LIST_MAX_PAGES / LIST_MAX_RESULTS bound, whose breach is an error
+naming the listing. (3) Truncation is never silent: a listing
+either completes, fails closed, or says it stopped. The closing
+inventory that dispositioned every paginated loop in the repo is
+on issue #6623.
 """
 
 from __future__ import annotations
@@ -352,6 +362,23 @@ class ColdStoreError(Exception):
     pass
 
 
+def _json_shape(value) -> str:
+    """Human name for a parsed JSON value's shape, for error messages."""
+    if value is None:
+        return "null"
+    if isinstance(value, bool):
+        return "a boolean"
+    if isinstance(value, dict):
+        return "an object"
+    if isinstance(value, list):
+        return "a list"
+    if isinstance(value, str):
+        return "a string"
+    if isinstance(value, (int, float)):
+        return "a number"
+    return type(value).__name__
+
+
 def utcnow_str() -> str:
     """SQLite datetime('now') compatible format (UTC, second precision)."""
     return datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
@@ -505,6 +532,21 @@ class ColdStore:
                 f"(invalid JSON: {e}) - repair or delete the file and "
                 "re-run `cold-store init`, then refill it from Bitwarden"
             ) from e
+        if not isinstance(creds, dict):
+            raise ColdStoreError(
+                f"credentials.json at {self.credentials_path} has an "
+                f"unexpected shape (expected a JSON object, got "
+                f"{_json_shape(creds)}) - repair or delete the file and "
+                "re-run `cold-store init`, then refill it from Bitwarden"
+            )
+        for key in ("client_id", "client_secret", "refresh_token"):
+            if key in creds and not isinstance(creds[key], str):
+                raise ColdStoreError(
+                    f"credentials.json at {self.credentials_path} has a "
+                    f"non-string {key} (got {_json_shape(creds[key])}) - "
+                    "repair the file and refill it from Bitwarden "
+                    "(credential values must be strings)"
+                )
         for key in ("client_id", "client_secret"):
             if not creds.get(key):
                 raise ColdStoreError(f"credentials.json is missing {key}")
@@ -513,13 +555,42 @@ class ColdStore:
     def load_state(self) -> dict:
         if self.state_path.exists():
             try:
-                return json.loads(self.state_path.read_text())
+                state = json.loads(self.state_path.read_text())
             except json.JSONDecodeError as e:
                 raise ColdStoreError(
                     f"state.json at {self.state_path} is corrupt "
                     f"(invalid JSON: {e}) - repair the file, or delete "
                     "it and let the next run rebuild folder state"
                 ) from e
+            if not isinstance(state, dict):
+                raise ColdStoreError(
+                    f"state.json at {self.state_path} has an unexpected "
+                    f"shape (expected a JSON object, got "
+                    f"{_json_shape(state)}) - repair the file, or delete "
+                    "it and let the next run rebuild folder state"
+                )
+            if "folders" in state:
+                folders = state["folders"]
+                if not isinstance(folders, dict):
+                    raise ColdStoreError(
+                        f"state.json at {self.state_path} has an "
+                        f"unexpected shape (folders must be a JSON "
+                        f"object mapping names to folder ids, got "
+                        f"{_json_shape(folders)}) - repair the file, or "
+                        "delete it and let the next run rebuild folder "
+                        "state"
+                    )
+                for name, folder_id in folders.items():
+                    if not isinstance(folder_id, str):
+                        raise ColdStoreError(
+                            f"state.json at {self.state_path} has an "
+                            f"unexpected shape (folder id for {name!r} "
+                            f"must be a string, got "
+                            f"{_json_shape(folder_id)}) - repair the "
+                            "file, or delete it and let the next run "
+                            "rebuild folder state"
+                        )
+            return state
         return {}
 
     def save_state(self, state: dict) -> None:
@@ -1523,9 +1594,7 @@ class ColdStore:
         if status != 200:
             raise ColdStoreError(f"files.list for get-backup failed (HTTP {status})")
         what = "files.list for get-backup"
-        files = _drive_files(
-            _drive_parse_object(resp, what), what, require_size=True
-        )
+        files = _drive_files(_drive_parse_object(resp, what), what, require_size=True)
         if not files:
             raise ColdStoreError(f"backup not found: {db_name}/{name}")
         file_id = files[0]["id"]

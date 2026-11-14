@@ -671,6 +671,9 @@ let
         inherit identity;
       };
       identityProviderImage = pkgs.callPackage ../pkgs/identity/provider-image.nix { };
+      genericRuntime = pkgs.callPackage ../pkgs/generic-containers/runtime-base.nix { };
+      genericJsRuntime = pkgs.callPackage ../pkgs/generic-containers/js-runtime.nix { };
+      genericPythonRuntime = pkgs.callPackage ../pkgs/generic-containers/python-runtime.nix { };
       mcpxDocs = pkgs.callPackage ../pkgs/mcpx/docs.nix { };
       mcpxRealServers = pkgs.callPackage ../pkgs/mcpx/real-servers.nix { };
       idMailDeploy = pkgs.callPackage ../nixos/services/id-mail/worker/deploy.nix { };
@@ -693,6 +696,9 @@ let
         mcpx-container = mcpxContainer;
         identity-image = identityImage;
         identity-provider-image = identityProviderImage;
+        generic-runtime = genericRuntime;
+        generic-js-runtime = genericJsRuntime;
+        generic-python-runtime = genericPythonRuntime;
       };
       checks = {
         # The packaging test (#1981): run the built mcpx artifact --
@@ -1176,6 +1182,7 @@ let
         "laptop-autocommit-in-progress"
         "laptop-autocommit-merge-abort"
         "laptop-backups-watchdog"
+        "laptop-state-backup"
         "laptop-repo-keeper"
         "laptop-untracked-review"
         "openclaw-backup"
@@ -1233,8 +1240,13 @@ let
     system:
     let
       pkgs = import inputs.nixpkgs-unstable { inherit system; };
+      # Crane libs for the dependency-split package build (code#8392):
+      # pkgs/fleet compiles its registry dependencies as a separate
+      # derivation per variant when these are passed.
+      craneLib = inputs.crane.mkLib pkgs;
       fleetPkgs = pkgs.callPackage ../pkgs/fleet {
         sourceRev = inputs.self.rev or "dirty";
+        inherit craneLib;
       };
     in
     {
@@ -1379,10 +1391,34 @@ let
       unhashableRegistry = pkgs.writeText "deploy-targets-unhashable.json" ''
         {"bad": {"class": ["systemd"], "restart": ["always"]}, "other": {"class": {"x": 1}, "restart": "sometimes"}}
       '';
+      validTargetService = {
+        package = "test-package";
+        entryPoint = "bin/service";
+        args = [ ];
+        environment = { };
+        secrets = [ ];
+        user = "nobody";
+        ports = [ ];
+        restart = "always";
+        healthCheck = null;
+        targets = [ "laptop" ];
+        class = "systemd";
+      };
+      invalidTargetRegistry =
+        name: target:
+        pkgs.writeText name (
+          builtins.toJSON {
+            svc = validTargetService // {
+              targets = [ target ];
+            };
+          }
+        );
+      newlineTargetRegistry = invalidTargetRegistry "deploy-targets-newline.json" "laptop\nFAKE  systemd     evil";
+      spaceTargetRegistry = invalidTargetRegistry "deploy-targets-space.json" "bad name";
     in
     {
       packages.deploy = deployPkgs.deploy;
-      deployTargets = deployPkgs.deployTargets;
+      inherit (deployPkgs) deployTargets;
       checks = {
         deploy-list =
           pkgs.runCommandLocal "check-deploy-list"
@@ -1407,6 +1443,15 @@ let
             }
             ''
               python3 ${../pkgs/deploy/test_dupkeys_property.py} ${../pkgs/deploy/deploy.py}
+              mkdir -p $out
+            '';
+        deploy-target-shape-property =
+          pkgs.runCommandLocal "check-deploy-target-shape-property"
+            {
+              nativeBuildInputs = [ pkgs.python3 ];
+            }
+            ''
+              python3 ${../pkgs/deploy/test_target_shape_property.py} ${../pkgs/deploy/deploy.py}
               mkdir -p $out
             '';
         deploy-slice2-tests =
@@ -1496,6 +1541,21 @@ let
           expect_invalid ${duplicateTargetsRegistry} "targets must not repeat a target"
           expect_invalid ${hostlessHealthCheckRegistry} "healthCheck must be an http(s) URL with a host"
           expect_invalid ${duplicatePortsRegistry} "ports must not repeat a port"
+          expect_invalid_target() {
+            registry="$1"
+            if ${deployPkgs.deploy}/bin/deploy list --registry "$registry" > target-out.txt 2> target-err.txt; then
+              echo "deploy list accepted a target with an invalid shape: $registry" >&2
+              exit 1
+            fi
+            if ! grep -Fq "targets must be host/class names matching" target-err.txt; then
+              echo "deploy list did not report the targets field for $registry" >&2
+              cat target-err.txt >&2
+              exit 1
+            fi
+            test ! -s target-out.txt
+          }
+          expect_invalid_target ${newlineTargetRegistry}
+          expect_invalid_target ${spaceTargetRegistry}
           mkdir -p $out
           cp err.txt $out/errors.txt
         '';

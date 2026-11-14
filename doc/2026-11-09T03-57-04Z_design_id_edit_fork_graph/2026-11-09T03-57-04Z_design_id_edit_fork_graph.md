@@ -91,7 +91,7 @@ rejected line.
    exactly one lineage, so lineages partition the graph, and the
    partition is a pure function of the DAG — deterministic and
    arrival-order independent, like the fold beneath it. A lineage's
-   *tip* is its last revision; a lineage is *live* while its tip is a
+   _tip_ is its last revision; a lineage is _live_ while its tip is a
    head.
 4. **Fork.** Forking is not an operation on identity; it is the
    observable event that a revision branches — either a second child of
@@ -140,7 +140,7 @@ the shape of this projection, not the query layer).
    a scope the viewer belongs to (§5); else the deterministic first
    live lineage in the fold's ID order. Where the approval flow
    (#5835) is enabled for the object, its effective version outranks
-   this default for *effective-version* display — approval decides
+   this default for _effective-version_ display — approval decides
    effect, this rule only decides what an ungoverned view opens on.
 
 ## 5. Mark-most-correct
@@ -156,8 +156,8 @@ revision, no lineage, and no other scope's view.
    the ranking record sets for graffiti marks, which are a second mark
    type under this same model (their demotion mechanics are #5836 §5's;
    this record defines no demotion).
-2. **Scopes.** A scope is either *personal* (the marker's own key —
-   the mark exists only in their view) or a *community scope* named by
+2. **Scopes.** A scope is either _personal_ (the marker's own key —
+   the mark exists only in their view) or a _community scope_ named by
    a board or collection whose membership defines it. There is no
    server-wide, network-wide, or global scope.
 3. **Who may mark.** In a personal scope: the marker, over any lineage
@@ -173,7 +173,7 @@ revision, no lineage, and no other scope's view.
    therefore impossible by construction, and cross-scope disagreement
    is not conflict but coexistence: two scopes may mark different
    lineages of the same object at the same time, and both are correct
-   *for their scope*.
+   _for their scope_.
 5. **Marks follow the lineage, not the pinned tip.** A mark names a
    lineage; as the lineage extends, the mark's current referent is the
    lineage's current tip. The tip at mark time is kept in the record,
@@ -183,7 +183,7 @@ revision, no lineage, and no other scope's view.
 6. **Display is always scope-qualified.** No surface may render a bare
    "most correct" without its scope ("most correct — board B"), and a
    viewer in several scopes sees each scope's mark labelled. This
-   answers the parent's open question: marks *can* point different
+   answers the parent's open question: marks _can_ point different
    ways across communities, and the display rule is that they are
    never merged into one verdict.
 7. **Consumer mapping (for #5836).** Ranking tier 2 reads: the current
@@ -233,7 +233,7 @@ parent (§5677 §4) requires the graph to record "proposal, discussion
 6. **Proposals are coordination, not a gate.** A merge revision may
    exist without any proposal (a direct merge by an actor who can see
    both lineages); it is fully attributed in the changelog like any
-   other. Proposals become the *required* path only where governance
+   other. Proposals become the _required_ path only where governance
    requires them — an approval-enabled object/collection per #5835 —
    never by this record's default.
 7. **No silent content merging.** A merge revision's content is
@@ -299,7 +299,7 @@ parent (§5677 §4) requires the graph to record "proposal, discussion
   a private query path.
 - **#5832 (multiplayer edit sessions, open).** The CRDT-class session
   merge model is #5832's, including its limits. Sessions operate
-  *within* a lineage's head; a session never silently creates a fork —
+  _within_ a lineage's head; a session never silently creates a fork —
   branching is a revision-level event (§3), however the session's
   output is committed.
 - **#5834 (talk page + changelog, open).** The changelog's data model
@@ -309,7 +309,7 @@ parent (§5677 §4) requires the graph to record "proposal, discussion
   by #5677 §4's "every edit, fork, mark, and approval") and that
   proposal discussion lives on the talk page.
 - **#5835 (approval flow, open).** Where approval governance is
-  enabled, it decides the object's *effective version*, and proposal
+  enabled, it decides the object's _effective version_, and proposal
   decisions route through it (§6 rule 4). Marks remain signals and
   never override an approval outcome; #5835 must confirm this
   composition when it settles (§10).
@@ -318,7 +318,7 @@ parent (§5677 §4) requires the graph to record "proposal, discussion
   that record names this design as its hard prerequisite). This record
   consumes nothing from ranking; graffiti demotion never feeds back
   into graph visibility (§4 rule 3).
-- **Revision substrate (#3814, landed).** Fork/merge *representation*
+- **Revision substrate (#3814, landed).** Fork/merge _representation_
   is the substrate's signed events; this record adds no wire types.
   Deletion/erasure stays out of scope exactly as the substrate leaves
   it — the takedown design the parent names must still be reconciled
@@ -361,7 +361,7 @@ prerequisite lands — not before):**
   story stays trivially readable.
 - **Cross-scope view composition.** A viewer in several scopes with
   different marks sees them side by side, labelled (§5 rule 6). A
-  combined "boards I trust" aggregate is a *view* choice a client may
+  combined "boards I trust" aggregate is a _view_ choice a client may
   build from the per-scope facts; standardizing one is deferred until
   a consumer needs it.
 

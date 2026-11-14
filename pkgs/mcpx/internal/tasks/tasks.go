@@ -163,6 +163,14 @@ type Fault struct {
 	Code    int    `json:"code"`
 	Message string `json:"message"`
 	Data    any    `json:"data,omitempty"`
+
+	// Relayed marks a fault that is a peer's error carried verbatim,
+	// as opposed to one minted by the carrier itself. It rides the
+	// fault JSON so the provenance survives the store, including its
+	// database persistence; a consumer rendering a fault back into a
+	// protocol error uses it to leave a peer's error untouched
+	// (#2435).
+	Relayed bool `json:"relayed,omitempty"`
 }
 
 func (f *Fault) Error() string { return f.Message }

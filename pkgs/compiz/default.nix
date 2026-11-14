@@ -13,6 +13,7 @@
   libnotify,
   libstartup_notification,
   libwnck3,
+  libxcursor,
   libxml2,
   libxslt,
   makeWrapper,
@@ -64,7 +65,7 @@ stdenv.mkDerivation (f: {
     mesa_glu
     pcre2
     protobuf
-    xorg.libXcursor
+    libxcursor
     xorg.libXdmcp
     xorgserver
   ];
