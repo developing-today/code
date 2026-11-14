@@ -1778,9 +1778,26 @@ async function overviewContext(): Promise<Awaited<ReturnType<typeof loadOverview
 // acceptance path — in-process recordFreshness, the IPC handler, and
 // the reconciler's synthetic invalidations all publish through the
 // same store.
+//
+// #5082 (2026-11-14): invalidate, don't clear. Notices land every few
+// minutes (115 in the 3 h before steward run 379), and clear() dropped
+// the cached assembly entirely, so the first post-notice request paid
+// the full cold assembly on the request path. That request is
+// routinely an hourly watch arriving after a quiet gap; when the
+// assembly chain inflated past the 10 s dashboard deadline under load
+// (steward runs 378/379: /api/overview.json 503 at 10.42 s, pass 2
+// clean), the deadline's last-good was always older than its 5-minute
+// staleness cap at that cadence, so the fallback was a hard 503.
+// invalidate() keeps the last assembly servable under the ordinary
+// SWR contract — the first post-notice request serves it immediately
+// and refreshes behind it — and the kick below starts that refresh
+// at notice time, so an accepted revision becomes visible one
+// assembly later without any request paying for the rebuild.
 freshnessStore.onNotice(() => {
-  overviewContextCache.clear();
-  todayContextCache.clear();
+  overviewContextCache.invalidate();
+  todayContextCache.invalidate();
+  void overviewContext().catch(() => {});
+  void todayContext().catch(() => {});
 });
 
 /** The live-source half of the /program assembly (#1046 + #1121): the
