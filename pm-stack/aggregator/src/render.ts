@@ -132,6 +132,11 @@ import {
   type Phase12StepState,
 } from "./phase12.ts";
 import {
+  PHASE_TRACKER_REPO,
+  PHASE_TRACKER_UMBRELLA,
+  derivePhaseValidation,
+} from "./phase-tracker.ts";
+import {
   BUILD_HEALTH_REPO,
   buildHealthIsStale,
   projectLane,
@@ -7171,6 +7176,43 @@ export function phase12PanelHtml(
   return `${head}${sourceLine}${queueStale}${rows}`;
 }
 
+/** The Phase tracker panel (#9923): per-phase validation state for
+ * Phases 0-13, derived live from the items source (the four #796
+ * validation audits, #1075-#1078, already in the id project's tracked
+ * refs). No hand-maintained values: a reopened audit or a new open
+ * follow-up changes the panel without an edit. Per-phase F-item
+ * progress is withheld — no machine-readable F-item mapping source
+ * exists yet (#9923), and a fabricated percentage is worse than the
+ * stated gap. */
+export function phaseTrackerPanelHtml(items: Map<RefKey, GhItem>): string {
+  const umbrellaUrl = `https://github.com/${PHASE_TRACKER_REPO}/issues/${PHASE_TRACKER_UMBRELLA}`;
+  const head = `<h2>Phase tracker — validation by phase, live from <a href="${umbrellaUrl}">#${PHASE_TRACKER_UMBRELLA}</a></h2>`;
+  const sourceLine = `<p class="muted">Source: the validation audits <a href="https://github.com/${PHASE_TRACKER_REPO}/issues/1075">#1075</a>–<a href="https://github.com/${PHASE_TRACKER_REPO}/issues/1078">#1078</a> under umbrella <a href="${umbrellaUrl}">#${PHASE_TRACKER_UMBRELLA}</a>, resolved from the same live GitHub items as the tracked-issues table above (the page provenance stamp applies). Per-phase F-item progress is not shown: no machine-readable F-item mapping source exists yet, so no percentage is rendered rather than an invented one.</p>`;
+  const rows = derivePhaseValidation(items)
+    .map((r) => {
+      const badge =
+        r.state === "validated"
+          ? `<span class="badge closed">validated — audit closed</span>`
+          : r.state === "validation-open"
+            ? `<span class="badge open">validation open — audit open</span>`
+            : r.state === "unresolved"
+              ? `<span class="badge">audit not resolved in the current source</span>`
+              : `<span class="badge">no validation audit</span>`;
+      const audit =
+        r.auditIssue === null
+          ? `<span class="muted">—</span>`
+          : `<a href="${esc(r.auditUrl ?? "")}">#${r.auditIssue}</a>${r.auditTitle ? ` ${esc(r.auditTitle)}` : ""}`;
+      const followUps = r.openFollowUps.length
+        ? r.openFollowUps
+            .map((f) => `<a href="${esc(f.url)}">#${f.issueNumber}</a>`)
+            .join(" ")
+        : `<span class="muted">—</span>`;
+      return `<tr><th scope="row">Phase ${r.phase}</th><td>${badge}</td><td>${audit}</td><td>${followUps}</td></tr>`;
+    })
+    .join("");
+  return `${head}${sourceLine}<div class="tblwrap"><table class="table table-zebra"><caption>Validation state per id-program phase, derived from live audit issue state</caption><thead><tr><th scope="col">Phase</th><th scope="col">Validation</th><th scope="col">Audit</th><th scope="col">Open follow-ups</th></tr></thead><tbody>${rows}</tbody></table></div>`;
+}
+
 /** The Build health panel (#9924): current CI lane states + the id
  * E2E nightly trend, projected from the Actions-API snapshot. A stale
  * or missing snapshot renders the warning INSTEAD of lane states —
@@ -7442,6 +7484,7 @@ export function renderProgramProject(
 <p class="muted">Built only from already-published fleet data — the orchestration section this aggregator serves and the fleet's tracked issues. No new data pipeline feeds this section.</p>${programEntries(config.sweepHealth, items)}`
     : "";
 
+  const phaseTrackerHtml = config.id === "id" ? phaseTrackerPanelHtml(items) : "";
   const phase12Html = config.id === "id" && phase12 !== undefined ? phase12PanelHtml(phase12, items, queueSnap ?? null) : "";
   const buildHealthHtml = config.id === "id" && buildHealth !== undefined ? buildHealthPanelHtml(buildHealth) : "";
   const f12Html =
@@ -7469,7 +7512,7 @@ ${poolHtml}
 ${roadmapHtml}
 ${repoCardsHtml}
 ${sweepHealthHtml}
-${phase12Html}${buildHealthHtml}${f12Html}${queueHtml}${editorialHtml}`;
+${phaseTrackerHtml}${phase12Html}${buildHealthHtml}${f12Html}${queueHtml}${editorialHtml}`;
   return layout(
     config.title,
     body,
