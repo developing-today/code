@@ -1,16 +1,16 @@
-//! The facade's side of the `id-sync` host seam (seam 9 of the crate
+//! The hub's side of the `id-sync` host seam (seam 9 of the crate
 //! split, #4406): the world hub runs each wire request as a directory
-//! action under its lease, and the directory itself is the artifact
-//! sink the pull/apply transfer writes to. The protocols live in
-//! `id_sync`; this is their composition with the hub and directory,
-//! which stay in the facade until steps 5-6.
+//! action under its lease. The protocols live in `id_sync`; this is
+//! their composition with the hub. (The other half of the seam, the
+//! `ArtifactSink` impl for the directory, lives in `id-directory`
+//! with the `Directory` type since step 6b, #4409.)
 
 use anyhow::Result;
-use id_sync::artifact::{ArtifactSink, SignedArtifact, Stored};
+use id_sync::artifact::{SignedArtifact, Stored};
 use id_sync::envelope::Envelope;
 use id_sync::host::{Availability, EnvelopeReceived, SessionHost};
 
-use crate::directory::{Directory, Received};
+use crate::directory::Received;
 use crate::directory_auth::Caller;
 use crate::directory_view::DirectoryAction;
 use crate::world_hub::WorldHub;
@@ -69,22 +69,5 @@ impl SessionHost for WorldHub {
         Ok(Availability::Available(
             outcome.artifact_page.unwrap_or_default(),
         ))
-    }
-}
-
-impl ArtifactSink for Directory {
-    fn receive_artifact(&mut self, artifact: &SignedArtifact) -> Result<Stored> {
-        Directory::receive_artifact(self, artifact)
-    }
-
-    fn receive_artifact_with_outcome(
-        &mut self,
-        artifact: &SignedArtifact,
-    ) -> Result<(Stored, Option<id_sync::artifact::LegacyArtifactNote>)> {
-        Directory::receive_artifact_with_outcome(self, artifact)
-    }
-
-    fn artifact_head_seq(&self, account: &str) -> u64 {
-        self.artifacts().head_seq(account)
     }
 }

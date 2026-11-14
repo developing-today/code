@@ -229,7 +229,6 @@ pub enum Delegation {
     Transfer,
 }
 
-
 /// A key-agreement scheme and its version (design §8.7). A policy with no scheme has `None`.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Scheme {

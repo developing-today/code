@@ -102,7 +102,7 @@
     # searches; the operator declares them read-only here.
     "fff" = {
       "args" = [ ];
-      "command" = "/home/user/.local/bin/fff-mcp";
+      "command" = "fff-mcp";
       "mcpx" = {
         "readOnlyTools" = [
           "find_files"
@@ -113,7 +113,7 @@
     };
     "fff-nix" = {
       "args" = [ "/home/user/code" ];
-      "command" = "/home/user/.local/bin/fff-mcp";
+      "command" = "fff-mcp";
       "mcpx" = {
         "readOnlyTools" = [
           "find_files"
@@ -124,7 +124,7 @@
     };
     "fff-worktree" = {
       "args" = [ "/home/user/.local/share/opencode/worktree" ];
-      "command" = "/home/user/.local/bin/fff-mcp";
+      "command" = "fff-mcp";
       "mcpx" = {
         "readOnlyTools" = [
           "find_files"

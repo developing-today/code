@@ -19,33 +19,52 @@ twice during this pass and was caught both times).
   `epic/atlas-program`, `epic/lab-cluster`, `epic/github-dynamic-compute`,
   `epic/turso-cloudflare`, `epic/saas-service`, `epic/storage`.
 - **Boards.** Org GitHub Project "Developing Today project" (developing-today
-  org Project #4) with Area/Status/Horizon/Type fields; Area is the split
+  org Project #4) with Area/Status/Horizon/Kind fields; Area is the split
   dimension and dedicated boards are filtered views over the one project
-  (pattern from code#910). Lab-cluster boards are the exception and belong to
+  (pattern from code#910). Kind is the canonical epic field: the aggregator
+  reads singleSelect `Kind` (pm-stack/aggregator/src/projects.ts) and
+  recognises epic ancestors only when Kind=Epic, so every epic's Project
+  item must carry Kind=Epic, with the `epic` label set consistently (per
+  pm-stack/README.md); no Type field or label substitutes for it.
+  Lab-cluster boards are the exception and belong to
   the Clustered-Computing org (Drew, 2026-11-12).
 - **Labels.** `epic` + `epic/<name>` (epic), `app/<name>` / `area/<name>`
   (area), `kind/<name>` (type), `design/<name>` (design effort),
   `effort/xs|s|m|l`, plus status/queue/source families. New labels are created
   only to mirror an existing fleet label (same name/color/description).
 
-## BOARD STATUS — BLOCKED on a token scope grant (needs Drew)
+## BOARD STATUS — route: `github.project-token` (scope grant CANCELLED)
 
-Every Project-board read and write in this pass failed with
-`INSUFFICIENT_SCOPES`: the automation `gh` token carries
-`admin:org, gist, repo, user, workflow` and **no `project` / `read:project`
-scope**. Labels, sub-issues, and epic creation are done; board membership,
-Area/Status/Type field values, and the dedicated ID-program view could not be
-set or even verified. Remedy (interactive, Drew only):
+The laptop automation `gh` token carries `admin:org, gist, repo, user,
+workflow` and **no `project` / `read:project` scope**, so in this pass every
+Project-board read and write attempted with that token failed with
+`INSUFFICIENT_SCOPES`. Labels, sub-issues, and epic creation are done.
 
-```
-gh auth refresh -s read:project,project
-```
+That is not a blocker, and nothing here waits on Drew: the laptop-token
+project-scope grant is **CANCELLED** — it requires fresh sign-in through
+Vertex SSO, which the fleet must never trigger or require (Drew ruling
+2026-11-12, recorded in `pm-stack/design-reprioritization-2026-11-12.md`).
+Do not schedule, suggest, or retry any token scope refresh for this purpose.
 
-Follow-up pass owed once granted: (1) add the crate-split chain (#2056, #3195,
-#3447, steps) and every epic issue in this manifest to Project #4 with Area set;
-(2) create/verify the ID-program dedicated view on Project #4; (3) fleet-wide
-board-membership audit against the epic taxonomy below; (4) lab-cluster boards
-in the Clustered-Computing org.
+Org Project #4 work uses the documented Projects v2 GraphQL route with
+the `github.project-token` secret instead. That route is proven: on
+2026-11-12 the six program views (views 16-21) were created on Project #4
+via `github.project-token` and verified by read-back, including the
+ID-program dedicated view ("Program — P1 ID", view 16) — so the ID-program
+view follow-up from the original pass is already done, not owed.
+
+Follow-up pass, via the `github.project-token` route: (1) add the
+crate-split chain (#2056, #3195, #3447, steps) and every epic issue in
+this manifest to Project #4 with Area set and, for every epic issue,
+Kind=Epic set on its Project item (canonical per pm-stack/README.md —
+dashboard epic membership comes only from Kind=Epic); (2) verify the ID-program
+dedicated view on Project #4 (view 16, created 2026-11-12 — verify, do
+not recreate); (3) fleet-wide board-membership audit against the epic
+taxonomy below; (4) lab-cluster boards in the Clustered-Computing org.
+Personal-repo (dezren39/*) issues cannot be placed on org Project #4 —
+a settled constraint per the same ruling; their tracking home is labels
+
+- milestones + this register.
 
 ## Phase 1 — the pkgs/id crate split (complete except boards)
 
@@ -73,13 +92,13 @@ in comments on #3447 (issuecomment-6832720755) and #2056
 
 ### developing-today/code — 1,070 → 1,073 open (concurrent fleet activity during the run)
 
-| Coverage | Before | After |
-|---|---|---|
-| ≥1 `epic/*` label | 873 (81.6%) | 929 (86.6%) |
+| Coverage            | Before      | After       |
+| ------------------- | ----------- | ----------- |
+| ≥1 `epic/*` label   | 873 (81.6%) | 929 (86.6%) |
 | `app/*` or `area/*` | 629 (58.8%) | 628 (58.5%) |
-| `kind/*` | 666 (62.2%) | 732 (68.2%) |
-| All three | 436 (40.7%) | 439 (40.9%) |
-| Epic-marker issues | 42 | 46 |
+| `kind/*`            | 666 (62.2%) | 732 (68.2%) |
+| All three           | 436 (40.7%) | 439 (40.9%) |
+| Epic-marker issues  | 42          | 46          |
 
 Writes (all read back): 67 mechanical `kind/*` labels (legacy `bug`/
 `enhancement`/`design`/`documentation` → prefixed forms); 2 native links
@@ -88,12 +107,12 @@ parented — notably 30 id-platform children sit under closed epic #6312);
 4 new epics for coherent unplaced clusters ≥8, children labeled + natively
 linked (54 total, 0 failures):
 
-| Epic | Label | Children |
-|---|---|---|
-| #8976 main-broken CI reports | `epic/main-broken` | 20 |
-| #8977 crate splits (other pkgs) | `epic/crate-splits` | 16 |
-| #8978 daily maintenance | `epic/daily-maintenance` | 10 |
-| #8979 scheduled tasks | `epic/scheduled-tasks` | 8 |
+| Epic                            | Label                    | Children |
+| ------------------------------- | ------------------------ | -------- |
+| #8976 main-broken CI reports    | `epic/main-broken`       | 20       |
+| #8977 crate splits (other pkgs) | `epic/crate-splits`      | 16       |
+| #8978 daily maintenance         | `epic/daily-maintenance` | 10       |
+| #8979 scheduled tasks           | `epic/scheduled-tasks`   | 8        |
 
 **Ambiguous epic labels in code** (native linking not possible without Drew's
 pick of a single home epic): multiple epic-marker carriers — `epic/lab-cluster`
@@ -395,18 +414,18 @@ have epic issues in developing-today/code, members natively linked and
 verified from both the epics' sub-issue lists (per_page=100) and sampled
 children's parent pointers:
 
-| Epic | Label | Members | Natively linked |
-|---|---|---|---|
-| #8983 Atlas program | `epic/atlas-program` | 68 | 68 |
-| #8985 GitHub and dynamic compute | `epic/github-dynamic-compute` | 28 | 24 |
-| #8986 design register | `epic/design-register` | 27 | 26 |
-| #8987 Turso + Cloudflare integration | `epic/turso-cloudflare` | 16 | 11 |
-| #8988 storage program | `epic/storage` | 11 | 10 |
-| #8989 SaaS service | `epic/saas-service` | 6 | 3 |
-| #8990 fleet tool | `epic/fleet-tool` | 6 | 6 |
-| #8991 pool routing | `epic/pool-routing` | 5 | 1 (+4 nested under member #1334) |
-| #8992 fleet apps | `epic/fleet-apps` | 2 | 2 |
-| #8993 mcpx | `epic/mcpx` | 2 | 0 (see below) |
+| Epic                                 | Label                         | Members | Natively linked                  |
+| ------------------------------------ | ----------------------------- | ------- | -------------------------------- |
+| #8983 Atlas program                  | `epic/atlas-program`          | 68      | 68                               |
+| #8985 GitHub and dynamic compute     | `epic/github-dynamic-compute` | 28      | 24                               |
+| #8986 design register                | `epic/design-register`        | 27      | 26                               |
+| #8987 Turso + Cloudflare integration | `epic/turso-cloudflare`       | 16      | 11                               |
+| #8988 storage program                | `epic/storage`                | 11      | 10                               |
+| #8989 SaaS service                   | `epic/saas-service`           | 6       | 3                                |
+| #8990 fleet tool                     | `epic/fleet-tool`             | 6       | 6                                |
+| #8991 pool routing                   | `epic/pool-routing`           | 5       | 1 (+4 nested under member #1334) |
+| #8992 fleet apps                     | `epic/fleet-apps`             | 2       | 2                                |
+| #8993 mcpx                           | `epic/mcpx`                   | 2       | 0 (see below)                    |
 
 - `epic/atlas` (8) is a strict subset of `epic/atlas-program` (68) — folded,
   no separate epic; both carrier labels sit on #8983 (label redundancy noted
@@ -420,5 +439,6 @@ children's parent pointers:
   0 direct sub-issues).
 - All members of every cluster live in developing-today/code (other repos
   checked: zero carriers). The ambiguous multi-carrier labels remain
-  untouched, awaiting Drew's pick. The Project-board blocker above is
-  unchanged by this pass.
+  untouched, awaiting Drew's pick. The Project-board status above was
+  corrected on 2026-11-13 (task 15840, issue #9345): the scope grant is
+  cancelled and Project #4 work uses the `github.project-token` route.

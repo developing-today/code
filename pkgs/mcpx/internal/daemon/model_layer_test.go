@@ -314,3 +314,146 @@ func TestBrokerSamplerPublishesSampleLifecycle(t *testing.T) {
 		t.Errorf("resp = %+v, want the answered text", out.resp)
 	}
 }
+
+// Codex P2 (PR #9021): a sampling question opened inside an
+// interruptible ask call (a prompt hook during /v1/ask kind: exec)
+// is recorded on that call, so the host driving the call sees it in
+// its ask poll and can answer it -- before, the question sat only in
+// the broker and the hook waited out its timeout.
+func TestBrokerSamplerAttachesQuestionToActiveAskCall(t *testing.T) {
+	reg := samplingRegistry(t)
+	s := &Server{reg: reg}
+	pol := defaultConsumerPolicy()
+	pol.ModelTimeout = 5 * time.Second
+	reg.asks.beginRun("call-1", "run-1", "sess-1")
+	defer reg.endAsk("call-1")
+	ctx := withAskCall(withPolicy(context.Background(), pol), "call-1")
+	fn := s.brokerSampler("sess-1")
+	type outcome struct {
+		resp model.Response
+		err  error
+	}
+	done := make(chan outcome, 1)
+	go func() {
+		resp, err := fn(ctx, model.Request{Messages: []model.Message{{Role: "user", Content: "advise"}}})
+		done <- outcome{resp, err}
+	}()
+	call, ok := reg.asks.get("call-1")
+	if !ok {
+		t.Fatal("the ask call was not registered")
+	}
+	deadline := time.Now().Add(5 * time.Second)
+	var qid string
+	for {
+		qs, _ := call.snapshot()
+		if len(qs) == 1 {
+			if qs[0].Method != "sampling/createMessage" {
+				t.Fatalf("attached question method = %q, want sampling/createMessage", qs[0].Method)
+			}
+			qid = qs[0].ID
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("the sampling question was never attached to the ask call (%d questions)", len(qs))
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if err := reg.broker.Respond(elicit.Answer{
+		ID: qid, Action: elicit.Accept, By: "test",
+		Content: json.RawMessage(`{"role":"assistant","model":"host-model","content":{"type":"text","text":"host advice"}}`),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case out := <-done:
+		if out.err != nil {
+			t.Fatalf("sampler: %v", out.err)
+		}
+		if out.resp.Text != "host advice" || out.resp.Provider != "sampling" {
+			t.Fatalf("resp = %+v, want the host's advice via sampling", out.resp)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("the sampler never returned after the ask answer")
+	}
+}
+
+// Codex P2 (PR #9021): a prompt hook inside a script-backed tool
+// invoked through the nested /v1/call path carries the owning run id
+// on its context but no askCallKey -- that path restores only
+// X-Mcpx-Run, and runDeclaredScript attaches the tool's fresh run to
+// the parent run instead of stamping an ask id. attachSample must
+// resolve the owning ask call through the run, or the hook's sampling
+// question is never exposed to the host driving the interruptible
+// call and waits out its timeout.
+func TestBrokerSamplerAttachesQuestionThroughOwningRun(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		// runOnCtx is the run id the sampler's context carries; attach
+		// additionally registers a nested run attached to run-1 for
+		// the script-backed-tool case.
+		runOnCtx string
+		attach   bool
+	}{
+		{name: "parent run on context", runOnCtx: "run-1"},
+		{name: "nested run attached to parent", runOnCtx: "run-2", attach: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			reg := samplingRegistry(t)
+			s := &Server{reg: reg}
+			pol := defaultConsumerPolicy()
+			pol.ModelTimeout = 5 * time.Second
+			reg.asks.beginRun("call-1", "run-1", "sess-1")
+			defer reg.endAsk("call-1")
+			if tc.attach {
+				if !reg.asks.attachRunToRun("run-1", "run-2") {
+					t.Fatal("attachRunToRun failed for the nested run")
+				}
+			}
+			ctx := withRun(withPolicy(context.Background(), pol), tc.runOnCtx)
+			fn := s.brokerSampler("sess-1")
+			type outcome struct {
+				resp model.Response
+				err  error
+			}
+			done := make(chan outcome, 1)
+			go func() {
+				resp, err := fn(ctx, model.Request{Messages: []model.Message{{Role: "user", Content: "advise"}}})
+				done <- outcome{resp, err}
+			}()
+			call, ok := reg.asks.get("call-1")
+			if !ok {
+				t.Fatal("the ask call was not registered")
+			}
+			deadline := time.Now().Add(5 * time.Second)
+			var qid string
+			for {
+				qs, _ := call.snapshot()
+				if len(qs) == 1 {
+					qid = qs[0].ID
+					break
+				}
+				if time.Now().After(deadline) {
+					t.Fatalf("the sampling question was never attached through the owning run (%d questions)", len(qs))
+				}
+				time.Sleep(10 * time.Millisecond)
+			}
+			if err := reg.broker.Respond(elicit.Answer{
+				ID: qid, Action: elicit.Accept, By: "test",
+				Content: json.RawMessage(`{"role":"assistant","model":"host-model","content":{"type":"text","text":"nested advice"}}`),
+			}); err != nil {
+				t.Fatal(err)
+			}
+			select {
+			case out := <-done:
+				if out.err != nil {
+					t.Fatalf("sampler: %v", out.err)
+				}
+				if out.resp.Text != "nested advice" {
+					t.Fatalf("resp = %+v, want the host's advice via the owning run", out.resp)
+				}
+			case <-time.After(5 * time.Second):
+				t.Fatal("the sampler never returned after the ask answer")
+			}
+		})
+	}
+}

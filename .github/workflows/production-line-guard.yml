@@ -13,13 +13,6 @@ on:
       - ".github/scripts/check-production-line-limit.sh"
       - ".github/scripts/check-production-line-limit.test.sh"
       - ".github/workflows/production-line-guard.yml"
-  pull_request:
-    paths:
-      - "pkgs/**"
-      - "apps/**"
-      - ".github/scripts/check-production-line-limit.sh"
-      - ".github/scripts/check-production-line-limit.test.sh"
-      - ".github/workflows/production-line-guard.yml"
   workflow_dispatch:
 
 permissions:

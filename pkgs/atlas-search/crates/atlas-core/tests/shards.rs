@@ -835,6 +835,31 @@ impl SearchBackend for Monolith {
 }
 
 #[test]
+fn sharded_backend_reports_the_shard_set_snapshot_id() {
+    // #9943: the service's result cache binds entries to the
+    // backend's snapshot id. A sharded backend reports its shard
+    // set's id (which moves on re-shard / promotion); a backend
+    // with no shard set reports None.
+    let c = corpus("snapshot", 82);
+    let set = Arc::new(
+        c.discover(&LogConnector::new(vec![Tier::Secret]), Tier::Internal)
+            .unwrap(),
+    );
+    let want = set.snapshot_id();
+    let be = ShardedBackend::new(
+        Monolith {
+            seen: Mutex::new(vec![]),
+        },
+        set,
+    );
+    assert_eq!(be.snapshot_id(), Some(want));
+    let mono = Monolith {
+        seen: Mutex::new(vec![]),
+    };
+    assert_eq!(mono.snapshot_id(), None);
+}
+
+#[test]
 fn sharded_backend_takes_vector_from_shards_and_fts_from_the_monolith() {
     let c = corpus("backend", 81);
     let set = Arc::new(

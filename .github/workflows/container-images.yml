@@ -3,18 +3,6 @@ name: container images
 # CI tier policy: see .github/ci-policy.md
 
 on:
-  pull_request:
-    paths:
-      - "pkgs/mcpx/**"
-      - "pkgs/identity/**"
-      - "pkgs/lab-ops-hub/container-image.nix"
-      - "pkgs/lab-ops-hub/container/**"
-      - "pkgs/lab-ops-hub/wrangler.jsonc"
-      - "pkgs/generic-containers/**"
-      - "lib/default.nix"
-      - "flake.nix"
-      - "flake.lock"
-      - ".github/workflows/container-images.yml"
   push:
     branches: [main]
     paths:

@@ -1503,6 +1503,7 @@ impl BoardGraph {
     /// interface. Replay therefore refuses a genesis that does not
     /// restore to the package's initial state rather than execute a
     /// signed turn under a possibly wrong participant.
+    #[cfg(feature = "sandbox")]
     pub fn replay_game_lineage(
         &self,
         game_post: &ArtifactHash,

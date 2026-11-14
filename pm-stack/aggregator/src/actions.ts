@@ -27,10 +27,14 @@
 //   itself and its run log names "requested via dashboard, action
 //   da-…".
 // - kind "session" — routed by the action's sessionSource: the
-//   orchestration pass consumes the OpenCode sources
-//   ("opencode-sandbox", "opencode-laptop") for poke/answer/stop.
-//   Sources with no live control channel (claude-code, cron) render
-//   no enabled controls.
+//   fast session-action consumer (a dedicated minutely cron,
+//   #10118) consumes the OpenCode laptop source
+//   ("opencode-laptop") for poke/answer/stop, so an answer lands
+//   inside the question tool's ~600 s live window; it also rejects
+//   "opencode-sandbox" actions (that server is retired). The
+//   orchestration pass no longer polls this slice. Sources with no
+//   live control channel (claude-code, cron) render no enabled
+//   controls.
 // - kind "preference" — the orchestration pass: set-delegation-default
 //   records the standing auto toggle (#1290; Drew's 2026-10-27 decision
 //   is the initial record). The aggregator also reads these records to
@@ -645,10 +649,28 @@ export class ActionsStore {
     );
     const valid: DashAction[] = [];
     const invalid: InvalidStoreRecord[] = [];
+    // Cross-row check (#9580, following the ViewsStore precedent in
+    // views.ts): the per-record validator cannot see that two valid
+    // rows share one id. Id-addressed consumers use find-first, so a
+    // duplicate silently shadows the later row while counts include
+    // both. Treat each later duplicate as an invalid record: it goes
+    // through the same #4151 quarantine (archive + diagnostics naming
+    // the row index and id) and never reaches the active store.
+    const firstIndexById = new Map<string, number>();
     parsed.actions.forEach((action, index) => {
       const reason = actionRecordProblem(action);
-      if (reason) invalid.push({ index, reason });
-      else valid.push(action as DashAction);
+      if (reason) {
+        invalid.push({ index, reason });
+        return;
+      }
+      const id = (action as DashAction).id;
+      const firstIndex = firstIndexById.get(id);
+      if (firstIndex !== undefined) {
+        invalid.push({ index, reason: `duplicates id "${id}" (first occurrence at row ${firstIndex})` });
+        return;
+      }
+      firstIndexById.set(id, index);
+      valid.push(action as DashAction);
     });
     this.actions = valid;
     if (invalid.length > 0) {

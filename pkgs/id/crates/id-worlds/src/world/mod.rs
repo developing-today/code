@@ -32,9 +32,12 @@ pub use crate::groups::worlds::Isolation;
 /// lives in [`crate::time`] so the crate builds without this feature.
 pub(crate) use crate::time::unix_ms;
 mod actor;
+mod admission_lease;
 mod clock;
+mod coordinator;
 mod core;
 mod handle;
+mod handoff_operations;
 pub mod hotness;
 mod metrics;
 mod replica;
@@ -48,10 +51,23 @@ mod util;
 mod tests;
 
 pub(crate) use actor::{WorldActor, WorldCommand};
+pub use admission_lease::{
+    ADMISSION_LEASE_DOMAIN, ADMISSION_LEASE_VERSION, AdmissionLease, AdmissionLeaseError,
+    MAX_ADMISSION_LEASE_DURATION_MS, ReplicaAdmissionGate, SignedAdmissionLease,
+};
 pub use clock::{Clock, ManualClock, SystemClock};
+pub use coordinator::{
+    ActiveHandoff, Coordinator, CoordinatorError, EntityInTransit, EntityOwner, ExportReceipt,
+    HandoffCompletion, HandoffStage, ImportReceipt, ObserveOutcome, ReconcileOutcome,
+    STUCK_THRESHOLD_MS, TransitStage,
+};
 pub(crate) use core::AdminHistoryByteLedger;
 pub use core::WorldCore;
 pub use handle::WorldHandle;
+pub use handoff_operations::{
+    ClientRoute, HandoffOperations, HandoffOpsEntry, HandoffOpsSnapshot, OperationKind, OpsError,
+    RouteDecision, StaleRoute,
+};
 pub use hotness::{FiredSignal, HotnessBand, HotnessReport, HotnessSignal};
 pub use metrics::{
     HistogramSnapshot, MetricsSnapshot, RegionWrites, WorldMetrics, WriteLocalitySnapshot,
@@ -162,196 +178,12 @@ impl Default for WorldLimits {
     }
 }
 
-/// Permission scopes granted by a world capability.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct WorldScopes(u8);
-
-impl WorldScopes {
-    /// Join the world and receive snapshots/events.
-    pub const JOIN: Self = Self(0b001);
-    /// Send chat messages.
-    pub const CHAT: Self = Self(0b010);
-    /// Submit game input events.
-    pub const INPUT: Self = Self(0b100);
-    /// Mint capabilities with a subset of this set.
-    pub const DELEGATE: Self = Self(0b1000);
-    /// Read chat lines without being able to send them. `CHAT` also reads.
-    pub const HISTORY: Self = Self(0b1_0000);
-    /// Install and upgrade the world's program. Carries no capability,
-    /// network, file or process authority: only the install path reads it.
-    pub const BUILDER: Self = Self(0b10_0000);
-    /// Revoke participants. Carries no capability, network, file or process
-    /// authority: only the revoke path reads it.
-    pub const MODERATOR: Self = Self(0b100_0000);
-    /// Default guest permissions.
-    pub const GUEST: Self = Self(Self::JOIN.0 | Self::CHAT.0 | Self::INPUT.0);
-    /// Every participant scope. The admin authority bits `BUILDER` and
-    /// `MODERATOR` are deliberately excluded: they are issued only by the
-    /// admin, never implied by a ceiling or handed out by a delegator.
-    pub const ALL: Self = Self(Self::GUEST.0 | Self::DELEGATE.0 | Self::HISTORY.0);
-    /// Every bit the type recognizes, including the admin authority bits.
-    /// [`Self::from_bits`] accepts these so a journaled builder or moderator
-    /// capability round-trips, without widening [`Self::ALL`].
-    const ALL_BITS: u8 = Self::ALL.0 | Self::BUILDER.0 | Self::MODERATOR.0;
-
-    /// Every recognized bit, including the admin authority bits. Used as
-    /// the seed for authority-aware effective-scope computation: unlike
-    /// [`Self::ALL`], this lets an admin-issued `BUILDER` / `MODERATOR`
-    /// bit survive the ancestor-chain intersection in
-    /// `WorldCore::authorize` (design #835 phase 2). It grants nothing on
-    /// its own — the chain intersection only ever removes bits.
-    pub(crate) const fn all_recognized() -> Self {
-        Self(Self::ALL_BITS)
-    }
-
-    /// Whether this set includes the builder authority (install modules).
-    #[must_use]
-    pub const fn is_builder(self) -> bool {
-        self.contains(Self::BUILDER)
-    }
-
-    /// Whether this set includes the moderator authority (revoke participants).
-    #[must_use]
-    pub const fn is_moderator(self) -> bool {
-        self.contains(Self::MODERATOR)
-    }
-
-    /// Role presets used by `id world invite --role`. `spectator` joins and
-    /// sees the world but not the chat; `observer` also reads chat without
-    /// sending it; `player` submits input; `guest` (the default) also chats;
-    /// `delegator` additionally mints narrower capabilities for others;
-    /// `builder` additionally installs modules; `moderator` additionally
-    /// revokes participants.
-    ///
-    /// The names are stable; the mapping to scopes is part of the protocol.
-    #[must_use]
-    pub fn from_role(name: &str) -> Option<Self> {
-        match name {
-            "spectator" => Some(Self::JOIN),
-            "observer" => Some(Self(Self::JOIN.0 | Self::HISTORY.0)),
-            "player" => Some(Self(Self::JOIN.0 | Self::INPUT.0)),
-            "guest" => Some(Self::GUEST),
-            "delegator" => Some(Self(Self::GUEST.0 | Self::DELEGATE.0)),
-            "builder" => Some(Self(Self::GUEST.0 | Self::BUILDER.0)),
-            "moderator" => Some(Self(Self::GUEST.0 | Self::MODERATOR.0)),
-            _ => None,
-        }
-    }
-
-    /// The names accepted by [`Self::from_role`].
-    pub const ROLES: &'static [&'static str] = &[
-        "spectator",
-        "observer",
-        "player",
-        "guest",
-        "delegator",
-        "builder",
-        "moderator",
-    ];
-
-    /// Raw scope bits, as journaled.
-    #[must_use]
-    pub const fn bits(self) -> u8 {
-        self.0
-    }
-
-    /// Scopes from raw bits; `None` if any bit names no scope. The admin
-    /// authority bits round-trip here even though they are outside [`Self::ALL`].
-    #[must_use]
-    pub const fn from_bits(bits: u8) -> Option<Self> {
-        if bits & !Self::ALL_BITS == 0 {
-            Some(Self(bits))
-        } else {
-            None
-        }
-    }
-
-    /// Every scope either set includes.
-    #[must_use]
-    pub const fn union(self, other: Self) -> Self {
-        Self(self.0 | other.0)
-    }
-
-    /// Only the scopes both sets include.
-    #[must_use]
-    pub const fn intersect(self, other: Self) -> Self {
-        Self(self.0 & other.0)
-    }
-
-    /// Whether this scope set includes `required`.
-    #[must_use]
-    pub const fn contains(self, required: Self) -> bool {
-        self.0 & required.0 == required.0
-    }
-
-    /// This set with the scopes it includes by implication: `CHAT` reads, so
-    /// it carries `HISTORY`. Apply it wherever sets are compared as sets.
-    #[must_use]
-    pub const fn implied(self) -> Self {
-        if self.contains(Self::CHAT) {
-            Self(self.0 | Self::HISTORY.0)
-        } else {
-            self
-        }
-    }
-
-    /// Whether a participant with this set may see chat lines.
-    #[must_use]
-    pub const fn reads_chat(self) -> bool {
-        self.0 & (Self::CHAT.0 | Self::HISTORY.0) != 0
-    }
-
-    /// The scopes a delegate of this set may hold: a subset that keeps `JOIN`.
-    /// `None` unless this set includes `DELEGATE` and `requested` is a subset.
-    /// A set with `CHAT` may delegate `HISTORY`, which `CHAT` includes.
-    #[must_use]
-    pub const fn attenuate(self, requested: Self) -> Option<Self> {
-        if self.contains(Self::DELEGATE)
-            && requested.contains(Self::JOIN)
-            && self.implied().contains(requested)
-        {
-            Some(requested)
-        } else {
-            None
-        }
-    }
-
-    /// Whether a participant with this set may cause the effect `cap`. Every
-    /// connected participant may read; `chat.say` also needs `CHAT`.
-    #[must_use]
-    pub fn allows_effect(self, cap: &str) -> bool {
-        match crate::world_caps::PROVIDER_REGISTRY
-            .get(cap)
-            .map_or(crate::world_caps::RequiredScope::Join, |provider| {
-                provider.required_scope
-            }) {
-            crate::world_caps::RequiredScope::Chat => self.contains(Self::CHAT),
-            // Reading chat needs only the right to read it (`CHAT` or
-            // `HISTORY`), the same rule the event stream applies.
-            crate::world_caps::RequiredScope::ChatRead => self.reads_chat(),
-            crate::world_caps::RequiredScope::Join => self.contains(Self::JOIN),
-        }
-    }
-
-    /// Scopes named on the wire (`join`, `chat`, `history`, `input`,
-    /// `delegate`, `builder`, `moderator`), or `None` if a name is unknown.
-    #[must_use]
-    pub fn from_names<'a>(names: impl IntoIterator<Item = &'a str>) -> Option<Self> {
-        names.into_iter().try_fold(Self(0), |scopes, name| {
-            let bit = match name {
-                "join" => Self::JOIN,
-                "chat" => Self::CHAT,
-                "history" => Self::HISTORY,
-                "input" => Self::INPUT,
-                "delegate" => Self::DELEGATE,
-                "builder" => Self::BUILDER,
-                "moderator" => Self::MODERATOR,
-                _ => return None,
-            };
-            Some(Self(scopes.0 | bit.0))
-        })
-    }
-}
+/// Permission scopes granted by a world capability. The definition
+/// lives in `id-caps` ([`id_caps::world_scopes::WorldScopes`]) so
+/// `id-directory` can name the vocabulary without depending on this
+/// crate (crate split step 6a, #4409); re-exported here at its
+/// historical path.
+pub use id_caps::world_scopes::WorldScopes;
 
 /// Bearer secret that grants access to one world. Never serialize it into a snapshot.
 #[derive(Clone, PartialEq, Eq)]
@@ -1449,12 +1281,55 @@ pub enum JournalEntry {
         /// The new setting.
         enabled: bool,
     },
-    /// A `schedule.at` request was accepted: `id` fires once, at `at_ms` (unix
+    /// A `schedule.at` request was accepted: `id` fires at `at_ms` (unix
     /// milliseconds). Written before the request's result is delivered.
+    /// A recurring schedule (#1355) also carries `interval_ms` and
+    /// `remaining` (total fires still to come, the pending one included);
+    /// both are absent for a one-shot schedule, and in entries written
+    /// before journal version 8.
     ScheduleSet {
         /// The schedule's id, unique among pending schedules.
         id: String,
         /// When it fires, in unix milliseconds.
+        at_ms: u64,
+        /// Fixed interval between fires, for a recurring schedule.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        interval_ms: Option<u64>,
+        /// Fires remaining including the pending one, for a recurring
+        /// schedule. Absent means one.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        remaining: Option<u32>,
+        /// The world the fire is delivered to, for a cross-world schedule
+        /// (#1355 part 2). Absent means this world.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        target: Option<String>,
+    },
+    /// The admin set this world's schedule-delivery consent for one peer
+    /// world (#1355 part 2, the F12.14 reciprocal-grant shape): `send`
+    /// lets this world's schedules target `peer`, `receive` lets `peer`'s
+    /// schedules be delivered here. Written whole on every change; both
+    /// false is a revocation. A cross-world fire needs the source's send
+    /// consent and the target's receive consent for the same pair.
+    ScheduleGrantSet {
+        /// The peer world's name.
+        peer: String,
+        /// This world may pend schedule fires for `peer`.
+        send: bool,
+        /// `peer` may deliver schedule fires to this world.
+        receive: bool,
+    },
+    /// This world durably accepted a cross-world schedule fire from
+    /// `source` (#1355 part 2): the receipt, keyed by source world,
+    /// schedule id, and the fire's planned time (its occurrence). Written
+    /// after the fire's `System` entry, so a source retry after a restart
+    /// is answered from the receipt instead of delivering twice.
+    ScheduleReceived {
+        /// The world the schedule belongs to.
+        source: String,
+        /// The schedule's id in the source world.
+        id: String,
+        /// The fire's planned due time in the source world, in unix
+        /// milliseconds: the occurrence key.
         at_ms: u64,
     },
     /// A pending schedule was cancelled before it fired.
@@ -1650,10 +1525,13 @@ pub enum JournalEntry {
         /// when it is the whole catalog.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         caps_ceiling: Option<Vec<String>>,
-        /// Pending schedules as `(id, at_ms)`. Absent when none are pending,
-        /// and it must match the `ScheduleSet` entries before it.
+        /// Pending schedules. Absent when none are pending, and it must
+        /// match the `ScheduleSet` entries before it. One-shot schedules
+        /// serialize in the legacy `(id, at_ms)` pair form; recurring
+        /// schedules (#1355) serialize as an object carrying their
+        /// interval and remaining fires.
         #[serde(default, skip_serializing_if = "Option::is_none")]
-        schedules: Option<Vec<(String, u64)>>,
+        schedules: Option<Vec<CheckpointSchedule>>,
         /// Active region-seam handoffs (#3870 phase 1, design #2818 §3):
         /// export fences/payloads, import receipts/dedupe keys and owner
         /// epochs, so compaction cannot resurrect an exported entity or
@@ -1755,10 +1633,17 @@ pub const JOURNAL_VERSION_CHECKPOINT_PARTS: u32 = 6;
 /// must refuse the journal at the header check.
 pub const JOURNAL_VERSION_WRITE_LEASE: u32 = 7;
 
+/// Header version of a journal that contains a recurring schedule: a
+/// [`JournalEntry::ScheduleSet`] carrying an interval / remaining count,
+/// or a checkpoint declaring one (#1355). Version-7 binaries would parse
+/// the entry yet silently restore the series as a one-shot schedule, so
+/// they must refuse the journal at the header check.
+pub const JOURNAL_VERSION_SCHEDULE_RECURRENCE: u32 = 8;
+
 /// Newest journal version this binary can read. Journals with a higher
 /// header version are refused at the header check, before any entry is
 /// applied.
-pub const MAX_JOURNAL_VERSION: u32 = JOURNAL_VERSION_WRITE_LEASE;
+pub const MAX_JOURNAL_VERSION: u32 = JOURNAL_VERSION_SCHEDULE_RECURRENCE;
 
 /// The header version a journal must carry once it contains `entry`: version 2
 /// for execution-profile entries, version 3 for region-handoff entries,
@@ -1798,15 +1683,33 @@ pub fn journal_version_required_by(entry: &JournalEntry) -> u32 {
         // and its retained events — a retained `EntityInput` event is a
         // version-3 kind even when no handoff is active (Codex review on
         // PR #3922).
+        JournalEntry::ScheduleSet {
+            interval_ms,
+            remaining,
+            target,
+            ..
+        } if interval_ms.is_some() || remaining.is_some() || target.is_some() => {
+            JOURNAL_VERSION_SCHEDULE_RECURRENCE
+        }
+        JournalEntry::ScheduleGrantSet { .. } | JournalEntry::ScheduleReceived { .. } => {
+            JOURNAL_VERSION_SCHEDULE_RECURRENCE
+        }
         JournalEntry::Checkpoint {
             transfers,
             lease,
             events,
             open_presence,
             execution_profile,
+            schedules,
             ..
         } => {
-            let base = if lease.is_some() {
+            let base = if schedules.as_ref().is_some_and(|declared| {
+                declared
+                    .iter()
+                    .any(|schedule| schedule.interval_ms.is_some() || schedule.remaining != 1)
+            }) {
+                JOURNAL_VERSION_SCHEDULE_RECURRENCE
+            } else if lease.is_some() {
                 JOURNAL_VERSION_WRITE_LEASE
             } else if open_presence.is_some() {
                 JOURNAL_VERSION_OPEN_PRESENCE
@@ -2095,12 +1998,201 @@ pub(crate) fn presence_change(text: &str) -> Option<(u64, bool)> {
     Some((value.get("participant")?.get("id")?.as_u64()?, joined))
 }
 
+/// A pending schedule (#1355): its next due time, and — for a recurring
+/// schedule — the fixed interval between fires and how many fires remain
+/// (the pending one included). A one-shot schedule is the same state with
+/// no interval and one remaining fire. Recurrence is fixed-rate: after
+/// firing at planned time `t` the next due time is `t + interval`, never
+/// `now + interval`, so late delivery and restarts cannot drift a series.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct PendingSchedule {
+    /// When the next fire is due, in unix milliseconds.
+    pub(crate) at_ms: u64,
+    /// Fixed interval between fires; `None` for a one-shot schedule.
+    pub(crate) interval_ms: Option<u64>,
+    /// Fires remaining, the pending one included. Always at least one.
+    pub(crate) remaining: u32,
+    /// The world the fire is delivered to; `None` delivers here.
+    pub(crate) target: Option<String>,
+}
+
+impl PendingSchedule {
+    /// A one-shot schedule due at `at_ms`.
+    pub(crate) fn one_shot(at_ms: u64) -> Self {
+        Self {
+            at_ms,
+            interval_ms: None,
+            remaining: 1,
+            target: None,
+        }
+    }
+
+    /// The state after one fire: `Some` re-armed state while fires remain,
+    /// `None` when the fire consumed the schedule.
+    pub(crate) fn after_fire(self) -> Option<Self> {
+        if self.remaining <= 1 {
+            return None;
+        }
+        let interval = self.interval_ms?;
+        let at_ms = self.at_ms.checked_add(interval)?;
+        Some(Self {
+            at_ms,
+            interval_ms: Some(interval),
+            remaining: self.remaining - 1,
+            target: self.target,
+        })
+    }
+}
+
+/// Default fires-remaining for a schedule record that names none: one.
+fn default_schedule_remaining() -> u32 {
+    1
+}
+
+/// Whether a schedule record's remaining count is the one-shot default.
+fn is_default_schedule_remaining(remaining: &u32) -> bool {
+    *remaining == 1
+}
+
+/// One pending schedule as a checkpoint declares it (#1355). Serializes
+/// in the legacy `(id, at_ms)` pair form while the schedule is a one-shot,
+/// so a checkpoint of one-shot schedules stays byte-compatible with
+/// journals written before journal version 8; a recurring schedule
+/// serializes as an object. Deserialization accepts both forms.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CheckpointSchedule {
+    /// The schedule's id, unique among pending schedules.
+    pub id: String,
+    /// When the next fire is due, in unix milliseconds.
+    pub at_ms: u64,
+    /// Fixed interval between fires; `None` for a one-shot schedule.
+    pub interval_ms: Option<u64>,
+    /// Fires remaining, the pending one included.
+    pub remaining: u32,
+    /// The world the fire is delivered to; `None` delivers here.
+    pub target: Option<String>,
+}
+
+impl serde::Serialize for CheckpointSchedule {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        if self.interval_ms.is_none() && self.remaining == 1 && self.target.is_none() {
+            return (self.id.clone(), self.at_ms).serialize(serializer);
+        }
+        #[derive(serde::Serialize)]
+        struct Current<'a> {
+            id: &'a str,
+            at_ms: u64,
+            #[serde(skip_serializing_if = "Option::is_none")]
+            interval_ms: Option<u64>,
+            #[serde(skip_serializing_if = "is_default_schedule_remaining")]
+            remaining: u32,
+            #[serde(skip_serializing_if = "Option::is_none")]
+            target: Option<&'a str>,
+        }
+        Current {
+            id: &self.id,
+            at_ms: self.at_ms,
+            interval_ms: self.interval_ms,
+            remaining: self.remaining,
+            target: self.target.as_deref(),
+        }
+        .serialize(serializer)
+    }
+}
+
+impl<'de> serde::Deserialize<'de> for CheckpointSchedule {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        #[derive(serde::Deserialize)]
+        #[serde(untagged)]
+        enum Repr {
+            Legacy((String, u64)),
+            Current {
+                id: String,
+                at_ms: u64,
+                #[serde(default)]
+                interval_ms: Option<u64>,
+                #[serde(default = "default_schedule_remaining")]
+                remaining: u32,
+                #[serde(default)]
+                target: Option<String>,
+            },
+        }
+        Ok(match Repr::deserialize(deserializer)? {
+            Repr::Legacy((id, at_ms)) => Self {
+                id,
+                at_ms,
+                interval_ms: None,
+                remaining: 1,
+                target: None,
+            },
+            Repr::Current {
+                id,
+                at_ms,
+                interval_ms,
+                remaining,
+                target,
+            } => Self {
+                id,
+                at_ms,
+                interval_ms,
+                remaining,
+                target,
+            },
+        })
+    }
+}
+
+/// This world's schedule-delivery consent for one peer world (#1355
+/// part 2): the pair must be reciprocal across the two worlds for a
+/// cross-world fire to happen — the source holds `send` for the target,
+/// the target holds `receive` for the source.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) struct ScheduleGrant {
+    /// This world may pend schedule fires for the peer.
+    pub(crate) send: bool,
+    /// The peer may deliver schedule fires to this world.
+    pub(crate) receive: bool,
+}
+
+/// A boxed future, so [`ScheduleDelivery`] stays object-safe (the
+/// [`crate::world_hub::WorldOpener`] pattern).
+pub(crate) type ScheduleDeliveryFuture<'a> =
+    std::pin::Pin<Box<dyn std::future::Future<Output = bool> + Send + 'a>>;
+
+/// Delivers one cross-world schedule fire to its target world (#1355
+/// part 2). Installed on an actor by the composition layer (the hub);
+/// an actor with no sink leaves cross-world schedules pending, exactly
+/// like a target that refuses. `true` means the target durably accepted
+/// the fire (its receipt is journaled), so the source may consume the
+/// occurrence.
+pub(crate) trait ScheduleDelivery: Send + Sync {
+    /// Deliver the fire of schedule `id`, planned for `at_ms`, from
+    /// `source` to `target`.
+    fn deliver_schedule<'a>(
+        &'a self,
+        source: &'a str,
+        target: &'a str,
+        id: &'a str,
+        at_ms: u64,
+        late: bool,
+    ) -> ScheduleDeliveryFuture<'a>;
+}
+
 /// The host event a program receives when schedule `id` fires. `late` is set
 /// only for a schedule the journal left overdue when the world reopened.
 pub(crate) fn schedule_fired_event(id: &str, late: bool) -> String {
+    schedule_fired_event_from(id, late, None)
+}
+
+/// Like [`schedule_fired_event`], for a fire delivered from another
+/// world: the event names its source world as `from`.
+pub(crate) fn schedule_fired_event_from(id: &str, late: bool, source: Option<&str>) -> String {
     let mut event = serde_json::json!({"cap": "schedule", "event": "fired", "id": id});
     if late {
         event["late"] = serde_json::Value::Bool(true);
+    }
+    if let Some(source) = source {
+        event["from"] = serde_json::json!(source);
     }
     event.to_string()
 }
@@ -2113,7 +2205,7 @@ pub(crate) fn schedule_fired_event(id: &str, late: bool) -> String {
 /// face), so a manual clock advancing `now_ms` past a schedule also advances
 /// this deadline.
 pub(crate) fn next_schedule_wake(
-    schedules: &BTreeMap<String, u64>,
+    schedules: &BTreeMap<String, PendingSchedule>,
     now_ms: u64,
     now_instant: std::time::Instant,
     deliverable: bool,
@@ -2121,7 +2213,7 @@ pub(crate) fn next_schedule_wake(
     if !deliverable {
         return None;
     }
-    let earliest = schedules.values().min().copied()?;
+    let earliest = schedules.values().map(|schedule| schedule.at_ms).min()?;
     let wait = std::time::Duration::from_millis(earliest.saturating_sub(now_ms));
     Some(now_instant + wait)
 }

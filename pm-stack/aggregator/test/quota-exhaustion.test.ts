@@ -22,9 +22,7 @@ function pool(partial: Partial<QuotaPool> = {}, windowPartial: Record<string, un
     provider: "meta",
     plan: "pro",
     state: "ok",
-    windows: [
-      { name: "5h", unit: "tokens", limit: 10000, used: 4000, resetsAt: RESET, ...windowPartial },
-    ],
+    windows: [{ name: "5h", unit: "tokens", limit: 10000, used: 4000, resetsAt: RESET, ...windowPartial }],
     freshness: { measuredAt: "2026-11-01T01:59:00Z", source: "test-gatherer", state: "ok" },
     ...partial,
   } as QuotaPool;
@@ -118,7 +116,11 @@ describe("deriveExhaustionForecasts (#3983)", () => {
   });
 
   test("zero measured rate is an explicit unknown, not a fabricated date", () => {
-    const flat = [obs(4000, "2026-11-01T01:00:00Z"), obs(4000, "2026-11-01T01:10:00Z"), obs(4000, "2026-11-01T01:20:00Z")];
+    const flat = [
+      obs(4000, "2026-11-01T01:00:00Z"),
+      obs(4000, "2026-11-01T01:10:00Z"),
+      obs(4000, "2026-11-01T01:20:00Z"),
+    ];
     const [f] = deriveExhaustionForecasts([pool()], flat, NOW);
     expect(f).toMatchObject({ state: "unknown", reason: "zero_rate" });
   });
@@ -131,11 +133,7 @@ describe("deriveExhaustionForecasts (#3983)", () => {
   });
 
   test("a passed reset is unknown even when the dated window is at its limit", () => {
-    const [f] = deriveExhaustionForecasts(
-      [pool({}, { used: 10000, resetsAt: "2026-11-01T01:59:00Z" })],
-      clean,
-      NOW,
-    );
+    const [f] = deriveExhaustionForecasts([pool({}, { used: 10000, resetsAt: "2026-11-01T01:59:00Z" })], clean, NOW);
     expect(f).toMatchObject({ state: "unknown", reason: "reset_passed", remaining: 0 });
     expect(f.exhaustsAt).toBeUndefined();
   });
@@ -217,7 +215,15 @@ describe("deriveExhaustionForecasts (#3983)", () => {
       // Foreign-pool observations and previous-reset observations are noise:
       const noisy = [
         ...series,
-        { pool: "other", provider: "meta", window: "5h", unit: "tokens", used: 99999, resetsAt: RESET, at: series[0].at },
+        {
+          pool: "other",
+          provider: "meta",
+          window: "5h",
+          unit: "tokens",
+          used: 99999,
+          resetsAt: RESET,
+          at: series[0].at,
+        },
         obs(99999, series[0].at, "2026-10-31T12:00:00Z"),
       ];
       const [g] = deriveExhaustionForecasts([mkPool()], noisy, now);

@@ -54,13 +54,28 @@ use std::time::{Duration, Instant};
 use anyhow::{Context, Result, ensure};
 use id::sandbox::{Sandbox, SandboxLimits};
 use id::world::{
-    CapabilityBounds, JournalEntry, WorldCore, WorldEvent, WorldEventKind, WorldHandle,
-    WorldJournal, WorldLimits, WorldProgram, WorldScopes,
+    CapabilityBounds, JoinCapability, JournalEntry, WorldCore, WorldEvent, WorldEventKind,
+    WorldHandle, WorldJournal, WorldLimits, WorldProgram, WorldScopes,
 };
 use id::world_hub::{HubLimits, OpenFuture, WorldHub, WorldOpener};
 use id::world_limits::RuntimeLimits;
 use id::world_session::{WorldService, module_hash};
 use id::world_store::{FileJournal, open_world};
+
+// The shared workload-generator core (#5891): the synchronous
+// workloads below are loadgen workloads (mix table, profile, seeded
+// run spec) executed through its scheduler against the InProcess
+// surface each one implements as direct core calls. The two async,
+// wall-clock-paced workloads (many_worlds, fuel_spin_isolation)
+// keep their dedicated drivers in this step — their pacing is the
+// open-loop / rate-based executor work of the record's later steps —
+// and their output lines are unchanged, as are all lines here.
+#[path = "../tests/common/loadgen.rs"]
+mod loadgen;
+
+/// The fixed seed of every bench run on the core: a bench run must
+/// be replayable from its spec (#5891, determinism before realism).
+const BENCH_SEED: u64 = 0x5891;
 
 const MANY_WORLDS_ADMIN: &str = "f11-many-worlds-benchmark";
 const COUNTER_WASM: &[u8] = include_bytes!("../examples/roc-counter/counter.wasm");
@@ -776,155 +791,459 @@ fn report(name: &str, unit: &str, samples: Vec<f64>) {
     );
 }
 
-fn bench_journal_append(dir: &PathBuf, entries: u64, reps: usize) -> Result<Vec<f64>> {
-    let mut samples = Vec::new();
-    for rep in 0..reps {
-        let path = dir.join(format!("append-{rep}.jsonl"));
-        let (mut journal, _) = FileJournal::open(&path, "bench-append")?;
-        let start = Instant::now();
-        for seq in 1..=entries {
-            journal.append(&JournalEntry::Committed {
-                event: chat_event(seq, "benchmark chat payload"),
-            })?;
+/// The `journal_append_fsync` workload on the loadgen core (#5891
+/// step 1): one actor, a single-family journal-append mix, the
+/// `InProcess` surface as direct `FileJournal` calls.
+struct AppendTarget {
+    dir: PathBuf,
+    rep: usize,
+}
+
+struct AppendSession {
+    journal: FileJournal,
+    seq: u64,
+}
+
+impl loadgen::Target<AppendSession> for AppendTarget {
+    fn connect(
+        &mut self,
+        _seed: u64,
+        _actor: &loadgen::Actor,
+    ) -> Result<AppendSession, loadgen::OpError> {
+        let path = self.dir.join(format!("append-{}.jsonl", self.rep));
+        self.rep += 1;
+        let (journal, _) = FileJournal::open(&path, "bench-append")
+            .map_err(|e| loadgen::OpError::Failed(format!("{e:#}")))?;
+        Ok(AppendSession { journal, seq: 0 })
+    }
+
+    fn execute(
+        &mut self,
+        session: &mut AppendSession,
+        op: loadgen::OpKind,
+        _payload: &[u8],
+    ) -> Result<Duration, loadgen::OpError> {
+        match op {
+            loadgen::OpKind::JournalAppend => {
+                session.seq += 1;
+                let start = Instant::now();
+                session
+                    .journal
+                    .append(&JournalEntry::Committed {
+                        event: chat_event(session.seq, "benchmark chat payload"),
+                    })
+                    .map_err(|e| loadgen::OpError::Failed(format!("{e:#}")))?;
+                Ok(start.elapsed())
+            }
+            other => Err(loadgen::OpError::Unsupported(other)),
         }
-        samples.push(start.elapsed().as_secs_f64() * 1e6 / entries as f64);
-        black_box(journal);
+    }
+
+    fn disconnect(&mut self, session: AppendSession) -> Result<(), loadgen::OpError> {
+        black_box(session.journal);
+        Ok(())
+    }
+}
+
+fn bench_journal_append(dir: &PathBuf, entries: u64, reps: usize) -> Result<Vec<f64>> {
+    let mut target = AppendTarget {
+        dir: dir.clone(),
+        rep: 0,
+    };
+    let mut samples = Vec::new();
+    for _ in 0..reps {
+        let summary = loadgen::run(
+            &mut target,
+            &loadgen::RunSpec {
+                seed: BENCH_SEED,
+                workload: loadgen::Workload {
+                    name: "journal_append_fsync".to_owned(),
+                    mix: loadgen::MixTable::single(loadgen::OpKind::JournalAppend),
+                    ops_per_actor: entries,
+                    warm_up_ops: 0,
+                    payload_bytes: 0,
+                },
+                profile: loadgen::Profile::honest("bench"),
+                scale: "S0".to_owned(),
+                surface: loadgen::Surface::InProcess,
+                actors: 1,
+            },
+        )
+        .map_err(|e| anyhow::anyhow!("{e}"))?;
+        let stats = summary.stats(loadgen::OpKind::JournalAppend);
+        samples.push(stats.total().as_secs_f64() * 1e6 / entries as f64);
     }
     Ok(samples)
+}
+
+/// The `checkpoint_compaction` workload on the loadgen core: the
+/// journal fill is session setup (untimed, as before); the measured
+/// operation is the single compaction.
+struct CompactTarget {
+    dir: PathBuf,
+    entries: u64,
+    rep: usize,
+}
+
+struct CompactSession {
+    journal: FileJournal,
+    compacted: Vec<JournalEntry>,
+}
+
+impl loadgen::Target<CompactSession> for CompactTarget {
+    fn connect(
+        &mut self,
+        _seed: u64,
+        _actor: &loadgen::Actor,
+    ) -> Result<CompactSession, loadgen::OpError> {
+        let path = self.dir.join(format!("compact-{}.jsonl", self.rep));
+        self.rep += 1;
+        let (mut journal, _) = FileJournal::open(&path, "bench-compact")
+            .map_err(|e| loadgen::OpError::Failed(format!("{e:#}")))?;
+        for seq in 1..=self.entries {
+            journal
+                .append(&JournalEntry::Committed {
+                    event: chat_event(seq, "benchmark chat payload"),
+                })
+                .map_err(|e| loadgen::OpError::Failed(format!("{e:#}")))?;
+        }
+        // The set a real compaction writes: header + participants +
+        // checkpoint, far smaller than the journal it replaces. 64
+        // stand-in entries keep the payload honest without building
+        // a full checkpoint state here.
+        let compacted: Vec<JournalEntry> = (1..=64)
+            .map(|seq| JournalEntry::Committed {
+                event: chat_event(seq, "checkpoint stand-in payload"),
+            })
+            .collect();
+        Ok(CompactSession { journal, compacted })
+    }
+
+    fn execute(
+        &mut self,
+        session: &mut CompactSession,
+        op: loadgen::OpKind,
+        _payload: &[u8],
+    ) -> Result<Duration, loadgen::OpError> {
+        match op {
+            loadgen::OpKind::JournalCompact => {
+                let start = Instant::now();
+                session
+                    .journal
+                    .compact(&session.compacted)
+                    .map_err(|e| loadgen::OpError::Failed(format!("{e:#}")))?;
+                Ok(start.elapsed())
+            }
+            other => Err(loadgen::OpError::Unsupported(other)),
+        }
+    }
+
+    fn disconnect(&mut self, session: CompactSession) -> Result<(), loadgen::OpError> {
+        black_box(session.journal);
+        Ok(())
+    }
 }
 
 fn bench_compaction(dir: &PathBuf, entries: u64, reps: usize) -> Result<Vec<f64>> {
-    // The set a real compaction writes: header + participants + checkpoint,
-    // far smaller than the journal it replaces. 64 stand-in entries keep the
-    // payload honest without building a full checkpoint state here.
-    let compacted: Vec<JournalEntry> = (1..=64)
-        .map(|seq| JournalEntry::Committed {
-            event: chat_event(seq, "checkpoint stand-in payload"),
-        })
-        .collect();
+    let mut target = CompactTarget {
+        dir: dir.clone(),
+        entries,
+        rep: 0,
+    };
     let mut samples = Vec::new();
-    for rep in 0..reps {
-        let path = dir.join(format!("compact-{rep}.jsonl"));
-        let (mut journal, _) = FileJournal::open(&path, "bench-compact")?;
-        for seq in 1..=entries {
-            journal.append(&JournalEntry::Committed {
-                event: chat_event(seq, "benchmark chat payload"),
-            })?;
-        }
-        let start = Instant::now();
-        journal.compact(&compacted)?;
-        samples.push(start.elapsed().as_secs_f64() * 1e6);
-        black_box(journal);
+    for _ in 0..reps {
+        let summary = loadgen::run(
+            &mut target,
+            &loadgen::RunSpec {
+                seed: BENCH_SEED,
+                workload: loadgen::Workload {
+                    name: "checkpoint_compaction".to_owned(),
+                    mix: loadgen::MixTable::single(loadgen::OpKind::JournalCompact),
+                    ops_per_actor: 1,
+                    warm_up_ops: 0,
+                    payload_bytes: 0,
+                },
+                profile: loadgen::Profile::honest("bench"),
+                scale: "S0".to_owned(),
+                surface: loadgen::Surface::InProcess,
+                actors: 1,
+            },
+        )
+        .map_err(|e| anyhow::anyhow!("{e}"))?;
+        let stats = summary.stats(loadgen::OpKind::JournalCompact);
+        samples.push(stats.total().as_secs_f64() * 1e6);
     }
     Ok(samples)
 }
 
-fn bench_guest_replay(events: u64, reps: usize) -> Result<Vec<f64>> {
-    // Build the journal once: world created, one participant issued, then
-    // N committed input events — the committed kind restore() actually
-    // puts in the replay list after a restart. (Committed chat is applied
-    // to core state directly and never replayed, which is how the slice-2
-    // baseline came to measure an empty guest pass; #1403.)
-    let mut core = WorldCore::new("bench-replay", WorldLimits::default())?;
-    let (participant, _token) = core.issue_capability(
-        "bench",
-        WorldScopes::JOIN.union(WorldScopes::CHAT),
-        CapabilityBounds {
+/// The `guest_replay` workload on the loadgen core: building the
+/// journal is session setup; the measured operation is one
+/// restore + replay of the whole journal (a journal read).
+struct ReplayTarget {
+    events: u64,
+}
+
+struct ReplaySession {
+    journal: Vec<JournalEntry>,
+    events: u64,
+}
+
+impl loadgen::Target<ReplaySession> for ReplayTarget {
+    fn connect(
+        &mut self,
+        _seed: u64,
+        _actor: &loadgen::Actor,
+    ) -> Result<ReplaySession, loadgen::OpError> {
+        // Build the journal once: world created, one participant
+        // issued, then N committed input events — the committed
+        // kind restore() actually puts in the replay list after a
+        // restart. (Committed chat is applied to core state
+        // directly and never replayed, which is how the slice-2
+        // baseline came to measure an empty guest pass; #1403.)
+        let mut core = WorldCore::new("bench-replay", WorldLimits::default())
+            .map_err(|e| loadgen::OpError::Failed(format!("{e:#}")))?;
+        let (participant, _token) = core
+            .issue_capability(
+                "bench",
+                WorldScopes::GUEST,
+                CapabilityBounds {
+                    expires_at: None,
+                    uses: None,
+                },
+            )
+            .map_err(|e| loadgen::OpError::Failed(format!("{e:#}")))?;
+        let mut journal: Vec<JournalEntry> = vec![JournalEntry::Created {
+            world_id: "bench-replay".to_owned(),
+            version: 1,
+        }];
+        // Rebuild the Issued entry from the minted participant via
+        // restore's own expectations: committed events only need a
+        // participant id that exists, and restore validates the
+        // header + ordering + each event kind against the
+        // participant's scopes, so the participant is issued the
+        // guest set (JOIN|CHAT|INPUT): an INPUT-less Issued entry
+        // makes restore refuse the first committed input event
+        // (#8316). Issue the capability in the restored core's
+        // place by using participant 1 events after an Issued entry
+        // we construct from the scratch participant's public fields.
+        journal.push(JournalEntry::Issued {
+            participant,
+            digest: "0".repeat(64),
+            scopes: WorldScopes::GUEST.bits(),
+            parent: None,
             expires_at: None,
             uses: None,
-        },
-    )?;
-    let mut journal: Vec<JournalEntry> = vec![JournalEntry::Created {
-        world_id: "bench-replay".to_owned(),
-        version: 1,
-    }];
-    // Rebuild the Issued entry from the minted participant via restore's own
-    // expectations: issue through a scratch core and harvest its journal by
-    // replaying chat through the public API instead — simpler: committed
-    // events only need a participant id that exists, and restore validates
-    // the header + ordering, so issue the capability in the restored core's
-    // place by using participant 1 events after an Issued entry we construct
-    // from the scratch participant's public fields.
-    journal.push(JournalEntry::Issued {
-        participant,
-        digest: "0".repeat(64),
-        scopes: (WorldScopes::JOIN.union(WorldScopes::CHAT)).bits(),
-        parent: None,
-        expires_at: None,
-        uses: None,
-        used: 0,
-        subject: None,
-    });
-    for seq in 1..=events {
-        journal.push(JournalEntry::Committed {
-            event: input_event(seq, "replay me"),
+            used: 0,
+            subject: None,
         });
+        for seq in 1..=self.events {
+            journal.push(JournalEntry::Committed {
+                event: input_event(seq, "replay me"),
+            });
+        }
+        Ok(ReplaySession {
+            journal,
+            events: self.events,
+        })
     }
 
+    fn execute(
+        &mut self,
+        session: &mut ReplaySession,
+        op: loadgen::OpKind,
+        _payload: &[u8],
+    ) -> Result<Duration, loadgen::OpError> {
+        match op {
+            loadgen::OpKind::JournalRead => {
+                let start = Instant::now();
+                let restored = WorldCore::restore(
+                    "bench-replay",
+                    WorldLimits::default(),
+                    session.journal.clone(),
+                )
+                .map_err(|e| loadgen::OpError::Failed(format!("restore: {e:#}")))?;
+                let mut guest = CountingProgram::default();
+                for event in &restored.replay {
+                    guest
+                        .update(event)
+                        .map_err(|e| loadgen::OpError::Failed(format!("{e:#}")))?;
+                }
+                // The guest must have seen every committed event: an
+                // empty or short replay is a harness bug (#1403
+                // shipped a baseline whose guest saw zero events),
+                // never a timing to record.
+                if guest.seen != session.events {
+                    return Err(loadgen::OpError::Failed(format!(
+                        "guest replay saw {} of {} committed events",
+                        guest.seen, session.events
+                    )));
+                }
+                let elapsed = start.elapsed();
+                black_box(guest.seen);
+                black_box(restored.replay.len());
+                Ok(elapsed)
+            }
+            other => Err(loadgen::OpError::Unsupported(other)),
+        }
+    }
+
+    fn disconnect(&mut self, _session: ReplaySession) -> Result<(), loadgen::OpError> {
+        Ok(())
+    }
+}
+
+fn bench_guest_replay(events: u64, reps: usize) -> Result<Vec<f64>> {
+    let mut target = ReplayTarget { events };
     let mut samples = Vec::new();
     for _ in 0..reps {
-        let start = Instant::now();
-        let restored = WorldCore::restore("bench-replay", WorldLimits::default(), journal.clone())
-            .context("restore")?;
-        let mut guest = CountingProgram::default();
-        for event in &restored.replay {
-            guest.update(event)?;
-        }
-        // The guest must have seen every committed event: an empty or
-        // short replay is a harness bug (#1403 shipped a baseline whose
-        // guest saw zero events), never a timing to record.
-        anyhow::ensure!(
-            guest.seen == events,
-            "guest replay saw {} of {events} committed events",
-            guest.seen
-        );
-        samples.push(start.elapsed().as_secs_f64() * 1e6 / events as f64);
-        black_box(guest.seen);
-        black_box(restored.replay.len());
+        let summary = loadgen::run(
+            &mut target,
+            &loadgen::RunSpec {
+                seed: BENCH_SEED,
+                workload: loadgen::Workload {
+                    name: "guest_replay".to_owned(),
+                    mix: loadgen::MixTable::single(loadgen::OpKind::JournalRead),
+                    ops_per_actor: 1,
+                    warm_up_ops: 0,
+                    payload_bytes: 0,
+                },
+                profile: loadgen::Profile::honest("bench"),
+                scale: "S0".to_owned(),
+                surface: loadgen::Surface::InProcess,
+                actors: 1,
+            },
+        )
+        .map_err(|e| anyhow::anyhow!("{e}"))?;
+        let stats = summary.stats(loadgen::OpKind::JournalRead);
+        samples.push(stats.total().as_secs_f64() * 1e6 / events as f64);
     }
     Ok(samples)
+}
+
+/// The `session_fanout` workload on the loadgen core: session setup
+/// spawns the world and subscribes every client; the measured
+/// operation is one chat round delivered to all of them (a sync
+/// round).
+struct FanoutTarget {
+    runtime: tokio::runtime::Runtime,
+    clients: usize,
+}
+
+struct FanoutSession {
+    handle: WorldHandle,
+    tokens: Vec<JoinCapability>,
+    receivers: Vec<tokio::sync::broadcast::Receiver<WorldEvent>>,
+    round: u64,
+}
+
+impl loadgen::Target<FanoutSession> for FanoutTarget {
+    fn connect(
+        &mut self,
+        _seed: u64,
+        _actor: &loadgen::Actor,
+    ) -> Result<FanoutSession, loadgen::OpError> {
+        // WorldHandle::spawn starts the world's task on the runtime,
+        // so session setup runs inside block_on, as the pre-core
+        // bench did for the whole workload.
+        let clients = self.clients;
+        self.runtime.block_on(async move {
+            let mut core = WorldCore::new("bench-fanout", WorldLimits::default())
+                .map_err(|e| loadgen::OpError::Failed(format!("{e:#}")))?;
+            // Rotate across several senders: the per-participant chat
+            // rate limit (50 messages / 10 s window) would otherwise
+            // refuse the full-size workload (100 rounds from one sender)
+            // partway through. Four senders x 25 rounds stay under the
+            // burst cap while measuring the same delivery path.
+            let mut tokens = Vec::new();
+            for sender in ["bench-0", "bench-1", "bench-2", "bench-3"] {
+                let (_participant, token) = core
+                    .issue_capability(
+                        sender,
+                        WorldScopes::JOIN.union(WorldScopes::CHAT),
+                        CapabilityBounds {
+                            expires_at: None,
+                            uses: None,
+                        },
+                    )
+                    .map_err(|e| loadgen::OpError::Failed(format!("{e:#}")))?;
+                tokens.push(token);
+            }
+            let handle = WorldHandle::spawn(core);
+            let receivers: Vec<_> = (0..clients).map(|_| handle.subscribe()).collect();
+            Ok(FanoutSession {
+                handle,
+                tokens,
+                receivers,
+                round: 0,
+            })
+        })
+    }
+
+    fn execute(
+        &mut self,
+        session: &mut FanoutSession,
+        op: loadgen::OpKind,
+        _payload: &[u8],
+    ) -> Result<Duration, loadgen::OpError> {
+        match op {
+            loadgen::OpKind::WorldSync => {
+                let round = session.round;
+                session.round += 1;
+                let start = Instant::now();
+                self.runtime.block_on(async {
+                    let token = session.tokens[(round as usize) % session.tokens.len()].clone();
+                    session
+                        .handle
+                        .chat(token, format!("fanout {round}"))
+                        .await
+                        .map_err(|e| loadgen::OpError::Failed(format!("{e:#}")))?;
+                    for receiver in &mut session.receivers {
+                        let event = receiver
+                            .recv()
+                            .await
+                            .map_err(|e| loadgen::OpError::Failed(format!("fanout recv: {e}")))?;
+                        black_box(event.sequence);
+                    }
+                    Ok::<(), loadgen::OpError>(())
+                })?;
+                Ok(start.elapsed())
+            }
+            other => Err(loadgen::OpError::Unsupported(other)),
+        }
+    }
+
+    fn disconnect(&mut self, _session: FanoutSession) -> Result<(), loadgen::OpError> {
+        Ok(())
+    }
 }
 
 fn bench_fanout(clients: usize, rounds: u64, reps: usize) -> Result<Vec<f64>> {
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()?;
+    let mut target = FanoutTarget { runtime, clients };
     let mut samples = Vec::new();
     for _ in 0..reps {
-        samples.push(runtime.block_on(async {
-            let mut core = WorldCore::new("bench-fanout", WorldLimits::default())?;
-            // Rotate across several senders: the per-participant chat rate
-            // limit (50 messages / 10 s window) would otherwise refuse the
-            // full-size workload (100 rounds from one sender) partway
-            // through. Four senders x 25 rounds stay under the burst cap
-            // while measuring the same delivery path.
-            let mut tokens = Vec::new();
-            for sender in ["bench-0", "bench-1", "bench-2", "bench-3"] {
-                let (_participant, token) = core.issue_capability(
-                    sender,
-                    WorldScopes::JOIN.union(WorldScopes::CHAT),
-                    CapabilityBounds {
-                        expires_at: None,
-                        uses: None,
-                    },
-                )?;
-                tokens.push(token);
-            }
-            let handle = WorldHandle::spawn(core);
-            let mut receivers: Vec<_> = (0..clients).map(|_| handle.subscribe()).collect();
-            let start = Instant::now();
-            for round in 0..rounds {
-                let token = tokens[(round as usize) % tokens.len()].clone();
-                handle.chat(token, format!("fanout {round}")).await?;
-                for receiver in &mut receivers {
-                    let event = receiver.recv().await.context("fanout recv")?;
-                    black_box(event.sequence);
-                }
-            }
-            Ok::<f64, anyhow::Error>(
-                start.elapsed().as_secs_f64() * 1e6 / (rounds * clients as u64) as f64,
-            )
-        })?);
+        let summary = loadgen::run(
+            &mut target,
+            &loadgen::RunSpec {
+                seed: BENCH_SEED,
+                workload: loadgen::Workload {
+                    name: "session_fanout".to_owned(),
+                    mix: loadgen::MixTable::single(loadgen::OpKind::WorldSync),
+                    ops_per_actor: rounds,
+                    warm_up_ops: 0,
+                    payload_bytes: 0,
+                },
+                profile: loadgen::Profile::honest("bench"),
+                scale: "S0".to_owned(),
+                surface: loadgen::Surface::InProcess,
+                actors: 1,
+            },
+        )
+        .map_err(|e| anyhow::anyhow!("{e}"))?;
+        let stats = summary.stats(loadgen::OpKind::WorldSync);
+        samples.push(stats.total().as_secs_f64() * 1e6 / (rounds * clients as u64) as f64);
     }
     Ok(samples)
 }

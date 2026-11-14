@@ -28,16 +28,10 @@ pub(crate) fn constant_time_eq(left: &[u8; 32], right: &[u8; 32]) -> bool {
     bool::from(left.ct_eq(right))
 }
 
-/// Lower-case hex encoding of a byte slice, two characters per byte.
-pub fn hex_encode(bytes: &[u8]) -> String {
-    const HEX: &[u8; 16] = b"0123456789abcdef";
-    let mut encoded = String::with_capacity(bytes.len() * 2);
-    for byte in bytes {
-        encoded.push(char::from(HEX[usize::from(byte >> 4)]));
-        encoded.push(char::from(HEX[usize::from(byte & 0x0f)]));
-    }
-    encoded
-}
+/// Lower-case hex encoding of a byte slice; the definition lives
+/// in `id-core` ([`id_core::hex::hex_encode`], crate split step 6a,
+/// #4409) and is re-exported at its historical path.
+pub use id_core::hex::hex_encode;
 
 /// Publish a new records snapshot through the watch channel when it differs.
 pub fn publish_records(

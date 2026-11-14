@@ -74,8 +74,8 @@ use crate::currency_poc::ledger::{
     Account, AccountError, AccountId, LedgerBackend, Transfer, TransferError, TransferId,
 };
 use crate::grants::{
-    family_fingerprints, GrantState, KeyRegistry, KeyState, RegisterRejection, RegistryEntry,
-    WindowSnapshot,
+    GrantState, KeyRegistry, KeyState, RegisterRejection, RegistryEntry, WindowSnapshot,
+    family_fingerprints,
 };
 
 /// Revocation-policy ladder (§5.1), snapshotted onto the grant record
@@ -240,14 +240,16 @@ impl GrantStore {
                 grant_id: grant.grant_id.clone(),
             });
         }
-        let entry = self.registry.register(
-            &grant.storefront_id,
-            fingerprints,
-            &grant.grant_id,
-            &grant.registering_id,
-            grant.registered_at,
-        )
-        .map_err(InsertPresentedError::Rejection)?;
+        let entry = self
+            .registry
+            .register(
+                &grant.storefront_id,
+                fingerprints,
+                &grant.grant_id,
+                &grant.registering_id,
+                grant.registered_at,
+            )
+            .map_err(InsertPresentedError::Rejection)?;
         self.order.push(grant.grant_id.clone());
         self.grants.insert(grant.grant_id.clone(), grant);
         Ok(entry)
@@ -428,11 +430,7 @@ fn derive_id(domain: &[u8], subject: &str) -> u128 {
     // Ledger ids of zero are invalid in the TigerBeetle model; the
     // derivation is deterministic, so map the (astronomically
     // unlikely) zero to one rather than failing.
-    if value == 0 {
-        1
-    } else {
-        value
-    }
+    if value == 0 { 1 } else { value }
 }
 
 /// An adverse attestation event applicable to a grant, as the
@@ -627,7 +625,8 @@ impl<'a, L: LedgerBackend> RegistrationService<'a, L> {
         let namespaces = self.store.family_namespaces(&request.storefront_id);
         let ns_refs: Vec<&str> = namespaces.iter().map(String::as_str).collect();
         let fingerprints = family_fingerprints(&ns_refs, &request.raw_key);
-        let fingerprint = crate::grants::fingerprint_of_raw(&request.storefront_id, &request.raw_key);
+        let fingerprint =
+            crate::grants::fingerprint_of_raw(&request.storefront_id, &request.raw_key);
 
         // Steps 3+4a: intent-first creation. The store's atomic
         // insert runs the §2.3 step-3 publisher-revocation check and
@@ -965,10 +964,11 @@ mod tests {
             .account_balance(hold_account_for(LEDGER_ID))
             .expect("hold account exists");
         assert_eq!(hold_balance.credits_posted, AMOUNT);
-        assert!(svc
-            .ledger()
-            .account_balance(account_id_for("grantee-1", LEDGER_ID))
-            .is_none());
+        assert!(
+            svc.ledger()
+                .account_balance(account_id_for("grantee-1", LEDGER_ID))
+                .is_none()
+        );
     }
 
     #[test]
@@ -1002,10 +1002,11 @@ mod tests {
             GrantState::PendingHold
         );
         // No second transfer was issued for the rejected presentation.
-        assert!(svc
-            .ledger()
-            .lookup_transfer(transfer_id_for_grant("grant-2"))
-            .is_none());
+        assert!(
+            svc.ledger()
+                .lookup_transfer(transfer_id_for_grant("grant-2"))
+                .is_none()
+        );
     }
 
     #[test]
@@ -1067,10 +1068,11 @@ mod tests {
         );
         assert_eq!(svc.store().grant_count(), 0);
         assert_eq!(svc.store().registry().len(), 0);
-        assert!(svc
-            .ledger()
-            .lookup_transfer(transfer_id_for_grant("grant-x"))
-            .is_none());
+        assert!(
+            svc.ledger()
+                .lookup_transfer(transfer_id_for_grant("grant-x"))
+                .is_none()
+        );
     }
 
     #[test]
@@ -1096,16 +1098,10 @@ mod tests {
     }
 
     impl LedgerBackend for LoseFirstResponse {
-        fn create_accounts(
-            &mut self,
-            accounts: &[Account],
-        ) -> Vec<Result<(), AccountError>> {
+        fn create_accounts(&mut self, accounts: &[Account]) -> Vec<Result<(), AccountError>> {
             self.inner.create_accounts(accounts)
         }
-        fn create_transfers(
-            &mut self,
-            batch: &[Transfer],
-        ) -> Vec<Result<(), TransferError>> {
+        fn create_transfers(&mut self, batch: &[Transfer]) -> Vec<Result<(), TransferError>> {
             let results = self.inner.create_transfers(batch);
             if !self.lost {
                 self.lost = true;
@@ -1116,16 +1112,10 @@ mod tests {
             }
             results
         }
-        fn try_lookup_transfer(
-            &self,
-            id: TransferId,
-        ) -> anyhow::Result<Option<Transfer>> {
+        fn try_lookup_transfer(&self, id: TransferId) -> anyhow::Result<Option<Transfer>> {
             self.inner.try_lookup_transfer(id)
         }
-        fn try_lookup_account(
-            &self,
-            id: AccountId,
-        ) -> anyhow::Result<Option<Account>> {
+        fn try_lookup_account(&self, id: AccountId) -> anyhow::Result<Option<Account>> {
             self.inner.try_lookup_account(id)
         }
         fn try_account_balance(
@@ -1134,10 +1124,7 @@ mod tests {
         ) -> anyhow::Result<Option<crate::currency_poc::ledger::AccountBalance>> {
             self.inner.try_account_balance(id)
         }
-        fn try_transfers_with_user_data_128(
-            &self,
-            value: u128,
-        ) -> anyhow::Result<Vec<Transfer>> {
+        fn try_transfers_with_user_data_128(&self, value: u128) -> anyhow::Result<Vec<Transfer>> {
             self.inner.try_transfers_with_user_data_128(value)
         }
     }
@@ -1150,13 +1137,7 @@ mod tests {
             inner: InMemoryLedger::new(),
             lost: false,
         };
-        let mut svc = RegistrationService::new(
-            GrantStore::new(),
-            ledger,
-            config(),
-            &v,
-            &adverse,
-        );
+        let mut svc = RegistrationService::new(GrantStore::new(), ledger, config(), &v, &adverse);
         let outcome = svc
             .register(&request("grant-1", "AAAAA-11111-BBBBB", 1_000))
             .unwrap();
@@ -1196,16 +1177,10 @@ mod tests {
     }
 
     impl LedgerBackend for DropFirstCreate {
-        fn create_accounts(
-            &mut self,
-            accounts: &[Account],
-        ) -> Vec<Result<(), AccountError>> {
+        fn create_accounts(&mut self, accounts: &[Account]) -> Vec<Result<(), AccountError>> {
             self.inner.create_accounts(accounts)
         }
-        fn create_transfers(
-            &mut self,
-            batch: &[Transfer],
-        ) -> Vec<Result<(), TransferError>> {
+        fn create_transfers(&mut self, batch: &[Transfer]) -> Vec<Result<(), TransferError>> {
             if !self.dropped {
                 self.dropped = true;
                 return batch
@@ -1215,16 +1190,10 @@ mod tests {
             }
             self.inner.create_transfers(batch)
         }
-        fn try_lookup_transfer(
-            &self,
-            id: TransferId,
-        ) -> anyhow::Result<Option<Transfer>> {
+        fn try_lookup_transfer(&self, id: TransferId) -> anyhow::Result<Option<Transfer>> {
             self.inner.try_lookup_transfer(id)
         }
-        fn try_lookup_account(
-            &self,
-            id: AccountId,
-        ) -> anyhow::Result<Option<Account>> {
+        fn try_lookup_account(&self, id: AccountId) -> anyhow::Result<Option<Account>> {
             self.inner.try_lookup_account(id)
         }
         fn try_account_balance(
@@ -1233,10 +1202,7 @@ mod tests {
         ) -> anyhow::Result<Option<crate::currency_poc::ledger::AccountBalance>> {
             self.inner.try_account_balance(id)
         }
-        fn try_transfers_with_user_data_128(
-            &self,
-            value: u128,
-        ) -> anyhow::Result<Vec<Transfer>> {
+        fn try_transfers_with_user_data_128(&self, value: u128) -> anyhow::Result<Vec<Transfer>> {
             self.inner.try_transfers_with_user_data_128(value)
         }
     }
@@ -1249,20 +1215,11 @@ mod tests {
             inner: InMemoryLedger::new(),
             dropped: false,
         };
-        let mut svc = RegistrationService::new(
-            GrantStore::new(),
-            ledger,
-            config(),
-            &v,
-            &adverse,
-        );
+        let mut svc = RegistrationService::new(GrantStore::new(), ledger, config(), &v, &adverse);
         let outcome = svc
             .register(&request("grant-1", "AAAAA-11111-BBBBB", 1_000))
             .unwrap();
-        assert!(matches!(
-            outcome,
-            RegistrationOutcome::IntentPending { .. }
-        ));
+        assert!(matches!(outcome, RegistrationOutcome::IntentPending { .. }));
         // Too fresh: the reconciler leaves it alone.
         let report = svc.reconcile(1_030, 60);
         assert_eq!(report.scanned, 0);
@@ -1270,11 +1227,12 @@ mod tests {
         // SAME deterministic id, confirm. Exactly one transfer.
         let report = svc.reconcile(1_000 + 3_600, 60);
         assert_eq!(report.confirmed, 1);
-        assert!(svc
-            .ledger()
-            .inner
-            .lookup_transfer(transfer_id_for_grant("grant-1"))
-            .is_some());
+        assert!(
+            svc.ledger()
+                .inner
+                .lookup_transfer(transfer_id_for_grant("grant-1"))
+                .is_some()
+        );
         let balance = svc
             .ledger()
             .inner
@@ -1320,10 +1278,11 @@ mod tests {
             .account_balance(hold_account_for(LEDGER_ID))
             .unwrap();
         assert_eq!(hold.credits_posted, AMOUNT);
-        assert!(svc
-            .ledger()
-            .account_balance(account_id_for("grantee-1", LEDGER_ID))
-            .is_none());
+        assert!(
+            svc.ledger()
+                .account_balance(account_id_for("grantee-1", LEDGER_ID))
+                .is_none()
+        );
     }
 
     #[test]
@@ -1437,20 +1396,11 @@ mod tests {
             inner: InMemoryLedger::new(),
             lost: false,
         };
-        let mut svc = RegistrationService::new(
-            GrantStore::new(),
-            ledger,
-            config(),
-            &v,
-            &adverse,
-        );
+        let mut svc = RegistrationService::new(GrantStore::new(), ledger, config(), &v, &adverse);
         let outcome = svc
             .register(&request("grant-1", "AAAAA-11111-BBBBB", 1_000))
             .unwrap();
-        assert!(matches!(
-            outcome,
-            RegistrationOutcome::IntentPending { .. }
-        ));
+        assert!(matches!(outcome, RegistrationOutcome::IntentPending { .. }));
         // Serialize the snapshot (the host's persistence form) and
         // restore from the bytes, so the test covers the real
         // round-trip, not a clone.
@@ -1492,10 +1442,7 @@ mod tests {
         let outcome = svc2
             .register(&request("grant-2", "AAAAA-11111-BBBBB", 5_000))
             .unwrap();
-        assert!(matches!(
-            outcome,
-            RegistrationOutcome::Rejected { .. }
-        ));
+        assert!(matches!(outcome, RegistrationOutcome::Rejected { .. }));
     }
 
     #[test]
@@ -1507,9 +1454,7 @@ mod tests {
         // once, (3) registry rows are append-only (count never
         // shrinks, equals distinct keys).
         let mut products = HashMap::new();
-        let keys: Vec<String> = (0..12)
-            .map(|i| format!("KEY{i:02}-AAAA-BBBB"))
-            .collect();
+        let keys: Vec<String> = (0..12).map(|i| format!("KEY{i:02}-AAAA-BBBB")).collect();
         for key in &keys {
             products.insert(key.clone(), "game-a".to_string());
         }

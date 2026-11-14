@@ -299,7 +299,9 @@ const RECORDS_READ_ARGUMENTS: &[ProviderArgument] = &[
         required: false,
     },
 ];
-/// Argument schema for `schedule.at`: a required `id` and `at`.
+/// Argument schema for `schedule.at`: a required `id` and `at`, plus the
+/// optional recurrence pair `interval_ms` / `count` (#1355): a recurring
+/// schedule names both, a one-shot schedule names neither.
 const SCHEDULE_AT_ARGUMENTS: &[ProviderArgument] = &[
     ProviderArgument {
         name: "id",
@@ -310,6 +312,21 @@ const SCHEDULE_AT_ARGUMENTS: &[ProviderArgument] = &[
         name: "at",
         value_type: ArgumentType::UnsignedInteger,
         required: true,
+    },
+    ProviderArgument {
+        name: "interval_ms",
+        value_type: ArgumentType::UnsignedInteger,
+        required: false,
+    },
+    ProviderArgument {
+        name: "count",
+        value_type: ArgumentType::UnsignedInteger,
+        required: false,
+    },
+    ProviderArgument {
+        name: "world",
+        value_type: ArgumentType::String,
+        required: false,
     },
 ];
 /// Argument schema for `schedule.cancel`: one required `id` string.
@@ -737,6 +754,9 @@ pub const MAX_SCHEDULE_HORIZON_DAYS: u64 = 30;
 pub const MAX_SCHEDULE_HORIZON_MS: u64 = MAX_SCHEDULE_HORIZON_DAYS * 24 * 60 * 60 * 1000;
 /// Most schedules delivered in one wakeup. Any left due fire on the next.
 pub const MAX_SCHEDULE_FIRES_PER_WAKEUP: usize = 64;
+/// Most fires one recurring schedule may name (#1355): recurrence is always
+/// finite, so a series cannot live forever without a bound.
+pub const MAX_SCHEDULE_RECURRENCES: u32 = 1024;
 /// Largest page of records served over the session protocol and the
 /// host view, in bytes. Cap results are not served this way: a
 /// `records.read` result is delivered through `result_event` and is
@@ -768,6 +788,34 @@ pub const MAX_RECORDS_RESULT_PAGE_BYTES: usize = MAX_EVENT_BYTES - RESULT_EVENT_
 /// # Errors
 ///
 /// Names the rule the id breaks.
+/// Check a `schedule.at` recurrence pair (#1355): one-shot schedules name
+/// neither `interval_ms` nor `count`; a recurring schedule names both, with
+/// a positive interval no longer than the schedule horizon and a finite
+/// total fire count of 2 to [`MAX_SCHEDULE_RECURRENCES`] (the first fire is
+/// the `at` time itself; the count includes it).
+///
+/// # Errors
+///
+/// Names the rule the pair breaks.
+pub fn validate_schedule_recurrence(interval_ms: Option<u64>, count: Option<u32>) -> Result<()> {
+    match (interval_ms, count) {
+        (None, None) => Ok(()),
+        (None, Some(_)) => bail!("schedule count requires interval_ms"),
+        (Some(_), None) => bail!("a recurring schedule requires a finite count"),
+        (Some(interval), Some(count)) => {
+            ensure!(
+                interval >= 1 && interval <= MAX_SCHEDULE_HORIZON_MS,
+                "schedule interval_ms must be 1 to {MAX_SCHEDULE_HORIZON_MS}"
+            );
+            ensure!(
+                (2..=MAX_SCHEDULE_RECURRENCES).contains(&count),
+                "schedule count must be 2 to {MAX_SCHEDULE_RECURRENCES}"
+            );
+            Ok(())
+        }
+    }
+}
+
 pub fn validate_schedule_id(id: &str) -> Result<()> {
     ensure!(
         !id.is_empty() && id.len() <= MAX_SCHEDULE_ID_BYTES,
@@ -2016,6 +2064,33 @@ mod tests {
         .unwrap();
         let error = validate_grant_names(&["time.nwo".to_owned()]).unwrap_err();
         assert!(error.to_string().contains("time.nwo"), "{error}");
+    }
+
+    #[test]
+    fn schedule_recurrence_pairs_are_bounded() {
+        assert!(validate_schedule_recurrence(None, None).is_ok());
+        assert!(validate_schedule_recurrence(Some(1), Some(2)).is_ok());
+        assert!(
+            validate_schedule_recurrence(
+                Some(MAX_SCHEDULE_HORIZON_MS),
+                Some(MAX_SCHEDULE_RECURRENCES)
+            )
+            .is_ok()
+        );
+        for (interval, count, needle) in [
+            (None, Some(3), "interval_ms"),
+            (Some(100), None, "finite count"),
+            (Some(0), Some(3), "interval_ms must be"),
+            (Some(100), Some(1), "count must be 2"),
+            (
+                Some(100),
+                Some(MAX_SCHEDULE_RECURRENCES + 1),
+                "count must be 2",
+            ),
+        ] {
+            let error = validate_schedule_recurrence(interval, count).unwrap_err();
+            assert!(error.to_string().contains(needle), "{error}");
+        }
     }
 
     #[test]

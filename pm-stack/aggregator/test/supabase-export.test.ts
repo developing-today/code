@@ -10,7 +10,7 @@ import { loadConfig } from "../src/config.ts";
 import { applySupabaseExport, extractSaasServices, type SupabaseExportDoc } from "../src/saas-extract.ts";
 import { SnapshotStore } from "../src/snapshots.ts";
 import { liveSource } from "../src/sources/live.ts";
-import { createSupabaseClientGetter } from "../src/supabase.ts";
+import { createSupabaseClientGetter, resolveSupabaseProjectRef } from "../src/supabase.ts";
 
 const VIEW = `
 ## Summary (b) — subscriptions, infrastructure, account tooling
@@ -69,6 +69,30 @@ describe("getSupabaseClient retry-after-null memoization", () => {
       if (previousProjectRef === undefined) delete process.env.SUPABASE_PROJECT_REF;
       else process.env.SUPABASE_PROJECT_REF = previousProjectRef;
     }
+  });
+
+  test("resolves the project ref through the canonical Bitwarden pointer", async () => {
+    const requested: string[] = [];
+    const ref = await resolveSupabaseProjectRef(async (key) => {
+      requested.push(key);
+      return key === "supabase.project-ref" ? "configured-project" : null;
+    }, {});
+
+    expect(ref).toBe("configured-project");
+    expect(requested).toEqual(["supabase.project-ref"]);
+  });
+
+  test("trims and prefers an explicit project-ref override", async () => {
+    const ref = await resolveSupabaseProjectRef(async () => {
+      throw new Error("secret lookup should not run for an explicit override");
+    }, { SUPABASE_PROJECT_REF: "  override-project  " });
+
+    expect(ref).toBe("override-project");
+  });
+
+  test("does not fall back to a project literal when the canonical ref is unavailable", async () => {
+    const ref = await resolveSupabaseProjectRef(async () => null, {});
+    expect(ref).toBeNull();
   });
 });
 

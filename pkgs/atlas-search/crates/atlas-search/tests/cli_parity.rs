@@ -26,6 +26,22 @@ fn expectations() -> Json {
         .expect("parse expectations")
 }
 
+/// Issue #9973: every executed search mints a UUIDv7 `query_id`
+/// and returns it in the envelope — a post-Python field that can
+/// never equal a recorded value. Strip it before an exact
+/// comparison, asserting it was present and well-formed.
+fn strip_query_id(got: &mut Json) -> String {
+    let id = got
+        .as_object_mut()
+        .expect("envelope is an object")
+        .remove("query_id")
+        .expect("envelope carries query_id (issue #9973)");
+    let id = id.as_str().expect("query_id is a string").to_string();
+    assert_eq!(id.len(), 36, "query_id is a UUID: {id}");
+    assert_eq!(id.as_bytes()[14], b'7', "query_id is UUIDv7: {id}");
+    id
+}
+
 fn fixture_spec() -> Json {
     let p = fixtures_dir().join("fixture_spec.json");
     serde_json::from_str(&std::fs::read_to_string(p).expect("read spec")).expect("parse spec")
@@ -141,8 +157,9 @@ fn cli_search_envelopes_match_python() {
             out.status.code(),
             String::from_utf8_lossy(&out.stderr)
         );
-        let got: Json = serde_json::from_slice(&out.stdout)
+        let mut got: Json = serde_json::from_slice(&out.stdout)
             .unwrap_or_else(|e| panic!("case {name}: stdout not JSON: {e}"));
+        strip_query_id(&mut got);
         assert_eq!(
             got,
             case["envelope"],
@@ -184,8 +201,8 @@ fn cli_rejects_unsupported_query_controls_before_backend_work() {
         .join("missing.db");
     for (flags, expected) in [
         (
-            vec!["--jaccard_depth", "5"],
-            "Jaccard controls are not implemented",
+            vec!["--jaccard_threshold", "1.5"],
+            "jaccard_threshold must be a finite number in [0, 1]",
         ),
         (
             vec!["--planner_enabled"],
@@ -264,8 +281,11 @@ fn raw_mode_does_not_widen_the_sensitivity_ceiling() {
     );
     assert!(normal.status.success());
     assert!(raw.status.success());
-    let normal: Json = serde_json::from_slice(&normal.stdout).unwrap();
-    let raw: Json = serde_json::from_slice(&raw.stdout).unwrap();
+    let mut normal: Json = serde_json::from_slice(&normal.stdout).unwrap();
+    let mut raw: Json = serde_json::from_slice(&raw.stdout).unwrap();
+    // Distinct executions mint distinct query_ids (issue #9973);
+    // everything else must be identical.
+    assert_ne!(strip_query_id(&mut raw), strip_query_id(&mut normal));
     assert_eq!(raw, normal, "raw mode must keep the same filters/ceiling");
 }
 
@@ -375,11 +395,22 @@ fn cli_text_goldens_match_python() {
             out.status.code(),
             String::from_utf8_lossy(&out.stderr)
         );
-        assert_eq!(
-            String::from_utf8_lossy(&out.stdout),
-            golden,
-            "golden {file} mismatch"
-        );
+        let stdout = String::from_utf8_lossy(&out.stdout).to_string();
+        let (qid_lines, kept): (Vec<&str>, Vec<&str>) =
+            stdout.lines().partition(|l| l.starts_with("query_id: "));
+        if name == "get_chunk_neighbors" {
+            assert!(qid_lines.is_empty(), "get-chunk mints no query_id");
+        } else {
+            assert_eq!(qid_lines.len(), 1, "the CLI prints the query_id");
+            let id = qid_lines[0].trim_start_matches("query_id: ");
+            assert_eq!(id.len(), 36, "printed query_id is a UUID: {id}");
+            assert_eq!(id.as_bytes()[14], b'7', "printed query_id is UUIDv7: {id}");
+        }
+        let mut kept = kept.join("\n");
+        if stdout.ends_with('\n') {
+            kept.push('\n');
+        }
+        assert_eq!(kept, golden, "golden {file} mismatch");
     }
 }
 
@@ -496,6 +527,7 @@ fn cli_shard_fanout_matches_python_vector_results() {
             String::from_utf8_lossy(&out.stderr)
         );
         let mut got: Json = serde_json::from_slice(&out.stdout).expect("stdout JSON");
+        strip_query_id(&mut got);
         let notes = got
             .as_object_mut()
             .unwrap()

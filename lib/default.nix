@@ -1183,6 +1183,7 @@ let
         "laptop-autocommit-in-progress"
         "laptop-autocommit-merge-abort"
         "laptop-backups-watchdog"
+        "laptop-state-backup"
         "laptop-repo-keeper"
         "laptop-untracked-review"
         "openclaw-backup"

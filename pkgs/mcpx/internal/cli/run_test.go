@@ -327,3 +327,44 @@ func TestRunRestoresPlumbingSource(t *testing.T) {
 		t.Fatal("Run left its App installed as the plumbing source; later in-process clients would inherit its settings")
 	}
 }
+
+// CODE-19 (PR #9344): the JSON envelope takes the service's result
+// over its own stdout parse -- a final-expression capture is the
+// answer even when stdout parses differently, and a deliberate
+// null is an answer too.
+func TestRunEnvelopePrefersServiceResult(t *testing.T) {
+	res := &execsvc.Result{ExitCode: 0, Result: float64(2), ResultPresent: true}
+	env := runEnvelope(res, "1\n", nil, nil)
+	if env["result"] != float64(2) {
+		t.Errorf("envelope result = %#v, want the captured 2 over the stdout 1", env["result"])
+	}
+	res = &execsvc.Result{ExitCode: 0, ResultPresent: true}
+	env = runEnvelope(res, "1\n", nil, nil)
+	if v, ok := env["result"]; !ok || v != nil {
+		t.Errorf("envelope result = %#v (present %v), want an explicit null", v, ok)
+	}
+	res = &execsvc.Result{ExitCode: 0}
+	env = runEnvelope(res, "{\"a\":1}\n", nil, nil)
+	if got, ok := env["result"].(map[string]any); !ok || got["a"] != float64(1) {
+		t.Errorf("envelope result = %#v, want the stdout parse to rule when the service has none", env["result"])
+	}
+}
+
+// Codex P2 (PR #9021): the --json envelope carries retained hook
+// frames, so a prompt hook's advice reaches a JSON caller instead
+// of being generated and discarded.
+func TestRunEnvelopeCarriesHooks(t *testing.T) {
+	res := &execsvc.Result{Stdout: "hi", Hooks: []execsvc.HookFrame{
+		{On: "script", Phase: "onSuccess", Action: "prompt", Effect: "advise", Advice: "cache it"},
+		{On: "script", Phase: "onError", Action: "prompt", Effect: "advise", Error: "advice unavailable: no model provider is configured"},
+	}}
+	env := runEnvelope(res, res.Stdout, nil, nil)
+	hooks, ok := env["hooks"].([]execsvc.HookFrame)
+	if !ok || len(hooks) != 2 || hooks[0].Advice != "cache it" || hooks[1].Error == "" {
+		t.Fatalf("envelope hooks = %#v", env["hooks"])
+	}
+	bare := runEnvelope(&execsvc.Result{Stdout: "hi"}, "hi", nil, nil)
+	if _, present := bare["hooks"]; present {
+		t.Fatal("a run with no hooks must not gain a hooks key")
+	}
+}

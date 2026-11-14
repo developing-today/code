@@ -26,6 +26,7 @@ type urlRequiredReply struct {
 				ElicitationID string `json:"elicitationId"`
 				Message       string `json:"message"`
 			} `json:"elicitations"`
+			RequestState string `json:"requestState"`
 		} `json:"data"`
 	} `json:"error"`
 	Result map[string]any `json:"result"`
@@ -90,6 +91,43 @@ func TestURLRequiredWhenNoChannelToAskOn(t *testing.T) {
 	if asker.abandoned != 0 {
 		t.Errorf("the call must NOT be abandoned: the broker keeps the questions (abandoned %d)", asker.abandoned)
 	}
+	if out.Error.Data.RequestState == "" {
+		t.Fatal("-32042 must carry a requestState that correlates the host retry")
+	}
+
+	// A retry that arrives before out-of-band completion remains suspended on
+	// the original call and receives -32042 again; it does not start a duplicate.
+	early := s.Handle(context.Background(), mcpserver.Request(2, "tools/call", map[string]any{
+		"name": "mcpx_call", "arguments": map[string]any{"namespace": "x", "tool": "y"},
+		"requestState": out.Error.Data.RequestState,
+	}))
+	if early == nil || early.Error == nil || early.Error.Code != -32042 {
+		t.Fatalf("retry before completion must remain -32042, got %+v", early)
+	}
+	earlyData, _ := json.Marshal(early.Error.Data)
+	var earlyReply struct {
+		RequestState string `json:"requestState"`
+	}
+	if err := json.Unmarshal(earlyData, &earlyReply); err != nil {
+		t.Fatal(err)
+	}
+	if asker.began != 1 {
+		t.Fatalf("early retry began operation %d times, want exactly once", asker.began)
+	}
+
+	// The host completed the URL flow out of band. Retrying with the latest
+	// token resumes the original Asker call; it must not invoke the operation again.
+	asker.answers["u1"] = json.RawMessage(`{"action":"accept"}`)
+	retry := s.Handle(context.Background(), mcpserver.Request(3, "tools/call", map[string]any{
+		"name": "mcpx_call", "arguments": map[string]any{"namespace": "x", "tool": "y"},
+		"requestState": earlyReply.RequestState,
+	}))
+	if retry == nil || retry.Error != nil {
+		t.Fatalf("correlated retry failed: %+v", retry)
+	}
+	if asker.began != 1 {
+		t.Fatalf("retried operation began %d times, want exactly once", asker.began)
+	}
 }
 
 func TestURLRequiredListsOnlyURLQuestions(t *testing.T) {
@@ -124,6 +162,26 @@ func TestURLRequiredWhenPushFailsInLoop(t *testing.T) {
 	}
 	if asker.abandoned != 0 {
 		t.Errorf("abandoned %d, want 0", asker.abandoned)
+	}
+	// The in-loop -32042 must carry the same correlation as the entry
+	// trigger's (#2897): a host retrying with this requestState after
+	// completing the URL flow out of band resumes the original call
+	// instead of starting a second upstream operation.
+	if out.Error.Data.RequestState == "" {
+		t.Fatal("in-loop -32042 must carry a requestState that correlates the host retry")
+	}
+	asker.answers["u3"] = json.RawMessage(`{"action":"accept"}`)
+	// The legacy wire vehicle: 2025-11-25 defines no requestState
+	// parameter, so the host echoes the token in _meta (MetaRequestState).
+	retry := s.Handle(context.Background(), mcpserver.Request(2, "tools/call", map[string]any{
+		"name": "mcpx_call", "arguments": map[string]any{"namespace": "x", "tool": "y"},
+		"_meta": map[string]any{mcpserver.MetaRequestState: out.Error.Data.RequestState},
+	}))
+	if retry == nil || retry.Error != nil {
+		t.Fatalf("correlated in-loop retry failed: %+v", retry)
+	}
+	if asker.began != 1 {
+		t.Fatalf("retried operation began %d times, want exactly once", asker.began)
 	}
 }
 

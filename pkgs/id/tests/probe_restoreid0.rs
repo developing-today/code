@@ -8,8 +8,8 @@
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
 use id::world::{
-    CapabilityBounds, JoinCapability, JournalEntry, Participant, WorldCore, WorldLimits,
-    WorldScopes, JOURNAL_VERSION,
+    CapabilityBounds, JOURNAL_VERSION, JoinCapability, JournalEntry, Participant, WorldCore,
+    WorldLimits, WorldScopes,
 };
 
 const SECRET_HEX: &str = "0707070707070707070707070707070707070707070707070707070707070707";
@@ -70,23 +70,32 @@ fn probe_controls_and_cases() {
         WorldScopes::GUEST,
         CapabilityBounds::default(),
     );
-    println!("CONTROL live mint control-only name refused = {}", refused.is_err());
+    println!(
+        "CONTROL live mint control-only name refused = {}",
+        refused.is_err()
+    );
     assert!(refused.is_err());
     let (stripped, _t2) = live2
-        .issue_capability("a\u{1b}b\nc", WorldScopes::GUEST, CapabilityBounds::default())
+        .issue_capability(
+            "a\u{1b}b\nc",
+            WorldScopes::GUEST,
+            CapabilityBounds::default(),
+        )
         .unwrap();
-    println!("CONTROL live mint sanitizes name to {:?}", stripped.display_name);
+    println!(
+        "CONTROL live mint sanitizes name to {:?}",
+        stripped.display_name
+    );
     assert_eq!(stripped.display_name, "abc");
 
     // CONTROL restore: a normal Issued participant 1 restores and chats as 1.
-    let mut restored = WorldCore::restore(
-        "w",
-        WorldLimits::default(),
-        [created(), issued(1, "Ada")],
-    )
-    .unwrap();
+    let mut restored =
+        WorldCore::restore("w", WorldLimits::default(), [created(), issued(1, "Ada")]).unwrap();
     let event = restored.core.chat(&token_for(1), "hello from one").unwrap();
-    println!("CONTROL restore participant 1 chat participant_id = {}", event.participant_id);
+    println!(
+        "CONTROL restore participant 1 chat participant_id = {}",
+        event.participant_id
+    );
     assert_eq!(event.participant_id, 1);
 
     // CASE A: Issued participant 0 — the host identity. Restore must
@@ -111,7 +120,10 @@ fn probe_controls_and_cases() {
         WorldLimits::default(),
         [created(), issued(2, "\u{7f}\u{1b}")],
     );
-    println!("CASE B restore Issued(name=all-controls) ok = {}", restore2.is_ok());
+    println!(
+        "CASE B restore Issued(name=all-controls) ok = {}",
+        restore2.is_ok()
+    );
     assert!(
         restore2.is_err(),
         "restore must refuse an Issued display name that sanitizes to empty"
@@ -126,7 +138,10 @@ fn probe_controls_and_cases() {
         WorldLimits::default(),
         [created(), issued(2, "ada\n[system] the host has left")],
     );
-    println!("CASE B2 restore Issued(name with newline) ok = {}", restore2b.is_ok());
+    println!(
+        "CASE B2 restore Issued(name with newline) ok = {}",
+        restore2b.is_ok()
+    );
     assert!(
         restore2b.is_err(),
         "restore must refuse an Issued display name containing control characters"

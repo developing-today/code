@@ -131,10 +131,10 @@ class DispatchBatchTests(unittest.TestCase):
         ]
         return rc, records, fake_q
 
-    def base_argv(self, *extra):
+    def base_argv(self, *extra, queue=QUEUE):
         return [
             "--queue",
-            QUEUE,
+            queue,
             "--worker",
             WORKER,
             "--count",
@@ -208,6 +208,29 @@ class DispatchBatchTests(unittest.TestCase):
             self.assertEqual(s["reason"], "batch dispatch for the test bundle")
             self.assertEqual(s["notes"], "lane notes for the batch")
             self.assertIn(str(s["task"]), s["worktree"])
+
+    def test_one_queue_code_batch_preserves_stream_and_repo(self):
+        sends = []
+
+        def send_impl(queue_name, task_id, *rest):
+            sends.append((queue_name, task_id))
+            self.bound[task_id] = f"ses_item_{task_id}"
+            return {"ok": True, "session_id": self.bound[task_id], "task": task_id}
+
+        rc, records, fake_q = self.run_main(
+            self.base_argv("--to", "opencode", "--session-id", "ses_lane", queue="code"),
+            [dict(row(101, 555), queue="code"), dict(row(102, 556), queue="code")],
+            send_impl=send_impl,
+        )
+        self.assertEqual(rc, 0)
+        self.assertEqual([r["outcome"] for r in self.items(records)], ["bound", "bound"])
+        self.assertEqual(sends, [("code", 101), ("code", 102)])
+        claim, = fake_q.verbs("claim")
+        self.assertEqual(claim[claim.index("--queue") + 1], "code")
+        self.assertEqual(
+            [primary for primary, _, _ in self.worktree_calls],
+            ["/home/user/git/code", "/home/user/git/code"],
+        )
 
     def test_failed_send_releases_item_with_flag(self):
         rows = [row(101, 555), row(102, 556)]
@@ -318,6 +341,29 @@ class DispatchBatchTests(unittest.TestCase):
         self.assertEqual(item["outcome"], "prepared_unbound")
         self.assertIn("bind_command", item)
         self.assertEqual(fake_q.verbs("bind"), [])
+
+    def test_claude_claim_carries_the_muse_lane_stamp(self):
+        # #8176: a Muse-family batch claim stamps the muse-lane
+        # marker (the lane surfaces carry no session model of
+        # their own); an opencode claim must NOT carry it — its
+        # stamp is derived from the named session by the queue
+        # client instead.
+        rows = [row(101, 555)]
+        _rc, _records, fake_q = self.run_main(
+            self.base_argv("--to", "Muse", "--count", "1"), rows
+        )
+        claim = fake_q.verbs("claim")[0]
+        self.assertEqual(claim[claim.index("--model-provider") + 1], "muse-lane")
+        self.assertEqual(claim[claim.index("--model-id") + 1], "muse-lane")
+
+        rows = [row(101, 555), row(102, 556)]
+        _rc, _records, fake_q = self.run_main(
+            self.base_argv("--to", "opencode", "--session-id", "ses_lane", "--dry-run"),
+            rows,
+        )
+        claim = fake_q.verbs("claim")[0]
+        self.assertNotIn("--model-provider", claim)
+        self.assertIn("ses_lane", claim)
 
     def test_single_item_batch_accepts_bare_row_response(self):
         # Regression (live acceptance, #8217): --count 1 is the

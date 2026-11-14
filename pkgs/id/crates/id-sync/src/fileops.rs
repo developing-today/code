@@ -170,12 +170,7 @@ fn is_archive_tag_name(name: &str) -> bool {
 /// `hash` in the same critical section (#2462): when this returns, the
 /// tag already points at `hash`, and no concurrent claim in this process
 /// can receive the same name.
-pub(crate) async fn claim_archive_name(
-    store: &Store,
-    name: &str,
-    ts: u64,
-    hash: Hash,
-) -> Result<String> {
+pub async fn claim_archive_name(store: &Store, name: &str, ts: u64, hash: Hash) -> Result<String> {
     let _guard = ARCHIVE_CLAIM_LOCK.lock().await;
     let candidate = free_archive_name(store, name, ts).await?;
     store.tags().set(&candidate, hash).await?;
@@ -195,7 +190,7 @@ pub(crate) const PROVENANCE_TAG_KEYS: [&[u8]; 2] = [b"origin", b"created"];
 /// are copied by content hash so the recorded values are preserved
 /// exactly; a source with no recorded provenance leaves `to` with
 /// none — unknown stays unknown, provenance is never invented.
-pub(crate) async fn snapshot_provenance_tags(tags: &TagStore, from: &str, to: &str) -> Result<()> {
+pub async fn snapshot_provenance_tags(tags: &TagStore, from: &str, to: &str) -> Result<()> {
     for key in PROVENANCE_TAG_KEYS {
         for tag in tags.get_by_key(&tags.global, from.as_bytes(), key).await? {
             tags.set_tag_hash(
@@ -808,9 +803,3 @@ mod archive_name_tests {
         );
     }
 }
-
-
-
-
-
-
