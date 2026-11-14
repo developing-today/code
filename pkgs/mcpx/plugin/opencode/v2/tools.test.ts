@@ -10,7 +10,14 @@
  *   bun test plugin/opencode/v2/tools.test.ts
  */
 import { describe, expect, test } from "bun:test";
-import { rank, targetKey, type Candidate, type Discovery, type DiscoverOptions, type Target } from "../../core/daemon.ts";
+import {
+  rank,
+  targetKey,
+  type Candidate,
+  type Discovery,
+  type DiscoverOptions,
+  type Target,
+} from "../../core/daemon.ts";
 import { resolveOptions } from "./options.ts";
 import { setupMcpxV2, type McpxV2Context } from "./index.ts";
 import { rememberDaemon, type StorageLike } from "./remember.ts";

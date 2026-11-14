@@ -122,6 +122,7 @@ def acquire_instance_lock(state_dir):
 
 # ---------------------------------------------------------------- utils
 
+
 def expand(p):
     return os.path.abspath(os.path.expanduser(p))
 
@@ -142,6 +143,66 @@ def run_git(repo, *args, timeout=GIT_TIMEOUT):
         return 127, b"", str(exc)
 
 
+class ConfigError(Exception):
+    """A config file is unreadable, malformed, or fails validation.
+
+    The message always names the file. `main` turns this into the
+    clean `worktree-reaper: cannot load config ...` error instead of
+    a traceback (#6394).
+    """
+
+
+def _load_json_object(path):
+    """Read `path` as JSON and require a top-level object (#6394)."""
+    try:
+        with open(path) as fh:
+            data = json.load(fh)
+    except OSError as exc:
+        raise ConfigError(f"{path}: cannot read file: {exc}") from exc
+    except json.JSONDecodeError as exc:
+        raise ConfigError(f"{path}: invalid JSON: {exc}") from exc
+    if not isinstance(data, dict):
+        raise ConfigError(
+            f"{path}: top level must be a JSON object, got {type(data).__name__}"
+        )
+    return data
+
+
+def validate_config(data, path):
+    """Validate one config file's contents against DEFAULT_CONFIG (#6394).
+
+    Unknown keys are refused: a typo'd `deny_*` key must never load
+    silently, because for a deletion tool that turns an explicit
+    "never reap this" into no protection at all. Types are taken
+    from the defaults: strings stay strings, the list keys stay
+    lists of strings, `fetch` stays a bool, and the numeric keys
+    stay numbers (never bools, never strings that explode mid-run).
+    """
+    for key, val in data.items():
+        if key not in DEFAULT_CONFIG:
+            raise ConfigError(
+                f"{path}: unknown key {key!r} "
+                f"(valid keys: {', '.join(sorted(DEFAULT_CONFIG))})"
+            )
+        default = DEFAULT_CONFIG[key]
+        if isinstance(default, bool):
+            ok = isinstance(val, bool)
+            want = "a boolean"
+        elif isinstance(default, list):
+            ok = isinstance(val, list) and all(isinstance(item, str) for item in val)
+            want = "a list of strings"
+        elif isinstance(default, str):
+            ok = isinstance(val, str)
+            want = "a string"
+        else:  # numeric defaults: quiet_hours, max_removals
+            ok = isinstance(val, (int, float)) and not isinstance(val, bool)
+            want = "a number"
+        if not ok:
+            raise ConfigError(f"{path}: key {key!r} must be {want}, got {val!r}")
+        if key in ("quiet_hours", "max_removals") and val < 0:
+            raise ConfigError(f"{path}: key {key!r} must be >= 0, got {val!r}")
+
+
 def load_config(script_dir, args):
     cfg = dict(DEFAULT_CONFIG)
     cfg_path = None
@@ -158,16 +219,19 @@ def load_config(script_dir, args):
                 cfg_path = cand
                 break
     if cfg_path:
-        with open(cfg_path) as fh:
-            cfg.update(json.load(fh))
+        data = _load_json_object(cfg_path)
+        validate_config(data, cfg_path)
+        cfg.update(data)
         cfg["_config_path"] = os.path.abspath(cfg_path)
     state_dir = expand(args.state_dir or cfg["state_dir"])
     overlay = os.path.join(state_dir, "config.local.json")
     if os.path.isfile(overlay):
-        with open(overlay) as fh:
-            local = json.load(fh)
+        local = _load_json_object(overlay)
+        validate_config(local, overlay)
         for key, val in local.items():
-            if key in ("deny_paths", "deny_prefixes", "deny_names") and isinstance(val, list):
+            if key in ("deny_paths", "deny_prefixes", "deny_names") and isinstance(
+                val, list
+            ):
                 cfg[key] = list(cfg.get(key, [])) + val
             else:
                 cfg[key] = val
@@ -183,6 +247,7 @@ def load_config(script_dir, args):
 
 
 # ------------------------------------------------------- repo inventory
+
 
 def discover_primaries(cfg):
     if cfg.get("primaries"):
@@ -224,15 +289,21 @@ def parse_worktree_porcelain(raw):
             continue
         if line.startswith("worktree "):
             flush()
-            cur = {"path": line[len("worktree "):], "head": None, "branch": None,
-                   "detached": False, "bare": False, "prunable": False,
-                   "locked": False}
+            cur = {
+                "path": line[len("worktree ") :],
+                "head": None,
+                "branch": None,
+                "detached": False,
+                "bare": False,
+                "prunable": False,
+                "locked": False,
+            }
         elif cur is None:
             continue
         elif line.startswith("HEAD "):
-            cur["head"] = line[len("HEAD "):]
+            cur["head"] = line[len("HEAD ") :]
         elif line.startswith("branch refs/heads/"):
-            cur["branch"] = line[len("branch refs/heads/"):]
+            cur["branch"] = line[len("branch refs/heads/") :]
         elif line == "detached":
             cur["detached"] = True
         elif line == "bare":
@@ -254,21 +325,28 @@ def list_worktrees(primary):
 
 def fetch_primary(primary):
     rc, _, err = run_git(
-        primary, "fetch", "--quiet", "--prune", "origin",
-        "+refs/heads/*:refs/remotes/origin/*", timeout=FETCH_TIMEOUT,
+        primary,
+        "fetch",
+        "--quiet",
+        "--prune",
+        "origin",
+        "+refs/heads/*:refs/remotes/origin/*",
+        timeout=FETCH_TIMEOUT,
     )
     return rc == 0, err.strip()
 
 
 # ---------------------------------------------------------------- gates
 
+
 def is_denied(tree, cfg, script_real):
     rp = os.path.realpath(tree)
     deny_paths = [os.path.realpath(expand(p)) for p in cfg.get("deny_paths", [])]
     if rp in deny_paths:
         return "deny-path"
-    for prefix in [expand(p) for p in cfg.get("deny_prefixes", [])] + \
-                  [expand(p) for p in HARD_DENY_PREFIXES]:
+    for prefix in [expand(p) for p in cfg.get("deny_prefixes", [])] + [
+        expand(p) for p in HARD_DENY_PREFIXES
+    ]:
         pp = os.path.realpath(prefix)
         if rp == pp or rp.startswith(pp + os.sep):
             return "deny-prefix"
@@ -342,8 +420,13 @@ def status_entries(tree):
     individual ignored files otherwise.
     """
     rc, out, err = run_git(
-        tree, "status", "--porcelain=v1", "-z", "--no-renames",
-        "--untracked-files=all", "--ignored=matching",
+        tree,
+        "status",
+        "--porcelain=v1",
+        "-z",
+        "--no-renames",
+        "--untracked-files=all",
+        "--ignored=matching",
     )
     if rc != 0:
         raise RuntimeError(f"status failed in {tree}: {err.strip()}")
@@ -373,7 +456,10 @@ def ignored_allowlisted(ignored, cfg):
     allow, other = [], []
     for path in ignored:
         segments = [seg for seg in path.split("/") if seg]
-        if any(seg in prefixes for seg in segments) or os.path.basename(path.rstrip("/")) in names:
+        if (
+            any(seg in prefixes for seg in segments)
+            or os.path.basename(path.rstrip("/")) in names
+        ):
             allow.append(path)
         else:
             other.append(path)
@@ -382,7 +468,10 @@ def ignored_allowlisted(ignored, cfg):
 
 def dirt_allowlisted(untracked, cfg):
     """Split untracked paths into (allowlisted, other) per the config."""
-    prefixes = [p if p.endswith("/") else p + "/" for p in cfg.get("generated_dirt_prefixes", [])]
+    prefixes = [
+        p if p.endswith("/") else p + "/"
+        for p in cfg.get("generated_dirt_prefixes", [])
+    ]
     names = set(cfg.get("generated_dirt_files", []))
     allow, other = [], []
     for path in untracked:
@@ -528,7 +617,7 @@ def proc_cwds():
 
 def tree_occupied(tree, cwds=None):
     rp = os.path.realpath(tree)
-    for ref in (proc_refs() if cwds is None else cwds):
+    for ref in proc_refs() if cwds is None else cwds:
         c = os.path.realpath(ref)
         if c == rp or c.startswith(rp + os.sep):
             return True
@@ -537,12 +626,17 @@ def tree_occupied(tree, cwds=None):
 
 # ------------------------------------------------------------------ run
 
+
 def evaluate_tree(primary, wt, cfg, now, cwds):
     """Evaluate all gates for one linked worktree. Returns a record."""
     tree = wt["path"]
     rec = {
-        "tree": tree, "primary": primary, "branch": wt["branch"],
-        "tip": wt["head"], "gates": {}, "action": "keep",
+        "tree": tree,
+        "primary": primary,
+        "branch": wt["branch"],
+        "tip": wt["head"],
+        "gates": {},
+        "action": "keep",
     }
     gates = rec["gates"]
     if not os.path.isdir(tree):
@@ -580,9 +674,11 @@ def evaluate_tree(primary, wt, cfg, now, cwds):
     # ignored content is exactly what the PUSHED proof cannot cover).
     gates["clean"] = {
         "ok": not tracked and not other and not ig_other,
-        "tracked": tracked[:20], "untracked_other": other[:20],
+        "tracked": tracked[:20],
+        "untracked_other": other[:20],
         "allowlisted": allow[:20],
-        "ignored_other": ig_other[:20], "ignored_allowlisted": ig_allow[:20],
+        "ignored_other": ig_other[:20],
+        "ignored_allowlisted": ig_allow[:20],
         "ignored": ignored,
         "allowlisted_only": bool(allow) and not tracked and not other,
     }
@@ -598,8 +694,12 @@ def evaluate_tree(primary, wt, cfg, now, cwds):
         return rec
     activity = max(mtime, float(head_reflog_ts(tree)))
     age_h = (now - activity) / 3600.0
-    gates["quiet"] = {"ok": activity <= cutoff, "last_activity": int(activity),
-                      "age_hours": round(age_h, 2), "size_bytes": size}
+    gates["quiet"] = {
+        "ok": activity <= cutoff,
+        "last_activity": int(activity),
+        "age_hours": round(age_h, 2),
+        "size_bytes": size,
+    }
     rec["size_bytes"] = size
     if not gates["quiet"]["ok"]:
         rec["reason"] = "active"
@@ -627,8 +727,10 @@ def reap_tree(primary, rec, cfg):
         rec["action"] = "keep"
         rec["reason"] = "occupied-unknown-at-removal"
         rec["error"] = str(exc)
-        print(f"worktree-reaper: WARNING: /proc scan failed before "
-              f"removal of {tree}; retaining it ({exc})")
+        print(
+            f"worktree-reaper: WARNING: /proc scan failed before "
+            f"removal of {tree}; retaining it ({exc})"
+        )
         return False
     if occupied_now:
         rec["action"] = "keep"
@@ -662,7 +764,10 @@ def reap_tree(primary, rec, cfg):
         rec["action"] = "keep"
         rec["reason"] = "unpushed-at-removal"
         return False
-    cutoff = time.time() - float(cfg.get("quiet_hours", DEFAULT_CONFIG["quiet_hours"])) * 3600
+    cutoff = (
+        time.time()
+        - float(cfg.get("quiet_hours", DEFAULT_CONFIG["quiet_hours"])) * 3600
+    )
     try:
         mtime, _size, _complete = walk_activity(tree, cutoff)
     except OSError as exc:
@@ -671,7 +776,10 @@ def reap_tree(primary, rec, cfg):
         rec["error"] = str(exc)
         return False
     activity = max(mtime, float(head_reflog_ts(tree)))
-    rec["gates"]["quiet_at_removal"] = {"ok": activity <= cutoff, "last_activity": int(activity)}
+    rec["gates"]["quiet_at_removal"] = {
+        "ok": activity <= cutoff,
+        "last_activity": int(activity),
+    }
     if activity > cutoff:
         rec["action"] = "keep"
         rec["reason"] = "active-at-removal"
@@ -699,21 +807,37 @@ def reap_tree(primary, rec, cfg):
 
 
 def main(argv=None):
-    ap = argparse.ArgumentParser(description="Retire dead fleet worktrees (Drew's 6-hour rule).")
-    ap.add_argument("--dry-run", action="store_true",
-                    help="evaluate and print the would-reap list; remove nothing")
+    ap = argparse.ArgumentParser(
+        description="Retire dead fleet worktrees (Drew's 6-hour rule)."
+    )
+    ap.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="evaluate and print the would-reap list; remove nothing",
+    )
     ap.add_argument("--config", help="path to config.json")
     ap.add_argument("--state-dir", help="override state dir (logs, kill switch)")
-    ap.add_argument("--primary", action="append", default=[],
-                    help="restrict to this primary (repeatable)")
-    ap.add_argument("--no-fetch", action="store_true",
-                    help="skip the origin fetch (tests; pushed gate then uses stale refs)")
+    ap.add_argument(
+        "--primary",
+        action="append",
+        default=[],
+        help="restrict to this primary (repeatable)",
+    )
+    ap.add_argument(
+        "--no-fetch",
+        action="store_true",
+        help="skip the origin fetch (tests; pushed gate then uses stale refs)",
+    )
     ap.add_argument("--quiet-hours", type=float, default=None)
     ap.add_argument("--max-removals", type=int, default=None)
     args = ap.parse_args(argv)
 
     script_dir = os.path.dirname(os.path.abspath(__file__))
-    cfg = load_config(script_dir, args)
+    try:
+        cfg = load_config(script_dir, args)
+    except ConfigError as exc:
+        print(f"worktree-reaper: cannot load config: {exc}")
+        return 2
     state_dir = cfg["state_dir"]
 
     if os.path.exists(os.path.join(state_dir, "DISABLED")):
@@ -723,16 +847,27 @@ def main(argv=None):
     os.makedirs(os.path.join(state_dir, "runs"), exist_ok=True)
     lock_fd, lock_path = acquire_instance_lock(state_dir)
     if lock_fd is None:
-        print(f"worktree-reaper: another instance already holds the lock "
-              f"({lock_path}); exiting without evaluating or removing anything.")
+        print(
+            f"worktree-reaper: another instance already holds the lock "
+            f"({lock_path}); exiting without evaluating or removing anything."
+        )
         return 0
     now = time.time()
     ts = time.strftime("%Y%m%dT%H%M%SZ", time.gmtime(int(now)))
     records = []
     summary = {
-        "run": ts, "dry_run": bool(args.dry_run), "evaluated": 0, "candidates": 0,
-        "reaped": 0, "reaped_bytes": 0, "branch_deleted": 0, "branch_kept": 0,
-        "kept": {}, "errors": [],
+        "run": ts,
+        "dry_run": bool(args.dry_run),
+        "evaluated": 0,
+        "candidates": 0,
+        "reaped": 0,
+        "reaped_bytes": 0,
+        "branch_deleted": 0,
+        "branch_kept": 0,
+        "stale_registrations": 0,
+        "pruned": 0,
+        "kept": {},
+        "errors": [],
     }
 
     primaries = [expand(p) for p in args.primary] or discover_primaries(cfg)
@@ -741,8 +876,10 @@ def main(argv=None):
     except ProcScanError as exc:
         # Fail closed (#5740): with no trustworthy occupancy scan,
         # nothing in this run may be removed — stop before evaluating.
-        print(f"worktree-reaper: ERROR: /proc scan failed ({exc}); "
-              "failing closed, nothing will be removed this run.")
+        print(
+            f"worktree-reaper: ERROR: /proc scan failed ({exc}); "
+            "failing closed, nothing will be removed this run."
+        )
         summary["errors"].append(f"proc scan failed: {exc}")
         print(json.dumps(summary, indent=2))
         os.close(lock_fd)
@@ -766,11 +903,21 @@ def main(argv=None):
             continue
         primary_real = os.path.realpath(primary)
         removed_any = False
+        stale_any = False
         for wt in worktrees:
             if wt["bare"] or os.path.realpath(wt["path"]) == primary_real:
                 continue  # primaries are never reaped
             summary["evaluated"] += 1
             rec = evaluate_tree(primary, wt, cfg, now, cwds)
+            if rec["action"] == "stale-registration":
+                # A registration whose directory is gone is not a kept
+                # tree: it is prune work for this primary (#6547). Count
+                # it as such, and in a dry run say would-prune instead
+                # of folding it into the kept counts.
+                stale_any = True
+                summary["stale_registrations"] += 1
+                if args.dry_run:
+                    rec["action"] = "would-prune"
             if rec["action"] == "candidate":
                 summary["candidates"] += 1
                 if args.dry_run:
@@ -786,16 +933,38 @@ def main(argv=None):
                         summary["branch_deleted"] += 1
                     else:
                         summary["branch_kept"] += 1
-            if rec["action"] not in ("reaped", "would-reap"):
+            if rec["action"] not in (
+                "reaped",
+                "would-reap",
+                "would-prune",
+                "stale-registration",
+            ):
                 reason = rec.get("reason", rec["action"])
                 summary["kept"][reason] = summary["kept"].get(reason, 0) + 1
             records.append(rec)
-            verb = {"reaped": "REAP", "would-reap": "WOULD-REAP"}.get(rec["action"])
+            verb = {
+                "reaped": "REAP",
+                "would-reap": "WOULD-REAP",
+                "would-prune": "WOULD-PRUNE",
+            }.get(rec["action"])
             if verb:
-                print(f"{verb} {rec['tree']} branch={rec['branch']} "
-                      f"size={rec.get('size_bytes', 0)} pushed={rec['gates'].get('pushed', {}).get('method')}")
-        if removed_any and not args.dry_run:
-            run_git(primary, "worktree", "prune")
+                print(
+                    f"{verb} {rec['tree']} branch={rec['branch']} "
+                    f"size={rec.get('size_bytes', 0)} pushed={rec['gates'].get('pushed', {}).get('method')}"
+                )
+        # Prune whenever this run left the primary's registrations
+        # stale: a tree was reaped, OR a stale registration was found
+        # (#6547 — previously prune ran only as a side effect of a
+        # same-run reap, so a deleted-directory-only primary was never
+        # pruned). Fail-safe: this block is reached only for primaries
+        # successfully inventoried above, and a prune failure is
+        # surfaced in the summary, never swallowed.
+        if (removed_any or stale_any) and not args.dry_run:
+            rc, _, err = run_git(primary, "worktree", "prune")
+            if rc != 0:
+                summary["errors"].append(f"prune failed in {primary}: {err.strip()}")
+            else:
+                summary["pruned"] += 1
 
     summary["kept_total"] = sum(summary["kept"].values())
     # The log name must be unique per run: ts has only second resolution,
@@ -808,7 +977,8 @@ def main(argv=None):
     suffix = 2
     while os.path.exists(log_path):
         log_path = os.path.join(
-            state_dir, "runs", f"run-{log_stamp}-{os.getpid()}-{suffix}.jsonl")
+            state_dir, "runs", f"run-{log_stamp}-{os.getpid()}-{suffix}.jsonl"
+        )
         suffix += 1
     try:
         with open(log_path, "x") as fh:

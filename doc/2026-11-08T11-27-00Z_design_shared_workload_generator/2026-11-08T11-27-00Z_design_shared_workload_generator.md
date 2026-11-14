@@ -70,9 +70,9 @@ of virtual actors:
   append, 25% capability check, 15% sync round). Mix tables are
   counts per 1,000 ops, so a run's op stream is a pure function of
   (seed, workload, scale).
-- **Pacing.** Two modes, chosen by the profile: *closed-loop*
+- **Pacing.** Two modes, chosen by the profile: _closed-loop_
   (actors issue the next op when the previous completes — the
-  benchmark mode, measuring service capacity) and *open-loop*
+  benchmark mode, measuring service capacity) and _open-loop_
   (ops issued at a target rate regardless of completions — the DoS
   mode, measuring overload behaviour). The mode is part of the
   profile and recorded in the run header; results from the two modes
@@ -112,7 +112,7 @@ trait Target {
 
 A workload that needs an operation a surface cannot express (e.g.
 blob transfer in-process before the blob API exists there) is
-*unsupported on that surface*, recorded as such in the run header —
+_unsupported on that surface_, recorded as such in the run header —
 never silently downgraded to a different operation. The
 per-interface coverage that results is #5896's input, not a gap
 this design papers over.
@@ -138,7 +138,7 @@ own:
 - `exhaust` — state-growth pressure: many identities, many worlds,
   deep journals, within protocol rules but at hostile volume.
 
-The catalogue of *scenarios* — which profile, on which surface,
+The catalogue of _scenarios_ — which profile, on which surface,
 against which limits, with which expected defence — is #5892's
 deliverable. This design fixes only the profile mechanism: a new
 adversarial behaviour is a new named modifier with its parameters
@@ -181,7 +181,7 @@ fixed here so scenarios stay declarative:
   attack traffic stays under the named bound once connections close.
 
 Timeouts and windows are scenario parameters with the defaults
-#5897's budgets will tune; the assertion *vocabulary* is what this
+#5897's budgets will tune; the assertion _vocabulary_ is what this
 record fixes.
 
 ## Rejected alternatives
@@ -239,5 +239,4 @@ record fixes.
    assertion helpers for #5892's first scenarios.
 5. `Iroh` loopback surface; remote-target guard (invariant 3).
 
-Filed from triage task 10293's scoping (2026-11-08) and queue task
-13155. Parent: #5685. Sibling records: #5894 (PR #7620).
+Filed from triage task 10293's scoping (2026-11-08) and queue task 13155. Parent: #5685. Sibling records: #5894 (PR #7620).

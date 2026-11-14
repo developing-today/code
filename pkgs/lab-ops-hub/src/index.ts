@@ -384,7 +384,9 @@ export default {
         if (!file.ok) return json({ error: file.error }, 400);
         const buf = await file.values.arrayBuffer();
         const key = uploadKey(file.values.name, Date.now(), crypto.randomUUID());
-        await env.FILES.put(key, buf, { httpMetadata: { contentType: file.values.type || "application/octet-stream" } });
+        await env.FILES.put(key, buf, {
+          httpMetadata: { contentType: file.values.type || "application/octet-stream" },
+        });
         const r = await env.DB.prepare("INSERT INTO files (r2_key, filename, content_type, size) VALUES (?1,?2,?3,?4)")
           .bind(key, file.values.name, file.values.type || null, buf.byteLength)
           .run();

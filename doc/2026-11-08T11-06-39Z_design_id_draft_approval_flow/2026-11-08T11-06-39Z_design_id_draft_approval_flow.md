@@ -11,15 +11,15 @@
 
 For an object whose effective policy requires approval, a submission is an immutable proposal for one exact revision, not a mutable flag on the live object. Keep one review queue per governed object; reviewer and author views are filtered projections over those submissions. Reviewers resolve a submission with **approve**, **reject**, or **request changes**. Each action is attributed and append-only. A rejected submission remains the submitter's fork and can be resubmitted as a new, linked submission; rejection never deletes or transfers ownership of the work.
 
-| Question | Decision |
-| --- | --- |
+| Question                   | Decision                                                                                                                                                                                                        |
+| -------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | Queue scope and visibility | One logical queue per object; reviewers see only objects they are authorized to review, and authors see their own submissions. Combined inboxes are filtered views, not a new authority or visibility boundary. |
-| Ordering | Oldest actionable submission first (`submitted_at`, then stable submission ID); no urgency or arrival-order policy may silently change the order. |
-| Delegation | No per-request forwarding or ad hoc delegation in v1. Decision authority is the object's owner/admin set as #5677 settles it. Changing that role set is governed there, not by a queue action. |
-| Decision target | A decision names the exact submitted revision and its base revision(s). Editing creates a new revision and requires a new submission. |
-| Outcomes | Approve authorizes that snapshot to become effective under #5677's merge model; reject preserves it as the author's fork; request-changes returns it to the author without making it effective. |
-| Resubmission | A changed or rejected fork may be submitted again as a new immutable submission linked to the prior one. Prior decisions remain visible and unchanged. |
-| Silence and concurrency | No timeout means approval. A pending item remains pending. Only one valid terminal decision wins an atomic transition for a submission; stale competing actions are reported, not overwritten. |
+| Ordering                   | Oldest actionable submission first (`submitted_at`, then stable submission ID); no urgency or arrival-order policy may silently change the order.                                                               |
+| Delegation                 | No per-request forwarding or ad hoc delegation in v1. Decision authority is the object's owner/admin set as #5677 settles it. Changing that role set is governed there, not by a queue action.                  |
+| Decision target            | A decision names the exact submitted revision and its base revision(s). Editing creates a new revision and requires a new submission.                                                                           |
+| Outcomes                   | Approve authorizes that snapshot to become effective under #5677's merge model; reject preserves it as the author's fork; request-changes returns it to the author without making it effective.                 |
+| Resubmission               | A changed or rejected fork may be submitted again as a new immutable submission linked to the prior one. Prior decisions remain visible and unchanged.                                                          |
+| Silence and concurrency    | No timeout means approval. A pending item remains pending. Only one valid terminal decision wins an atomic transition for a submission; stale competing actions are reported, not overwritten.                  |
 
 ## 1. Scope and parent boundary
 
@@ -108,14 +108,14 @@ Implementation invariants:
 
 ## 6. Alternatives rejected
 
-| Alternative | Why it is not v1 |
-| --- | --- |
-| Mutable “draft” flag on the live object | It does not pin what was reviewed, makes later edits appear approved, and cannot preserve a rejected fork reliably. |
-| One global queue visible to every owner/admin | It mixes authority scopes and risks disclosing restricted object titles, content, or existence. Combined inboxes are filtered views only. |
-| Last-write-wins or automatic approval after a timeout | Silence is not consent, and arrival order cannot resolve concurrent revisions safely. |
-| Reviewer deletes or takes ownership of rejected work | It contradicts #5677's rejected-fork rule and erases the submitter's work and provenance. |
-| Reopen a rejected submission in place | It hides which snapshot was rejected and makes the audit trail mutable; a linked new submission is unambiguous. |
-| Forward a particular decision to any user | It bypasses object authority and creates an unreviewed delegation system. Any future delegation must be explicit in #5677 and auditable. |
+| Alternative                                           | Why it is not v1                                                                                                                          |
+| ----------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------- |
+| Mutable “draft” flag on the live object               | It does not pin what was reviewed, makes later edits appear approved, and cannot preserve a rejected fork reliably.                       |
+| One global queue visible to every owner/admin         | It mixes authority scopes and risks disclosing restricted object titles, content, or existence. Combined inboxes are filtered views only. |
+| Last-write-wins or automatic approval after a timeout | Silence is not consent, and arrival order cannot resolve concurrent revisions safely.                                                     |
+| Reviewer deletes or takes ownership of rejected work  | It contradicts #5677's rejected-fork rule and erases the submitter's work and provenance.                                                 |
+| Reopen a rejected submission in place                 | It hides which snapshot was rejected and makes the audit trail mutable; a linked new submission is unambiguous.                           |
+| Forward a particular decision to any user             | It bypasses object authority and creates an unreviewed delegation system. Any future delegation must be explicit in #5677 and auditable.  |
 
 ## 7. Provisional boundary and coordination
 
@@ -131,11 +131,11 @@ This record proposes no changes to a parent decision and creates no separate iss
 
 ## Acceptance map (#5835)
 
-| Requirement | Where |
-| --- | --- |
-| Queue shape, visibility, ordering, and delegation | §2.1 |
-| Approve/reject/request-changes outcomes and visibility | §3 |
-| Rejected fork ownership, visibility boundary, and resubmission | §3, §4 |
-| Parent dependencies marked provisional | §1, §2.2, §3, §7 |
-| Alternatives and implementation invariants | §5, §6 |
-| Split decision | No split: §7 records why this is one coherent design |
+| Requirement                                                    | Where                                                |
+| -------------------------------------------------------------- | ---------------------------------------------------- |
+| Queue shape, visibility, ordering, and delegation              | §2.1                                                 |
+| Approve/reject/request-changes outcomes and visibility         | §3                                                   |
+| Rejected fork ownership, visibility boundary, and resubmission | §3, §4                                               |
+| Parent dependencies marked provisional                         | §1, §2.2, §3, §7                                     |
+| Alternatives and implementation invariants                     | §5, §6                                               |
+| Split decision                                                 | No split: §7 records why this is one coherent design |

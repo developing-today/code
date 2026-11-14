@@ -180,12 +180,12 @@ let
           nspr
           nss
           udev
-          xorg.libX11
-          xorg.libXcursor
-          xorg.libXext
-          xorg.libXi
-          xorg.libXrandr
-          xorg.libXrender
+          libx11
+          libxcursor
+          libxext
+          libxi
+          libxrandr
+          libxrender
           zlib
         ];
       runScript = "${squareline-run}/bin/squareline-run";
@@ -459,16 +459,6 @@ in
     # mise: 29 unit tests fail in sandbox (network-dependent tests)
     (final: prev: {
       mise = prev.mise.overrideAttrs (_: {
-        doCheck = false;
-      });
-    })
-    # cargo-llvm-cov 0.9.0 (code#5275): its integration tests emit profraw
-    # that the pinned llvm-22.1.8 llvm-profdata refuses to merge
-    # ("no profile can be merged") -- package-vs-LLVM drift at the
-    # current nixpkgs pin, same class as zulip-term/mise above.
-    # Package stays in the system; only its check phase is skipped.
-    (final: prev: {
-      cargo-llvm-cov = prev.cargo-llvm-cov.overrideAttrs (_: {
         doCheck = false;
       });
     })

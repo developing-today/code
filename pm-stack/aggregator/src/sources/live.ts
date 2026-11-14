@@ -8,7 +8,7 @@ import { createHash } from "node:crypto";
 import { dirname, join } from "node:path";
 import type { Config } from "../config.ts";
 import { applyBoardDonePolicy, isRetiredDoneTableTitle } from "../board-policy.ts";
-import { aaApplyPriceOverlay, isAaSection } from "../aa.ts";
+import { AA_PLAN_FACTS, aaApplyPriceOverlay, isAaSection } from "../aa.ts";
 import { aaCacheFileName, aaPricesFingerprint, isAaBatchCacheEntry } from "../aa-batches.ts";
 import { isBatchUuid } from "../aa-batch-sql.ts";
 import { isDnsSection } from "../dns.ts";
@@ -37,8 +37,20 @@ import {
   type KaneoCardSnapshot,
 } from "../activity.ts";
 import { isRecord } from "../validate.ts";
-import { buildAttentionFlags } from "../derive.ts";
+import { fetchIssueBodySnapshot, type Phase12Snapshot } from "../phase12.ts";
+import { loadPhaseMapping, type PhaseMappingSnapshot } from "../phase-mapping.ts";
+import { fetchBuildHealthSnapshot, type BuildHealthSnapshot } from "../build-health.ts";
+import {
+  fetchQueueSnapshot,
+  readBrokerToken,
+  unavailableQueueSnapshot,
+  QUEUE_STALE_MS,
+  type QueueSnapshot,
+} from "../queue.ts";
+import { F12_DESIGN_ISSUE_NUMBER, parseF12Items, parseTimelinePrRefs, type F12PrRef } from "../f12-readiness.ts";
+import { buildAttentionFlags, buildQuotaActions, quotaActionFlags } from "../derive.ts";
 import { validateRoadmapHorizon } from "../roadmap-horizon.ts";
+import { describeRepoRoadmapSection, mergeRoadmapRows, readRepoRoadmaps } from "./repo-roadmap.ts";
 import { summarizeDns } from "../dns.ts";
 import {
   applyCloudflareExport,
@@ -245,7 +257,9 @@ async function kaneoBoard(cfg: Config, cookie: string): Promise<{ items: BoardIt
             // non-numeric) must not become a board link renderers throw
             // on; the card survives, the drop is traced.
             if (!isValidRef(ref)) {
-              console.error(`[board] WARNING: dropping Kaneo link with invalid ref ${JSON.stringify(ref)} for task ${t.id} (#6243)`);
+              console.error(
+                `[board] WARNING: dropping Kaneo link with invalid ref ${JSON.stringify(ref)} for task ${t.id} (#6243)`,
+              );
               return [];
             }
             return [{ ref, relation: "tracks" as const }];
@@ -487,6 +501,111 @@ export function latestPerRef(comments: Comment[]): Comment[] {
   return [...byRef.values()];
 }
 
+/** TTL for the latest-comments cache below (#9781). */
+export const LATEST_COMMENTS_TTL_MS = 60_000;
+
+/**
+ * Per-ref stale-while-revalidate cache for the briefs' latest comments
+ * (#9781). projectorLatestComments fans out one projector read per ref
+ * with an 8 s abort on every fetch, and the board/program/attention
+ * handlers call it on EVERY request — so whenever the projector is
+ * slow (measured 11.2 s for a /comments read while its 15-minute
+ * /reconcile sweep occupies the process), each page assembly pays the
+ * full ~8.2 s abort cliff, and /program's assembly crosses its 10 s
+ * deadline into a 503. This cache gives the read the same contract the
+ * page assemblies already have (#1179/#5082): fresh entries serve
+ * directly; expired entries serve the stale comment immediately and
+ * refresh single-flight in the background; only a never-seen ref pays
+ * a projector read on the request path. A failed fetch never poisons
+ * the cache: a failed refresh keeps serving the stale value, and a
+ * failed cold read falls back (fixtures, in the live source) without
+ * caching the failure, so the next request retries the projector.
+ *
+ * Truthfulness: a brief's "latest comment" can lag reality by at most
+ * the TTL plus one refresh — the same 60 s bound the health probe
+ * cache (#1147) already accepts. Only the latest comment per ref is
+ * cached, never a comment list, so nothing else can be served stale.
+ */
+export class LatestCommentsCache {
+  private entries = new Map<RefKey, { at: number; comment: Comment | null }>();
+  private inFlight = new Set<RefKey>();
+
+  constructor(
+    private readonly fetchLatest: (refs: RefKey[]) => Promise<Comment[] | null>,
+    private readonly fallback: (refs: RefKey[]) => Promise<Comment[]>,
+    private readonly ttlMs: number = LATEST_COMMENTS_TTL_MS,
+    private readonly now: () => number = Date.now,
+  ) {}
+
+  /** The latest comment for each requested ref that has one, in ref order. */
+  async get(refs: RefKey[]): Promise<Comment[]> {
+    const at = this.now();
+    const byRef = new Map<RefKey, Comment>();
+    const missing: RefKey[] = [];
+    const stale: RefKey[] = [];
+    for (const ref of refs) {
+      const hit = this.entries.get(ref);
+      if (hit && at - hit.at < this.ttlMs) {
+        if (hit.comment) byRef.set(ref, hit.comment);
+      } else if (hit) {
+        if (hit.comment) byRef.set(ref, hit.comment);
+        stale.push(ref);
+      } else {
+        missing.push(ref);
+      }
+    }
+    if (stale.length) this.refresh(stale);
+    if (missing.length) {
+      const live = await this.fetchLatest(missing);
+      if (live) {
+        const fetched = new Map(live.map((c) => [c.ref, c]));
+        for (const ref of missing) {
+          const comment = fetched.get(ref) ?? null;
+          this.store(ref, comment);
+          if (comment) byRef.set(ref, comment);
+        }
+      } else {
+        for (const c of await this.fallback(missing)) byRef.set(c.ref, c);
+      }
+    }
+    return refs.flatMap((ref) => {
+      const c = byRef.get(ref);
+      return c ? [c] : [];
+    });
+  }
+
+  /** Background re-read behind expired entries; never throws. */
+  private refresh(refs: RefKey[]): void {
+    const todo = refs.filter((ref) => !this.inFlight.has(ref));
+    if (!todo.length) return;
+    for (const ref of todo) this.inFlight.add(ref);
+    this.fetchLatest(todo).then(
+      (live) => {
+        if (live) {
+          const fetched = new Map(live.map((c) => [c.ref, c]));
+          for (const ref of todo) this.store(ref, fetched.get(ref) ?? null);
+        }
+        // A failed refresh keeps the stale entries; the next expired
+        // read retries.
+        for (const ref of todo) this.inFlight.delete(ref);
+      },
+      () => {
+        for (const ref of todo) this.inFlight.delete(ref);
+      },
+    );
+  }
+
+  private store(ref: RefKey, comment: Comment | null): void {
+    // Soft cap: briefs only ever ask for pool/board/attention refs
+    // (hundreds), so this only trims pathological growth.
+    if (!this.entries.has(ref) && this.entries.size >= 4096) {
+      const oldest = this.entries.keys().next().value;
+      if (oldest !== undefined) this.entries.delete(oldest);
+    }
+    this.entries.set(ref, { at: this.now(), comment });
+  }
+}
+
 /**
  * The latest comment for each ref, one projector read per ref (#1279).
  * The bulk /comments read applies its row limit across every requested
@@ -532,7 +651,9 @@ export async function projectorLinks(baseUrl: string, subject: string): Promise<
   // bad registry row stays visible instead of silently vanishing.
   return rows.flatMap((row) => {
     if (!isValidRef(row.ref)) {
-      console.error(`[registry] WARNING: dropping projector link with invalid ref ${JSON.stringify(row.ref)} for subject ${subject} (#6211)`);
+      console.error(
+        `[registry] WARNING: dropping projector link with invalid ref ${JSON.stringify(row.ref)} for subject ${subject} (#6211)`,
+      );
       return [];
     }
     return [{ ref: row.ref, relation: asRelation(row.relation) }];
@@ -606,7 +727,10 @@ export function titleRefs(title: string, onInvalid?: (ref: string) => void): Ref
   }
   const aliases: { at: number; repo: string }[] = [];
   for (const m of title.matchAll(/\b(code|opencode|openchamber|nix)\b/gi)) {
-    aliases.push({ at: m.index ?? 0, repo: TITLE_REPO_ALIASES[m[1].toLowerCase()] });
+    const alias = m[1].toLowerCase();
+    if (Object.hasOwn(TITLE_REPO_ALIASES, alias)) {
+      aliases.push({ at: m.index ?? 0, repo: TITLE_REPO_ALIASES[alias] });
+    }
   }
   if (aliases.length) {
     for (const m of title.matchAll(/#(\d+)/g)) {
@@ -676,9 +800,7 @@ export function inFlightBoardItems(section: OrchestrationSection, existing: Boar
     const refs: RefKey[] = [];
     const add = (ref: unknown) => {
       if (!isValidRef(ref)) {
-        console.error(
-          `[board] WARNING: dropping invalid in-flight ref ${JSON.stringify(ref)} for task ${item.id}`,
-        );
+        console.error(`[board] WARNING: dropping invalid in-flight ref ${JSON.stringify(ref)} for task ${item.id}`);
         return;
       }
       if (!refs.includes(ref)) refs.push(ref);
@@ -808,6 +930,20 @@ export function liveSource(
   // In-memory on purpose: a restart re-baselines silently, and the
   // ingestion store's persisted seen set is the durable dedupe.
   let prevKaneoCards: Map<string, KaneoCardSnapshot> | null = null;
+  // #9781: the briefs' latest-comments cache for this source instance.
+  // The fetch seam keeps projectorLatestComments' fail-soft contract
+  // (null = the whole batch failed); the fallback keeps the pre-cache
+  // behaviour for never-seen refs whose projector read failed.
+  const latestCommentsCache = new LatestCommentsCache(
+    async (refs) => {
+      const baseUrl = cfg.projector.baseUrl;
+      if (!baseUrl) return null;
+      const live = await projectorLatestComments(baseUrl, refs);
+      if (live) provenance.comments = "live (projector)";
+      return live;
+    },
+    async (refs) => latestPerRef(await fix.comments(refs)),
+  );
   async function publishKaneoFreshness(board: readonly BoardItem[]): Promise<void> {
     if (!opts?.onFreshness) return;
     const cards = board
@@ -842,7 +978,9 @@ export function liveSource(
         reason: "source-event",
       });
     } catch (err) {
-      console.error(`[freshness] WARNING: kaneo invalidation publish failed: ${err instanceof Error ? err.message : String(err)}`);
+      console.error(
+        `[freshness] WARNING: kaneo invalidation publish failed: ${err instanceof Error ? err.message : String(err)}`,
+      );
     }
   }
   // #3321: per-card ingested-transition counters (the `seq` on
@@ -1012,6 +1150,23 @@ export function liveSource(
   // are read from its state file at request time (the port changes
   // across restarts). Mapped sessions are cached for 45 s (#890).
   let laptopCache: { value: MappedSessions; at: number } | null = null;
+  // #5082 (2026-11-14): a failed map is remembered briefly, and one
+  // in-flight map is shared between concurrent callers.
+  // mapServerSessions walks up to ~120 sequential fetches with 10 s
+  // aborts, so when a server stalls, one attempt costs 6-10.5 s
+  // (measured live) — and with success-only caching, EVERY caller
+  // paid that stall again: registry() runs on the request path of
+  // /program, /api/program.json and /board (via commentFormOpts),
+  // and pool-quota-steward run 381 watched three sequential
+  // assemblies each pay ~10.5 s, two of them crossing the dashboard
+  // deadline into 503s. The 15 s negative window matches the
+  // failure's timescale (a stalled server recovers in seconds to
+  // minutes); a null map already reads as "unreachable on the last
+  // read" to the coverage facet, so holding it briefly changes no
+  // one's story, only how often the stall is re-paid.
+  let laptopFailureAt = 0;
+  let laptopInFlight: Promise<MappedSessions | null> | null = null;
+  const LAPTOP_FAILURE_CACHE_MS = 15_000;
   // #1226: the Needs-Drew label census hits the GitHub search API
   // (8 queries per sweep). The sweeper caches for 5 minutes and shares
   // one in-flight sweep between concurrent callers, so the three
@@ -1026,6 +1181,144 @@ export function liveSource(
     };
     return getJson(url, headers);
   });
+  // #9922: the Path to Phase 12 body feed — one GraphQL read of
+  // #1235's body, cached for 5 minutes and shared in-flight (same
+  // discipline as the Needs-Drew sweeper above), fail-soft to the
+  // last good snapshot or null so a GitHub outage renders the panel
+  // unavailable instead of breaking /program/<id>.
+  let phase12Cache: { value: Phase12Snapshot; at: number } | null = null;
+  let phase12InFlight: Promise<Phase12Snapshot | null> | null = null;
+  async function phase12Snapshot(): Promise<Phase12Snapshot | null> {
+    if (phase12Cache && Date.now() - phase12Cache.at < 5 * 60_000) return phase12Cache.value;
+    if (!phase12InFlight) {
+      phase12InFlight = (async () => {
+        const token = process.env.PM_AGG_GITHUB_TOKEN ?? process.env.GITHUB_TOKEN;
+        if (!token) return phase12Cache?.value ?? null;
+        try {
+          const snap = await fetchIssueBodySnapshot(token);
+          phase12Cache = { value: snap, at: Date.now() };
+          return snap;
+        } catch {
+          return phase12Cache?.value ?? null;
+        }
+      })().finally(() => {
+        phase12InFlight = null;
+      });
+    }
+    return phase12InFlight;
+  }
+  // #9923 step 3: the F-item mapping feed — planning/roadmaps/id.md
+  // in the code checkout, parsed and cached for 5 minutes, shared
+  // in-flight and fail-soft to the last good snapshot or null (same
+  // discipline as the phase12 feed above).
+  let phaseMappingCache: { value: PhaseMappingSnapshot; at: number } | null = null;
+  let phaseMappingInFlight: Promise<PhaseMappingSnapshot | null> | null = null;
+  async function phaseMappingSnapshot(): Promise<PhaseMappingSnapshot | null> {
+    if (phaseMappingCache && Date.now() - phaseMappingCache.at < 5 * 60_000) return phaseMappingCache.value;
+    if (!phaseMappingInFlight) {
+      phaseMappingInFlight = (async () => {
+        try {
+          const snap = await loadPhaseMapping(cfg.codeCheckout);
+          if (snap) phaseMappingCache = { value: snap, at: Date.now() };
+          return snap ?? phaseMappingCache?.value ?? null;
+        } catch {
+          return phaseMappingCache?.value ?? null;
+        }
+      })().finally(() => {
+        phaseMappingInFlight = null;
+      });
+    }
+    return phaseMappingInFlight;
+  }
+  // #9924: the Build health snapshot — Actions API reads for the
+  // id-gating lanes + the e2e nightly, cached for 5 minutes and
+  // shared in-flight (same discipline as the phase12 feed above),
+  // fail-soft to the last good snapshot or null.
+  let buildHealthCache: { value: BuildHealthSnapshot; at: number } | null = null;
+  let buildHealthInFlight: Promise<BuildHealthSnapshot | null> | null = null;
+  async function buildHealthSnapshot(): Promise<BuildHealthSnapshot | null> {
+    if (buildHealthCache && Date.now() - buildHealthCache.at < 5 * 60_000) return buildHealthCache.value;
+    if (!buildHealthInFlight) {
+      buildHealthInFlight = (async () => {
+        try {
+          const token = process.env.PM_AGG_GITHUB_TOKEN ?? process.env.GITHUB_TOKEN ?? null;
+          const snap = await fetchBuildHealthSnapshot(token);
+          buildHealthCache = { value: snap, at: Date.now() };
+          return snap;
+        } catch {
+          return buildHealthCache?.value ?? null;
+        }
+      })().finally(() => {
+        buildHealthInFlight = null;
+      });
+    }
+    return buildHealthInFlight;
+  }
+  // #9926: the readiness panel's two extra reads — #534's body
+  // (design checklist) through the phase12 body feed, and PR
+  // cross-references from each F-item issue's timeline. Both cached
+  // for 5 minutes and shared in-flight, fail-soft like the feeds
+  // above: a failed timeline read drops that issue's PRs, never
+  // the panel.
+  let phase12DesignCache: { value: Phase12Snapshot; at: number } | null = null;
+  let phase12DesignInFlight: Promise<Phase12Snapshot | null> | null = null;
+  async function phase12DesignSnapshot(): Promise<Phase12Snapshot | null> {
+    if (phase12DesignCache && Date.now() - phase12DesignCache.at < 5 * 60_000) return phase12DesignCache.value;
+    if (!phase12DesignInFlight) {
+      phase12DesignInFlight = (async () => {
+        const token = process.env.PM_AGG_GITHUB_TOKEN ?? process.env.GITHUB_TOKEN;
+        if (!token) return phase12DesignCache?.value ?? null;
+        try {
+          const snap = await fetchIssueBodySnapshot(token, fetch, () => new Date(), F12_DESIGN_ISSUE_NUMBER);
+          phase12DesignCache = { value: snap, at: Date.now() };
+          return snap;
+        } catch {
+          return phase12DesignCache?.value ?? null;
+        }
+      })().finally(() => {
+        phase12DesignInFlight = null;
+      });
+    }
+    return phase12DesignInFlight;
+  }
+  let f12PrRefsCache: { value: Map<number, F12PrRef[]>; at: number } | null = null;
+  let f12PrRefsInFlight: Promise<Map<number, F12PrRef[]> | null> | null = null;
+  async function f12PrRefsSnapshot(): Promise<Map<number, F12PrRef[]> | null> {
+    if (f12PrRefsCache && Date.now() - f12PrRefsCache.at < 5 * 60_000) return f12PrRefsCache.value;
+    if (!f12PrRefsInFlight) {
+      f12PrRefsInFlight = (async () => {
+        const snap = await phase12Snapshot();
+        if (!snap) return f12PrRefsCache?.value ?? null;
+        const token = process.env.PM_AGG_GITHUB_TOKEN ?? process.env.GITHUB_TOKEN;
+        const headers: Record<string, string> = {
+          Accept: "application/vnd.github+json",
+          "X-GitHub-Api-Version": "2022-11-28",
+          "User-Agent": "pm-aggregator-f12-readiness",
+          ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        };
+        const out = new Map<number, F12PrRef[]>();
+        await Promise.all(
+          parseF12Items(snap.body).map(async (item) => {
+            try {
+              const res = await fetch(
+                `https://api.github.com/repos/developing-today/code/issues/${item.issueNumber}/timeline?per_page=100`,
+                { headers, signal: AbortSignal.timeout(20_000) },
+              );
+              if (!res.ok) return;
+              out.set(item.issueNumber, parseTimelinePrRefs(await res.json()));
+            } catch {
+              // One issue's timeline failing drops only its PR column.
+            }
+          }),
+        );
+        f12PrRefsCache = { value: out, at: Date.now() };
+        return out;
+      })().finally(() => {
+        f12PrRefsInFlight = null;
+      });
+    }
+    return f12PrRefsInFlight;
+  }
   // #1116: a laptop leg's health, tracked per state file so the
   // attention provenance can say which legs are dead instead of the
   // failure staying silent. Before this, the OpenChamber-managed
@@ -1037,6 +1330,24 @@ export function liveSource(
   };
   async function laptopMapped(): Promise<MappedSessions | null> {
     if (laptopCache && Date.now() - laptopCache.at < 45_000) return laptopCache.value;
+    if (!laptopInFlight) {
+      if (Date.now() - laptopFailureAt < LAPTOP_FAILURE_CACHE_MS) return null;
+      laptopInFlight = (async () => {
+        const mapped = await mapLaptopServers();
+        if (mapped) {
+          laptopCache = { value: mapped, at: Date.now() };
+        } else {
+          laptopFailureAt = Date.now();
+        }
+        return mapped;
+      })().finally(() => {
+        laptopInFlight = null;
+      });
+    }
+    return laptopInFlight;
+  }
+
+  async function mapLaptopServers(): Promise<MappedSessions | null> {
     // Leg 1: the standing OpenCode server (opencode.service) — its own
     // state file carries the current url + password and is rewritten
     // on every restart, so this leg survives the restart churn that
@@ -1047,16 +1358,11 @@ export function liveSource(
         password?: string;
       };
       if (state.url && state.password) {
-        const mapped = await mapServerSessions(
-          { baseUrl: state.url, password: state.password },
-          Date.now(),
-          { source: "opencode-laptop" },
-        );
+        const mapped = await mapServerSessions({ baseUrl: state.url, password: state.password }, Date.now(), {
+          source: "opencode-laptop",
+        });
         laptopLegs.standing = mapped !== null;
-        if (mapped) {
-          laptopCache = { value: mapped, at: Date.now() };
-          return mapped;
-        }
+        if (mapped) return mapped;
       } else {
         laptopLegs.standing = false;
       }
@@ -1081,7 +1387,6 @@ export function liveSource(
       );
       laptopLegs.openchamber = mapped !== null;
       if (!mapped) return null;
-      laptopCache = { value: mapped, at: Date.now() };
       return mapped;
     } catch {
       laptopLegs.openchamber = false;
@@ -1165,6 +1470,56 @@ export function liveSource(
     return merged;
   }
 
+  // The quota view with the gatherer's quota-current overlay applied —
+  // the same view quota() serves. Usage-derived quota flags/actions must
+  // come from THIS view, not the unoverlaid feed quota (Codex P2,
+  // PR #4695): a pool the gatherer now reports healthy must clear its
+  // walled/high-usage actions on the usage strip too.
+  async function overlayCurrent(base: QuotaView): Promise<QuotaView> {
+    try {
+      const raw = await readFile(cfg.quotaCurrentFile, "utf8");
+      const file = parseQuotaCurrent(JSON.parse(raw));
+      if (file) return overlayQuotaCurrent(base, file);
+    } catch {
+      /* no gatherer file (or unreadable): base view stands */
+    }
+    return base;
+  }
+
+  // #9920: the read-only fleet-queue collector — POST /health +
+  // /list (rich) against the laptop queue-broker with the agent
+  // token from its file, cached 60s and shared in-flight. Fail-soft:
+  // a failed read re-serves the last good snapshot forced stale
+  // (available=false, error named), or the unavailable snapshot
+  // when nothing good exists yet — never a throw into a page.
+  let queueCache: { value: QueueSnapshot; at: number } | null = null;
+  let queueInFlight: Promise<QueueSnapshot> | null = null;
+  async function queueSnapshot(): Promise<QueueSnapshot> {
+    if (queueCache && Date.now() - queueCache.at < 60_000) {
+      const v = queueCache.value;
+      return { ...v, stale: v.stale || Date.now() - v.fetchedAt > QUEUE_STALE_MS };
+    }
+    if (!queueInFlight) {
+      queueInFlight = (async () => {
+        try {
+          const token = await readBrokerToken(cfg.queueBrokerTokenFile);
+          if (!token) throw new Error(`queue broker token file unreadable: ${cfg.queueBrokerTokenFile}`);
+          const snap = await fetchQueueSnapshot(cfg.queueBrokerUrl, token);
+          queueCache = { value: snap, at: Date.now() };
+          return snap;
+        } catch (err) {
+          const msg = err instanceof Error ? err.message : String(err);
+          if (queueCache) {
+            return { ...queueCache.value, available: false, stale: true, errors: [msg] };
+          }
+          return unavailableQueueSnapshot(Date.now(), msg);
+        }
+      })().finally(() => {
+        queueInFlight = null;
+      });
+    }
+    return queueInFlight;
+  }
   return {
     async board() {
       try {
@@ -1308,13 +1663,28 @@ export function liveSource(
       try {
         const rows = await gristRoadmap(cfg);
         if (rows.length > 0) {
-          provenance.roadmap = "live (Grist)";
+          let merged = rows;
+          let label = "live (Grist)";
           if (cfg.projector.baseUrl) {
-            const enriched = await enrichWithRegistryLinks(cfg.projector.baseUrl, rows, (r) => r.subject);
-            provenance.roadmap = "live (Grist + projector links)";
-            return enriched;
+            merged = await enrichWithRegistryLinks(cfg.projector.baseUrl, rows, (r) => r.subject);
+            label = "live (Grist + projector links)";
           }
-          return rows;
+          // #1738: merge the repos' own roadmap files in alongside the
+          // Grist rows. The repo-file read never throws (its failures
+          // are section states), but guard anyway: a broken repo source
+          // must never take the Grist roadmap down with it. Empty
+          // sections name their state + reason in the label (#1500).
+          try {
+            const repo = await readRepoRoadmaps(cfg);
+            const out = mergeRoadmapRows(merged, repo.rows);
+            merged = out.rows;
+            const sections = repo.sections.map(describeRepoRoadmapSection).join("; ");
+            label += ` + repo files (${sections}${out.collapsedCount ? `; ${out.collapsedCount} grist duplicate(s) collapsed` : ""})`;
+          } catch (err) {
+            label += ` + repo files (unreadable: ${err instanceof Error ? err.message : err})`;
+          }
+          provenance.roadmap = label;
+          return merged;
         }
       } catch (err) {
         provenance.roadmap = `fixtures (grist unreachable: ${err instanceof Error ? err.message : err})`;
@@ -1391,6 +1761,24 @@ export function liveSource(
     async needsDrew(): Promise<NeedsDrewCensus | null> {
       return needsDrewSweep();
     },
+    async phase12(): Promise<Phase12Snapshot | null> {
+      return phase12Snapshot();
+    },
+    async phaseMapping(): Promise<PhaseMappingSnapshot | null> {
+      return phaseMappingSnapshot();
+    },
+    async buildHealth(): Promise<BuildHealthSnapshot | null> {
+      return buildHealthSnapshot();
+    },
+    async phase12Design(): Promise<Phase12Snapshot | null> {
+      return phase12DesignSnapshot();
+    },
+    async f12PrRefs(): Promise<Map<number, F12PrRef[]> | null> {
+      return f12PrRefsSnapshot();
+    },
+    async queue(): Promise<QueueSnapshot | null> {
+      return queueSnapshot();
+    },
     async coverageCensus(): Promise<RepoCensus[] | null> {
       const feed = await getFeed();
       return coverageFromFeed(feed);
@@ -1406,14 +1794,13 @@ export function liveSource(
       return fix.comments(refs);
     },
     async latestComments(refs) {
-      if (cfg.projector.baseUrl) {
-        const live = await projectorLatestComments(cfg.projector.baseUrl, refs);
-        if (live) {
-          provenance.comments = "live (projector)";
-          return live;
-        }
+      if (!cfg.projector.baseUrl) {
+        return latestPerRef(await fix.comments(refs));
       }
-      return latestPerRef(await fix.comments(refs));
+      // #9781: ride the per-ref SWR cache (see LatestCommentsCache) —
+      // the uncached fan-out made /program and /board pay an ~8.2 s
+      // abort cliff on every request whenever the projector was slow.
+      return latestCommentsCache.get(refs);
     },
     async quota() {
       // Slice 1 (#890): quota comes from the fleet feed file produced
@@ -1557,12 +1944,17 @@ export function liveSource(
           subscriptions: feed.subscriptions ?? [],
         };
         partial.services = await tursoOverlay(cfg, partial.services);
+        const quotaForFlags = await overlayCurrent(feed.quota);
         return {
           ...partial,
           chargesNote: partial.charges.length
             ? undefined
             : "No charge evidence in the feed's records yet — rows appear as Plaid/Gmail receipt evidence is recorded (§2.4).",
-          attention: [...buildAttentionFlags(feed.quota, partial), ...feedChargeFlags],
+          attention: [
+            ...buildAttentionFlags(quotaForFlags, partial),
+            ...quotaActionFlags(buildQuotaActions(quotaForFlags, AA_PLAN_FACTS)),
+            ...feedChargeFlags,
+          ],
           domains,
           history,
         };
@@ -1593,12 +1985,17 @@ export function liveSource(
         provenance.usage =
           "live (quota-view.md + provider registry, direct read — feed carries no hub sections yet)" +
           feedSanitizationNotes;
+        const quotaForFlags = await overlayCurrent(feed?.quota ?? (await fix.quota()));
         return {
           ...partial,
           chargesNote: partial.charges.length
             ? undefined
             : "No charge evidence in the local records yet — rows appear as Plaid/Gmail receipt evidence is recorded (§2.4).",
-          attention: [...buildAttentionFlags(feed?.quota ?? (await fix.quota()), partial), ...feedChargeFlags],
+          attention: [
+            ...buildAttentionFlags(quotaForFlags, partial),
+            ...quotaActionFlags(buildQuotaActions(quotaForFlags, AA_PLAN_FACTS)),
+            ...feedChargeFlags,
+          ],
           domains,
           history,
         };
@@ -1807,11 +2204,14 @@ export function liveSource(
       // beside the feed. The feed's latest section carries the index, so the
       // historical render keeps the same selector list.
       if (batch !== undefined && batch !== null && batch !== "") {
-        const batchList =
-          feed?.aa && isAaSection(feed.aa) && feed.aa.status === "ok" ? (feed.aa.batches ?? []) : [];
+        const batchList = feed?.aa && isAaSection(feed.aa) && feed.aa.status === "ok" ? (feed.aa.batches ?? []) : [];
         if (!isBatchUuid(batch)) {
           provenance.aa = "live (fleet feed · invalid ?batch value)";
-          return { status: "absent", reason: "invalid batch id", generatedAt: feed?.generatedAt ?? new Date().toISOString() };
+          return {
+            status: "absent",
+            reason: "invalid batch id",
+            generatedAt: feed?.generatedAt ?? new Date().toISOString(),
+          };
         }
         try {
           const parsed: unknown = JSON.parse(

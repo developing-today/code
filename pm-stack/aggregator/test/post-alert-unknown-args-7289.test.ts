@@ -84,11 +84,16 @@ describe("post-alert unknown arguments (#7289)", () => {
   test("control: the documented invocation still posts exactly the incident it names", async () => {
     const before = captured.length;
     const { code } = await runScript([
-      "--source", "watch",
-      "--key", "host1",
-      "--severity", "warning",
-      "--title", "host down",
-      "--body", "503",
+      "--source",
+      "watch",
+      "--key",
+      "host1",
+      "--severity",
+      "warning",
+      "--title",
+      "host down",
+      "--body",
+      "503",
     ]);
     expect(code).toBe(0);
     expect(captured.length).toBe(before + 1);
@@ -104,15 +109,38 @@ describe("post-alert unknown arguments (#7289)", () => {
   test("unknown, misspelled, joined, duplicate, and stray arguments exit 2 with no token resolved and no fetch", async () => {
     const badArgSets: { args: string[]; names: string }[] = [
       // typo'd --severity used to post the incident as critical
-      { args: ["--source", "watch", "--key", "host1", "--severty", "warning", "--title", "host down"], names: "--severty" },
+      {
+        args: ["--source", "watch", "--key", "host1", "--severty", "warning", "--title", "host down"],
+        names: "--severty",
+      },
       // joined form used to be invisible to indexOf, same critical fallback
-      { args: ["--source", "watch", "--key", "host1", "--severity=warning", "--title", "host down"], names: "--severity=warning" },
+      {
+        args: ["--source", "watch", "--key", "host1", "--severity=warning", "--title", "host down"],
+        names: "--severity=warning",
+      },
       // unknown flag
       { args: ["--source", "watch", "--key", "host1", "--title", "host down", "--bogus", "x"], names: "--bogus" },
       // typo'd --body used to drop the body silently
-      { args: ["--source", "watch", "--key", "host1", "--severity", "info", "--title", "host down", "--bodi", "503"], names: "--bodi" },
+      {
+        args: ["--source", "watch", "--key", "host1", "--severity", "info", "--title", "host down", "--bodi", "503"],
+        names: "--bodi",
+      },
       // duplicate flag: indexOf silently used the first value
-      { args: ["--source", "watch", "--key", "host1", "--severity", "warning", "--severity", "info", "--title", "host down"], names: "--severity" },
+      {
+        args: [
+          "--source",
+          "watch",
+          "--key",
+          "host1",
+          "--severity",
+          "warning",
+          "--severity",
+          "info",
+          "--title",
+          "host down",
+        ],
+        names: "--severity",
+      },
       // stray positional
       { args: ["--source", "watch", "--key", "host1", "--title", "host down", "extra"], names: "extra" },
     ];

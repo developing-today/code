@@ -18,13 +18,13 @@
   Cloudflare Workers relay record
   (`doc/2026-11-05T15-10-00Z_design_cloudflare_workers_rendezvous_relay.md`)
   explicitly routes networks that allow HTTPS but block WebSocket to
-  *this* tier, so this record is the supported path for them.
+  _this_ tier, so this record is the supported path for them.
 - Evidence baseline: `origin/main` at `7dc4aefa23`, worktree
   `~/git/fleet/12791-5796`, 2026-11-10. Verified at that baseline: no
   CONNECT/proxy client exists in the crate — `grep -riE
-  'https?_proxy|all_proxy|no_proxy|proxy-authorization'` over
+'https?_proxy|all_proxy|no_proxy|proxy-authorization'` over
   `pkgs/id/src` and `pkgs/id/crates/id-core/src` returns nothing — while
-  the *server* half that a CONNECT tunnel must reach already exists:
+  the _server_ half that a CONNECT tunnel must reach already exists:
   `SSH_TUNNEL_ALPN` + `SshTunnelProtocol` (host-side SSH forwarding,
   `pkgs/id/src/world_ssh.rs:89,97`), `id world ssh-tunnel --listen`
   (local listener for an SSH client, `pkgs/id/src/cli.rs:1962-1977`),
@@ -66,7 +66,7 @@ Taken as given:
    silent downgrade" rule (§7.3) all apply to CONNECT attempts exactly
    as to UDP/TCP attempts.
 6. **Broker leg framing (#5792 §2, §4):** CONNECT is how the client
-   *reaches* the broker when egress demands a proxy; once the tunnel
+   _reaches_ the broker when egress demands a proxy; once the tunnel
    exists, the frames and the 25 s PING keepalive are #5792's, unchanged.
 
 This record decides only: **how ID establishes, authenticates, keeps and
@@ -80,7 +80,7 @@ tunnel.**
 1. **One CONNECT client, used by two callers.** A single CONNECT
    implementation inside `id` (a `connect-proxy` transport module, not a
    shell-out to `socat`/`ssh -o ProxyCommand`) establishes a byte tunnel
-   to a *single* named destination. Two callers use it: (a) the
+   to a _single_ named destination. Two callers use it: (a) the
    transport stack dialing a broker/host over TCP 443, and (b) the
    locally terminated endpoint (§7) dialing on behalf of a local SSH
    client. There is no second proxy code path.
@@ -91,7 +91,7 @@ tunnel.**
    config → "no proxy" (attempt the direct TCP tier instead). This is
    #5791 §5's override table applied to one more knob; it adds no new
    precedence layer.
-3. **Authentication is a credential *reference*, resolved at use, never
+3. **Authentication is a credential _reference_, resolved at use, never
    a value in config or logs.** `Basic` is the v1 scheme. `407` is
    #5791's `proxy_auth_required` class: negotiation pauses for a
    credential once, and never falls through to a direct attempt as if
@@ -105,7 +105,7 @@ tunnel.**
 5. **The locally terminated endpoint is `id`'s own listener on
    loopback**, carrying SSH-class bytes to a tunnel established with the
    same CONNECT client. This generalizes the existing `id world
-   ssh-tunnel --listen` shape rather than inventing a second local proxy.
+ssh-tunnel --listen` shape rather than inventing a second local proxy.
 6. **Keepalive and reuse follow #5792's numbers**, because the tunnel
    carries #5792 frames: PING every 25 s with jitter, dead leg after 3
    unanswered, 120 s broker-side idle close. A CONNECT tunnel that a
@@ -120,13 +120,13 @@ tunnel.**
 
 ### 3.1 Sources, in precedence order
 
-| Source | Scope | Notes |
-|---|---|---|
-| CLI `--proxy URL` / `--no-proxy` | per invocation | wins over everything; `--no-proxy` is a forbid |
+| Source                                   | Scope          | Notes                                                                                                                                                        |
+| ---------------------------------------- | -------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| CLI `--proxy URL` / `--no-proxy`         | per invocation | wins over everything; `--no-proxy` is a forbid                                                                                                               |
 | `HTTPS_PROXY` / `ALL_PROXY` / `NO_PROXY` | per invocation | the same variables the fleet's own sandbox tooling already honours (`docs/2026-11-04_remote-gui-access-runbook.md` uses `$HTTPS_PROXY` with a port override) |
-| per-peer config | one peer | pinned proxy for a peer reachable only through one egress |
-| global config | all peers | the machine's usual proxy |
-| none | — | dial the destination directly (the TCP tier), no CONNECT |
+| per-peer config                          | one peer       | pinned proxy for a peer reachable only through one egress                                                                                                    |
+| global config                            | all peers      | the machine's usual proxy                                                                                                                                    |
+| none                                     | —              | dial the destination directly (the TCP tier), no CONNECT                                                                                                     |
 
 `NO_PROXY` matching is by host suffix and literal IP, as browsers and
 `curl` implement it, and it is honoured for both callers. A credential
@@ -206,7 +206,7 @@ User-Agent: id/<version>
   peer.
 - Numbers are the latency design's (#5671 item 7 / #5797); this record
   fixes only that the three phases are separately timed and separately
-  classified, and that a CONNECT attempt is *one* candidate attempt for
+  classified, and that a CONNECT attempt is _one_ candidate attempt for
   #5791 §3.3's overall budget.
 
 ### 4.4 Keepalive through an idle-killing proxy
@@ -229,7 +229,7 @@ stall.
   tunnels per broker per client — matching #5792's two-connection
   decision, so a proxy never sees a connection fan-out that the broker
   design did not already accept.
-- A tunnel is not multiplexed across *different* destinations, and not
+- A tunnel is not multiplexed across _different_ destinations, and not
   shared between a broker leg and the local SSH endpoint (§7): a
   compromised or logged proxy must never be able to correlate the two by
   seeing them on one connection.
@@ -238,10 +238,10 @@ stall.
 
 ### 5.1 Schemes
 
-| Scheme | v1 | Reason |
-|---|---|---|
-| `Basic` | **supported** | universal, trivially implemented over the tunnel handshake, and the only scheme our own egress speaks |
-| `Digest` | follow-up (§13) | no better than Basic inside TLS-to-proxy, added complexity for a legacy case |
+| Scheme                            | v1                                             | Reason                                                                                                                                                                                                                                         |
+| --------------------------------- | ---------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `Basic`                           | **supported**                                  | universal, trivially implemented over the tunnel handshake, and the only scheme our own egress speaks                                                                                                                                          |
+| `Digest`                          | follow-up (§13)                                | no better than Basic inside TLS-to-proxy, added complexity for a legacy case                                                                                                                                                                   |
 | `NTLM` / `Negotiate` / `Kerberos` | **not supported in v1**; classified, not faked | multi-round challenge protocols with host-level state and platform credential APIs; a faked implementation that "sort of" works is worse than a precise `proxy_auth_required` telling the operator this proxy needs a scheme ID does not speak |
 
 An unsupported challenge is a **first-class, precise outcome**:
@@ -268,8 +268,8 @@ generic failure and not a silent direct attempt.
 
 This answers #5671's open question and #5791 §8's deferred half
 ("storage itself stays with the HTTP-CONNECT traversal design"): the
-*storage* is the platform credential store behind a reference; the
-*negotiation rule* (#5791 §5.4, pause-and-surface on 407) stands
+_storage_ is the platform credential store behind a reference; the
+_negotiation rule_ (#5791 §5.4, pause-and-surface on 407) stands
 unchanged.
 
 ### 5.3 The 407 flow
@@ -314,7 +314,7 @@ than papered over:
    is configured", and never downgrades to plaintext.
 2. **Inside the tunnel, ID's E2E layer is what survives inspection.**
    The broker forwards ciphertext (#5792 invariant 1); the ID handshake
-   is end-to-end. An inspecting proxy that terminates the *outer* TLS
+   is end-to-end. An inspecting proxy that terminates the _outer_ TLS
    therefore sees ID's handshake and frames as opaque bytes. That is the
    same exposure #5671 §4 already assigns to any network path, which is
    the point of keeping payloads E2E.
@@ -329,7 +329,7 @@ than papered over:
    network is a policy exemption for the broker endpoint — not a client
    workaround. This is recorded so support conversations start from the
    right fact.
-5. **Authentication of the *proxy* does not authenticate the *peer*.**
+5. **Authentication of the _proxy_ does not authenticate the _peer_.**
    A `200 Connection established` proves the proxy accepted a tunnel;
    it says nothing about the destination. The TLS handshake inside is
    the only peer authentication, on every tier, and no code path may
@@ -383,21 +383,21 @@ ssh -p <local-port> host          # after `id world ssh-tunnel --listen --proxy 
 No new top-level classes are introduced; the CONNECT tier returns
 #5791's classes with the proxy hop named.
 
-| CONNECT-layer outcome | Class | Next action per #5791 §6.2 |
-|---|---|---|
-| TCP to proxy refused / unreachable | `timeout` or `transport_error` (with the connect error) | fall through |
-| Proxy accepts, never answers the CONNECT | `timeout` (CONNECT-hop deadline, §4.3) | fall through |
-| `407` (any scheme) | `proxy_auth_required` | stop, ask operator once (§5.3) |
-| `403`, `502`, `503` from the proxy | `proxy_denied` | fall through (proxy refusing one destination says nothing about direct transports) |
-| Malformed/garbage response | `transport_error` with the raw status line (redacted) | fall through |
-| Tunnel up, TLS inside fails validation | `tls_failure` | **stop and surface** — never falls through, never downgraded |
-| Tunnel up, ID handshake auth fails | `auth_failure` | **stop and surface** |
-| Tunnel dies mid-session | not a failure class — a **resumption** (#5792 §5) | resume; surface only if the resume window expires |
+| CONNECT-layer outcome                    | Class                                                   | Next action per #5791 §6.2                                                         |
+| ---------------------------------------- | ------------------------------------------------------- | ---------------------------------------------------------------------------------- |
+| TCP to proxy refused / unreachable       | `timeout` or `transport_error` (with the connect error) | fall through                                                                       |
+| Proxy accepts, never answers the CONNECT | `timeout` (CONNECT-hop deadline, §4.3)                  | fall through                                                                       |
+| `407` (any scheme)                       | `proxy_auth_required`                                   | stop, ask operator once (§5.3)                                                     |
+| `403`, `502`, `503` from the proxy       | `proxy_denied`                                          | fall through (proxy refusing one destination says nothing about direct transports) |
+| Malformed/garbage response               | `transport_error` with the raw status line (redacted)   | fall through                                                                       |
+| Tunnel up, TLS inside fails validation   | `tls_failure`                                           | **stop and surface** — never falls through, never downgraded                       |
+| Tunnel up, ID handshake auth fails       | `auth_failure`                                          | **stop and surface**                                                               |
+| Tunnel dies mid-session                  | not a failure class — a **resumption** (#5792 §5)       | resume; surface only if the resume window expires                                  |
 
 Two rules that follow and are easy to get wrong:
 
 - **`proxy_denied` must not quarantine the proxy.** #5791 §6.3
-  quarantines `udp_blocked`/`policy_denied`; a proxy refusing *one*
+  quarantines `udp_blocked`/`policy_denied`; a proxy refusing _one_
   destination is destination-specific, so the proxy stays a candidate
   for other destinations and `NO_PROXY`-exempt ones.
 - **A `407` must not be remembered as a network fact.** It is a
@@ -406,21 +406,21 @@ Two rules that follow and are easy to get wrong:
 
 ## 9. What stays end-to-end / where plaintext exists
 
-| Path | Encrypted end to end? | Where plaintext exists |
-|---|---|---|
-| ID data/sync through broker over CONNECT | yes (#5792, #5671) | true endpoints (+ local `id` endpoint if the workload terminates there) |
-| ID queries/results | yes | same |
-| SSH through local endpoint → CONNECT → broker → world SSH | yes, SSH's own E2E | local SSH client, local `id` pump, host's SSH server |
-| CONNECT request itself (host:port, auth header) | **no** — visible to the proxy | proxy (this is inherent, and minimized: no URLs, no payload, no metadata beyond the destination) |
-| Hop TLS to broker (outer) | terminates at broker and proxy if inspecting | broker; appliance if MITM |
-| Control/rendezvous | authenticated + integrity-protected | as advertised in the rendezvous record |
+| Path                                                      | Encrypted end to end?                        | Where plaintext exists                                                                           |
+| --------------------------------------------------------- | -------------------------------------------- | ------------------------------------------------------------------------------------------------ |
+| ID data/sync through broker over CONNECT                  | yes (#5792, #5671)                           | true endpoints (+ local `id` endpoint if the workload terminates there)                          |
+| ID queries/results                                        | yes                                          | same                                                                                             |
+| SSH through local endpoint → CONNECT → broker → world SSH | yes, SSH's own E2E                           | local SSH client, local `id` pump, host's SSH server                                             |
+| CONNECT request itself (host:port, auth header)           | **no** — visible to the proxy                | proxy (this is inherent, and minimized: no URLs, no payload, no metadata beyond the destination) |
+| Hop TLS to broker (outer)                                 | terminates at broker and proxy if inspecting | broker; appliance if MITM                                                                        |
+| Control/rendezvous                                        | authenticated + integrity-protected          | as advertised in the rendezvous record                                                           |
 
 **Named non-E2E item:** the CONNECT destination and the fact that a
 tunnel exists are visible to the egress proxy by construction. This is
 the one non-E2E datum this tier introduces, and it is the minimum the
 mechanism can carry. Nothing else — no lengths beyond TCP's own
 observable byte counts, no frame types, no stream counts visible to the
-proxy as *semantic* items — is added by ID.
+proxy as _semantic_ items — is added by ID.
 
 ## 10. Invariants implementation must hold
 
@@ -463,7 +463,7 @@ proxy as *semantic* items — is added by ID.
    an external process per tunnel, credentials on a command line (visible
    in `ps`), no failure classes, no deadline separation, and a runtime
    dependency the `id` binary otherwise does not have. `ProxyCommand` is
-   what users do *today* — the point of this design is to make ID do it
+   what users do _today_ — the point of this design is to make ID do it
    with ID's error semantics.
 2. **Plain HTTP request smuggling instead of CONNECT** (i.e. use the
    broker's WebSocket/HTTP adapter as the primary path). Rejected as
@@ -504,7 +504,7 @@ No decision above changes a #5671 decision:
   promotes it (§1.1).
 - **Broker shape** — both legs outbound, `id` serve-proxy mode, TLS 1.3
   over 443: used, not amended (§1.2).
-- **Trust model** — broker sees metadata only; §6 and §11.3 *extend* the
+- **Trust model** — broker sees metadata only; §6 and §11.3 _extend_ the
   same rule to the egress proxy, which is a stricter reading, not a
   change.
 - **E2E boundary** — §9 names the one non-E2E datum (CONNECT
@@ -525,7 +525,7 @@ silently forked:
   supersede, wrap, or coexist?" — this record's §7 **wraps** it: #785's
   SSH-over-Iroh route is unchanged, `world ssh-tunnel` gains a CONNECT
   transport choice, and nothing in #785 is superseded. The final
-  supersede/wrap call for the SSH *fallback requirement* stays with
+  supersede/wrap call for the SSH _fallback requirement_ stays with
   #785's own open scope decision (`doc/2026-11-01_design_id785.md`).
 
 ## 13. Splits and follow-ups

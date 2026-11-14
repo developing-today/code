@@ -42,14 +42,25 @@ def bare_mirror(root, repo):
         "GIT_COMMITTER_EMAIL": "ghb-test@example.invalid",
     }
     tree = subprocess.run(
-        ["git", "-C", path, "mktree"], input="", capture_output=True, text=True, check=True
+        ["git", "-C", path, "mktree"],
+        input="",
+        capture_output=True,
+        text=True,
+        check=True,
     ).stdout.strip()
     commit = subprocess.run(
         ["git", "-C", path, "commit-tree", tree, "-m", "seed"],
-        capture_output=True, text=True, check=True, env=env,
+        capture_output=True,
+        text=True,
+        check=True,
+        env=env,
     ).stdout.strip()
-    subprocess.run(["git", "-C", path, "update-ref", "refs/heads/main", commit], check=True)
-    subprocess.run(["git", "-C", path, "symbolic-ref", "HEAD", "refs/heads/main"], check=True)
+    subprocess.run(
+        ["git", "-C", path, "update-ref", "refs/heads/main", commit], check=True
+    )
+    subprocess.run(
+        ["git", "-C", path, "symbolic-ref", "HEAD", "refs/heads/main"], check=True
+    )
 
 
 def plan_item(repo, parent=None):

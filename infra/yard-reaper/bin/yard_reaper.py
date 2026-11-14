@@ -37,8 +37,17 @@ REPO = "developing-today/code"
 # --- yard-reaper additions (code#7093) ---
 # Drew's keep set (2026-11-07): human-authored text, scripts, markdown.
 KEEP_SUFFIXES = {
-    ".md", ".txt", ".sh", ".py", ".ts", ".js", ".json", ".yaml", ".yml",
-    ".toml", ".log",
+    ".md",
+    ".txt",
+    ".sh",
+    ".py",
+    ".ts",
+    ".js",
+    ".json",
+    ".yaml",
+    ".yml",
+    ".toml",
+    ".log",
 }
 # Fixture floods are GENERATED .txt bulk despite the keep extension;
 # provenance (directory name) beats extension (#7093 heuristics:
@@ -53,8 +62,16 @@ FIXTURE_DIR_MARKERS = ("watcher-bench", "bench-fixture", "fixture")
 # real dry-run showed probe trees whose only "keep-set" files were
 # package sources inside cache/ trees (#7093 run 20261108T220620Z).
 BULK_DIR_NAMES = {
-    "target", "dist", "node_modules", ".git",
-    "cache", ".cache", "vendor", ".bun", ".npm", ".venv",
+    "target",
+    "dist",
+    "node_modules",
+    ".git",
+    "cache",
+    ".cache",
+    "vendor",
+    ".bun",
+    ".npm",
+    ".venv",
     "__pycache__",
 }
 # Examination holds: entries another lane is actively examining are
@@ -662,9 +679,7 @@ def is_fixture_dir(path: Path, root: Path) -> bool:
     if parts in ((), (".",)):
         parts = (path.name,)
     return any(
-        marker in part.lower()
-        for part in parts
-        for marker in FIXTURE_DIR_MARKERS
+        marker in part.lower() for part in parts for marker in FIXTURE_DIR_MARKERS
     )
 
 
@@ -809,9 +824,7 @@ def discover_entries(
         if resolved in registered:
             continue
         if top_level and entry.name in DENY_NAMES:
-            entries.append(
-                Entry(resolved, 0, 0, "held", protected="examination-hold")
-            )
+            entries.append(Entry(resolved, 0, 0, "held", protected="examination-hold"))
             continue
         # A linked worktree of a primary the (possibly partial)
         # registered set missed still carries branch state; only a
@@ -830,8 +843,7 @@ def discover_entries(
         elif issue_id is not None and issue_id in claimed_issues:
             protection = "live-claimed-issue"
         elif any(
-            cwd == resolved or cwd.is_relative_to(resolved)
-            for cwd in process_cwds
+            cwd == resolved or cwd.is_relative_to(resolved) for cwd in process_cwds
         ):
             protection = "process-in-entry"
         elif newest > idle_before:
@@ -910,7 +922,9 @@ def discover_targets(
                 or dir_task_id(entry.name)
             )
             issue_id = issue_id_from(branch or "") or issue_id_from(entry.name)
-            candidates.append((target, worktree, branch, task_id, issue_id, worktree, False))
+            candidates.append(
+                (target, worktree, branch, task_id, issue_id, worktree, False)
+            )
 
     result = []
     for path, worktree, branch, task_id, issue_id, owner_dir, adhoc in candidates:
@@ -922,8 +936,13 @@ def discover_targets(
         except OSError as exc:
             result.append(
                 Target(
-                    path, 0, 0, branch, task_id,
-                    protected=f"stat-failed: {exc}", issue_id=issue_id,
+                    path,
+                    0,
+                    0,
+                    branch,
+                    task_id,
+                    protected=f"stat-failed: {exc}",
+                    issue_id=issue_id,
                 )
             )
             continue
@@ -1258,9 +1277,7 @@ def main() -> int:
                     f"issue {target.issue_id} became claimed; stopping before {path}"
                 )
             if target.reason == "terminal-task":
-                fresh_status = source.states({target.task_id}).get(
-                    target.task_id
-                )
+                fresh_status = source.states({target.task_id}).get(target.task_id)
                 if fresh_status not in {"done", "failed", "cancelled"}:
                     raise SafetyError(
                         f"task {target.task_id} is no longer terminal; stopping"
@@ -1364,8 +1381,7 @@ def main() -> int:
                     f"issue {issue_id} became claimed; stopping before {resolved}"
                 )
             if any(
-                cwd == resolved or cwd.is_relative_to(resolved)
-                for cwd in fresh_cwds
+                cwd == resolved or cwd.is_relative_to(resolved) for cwd in fresh_cwds
             ):
                 raise SafetyError(f"process entered entry; stopping before {resolved}")
             size, newest, keep, _files = classify_entry_files(resolved)

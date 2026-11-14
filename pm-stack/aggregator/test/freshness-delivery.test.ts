@@ -27,7 +27,10 @@ function notice(sequence: number, scope: string[], source: FreshnessNotice["sour
 
 /** Fixed journal: sequences > `after`, honouring the same allow-list filter
  *  contract as FreshnessStore.listAfter. */
-function reader(events: FreshnessNotice[], options: { resetRequired?: boolean; cursor?: number } = {}): FreshnessJournalReader {
+function reader(
+  events: FreshnessNotice[],
+  options: { resetRequired?: boolean; cursor?: number } = {},
+): FreshnessJournalReader {
   const cursor = options.cursor ?? events.at(-1)?.sequence ?? 0;
   return {
     async listAfter(after: number) {
@@ -135,7 +138,13 @@ describe("freshness envelope", () => {
     expect(envelope.sources["fleet-feed"].notices).toBe(1);
     // Every source is present, even with no notices, so a client never has to
     // distinguish "absent" from "healthy".
-    expect(Object.keys(envelope.sources).sort()).toEqual(["fleet-feed", "github", "kaneo", "orchestration", "reconcile"]);
+    expect(Object.keys(envelope.sources).sort()).toEqual([
+      "fleet-feed",
+      "github",
+      "kaneo",
+      "orchestration",
+      "reconcile",
+    ]);
   });
 
   test("marks a source live only while a retained notice is recent", async () => {
@@ -170,7 +179,14 @@ describe("freshness SSE stream", () => {
     const store = reader([notice(1, ["board"]), notice(2, ["board"]), notice(3, ["feed"], "fleet-feed")]);
     const scope = deliveryScopeFromUrl(new URL("http://agg.test/freshness/stream?page=board"));
     if (!scope.ok) throw new Error("scope");
-    const response = createFreshnessStream({ reader: store, scope: scope.scope, after: 0, pollMs: 5, heartbeatMs: 50, signal: signal.signal });
+    const response = createFreshnessStream({
+      reader: store,
+      scope: scope.scope,
+      after: 0,
+      pollMs: 5,
+      heartbeatMs: 50,
+      signal: signal.signal,
+    });
 
     expect(response.status).toBe(200);
     expect(response.headers.get("content-type")).toContain("text/event-stream");
@@ -213,7 +229,14 @@ describe("freshness SSE stream", () => {
     const store = reader([], { resetRequired: true, cursor: 500 });
     const scope = deliveryScopeFromUrl(new URL("http://agg.test/freshness/stream?page=board"));
     if (!scope.ok) throw new Error("scope");
-    const response = createFreshnessStream({ reader: store, scope: scope.scope, after: 1, pollMs: 5, heartbeatMs: 50, signal: signal.signal });
+    const response = createFreshnessStream({
+      reader: store,
+      scope: scope.scope,
+      after: 1,
+      pollMs: 5,
+      heartbeatMs: 50,
+      signal: signal.signal,
+    });
 
     const text = await readFrames(response, (current) => current.includes("event: reset"), signal.signal);
     signal.abort();
@@ -229,7 +252,14 @@ describe("freshness SSE stream", () => {
     const store = reader([]);
     const scope = deliveryScopeFromUrl(new URL("http://agg.test/freshness/stream?page=board"));
     if (!scope.ok) throw new Error("scope");
-    const response = createFreshnessStream({ reader: store, scope: scope.scope, after: 0, pollMs: 5, heartbeatMs: 10, signal: signal.signal });
+    const response = createFreshnessStream({
+      reader: store,
+      scope: scope.scope,
+      after: 0,
+      pollMs: 5,
+      heartbeatMs: 10,
+      signal: signal.signal,
+    });
 
     const text = await readFrames(response, (current) => /: heartbeat /.test(current), signal.signal);
     signal.abort();
@@ -249,7 +279,14 @@ describe("freshness SSE stream", () => {
     };
     const scope = deliveryScopeFromUrl(new URL("http://agg.test/freshness/stream?page=board"));
     if (!scope.ok) throw new Error("scope");
-    const response = createFreshnessStream({ reader: live, scope: scope.scope, after: 0, pollMs: 5, heartbeatMs: 1000, signal: signal.signal });
+    const response = createFreshnessStream({
+      reader: live,
+      scope: scope.scope,
+      after: 0,
+      pollMs: 5,
+      heartbeatMs: 1000,
+      signal: signal.signal,
+    });
 
     const bodyPromise = readFrames(response, (current) => current.includes("id: 7"), signal.signal);
     events.push(notice(7, ["board"]));

@@ -9,3 +9,8 @@ description = "fleet configuration: ~/.config/fleet/fleet.toml + env resolution,
 [dependencies]
 serde = { workspace = true }
 toml = { workspace = true }
+
+[dev-dependencies]
+# Property-based tests for the [[proxy.services]] load invariants
+# (#6397), the same proptest version pkgs/id uses.
+proptest = "1.12"

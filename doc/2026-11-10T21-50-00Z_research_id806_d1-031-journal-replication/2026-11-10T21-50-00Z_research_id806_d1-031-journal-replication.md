@@ -49,12 +49,12 @@ package had to close; it is no longer the current state (see Evidence).
 
 Summarized from design §3 (`doc/2026-11-01_design_id806.md`):
 
-| Option | Why not / why |
-| --- | --- |
-| Extend the `world_records` iroh-docs document to carry journal data | A CRDT key/value document is the wrong authority for an ordered journal: it represents the latest projection, coalesces intermediate changes, and cannot directly restore/serve a world. |
-| Send the journal through the existing interactive `WORLD_ALPN` session | Couples replication lifecycle/versioning to participant frames; no replication cursor, durable change feed, checkpoint-reset contract, or replica read-only mode exists there. |
-| Re-send a complete signed journal snapshot on every sync | Smallest protocol, but repeats all journal and module bytes on every reconnect. Retained as the initial-sync and compaction-recovery mechanism, not the steady-state path. |
-| **Dedicated signed replication stream with snapshot/reset plus ordered tail** | **Chosen.** Keeps the authoritative JSONL journal, replication integrity, and participant sessions separate; supports reconnect, compaction, and offline serving. |
+| Option                                                                        | Why not / why                                                                                                                                                                            |
+| ----------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Extend the `world_records` iroh-docs document to carry journal data           | A CRDT key/value document is the wrong authority for an ordered journal: it represents the latest projection, coalesces intermediate changes, and cannot directly restore/serve a world. |
+| Send the journal through the existing interactive `WORLD_ALPN` session        | Couples replication lifecycle/versioning to participant frames; no replication cursor, durable change feed, checkpoint-reset contract, or replica read-only mode exists there.           |
+| Re-send a complete signed journal snapshot on every sync                      | Smallest protocol, but repeats all journal and module bytes on every reconnect. Retained as the initial-sync and compaction-recovery mechanism, not the steady-state path.               |
+| **Dedicated signed replication stream with snapshot/reset plus ordered tail** | **Chosen.** Keeps the authoritative JSONL journal, replication integrity, and participant sessions separate; supports reconnect, compaction, and offline serving.                        |
 
 ## The contract (design §4, as implemented)
 
@@ -162,13 +162,13 @@ Summarized from design §3 (`doc/2026-11-01_design_id806.md`):
 
 Implementation phases from design §7, verified on GitHub 2026-11-10:
 
-| Phase | Scope | PR | State |
-| --- | --- | --- | --- |
-| 1 | Replication wire contract + crypto primitives | #4447 | MERGED 2026-11-02 |
-| 2 | Serve signed world journal replication | #4589 | MERGED 2026-11-02 |
-| 3 | Durable replication receiver + verifier | #4634 | MERGED 2026-11-03 |
-| 4 | Read-only replica world service and spectators | #4708 | MERGED 2026-11-03 |
-| 5 | Operator interface and resilience | — | No merged PR in this evidence set; remains #806 scope |
+| Phase | Scope                                          | PR    | State                                                 |
+| ----- | ---------------------------------------------- | ----- | ----------------------------------------------------- |
+| 1     | Replication wire contract + crypto primitives  | #4447 | MERGED 2026-11-02                                     |
+| 2     | Serve signed world journal replication         | #4589 | MERGED 2026-11-02                                     |
+| 3     | Durable replication receiver + verifier        | #4634 | MERGED 2026-11-03                                     |
+| 4     | Read-only replica world service and spectators | #4708 | MERGED 2026-11-03                                     |
+| 5     | Operator interface and resilience              | —     | No merged PR in this evidence set; remains #806 scope |
 
 Current-main module map, verified at `9b65fa2ec8` on 2026-11-10:
 

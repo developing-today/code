@@ -14,6 +14,7 @@ The implementation consists of two main Python scripts in `pm-stack/opencode-cla
 ## Files Implemented
 
 ### Core Implementation
+
 - ✅ `pm-stack/opencode-claimant/claimant.py` (556 lines)
   - Main execution script
   - Implements all 6 steps: Supervision, Gate, Cap, Launch, Terminal States, Logging
@@ -28,6 +29,7 @@ The implementation consists of two main Python scripts in `pm-stack/opencode-cla
   - Stuck-bound session detection
 
 ### Supporting Files
+
 - ✅ `pm-stack/opencode-claimant/README.md` (205 lines)
   - Comprehensive documentation
   - Usage instructions
@@ -90,18 +92,21 @@ The implementation consists of two main Python scripts in `pm-stack/opencode-cla
 ### Key Features
 
 #### Mode Handling
+
 - **shadow** (default): Discovery and read-only supervision only. No mutations.
 - **live**: Full execution including session creation, binding, and prompt delivery.
 - Mode read from `~/.local/state/opencode-claimant/mode`
 - Missing/unreadable file defaults to `shadow`
 
 #### Queues Monitored
+
 1. `repo-health-code-pilot`
 2. `repo-health-opencode-pilot`
 3. `repo-health-openchamber-pilot`
 4. `repo-health-nix-pilot`
 
 #### Concurrency Cap
+
 - **36 active root sessions** across the fleet
 - Monitored via OpenCode server API (`GET /api/session`)
 - Only root sessions without terminal markers count toward cap
@@ -111,43 +116,51 @@ The implementation consists of two main Python scripts in `pm-stack/opencode-cla
 #### Recovery Rules (#4758, Phase 3 of #4912)
 
 **Zero-Message Recovery:**
+
 - Bound sessions with no messages
 - No activity markers
 - Silent for >30 minutes (ACTIVE_WINDOW_MS)
 - Attempts remaining (`attempts < max_attempts`)
 
 **Process:**
+
 1. Verify zero messages via `GET /api/session/{id}/messages`
 2. Delete session via `DELETE /api/session/{id}`
 3. Atomically reclaim task via `bind` with `--launched-by opencode-claimant-recovery:zero-message-deleted`
 4. Task becomes unbound and eligible for next fire
 
 **Gone-Session Recovery:**
+
 - Bound sessions absent from server
 - Attempts remaining
 
 **Process:**
+
 1. Verify absence via `GET /api/session/{id}`
 2. Atomically reclaim task via `bind` with `--launched-by opencode-claimant-recovery:gone-session`
 
 **Exhausted Attempts:**
+
 - When attempts exhausted:
   1. For zero-message sessions: delete then fail task terminally
   2. For gone sessions: fail task terminally
   3. Use `repo-queue fail` with execution record containing session_id
 
 #### Atomic Operations
+
 - **Bind operation**: `repo-queue bind <task> --worker opencode-claimant --session-id <id> --launched-by opencode-claimant`
 - **Recovery operations**: Use special `launched_by` values for compare-and-clear guards
 - **Migration 0021**: `bind_repo_task_lane_session`
 - **Migration 0022**: Atomic recovery operations
 
 #### Session Location Verification
+
 - Verify `location.directory` before binding
 - Prevents sessions from being created at wrong location
 - Critical for correct session→repo attribution
 
 #### Task State Verification
+
 - Re-verify task state before launch
 - Check for concurrent modifications
 - Prevent double-execution
@@ -166,17 +179,20 @@ The implementation consists of two main Python scripts in `pm-stack/opencode-cla
 ## Usage
 
 ### Run in Shadow Mode (Safe Testing)
+
 ```bash
 python3 pm-stack/opencode-claimant/claimant.py
 ```
 
 ### Run in Live Mode (Full Execution)
+
 ```bash
 echo "live" > ~/.local/state/opencode-claimant/mode
 python3 pm-stack/opencode-claimant/claimant.py
 ```
 
 ### Test Candidate Discovery
+
 ```bash
 python3 pm-stack/opencode-claimant/poll.py
 ```

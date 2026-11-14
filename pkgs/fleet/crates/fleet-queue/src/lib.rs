@@ -25,18 +25,24 @@ pub mod bin_args;
 pub mod creation_outbox;
 mod home;
 pub mod log;
+pub mod merge_intent;
 pub mod token_file;
+pub mod work;
 
 #[cfg(feature = "client")]
 pub mod client;
 #[cfg(feature = "client")]
 pub mod fallback;
+#[cfg(feature = "client")]
+pub mod needs_drew;
+#[cfg(feature = "client")]
+pub mod placement;
 #[cfg(feature = "queue-broker")]
 pub mod queue_broker;
-#[cfg(feature = "queue-broker")]
-pub mod turso_queue;
 #[cfg(feature = "secrets-broker")]
 pub mod secrets_broker;
+#[cfg(feature = "queue-broker")]
+pub mod turso_queue;
 #[cfg(any(feature = "queue-broker", feature = "secrets-broker"))]
 pub mod uds_http;
 #[cfg(feature = "queue-broker")]

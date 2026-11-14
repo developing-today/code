@@ -13,12 +13,12 @@ those backups, it does not redefine them).
 
 ## Targets (#1258)
 
-| Scope | RTO (restore) | RPO (data loss) |
-| --- | --- | --- |
-| Core PM stack available again | 4 h | — |
-| Kaneo (Postgres) | within core 4 h | 1 h |
-| Grist | within core 4 h | 24 h |
-| Pad | within core 4 h | 24 h |
+| Scope                         | RTO (restore)   | RPO (data loss) |
+| ----------------------------- | --------------- | --------------- |
+| Core PM stack available again | 4 h             | —               |
+| Kaneo (Postgres)              | within core 4 h | 1 h             |
+| Grist                         | within core 4 h | 24 h            |
+| Pad                           | within core 4 h | 24 h            |
 
 A drill that misses a target is recorded as a miss with the gap named —
 targets are never claimed until verified by a drill.

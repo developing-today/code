@@ -188,9 +188,7 @@ describe("reconcileRepos prs stream sources pulls-shaped data (#4528)", () => {
 
   test("merged-first-sight stores merged=1 + merged_at", async () => {
     const repo = "developing-today/prs-merged-first-sight";
-    const { fetchFn } = prsFake(repo, [
-      pullsPr(repo, 8, { state: "closed", merged_at: "2026-10-03T00:00:00Z" }),
-    ]);
+    const { fetchFn } = prsFake(repo, [pullsPr(repo, 8, { state: "closed", merged_at: "2026-10-03T00:00:00Z" })]);
     const result = await reconcileRepos(db, { PM_REPOS: repo, GITHUB_TOKEN: "test-token" }, fetchFn);
     expect(result.ok).toBe(true);
     const items = await getItems(db, [`${repo}#8`]);
@@ -207,19 +205,23 @@ describe("reconcileRepos prs stream sources pulls-shaped data (#4528)", () => {
     // materialized draft=0/merged=0 with no merged_at.
     await upsertItem(
       db,
-      fromIssueOrPr(repo, {
-        number: 9,
-        html_url: `https://github.com/${repo}/pull/9`,
-        url: `https://api.github.com/repos/${repo}/issues/9`,
-        title: "pr 9",
-        state: "open",
-        user: { login: "drew" },
-        labels: [],
-        assignees: [],
-        pull_request: { url: `https://api.github.com/repos/${repo}/pulls/9` },
-        created_at: "2026-10-01T00:00:00Z",
-        updated_at: "2026-10-02T00:00:00Z",
-      }, "pr"),
+      fromIssueOrPr(
+        repo,
+        {
+          number: 9,
+          html_url: `https://github.com/${repo}/pull/9`,
+          url: `https://api.github.com/repos/${repo}/issues/9`,
+          title: "pr 9",
+          state: "open",
+          user: { login: "drew" },
+          labels: [],
+          assignees: [],
+          pull_request: { url: `https://api.github.com/repos/${repo}/pulls/9` },
+          created_at: "2026-10-01T00:00:00Z",
+          updated_at: "2026-10-02T00:00:00Z",
+        },
+        "pr",
+      ),
     );
     expect((await getItems(db, [`${repo}#9`]))[0].draft).toBe(0);
     // A later polls pass with pulls truth heals the row.
@@ -263,5 +265,107 @@ describe("reconcileRepos reviews stream per-PR guard (#2745)", () => {
     expect((await getComments(db, [`${repo}#1`])).map((c) => c.id)).toEqual(["101"]);
     expect((await getComments(db, [`${repo}#3`])).map((c) => c.id)).toEqual(["103"]);
     expect(await getSyncCursor(db, repo, "reviews")).toBe("2026-10-06T00:00:00Z");
+  });
+});
+
+describe("wrong-shape list elements (#7009)", () => {
+  test("fromIssueOrPr refuses non-object / bad-number elements with a named error, never a raw TypeError or phantom row", () => {
+    for (const bad of [null, "str", 42, [], {}, { number: 1.5 }, { number: "7" }, { number: undefined }]) {
+      let err: unknown = null;
+      try {
+        fromIssueOrPr("o/r", bad as never, "issue");
+      } catch (e) {
+        err = e;
+      }
+      expect(err).toBeInstanceOf(Error);
+      expect(err).not.toBeInstanceOf(TypeError);
+      expect((err as Error).message).toContain("refusing to project");
+    }
+  });
+
+  test("reconcile skips bad elements with a count, stores the good ones, and still advances cursors", async () => {
+    const repo = "developing-today/bad-elements";
+    const item = (n: number, at: string) => ({
+      number: n,
+      html_url: `https://github.com/${repo}/issues/${n}`,
+      url: `https://api.github.com/repos/${repo}/issues/${n}`,
+      title: `item ${n}`,
+      state: "open",
+      user: { login: "drew" },
+      labels: [],
+      assignees: [],
+      created_at: "2026-10-01T00:00:00Z",
+      updated_at: at,
+    });
+    const fetchFn = (async (url: string) => {
+      if (url.includes("/issues/comments")) {
+        return jsonRes([
+          null,
+          "junk",
+          {
+            id: 7001,
+            html_url: `https://github.com/${repo}/issues/1#issuecomment-7001`,
+            body: "good comment",
+            user: { login: "drew" },
+            created_at: "2026-10-03T00:00:00Z",
+            updated_at: "2026-10-04T00:00:00Z",
+          },
+        ]);
+      }
+      if (url.includes("/pulls/comments")) return jsonRes([42]);
+      if (url.includes("/pulls/1/reviews")) {
+        return jsonRes([
+          null,
+          {
+            id: 701,
+            body: "ok review",
+            user: { login: "drew" },
+            state: "APPROVED",
+            submitted_at: "2026-10-05T00:00:00Z",
+          },
+        ]);
+      }
+      if (url.includes("/pulls?")) {
+        return jsonRes([item(1, "2026-10-02T00:00:00Z"), null, { title: "no number" }, []]);
+      }
+      if (url.includes("/issues?")) {
+        return jsonRes([item(1, "2026-10-02T00:00:00Z"), "junk", item(2, "2026-10-06T00:00:00Z"), { number: 2.5 }]);
+      }
+      return jsonRes([]);
+    }) as unknown as typeof fetch;
+
+    const result = await reconcileRepos(db, { PM_REPOS: repo, GITHUB_TOKEN: "test-token" }, fetchFn);
+    expect(result.ok).toBe(true);
+    const streams = result.streams as Record<string, any>[];
+    const byStream = (name: string) => streams.find((s) => s.stream === name)!;
+
+    const issues = byStream("issues");
+    expect(issues.error).toBeUndefined();
+    expect(issues.written).toBe(2);
+    expect(issues.skipped).toBe(2);
+    expect(issues.cursor).toBe("2026-10-06T00:00:00Z");
+    expect((await getItems(db, [`${repo}#1`, `${repo}#2`])).length).toBe(2);
+    expect((await getItems(db, [`${repo}#undefined`])).length).toBe(0);
+
+    const prs = byStream("prs");
+    expect(prs.error).toBeUndefined();
+    expect(prs.written).toBe(1);
+    expect(prs.skipped).toBe(3);
+
+    const issueComments = byStream("issue_comments");
+    expect(issueComments.error).toBeUndefined();
+    expect(issueComments.written).toBe(1);
+    expect(issueComments.skipped).toBe(2);
+    expect((await getComments(db, [`${repo}#1`])).map((c) => c.id)).toContain("7001");
+
+    const reviewComments = byStream("review_comments");
+    expect(reviewComments.error).toBeUndefined();
+    expect(reviewComments.skipped).toBe(1);
+
+    const reviews = byStream("reviews");
+    expect(reviews.error).toBeUndefined();
+    expect(reviews.written).toBe(1);
+    expect(reviews.skipped).toBe(4);
+    expect((await getComments(db, [`${repo}#1`])).map((c) => c.id).sort()).toEqual(["7001", "701"]);
   });
 });

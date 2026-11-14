@@ -47,6 +47,7 @@ var EffectProbes = map[string]string{
 	"script.prefix":              "TestScriptPrefixIsReachableFromTheEnvironment",
 	"script.check":               "TestScriptTypecheckOnRefusesATypeError",
 	"script.env":                 "TestScriptEnvIsReachableFromTheEnvironment",
+	"script.devshell":            "TestScriptDevshellIsReachableFromTheEnvironment",
 	"paths.state":                "TestStateDirectoryIsReachableAsASetting",
 	"registry.url":               "TestRegistryPageSizeChangesWhatTheCLIAsksFor",
 	"output.json":                "TestOutputJSONIsReachableFromTheEnvironment",

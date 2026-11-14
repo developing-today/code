@@ -282,6 +282,7 @@ fn check_hop(
 }
 
 #[cfg(test)]
+#[allow(clippy::panic)]
 mod tests {
     use super::*;
 

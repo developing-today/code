@@ -79,7 +79,9 @@ fn expanduser(p: &str) -> String {
         // relative to the CWD.
         let home = match std::env::var_os("HOME") {
             Some(home) if !home.is_empty() => home,
-            _ => panic!("HOME is not set or is empty: atlas-core requires a non-empty HOME to expand ~/ paths (issue #5640)"),
+            _ => panic!(
+                "HOME is not set or is empty: atlas-core requires a non-empty HOME to expand ~/ paths (issue #5640)"
+            ),
         };
         return PathBuf::from(home)
             .join(rest)

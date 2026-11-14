@@ -211,8 +211,20 @@ describe("stall risk contract (#3984 §3/§4)", () => {
       escalatesToNeedsYou: false,
       evidenceCoverage: 0.5,
       signals: [
-        { code: "blocked_edge_age", contribution: 30, known: true, observedAt: "2026-10-26T00:00:00Z", detail: "blocked edge unresolved for at least 7 days (lower bound)" },
-        { code: "no_meaningful_activity", contribution: 20, known: true, observedAt: "2026-11-02T00:00:00Z", detail: "no meaningful activity for at least 7 days (updatedAt proxy)" },
+        {
+          code: "blocked_edge_age",
+          contribution: 30,
+          known: true,
+          observedAt: "2026-10-26T00:00:00Z",
+          detail: "blocked edge unresolved for at least 7 days (lower bound)",
+        },
+        {
+          code: "no_meaningful_activity",
+          contribution: 20,
+          known: true,
+          observedAt: "2026-11-02T00:00:00Z",
+          detail: "no meaningful activity for at least 7 days (updatedAt proxy)",
+        },
         { code: "queue_heartbeat", contribution: 0, known: false, observedAt: null, detail: "no queue source" },
         { code: "queue_requeues", contribution: 0, known: false, observedAt: null, detail: "no queue source" },
       ],
@@ -296,10 +308,32 @@ describe("rendering consumes the shared contract (#3984)", () => {
     const rec = reconcileRoadmap([row], pool);
     const drill = buildRoadmapDrill([row], rec, pool);
     const prov = {
-      board: "x", roadmap: "x", items: "x", comments: "x", quota: "x", usage: "x",
-      attention: "x", orchestration: "x", dns: "x", registry: "x", aa: "x",
+      board: "x",
+      roadmap: "x",
+      items: "x",
+      comments: "x",
+      quota: "x",
+      usage: "x",
+      attention: "x",
+      orchestration: "x",
+      dns: "x",
+      registry: "x",
+      aa: "x",
     } as Parameters<typeof renderRoadmap>[2];
-    const html = renderRoadmap([row], new Map(), prov, "quarter", undefined, undefined, rec, drill, undefined, "", undefined, byRef);
+    const html = renderRoadmap(
+      [row],
+      new Map(),
+      prov,
+      "quarter",
+      undefined,
+      undefined,
+      rec,
+      drill,
+      undefined,
+      "",
+      undefined,
+      byRef,
+    );
     expect(html).toContain("high confidence");
     expect(html).toContain("16 of 20 completed children");
   });

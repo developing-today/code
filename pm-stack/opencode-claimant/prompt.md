@@ -39,11 +39,11 @@ Never claim, bind, launch, or mutate a task in shadow mode.
 
 ## BACKEND OUTAGE — FALLBACK MODE (2026-11-06, code#6619)
 
-If the queue backend is down —  (or any broker
+If the queue backend is down — `fleet queue health` (or any broker
 verb) fails with a broker/PostgREST error instead of returning
 state — do NOT improvise a fallback bind. Session binding is a
 database operation; the GitHub-native fallback protocol
-(, doc/fleet/queue-fallback-mode.md in this
+(see doc/fleet/queue-fallback-mode.md in this
 repo) deliberately has no claimant equivalent, because its claims
 are worked by the claiming worker itself. In an outage: record the
 failure in the fire log (the health error verbatim), launch
@@ -59,9 +59,11 @@ outage is recoverable, a double-launch's damage is not.
   `repo-health-opencode-pilot`, `repo-health-openchamber-pilot`,
   `repo-health-nix-pilot`.
 - Queue CLI on this machine: `repo-queue`
-  (`~/fleet-brokers/bin/repo-queue`; it reaches the queue-broker
-  directly — pass `--worker opencode-claimant` on every verb you
-  use).
+  (`~/.local/bin/repo-queue`, the packaged fleet binary's argv0
+  alias — the hand-built `~/fleet-brokers/bin` tree was retired by
+  the code#5362 cutover; this matches `REPO_QUEUE_CMD` in
+  claimant.py/poll.py — pass `--worker opencode-claimant` on every
+  verb you use).
 - Claim-model stamp (#8176): a session that picks up an item
   itself (a lane section's claim, or your own direct claim) names
   the model serving it: read your own serving leaf first with the
@@ -69,7 +71,7 @@ outage is recoverable, a double-launch's damage is not.
   provider / model / variant — the leaf that actually served your
   last step, not your declared route) and pass it on the claim —
   `--model-provider <provider> --model-id <model>
-  --model-variant <variant>` (variant only when lastServing
+--model-variant <variant>` (variant only when lastServing
   carries one). The broker stamps it on the task
   (claim_provider / claim_model / claim_variant): the model AT
   CLAIM TIME — a later failover does not rewrite it. If the
@@ -162,7 +164,7 @@ outage is recoverable, a double-launch's damage is not.
    stuck_bound entry): reclaim the task to unbound with one atomic
    compare-and-clear CLI call:
    `bind <id> --worker opencode-claimant --session-id <old session
-   id> --launched-by opencode-claimant-recovery:zero-message-deleted`.
+id> --launched-by opencode-claimant-recovery:zero-message-deleted`.
    Migration 0022 makes this reserved `launched_by` value verify the
    old id against BOTH `tasks.progress.session_id` and the lane
    ledger, then clear both in one transaction and record
@@ -184,8 +186,8 @@ outage is recoverable, a double-launch's damage is not.
    zero-message session, first do the verified delete above; for a
    gone session, absence is already verified. Then terminally fail
    the task as its `worker_id` — `fail <id> --worker <worker_id>
-   --error "bound session <id> unavailable without terminal outcome; attempts
-   exhausted" --reason-class deterministic` with `--execution
+--error "bound session <id> unavailable without terminal outcome; attempts
+exhausted" --reason-class deterministic` with `--execution
    "{\"lane\": \"opencode\", \"session_id\": \"<the bound
       session id>\", \"fallback_reason\": \"launch_failed_attempts_exhausted\"}"
    so the bound session id survives in the execution record.
@@ -266,7 +268,7 @@ queue task and issue>, "model": {"id": <route model>,
    terminal verbs (complete / park / block / fail) carrying
    `--execution "{\"lane\": \"opencode\", \"session_id\": \"<id>\"}"`
    with the SAME session id you bound in step c. The queue CLI on
-   this machine is `repo-queue` (`~/fleet-brokers/bin/repo-queue`).
+   this machine is `repo-queue` (`~/.local/bin/repo-queue`).
    e. Post the launch agent-note on the issue (agent-note:v1,
    state=handed off) naming task id + session id.
 5. Terminal states are recorded by the worker session itself via the

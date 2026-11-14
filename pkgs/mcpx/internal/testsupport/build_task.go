@@ -24,6 +24,7 @@ func TaskMCPBinary(t *testing.T) string {
 			taskErr = err
 			return
 		}
+		registerBuildTempDir(dir)
 		taskBin = filepath.Join(dir, "taskmcp")
 		cmd := exec.Command("go", "build", "-o", taskBin, "./internal/testsupport/taskmcp")
 		cmd.Dir = repoRoot()
