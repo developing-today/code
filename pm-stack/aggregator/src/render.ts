@@ -125,6 +125,7 @@ import type { ProjectDetail, ProjectSummary } from "./project-config.ts";
 import { derivedProjectState, projectDisagreement, PROJECT_URL } from "./projects.ts";
 import { PHASE12_ISSUE_URL, joinPhase12Steps, parsePhase12Steps, phase12IsStale, type Phase12Snapshot } from "./phase12.ts";
 import { BUILD_HEALTH_REPO, buildHealthIsStale, projectLane, projectNightlyTrend, type BuildHealthSnapshot } from "./build-health.ts";
+import { F12_DESIGN_ISSUE_URL, parseF12Designs, parseF12Items, projectF12Readiness, type F12PrRef } from "./f12-readiness.ts";
 import {
   CANONICAL_STATUSES,
   STATUS_SOURCE_LABELS,
@@ -7151,6 +7152,60 @@ export function buildHealthPanelHtml(snapshot: BuildHealthSnapshot | null): stri
   return `${head}${sourceLine}${laneCards}${nightlyHtml}`;
 }
 
+/** The Phase 12 readiness panel (#9926): F12.1–F12.18 with design
+ * state (from #534's checklist), live issue state, and PR state
+ * (timeline cross-references). The F-item list is parsed from
+ * #1235's body — never hand-typed here. A stale snapshot withholds
+ * the rows behind the warning; missing sub-feeds render their
+ * column as unavailable instead of inventing a state. */
+export function f12ReadinessPanelHtml(
+  phase12: Phase12Snapshot | null,
+  design: Phase12Snapshot | null,
+  prRefs: Map<number, F12PrRef[]> | null,
+  items: Map<RefKey, GhItem>,
+): string {
+  const head = `<h2>Phase 12 readiness — F12.1–F12.18, live</h2>`;
+  if (!phase12) {
+    return `${head}<div class="banner">The #1235 body feed is unavailable in the current source, so no F-item state is shown — the F-item list itself comes from that body, and this panel never renders a hand-typed copy.</div>`;
+  }
+  const sourceLine = `<p class="muted">Sources: F-item list + order from <a href="${PHASE12_ISSUE_URL}">developing-today/code#1235</a> (fetched ${esc(phase12.fetchedAt)}); design state from <a href="${F12_DESIGN_ISSUE_URL}">#534</a>${design ? ` (fetched ${esc(design.fetchedAt)})` : " (feed unavailable — design column withheld)"}; issue state is live GitHub state; PR state from issue-timeline cross-references${prRefs ? "" : " (timeline read unavailable — PR column withheld)"}.</p>`;
+  if (phase12IsStale(phase12) || (design !== null && phase12IsStale(design))) {
+    return `${head}${sourceLine}<div class="banner">Stale source: a body snapshot feeding this panel is outside the freshness window — the F-item rows are withheld rather than shown silently old. They refresh on the next successful body read.</div>`;
+  }
+  const fItems = parseF12Items(phase12.body);
+  if (!fItems.length) {
+    return `${head}${sourceLine}<div class="banner">No F-items could be parsed from the current #1235 body, so no readiness state is shown.</div>`;
+  }
+  const designs = design ? parseF12Designs(design.body) : new Map();
+  const rows = projectF12Readiness(fItems, designs, items, prRefs ?? new Map())
+    .map((r) => {
+      const issueBadge =
+        r.issueState === null
+          ? `<span class="badge">issue not resolved in the current source</span>`
+          : `<span class="badge ${r.issueState === "open" ? "open" : "closed"}">issue ${esc(r.issueState)}</span>`;
+      const designBadge = !design
+        ? `<span class="badge">design feed unavailable</span>`
+        : r.design === null
+          ? `<span class="badge">no design entry in #534</span>`
+          : r.design.done
+            ? `<span class="badge merged">design ${esc(r.design.designId)} done</span>`
+            : `<span class="badge implementing">design ${esc(r.design.designId)} pending</span>`;
+      const prBadge = !prRefs
+        ? `<span class="badge">PR read unavailable</span>`
+        : r.prs.length
+          ? r.prs
+              .map(
+                (p) =>
+                  `<span class="badge ${p.state === "merged" ? "merged" : p.state === "open" ? "open" : "closed"}"><a href="${esc(p.url)}">PR #${p.number} ${esc(p.state)}</a></span>`,
+              )
+              .join(" ")
+          : `<span class="badge">no cross-referenced PR</span>`;
+      return `<div class="card"><strong>${esc(r.f)} — <a href="${esc(r.url)}">#${r.issueNumber}</a> ${esc(r.title ?? "")}</strong><br>${designBadge} ${issueBadge} ${prBadge}</div>`;
+    })
+    .join("");
+  return `${head}${sourceLine}${rows}`;
+}
+
 export function renderProgramProject(
   detail: ProjectDetail,
   items: Map<RefKey, GhItem>,
@@ -7159,6 +7214,7 @@ export function renderProgramProject(
   epicPool: ProjectPoolItem[] = detail.poolItems,
   phase12?: Phase12Snapshot | null,
   buildHealth?: BuildHealthSnapshot | null,
+  f12?: { design: Phase12Snapshot | null; prRefs: Map<number, F12PrRef[]> | null } | null,
 ): string {
   const { config } = detail;
   const linkBits: string[] = [];
@@ -7266,6 +7322,7 @@ export function renderProgramProject(
 
   const phase12Html = config.id === "id" && phase12 !== undefined ? phase12PanelHtml(phase12, items) : "";
   const buildHealthHtml = config.id === "id" && buildHealth !== undefined ? buildHealthPanelHtml(buildHealth) : "";
+  const f12Html = config.id === "id" && f12 !== undefined ? f12ReadinessPanelHtml(phase12 ?? null, f12?.design ?? null, f12?.prRefs ?? null, items) : "";
 
   const ed = config.editorial;
   const editorialHtml = ed
@@ -7286,7 +7343,7 @@ ${poolHtml}
 ${roadmapHtml}
 ${repoCardsHtml}
 ${sweepHealthHtml}
-${phase12Html}${buildHealthHtml}${editorialHtml}`;
+${phase12Html}${buildHealthHtml}${f12Html}${editorialHtml}`;
   return layout(
     config.title,
     body,
