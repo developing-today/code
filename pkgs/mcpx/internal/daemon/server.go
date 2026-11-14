@@ -52,6 +52,12 @@ type Server struct {
 	// everything those sessions own. The zero value is ready;
 	// every Server gets its own.
 	pluginSessions pluginsession.Registry
+	// pluginHooks resolves plugin-session manifest hooks into live
+	// bus subscribers (#1873 slice 2, #10046). Built lazily by
+	// hookResolver, because tests construct Servers directly and a
+	// Server's bus exists only where New (or the test) put one.
+	pluginHooks     *pluginsession.Resolver
+	pluginHooksOnce sync.Once
 	// augment is Options.Augment, kept for reloads.
 	augment func(*config.Config) error
 	paths   Paths

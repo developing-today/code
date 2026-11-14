@@ -27,10 +27,12 @@ func (s *Server) routesPluginSessions(mux *http.ServeMux) {
 
 // pluginSessionOpenRequest is what a connecting plugin sends: its
 // manifest's name, and the capabilities and hook subscriptions the
-// manifest declares. Both declarations are recorded and reportable
-// and nothing more (decision 0003 for capabilities, decision 0001
-// for manifest hooks -- there is no registration route and no
-// enforcement here).
+// manifest declares. Capabilities are recorded and reportable and
+// nothing more (decision 0003 -- no enforcement here). Hook
+// declarations are recorded the same way, and at open they are also
+// resolved into live bus subscribers owned by the session
+// (pluginsession.Resolver, #10046): decision 0001's rule stands --
+// hooks come from the manifest, there is no registration route.
 type pluginSessionOpenRequest struct {
 	Plugin       string   `json:"plugin"`
 	Capabilities []string `json:"capabilities"`
@@ -48,7 +50,7 @@ func (s *Server) handlePluginSessionOpen(w http.ResponseWriter, r *http.Request)
 		writeErr(w, http.StatusBadRequest, fmt.Errorf("plugin session: plugin name is required"))
 		return
 	}
-	sess := s.pluginSessions.Open(req.Plugin, req.Capabilities, req.Hooks)
+	sess := s.hookResolver().Open(req.Plugin, req.Capabilities, req.Hooks)
 	writeJSON(w, http.StatusCreated, map[string]any{"session": sess})
 }
 
@@ -73,12 +75,23 @@ func (s *Server) handlePluginSessionGet(w http.ResponseWriter, r *http.Request) 
 // is the dropped record, so the caller can see exactly what ended.
 func (s *Server) handlePluginSessionClose(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
-	dropped, ok := s.pluginSessions.Close(id)
+	dropped, ok := s.hookResolver().Close(id)
 	if !ok {
 		writeErr(w, http.StatusNotFound, fmt.Errorf("plugin session %s not found", id))
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"closed": dropped})
+}
+
+// hookResolver is the server's manifest-hook resolver, built on
+// first use against this server's registry and event bus. A server
+// with no bus (tests construct them bare) resolves nothing: the
+// declarations stay recorded, exactly as the foundation left them.
+func (s *Server) hookResolver() *pluginsession.Resolver {
+	s.pluginHooksOnce.Do(func() {
+		s.pluginHooks = pluginsession.NewResolver(&s.pluginSessions, s.Events)
+	})
+	return s.pluginHooks
 }
 
 // pluginSessionStatus is the /v1/status embedding: the same list
