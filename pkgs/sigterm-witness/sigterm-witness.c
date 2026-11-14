@@ -234,6 +234,11 @@ int main(int argc, char **argv) {
   while (i < argc) {
     if (strcmp(argv[i], "--") == 0) { i++; break; }
     if (strcmp(argv[i], "--log") == 0) {
+      if (i + 1 < argc && argv[i + 1][0] == '\0') {
+        fprintf(stderr, "sigterm-witness: --log requires a non-empty FILE\n"
+                        "usage: sigterm-witness --log FILE -- CMD [ARGS...]\n");
+        return 64;
+      }
       if (i + 1 >= argc) {
         fprintf(stderr, "sigterm-witness: --log requires a FILE argument\n"
                         "usage: sigterm-witness --log FILE -- CMD [ARGS...]\n");

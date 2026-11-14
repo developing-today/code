@@ -78,8 +78,12 @@
 # identify sent both units SIGTERM and the decisions page went dark
 # mid-use. To make a repeat a matter of record, the aggregator and
 # dispatch ExecStarts run under pkgs/sigterm-witness: a transparent
-# wrapper whose SA_SIGINFO handler logs every delivered signal's
-# sender (pid, uid, comm, parent pid, cmdline where capturable) to
+# wrapper whose SA_SIGINFO handler logs the sender (pid, uid,
+# comm, parent pid, cmdline where capturable) of every signal
+# delivered to the wrapper itself; a signal addressed directly to
+# the child's pid is recorded as a child-killed event without
+# sender details (the documented limit in sigterm-witness.c). The
+# handler logs to
 # sigterm-witness.log in the service's state dir, then forwards the
 # signal and re-raises the child's death unchanged. The laptop has
 # no auditd; the witness is the attribution of record until a
