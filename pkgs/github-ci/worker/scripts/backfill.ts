@@ -26,7 +26,7 @@
  * Usage (from pkgs/github-ci/worker):
  *   GH_TOKEN=$(gh auth token) \
  *   TURSO_QUEUE_TOKEN=$(fleet secrets get turso.fleet-queue-rw-token) \
- *   npm run backfill -- [owner/repo ...]
+ *   npm run backfill -- [--max-pointer-repairs=N] [owner/repo ...]
  * With no arguments every FLEET_REPOS repo is swept; a repo that
  * errors (renamed, no access) is reported and the sweep continues.
  * Output is one JSON summary line per repo plus a totals line.
@@ -67,18 +67,46 @@ if (!GH_TOKEN)
 if (!env.TURSO_QUEUE_TOKEN)
   throw new Error("TURSO_QUEUE_TOKEN is unset (see usage in the file header)");
 
-const api = async (path: string): Promise<unknown> => {
-  const res = await fetch(`https://api.github.com${path}`, {
-    headers: {
-      Authorization: `Bearer ${GH_TOKEN}`,
-      Accept: "application/vnd.github+json",
-      "X-GitHub-Api-Version": "2022-11-28",
-      "User-Agent": "github-ci-mirror-backfill",
-    },
-  });
-  if (!res.ok) throw new Error(`github api ${path}: HTTP ${res.status}`);
-  return res.json();
+/**
+ * Retry transient transport failures (socket termination, 5xx) with
+ * backoff. The fleet's laptop network drops long request sequences
+ * regularly; a sweep is exactly that, so every call it makes goes
+ * through here or through sweepBatch. HTTP 4xx is not retried.
+ */
+const retry = async <T>(label: string, fn: () => Promise<T>): Promise<T> => {
+  let lastErr: unknown;
+  for (let attempt = 1; attempt <= 5; attempt++) {
+    try {
+      return await fn();
+    } catch (e) {
+      lastErr = e;
+      if (attempt < 5)
+        await new Promise((r) => setTimeout(r, 500 * 2 ** attempt));
+    }
+  }
+  throw new Error(`${label}: failed after 5 attempts: ${String(lastErr)}`);
 };
+
+const sweepBatch: typeof mirrorSweepBatch = (e, stmts) =>
+  retry(`turso batch (${stmts.length} stmts)`, () =>
+    mirrorSweepBatch(e, stmts),
+  );
+
+const api = async (path: string): Promise<unknown> =>
+  retry(`github api ${path}`, async () => {
+    const res = await fetch(`https://api.github.com${path}`, {
+      headers: {
+        Authorization: `Bearer ${GH_TOKEN}`,
+        Accept: "application/vnd.github+json",
+        "X-GitHub-Api-Version": "2022-11-28",
+        "User-Agent": "github-ci-mirror-backfill",
+      },
+    });
+    if (res.status >= 500)
+      throw new Error(`github api ${path}: HTTP ${res.status}`);
+    if (!res.ok) throw new Error(`github api ${path}: HTTP ${res.status}`);
+    return res.json();
+  });
 
 /** Follow ?page= pagination for a list endpoint; returns every item. */
 const apiAll = async (path: string): Promise<Obj[]> => {
@@ -106,10 +134,12 @@ const storedRows = async (
   table: string,
   repo: string,
 ): Promise<Map<number, StoredRow>> => {
-  const r = await q.execute(
-    `SELECT number, gh_updated_at, body_hash, comments, latest_agent_note_id
-       FROM ${table} WHERE repo = ?`,
-    [{ type: "text", value: repo }],
+  const r = await retry(`read ${table}`, () =>
+    q.execute(
+      `SELECT number, gh_updated_at, body_hash, comments, latest_agent_note_id
+         FROM ${table} WHERE repo = ?`,
+      [{ type: "text", value: repo }],
+    ),
   );
   const map = new Map<number, StoredRow>();
   for (const row of r.response?.result?.rows ?? []) {
@@ -141,6 +171,7 @@ interface RepoSummary {
   vanished_deleted: number;
   pointers_set: number;
   pointers_cleared: number;
+  pointers_deferred: number;
   unchanged: number;
   error?: string;
 }
@@ -154,6 +185,7 @@ const sweepRepo = async (repo: string): Promise<RepoSummary> => {
     vanished_deleted: 0,
     pointers_set: 0,
     pointers_cleared: 0,
+    pointers_deferred: 0,
     unchanged: 0,
   };
   const q = new Turso(env.TURSO_QUEUE_URL, env.TURSO_QUEUE_TOKEN);
@@ -222,10 +254,21 @@ const sweepRepo = async (repo: string): Promise<RepoSummary> => {
   }
   // Flush snapshot writes in bounded batches before pointer work.
   for (let i = 0; i < stmts.length; i += 100) {
-    await mirrorSweepBatch(env, stmts.slice(i, i + 100));
+    await sweepBatch(env, stmts.slice(i, i + 100));
   }
 
-  // Pointer re-derivation for changed items that carry comments.
+  // Pointer re-derivation for changed items that carry comments,
+  // most recently updated first, capped per run: a first sweep of a
+  // large repo changes everything, and one comments listing per item
+  // would exhaust the API budget repairing pointers for items nobody
+  // has touched in years. Deferred items are counted, and any later
+  // change to an item (or a rerun with a raised cap) repairs it.
+  changed.sort((a, b) =>
+    String(b.item.updated_at ?? "").localeCompare(
+      String(a.item.updated_at ?? ""),
+    ),
+  );
+  let pointerBudget = MAX_POINTER_REPAIRS;
   for (const { item, isPr } of changed) {
     const number = Number(item.number);
     if (
@@ -233,6 +276,11 @@ const sweepRepo = async (repo: string): Promise<RepoSummary> => {
       Number(item.comments ?? 0) === 0
     )
       continue;
+    if (pointerBudget <= 0) {
+      summary.pointers_deferred++;
+      continue;
+    }
+    pointerBudget--;
     const comments = await apiAll(
       `/repos/${repo}/issues/${number}/comments?sort=created&direction=asc`,
     );
@@ -246,28 +294,32 @@ const sweepRepo = async (repo: string): Promise<RepoSummary> => {
           { issue: item, comment: latestNote, action: "created" },
           repo,
         );
-        await mirrorSweepBatch(env, commentTouchStmts(touch));
+        await sweepBatch(env, commentTouchStmts(touch));
         summary.pointers_set++;
       }
     } else if (
       stored?.agentNoteId != null &&
       !comments.some((c) => Number(c.id) === stored.agentNoteId)
     ) {
-      await mirrorSweepBatch(env, [
-        clearAgentNotePointerStmt(repo, number, isPr),
-      ]);
+      await sweepBatch(env, [clearAgentNotePointerStmt(repo, number, isPr)]);
       summary.pointers_cleared++;
     }
   }
 
-  await mirrorSweepBatch(env, [backfillStampStmt(repo, queueNow())]);
+  await sweepBatch(env, [backfillStampStmt(repo, queueNow())]);
   return summary;
 };
 
+const MAX_POINTER_REPAIRS = Number(
+  process.argv
+    .find((a) => a.startsWith("--max-pointer-repairs="))
+    ?.split("=")[1] ?? 400,
+);
+
 const main = async (): Promise<void> => {
-  const repos =
-    process.argv.slice(2).length > 0 ? process.argv.slice(2) : [...FLEET_REPOS];
-  await ensureMirrorSchema(env);
+  const repoArgs = process.argv.slice(2).filter((a) => !a.startsWith("--"));
+  const repos = repoArgs.length > 0 ? repoArgs : [...FLEET_REPOS];
+  await retry("ensure schema", () => ensureMirrorSchema(env));
   let failures = 0;
   for (const repo of repos) {
     try {
