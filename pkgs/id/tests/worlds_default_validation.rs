@@ -18,6 +18,7 @@ struct ScriptedHost {
 }
 
 impl ProtocolHandler for ScriptedHost {
+    #[allow(clippy::unwrap_used)]
     async fn accept(&self, conn: iroh::endpoint::Connection) -> Result<(), AcceptError> {
         let reply = self.reply.clone();
         tokio::spawn(async move {
@@ -35,6 +36,7 @@ impl ProtocolHandler for ScriptedHost {
     }
 }
 
+#[allow(clippy::unwrap_used)]
 async fn endpoint() -> Endpoint {
     Endpoint::builder(presets::Minimal)
         .relay_mode(RelayMode::Disabled)
@@ -43,6 +45,7 @@ async fn endpoint() -> Endpoint {
         .unwrap()
 }
 
+#[allow(clippy::unwrap_used)]
 async fn run_case(
     reply: serde_json::Value,
 ) -> anyhow::Result<(String, Vec<(String, bool, usize)>)> {
@@ -81,6 +84,7 @@ fn worlds_reply() -> serde_json::Value {
 }
 
 #[tokio::test]
+#[allow(clippy::expect_used)]
 async fn worlds_reply_default_must_be_a_string() {
     // Control: a string default is returned unchanged, worlds listed.
     let mut reply = worlds_reply();

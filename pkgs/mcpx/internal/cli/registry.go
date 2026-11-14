@@ -9,6 +9,7 @@ import (
 
 	"github.com/developing-today/code/pkgs/mcpx/internal/config"
 	"github.com/developing-today/code/pkgs/mcpx/internal/registry"
+	"github.com/developing-today/code/pkgs/mcpx/internal/wantlog"
 )
 
 // CmdRegistry searches a registry and adds servers from it.
@@ -43,7 +44,7 @@ func (a *App) CmdRegistry(ctx context.Context, args []string) error {
 		if limit <= 0 {
 			limit = a.Settings().Int("registry.limit")
 		}
-		res, err := client.Search(ctx, query, limit)
+		res, err := a.registrySearch(ctx, query, limit)
 		if err != nil {
 			return err
 		}
@@ -240,7 +241,18 @@ func (a *App) addServerToConfig(explicit, name string, entry map[string]any) (st
 // drops it cannot tell a complete answer from a cut one, which is the only
 // thing that makes "raise --limit" the right advice.
 func (a *App) registrySearch(ctx context.Context, query string, limit int) (registry.Results, error) {
-	return registry.New(a.Settings().String("registry.url"), a.registryOptions()).Search(ctx, query, limit)
+	res, err := registry.New(a.Settings().String("registry.url"), a.registryOptions()).Search(ctx, query, limit)
+	if err == nil {
+		a.recordRegistrySearch(query, res)
+	}
+	return res, err
+}
+
+// recordRegistrySearch keeps the local feedback loop next to the CLI search
+// result, so CLI, MCP and TUI searches all record the same empty result.
+// Best-effort: the record must not fail the search that produced it.
+func (a *App) recordRegistrySearch(query string, res registry.Results) {
+	_ = wantlog.RecordSearchMiss(a.wantStateDir(), query, len(res.Servers))
 }
 
 // hoistFlags moves flags ahead of positional arguments.

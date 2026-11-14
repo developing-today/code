@@ -15,8 +15,14 @@ set -uo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" >/dev/null 2>&1 && pwd)"
 UNDER_TEST="$SCRIPT_DIR/bws-to-sops.sh"
-[ -f "$UNDER_TEST" ] || { echo "FAIL: $UNDER_TEST not found" >&2; exit 1; }
-command -v jq >/dev/null 2>&1 || { echo "FAIL: jq not found in PATH" >&2; exit 1; }
+[ -f "$UNDER_TEST" ] || {
+  echo "FAIL: $UNDER_TEST not found" >&2
+  exit 1
+}
+command -v jq >/dev/null 2>&1 || {
+  echo "FAIL: jq not found in PATH" >&2
+  exit 1
+}
 
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
@@ -85,10 +91,16 @@ run_case() {
   [ -f "$mirror" ] && after="$(sha256sum "$mirror" | cut -d' ' -f1)"
 
   local ok=true
-  [ "$rc" -eq "$want_rc" ] || { ok=false; echo "FAIL $name: exit $rc, want $want_rc"; }
+  [ "$rc" -eq "$want_rc" ] || {
+    ok=false
+    echo "FAIL $name: exit $rc, want $want_rc"
+  }
   local want
   for want in "$@"; do
-    grep -qxF "$want" <<<"$out" || { ok=false; echo "FAIL $name: missing line: $want"; }
+    grep -qxF "$want" <<<"$out" || {
+      ok=false
+      echo "FAIL $name: missing line: $want"
+    }
   done
   if grep -q 'VALUE-' <<<"$out"; then
     ok=false

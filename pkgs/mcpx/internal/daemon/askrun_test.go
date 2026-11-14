@@ -111,3 +111,33 @@ func TestAQuestionOnACallsContextIsThatCalls(t *testing.T) {
 		t.Fatal("a call is only the asker for its own server")
 	}
 }
+
+// Oracle: attached runs attribute to their ask call (Codex P2 on
+// PR #8317). A declared script execution registers its fresh run
+// against the ask call that invoked it; the run's upstream calls
+// then join that call, and ending the call clears the run index --
+// including a run attached from inside another live run.
+func TestAskTableAttachRun(t *testing.T) {
+	tb := newAskTable()
+	tb.begin("call-1", "srv", "k", "s")
+	if !tb.attachRun("call-1", "run-9") {
+		t.Fatal("attachRun on a live call must succeed")
+	}
+	if tb.attachRun("no-such-call", "run-x") {
+		t.Fatal("attachRun on an unknown call must fail")
+	}
+	leave := tb.join("run-9", "ask", "k2")
+	if a, ok := tb.sole("ask", "k2", 1); !ok || a.ID != "call-1" {
+		t.Fatalf("a question from the attached run must belong to call-1, got %v %v", a, ok)
+	}
+	leave()
+	if !tb.attachRunToRun("run-9", "run-10") {
+		t.Fatal("attachRunToRun on a live run must succeed")
+	}
+	tb.end("call-1")
+	for _, run := range []string{"run-9", "run-10"} {
+		if _, ok := tb.byRun[run]; ok {
+			t.Errorf("run index still holds %s after the call ended", run)
+		}
+	}
+}

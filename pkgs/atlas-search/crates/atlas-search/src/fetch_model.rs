@@ -38,11 +38,21 @@ pub const MODEL_FILES: [(&str, &str); 2] = [
 
 /// `~/.local/state/atlas-search` — the same state-root convention
 /// `init`/`serve` use for `service.json`.
+fn home_dir() -> PathBuf {
+    // Home-resolution contract (issues #5640 / #5762): a missing or
+    // empty HOME is an error naming HOME, never a substitute
+    // directory - the old fallback to a literal "~" silently
+    // resolved state/config/token paths relative to the CWD.
+    match std::env::var_os("HOME") {
+        Some(home) if !home.is_empty() => PathBuf::from(home),
+        _ => panic!(
+            "HOME is not set or is empty: atlas-search requires a non-empty HOME to resolve its state/config paths (issue #5640)"
+        ),
+    }
+}
+
 pub fn state_root() -> PathBuf {
-    let home = std::env::var_os("HOME")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from("~"));
-    home.join(".local/state/atlas-search")
+    home_dir().join(".local/state/atlas-search")
 }
 
 /// The provisioned snapshot dir for the pinned revision.

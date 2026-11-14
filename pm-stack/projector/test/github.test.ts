@@ -208,9 +208,7 @@ describe("GitHub API response shape validation (#6954)", () => {
         if (url.includes("/access_tokens")) return new Response(bodyText, { status: 200 });
         return new Response("{}", { status: 404 });
       };
-      const result = await apiTokenFor(env, repo, fetchFn as unknown as typeof fetch).catch(
-        (error: unknown) => error,
-      );
+      const result = await apiTokenFor(env, repo, fetchFn as unknown as typeof fetch).catch((error: unknown) => error);
       expect(result).toBeInstanceOf(Error);
       expect((result as Error).message).toContain("installation_token_failed_shape");
     }

@@ -7,7 +7,11 @@
 
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
-use serde_json::Value;
+use id::shell_contract::{ShellContract, check_transcript};
+use id_native_shell::{
+    SessionState, chat_frame, input_frame, join_frame, paste_frame, resize_frame,
+};
+use serde_json::{Value, json};
 use std::collections::BTreeSet;
 use std::path::PathBuf;
 
@@ -102,4 +106,43 @@ fn transcript_records_a_view_with_data() {
             .expect("view data")
             .contains("welcome")
     );
+}
+
+#[test]
+fn native_session_builders_pass_the_f13_1_contract_checker() {
+    let mut state = SessionState::default();
+    let mut lines = Vec::new();
+    let mut record = |from: &str, frame: Value| {
+        lines.push(json!({"from": from, "frame": frame}).to_string());
+    };
+
+    record("client", join_frame("capability", None));
+    for (frame, expected) in [
+        (
+            json!({"type":"snapshot", "snapshot":{"sequence":0}}),
+            id_native_shell::ServerUpdate::Snapshot,
+        ),
+        (
+            json!({"type":"event", "event":{"sequence":1,"kind":{"kind":"input"}}}),
+            id_native_shell::ServerUpdate::Event,
+        ),
+        (
+            json!({"type":"view", "sequence":1, "data":"welcome", "view_revision":0}),
+            id_native_shell::ServerUpdate::View,
+        ),
+    ] {
+        assert_eq!(state.apply_server_frame(frame.clone()).unwrap(), expected);
+        record("server", frame);
+    }
+
+    record("client", input_frame(b"look\r"));
+    record("client", paste_frame("a pasted line").unwrap());
+    record("client", resize_frame(80, 24).unwrap());
+    record("client", chat_frame("hello from the native shell"));
+
+    let transcript = lines.join("\n");
+    let contract = ShellContract::embedded().expect("embedded F13.1 contract");
+    let violations = check_transcript(&contract, &transcript).expect("parse transcript");
+    assert!(violations.is_empty(), "{violations:#?}\n{transcript}");
+    assert_eq!(state.view().unwrap().text_projection(), "welcome");
 }

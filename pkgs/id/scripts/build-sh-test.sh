@@ -76,4 +76,61 @@ grep -qx 'cargo build --features web' "$tmp/cargo.log" ||
 [ "$(cat target/.build-variant)" = "web" ] ||
   fail "web debug did not write 'web' to target/.build-variant"
 
+# ── Disturbed-marker cases (#6883) ──────────────────────────────────
+# The marker is the only variant evidence for the binary at the shared
+# target/debug/id path. A missing, empty, or garbage marker must force
+# a rebuild of the requested variant — never an "up to date" verdict on
+# a binary that may be the other variant. (Pre-fix: all three cases
+# printed "up to date" and never invoked cargo.)
+
+# Missing marker: delete it, request lib — cargo must run with the lib
+# flags and the marker must be rewritten as 'lib'.
+rm target/.build-variant
+bash ./build.sh lib debug >missing.out 2>missing.err || {
+  cat missing.err >&2
+  fail "missing-marker lib debug exited non-zero"
+}
+[ "$(tail -n 1 "$tmp/cargo.log")" = "cargo build" ] ||
+  fail "missing marker did not force a lib rebuild (log tail: $(tail -n 1 "$tmp/cargo.log"))"
+[ "$(cat target/.build-variant)" = "lib" ] ||
+  fail "missing-marker rebuild did not rewrite the marker as 'lib'"
+
+# Empty marker (the interrupted-build state): truncate it, request
+# web — cargo must run with --features web, marker rewritten as 'web'.
+: >target/.build-variant
+bash ./build.sh web debug >empty.out 2>empty.err || {
+  cat empty.err >&2
+  fail "empty-marker web debug exited non-zero"
+}
+[ "$(tail -n 1 "$tmp/cargo.log")" = "cargo build --features web" ] ||
+  fail "empty marker did not force a web rebuild (log tail: $(tail -n 1 "$tmp/cargo.log"))"
+[ "$(cat target/.build-variant)" = "web" ] ||
+  fail "empty-marker rebuild did not rewrite the marker as 'web'"
+
+# Garbage marker: content that is neither variant, request lib — cargo
+# must run with the lib flags, marker rewritten as 'lib'.
+printf 'banana\n' >target/.build-variant
+bash ./build.sh lib debug >garbage.out 2>garbage.err || {
+  cat garbage.err >&2
+  fail "garbage-marker lib debug exited non-zero"
+}
+[ "$(tail -n 1 "$tmp/cargo.log")" = "cargo build" ] ||
+  fail "garbage marker did not force a lib rebuild (log tail: $(tail -n 1 "$tmp/cargo.log"))"
+[ "$(cat target/.build-variant)" = "lib" ] ||
+  fail "garbage-marker rebuild did not rewrite the marker as 'lib'"
+
+# Exact-match control: with the marker intact and matching, an
+# immediate re-run of the same variant takes the up-to-date path and
+# does NOT invoke cargo (the other side of the #6883 rule).
+before="$(wc -l <"$tmp/cargo.log")"
+bash ./build.sh lib debug >uptodate.out 2>uptodate.err || {
+  cat uptodate.err >&2
+  fail "exact-match lib debug exited non-zero"
+}
+after="$(wc -l <"$tmp/cargo.log")"
+[ "$before" = "$after" ] ||
+  fail "exact-match marker wrongly forced a rebuild (cargo invoked)"
+grep -q 'up to date' uptodate.out ||
+  fail "exact-match re-run did not report 'up to date'"
+
 echo "build-sh tests passed"

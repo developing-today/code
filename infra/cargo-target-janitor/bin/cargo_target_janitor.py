@@ -295,8 +295,7 @@ def _shape_int(reader: str, field: str, value) -> int:
 def _shape_row(reader: str, row) -> dict:
     if not isinstance(row, dict):
         raise SafetyError(
-            f"{reader}: invalid shape: row is {type(row).__name__}, "
-            "expected an object"
+            f"{reader}: invalid shape: row is {type(row).__name__}, expected an object"
         )
     return row
 
@@ -687,7 +686,9 @@ def discover_targets(
                 or dir_task_id(entry.name)
             )
             issue_id = issue_id_from(branch or "") or issue_id_from(entry.name)
-            candidates.append((target, worktree, branch, task_id, issue_id, worktree, False))
+            candidates.append(
+                (target, worktree, branch, task_id, issue_id, worktree, False)
+            )
 
     result = []
     for path, worktree, branch, task_id, issue_id, owner_dir, adhoc in candidates:
@@ -699,8 +700,13 @@ def discover_targets(
         except OSError as exc:
             result.append(
                 Target(
-                    path, 0, 0, branch, task_id,
-                    protected=f"stat-failed: {exc}", issue_id=issue_id,
+                    path,
+                    0,
+                    0,
+                    branch,
+                    task_id,
+                    protected=f"stat-failed: {exc}",
+                    issue_id=issue_id,
                 )
             )
             continue
@@ -938,9 +944,7 @@ def main() -> int:
                     f"issue {target.issue_id} became claimed; stopping before {path}"
                 )
             if target.reason == "terminal-task":
-                fresh_status = source.states({target.task_id}).get(
-                    target.task_id
-                )
+                fresh_status = source.states({target.task_id}).get(target.task_id)
                 if fresh_status not in {"done", "failed", "cancelled"}:
                     raise SafetyError(
                         f"task {target.task_id} is no longer terminal; stopping"
