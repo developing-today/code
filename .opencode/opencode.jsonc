@@ -231,9 +231,16 @@
   // Every _antigravity seat is dead: hydrogen (summit, speed,
   // workhorse-weighted), argon (summit, specialist), sonnet-5-5
   // (workhorse-weighted) and opus via antigravity. Per the switchboard
-  // rule the definition and every seat stay in place; deleting this
-  // line re-enables it. Re-enable only when the account is reinstated
-  // on appeal AND a live probe shows the door answering again.
+  // rule the definition and every seat stay in place. CORRECTION
+  // (2026-11-14): the re-enable condition first written here was
+  // wrong. This disable is PERMANENT for fleet use, regardless of the
+  // appeal outcome: the appeal gives each account exactly one
+  // remediation, Google's terms ban third-party/wrapper access to
+  // Antigravity outright, and a single fleet call after reinstatement
+  // risks permanent suspension of the account. Do NOT delete this
+  // line, do NOT re-enable this provider, and do NOT probe it. If the
+  // account is reinstated, it is for use inside Google's own
+  // Antigravity app only.
   // 2026-11-14 (code#9859): "_muse" joins the list below. Its
   // subscription quota is exhausted - a quota wall, not an account
   // death: route_attempt probes in the trailing 3 hours at 03:55 CT
