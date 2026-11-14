@@ -1340,31 +1340,29 @@ fn model_stamp_flags(
     }
 }
 
-/// #8176 (2026-11-12 fix): read the claim stamp off a session
-/// record (the OpenCode server's GET /api/session/<id> shape,
-/// enveloped in `data` or bare): the session's own model —
-/// providerID + id, variant only when the session carries a real
+/// The provider id that addresses configured routes, not serving
+/// leaves: routes appear in the catalog under this provider
+/// (opencode-route/<route-id>), so a model addressed under it is a
+/// route alias, never the leaf that served a claim (#9408).
+const ROUTE_PROVIDER: &str = "opencode-route";
+
+/// One stamp derivation, shared by the session-model path (id key
+/// "id") and the route_usage lastServing path (id key "modelID"):
+/// providerID + id, variant only when the record carries a real
 /// effort variant (the server reports "default" when none was
 /// chosen; that is the absence of a variant, not a variant).
-/// Pure: the oracle for the derivation below.
-fn session_model_stamp(session: &Value) -> Option<(String, String, Option<String>)> {
-    let inner = if session.get("model").is_some() {
-        session
-    } else {
-        session.get("data")?
-    };
-    let model = inner.get("model")?;
-    let provider = model
+fn stamp_from(record: &Value, id_key: &str) -> Option<(String, String, Option<String>)> {
+    let provider = record
         .get("providerID")
         .and_then(|x| x.as_str())
         .map(str::trim)
         .filter(|s| !s.is_empty())?;
-    let id = model
-        .get("id")
+    let id = record
+        .get(id_key)
         .and_then(|x| x.as_str())
         .map(str::trim)
         .filter(|s| !s.is_empty())?;
-    let variant = model
+    let variant = record
         .get("variant")
         .and_then(|x| x.as_str())
         .map(str::trim)
@@ -1374,6 +1372,51 @@ fn session_model_stamp(session: &Value) -> Option<(String, String, Option<String
         id.to_string(),
         variant.map(str::to_string),
     ))
+}
+
+/// #8176 (2026-11-12 fix): read the claim stamp off a session
+/// record (the OpenCode server's GET /api/session/<id> shape,
+/// enveloped in `data` or bare): the session's own model —
+/// providerID + id, variant only when the session carries a real
+/// effort variant (the server reports "default" when none was
+/// chosen; that is the absence of a variant, not a variant).
+/// Pure: the oracle for the derivation below.
+///
+/// #9408: the stamp must name the SERVING leaf, not the declared
+/// route. When the record carries the route_usage readout
+/// (opencode#1891: route_usage.lastServing, providerID + modelID +
+/// variant), it wins. Otherwise the session model is used only when
+/// it is not a route alias: a model under the opencode-route
+/// provider is the configured route (opencode-route/workhorse),
+/// which says nothing about which leaf served the claim, so the
+/// claim is left unstamped rather than permanently recording the
+/// alias. (The deployed server's session records today carry no
+/// route_usage field at all — verified 2026-11-14 — so routed
+/// claims go unstamped until the readout reaches the record.)
+fn session_model_stamp(session: &Value) -> Option<(String, String, Option<String>)> {
+    let inner = if session.get("model").is_some() {
+        session
+    } else {
+        session.get("data")?
+    };
+    // The serving-leaf readout, when the record carries one: under
+    // route_usage (the tool's output shape), or bare at the top of
+    // the record. A present readout that does not parse stamps
+    // nothing — falling back to the declared model would record
+    // exactly the alias this path exists to avoid.
+    let readout = inner
+        .get("route_usage")
+        .and_then(|ru| ru.get("lastServing"))
+        .or_else(|| inner.get("lastServing"));
+    if let Some(leaf) = readout {
+        return stamp_from(leaf, "modelID").filter(|s| s.0 != ROUTE_PROVIDER);
+    }
+    let model = inner.get("model")?;
+    let stamp = stamp_from(model, "id")?;
+    if stamp.0 == ROUTE_PROVIDER {
+        return None;
+    }
+    Some(stamp)
 }
 
 /// Minimal base64 (standard alphabet, padded) for the server's
@@ -5484,16 +5527,11 @@ mod tests {
 
     #[test]
     fn session_model_stamp_reads_the_session_record() {
-        // #8176 derivation oracle: the stamp is the session's own
-        // model — providerID + id from the server's session record
-        // (enveloped or bare); a "default" variant is no variant.
-        let enveloped = json!({
-            "data": {"id": "ses_x", "model": {"id": "workhorse", "providerID": "opencode-route", "variant": "default"}}
-        });
-        assert_eq!(
-            session_model_stamp(&enveloped),
-            Some(("opencode-route".to_string(), "workhorse".to_string(), None))
-        );
+        // #8176 derivation oracle, as corrected by #9408: the stamp
+        // is the SERVING leaf. A direct session's own model —
+        // providerID + id from the server's session record
+        // (enveloped or bare) — is its leaf; a "default" variant is
+        // no variant.
         let bare = json!({
             "id": "ses_y", "model": {"id": "gpt-6-luna", "providerID": "openai-plan", "variant": "high"}
         });
@@ -5505,6 +5543,39 @@ mod tests {
                 Some("high".to_string()),
             ))
         );
+        // #9408: a routed session's model is the configured route
+        // alias (opencode-route/workhorse), not a serving leaf —
+        // with no route_usage readout on the record the claim is
+        // left unstamped instead of recording the alias.
+        let enveloped = json!({
+            "data": {"id": "ses_x", "model": {"id": "workhorse", "providerID": "opencode-route", "variant": "default"}}
+        });
+        assert_eq!(session_model_stamp(&enveloped), None);
+        // #9408: when the record carries the route_usage readout
+        // (opencode#1891), its lastServing leaf is the stamp — even
+        // though the declared model is the route alias.
+        let routed = json!({
+            "data": {
+                "id": "ses_x",
+                "model": {"id": "workhorse", "providerID": "opencode-route", "variant": "default"},
+                "route_usage": {"lastServing": {"providerID": "openai.main", "modelID": "gpt-6-luna", "variant": "high"}}
+            }
+        });
+        assert_eq!(
+            session_model_stamp(&routed),
+            Some((
+                "openai.main".to_string(),
+                "gpt-6-luna".to_string(),
+                Some("high".to_string()),
+            ))
+        );
+        // A present-but-incomplete readout stamps nothing; it never
+        // falls back to the route alias.
+        let incomplete = json!({
+            "model": {"id": "workhorse", "providerID": "opencode-route"},
+            "route_usage": {"lastServing": {"providerID": "openai.main"}}
+        });
+        assert_eq!(session_model_stamp(&incomplete), None);
         // Half a model, or no model, stamps nothing.
         assert_eq!(session_model_stamp(&json!({"data": {"id": "ses_z"}})), None);
         assert_eq!(
