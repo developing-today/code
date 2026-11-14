@@ -282,7 +282,6 @@
     "nvidia",
     "vercel",
     "huggingface",
-    "opencode",
     "github-copilot",
     "openrouter",
     "cloudflare-workers-ai",
@@ -1280,6 +1279,24 @@
       "instanceOf": "opencode-go",
       "name": "OpenCode Go (developing-today-0)"
     },
+    // Zen account instances (2026-11-14, Drew): mirror the Go instances —
+    // one per console workspace, re-enabling the "opencode" provider the
+    // same pass (its line leaves disabled_providers above). The bare
+    // opencode provider is NOT a member of opencode-plans below: same
+    // rule as Go — it rides whichever console login is active, so its
+    // burn would land on that account unattributed.
+    "opencode.drewrypope": {
+      "instanceOf": "opencode",
+      "name": "OpenCode Zen (drewrypope)"
+    },
+    "opencode.popesdrew": {
+      "instanceOf": "opencode",
+      "name": "OpenCode Zen (popesdrew)"
+    },
+    "opencode.developing-today-0": {
+      "instanceOf": "opencode",
+      "name": "OpenCode Zen (developing-today-0)"
+    },
     "_commandcode": {
           // 2026-11-05 (code#6117, opencode#1749): repointed from the CLI proxy
           // (:18748, @ai-sdk/openai-compatible) to the in-fork native commandcode
@@ -2221,6 +2238,18 @@
         "providers": ["opencode-go.drewrypope", "opencode-go.popesdrew", "opencode-go.developing-today-0"],
         "selection": "weighted",
         "weights": { "opencode-go.drewrypope": 1, "opencode-go.popesdrew": 1, "opencode-go.developing-today-0": 1 }
+      },
+      // opencode-plans (2026-11-14, Drew): the OpenCode Zen plans as ONE
+      // virtual provider, mirroring opencode-go-plans. Consumers name
+      // opencode-plans/<model>. Equal split — the three workspaces are
+      // peers. Zen keys are per-workspace console keys (OPENCODE_API_KEY
+      // per workspace); per-workspace key wiring is verified by live
+      // probe after the switch, and a workspace without a working key is
+      // demoted by the router's health/quota rules, not by config edits.
+      "opencode-plans": {
+        "providers": ["opencode.drewrypope", "opencode.popesdrew", "opencode.developing-today-0"],
+        "selection": "weighted",
+        "weights": { "opencode.drewrypope": 1, "opencode.popesdrew": 1, "opencode.developing-today-0": 1 }
       }
     },
     "model_routes": {
@@ -2855,8 +2884,12 @@
         // stealth codename (revealed 2026-10-16) and the provider renamed
         // the route to beam-free. Deliberately NOT seated: one model, one
         // seat. (The Go endpoint no longer serves cat-jam-free at all.)
+        // 2026-11-14 (Zen pass): the Zen door for the same model joins as
+        // a second leaf (opencode-plans/beam-free, default weight behind
+        // the Go leaf's 3).
         "targets": [
-          "opencode-go-plans/beam-free"
+          "opencode-go-plans/beam-free",
+          "opencode-plans/beam-free"
         ],
         "selection": "round-robin",
         "autonomy": "rules",
@@ -2874,8 +2907,11 @@
         // LongCat-2.5-Preview; no Artificial Analysis listing (vendor
         // claims only), so it is seated in scout behind Beam on probe
         // evidence, not on a benchmark.
+        // 2026-11-14 (Zen pass): the Zen free door (longcat-2.5-free is
+        // served there too) joins as a second leaf at default weight.
         "targets": [
-          "opencode-go-plans/longcat-2.5-free"
+          "opencode-go-plans/longcat-2.5-free",
+          "opencode-plans/longcat-2.5-free"
         ],
         "selection": "round-robin",
         "autonomy": "rules",
@@ -2894,13 +2930,165 @@
         // scout as a free fallback leg, not a primary: unknown identity
         // means unknown failure modes, so it sits behind Beam and
         // LongCat in the ordered chain.
+        // 2026-11-14 (Zen pass): Zen's iceman-free joins as a second
+        // leaf — same stealth model, second door.
         "targets": [
-          "opencode-go-plans/iceman-contributor-free"
+          "opencode-go-plans/iceman-contributor-free",
+          "opencode-plans/iceman-free"
         ],
         "selection": "round-robin",
         "autonomy": "rules",
         "weights": {
           "opencode-go-plans/iceman-contributor-free": 3
+        }
+      },
+      "flash-free-plan": {
+        "name": "DeepSeek V4.1 Flash Free (Zen) - plan providers",
+        // NEW 2026-11-14 (Drew, Zen pass): Zen's free DeepSeek Flash gets
+        // its own pool instead of a leaf inside deepseek-flash-plan —
+        // that pool's leaves carry per-door variant remaps and the free
+        // door's variant surface is unverified, so it serves here as a
+        // plain leg (background tier). Same model as deepseek-flash-plan
+        // (1017): AA v5 II 33 max / 29 high / 19 non-reasoning — the
+        // strongest free model on either shelf. Zen's free tier requires
+        // OpenCode (Zen docs); our server qualifies.
+        "targets": [
+          "opencode-plans/deepseek-v4.1-flash-free"
+        ],
+        "selection": "round-robin",
+        "autonomy": "rules",
+        "weights": {
+          "opencode-plans/deepseek-v4.1-flash-free": 3
+        }
+      },
+      "inkling-plan": {
+        "name": "Inkling 2 Small Free (Zen) - plan providers",
+        // NEW 2026-11-14 (Drew, Zen pass): Thinking Machines Lab's
+        // Inkling 2 Small, free on Zen. AA v5 II 31 (launch-coverage
+        // reported) — the strongest free generalist after Flash; seated
+        // in scout behind the Go free legs.
+        "targets": [
+          "opencode-plans/inkling-2-small-free"
+        ],
+        "selection": "round-robin",
+        "autonomy": "rules",
+        "weights": {
+          "opencode-plans/inkling-2-small-free": 3
+        }
+      },
+      "glm-5-3-flash-zen-plan": {
+        "name": "GLM 5.3 Flash Free (Zen) - plan providers",
+        // NEW 2026-11-14 (Drew, Zen pass): Z AI's GLM-5.3-Flash, free on
+        // Zen. AA v5 II 28 at ~48 tok/s — capable but slow, so it is
+        // seated in the background tier only, never in scout (the old
+        // glm-flash-plan was dissolved 2026-10-27 for exactly this
+        // decode speed; this pool is a separate Zen door, not a revival
+        // of that seat).
+        "targets": [
+          "opencode-plans/glm-5.3-flash-free"
+        ],
+        "selection": "round-robin",
+        "autonomy": "rules",
+        "weights": {
+          "opencode-plans/glm-5.3-flash-free": 3
+        }
+      },
+      "minimax-flash-plan": {
+        "name": "MiniMax M3.1 Flash Free (Zen) - plan providers",
+        // NEW 2026-11-14 (Drew, Zen pass): MiniMax M3.1 Flash, free on
+        // Zen. AA v5 II 29 at ~137 tok/s. Caution from the fleet's AA
+        // pull: it rarely abstains — careless for facts — so it serves
+        // patient bulk work (background), not fact-facing tiers.
+        "targets": [
+          "opencode-plans/minimax-m3.1-flash-free"
+        ],
+        "selection": "round-robin",
+        "autonomy": "rules",
+        "weights": {
+          "opencode-plans/minimax-m3.1-flash-free": 3
+        }
+      },
+      "flint-plan": {
+        "name": "Flint 40B Free (Zen) - plan providers",
+        // NEW 2026-11-14 (Drew, Zen pass): Recursive's Flint 40B coding
+        // model, free on Zen. No AA listing (vendor-claimed SWE-bench
+        // only). Seated in background as a coding-leaning free leg.
+        "targets": [
+          "opencode-plans/flint-40b-free"
+        ],
+        "selection": "round-robin",
+        "autonomy": "rules",
+        "weights": {
+          "opencode-plans/flint-40b-free": 3
+        }
+      },
+      "big-pickle-plan": {
+        "name": "Big Pickle Free (Zen) - plan providers",
+        // NEW 2026-11-14 (Drew, Zen pass): Zen's stealth free model. The
+        // backend ROTATES (community reads it as a GLM-class model,
+        // unconfirmed) — no benchmark can honestly attach to a moving
+        // target, so it is seated in background only, behind every
+        // measured free leg: bulk capacity of unknown provenance.
+        "targets": [
+          "opencode-plans/big-pickle"
+        ],
+        "selection": "round-robin",
+        "autonomy": "rules",
+        "weights": {
+          "opencode-plans/big-pickle": 3
+        }
+      },
+      "nemotron-vl-plan": {
+        "name": "Nemotron 3.5 Super VL Free (Zen) - plan providers",
+        // NEW 2026-11-14 (Drew, Zen pass): NVIDIA's vision-language
+        // Nemotron, free on Zen. AA v5 II 13.6 (via BenchLM's AA
+        // compilation). Weak as a generalist; its seat exists for
+        // vision-carrying bulk work in the background tier.
+        "targets": [
+          "opencode-plans/nemotron-3.5-super-vl-free"
+        ],
+        "selection": "round-robin",
+        "autonomy": "rules",
+        "weights": {
+          "opencode-plans/nemotron-3.5-super-vl-free": 3
+        }
+      },
+      "nemotron-lightning-plan": {
+        "name": "Nemotron 3.5 Lightning Free (Zen) - plan providers",
+        // NEW 2026-11-14 (Drew, Zen pass): NVIDIA's small Nemotron,
+        // free on Zen. AA v5 II 5.5 (via BenchLM's AA compilation) —
+        // the weakest measured model in the fleet. Seated last in
+        // background as a free last resort ahead of metered escalation.
+        "targets": [
+          "opencode-plans/nemotron-3.5-lightning-free"
+        ],
+        "selection": "round-robin",
+        "autonomy": "rules",
+        "weights": {
+          "opencode-plans/nemotron-3.5-lightning-free": 3
+        }
+      },
+      "system1": {
+        "name": "System One - decision models (NOT a chat pool)",
+        // NEW 2026-11-14 (Drew): the decision-model pool. System-1
+        // models answer typed questions (noul/choice/score) over a
+        // state payload — they are NOT chat models and chat calls to
+        // them return 400. This route exists so the pool name resolves
+        // for the decision wiring (design mill supplement: the config
+        // default decision pool); it must NEVER be seated in a chat
+        // tier or targeted by a chat session. First leg is the free
+        // tier: Jev 1.13 Free (TypeSafe AI). The paid decision models
+        // (jev-1.13, gpt-6-luna-decision, gemini-decision-1 — all on
+        // Zen) are natural later legs, free-first per the design.
+        // Alias note: Drew named this pool "system1"; the mill design
+        // supplement calls the same pool "decision".
+        "targets": [
+          "opencode-plans/jev-1.13-free"
+        ],
+        "selection": "round-robin",
+        "autonomy": "rules",
+        "weights": {
+          "opencode-plans/jev-1.13-free": 3
         }
       },
       "mimo-flash-plan": {
@@ -2919,10 +3107,13 @@
         // DeepSeek leaves out of the Flash pools' way is about burn
         // accounting, and MiMo is ClinePass's best seat), OpenDesign,
         // and Command Code as a minor leaf (weight 0.5, $10 credits/mo).
+        // 2026-11-14 (Zen pass): the Zen free door (mimo-v2.6-flash-free)
+        // joins as a fourth leaf at default weight.
         "targets": [
           "opencode-go-plans/mimo-v2.6-flash",
           "cline-pass/mimo-v2.6-flash",
-          "opendesign/mimo-v2.6-flash"
+          "opendesign/mimo-v2.6-flash",
+          "opencode-plans/mimo-v2.6-flash-free"
         ],
         "selection": "round-robin",
         "autonomy": "rules",
@@ -3004,10 +3195,15 @@
         // join through their own plan pools, directly behind Beam — the
         // Go provider serves exactly three free models and all three are
         // now seated in this tier (probe-verified 2026-11-14).
+        // 2026-11-14 (Drew, Zen pass): Inkling 2 Small Free joins through
+        // inkling-plan — AA v5 II 31, the strongest free generalist on
+        // either shelf after Flash — behind the Go free legs (Zen key
+        // wiring is verified per workspace after the switch).
         "targets": [
           "opencode-route/beam-plan",
           "opencode-route/longcat-plan",
           "opencode-route/iceman-plan",
+          "opencode-route/inkling-plan",
           "opencode-route/deepseek-flash-plan#low",
           "opencode-route/haiku-plan#low",
           "opencode-route/workhorse"
@@ -3064,6 +3260,14 @@
         // final ungated MiMo position is the off-peak failover.
         // No agent defaults here yet — queue workers are repointed as the
         // follow-up step so the adoption is observable.
+        // 2026-11-14 (Drew, Zen pass): the Zen free shelf's patient-tier
+        // models join as plain legs ahead of the workhorse escalation —
+        // DeepSeek Flash Free (AA v5 II 33 max), MiniMax M3.1 Flash Free
+        // (29), GLM 5.3 Flash Free (28, slow at ~48 tok/s — patient tier
+        // only), Flint 40B Free (coding specialist, no AA listing), Big
+        // Pickle (stealth, rotating backend — no score can attach), and
+        // the two Nemotron free models last (VL 13.6, Lightning 5.5 —
+        // the weakest measured seats in the fleet; free last resorts).
         "targets": [
           {
             "model": "opencode-route/mimo-flash-plan",
@@ -3082,6 +3286,13 @@
             "window": "deepseek-peak-early"
           },
           "opencode-route/mimo-flash-plan",
+          "opencode-route/flash-free-plan",
+          "opencode-route/minimax-flash-plan",
+          "opencode-route/glm-5-3-flash-zen-plan",
+          "opencode-route/flint-plan",
+          "opencode-route/big-pickle-plan",
+          "opencode-route/nemotron-vl-plan",
+          "opencode-route/nemotron-lightning-plan",
           "opencode-route/workhorse"
         ],
         "selection": "ordered",
