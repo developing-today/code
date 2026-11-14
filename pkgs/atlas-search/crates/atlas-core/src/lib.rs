@@ -29,6 +29,7 @@
 
 pub mod backend;
 pub mod embed;
+pub mod embed_cache;
 pub mod error;
 pub mod eval;
 pub mod filters;
@@ -46,6 +47,10 @@ pub const MAX_EXPAND_NEIGHBORS: usize = 100;
 
 pub use backend::SearchBackend;
 pub use embed::{AtlasEmbedder, FixedEmbedder, QUERY_PROMPT, QueryEmbedder};
+pub use embed_cache::{
+    CachingEmbedder, QueryEmbeddingCache, RawQueryEmbedder, SharedEmbeddingStore,
+    TursoEmbeddingStore, cache_key, normalize_query_text,
+};
 pub use error::{Error, Result};
 pub use eval::{
     EVAL_FORMAT, EvalData, EvalReport, MAX_GRADE, Metric, REPORT_FORMAT, Split, evaluate,

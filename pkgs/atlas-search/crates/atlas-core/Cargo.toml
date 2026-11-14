@@ -19,3 +19,5 @@ ureq = { version = "3", features = ["rustls"] }
 
 [dev-dependencies]
 serde_json = { version = "1", features = ["preserve_order"] }
+# Same proptest version the fleet-queue / pkgs-id crates use.
+proptest = "1.12"
