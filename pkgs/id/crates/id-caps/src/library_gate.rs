@@ -212,10 +212,7 @@ pub fn check_import(
         };
     }
 
-    let platform = record
-        .checked_surface
-        .as_ref()
-        .map(|s| s.platform.clone());
+    let platform = record.checked_surface.as_ref().map(|s| s.platform.clone());
     let platform_label = platform.as_deref().unwrap_or("<unspecified platform>");
     let mut failures: Vec<GateFailure> = Vec::new();
 
@@ -229,8 +226,7 @@ pub fn check_import(
         match catalog.get(&req.name) {
             None => unknown.push(ExcessEntry {
                 name: req.name.clone(),
-                detail: "names no entry in the catalog the world is compiled against"
-                    .to_string(),
+                detail: "names no entry in the catalog the world is compiled against".to_string(),
             }),
             Some(entry) => {
                 if let Some(pin) = req.version_pin {
@@ -345,9 +341,7 @@ pub fn check_import(
         failures.push(GateFailure {
             subreason: GateSubreason::DeclarationMismatch,
             excess: undeclared,
-            remedy: format!(
-                "declare the missing uses in the library's manifest: {names}."
-            ),
+            remedy: format!("declare the missing uses in the library's manifest: {names}."),
         });
     }
 
@@ -438,11 +432,7 @@ mod tests {
         }
     }
 
-    fn inputs(
-        platform: &[&str],
-        requested: &[&str],
-        discovered: &[&str],
-    ) -> GateInputs {
+    fn inputs(platform: &[&str], requested: &[&str], discovered: &[&str]) -> GateInputs {
         GateInputs {
             platform_surface: platform.iter().map(|s| (*s).to_string()).collect(),
             world_requested: requested.iter().map(|s| (*s).to_string()).collect(),
@@ -479,9 +469,20 @@ mod tests {
         let f = failure(&verdict, GateSubreason::NotOnPlatform);
         assert_eq!(excess_names(f), vec!["RocCap", "records.read"]);
         let text = verdict.diagnostic.unwrap().to_string();
-        assert!(text.contains("import_requirement_unmet / not_on_platform:"), "{text}");
-        assert!(text.contains("RocCap — not exposed by the selected platform (roc-world/platform-no-caps)"), "{text}");
-        assert!(text.contains("remedy: select a platform exposing RocCap + records.read"), "{text}");
+        assert!(
+            text.contains("import_requirement_unmet / not_on_platform:"),
+            "{text}"
+        );
+        assert!(
+            text.contains(
+                "RocCap — not exposed by the selected platform (roc-world/platform-no-caps)"
+            ),
+            "{text}"
+        );
+        assert!(
+            text.contains("remedy: select a platform exposing RocCap + records.read"),
+            "{text}"
+        );
     }
 
     #[test]
