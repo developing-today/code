@@ -437,7 +437,8 @@ pub fn sign_request(
 ) -> Result<(Signed, Vec<u8>), GatewayError> {
     let body = request.body()?;
     let signed =
-        directory_auth::sign_request(key, REQUEST_METHOD, REQUEST_TARGET, &body, at, nonce);
+        directory_auth::sign_request(key, REQUEST_METHOD, REQUEST_TARGET, &body, at, nonce)
+            .map_err(|_| GatewayError::Envelope)?;
     Ok((signed, body))
 }
 
@@ -1078,26 +1079,34 @@ mod tests {
                     })
                 }
             ),
-            (arb_currency_id(), arb_text(1, 12), arb_text(1, 12), any::<u128>()).prop_map(
-                |(currency, from, to, amount)| {
+            (
+                arb_currency_id(),
+                arb_text(1, 12),
+                arb_text(1, 12),
+                any::<u128>()
+            )
+                .prop_map(|(currency, from, to, amount)| {
                     CurrencyOp::Transfer(Transfer {
                         currency,
                         from,
                         to,
                         amount,
                     })
-                }
-            ),
-            (arb_currency_id(), arb_currency_id(), arb_text(1, 12), any::<u128>()).prop_map(
-                |(source, dest, from, amount)| {
+                }),
+            (
+                arb_currency_id(),
+                arb_currency_id(),
+                arb_text(1, 12),
+                any::<u128>()
+            )
+                .prop_map(|(source, dest, from, amount)| {
                     CurrencyOp::Convert(Convert {
                         source,
                         dest,
                         from,
                         amount,
                     })
-                }
-            ),
+                }),
             (arb_currency_id(), arb_text(1, 12)).prop_map(|(currency, account)| {
                 CurrencyOp::Balance(Balance { currency, account })
             }),
@@ -1117,25 +1126,27 @@ mod tests {
         })
     }
 
-    proptest::proptest! {
-        #![proptest::proptest_config(proptest::test_runner::Config::with_cases(128))]
+    use proptest::prelude::*;
+
+    proptest! {
+        #![proptest_config(proptest::test_runner::Config::with_cases(128))]
 
         #[test]
         fn prop_request_body_round_trips_for_all_ops(req in arb_request()) {
             let body = req.body().unwrap();
-            proptest::prop_assert_eq!(CurrencyRequest::from_body(&body).unwrap(), req);
+            prop_assert_eq!(CurrencyRequest::from_body(&body).unwrap(), req);
         }
 
         #[test]
         fn prop_canonical_encoding_is_a_fixed_point(req in arb_request()) {
             let body = req.body().unwrap();
             let decoded = CurrencyRequest::from_body(&body).unwrap();
-            proptest::prop_assert_eq!(decoded.body().unwrap(), body);
+            prop_assert_eq!(decoded.body().unwrap(), body);
         }
 
         #[test]
         fn prop_idempotency_id_is_stable(req in arb_request(), account in arb_text(1, 12)) {
-            proptest::prop_assert_eq!(
+            prop_assert_eq!(
                 idempotency_id(&account, &req),
                 idempotency_id(&account, &req.clone())
             );
@@ -1144,12 +1155,12 @@ mod tests {
         #[test]
         fn prop_idempotency_id_separates_on_request_id(
             req in arb_request(),
-            other_id in proptest::prelude::any::<u128>(),
+            other_id in any::<u128>(),
         ) {
-            proptest::prop_assume!(other_id != req.client_request_id);
+            prop_assume!(other_id != req.client_request_id);
             let mut other = req.clone();
             other.client_request_id = other_id;
-            proptest::prop_assert_ne!(
+            prop_assert_ne!(
                 idempotency_id("account", &req),
                 idempotency_id("account", &other)
             );
@@ -1174,11 +1185,11 @@ mod tests {
                     account: account.clone(),
                 }),
             };
-            proptest::prop_assert_ne!(
+            prop_assert_ne!(
                 idempotency_id(&account, &balance),
                 idempotency_id(&account, &history)
             );
-            proptest::prop_assert_ne!(
+            prop_assert_ne!(
                 idempotency_id(&account, &balance),
                 idempotency_id("other-account", &balance)
             );
