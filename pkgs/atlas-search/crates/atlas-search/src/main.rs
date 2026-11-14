@@ -34,7 +34,7 @@ use atlas_core::{
     AtlasEmbedder, CachingEmbedder, Error as CoreError, FixedEmbedder, JsonlTraceSink,
     LocalBackend, QueryEmbedder, QueryEmbeddingCache, SearchBackend, SearchMode, SearchOptions,
     TraceContext, TraceDocument, TursoBackend, VectorBackend, ingest_traces, load_feedback_refs,
-    run_get_chunk, run_retention, run_search_traced, search_traces,
+    run_get_chunk, run_retention, run_search_traced, search_traces, valid_civil_date,
 };
 use atlas_proto::{
     FilterSpec, QueryVariant, SearchMode as ProtoSearchMode, SearchParametersV1, SearchRequest,
@@ -973,16 +973,29 @@ fn cmd_traces(args: TracesArgs) -> Result<(), CliError> {
                     atlas_core::trace::rfc3339_utc(ms)[..10].to_string()
                 }
             };
-            let parts: Vec<i64> = today_str
-                .split('-')
-                .map(|p| p.parse().unwrap_or(0))
-                .collect();
-            if parts.len() != 3 || parts[0] == 0 {
-                return Err((2, format!("--today must be YYYY-MM-DD, got {today_str}")));
-            }
+            // Strict calendar validation: every component must
+            // parse, and the result must be a real date. An
+            // out-of-range month/day would otherwise be silently
+            // normalised by the day-count math and could age
+            // recent traces out of the hot tier by years.
+            let today: Option<(i64, u32, u32)> = (|| {
+                let mut parts = today_str.split('-');
+                let y: i64 = parts.next()?.parse().ok()?;
+                let m: u32 = parts.next()?.parse().ok()?;
+                let d: u32 = parts.next()?.parse().ok()?;
+                if parts.next().is_some() || !valid_civil_date(y, m, d) {
+                    return None;
+                }
+                Some((y, m, d))
+            })();
+            let Some(today) = today else {
+                return Err((
+                    2,
+                    format!("--today must be a valid YYYY-MM-DD date, got {today_str}"),
+                ));
+            };
             let refs = load_feedback_refs(&a.feedback).map_err(map_err)?;
-            let report = run_retention(&dir, (parts[0], parts[1] as u32, parts[2] as u32), &refs)
-                .map_err(map_err)?;
+            let report = run_retention(&dir, today, &refs).map_err(map_err)?;
             let out = serde_json::json!({
                 "dir": dir.display().to_string(),
                 "today": today_str,

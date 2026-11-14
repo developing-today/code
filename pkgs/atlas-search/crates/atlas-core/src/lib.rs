@@ -75,7 +75,7 @@ pub use trace_ingest::{
     COLD_DIR_NAME, COMPACTION_SCHEMA, HOT_RETENTION_DAYS, RetentionReport, TRACE_SOURCE_CLASS,
     TRACE_SOURCE_ID, TraceCorpus, TraceDocument, TraceSourceRegistration, days_from_civil,
     ingest_traces, load_feedback_refs, record_included, run_retention, search_traces,
-    trace_file_day, trace_source_registration,
+    trace_file_day, trace_source_registration, valid_civil_date,
 };
 pub use turso::TursoBackend;
 pub use types::{BranchQuery, DEFAULT_MODEL, DEFAULT_VEC_TABLE, VectorBackend};

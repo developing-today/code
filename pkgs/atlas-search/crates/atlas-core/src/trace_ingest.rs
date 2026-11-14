@@ -209,7 +209,7 @@ pub fn trace_file_day(file_name: &str) -> Option<(i64, u32, u32)> {
     let y: i64 = parts.next()?.parse().ok()?;
     let m: u32 = parts.next()?.parse().ok()?;
     let d: u32 = parts.next()?.parse().ok()?;
-    if parts.next().is_some() || !(1..=12).contains(&m) || !(1..=31).contains(&d) {
+    if parts.next().is_some() || !valid_civil_date(y, m, d) {
         return None;
     }
     Some((y, m, d))
@@ -367,6 +367,113 @@ pub fn days_from_civil(y: i64, m: u32, d: u32) -> i64 {
     era * 146_097 + doe - 719_468
 }
 
+/// Whether `(y, m, d)` is a real proleptic Gregorian calendar
+/// date: month in 1..=12 and day within that month, leap years
+/// included. `days_from_civil` silently normalises out-of-range
+/// components (month 99 advances the year count), so callers that
+/// parse a date from text must gate on this first — an invalid
+/// `today` would otherwise age every trace file by years.
+pub fn valid_civil_date(y: i64, m: u32, d: u32) -> bool {
+    if !(1..=12).contains(&m) || d == 0 {
+        return false;
+    }
+    let leap = (y % 4 == 0 && y % 100 != 0) || y % 400 == 0;
+    let days_in_month = match m {
+        1 | 3 | 5 | 7 | 8 | 10 | 12 => 31,
+        4 | 6 | 9 | 11 => 30,
+        _ => {
+            if leap {
+                29
+            } else {
+                28
+            }
+        }
+    };
+    d <= days_in_month
+}
+
+/// Identity of one trace line for cold-tier deduplication: the
+/// record's `query_id` when it parses and carries one, else the
+/// line itself. Retention retries key on this so a record already
+/// archived is never archived twice.
+fn trace_line_key(line: &str) -> String {
+    match serde_json::from_str::<Json>(line) {
+        Ok(rec) => match rec.get("query_id").and_then(Json::as_str) {
+            Some(qid) => format!("qid:{qid}"),
+            None => format!("raw:{line}"),
+        },
+        Err(_) => format!("raw:{line}"),
+    }
+}
+
+/// Accumulate one cold record's contribution to the compaction
+/// aggregate (served / merged totals, per-surface count, query
+/// text hash). Unparseable lines contribute nothing but the
+/// record count, which the caller tracks separately.
+fn accumulate_aggregate(
+    line: &str,
+    served_total: &mut u64,
+    merged_total: &mut u64,
+    surfaces: &mut BTreeMap<String, u64>,
+    hashes: &mut Vec<String>,
+) {
+    let Some(rec) = serde_json::from_str::<Json>(line).ok() else {
+        return;
+    };
+    if let Some(pc) = rec.get("pool_counts") {
+        *served_total += pc.get("served").and_then(Json::as_u64).unwrap_or(0);
+        *merged_total += pc.get("merged").and_then(Json::as_u64).unwrap_or(0);
+    }
+    let surface = rec
+        .get("surface")
+        .and_then(Json::as_str)
+        .unwrap_or("")
+        .to_string();
+    *surfaces.entry(surface).or_default() += 1;
+    if let Some(h) = rec.get("query_text_hash").and_then(Json::as_str) {
+        hashes.push(h.to_string());
+    }
+}
+
+/// Replace `path` with `contents` atomically: write the full
+/// contents to a temporary file in the same directory, sync it,
+/// then rename over the destination. A failure at any step before
+/// the rename leaves the original file intact — a truncating
+/// `std::fs::write` could destroy the only complete copy of a
+/// feedback-exempt or previously archived record.
+fn write_atomic(path: &Path, contents: &str) -> Result<()> {
+    use std::io::Write as _;
+    let parent = path.parent().ok_or_else(|| {
+        Error::backend(format!("trace retention: no parent for {}", path.display()))
+    })?;
+    let name = path
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    let tmp = parent.join(format!(".{name}.tmp-{}", std::process::id()));
+    let write = (|| -> std::io::Result<()> {
+        let mut f = std::fs::File::create(&tmp)?;
+        f.write_all(contents.as_bytes())?;
+        f.sync_all()?;
+        Ok(())
+    })();
+    if let Err(e) = write {
+        let _ = std::fs::remove_file(&tmp);
+        return Err(Error::backend(format!(
+            "trace retention: cannot write {}: {e}",
+            path.display()
+        )));
+    }
+    if let Err(e) = std::fs::rename(&tmp, path) {
+        let _ = std::fs::remove_file(&tmp);
+        return Err(Error::backend(format!(
+            "trace retention: cannot write {}: {e}",
+            path.display()
+        )));
+    }
+    Ok(())
+}
+
 /// Run the section 4 retention pass over the hot trace files in
 /// `dir`, ageing each file by its name's day stamp against
 /// `today` (a (year, month, day) triple, injected so the pass is
@@ -383,6 +490,15 @@ pub fn days_from_civil(y: i64, m: u32, d: u32) -> i64 {
 ///   aggregate hook follow-on 3's section 5 tables will consume).
 ///   A file whose records all move is removed from the hot tier.
 ///
+/// The move is safe to retry: the cold file is merged
+/// idempotently (records keyed by query_id, archived exactly
+/// once), the aggregate is rebuilt from the complete resulting
+/// cold file, every replacement is written atomically (temp file
+/// + sync + rename in the same directory), and the hot cleanup
+/// happens only after the cold file and its aggregate are in
+/// place — a failure mid-pass leaves the hot file intact for a
+/// retry that cannot duplicate or lose records.
+///
 /// Lines that do not parse as trace records are treated as
 /// compactable (they carry no query_id a feedback record could
 /// reference) and are preserved verbatim in the cold file.
@@ -392,6 +508,12 @@ pub fn run_retention(
     feedback_refs: &HashSet<String>,
 ) -> Result<RetentionReport> {
     let mut report = RetentionReport::default();
+    if !valid_civil_date(today.0, today.1, today.2) {
+        return Err(Error::backend(format!(
+            "trace retention: invalid today date {:04}-{:02}-{:02}",
+            today.0, today.1, today.2
+        )));
+    }
     let today_days = days_from_civil(today.0, today.1, today.2);
     let cold_dir = dir.join(COLD_DIR_NAME);
     for path in trace_files(dir)? {
@@ -415,10 +537,6 @@ pub fn run_retention(
         })?;
         let mut exempt_lines: Vec<&str> = Vec::new();
         let mut cold_lines: Vec<&str> = Vec::new();
-        let mut served_total: u64 = 0;
-        let mut merged_total: u64 = 0;
-        let mut surfaces: BTreeMap<String, u64> = BTreeMap::new();
-        let mut hashes: Vec<String> = Vec::new();
         for line in body.lines() {
             let line = line.trim();
             if line.is_empty() {
@@ -435,21 +553,6 @@ pub fn run_retention(
                 continue;
             }
             cold_lines.push(line);
-            if let Some(rec) = &parsed {
-                if let Some(pc) = rec.get("pool_counts") {
-                    served_total += pc.get("served").and_then(Json::as_u64).unwrap_or(0);
-                    merged_total += pc.get("merged").and_then(Json::as_u64).unwrap_or(0);
-                }
-                let surface = rec
-                    .get("surface")
-                    .and_then(Json::as_str)
-                    .unwrap_or("")
-                    .to_string();
-                *surfaces.entry(surface).or_default() += 1;
-                if let Some(h) = rec.get("query_text_hash").and_then(Json::as_str) {
-                    hashes.push(h.to_string());
-                }
-            }
         }
         if cold_lines.is_empty() {
             // Everything in the file is feedback-referenced: the
@@ -464,33 +567,64 @@ pub fn run_retention(
             ))
         })?;
         let cold_path = cold_dir.join(&name);
-        {
-            let mut out = String::new();
-            if cold_path.exists() {
-                out = std::fs::read_to_string(&cold_path).map_err(|e| {
-                    Error::backend(format!(
-                        "trace retention: cannot read {}: {e}",
-                        cold_path.display()
-                    ))
-                })?;
-            }
-            for line in &cold_lines {
-                out.push_str(line);
-                out.push('\n');
-            }
-            std::fs::write(&cold_path, out).map_err(|e| {
+        // Idempotent archive merge: records already in the cold
+        // file (from an earlier pass, or from a pass that failed
+        // after the cold write but before the hot cleanup) are
+        // kept exactly once, keyed by query_id. A retry therefore
+        // cannot duplicate raw traces, and the aggregate below is
+        // rebuilt from the complete resulting cold file, so it
+        // describes every archived record — not just this pass's.
+        let mut result_lines: Vec<String> = Vec::new();
+        let mut seen: HashSet<String> = HashSet::new();
+        if cold_path.exists() {
+            let existing = std::fs::read_to_string(&cold_path).map_err(|e| {
                 Error::backend(format!(
-                    "trace retention: cannot write {}: {e}",
+                    "trace retention: cannot read {}: {e}",
                     cold_path.display()
                 ))
             })?;
+            for line in existing.lines() {
+                let line = line.trim();
+                if !line.is_empty() && seen.insert(trace_line_key(line)) {
+                    result_lines.push(line.to_string());
+                }
+            }
+        }
+        for line in &cold_lines {
+            if seen.insert(trace_line_key(line)) {
+                result_lines.push((*line).to_string());
+            }
+        }
+        let mut out = String::new();
+        for line in &result_lines {
+            out.push_str(line);
+            out.push('\n');
+        }
+        // Commit order: cold file first, then its aggregate, and
+        // only then the hot cleanup. Every write is atomic, and
+        // any failure before the hot cleanup leaves the hot file
+        // intact so the pass can be retried — the merge above
+        // makes that retry a no-op for records already archived.
+        write_atomic(&cold_path, &out)?;
+        let mut served_total: u64 = 0;
+        let mut merged_total: u64 = 0;
+        let mut surfaces: BTreeMap<String, u64> = BTreeMap::new();
+        let mut hashes: Vec<String> = Vec::new();
+        for line in &result_lines {
+            accumulate_aggregate(
+                line,
+                &mut served_total,
+                &mut merged_total,
+                &mut surfaces,
+                &mut hashes,
+            );
         }
         let aggregate = json!({
             "schema": COMPACTION_SCHEMA,
             "source_id": TRACE_SOURCE_ID,
             "source_class": TRACE_SOURCE_CLASS,
             "day": format!("{:04}-{:02}-{:02}", day.0, day.1, day.2),
-            "compacted_records": cold_lines.len(),
+            "compacted_records": result_lines.len(),
             "exempt_records": exempt_lines.len(),
             "served_total": served_total,
             "merged_total": merged_total,
@@ -501,16 +635,10 @@ pub fn run_retention(
             "atlas-traces-{:04}-{:02}-{:02}.aggregate.json",
             day.0, day.1, day.2
         ));
-        std::fs::write(
+        write_atomic(
             &aggregate_path,
-            serde_json::to_string_pretty(&aggregate).unwrap_or_default(),
-        )
-        .map_err(|e| {
-            Error::backend(format!(
-                "trace retention: cannot write {}: {e}",
-                aggregate_path.display()
-            ))
-        })?;
+            &serde_json::to_string_pretty(&aggregate).unwrap_or_default(),
+        )?;
         report.compacted_records += cold_lines.len();
         report.moved_files += 1;
         report
@@ -529,12 +657,7 @@ pub fn run_retention(
                 out.push_str(line);
                 out.push('\n');
             }
-            std::fs::write(&path, out).map_err(|e| {
-                Error::backend(format!(
-                    "trace retention: cannot rewrite {}: {e}",
-                    path.display()
-                ))
-            })?;
+            write_atomic(&path, &out)?;
         }
     }
     Ok(report)
@@ -750,6 +873,114 @@ mod tests {
         .expect("cold file");
         assert!(cold.contains("000000000021"));
         assert!(!cold.contains("000000000020"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn valid_civil_date_rejects_out_of_range() {
+        assert!(valid_civil_date(2026, 11, 14));
+        assert!(valid_civil_date(2024, 2, 29), "leap year Feb 29");
+        assert!(!valid_civil_date(2026, 2, 29), "non-leap Feb 29");
+        assert!(!valid_civil_date(2026, 99, 14));
+        assert!(!valid_civil_date(2026, 0, 10));
+        assert!(!valid_civil_date(2026, 4, 31));
+        assert!(!valid_civil_date(2026, 1, 0));
+        // An invalid today is a usage error, never a silent
+        // normalisation that ages recent traces by years.
+        let dir = temp_dir("bad-today");
+        assert!(run_retention(&dir, (2026, 99, 14), &HashSet::new()).is_err());
+        assert!(run_retention(&dir, (2026, 2, 30), &HashSet::new()).is_err());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn retention_retry_after_cold_write_does_not_duplicate() {
+        // Simulate a pass that wrote the cold file and then failed
+        // before the hot cleanup: the record sits in BOTH tiers.
+        // The retry must archive it exactly once.
+        let dir = temp_dir("retry");
+        let line = trace_line(
+            "019abcde-0000-7000-8000-000000000030",
+            "2026-01-01T09:00:00Z",
+            "retry query",
+            "hashretry",
+        );
+        let aged = write_file(&dir, "atlas-traces-2026-01-01.jsonl", &[line.clone()]);
+        let cold_dir = dir.join(COLD_DIR_NAME);
+        std::fs::create_dir_all(&cold_dir).expect("cold dir");
+        write_file(&cold_dir, "atlas-traces-2026-01-01.jsonl", &[line]);
+        let report = run_retention(&dir, (2026, 11, 14), &HashSet::new()).expect("retention");
+        assert_eq!(report.moved_files, 1);
+        assert!(!aged.exists(), "hot file cleaned up on retry");
+        let cold = std::fs::read_to_string(cold_dir.join("atlas-traces-2026-01-01.jsonl"))
+            .expect("cold file");
+        assert_eq!(
+            cold.matches("000000000030").count(),
+            1,
+            "archived exactly once"
+        );
+        let aggregate: Json = serde_json::from_str(
+            &std::fs::read_to_string(cold_dir.join("atlas-traces-2026-01-01.aggregate.json"))
+                .expect("aggregate exists"),
+        )
+        .expect("aggregate parses");
+        assert_eq!(aggregate["compacted_records"], 1);
+        assert_eq!(aggregate["served_total"], 2);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn retention_second_pass_preserves_aggregate_history() {
+        // A is archived while B is feedback-exempt; when B's
+        // exemption later lapses, the aggregate must still
+        // describe A as well as B.
+        let dir = temp_dir("aggregate-history");
+        write_file(
+            &dir,
+            "atlas-traces-2026-01-01.jsonl",
+            &[
+                trace_line(
+                    "019abcde-0000-7000-8000-000000000040",
+                    "2026-01-01T09:00:00Z",
+                    "first archived",
+                    "hashfirst",
+                ),
+                trace_line(
+                    "019abcde-0000-7000-8000-000000000041",
+                    "2026-01-01T10:00:00Z",
+                    "later archived",
+                    "hashlater",
+                ),
+            ],
+        );
+        let mut refs = HashSet::new();
+        refs.insert("019abcde-0000-7000-8000-000000000041".to_string());
+        run_retention(&dir, (2026, 11, 14), &refs).expect("first pass");
+        run_retention(&dir, (2026, 11, 14), &HashSet::new()).expect("second pass");
+        let aggregate: Json = serde_json::from_str(
+            &std::fs::read_to_string(
+                dir.join(COLD_DIR_NAME)
+                    .join("atlas-traces-2026-01-01.aggregate.json"),
+            )
+            .expect("aggregate exists"),
+        )
+        .expect("aggregate parses");
+        assert_eq!(aggregate["compacted_records"], 2);
+        assert_eq!(aggregate["served_total"], 4);
+        let hashes: Vec<&str> = aggregate["query_text_hashes"]
+            .as_array()
+            .expect("hashes array")
+            .iter()
+            .filter_map(Json::as_str)
+            .collect();
+        assert!(
+            hashes.contains(&"hashfirst"),
+            "first pass history kept: {hashes:?}"
+        );
+        assert!(
+            hashes.contains(&"hashlater"),
+            "second pass included: {hashes:?}"
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 }
