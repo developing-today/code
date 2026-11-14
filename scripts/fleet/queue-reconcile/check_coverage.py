@@ -206,7 +206,7 @@ def triage_packet(repo: str, issue: dict, checked_at: str) -> dict:
                 "Normal (30): imported by coverage reconciliation, not filed by a creator run."
             ),
             "timebox_minutes": 45,
-            "max_attempts": 6,
+            "max_attempts": 1000,  # #8973: new-task default (Drew order 2026-11-12)
             "context_refs": [url],
             "dedupe": {
                 "checked_at": checked_at,

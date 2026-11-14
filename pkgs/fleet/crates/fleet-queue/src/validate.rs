@@ -895,6 +895,14 @@ pub fn validate_not_before(value: &Value, field: &str) -> Result<(), String> {
 /// strings name it, so the bound cannot drift between copies again.
 pub(crate) const MAX_ATTEMPTS_CEILING: u64 = 1000;
 
+/// The default max_attempts for a newly created task (#8973).
+/// Drew's 2026-11-12 order made 1000 the producer default
+/// everywhere a task is created, so the default sits at the
+/// ceiling. Every creation path that omits an explicit value
+/// (task_from_packet, the enqueue insert fallback) uses this one
+/// constant so the paths cannot drift apart again.
+pub(crate) const TASK_DEFAULT_MAX_ATTEMPTS: u64 = 1000;
+
 /// validate_packet: returns (errors, warnings).
 fn valid_max_attempts(value: &Value) -> bool {
     value
@@ -996,11 +1004,9 @@ pub fn validate_packet(packet: &Value) -> (Vec<String>, Vec<String>) {
     }
     if let Some(ma) = payload.get("max_attempts").and_then(|v| v.as_i64()) {
         let kind = payload.get("kind").and_then(|k| k.as_str()).unwrap_or("");
-        let want = if kind == "triage" || kind == "ci_investigation" {
-            6
-        } else {
-            4
-        };
+        // #8973: the design default is TASK_DEFAULT_MAX_ATTEMPTS for
+        // every kind since Drew's 2026-11-12 order.
+        let want = TASK_DEFAULT_MAX_ATTEMPTS as i64;
         if ma != want {
             warnings.push(format!(
                 "payload.max_attempts: design default for {kind} is {want}, packet says {ma}"
@@ -1019,7 +1025,7 @@ pub fn task_from_packet(packet: &Value, queue: &str) -> Value {
         .filter(|v| !v.is_null())
         .or_else(|| payload.get("max_attempts"))
         .cloned()
-        .unwrap_or(json!(4));
+        .unwrap_or(json!(TASK_DEFAULT_MAX_ATTEMPTS));
     json!({
         "queue": queue,
         "title": packet.get("title").cloned().unwrap_or(Value::Null),
@@ -1104,7 +1110,7 @@ mod tests {
                 .iter()
                 .any(|e| e.contains("max_attempts"))
         );
-        assert_eq!(task_from_packet(&packet, "q")["max_attempts"], 4);
+        assert_eq!(task_from_packet(&packet, "q")["max_attempts"], 1000);
         packet["payload"]["max_attempts"] = json!(7);
         assert_eq!(task_from_packet(&packet, "q")["max_attempts"], 7);
     }
