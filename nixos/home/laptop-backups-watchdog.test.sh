@@ -201,9 +201,12 @@ expect_ok pm-stack-root-absent
 
 # A fresh date dir with no archive is the failure shape: mkdir happened,
 # but the dump never produced its named archive.
-TODAY="$(date +%F)"
+# Pin every derived day name to one captured epoch so a midnight
+# rollover mid-run cannot make the scenarios disagree about "today".
+TEST_EPOCH="$(date +%s)"
+TODAY="$(date -d "@$TEST_EPOCH" +%F)"
 PM_STACK_ROOT="$HOME_DIR/backups/pm-stack"
-YESTERDAY="$(date -d '1 day ago' +%F)"
+YESTERDAY="$(date -d "@$((TEST_EPOCH - 86400))" +%F)"
 mkdir -p "$PM_STACK_ROOT/$YESTERDAY"
 touch "$PM_STACK_ROOT/$YESTERDAY/pm-stack-$YESTERDAY.tar.zst"
 mkdir -p "$PM_STACK_ROOT/$TODAY"
@@ -226,9 +229,9 @@ rm -f "$PM_STACK_ROOT/$TODAY/pm-stack-$TODAY.tar.zst"
 rmdir "$PM_STACK_ROOT/$TODAY"
 rm -f "$PM_STACK_ROOT/$YESTERDAY/pm-stack-$YESTERDAY.tar.zst"
 rmdir "$PM_STACK_ROOT/$YESTERDAY"
-STALE_DAY="$(date -d '48 hours ago' +%F)"
+STALE_DAY="$(date -d "@$((TEST_EPOCH - 172800))" +%F)"
 mkdir -p "$PM_STACK_ROOT/$STALE_DAY"
-touch -d '48 hours ago' "$PM_STACK_ROOT/$STALE_DAY"
+touch -d "@$((TEST_EPOCH - 172800))" "$PM_STACK_ROOT/$STALE_DAY"
 run_watchdog
 expect_ok pm-stack-stale-day
 

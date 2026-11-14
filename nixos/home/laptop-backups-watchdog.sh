@@ -179,6 +179,9 @@ fi
 PM_STACK_ROOT="$HOME/backups/pm-stack"
 if [ -d "$PM_STACK_ROOT" ]; then
   newest_pm_stack_day=""
+  # nullglob: an unmatched glob must expand to nothing, not to the
+  # literal pattern (which the [ -d ] guard below would have to catch).
+  shopt -s nullglob
   for day_dir in "$PM_STACK_ROOT"/*/; do
     [ -d "$day_dir" ] || continue
     day="${day_dir%/}"
@@ -200,6 +203,7 @@ if [ -d "$PM_STACK_ROOT" ]; then
       newest_pm_stack_day="$day"
     fi
   done
+  shopt -u nullglob
 
   if [ -n "$newest_pm_stack_day" ]; then
     expected_archive="$PM_STACK_ROOT/$newest_pm_stack_day/pm-stack-$newest_pm_stack_day.tar.zst"
