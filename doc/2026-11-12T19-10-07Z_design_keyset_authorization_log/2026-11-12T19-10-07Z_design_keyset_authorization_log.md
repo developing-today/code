@@ -122,10 +122,36 @@ same records reaches the same state.
 5. **Forks.** Two valid records extending the same head are a fork.
    The canonical continuation is the one with the smaller merge key
    `(lamport, author, hash)`; the other branch is retained as evidence
-   but never folded. Because admin authority is judged at position,
-   a fork created by a key that the canonical branch later revokes
-   cannot resurrect itself: its records still fold only if authorised
+   but never folded — subject to the two overrides below, which exist
+   because merge-key order alone does NOT protect a revocation: a key
+   that is still authorised at the shared parent can sign a sibling
+   whose merge key sorts first (a smaller counter, or a varied label
+   until the hash wins), and the revoking branch would lose the fork
+   and disappear from the folded state (Codex review on PR #8984,
+   finding at this rule).
+   - **Revocation priority.** When sibling branches conflict and one
+     of them carries an `AdminKeyRotated` or revocation record, valid
+     at its position, that rotates away or revokes a key which
+     authored the competing sibling, the revoking branch is canonical
+     regardless of merge key. Merge-key order decides only forks in
+     which neither branch revokes or rotates away the other's author.
+   - **Checkpoint finality.** Fork choice is provisional until the
+     chosen head is covered by a `Checkpoint` whose `state_hash` a
+     replica has verified against a full fold (rule 6). Once a head
+     is checkpoint-final, a later-arriving sibling extending any
+     ancestor of that head is evidence only and can never displace
+     it — this is the rollback protection that bounds how long the
+     provisional window stays open. Consumers that act on admin
+     authority (enrolment, rotation, hosted rebind under Decision 6)
+     SHOULD require checkpoint finality for the state they act on
+     when the identity's log has ever forked.
+   A fork created by a key that the canonical branch later revokes
+   still cannot resurrect itself: its records fold only if authorised
    at their position on the canonical chain — and they are not on it.
+   Note the packet-1 implementation (`pkgs/id/src/keyset.rs`) folds
+   by merge key with anchored genesis and checkpoint records that
+   cannot displace admin records; revocation priority and checkpoint
+   finality are follow-up packet 5 in §7, not yet implemented.
 6. **Checkpoints.** A replica may start from a `Checkpoint` whose
    `state_hash` it has verified against a full fold once, then fold
    only the suffix. A checkpoint never authorises anything by itself.
@@ -149,7 +175,21 @@ rule 5 and loses deterministically to the first folded one.
 - SSO/IdP state never mints or rebinds keys by itself (the #2060 rule):
   an `IdpBindingBound` entry is an admin-signed pointer to a
   `BindingRecord`; the hosted binding ceremony's own rebind path
-  (`RebindRecord`, signed by a surviving key) is unchanged.
+  (`RebindRecord`, signed by a surviving key) is unchanged for
+  identities that have not migrated to a keyset.
+- For a migrated identity, hosted rebind authorisation consumes the
+  folded keyset state (Codex review on PR #8984, finding at this
+  section): `rebind_with_old_key_authorization` and `cancel_rebind`
+  in `pkgs/id/src/hosted_binding.rs` currently verify against the
+  binding's recorded `iroh_id` / the request's `old_iroh_id` only, so
+  a rotated-away genesis key would retain rebind power and the new
+  admin key would have none. Once an identity has a keyset, the
+  authorising key for a rebind or a rebind cancellation must be an
+  Active admin key in the identity's current fold (checkpoint-final
+  where Decision 4 rule 5 requires it); the immutable identity
+  identifier (Decision 1) does not change. The legacy `iroh_id`
+  check remains the rule only for unmigrated identities. This is
+  follow-up packet 5 in §7, not yet implemented.
 - Per-device group-encryption sessions (`src/encryption/`) consume the
   folded device set; they do not define their own enrolment.
 
@@ -166,6 +206,11 @@ rule 5 and loses deterministically to the first folded one.
    instead of ad-hoc key lists.
 4. Genesis migration for single-key accounts (lazy, §5) plus CLI
    surface (`id keyset show|enrol|revoke|rotate`).
+5. Fork-finality and hosted-rebind deltas from the PR #8984 Codex
+   review: revocation-priority fork choice and checkpoint finality
+   in the `keyset.rs` fold (Decision 4 rule 5), and folded-admin
+   authorisation for hosted rebind / cancel-rebind of migrated
+   identities in `hosted_binding.rs` (Decision 6).
 
 Acceptance items 2–4 of #2380 map to packets 2, 3, and 4 above;
 packet 1 is the substrate they share. #2380 stays open until all four
