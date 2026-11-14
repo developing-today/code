@@ -33,26 +33,37 @@ twice during this pass and was caught both times).
   `effort/xs|s|m|l`, plus status/queue/source families. New labels are created
   only to mirror an existing fleet label (same name/color/description).
 
-## BOARD STATUS — BLOCKED on a token scope grant (needs Drew)
+## BOARD STATUS — route: `github.project-token` (scope grant CANCELLED)
 
-Every Project-board read and write in this pass failed with
-`INSUFFICIENT_SCOPES`: the automation `gh` token carries
-`admin:org, gist, repo, user, workflow` and **no `project` / `read:project`
-scope**. Labels, sub-issues, and epic creation are done; board membership,
-Area/Status/Kind field values, and the dedicated ID-program view could not be
-set or even verified. Remedy (interactive, Drew only):
+The laptop automation `gh` token carries `admin:org, gist, repo, user,
+workflow` and **no `project` / `read:project` scope**, so in this pass every
+Project-board read and write attempted with that token failed with
+`INSUFFICIENT_SCOPES`. Labels, sub-issues, and epic creation are done.
 
-```
-gh auth refresh -s read:project,project
-```
+That is not a blocker, and nothing here waits on Drew: the laptop-token
+project-scope grant is **CANCELLED** — it requires fresh sign-in through
+Vertex SSO, which the fleet must never trigger or require (Drew ruling
+2026-11-12, recorded in `pm-stack/design-reprioritization-2026-11-12.md`).
+Do not schedule, suggest, or retry any token scope refresh for this purpose.
 
-Follow-up pass owed once granted: (1) add the crate-split chain (#2056, #3195,
-#3447, steps) and every epic issue in this manifest to Project #4 with Area set
-and, for every epic issue, Kind=Epic set on its Project item (canonical per
-pm-stack/README.md — dashboard epic membership comes only from Kind=Epic);
-(2) create/verify the ID-program dedicated view on Project #4; (3) fleet-wide
-board-membership audit against the epic taxonomy below; (4) lab-cluster boards
-in the Clustered-Computing org.
+Org Project #4 work uses the documented Projects v2 GraphQL route with
+the `github.project-token` secret instead. That route is proven: on
+2026-11-12 the six program views (views 16-21) were created on Project #4
+via `github.project-token` and verified by read-back, including the
+ID-program dedicated view ("Program — P1 ID", view 16) — so the ID-program
+view follow-up from the original pass is already done, not owed.
+
+Follow-up pass, via the `github.project-token` route: (1) add the
+crate-split chain (#2056, #3195, #3447, steps) and every epic issue in
+this manifest to Project #4 with Area set and, for every epic issue,
+Kind=Epic set on its Project item (canonical per pm-stack/README.md —
+dashboard epic membership comes only from Kind=Epic); (2) verify the ID-program
+dedicated view on Project #4 (view 16, created 2026-11-12 — verify, do
+not recreate); (3) fleet-wide board-membership audit against the epic
+taxonomy below; (4) lab-cluster boards in the Clustered-Computing org.
+Personal-repo (dezren39/*) issues cannot be placed on org Project #4 —
+a settled constraint per the same ruling; their tracking home is labels
++ milestones + this register.
 
 ## Phase 1 — the pkgs/id crate split (complete except boards)
 
@@ -427,5 +438,6 @@ children's parent pointers:
   0 direct sub-issues).
 - All members of every cluster live in developing-today/code (other repos
   checked: zero carriers). The ambiguous multi-carrier labels remain
-  untouched, awaiting Drew's pick. The Project-board blocker above is
-  unchanged by this pass.
+  untouched, awaiting Drew's pick. The Project-board status above was
+  corrected on 2026-11-13 (task 15840, issue #9345): the scope grant is
+  cancelled and Project #4 work uses the `github.project-token` route.
