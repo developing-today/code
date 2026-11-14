@@ -386,6 +386,24 @@ func workDirKeyMaterial(kind string, opts Options) string {
 // devshell's PATH taking precedence inside. A missing nix or an
 // unknown value is a loud error naming the setting — never a silent
 // host fallback.
+// devshellIsFlake reports whether the setting selects a flake devshell.
+func devshellIsFlake(devshell string) bool {
+	return strings.HasPrefix(devshell, "flake:")
+}
+
+// devshellSpawnName picks the command a spawn should invoke. Under a
+// flake devshell the shell owns command resolution, so the unresolved
+// invocation name is what must reach `nix develop -c`: handing it the
+// host-resolved absolute path would run the host's runtime version
+// inside the shell, defeating the pin (Codex review, PR #8381). On the
+// host the resolved binary is used exactly as before.
+func devshellSpawnName(devshell, bin, invoke string) string {
+	if devshellIsFlake(devshell) && invoke != "" {
+		return invoke
+	}
+	return bin
+}
+
 func wrapDevshell(devshell, bin string, args []string, lookPath func(string) (string, error)) (string, []string, error) {
 	switch {
 	case devshell == "" || devshell == "host":
@@ -454,11 +472,25 @@ func Run(ctx context.Context, opts Options) (*Result, error) {
 		// review). The later block fills in Bin, and reports a runtime
 		// that is missing from both.
 		if jsEnv.runtime == "" {
-			return nil, err
-		}
-		rt, err = ResolveDeferred(jsEnv.runtime, opts.Permissions, opts.Setup)
-		if err != nil {
-			return nil, err
+			// A flake devshell may provide a runtime the host lacks:
+			// defer the lookup to the shell the same way the shebang
+			// case below defers it, so the run reaches the spawn and
+			// the shell's pinned runtime is what executes (Codex
+			// review, PR #8381). Only an explicit kind name can be
+			// deferred; auto order has no single name to hand the
+			// shell, so its error stands.
+			if !devshellIsFlake(opts.Devshell) {
+				return nil, err
+			}
+			rt, err = ResolveDeferred(opts.Runtime, opts.Permissions, opts.Setup)
+			if err != nil {
+				return nil, err
+			}
+		} else {
+			rt, err = ResolveDeferred(jsEnv.runtime, opts.Permissions, opts.Setup)
+			if err != nil {
+				return nil, err
+			}
 		}
 	}
 
@@ -696,7 +728,10 @@ func Run(ctx context.Context, opts Options) (*Result, error) {
 			rt.Bin = abs
 		}
 	}
-	if rt.Kind == KindNode {
+	if rt.Kind == KindNode && !(devshellIsFlake(opts.Devshell) && rt.Bin == rt.Invoke) {
+		// A devshell-deferred runtime has no host binary to probe: Bin
+		// is still the bare name the shell will resolve. Probing it
+		// here would fail the run before the shell gets its chance.
 		if err := checkNodeTransformTypes(rt.Bin); err != nil {
 			return nil, err
 		}
@@ -791,7 +826,7 @@ func Run(ctx context.Context, opts Options) (*Result, error) {
 	// through to the script, so no "--" separator is needed.
 	args := append(rt.Args(scriptPath), opts.Args...)
 
-	bin, cmdArgs, werr := wrapDevshell(opts.Devshell, rt.Bin, args, exec.LookPath)
+	bin, cmdArgs, werr := wrapDevshell(opts.Devshell, devshellSpawnName(opts.Devshell, rt.Bin, rt.Invoke), args, exec.LookPath)
 	if werr != nil {
 		return nil, werr
 	}

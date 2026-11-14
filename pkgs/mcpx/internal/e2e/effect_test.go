@@ -73,6 +73,8 @@ var effectProbeFuncs = map[string]func(*testing.T){
 	"TestRegistryLimitReachesTheCLI":                         TestRegistryLimitReachesTheCLI,
 	"TestRegistryPageSizeChangesWhatTheCLIAsksFor":           TestRegistryPageSizeChangesWhatTheCLIAsksFor,
 	"TestScriptCaptureConsoleOffDropsConsoleOutput":          TestScriptCaptureConsoleOffDropsConsoleOutput,
+	"TestScriptCwdIsReachableFromTheEnvironment":             TestScriptCwdIsReachableFromTheEnvironment,
+	"TestScriptInterpreterIsReachableFromTheEnvironment":     TestScriptInterpreterIsReachableFromTheEnvironment,
 	"TestScriptEnvIsReachableFromTheEnvironment":             TestScriptEnvIsReachableFromTheEnvironment,
 	"TestScriptDevshellIsReachableFromTheEnvironment":        TestScriptDevshellIsReachableFromTheEnvironment,
 	"TestScriptPrefixIsReachableFromTheEnvironment":          TestScriptPrefixIsReachableFromTheEnvironment,
