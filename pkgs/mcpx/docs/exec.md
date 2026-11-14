@@ -74,7 +74,7 @@ module is not beside it. `--export` does survive, because the launcher imports
 the written file and calls the named export there.
 
 That is the default, not the only form. `--remote-file` sends the script's
-*name* instead — the `file:` form of the request — and the daemon resolves it
+_name_ instead — the `file:` form of the request — and the daemon resolves it
 on its own script search path. Resolution is one rule for every surface
 (#2168): the shared `internal/scriptresolve` package searches the same
 directories the CLI searches (`.config/mcpx/scripts` then `.mcpx/scripts`,
@@ -167,14 +167,29 @@ Three renderings of one run.
   must keep doing so.
 - **structured** — the `/v1` and MCP default. One document:
   `{result, emits[], logs[], stdout, artifacts[], exitCode, durationMs,
-error?}`. A caller over HTTP wants fields, not text it has to scrape.
+error?, errorKind?}`. A caller over HTTP wants fields, not text it has to scrape.
+
+  `errorKind` is the failure's typed kind (CODE-30), present exactly when
+  `error` is: `timeout` (the run exceeded its bound), `not_started` (a
+  missing runtime, an unreadable launcher, a type error found before
+  execution), or `execution` (the script started and failed — it threw,
+  exited non-zero, or the runner reported the failure). The message and
+  exit details are unchanged; the kind is what a caller branches on.
+
 - **stream** — frames as they happen. SSE by default because it is plain
   HTTP and a browser consumes it with no code; NDJSON on
   `Accept: application/x-ndjson`, because a program with a JSON decoder should
   not have to strip `data: ` off every line first.
 
-`result` is the script's stdout parsed when stdout is JSON. That rule is
-inherited from `mcpx --json run` rather than invented, so the two agree.
+`result` is the value of the snippet's final top-level expression when
+it has one (CODE-19): a snippet that ends in an expression statement
+reports that expression's value, REPL-style, with stdout and `emit()`
+values still carried separately under their own names. When the final
+expression is `undefined` -- a print-style snippet ending in
+`console.log(...)` -- or the source declares a default export instead,
+the older rule decides: the script's stdout parsed when stdout is JSON.
+That rule is inherited from `mcpx --json run` rather than invented, so
+the two agree.
 
 ### The frame order, and why it is the order
 
@@ -205,6 +220,27 @@ final one: an `onSuccess`/`onError` hook frame precedes the `result`/`error`
 frame it may have replaced (its frame carries the original when it changed
 the value), and a `suffix` hook frame follows the outcome, before `end`. A
 replaced error produces no `error` frame at all.
+
+A hook entry declares exactly one action. `script` is the deterministic
+action above. `prompt` is the model-backed one (#1929 Approach C, first
+slice): the entry's `prompt` text is sent to the configured model provider
+(`model.provider` and friends, resolved per request on the daemon, from
+the same settings for a local CLI run), with `effect` defaulting to
+`advise` — the only effect this slice implements; `ask`, `propose`,
+`apply` and `run` are refused at validation rather than silently
+downgraded. `@placeholders` in the prompt text — the built-ins `@result`,
+`@error`, `@diagnostic`, `@calls`, `@artifacts`, `@source`, plus the
+call's own placeholder values — are substituted JSON-encoded, as data,
+never as raw text. The provider's answer rides the hook frame as
+`advice`, with `model` and `provider` naming what answered; advice never
+transforms the result or the error, in any phase. When no provider is
+configured, or the provider errors, the frame instead carries
+`error: "advice unavailable: …"` and the run continues deterministically
+— a prompt hook can slow a run down by its timeout, but it cannot change
+or fail it. A per-hook `model` names the model to ask, in the
+provider/model namespace. Prompt hooks are declared in the same lists as
+script hooks — the config `hooks` entries and a call's `options.hooks` —
+and run in declaration order among them.
 
 Artifact **metadata** comes before `end`; artifact **bodies** come strictly
 after it. That is the whole point of the design, and it is step 5 of the

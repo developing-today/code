@@ -1,7 +1,7 @@
 const std = @import("std");
 
 pub fn build(b: *std.Build) void {
-    const optimize = b.standardOptimizeOption(.{ .preferred_optimize_mode = .ReleaseSmall });
+    const optimize = b.standardOptimizeOption(.{ .preferred_optimize_mode = .small });
     const target = b.resolveTargetQuery(.{ .cpu_arch = .wasm32, .os_tag = .freestanding, .abi = .none });
     const obj = b.addObject(.{
         .name = "host",
@@ -9,7 +9,7 @@ pub fn build(b: *std.Build) void {
             .root_source_file = b.path("src/host.zig"),
             .target = target,
             .optimize = optimize,
-            .strip = optimize != .Debug,
+            .strip = optimize != .debug,
             .pic = true,
         }),
     });

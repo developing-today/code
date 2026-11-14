@@ -1,146 +1,15 @@
-//! Who may pull a world's events from this server (P6.5, decision 11).
+//! The pull policy, re-exported from `id-events`.
 //!
-//! The policy is a local serving rule. It decides what this server sends, and a peer never sees
-//! it. Nothing here goes on the wire, so two servers with different policies still sync.
-//!
-//! - **Open** (the default): any peer may pull the world's events. That is how sync works today.
-//! - **Members**: a peer may pull only while it is a current member of the world. Membership is
-//!   read when each session starts, so a removed member is refused on the next pull.
-//!
-//! A [`PullGate`] binds a policy to one world and to the membership it is checked against. The
-//! sync sessions check the gate before any event is sent. A refused peer gets no event, and the
-//! refusal is clean. An open gate never reads membership.
-//!
-//! A gate may also carry the operator block list ([`crate::event_store::BlockList`], #2245):
-//! a peer blocked by key is refused under every policy, and a gate whose world's name is a
-//! blocked topic tag serves nothing. The blocks compose with the policy — they only ever
-//! narrow it. Without a list attached, a gate behaves exactly as it did before the list
-//! existed. The list is read on each check, so a block or an unblock lands on the next
-//! session, as a membership removal does.
-//!
-//! This is a config setting, not a protocol rule. The policy belongs with the world's policy. The
-//! server config's `[policy]` table parses it ([`crate::server_config::ServerConfig::pull_policy`]),
-//! but `id serve` does not read it yet, and no session builds a gate from config. Blobs are not
-//! governed here. The blob gate ([`crate::blob_gate`]) still requires membership to fetch, whatever
-//! this policy says. Authorized pull is advisory: it stops an honest server from serving a
-//! non-member. It does not stop re-serving, recall copies, or hide metadata.
+//! Step 2b of the pkgs/id crate split (#4405): the implementation of
+//! this module — the policy value types and the gate — lives in
+//! `id_events::pull_policy`, the sync-gating vocabulary the events
+//! layer owns. This facade module holds the re-exports, the test
+//! fixtures that fold through the facade's own `groups::worlds` (which
+//! stays here until step 4), and the one gate test that runs against
+//! the real event store, so every historical `id::pull_policy` path
+//! is unchanged.
 
-use std::sync::Arc;
-
-use iroh_base::EndpointId;
-
-use crate::blob_gate::WorldAccess;
-use crate::event_store::BlockList;
-
-/// Who may pull a world's events from this server.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub enum PullPolicy {
-    /// Any peer may pull. The default, and today's behaviour.
-    #[default]
-    Open,
-    /// Only a current member of the world may pull.
-    Members,
-}
-
-impl PullPolicy {
-    /// Whether `peer` may pull the events of `world`. Only [`PullPolicy::Members`] reads `access`,
-    /// and it reads it on each call, so a removal is seen by the next call.
-    pub fn admits(self, access: &dyn WorldAccess, world: &str, peer: &EndpointId) -> bool {
-        match self {
-            Self::Open => true,
-            Self::Members => access.is_current_member(world, peer),
-        }
-    }
-}
-
-/// A policy bound to one world, and the membership it is checked against.
-#[derive(Clone)]
-pub struct PullGate {
-    policy: PullPolicy,
-    world: String,
-    access: Arc<dyn WorldAccess>,
-    /// The operator block list, when the gate's owner attached one
-    /// ([`PullGate::with_blocks`]). Read on each check.
-    blocks: Option<Arc<dyn BlockList>>,
-}
-
-impl PullGate {
-    /// A gate for `world` under `policy`. `access` answers membership at the time of each check.
-    /// No operator block list is attached; [`PullGate::with_blocks`] adds one.
-    #[must_use]
-    pub fn new<A: WorldAccess>(
-        policy: PullPolicy,
-        world: impl Into<String>,
-        access: Arc<A>,
-    ) -> Self {
-        Self {
-            policy,
-            world: world.into(),
-            access,
-            blocks: None,
-        }
-    }
-
-    /// Attaches the operator block list (#2245): a peer blocked by key is
-    /// refused under every policy, and a gate whose world's name is a
-    /// blocked topic tag serves nothing. The list is consulted live, so a
-    /// block added after the gate was built is seen by the next check.
-    #[must_use]
-    pub fn with_blocks(mut self, blocks: Arc<dyn BlockList>) -> Self {
-        self.blocks = Some(blocks);
-        self
-    }
-
-    /// The world this gate serves.
-    #[must_use]
-    pub fn world(&self) -> &str {
-        &self.world
-    }
-
-    /// Whether the operator block list blocks `peer` by key. False when
-    /// no list is attached.
-    #[must_use]
-    pub fn peer_blocked(&self, peer: &EndpointId) -> bool {
-        self.blocks
-            .as_ref()
-            .is_some_and(|blocks| blocks.peer_blocked(peer.as_bytes()))
-    }
-
-    /// Whether the operator block list blocks this topic tag (raw bytes:
-    /// a world name, or a sync topic's hash bytes). False when no list is
-    /// attached. Session seams that carry a topic the gate's world does
-    /// not name — the `log_sync` handshake — check the tag through here.
-    #[must_use]
-    pub fn topic_tag_blocked(&self, tag: &[u8]) -> bool {
-        self.blocks
-            .as_ref()
-            .is_some_and(|blocks| blocks.topic_tag_blocked(tag))
-    }
-
-    /// Whether `peer` may pull this world's events now: not blocked by
-    /// key, the world not blocked as a topic tag, and the policy admits
-    /// the peer.
-    #[must_use]
-    pub fn admits(&self, peer: &EndpointId) -> bool {
-        !self.peer_blocked(peer)
-            && !self.topic_tag_blocked(self.world.as_bytes())
-            && self.policy.admits(self.access.as_ref(), &self.world, peer)
-    }
-}
-
-impl std::fmt::Debug for PullGate {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("PullGate")
-            .field("policy", &self.policy)
-            .field("world", &self.world)
-            .finish_non_exhaustive()
-    }
-}
-
-/// A session the pull policy refused. No event was sent.
-#[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
-#[error("the pull policy refuses this peer the events of world {0:?}")]
-pub struct PullRefused(pub String);
+pub use id_events::pull_policy::{PullGate, PullPolicy, PullRefused};
 
 /// Fixtures for the pull tests and the session tests: a folded world, and membership a test can
 /// change between two checks.
@@ -322,89 +191,7 @@ pub(crate) mod testing {
 mod tests {
     use super::testing::{WORLD, docs_world, key, live};
     use super::*;
-
-    #[test]
-    fn test_pull_policy_defaults_to_open() {
-        assert_eq!(PullPolicy::default(), PullPolicy::Open);
-    }
-
-    /// Open pull admits a stranger: today's behaviour, pinned.
-    #[test]
-    fn test_pull_policy_open_admits_a_non_member() {
-        let gate = PullGate::new(
-            PullPolicy::Open,
-            WORLD,
-            live(docs_world(key(1).public(), key(2).public(), false)),
-        );
-        assert!(gate.admits(&key(9).public()), "a stranger may pull");
-        assert!(gate.admits(&key(2).public()), "a member may pull");
-    }
-
-    /// The members option admits a current member, the founder included, and refuses a stranger.
-    #[test]
-    fn test_pull_policy_members_admits_only_a_current_member() {
-        let gate = PullGate::new(
-            PullPolicy::Members,
-            WORLD,
-            live(docs_world(key(1).public(), key(2).public(), false)),
-        );
-        assert!(gate.admits(&key(2).public()), "a member");
-        assert!(gate.admits(&key(1).public()), "the founder is a member too");
-        assert!(!gate.admits(&key(9).public()), "a stranger is refused");
-    }
-
-    /// The check reads membership when it runs, so a removal lands on the next check.
-    #[test]
-    fn test_pull_policy_members_refuses_a_removed_member_on_the_next_check() {
-        let access = live(docs_world(key(1).public(), key(2).public(), false));
-        let gate = PullGate::new(PullPolicy::Members, WORLD, Arc::clone(&access));
-        assert!(gate.admits(&key(2).public()), "before the removal");
-        access.set(docs_world(key(1).public(), key(2).public(), true));
-        assert!(!gate.admits(&key(2).public()), "after the removal");
-    }
-
-    /// #2245: a peer blocked by key is refused even under the open
-    /// policy, which admits every other peer. The block only narrows.
-    #[test]
-    fn test_pull_gate_refuses_a_blocked_peer_under_open_policy() {
-        let gate = PullGate::new(
-            PullPolicy::Open,
-            WORLD,
-            live(docs_world(key(1).public(), key(2).public(), false)),
-        )
-        .with_blocks(super::testing::stub_blocks(
-            &[*key(9).public().as_bytes()],
-            &[],
-        ));
-        assert!(
-            !gate.admits(&key(9).public()),
-            "the blocked peer is refused"
-        );
-        assert!(
-            gate.admits(&key(2).public()),
-            "an unblocked peer still pulls"
-        );
-    }
-
-    /// #2245: a blocked topic tag is not pulled — a gate whose world is a
-    /// blocked tag serves nothing, to members included.
-    #[test]
-    fn test_pull_gate_refuses_every_peer_when_its_world_is_a_blocked_topic_tag() {
-        let gate = PullGate::new(
-            PullPolicy::Members,
-            WORLD,
-            live(docs_world(key(1).public(), key(2).public(), false)),
-        )
-        .with_blocks(super::testing::stub_blocks(&[], &[WORLD]));
-        assert!(
-            !gate.admits(&key(2).public()),
-            "a member of a blocked topic"
-        );
-        assert!(
-            !gate.admits(&key(1).public()),
-            "the founder of a blocked topic"
-        );
-    }
+    use std::sync::Arc;
 
     /// #2245, against the real store-backed list: a permanent block
     /// refuses the peer, and an expired block does not — expiry is judged
@@ -441,17 +228,5 @@ mod tests {
             "an expired block (expiry 1_500, long past) is not enforced"
         );
         assert!(gate.admits(&key(2).public()), "an unlisted peer pulls");
-    }
-
-    /// A gate names one world. A member of `docs` is not a member of another world.
-    #[test]
-    fn test_pull_policy_members_checks_only_the_gates_world() {
-        let gate = PullGate::new(
-            PullPolicy::Members,
-            "other",
-            live(docs_world(key(1).public(), key(2).public(), false)),
-        );
-        assert_eq!(gate.world(), "other");
-        assert!(!gate.admits(&key(2).public()));
     }
 }

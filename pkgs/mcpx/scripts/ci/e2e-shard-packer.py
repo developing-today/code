@@ -66,13 +66,39 @@ DEFAULT_GOOS = "linux"
 DEFAULT_GOARCH = "amd64"
 
 _KNOWN_GOOS = {
-    "aix", "android", "darwin", "dragonfly", "freebsd", "hurd", "illumos",
-    "ios", "js", "linux", "netbsd", "openbsd", "plan9", "solaris",
-    "wasip1", "windows",
+    "aix",
+    "android",
+    "darwin",
+    "dragonfly",
+    "freebsd",
+    "hurd",
+    "illumos",
+    "ios",
+    "js",
+    "linux",
+    "netbsd",
+    "openbsd",
+    "plan9",
+    "solaris",
+    "wasip1",
+    "windows",
 }
 _KNOWN_GOARCH = {
-    "386", "amd64", "arm", "arm64", "loong64", "mips", "mips64", "mipsle",
-    "mips64le", "ppc64", "ppc64le", "riscv64", "s390x", "sparc64", "wasm",
+    "386",
+    "amd64",
+    "arm",
+    "arm64",
+    "loong64",
+    "mips",
+    "mips64",
+    "mipsle",
+    "mips64le",
+    "ppc64",
+    "ppc64le",
+    "riscv64",
+    "s390x",
+    "sparc64",
+    "wasm",
 }
 
 # Tags the default build satisfies beyond GOOS/GOARCH: "unix" (linux is a
@@ -192,9 +218,9 @@ def _constraints_included(text: str) -> bool:
         if stripped.startswith("package "):
             break
         if stripped.startswith("//go:build"):
-            go_build = stripped[len("//go:build"):].strip()
+            go_build = stripped[len("//go:build") :].strip()
         elif stripped.startswith("// +build"):
-            plus_build.append(stripped[len("// +build"):].strip())
+            plus_build.append(stripped[len("// +build") :].strip())
         elif stripped and not stripped.startswith("//"):
             break
     if go_build is not None:
@@ -241,7 +267,8 @@ def load_weights(path: str | None, names: list[str]) -> tuple[dict[str, float], 
         # i.e. ~3 s per test. Unit weights would under-count the suite and
         # silently drop the shard count, so the fallback keeps that scale.
         return {name: DEFAULT_SECONDS for name in names}, (
-            f"equal weights at the run-41530429335 rate ({DEFAULT_SECONDS:.0f}s/test; no timing seed)")
+            f"equal weights at the run-41530429335 rate ({DEFAULT_SECONDS:.0f}s/test; no timing seed)"
+        )
     median = statistics.median(measured.values())
     weights = {name: measured.get(name, median) for name in names}
     return weights, f"seed: {len(measured)} measured, median {median:.1f}s for the rest"
@@ -292,8 +319,12 @@ def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--tests-dir", default="pkgs/mcpx/internal/e2e")
     ap.add_argument("--timings", default="pkgs/mcpx/scripts/ci/e2e-timings.json")
-    ap.add_argument("--target-seconds", type=float, default=170.0,
-                    help="desired wall time of one e2e leg's test work")
+    ap.add_argument(
+        "--target-seconds",
+        type=float,
+        default=170.0,
+        help="desired wall time of one e2e leg's test work",
+    )
     ap.add_argument("--max-shards", type=int, default=6)
     ap.add_argument("--github-output", default=os.environ.get("GITHUB_OUTPUT"))
     ap.add_argument("--github-summary", default=os.environ.get("GITHUB_STEP_SUMMARY"))
@@ -301,7 +332,9 @@ def main() -> int:
 
     names = discover(args.tests_dir)
     if not names:
-        raise SystemExit(f"coverage defect: no Test functions found under {args.tests_dir}")
+        raise SystemExit(
+            f"coverage defect: no Test functions found under {args.tests_dir}"
+        )
     weights, weight_note = load_weights(args.timings, names)
     shards, buckets = pack(names, weights, args.target_seconds, args.max_shards)
     assert_covered(names, buckets)
@@ -309,21 +342,27 @@ def main() -> int:
     include = []
     for i, bucket in enumerate(buckets):
         seconds = sum(weights[n] for n in bucket)
-        include.append({
-            "shard": i,
-            "count": len(bucket),
-            "run": "|".join(bucket),
-            "seconds": round(seconds, 1),
-            "longest": max((weights[n] for n in bucket), default=0.0),
-        })
+        include.append(
+            {
+                "shard": i,
+                "count": len(bucket),
+                "run": "|".join(bucket),
+                "seconds": round(seconds, 1),
+                "longest": max((weights[n] for n in bucket), default=0.0),
+            }
+        )
     longest_total = max(item["seconds"] for item in include) if include else 0.0
 
     matrix = json.dumps({"include": include})
-    print(f"e2e tests: {len(names)} in {shards} shards ({weight_note}); "
-          f"expected longest leg {longest_total:.0f}s test time")
+    print(
+        f"e2e tests: {len(names)} in {shards} shards ({weight_note}); "
+        f"expected longest leg {longest_total:.0f}s test time"
+    )
     for item in include:
-        print(f"  shard {item['shard']}: {item['count']:3d} tests, "
-              f"{item['seconds']:7.1f}s test time, longest {item['longest']:.1f}s")
+        print(
+            f"  shard {item['shard']}: {item['count']:3d} tests, "
+            f"{item['seconds']:7.1f}s test time, longest {item['longest']:.1f}s"
+        )
 
     if args.github_output:
         with open(args.github_output, "a") as fh:

@@ -9,7 +9,7 @@ from the routes table alone.
 ## Intent
 
 `id serve` already exposes the hosted-world directory at `/explore`. The
-group CLI (`id group ...`) maintains a *local* group log — friendships,
+group CLI (`id group ...`) maintains a _local_ group log — friendships,
 groups, and grants recorded on this machine — but had no web surface: an
 operator could not see the local groups and grants from the same server
 that serves the worlds. #2143 asks for a read-only local groups page.
@@ -32,13 +32,13 @@ that serves the worlds. #2143 asks for a read-only local groups page.
    drops an unterminated final entry (a torn append interrupted before
    its closing newline). A web page must never mutate the file it merely
    displays, so `read_projection` in `web/groups.rs` parses the file
-   *without* opening it through `GroupLog::open`. To stay consistent with
+   _without_ opening it through `GroupLog::open`. To stay consistent with
    the writer's view of the world it mirrors the repair semantics
    exactly, in memory only: the raw bytes are checked for a trailing
    newline first, every unterminated final entry is dropped — parseable
    or not — and the tail is never decoded before that check, so a torn
    multibyte character at the end of the file cannot fail the whole page.
-   A genuinely corrupt *terminated* entry is an error, mirroring
+   A genuinely corrupt _terminated_ entry is an error, mirroring
    `GroupLog::open`, rather than being silently skipped.
 
 3. **The log path is the serve command's configured resolution.**

@@ -6,7 +6,12 @@ import { spawnSync } from "node:child_process";
 import { chmodSync, existsSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { amountFromBody, gmailMessageDay, isNotChargeSubject, stagedManifestPeriod } from "../scripts/produce-charge-candidates.ts";
+import {
+  amountFromBody,
+  gmailMessageDay,
+  isNotChargeSubject,
+  stagedManifestPeriod,
+} from "../scripts/produce-charge-candidates.ts";
 
 const producerScript = join(import.meta.dir, "../scripts/produce-charge-candidates.ts");
 
@@ -49,7 +54,11 @@ function liveHarness() {
   };
 }
 
-function expectCliUsageError(args: (h: ReturnType<typeof liveHarness>) => string[], message: string, strayFile?: string) {
+function expectCliUsageError(
+  args: (h: ReturnType<typeof liveHarness>) => string[],
+  message: string,
+  strayFile?: string,
+) {
   const h = liveHarness();
   writeFileSync(h.defaultOut, "preserve existing candidates");
   const res = h.run(args(h));
@@ -249,7 +258,14 @@ describe("staged mode gmail staging (#4660)", () => {
         body: {
           accounts: [{ account_id: "a1", name: "Visa Card", mask: "1234" }],
           transactions: [
-            { account_id: "a1", amount: 12.34, date: "2026-10-15", name: "Coffee Shop", merchant_name: "Coffee Shop", category: ["Food and Drink"] },
+            {
+              account_id: "a1",
+              amount: 12.34,
+              date: "2026-10-15",
+              name: "Coffee Shop",
+              merchant_name: "Coffee Shop",
+              category: ["Food and Drink"],
+            },
           ],
         },
       }),
@@ -310,10 +326,7 @@ describe("live mode CLI validation (#3333)", () => {
   });
 
   test("a flag-like --start value is a usage error", () => {
-    expectCliUsageError(
-      (h) => ["--start", "--end", "2026-10-31", "--out", h.out, "--skip-gmail"],
-      "--start",
-    );
+    expectCliUsageError((h) => ["--start", "--end", "2026-10-31", "--out", h.out, "--skip-gmail"], "--start");
   });
 
   test("a trailing --end is a usage error before any side effect", () => {
@@ -321,10 +334,7 @@ describe("live mode CLI validation (#3333)", () => {
   });
 
   test("a flag-like --end value is a usage error", () => {
-    expectCliUsageError(
-      (h) => ["--start", "2026-10-01", "--end", "--out", h.out, "--skip-gmail"],
-      "--end",
-    );
+    expectCliUsageError((h) => ["--start", "2026-10-01", "--end", "--out", h.out, "--skip-gmail"], "--end");
   });
 
   test("a trailing --out is a usage error and preserves the configured default path", () => {
@@ -386,15 +396,7 @@ describe("live mode CLI validation (#3333)", () => {
   test("valid explicit flags keep the period, output path, and summary", () => {
     const h = liveHarness();
     writeFileSync(h.defaultOut, "preserve existing candidates");
-    const res = h.run([
-      "--start",
-      "2026-10-01",
-      "--end",
-      "2026-10-01",
-      "--out",
-      h.out,
-      "--skip-gmail",
-    ]);
+    const res = h.run(["--start", "2026-10-01", "--end", "2026-10-01", "--out", h.out, "--skip-gmail"]);
     expect(res.status).toBe(0);
     expect(JSON.parse(readFileSync(h.out, "utf8")).period).toEqual({ start: "2026-10-01", end: "2026-10-01" });
     expect(res.stdout).toContain(`producer: wrote ${h.out} — 0 candidates for 2026-10-01..2026-10-01`);

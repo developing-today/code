@@ -1,8 +1,16 @@
 //! Probe (creator-a, 2026-11-05): does fold_authorisation accept authorisations
 //! whose terms the conversion layer can never honour?
+//!
+//! Flipped 2026-11-11 (task 14777, PR #5181, issue #4071): the probe was
+//! salvaged onto main documenting the bug — every shape below folded Live
+//! and validate() returned Ok. RateAuthorisation::validate now rejects
+//! each shape with a named ValidateError and the fold filters it out, so
+//! the probe asserts the fixed behaviour and stands as the regression
+//! pin for #4071.
 use id::conversion::{ConvertError, convert_amount, fee_amount};
 use id::currency::{
-    AuthorisationState, AuthorisedCallers, RateAuthorisation, fold_authorisation, issuer_id,
+    AuthorisationState, AuthorisedCallers, RateAuthorisation, ValidateError, fold_authorisation,
+    issuer_id,
 };
 use p2panda_core::SigningKey;
 
@@ -39,45 +47,66 @@ fn folds_live(auth: &RateAuthorisation) -> bool {
 }
 
 #[test]
-fn probe_fee_bps_over_10000_folds_live_but_conversion_refuses() {
+fn probe_fee_bps_over_10000_is_rejected_and_conversion_refuses() {
     let mut auth = base();
     auth.fee_bps = Some(10_001);
     assert!(
-        folds_live(&auth),
-        "authorisation with fee_bps=10001 folds Live"
+        !folds_live(&auth),
+        "authorisation with fee_bps=10001 must not fold Live"
     );
     assert_eq!(
         fee_amount(1_000, 10_001),
         Err(ConvertError::InvalidFeeBps { fee_bps: 10_001 }),
-        "conversion layer refuses the very fee the folded authorisation carries"
+        "conversion layer refuses the very fee the authorisation carries"
     );
-    // And the authorisation's own validate() accepts it too.
-    assert!(auth.validate(&issuer_id(&lp_key())).is_ok());
+    assert_eq!(
+        auth.validate(&issuer_id(&lp_key())),
+        Err(ValidateError::FeeBpsTooHigh)
+    );
 }
 
 #[test]
-fn probe_min_above_max_folds_live_but_no_amount_is_convertible() {
+fn probe_min_above_max_is_rejected() {
     let mut auth = base();
     auth.min_amount = 10_000;
     auth.max_amount = 1;
-    assert!(folds_live(&auth), "min>max authorisation folds Live");
-    assert!(auth.validate(&issuer_id(&lp_key())).is_ok());
+    assert!(
+        !folds_live(&auth),
+        "min>max authorisation must not fold Live"
+    );
+    assert_eq!(
+        auth.validate(&issuer_id(&lp_key())),
+        Err(ValidateError::MinAmountExceedsMaxAmount)
+    );
 }
 
 #[test]
-fn probe_empty_time_window_folds_live() {
+fn probe_empty_time_window_is_rejected() {
     let mut auth = base();
     auth.not_before = 2_000;
     auth.expires_at = 2_000; // expires_at is exclusive: no instant is valid
-    assert!(folds_live(&auth), "not_before==expires_at folds Live");
-    assert!(auth.validate(&issuer_id(&lp_key())).is_ok());
+    assert!(
+        !folds_live(&auth),
+        "not_before==expires_at must not fold Live"
+    );
+    assert_eq!(
+        auth.validate(&issuer_id(&lp_key())),
+        Err(ValidateError::InvalidTimeWindow)
+    );
 }
 
 #[test]
-fn probe_zero_rate_num_folds_live_but_every_conversion_is_zero_output() {
+fn probe_zero_rate_num_is_rejected_and_every_conversion_is_zero_output() {
     let mut auth = base();
     auth.rate_num = 0;
-    assert!(folds_live(&auth), "rate_num=0 authorisation folds Live");
+    assert!(
+        !folds_live(&auth),
+        "rate_num=0 authorisation must not fold Live"
+    );
+    assert_eq!(
+        auth.validate(&issuer_id(&lp_key())),
+        Err(ValidateError::ZeroRateNumerator)
+    );
     assert_eq!(
         convert_amount(1_000, 0, 10_000, 0, 0),
         Err(ConvertError::ZeroOutput),
@@ -86,12 +115,25 @@ fn probe_zero_rate_num_folds_live_but_every_conversion_is_zero_output() {
 }
 
 #[test]
-fn probe_same_ledger_and_zero_max_also_fold_live() {
+fn probe_same_ledger_and_zero_max_are_rejected() {
     let mut auth = base();
     auth.dest_ledger = auth.source_ledger.clone();
     auth.max_amount = 0;
     assert!(
-        folds_live(&auth),
-        "same-ledger, max=0 authorisation folds Live"
+        !folds_live(&auth),
+        "same-ledger, max=0 authorisation must not fold Live"
+    );
+    // min_amount (1) > max_amount (0) is the first check that fires.
+    assert_eq!(
+        auth.validate(&issuer_id(&lp_key())),
+        Err(ValidateError::MinAmountExceedsMaxAmount)
+    );
+
+    let mut same_ledger = base();
+    same_ledger.dest_ledger = same_ledger.source_ledger.clone();
+    assert!(!folds_live(&same_ledger));
+    assert_eq!(
+        same_ledger.validate(&issuer_id(&lp_key())),
+        Err(ValidateError::SameSourceAndDestinationLedger)
     );
 }

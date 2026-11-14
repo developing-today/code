@@ -35,7 +35,10 @@ function tmpDir(prefix: string): string {
 /** Stamp records into a valid stored chain, the way persist()'s
  *  rechain does, so a fixture file can carry records (including
  *  past-retention ones) that load() will verify. */
-function stampChain(rows: Array<Partial<AuditEvent> & { at: string; summary: string }>, anchor = EVENT_CHAIN_GENESIS): AuditEvent[] {
+function stampChain(
+  rows: Array<Partial<AuditEvent> & { at: string; summary: string }>,
+  anchor = EVENT_CHAIN_GENESIS,
+): AuditEvent[] {
   let prev = anchor;
   return rows.map((row, i) => {
     const stamped: AuditEvent = {
@@ -252,8 +255,22 @@ describe("audit archive retention (#3322)", () => {
 
 describe("backup / restore round trip (#3322)", () => {
   const deliveries: ActivityDelivery[] = [
-    { source: "watchdog", sourceId: "wd-1", at: iso(2 * 60 * 60 * 1000), kind: "watchdog-event", ref: "gh:developing-today/code#1", summary: "watchdog one" },
-    { source: "watchdog", sourceId: "wd-2", at: iso(60 * 60 * 1000), kind: "watchdog-event", ref: "gh:developing-today/code#1", summary: "watchdog two" },
+    {
+      source: "watchdog",
+      sourceId: "wd-1",
+      at: iso(2 * 60 * 60 * 1000),
+      kind: "watchdog-event",
+      ref: "gh:developing-today/code#1",
+      summary: "watchdog one",
+    },
+    {
+      source: "watchdog",
+      sourceId: "wd-2",
+      at: iso(60 * 60 * 1000),
+      kind: "watchdog-event",
+      ref: "gh:developing-today/code#1",
+      summary: "watchdog two",
+    },
   ];
 
   function walkFiles(root: string): string[] {
@@ -310,11 +327,7 @@ describe("backup / restore round trip (#3322)", () => {
       manifest[rel] = { sha256: createHash("sha256").update(bytes).digest("hex"), size: bytes.length };
     }
     // Every member the #3322 acceptance names is in the manifest.
-    for (const member of [
-      "events.json",
-      "events.json.outbox.jsonl",
-      "activity-ingestion.json",
-    ]) {
+    for (const member of ["events.json", "events.json.outbox.jsonl", "activity-ingestion.json"]) {
       expect(manifest[member]).toBeDefined();
     }
     expect(Object.keys(manifest).some((k) => k.startsWith("events.json.archive/"))).toBe(true);
@@ -416,7 +429,9 @@ describe("audit archive retention — Codex round-2 regressions (#3322, PR #7665
     // the hot stream.
     const dir = tmpDir("agg-events-archive-outbox-twin-");
     const file = join(dir, "events.json");
-    const archivedRecord = stampChain([{ at: iso(60 * 60 * 1000), summary: "already archived", id: "evt_archived_1" }])[0];
+    const archivedRecord = stampChain([
+      { at: iso(60 * 60 * 1000), summary: "already archived", id: "evt_archived_1" },
+    ])[0];
     await writeEventsFile(file, stampChain([{ at: iso(30 * 60 * 1000), summary: "hot record", id: "evt_hot_1" }]));
     await mkdir(join(dir, "events.json.archive"), { recursive: true });
     await writeFile(

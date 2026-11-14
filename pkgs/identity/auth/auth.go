@@ -49,7 +49,7 @@ func GetDbConnectionWhichIPromiseToCloseMyself() (*sql.DB, error) {
 }
 
 func InsertPrivateKey(pk ed25519.PrivateKey) (int64, error) {
-	log.Info("Inserting private key", "privateKeyType", pk.Public().(ed25519.PublicKey), "privateKeyString", base64.StdEncoding.EncodeToString(pk))
+	log.Info("Inserting private key", "publicKeyType", "ssh-ed25519")
 	db, err := GetDbConnectionWhichIPromiseToCloseMyself()
 	if err != nil {
 		return -1, fmt.Errorf("failed to open db: %w", err)
@@ -61,7 +61,7 @@ func InsertPrivateKey(pk ed25519.PrivateKey) (int64, error) {
 	publicKeyType := "ssh-ed25519"
 	publicKeyString := base64.StdEncoding.EncodeToString(publicKey)
 
-	log.Info("Inserting private key", "privateKeyType", publicKey, "privateKeyString", privateKeyString, "publicKeyType", publicKeyType, "publicKeyString", publicKeyString)
+	log.Info("Inserting private key", "publicKeyType", publicKeyType, "publicKeyString", publicKeyString)
 
 	stmt, err := db.Prepare("INSERT INTO private_key (type, private_key, public_key) VALUES (?, ?, ?)")
 	if err != nil {
@@ -69,7 +69,7 @@ func InsertPrivateKey(pk ed25519.PrivateKey) (int64, error) {
 	}
 	defer stmt.Close()
 
-	log.Info("Inserting private key", "privateKeyType", publicKey, "privateKeyString", privateKeyString, "publicKeyType", publicKeyType, "publicKeyString", publicKeyString)
+	log.Info("Inserting private key", "publicKeyType", publicKeyType, "publicKeyString", publicKeyString)
 
 	result, err := stmt.Exec(publicKeyType, privateKeyString, publicKeyString)
 
@@ -326,7 +326,7 @@ func InsertUser(ctx ssh.Context) (int64, error) {
 }
 
 func InsertHashPublicKey(hash string, hash_type string, key ssh.PublicKey) (int64, error) {
-	log.Info("Inserting hash public key", "hash", hash, "hash_type", hash_type)
+	log.Info("Inserting hash public key", "hash_type", hash_type)
 	db, err := GetDbConnectionWhichIPromiseToCloseMyself()
 	if err != nil {
 		return -1, fmt.Errorf("failed to open db: %w", err)
@@ -368,7 +368,7 @@ func InsertHashPublicKey(hash string, hash_type string, key ssh.PublicKey) (int6
 }
 
 func GetPublicKeyFromHash(hash string, hash_type string) (string, error) {
-	log.Info("Getting hash public key", "hash", hash, "hash_type", hash_type)
+	log.Info("Getting hash public key", "hash_type", hash_type)
 	host := os.Getenv("TURSO_HOST")
 	if host == "" {
 		log.Fatal("TURSO_HOST is not set")
@@ -404,7 +404,7 @@ func GetPublicKeyFromHash(hash string, hash_type string) (string, error) {
 }
 
 func InsertTextPublicKey(text string, text_type string, key ssh.PublicKey) (int64, error) {
-	log.Info("Inserting text public key", "text", text, "text_type", text_type)
+	log.Info("Inserting text public key", "text_type", text_type)
 	db, err := GetDbConnectionWhichIPromiseToCloseMyself()
 	if err != nil {
 		return -1, fmt.Errorf("failed to open db: %w", err)
@@ -447,7 +447,7 @@ func InsertTextPublicKey(text string, text_type string, key ssh.PublicKey) (int6
 }
 
 func GetPublicKeyFromText(text string, text_type string) (string, error) {
-	log.Info("Getting text public key", "text", text, "text_type", text_type)
+	log.Info("Getting text public key", "text_type", text_type)
 	host := os.Getenv("TURSO_HOST")
 	if host == "" {
 		log.Fatal("TURSO_HOST is not set")
@@ -482,7 +482,7 @@ func GetPublicKeyFromText(text string, text_type string) (string, error) {
 }
 
 func GetPublicKey(text string, text_type *string) (string, error) {
-	log.Info("Getting hash/text public key", "text", text, "text_type", text_type)
+	log.Info("Getting hash/text public key")
 	if text_type == nil {
 		text_type = new(string)
 		*text_type = "%"

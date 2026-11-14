@@ -33,6 +33,8 @@ pub const DEFAULT_SECRETS_BROKER_SOCKET: &str = ".config/secrets-broker/broker.s
 pub const PORT_LAPTOP_AGENT: u16 = 4799;
 pub const PORT_SECRETS_BROKER: u16 = 4800;
 pub const PORT_QUEUE_BROKER: u16 = 4801;
+/// RustDesk's direct-access TCP endpoint on the laptop.
+pub const PORT_RUSTDESK: u16 = 21118;
 /// Broker idle exit (§4: retained from the Python broker — a warmth
 /// cache that exits when cold is a feature on a shared sandbox).
 pub const DEFAULT_IDLE_EXIT_SECS: u64 = 3600;
@@ -715,6 +717,34 @@ impl Config {
                 DEFAULT_DISPATCH_TEST_THRESHOLD,
             ));
         }
+        // Blank scalar strings (#6405): an empty or
+        // whitespace-only string in a path/URL/name field is the
+        // same misspelling class as the zero rule above — a
+        // templated config rendering a variable that came out
+        // empty. Left alone, an empty broker_socket resolves to
+        // $HOME itself and an empty dispatch url surfaces as a
+        // configured Some("") instead of the documented default.
+        // Reject at load, naming the field; omitting the field
+        // keeps the default. The configured value is never echoed
+        // in the error.
+        let blank = |value: &Option<String>| value.as_deref().is_some_and(|v| v.trim().is_empty());
+        for (value, field) in [
+            (&self.proxy.broker_socket, "[proxy] broker_socket"),
+            (&self.proxy.target_host, "[proxy] target_host"),
+            (&self.proxy.connect_udp_listen, "[proxy] connect_udp_listen"),
+            (&self.secrets.token_file, "[secrets] token_file"),
+            (&self.dispatch.url, "[dispatch] url"),
+            (&self.dispatch.token_name, "[dispatch] token_name"),
+        ] {
+            if blank(value) {
+                return Err(ConfigError::Parse {
+                    path: path.to_path_buf(),
+                    message: format!(
+                        "{field} must not be empty or blank; omit the field for the default"
+                    ),
+                });
+            }
+        }
         // [host] (#6770, design #5687 §1): the manifest's loud
         // rules run at load like every other section's, plus one
         // structural rule of its own — a section that sets
@@ -728,6 +758,58 @@ impl Config {
                 message: "[host] section sets init_mode/roles but no location;                           a manifest must name its location"
                     .to_string(),
             });
+        }
+        // [[proxy.services]] rows (#6397): the routing table is
+        // collected into a port-keyed map downstream (fleet-proxy's
+        // services_map), so a duplicate port silently collapses
+        // last-wins, a duplicate name makes the advertised hello map
+        // ambiguous, and port 0 or an empty name can never be routed
+        // to. All four are misspelling-class errors: loud at load,
+        // naming the offending row. The built-in default table is
+        // not validated here — only rows the operator declared.
+        let mut port_rows: BTreeMap<u16, usize> = BTreeMap::new();
+        let mut name_rows: BTreeMap<&str, usize> = BTreeMap::new();
+        for (index, row) in self.proxy.services.iter().enumerate() {
+            let human_row = index + 1;
+            if row.port == 0 {
+                return Err(ConfigError::Parse {
+                    path: path.to_path_buf(),
+                    message: format!(
+                        "[[proxy.services]] row {human_row} (name {:?}) has port 0; a service port must be between 1 and 65535",
+                        row.name
+                    ),
+                });
+            }
+            if row.name.trim().is_empty() {
+                return Err(ConfigError::Parse {
+                    path: path.to_path_buf(),
+                    message: format!(
+                        "[[proxy.services]] row {human_row} (port {}) has an empty name; every routed service needs a name",
+                        row.port
+                    ),
+                });
+            }
+            if let Some(first) = port_rows.insert(row.port, index) {
+                return Err(ConfigError::Parse {
+                    path: path.to_path_buf(),
+                    message: format!(
+                        "[[proxy.services]] row {human_row} (name {:?}) duplicates port {} already used by row {}; duplicate ports collapse last-wins in the routing map",
+                        row.name,
+                        row.port,
+                        first + 1
+                    ),
+                });
+            }
+            if let Some(first) = name_rows.insert(row.name.as_str(), index) {
+                return Err(ConfigError::Parse {
+                    path: path.to_path_buf(),
+                    message: format!(
+                        "[[proxy.services]] row {human_row} duplicates service name {:?} already used by row {}",
+                        row.name,
+                        first + 1
+                    ),
+                });
+            }
         }
         Ok(())
     }
@@ -1074,8 +1156,9 @@ impl Config {
     /// The routing table: config's `[proxy] services`, or the
     /// built-in table matching today's live system — 4799 the
     /// (Python) laptop-agent daemon, 4800/4801 the fleet broker
-    /// roles (§4: a serve build without a role advertises a map
-    /// without its port; the table is how that is said).
+    /// roles, and 21118 RustDesk direct access (§4: a serve build
+    /// without a role advertises a map without its port; the table
+    /// is how that is said).
     pub fn services(&self) -> Vec<ServiceConfig> {
         if !self.proxy.services.is_empty() {
             return self.proxy.services.clone();
@@ -1085,6 +1168,7 @@ impl Config {
             (PORT_LAPTOP_AGENT, "laptop-agent", "python".to_string()),
             (PORT_SECRETS_BROKER, "secrets-broker", fleet_version.clone()),
             (PORT_QUEUE_BROKER, "queue-broker", fleet_version),
+            (PORT_RUSTDESK, "rustdesk", "rustdesk-direct-v1".to_string()),
         ]
         .into_iter()
         .map(|(port, name, version)| ServiceConfig {
@@ -1093,6 +1177,42 @@ impl Config {
             version: Some(version),
         })
         .collect()
+    }
+
+    /// Port-to-socket resolution beside [`Config::services`]
+    /// (#6219, from the #5699 design): the Unix socket a colocated
+    /// caller dials for the service routed on `port`, when that
+    /// service is a broker role with a socket. `None` when the
+    /// port is unrouted or its service has no socket -- the caller
+    /// keeps its TCP route. The hello/services wire contract is
+    /// untouched: this is a local dial decision only, derived
+    /// from the same port-keyed table `services()` returns.
+    pub fn service_socket(&self, port: u16) -> Option<PathBuf> {
+        let name = self.services().into_iter().find(|s| s.port == port)?.name;
+        self.role_socket(&name)
+    }
+
+    /// The transport choice for the service routed on `port`
+    /// (#6219): port -> service name (via [`Config::services`])
+    /// -> [`Config::role_transport_choice`]. `None` when the port
+    /// is unrouted or its service is not a broker role (the
+    /// caller keeps whatever route it already had).
+    pub fn service_transport_choice(&self, port: u16) -> Option<RoleTransport> {
+        let name = self.services().into_iter().find(|s| s.port == port)?.name;
+        self.role_transport_choice(&name)
+    }
+
+    /// The socket and configured transport preference for the
+    /// service routed on `port` (#6219), WITHOUT probing: the
+    /// dial itself is the probe on the proxy's dial path, and it
+    /// must stay inside the caller's setup deadline (a probe
+    /// connect here could block unboundedly on a wedged listener
+    /// whose backlog is full). `None` when the port is unrouted
+    /// or its service has no socket.
+    pub fn service_socket_resolution(&self, port: u16) -> Option<(PathBuf, Option<String>)> {
+        let name = self.services().into_iter().find(|s| s.port == port)?.name;
+        let socket = self.role_socket(&name)?;
+        Some((socket, self.role_transport(&name)))
     }
 
     /// The token file the session broker reads when a request names
@@ -1318,15 +1438,47 @@ mod tests {
     fn services_default_to_the_live_table() {
         let cfg = Config::default();
         let services = cfg.services();
-        assert_eq!(services.len(), 3);
+        assert_eq!(services.len(), 4);
         assert_eq!(services[0].port, PORT_LAPTOP_AGENT);
         assert_eq!(services[0].name, "laptop-agent");
         assert_eq!(services[1].port, PORT_SECRETS_BROKER);
         assert_eq!(services[2].port, PORT_QUEUE_BROKER);
+        assert_eq!(services[3].port, PORT_RUSTDESK);
+        assert_eq!(services[3].name, "rustdesk");
         assert!(services.iter().all(|s| s.version.is_some()));
         assert_eq!(cfg.target_host(), DEFAULT_TARGET_HOST);
         assert_eq!(cfg.egress_proxy_port(), DEFAULT_EGRESS_PROXY_PORT);
         assert!(!cfg.proxy_direct());
+    }
+
+    #[test]
+    fn service_socket_resolves_broker_ports_only() {
+        // #6219: the port-to-socket map beside services() resolves
+        // the two broker-role ports to their role sockets; the
+        // laptop-agent port (no role socket) and unrouted ports
+        // resolve to None, so their callers keep TCP.
+        let cfg = Config::default();
+        assert_eq!(
+            cfg.service_socket(PORT_QUEUE_BROKER),
+            Some(cfg.queue_broker_socket())
+        );
+        assert_eq!(
+            cfg.service_socket(PORT_SECRETS_BROKER),
+            Some(cfg.secrets_broker_socket())
+        );
+        assert_eq!(cfg.service_socket(PORT_LAPTOP_AGENT), None);
+        assert_eq!(cfg.service_socket(9999), None);
+        // The transport choice follows the same mapping: a broker
+        // port yields a choice, an unrouted port yields None.
+        assert!(cfg.service_transport_choice(PORT_QUEUE_BROKER).is_some());
+        assert!(cfg.service_transport_choice(PORT_LAPTOP_AGENT).is_none());
+        assert!(cfg.service_transport_choice(9999).is_none());
+        // The probe-free resolution pairs each broker port with
+        // its socket; unrouted / socket-less ports give None.
+        let (sock, _pref) = cfg.service_socket_resolution(PORT_QUEUE_BROKER).unwrap();
+        assert_eq!(sock, cfg.queue_broker_socket());
+        assert!(cfg.service_socket_resolution(PORT_LAPTOP_AGENT).is_none());
+        assert!(cfg.service_socket_resolution(9999).is_none());
     }
 
     #[test]
@@ -1336,6 +1488,145 @@ mod tests {
         let services = cfg.services();
         assert_eq!(services.len(), 1);
         assert_eq!(services[0].name, "laptop-agent");
+    }
+
+    #[test]
+    fn services_row_with_port_zero_is_a_loud_error() {
+        let (_dir, path) = write_temp("[[proxy.services]]\nport = 0\nname = \"laptop-agent\"\n");
+        match Config::load_from(&path) {
+            Err(ConfigError::Parse { message, .. }) => {
+                assert!(message.contains("port 0"), "{message}");
+                assert!(message.contains("laptop-agent"), "{message}");
+            }
+            other => panic!("expected Parse error, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn services_row_with_empty_name_is_a_loud_error() {
+        let (_dir, path) = write_temp("[[proxy.services]]\nport = 4799\nname = \"\"\n");
+        match Config::load_from(&path) {
+            Err(ConfigError::Parse { message, .. }) => {
+                assert!(message.contains("empty name"), "{message}");
+                assert!(message.contains("4799"), "{message}");
+            }
+            other => panic!("expected Parse error, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn services_rows_with_duplicate_port_are_a_loud_error() {
+        // The triage probe's impostor case (#6397): two rows on one
+        // port used to load fine and collapse last-wins downstream.
+        let (_dir, path) = write_temp(
+            "[[proxy.services]]\nport = 4801\nname = \"queue-broker\"\n[[proxy.services]]\nport = 4801\nname = \"impostor\"\n",
+        );
+        match Config::load_from(&path) {
+            Err(ConfigError::Parse { message, .. }) => {
+                assert!(message.contains("4801"), "{message}");
+                assert!(message.contains("impostor"), "{message}");
+            }
+            other => panic!("expected Parse error, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn services_rows_with_duplicate_name_are_a_loud_error() {
+        let (_dir, path) = write_temp(
+            "[[proxy.services]]\nport = 4800\nname = \"secrets-broker\"\n[[proxy.services]]\nport = 4801\nname = \"secrets-broker\"\n",
+        );
+        match Config::load_from(&path) {
+            Err(ConfigError::Parse { message, .. }) => {
+                assert!(message.contains("secrets-broker"), "{message}");
+            }
+            other => panic!("expected Parse error, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn services_rows_valid_table_loads_verbatim() {
+        let (_dir, path) = write_temp(
+            "[[proxy.services]]\nport = 4799\nname = \"laptop-agent\"\n[[proxy.services]]\nport = 4801\nname = \"queue-broker\"\n",
+        );
+        let cfg = Config::load_from(&path).unwrap();
+        let services = cfg.services();
+        assert_eq!(services.len(), 2);
+        assert_eq!(services[0].name, "laptop-agent");
+        assert_eq!(services[1].port, 4801);
+    }
+
+    use proptest::prelude::*;
+
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(256))]
+
+        /// PBT (#6397, testing doctrine): load acceptance for a
+        /// generated [[proxy.services]] table is decided by an
+        /// independent predicate over the four invariants — every
+        /// port nonzero, every name nonblank after trimming, ports
+        /// unique, names unique — never by the loader's own say-so.
+        /// The generators draw ports and names from small pools so
+        /// collisions, zeroes, and blank/whitespace names occur in
+        /// arbitrary row orders; a table the predicate accepts must
+        /// load verbatim, and one it rejects must fail with a Parse
+        /// error.
+        #[test]
+        fn services_tables_load_exactly_when_the_invariants_hold(
+            rows in prop::collection::vec(
+                (
+                    prop_oneof![
+                        Just(0_u16),
+                        Just(4799_u16),
+                        Just(4800_u16),
+                        Just(4801_u16),
+                        any::<u16>(),
+                    ],
+                    prop_oneof![
+                        Just(String::new()),
+                        Just(" ".to_string()),
+                        Just("laptop-agent".to_string()),
+                        Just("queue-broker".to_string()),
+                        "[a-z]{1,6}",
+                    ],
+                ),
+                0..6,
+            )
+        ) {
+            let mut text = String::new();
+            for (port, name) in &rows {
+                text.push_str(&format!(
+                    "[[proxy.services]]\nport = {port}\nname = \"{name}\"\n"
+                ));
+            }
+            let valid = rows.iter().all(|(port, name)| *port != 0 && !name.trim().is_empty())
+                && rows.iter().map(|(port, _)| *port).collect::<std::collections::HashSet<_>>().len() == rows.len()
+                && rows.iter().map(|(_, name)| name.as_str()).collect::<std::collections::HashSet<_>>().len() == rows.len();
+            let (_dir, path) = write_temp(&text);
+            match (valid, Config::load_from(&path)) {
+                (true, Ok(cfg)) => {
+                    let services = cfg.services();
+                    if rows.is_empty() {
+                        // No declared rows is the documented "empty
+                        // means the built-in table" case (see the
+                        // services field doc), not a verbatim load.
+                        prop_assert_eq!(services.len(), Config::default().services().len());
+                    } else {
+                        prop_assert_eq!(services.len(), rows.len());
+                        for (service, (port, name)) in services.iter().zip(&rows) {
+                            prop_assert_eq!(service.port, *port);
+                            prop_assert_eq!(&service.name, name);
+                        }
+                    }
+                }
+                (true, Err(e)) => {
+                    prop_assert!(false, "predicate-valid table rejected: {e}");
+                }
+                (false, Err(ConfigError::Parse { .. })) => {}
+                (false, other) => {
+                    prop_assert!(false, "predicate-invalid table not rejected with Parse: {other:?}");
+                }
+            }
+        }
     }
 
     #[test]
@@ -1788,6 +2079,68 @@ socket = "rel/s.sock"
         let (_dir3, path3) = write_temp("[dispatch-test]\nthreshold = 7\n");
         let cfg = Config::load_from(&path3).unwrap();
         assert_eq!(cfg.dispatch_test_threshold(), 7);
+    }
+    #[test]
+    fn blank_scalar_strings_are_a_loud_error() {
+        // #6405: an empty or whitespace-only string in a scalar
+        // path/URL/name field fails at load naming its field
+        // (oracle: the Parse message contains the field name for
+        // both the empty and the whitespace spelling of each of
+        // the six fields). Nonblank values surface unchanged and
+        // omitted fields keep their documented defaults.
+        for (contents, field) in [
+            ("[proxy]\nbroker_socket = \"\"\n", "[proxy] broker_socket"),
+            (
+                "[proxy]\nbroker_socket = \"   \"\n",
+                "[proxy] broker_socket",
+            ),
+            ("[proxy]\ntarget_host = \"\"\n", "[proxy] target_host"),
+            ("[proxy]\ntarget_host = \"\t\"\n", "[proxy] target_host"),
+            (
+                "[proxy]\nconnect_udp_listen = \"\"\n",
+                "[proxy] connect_udp_listen",
+            ),
+            (
+                "[proxy]\nconnect_udp_listen = \"  \"\n",
+                "[proxy] connect_udp_listen",
+            ),
+            ("[secrets]\ntoken_file = \"\"\n", "[secrets] token_file"),
+            ("[secrets]\ntoken_file = \"  \"\n", "[secrets] token_file"),
+            ("[dispatch]\nurl = \"\"\n", "[dispatch] url"),
+            ("[dispatch]\nurl = \"  \"\n", "[dispatch] url"),
+            ("[dispatch]\ntoken_name = \"\"\n", "[dispatch] token_name"),
+            ("[dispatch]\ntoken_name = \"  \"\n", "[dispatch] token_name"),
+        ] {
+            let (_dir, path) = write_temp(contents);
+            match Config::load_from(&path) {
+                Err(ConfigError::Parse { message, .. }) => {
+                    assert!(
+                        message.contains(field),
+                        "error should name {field}: {message}"
+                    );
+                }
+                other => panic!("expected Parse error for {contents:?}, got {other:?}"),
+            }
+        }
+        // Valid control: every field set to a nonblank value loads
+        // and surfaces exactly that value.
+        let (_dir, path) = write_temp(
+            "[proxy]\nbroker_socket = \"/run/fleet.sock\"\ntarget_host = \"host.example\"\nconnect_udp_listen = \"127.0.0.1:1080\"\n[secrets]\ntoken_file = \"/run/token\"\n[dispatch]\nurl = \"http://host:4880\"\ntoken_name = \"custom-token\"\n",
+        );
+        let cfg = Config::load_from(&path).unwrap();
+        assert_eq!(cfg.broker_socket(), PathBuf::from("/run/fleet.sock"));
+        assert_eq!(cfg.target_host(), "host.example");
+        assert_eq!(cfg.connect_udp_listen(), "127.0.0.1:1080");
+        assert_eq!(cfg.secrets_token_file(), PathBuf::from("/run/token"));
+        assert_eq!(cfg.dispatch_url(), Some("http://host:4880".to_string()));
+        assert_eq!(cfg.dispatch_token_name(), "custom-token");
+        // Omitted control: an empty file keeps every default.
+        let (_dir, path) = write_temp("");
+        let cfg = Config::load_from(&path).unwrap();
+        assert_eq!(cfg.target_host(), DEFAULT_TARGET_HOST);
+        assert_eq!(cfg.connect_udp_listen(), DEFAULT_CONNECT_UDP_LISTEN);
+        assert_eq!(cfg.dispatch_url(), None);
+        assert_eq!(cfg.dispatch_token_name(), DEFAULT_DISPATCH_TOKEN_NAME);
     }
     // ---- [host] manifest + location resolution (#6770, #5687) ----
 

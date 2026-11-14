@@ -16,9 +16,18 @@ set -uo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" >/dev/null 2>&1 && pwd)"
 ENC="$SCRIPT_DIR/sops_encrypt.sh"
 BW="$SCRIPT_DIR/bitwarden-to-sops.sh"
-[ -f "$ENC" ] || { echo "FAIL: $ENC not found" >&2; exit 1; }
-[ -f "$BW" ] || { echo "FAIL: $BW not found" >&2; exit 1; }
-command -v jq >/dev/null 2>&1 || { echo "FAIL: jq not found in PATH" >&2; exit 1; }
+[ -f "$ENC" ] || {
+  echo "FAIL: $ENC not found" >&2
+  exit 1
+}
+[ -f "$BW" ] || {
+  echo "FAIL: $BW not found" >&2
+  exit 1
+}
+command -v jq >/dev/null 2>&1 || {
+  echo "FAIL: jq not found in PATH" >&2
+  exit 1
+}
 
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
@@ -52,7 +61,10 @@ chmod +x "$STUB_BIN/sops" "$STUB_BIN/bws"
 
 FAILURES=0
 pass() { echo "PASS: $1"; }
-fail() { echo "FAIL: $1" >&2; FAILURES=$((FAILURES + 1)); }
+fail() {
+  echo "FAIL: $1" >&2
+  FAILURES=$((FAILURES + 1))
+}
 
 # check <name> <condition...>: pass when the condition command succeeds.
 check() {

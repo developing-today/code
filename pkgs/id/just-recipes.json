@@ -827,7 +827,7 @@
         "windows_shell": null,
         "working_directory": null
       },
-      "source": "/home/user/git/fleet/6592/root.just",
+      "source": "/home/user/git/fleet/14257-7904-rust-sdk-venue/root.just",
       "unexports": [],
       "warnings": []
     }
@@ -1468,6 +1468,7 @@
         { "arguments": [], "recipe": "web-lint", "star": null },
         { "arguments": [], "recipe": "test-sandbox", "star": null },
         { "arguments": [], "recipe": "test-native-shell", "star": null },
+        { "arguments": [], "recipe": "test-rust-examples", "star": null },
         { "arguments": [], "recipe": "test-web-unit", "star": null },
         { "arguments": [], "recipe": "test-web-typecheck", "star": null },
         { "arguments": [], "recipe": "roc-test", "star": null },
@@ -1478,7 +1479,7 @@
       "doc": "CI-safe checks (read-only, no modifications) [bun]",
       "name": "ci",
       "parameters": [],
-      "priors": 14,
+      "priors": 15,
       "private": false,
       "quiet": false,
       "namepath": "ci",
@@ -2740,6 +2741,22 @@
       "namepath": "test-rust",
       "shebang": false
     },
+    "test-rust-examples": {
+      "attributes": [{ "group": "test" }],
+      "body": [
+        ["cargo test --manifest-path examples/rust-world/Cargo.toml"],
+        ["cargo test --manifest-path examples/rust-counter/Cargo.toml"]
+      ],
+      "dependencies": [],
+      "doc": "Run the Rust example-guest unit tests (#7904): plaza-sdk (examples/rust-world, 9 tests) and rust-counter (examples/rust-counter, 2 tests) are standalone crates outside the pkgs/id workspace, so the workspace test recipes never run them.",
+      "name": "test-rust-examples",
+      "parameters": [],
+      "priors": 0,
+      "private": false,
+      "quiet": false,
+      "namepath": "test-rust-examples",
+      "shebang": false
+    },
     "test-sandbox": {
       "attributes": [{ "group": "test" }],
       "body": [["cargo nextest run --all-features -E 'not test(serve_tests)'"]],
@@ -3339,7 +3356,7 @@
     "windows_shell": null,
     "working_directory": null
   },
-  "source": "/home/user/git/fleet/14371-6378-nextest/pkgs/id/justfile",
+  "source": "/home/user/git/fleet/14257-7904-rust-sdk-venue/pkgs/id/justfile",
   "unexports": [],
   "warnings": []
 }

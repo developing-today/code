@@ -5,25 +5,29 @@ something breaks without it.
 
 ## Go libraries
 
-**Nine**, and `pkgs/mcpx/package.nix` states the trade for each one beside
+**Eleven**, and `pkgs/mcpx/package.nix` states the trade for each one beside
 the `vendorHash` that pays for them.
 
-| module                                     | what it is for                                                                                                                                               |
-| ------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `modernc.org/sqlite`                       | the log index                                                                                                                                                |
-| `github.com/charmbracelet/bubbletea`       | the full-screen browser, `mcpx tui`                                                                                                                          |
-| `github.com/charmbracelet/bubbles`         | its widgets                                                                                                                                                  |
-| `github.com/charmbracelet/lipgloss`        | its layout                                                                                                                                                   |
-| `gopkg.in/yaml.v3`                         | OpenAPI documents, which are published as YAML as often as JSON, and which one you get is not the caller's choice                                            |
-| `github.com/santhosh-tekuri/jsonschema/v6` | the JSON Schema validator (`internal/schemaval`): tool input/output schemas and elicitation schemas are checked with a real validator, not by hand           |
-| `github.com/tetratelabs/wazero`            | the WebAssembly runtime: wasm tooling and the embeddings worker run without a cgo toolchain                                                                  |
-| `golang.org/x/sys`                         | the OS-specific syscalls the standard library does not expose (peer credentials on the daemon socket, process groups)                                        |
-| `tailscale.com`                            | the tsnet identity transport (#1967): the daemon embeds a Tailscale node and is reachable by its tailnet identity, still as a pure-Go `CGO_ENABLED=0` binary |
+| module                                     | what it is for                                                                                                                                                                                                           |
+| ------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `modernc.org/sqlite`                       | the log index                                                                                                                                                                                                            |
+| `github.com/charmbracelet/bubbletea`       | the full-screen browser, `mcpx tui`                                                                                                                                                                                      |
+| `github.com/charmbracelet/bubbles`         | its widgets                                                                                                                                                                                                              |
+| `github.com/charmbracelet/lipgloss`        | its layout                                                                                                                                                                                                               |
+| `github.com/mattn/go-runewidth`            | the cell width of a rune, for the browser's columns and truncation: wide East Asian characters, combining marks and emoji take one or two cells, and the arithmetic has to match the terminal rather than the byte count |
+| `gopkg.in/yaml.v3`                         | OpenAPI documents, which are published as YAML as often as JSON, and which one you get is not the caller's choice                                                                                                        |
+| `github.com/santhosh-tekuri/jsonschema/v6` | the JSON Schema validator (`internal/schemaval`): tool input/output schemas and elicitation schemas are checked with a real validator, not by hand                                                                       |
+| `github.com/tetratelabs/wazero`            | the WebAssembly runtime: wasm tooling and the embeddings worker run without a cgo toolchain                                                                                                                              |
+| `golang.org/x/sys`                         | the OS-specific syscalls the standard library does not expose (peer credentials on the daemon socket, process groups)                                                                                                    |
+| `golang.org/x/net`                         | `publicsuffix` and `idna` at the elicitation answer review (`internal/cli/elicit.go`): the registrable domain under a URL about to be answered, plus both host forms and a punycode warning (#1678)                      |
+| `tailscale.com`                            | the tsnet identity transport (#1967): the daemon embeds a Tailscale node and is reachable by its tailnet identity, still as a pure-Go `CGO_ENABLED=0` binary                                                             |
 
 The three `charmbracelet` modules are one decision, not three: they cost about
 1.2 MB in the stripped binary and replace raw terminal handling -- escape
 sequences, resize, a redraw loop -- which is the kind of code that is never
-finished and never correct on every terminal.
+finished and never correct on every terminal. `go-runewidth` is that decision's
+measuring stick: a rune is one or two cells wide, and truncation has to agree
+with the terminal rather than with `len()`.
 
 Everything else -- the MCP client, the JSON-RPC framing, the process pools,
 the JSON Schema to TypeScript compiler, the HTTP API and the CLI -- is

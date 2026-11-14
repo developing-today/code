@@ -34,16 +34,16 @@ keep the model advisory until real churn data exists (§6).
 Per source class `s` (the classes are #6026's: code, docs, session logs,
 chat logs, generated reports, boot/operational records), over one day:
 
-| Symbol | Meaning |
-|---|---|
-| `F_s` | files (objects) in the class |
-| `λ_s` | new versions per file per day (churn rate) |
-| `A_s` | average full size of one version, bytes |
-| `ρ_s` | span-reuse ratio of a new version: the fraction of its bytes already embedded as spans of prior versions (#6028's delta reuse ratio, §3) |
-| `M_s` | marginal stored bytes of one new version |
-| `V̄_s` | average retained versions per file under the class's retention policy |
-| `α` | index amplification: stored bytes per content byte for vectors + search index |
-| `β_s` | manifest/metadata bytes per version (span references, lineage, occurrence rows) |
+| Symbol | Meaning                                                                                                                                  |
+| ------ | ---------------------------------------------------------------------------------------------------------------------------------------- |
+| `F_s`  | files (objects) in the class                                                                                                             |
+| `λ_s`  | new versions per file per day (churn rate)                                                                                               |
+| `A_s`  | average full size of one version, bytes                                                                                                  |
+| `ρ_s`  | span-reuse ratio of a new version: the fraction of its bytes already embedded as spans of prior versions (#6028's delta reuse ratio, §3) |
+| `M_s`  | marginal stored bytes of one new version                                                                                                 |
+| `V̄_s`  | average retained versions per file under the class's retention policy                                                                    |
+| `α`    | index amplification: stored bytes per content byte for vectors + search index                                                            |
+| `β_s`  | manifest/metadata bytes per version (span references, lineage, occurrence rows)                                                          |
 
 A version's marginal storage is only its new spans plus its manifest —
 the finding #6061 was filed from:
@@ -94,14 +94,14 @@ a step function reported as current count + planned shards, per #6019).
 
 ## 3. Inputs — every one measurable, each from a named source
 
-| Input | Source | Notes |
-|---|---|---|
-| `λ_s`, `A_s` | ingest ledger (#6058), aggregated per class per day | versions landed and their full sizes, whether or not spans were reused |
-| `ρ_s` | **byte-weighted** reuse from the ledger aggregates: `bytes_reused / (bytes_reused + bytes_new)` per class, where the byte sums are over span bytes | #6058 owns the ledger schema — per batch `(chunks_new, chunks_reused, tokens_embedded, model, $)` — but those fields are chunk *counts*, and a count ratio is not the byte fraction §2 requires when span sizes vary (the offset-matching design under #6028 allows variable-size spans and split subspans). The §7 aggregation therefore sums span bytes alongside the counts; the count ratio is never used as `ρ_s` |
-| storage delta, write volume | #6019's per-run cost accounting | the ground truth the model's `S_s` is reconciled against (§5, step 4) |
-| `α` | measured once per embedding model/index build: (vector + index bytes) ÷ content bytes | re-measured when the model or index changes; not a per-batch ledger concern |
-| `β_s` | manifest row size × spans per version, from #6028's span format | small next to `A_s × (1 − ρ_s)` except for tiny, heavily-edited files; kept explicit so that case is visible |
-| envelope | #6019 (plan, storage quota, DB quota, $ ceiling) | consumed as a constant between plan changes; a plan change is a recalibration trigger (§5) |
+| Input                       | Source                                                                                                                                             | Notes                                                                                                                                                                                                                                                                                                                                                                                                                  |
+| --------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `λ_s`, `A_s`                | ingest ledger (#6058), aggregated per class per day                                                                                                | versions landed and their full sizes, whether or not spans were reused                                                                                                                                                                                                                                                                                                                                                 |
+| `ρ_s`                       | **byte-weighted** reuse from the ledger aggregates: `bytes_reused / (bytes_reused + bytes_new)` per class, where the byte sums are over span bytes | #6058 owns the ledger schema — per batch `(chunks_new, chunks_reused, tokens_embedded, model, $)` — but those fields are chunk _counts_, and a count ratio is not the byte fraction §2 requires when span sizes vary (the offset-matching design under #6028 allows variable-size spans and split subspans). The §7 aggregation therefore sums span bytes alongside the counts; the count ratio is never used as `ρ_s` |
+| storage delta, write volume | #6019's per-run cost accounting                                                                                                                    | the ground truth the model's `S_s` is reconciled against (§5, step 4)                                                                                                                                                                                                                                                                                                                                                  |
+| `α`                         | measured once per embedding model/index build: (vector + index bytes) ÷ content bytes                                                              | re-measured when the model or index changes; not a per-batch ledger concern                                                                                                                                                                                                                                                                                                                                            |
+| `β_s`                       | manifest row size × spans per version, from #6028's span format                                                                                    | small next to `A_s × (1 − ρ_s)` except for tiny, heavily-edited files; kept explicit so that case is visible                                                                                                                                                                                                                                                                                                           |
+| envelope                    | #6019 (plan, storage quota, DB quota, $ ceiling)                                                                                                   | consumed as a constant between plan changes; a plan change is a recalibration trigger (§5)                                                                                                                                                                                                                                                                                                                             |
 
 Classes #6026 lists whose files are append-mostly (session logs, chat
 logs, boot records) are expected at `ρ_s ≥ 0.9` once delta ingestion
@@ -120,7 +120,7 @@ One append-mostly log class: `F = 2,000` files, `λ = 1` version/day,
   ~18× on this class; that is why `ρ_s` is a model input and not a
   constant.
 - At `V̄ = 90` retained versions: `S ≈ 2,000 × (320 KB + 89 × 18 KB)
-  ≈ 3.8 GB`, of which the 14-day hot window (the full newest version
+≈ 3.8 GB`, of which the 14-day hot window (the full newest version
   plus 13 marginal versions per file) is ≈ 1.1 GB.
 - The same class at the conservative v1 assumption `ρ = 0` (§5) projects
   `M ≈ 322 KB` and would hit a 10 GB envelope line in ~16 days of
@@ -159,7 +159,7 @@ into the same cycle that produced them.
      uses `ρ_s = 0` and the upper end of the churn range (mean + 1σ of
      daily arrivals). Retention defaults derived in that regime err
      toward keeping versions.
-  2. A class's retention window may only be *shortened* by a
+  2. A class's retention window may only be _shortened_ by a
      calibration cycle whose data covers at least one full retention
      cycle at the current window.
   3. **Cold-tier moves precede deletions by at least one full retention
@@ -172,13 +172,13 @@ into the same cycle that produced them.
 
 Per class, each calibration cycle publishes one defaults row:
 
-| Output | Meaning |
-|---|---|
-| `hot_days` | age below which versions stay hot (also: the latest version is always hot, per #6026's newest-resolution) |
-| `cold_days` | age at which cold residence ends and trigger evaluation may begin (≥ `hot_days` + one full retention cycle, per §5.2 rule 3) |
-| `max_versions` | the increments-trigger parameter: versions retained per file before the oldest become trigger-eligible |
-| `min_age_days` | the date-trigger parameter: no version younger than this is trigger-eligible |
-| `projected_months_to_envelope` | the §2 projection, carried on the row so a default is never read without its consequence |
+| Output                         | Meaning                                                                                                                      |
+| ------------------------------ | ---------------------------------------------------------------------------------------------------------------------------- |
+| `hot_days`                     | age below which versions stay hot (also: the latest version is always hot, per #6026's newest-resolution)                    |
+| `cold_days`                    | age at which cold residence ends and trigger evaluation may begin (≥ `hot_days` + one full retention cycle, per §5.2 rule 3) |
+| `max_versions`                 | the increments-trigger parameter: versions retained per file before the oldest become trigger-eligible                       |
+| `min_age_days`                 | the date-trigger parameter: no version younger than this is trigger-eligible                                                 |
+| `projected_months_to_envelope` | the §2 projection, carried on the row so a default is never read without its consequence                                     |
 
 The rule engine (#6026 / #6041) owns the trigger mechanics and the
 access trigger (which consumes retrieval statistics, not ledger data —

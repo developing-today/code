@@ -42,7 +42,8 @@ export PATH="$work/bin:$PATH"
 
 fail=0
 check() { # name condition...
-  local name="$1"; shift
+  local name="$1"
+  shift
   if "$@" >/dev/null 2>&1; then
     echo "PASS: $name"
   else
@@ -75,9 +76,12 @@ check "new ciphertext installed" cmp -s "$work/dns/terraform.tfstate.enc" "$work
 check "lock cleaned up on success" test ! -e "$work/dns/.lock"
 
 if [ "$fail" -ne 0 ]; then
-  echo "--- fast.log ---" >&2; cat "$work/fast.log" >&2
-  echo "--- fail.log ---" >&2; cat "$work/fail.log" >&2
-  echo "--- ok.log ---" >&2; cat "$work/ok.log" >&2
+  echo "--- fast.log ---" >&2
+  cat "$work/fast.log" >&2
+  echo "--- fail.log ---" >&2
+  cat "$work/fail.log" >&2
+  echo "--- ok.log ---" >&2
+  cat "$work/ok.log" >&2
   exit 1
 fi
 echo "all save.sh atomicity checks passed"

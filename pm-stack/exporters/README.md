@@ -51,7 +51,7 @@ cd pm-stack/aggregator && bun test ../exporters/test/watchdog-state.test.ts
 - The repair executors for rungs 2 and 3 (CDP session re-validation,
   browser re-login driver), which stop dead at a human-only challenge and
   hand off to `recordRungOutcome`.
-- The rung-4 escalation hand-off (contract owned by #6033).
+- The rung-4 escalation hand-off module (#6033):  plans the deduped queue-task + incident-issue effects behind injected effectors, records the refs on the incident, plans recovery (comment + close + complete), and renders the NEEDS DREW surfacing line (immediate when human-blocked, after 24 h unresolved otherwise). Production effectors (fleet CLI / gh) are wired by the entry point below.
 - Producer scaffolding under `pm-stack/exporters/` from the retired Meta
   producer pattern, and the gatherer `FILE_EXPORTS` registration.
 - `pm-stack/systemd/` oneshot + timer units on the gatherer cadence.

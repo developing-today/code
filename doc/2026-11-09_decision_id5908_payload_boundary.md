@@ -32,19 +32,19 @@
 
 ## Decision summary
 
-| Question | Decision |
-| --- | --- |
-| Where is the boundary? | Decided **per field/part of a statement**, never per document: apply the ordered procedure in §2 to each part; a single statement routinely lands parts on both sides (§4 grey cases) |
-| What decides? | First matching test in §2 wins: **addressed-by-others → queried/joined → reasoned/tagged → decomposed**; **carried/displayed/verbatim → attached**; parts matching neither default to attach (§2, step 6) |
-| How is a payload referenced? | A payload is a **first-class ID'd object**. Triples reference its ID (`statement —has-payload→ payload-id`, plus media-type / hash / size as ordinary triples); the payload bytes are **never** a triple object and never embedded in the triple table (§5) |
-| How is a payload resolved? | At read/query time, through its ID, exactly like every other ID in the parent model (§5.2); the triple store stays byte-free |
-| Can a payload later cross the line? | Yes, one way at a time, by an explicit **promotion** (attach → decompose) that mints triples *about* the payload while the payload itself stays attached; demotion never deletes triples, it only deprecates them (§6) |
+| Question                            | Decision                                                                                                                                                                                                                                                    |
+| ----------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Where is the boundary?              | Decided **per field/part of a statement**, never per document: apply the ordered procedure in §2 to each part; a single statement routinely lands parts on both sides (§4 grey cases)                                                                       |
+| What decides?                       | First matching test in §2 wins: **addressed-by-others → queried/joined → reasoned/tagged → decomposed**; **carried/displayed/verbatim → attached**; parts matching neither default to attach (§2, step 6)                                                   |
+| How is a payload referenced?        | A payload is a **first-class ID'd object**. Triples reference its ID (`statement —has-payload→ payload-id`, plus media-type / hash / size as ordinary triples); the payload bytes are **never** a triple object and never embedded in the triple table (§5) |
+| How is a payload resolved?          | At read/query time, through its ID, exactly like every other ID in the parent model (§5.2); the triple store stays byte-free                                                                                                                                |
+| Can a payload later cross the line? | Yes, one way at a time, by an explicit **promotion** (attach → decompose) that mints triples _about_ the payload while the payload itself stays attached; demotion never deletes triples, it only deprecates them (§6)                                      |
 
 ## 1. What the boundary is (and is not)
 
-Parent §2.4 fixes the intuition: decompose what is *queried, joined,
-tagged, or reasoned over*; attach what is *carried, displayed, or
-stored verbatim*. That sentence is a direction, not a procedure — two
+Parent §2.4 fixes the intuition: decompose what is _queried, joined,
+tagged, or reasoned over_; attach what is _carried, displayed, or
+stored verbatim_. That sentence is a direction, not a procedure — two
 implementers can apply it to the same field and disagree. This record
 supplies the missing procedure (§2), the referencing/resolution shape
 (§5), and the invariants (§3) an implementation is tested against.
@@ -71,20 +71,20 @@ Record the deciding test number in the ingest provenance for any part
 where the answer was not obvious — that record is what lets a later
 design amend the procedure from evidence instead of taste.
 
-1. **Addressed test.** Will anything else ever need to point *at this
-   part* — link it, cite it, tag it, attach provenance to it, or make
+1. **Addressed test.** Will anything else ever need to point _at this
+   part_ — link it, cite it, tag it, attach provenance to it, or make
    it the subject/object of another statement? If yes → **decompose**
    (it needs an ID and triples; a payload can be pointed at only as a
    whole, §5).
 2. **Query test.** Will a query need to select, filter, sort, or join
-   on this part's *content* (not merely retrieve it with its parent)?
+   on this part's _content_ (not merely retrieve it with its parent)?
    If yes → **decompose**.
 3. **Reasoning test.** Will rules, inference, aggregation, or the
-   SQL/PGQ graph views (parent §3) traverse *through* this part to
+   SQL/PGQ graph views (parent §3) traverse _through_ this part to
    other facts? If yes → **decompose**.
 4. **Verbatim test.** Is this part's value precisely its exact bytes —
    would re-encoding, re-flowing, normalising, or summarising it
-   change what it *is* (a text body, an image, a geometry, a signed
+   change what it _is_ (a text body, an image, a geometry, a signed
    document, a recording)? If yes → **attach**.
 5. **Display test.** Is this part only ever rendered whole, as-is,
    alongside its parent statement? If yes → **attach**.
@@ -121,13 +121,13 @@ Two corollaries:
   authored shape; the payload bytes come back bit-identical (checked
   against the I2 hash), the triples semantically identical.
 - **I4 — One-way, lossless promotion.** Promoting a payload (§6) adds
-  triples *about* it and never mutates or discards the payload;
+  triples _about_ it and never mutates or discards the payload;
   nothing about a payload's ID or hash changes when it is promoted.
 - **I5 — No special cases.** A new payload kind needs no schema
   change: media types are data (triples), not columns, tables, or
   parser branches (parent §2.3).
 - **I6 — The anchor carries references, not content.** The stage-2
-  canonical JSON (parent §2.2, #5906 §5) records payload *references*
+  canonical JSON (parent §2.2, #5906 §5) records payload _references_
   (payload ID + hash) in place of payload bytes above the inline
   floor set by the conversion contract; the authored shape stays
   auditable without duplicating payload storage.
@@ -138,18 +138,18 @@ Each case names the deciding test(s). These are the calibration set:
 an implementation (or a future amendment) that disagrees with a case
 here must say which test it reads differently, and why.
 
-| Part | Verdict | Why |
-| --- | --- | --- |
-| Long text body of a note | **Attach** the body; **decompose** title, author, timestamps, tags | Body: verbatim (4) + display (5). Title/author/time: queried and addressed (1, 2). Tags are triples outright (parent §2.5) |
-| Photograph | **Attach** the image bytes; **decompose** caption, photographer, subjects, location, time | Bytes are verbatim (4). "Photos of Ada in Lisbon" is a query (2) over the decomposed facts, which reference the payload ID |
-| Geometry / route track | **Attach** the geometry; **decompose** named endpoints, region, distance class | Geometry is carried verbatim (4); endpoints are addressed and joined (1, 2). If a future feature queries *inside* geometries, that sub-part is promoted per §6 — the geometry still stays attached |
-| A KDL document someone uploaded | **Attach** the document as authored; **decompose** the statements it parses into | The document is the provenance artifact (verbatim, 4) *and* the ingest source: parent §2.2 decomposes its statements. Both, linked — the split corollary, not a contradiction |
-| Source-code snippet in a discussion | **Attach** the code text; **decompose** language, the symbols it defines/mentions *if* tooling queries them | Code is verbatim (4) — whitespace is semantics. Symbol extraction is a §6 promotion when a consumer actually arrives (test 2), not speculative ingest work |
-| Sensor reading series | **Decompose** each reading *if* readings are filtered/aggregated (the usual case); **attach** a raw capture file (e.g. a waveform) the readings were derived from | Readings fail verbatim (they are queried numbers, 2/3); the raw capture is carried verbatim (4) and is the readings' provenance |
-| A person's name as a string | **Decompose** — the name belongs to a person entity referenced by ID (parent §2.2 stage 4) | Names are addressed and joined (1, 2). The string is a property of the entity via triples, never a payload; attaching it would fork identity |
-| A timestamped comment thread | **Decompose** each comment's author/time/reply-to; **attach** each comment's body text | Structure is addressed and traversed (1, 3); bodies are verbatim display text (4, 5) — the note-body case, per comment |
-| External JSON blob (API response kept for audit) | **Attach** the blob verbatim; **decompose** the fields the audit queries (source, fetched-at, subject) | The blob's value is its exact bytes as received (4). Promoting arbitrary fields "just in case" violates the §2 default; promotion (§6) covers the field that later becomes queried |
-| Audio recording with a transcript | **Attach** both the recording and the transcript text; **decompose** speaker, participants, time, and any cited/quoted segments as addressed sub-parts | Recording is verbatim (4). The transcript is also verbatim (4) — but a *quoted segment* another statement cites passes the addressed test (1) and is decomposed as a citation, pointing back at the transcript payload ID |
+| Part                                             | Verdict                                                                                                                                                           | Why                                                                                                                                                                                                                       |
+| ------------------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Long text body of a note                         | **Attach** the body; **decompose** title, author, timestamps, tags                                                                                                | Body: verbatim (4) + display (5). Title/author/time: queried and addressed (1, 2). Tags are triples outright (parent §2.5)                                                                                                |
+| Photograph                                       | **Attach** the image bytes; **decompose** caption, photographer, subjects, location, time                                                                         | Bytes are verbatim (4). "Photos of Ada in Lisbon" is a query (2) over the decomposed facts, which reference the payload ID                                                                                                |
+| Geometry / route track                           | **Attach** the geometry; **decompose** named endpoints, region, distance class                                                                                    | Geometry is carried verbatim (4); endpoints are addressed and joined (1, 2). If a future feature queries _inside_ geometries, that sub-part is promoted per §6 — the geometry still stays attached                        |
+| A KDL document someone uploaded                  | **Attach** the document as authored; **decompose** the statements it parses into                                                                                  | The document is the provenance artifact (verbatim, 4) _and_ the ingest source: parent §2.2 decomposes its statements. Both, linked — the split corollary, not a contradiction                                             |
+| Source-code snippet in a discussion              | **Attach** the code text; **decompose** language, the symbols it defines/mentions _if_ tooling queries them                                                       | Code is verbatim (4) — whitespace is semantics. Symbol extraction is a §6 promotion when a consumer actually arrives (test 2), not speculative ingest work                                                                |
+| Sensor reading series                            | **Decompose** each reading _if_ readings are filtered/aggregated (the usual case); **attach** a raw capture file (e.g. a waveform) the readings were derived from | Readings fail verbatim (they are queried numbers, 2/3); the raw capture is carried verbatim (4) and is the readings' provenance                                                                                           |
+| A person's name as a string                      | **Decompose** — the name belongs to a person entity referenced by ID (parent §2.2 stage 4)                                                                        | Names are addressed and joined (1, 2). The string is a property of the entity via triples, never a payload; attaching it would fork identity                                                                              |
+| A timestamped comment thread                     | **Decompose** each comment's author/time/reply-to; **attach** each comment's body text                                                                            | Structure is addressed and traversed (1, 3); bodies are verbatim display text (4, 5) — the note-body case, per comment                                                                                                    |
+| External JSON blob (API response kept for audit) | **Attach** the blob verbatim; **decompose** the fields the audit queries (source, fetched-at, subject)                                                            | The blob's value is its exact bytes as received (4). Promoting arbitrary fields "just in case" violates the §2 default; promotion (§6) covers the field that later becomes queried                                        |
+| Audio recording with a transcript                | **Attach** both the recording and the transcript text; **decompose** speaker, participants, time, and any cited/quoted segments as addressed sub-parts            | Recording is verbatim (4). The transcript is also verbatim (4) — but a _quoted segment_ another statement cites passes the addressed test (1) and is decomposed as a citation, pointing back at the transcript payload ID |
 
 ## 5. Referencing and resolution
 
@@ -183,10 +183,10 @@ their hashes, and I3's check applies on arrival.
 ### 5.3 What a payload is not
 
 A payload is not a statement and carries no truth value; claims
-*about* it are triples (§5.1), and claims *derived from* it after
+_about_ it are triples (§5.1), and claims _derived from_ it after
 promotion are triples with provenance pointing at its ID (§6). A
 payload is also not a hiding place: anything a consumer needs to
-query, cite, or reason over must not exist *only* inside a payload
+query, cite, or reason over must not exist _only_ inside a payload
 (§2 tests 1–3 are the enforcement at ingest).
 
 ## 6. Promotion: when an attached part crosses the line
@@ -219,23 +219,23 @@ proposed parent-level change and must be recorded explicitly on
 
 ## 8. Alternatives rejected
 
-| Alternative | Why rejected |
-| --- | --- |
-| **Decompose everything** (no payloads; all content atomised) | Destroys verbatim fidelity (I3 becomes unmeetable for media, signed documents, code), explodes the triple table with facts nobody queries, and contradicts parent §2.4, which names legitimate attached payloads outright |
-| **Attach everything compound** (statements as document payloads, triples only between documents) | Recreates the blob store parent §2.1 rejects: unqueryable content, identity forks (the name-string case), and graph views with nothing to traverse |
-| **A byte-size threshold** (under N bytes decompose, over N attach) | Size does not track the §2 tests: verbatim quotes are small, queried tables are large. A threshold would misclassify both §4 directions and would silently re-decide statements when a part grows past N |
-| **Per-type hard-coded rules** (a table mapping each content type to a side) | A special case per type — exactly what parent §2.3 forbids; the table would fork from the procedure on the first new type. Types may carry *defaults* recorded as data, but the §2 procedure remains the authority when a default is challenged |
-| **Inline small payloads in the triple table as literal objects** | Violates I1 and parent §2.2 stage 4 (triple elements are IDs); literals in the object slot are how triple stores grow a second, unqueryable data model inside the first |
+| Alternative                                                                                      | Why rejected                                                                                                                                                                                                                                    |
+| ------------------------------------------------------------------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Decompose everything** (no payloads; all content atomised)                                     | Destroys verbatim fidelity (I3 becomes unmeetable for media, signed documents, code), explodes the triple table with facts nobody queries, and contradicts parent §2.4, which names legitimate attached payloads outright                       |
+| **Attach everything compound** (statements as document payloads, triples only between documents) | Recreates the blob store parent §2.1 rejects: unqueryable content, identity forks (the name-string case), and graph views with nothing to traverse                                                                                              |
+| **A byte-size threshold** (under N bytes decompose, over N attach)                               | Size does not track the §2 tests: verbatim quotes are small, queried tables are large. A threshold would misclassify both §4 directions and would silently re-decide statements when a part grows past N                                        |
+| **Per-type hard-coded rules** (a table mapping each content type to a side)                      | A special case per type — exactly what parent §2.3 forbids; the table would fork from the procedure on the first new type. Types may carry _defaults_ recorded as data, but the §2 procedure remains the authority when a default is challenged |
+| **Inline small payloads in the triple table as literal objects**                                 | Violates I1 and parent §2.2 stage 4 (triple elements are IDs); literals in the object slot are how triple stores grow a second, unqueryable data model inside the first                                                                         |
 
 ## 9. What this record leaves open (and to whom)
 
-| Question | Owner | Why not here |
-| --- | --- | --- |
-| The payload store itself (engine, replication, retention) | Implementation follow-on, filed from #5908 | This record fixes the referencing contract (§5) an implementation must satisfy, not the store's internals |
-| The inline floor in I6 (below which the anchor may carry bytes directly) | #5906 conversion-contract implementation | It is a conversion-layer constant; this record requires the floor to exist and references to replace bytes above it |
-| Media-type vocabulary (which media-type IDs exist, who mints them) | Tagging/vocabulary alignment, #2048 line | Vocabularies are data (parent §2.5); this record only requires media type to be one (I2, I5) |
-| Whether promotion is manual, tooling-assisted, or automatic on observed queries | Implementation follow-on | §6 fixes promotion's semantics and invariants; its trigger is an operational choice |
-| SQL/PGQ shapes for reaching payloads through graph views | Parent §3 / capability ticket | §5.1 guarantees payloads are reachable by ordinary traversal; query-surface design is the parent's ticket |
+| Question                                                                        | Owner                                      | Why not here                                                                                                        |
+| ------------------------------------------------------------------------------- | ------------------------------------------ | ------------------------------------------------------------------------------------------------------------------- |
+| The payload store itself (engine, replication, retention)                       | Implementation follow-on, filed from #5908 | This record fixes the referencing contract (§5) an implementation must satisfy, not the store's internals           |
+| The inline floor in I6 (below which the anchor may carry bytes directly)        | #5906 conversion-contract implementation   | It is a conversion-layer constant; this record requires the floor to exist and references to replace bytes above it |
+| Media-type vocabulary (which media-type IDs exist, who mints them)              | Tagging/vocabulary alignment, #2048 line   | Vocabularies are data (parent §2.5); this record only requires media type to be one (I2, I5)                        |
+| Whether promotion is manual, tooling-assisted, or automatic on observed queries | Implementation follow-on                   | §6 fixes promotion's semantics and invariants; its trigger is an operational choice                                 |
+| SQL/PGQ shapes for reaching payloads through graph views                        | Parent §3 / capability ticket              | §5.1 guarantees payloads are reachable by ordinary traversal; query-surface design is the parent's ticket           |
 
 ## 10. Change log
 

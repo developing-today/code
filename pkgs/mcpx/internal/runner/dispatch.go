@@ -962,7 +962,21 @@ func runDispatched(ctx context.Context, opts Options, d *dispatch) (*Result, err
 
 	args := append(append([]string{}, d.args...), scriptPath)
 	args = append(args, opts.Args...)
-	cmd := exec.Command(d.bin, args...)
+	// The devshell setting applies to dispatched runs exactly as to
+	// runtime runs: without this wrap a Python or shebang-dispatched
+	// script silently ran on the host, and an invalid devshell value
+	// was never even validated (Codex review, PR #8381). Inside a
+	// flake the interpreter is invoked by the name it was dispatched
+	// under, so the shell resolves its own.
+	invoke := d.lookupBin
+	if invoke == "" {
+		invoke = filepath.Base(d.bin)
+	}
+	bin, cmdArgs, werr := wrapDevshell(opts.Devshell, devshellSpawnName(opts.Devshell, d.bin, invoke), args, exec.LookPath)
+	if werr != nil {
+		return nil, werr
+	}
+	cmd := exec.Command(bin, cmdArgs...)
 	cmd.Dir = dir
 	// The shebang's own environment comes first of the additions: env(1)
 	// would have started from the inherited environment (or an empty one,
@@ -1007,6 +1021,7 @@ func runDispatched(ctx context.Context, opts Options, d *dispatch) (*Result, err
 				Collect:     opts.CollectLogs,
 				Result:      opts.OnResult,
 				Artifact:    opts.OnArtifact,
+				Final:       opts.OnFinal,
 			})
 		}()
 		// The notice rides the same stream as the script's own stderr,

@@ -305,6 +305,27 @@ test.describe("File Delete and Restore", () => {
     await page.goto("/files");
     await expect(page.locator(`text=${fileName}`)).toBeVisible({ timeout: 5_000 });
   });
+
+  test("cannot restore a missing file", async ({ page }) => {
+    const response = await page.request.post("/api/restore", {
+      data: { name: `restore-missing-${Date.now()}.txt` },
+      headers: { "Content-Type": "application/json" },
+    });
+
+    expect(response.status()).toBe(404);
+  });
+
+  test("cannot restore a file that is not deleted", async ({ page }) => {
+    const fileName = `restore-not-deleted-${Date.now()}.txt`;
+    await createFile(page, fileName);
+
+    const response = await page.request.post("/api/restore", {
+      data: { name: fileName },
+      headers: { "Content-Type": "application/json" },
+    });
+
+    expect(response.status()).toBe(409);
+  });
 });
 
 // ---------------------------------------------------------------------------

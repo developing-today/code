@@ -91,6 +91,13 @@ pub const DEFAULT_LEASE_MIN: i64 = 30;
 const MARKER_PREFIX: &str = "<!-- fleet-claim v1 ";
 const MARKER_SUFFIX: &str = " -->";
 
+/// Marker reads paginate issue comments at this page size, up to
+/// MAX_MARKER_PAGES pages. The bound is a safety limit, not a silent
+/// truncation point (#9044): a read that reaches it on a full page
+/// errors instead of returning a partial marker set as complete.
+const MARKER_PAGE_SIZE: usize = 100;
+const MAX_MARKER_PAGES: usize = 10;
+
 const EXIT_USAGE: i32 = 2;
 const EXIT_TRANSPORT: i32 = 3;
 const EXIT_NO_CLAIM: i32 = 5;
@@ -570,10 +577,27 @@ fn gh_json(args: &[String]) -> Result<Value, String> {
 /// (chronological). The marker's own embedded `ts` is authoritative —
 /// comment metadata is never consulted for lease math.
 fn fetch_markers(repo: &str, number: i64) -> Result<Vec<Marker>, String> {
+    collect_markers(|page| {
+        let path = format!(
+            "repos/{repo}/issues/{number}/comments?per_page={MARKER_PAGE_SIZE}&page={page}"
+        );
+        gh_json(&["api".into(), path])
+    })
+}
+
+/// The page loop behind `fetch_markers`, with fetching injected so
+/// tests can pin the bound behavior. Reads under the bound return
+/// exactly the markers found, in page order. A full final page means
+/// more comments may exist past the bound, so the read fails loudly
+/// (#9044; design #6622 contract rule 3: truncation is never silent)
+/// instead of presenting a partial marker set as complete -- a live
+/// claim past the bound would otherwise read as absent.
+fn collect_markers(
+    mut fetch_page: impl FnMut(usize) -> Result<Value, String>,
+) -> Result<Vec<Marker>, String> {
     let mut markers = Vec::new();
-    for page in 1..=10 {
-        let path = format!("repos/{repo}/issues/{number}/comments?per_page=100&page={page}");
-        let page_json = gh_json(&["api".into(), path])?;
+    for page in 1..=MAX_MARKER_PAGES {
+        let page_json = fetch_page(page)?;
         let Some(comments) = page_json.as_array() else {
             return Err("comments response was not an array".to_string());
         };
@@ -585,11 +609,14 @@ fn fetch_markers(repo: &str, number: i64) -> Result<Vec<Marker>, String> {
                 }
             }
         }
-        if count < 100 {
-            break;
+        if count < MARKER_PAGE_SIZE {
+            return Ok(markers);
         }
     }
-    Ok(markers)
+    Err(format!(
+        "issue comments exceed the {MAX_MARKER_PAGES}-page marker read bound          ({} comments); refusing to return a truncated marker set",
+        MAX_MARKER_PAGES * MARKER_PAGE_SIZE
+    ))
 }
 
 fn post_comment(repo: &str, number: i64, body: &str) -> Result<String, String> {
@@ -1226,6 +1253,61 @@ mod tests {
         assert_eq!(parse_ts("2026-02-28T00:00:00Z"), Some(1_772_236_800));
         assert_eq!(parse_ts("2026-04-30T00:00:00Z"), Some(1_777_507_200));
         assert_eq!(parse_ts("2026-01-31T00:00:00Z"), Some(1_769_817_600));
+    }
+
+    #[test]
+    fn collect_markers_full_last_page_is_a_truncation_error() {
+        // #9044 oracle: a marker read whose final (10th) page is full
+        // may be missing markers past 1,000 comments, so it must fail
+        // explicitly -- never return the partial set as complete.
+        let body = marker_line(&MarkerKind::Claim, "a", None, T0);
+        let full_page = Value::Array(
+            (0..MARKER_PAGE_SIZE)
+                .map(|_| json!({"body": body}))
+                .collect(),
+        );
+        let pages = std::cell::Cell::new(0usize);
+        let err = collect_markers(|_page| {
+            pages.set(pages.get() + 1);
+            Ok(full_page.clone())
+        })
+        .expect_err("a full 10th page must error, not truncate silently");
+        assert!(err.contains("truncated marker set"), "error was: {err}");
+        assert_eq!(pages.get(), MAX_MARKER_PAGES);
+    }
+
+    #[test]
+    fn collect_markers_under_the_bound_is_unchanged() {
+        // Reads under the bound return every marker in page order and
+        // stop at the first short page; non-marker comments are skipped.
+        let body = marker_line(&MarkerKind::Claim, "a", None, T0);
+        let full_page = Value::Array(
+            (0..MARKER_PAGE_SIZE)
+                .map(|_| json!({"body": body}))
+                .collect(),
+        );
+        let last_page = json!([
+            {"body": marker_line(&MarkerKind::Heartbeat, "a", None, T0 + 60)},
+            {"body": "an ordinary progress comment"},
+            {"body": marker_line(&MarkerKind::Release, "a", Some("done"), T0 + 120)},
+        ]);
+        let pages = std::cell::Cell::new(0usize);
+        let markers = collect_markers(|page| {
+            pages.set(pages.get() + 1);
+            Ok(if page == 1 {
+                full_page.clone()
+            } else {
+                last_page.clone()
+            })
+        })
+        .expect("a read ending on a short page must succeed");
+        assert_eq!(markers.len(), MARKER_PAGE_SIZE + 2);
+        assert_eq!(markers[MARKER_PAGE_SIZE].kind, MarkerKind::Heartbeat);
+        assert_eq!(markers[MARKER_PAGE_SIZE + 1].kind, MarkerKind::Release);
+        assert_eq!(pages.get(), 2);
+        // A single short (even empty) page is a complete read.
+        let empty = collect_markers(|_page| Ok(json!([]))).expect("empty read must succeed");
+        assert!(empty.is_empty());
     }
 
     #[test]

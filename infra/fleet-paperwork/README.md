@@ -33,7 +33,8 @@ through a personal user token has two failure modes, both observed live on
   and `dezren39/fleet`.
 - **A filing is verified, or it is a failure.** Every create / comment / close
   is followed by a readback GET, and the result is compared (title, body,
-  state). A missing, empty, or mismatched readback exits nonzero.
+  state) — plus the labels that were sent, for create. A missing, empty, or
+  mismatched readback exits nonzero.
 - Creates are **deduped by exact title** (search API + byte-exact title
   comparison) and **paced** (default 3 s minimum between writes, enforced
   across invocations via the ledger), so re-running a batch is safe and
