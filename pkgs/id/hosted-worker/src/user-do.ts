@@ -40,6 +40,10 @@ interface DOState {
 }
 interface Env {
   BLOBS?: R2BucketLike;
+  /** Slice B (#9955): per-user storage ceiling in bytes, as a
+   * string var. Absent/empty = no ceiling. A malformed value
+   * fails writes closed (see ceilingBytes). */
+  USER_CEILING_BYTES?: string;
 }
 
 function json(body: unknown, status = 200): Response {
@@ -77,6 +81,57 @@ export class UserDO {
         String(SCHEMA_VERSION),
       );
     });
+  }
+
+  /** The configured storage ceiling in bytes; null = no ceiling.
+   * A malformed value is a configuration error: writes fail
+   * closed rather than silently running unceilinged. */
+  private ceilingBytes(): number | null {
+    const raw = this.env.USER_CEILING_BYTES;
+    if (raw === undefined || raw === "") return null;
+    const n = Number(raw);
+    if (!Number.isInteger(n) || n < 0) {
+      throw new FailClosed(500, "ceiling_misconfigured", "USER_CEILING_BYTES is not a non-negative integer; writes fail closed");
+    }
+    return n;
+  }
+
+  /** Usage accounting, derived from the tables on every read so
+   * the numbers can never drift from the data they describe.
+   * blob_bytes counts bytes referenced by THIS user (a deduped
+   * blob referenced by two users counts toward both — the
+   * reference is what each user's storage pays for). */
+  private usage() {
+    const sql = this.state.storage.sql;
+    const kv = sql.exec("SELECT COUNT(*) AS n, COALESCE(SUM(LENGTH(value)), 0) AS bytes FROM kv").toArray()[0];
+    const blobs = sql.exec("SELECT COUNT(*) AS n, COALESCE(SUM(size), 0) AS bytes FROM blobs").toArray()[0];
+    const kvBytes = Number(kv.bytes);
+    const blobBytes = Number(blobs.bytes);
+    return {
+      requests: Number(this.meta("requests") ?? "0"),
+      kv_count: Number(kv.n),
+      kv_bytes: kvBytes,
+      blob_count: Number(blobs.n),
+      blob_bytes: blobBytes,
+      storage_bytes: kvBytes + blobBytes,
+    };
+  }
+
+  /** Fail a write closed when it would push storage over the
+   * ceiling. Reads, export, and deletes never call this: at cap
+   * the object is read-only + exportable, and deletes are how a
+   * user recovers headroom. */
+  private assertWritable(deltaBytes: number) {
+    const ceiling = this.ceilingBytes();
+    if (ceiling === null) return;
+    const after = this.usage().storage_bytes + deltaBytes;
+    if (after > ceiling) {
+      throw new FailClosed(
+        413,
+        "ceiling_exceeded",
+        `storage ceiling exceeded: ${after} bytes would exceed the ${ceiling}-byte ceiling; reads and export remain available`,
+      );
+    }
   }
 
   private meta(key: string): string | null {
@@ -125,7 +180,36 @@ export class UserDO {
     await this.ready;
     try {
       const { bindingId, jurisdiction } = this.guard(req);
+      this.state.storage.sql.exec(
+        "INSERT INTO meta (key, value) VALUES ('requests', '1') ON CONFLICT(key) DO UPDATE SET value = CAST(value AS INTEGER) + 1",
+      );
       const url = new URL(req.url);
+      if (url.pathname === "/v1/usage" && req.method === "GET") {
+        const usage = this.usage();
+        const ceiling = this.ceilingBytes();
+        return json({
+          binding_id: bindingId,
+          jurisdiction,
+          ...usage,
+          ceiling_bytes: ceiling,
+          at_cap: ceiling !== null && usage.storage_bytes >= ceiling,
+        });
+      }
+      if (url.pathname === "/v1/export" && req.method === "GET") {
+        // Export stays available at cap by design (#3811): it is
+        // a read, and it is how a capped user gets their data out.
+        const kvRows = this.state.storage.sql.exec("SELECT key, value FROM kv ORDER BY key").toArray();
+        const blobRows = this.state.storage.sql
+          .exec("SELECT hash, size, created_at FROM blobs ORDER BY hash")
+          .toArray();
+        return json({
+          binding_id: bindingId,
+          jurisdiction,
+          usage: this.usage(),
+          kv: Object.fromEntries(kvRows.map((r) => [String(r.key), String(r.value)])),
+          blobs: blobRows.map((r) => ({ hash: String(r.hash), size: Number(r.size), created_at: String(r.created_at) })),
+        });
+      }
       if (url.pathname === "/v1/state" && req.method === "GET") {
         return json({
           binding_id: bindingId,
@@ -143,6 +227,8 @@ export class UserDO {
         // Content-addressed dedup: identical bytes are stored
         // once, whoever uploads them; the reference row below is
         // what grants THIS user access.
+        const priorRef = this.state.storage.sql.exec("SELECT hash FROM blobs WHERE hash = ?", hash).toArray();
+        this.assertWritable(priorRef.length === 0 ? bytes.byteLength : 0);
         const existing = await bucket.head(hash);
         if (!existing) await bucket.put(hash, bytes);
         this.state.storage.sql.exec(
@@ -191,6 +277,9 @@ export class UserDO {
       const kvMatch = url.pathname.match(/^\/v1\/kv\/([A-Za-z0-9._-]{1,128})$/);
       if (kvMatch && req.method === "PUT") {
         const value = await req.text();
+        const prior = this.state.storage.sql.exec("SELECT LENGTH(value) AS n FROM kv WHERE key = ?", kvMatch[1]).toArray();
+        const priorBytes = prior.length === 0 ? 0 : Number(prior[0].n);
+        this.assertWritable(new TextEncoder().encode(value).byteLength - priorBytes);
         this.state.storage.sql.exec(
           "INSERT INTO kv (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value",
           kvMatch[1],
@@ -202,6 +291,14 @@ export class UserDO {
         const rows = this.state.storage.sql.exec("SELECT value FROM kv WHERE key = ?", kvMatch[1]).toArray();
         if (rows.length === 0) return json({ error: "not_found" }, 404);
         return json({ key: kvMatch[1], value: String(rows[0].value) });
+      }
+      if (kvMatch && req.method === "DELETE") {
+        // Deletes only shrink usage, so they stay available at
+        // cap — they are how a capped user recovers headroom.
+        const rows = this.state.storage.sql.exec("SELECT key FROM kv WHERE key = ?", kvMatch[1]).toArray();
+        if (rows.length === 0) return json({ error: "not_found" }, 404);
+        this.state.storage.sql.exec("DELETE FROM kv WHERE key = ?", kvMatch[1]);
+        return json({ key: kvMatch[1], deleted: true });
       }
       return json({ error: "not_found" }, 404);
     } catch (e) {
