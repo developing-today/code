@@ -112,7 +112,7 @@ jobs:
         id: pw
         run: echo "version=$(bunx playwright --version | awk '{print $2}')" >> "$GITHUB_OUTPUT"
       - name: Cache Playwright browsers (pinned by @playwright/test in bun.lock)
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: ~/.cache/ms-playwright
           key: playwright-${{ runner.os }}-${{ steps.pw.outputs.version }}-${{ hashFiles('pm-stack/aggregator/bun.lock') }}
