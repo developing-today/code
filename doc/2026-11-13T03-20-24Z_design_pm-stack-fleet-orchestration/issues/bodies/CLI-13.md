@@ -60,9 +60,6 @@ File-collision sequencing edges added by stable topological serialization: none.
 Existing issue references retained as non-blocking runtime/evidence gates: none.
 Domain-starter parent references are never emitted as hard native blockers. Source parents normalized to granular slices or runtime gates: none.
 
-
-
-
 Use only granular issue-key edges after all keys are resolved. Never make a whole domain starter a hard blocker when it creates a cycle. File collisions are hard sequencing edges. Parent integration adds native parent/blocker edges in a later pass after the command map, requirements IDs, and acyclic graph are verified.
 
 ## Starting failing test, oracle, and done check
@@ -104,7 +101,6 @@ Negative coverage: silent aliases, unsupported mirror advertised, missing option
 ### CLI-13 — Shared CLI registration and compatibility inventory (DEP-05 alias; one issue only)
 
 **Tier:** recommended after contracts. **Goal:** one shared integration deliverable registers dependency/note/journal commands while preserving `fleet queue`/`repo-queue`; no competing CLI writer or second #9208 issue. **Owns:** shared #9206/CLI-13 slice alone owns `pkgs/fleet/crates/fleet-queue/src/lib.rs`, `pkgs/fleet/crates/fleet/src/main.rs`, `pkgs/fleet/crates/fleet-registry/src/lib.rs`, command golden tests and additive `census/commands.jsonl` rows. #9208 contributes contracts, not these shared files. **Hard blockers:** shared Command/Result grammar; DEP-02/03; JRN-02; AUTH-01. **First failing oracle:** `pmo_cli_dependency_help_and_json_match_capabilities`, added to the existing CLI test target by CLI-13; census shows lifecycle namespaces absent at pin. **Done:** verify exact test is listed by the target's `-- --list`, then run that target's test; run fleet-queue unit contract tests separately. **Negative:** silent aliases, unsupported mirror advertised, missing options, unknown flags accepted. **Migration:** additive, no queue rename. **Docs:** help and command inventory same PR.
-
 
 ## Merged source-key/facade acceptance
 

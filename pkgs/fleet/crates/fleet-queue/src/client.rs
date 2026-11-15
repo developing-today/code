@@ -1022,6 +1022,31 @@ pub(crate) fn list_rows(resp: &Value) -> Result<Vec<Value>, String> {
         })
 }
 
+/// The total in a PostgREST `Content-Range` header (#10376):
+/// `0-49/237` -> 237, `*/0` -> 0. A `*` total (no count was
+/// requested) or an unparseable header yields None — unknown,
+/// never a fabricated zero.
+pub(crate) fn content_range_total(content_range: &str) -> Option<i64> {
+    content_range.rsplit('/').next()?.trim().parse::<i64>().ok()
+}
+
+/// The /list reply envelope (#10376; contract #6622 rule 3 —
+/// complete, bounded, or say so): alongside the rows, the total
+/// number of matching tasks when the backend knows it (null when
+/// it does not) and whether this window is a strict prefix of the
+/// matching set. Additive: existing consumers read only `rows`.
+pub(crate) fn list_envelope(rows: Value, total: Option<i64>, offset: i64) -> Value {
+    let returned = rows.as_array().map(|a| a.len() as i64).unwrap_or(0);
+    let truncated = total.map(|t| offset + returned < t).unwrap_or(false);
+    json!({"rows": rows, "total": total, "truncated": truncated})
+}
+
+/// The total a /list reply carries (#10376), when the broker
+/// reported one. Absent on replies from a pre-#10376 broker.
+pub(crate) fn list_total(resp: &Value) -> Option<i64> {
+    resp.get("total").and_then(|t| t.as_i64())
+}
+
 /// The accepted ranges for the queue duration flags (#6420; design
 /// #6448 Phase 3 pin, same as `list --limit`: out-of-range is
 /// REJECTED, never clamped, at both the client and the broker).
@@ -1340,31 +1365,29 @@ fn model_stamp_flags(
     }
 }
 
-/// #8176 (2026-11-12 fix): read the claim stamp off a session
-/// record (the OpenCode server's GET /api/session/<id> shape,
-/// enveloped in `data` or bare): the session's own model —
-/// providerID + id, variant only when the session carries a real
+/// The provider id that addresses configured routes, not serving
+/// leaves: routes appear in the catalog under this provider
+/// (opencode-route/<route-id>), so a model addressed under it is a
+/// route alias, never the leaf that served a claim (#9408).
+const ROUTE_PROVIDER: &str = "opencode-route";
+
+/// One stamp derivation, shared by the session-model path (id key
+/// "id") and the route_usage lastServing path (id key "modelID"):
+/// providerID + id, variant only when the record carries a real
 /// effort variant (the server reports "default" when none was
 /// chosen; that is the absence of a variant, not a variant).
-/// Pure: the oracle for the derivation below.
-fn session_model_stamp(session: &Value) -> Option<(String, String, Option<String>)> {
-    let inner = if session.get("model").is_some() {
-        session
-    } else {
-        session.get("data")?
-    };
-    let model = inner.get("model")?;
-    let provider = model
+fn stamp_from(record: &Value, id_key: &str) -> Option<(String, String, Option<String>)> {
+    let provider = record
         .get("providerID")
         .and_then(|x| x.as_str())
         .map(str::trim)
         .filter(|s| !s.is_empty())?;
-    let id = model
-        .get("id")
+    let id = record
+        .get(id_key)
         .and_then(|x| x.as_str())
         .map(str::trim)
         .filter(|s| !s.is_empty())?;
-    let variant = model
+    let variant = record
         .get("variant")
         .and_then(|x| x.as_str())
         .map(str::trim)
@@ -1374,6 +1397,51 @@ fn session_model_stamp(session: &Value) -> Option<(String, String, Option<String
         id.to_string(),
         variant.map(str::to_string),
     ))
+}
+
+/// #8176 (2026-11-12 fix): read the claim stamp off a session
+/// record (the OpenCode server's GET /api/session/<id> shape,
+/// enveloped in `data` or bare): the session's own model —
+/// providerID + id, variant only when the session carries a real
+/// effort variant (the server reports "default" when none was
+/// chosen; that is the absence of a variant, not a variant).
+/// Pure: the oracle for the derivation below.
+///
+/// #9408: the stamp must name the SERVING leaf, not the declared
+/// route. When the record carries the route_usage readout
+/// (opencode#1891: route_usage.lastServing, providerID + modelID +
+/// variant), it wins. Otherwise the session model is used only when
+/// it is not a route alias: a model under the opencode-route
+/// provider is the configured route (opencode-route/workhorse),
+/// which says nothing about which leaf served the claim, so the
+/// claim is left unstamped rather than permanently recording the
+/// alias. (The deployed server's session records today carry no
+/// route_usage field at all — verified 2026-11-14 — so routed
+/// claims go unstamped until the readout reaches the record.)
+fn session_model_stamp(session: &Value) -> Option<(String, String, Option<String>)> {
+    let inner = if session.get("model").is_some() {
+        session
+    } else {
+        session.get("data")?
+    };
+    // The serving-leaf readout, when the record carries one: under
+    // route_usage (the tool's output shape), or bare at the top of
+    // the record. A present readout that does not parse stamps
+    // nothing — falling back to the declared model would record
+    // exactly the alias this path exists to avoid.
+    let readout = inner
+        .get("route_usage")
+        .and_then(|ru| ru.get("lastServing"))
+        .or_else(|| inner.get("lastServing"));
+    if let Some(leaf) = readout {
+        return stamp_from(leaf, "modelID").filter(|s| s.0 != ROUTE_PROVIDER);
+    }
+    let model = inner.get("model")?;
+    let stamp = stamp_from(model, "id")?;
+    if stamp.0 == ROUTE_PROVIDER {
+        return None;
+    }
+    Some(stamp)
 }
 
 /// Minimal base64 (standard alphabet, padded) for the server's
@@ -1402,6 +1470,37 @@ fn b64_encode(bytes: &[u8]) -> String {
     out
 }
 
+/// OpenCode server base URL for the claim-stamp lookup (#9409),
+/// resolved consistently with the claimant tooling
+/// (pm-stack/opencode-claimant/claimant.py and poll.py): the
+/// `OPENCODE_URL` override wins, then the legacy
+/// `OPENCODE_SERVER_URL` this lookup originally read, then the
+/// loopback default both sides share. Pure, so the resolution
+/// order is unit-testable.
+fn resolve_opencode_base_url(env_url: Option<&str>, env_server_url: Option<&str>) -> String {
+    for candidate in [env_url, env_server_url] {
+        if let Some(u) = candidate
+            .map(|v| v.trim().trim_end_matches('/'))
+            .filter(|v| !v.is_empty())
+        {
+            return u.to_string();
+        }
+    }
+    "http://127.0.0.1:13420".to_string()
+}
+
+/// OpenCode credential file for the claim-stamp lookup (#9409),
+/// resolved consistently with the claimant tooling: the
+/// `OPENCODE_AUTH_FILE` override wins, then the production state
+/// file under the user's home. Pure, so the resolution is
+/// unit-testable.
+fn resolve_opencode_auth_file(env_file: Option<&str>, home: &str) -> String {
+    match env_file.map(str::trim).filter(|v| !v.is_empty()) {
+        Some(f) => f.to_string(),
+        None => format!("{home}/.local/state/opencode/service-prod.json"),
+    }
+}
+
 /// #8176 (2026-11-12 fix): derive the claim stamp for a claim that
 /// names its claiming session (--session-id) but carries no
 /// explicit --model-* flags. The dispatch surfaces claim on behalf
@@ -1424,14 +1523,14 @@ fn derive_claim_model_stamp(session_id: &str) -> Option<(String, String, Option<
     if session_id.is_empty() {
         return None;
     }
-    let base = std::env::var("OPENCODE_SERVER_URL")
-        .ok()
-        .map(|s| s.trim().trim_end_matches('/').to_string())
-        .filter(|s| !s.is_empty())
-        .unwrap_or_else(|| "http://127.0.0.1:13420".to_string());
+    let base = resolve_opencode_base_url(
+        std::env::var("OPENCODE_URL").ok().as_deref(),
+        std::env::var("OPENCODE_SERVER_URL").ok().as_deref(),
+    );
     let home = crate::home::from_env().ok()?;
-    let state =
-        std::fs::read_to_string(format!("{home}/.local/state/opencode/service-prod.json")).ok()?;
+    let auth_file =
+        resolve_opencode_auth_file(std::env::var("OPENCODE_AUTH_FILE").ok().as_deref(), &home);
+    let state = std::fs::read_to_string(auth_file).ok()?;
     let state: Value = serde_json::from_str(&state).ok()?;
     let password = state.get("password")?.as_str()?;
     let agent: ureq::Agent = ureq::Agent::config_builder()
@@ -1673,6 +1772,7 @@ fn cmd_list(rest: &[String]) -> i32 {
     // verify a just-completed task's status from list output even
     // when the done list is thousands of rows long.
     let mut rows: Vec<Value> = Vec::new();
+    let mut total: Option<i64> = None;
     for (offset, page_limit) in list_pages(limit) {
         let resp = call(
             "/list",
@@ -1688,6 +1788,9 @@ fn cmd_list(rest: &[String]) -> i32 {
             }),
         );
         let resp = unwrap_ok(resp);
+        if let Some(t) = list_total(&resp) {
+            total = Some(t);
+        }
         let page = match list_rows(&resp) {
             Ok(page) => page,
             Err(e) => die(3, &e),
@@ -1708,6 +1811,19 @@ fn cmd_list(rest: &[String]) -> i32 {
         .collect();
     let str_rows: Vec<Vec<String>> = rows.iter().map(list_row_cells).collect();
     print_table(&cols, &str_rows);
+    // #10376: name the completeness of the listing — a limited
+    // window must never read as the whole matching set.
+    if let Some(t) = total {
+        if (rows.len() as i64) < t {
+            println!(
+                "(truncated: showing {} of {} matching tasks — raise --limit to see more)",
+                rows.len(),
+                t
+            );
+        } else {
+            println!("({} matching tasks)", t);
+        }
+    }
     0
 }
 
@@ -5451,16 +5567,11 @@ mod tests {
 
     #[test]
     fn session_model_stamp_reads_the_session_record() {
-        // #8176 derivation oracle: the stamp is the session's own
-        // model — providerID + id from the server's session record
-        // (enveloped or bare); a "default" variant is no variant.
-        let enveloped = json!({
-            "data": {"id": "ses_x", "model": {"id": "workhorse", "providerID": "opencode-route", "variant": "default"}}
-        });
-        assert_eq!(
-            session_model_stamp(&enveloped),
-            Some(("opencode-route".to_string(), "workhorse".to_string(), None))
-        );
+        // #8176 derivation oracle, as corrected by #9408: the stamp
+        // is the SERVING leaf. A direct session's own model —
+        // providerID + id from the server's session record
+        // (enveloped or bare) — is its leaf; a "default" variant is
+        // no variant.
         let bare = json!({
             "id": "ses_y", "model": {"id": "gpt-6-luna", "providerID": "openai-plan", "variant": "high"}
         });
@@ -5472,6 +5583,39 @@ mod tests {
                 Some("high".to_string()),
             ))
         );
+        // #9408: a routed session's model is the configured route
+        // alias (opencode-route/workhorse), not a serving leaf —
+        // with no route_usage readout on the record the claim is
+        // left unstamped instead of recording the alias.
+        let enveloped = json!({
+            "data": {"id": "ses_x", "model": {"id": "workhorse", "providerID": "opencode-route", "variant": "default"}}
+        });
+        assert_eq!(session_model_stamp(&enveloped), None);
+        // #9408: when the record carries the route_usage readout
+        // (opencode#1891), its lastServing leaf is the stamp — even
+        // though the declared model is the route alias.
+        let routed = json!({
+            "data": {
+                "id": "ses_x",
+                "model": {"id": "workhorse", "providerID": "opencode-route", "variant": "default"},
+                "route_usage": {"lastServing": {"providerID": "openai.main", "modelID": "gpt-6-luna", "variant": "high"}}
+            }
+        });
+        assert_eq!(
+            session_model_stamp(&routed),
+            Some((
+                "openai.main".to_string(),
+                "gpt-6-luna".to_string(),
+                Some("high".to_string()),
+            ))
+        );
+        // A present-but-incomplete readout stamps nothing; it never
+        // falls back to the route alias.
+        let incomplete = json!({
+            "model": {"id": "workhorse", "providerID": "opencode-route"},
+            "route_usage": {"lastServing": {"providerID": "openai.main"}}
+        });
+        assert_eq!(session_model_stamp(&incomplete), None);
         // Half a model, or no model, stamps nothing.
         assert_eq!(session_model_stamp(&json!({"data": {"id": "ses_z"}})), None);
         assert_eq!(
@@ -5721,6 +5865,48 @@ mod tests {
     #[test]
     fn default_queue_empty_env_values_use_default() {
         assert_env_resolution(default_queue_from_env, DEFAULT_QUEUE);
+    }
+
+    #[test]
+    fn opencode_base_url_honors_claimant_overrides() {
+        // #9409: OPENCODE_URL (the claimant tooling's override) wins
+        // over the legacy OPENCODE_SERVER_URL; trailing slashes and
+        // blank values are normalized away; the shared loopback
+        // default applies when neither is set.
+        assert_eq!(
+            resolve_opencode_base_url(Some("http://example:9999/"), Some("http://legacy:1")),
+            "http://example:9999"
+        );
+        assert_eq!(
+            resolve_opencode_base_url(None, Some("http://legacy:1/")),
+            "http://legacy:1"
+        );
+        assert_eq!(
+            resolve_opencode_base_url(Some("  "), Some("")),
+            "http://127.0.0.1:13420"
+        );
+        assert_eq!(
+            resolve_opencode_base_url(None, None),
+            "http://127.0.0.1:13420"
+        );
+    }
+
+    #[test]
+    fn opencode_auth_file_honors_claimant_override() {
+        // #9409: OPENCODE_AUTH_FILE (the claimant tooling's override)
+        // wins; otherwise the production state file under home.
+        assert_eq!(
+            resolve_opencode_auth_file(Some("/tmp/alt-auth.json"), "/home/x"),
+            "/tmp/alt-auth.json"
+        );
+        assert_eq!(
+            resolve_opencode_auth_file(Some(" "), "/home/x"),
+            "/home/x/.local/state/opencode/service-prod.json"
+        );
+        assert_eq!(
+            resolve_opencode_auth_file(None, "/home/x"),
+            "/home/x/.local/state/opencode/service-prod.json"
+        );
     }
 
     #[test]
@@ -6102,6 +6288,32 @@ mod tests {
             list_rows(&json!({"ok": true, "rows": [{"id": 7}]})),
             Ok(vec![json!({"id": 7})])
         );
+    }
+
+    #[test]
+    fn list_envelope_reports_total_and_truncation() {
+        // #10376 oracle (contract #6622 rule 3): a listing whose
+        // limit is below the matching count says so; an exhaustive
+        // listing reports completeness; an unknown total is null,
+        // never a fabricated zero.
+        assert_eq!(content_range_total("0-49/237"), Some(237));
+        assert_eq!(content_range_total("*/0"), Some(0));
+        assert_eq!(content_range_total("0-49/*"), None);
+        assert_eq!(content_range_total("garbage"), None);
+        let rows = json!([{"id": 1}, {"id": 2}]);
+        let limited = list_envelope(rows.clone(), Some(5), 0);
+        assert_eq!(limited["total"], json!(5));
+        assert_eq!(limited["truncated"], json!(true));
+        assert_eq!(list_rows(&limited).map(|r| r.len()), Ok(2));
+        let exhaustive = list_envelope(rows.clone(), Some(2), 0);
+        assert_eq!(exhaustive["truncated"], json!(false));
+        let windowed = list_envelope(rows.clone(), Some(5), 3);
+        assert_eq!(windowed["truncated"], json!(false));
+        let unknown = list_envelope(rows, None, 0);
+        assert_eq!(unknown["total"], Value::Null);
+        assert_eq!(unknown["truncated"], json!(false));
+        assert_eq!(list_total(&limited), Some(5));
+        assert_eq!(list_total(&json!({"rows": []})), None);
     }
 
     #[test]

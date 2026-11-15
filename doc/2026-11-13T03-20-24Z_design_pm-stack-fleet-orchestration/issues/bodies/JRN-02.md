@@ -51,9 +51,6 @@ File-collision sequencing edges added by stable topological serialization: none.
 Existing issue references retained as non-blocking runtime/evidence gates: #3424 (existing durable-task-model compatibility evidence; do not duplicate its research/intake issue), #9178 (upstream claim/manual/takeover/resume semantics must be verified before mutation/cutover; offline compatibility models may proceed).
 Domain-starter parent references are never emitted as hard native blockers. Source parents normalized to granular slices or runtime gates: #9206→CLI-02.
 
-
-
-
 Use only granular issue-key edges after all keys are resolved. Never make a whole domain starter a hard blocker when it creates a cycle. File collisions are hard sequencing edges. Parent integration adds native parent/blocker edges in a later pass after the command map, requirements IDs, and acyclic graph are verified.
 
 ## Starting failing test, oracle, and done check
@@ -96,9 +93,9 @@ Negative coverage: unauthorized read, cross-authority/work search leak, text spo
 
 **Tier:** crucial. **Goal:** private note entity/current projection; correction appends/supersedes; public status reason is an allowlisted code, never an implicit copy of private body. **Owns:** `src/work/journal.rs` + `authority.rs`; CLI registration is the single shared #9206 integration slice, not this issue. **Hard blockers:** JRN-01; granular #9206 authority/work identity contract; #3424 reason reconciliation; #9178 ownership. **First failing oracles:** `pmo_journal_private_note_never_serializes_publicly` and `pmo_journal_correction_preserves_original_event`. **Done command:** confirm both appear in package `-- --list`, then run package test filter `pmo_journal_`. **Negative:** unauthorized read, cross-authority/work search leak, text spoofing reserved reason code, correction rewrites prior event, no explicit mirror consent. **Migration:** map `result.park_reason`/status only as existing structured status evidence, not presumed note; preserve unclassified bytes. **Docs:** privacy/access scope.
 
-
 ## Shared-file sequencing
 
 Added hard sequencing edges (the predecessor owns the same exact writable file):
+
 - blocked by `AUTH-05` — `shared-file:pkgs/fleet/crates/fleet-queue/src/work/authority.rs`
 - blocked by `JRN-01` — `shared-file:pkgs/fleet/crates/fleet-queue/src/work/journal.rs`

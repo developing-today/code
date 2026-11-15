@@ -851,6 +851,52 @@ pub struct WorldFileScopeArgs {
     pub no_relay: bool,
 }
 
+/// The arguments of `id world replica`, extracted into their own
+/// `Args` struct for the same reason as `ServeArgs` (#4751): keeping
+/// clap's derive-generated construction in its own function bounds
+/// the stack frame of the parent enum's `augment_subcommands`.
+#[derive(Args, Debug)]
+pub struct WorldReplicaArgs {
+    /// The writer host's node ID (64 hex characters).
+    pub node: String,
+    /// Replica directory: the durable journal lives here and is
+    /// opened in place on later runs (created on first follow).
+    #[arg(long, value_name = "DIR")]
+    pub dir: PathBuf,
+    /// Admin secret of the writer host, authorizing the raw journal feed.
+    #[arg(long, env = "ID_WORLD_ADMIN_TOKEN", hide_env_values = true)]
+    pub admin_token: String,
+    /// World to replicate (the writer's world name).
+    #[arg(long, env = "ID_WORLD", default_value = "lobby")]
+    pub world: String,
+    /// Pinned writer source key (64 hex characters): the replication
+    /// stream and the admission lease must both verify against it.
+    /// Defaults to the writer's node ID, which is the key the writer
+    /// signs its replication stream with.
+    #[arg(long, value_name = "HEX")]
+    pub source: Option<String>,
+    /// Path to a writer-signed admission lease (JSON) to hold while
+    /// serving: new spectators are admitted only while it verifies
+    /// (policy B). Without one the replica serves gated, admitting
+    /// no new spectators.
+    #[arg(long, value_name = "FILE")]
+    pub lease: Option<PathBuf>,
+    /// Sync once from the writer, print the replica status as JSON,
+    /// and exit without serving.
+    #[arg(long, conflicts_with = "follow")]
+    pub once: bool,
+    /// Keep following the writer (reconnecting across sessions),
+    /// printing one JSON line per committed cursor; never serves.
+    #[arg(long)]
+    pub follow: bool,
+    /// Direct socket address of the writer host (repeatable); skips discovery.
+    #[arg(long = "addr")]
+    pub addrs: Vec<SocketAddr>,
+    /// Disable relay servers (direct connection only).
+    #[arg(long)]
+    pub no_relay: bool,
+}
+
 /// Subcommands for `id world`.
 #[derive(Subcommand, Debug)]
 pub enum WorldCommand {
@@ -989,6 +1035,15 @@ pub enum WorldCommand {
     ForceCrossWorldWrite(WorldForceCrossWorldWriteArgs),
     /// Set a world's file scope (needs the host's admin token).
     FileScope(WorldFileScopeArgs),
+    /// Follow a pinned writer into a durable replica, open it under
+    /// the policy-B admission gate, and serve it (F12.13 phase 5).
+    ///
+    /// Syncs the replica directory from the writer's signed journal
+    /// feed, prints the replica status (source, world, cursor,
+    /// staleness) as one JSON object, then serves the replica's world
+    /// sessions on this node. `--once` stops after the status print;
+    /// `--follow` keeps the replica journal current without serving.
+    Replica(WorldReplicaArgs),
     /// Create a world on a host (needs the host's admin token).
     Create {
         /// The host's node ID (64 hex characters).

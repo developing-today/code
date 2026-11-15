@@ -15,16 +15,16 @@ The #9180 convention requires each record to state ID, title, date, status, owne
 
 ## Records
 
-| ID | Record | Status | Domain / current links |
-|---|---|---|---|
-| FDR-PMO-001 | [Canonical broker and distributed command seam](FDR-PMO-001-canonical-broker-command-seam.md) | accepted (design only) | #9200, #9203, #9028, #9198, #9241 |
-| FDR-PMO-002 | [Versioned priority profiles, ordering, and provenance](FDR-PMO-002-priority-profiles-ordering-provenance.md) | accepted (design only) | #9199, #9200, #9204, #7030 |
-| FDR-PMO-003 | [Lifecycle, claim compatibility, and lease fencing](FDR-PMO-003-lifecycle-claim-fencing.md) | accepted (design only) | #9206, #9209, #9178, #9179 |
-| FDR-PMO-004 | [Immutable hydration, cursors, and attribution](FDR-PMO-004-hydration-cursors-attribution.md) | accepted (design only) | #9207, #9206, #9209 |
-| FDR-PMO-005 | [Typed dependencies, private journal, and field authority](FDR-PMO-005-dependencies-journal-authority.md) | accepted (design only) | #9208, #9199, #9209 |
-| FDR-PMO-006 | [Transactional outbox and direct verified completion](FDR-PMO-006-outbox-direct-completion.md) | accepted (design only) | #9209, #9207, #9208, #9198 |
-| FDR-PMO-007 | [Direct dispatch and durable launch receipts](FDR-PMO-007-direct-dispatch-receipts.md) | accepted (design only) | #9203, #9201, #9028, #6533 |
-| FDR-PMO-008 | [Bounded exploration, fairness, and calibration](FDR-PMO-008-exploration-fairness-calibration.md) | accepted (design only) | #9204, #9199, #8097 |
+| ID          | Record                                                                                                        | Status                 | Domain / current links            |
+| ----------- | ------------------------------------------------------------------------------------------------------------- | ---------------------- | --------------------------------- |
+| FDR-PMO-001 | [Canonical broker and distributed command seam](FDR-PMO-001-canonical-broker-command-seam.md)                 | accepted (design only) | #9200, #9203, #9028, #9198, #9241 |
+| FDR-PMO-002 | [Versioned priority profiles, ordering, and provenance](FDR-PMO-002-priority-profiles-ordering-provenance.md) | accepted (design only) | #9199, #9200, #9204, #7030        |
+| FDR-PMO-003 | [Lifecycle, claim compatibility, and lease fencing](FDR-PMO-003-lifecycle-claim-fencing.md)                   | accepted (design only) | #9206, #9209, #9178, #9179        |
+| FDR-PMO-004 | [Immutable hydration, cursors, and attribution](FDR-PMO-004-hydration-cursors-attribution.md)                 | accepted (design only) | #9207, #9206, #9209               |
+| FDR-PMO-005 | [Typed dependencies, private journal, and field authority](FDR-PMO-005-dependencies-journal-authority.md)     | accepted (design only) | #9208, #9199, #9209               |
+| FDR-PMO-006 | [Transactional outbox and direct verified completion](FDR-PMO-006-outbox-direct-completion.md)                | accepted (design only) | #9209, #9207, #9208, #9198        |
+| FDR-PMO-007 | [Direct dispatch and durable launch receipts](FDR-PMO-007-direct-dispatch-receipts.md)                        | accepted (design only) | #9203, #9201, #9028, #6533        |
+| FDR-PMO-008 | [Bounded exploration, fairness, and calibration](FDR-PMO-008-exploration-fairness-calibration.md)             | accepted (design only) | #9204, #9199, #8097               |
 
 ## Cross-record source and compatibility anchors
 

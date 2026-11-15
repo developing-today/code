@@ -227,9 +227,7 @@ export interface UnlockPicture {
  */
 export function unlockPicture(windows: WindowLike[], binding: WindowLike): UnlockPicture {
   const bindingResetsAt = binding.resetsAt;
-  const freesAtReset = windows
-    .filter((w) => w.resetsAt != null && w.resetsAt === bindingResetsAt)
-    .map((w) => w.name);
+  const freesAtReset = windows.filter((w) => w.resetsAt != null && w.resetsAt === bindingResetsAt).map((w) => w.name);
   const bindingMs = bindingResetsAt ? Date.parse(bindingResetsAt) : NaN;
   const stillWalledAfter = windows
     .filter((w) => {

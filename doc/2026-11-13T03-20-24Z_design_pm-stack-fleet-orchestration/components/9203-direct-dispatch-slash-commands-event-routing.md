@@ -106,18 +106,18 @@ The shared `Result` effect receipt includes operation/idempotency key, `(authori
 
 ### 3.7 Security and fail-safe matrix
 
-| Input/failure | Required behavior | No-go behavior |
-|---|---|---|
-| Bad/missing signature, spoofed repo, unsupported webhook | Reject before queue/session/Project/GitHub effect; audit bounded denial | Parsing body then performing effects |
-| Authorized actor posts unknown command | Store/return invalid-command result or ordinary comment classification | Shell, URL fetch, model tool execution or silently enqueueing arbitrary prompt |
-| Plain-language classifier uncertain | Surface candidate for triage; no direct effect | Treat classifier output as auth or exact executable command |
-| Actor authorized at receipt but revoked before dispatch | Reauthorize, reject/expire and record | Apply stale authorization from webhook time |
-| Duplicate event/command or retried browser request | Return existing receipt from stable idempotency key | Double session, comment, merge or queue item |
-| Ambiguous issue/task mapping | Block with canonical candidates and request resolution | Guess by numeric id or title similarity |
-| Task blocked/parked/manual-only/lease active | Apply #9178/#9179 gates; return blocked or explicit permitted recovery | Do-now as gate bypass, hidden park clearing, implicit takeover |
-| Provider unavailable or request times out after remote effect | Record ambiguous result, reconcile existing session and task by key | Blind launch retry or claim success from HTTP acceptance |
-| Session supports no send/resume | Show actual unsupported capability and documented alternate | Fake button, Slack post presented as session ack |
-| Queue/dispatch producer uses wrong store | Fail closed on canonical route or surface integration mismatch | Write directly to a second store or report canonical queue state |
+| Input/failure                                                 | Required behavior                                                       | No-go behavior                                                                 |
+| ------------------------------------------------------------- | ----------------------------------------------------------------------- | ------------------------------------------------------------------------------ |
+| Bad/missing signature, spoofed repo, unsupported webhook      | Reject before queue/session/Project/GitHub effect; audit bounded denial | Parsing body then performing effects                                           |
+| Authorized actor posts unknown command                        | Store/return invalid-command result or ordinary comment classification  | Shell, URL fetch, model tool execution or silently enqueueing arbitrary prompt |
+| Plain-language classifier uncertain                           | Surface candidate for triage; no direct effect                          | Treat classifier output as auth or exact executable command                    |
+| Actor authorized at receipt but revoked before dispatch       | Reauthorize, reject/expire and record                                   | Apply stale authorization from webhook time                                    |
+| Duplicate event/command or retried browser request            | Return existing receipt from stable idempotency key                     | Double session, comment, merge or queue item                                   |
+| Ambiguous issue/task mapping                                  | Block with canonical candidates and request resolution                  | Guess by numeric id or title similarity                                        |
+| Task blocked/parked/manual-only/lease active                  | Apply #9178/#9179 gates; return blocked or explicit permitted recovery  | Do-now as gate bypass, hidden park clearing, implicit takeover                 |
+| Provider unavailable or request times out after remote effect | Record ambiguous result, reconcile existing session and task by key     | Blind launch retry or claim success from HTTP acceptance                       |
+| Session supports no send/resume                               | Show actual unsupported capability and documented alternate             | Fake button, Slack post presented as session ack                               |
+| Queue/dispatch producer uses wrong store                      | Fail closed on canonical route or surface integration mismatch          | Write directly to a second store or report canonical queue state               |
 
 ## 4. V3 — implementation slices (issue specs, not filed)
 

@@ -11,7 +11,7 @@
   publish-shaped store is still chunk-centric:
   `pkgs/atlas-search/fixtures/fixture_corpus.sql` defines
   `chunks (id, message_id, chunk_idx, text, content_hash UNIQUE,
-  sensitivity)`, `vec_snowflake_m_v2_768_f32 (chunk_id, vec)`, and a
+sensitivity)`, `vec_snowflake_m_v2_768_f32 (chunk_id, vec)`, and a
   `chunks_fts` FTS5 table; atlas-core resolves retrieval through
   chunks. No span table or span schema exists on main.
 
@@ -22,11 +22,11 @@ span references `(embed_id, start, end)`: most of a new version is
 byte-identical to spans already embedded, and only genuinely new
 ranges are embedded and stored. That model needs a schema in which
 
-- a span's stored text *is* the text that was embedded (the snapshot),
+- a span's stored text _is_ the text that was embedded (the snapshot),
   because the same paragraph embedded with different neighbours is a
   different vector — embeddings are not hashes;
 - spans are reused **only** when byte-identical;
-- context (heading path, section) versions with the *reference*, not
+- context (heading path, section) versions with the _reference_, not
   the span, so a reused span under a new heading carries no stale
   context;
 - a version can be reconstructed from its span list exactly once (the
@@ -43,7 +43,7 @@ ranges are embedded and stored. That model needs a schema in which
   `[start, end)` — the unit the #6036 matcher works in (Gear rolling
   hash over bytes, byte-verified copy tokens). Anchors never drift:
   versions are immutable, so an anchor cannot be invalidated by a
-  later edit; a later edit is a *new version* with its own manifest
+  later edit; a later edit is a _new version_ with its own manifest
   (§5, I8).
 
 ## 3. The question #6036 left open — settled: split-on-reference
@@ -115,7 +115,7 @@ CREATE TABLE chunk_span_map (
 
 Notes:
 
-- **No separate occurrences table.** A manifest row *is* an
+- **No separate occurrences table.** A manifest row _is_ an
   occurrence of its span (#3125 semantics): "where does this text
   appear" is `file_version_spans WHERE span_id = ?`, and an embed's
   matched head/tail in #6028's example are manifest rows of the
@@ -128,7 +128,7 @@ Notes:
   reference it. Retrieval resolves span → manifest rows → versions,
   which is the direction the sensitivity filter and the join need.
 - `spans.sensitivity` is classified once per unique text.
-  Sensitivity of a *source* lives on the version (#6026); the
+  Sensitivity of a _source_ lives on the version (#6026); the
   effective sensitivity used by filters is defined in I7.
 
 ## 5. Invariants (testable)
@@ -176,7 +176,7 @@ Notes:
   is valid for exactly as long as its manifest row exists. When a
   version rolls to cold storage or is retired under #6026's policy,
   its manifest and the referenced snapshots remain resolvable —
-  the snapshot *is* the served text, so a query trace (#6027)
+  the snapshot _is_ the served text, so a query trace (#6027)
   resolves without re-reading the source version. Span rows are
   garbage-collected only when no manifest row and no
   `chunk_span_map` row references them and retention policy permits;
@@ -185,8 +185,8 @@ Notes:
 ## 6. Migration from the chunk store
 
 Corpus at design time: ~107,639 chunks (2026-11-08 count, #6035).
-The chunk store's unit is the *message* (session corpus), the span
-store's unit is the *version*; the migration bridges that honestly
+The chunk store's unit is the _message_ (session corpus), the span
+store's unit is the _version_; the migration bridges that honestly
 instead of pretending chunks were file spans.
 
 - **Phase 0 — schema alongside.** The §4 tables land in the publish
@@ -197,8 +197,8 @@ instead of pretending chunks were file spans.
   `content_hash UNIQUE`, but that hash's algorithm is the chunker's,
   not this design's: backfill recomputes BLAKE3 over `text`, byte-
   compares on hash collision, and writes one span per unique text
-  (`origin_kind='backfill'`) plus its vector row *by copying the
-  chunk's existing vector* — the vector was computed from exactly
+  (`origin_kind='backfill'`) plus its vector row _by copying the
+  chunk's existing vector_ — the vector was computed from exactly
   this text, so I6 holds without re-embedding. Every chunk gets a
   `chunk_span_map` row.
 - **Phase 2 — backfill manifests where provable.** A message is a
@@ -218,7 +218,7 @@ instead of pretending chunks were file spans.
   write the span model only (files natively; messages as
   single-version objects with verified manifests by construction).
 - **Phase 4 — cutover.** When the Phase 2 report shows 100% of
-  *active* messages verified (or explicitly excepted and
+  _active_ messages verified (or explicitly excepted and
   re-ingested), chunk writes stop and `chunks` /
   `vec_snowflake_m_v2_768_f32` / `chunks_fts` become read-only
   legacy. They are dropped only in a later major schema change,
@@ -226,7 +226,7 @@ instead of pretending chunks were file spans.
 - **Chunk IDs already referenced by traces and feedback** resolve
   permanently through `chunk_span_map`: chunk → span → every
   manifest row (its occurrences). A chunk id is never reissued
-  with a different meaning; a trace recorded against chunk *N*
+  with a different meaning; a trace recorded against chunk _N_
   still names the same text after cutover, and the span path can
   additionally name every version that text occurs in — strictly
   more resolution than the chunk store offers today.
@@ -247,7 +247,7 @@ instead of pretending chunks were file spans.
 - **The ≥0.9 dedup edge does not authorize reuse.** #6028 asks for
   the maximum overlap before an embed "is just a duplicate",
   interacting with #5733's ≥0.9 Jaccard edge. Settled here: the
-  0.9 edge is a *retrieval and reporting* classification — a new
+  0.9 edge is a _retrieval and reporting_ classification — a new
   range whose shingle Jaccard against an existing span is ≥0.9
   is recorded as a near-duplicate of that span (for rescore dedup
   and occurrence reporting) and is still stored and embedded as
@@ -271,7 +271,7 @@ remainder and `S2` (offsets shifted by the edit's net length).
 1. The matcher (#6036) emits: copy `[0, 17)` from `S1`, literal
    `[17, 242)`, copy of `S1 [17+Δ, 400)` and all of `S2` at their
    new offsets.
-2. Resolution (§3): the two `S1` copy ranges are *parts* of `S1`,
+2. Resolution (§3): the two `S1` copy ranges are _parts_ of `S1`,
    so each becomes a split span — `S3` = `S1[0, 17)` and `S4` =
    `S1`'s matched remainder — each re-embedded with
    `parent_span_id = S1`. The literal becomes fresh span `S5`.

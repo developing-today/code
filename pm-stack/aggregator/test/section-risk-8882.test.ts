@@ -70,7 +70,7 @@ describe("section-risk derivation (#8882)", () => {
     expect(candidates[0].title).toBe("Section failed: workhorse");
     expect(candidates[0].breakthrough).toBe(true);
     expect(candidates[0].url).toBe("/quota");
-    expect(candidates[0].body).toBe("walled: pool-b (resets Fri 14:28Z), pool-a (resets Sat 09:00Z)");
+    expect(candidates[0].body).toBe("walled: pool-b (resets Fri 8:28 AM CST), pool-a (resets Sat 3:00 AM CST)");
   });
 
   test("only non-walled pool >=85% -> one SEVERE RISK candidate; stale pools never count as serving", () => {
@@ -85,7 +85,9 @@ describe("section-risk derivation (#8882)", () => {
     expect(candidates).toHaveLength(1);
     expect(candidates[0].title).toBe("Section at risk: workhorse");
     expect(candidates[0].breakthrough).toBe(false);
-    expect(candidates[0].body).toBe("walled: pool-a (resets Fri 14:28Z) · pending: pool-b 97% (resets Mon 11:04Z)");
+    expect(candidates[0].body).toBe(
+      "walled: pool-a (resets Fri 8:28 AM CST) · pending: pool-b 97% (resets Mon 5:04 AM CST)",
+    );
   });
 
   test("one healthy pool under 85% -> NO section candidate even with other pools walled/near", () => {

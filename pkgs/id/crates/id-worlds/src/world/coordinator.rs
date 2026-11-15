@@ -349,6 +349,14 @@ impl Coordinator {
         self.owners.get(entity_ref).cloned()
     }
 
+    /// Every entity reference in the owner map, in sorted order.
+    /// Lets an operations surface enumerate the tracked entities
+    /// without the map itself leaving the coordinator.
+    #[must_use]
+    pub fn tracked_entities(&self) -> Vec<String> {
+        self.owners.keys().cloned().collect()
+    }
+
     /// The in-flight handoff for an entity, if any.
     #[must_use]
     pub fn active_handoff(&self, entity_ref: &str) -> Option<&ActiveHandoff> {

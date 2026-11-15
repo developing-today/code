@@ -423,6 +423,31 @@ impl WorldHandle {
         Ok((world_id, snapshot_source, updates))
     }
 
+    /// The authenticated sidecars for a replication snapshot of this
+    /// world (F12.13 phase 5): the directory facts for `subjects` as
+    /// JSONL entry bytes and the active module hash (whose bytes the
+    /// caller loads from the world's module store). One actor round
+    /// trip, so the facts are the ones in force at the actor's current
+    /// state.
+    ///
+    /// # Errors
+    ///
+    /// Fails when the actor is closed or the directory facts cannot
+    /// be derived for the given subjects.
+    pub async fn replica_sidecars(
+        &self,
+        subjects: std::collections::BTreeSet<String>,
+    ) -> Result<(Vec<u8>, Option<String>)> {
+        let (reply, response) = oneshot::channel();
+        self.commands
+            .send(WorldCommand::ReplicaSidecars { subjects, reply })
+            .await
+            .map_err(|_| anyhow::anyhow!("world actor is closed"))?;
+        response
+            .await
+            .context("world actor dropped replica sidecars response")?
+    }
+
     /// One actor round trip: subscribe, capture the journal image, and —
     /// for a journal above the per-entry payload bound — capture a second
     /// source for the caller to probe outside the actor (#8095).

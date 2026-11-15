@@ -24,12 +24,12 @@ manifests. No crypto/PKI deliverable, library installation or production change.
 
 ## Alternatives and choice
 
-| Approach | Benefit | Cost / limit | Design choice |
-|---|---|---|---|
-| RFC 8785 over a typed intent DTO | Existing cross-language specification and test vectors; separates wire pretty-printing from digest | Strict input validation and correct numeric/key serialization required | Default for new work-command v1 |
-| Hand-written fixed-field encoding | Small for a permanently tiny tuple | Escaping, null/default, extension and ordering rules become a custom protocol | Retain as an alternative only if a reviewed equivalence corpus proves it |
-| Language-default JSON serialization | Convenient | Property order, number forms and Unicode behavior may differ; silent mismatch across Rust/TS | Not a protocol definition |
-| New binary/canonical-CBOR wire | Precise type model possible | New client/wire/tooling burden without measured need | Not selected; no new binary or infrastructure |
+| Approach                            | Benefit                                                                                            | Cost / limit                                                                                 | Design choice                                                            |
+| ----------------------------------- | -------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------ |
+| RFC 8785 over a typed intent DTO    | Existing cross-language specification and test vectors; separates wire pretty-printing from digest | Strict input validation and correct numeric/key serialization required                       | Default for new work-command v1                                          |
+| Hand-written fixed-field encoding   | Small for a permanently tiny tuple                                                                 | Escaping, null/default, extension and ordering rules become a custom protocol                | Retain as an alternative only if a reviewed equivalence corpus proves it |
+| Language-default JSON serialization | Convenient                                                                                         | Property order, number forms and Unicode behavior may differ; silent mismatch across Rust/TS | Not a protocol definition                                                |
+| New binary/canonical-CBOR wire      | Precise type model possible                                                                        | New client/wire/tooling burden without measured need                                         | Not selected; no new binary or infrastructure                            |
 
 The choice is bounded to the new interface. Do **not** rewrite legacy creation-outbox payload
 hashes or declare them equivalent without an explicit compatibility fixture/migration.

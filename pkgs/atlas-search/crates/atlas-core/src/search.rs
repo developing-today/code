@@ -8,7 +8,7 @@
 
 use std::collections::HashMap;
 
-use atlas_proto::SearchParametersV1;
+use atlas_proto::{RawMode, SearchParametersV1};
 use serde_json::{Map, Value as Json, json};
 
 use crate::backend::SearchBackend;
@@ -16,6 +16,7 @@ use crate::embed::QueryEmbedder;
 use crate::error::{Error, Result};
 use crate::filters::Filters;
 use crate::fusion::{FusedEntry, fts_match_expr, fuse_with_parameters};
+use crate::trace::{TraceContext, TraceSink, build_trace_record, new_query_id};
 use crate::types::{BranchPools, BranchQuery, ChunkDetail, DEFAULT_MODEL, VectorBackend, round6};
 
 /// The Python's `MESSAGE_TEXT_CAP`.
@@ -155,6 +156,38 @@ pub fn run_search(
     )
 }
 
+/// A pending trace write (issue #9973): the sink + context a
+/// traced search persists its `atlas-query-trace/v1` record
+/// through, and the query_id minted at request receipt.
+pub struct TraceJob<'a> {
+    pub sink: &'a dyn TraceSink,
+    pub ctx: TraceContext,
+    pub query_id: String,
+}
+
+/// [`run_search`] with query-trace capture (issue #9973, design
+/// sections 2-3): mints a `query_id`, returns it in the envelope,
+/// and persists the trace record BEFORE the response is
+/// released. Fail-closed: a trace write failure fails the search.
+pub fn run_search_traced(
+    backend: &dyn SearchBackend,
+    embedder: &dyn QueryEmbedder,
+    filters: &Filters,
+    opts: &SearchOptions,
+    sink: &dyn TraceSink,
+    ctx: TraceContext,
+) -> Result<Json> {
+    run_search_with_executor_traced(
+        backend,
+        embedder,
+        filters,
+        opts,
+        &BackendBranchExecutor::new(backend),
+        sink,
+        ctx,
+    )
+}
+
 /// [`run_search`] with a caller-supplied branch executor. Every
 /// step other than obtaining the branch pools — validation, query
 /// embedding, fusion, detail lookup, and envelope rendering — is
@@ -166,6 +199,46 @@ pub fn run_search_with_executor(
     opts: &SearchOptions,
     executor: &dyn BranchPoolExecutor,
 ) -> Result<Json> {
+    run_search_impl(backend, embedder, filters, opts, executor, None)
+}
+
+/// [`run_search_with_executor`] with query-trace capture; see
+/// [`run_search_traced`].
+#[allow(clippy::too_many_arguments)]
+pub fn run_search_with_executor_traced(
+    backend: &dyn SearchBackend,
+    embedder: &dyn QueryEmbedder,
+    filters: &Filters,
+    opts: &SearchOptions,
+    executor: &dyn BranchPoolExecutor,
+    sink: &dyn TraceSink,
+    ctx: TraceContext,
+) -> Result<Json> {
+    let job = TraceJob {
+        sink,
+        ctx,
+        query_id: new_query_id(),
+    };
+    run_search_impl(backend, embedder, filters, opts, executor, Some(&job))
+}
+
+fn run_search_impl(
+    backend: &dyn SearchBackend,
+    embedder: &dyn QueryEmbedder,
+    filters: &Filters,
+    opts: &SearchOptions,
+    executor: &dyn BranchPoolExecutor,
+    trace: Option<&TraceJob<'_>>,
+) -> Result<Json> {
+    let trace_started = trace.map(|_| {
+        (
+            std::time::Instant::now(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_millis() as u64)
+                .unwrap_or(0),
+        )
+    });
     opts.parameters
         .validate(opts.expand)
         .map_err(Error::fatal)?;
@@ -174,6 +247,19 @@ pub fn run_search_with_executor(
             "expand must be at most {}",
             crate::MAX_EXPAND_NEIGHBORS
         )));
+    }
+    // Hydration renders on the flat output; with session grouping
+    // on and raw output off there is no flat row to hydrate.
+    // Rather than silently ignoring the flag, refuse the
+    // combination -- --raw-rows produces the flat rows hydration
+    // attaches to (#9942).
+    if opts.parameters.hydrate > 0
+        && opts.group_by_session
+        && opts.parameters.raw_mode == RawMode::Off
+    {
+        return Err(Error::fatal(
+            "hydrate requires flat output: disable group_by_session or use raw_mode",
+        ));
     }
     if opts.mode.uses_vector()
         && opts.vector_backend != VectorBackend::Scan
@@ -218,13 +304,42 @@ pub fn run_search_with_executor(
         },
         filters,
     )?;
-    let (ranked, vec_dist) = fuse_with_parameters(
+    let (mut ranked, vec_dist) = fuse_with_parameters(
         &pools.fts,
         &pools.vector,
         opts.parameters.rrf_k,
         opts.parameters.fts_weight,
         opts.parameters.vector_weight,
     );
+
+    // Jaccard rescore (#5733): a third signal over the fused
+    // candidate union only — retrieval is unchanged. Candidate
+    // shingle sets are computed from chunk text at this stage (the
+    // union is depth-bounded, so the cost is too); the design's
+    // stored sets drop into rescore_fused unchanged when the ingest
+    // side store lands. Off unless jaccard_depth is set.
+    let mut jaccard_note: Option<String> = None;
+    if opts.parameters.jaccard_depth > 0 && !ranked.is_empty() {
+        let depth = opts.parameters.jaccard_depth.min(ranked.len());
+        let ids: Vec<i64> = ranked[..depth].iter().map(|e| e.chunk_id).collect();
+        let details = details_map(backend, &ids)?;
+        let query_set = crate::shingles::ShingleSet::from_text(&opts.query);
+        let sets: std::collections::HashMap<i64, crate::shingles::ShingleSet> = details
+            .values()
+            .map(|d| (d.chunk_id, crate::shingles::ShingleSet::from_text(&d.text)))
+            .collect();
+        let threshold = if opts.parameters.jaccard_threshold == 0.0 {
+            crate::shingles::DEFAULT_NEAR_EXACT_THRESHOLD
+        } else {
+            opts.parameters.jaccard_threshold
+        };
+        let report =
+            crate::shingles::rescore_fused(&mut ranked, &query_set, &sets, depth, threshold);
+        jaccard_note = Some(format!(
+            "jaccard rescore: {} candidates rescored (depth {}), {} near-exact at threshold {}",
+            report.rescored, depth, report.near_exact, threshold
+        ));
+    }
 
     // The local backend learns things mid-search (vector
     // coverage); fold any late notes in before rendering.
@@ -233,8 +348,33 @@ pub fn run_search_with_executor(
             notes.push(n);
         }
     }
+    if let Some(n) = jaccard_note {
+        notes.push(n);
+    }
 
-    let mut out = if opts.group_by_session {
+    let mut out = if opts.parameters.raw_mode == RawMode::Branches {
+        // Pre-fusion branch rows, exactly as the branches
+        // produced them (design s3.3 --raw=branches): no fusion,
+        // no grouping, no detail fetch.
+        let mut rows = Vec::new();
+        for (branch, hits) in [("fts", &pools.fts), ("vector", &pools.vector)] {
+            for (i, hit) in hits.iter().enumerate() {
+                let mut row = Map::new();
+                row.insert("chunk_id".into(), json!(hit.chunk_id));
+                row.insert("branch".into(), json!(branch));
+                row.insert("rank".into(), json!(i + 1));
+                if let Some(dist) = hit.dist {
+                    row.insert("vector_distance".into(), json!(round6(dist)));
+                }
+                rows.push(Json::Object(row));
+            }
+        }
+        let mut env = envelope(backend, opts, filters, Json::Array(rows), &notes);
+        env.as_object_mut()
+            .expect("envelope is an object")
+            .insert("raw".into(), json!("branches"));
+        env
+    } else if opts.group_by_session && opts.parameters.raw_mode == RawMode::Off {
         grouped_output(backend, opts, filters, &ranked, &vec_dist, &notes)?
     } else {
         let keep = &ranked[..opts.k.min(ranked.len())];
@@ -245,9 +385,25 @@ pub fn run_search_with_executor(
             let Some(d) = details.get(&e.chunk_id) else {
                 continue;
             };
-            results.push(result_entry(backend, opts, e, d, &vec_dist)?);
+            let mut entry = result_entry(backend, opts, e, d, &vec_dist)?;
+            // Hydration: the first `hydrate` RENDERED results
+            // (details present) gain full content.
+            if results.len() < opts.parameters.hydrate {
+                let hydrated = hydrate_entry(backend, d)?;
+                entry
+                    .as_object_mut()
+                    .expect("result entry is an object")
+                    .insert("hydrated".into(), hydrated);
+            }
+            results.push(entry);
         }
-        envelope(backend, opts, filters, Json::Array(results), &notes)
+        let mut env = envelope(backend, opts, filters, Json::Array(results), &notes);
+        if opts.parameters.raw_mode == RawMode::Ungrouped {
+            env.as_object_mut()
+                .expect("envelope is an object")
+                .insert("raw".into(), json!("ungrouped"));
+        }
+        env
     };
     if opts.mode.uses_vector() {
         // Provenance: exactly which model/table produced the pool.
@@ -275,7 +431,84 @@ pub fn run_search_with_executor(
             .expect("envelope is an object")
             .insert("vector".into(), Json::Object(v));
     }
+    if let (Some(job), Some((instant, started_ms))) = (trace, trace_started) {
+        // Trace capture (issue #9973): resolve details for EVERY
+        // pool entrant (not only the served top-k), build the
+        // record, and persist it before the response is released.
+        // Fail-closed: any failure here fails the search.
+        let all_ids: Vec<i64> = ranked.iter().map(|e| e.chunk_id).collect();
+        let details = details_map(backend, &all_ids)?;
+        let mut served: Vec<i64> = Vec::new();
+        collect_served(out.get("results"), &mut served);
+        let record = build_trace_record(
+            &job.query_id,
+            &job.ctx,
+            started_ms,
+            instant.elapsed().as_millis() as u64,
+            opts,
+            filters,
+            backend.name(),
+            &pools,
+            &ranked,
+            &vec_dist,
+            &details,
+            &served,
+        );
+        job.sink.write_trace(&record)?;
+        out.as_object_mut()
+            .expect("envelope is an object")
+            .insert("query_id".into(), Json::String(job.query_id.clone()));
+    }
     Ok(out)
+}
+
+/// Chunk ids in rendered order, walking the envelope's results
+/// (flat entries carry `chunk_id` directly; grouped session
+/// entries nest them) — the trace's served set.
+fn collect_served(v: Option<&Json>, acc: &mut Vec<i64>) {
+    match v {
+        Some(Json::Array(items)) => {
+            for it in items {
+                collect_served(Some(it), acc);
+            }
+        }
+        Some(Json::Object(map)) => {
+            if let Some(id) = map.get("chunk_id").and_then(Json::as_i64) {
+                if !acc.contains(&id) {
+                    acc.push(id);
+                }
+            }
+            for val in map.values() {
+                if val.is_array() {
+                    collect_served(Some(val), acc);
+                }
+            }
+        }
+        _ => {}
+    }
+}
+
+/// One hydrated payload (#9942): the full chunk text plus the
+/// full, UNCAPPED message text from the backend's content store.
+/// This is the explicit full-content path -- unlike
+/// --with-message's display payload, nothing is truncated. (On
+/// the shard path the tier content stores hydrate separately,
+/// #6664; this covers the monolith backends, whose message store
+/// IS the content store.)
+fn hydrate_entry(backend: &dyn SearchBackend, d: &ChunkDetail) -> Result<Json> {
+    let message = match backend.message(&d.message_id)? {
+        Some(m) => json!({
+            "id": m.id,
+            "role": m.role,
+            "text": m.text,
+            "truncated": false,
+        }),
+        None => Json::Null,
+    };
+    Ok(json!({
+        "chunk_text": d.text,
+        "message": message,
+    }))
 }
 
 /// The Python's `run_get_chunk`: a by-id lookup with NO
@@ -548,4 +781,317 @@ fn grouped_output(
         Json::Array(results),
         notes,
     ))
+}
+
+#[cfg(test)]
+mod trace_tests {
+    use super::*;
+    use crate::trace::{JsonlTraceSink, TraceContext};
+    use crate::types::{BranchHit, MessageRow, NeighborRow};
+    use std::sync::Mutex;
+
+    struct StubBackend;
+    impl SearchBackend for StubBackend {
+        fn name(&self) -> &'static str {
+            "local"
+        }
+        fn vec_table(&self) -> &str {
+            "vec_stub"
+        }
+        fn notes(&self) -> Vec<String> {
+            Vec::new()
+        }
+        fn branch_pools(&self, _q: &BranchQuery, _f: &Filters) -> Result<BranchPools> {
+            Ok(BranchPools {
+                fts: vec![
+                    BranchHit {
+                        chunk_id: 1,
+                        dist: None,
+                    },
+                    BranchHit {
+                        chunk_id: 2,
+                        dist: None,
+                    },
+                    BranchHit {
+                        chunk_id: 3,
+                        dist: None,
+                    },
+                ],
+                vector: vec![BranchHit {
+                    chunk_id: 2,
+                    dist: Some(0.25),
+                }],
+                candidate_models: Default::default(),
+            })
+        }
+        fn chunk_details(&self, ids: &[i64]) -> Result<Vec<ChunkDetail>> {
+            Ok(ids
+                .iter()
+                .map(|&id| ChunkDetail {
+                    chunk_id: id,
+                    text: format!("text {id}"),
+                    chunk_idx: 0,
+                    message_id: format!("m{id}"),
+                    m_role: None,
+                    session_id: "s1".into(),
+                    s_title: None,
+                    s_client: None,
+                    s_created_at: None,
+                    l_kind: None,
+                    l_topics: None,
+                    l_projects: None,
+                    eff_sensitivity: Some("internal".into()),
+                })
+                .collect())
+        }
+        fn neighbors(&self, _m: &str, _i: i64, _n: i64) -> Result<Vec<NeighborRow>> {
+            Ok(Vec::new())
+        }
+        fn message(&self, _m: &str) -> Result<Option<MessageRow>> {
+            Ok(None)
+        }
+    }
+
+    struct StubEmbedder;
+    impl QueryEmbedder for StubEmbedder {
+        fn embed_query(&self, _t: &str, _trunc: usize) -> Result<Vec<f32>> {
+            Ok(vec![0.1, 0.2])
+        }
+    }
+
+    #[derive(Default)]
+    struct VecSink {
+        records: Mutex<Vec<Json>>,
+    }
+    impl TraceSink for VecSink {
+        fn write_trace(&self, record: &Json) -> Result<()> {
+            self.records.lock().unwrap().push(record.clone());
+            Ok(())
+        }
+    }
+
+    struct FailSink;
+    impl TraceSink for FailSink {
+        fn write_trace(&self, _record: &Json) -> Result<()> {
+            Err(Error::backend("trace sink unavailable (test)"))
+        }
+    }
+
+    fn fts_opts(k: usize) -> SearchOptions {
+        SearchOptions {
+            mode: SearchMode::Fts,
+            k,
+            ..SearchOptions::new("backup database")
+        }
+    }
+
+    #[test]
+    fn traced_search_records_every_pool_entrant_and_returns_query_id() {
+        let sink = VecSink::default();
+        let ctx = TraceContext::new("cli", "user", "test");
+        let out = run_search_traced(
+            &StubBackend,
+            &StubEmbedder,
+            &Filters::default(),
+            &fts_opts(1),
+            &sink,
+            ctx,
+        )
+        .unwrap();
+        let query_id = out
+            .get("query_id")
+            .and_then(Json::as_str)
+            .expect("envelope carries query_id")
+            .to_string();
+        let records = sink.records.lock().unwrap();
+        assert_eq!(records.len(), 1);
+        let rec = &records[0];
+        assert_eq!(rec["schema"], "atlas-query-trace/v1");
+        assert_eq!(rec["query_id"], query_id);
+        assert_eq!(rec["retry_of"], Json::Null);
+        assert_eq!(rec["pool_counts"]["merged"], 3);
+        assert_eq!(rec["pool_counts"]["served"], 1);
+        let results = rec["results"].as_array().unwrap();
+        assert_eq!(results.len(), 3, "every pool entrant is traced");
+        let served: Vec<&Json> = results
+            .iter()
+            .filter(|r| r["stages"]["final"]["served"] == true)
+            .collect();
+        assert_eq!(served.len(), 1);
+        assert_eq!(served[0]["stages"]["final"]["rank"], 1);
+        let unserved = results
+            .iter()
+            .find(|r| r["chunk_id"] == 3)
+            .expect("chunk 3 entered the pool and was not served");
+        assert_eq!(unserved["stages"]["final"]["served"], false);
+        assert_eq!(unserved["stages"]["final"]["rank"], Json::Null);
+        assert_eq!(unserved["stages"]["merge"]["rank_sources"]["fts"], 3);
+        assert_eq!(unserved["stages"]["merge"]["rank_after_fusion"], 3);
+        // Ranking behaviour unchanged: the untraced envelope is the
+        // traced envelope minus query_id.
+        let plain = run_search(
+            &StubBackend,
+            &StubEmbedder,
+            &Filters::default(),
+            &fts_opts(1),
+        )
+        .unwrap();
+        let mut stripped = out.clone();
+        stripped.as_object_mut().unwrap().remove("query_id");
+        assert_eq!(stripped, plain);
+    }
+
+    #[test]
+    fn trace_sink_failure_fails_the_search() {
+        // Design invariant 2 (fail-closed): no silently untraced
+        // success — the search errors when the trace cannot be
+        // persisted.
+        let err = run_search_traced(
+            &StubBackend,
+            &StubEmbedder,
+            &Filters::default(),
+            &fts_opts(2),
+            &FailSink,
+            TraceContext::new("cli", "user", "test"),
+        )
+        .unwrap_err();
+        assert!(err.to_string().contains("trace sink unavailable"));
+    }
+
+    #[test]
+    fn jsonl_sink_appends_one_line_per_record() {
+        let dir =
+            std::env::temp_dir().join(format!("atlas-trace-test-{}", crate::trace::new_query_id()));
+        let sink = JsonlTraceSink::new(dir.clone());
+        let rec = json!({"schema": "atlas-query-trace/v1", "ts": "2026-11-14T00:00:00Z"});
+        sink.write_trace(&rec).unwrap();
+        sink.write_trace(&rec).unwrap();
+        let body = std::fs::read_to_string(dir.join("atlas-traces-2026-11-14.jsonl")).unwrap();
+        assert_eq!(body.lines().count(), 2);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
+mod jaccard_tests {
+    use super::*;
+    use crate::types::{BranchHit, MessageRow, NeighborRow};
+
+    /// The pasted passage the query quotes verbatim (chunk 2's text);
+    /// chunk 1 is merely topical and wins the fused ranking.
+    const PASSAGE: &str =
+        "error at line forty two the database disk image is malformed beyond repair";
+
+    struct JaccardStub;
+    impl SearchBackend for JaccardStub {
+        fn name(&self) -> &'static str {
+            "local"
+        }
+        fn vec_table(&self) -> &str {
+            "vec_stub"
+        }
+        fn notes(&self) -> Vec<String> {
+            Vec::new()
+        }
+        fn branch_pools(&self, _q: &BranchQuery, _f: &Filters) -> Result<BranchPools> {
+            Ok(BranchPools {
+                fts: vec![
+                    BranchHit {
+                        chunk_id: 1,
+                        dist: None,
+                    },
+                    BranchHit {
+                        chunk_id: 2,
+                        dist: None,
+                    },
+                    BranchHit {
+                        chunk_id: 3,
+                        dist: None,
+                    },
+                ],
+                vector: vec![],
+                candidate_models: Default::default(),
+            })
+        }
+        fn chunk_details(&self, ids: &[i64]) -> Result<Vec<ChunkDetail>> {
+            let texts: std::collections::HashMap<i64, &str> = std::collections::HashMap::from([
+                (
+                    1,
+                    "database backup restore repair disk image troubleshooting guide",
+                ),
+                (2, PASSAGE),
+                (
+                    3,
+                    "unrelated notes about cooking rice and lentils for dinner",
+                ),
+            ]);
+            Ok(ids
+                .iter()
+                .map(|&id| ChunkDetail {
+                    chunk_id: id,
+                    text: texts.get(&id).copied().unwrap_or("").to_string(),
+                    chunk_idx: 0,
+                    message_id: format!("m{id}"),
+                    m_role: None,
+                    session_id: "s1".into(),
+                    s_title: None,
+                    s_client: None,
+                    s_created_at: None,
+                    l_kind: None,
+                    l_topics: None,
+                    l_projects: None,
+                    eff_sensitivity: Some("internal".into()),
+                })
+                .collect())
+        }
+        fn neighbors(&self, _m: &str, _i: i64, _n: i64) -> Result<Vec<NeighborRow>> {
+            Ok(Vec::new())
+        }
+        fn message(&self, _m: &str) -> Result<Option<MessageRow>> {
+            Ok(None)
+        }
+    }
+
+    struct StubEmbedder;
+    impl QueryEmbedder for StubEmbedder {
+        fn embed_query(&self, _t: &str, _trunc: usize) -> Result<Vec<f32>> {
+            Ok(vec![0.1, 0.2])
+        }
+    }
+
+    fn opts(depth: usize) -> SearchOptions {
+        let mut o = SearchOptions {
+            mode: SearchMode::Fts,
+            k: 3,
+            ..SearchOptions::new(PASSAGE)
+        };
+        o.parameters.jaccard_depth = depth;
+        o
+    }
+
+    fn result_ids(out: &Json) -> Vec<i64> {
+        out["results"]
+            .as_array()
+            .expect("results array")
+            .iter()
+            .map(|r| r["chunk_id"].as_i64().expect("chunk_id"))
+            .collect()
+    }
+
+    #[test]
+    fn rescore_promotes_the_pasted_passage_end_to_end() {
+        // Off (the production default): fused order stands, the
+        // topical chunk leads.
+        let off = run_search(&JaccardStub, &StubEmbedder, &Filters::default(), &opts(0)).unwrap();
+        assert_eq!(result_ids(&off)[0], 1);
+
+        // On: the near-exact tier promotes the quoted passage itself
+        // to rank 1, and the envelope notes the rescore.
+        let on = run_search(&JaccardStub, &StubEmbedder, &Filters::default(), &opts(100)).unwrap();
+        assert_eq!(result_ids(&on)[0], 2);
+        let notes = on["notes"].to_string();
+        assert!(notes.contains("jaccard rescore"), "{notes}");
+        assert!(notes.contains("1 near-exact"), "{notes}");
+    }
 }

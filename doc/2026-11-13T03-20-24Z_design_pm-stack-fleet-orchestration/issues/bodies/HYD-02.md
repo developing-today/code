@@ -44,9 +44,6 @@ File-collision sequencing edges added by stable topological serialization: none.
 Existing issue references retained as non-blocking runtime/evidence gates: none.
 Domain-starter parent references are never emitted as hard native blockers. Source parents normalized to granular slices or runtime gates: #9206→CLI-03.
 
-
-
-
 Use only granular issue-key edges after all keys are resolved. Never make a whole domain starter a hard blocker when it creates a cycle. File collisions are hard sequencing edges. Parent integration adds native parent/blocker edges in a later pass after the command map, requirements IDs, and acyclic graph are verified.
 
 ## Starting failing test, oracle, and done check
@@ -89,8 +86,8 @@ Negative coverage: case-fold collisions, long title truncates digest.
 
 **Tier:** crucial. **Goal:** prevent collisions/path traversal for same PR/issue number in different repos; preserve stable remote IDs. **Owns:** `pkgs/fleet/crates/fleet-queue/src/work/context.rs` path-key helpers/tests. **Hard blockers:** HYD-01 and granular #9206 resource-ref normalization slice. **First failing oracle:** `pmo_hyd_artifact_keys_are_repo_scoped_and_traversal_safe` generates same issue/PR number in two repositories plus `../`, control and long Unicode titles. **Done command:** confirm exact test is listed by `cargo test --manifest-path pkgs/fleet/Cargo.toml -p fleet-queue --lib --features client,queue-broker -- --list`, then run `cargo test --manifest-path pkgs/fleet/Cargo.toml -p fleet-queue --lib --features client,queue-broker pmo_hyd_artifact_keys_are_repo_scoped_and_traversal_safe`. **Acceptance:** stable deterministic unique digest-suffixed keys; rejects traversal/symlink escape/control chars; normalization does not collapse distinct refs. **Negative:** case-fold collisions, long title truncates digest. **Migration/rollback:** old artifact aliases remain readable; disable writer without deleting old artifacts. Future test is not present evidence.
 
-
 ## Shared-file sequencing
 
 Added hard sequencing edges (the predecessor owns the same exact writable file):
+
 - blocked by `HYD-01` — `shared-file:pkgs/fleet/crates/fleet-queue/src/work/context.rs`

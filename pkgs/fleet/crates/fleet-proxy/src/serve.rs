@@ -28,7 +28,9 @@
 use std::collections::HashMap;
 use std::io::Write;
 use std::net::TcpStream;
+use std::os::unix::io::AsRawFd;
 use std::os::unix::net::{UnixListener, UnixStream};
+use std::path::Path;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -937,6 +939,34 @@ fn keepalive_loop(broker: Arc<Broker>, idle_exit: bool) {
     }
 }
 
+/// #9611 acceptance 1 (fleet-proxy leg): the cross-implementation
+/// singleton lock. The Python broker holds an exclusive flock on
+/// `broker.lock` beside the socket for its whole lifetime; this
+/// implementation must play by the same rule, or the two can both
+/// pass the stale-socket probe and race to bind (episode 1: Errno 98
+/// churn; episode 2 tail: a silent takeover after which broker.pid
+/// named a dead process). Returns the lock file, to be kept alive
+/// for the process lifetime, or None when another implementation
+/// already holds the singleton — the caller then converges on that
+/// owner instead of competing for the socket. The flock releases
+/// automatically when the holder dies, so a crashed broker never
+/// wedges the path.
+fn acquire_singleton_lock(socket_dir: &Path) -> Option<std::fs::File> {
+    let lock_path = socket_dir.join("broker.lock");
+    let file = std::fs::OpenOptions::new()
+        .create(true)
+        .read(true)
+        .write(true)
+        .truncate(false)
+        .open(&lock_path)
+        .ok()?;
+    let rc = unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) };
+    if rc != 0 {
+        return None;
+    }
+    Some(file)
+}
+
 /// Run the broker co-hosted with other serve roles in one process
 /// (`fleet serve <role> [<role> ...]`, #6264): same broker, but the
 /// idle-exit is disabled — the proxy's standalone lifetime contract
@@ -958,6 +988,23 @@ pub fn run(config: &Config) -> i32 {
 
 fn run_inner(config: &Config, idle_exit: bool) -> i32 {
     let socket_path = config.broker_socket();
+    // #9611 acceptance 1: converge on the cross-implementation
+    // singleton before touching the socket. Held for the whole
+    // process lifetime (the serve loop below never returns while
+    // this binding is alive).
+    let _singleton_lock = match socket_path.parent() {
+        Some(dir) => match acquire_singleton_lock(dir) {
+            Some(f) => Some(f),
+            None => {
+                eprintln!(
+                    "fleet proxy serve: broker singleton lock held by another                      implementation; not competing for {}",
+                    socket_path.display()
+                );
+                return 0;
+            }
+        },
+        None => None,
+    };
     if let Some(parent) = socket_path.parent() {
         let _ = std::fs::create_dir_all(parent);
         // The Python chmods its socket dir 0700 (best effort).
@@ -985,6 +1032,13 @@ fn run_inner(config: &Config, idle_exit: bool) -> i32 {
             return crate::EXIT_TRANSPORT;
         }
     };
+    // broker.pid names the socket owner, written only after this
+    // process actually owns the listening socket (#9611 acc. 1) —
+    // previously only the Python broker wrote it, so a fleet-proxy
+    // takeover left it naming a dead pid.
+    if let Some(dir) = socket_path.parent() {
+        let _ = std::fs::write(dir.join("broker.pid"), std::process::id().to_string());
+    }
     let size = pool_size();
     // The stamp is the FIRST line a starting broker writes, so it
     // precedes any per-request tunnel failure the egress setup
@@ -1552,6 +1606,28 @@ mod tests {
                 "callers stranded: {callers:?}"
             );
         });
+    }
+
+    #[test]
+    fn singleton_lock_is_exclusive_across_open_descriptions() {
+        let dir =
+            std::env::temp_dir().join(format!("fleet-proxy-singleton-test-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let first = acquire_singleton_lock(&dir);
+        assert!(first.is_some(), "first acquisition must succeed");
+        // flock is per open-file-description: a second open in the
+        // same process still conflicts — the property the
+        // cross-implementation singleton relies on.
+        assert!(
+            acquire_singleton_lock(&dir).is_none(),
+            "second acquisition must fail while the first is held"
+        );
+        drop(first);
+        assert!(
+            acquire_singleton_lock(&dir).is_some(),
+            "acquisition must succeed again after the holder drops"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

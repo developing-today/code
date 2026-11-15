@@ -44,7 +44,6 @@ Domain-starter parent references are never emitted as hard native blockers. Sour
 
 Source-local candidate aliases normalized for this packet: DST-ORDER-01 → PRI-03; PRI-CMP-01 → PRI-03.
 
-
 Use only granular issue-key edges after all keys are resolved. Never make a whole domain starter a hard blocker when it creates a cycle. File collisions are hard sequencing edges. Parent integration adds native parent/blocker edges in a later pass after the command map, requirements IDs, and acyclic graph are verified.
 
 ## Starting failing test, oracle, and done check

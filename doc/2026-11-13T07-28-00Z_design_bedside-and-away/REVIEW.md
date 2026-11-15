@@ -2,13 +2,13 @@
 
 This intake is not an implementation PR. Keep #9359 open and keep the private prototype operating as-is until separately authorized changes are reviewed. Publish child implementation issues after the applicable component designs and evidence are reviewed, not from unreviewed placeholder text.
 
-| Gate | Receipt required |
-| --- | --- |
-| Source integrity | Complete source register with stable identifiers; statements classified as accepted requirement, option, question, superseded, or deferred; no lost bottom-of-message clauses. |
-| Prototype census | Feature-to-source matrix distinguishes working, smoke-tested, manual, local draft, absent, and unverified. Inventory existing files and endpoints, without capturing credentials or production data. |
-| Component review | Each packet includes design alternatives, boundaries, contracts, threat cases, rollback, and acceptance oracles. Reviewers cite source IDs, identify unhandled cases, and record dispositions. |
-| Implementation mapping | Each child issue traces to a reviewed design and source statements, has dependencies and negative tests, and distinguishes design completion from shipped behavior. |
-| Operational handoff | Separately verify deployment owner, scope, version, read/write smoke and rollback. No Archer dispatch until the concrete destination and approval boundaries are resolved. |
+| Gate                   | Receipt required                                                                                                                                                                                     |
+| ---------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Source integrity       | Complete source register with stable identifiers; statements classified as accepted requirement, option, question, superseded, or deferred; no lost bottom-of-message clauses.                       |
+| Prototype census       | Feature-to-source matrix distinguishes working, smoke-tested, manual, local draft, absent, and unverified. Inventory existing files and endpoints, without capturing credentials or production data. |
+| Component review       | Each packet includes design alternatives, boundaries, contracts, threat cases, rollback, and acceptance oracles. Reviewers cite source IDs, identify unhandled cases, and record dispositions.       |
+| Implementation mapping | Each child issue traces to a reviewed design and source statements, has dependencies and negative tests, and distinguishes design completion from shipped behavior.                                  |
+| Operational handoff    | Separately verify deployment owner, scope, version, read/write smoke and rollback. No Archer dispatch until the concrete destination and approval boundaries are resolved.                           |
 
 ## Intake review prompts
 

@@ -712,14 +712,7 @@
           "url": "https://github.com/developing-today/code/issues/9478"
         }
       },
-      "native_blockers_pending": [
-        "CLI-02",
-        "PRI-01",
-        "CEN-04",
-        "#9073",
-        "#9074",
-        "AUTH-04"
-      ],
+      "native_blockers_pending": ["CLI-02", "PRI-01", "CEN-04", "#9073", "#9074", "AUTH-04"],
       "parent_link": {
         "attempted_at": "2026-11-13T11:04:44Z",
         "database_id": 6369931075,
@@ -740,14 +733,7 @@
       "queue_response_at": "2026-11-13T11:07:03Z",
       "queue_status": "queued",
       "readback_at": "2026-11-13T11:06:57Z",
-      "relationship_pending": [
-        "CLI-02",
-        "PRI-01",
-        "CEN-04",
-        "#9073",
-        "#9074",
-        "AUTH-04"
-      ],
+      "relationship_pending": ["CLI-02", "PRI-01", "CEN-04", "#9073", "#9074", "AUTH-04"],
       "reused": false,
       "status": "complete",
       "task_id": 15891,
@@ -793,11 +779,7 @@
           "url": "https://github.com/developing-today/code/issues/9513"
         }
       },
-      "native_blockers_pending": [
-        "JRN-02",
-        "REL-03",
-        "CEN-04"
-      ],
+      "native_blockers_pending": ["JRN-02", "REL-03", "CEN-04"],
       "parent_link": {
         "attempted_at": "2026-11-13T11:38:49Z",
         "database_id": 6370458584,
@@ -815,11 +797,7 @@
       "queue_response_at": "2026-11-13T11:38:49Z",
       "queue_status": "queued",
       "readback_at": "2026-11-13T11:38:38Z",
-      "relationship_pending": [
-        "JRN-02",
-        "REL-03",
-        "CEN-04"
-      ],
+      "relationship_pending": ["JRN-02", "REL-03", "CEN-04"],
       "reused": false,
       "status": "complete",
       "task_id": 15994,
@@ -881,13 +859,7 @@
           "url": "https://github.com/developing-today/code/issues/9515"
         }
       },
-      "native_blockers_pending": [
-        "AUTH-02",
-        "REL-03",
-        "REL-04",
-        "REL-05",
-        "CEN-04"
-      ],
+      "native_blockers_pending": ["AUTH-02", "REL-03", "REL-04", "REL-05", "CEN-04"],
       "parent_link": {
         "attempted_at": "2026-11-13T11:08:07Z",
         "database_id": 6369981314,
@@ -905,13 +877,7 @@
       "queue_response_at": "2026-11-13T11:08:08Z",
       "queue_status": "queued",
       "readback_at": "2026-11-13T11:07:52Z",
-      "relationship_pending": [
-        "AUTH-02",
-        "REL-03",
-        "REL-04",
-        "REL-05",
-        "CEN-04"
-      ],
+      "relationship_pending": ["AUTH-02", "REL-03", "REL-04", "REL-05", "CEN-04"],
       "reused": false,
       "status": "complete",
       "task_id": 15892,
@@ -1003,12 +969,7 @@
           "url": "https://github.com/developing-today/code/issues/9513"
         }
       },
-      "native_blockers_pending": [
-        "CLI-02",
-        "REL-03",
-        "HYD-06",
-        "AUTH-01"
-      ],
+      "native_blockers_pending": ["CLI-02", "REL-03", "HYD-06", "AUTH-01"],
       "parent_link": {
         "attempted_at": "2026-11-13T11:09:01Z",
         "database_id": 6369994493,
@@ -1026,12 +987,7 @@
       "queue_response_at": "2026-11-13T11:09:03Z",
       "queue_status": "queued",
       "readback_at": "2026-11-13T11:08:45Z",
-      "relationship_pending": [
-        "CLI-02",
-        "REL-03",
-        "HYD-06",
-        "AUTH-01"
-      ],
+      "relationship_pending": ["CLI-02", "REL-03", "HYD-06", "AUTH-01"],
       "reused": false,
       "status": "complete",
       "task_id": 15894,
@@ -1099,9 +1055,7 @@
           "url": "https://github.com/developing-today/code/issues/9500"
         }
       },
-      "native_blockers_pending": [
-        "CEN-01"
-      ],
+      "native_blockers_pending": ["CEN-01"],
       "parent_link": {
         "attempted_at": "2026-11-13T11:09:36Z",
         "database_id": 6370002663,
@@ -1119,9 +1073,7 @@
       "queue_response_at": "2026-11-13T11:09:37Z",
       "queue_status": "queued",
       "readback_at": "2026-11-13T11:09:19Z",
-      "relationship_pending": [
-        "CEN-01"
-      ],
+      "relationship_pending": ["CEN-01"],
       "reused": false,
       "status": "complete",
       "task_id": 15895,
@@ -1289,12 +1241,7 @@
           "url": "https://github.com/developing-today/code/issues/9513"
         }
       },
-      "native_blockers_pending": [
-        "PRI-01",
-        "REL-03",
-        "HYD-06",
-        "AUTH-01"
-      ],
+      "native_blockers_pending": ["PRI-01", "REL-03", "HYD-06", "AUTH-01"],
       "parent_link": {
         "attempted_at": "2026-11-13T11:11:19Z",
         "database_id": 6370030690,
@@ -1312,12 +1259,7 @@
       "queue_response_at": "2026-11-13T11:11:20Z",
       "queue_status": "queued",
       "readback_at": "2026-11-13T11:11:04Z",
-      "relationship_pending": [
-        "PRI-01",
-        "REL-03",
-        "HYD-06",
-        "AUTH-01"
-      ],
+      "relationship_pending": ["PRI-01", "REL-03", "HYD-06", "AUTH-01"],
       "reused": false,
       "status": "complete",
       "task_id": 15899,
@@ -1423,9 +1365,7 @@
           "url": "https://github.com/developing-today/code/issues/9501"
         }
       },
-      "native_blockers_pending": [
-        "CLI-01"
-      ],
+      "native_blockers_pending": ["CLI-01"],
       "parent_link": {
         "attempted_at": "2026-11-13T11:12:19Z",
         "database_id": 6370045658,
@@ -1443,9 +1383,7 @@
       "queue_response_at": "2026-11-13T11:12:20Z",
       "queue_status": "queued",
       "readback_at": "2026-11-13T11:12:03Z",
-      "relationship_pending": [
-        "CLI-01"
-      ],
+      "relationship_pending": ["CLI-01"],
       "reused": false,
       "status": "complete",
       "task_id": 15901,
@@ -1483,10 +1421,7 @@
           "url": "https://github.com/developing-today/code/issues/9491"
         }
       },
-      "native_blockers_pending": [
-        "REL-01",
-        "SEL-01"
-      ],
+      "native_blockers_pending": ["REL-01", "SEL-01"],
       "parent_link": {
         "attempted_at": "2026-11-13T11:12:46Z",
         "database_id": 6370053024,
@@ -1504,10 +1439,7 @@
       "queue_response_at": "2026-11-13T11:12:48Z",
       "queue_status": "queued",
       "readback_at": "2026-11-13T11:12:29Z",
-      "relationship_pending": [
-        "REL-01",
-        "SEL-01"
-      ],
+      "relationship_pending": ["REL-01", "SEL-01"],
       "reused": false,
       "status": "complete",
       "task_id": 15902,
@@ -1537,9 +1469,7 @@
           "url": "https://github.com/developing-today/code/issues/9440"
         }
       },
-      "native_blockers_pending": [
-        "CLI-04"
-      ],
+      "native_blockers_pending": ["CLI-04"],
       "parent_link": {
         "attempted_at": "2026-11-13T11:39:40Z",
         "database_id": 6370472051,
@@ -1557,9 +1487,7 @@
       "queue_response_at": "2026-11-13T11:39:40Z",
       "queue_status": "queued",
       "readback_at": "2026-11-13T11:39:31Z",
-      "relationship_pending": [
-        "CLI-04"
-      ],
+      "relationship_pending": ["CLI-04"],
       "reused": false,
       "status": "complete",
       "task_id": 15997,
@@ -1643,11 +1571,7 @@
           "url": "https://github.com/developing-today/code/issues/9464"
         }
       },
-      "native_blockers_pending": [
-        "DEP-02",
-        "JRN-02",
-        "AUTH-01"
-      ],
+      "native_blockers_pending": ["DEP-02", "JRN-02", "AUTH-01"],
       "parent_link": {
         "attempted_at": "2026-11-13T11:13:46Z",
         "database_id": 6370068369,
@@ -1665,11 +1589,7 @@
       "queue_response_at": "2026-11-13T11:13:47Z",
       "queue_status": "queued",
       "readback_at": "2026-11-13T11:13:30Z",
-      "relationship_pending": [
-        "DEP-02",
-        "JRN-02",
-        "AUTH-01"
-      ],
+      "relationship_pending": ["DEP-02", "JRN-02", "AUTH-01"],
       "reused": false,
       "status": "complete",
       "task_id": 15904,
@@ -1707,10 +1627,7 @@
           "url": "https://github.com/developing-today/code/issues/9438"
         }
       },
-      "native_blockers_pending": [
-        "CLI-02",
-        "CEN-04"
-      ],
+      "native_blockers_pending": ["CLI-02", "CEN-04"],
       "parent_link": {
         "attempted_at": "2026-11-13T11:39:56Z",
         "database_id": 6370476013,
@@ -1728,10 +1645,7 @@
       "queue_response_at": "2026-11-13T11:39:56Z",
       "queue_status": "queued",
       "readback_at": "2026-11-13T11:39:47Z",
-      "relationship_pending": [
-        "CLI-02",
-        "CEN-04"
-      ],
+      "relationship_pending": ["CLI-02", "CEN-04"],
       "reused": false,
       "status": "complete",
       "task_id": 15998,
@@ -1761,9 +1675,7 @@
           "url": "https://github.com/developing-today/code/issues/9503"
         }
       },
-      "native_blockers_pending": [
-        "DEP-02"
-      ],
+      "native_blockers_pending": ["DEP-02"],
       "parent_link": {
         "attempted_at": "2026-11-13T11:14:20Z",
         "database_id": 6370077542,
@@ -1781,9 +1693,7 @@
       "queue_response_at": "2026-11-13T11:14:21Z",
       "queue_status": "queued",
       "readback_at": "2026-11-13T11:14:06Z",
-      "relationship_pending": [
-        "DEP-02"
-      ],
+      "relationship_pending": ["DEP-02"],
       "reused": false,
       "status": "complete",
       "task_id": 15905,
@@ -1853,14 +1763,7 @@
           "url": "https://github.com/developing-today/code/issues/9443"
         }
       },
-      "native_blockers_pending": [
-        "DEP-02",
-        "CLI-02",
-        "CEN-04",
-        "#9073",
-        "#9074",
-        "DEP-03"
-      ],
+      "native_blockers_pending": ["DEP-02", "CLI-02", "CEN-04", "#9073", "#9074", "DEP-03"],
       "parent_link": {
         "attempted_at": "2026-11-13T11:14:42Z",
         "database_id": 6370083469,
@@ -1878,14 +1781,7 @@
       "queue_response_at": "2026-11-13T11:14:43Z",
       "queue_status": "queued",
       "readback_at": "2026-11-13T11:14:29Z",
-      "relationship_pending": [
-        "DEP-02",
-        "CLI-02",
-        "CEN-04",
-        "#9073",
-        "#9074",
-        "DEP-03"
-      ],
+      "relationship_pending": ["DEP-02", "CLI-02", "CEN-04", "#9073", "#9074", "DEP-03"],
       "reused": false,
       "status": "complete",
       "task_id": 15906,
@@ -1961,10 +1857,7 @@
           "url": "https://github.com/developing-today/code/issues/9016"
         }
       },
-      "native_blockers_pending": [
-        "#9016",
-        "#8887"
-      ],
+      "native_blockers_pending": ["#9016", "#8887"],
       "parent_link": {
         "attempted_at": "2026-11-13T11:15:12Z",
         "database_id": 6370090950,
@@ -1982,10 +1875,7 @@
       "queue_response_at": "2026-11-13T11:15:12Z",
       "queue_status": "queued",
       "readback_at": "2026-11-13T11:14:58Z",
-      "relationship_pending": [
-        "#9016",
-        "#8887"
-      ],
+      "relationship_pending": ["#9016", "#8887"],
       "reused": false,
       "status": "complete",
       "task_id": 15907,
@@ -2047,13 +1937,7 @@
           "url": "https://github.com/developing-today/code/issues/9478"
         }
       },
-      "native_blockers_pending": [
-        "DSP-01",
-        "#9070",
-        "PRI-01",
-        "CLI-02",
-        "DEP-04"
-      ],
+      "native_blockers_pending": ["DSP-01", "#9070", "PRI-01", "CLI-02", "DEP-04"],
       "parent_link": {
         "attempted_at": "2026-11-13T11:15:39Z",
         "database_id": 6370097289,
@@ -2071,13 +1955,7 @@
       "queue_response_at": "2026-11-13T11:15:40Z",
       "queue_status": "queued",
       "readback_at": "2026-11-13T11:15:21Z",
-      "relationship_pending": [
-        "DSP-01",
-        "#9070",
-        "PRI-01",
-        "CLI-02",
-        "DEP-04"
-      ],
+      "relationship_pending": ["DSP-01", "#9070", "PRI-01", "CLI-02", "DEP-04"],
       "reused": false,
       "status": "complete",
       "task_id": 15908,
@@ -2123,11 +2001,7 @@
           "url": "https://github.com/developing-today/code/issues/9513"
         }
       },
-      "native_blockers_pending": [
-        "REL-03",
-        "#9075",
-        "CLI-02"
-      ],
+      "native_blockers_pending": ["REL-03", "#9075", "CLI-02"],
       "parent_link": {
         "attempted_at": "2026-11-13T11:40:30Z",
         "database_id": 6370484192,
@@ -2145,11 +2019,7 @@
       "queue_response_at": "2026-11-13T11:40:30Z",
       "queue_status": "queued",
       "readback_at": "2026-11-13T11:40:20Z",
-      "relationship_pending": [
-        "REL-03",
-        "#9075",
-        "CLI-02"
-      ],
+      "relationship_pending": ["REL-03", "#9075", "CLI-02"],
       "reused": false,
       "status": "complete",
       "task_id": 16002,
@@ -2195,11 +2065,7 @@
           "url": "https://github.com/developing-today/code/issues/9513"
         }
       },
-      "native_blockers_pending": [
-        "REL-03",
-        "#8581",
-        "DSP-05"
-      ],
+      "native_blockers_pending": ["REL-03", "#8581", "DSP-05"],
       "parent_link": {
         "attempted_at": "2026-11-13T11:40:46Z",
         "database_id": 6370488033,
@@ -2217,11 +2083,7 @@
       "queue_response_at": "2026-11-13T11:40:46Z",
       "queue_status": "queued",
       "readback_at": "2026-11-13T11:40:36Z",
-      "relationship_pending": [
-        "REL-03",
-        "#8581",
-        "DSP-05"
-      ],
+      "relationship_pending": ["REL-03", "#8581", "DSP-05"],
       "reused": false,
       "status": "complete",
       "task_id": 16004,
@@ -2259,10 +2121,7 @@
           "url": "https://github.com/developing-today/code/issues/9506"
         }
       },
-      "native_blockers_pending": [
-        "DSP-05",
-        "DSP-06"
-      ],
+      "native_blockers_pending": ["DSP-05", "DSP-06"],
       "parent_link": {
         "attempted_at": "2026-11-13T11:16:12Z",
         "database_id": 6370107673,
@@ -2280,10 +2139,7 @@
       "queue_response_at": "2026-11-13T11:16:12Z",
       "queue_status": "queued",
       "readback_at": "2026-11-13T11:16:01Z",
-      "relationship_pending": [
-        "DSP-05",
-        "DSP-06"
-      ],
+      "relationship_pending": ["DSP-05", "DSP-06"],
       "reused": false,
       "status": "complete",
       "task_id": 15909,
@@ -2321,10 +2177,7 @@
           "url": "https://github.com/developing-today/code/issues/9478"
         }
       },
-      "native_blockers_pending": [
-        "PRI-01",
-        "DSP-04"
-      ],
+      "native_blockers_pending": ["PRI-01", "DSP-04"],
       "parent_link": {
         "attempted_at": "2026-11-13T11:16:30Z",
         "database_id": 6370112348,
@@ -2342,10 +2195,7 @@
       "queue_response_at": "2026-11-13T11:16:30Z",
       "queue_status": "queued",
       "readback_at": "2026-11-13T11:16:19Z",
-      "relationship_pending": [
-        "PRI-01",
-        "DSP-04"
-      ],
+      "relationship_pending": ["PRI-01", "DSP-04"],
       "reused": false,
       "status": "complete",
       "task_id": 15910,
@@ -2383,10 +2233,7 @@
           "url": "https://github.com/developing-today/code/issues/9513"
         }
       },
-      "native_blockers_pending": [
-        "REL-03",
-        "DSP-07"
-      ],
+      "native_blockers_pending": ["REL-03", "DSP-07"],
       "parent_link": {
         "attempted_at": "2026-11-13T11:16:48Z",
         "database_id": 6370116820,
@@ -2404,10 +2251,7 @@
       "queue_response_at": "2026-11-13T11:16:48Z",
       "queue_status": "queued",
       "readback_at": "2026-11-13T11:16:37Z",
-      "relationship_pending": [
-        "REL-03",
-        "DSP-07"
-      ],
+      "relationship_pending": ["REL-03", "DSP-07"],
       "reused": false,
       "status": "complete",
       "task_id": 15911,
@@ -2485,15 +2329,7 @@
           "url": "https://github.com/developing-today/code/issues/9513"
         }
       },
-      "native_blockers_pending": [
-        "DSP-01",
-        "CLI-02",
-        "REL-03",
-        "DSP-04",
-        "DSP-05",
-        "DSP-06",
-        "DSP-07"
-      ],
+      "native_blockers_pending": ["DSP-01", "CLI-02", "REL-03", "DSP-04", "DSP-05", "DSP-06", "DSP-07"],
       "parent_link": {
         "attempted_at": "2026-11-13T11:17:07Z",
         "database_id": 6370121161,
@@ -2511,15 +2347,7 @@
       "queue_response_at": "2026-11-13T11:17:07Z",
       "queue_status": "queued",
       "readback_at": "2026-11-13T11:16:55Z",
-      "relationship_pending": [
-        "DSP-01",
-        "CLI-02",
-        "REL-03",
-        "DSP-04",
-        "DSP-05",
-        "DSP-06",
-        "DSP-07"
-      ],
+      "relationship_pending": ["DSP-01", "CLI-02", "REL-03", "DSP-04", "DSP-05", "DSP-06", "DSP-07"],
       "reused": false,
       "status": "complete",
       "task_id": 15912,
@@ -2595,10 +2423,7 @@
           "url": "https://github.com/developing-today/code/issues/9478"
         }
       },
-      "native_blockers_pending": [
-        "#7030",
-        "PRI-01"
-      ],
+      "native_blockers_pending": ["#7030", "PRI-01"],
       "parent_link": {
         "attempted_at": "2026-11-13T11:17:46Z",
         "database_id": 6370131407,
@@ -2616,10 +2441,7 @@
       "queue_response_at": "2026-11-13T11:17:47Z",
       "queue_status": "queued",
       "readback_at": "2026-11-13T11:17:36Z",
-      "relationship_pending": [
-        "#7030",
-        "PRI-01"
-      ],
+      "relationship_pending": ["#7030", "PRI-01"],
       "reused": false,
       "status": "complete",
       "task_id": 15914,
@@ -2657,10 +2479,7 @@
           "url": "https://github.com/developing-today/code/issues/9513"
         }
       },
-      "native_blockers_pending": [
-        "REL-03",
-        "DST-06"
-      ],
+      "native_blockers_pending": ["REL-03", "DST-06"],
       "parent_link": {
         "attempted_at": "2026-11-13T11:18:05Z",
         "database_id": 6370135791,
@@ -2678,10 +2497,7 @@
       "queue_response_at": "2026-11-13T11:18:05Z",
       "queue_status": "queued",
       "readback_at": "2026-11-13T11:17:54Z",
-      "relationship_pending": [
-        "REL-03",
-        "DST-06"
-      ],
+      "relationship_pending": ["REL-03", "DST-06"],
       "reused": false,
       "status": "complete",
       "task_id": 15915,
@@ -2735,12 +2551,7 @@
           "url": "https://github.com/developing-today/code/issues/9453"
         }
       },
-      "native_blockers_pending": [
-        "AUTH-01",
-        "DST-01",
-        "DST-03",
-        "DSP-01"
-      ],
+      "native_blockers_pending": ["AUTH-01", "DST-01", "DST-03", "DSP-01"],
       "parent_link": {
         "attempted_at": "2026-11-13T11:18:25Z",
         "database_id": 6370140678,
@@ -2758,12 +2569,7 @@
       "queue_response_at": "2026-11-13T11:18:26Z",
       "queue_status": "queued",
       "readback_at": "2026-11-13T11:18:14Z",
-      "relationship_pending": [
-        "AUTH-01",
-        "DST-01",
-        "DST-03",
-        "DSP-01"
-      ],
+      "relationship_pending": ["AUTH-01", "DST-01", "DST-03", "DSP-01"],
       "reused": false,
       "status": "complete",
       "task_id": 15916,
@@ -2839,10 +2645,7 @@
           "url": "https://github.com/developing-today/code/issues/9081"
         }
       },
-      "native_blockers_pending": [
-        "#9079",
-        "#9081"
-      ],
+      "native_blockers_pending": ["#9079", "#9081"],
       "parent_link": {
         "attempted_at": "2026-11-13T11:19:02Z",
         "database_id": 6370150289,
@@ -2860,10 +2663,7 @@
       "queue_response_at": "2026-11-13T11:19:03Z",
       "queue_status": "queued",
       "readback_at": "2026-11-13T11:18:52Z",
-      "relationship_pending": [
-        "#9079",
-        "#9081"
-      ],
+      "relationship_pending": ["#9079", "#9081"],
       "reused": false,
       "status": "complete",
       "task_id": 15918,
@@ -2901,10 +2701,7 @@
           "url": "https://github.com/developing-today/code/issues/9513"
         }
       },
-      "native_blockers_pending": [
-        "REL-03",
-        "DST-04"
-      ],
+      "native_blockers_pending": ["REL-03", "DST-04"],
       "parent_link": {
         "attempted_at": "2026-11-13T11:19:21Z",
         "database_id": 6370154635,
@@ -2922,10 +2719,7 @@
       "queue_response_at": "2026-11-13T11:19:22Z",
       "queue_status": "queued",
       "readback_at": "2026-11-13T11:19:10Z",
-      "relationship_pending": [
-        "REL-03",
-        "DST-04"
-      ],
+      "relationship_pending": ["REL-03", "DST-04"],
       "reused": false,
       "status": "complete",
       "task_id": 15919,
@@ -2963,10 +2757,7 @@
           "url": "https://github.com/developing-today/code/issues/9438"
         }
       },
-      "native_blockers_pending": [
-        "CEN-04",
-        "CLI-02"
-      ],
+      "native_blockers_pending": ["CEN-04", "CLI-02"],
       "parent_link": {
         "attempted_at": "2026-11-13T11:19:39Z",
         "database_id": 6370159429,
@@ -2984,10 +2775,7 @@
       "queue_response_at": "2026-11-13T11:19:39Z",
       "queue_status": "queued",
       "readback_at": "2026-11-13T11:19:29Z",
-      "relationship_pending": [
-        "CEN-04",
-        "CLI-02"
-      ],
+      "relationship_pending": ["CEN-04", "CLI-02"],
       "reused": false,
       "status": "complete",
       "task_id": 15920,
@@ -3025,10 +2813,7 @@
           "url": "https://github.com/developing-today/code/issues/9458"
         }
       },
-      "native_blockers_pending": [
-        "HYD-01",
-        "CLI-03"
-      ],
+      "native_blockers_pending": ["HYD-01", "CLI-03"],
       "parent_link": {
         "attempted_at": "2026-11-13T11:19:56Z",
         "database_id": 6370163748,
@@ -3046,10 +2831,7 @@
       "queue_response_at": "2026-11-13T11:19:56Z",
       "queue_status": "queued",
       "readback_at": "2026-11-13T11:19:45Z",
-      "relationship_pending": [
-        "HYD-01",
-        "CLI-03"
-      ],
+      "relationship_pending": ["HYD-01", "CLI-03"],
       "reused": false,
       "status": "complete",
       "task_id": 15921,
@@ -3103,12 +2885,7 @@
           "url": "https://github.com/developing-today/code/issues/9459"
         }
       },
-      "native_blockers_pending": [
-        "HYD-01",
-        "CEN-04",
-        "DEP-03",
-        "HYD-02"
-      ],
+      "native_blockers_pending": ["HYD-01", "CEN-04", "DEP-03", "HYD-02"],
       "parent_link": {
         "attempted_at": "2026-11-13T11:20:15Z",
         "database_id": 6370168091,
@@ -3126,12 +2903,7 @@
       "queue_response_at": "2026-11-13T11:20:16Z",
       "queue_status": "queued",
       "readback_at": "2026-11-13T11:20:03Z",
-      "relationship_pending": [
-        "HYD-01",
-        "CEN-04",
-        "DEP-03",
-        "HYD-02"
-      ],
+      "relationship_pending": ["HYD-01", "CEN-04", "DEP-03", "HYD-02"],
       "reused": false,
       "status": "complete",
       "task_id": 15922,
@@ -3193,13 +2965,7 @@
           "url": "https://github.com/developing-today/code/issues/9460"
         }
       },
-      "native_blockers_pending": [
-        "HYD-01",
-        "CLI-03",
-        "AUTH-01",
-        "CEN-04",
-        "HYD-03"
-      ],
+      "native_blockers_pending": ["HYD-01", "CLI-03", "AUTH-01", "CEN-04", "HYD-03"],
       "parent_link": {
         "attempted_at": "2026-11-13T11:20:33Z",
         "database_id": 6370173022,
@@ -3217,13 +2983,7 @@
       "queue_response_at": "2026-11-13T11:20:34Z",
       "queue_status": "queued",
       "readback_at": "2026-11-13T11:20:22Z",
-      "relationship_pending": [
-        "HYD-01",
-        "CLI-03",
-        "AUTH-01",
-        "CEN-04",
-        "HYD-03"
-      ],
+      "relationship_pending": ["HYD-01", "CLI-03", "AUTH-01", "CEN-04", "HYD-03"],
       "reused": false,
       "status": "complete",
       "task_id": 15923,
@@ -3277,12 +3037,7 @@
           "url": "https://github.com/developing-today/code/issues/9513"
         }
       },
-      "native_blockers_pending": [
-        "HYD-01",
-        "CEN-04",
-        "REL-03",
-        "REL-02"
-      ],
+      "native_blockers_pending": ["HYD-01", "CEN-04", "REL-03", "REL-02"],
       "parent_link": {
         "attempted_at": "2026-11-13T11:41:00Z",
         "database_id": 6370492036,
@@ -3300,12 +3055,7 @@
       "queue_response_at": "2026-11-13T11:41:01Z",
       "queue_status": "queued",
       "readback_at": "2026-11-13T11:40:52Z",
-      "relationship_pending": [
-        "HYD-01",
-        "CEN-04",
-        "REL-03",
-        "REL-02"
-      ],
+      "relationship_pending": ["HYD-01", "CEN-04", "REL-03", "REL-02"],
       "reused": false,
       "status": "complete",
       "task_id": 16005,
@@ -3351,11 +3101,7 @@
           "url": "https://github.com/developing-today/code/issues/9463"
         }
       },
-      "native_blockers_pending": [
-        "HYD-05",
-        "JRN-01",
-        "CLI-05"
-      ],
+      "native_blockers_pending": ["HYD-05", "JRN-01", "CLI-05"],
       "parent_link": {
         "attempted_at": "2026-11-13T11:41:16Z",
         "database_id": 6370495779,
@@ -3373,11 +3119,7 @@
       "queue_response_at": "2026-11-13T11:41:17Z",
       "queue_status": "queued",
       "readback_at": "2026-11-13T11:41:07Z",
-      "relationship_pending": [
-        "HYD-05",
-        "JRN-01",
-        "CLI-05"
-      ],
+      "relationship_pending": ["HYD-05", "JRN-01", "CLI-05"],
       "reused": false,
       "status": "complete",
       "task_id": 16006,
@@ -3423,11 +3165,7 @@
           "url": "https://github.com/developing-today/code/issues/9513"
         }
       },
-      "native_blockers_pending": [
-        "REL-03",
-        "CLI-05",
-        "HYD-06"
-      ],
+      "native_blockers_pending": ["REL-03", "CLI-05", "HYD-06"],
       "parent_link": {
         "attempted_at": "2026-11-13T11:41:31Z",
         "database_id": 6370499769,
@@ -3445,11 +3183,7 @@
       "queue_response_at": "2026-11-13T11:41:32Z",
       "queue_status": "queued",
       "readback_at": "2026-11-13T11:41:22Z",
-      "relationship_pending": [
-        "REL-03",
-        "CLI-05",
-        "HYD-06"
-      ],
+      "relationship_pending": ["REL-03", "CLI-05", "HYD-06"],
       "reused": false,
       "status": "complete",
       "task_id": 16008,
@@ -3519,14 +3253,7 @@
           "url": "https://github.com/developing-today/code/issues/9513"
         }
       },
-      "native_blockers_pending": [
-        "CLI-13",
-        "HYD-04",
-        "HYD-05",
-        "HYD-06",
-        "REL-03",
-        "HYD-07"
-      ],
+      "native_blockers_pending": ["CLI-13", "HYD-04", "HYD-05", "HYD-06", "REL-03", "HYD-07"],
       "parent_link": {
         "attempted_at": "2026-11-13T11:41:47Z",
         "database_id": 6370503589,
@@ -3544,14 +3271,7 @@
       "queue_response_at": "2026-11-13T11:41:47Z",
       "queue_status": "queued",
       "readback_at": "2026-11-13T11:41:37Z",
-      "relationship_pending": [
-        "CLI-13",
-        "HYD-04",
-        "HYD-05",
-        "HYD-06",
-        "REL-03",
-        "HYD-07"
-      ],
+      "relationship_pending": ["CLI-13", "HYD-04", "HYD-05", "HYD-06", "REL-03", "HYD-07"],
       "reused": false,
       "status": "complete",
       "task_id": 16009,
@@ -3729,11 +3449,7 @@
           "url": "https://github.com/developing-today/code/issues/9513"
         }
       },
-      "native_blockers_pending": [
-        "CEN-04",
-        "REL-03",
-        "CLI-05"
-      ],
+      "native_blockers_pending": ["CEN-04", "REL-03", "CLI-05"],
       "parent_link": {
         "attempted_at": "2026-11-13T11:21:36Z",
         "database_id": 6370189755,
@@ -3751,11 +3467,7 @@
       "queue_response_at": "2026-11-13T11:21:36Z",
       "queue_status": "queued",
       "readback_at": "2026-11-13T11:21:25Z",
-      "relationship_pending": [
-        "CEN-04",
-        "REL-03",
-        "CLI-05"
-      ],
+      "relationship_pending": ["CEN-04", "REL-03", "CLI-05"],
       "reused": false,
       "status": "complete",
       "task_id": 15926,
@@ -3801,11 +3513,7 @@
           "url": "https://github.com/developing-today/code/issues/9463"
         }
       },
-      "native_blockers_pending": [
-        "JRN-01",
-        "CLI-02",
-        "AUTH-05"
-      ],
+      "native_blockers_pending": ["JRN-01", "CLI-02", "AUTH-05"],
       "parent_link": {
         "attempted_at": "2026-11-13T11:21:52Z",
         "database_id": 6370194558,
@@ -3823,11 +3531,7 @@
       "queue_response_at": "2026-11-13T11:21:53Z",
       "queue_status": "queued",
       "readback_at": "2026-11-13T11:21:42Z",
-      "relationship_pending": [
-        "JRN-01",
-        "CLI-02",
-        "AUTH-05"
-      ],
+      "relationship_pending": ["JRN-01", "CLI-02", "AUTH-05"],
       "reused": false,
       "status": "complete",
       "task_id": 15927,
@@ -3889,13 +3593,7 @@
           "url": "https://github.com/developing-today/code/issues/9513"
         }
       },
-      "native_blockers_pending": [
-        "CLI-05",
-        "HYD-01",
-        "REL-03",
-        "JRN-01",
-        "JRN-02"
-      ],
+      "native_blockers_pending": ["CLI-05", "HYD-01", "REL-03", "JRN-01", "JRN-02"],
       "parent_link": {
         "attempted_at": "2026-11-13T11:22:10Z",
         "database_id": 6370199107,
@@ -3913,13 +3611,7 @@
       "queue_response_at": "2026-11-13T11:22:11Z",
       "queue_status": "queued",
       "readback_at": "2026-11-13T11:21:59Z",
-      "relationship_pending": [
-        "CLI-05",
-        "HYD-01",
-        "REL-03",
-        "JRN-01",
-        "JRN-02"
-      ],
+      "relationship_pending": ["CLI-05", "HYD-01", "REL-03", "JRN-01", "JRN-02"],
       "reused": false,
       "status": "complete",
       "task_id": 15929,
@@ -3949,9 +3641,7 @@
           "url": "https://github.com/developing-today/code/issues/9434"
         }
       },
-      "native_blockers_pending": [
-        "CEN-04"
-      ],
+      "native_blockers_pending": ["CEN-04"],
       "parent_link": {
         "attempted_at": "2026-11-13T11:22:26Z",
         "database_id": 6370203674,
@@ -3969,9 +3659,7 @@
       "queue_response_at": "2026-11-13T11:22:27Z",
       "queue_status": "queued",
       "readback_at": "2026-11-13T11:22:17Z",
-      "relationship_pending": [
-        "CEN-04"
-      ],
+      "relationship_pending": ["CEN-04"],
       "reused": false,
       "status": "complete",
       "task_id": 15930,
@@ -4063,12 +3751,7 @@
           "url": "https://github.com/developing-today/code/issues/9076"
         }
       },
-      "native_blockers_pending": [
-        "#9070",
-        "#9062",
-        "#9073",
-        "#9076"
-      ],
+      "native_blockers_pending": ["#9070", "#9062", "#9073", "#9076"],
       "parent_link": {
         "attempted_at": "2026-11-13T11:23:03Z",
         "database_id": 6370212544,
@@ -4086,12 +3769,7 @@
       "queue_response_at": "2026-11-13T11:23:03Z",
       "queue_status": "queued",
       "readback_at": "2026-11-13T11:22:51Z",
-      "relationship_pending": [
-        "#9070",
-        "#9062",
-        "#9073",
-        "#9076"
-      ],
+      "relationship_pending": ["#9070", "#9062", "#9073", "#9076"],
       "reused": false,
       "status": "complete",
       "task_id": 15932,
@@ -4137,11 +3815,7 @@
           "url": "https://github.com/developing-today/code/issues/9478"
         }
       },
-      "native_blockers_pending": [
-        "MOB-01",
-        "PRI-01",
-        "#9070"
-      ],
+      "native_blockers_pending": ["MOB-01", "PRI-01", "#9070"],
       "parent_link": {
         "attempted_at": "2026-11-13T11:23:20Z",
         "database_id": 6370217756,
@@ -4159,11 +3833,7 @@
       "queue_response_at": "2026-11-13T11:23:21Z",
       "queue_status": "queued",
       "readback_at": "2026-11-13T11:23:11Z",
-      "relationship_pending": [
-        "MOB-01",
-        "PRI-01",
-        "#9070"
-      ],
+      "relationship_pending": ["MOB-01", "PRI-01", "#9070"],
       "reused": false,
       "status": "complete",
       "task_id": 15933,
@@ -4217,12 +3887,7 @@
           "url": "https://github.com/developing-today/code/issues/9468"
         }
       },
-      "native_blockers_pending": [
-        "MOB-00",
-        "MOB-01",
-        "#9070",
-        "#1276"
-      ],
+      "native_blockers_pending": ["MOB-00", "MOB-01", "#9070", "#1276"],
       "parent_link": {
         "attempted_at": "2026-11-13T11:23:39Z",
         "database_id": 6370222100,
@@ -4240,12 +3905,7 @@
       "queue_response_at": "2026-11-13T11:23:39Z",
       "queue_status": "queued",
       "readback_at": "2026-11-13T11:23:27Z",
-      "relationship_pending": [
-        "MOB-00",
-        "MOB-01",
-        "#9070",
-        "#1276"
-      ],
+      "relationship_pending": ["MOB-00", "MOB-01", "#9070", "#1276"],
       "reused": false,
       "status": "complete",
       "task_id": 15935,
@@ -4283,10 +3943,7 @@
           "url": "https://github.com/developing-today/code/issues/9470"
         }
       },
-      "native_blockers_pending": [
-        "MOB-00",
-        "MOB-03"
-      ],
+      "native_blockers_pending": ["MOB-00", "MOB-03"],
       "parent_link": {
         "attempted_at": "2026-11-13T11:23:58Z",
         "database_id": 6370227156,
@@ -4304,10 +3961,7 @@
       "queue_response_at": "2026-11-13T11:23:59Z",
       "queue_status": "queued",
       "readback_at": "2026-11-13T11:23:46Z",
-      "relationship_pending": [
-        "MOB-00",
-        "MOB-03"
-      ],
+      "relationship_pending": ["MOB-00", "MOB-03"],
       "reused": false,
       "status": "complete",
       "task_id": 15936,
@@ -4361,12 +4015,7 @@
           "url": "https://github.com/developing-today/code/issues/9478"
         }
       },
-      "native_blockers_pending": [
-        "MOB-01",
-        "#9180",
-        "PRI-01",
-        "#8581"
-      ],
+      "native_blockers_pending": ["MOB-01", "#9180", "PRI-01", "#8581"],
       "parent_link": {
         "attempted_at": "2026-11-13T11:24:19Z",
         "database_id": 6370232753,
@@ -4384,12 +4033,7 @@
       "queue_response_at": "2026-11-13T11:24:19Z",
       "queue_status": "queued",
       "readback_at": "2026-11-13T11:24:07Z",
-      "relationship_pending": [
-        "MOB-01",
-        "#9180",
-        "PRI-01",
-        "#8581"
-      ],
+      "relationship_pending": ["MOB-01", "#9180", "PRI-01", "#8581"],
       "reused": false,
       "status": "complete",
       "task_id": 15937,
@@ -4427,10 +4071,7 @@
           "url": "https://github.com/developing-today/code/issues/9478"
         }
       },
-      "native_blockers_pending": [
-        "MOB-05",
-        "PRI-01"
-      ],
+      "native_blockers_pending": ["MOB-05", "PRI-01"],
       "parent_link": {
         "attempted_at": "2026-11-13T11:24:40Z",
         "database_id": 6370237641,
@@ -4448,10 +4089,7 @@
       "queue_response_at": "2026-11-13T11:24:41Z",
       "queue_status": "queued",
       "readback_at": "2026-11-13T11:24:26Z",
-      "relationship_pending": [
-        "MOB-05",
-        "PRI-01"
-      ],
+      "relationship_pending": ["MOB-05", "PRI-01"],
       "reused": false,
       "status": "complete",
       "task_id": 15938,
@@ -4497,11 +4135,7 @@
           "url": "https://github.com/developing-today/code/issues/9472"
         }
       },
-      "native_blockers_pending": [
-        "MOB-05",
-        "#9075",
-        "DSP-05"
-      ],
+      "native_blockers_pending": ["MOB-05", "#9075", "DSP-05"],
       "parent_link": {
         "attempted_at": "2026-11-13T11:25:00Z",
         "database_id": 6370243598,
@@ -4519,11 +4153,7 @@
       "queue_response_at": "2026-11-13T11:25:01Z",
       "queue_status": "queued",
       "readback_at": "2026-11-13T11:24:48Z",
-      "relationship_pending": [
-        "MOB-05",
-        "#9075",
-        "DSP-05"
-      ],
+      "relationship_pending": ["MOB-05", "#9075", "DSP-05"],
       "reused": false,
       "status": "complete",
       "task_id": 15940,
@@ -4585,13 +4215,7 @@
           "url": "https://github.com/developing-today/code/issues/9468"
         }
       },
-      "native_blockers_pending": [
-        "MOB-01",
-        "#9070",
-        "DEP-02",
-        "HYD-06",
-        "#8581"
-      ],
+      "native_blockers_pending": ["MOB-01", "#9070", "DEP-02", "HYD-06", "#8581"],
       "parent_link": {
         "attempted_at": "2026-11-13T11:25:21Z",
         "database_id": 6370249543,
@@ -4609,13 +4233,7 @@
       "queue_response_at": "2026-11-13T11:25:22Z",
       "queue_status": "queued",
       "readback_at": "2026-11-13T11:25:10Z",
-      "relationship_pending": [
-        "MOB-01",
-        "#9070",
-        "DEP-02",
-        "HYD-06",
-        "#8581"
-      ],
+      "relationship_pending": ["MOB-01", "#9070", "DEP-02", "HYD-06", "#8581"],
       "reused": false,
       "status": "complete",
       "task_id": 15941,
@@ -4661,11 +4279,7 @@
           "url": "https://github.com/developing-today/code/issues/9472"
         }
       },
-      "native_blockers_pending": [
-        "MOB-05",
-        "#8580",
-        "#8581"
-      ],
+      "native_blockers_pending": ["MOB-05", "#8580", "#8581"],
       "parent_link": {
         "attempted_at": "2026-11-13T11:25:39Z",
         "database_id": 6370254885,
@@ -4683,11 +4297,7 @@
       "queue_response_at": "2026-11-13T11:25:40Z",
       "queue_status": "queued",
       "readback_at": "2026-11-13T11:25:28Z",
-      "relationship_pending": [
-        "MOB-05",
-        "#8580",
-        "#8581"
-      ],
+      "relationship_pending": ["MOB-05", "#8580", "#8581"],
       "reused": false,
       "status": "complete",
       "task_id": 15942,
@@ -4733,11 +4343,7 @@
           "url": "https://github.com/developing-today/code/issues/9468"
         }
       },
-      "native_blockers_pending": [
-        "MOB-01",
-        "#9079",
-        "#9081"
-      ],
+      "native_blockers_pending": ["MOB-01", "#9079", "#9081"],
       "parent_link": {
         "attempted_at": "2026-11-13T11:25:58Z",
         "database_id": 6370260033,
@@ -4755,11 +4361,7 @@
       "queue_response_at": "2026-11-13T11:25:59Z",
       "queue_status": "queued",
       "readback_at": "2026-11-13T11:25:46Z",
-      "relationship_pending": [
-        "MOB-01",
-        "#9079",
-        "#9081"
-      ],
+      "relationship_pending": ["MOB-01", "#9079", "#9081"],
       "reused": false,
       "status": "complete",
       "task_id": 15943,
@@ -4789,9 +4391,7 @@
           "url": "https://github.com/developing-today/code/issues/7030"
         }
       },
-      "native_blockers_pending": [
-        "#7030"
-      ],
+      "native_blockers_pending": ["#7030"],
       "parent_link": {
         "attempted_at": "2026-11-13T11:26:18Z",
         "database_id": 6370265279,
@@ -4809,9 +4409,7 @@
       "queue_response_at": "2026-11-13T11:26:19Z",
       "queue_status": "queued",
       "readback_at": "2026-11-13T11:26:05Z",
-      "relationship_pending": [
-        "#7030"
-      ],
+      "relationship_pending": ["#7030"],
       "reused": false,
       "status": "complete",
       "task_id": 15945,
@@ -4857,11 +4455,7 @@
           "url": "https://github.com/developing-today/code/issues/9484"
         }
       },
-      "native_blockers_pending": [
-        "#9073",
-        "#9074",
-        "PRI-05d"
-      ],
+      "native_blockers_pending": ["#9073", "#9074", "PRI-05d"],
       "parent_link": {
         "attempted_at": "2026-11-13T11:26:41Z",
         "database_id": 6370270765,
@@ -4879,11 +4473,7 @@
       "queue_response_at": "2026-11-13T11:26:41Z",
       "queue_status": "queued",
       "readback_at": "2026-11-13T11:26:27Z",
-      "relationship_pending": [
-        "#9073",
-        "#9074",
-        "PRI-05d"
-      ],
+      "relationship_pending": ["#9073", "#9074", "PRI-05d"],
       "reused": false,
       "status": "complete",
       "task_id": 15946,
@@ -4929,11 +4519,7 @@
           "url": "https://github.com/developing-today/code/issues/9479"
         }
       },
-      "native_blockers_pending": [
-        "#9074",
-        "HYD-03",
-        "PRI-02"
-      ],
+      "native_blockers_pending": ["#9074", "HYD-03", "PRI-02"],
       "parent_link": {
         "attempted_at": "2026-11-13T11:42:02Z",
         "database_id": 6370507475,
@@ -4951,11 +4537,7 @@
       "queue_response_at": "2026-11-13T11:42:02Z",
       "queue_status": "queued",
       "readback_at": "2026-11-13T11:41:53Z",
-      "relationship_pending": [
-        "#9074",
-        "HYD-03",
-        "PRI-02"
-      ],
+      "relationship_pending": ["#9074", "HYD-03", "PRI-02"],
       "reused": false,
       "status": "complete",
       "task_id": 16010,
@@ -5001,11 +4583,7 @@
           "url": "https://github.com/developing-today/code/issues/9511"
         }
       },
-      "native_blockers_pending": [
-        "DEP-03",
-        "PRI-03",
-        "DSP-04"
-      ],
+      "native_blockers_pending": ["DEP-03", "PRI-03", "DSP-04"],
       "parent_link": {
         "attempted_at": "2026-11-13T11:27:09Z",
         "database_id": 6370277859,
@@ -5023,11 +4601,7 @@
       "queue_response_at": "2026-11-13T11:27:10Z",
       "queue_status": "queued",
       "readback_at": "2026-11-13T11:26:56Z",
-      "relationship_pending": [
-        "DEP-03",
-        "PRI-03",
-        "DSP-04"
-      ],
+      "relationship_pending": ["DEP-03", "PRI-03", "DSP-04"],
       "reused": false,
       "status": "complete",
       "task_id": 15948,
@@ -5057,9 +4631,7 @@
           "url": "https://github.com/developing-today/code/issues/9478"
         }
       },
-      "native_blockers_pending": [
-        "PRI-01"
-      ],
+      "native_blockers_pending": ["PRI-01"],
       "parent_link": {
         "attempted_at": "2026-11-13T11:27:28Z",
         "database_id": 6370283157,
@@ -5077,9 +4649,7 @@
       "queue_response_at": "2026-11-13T11:27:28Z",
       "queue_status": "queued",
       "readback_at": "2026-11-13T11:27:17Z",
-      "relationship_pending": [
-        "PRI-01"
-      ],
+      "relationship_pending": ["PRI-01"],
       "reused": false,
       "status": "complete",
       "task_id": 15950,
@@ -5109,9 +4679,7 @@
           "url": "https://github.com/developing-today/code/issues/9481"
         }
       },
-      "native_blockers_pending": [
-        "PRI-05a"
-      ],
+      "native_blockers_pending": ["PRI-05a"],
       "parent_link": {
         "attempted_at": "2026-11-13T11:27:47Z",
         "database_id": 6370287995,
@@ -5129,9 +4697,7 @@
       "queue_response_at": "2026-11-13T11:27:48Z",
       "queue_status": "queued",
       "readback_at": "2026-11-13T11:27:36Z",
-      "relationship_pending": [
-        "PRI-05a"
-      ],
+      "relationship_pending": ["PRI-05a"],
       "reused": false,
       "status": "complete",
       "task_id": 15951,
@@ -5161,9 +4727,7 @@
           "url": "https://github.com/developing-today/code/issues/9482"
         }
       },
-      "native_blockers_pending": [
-        "PRI-05b"
-      ],
+      "native_blockers_pending": ["PRI-05b"],
       "parent_link": {
         "attempted_at": "2026-11-13T11:28:08Z",
         "database_id": 6370292986,
@@ -5181,9 +4745,7 @@
       "queue_response_at": "2026-11-13T11:28:08Z",
       "queue_status": "queued",
       "readback_at": "2026-11-13T11:27:56Z",
-      "relationship_pending": [
-        "PRI-05b"
-      ],
+      "relationship_pending": ["PRI-05b"],
       "reused": false,
       "status": "complete",
       "task_id": 15952,
@@ -5213,9 +4775,7 @@
           "url": "https://github.com/developing-today/code/issues/9483"
         }
       },
-      "native_blockers_pending": [
-        "PRI-05c"
-      ],
+      "native_blockers_pending": ["PRI-05c"],
       "parent_link": {
         "attempted_at": "2026-11-13T11:28:27Z",
         "database_id": 6370298154,
@@ -5233,9 +4793,7 @@
       "queue_response_at": "2026-11-13T11:28:28Z",
       "queue_status": "queued",
       "readback_at": "2026-11-13T11:28:16Z",
-      "relationship_pending": [
-        "PRI-05c"
-      ],
+      "relationship_pending": ["PRI-05c"],
       "reused": false,
       "status": "complete",
       "task_id": 15954,
@@ -5265,9 +4823,7 @@
           "url": "https://github.com/developing-today/code/issues/9480"
         }
       },
-      "native_blockers_pending": [
-        "PRI-04"
-      ],
+      "native_blockers_pending": ["PRI-04"],
       "parent_link": {
         "attempted_at": "2026-11-13T11:28:48Z",
         "database_id": 6370303219,
@@ -5285,9 +4841,7 @@
       "queue_response_at": "2026-11-13T11:28:49Z",
       "queue_status": "queued",
       "readback_at": "2026-11-13T11:28:35Z",
-      "relationship_pending": [
-        "PRI-04"
-      ],
+      "relationship_pending": ["PRI-04"],
       "reused": false,
       "status": "complete",
       "task_id": 15955,
@@ -5325,10 +4879,7 @@
           "url": "https://github.com/developing-today/code/issues/9074"
         }
       },
-      "native_blockers_pending": [
-        "#9073",
-        "#9074"
-      ],
+      "native_blockers_pending": ["#9073", "#9074"],
       "parent_link": {
         "attempted_at": "2026-11-13T11:29:08Z",
         "database_id": 6370308304,
@@ -5346,10 +4897,7 @@
       "queue_response_at": "2026-11-13T11:29:09Z",
       "queue_status": "queued",
       "readback_at": "2026-11-13T11:28:56Z",
-      "relationship_pending": [
-        "#9073",
-        "#9074"
-      ],
+      "relationship_pending": ["#9073", "#9074"],
       "reused": false,
       "status": "complete",
       "task_id": 15957,
@@ -5395,11 +4943,7 @@
           "url": "https://github.com/developing-today/code/issues/9439"
         }
       },
-      "native_blockers_pending": [
-        "CEN-04",
-        "CLI-01",
-        "CLI-03"
-      ],
+      "native_blockers_pending": ["CEN-04", "CLI-01", "CLI-03"],
       "parent_link": {
         "attempted_at": "2026-11-13T11:42:18Z",
         "database_id": 6370511202,
@@ -5417,11 +4961,7 @@
       "queue_response_at": "2026-11-13T11:42:18Z",
       "queue_status": "queued",
       "readback_at": "2026-11-13T11:42:08Z",
-      "relationship_pending": [
-        "CEN-04",
-        "CLI-01",
-        "CLI-03"
-      ],
+      "relationship_pending": ["CEN-04", "CLI-01", "CLI-03"],
       "reused": false,
       "status": "complete",
       "task_id": 16012,
@@ -5467,11 +5007,7 @@
           "url": "https://github.com/developing-today/code/issues/9512"
         }
       },
-      "native_blockers_pending": [
-        "REL-01",
-        "PRI-03",
-        "CLI-05"
-      ],
+      "native_blockers_pending": ["REL-01", "PRI-03", "CLI-05"],
       "parent_link": {
         "attempted_at": "2026-11-13T11:29:34Z",
         "database_id": 6370315002,
@@ -5489,11 +5025,7 @@
       "queue_response_at": "2026-11-13T11:29:35Z",
       "queue_status": "queued",
       "readback_at": "2026-11-13T11:29:22Z",
-      "relationship_pending": [
-        "REL-01",
-        "PRI-03",
-        "CLI-05"
-      ],
+      "relationship_pending": ["REL-01", "PRI-03", "CLI-05"],
       "reused": false,
       "status": "complete",
       "task_id": 15959,
@@ -5539,11 +5071,7 @@
           "url": "https://github.com/developing-today/code/issues/9448"
         }
       },
-      "native_blockers_pending": [
-        "CLI-02",
-        "CEN-04",
-        "DSP-08"
-      ],
+      "native_blockers_pending": ["CLI-02", "CEN-04", "DSP-08"],
       "parent_link": {
         "attempted_at": "2026-11-13T11:42:34Z",
         "database_id": 6370515270,
@@ -5561,11 +5089,7 @@
       "queue_response_at": "2026-11-13T11:42:34Z",
       "queue_status": "queued",
       "readback_at": "2026-11-13T11:42:25Z",
-      "relationship_pending": [
-        "CLI-02",
-        "CEN-04",
-        "DSP-08"
-      ],
+      "relationship_pending": ["CLI-02", "CEN-04", "DSP-08"],
       "reused": false,
       "status": "complete",
       "task_id": 16014,
@@ -5611,11 +5135,7 @@
           "url": "https://github.com/developing-today/code/issues/9513"
         }
       },
-      "native_blockers_pending": [
-        "REL-03",
-        "HYD-05",
-        "DSP-09"
-      ],
+      "native_blockers_pending": ["REL-03", "HYD-05", "DSP-09"],
       "parent_link": {
         "attempted_at": "2026-11-13T11:42:51Z",
         "database_id": 6370519366,
@@ -5633,11 +5153,7 @@
       "queue_response_at": "2026-11-13T11:42:51Z",
       "queue_status": "queued",
       "readback_at": "2026-11-13T11:42:41Z",
-      "relationship_pending": [
-        "REL-03",
-        "HYD-05",
-        "DSP-09"
-      ],
+      "relationship_pending": ["REL-03", "HYD-05", "DSP-09"],
       "reused": false,
       "status": "complete",
       "task_id": 16015,
@@ -5675,10 +5191,7 @@
           "url": "https://github.com/developing-today/code/issues/9514"
         }
       },
-      "native_blockers_pending": [
-        "REL-04",
-        "AUTH-02"
-      ],
+      "native_blockers_pending": ["REL-04", "AUTH-02"],
       "parent_link": {
         "attempted_at": "2026-11-13T11:43:07Z",
         "database_id": 6370523207,
@@ -5696,10 +5209,7 @@
       "queue_response_at": "2026-11-13T11:43:07Z",
       "queue_status": "queued",
       "readback_at": "2026-11-13T11:42:57Z",
-      "relationship_pending": [
-        "REL-04",
-        "AUTH-02"
-      ],
+      "relationship_pending": ["REL-04", "AUTH-02"],
       "reused": false,
       "status": "complete",
       "task_id": 16016,
@@ -5753,12 +5263,7 @@
           "url": "https://github.com/developing-today/code/issues/9513"
         }
       },
-      "native_blockers_pending": [
-        "REL-03",
-        "AUTH-02",
-        "AUTH-01",
-        "CEN-04"
-      ],
+      "native_blockers_pending": ["REL-03", "AUTH-02", "AUTH-01", "CEN-04"],
       "parent_link": {
         "attempted_at": "2026-11-13T11:43:24Z",
         "database_id": 6370527240,
@@ -5776,12 +5281,7 @@
       "queue_response_at": "2026-11-13T11:43:24Z",
       "queue_status": "queued",
       "readback_at": "2026-11-13T11:43:14Z",
-      "relationship_pending": [
-        "REL-03",
-        "AUTH-02",
-        "AUTH-01",
-        "CEN-04"
-      ],
+      "relationship_pending": ["REL-03", "AUTH-02", "AUTH-01", "CEN-04"],
       "reused": false,
       "status": "complete",
       "task_id": 16017,
@@ -5867,16 +5367,7 @@
           "url": "https://github.com/developing-today/code/issues/9516"
         }
       },
-      "native_blockers_pending": [
-        "REL-01",
-        "REL-02",
-        "REL-03",
-        "REL-04",
-        "REL-05",
-        "REL-06",
-        "HYD-06",
-        "AUTH-01"
-      ],
+      "native_blockers_pending": ["REL-01", "REL-02", "REL-03", "REL-04", "REL-05", "REL-06", "HYD-06", "AUTH-01"],
       "parent_link": {
         "attempted_at": "2026-11-13T11:43:39Z",
         "database_id": 6370531118,
@@ -5894,16 +5385,7 @@
       "queue_response_at": "2026-11-13T11:43:39Z",
       "queue_status": "queued",
       "readback_at": "2026-11-13T11:43:30Z",
-      "relationship_pending": [
-        "REL-01",
-        "REL-02",
-        "REL-03",
-        "REL-04",
-        "REL-05",
-        "REL-06",
-        "HYD-06",
-        "AUTH-01"
-      ],
+      "relationship_pending": ["REL-01", "REL-02", "REL-03", "REL-04", "REL-05", "REL-06", "HYD-06", "AUTH-01"],
       "reused": false,
       "status": "complete",
       "task_id": 16020,
@@ -5941,10 +5423,7 @@
           "url": "https://github.com/developing-today/code/issues/9517"
         }
       },
-      "native_blockers_pending": [
-        "CLI-13",
-        "REL-07"
-      ],
+      "native_blockers_pending": ["CLI-13", "REL-07"],
       "parent_link": {
         "attempted_at": "2026-11-13T11:43:53Z",
         "database_id": 6370534918,
@@ -5962,10 +5441,7 @@
       "queue_response_at": "2026-11-13T11:43:54Z",
       "queue_status": "queued",
       "readback_at": "2026-11-13T11:43:45Z",
-      "relationship_pending": [
-        "CLI-13",
-        "REL-07"
-      ],
+      "relationship_pending": ["CLI-13", "REL-07"],
       "reused": false,
       "status": "complete",
       "task_id": 16021,
@@ -6019,12 +5495,7 @@
           "url": "https://github.com/developing-today/code/issues/9518"
         }
       },
-      "native_blockers_pending": [
-        "HYD-06",
-        "REL-03",
-        "AUTH-01",
-        "REL-08"
-      ],
+      "native_blockers_pending": ["HYD-06", "REL-03", "AUTH-01", "REL-08"],
       "parent_link": {
         "attempted_at": "2026-11-13T11:44:10Z",
         "database_id": 6370538940,
@@ -6042,12 +5513,7 @@
       "queue_response_at": "2026-11-13T11:44:10Z",
       "queue_status": "queued",
       "readback_at": "2026-11-13T11:44:00Z",
-      "relationship_pending": [
-        "HYD-06",
-        "REL-03",
-        "AUTH-01",
-        "REL-08"
-      ],
+      "relationship_pending": ["HYD-06", "REL-03", "AUTH-01", "REL-08"],
       "reused": false,
       "status": "complete",
       "task_id": 16023,
@@ -6101,12 +5567,7 @@
           "url": "https://github.com/developing-today/code/issues/9487"
         }
       },
-      "native_blockers_pending": [
-        "CEN-04",
-        "REL-02",
-        "#9073",
-        "#9076"
-      ],
+      "native_blockers_pending": ["CEN-04", "REL-02", "#9073", "#9076"],
       "parent_link": {
         "attempted_at": "2026-11-13T11:30:40Z",
         "database_id": 6370332290,
@@ -6124,12 +5585,7 @@
       "queue_response_at": "2026-11-13T11:30:40Z",
       "queue_status": "queued",
       "readback_at": "2026-11-13T11:30:29Z",
-      "relationship_pending": [
-        "CEN-04",
-        "REL-02",
-        "#9073",
-        "#9076"
-      ],
+      "relationship_pending": ["CEN-04", "REL-02", "#9073", "#9076"],
       "reused": false,
       "status": "complete",
       "task_id": 15960,
@@ -6199,14 +5655,7 @@
           "url": "https://github.com/developing-today/code/issues/9519"
         }
       },
-      "native_blockers_pending": [
-        "CEN-04",
-        "REL-02",
-        "#9073",
-        "#9076",
-        "REL-09",
-        "REL-05"
-      ],
+      "native_blockers_pending": ["CEN-04", "REL-02", "#9073", "#9076", "REL-09", "REL-05"],
       "parent_link": {
         "attempted_at": "2026-11-13T11:31:00Z",
         "database_id": 6370337132,
@@ -6224,14 +5673,7 @@
       "queue_response_at": "2026-11-13T11:31:01Z",
       "queue_status": "queued",
       "readback_at": "2026-11-13T11:30:47Z",
-      "relationship_pending": [
-        "CEN-04",
-        "REL-02",
-        "#9073",
-        "#9076",
-        "REL-09",
-        "REL-05"
-      ],
+      "relationship_pending": ["CEN-04", "REL-02", "#9073", "#9076", "REL-09", "REL-05"],
       "reused": false,
       "status": "complete",
       "task_id": 15963,
@@ -6293,13 +5735,7 @@
           "url": "https://github.com/developing-today/code/issues/9517"
         }
       },
-      "native_blockers_pending": [
-        "REL-03",
-        "REL-04",
-        "REL-05",
-        "REL-06",
-        "REL-07"
-      ],
+      "native_blockers_pending": ["REL-03", "REL-04", "REL-05", "REL-06", "REL-07"],
       "parent_link": {
         "attempted_at": "2026-11-13T11:31:19Z",
         "database_id": 6370342358,
@@ -6317,13 +5753,7 @@
       "queue_response_at": "2026-11-13T11:31:20Z",
       "queue_status": "queued",
       "readback_at": "2026-11-13T11:31:07Z",
-      "relationship_pending": [
-        "REL-03",
-        "REL-04",
-        "REL-05",
-        "REL-06",
-        "REL-07"
-      ],
+      "relationship_pending": ["REL-03", "REL-04", "REL-05", "REL-06", "REL-07"],
       "reused": false,
       "status": "complete",
       "task_id": 15964,
@@ -6369,11 +5799,7 @@
           "url": "https://github.com/developing-today/code/issues/9478"
         }
       },
-      "native_blockers_pending": [
-        "#8097",
-        "PRI-01",
-        "DST-01"
-      ],
+      "native_blockers_pending": ["#8097", "PRI-01", "DST-01"],
       "parent_link": {
         "attempted_at": "2026-11-13T11:31:39Z",
         "database_id": 6370347318,
@@ -6391,11 +5817,7 @@
       "queue_response_at": "2026-11-13T11:31:39Z",
       "queue_status": "queued",
       "readback_at": "2026-11-13T11:31:27Z",
-      "relationship_pending": [
-        "#8097",
-        "PRI-01",
-        "DST-01"
-      ],
+      "relationship_pending": ["#8097", "PRI-01", "DST-01"],
       "reused": false,
       "status": "complete",
       "task_id": 15966,
@@ -6449,12 +5871,7 @@
           "url": "https://github.com/developing-today/code/issues/9491"
         }
       },
-      "native_blockers_pending": [
-        "SEL-01",
-        "REL-02",
-        "REL-04",
-        "CLI-04"
-      ],
+      "native_blockers_pending": ["SEL-01", "REL-02", "REL-04", "CLI-04"],
       "parent_link": {
         "attempted_at": "2026-11-13T11:32:00Z",
         "database_id": 6370352250,
@@ -6472,12 +5889,7 @@
       "queue_response_at": "2026-11-13T11:32:00Z",
       "queue_status": "queued",
       "readback_at": "2026-11-13T11:31:47Z",
-      "relationship_pending": [
-        "SEL-01",
-        "REL-02",
-        "REL-04",
-        "CLI-04"
-      ],
+      "relationship_pending": ["SEL-01", "REL-02", "REL-04", "CLI-04"],
       "reused": false,
       "status": "complete",
       "task_id": 15967,
@@ -6507,9 +5919,7 @@
           "url": "https://github.com/developing-today/code/issues/9492"
         }
       },
-      "native_blockers_pending": [
-        "SEL-02"
-      ],
+      "native_blockers_pending": ["SEL-02"],
       "parent_link": {
         "attempted_at": "2026-11-13T11:32:22Z",
         "database_id": 6370357419,
@@ -6527,9 +5937,7 @@
       "queue_response_at": "2026-11-13T11:32:22Z",
       "queue_status": "queued",
       "readback_at": "2026-11-13T11:32:08Z",
-      "relationship_pending": [
-        "SEL-02"
-      ],
+      "relationship_pending": ["SEL-02"],
       "reused": false,
       "status": "complete",
       "task_id": 15969,
@@ -6575,11 +5983,7 @@
           "url": "https://github.com/developing-today/code/issues/9493"
         }
       },
-      "native_blockers_pending": [
-        "SEL-02",
-        "REL-03",
-        "SEL-03"
-      ],
+      "native_blockers_pending": ["SEL-02", "REL-03", "SEL-03"],
       "parent_link": {
         "attempted_at": "2026-11-13T11:32:41Z",
         "database_id": 6370363103,
@@ -6597,11 +6001,7 @@
       "queue_response_at": "2026-11-13T11:32:41Z",
       "queue_status": "queued",
       "readback_at": "2026-11-13T11:32:29Z",
-      "relationship_pending": [
-        "SEL-02",
-        "REL-03",
-        "SEL-03"
-      ],
+      "relationship_pending": ["SEL-02", "REL-03", "SEL-03"],
       "reused": false,
       "status": "complete",
       "task_id": 15971,
@@ -6639,10 +6039,7 @@
           "url": "https://github.com/developing-today/code/issues/9494"
         }
       },
-      "native_blockers_pending": [
-        "SEL-03",
-        "SEL-04"
-      ],
+      "native_blockers_pending": ["SEL-03", "SEL-04"],
       "parent_link": {
         "attempted_at": "2026-11-13T11:32:58Z",
         "database_id": 6370367728,
@@ -6660,10 +6057,7 @@
       "queue_response_at": "2026-11-13T11:32:59Z",
       "queue_status": "queued",
       "readback_at": "2026-11-13T11:32:47Z",
-      "relationship_pending": [
-        "SEL-03",
-        "SEL-04"
-      ],
+      "relationship_pending": ["SEL-03", "SEL-04"],
       "reused": false,
       "status": "complete",
       "task_id": 15972,
@@ -6701,10 +6095,7 @@
           "url": "https://github.com/developing-today/code/issues/9495"
         }
       },
-      "native_blockers_pending": [
-        "#8097",
-        "SEL-05"
-      ],
+      "native_blockers_pending": ["#8097", "SEL-05"],
       "parent_link": {
         "attempted_at": "2026-11-13T11:33:13Z",
         "database_id": 6370371954,
@@ -6722,10 +6113,7 @@
       "queue_response_at": "2026-11-13T11:33:13Z",
       "queue_status": "queued",
       "readback_at": "2026-11-13T11:33:04Z",
-      "relationship_pending": [
-        "#8097",
-        "SEL-05"
-      ],
+      "relationship_pending": ["#8097", "SEL-05"],
       "reused": false,
       "status": "complete",
       "task_id": 15974,
@@ -6763,10 +6151,7 @@
           "url": "https://github.com/developing-today/code/issues/9496"
         }
       },
-      "native_blockers_pending": [
-        "SEL-01",
-        "SEL-06"
-      ],
+      "native_blockers_pending": ["SEL-01", "SEL-06"],
       "parent_link": {
         "attempted_at": "2026-11-13T11:33:31Z",
         "database_id": 6370375871,
@@ -6784,10 +6169,7 @@
       "queue_response_at": "2026-11-13T11:33:31Z",
       "queue_status": "queued",
       "readback_at": "2026-11-13T11:33:20Z",
-      "relationship_pending": [
-        "SEL-01",
-        "SEL-06"
-      ],
+      "relationship_pending": ["SEL-01", "SEL-06"],
       "reused": false,
       "status": "complete",
       "task_id": 15975,
@@ -6841,12 +6223,7 @@
           "url": "https://github.com/developing-today/code/issues/9480"
         }
       },
-      "native_blockers_pending": [
-        "CEN-04",
-        "#9073",
-        "#9074",
-        "PRI-04"
-      ],
+      "native_blockers_pending": ["CEN-04", "#9073", "#9074", "PRI-04"],
       "parent_link": {
         "attempted_at": "2026-11-13T11:33:47Z",
         "database_id": 6370380461,
@@ -6864,12 +6241,7 @@
       "queue_response_at": "2026-11-13T11:33:47Z",
       "queue_status": "queued",
       "readback_at": "2026-11-13T11:33:37Z",
-      "relationship_pending": [
-        "CEN-04",
-        "#9073",
-        "#9074",
-        "PRI-04"
-      ],
+      "relationship_pending": ["CEN-04", "#9073", "#9074", "PRI-04"],
       "reused": false,
       "status": "complete",
       "task_id": 15976,
@@ -6893,113 +6265,62 @@
     "manual_support_allocations": {
       "AUTH-05": {
         "approved_by": "parent session ses_e5e2d10e06effeEylSDDVaN0PL, message seq 12; support mapping only, NOT Apply approval",
-        "ids": [
-          "C-R121",
-          "C-R122",
-          "P-R018"
-        ],
+        "ids": ["C-R121", "C-R122", "P-R018"],
         "note": "provenance/trust support for HYD-07's canonical activity classifier; not a second classifier"
       },
       "CEN-05": {
         "approved_by": "parent session ses_e5e2d10e06effeEylSDDVaN0PL, message seq 12; support mapping only, NOT Apply approval",
-        "ids": [
-          "C-R104",
-          "C-R160",
-          "O-R039",
-          "H-R046"
-        ],
+        "ids": ["C-R104", "C-R160", "O-R039", "H-R046"],
         "note": "offline reference validation method; no production implementation claim"
       },
       "CEN-06": {
         "approved_by": "parent session ses_e5e2d10e06effeEylSDDVaN0PL, message seq 12; support mapping only, NOT Apply approval",
-        "ids": [
-          "H-R048",
-          "C-R161",
-          "C-R162",
-          "O-R039"
-        ],
+        "ids": ["H-R048", "C-R161", "C-R162", "O-R039"],
         "note": "evidence-reporting method separate from experiment/model results"
       },
       "CEN-07": {
         "approved_by": "parent session ses_e5e2d10e06effeEylSDDVaN0PL, message seq 12; support mapping only, NOT Apply approval",
-        "ids": [
-          "H-R046",
-          "C-R160",
-          "C-R162",
-          "P-R027"
-        ],
+        "ids": ["H-R046", "C-R160", "C-R162", "P-R027"],
         "note": "adapter/CI validation method; not a literal request for a new CI workflow or service"
       },
       "DSP-10": {
         "approved_by": "parent session ses_e5e2d10e06effeEylSDDVaN0PL, message seq 12; support mapping only, NOT Apply approval",
-        "ids": [
-          "H-R046",
-          "H-R048",
-          "C-R160",
-          "C-R162",
-          "O-R065"
-        ],
+        "ids": ["H-R046", "H-R048", "C-R160", "C-R162", "O-R065"],
         "note": "rollout, recovery and evidence distinctions; no deployment or schedule authorization"
       },
       "DST-07": {
         "approved_by": "parent session ses_e5e2d10e06effeEylSDDVaN0PL, message seq 12; support mapping only, NOT Apply approval",
-        "ids": [
-          "H-R005",
-          "P-R026"
-        ],
+        "ids": ["H-R005", "P-R026"],
         "note": "versioned/degraded/partial output method; no invented runtime capability"
       },
       "JRN-04": {
         "approved_by": "parent session ses_e5e2d10e06effeEylSDDVaN0PL, message seq 12; support mapping only, NOT Apply approval",
-        "ids": [
-          "P-R006",
-          "H-R023"
-        ],
+        "ids": ["P-R006", "H-R023"],
         "note": "design-expansion feasibility research only; also consumes #3424's existing full-history requirement; not a literal full-event-store mandate or parallel DB"
       },
       "MOB-00": {
         "approved_by": "parent session ses_e5e2d10e06effeEylSDDVaN0PL, message seq 12; support mapping only, NOT Apply approval",
-        "ids": [
-          "C-R081",
-          "C-R160",
-          "O-R013"
-        ],
+        "ids": ["C-R081", "C-R160", "O-R013"],
         "note": "browser test harness as an explicit validation method, not a new app/service"
       },
       "MOB-08": {
         "approved_by": "parent session ses_e5e2d10e06effeEylSDDVaN0PL, message seq 12; support mapping only, NOT Apply approval",
-        "ids": [
-          "C-R081",
-          "O-R012",
-          "P-R018",
-          "C-R119"
-        ],
+        "ids": ["C-R081", "O-R012", "P-R018", "C-R119"],
         "note": "dependency/activity view integration method over existing projection sources"
       },
       "MOB-10": {
         "approved_by": "parent session ses_e5e2d10e06effeEylSDDVaN0PL, message seq 12; support mapping only, NOT Apply approval",
-        "ids": [
-          "H-R005",
-          "H-R023"
-        ],
+        "ids": ["H-R005", "H-R023"],
         "note": "hosted compatibility validation method; not a literal adoption of the recovered original's hosted deployment mechanism"
       },
       "PRI-07": {
         "approved_by": "parent session ses_e5e2d10e06effeEylSDDVaN0PL, message seq 12; support mapping only, NOT Apply approval",
-        "ids": [
-          "C-R047",
-          "H-R046",
-          "C-R162"
-        ],
+        "ids": ["C-R047", "H-R046", "C-R162"],
         "note": "shadow/migration/rollback validation only; no priority cutover authorization"
       },
       "PRI-08": {
         "approved_by": "parent session ses_e5e2d10e06effeEylSDDVaN0PL, message seq 12; support mapping only, NOT Apply approval",
-        "ids": [
-          "C-R040",
-          "C-R105",
-          "H-R010"
-        ],
+        "ids": ["C-R040", "C-R105", "H-R010"],
         "note": "design-expansion support for distinct conditional importance-axis mixing; importance remains null/unfabricated until evidence and no urgency derivation"
       }
     },

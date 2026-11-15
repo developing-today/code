@@ -36,29 +36,29 @@
 
 All 21 slices were checked for a title, explicit S2/S6 statement references, goal/output, enables, file/test ownership, prerequisite edges, tier/version, oracle, failing test and future command. Union coverage is exactly the 36 S2/S6 statements (no missing or out-of-range references). I found no crucial slice with a hard dependency on a recommended slice. The following table records slice-level disposition; “blocked” means the slice needs the linked correction above before the whole handoff is ready, not that every isolated implementation detail is unsound.
 
-| Slice | Zero-context disposition |
-|---|---|
-| C9133-01 | **Blocked by 1.** Good bounded schema/fixture intent, but its oracle needs to execute semantics, not just assert fixture fields. |
-| C9133-02-D1 | Agree as a narrow adapter/conformance PR; no performance claim. |
-| C9133-02-R2 | Agree as a narrow object adapter; keep SQL-scan unsupported unless semantic equivalence is demonstrated. |
-| C9133-02-redb | Agree as a narrow adapter; adapter test is not a benchmark run (finding 2). |
-| C9133-02-turso | Agree as a narrow adapter; adapter test is not a benchmark run (finding 2). |
-| C9133-CLOUD | **Blocked by 1–4.** Cloud-only scope does not satisfy the laptop comparison; recall input and validator ownership are unclear. Contingent gates (credentials, spend cap, region, corpus/eval set) are appropriate. |
-| C9134-01 | Agree: research/contract boundary names watermark and policy authority prerequisites and fail-closed oracle. |
-| C9134-02 | Agree: implementation is scoped to cache migration; hard prerequisites are the contract and sibling-owned policy/watermark interfaces. |
-| C9135-01 | **Blocked by 5.** Identity/store inventory and bounded test are coherent; research file conflicts with C9138-01. |
-| C9135-02 | Agree: compatibility-only test with no wire-byte change; owner review is explicit. |
-| C9135-03 | Agree as contingent research; its hard dependency on C9135-01 and source-check command are stated. |
-| C9136-01 | Agree: broker authorization and encryption are correctly separate; scope remains #9083/#9084-owned. |
-| C9136-02 | Agree: bounded authorization implementation, including presence/list probes. |
-| C9137-01 | Agree on core fence contract: atomic ref-intent/tombstone generation authority, resurrection at g+1, and GC disabled without #9084 support. |
-| C9137-02 | Agree: collector is downstream of the fence and deletes only a captured physical generation. |
-| C9138-01 | **Blocked by 5.** Keeps Snowflake Arctic distinct from Cortex and leaves the second model owner-undecided; research file conflicts with C9135-01. |
-| C9138-02 | Agree: consumes the model decision and #9084 identity contract; does not choose a second embedder. |
-| C9139-01 | **Blocked by 6.** Snapshot, finite dedup/expiry, restart and signed-page gates are present; deterministic ordering/tie-break is not. |
-| C9139-02 | Agree conditional on C9139-01's settled model; logical worker and bounded per-tenant DO intent are coherent. |
-| C9140-01 | Agree: separates recommendation snapshots from search history and states per-class retention plus deletion/hold. |
-| C9140-02 | Agree conditional on object/lifecycle authority and paging contract; pinned snapshot IDs make comparisons stable. |
+| Slice          | Zero-context disposition                                                                                                                                                                                           |
+| -------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| C9133-01       | **Blocked by 1.** Good bounded schema/fixture intent, but its oracle needs to execute semantics, not just assert fixture fields.                                                                                   |
+| C9133-02-D1    | Agree as a narrow adapter/conformance PR; no performance claim.                                                                                                                                                    |
+| C9133-02-R2    | Agree as a narrow object adapter; keep SQL-scan unsupported unless semantic equivalence is demonstrated.                                                                                                           |
+| C9133-02-redb  | Agree as a narrow adapter; adapter test is not a benchmark run (finding 2).                                                                                                                                        |
+| C9133-02-turso | Agree as a narrow adapter; adapter test is not a benchmark run (finding 2).                                                                                                                                        |
+| C9133-CLOUD    | **Blocked by 1–4.** Cloud-only scope does not satisfy the laptop comparison; recall input and validator ownership are unclear. Contingent gates (credentials, spend cap, region, corpus/eval set) are appropriate. |
+| C9134-01       | Agree: research/contract boundary names watermark and policy authority prerequisites and fail-closed oracle.                                                                                                       |
+| C9134-02       | Agree: implementation is scoped to cache migration; hard prerequisites are the contract and sibling-owned policy/watermark interfaces.                                                                             |
+| C9135-01       | **Blocked by 5.** Identity/store inventory and bounded test are coherent; research file conflicts with C9138-01.                                                                                                   |
+| C9135-02       | Agree: compatibility-only test with no wire-byte change; owner review is explicit.                                                                                                                                 |
+| C9135-03       | Agree as contingent research; its hard dependency on C9135-01 and source-check command are stated.                                                                                                                 |
+| C9136-01       | Agree: broker authorization and encryption are correctly separate; scope remains #9083/#9084-owned.                                                                                                                |
+| C9136-02       | Agree: bounded authorization implementation, including presence/list probes.                                                                                                                                       |
+| C9137-01       | Agree on core fence contract: atomic ref-intent/tombstone generation authority, resurrection at g+1, and GC disabled without #9084 support.                                                                        |
+| C9137-02       | Agree: collector is downstream of the fence and deletes only a captured physical generation.                                                                                                                       |
+| C9138-01       | **Blocked by 5.** Keeps Snowflake Arctic distinct from Cortex and leaves the second model owner-undecided; research file conflicts with C9135-01.                                                                  |
+| C9138-02       | Agree: consumes the model decision and #9084 identity contract; does not choose a second embedder.                                                                                                                 |
+| C9139-01       | **Blocked by 6.** Snapshot, finite dedup/expiry, restart and signed-page gates are present; deterministic ordering/tie-break is not.                                                                               |
+| C9139-02       | Agree conditional on C9139-01's settled model; logical worker and bounded per-tenant DO intent are coherent.                                                                                                       |
+| C9140-01       | Agree: separates recommendation snapshots from search history and states per-class retention plus deletion/hold.                                                                                                   |
+| C9140-02       | Agree conditional on object/lifecycle authority and paging contract; pinned snapshot IDs make comparisons stable.                                                                                                  |
 
 ## Evidence checks performed
 

@@ -66,7 +66,8 @@ add `fleet work complete` parser contract with explicit refs, `--wait/--verify`,
 - **P-R040 — design-only (candidate)**; occurrences `P-1414`; full trace: census/requirements-crosswalk.jsonl
 - **P-R054 — design-only (candidate)**; occurrences `P-1705, P-1706, P-1707, P-1708, P-1709, P-1710, P-1711, P-1712, P-1713, P-1714, P-1715`; full trace: census/requirements-crosswalk.jsonl
 - **P-R069 — design-only (candidate)**; occurrences `P-1705, P-1706, P-1707, P-1708, P-1709, P-1710, P-1711, P-1712, P-1713, P-1714, P-1715`; full trace: census/requirements-crosswalk.jsonl
-Deliver this bounded slice only. It enables downstream work only after its stated contracts and prerequisites are accepted; it does not imply that other component specs, closed parent issues, source code, tests, deployments, or runtime behavior are complete.
+  Deliver this bounded slice only. It enables downstream work only after its stated contracts and prerequisites are accepted; it does not imply that other component specs, closed parent issues, source code, tests, deployments, or runtime behavior are complete.
+
 ## Owned files and boundaries
 
 - `pkgs/fleet/crates/fleet-queue/src/work/completion.rs`
@@ -81,9 +82,6 @@ Hard blockers named by the source slice, after granular-key normalization: CLI-1
 File-collision sequencing edges added by stable topological serialization: none.
 Existing issue references retained as non-blocking runtime/evidence gates: none.
 Domain-starter parent references are never emitted as hard native blockers. Source parents normalized to granular slices or runtime gates: #9206→CLI-13, #9203→runtime gate.
-
-
-
 
 Use only granular issue-key edges after all keys are resolved. Never make a whole domain starter a hard blocker when it creates a cycle. File collisions are hard sequencing edges. Parent integration adds native parent/blocker edges in a later pass after the command map, requirements IDs, and acyclic graph are verified.
 
@@ -127,13 +125,12 @@ Negative coverage: ambiguous repo, implicit close-all, timeout, unauthorized mer
 
 **Tier:** recommended after state machine. **Goal:** add `fleet work complete` parser contract with explicit refs, `--wait/--verify`, idempotency and shared structured outcome. **Owns:** one shared #9206 CLI integration slice for `fleet/src/main.rs`, `fleet-registry/src/lib.rs`, golden help/output and command inventory; #9209 does not create duplicate writers. **Hard blockers:** #9206 Command/Result contract; REL-07; #9203 dispatch excluded. **First failing oracle:** `pmo_cli_complete_requires_explicit_remote_resource_allowlist` plus `pmo_cli_complete_reports_partial_receipt`; census shows proposed namespace absent at pin. **Done:** named tests must be listed in their owning integration target, then run that exact target; queue crate command tests service composition only. **Negative:** ambiguous repo, implicit close-all, timeout, unauthorized merge, changed digest. **Compatibility:** additive, preserve all source options and queue aliases. Deployment receipt separate.
 
-
 ## Merged source-key/facade acceptance
 
 - `CLI-10` → `REL-08`: Completion and sync/outbox CLI façade is REL-08; effect verification, recovery and ordering remain REL-03–07. Exact command rows allocated here: flag.close-issues, flag.close-linked-issues, flag.close-queue, flag.dry-run, flag.expected-version, flag.idempotency-key, flag.lease-token, flag.merge-linked-prs, flag.merge-pr, flag.require-clean-reconciliation, flag.timeout, flag.verify, flag.wait, sync.outbox.inspect, sync.outbox.list, sync.outbox.retry, sync.run, sync.status, sync.verify.
 
-
 ## Shared-file sequencing
 
 Added hard sequencing edges (the predecessor owns the same exact writable file):
+
 - blocked by `REL-07` — `shared-file:pkgs/fleet/crates/fleet-queue/src/work/completion.rs`

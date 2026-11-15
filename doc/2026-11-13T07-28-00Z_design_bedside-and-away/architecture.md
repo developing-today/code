@@ -37,20 +37,20 @@ Use opaque, immutable identifiers independently of editable names. Names may tri
 
 Core entities:
 
-| Entity | Purpose |
-|---|---|
-| Account / installation / principal | Separate authenticated identity, local guest continuity, and service actors |
-| Store / membership / invitation | Private, shared, or explicitly open boundary; roles and invite lifecycle |
-| Item / need / variant family | Concrete candidate, abstract requirement, or related alternatives |
-| Collection / project / category | Ordered or unordered groups; categories are a distinguished label/group type |
-| Placement / relation | Many-to-many association, independent ordering, parent context, and relationship type |
-| Label / attribute | Colored labels and typed normalized values with units and source evidence |
-| Annotation / comment / preference | Text or field anchors, user decisions, strength, quantity, and rationale |
-| Source / attachment / evidence | URL or captured content with attribution, timestamp, and access classification |
-| Policy / default / override | Visibility and configuration, explicit decisions distinct from inherited defaults |
-| Request / research job / report | Versioned intent, targets, workflow state, and reviewed output |
-| Inventory movement / receipt / expense | Observable operations, quantities, allocation, and correction history |
-| Event / command / outbox | Auditable mutation, concurrency control, and delivery lifecycle |
+| Entity                                 | Purpose                                                                               |
+| -------------------------------------- | ------------------------------------------------------------------------------------- |
+| Account / installation / principal     | Separate authenticated identity, local guest continuity, and service actors           |
+| Store / membership / invitation        | Private, shared, or explicitly open boundary; roles and invite lifecycle              |
+| Item / need / variant family           | Concrete candidate, abstract requirement, or related alternatives                     |
+| Collection / project / category        | Ordered or unordered groups; categories are a distinguished label/group type          |
+| Placement / relation                   | Many-to-many association, independent ordering, parent context, and relationship type |
+| Label / attribute                      | Colored labels and typed normalized values with units and source evidence             |
+| Annotation / comment / preference      | Text or field anchors, user decisions, strength, quantity, and rationale              |
+| Source / attachment / evidence         | URL or captured content with attribution, timestamp, and access classification        |
+| Policy / default / override            | Visibility and configuration, explicit decisions distinct from inherited defaults     |
+| Request / research job / report        | Versioned intent, targets, workflow state, and reviewed output                        |
+| Inventory movement / receipt / expense | Observable operations, quantities, allocation, and correction history                 |
+| Event / command / outbox               | Auditable mutation, concurrency control, and delivery lifecycle                       |
 
 An item can occur in multiple categories without duplication. Ordering belongs to a placement within a parent; moving one placement does not silently reorder all placements. Cycles are forbidden for hierarchical containment, but non-hierarchical related-to links may be cyclic.
 
@@ -143,19 +143,19 @@ Use protected secrets through approved tooling. Track expiry/rotation and monito
 
 The following are **proposed issue families**, not claims that repository issues already exist.
 
-| Workstream | Child design required | Acceptance gate |
-|---|---|---|
-| DM-00 Evidence and coverage | Requirements ledger; prototype audit; source traceability | Every owner statement mapped to requirement, conflict, clarification, or explicit deferral; all completion claims tied to evidence |
-| DM-01 Domain and variants | Entity/edge schema; split/merge semantics; normalization | Same item in multiple groups; independent ordering; split and regroup preserve IDs, notes, and history |
-| DM-02 Identity and ACL | Guest/account claim; stores; invites; policy precedence | Denial matrix covers API, search, history, summaries, exports, media, jobs, and priority override attempts |
-| DM-03 Commands and history | Event contract; idempotency; concurrency; undo | Duplicate and unknown-outcome requests cannot double-apply; undo after concurrent edit gives safe conflict resolution |
-| DM-04 Interaction and accessibility | Selection/tree actions; annotations; mobile decision views | Keyboard/touch tests; operations work at all promised levels; non-color status indicators |
-| DM-05 Defaults and refresh | Inheritance; preview/override; machine changes | Cancelled/disabled settings remain so across refresh and migration; bulk review preserves author/provenance |
-| DM-06 Research and media | Merchant access; evidence; extraction; attachments | Unknown fit/price remains unknown; source freshness visible; no credentials in DB/logs; quotas and malicious uploads tested |
-| DM-07 Inventory and reporting | Receipts; units; budget allocations; calendar dimensions | Preview before ambiguous mutation; totals reconcile; timezone and permissions tested |
-| DM-08 Steering and orchestration | Manual request contract; authenticated outbox/callback adapter | Request available globally and per-target; manual mode honest; replay/retry/cancel/conflict tests pass |
-| DM-09 Backend and operations | Placement interface; migrations; secrets; backup/restore | Dedicated data remains isolated; restore rehearsal and version rollback tested; approved routes unchanged |
-| DM-10 Release and documentation | Phased rollout; acceptance matrix; owner-facing status | Linked design PRs/issues/commits, clear built/partial/not-built states, no unreviewed scope deletion |
+| Workstream                          | Child design required                                          | Acceptance gate                                                                                                                    |
+| ----------------------------------- | -------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------- |
+| DM-00 Evidence and coverage         | Requirements ledger; prototype audit; source traceability      | Every owner statement mapped to requirement, conflict, clarification, or explicit deferral; all completion claims tied to evidence |
+| DM-01 Domain and variants           | Entity/edge schema; split/merge semantics; normalization       | Same item in multiple groups; independent ordering; split and regroup preserve IDs, notes, and history                             |
+| DM-02 Identity and ACL              | Guest/account claim; stores; invites; policy precedence        | Denial matrix covers API, search, history, summaries, exports, media, jobs, and priority override attempts                         |
+| DM-03 Commands and history          | Event contract; idempotency; concurrency; undo                 | Duplicate and unknown-outcome requests cannot double-apply; undo after concurrent edit gives safe conflict resolution              |
+| DM-04 Interaction and accessibility | Selection/tree actions; annotations; mobile decision views     | Keyboard/touch tests; operations work at all promised levels; non-color status indicators                                          |
+| DM-05 Defaults and refresh          | Inheritance; preview/override; machine changes                 | Cancelled/disabled settings remain so across refresh and migration; bulk review preserves author/provenance                        |
+| DM-06 Research and media            | Merchant access; evidence; extraction; attachments             | Unknown fit/price remains unknown; source freshness visible; no credentials in DB/logs; quotas and malicious uploads tested        |
+| DM-07 Inventory and reporting       | Receipts; units; budget allocations; calendar dimensions       | Preview before ambiguous mutation; totals reconcile; timezone and permissions tested                                               |
+| DM-08 Steering and orchestration    | Manual request contract; authenticated outbox/callback adapter | Request available globally and per-target; manual mode honest; replay/retry/cancel/conflict tests pass                             |
+| DM-09 Backend and operations        | Placement interface; migrations; secrets; backup/restore       | Dedicated data remains isolated; restore rehearsal and version rollback tested; approved routes unchanged                          |
+| DM-10 Release and documentation     | Phased rollout; acceptance matrix; owner-facing status         | Linked design PRs/issues/commits, clear built/partial/not-built states, no unreviewed scope deletion                               |
 
 Review order: DM-00 first; DM-01/02/03 and DM-09 establish shared invariants; DM-04/05/06/07 and manual DM-08 may develop against those contracts; connected DM-08 follows endpoint and authorization review; DM-10 verifies the integrated result. Do not serialize unrelated designs unnecessarily, but do not let parallel teams invent incompatible identity, ordering, event, or ACL models.
 

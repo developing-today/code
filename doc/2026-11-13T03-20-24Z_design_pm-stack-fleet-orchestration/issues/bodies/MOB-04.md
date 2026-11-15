@@ -38,9 +38,6 @@ File-collision sequencing edges added by stable topological serialization: none.
 Existing issue references retained as non-blocking runtime/evidence gates: none.
 Domain-starter parent references are never emitted as hard native blockers. Source parents normalized to granular slices or runtime gates: none.
 
-
-
-
 Use only granular issue-key edges after all keys are resolved. Never make a whole domain starter a hard blocker when it creates a cycle. File collisions are hard sequencing edges. Parent integration adds native parent/blocker edges in a later pass after the command map, requirements IDs, and acyclic graph are verified.
 
 ## Starting failing test, oracle, and done check
@@ -88,9 +85,9 @@ Negative coverage: stale input, duplicate/replay, ambiguous resource, unauthoriz
 - **Done/oracle:** accessibility DOM assertions and measured CSS geometry at 360/768/1280 CSS px and 200% zoom, keyboard flow, plus manual review checklist; no critical/serious automated violations and documented exceptions accounted for. Target is WCAG 2.2 AA, not a blanket compliance claim. Commands: `cd pm-stack/aggregator && bun test test/mobile-accessibility.test.ts`; browser command `cd pm-stack/aggregator && bunx playwright test --config playwright.config.ts --grep pmo_mob_03/04` using MOB-00's pinned harness.
 - **Edges:** MOB-00 hard prerequisite for browser acceptance; can proceed with MOB-03 prototype/unit tests, then gates production controls. No policy dependency.
 
-
 ## Shared-file sequencing
 
 Added hard sequencing edges (the predecessor owns the same exact writable file):
+
 - blocked by `MOB-03` — `shared-file:pm-stack/aggregator/src/render.ts`
 - blocked by `MOB-03` — `shared-file:pm-stack/aggregator/src/ui.css`

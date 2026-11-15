@@ -51,7 +51,8 @@ Required before/after peer ordering within equal effective urgency; exact intege
 - **P-R014 — design-only (candidate)**; occurrences `P-522, P-523, P-524, P-525, P-526, P-527, P-528, P-529, P-530, P-531, P-532, P-533, P-534, P-535, P-536, P-537, P-538, P-539, P-540, P-541, P-542, P-543, P-544, P-545, P-546, P-547, P-548, P-549, P-550, P-551, P-552`; full trace: census/requirements-crosswalk.jsonl
 - **S-R005 — design-only (candidate)**; occurrences `S-029, S-030, S-031, S-032, S-033, S-034`; full trace: census/requirements-crosswalk.jsonl
 - **S-R007 — design-only (candidate)**; occurrences `S-040, S-041, S-042, S-043, S-044, S-045, S-046`; full trace: census/requirements-crosswalk.jsonl
-Deliver this bounded slice only. It enables downstream work only after its stated contracts and prerequisites are accepted; it does not imply that other component specs, closed parent issues, source code, tests, deployments, or runtime behavior are complete.
+  Deliver this bounded slice only. It enables downstream work only after its stated contracts and prerequisites are accepted; it does not imply that other component specs, closed parent issues, source code, tests, deployments, or runtime behavior are complete.
+
 ## Owned files and boundaries
 
 - `pkgs/fleet/crates/fleet-queue/src/work/priority.rs`
@@ -70,14 +71,13 @@ Domain-starter parent references are never emitted as hard native blockers. Sour
 
 Source-local candidate aliases normalized for this packet: DST-ORDER-01 → PRI-03; PRI-CMP-01 → PRI-03; PRI-05 → PRI-05a, PRI-05b, PRI-05c, PRI-05d.
 
-
 Use only granular issue-key edges after all keys are resolved. Never make a whole domain starter a hard blocker when it creates a cycle. File collisions are hard sequencing edges. Parent integration adds native parent/blocker edges in a later pass after the command map, requirements IDs, and acyclic graph are verified.
 
 ## Starting failing test, oracle, and done check
 
 - **First failing test:** `pmo_peer_rank_rebalances_local_range; pmo_work_id_decimal_strings_order_numeric_not_lexical`
 - **Oracle:** The source slice’s stated reference model, golden fixture, or invariant; compare expected and observed state explicitly. No mock-only claim of deployed/live behavior.
-- **Done command:** `Verify `pmo_peer_rank_rebalances_local_range` and `pmo_work_id_decimal_strings_order_numeric_not_lexical` are listed; then run both exact fleet-queue filters. Comparator oracle asserts ID 9 sorts before 10 numerically for equal prior keys.`
+- **Done command:** `Verify `pmo_peer_rank_rebalances_local_range`and`pmo_work_id_decimal_strings_order_numeric_not_lexical` are listed; then run both exact fleet-queue filters. Comparator oracle asserts ID 9 sorts before 10 numerically for equal prior keys.`
 - Tests must first be listed by exact name in the owning target (`-- --list`); assert the test exists before execution. A zero-test filter passing is not acceptance.
 
 ## Acceptance and negative cases
@@ -116,9 +116,9 @@ Wire work IDs are canonical unsigned decimal strings, but after authority IDs co
 | `PRI-03` / recommended | Required before/after peer ordering within equal effective urgency; exact integer rank and local deterministic rebalance in `pkgs/fleet/crates/fleet-queue/src/work/priority.rs`; comparator parity in `pkgs/fleet/crates/fleet-queue/src/turso_queue.rs`. | `PRI-CMP-01`; `DST-ORDER-01`; persistent rank writes gated on Queue Table Improvements/#9074 schema disposition | Same snapshot permutations yield same order; moves work within group; cross-group requires confirmation; stale neighbors/epoch conflict; rebalance bounded/atomic/audited. |
 **Future red-first test commands / oracles per issue:** Exact future Rust commands: PRI-01 `cargo test --manifest-path pkgs/fleet/Cargo.toml -p fleet-queue --lib --features client,queue-broker pmo_priority_profile_preserves_ratified_values`; PRI-02 `cargo test --manifest-path pkgs/fleet/Cargo.toml -p fleet-queue --lib --features client,queue-broker pmo_priority_dimensions_pin_explanation`; PRI-03 `cargo test --manifest-path pkgs/fleet/Cargo.toml -p fleet-queue --lib --features client,queue-broker pmo_peer_rank_rebalances_local_range`; PRI-04 `cargo test --manifest-path pkgs/fleet/Cargo.toml -p fleet-queue --lib --features client,queue-broker pmo_dependency_cycle_opposite_edge_pair`; PRI-05 `cargo test --manifest-path pkgs/fleet/Cargo.toml -p fleet-queue --lib --features client,queue-broker pmo_triage_is_bounded_and_bidirectional`; PRI-07 `cargo test --manifest-path pkgs/fleet/Cargo.toml -p fleet-queue --lib --features client,queue-broker pmo_priority_shadow_preserves_live_values`. Before running each, issue verification must run its exact command with `-- --list` and assert the test is present; zero-test success is not acceptance. PRI-01 TS regression: `cd pm-stack/dispatch && bun test test/validate.test.ts` (existing test path). PRI-06 first asserts `test -f pm-stack/aggregator/src/priority-actions.test.ts`, then runs `cd pm-stack/aggregator && bun test src/priority-actions.test.ts`; oracle is shared command result plus visible stale/conflict. These are proposed future tests in the listed existing modules/services, not current tests or a new crate.
 
-
 ## Shared-file sequencing
 
 Added hard sequencing edges (the predecessor owns the same exact writable file):
+
 - blocked by `HYD-03` — `shared-file:pkgs/fleet/crates/fleet-queue/src/turso_queue.rs`
 - blocked by `PRI-02` — `shared-file:pkgs/fleet/crates/fleet-queue/src/work/priority.rs`

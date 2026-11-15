@@ -88,6 +88,41 @@ describe("TodayCache cold miss / warm hit / expiry", () => {
     expect(await cache.get(async () => `v${++calls}`)).toBe("v2");
     expect(calls).toBe(2);
   });
+
+  test("invalidate() keeps the value servable and refreshes behind it (#5082)", async () => {
+    let now = 1_000_000;
+    let calls = 0;
+    const cache = new TodayCache<string>(10_000, () => now);
+    await cache.get(async () => `v${++calls}`);
+    expect(calls).toBe(1);
+    // Still inside the TTL: invalidate marks the entry expired, so the
+    // next read serves the retained value immediately — never the cold
+    // load — and one background refresh re-reads behind it.
+    cache.invalidate();
+    expect(await cache.get(async () => `v${++calls}`)).toBe("v1");
+    expect(calls).toBe(2);
+    await Bun.sleep(10);
+    expect(await cache.get(async () => "never")).toBe("v2");
+    expect(calls).toBe(2);
+  });
+
+  test("invalidate() on an empty cache stays a cold miss", async () => {
+    let calls = 0;
+    const cache = new TodayCache<string>();
+    cache.invalidate();
+    expect(await cache.get(async () => `v${++calls}`)).toBe("v1");
+    expect(calls).toBe(1);
+  });
+
+  test("invalidate() does not resurrect a cleared cache", async () => {
+    let calls = 0;
+    const cache = new TodayCache<string>();
+    await cache.get(async () => `v${++calls}`);
+    cache.clear();
+    cache.invalidate();
+    expect(await cache.get(async () => `v${++calls}`)).toBe("v2");
+    expect(calls).toBe(2);
+  });
 });
 
 describe("TodayCache concurrent coalescing", () => {

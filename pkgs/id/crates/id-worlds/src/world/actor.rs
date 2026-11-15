@@ -87,6 +87,7 @@ impl WorldCommand {
             Self::ProgramHealth { .. } => "ProgramHealth",
             Self::AdminEventHistory { .. } => "AdminEventHistory",
             Self::ReplicationFeed { .. } => "ReplicationFeed",
+            Self::ReplicaSidecars { .. } => "ReplicaSidecars",
             Self::ReplicationCompact { .. } => "ReplicationCompact",
             Self::Shutdown { .. } => "Shutdown",
         }
@@ -401,6 +402,20 @@ pub(crate) enum WorldCommand {
                 broadcast::Receiver<ReplicationUpdate>,
             )>,
         >,
+    },
+    /// The authenticated sidecars for one replication snapshot
+    /// (F12.13 phase 5): the directory facts for `subjects` (the
+    /// accounts in the snapshot journal's capability chains) as
+    /// JSONL entry bytes, plus the active module hash whose bytes
+    /// the feed serves from the module store. The feed captures the
+    /// sidecars from the actor immediately after the snapshot image
+    /// in the same session, and the signed batch binds them to that
+    /// snapshot's cursor; facts are derived inside the actor (the
+    /// only place directory changes are applied), never read from a
+    /// file the actor is concurrently appending to.
+    ReplicaSidecars {
+        subjects: std::collections::BTreeSet<String>,
+        reply: oneshot::Sender<Result<(Vec<u8>, Option<String>)>>,
     },
     /// Serialized forced compaction after an out-of-actor probe found an
     /// oversized legacy entry (#8095). Compaction itself stays an actor
@@ -1390,8 +1405,9 @@ impl WorldActor {
                 Decision::Allow => self.arm(sub),
                 Decision::AllowAndGrant => {
                     let granted: Vec<String> = self.core.ledger.granted().iter().cloned().collect();
-                    let _ = self.persist(JournalEntry::CapsGranted { granted });
-                    self.arm(sub);
+                    if self.persist(JournalEntry::CapsGranted { granted }).is_ok() {
+                        self.arm(sub);
+                    }
                 }
                 Decision::Deny(error) => {
                     let spec = sub.spec();
@@ -1613,7 +1629,8 @@ impl WorldActor {
             Decision::Allow => {}
             Decision::AllowAndGrant => {
                 let granted: Vec<String> = self.core.ledger.granted().iter().cloned().collect();
-                let _ = self.persist(JournalEntry::CapsGranted { granted });
+                self.persist(JournalEntry::CapsGranted { granted })
+                    .map_err(|_| CapError::failed_with("capability_grant_persist_failed"))?;
             }
             Decision::Deny(error) => return Err(error),
         }
@@ -1631,17 +1648,26 @@ impl WorldActor {
             "form.cancel" => self.execute_form_cancel(&request.args),
             "loc.position" => self.execute_loc_position(&request.args),
             "chat.say" => self.execute_chat(&request.args),
-            "chat.history" => Ok(serde_json::json!({
-                "lines": chat_history(
-                    &self.core.events,
-                    request
-                        .args
-                        .get("count")
-                        .and_then(serde_json::Value::as_u64)
-                        .unwrap_or(16)
-                        .min(crate::world_caps::MAX_CHAT_HISTORY_LINES as u64) as usize,
-                ),
-            })),
+            "chat.history" => {
+                // A supplied `count` must be an unsigned integer; only an
+                // omitted count falls back to the default. Treating a
+                // malformed count as omitted silently turns a client error
+                // into a successful read (#7892).
+                let count = match request.args.get("count") {
+                    None => 16,
+                    Some(value) => value
+                        .as_u64()
+                        .ok_or_else(CapError::bad_args)?
+                        .min(crate::world_caps::MAX_CHAT_HISTORY_LINES as u64)
+                        as usize,
+                };
+                Ok(serde_json::json!({
+                    "lines": chat_history(
+                        &self.core.events,
+                        count.min(crate::world_caps::MAX_CHAT_HISTORY_LINES),
+                    ),
+                }))
+            }
             "records.read" => self.execute_records_read(&request.args),
             "schedule.at" => self.execute_schedule_at(&request.args),
             "schedule.cancel" => self.execute_schedule_cancel(&request.args),
@@ -2642,10 +2668,20 @@ impl WorldActor {
                 let revoked = self.core.revoke_tree(participant_id);
                 let was_active = !revoked.is_empty();
                 if was_active {
-                    let _ = self.persist(JournalEntry::Revoked { participant_id, by });
+                    // Fail-closed: surface a persist failure rather than
+                    // reporting an audited success (design #835 phase 2).
+                    let persisted = self.persist(JournalEntry::Revoked { participant_id, by });
                     for id in revoked {
                         let _ = self.revocation_sender.send(id);
                     }
+                    self.audit_admin_result(
+                        by.map_or_else(|| "admin".to_owned(), |id| format!("participant:{id}")),
+                        "Revoke",
+                        serde_json::json!({"participant_id": participant_id, "changed": was_active}),
+                        persisted.is_ok(),
+                    );
+                    let _ = reply.send(persisted.is_ok() && was_active);
+                    return;
                 }
                 self.audit_admin_result(
                     by.map_or_else(|| "admin".to_owned(), |id| format!("participant:{id}")),
@@ -2733,10 +2769,17 @@ impl WorldActor {
                 reply,
             } => {
                 // Author-key bindings change what later inputs the world
-                // accepts; a replica takes no such local state.
-                let result = self
-                    .check_writable()
-                    .and_then(|()| self.core.bind_author_key(&token, author_key));
+                // accepts; a replica takes no such local state. A new
+                // binding is journaled (#4346) so the participant's chain
+                // position survives a restart.
+                let result = self.check_writable().and_then(|()| {
+                    let (participant_id, entry) =
+                        self.core.bind_author_key_entry(&token, author_key)?;
+                    if let Some(entry) = entry {
+                        self.persist(entry)?;
+                    }
+                    Ok(participant_id)
+                });
                 let _ = reply.send(result);
             }
             WorldCommand::Presence {
@@ -2809,21 +2852,47 @@ impl WorldActor {
                             .update(&candidate)
                             .and_then(|()| program_records(self.program.as_mut()))
                         {
-                            Ok(records) => self
-                                .persist(JournalEntry::Committed {
+                            Ok(records) => {
+                                // A signed input and its acceptance are one
+                                // journal transaction (Codex review on PR
+                                // #9037): both entries are persisted
+                                // atomically BEFORE either is applied in
+                                // memory. The previous two-append order let
+                                // a crash leave a committed input whose
+                                // signed chain never advanced — restore
+                                // replayed the input, a retry executed it
+                                // again, and the author's next sequence was
+                                // refused.
+                                let committed = JournalEntry::Committed {
                                     event: candidate.clone(),
-                                })
-                                .and_then(|()| self.core.commit_prepared(candidate))
-                                .and_then(|event| {
-                                    if let Some(signed) = &signed {
-                                        self.core.record_signed_move(&event, signed)?;
-                                    }
-                                    Ok(event)
-                                })
-                                .inspect(|event| {
-                                    let records = records.unwrap_or_default();
-                                    self.republished(records, event.sequence);
-                                }),
+                                };
+                                let persisted = match &signed {
+                                    Some(signed) => self
+                                        .core
+                                        .signed_move_record(&candidate, signed)
+                                        .and_then(|record| {
+                                            self.persist_transaction(&[
+                                                committed,
+                                                JournalEntry::SignedMoveAccepted {
+                                                    record: JournalSignedMove::from_record(&record),
+                                                },
+                                            ])
+                                        }),
+                                    None => self.persist(committed),
+                                };
+                                persisted
+                                    .and_then(|()| self.core.commit_prepared(candidate))
+                                    .and_then(|event| {
+                                        if let Some(signed) = &signed {
+                                            self.core.record_signed_move(&event, signed)?;
+                                        }
+                                        Ok(event)
+                                    })
+                                    .inspect(|event| {
+                                        let records = records.unwrap_or_default();
+                                        self.republished(records, event.sequence);
+                                    })
+                            }
                             Err(error) => {
                                 self.program_healthy = false;
                                 Err(error.context("world program rejected input"))
@@ -3118,6 +3187,19 @@ impl WorldActor {
                     let _ = reply.send(Err(error));
                     return;
                 }
+                let sequence = match self.core.sequence.checked_add(1) {
+                    Some(sequence) => sequence,
+                    None => {
+                        self.audit_admin_result(
+                            installed_by.map_or_else(|| "admin".to_owned(), |id| format!("participant:{id}")),
+                            "InstallProgram",
+                            serde_json::json!({"module_hash": module_hash, "seed": seed, "installed_by": installed_by}),
+                            false,
+                        );
+                        let _ = reply.send(Err(anyhow::anyhow!("world sequence exhausted")));
+                        return;
+                    }
+                };
                 // A program whose initial records are invalid is refused
                 // before anything is journaled.
                 let new_records = match program_records(replacement.as_mut()) {
@@ -3136,7 +3218,7 @@ impl WorldActor {
                 // Actor serialization makes activation and its event atomic
                 // with respect to other world commands.
                 let candidate = WorldEvent {
-                    sequence: self.core.sequence.saturating_add(1),
+                    sequence,
                     participant_id: 0,
                     kind: WorldEventKind::ProgramInstalled {
                         module_hash: module_hash.clone(),
@@ -3629,6 +3711,18 @@ impl WorldActor {
                     }
                     .await
                 };
+                let _ = reply.send(result);
+            }
+            WorldCommand::ReplicaSidecars { subjects, reply } => {
+                let result = (|| -> Result<(Vec<u8>, Option<String>)> {
+                    let facts = self.core.directory().replica_facts_for(&subjects)?;
+                    let mut bytes = Vec::new();
+                    for entry in &facts {
+                        serde_json::to_writer(&mut bytes, entry)?;
+                        bytes.push(b'\n');
+                    }
+                    Ok((bytes, self.core.active_module_hash.clone()))
+                })();
                 let _ = reply.send(result);
             }
             WorldCommand::ReplicationCompact {

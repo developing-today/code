@@ -3,3114 +3,2304 @@
     "id": "S0.1",
     "text": "Extensibility is an architecture goal, not a deferred goal.",
     "source_line": 22,
-    "issue_homes": [
-      "#9110"
-    ]
+    "issue_homes": ["#9110"]
   },
   {
     "id": "S0.2",
     "text": "Primitives/adapters/hooks are designed for the full matrix of stores/buckets/streams/transports from the start.",
     "source_line": 22,
-    "issue_homes": [
-      "#9110"
-    ]
+    "issue_homes": ["#9110"]
   },
   {
     "id": "S0.3",
     "text": "Only implementing the long tail is de-prioritized.",
     "source_line": 22,
-    "issue_homes": [
-      "#9110"
-    ]
+    "issue_homes": ["#9110"]
   },
   {
     "id": "S0.4",
     "text": "\"Plumbing not a matrix\" was implementation priority, not an architecture limit.",
     "source_line": 22,
-    "issue_homes": [
-      "#9110"
-    ]
+    "issue_homes": ["#9110"]
   },
   {
     "id": "S0.5",
     "text": "Both tier-1 editions are fully featured.",
     "source_line": 22,
-    "issue_homes": [
-      "#9110"
-    ]
+    "issue_homes": ["#9110"]
   },
   {
     "id": "S0.6",
     "text": "Store work proceeds redb → +Turso/SQLite/IndexedDB.",
     "source_line": 22,
-    "issue_homes": [
-      "#9110"
-    ]
+    "issue_homes": ["#9110"]
   },
   {
     "id": "S0.7",
     "text": "That work is built to accommodate future backends without redesign.",
     "source_line": 22,
-    "issue_homes": [
-      "#9110"
-    ]
+    "issue_homes": ["#9110"]
   },
   {
     "id": "S0.8",
     "text": "Postgres is a plausible future backend.",
     "source_line": 22,
-    "issue_homes": [
-      "#9110"
-    ]
+    "issue_homes": ["#9110"]
   },
   {
     "id": "S0.9",
     "text": "NATS-stream is a plausible future message transport.",
     "source_line": 22,
-    "issue_homes": [
-      "#9110"
-    ]
+    "issue_homes": ["#9110"]
   },
   {
     "id": "S0.10",
     "text": "Kafka is supportable, not Drew's choice.",
     "source_line": 22,
-    "issue_homes": [
-      "#9110"
-    ]
+    "issue_homes": ["#9110"]
   },
   {
     "id": "S0.11",
     "text": "Custom connection types per operation type are supportable.",
     "source_line": 22,
-    "issue_homes": [
-      "#9110"
-    ]
+    "issue_homes": ["#9110"]
   },
   {
     "id": "S0.12",
     "text": "An extension system exists: callbacks/hooks along all normal paths.",
     "source_line": 22,
-    "issue_homes": [
-      "#9110"
-    ]
+    "issue_homes": ["#9110"]
   },
   {
     "id": "S0.13",
     "text": "New protocols/backends are adapter code against stable primitives.",
     "source_line": 22,
-    "issue_homes": [
-      "#9110"
-    ]
+    "issue_homes": ["#9110"]
   },
   {
     "id": "S0.14",
     "text": "(implied) No core logic hard-codes a single store/bucket/stream/transport.",
     "source_line": 22,
-    "issue_homes": [
-      "#9110"
-    ]
+    "issue_homes": ["#9110"]
   },
   {
     "id": "S0.15",
     "text": "(implied) Adding a backend is additive, not a breaking refactor.",
     "source_line": 22,
-    "issue_homes": [
-      "#9110"
-    ]
+    "issue_homes": ["#9110"]
   },
   {
     "id": "S0.16",
     "text": "(implied) Parity is defined at the primitive layer; a backend limitation is a conformance gap, not a product tier.",
     "source_line": 22,
-    "issue_homes": [
-      "#9110"
-    ]
+    "issue_homes": ["#9110"]
   },
   {
     "id": "S0.17",
     "text": "(implied) Hooks are part of the normal execution-path contract, not a debug afterthought.",
     "source_line": 22,
-    "issue_homes": [
-      "#9110"
-    ]
+    "issue_homes": ["#9110"]
   },
   {
     "id": "S1.1",
     "text": "Every peer belongs to an explicit peer class; no unclassed peer.",
     "source_line": 26,
-    "issue_homes": [
-      "#9141"
-    ]
+    "issue_homes": ["#9141"]
   },
   {
     "id": "S1.2",
     "text": "Class: fully trusted.",
     "source_line": 26,
-    "issue_homes": [
-      "#9141"
-    ]
+    "issue_homes": ["#9141"]
   },
   {
     "id": "S1.3",
     "text": "Class: send-only (we send, we do not accept).",
     "source_line": 26,
-    "issue_homes": [
-      "#9141"
-    ]
+    "issue_homes": ["#9141"]
   },
   {
     "id": "S1.4",
     "text": "Class: accept-signed-from.",
     "source_line": 26,
-    "issue_homes": [
-      "#9141"
-    ]
+    "issue_homes": ["#9141"]
   },
   {
     "id": "S1.5",
     "text": "(implied) Classification is directional, not symmetric.",
     "source_line": 26,
-    "issue_homes": [
-      "#9141"
-    ]
+    "issue_homes": ["#9141"]
   },
   {
     "id": "S1.6",
     "text": "(implied) Classification is per-peer, not global.",
     "source_line": 26,
-    "issue_homes": [
-      "#9141"
-    ]
+    "issue_homes": ["#9141"]
   },
   {
     "id": "S1.7",
     "text": "(implied) Class governs acceptance behaviour; it does not by itself confer cryptographic trust.",
     "source_line": 26,
-    "issue_homes": [
-      "#9141"
-    ]
+    "issue_homes": ["#9141"]
   },
   {
     "id": "S1.8",
     "text": "(implied) Class is changeable over time (promote/demote/revoke) without redesign.",
     "source_line": 26,
-    "issue_homes": [
-      "#9141"
-    ]
+    "issue_homes": ["#9141"]
   },
   {
     "id": "S1.9",
     "text": "(implied) Default class for an unknown peer is the most restrictive: no acceptance.",
     "source_line": 26,
-    "issue_homes": [
-      "#9141"
-    ]
+    "issue_homes": ["#9141"]
   },
   {
     "id": "S1.10",
     "text": "(implied) Send-only is a legitimate permanent posture, not a degraded state.",
     "source_line": 26,
-    "issue_homes": [
-      "#9141"
-    ]
+    "issue_homes": ["#9141"]
   },
   {
     "id": "S1.11",
     "text": "(implied) Fully trusted does NOT mean exempt from validation.",
     "source_line": 26,
-    "issue_homes": [
-      "#9141"
-    ]
+    "issue_homes": ["#9141"]
   },
   {
     "id": "S1.12",
     "text": "Data is accepted ONLY when cryptographically signed AND validated — every source, no exceptions by source.",
     "source_line": 28,
-    "issue_homes": [
-      "#9141"
-    ]
+    "issue_homes": ["#9141"]
   },
   {
     "id": "S1.13",
     "text": "Unsigned data is not accepted, even from a fully trusted peer.",
     "source_line": 28,
-    "issue_homes": [
-      "#9141"
-    ]
+    "issue_homes": ["#9141"]
   },
   {
     "id": "S1.14",
     "text": "Invalidly signed data is not accepted, even from a fully trusted peer.",
     "source_line": 28,
-    "issue_homes": [
-      "#9141"
-    ]
+    "issue_homes": ["#9141"]
   },
   {
     "id": "S1.15",
     "text": "(implied) Internal peers are under the same gate as external.",
     "source_line": 28,
-    "issue_homes": [
-      "#9141"
-    ]
+    "issue_homes": ["#9141"]
   },
   {
     "id": "S1.16",
     "text": "(implied) Local/loopback/in-process channels are under the same gate — no channel exception.",
     "source_line": 28,
-    "issue_homes": [
-      "#9141"
-    ]
+    "issue_homes": ["#9141"]
   },
   {
     "id": "S1.17",
     "text": "(implied) Validation is distinct from signature presence (a non-verifying or misattributed signature fails).",
     "source_line": 28,
-    "issue_homes": [
-      "#9141"
-    ]
+    "issue_homes": ["#9141"]
   },
   {
     "id": "S1.18",
     "text": "(implied) Validation binds data to a signer identity, not merely to \"some valid signature\".",
     "source_line": 28,
-    "issue_homes": [
-      "#9141"
-    ]
+    "issue_homes": ["#9141"]
   },
   {
     "id": "S1.19",
     "text": "(implied) Acceptance is a gate at ingest, not post-hoc cleanup.",
     "source_line": 28,
-    "issue_homes": [
-      "#9141"
-    ]
+    "issue_homes": ["#9141"]
   },
   {
     "id": "S1.20",
     "text": "(implied) The gate is a mechanism/invariant, not a behaviour configuration may switch off (tension with §7 — ruled in principle 3).",
     "source_line": 28,
-    "issue_homes": [
-      "#9141"
-    ]
+    "issue_homes": ["#9141"]
   },
   {
     "id": "S1.21",
     "text": "(implied) Key rotation must not retroactively invalidate data validly signed under a then-current key.",
     "source_line": 28,
-    "issue_homes": [
-      "#9141"
-    ]
+    "issue_homes": ["#9141"]
   },
   {
     "id": "S1.22",
     "text": "(implied) Key revocation/compromise has a defined effect on previously accepted data (revalidate/flag/quarantine).",
     "source_line": 28,
-    "issue_homes": [
-      "#9141"
-    ]
+    "issue_homes": ["#9141"]
   },
   {
     "id": "S1.23",
     "text": "(implied) Replay/freshness protection is required: re-presented old signed data is handled by a specified rule.",
     "source_line": 28,
-    "issue_homes": [
-      "#9141"
-    ]
+    "issue_homes": ["#9141"]
   },
   {
     "id": "S1.24",
     "text": "(implied) Signature-suite agility: deprecating an algorithm must not break the protocol.",
     "source_line": 28,
-    "issue_homes": [
-      "#9141"
-    ]
+    "issue_homes": ["#9141"]
   },
   {
     "id": "S1.25",
     "text": "(implied) Rejection under the gate is an observable, recordable event (silent drops would defeat reputation and inconsistency detection).",
     "source_line": 28,
-    "issue_homes": [
-      "#9141"
-    ]
+    "issue_homes": ["#9141"]
   },
   {
     "id": "S1.26",
     "text": "Internal peers carry implicit trust — a posture distinct from external federation peers.",
     "source_line": 30,
-    "issue_homes": [
-      "#9142"
-    ]
+    "issue_homes": ["#9142"]
   },
   {
     "id": "S1.27",
     "text": "Implicit-trust peers sync toward 1:1 sameness.",
     "source_line": 30,
-    "issue_homes": [
-      "#9142"
-    ]
+    "issue_homes": ["#9142"]
   },
   {
     "id": "S1.28",
     "text": "Sameness is qualified \"within reason\" — a convergence target, not an absolute invariant.",
     "source_line": 30,
-    "issue_homes": [
-      "#9142"
-    ]
+    "issue_homes": ["#9142"]
   },
   {
     "id": "S1.29",
     "text": "(implied) \"Within reason\" includes storage capacity, retention policy, configured scope.",
     "source_line": 30,
-    "issue_homes": [
-      "#9142"
-    ]
+    "issue_homes": ["#9142"]
   },
   {
     "id": "S1.30",
     "text": "(implied) \"Within reason\" includes tenant/trust-domain boundaries — sameness never crosses a boundary data must not cross (see #9083).",
     "source_line": 30,
-    "issue_homes": [
-      "#9142"
-    ]
+    "issue_homes": ["#9142"]
   },
   {
     "id": "S1.31",
     "text": "(implied) Sync is convergence over time; temporary divergence is normal.",
     "source_line": 30,
-    "issue_homes": [
-      "#9142"
-    ]
+    "issue_homes": ["#9142"]
   },
   {
     "id": "S1.32",
     "text": "(implied) Divergence is detectable (otherwise \"sync toward\" is unverifiable).",
     "source_line": 30,
-    "issue_homes": [
-      "#9142"
-    ]
+    "issue_homes": ["#9142"]
   },
   {
     "id": "S1.33",
     "text": "(implied) Anti-entropy/reconciliation is the implied mechanism class; specifics deferred to the CRDT exploration.",
     "source_line": 30,
-    "issue_homes": [
-      "#9142"
-    ]
+    "issue_homes": ["#9142"]
   },
   {
     "id": "S1.34",
     "text": "A sync conflict's first output is a conflict report.",
     "source_line": 32,
-    "issue_homes": [
-      "#9142"
-    ]
+    "issue_homes": ["#9142"]
   },
   {
     "id": "S1.35",
     "text": "Reports come before any automatic merge — no silent auto-resolution precedes the report.",
     "source_line": 32,
-    "issue_homes": [
-      "#9142"
-    ]
+    "issue_homes": ["#9142"]
   },
   {
     "id": "S1.36",
     "text": "(implied) A conflict report is a first-class artifact (addressable, retainable, actionable), not a log line.",
     "source_line": 32,
-    "issue_homes": [
-      "#9142"
-    ]
+    "issue_homes": ["#9142"]
   },
   {
     "id": "S1.37",
     "text": "(implied) A report identifies the conflicting versions, signers/sources, and the data in dispute.",
     "source_line": 32,
-    "issue_homes": [
-      "#9142"
-    ]
+    "issue_homes": ["#9142"]
   },
   {
     "id": "S1.38",
     "text": "(implied) Unresolved conflicts do not block unrelated sync.",
     "source_line": 32,
-    "issue_homes": [
-      "#9142"
-    ]
+    "issue_homes": ["#9142"]
   },
   {
     "id": "S1.39",
     "text": "CRDT/merge exploration is explicitly later — a research track, not a dependency of the first federation design.",
     "source_line": 32,
-    "issue_homes": [
-      "#9142"
-    ]
+    "issue_homes": ["#9142"]
   },
   {
     "id": "S1.40",
     "text": "(implied) Conflict-report-first remains available even if a merge mechanism is later adopted.",
     "source_line": 32,
-    "issue_homes": [
-      "#9142"
-    ]
+    "issue_homes": ["#9142"]
   },
   {
     "id": "S1.41",
     "text": "Research: evaluate **Automerge** (data-model fit, fleet-scale performance, signed-history compatibility, interop cost).",
     "source_line": 32,
-    "issue_homes": [
-      "#9143"
-    ]
+    "issue_homes": ["#9143"]
   },
   {
     "id": "S1.42",
     "text": "Research: identify what \"diamonds\" refers to (believed Diamond Types) and evaluate on the same criteria — the identification is part of the research.",
     "source_line": 32,
-    "issue_homes": [
-      "#9143"
-    ]
+    "issue_homes": ["#9143"]
   },
   {
     "id": "S1.43",
     "text": "Research: evaluate the **Willow protocol** (reconciliation efficiency, namespace/subspace model vs our scoping, signed-only acceptance fit).",
     "source_line": 32,
-    "issue_homes": [
-      "#9143"
-    ]
+    "issue_homes": ["#9143"]
   },
   {
     "id": "S1.44",
     "text": "Research: evaluate **OCAPN** (capability authority model vs the peer-class model; can attenuation express send-only / accept-signed-from natively?).",
     "source_line": 32,
-    "issue_homes": [
-      "#9143"
-    ]
+    "issue_homes": ["#9143"]
   },
   {
     "id": "S1.45",
     "text": "(implied) The four explorations are a named set evaluated on a common criteria matrix.",
     "source_line": 32,
-    "issue_homes": [
-      "#9143"
-    ]
+    "issue_homes": ["#9143"]
   },
   {
     "id": "S1.46",
     "text": "(implied) The set is not exhaustive — other prior art found is captured, not excluded.",
     "source_line": 32,
-    "issue_homes": [
-      "#9143"
-    ]
+    "issue_homes": ["#9143"]
   },
   {
     "id": "S1.47",
     "text": "A federated query checks the server's own store first.",
     "source_line": 34,
-    "issue_homes": [
-      "#9144"
-    ]
+    "issue_homes": ["#9144"]
   },
   {
     "id": "S1.48",
     "text": "Then it fans out to remotes.",
     "source_line": 34,
-    "issue_homes": [
-      "#9144"
-    ]
+    "issue_homes": ["#9144"]
   },
   {
     "id": "S1.49",
     "text": "Fan-out targets a prioritized list of remotes.",
     "source_line": 34,
-    "issue_homes": [
-      "#9144"
-    ]
+    "issue_homes": ["#9144"]
   },
   {
     "id": "S1.50",
     "text": "Those remotes are known not to hold everything.",
     "source_line": 34,
-    "issue_homes": [
-      "#9144"
-    ]
+    "issue_homes": ["#9144"]
   },
   {
     "id": "S1.51",
     "text": "(implied) A remote's negative answer is not a global negative.",
     "source_line": 34,
-    "issue_homes": [
-      "#9144"
-    ]
+    "issue_homes": ["#9144"]
   },
   {
     "id": "S1.52",
     "text": "(implied) Prioritization is explicit, by stated criteria.",
     "source_line": 34,
-    "issue_homes": [
-      "#9144"
-    ]
+    "issue_homes": ["#9144"]
   },
   {
     "id": "S1.53",
     "text": "(implied) Prioritization inputs (trust class, reputation, coverage, latency, cost) are design decisions, candidates for configuration.",
     "source_line": 34,
-    "issue_homes": [
-      "#9144"
-    ]
+    "issue_homes": ["#9144"]
   },
   {
     "id": "S1.54",
     "text": "A trusted remote may re-fan-out to its remotes — recursion.",
     "source_line": 34,
-    "issue_homes": [
-      "#9144"
-    ]
+    "issue_homes": ["#9144"]
   },
   {
     "id": "S1.55",
     "text": "(implied) Re-fan-out is restricted to trusted remotes; relay authority is not granted to accept-only peers.",
     "source_line": 34,
-    "issue_homes": [
-      "#9144"
-    ]
+    "issue_homes": ["#9144"]
   },
   {
     "id": "S1.56",
     "text": "Recursion is bounded by max-hops.",
     "source_line": 34,
-    "issue_homes": [
-      "#9144"
-    ]
+    "issue_homes": ["#9144"]
   },
   {
     "id": "S1.57",
     "text": "(implied) Max-hops is a stated bound carried by every query (decremented/tracked per relay).",
     "source_line": 34,
-    "issue_homes": [
-      "#9144"
-    ]
+    "issue_homes": ["#9144"]
   },
   {
     "id": "S1.58",
     "text": "Signatures and validation apply throughout: query, relayed copies, responses.",
     "source_line": 34,
-    "issue_homes": [
-      "#9144"
-    ]
+    "issue_homes": ["#9144"]
   },
   {
     "id": "S1.59",
     "text": "(implied) A relayed response preserves the original responder's signature end-to-end — no hop-by-hop authority substitution.",
     "source_line": 34,
-    "issue_homes": [
-      "#9144"
-    ]
+    "issue_homes": ["#9144"]
   },
   {
     "id": "S1.60",
     "text": "(implied) Relayed responses are validated to the direct-response standard.",
     "source_line": 34,
-    "issue_homes": [
-      "#9144"
-    ]
+    "issue_homes": ["#9144"]
   },
   {
     "id": "S1.61",
     "text": "(implied) Fan-out must not amplify without bound; breadth × depth is a resource surface max-hops alone doesn't bound.",
     "source_line": 34,
-    "issue_homes": [
-      "#9144"
-    ]
+    "issue_homes": ["#9144"]
   },
   {
     "id": "S1.62",
     "text": "(implied) A query carries a stable request identity across all copies/relays (prerequisite for duplicate handling).",
     "source_line": 34,
-    "issue_homes": [
-      "#9144"
-    ]
+    "issue_homes": ["#9144"]
   },
   {
     "id": "S1.63",
     "text": "(implied) Fan-out leaks query interest to every remote queried — a named privacy surface, accepted or mitigated explicitly.",
     "source_line": 34,
-    "issue_homes": [
-      "#9144"
-    ]
+    "issue_homes": ["#9144"]
   },
   {
     "id": "S1.64",
     "text": "The same request can legitimately arrive more than once (direct + via relay) — normal, not an error.",
     "source_line": 36,
-    "issue_homes": [
-      "#9145"
-    ]
+    "issue_homes": ["#9145"]
   },
   {
     "id": "S1.65",
     "text": "All four duplicate behaviours are specced: inform users, short-circuit, dedup, loop-inform.",
     "source_line": 36,
-    "issue_homes": [
-      "#9145"
-    ]
+    "issue_homes": ["#9145"]
   },
   {
     "id": "S1.66",
     "text": "Inform: a duplicate is surfaced to the requester, not silently swallowed.",
     "source_line": 36,
-    "issue_homes": [
-      "#9145"
-    ]
+    "issue_homes": ["#9145"]
   },
   {
     "id": "S1.67",
     "text": "Short-circuit: a duplicate of an in-flight/answered request is not re-executed from scratch.",
     "source_line": 36,
-    "issue_homes": [
-      "#9145"
-    ]
+    "issue_homes": ["#9145"]
   },
   {
     "id": "S1.68",
     "text": "Dedup: duplicate work/results are deduplicated into one coherent result set.",
     "source_line": 36,
-    "issue_homes": [
-      "#9145"
-    ]
+    "issue_homes": ["#9145"]
   },
   {
     "id": "S1.69",
     "text": "Loop-inform: duplication evidencing a loop is reported specifically as a loop.",
     "source_line": 36,
-    "issue_homes": [
-      "#9145"
-    ]
+    "issue_homes": ["#9145"]
   },
   {
     "id": "S1.70",
     "text": "(implied) Duplicate-vs-loop discrimination needs request identity + hop/path information.",
     "source_line": 36,
-    "issue_homes": [
-      "#9145"
-    ]
+    "issue_homes": ["#9145"]
   },
   {
     "id": "S1.71",
     "text": "(implied) Dedup is by request identity, not query text — the same query asked later is a new request.",
     "source_line": 36,
-    "issue_homes": [
-      "#9145"
-    ]
+    "issue_homes": ["#9145"]
   },
   {
     "id": "S1.72",
     "text": "(implied) Dedup state is finite; its retention window and expiry behaviour are specified.",
     "source_line": 36,
-    "issue_homes": [
-      "#9145"
-    ]
+    "issue_homes": ["#9145"]
   },
   {
     "id": "S1.73",
     "text": "Servers may store routing state.",
     "source_line": 38,
-    "issue_homes": [
-      "#9146"
-    ]
+    "issue_homes": ["#9146"]
   },
   {
     "id": "S1.74",
     "text": "Servers periodically validate their known network shape against reality.",
     "source_line": 38,
-    "issue_homes": [
-      "#9146"
-    ]
+    "issue_homes": ["#9146"]
   },
   {
     "id": "S1.75",
     "text": "(implied) Routing state goes stale; staleness is expected and handled.",
     "source_line": 38,
-    "issue_homes": [
-      "#9146"
-    ]
+    "issue_homes": ["#9146"]
   },
   {
     "id": "S1.76",
     "text": "(implied) Validation detects at least vanished peers, appeared peers, topology changes affecting fan-out.",
     "source_line": 38,
-    "issue_homes": [
-      "#9146"
-    ]
+    "issue_homes": ["#9146"]
   },
   {
     "id": "S1.77",
     "text": "(implied) Routing state is an attack surface (poisoning redirects fan-out, suppresses results, manufactures loops) — routing updates fall under the same signature/validation discipline as data.",
     "source_line": 38,
-    "issue_homes": [
-      "#9146"
-    ]
+    "issue_homes": ["#9146"]
   },
   {
     "id": "S1.78",
     "text": "(implied) A server's known shape is partial by design; no complete topology is assumed.",
     "source_line": 38,
-    "issue_homes": [
-      "#9146"
-    ]
+    "issue_homes": ["#9146"]
   },
   {
     "id": "S1.79",
     "text": "A reputation system exists: peers carry ratings.",
     "source_line": 40,
-    "issue_homes": [
-      "#9147"
-    ]
+    "issue_homes": ["#9147"]
   },
   {
     "id": "S1.80",
     "text": "(implied) Ratings derive from evidence, not assertion alone.",
     "source_line": 40,
-    "issue_homes": [
-      "#9147"
-    ]
+    "issue_homes": ["#9147"]
   },
   {
     "id": "S1.81",
     "text": "(implied) Reputation feeds behaviour — at minimum fan-out prioritization and peer-class changes.",
     "source_line": 40,
-    "issue_homes": [
-      "#9147"
-    ]
+    "issue_homes": ["#9147"]
   },
   {
     "id": "S1.82",
     "text": "Trust adapts from evidence automatically per stated rules (not only manual reclassification).",
     "source_line": 40,
-    "issue_homes": [
-      "#9147"
-    ]
+    "issue_homes": ["#9147"]
   },
   {
     "id": "S1.83",
     "text": "Takeover case (explicit): a highly trusted server turns malicious (takeover or key compromise); the system must survive it.",
     "source_line": 40,
-    "issue_homes": [
-      "#9148"
-    ]
+    "issue_homes": ["#9148"]
   },
   {
     "id": "S1.84",
     "text": "(implied) Trust must be revocable at speed — slow adaptation is not a defence.",
     "source_line": 40,
-    "issue_homes": [
-      "#9148"
-    ]
+    "issue_homes": ["#9148"]
   },
   {
     "id": "S1.85",
     "text": "(implied) Blast-radius limit: data accepted from a taken-over server before detection is identifiable as a set.",
     "source_line": 40,
-    "issue_homes": [
-      "#9148"
-    ]
+    "issue_homes": ["#9148"]
   },
   {
     "id": "S1.86",
     "text": "(implied) A defined post-detection posture for that server's prior data (revalidate/flag/quarantine/repudiate) is chosen and specced.",
     "source_line": 40,
-    "issue_homes": [
-      "#9148"
-    ]
+    "issue_homes": ["#9148"]
   },
   {
     "id": "S1.87",
     "text": "(implied) Takeover vs honest key compromise are distinguished, or explicitly conflated — recovery differs.",
     "source_line": 40,
-    "issue_homes": [
-      "#9148"
-    ]
+    "issue_homes": ["#9148"]
   },
   {
     "id": "S1.88",
     "text": "Reputation includes protections against bad actors abusing the reputation system itself.",
     "source_line": 40,
-    "issue_homes": [
-      "#9147"
-    ]
+    "issue_homes": ["#9147"]
   },
   {
     "id": "S1.89",
     "text": "(implied) Protections cover rating manipulation: ballot-stuffing/self-promotion, retaliatory down-rating, Sybil raters — a stated position per failure mode.",
     "source_line": 40,
-    "issue_homes": [
-      "#9147"
-    ]
+    "issue_homes": ["#9147"]
   },
   {
     "id": "S1.90",
     "text": "(implied) Protections cover whitewashing (fresh identity resetting reputation) — in tension with open federation, recorded as a tension.",
     "source_line": 40,
-    "issue_homes": [
-      "#9147"
-    ]
+    "issue_homes": ["#9147"]
   },
   {
     "id": "S1.91",
     "text": "(implied) Protections cover collusion — load-bearing, because collusion is the defeat condition of inconsistency detection and cannot be assumed away.",
     "source_line": 40,
-    "issue_homes": [
-      "#9147"
-    ]
+    "issue_homes": ["#9147"]
   },
   {
     "id": "S1.92",
     "text": "A public log for claims and disputes about federation conduct exists.",
     "source_line": 42,
-    "issue_homes": [
-      "#9147"
-    ]
+    "issue_homes": ["#9147"]
   },
   {
     "id": "S1.93",
     "text": "Entry form: \"server X claims Y was done incorrectly\" — a claim by an identified server about another's act.",
     "source_line": 42,
-    "issue_homes": [
-      "#9147"
-    ]
+    "issue_homes": ["#9147"]
   },
   {
     "id": "S1.94",
     "text": "(implied) Entries are claims, not verdicts.",
     "source_line": 42,
-    "issue_homes": [
-      "#9147"
-    ]
+    "issue_homes": ["#9147"]
   },
   {
     "id": "S1.95",
     "text": "(implied) The accused party can answer in the same log (right of reply).",
     "source_line": 42,
-    "issue_homes": [
-      "#9147"
-    ]
+    "issue_homes": ["#9147"]
   },
   {
     "id": "S1.96",
     "text": "(implied) Entries are attributable and non-repudiable — signed by the claimant.",
     "source_line": 42,
-    "issue_homes": [
-      "#9147"
-    ]
+    "issue_homes": ["#9147"]
   },
   {
     "id": "S1.97",
     "text": "(implied) The log is append-only in effect; corrections are new entries.",
     "source_line": 42,
-    "issue_homes": [
-      "#9147"
-    ]
+    "issue_homes": ["#9147"]
   },
   {
     "id": "S1.98",
     "text": "(implied) The log is evidence input to reputation.",
     "source_line": 42,
-    "issue_homes": [
-      "#9147"
-    ]
+    "issue_homes": ["#9147"]
   },
   {
     "id": "S1.99",
     "text": "(implied) Frivolous/spam claims are themselves a bad-actor case needing protection (no cost-free smear/flood channel).",
     "source_line": 42,
-    "issue_homes": [
-      "#9147"
-    ]
+    "issue_homes": ["#9147"]
   },
   {
     "id": "S1.100",
     "text": "Inconsistency is detectable from acknowledgments: what a server acknowledged receiving is evidence against its later claims.",
     "source_line": 44,
-    "issue_homes": [
-      "#9148"
-    ]
+    "issue_homes": ["#9148"]
   },
   {
     "id": "S1.101",
     "text": "Worked example (explicit): A says \"don't have it\"; B produces a recipient list including A — contradiction.",
     "source_line": 44,
-    "issue_homes": [
-      "#9148"
-    ]
+    "issue_homes": ["#9148"]
   },
   {
     "id": "S1.102",
     "text": "(implied) Detection is by a third party comparing denial vs recipient list; it does not require A's cooperation.",
     "source_line": 44,
-    "issue_homes": [
-      "#9148"
-    ]
+    "issue_homes": ["#9148"]
   },
   {
     "id": "S1.103",
     "text": "(implied) Acks/recipient lists are retained and producible as evidence.",
     "source_line": 44,
-    "issue_homes": [
-      "#9148"
-    ]
+    "issue_homes": ["#9148"]
   },
   {
     "id": "S1.104",
     "text": "(implied) Acks are signed/non-repudiable to serve as evidence.",
     "source_line": 44,
-    "issue_homes": [
-      "#9148"
-    ]
+    "issue_homes": ["#9148"]
   },
   {
     "id": "S1.105",
     "text": "Defeating detection requires collusion (e.g. B withholds/falsifies the recipient list).",
     "source_line": 44,
-    "issue_homes": [
-      "#9148"
-    ]
+    "issue_homes": ["#9148"]
   },
   {
     "id": "S1.106",
     "text": "(implied) Collusion is the residual, accepted-by-analysis risk — detection raises the cost of lying from one server to a colluding set; it does not make lying impossible.",
     "source_line": 44,
-    "issue_homes": [
-      "#9148"
-    ]
+    "issue_homes": ["#9148"]
   },
   {
     "id": "S1.107",
     "text": "(implied) The size/composition of the colluding set needed is a security parameter worth stating.",
     "source_line": 44,
-    "issue_homes": [
-      "#9148"
-    ]
+    "issue_homes": ["#9148"]
   },
   {
     "id": "S1.108",
     "text": "(implied) A detected contradiction belongs in the public log and in reputation evidence.",
     "source_line": 44,
-    "issue_homes": [
-      "#9148"
-    ]
+    "issue_homes": ["#9148"]
   },
   {
     "id": "S1.109",
     "text": "Threat case: tampering with (federated) search results is a named threat.",
     "source_line": 44,
-    "issue_homes": [
-      "#9148"
-    ]
+    "issue_homes": ["#9148"]
   },
   {
     "id": "S1.110",
     "text": "(implied) Tampering decomposes into omission, injection, reordering/manipulation, staleness.",
     "source_line": 44,
-    "issue_homes": [
-      "#9148"
-    ]
+    "issue_homes": ["#9148"]
   },
   {
     "id": "S1.111",
     "text": "(implied) Injection is bounded by the signature gate (an injected result can't carry its claimed source's valid signature) — omission is the hard case, leaving no cryptographic trace.",
     "source_line": 44,
-    "issue_homes": [
-      "#9148"
-    ]
+    "issue_homes": ["#9148"]
   },
   {
     "id": "S1.112",
     "text": "(implied) Omission detection depends on cross-checking and acknowledgments — the design states which countermeasures it uses.",
     "source_line": 44,
-    "issue_homes": [
-      "#9148"
-    ]
+    "issue_homes": ["#9148"]
   },
   {
     "id": "S1.113",
     "text": "(implied) A remote claiming completeness for a scope can be caught omitting; whether remotes make completeness claims is a recorded design decision.",
     "source_line": 44,
-    "issue_homes": [
-      "#9148"
-    ]
+    "issue_homes": ["#9148"]
   },
   {
     "id": "S1.114",
     "text": "Our system is not special.",
     "source_line": 46,
-    "issue_homes": [
-      "#9106",
-      "#9110"
-    ]
+    "issue_homes": ["#9106", "#9110"]
   },
   {
     "id": "S1.115",
     "text": "Every capability is a configuration option anyone could replicate; none is reserved to our implementation by the protocol.",
     "source_line": 46,
-    "issue_homes": [
-      "#9106",
-      "#9110"
-    ]
+    "issue_homes": ["#9106", "#9110"]
   },
   {
     "id": "S1.116",
     "text": "(implied) No privileged protocol position for our servers (same classes, reputation, log exposure).",
     "source_line": 46,
-    "issue_homes": [
-      "#9106",
-      "#9110"
-    ]
+    "issue_homes": ["#9106", "#9110"]
   },
   {
     "id": "S1.117",
     "text": "(implied) No hardcoded self-preference (no default trust/priority exemption for our nodes that a replicator couldn't also configure).",
     "source_line": 46,
-    "issue_homes": [
-      "#9106",
-      "#9110"
-    ]
+    "issue_homes": ["#9106", "#9110"]
   },
   {
     "id": "S1.118",
     "text": "(implied) Non-specialness is testable as interop: an equivalently configured independent implementation participates equivalently.",
     "source_line": 46,
-    "issue_homes": [
-      "#9106",
-      "#9110"
-    ]
+    "issue_homes": ["#9106", "#9110"]
   },
   {
     "id": "S1.119",
     "text": "(implied) First-party/hosted deployments are instances of configurations, not a distinct kind of system (link: #9078).",
     "source_line": 46,
-    "issue_homes": [
-      "#9106",
-      "#9110"
-    ]
+    "issue_homes": ["#9106", "#9110"]
   },
   {
     "id": "S1.120",
     "text": "(implied) We cannot be the unaccountable operator/arbiter of the reputation or log systems — that would be a special position.",
     "source_line": 46,
-    "issue_homes": [
-      "#9106",
-      "#9110"
-    ]
+    "issue_homes": ["#9106", "#9110"]
   },
   {
     "id": "S7.1",
     "text": "The system has different modes.",
     "source_line": 50,
-    "issue_homes": [
-      "#9111"
-    ]
+    "issue_homes": ["#9111"]
   },
   {
     "id": "S7.2",
     "text": "Different kinds of links exist.",
     "source_line": 50,
-    "issue_homes": [
-      "#9111"
-    ]
+    "issue_homes": ["#9111"]
   },
   {
     "id": "S7.3",
     "text": "Different kinds of storages exist.",
     "source_line": 50,
-    "issue_homes": [
-      "#9111"
-    ]
+    "issue_homes": ["#9111"]
   },
   {
     "id": "S7.4",
     "text": "(implied) A mode is a named, selectable posture — not a code fork.",
     "source_line": 50,
-    "issue_homes": [
-      "#9111"
-    ]
+    "issue_homes": ["#9111"]
   },
   {
     "id": "S7.5",
     "text": "(implied) Link kinds are distinct from peer classes but interact (sync link, query/fan-out link, send-only link; usable link kinds follow from peer class).",
     "source_line": 50,
-    "issue_homes": [
-      "#9111"
-    ]
+    "issue_homes": ["#9111"]
   },
   {
     "id": "S7.6",
     "text": "(implied) Storage kinds differ in federation-relevant properties (durability, retention, whether the storage participates in sync/fan-out at all).",
     "source_line": 50,
-    "issue_homes": [
-      "#9111"
-    ]
+    "issue_homes": ["#9111"]
   },
   {
     "id": "S7.7",
     "text": "Tiering may be built directly in.",
     "source_line": 50,
-    "issue_homes": [
-      "#9111"
-    ]
+    "issue_homes": ["#9111"]
   },
   {
     "id": "S7.8",
     "text": "(implied) Tiering may apply at several layers (storage, data, trust/peer, query-priority) — the design says which.",
     "source_line": 50,
-    "issue_homes": [
-      "#9111"
-    ]
+    "issue_homes": ["#9111"]
   },
   {
     "id": "S7.9",
     "text": "(implied) Built-in tiering lives in the core model: records carry their tier natively.",
     "source_line": 50,
-    "issue_homes": [
-      "#9111"
-    ]
+    "issue_homes": ["#9111"]
   },
   {
     "id": "S7.10",
     "text": "Behaviours are expressed as configuration where what varies is behaviour.",
     "source_line": 50,
-    "issue_homes": [
-      "#9111"
-    ]
+    "issue_homes": ["#9111"]
   },
   {
     "id": "S7.11",
     "text": "…and as primitives where what varies is mechanism.",
     "source_line": 50,
-    "issue_homes": [
-      "#9111"
-    ]
+    "issue_homes": ["#9111"]
   },
   {
     "id": "S7.12",
     "text": "(implied) That rule is a classification test applied to every federation/trust feature (peer classes, max-hops, prioritization, sync scope, mode = configuration; signature validation, acknowledgment, dedup identity, fan-out recursion = primitives).",
     "source_line": 50,
-    "issue_homes": [
-      "#9111"
-    ]
+    "issue_homes": ["#9111"]
   },
   {
     "id": "S7.13",
     "text": "(implied) Configuration cannot override a primitive's invariant — no config disables signature validation (resolves S1.20).",
     "source_line": 50,
-    "issue_homes": [
-      "#9111"
-    ]
+    "issue_homes": ["#9111"]
   },
   {
     "id": "S7.14",
     "text": "(implied) Modes are bundles of configuration: selecting a mode sets many behaviour values coherently; individual values remain overridable.",
     "source_line": 50,
-    "issue_homes": [
-      "#9111"
-    ]
+    "issue_homes": ["#9111"]
   },
   {
     "id": "S7.15",
     "text": "(implied) Modes compose with per-peer configuration — mode is deployment posture, peer class is per-relationship posture; neither collapses into the other.",
     "source_line": 50,
-    "issue_homes": [
-      "#9111"
-    ]
+    "issue_homes": ["#9111"]
   },
   {
     "id": "S7.16",
     "text": "(implied) Mode/link/storage selections are themselves replicable configuration under non-specialness (S1.115).",
     "source_line": 50,
-    "issue_homes": [
-      "#9111"
-    ]
+    "issue_homes": ["#9111"]
   },
   {
     "id": "S2.1",
     "text": "Benchmark latency/characteristics: D1 vs R2 vs laptop redb vs laptop Turso.",
     "source_line": 54,
-    "issue_homes": [
-      "#9133"
-    ]
+    "issue_homes": ["#9133"]
   },
   {
     "id": "S2.2",
     "text": "Benchmarks run at various shard levels.",
     "source_line": 54,
-    "issue_homes": [
-      "#9133"
-    ]
+    "issue_homes": ["#9133"]
   },
   {
     "id": "S2.3",
     "text": "Benchmarks run as DBs grow — size is a dimension, not a fixed fixture.",
     "source_line": 54,
-    "issue_homes": [
-      "#9133"
-    ]
+    "issue_homes": ["#9133"]
   },
   {
     "id": "S2.4",
     "text": "A tenant hot cache exists in D1.",
     "source_line": 54,
-    "issue_homes": [
-      "#9134"
-    ]
+    "issue_homes": ["#9134"]
   },
   {
     "id": "S2.5",
     "text": "Hot-cache admission is by tenant tier / compute usage.",
     "source_line": 54,
-    "issue_homes": [
-      "#9134"
-    ]
+    "issue_homes": ["#9134"]
   },
   {
     "id": "S2.6",
     "text": "Recent heavy/frequent queries skip the Turso hop via the hot cache.",
     "source_line": 54,
-    "issue_homes": [
-      "#9134"
-    ]
+    "issue_homes": ["#9134"]
   },
   {
     "id": "S2.7",
     "text": "Tenant stores possibly live IN D1.",
     "source_line": 54,
-    "issue_homes": [
-      "#9135"
-    ]
+    "issue_homes": ["#9135"]
   },
   {
     "id": "S2.8",
     "text": "Alternative: tenant stores are SQLite files synced to S3/R2 on an interval.",
     "source_line": 54,
-    "issue_homes": [
-      "#9135"
-    ]
+    "issue_homes": ["#9135"]
   },
   {
     "id": "S2.9",
     "text": "Existing tooling for SQLite-file sync is evaluated before building new.",
     "source_line": 54,
-    "issue_homes": [
-      "#9135"
-    ]
+    "issue_homes": ["#9135"]
   },
   {
     "id": "S2.10",
     "text": "One, or a set of, R2/RustFS buckets serves many ID instances.",
     "source_line": 54,
-    "issue_homes": [
-      "#9136"
-    ]
+    "issue_homes": ["#9136"]
   },
   {
     "id": "S2.11",
     "text": "Shared buckets have a trusted mode: sync just ID + hash.",
     "source_line": 54,
-    "issue_homes": [
-      "#9136"
-    ]
+    "issue_homes": ["#9136"]
   },
   {
     "id": "S2.12",
     "text": "Shared buckets have an untrusted mode: broker and/or encryption.",
     "source_line": 54,
-    "issue_homes": [
-      "#9136"
-    ]
+    "issue_homes": ["#9136"]
   },
   {
     "id": "S2.13",
     "text": "In untrusted mode, co-tenants see only encrypted blobs.",
     "source_line": 54,
-    "issue_homes": [
-      "#9136"
-    ]
+    "issue_homes": ["#9136"]
   },
   {
     "id": "S2.14",
     "text": "Garbage collection is designed for this storage model.",
     "source_line": 54,
-    "issue_homes": [
-      "#9137"
-    ]
+    "issue_homes": ["#9137"]
   },
   {
     "id": "S2.15",
     "text": "GC prioritizes very large files.",
     "source_line": 54,
-    "issue_homes": [
-      "#9137"
-    ]
+    "issue_homes": ["#9137"]
   },
   {
     "id": "S2.16",
     "text": "(implied) Benchmarks report economics as well as latency (cost per tenant / per query shape, per shard level and size).",
     "source_line": 54,
-    "issue_homes": [
-      "#9133"
-    ]
+    "issue_homes": ["#9133"]
   },
   {
     "id": "S2.17",
     "text": "(implied) Hot-cache invalidation/staleness vs the Turso source of truth is specified; skipping the hop is valid only within a defined freshness bound.",
     "source_line": 54,
-    "issue_homes": [
-      "#9134"
-    ]
+    "issue_homes": ["#9134"]
   },
   {
     "id": "S2.18",
     "text": "(implied) Trusted vs untrusted is a per-bucket/per-tenant threat model, not a global flag.",
     "source_line": 54,
-    "issue_homes": [
-      "#9136"
-    ]
+    "issue_homes": ["#9136"]
   },
   {
     "id": "S2.19",
     "text": "(implied) GC for large files avoids re-upload/rewrite of a whole file to reclaim a small fraction — chunk/segment reclamation matters.",
     "source_line": 54,
-    "issue_homes": [
-      "#9137"
-    ]
+    "issue_homes": ["#9137"]
   },
   {
     "id": "S6.1",
     "text": "Much/all ID-ingested content is auto-queued for vectorization.",
     "source_line": 58,
-    "issue_homes": [
-      "#9138"
-    ]
+    "issue_homes": ["#9138"]
   },
   {
     "id": "S6.2",
     "text": "Vectorization uses Snowflake + the second embedder from Atlas #9092.",
     "source_line": 58,
-    "issue_homes": [
-      "#9138"
-    ]
+    "issue_homes": ["#9138"]
   },
   {
     "id": "S6.3",
     "text": "Built-in ID search is a platform feature, not an add-on.",
     "source_line": 58,
-    "issue_homes": [
-      "#9138"
-    ]
+    "issue_homes": ["#9138"]
   },
   {
     "id": "S6.4",
     "text": "Recommendations are \"news feed\" / \"you might be interested\" surfaces.",
     "source_line": 58,
-    "issue_homes": [
-      "#9139"
-    ]
+    "issue_homes": ["#9139"]
   },
   {
     "id": "S6.5",
     "text": "ONE worker fans out for recommendations.",
     "source_line": 58,
-    "issue_homes": [
-      "#9139"
-    ]
+    "issue_homes": ["#9139"]
   },
   {
     "id": "S6.6",
     "text": "A Durable Object accumulates recommendations incrementally.",
     "source_line": 58,
-    "issue_homes": [
-      "#9139"
-    ]
+    "issue_homes": ["#9139"]
   },
   {
     "id": "S6.7",
     "text": "The consumer API is incremental: \"give me the next 10\".",
     "source_line": 58,
-    "issue_homes": [
-      "#9139"
-    ]
+    "issue_homes": ["#9139"]
   },
   {
     "id": "S6.8",
     "text": "Recommendations are stored as their own objects.",
     "source_line": 58,
-    "issue_homes": [
-      "#9140"
-    ]
+    "issue_homes": ["#9140"]
   },
   {
     "id": "S6.9",
     "text": "Search history is stored (as recommendation objects/inputs).",
     "source_line": 58,
-    "issue_homes": [
-      "#9140"
-    ]
+    "issue_homes": ["#9140"]
   },
   {
     "id": "S6.10",
     "text": "Stored recommendations enable admin before/after comparisons.",
     "source_line": 58,
-    "issue_homes": [
-      "#9140"
-    ]
+    "issue_homes": ["#9140"]
   },
   {
     "id": "S6.11",
     "text": "Some recommendation data has shorter retention.",
     "source_line": 58,
-    "issue_homes": [
-      "#9140"
-    ]
+    "issue_homes": ["#9140"]
   },
   {
     "id": "S6.12",
     "text": "\"What's hot\" intermediate data is the example short-retention class.",
     "source_line": 58,
-    "issue_homes": [
-      "#9140"
-    ]
+    "issue_homes": ["#9140"]
   },
   {
     "id": "S6.13",
     "text": "(implied) Ingest → vectorize is asynchronous/queued, not blocking ingest.",
     "source_line": 58,
-    "issue_homes": [
-      "#9138"
-    ]
+    "issue_homes": ["#9138"]
   },
   {
     "id": "S6.14",
     "text": "(implied) Both embedders' outputs are searchable/comparable; embedder choice is not hard-coded.",
     "source_line": 58,
-    "issue_homes": [
-      "#9138"
-    ]
+    "issue_homes": ["#9138"]
   },
   {
     "id": "S6.15",
     "text": "(implied) Incremental accumulation survives restarts — hence a Durable Object, not in-memory paging.",
     "source_line": 58,
-    "issue_homes": [
-      "#9139"
-    ]
+    "issue_homes": ["#9139"]
   },
   {
     "id": "S6.16",
     "text": "(implied) Retention is per data class, not one global TTL.",
     "source_line": 58,
-    "issue_homes": [
-      "#9140"
-    ]
+    "issue_homes": ["#9140"]
   },
   {
     "id": "S6.17",
     "text": "(implied) Before/after comparison requires versioned/timestamped recommendation snapshots.",
     "source_line": 58,
-    "issue_homes": [
-      "#9140"
-    ]
+    "issue_homes": ["#9140"]
   },
   {
     "id": "S3.1",
     "text": "Multiple ID shapes are supported; no single canonical format.",
     "source_line": 62,
-    "issue_homes": [
-      "#9113"
-    ]
+    "issue_homes": ["#9113"]
   },
   {
     "id": "S3.2",
     "text": "(implied) Consumers dispatch behaviour by ID shape.",
     "source_line": 62,
-    "issue_homes": [
-      "#9113"
-    ]
+    "issue_homes": ["#9113"]
   },
   {
     "id": "S3.3",
     "text": "(implied) New shapes can be added without invalidating existing IDs.",
     "source_line": 62,
-    "issue_homes": [
-      "#9113"
-    ]
+    "issue_homes": ["#9113"]
   },
   {
     "id": "S3.4",
     "text": "The content-addressed hash is one supported shape.",
     "source_line": 62,
-    "issue_homes": [
-      "#9113"
-    ]
+    "issue_homes": ["#9113"]
   },
   {
     "id": "S3.5",
     "text": "A hash ID needs no map (no lookup table/registry/translation layer).",
     "source_line": 62,
-    "issue_homes": [
-      "#9113"
-    ]
+    "issue_homes": ["#9113"]
   },
   {
     "id": "S3.6",
     "text": "Store hash, ship hash — the stored hash is transmitted unchanged.",
     "source_line": 62,
-    "issue_homes": [
-      "#9113"
-    ]
+    "issue_homes": ["#9113"]
   },
   {
     "id": "S3.7",
     "text": "(implied) A hash ID is portable across servers, buckets, transports without re-issuance.",
     "source_line": 62,
-    "issue_homes": [
-      "#9113"
-    ]
+    "issue_homes": ["#9113"]
   },
   {
     "id": "S3.8",
     "text": "(implied) A hash ID is verifiable by recomputation over the content.",
     "source_line": 62,
-    "issue_homes": [
-      "#9113"
-    ]
+    "issue_homes": ["#9113"]
   },
   {
     "id": "S3.9",
     "text": "(implied) Identical content yields the same hash ID (natural dedup).",
     "source_line": 62,
-    "issue_homes": [
-      "#9113"
-    ]
+    "issue_homes": ["#9113"]
   },
   {
     "id": "S3.10",
     "text": "(implied) A hash ID names content independently of where copies live.",
     "source_line": 62,
-    "issue_homes": [
-      "#9113"
-    ]
+    "issue_homes": ["#9113"]
   },
   {
     "id": "S3.11",
     "text": "Metadata lives in a sidecar beside the hash, not inside the hashed content.",
     "source_line": 62,
-    "issue_homes": [
-      "#9114"
-    ]
+    "issue_homes": ["#9114"]
   },
   {
     "id": "S3.12",
     "text": "(implied) Keeping metadata outside keeps the hash stable when metadata changes.",
     "source_line": 62,
-    "issue_homes": [
-      "#9114"
-    ]
+    "issue_homes": ["#9114"]
   },
   {
     "id": "S3.13",
     "text": "The default sidecar form is a file/object named `hash.metadata`.",
     "source_line": 62,
-    "issue_homes": [
-      "#9114"
-    ]
+    "issue_homes": ["#9114"]
   },
   {
     "id": "S3.14",
     "text": "`hash.metadata` contains ALL metadata for that hash (complete, not a subset).",
     "source_line": 62,
-    "issue_homes": [
-      "#9114"
-    ]
+    "issue_homes": ["#9114"]
   },
   {
     "id": "S3.15",
     "text": "Alternative A: one R2 path/filename per metadata version.",
     "source_line": 62,
-    "issue_homes": [
-      "#9114"
-    ]
+    "issue_homes": ["#9114"]
   },
   {
     "id": "S3.16",
     "text": "Alternative B: the sidecar is a pointer to `hash.metadata.<date>`.",
     "source_line": 62,
-    "issue_homes": [
-      "#9114"
-    ]
+    "issue_homes": ["#9114"]
   },
   {
     "id": "S3.17",
     "text": "(implied) S3.13–S3.16 are undecided alternatives, not three simultaneous mandates.",
     "source_line": 62,
-    "issue_homes": [
-      "#9114"
-    ]
+    "issue_homes": ["#9114"]
   },
   {
     "id": "S3.18",
     "text": "(implied) The dated form makes each metadata version an immutable, addressable snapshot.",
     "source_line": 62,
-    "issue_homes": [
-      "#9114"
-    ]
+    "issue_homes": ["#9114"]
   },
   {
     "id": "S3.19",
     "text": "(implied) The pointer form is a mutable \"latest\" indirection over immutable dated versions.",
     "source_line": 62,
-    "issue_homes": [
-      "#9114"
-    ]
+    "issue_homes": ["#9114"]
   },
   {
     "id": "S3.20",
     "text": "(implied) The R2-path form needs defined escaping/encoding for hashes, versions, dates in paths.",
     "source_line": 62,
-    "issue_homes": [
-      "#9114"
-    ]
+    "issue_homes": ["#9114"]
   },
   {
     "id": "S3.21",
     "text": "The metadata may contain related path links.",
     "source_line": 62,
-    "issue_homes": [
-      "#9114"
-    ]
+    "issue_homes": ["#9114"]
   },
   {
     "id": "S3.22",
     "text": "(implied) Related links are path references, not restricted to hash IDs.",
     "source_line": 62,
-    "issue_homes": [
-      "#9114"
-    ]
+    "issue_homes": ["#9114"]
   },
   {
     "id": "S3.23",
     "text": "A server receiving a hash can acknowledge its existence.",
     "source_line": 62,
-    "issue_homes": [
-      "#9115"
-    ]
+    "issue_homes": ["#9115"]
   },
   {
     "id": "S3.24",
     "text": "(implied) Existence acknowledgement is a distinct operation from returning content or metadata.",
     "source_line": 62,
-    "issue_homes": [
-      "#9115"
-    ]
+    "issue_homes": ["#9115"]
   },
   {
     "id": "S3.25",
     "text": "(implied) Existence ack enables replica/inventory checks without content transfer.",
     "source_line": 62,
-    "issue_homes": [
-      "#9115"
-    ]
+    "issue_homes": ["#9115"]
   },
   {
     "id": "S3.26",
     "text": "A harvesting process collects sidecar metadata and inserts location records into a location index.",
     "source_line": 62,
-    "issue_homes": [
-      "#9115"
-    ]
+    "issue_homes": ["#9115"]
   },
   {
     "id": "S3.27",
     "text": "Harvesting can run as a batch process.",
     "source_line": 62,
-    "issue_homes": [
-      "#9115"
-    ]
+    "issue_homes": ["#9115"]
   },
   {
     "id": "S3.28",
     "text": "Harvesting can run immediately on receipt/ingest — a deployment choice, not a format difference.",
     "source_line": 62,
-    "issue_homes": [
-      "#9115"
-    ]
+    "issue_homes": ["#9115"]
   },
   {
     "id": "S3.29",
     "text": "The harvester inserts ALL location records found, not only a primary one.",
     "source_line": 62,
-    "issue_homes": [
-      "#9115"
-    ]
+    "issue_homes": ["#9115"]
   },
   {
     "id": "S3.30",
     "text": "Location records include an R2 bucket location.",
     "source_line": 62,
-    "issue_homes": [
-      "#9115"
-    ]
+    "issue_homes": ["#9115"]
   },
   {
     "id": "S3.31",
     "text": "Location records include a laptop location as hostname + path.",
     "source_line": 62,
-    "issue_homes": [
-      "#9115"
-    ]
+    "issue_homes": ["#9115"]
   },
   {
     "id": "S3.32",
     "text": "Location records include a Drive location prefixed by account (no cross-account collisions).",
     "source_line": 62,
-    "issue_homes": [
-      "#9115"
-    ]
+    "issue_homes": ["#9115"]
   },
   {
     "id": "S3.33",
     "text": "Location records include a Drive URL.",
     "source_line": 62,
-    "issue_homes": [
-      "#9115"
-    ]
+    "issue_homes": ["#9115"]
   },
   {
     "id": "S3.34",
     "text": "The location-type list is open-ended (\"etc.\") — new types expected.",
     "source_line": 62,
-    "issue_homes": [
-      "#9115"
-    ]
+    "issue_homes": ["#9115"]
   },
   {
     "id": "S3.35",
     "text": "(implied) One hash has many concurrent location records of different types.",
     "source_line": 62,
-    "issue_homes": [
-      "#9115"
-    ]
+    "issue_homes": ["#9115"]
   },
   {
     "id": "S3.36",
     "text": "(implied) The sidecar is the harvester's source; the location index is derived and rebuildable.",
     "source_line": 62,
-    "issue_homes": [
-      "#9115"
-    ]
+    "issue_homes": ["#9115"]
   },
   {
     "id": "S3.37",
     "text": "The location index ties directly to Atlas VFS #9100.",
     "source_line": 62,
-    "issue_homes": [
-      "#9115"
-    ]
+    "issue_homes": ["#9115"]
   },
   {
     "id": "S3.38",
     "text": "(implied) Deletion/move/stale-location handling for harvested records is unspecified and must be designed.",
     "source_line": 62,
-    "issue_homes": [
-      "#9115"
-    ]
+    "issue_homes": ["#9115"]
   },
   {
     "id": "S4.1",
     "text": "A namespace is a named addressing space with its own rules, distinct from its host server.",
     "source_line": 67,
-    "issue_homes": [
-      "#9116",
-      "#9117"
-    ]
+    "issue_homes": ["#9116", "#9117"]
   },
   {
     "id": "S4.2",
     "text": "A server hosts multiple namespaces.",
     "source_line": 67,
-    "issue_homes": [
-      "#9116",
-      "#9117"
-    ]
+    "issue_homes": ["#9116", "#9117"]
   },
   {
     "id": "S4.3",
     "text": "Each server has a namespace registry.",
     "source_line": 67,
-    "issue_homes": [
-      "#9116",
-      "#9117"
-    ]
+    "issue_homes": ["#9116", "#9117"]
   },
   {
     "id": "S4.4",
     "text": "The registry is definable per server.",
     "source_line": 67,
-    "issue_homes": [
-      "#9116",
-      "#9117"
-    ]
+    "issue_homes": ["#9116", "#9117"]
   },
   {
     "id": "S4.5",
     "text": "Different servers' registries may diverge — by design.",
     "source_line": 67,
-    "issue_homes": [
-      "#9116",
-      "#9117"
-    ]
+    "issue_homes": ["#9116", "#9117"]
   },
   {
     "id": "S4.6",
     "text": "(implied) No global namespace registry and no globally canonical resolution exists.",
     "source_line": 67,
-    "issue_homes": [
-      "#9116",
-      "#9117"
-    ]
+    "issue_homes": ["#9116", "#9117"]
   },
   {
     "id": "S4.7",
     "text": "(implied) The same name may resolve differently on different servers without either being in error.",
     "source_line": 67,
-    "issue_homes": [
-      "#9116",
-      "#9117"
-    ]
+    "issue_homes": ["#9116", "#9117"]
   },
   {
     "id": "S4.8",
     "text": "Each namespace can have its own URL handler.",
     "source_line": 67,
-    "issue_homes": [
-      "#9116",
-      "#9117"
-    ]
+    "issue_homes": ["#9116", "#9117"]
   },
   {
     "id": "S4.9",
     "text": "Each namespace can have its own encoding (e.g. base64).",
     "source_line": 67,
-    "issue_homes": [
-      "#9116",
-      "#9117"
-    ]
+    "issue_homes": ["#9116", "#9117"]
   },
   {
     "id": "S4.10",
     "text": "(implied) Encoding is per-namespace, not a global URL property.",
     "source_line": 67,
-    "issue_homes": [
-      "#9116",
-      "#9117"
-    ]
+    "issue_homes": ["#9116", "#9117"]
   },
   {
     "id": "S4.11",
     "text": "An `id://` URL design covers these namespaces.",
     "source_line": 67,
-    "issue_homes": [
-      "#9116",
-      "#9117"
-    ]
+    "issue_homes": ["#9116", "#9117"]
   },
   {
     "id": "S4.12",
     "text": "It must follow the URI specifications.",
     "source_line": 67,
-    "issue_homes": [
-      "#9116",
-      "#9117"
-    ]
+    "issue_homes": ["#9116", "#9117"]
   },
   {
     "id": "S4.13",
     "text": "It must be human-readable.",
     "source_line": 67,
-    "issue_homes": [
-      "#9116",
-      "#9117"
-    ]
+    "issue_homes": ["#9116", "#9117"]
   },
   {
     "id": "S4.14",
     "text": "It must be expandable without breaking existing URLs.",
     "source_line": 67,
-    "issue_homes": [
-      "#9116",
-      "#9117"
-    ]
+    "issue_homes": ["#9116", "#9117"]
   },
   {
     "id": "S4.15",
     "text": "Drew's `idb64+...` sketch is NOT adopted — it is a sketch to evaluate/replace.",
     "source_line": 67,
-    "issue_homes": [
-      "#9116",
-      "#9117"
-    ]
+    "issue_homes": ["#9116", "#9117"]
   },
   {
     "id": "S4.16",
     "text": "(implied) Human-readability rules out a common case that is only an opaque base64 blob.",
     "source_line": 67,
-    "issue_homes": [
-      "#9116",
-      "#9117"
-    ]
+    "issue_homes": ["#9116", "#9117"]
   },
   {
     "id": "S4.17",
     "text": "(implied) URI compliance constrains scheme, authority/path, reserved characters, percent-encoding, case/normalisation, length — all to be settled in the design.",
     "source_line": 67,
-    "issue_homes": [
-      "#9116",
-      "#9117"
-    ]
+    "issue_homes": ["#9116", "#9117"]
   },
   {
     "id": "S4.18",
     "text": "(implied) A namespace definition declares at least: core type, handler, encoding, resolution/write rules.",
     "source_line": 67,
-    "issue_homes": [
-      "#9116",
-      "#9117"
-    ]
+    "issue_homes": ["#9116", "#9117"]
   },
   {
     "id": "S4.19",
     "text": "Exactly two core namespaces exist, from which families derive.",
     "source_line": 69,
-    "issue_homes": [
-      "#9120"
-    ]
+    "issue_homes": ["#9120"]
   },
   {
     "id": "S4.20",
     "text": "Core (a) is the content-addressed namespace.",
     "source_line": 69,
-    "issue_homes": [
-      "#9120"
-    ]
+    "issue_homes": ["#9120"]
   },
   {
     "id": "S4.21",
     "text": "Core (b) is the array-address namespace.",
     "source_line": 69,
-    "issue_homes": [
-      "#9120"
-    ]
+    "issue_homes": ["#9120"]
   },
   {
     "id": "S4.22",
     "text": "(implied) Derived families are configurations/compositions of a core, not new storage primitives, unless a design proves otherwise.",
     "source_line": 69,
-    "issue_homes": [
-      "#9120"
-    ]
+    "issue_homes": ["#9120"]
   },
   {
     "id": "S4.23",
     "text": "In core (b), an address is an array of byte-strings.",
     "source_line": 69,
-    "issue_homes": [
-      "#9118"
-    ]
+    "issue_homes": ["#9118"]
   },
   {
     "id": "S4.24",
     "text": "Each array item is either null or bytes.",
     "source_line": 69,
-    "issue_homes": [
-      "#9118"
-    ]
+    "issue_homes": ["#9118"]
   },
   {
     "id": "S4.25",
     "text": "(implied) Item order is significant — position is part of the address.",
     "source_line": 71,
-    "issue_homes": [
-      "#9118"
-    ]
+    "issue_homes": ["#9118"]
   },
   {
     "id": "S4.26",
     "text": "Address length is arbitrary, 0..n.",
     "source_line": 71,
-    "issue_homes": [
-      "#9118"
-    ]
+    "issue_homes": ["#9118"]
   },
   {
     "id": "S4.27",
     "text": "The zero-length address is valid.",
     "source_line": 71,
-    "issue_homes": [
-      "#9118"
-    ]
+    "issue_homes": ["#9118"]
   },
   {
     "id": "S4.28",
     "text": "(implied) Null items are meaningful sparse slots, not merely absent values.",
     "source_line": 71,
-    "issue_homes": [
-      "#9118"
-    ]
+    "issue_homes": ["#9118"]
   },
   {
     "id": "S4.29",
     "text": "A bare string query is shorthand for an array address.",
     "source_line": 71,
-    "issue_homes": [
-      "#9118",
-      "#9119"
-    ]
+    "issue_homes": ["#9118", "#9119"]
   },
   {
     "id": "S4.30",
     "text": "A bare string resolves via a server-configurable default index.",
     "source_line": 71,
-    "issue_homes": [
-      "#9118",
-      "#9119"
-    ]
+    "issue_homes": ["#9118", "#9119"]
   },
   {
     "id": "S4.31",
     "text": "Drew's example configuration is index 2 with [0],[1] null.",
     "source_line": 71,
-    "issue_homes": [
-      "#9118",
-      "#9119"
-    ]
+    "issue_homes": ["#9118", "#9119"]
   },
   {
     "id": "S4.32",
     "text": "S4.31 is one server's configuration, NOT the rule — never hardcoded.",
     "source_line": 71,
-    "issue_homes": [
-      "#9118",
-      "#9119"
-    ]
+    "issue_homes": ["#9118", "#9119"]
   },
   {
     "id": "S4.33",
     "text": "(implied) Different default-index configs resolve the same bare string to different addresses.",
     "source_line": 71,
-    "issue_homes": [
-      "#9118",
-      "#9119"
-    ]
+    "issue_homes": ["#9118", "#9119"]
   },
   {
     "id": "S4.34",
     "text": "Values are stored as TYPE + BYTES (type tag + payload).",
     "source_line": 71,
-    "issue_homes": [
-      "#9118"
-    ]
+    "issue_homes": ["#9118"]
   },
   {
     "id": "S4.35",
     "text": "Equality is type-sensitive: number 1 ≠ string \"1\".",
     "source_line": 71,
-    "issue_homes": [
-      "#9118"
-    ]
+    "issue_homes": ["#9118"]
   },
   {
     "id": "S4.36",
     "text": "(implied) Identical bytes with different type tags are different values.",
     "source_line": 71,
-    "issue_homes": [
-      "#9118"
-    ]
+    "issue_homes": ["#9118"]
   },
   {
     "id": "S4.37",
     "text": "Serialization is type-aware.",
     "source_line": 71,
-    "issue_homes": [
-      "#9118"
-    ]
+    "issue_homes": ["#9118"]
   },
   {
     "id": "S4.38",
     "text": "(implied) Serialization round-trips: a value reads back with the type it was written with.",
     "source_line": 71,
-    "issue_homes": [
-      "#9118"
-    ]
+    "issue_homes": ["#9118"]
   },
   {
     "id": "S4.39",
     "text": "Arbitrary objects serialize into this namespace.",
     "source_line": 71,
-    "issue_homes": [
-      "#9118"
-    ]
+    "issue_homes": ["#9118"]
   },
   {
     "id": "S4.40",
     "text": "(implied) The object serialization format, and which types are primitive vs encoded objects, must be designed.",
     "source_line": 71,
-    "issue_homes": [
-      "#9118"
-    ]
+    "issue_homes": ["#9118"]
   },
   {
     "id": "S4.41",
     "text": "Interfaces may stream results.",
     "source_line": 71,
-    "issue_homes": [
-      "#9119"
-    ]
+    "issue_homes": ["#9119"]
   },
   {
     "id": "S4.42",
     "text": "Interfaces accept a max-items parameter.",
     "source_line": 71,
-    "issue_homes": [
-      "#9119"
-    ]
+    "issue_homes": ["#9119"]
   },
   {
     "id": "S4.43",
     "text": "(implied) Streaming + max-items require defined truncation/continuation semantics.",
     "source_line": 71,
-    "issue_homes": [
-      "#9119"
-    ]
+    "issue_homes": ["#9119"]
   },
   {
     "id": "S4.44",
     "text": "(implied) Max-items is an interface capability, not a limit on address length or stored items.",
     "source_line": 71,
-    "issue_homes": [
-      "#9119"
-    ]
+    "issue_homes": ["#9119"]
   },
   {
     "id": "S4.45",
     "text": "A derived string-path namespace of human, Wikipedia-style names exists.",
     "source_line": 73,
-    "issue_homes": [
-      "#9121"
-    ]
+    "issue_homes": ["#9121"]
   },
   {
     "id": "S4.46",
     "text": "Example: `us president.md` (spaces, extension included).",
     "source_line": 73,
-    "issue_homes": [
-      "#9121"
-    ]
+    "issue_homes": ["#9121"]
   },
   {
     "id": "S4.47",
     "text": "A name resolves to a target, per-server.",
     "source_line": 73,
-    "issue_homes": [
-      "#9121"
-    ]
+    "issue_homes": ["#9121"]
   },
   {
     "id": "S4.48",
     "text": "Resolution may be hand-picked by the admin.",
     "source_line": 73,
-    "issue_homes": [
-      "#9121"
-    ]
+    "issue_homes": ["#9121"]
   },
   {
     "id": "S4.49",
     "text": "Resolution may be picked algorithmically.",
     "source_line": 73,
-    "issue_homes": [
-      "#9121"
-    ]
+    "issue_homes": ["#9121"]
   },
   {
     "id": "S4.50",
     "text": "(implied) Both modes must be representable per server.",
     "source_line": 73,
-    "issue_homes": [
-      "#9121"
-    ]
+    "issue_homes": ["#9121"]
   },
   {
     "id": "S4.51",
     "text": "(implied) Names are expected to be ambiguous/colliding; multiple candidate resolutions exist.",
     "source_line": 73,
-    "issue_homes": [
-      "#9121"
-    ]
+    "issue_homes": ["#9121"]
   },
   {
     "id": "S4.52",
     "text": "Search shows the resolutions (plural), not a hidden winner.",
     "source_line": 73,
-    "issue_homes": [
-      "#9121"
-    ]
+    "issue_homes": ["#9121"]
   },
   {
     "id": "S4.53",
     "text": "Resolutions are lens-able.",
     "source_line": 73,
-    "issue_homes": [
-      "#9121"
-    ]
+    "issue_homes": ["#9121"]
   },
   {
     "id": "S4.54",
     "text": "Lens 1: own server's overrides.",
     "source_line": 73,
-    "issue_homes": [
-      "#9121"
-    ]
+    "issue_homes": ["#9121"]
   },
   {
     "id": "S4.55",
     "text": "Lens 2: popularity by total count.",
     "source_line": 73,
-    "issue_homes": [
-      "#9121"
-    ]
+    "issue_homes": ["#9121"]
   },
   {
     "id": "S4.56",
     "text": "Lens 3: popularity among users you have interacted with.",
     "source_line": 73,
-    "issue_homes": [
-      "#9121"
-    ]
+    "issue_homes": ["#9121"]
   },
   {
     "id": "S4.57",
     "text": "Lens 4: popularity among users of a given standing.",
     "source_line": 73,
-    "issue_homes": [
-      "#9121"
-    ]
+    "issue_homes": ["#9121"]
   },
   {
     "id": "S4.58",
     "text": "(implied) \"Standing\" must be defined (what it is, who assigns it, how it's queried).",
     "source_line": 73,
-    "issue_homes": [
-      "#9121"
-    ]
+    "issue_homes": ["#9121"]
   },
   {
     "id": "S4.59",
     "text": "Authority groups curate names/resolutions.",
     "source_line": 73,
-    "issue_homes": [
-      "#9121"
-    ]
+    "issue_homes": ["#9121"]
   },
   {
     "id": "S4.60",
     "text": "A group is adoptable as a preferred filter/lens.",
     "source_line": 73,
-    "issue_homes": [
-      "#9121"
-    ]
+    "issue_homes": ["#9121"]
   },
   {
     "id": "S4.61",
     "text": "Example: a \"wiki group\" curating Wikipedia-style names.",
     "source_line": 73,
-    "issue_homes": [
-      "#9121"
-    ]
+    "issue_homes": ["#9121"]
   },
   {
     "id": "S4.62",
     "text": "(implied) Adopting a group is voluntary — a preference, not a global authority.",
     "source_line": 73,
-    "issue_homes": [
-      "#9121"
-    ]
+    "issue_homes": ["#9121"]
   },
   {
     "id": "S4.63",
     "text": "(implied) Multiple groups can curate overlapping names; a viewer can switch preferred group.",
     "source_line": 73,
-    "issue_homes": [
-      "#9121"
-    ]
+    "issue_homes": ["#9121"]
   },
   {
     "id": "S4.64",
     "text": "A derived numeric-registry family exists (addresses/values are numbers).",
     "source_line": 75,
-    "issue_homes": [
-      "#9122"
-    ]
+    "issue_homes": ["#9122"]
   },
   {
     "id": "S4.65",
     "text": "Integers supported.",
     "source_line": 75,
-    "issue_homes": [
-      "#9122"
-    ]
+    "issue_homes": ["#9122"]
   },
   {
     "id": "S4.66",
     "text": "Floats supported.",
     "source_line": 75,
-    "issue_homes": [
-      "#9122"
-    ]
+    "issue_homes": ["#9122"]
   },
   {
     "id": "S4.67",
     "text": "Decimals supported.",
     "source_line": 75,
-    "issue_homes": [
-      "#9122"
-    ]
+    "issue_homes": ["#9122"]
   },
   {
     "id": "S4.68",
     "text": "Bigints supported.",
     "source_line": 75,
-    "issue_homes": [
-      "#9122"
-    ]
+    "issue_homes": ["#9122"]
   },
   {
     "id": "S4.69",
     "text": "Numbers are infinitely growable (no fixed max magnitude/precision).",
     "source_line": 75,
-    "issue_homes": [
-      "#9122"
-    ]
+    "issue_homes": ["#9122"]
   },
   {
     "id": "S4.70",
     "text": "(implied) That requires an extensible byte encoding, not fixed-width fields.",
     "source_line": 75,
-    "issue_homes": [
-      "#9122"
-    ]
+    "issue_homes": ["#9122"]
   },
   {
     "id": "S4.71",
     "text": "A numeric registry may be the byte system plus numeric-style write validation.",
     "source_line": 75,
-    "issue_homes": [
-      "#9122"
-    ]
+    "issue_homes": ["#9122"]
   },
   {
     "id": "S4.72",
     "text": "(implied) Numeric-ness is then enforced at write by validation, not a separate engine.",
     "source_line": 75,
-    "issue_homes": [
-      "#9122"
-    ]
+    "issue_homes": ["#9122"]
   },
   {
     "id": "S4.73",
     "text": "(implied) Validation defines canonical encoding, ordering, precision, and rejection rules per numeric kind.",
     "source_line": 75,
-    "issue_homes": [
-      "#9122"
-    ]
+    "issue_homes": ["#9122"]
   },
   {
     "id": "S4.74",
     "text": "A derived stream namespace family exists.",
     "source_line": 77,
-    "issue_homes": [
-      "#9123"
-    ]
+    "issue_homes": ["#9123"]
   },
   {
     "id": "S4.75",
     "text": "Text streams.",
     "source_line": 77,
-    "issue_homes": [
-      "#9123"
-    ]
+    "issue_homes": ["#9123"]
   },
   {
     "id": "S4.76",
     "text": "Chat-as-typed in multi-user documents (contributions addressable while produced).",
     "source_line": 77,
-    "issue_homes": [
-      "#9123"
-    ]
+    "issue_homes": ["#9123"]
   },
   {
     "id": "S4.77",
     "text": "Voice in progress.",
     "source_line": 77,
-    "issue_homes": [
-      "#9123"
-    ]
+    "issue_homes": ["#9123"]
   },
   {
     "id": "S4.78",
     "text": "Video in progress.",
     "source_line": 77,
-    "issue_homes": [
-      "#9123"
-    ]
+    "issue_homes": ["#9123"]
   },
   {
     "id": "S4.79",
     "text": "(implied) A stream is addressable before it finishes; in-progress state is first-class.",
     "source_line": 77,
-    "issue_homes": [
-      "#9123"
-    ]
+    "issue_homes": ["#9123"]
   },
   {
     "id": "S4.80",
     "text": "A finished stream redirects to the final stored object.",
     "source_line": 77,
-    "issue_homes": [
-      "#9123"
-    ]
+    "issue_homes": ["#9123"]
   },
   {
     "id": "S4.81",
     "text": "(implied) The redirect is namespace semantics: following a completed stream's address yields the stored object.",
     "source_line": 77,
-    "issue_homes": [
-      "#9123"
-    ]
+    "issue_homes": ["#9123"]
   },
   {
     "id": "S4.82",
     "text": "(implied) Stream lifecycle and write-vs-subscribe rights must be designed.",
     "source_line": 77,
-    "issue_homes": [
-      "#9123"
-    ]
+    "issue_homes": ["#9123"]
   },
   {
     "id": "S4.83",
     "text": "A namespace definition can be signed by an authority.",
     "source_line": 79,
-    "issue_homes": [
-      "#9124"
-    ]
+    "issue_homes": ["#9124"]
   },
   {
     "id": "S4.84",
     "text": "Drew signing a definition is the canonical example.",
     "source_line": 79,
-    "issue_homes": [
-      "#9124"
-    ]
+    "issue_homes": ["#9124"]
   },
   {
     "id": "S4.85",
     "text": "A signed definition designates the world data its coordinates land in.",
     "source_line": 79,
-    "issue_homes": [
-      "#9124"
-    ]
+    "issue_homes": ["#9124"]
   },
   {
     "id": "S4.86",
     "text": "Coordinates are tuple addresses in the world (e.g. ID 1,3,7).",
     "source_line": 79,
-    "issue_homes": [
-      "#9124"
-    ]
+    "issue_homes": ["#9124"]
   },
   {
     "id": "S4.87",
     "text": "(implied) Coordinate worlds are naturally expressed on the array-address core.",
     "source_line": 79,
-    "issue_homes": [
-      "#9124"
-    ]
+    "issue_homes": ["#9124"]
   },
   {
     "id": "S4.88",
     "text": "Resolving a coordinate lands in the signer-designated world data.",
     "source_line": 79,
-    "issue_homes": [
-      "#9124"
-    ]
+    "issue_homes": ["#9124"]
   },
   {
     "id": "S4.89",
     "text": "World content is presentable/renderable, not only raw fetch.",
     "source_line": 79,
-    "issue_homes": [
-      "#9124"
-    ]
+    "issue_homes": ["#9124"]
   },
   {
     "id": "S4.90",
     "text": "A signed world is read-only for others.",
     "source_line": 79,
-    "issue_homes": [
-      "#9124"
-    ]
+    "issue_homes": ["#9124"]
   },
   {
     "id": "S4.91",
     "text": "Others remain free to serve whatever they want on their servers.",
     "source_line": 79,
-    "issue_homes": [
-      "#9124"
-    ]
+    "issue_homes": ["#9124"]
   },
   {
     "id": "S4.92",
     "text": "(implied) A signature confers canonicity for that signer's world, not a protocol monopoly.",
     "source_line": 79,
-    "issue_homes": [
-      "#9124"
-    ]
+    "issue_homes": ["#9124"]
   },
   {
     "id": "S4.93",
     "text": "(implied) Signature verification, signer key identity, and revocation/re-signing must be designed.",
     "source_line": 79,
-    "issue_homes": [
-      "#9124"
-    ]
+    "issue_homes": ["#9124"]
   },
   {
     "id": "S5.1",
     "text": "Everything breaks down into triples.",
     "source_line": 84,
-    "issue_homes": [
-      "#9125",
-      "#9126"
-    ]
+    "issue_homes": ["#9125", "#9126"]
   },
   {
     "id": "S5.2",
     "text": "Infinitely many triples are allowed.",
     "source_line": 84,
-    "issue_homes": [
-      "#9125",
-      "#9126"
-    ]
+    "issue_homes": ["#9125", "#9126"]
   },
   {
     "id": "S5.3",
     "text": "Storage is NOT pretty-printed UTF-8 JSON.",
     "source_line": 84,
-    "issue_homes": [
-      "#9125",
-      "#9126"
-    ]
+    "issue_homes": ["#9125", "#9126"]
   },
   {
     "id": "S5.4",
     "text": "Investigate compressed/streamable binary encoding.",
     "source_line": 84,
-    "issue_homes": [
-      "#9125",
-      "#9126"
-    ]
+    "issue_homes": ["#9125", "#9126"]
   },
   {
     "id": "S5.5",
     "text": "Investigate JSONB.",
     "source_line": 84,
-    "issue_homes": [
-      "#9125",
-      "#9126"
-    ]
+    "issue_homes": ["#9125", "#9126"]
   },
   {
     "id": "S5.6",
     "text": "Investigate normalized byte-key→byte-value maps.",
     "source_line": 84,
-    "issue_homes": [
-      "#9125",
-      "#9126"
-    ]
+    "issue_homes": ["#9125", "#9126"]
   },
   {
     "id": "S5.7",
     "text": "Graph storage must be efficient at scale.",
     "source_line": 84,
-    "issue_homes": [
-      "#9125",
-      "#9126"
-    ]
+    "issue_homes": ["#9125", "#9126"]
   },
   {
     "id": "S5.8",
     "text": "Graph query languages are evaluated/supported.",
     "source_line": 84,
-    "issue_homes": [
-      "#9125",
-      "#9126"
-    ]
+    "issue_homes": ["#9125", "#9126"]
   },
   {
     "id": "S5.9",
     "text": "Graph visualization is in scope.",
     "source_line": 84,
-    "issue_homes": [
-      "#9125",
-      "#9126"
-    ]
+    "issue_homes": ["#9125", "#9126"]
   },
   {
     "id": "S5.10",
     "text": "Metadata is accessed via the graph when graph query lands.",
     "source_line": 84,
-    "issue_homes": [
-      "#9125",
-      "#9126"
-    ]
+    "issue_homes": ["#9125", "#9126"]
   },
   {
     "id": "S5.11",
     "text": "(implied) Triple encoding preserves streaming/partial read; no whole-graph load to answer a query.",
     "source_line": 84,
-    "issue_homes": [
-      "#9125",
-      "#9126"
-    ]
+    "issue_homes": ["#9125", "#9126"]
   },
   {
     "id": "S5.12",
     "text": "(implied) Visualization consumes the same graph query layer, not a separate store.",
     "source_line": 84,
-    "issue_homes": [
-      "#9125",
-      "#9126"
-    ]
+    "issue_homes": ["#9125", "#9126"]
   },
   {
     "id": "S5.13",
     "text": "\"User attributes\" is Drew's term, distinct from Atlas metadata.",
     "source_line": 86,
-    "issue_homes": [
-      "#9127"
-    ]
+    "issue_homes": ["#9127"]
   },
   {
     "id": "S5.14",
     "text": "…and distinct from content-location metadata.",
     "source_line": 86,
-    "issue_homes": [
-      "#9127"
-    ]
+    "issue_homes": ["#9127"]
   },
   {
     "id": "S5.15",
     "text": "User attributes = metadata on a user's user object.",
     "source_line": 86,
-    "issue_homes": [
-      "#9127"
-    ]
+    "issue_homes": ["#9127"]
   },
   {
     "id": "S5.16",
     "text": "Attributes are themselves objects.",
     "source_line": 86,
-    "issue_homes": [
-      "#9127"
-    ]
+    "issue_homes": ["#9127"]
   },
   {
     "id": "S5.17",
     "text": "Example: the `name` attribute of the `geordi.png` path.",
     "source_line": 86,
-    "issue_homes": [
-      "#9127"
-    ]
+    "issue_homes": ["#9127"]
   },
   {
     "id": "S5.18",
     "text": "Example: comments at `geordi.png/comments`.",
     "source_line": 86,
-    "issue_homes": [
-      "#9127"
-    ]
+    "issue_homes": ["#9127"]
   },
   {
     "id": "S5.19",
     "text": "Attributes can be append-list attributes.",
     "source_line": 86,
-    "issue_homes": [
-      "#9127"
-    ]
+    "issue_homes": ["#9127"]
   },
   {
     "id": "S5.20",
     "text": "Anyone may SUBMIT a signed comment object + hash for append.",
     "source_line": 88,
-    "issue_homes": [
-      "#9127"
-    ]
+    "issue_homes": ["#9127"]
   },
   {
     "id": "S5.21",
     "text": "The server appends in server-defined central order.",
     "source_line": 88,
-    "issue_homes": [
-      "#9127"
-    ]
+    "issue_homes": ["#9127"]
   },
   {
     "id": "S5.22",
     "text": "Submitters cannot set/edit the list directly.",
     "source_line": 88,
-    "issue_homes": [
-      "#9127"
-    ]
+    "issue_homes": ["#9127"]
   },
   {
     "id": "S5.23",
     "text": "The owner/group admins control the object generally.",
     "source_line": 88,
-    "issue_homes": [
-      "#9127"
-    ]
+    "issue_homes": ["#9127"]
   },
   {
     "id": "S5.24",
     "text": "An explicitly OPENED attribute accepts append submissions despite that control.",
     "source_line": 88,
-    "issue_homes": [
-      "#9127"
-    ]
+    "issue_homes": ["#9127"]
   },
   {
     "id": "S5.25",
     "text": "Non-group submitters go to a PENDING queue.",
     "source_line": 88,
-    "issue_homes": [
-      "#9127"
-    ]
+    "issue_homes": ["#9127"]
   },
   {
     "id": "S5.26",
     "text": "Pending submissions need member/admin approval per configuration.",
     "source_line": 88,
-    "issue_homes": [
-      "#9127"
-    ]
+    "issue_homes": ["#9127"]
   },
   {
     "id": "S5.27",
     "text": "(implied) Append order is authoritative only from the server.",
     "source_line": 88,
-    "issue_homes": [
-      "#9127"
-    ]
+    "issue_homes": ["#9127"]
   },
   {
     "id": "S5.28",
     "text": "(implied) Signature + hash are verified before append or queueing.",
     "source_line": 88,
-    "issue_homes": [
-      "#9127"
-    ]
+    "issue_homes": ["#9127"]
   },
   {
     "id": "S5.29",
     "text": "(implied) Opened vs closed is an explicit per-attribute state.",
     "source_line": 88,
-    "issue_homes": [
-      "#9127"
-    ]
+    "issue_homes": ["#9127"]
   },
   {
     "id": "S5.30",
     "text": "Infinitely nesting objects are the substrate for social apps.",
     "source_line": 90,
-    "issue_homes": [
-      "#9128"
-    ]
+    "issue_homes": ["#9128"]
   },
   {
     "id": "S5.31",
     "text": "Feeds/Twitter-like apps are buildable.",
     "source_line": 90,
-    "issue_homes": [
-      "#9128"
-    ]
+    "issue_homes": ["#9128"]
   },
   {
     "id": "S5.32",
     "text": "Profiles/Facebook-LinkedIn-like apps are buildable.",
     "source_line": 90,
-    "issue_homes": [
-      "#9128"
-    ]
+    "issue_homes": ["#9128"]
   },
   {
     "id": "S5.33",
     "text": "Bulletin boards (phpBB/Usenet/Reddit/HN-like) are buildable.",
     "source_line": 90,
-    "issue_homes": [
-      "#9128"
-    ]
+    "issue_homes": ["#9128"]
   },
   {
     "id": "S5.34",
     "text": "Accepted objects become topics.",
     "source_line": 90,
-    "issue_homes": [
-      "#9128"
-    ]
+    "issue_homes": ["#9128"]
   },
   {
     "id": "S5.35",
     "text": "Comments on comments are supported.",
     "source_line": 90,
-    "issue_homes": [
-      "#9128"
-    ]
+    "issue_homes": ["#9128"]
   },
   {
     "id": "S5.36",
     "text": "Comment objects are content-addressed in the mutable area.",
     "source_line": 90,
-    "issue_homes": [
-      "#9128"
-    ]
+    "issue_homes": ["#9128"]
   },
   {
     "id": "S5.37",
     "text": "Forum views carry a cheap freshness TOKEN.",
     "source_line": 90,
-    "issue_homes": [
-      "#9128"
-    ]
+    "issue_homes": ["#9128"]
   },
   {
     "id": "S5.38",
     "text": "Token semantics: latest check / since-date / before-date.",
     "source_line": 90,
-    "issue_homes": [
-      "#9128"
-    ]
+    "issue_homes": ["#9128"]
   },
   {
     "id": "S5.39",
     "text": "(implied) The token proves \"nothing new\" without a full scan/refetch.",
     "source_line": 90,
-    "issue_homes": [
-      "#9128"
-    ]
+    "issue_homes": ["#9128"]
   },
   {
     "id": "S5.40",
     "text": "(implied) Nesting depth is not capped by the data model; caps are view/policy.",
     "source_line": 90,
-    "issue_homes": [
-      "#9128"
-    ]
+    "issue_homes": ["#9128"]
   },
   {
     "id": "S5.41",
     "text": "Mutable-area items are editable by owner/admins.",
     "source_line": 92,
-    "issue_homes": [
-      "#9129"
-    ]
+    "issue_homes": ["#9129"]
   },
   {
     "id": "S5.42",
     "text": "Versioning is a `succeeds` triple, v1 → v2.",
     "source_line": 92,
-    "issue_homes": [
-      "#9129"
-    ]
+    "issue_homes": ["#9129"]
   },
   {
     "id": "S5.43",
     "text": "Views show v2 by default.",
     "source_line": 92,
-    "issue_homes": [
-      "#9129"
-    ]
+    "issue_homes": ["#9129"]
   },
   {
     "id": "S5.44",
     "text": "Views carry v1 comments forward onto v2.",
     "source_line": 92,
-    "issue_homes": [
-      "#9129"
-    ]
+    "issue_homes": ["#9129"]
   },
   {
     "id": "S5.45",
     "text": "Carried comments are asterisked as old-version comments.",
     "source_line": 92,
-    "issue_homes": [
-      "#9129"
-    ]
+    "issue_homes": ["#9129"]
   },
   {
     "id": "S5.46",
     "text": "TRUE DELETE is governed by server policy.",
     "source_line": 94,
-    "issue_homes": [
-      "#9130"
-    ]
+    "issue_homes": ["#9130"]
   },
   {
     "id": "S5.47",
     "text": "Server admins can true-delete.",
     "source_line": 94,
-    "issue_homes": [
-      "#9130"
-    ]
+    "issue_homes": ["#9130"]
   },
   {
     "id": "S5.48",
     "text": "GC can true-delete when an item is unreferenced.",
     "source_line": 94,
-    "issue_homes": [
-      "#9130"
-    ]
+    "issue_homes": ["#9130"]
   },
   {
     "id": "S5.49",
     "text": "Group admins/users can mark their own items for next-batch deletion.",
     "source_line": 94,
-    "issue_homes": [
-      "#9130"
-    ]
+    "issue_homes": ["#9130"]
   },
   {
     "id": "S5.50",
     "text": "Marking is batched, not immediate.",
     "source_line": 94,
-    "issue_homes": [
-      "#9130"
-    ]
+    "issue_homes": ["#9130"]
   },
   {
     "id": "S5.51",
     "text": "A firehose \"please delete / please moderate\" queue exists for admin review.",
     "source_line": 94,
-    "issue_homes": [
-      "#9130"
-    ]
+    "issue_homes": ["#9130"]
   },
   {
     "id": "S5.52",
     "text": "(implied) Marking, moderation-queueing, and true deletion are three distinct states.",
     "source_line": 94,
-    "issue_homes": [
-      "#9130"
-    ]
+    "issue_homes": ["#9130"]
   },
   {
     "id": "S5.53",
     "text": "(implied) A referenced object is not GC-deleted even if marked, until references clear or policy overrides.",
     "source_line": 94,
-    "issue_homes": [
-      "#9130"
-    ]
+    "issue_homes": ["#9130"]
   },
   {
     "id": "S5.54",
     "text": "Assigning array[0..1] = [null, user's public ID (iroh key)] makes a space client-validatable as that signer's.",
     "source_line": 96,
-    "issue_homes": [
-      "#9131"
-    ]
+    "issue_homes": ["#9131"]
   },
   {
     "id": "S5.55",
     "text": "Petname attributes exist, distinct from canonical IDs.",
     "source_line": 96,
-    "issue_homes": [
-      "#9131"
-    ]
+    "issue_homes": ["#9131"]
   },
   {
     "id": "S5.56",
     "text": "Delegations: other keys can own/write a location.",
     "source_line": 96,
-    "issue_homes": [
-      "#9132"
-    ]
+    "issue_homes": ["#9132"]
   },
   {
     "id": "S5.57",
     "text": "Delegation is expressed via a well-known location listing delegations/transfers.",
     "source_line": 96,
-    "issue_homes": [
-      "#9132"
-    ]
+    "issue_homes": ["#9132"]
   },
   {
     "id": "S5.58",
     "text": "Alternative: identity triples (\"XYZ is the same as 123\").",
     "source_line": 96,
-    "issue_homes": [
-      "#9132"
-    ]
+    "issue_homes": ["#9132"]
   },
   {
     "id": "S5.59",
     "text": "An identity triple is accepted only when CROSS-SIGNED.",
     "source_line": 96,
-    "issue_homes": [
-      "#9132"
-    ]
+    "issue_homes": ["#9132"]
   },
   {
     "id": "S5.60",
     "text": "Cross-signed = both sides state/publish toward each other.",
     "source_line": 96,
-    "issue_homes": [
-      "#9132"
-    ]
+    "issue_homes": ["#9132"]
   },
   {
     "id": "S5.61",
     "text": "The exact delegation/cross-signing ceremony must be designed.",
     "source_line": 96,
-    "issue_homes": [
-      "#9132"
-    ]
+    "issue_homes": ["#9132"]
   },
   {
     "id": "S5.62",
     "text": "(implied) Client validation must not require trusting the server for signer identity.",
     "source_line": 96,
-    "issue_homes": [
-      "#9131"
-    ]
+    "issue_homes": ["#9131"]
   },
   {
     "id": "S5.63",
     "text": "(implied) A unilateral identity claim is at most pending/unverified, not a delegation.",
     "source_line": 96,
-    "issue_homes": [
-      "#9132"
-    ]
+    "issue_homes": ["#9132"]
   },
   {
     "id": "S5.64",
     "text": "(implied) Transfer (replaces owner) and delegation (grants, may not revoke the original) are distinct.",
     "source_line": 96,
-    "issue_homes": [
-      "#9132"
-    ]
+    "issue_homes": ["#9132"]
   }
 ]

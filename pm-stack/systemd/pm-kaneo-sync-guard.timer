@@ -1,0 +1,10 @@
+[Unit]
+Description=Hourly Kaneo GitHub sync guard (code#10137)
+
+[Timer]
+OnCalendar=hourly
+Persistent=true
+Unit=pm-kaneo-sync-guard.service
+
+[Install]
+WantedBy=timers.target

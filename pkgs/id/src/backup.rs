@@ -57,6 +57,8 @@ use id_core::key_envelope;
 /// Total v1 envelope length: 60-byte header + 32-byte wrapped key +
 /// 16-byte AEAD tag, matching `key_envelope`'s layout.
 pub const BACKUP_ENVELOPE_LEN: usize = 108;
+/// Minimum passphrase length accepted by every backup creation path.
+pub const MIN_BACKUP_PASSPHRASE_BYTES: usize = key_envelope::MIN_PASSPHRASE_BYTES;
 /// Envelope magic, mirroring `key_envelope`'s `IDKEY` header.
 const ENVELOPE_MAGIC: &[u8; 5] = b"IDKEY";
 /// Envelope version byte offset and expected v1 value.
@@ -160,6 +162,9 @@ pub enum BackupError {
     /// The per-identity download budget is exhausted; retry after the
     /// given number of milliseconds.
     DownloadBudgetExceeded { retry_after_ms: u64 },
+    /// A new device cannot be bound while restore notifications for
+    /// this identity are still pending.
+    RestorePending,
 }
 
 impl fmt::Display for BackupError {
@@ -180,6 +185,12 @@ impl fmt::Display for BackupError {
                 f,
                 "download budget exceeded; retry after {retry_after_ms} ms"
             ),
+            Self::RestorePending => {
+                write!(
+                    f,
+                    "cannot bind a device while restore notifications are pending"
+                )
+            }
         }
     }
 }
@@ -737,13 +748,30 @@ impl BackupStore {
         }
     }
 
-    /// Register a bound device for restore notifications.
-    pub fn bind_device(&mut self, public_key: &[u8; 32], device_public_key: [u8; 32]) {
+    /// Register a bound device for restore notifications. New devices
+    /// cannot be added while a restore's notification set is pending;
+    /// repeated registration of an already-bound device remains a no-op.
+    pub fn bind_device(
+        &mut self,
+        public_key: &[u8; 32],
+        device_public_key: [u8; 32],
+    ) -> Result<(), BackupError> {
         let hash = key_hash(public_key);
-        let devices = self.bound_devices.entry(hash).or_default();
-        if !devices.contains(&device_public_key) {
-            devices.push(device_public_key);
+        if self
+            .bound_devices
+            .get(&hash)
+            .is_some_and(|devices| devices.contains(&device_public_key))
+        {
+            return Ok(());
         }
+        if self.restore_pending.contains_key(&hash) {
+            return Err(BackupError::RestorePending);
+        }
+        self.bound_devices
+            .entry(hash)
+            .or_default()
+            .push(device_public_key);
+        Ok(())
     }
 
     /// Confirm the restore notifications for the restore named by
@@ -826,7 +854,11 @@ pub fn passphrase_warning(passphrase: &[u8]) -> Option<&'static str> {
     .iter()
     .filter(|present| **present)
     .count();
-    if text.chars().count() < 12 || (classes < 2 && text.chars().count() < 20) {
+    let mut chars = text.chars();
+    let first_char = chars.next();
+    let all_same = first_char.is_some() && chars.all(|ch| Some(ch) == first_char);
+    let char_count = text.chars().count();
+    if char_count < 12 || (classes < 2 && (char_count < 20 || all_same)) {
         Some(WEAK_PASSPHRASE_WARNING)
     } else {
         None
@@ -837,6 +869,10 @@ pub fn passphrase_warning(passphrase: &[u8]) -> Option<&'static str> {
 /// `key_envelope::encrypt` exactly — no second format — and report
 /// the weak-passphrase warning alongside.
 pub fn create_backup(passphrase: &[u8], identity_key: &[u8; 32]) -> anyhow::Result<CreatedBackup> {
+    anyhow::ensure!(
+        passphrase.len() >= MIN_BACKUP_PASSPHRASE_BYTES,
+        "passphrase must be at least {MIN_BACKUP_PASSPHRASE_BYTES} bytes"
+    );
     Ok(CreatedBackup {
         envelope: key_envelope::encrypt(passphrase, identity_key)?,
         passphrase_warning: passphrase_warning(passphrase),
@@ -1088,7 +1124,7 @@ mod tests {
     #[test]
     fn restore_increments_epoch_and_notifies_bound_devices() {
         let (mut store, _s, public, _e) = uploaded_store();
-        store.bind_device(&public, [42; 32]);
+        store.bind_device(&public, [42; 32]).unwrap();
         assert!(store.is_authoritative(&public));
         let receipt = store.download_for_restore(&public, 5_000).unwrap();
         assert_eq!(receipt.restore_epoch, 1);
@@ -1103,6 +1139,36 @@ mod tests {
         assert_eq!(store.record(&public).unwrap().restore_epoch(), 1);
     }
 
+    /// Oracle: while restore notifications are pending, a new device
+    /// cannot join the bound-device set after the receipt has snapshotted
+    /// its notification targets. The refusal leaves the pending restore
+    /// intact; after confirmation, binding is available again.
+    #[test]
+    fn binding_device_is_refused_until_restore_notifications_are_confirmed() {
+        let (mut store, _s, public, _e) = uploaded_store();
+        store.bind_device(&public, [42; 32]).unwrap();
+        let receipt = store.download_for_restore(&public, 5_000).unwrap();
+        assert_eq!(receipt.notifications.len(), 1);
+        assert_eq!(receipt.notifications[0].device_public_key, [42; 32]);
+        assert!(!store.is_authoritative(&public));
+        assert_eq!(store.bind_device(&public, [42; 32]), Ok(()));
+        assert!(!store.is_authoritative(&public));
+
+        assert_eq!(
+            store.bind_device(&public, [43; 32]),
+            Err(BackupError::RestorePending)
+        );
+        assert!(!store.is_authoritative(&public));
+        assert!(store.confirm_restore_notifications(&public, receipt.token));
+        assert!(store.is_authoritative(&public));
+
+        store.bind_device(&public, [43; 32]).unwrap();
+        let next = store.download_for_restore(&public, 6_000).unwrap();
+        assert_eq!(next.notifications.len(), 2);
+        assert_eq!(next.notifications[0].device_public_key, [42; 32]);
+        assert_eq!(next.notifications[1].device_public_key, [43; 32]);
+    }
+
     /// Oracle: Codex review on PR #7658 — a stale confirmation for
     /// restore epoch 1 must not clear restore epoch 2's pending
     /// notifications; only the current epoch's confirmation restores
@@ -1110,7 +1176,7 @@ mod tests {
     #[test]
     fn stale_restore_confirmation_does_not_clear_newer_restore() {
         let (mut store, _s, public, _e) = uploaded_store();
-        store.bind_device(&public, [42; 32]);
+        store.bind_device(&public, [42; 32]).unwrap();
         let first = store.download_for_restore(&public, 5_000).unwrap();
         assert_eq!(first.restore_epoch, 1);
         let second = store.download_for_restore(&public, 6_000).unwrap();
@@ -1131,7 +1197,7 @@ mod tests {
     #[test]
     fn stale_restore_token_does_not_confirm_recreated_backup() {
         let (mut store, signing, public, envelope) = uploaded_store();
-        store.bind_device(&public, [42; 32]);
+        store.bind_device(&public, [42; 32]).unwrap();
         let first = store.download_for_restore(&public, 5_000).unwrap();
         assert_eq!(
             first.token,
@@ -1227,15 +1293,41 @@ mod tests {
     }
 
     #[test]
+    fn passphrase_floor_rejects_short_input_and_accepts_the_exact_boundary() {
+        assert!(create_backup(b"", &[1; 32]).is_err());
+        assert!(create_backup(b"1234567", &[1; 32]).is_err());
+
+        let created = create_backup(b"12345678", &[1; 32]).unwrap();
+        assert_eq!(created.envelope.len(), BACKUP_ENVELOPE_LEN);
+        assert_eq!(
+            restore_identity_key(b"12345678", &created.envelope).unwrap(),
+            [1; 32]
+        );
+        assert_eq!(created.passphrase_warning, Some(WEAK_PASSPHRASE_WARNING));
+    }
+
+    #[test]
     fn weak_passphrases_are_warned_at_creation() {
         assert_eq!(
-            create_backup(b"short", &[1; 32])
+            create_backup(b"shorter!", &[1; 32])
+                .unwrap()
+                .passphrase_warning,
+            Some(WEAK_PASSPHRASE_WARNING)
+        );
+        assert_eq!(
+            create_backup(b"aaaaaaaaaaaaaaaaaaaa", &[1; 32])
                 .unwrap()
                 .passphrase_warning,
             Some(WEAK_PASSPHRASE_WARNING)
         );
         assert_eq!(
             create_backup(PASSPHRASE, &[1; 32])
+                .unwrap()
+                .passphrase_warning,
+            None
+        );
+        assert_eq!(
+            create_backup(b"abcdefghijklmnopqrst", &[1; 32])
                 .unwrap()
                 .passphrase_warning,
             None

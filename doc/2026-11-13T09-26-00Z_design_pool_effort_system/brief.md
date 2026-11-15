@@ -154,5 +154,5 @@ p90, p99, p99.9, quartiles (Q1–Q3, IQR)**, etc.
   ledger), code#9374 (mcpx daemon call ledger) — per-subcommand usage data in
   §5 is partly inference until those land.
 - AA data: ~/workspace/model-review-2026-11-12/aa-results.md/.json (AA v5.0.1)
-  + the AI Benchmarks Space. Claim-model stamping works (code#8176 fix), so
-  new trials are attributable per task.
+  - the AI Benchmarks Space. Claim-model stamping works (code#8176 fix), so
+    new trials are attributable per task.

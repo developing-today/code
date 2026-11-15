@@ -222,7 +222,7 @@ jobs:
           -- --exact
 
   # The issue #3850 regression is not covered by the normal default-feature
-  # matrix: keep a direct no-world build in the PR tier.
+  # matrix: keep a direct no-world build in the basic tier.
   no-world:
     name: "basic: id builds without world feature"
     runs-on: ubuntu-latest

@@ -45,7 +45,11 @@ fn sign_rotation_refuses_self_successor() {
         None,
         &[(author_id(&ev), ev.id, control.clone())],
     );
-    println!("control: keys={} transitions={}", folded.keys.len(), folded.transitions.len());
+    println!(
+        "control: keys={} transitions={}",
+        folded.keys.len(),
+        folded.transitions.len()
+    );
     assert_eq!(folded.keys.len(), 2);
     assert_eq!(folded.transitions.len(), 1);
 
@@ -66,5 +70,8 @@ fn sign_rotation_refuses_self_successor() {
         "validate must refuse the self-rotation"
     );
     let signed = sign_rotation(&gen0, 0, None, &self_rot, vec![]);
-    assert!(signed.is_err(), "sign_rotation must refuse the self-rotation");
+    assert!(
+        signed.is_err(),
+        "sign_rotation must refuse the self-rotation"
+    );
 }

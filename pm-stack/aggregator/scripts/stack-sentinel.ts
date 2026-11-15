@@ -33,6 +33,7 @@ import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { resolveBwsSecret } from "../src/secrets.ts";
 import { applySentinelProbe, normalizeSentinelEntry, type SentinelServiceEntry } from "../src/sentinel-damping.ts";
+import { checkPrimaryCheckout } from "../src/primary-checkout.ts";
 
 const LOOP_MS = 30_000;
 
@@ -67,6 +68,32 @@ const PROBES: Probe[] = [
 ];
 
 type ServiceState = "down" | "up";
+
+/** A sentinel target: an HTTP probe or a local check. Transitions post identically. */
+interface Target {
+  id: string;
+  name: string;
+}
+
+/**
+ * Local (non-HTTP) checks, folded through the same damping and
+ * posting machinery as the service probes. The primary-checkout
+ * guard (#9849): ~/git/code is a deploy surface kept on a clean main
+ * by pm-git-sync; a lane working in it directly blocked deploys
+ * twice (#8170 and its recurrence) before anyone noticed. The check
+ * names the dirt in its incident detail.
+ */
+interface LocalCheck extends Target {
+  run: () => { state: ServiceState; detail: string };
+}
+
+const LOCAL_CHECKS: LocalCheck[] = [
+  {
+    id: "primary-checkout",
+    name: "Primary checkout",
+    run: () => checkPrimaryCheckout(process.env.PM_PRIMARY_CHECKOUT_DIR?.trim() || join(homedir(), "git", "code")),
+  },
+];
 
 interface SentinelStateFile {
   services: Record<string, SentinelServiceEntry>;
@@ -120,7 +147,7 @@ async function probeOne(probe: Probe): Promise<{ state: ServiceState; detail: st
 }
 
 async function postTransition(
-  probe: Probe,
+  probe: Target,
   entry: SentinelServiceEntry,
   base: string,
   token: string,
@@ -157,35 +184,42 @@ async function round(state: SentinelStateFile): Promise<void> {
   const base = (process.env.ALERTS_INTAKE_URL ?? "http://127.0.0.1:4870").replace(/\/+$/, "");
   let token: string | null = null;
   let tokenResolved = false;
-  for (const probe of PROBES) {
-    const verdict = await probeOne(probe);
+  const fold = async (target: Target, verdict: { state: ServiceState; detail: string }): Promise<void> => {
     const now = new Date().toISOString();
     // #9049: the damping fold decides whether this verdict changes
     // the service's state at all — a lone failed probe only advances
     // the failure streak recorded on the entry.
-    const entry = applySentinelProbe(state.services[probe.id], verdict, now);
-    state.services[probe.id] = entry;
+    const entry = applySentinelProbe(state.services[target.id], verdict, now);
+    state.services[target.id] = entry;
     if (entry.postedState !== entry.state) {
       if (!tokenResolved) {
         token = await resolveBwsSecret("pm-aggregator.alerts-intake-token");
         tokenResolved = true;
       }
       if (!token) {
-        console.error(`stack-sentinel: intake token unavailable; ${probe.id} transition stays pending`);
-      } else if (await postTransition(probe, entry, base, token)) {
+        console.error(`stack-sentinel: intake token unavailable; ${target.id} transition stays pending`);
+      } else if (await postTransition(target, entry, base, token)) {
         entry.postedState = entry.state;
-        console.log(`stack-sentinel: posted ${probe.id} -> ${entry.state}`);
+        console.log(`stack-sentinel: posted ${target.id} -> ${entry.state}`);
       } else {
-        console.error(`stack-sentinel: post failed for ${probe.id} -> ${entry.state}; will retry next round`);
+        console.error(`stack-sentinel: post failed for ${target.id} -> ${entry.state}; will retry next round`);
       }
     }
+  };
+  for (const probe of PROBES) {
+    await fold(probe, await probeOne(probe));
+  }
+  for (const check of LOCAL_CHECKS) {
+    await fold(check, check.run());
   }
   await saveState(state);
 }
 
 async function main(): Promise<void> {
   const state = await loadState();
-  console.log(`stack-sentinel: probing ${PROBES.length} services every ${LOOP_MS / 1000}s (state: ${STATE_FILE})`);
+  console.log(
+    `stack-sentinel: probing ${PROBES.length} services + ${LOCAL_CHECKS.length} local checks every ${LOOP_MS / 1000}s (state: ${STATE_FILE})`,
+  );
   for (;;) {
     try {
       await round(state);

@@ -848,10 +848,42 @@ fn parse_http_response(raw: &[u8]) -> Result<TransportResponse, TransportError> 
         .nth(1)
         .and_then(|code| code.parse().ok())
         .ok_or_else(|| TransportError::Io("response has no status code".to_owned()))?;
-    let chunked = head.lines().any(|line| {
-        line.to_ascii_lowercase().starts_with("transfer-encoding:")
-            && line.to_ascii_lowercase().contains("chunked")
-    });
+    let mut transfer_encoding_seen = false;
+    let mut chunked = false;
+    for line in head.lines().skip(1) {
+        // RFC 9112 section 5.2: obs-fold is deprecated and a folded
+        // continuation would otherwise be skipped here, letting the
+        // unfolded field value smuggle codings past the check below
+        // (e.g. "Transfer-Encoding: chunked" folded with ", gzip").
+        // Reject any folded header line outright.
+        if line.starts_with([' ', '\t']) {
+            return Err(TransportError::Io("folded header field".to_owned()));
+        }
+        let Some((name, value)) = line.split_once(':') else {
+            continue;
+        };
+        if !name.eq_ignore_ascii_case("transfer-encoding") {
+            continue;
+        }
+        transfer_encoding_seen = true;
+        for coding in value.split(',') {
+            // Only HTTP optional whitespace (SP / HTAB) may surround a
+            // transfer coding; str::trim would also strip e.g. VT/FF and
+            // accept a malformed field.
+            let coding = coding.trim_matches(|c| matches!(c, ' ' | '\t'));
+            if !coding.eq_ignore_ascii_case("chunked") || chunked {
+                return Err(TransportError::Io(
+                    "unsupported transfer encoding".to_owned(),
+                ));
+            }
+            chunked = true;
+        }
+    }
+    if transfer_encoding_seen && !chunked {
+        return Err(TransportError::Io(
+            "unsupported transfer encoding".to_owned(),
+        ));
+    }
     let body_bytes = if chunked {
         dechunk(body_bytes)?
     } else {
@@ -859,6 +891,97 @@ fn parse_http_response(raw: &[u8]) -> Result<TransportResponse, TransportError> 
     };
     let body = String::from_utf8_lossy(&body_bytes).into_owned();
     Ok(TransportResponse { status, body })
+}
+
+fn is_http_token_byte(byte: u8) -> bool {
+    byte.is_ascii_alphanumeric()
+        || matches!(
+            byte,
+            b'!' | b'#'..=b'\'' | b'*' | b'+' | b'-' | b'.' | b'^' | b'_' | b'`' | b'|' | b'~'
+        )
+}
+
+fn skip_optional_whitespace(mut bytes: &[u8]) -> &[u8] {
+    while matches!(bytes.first(), Some(b' ' | b'\t')) {
+        bytes = &bytes[1..];
+    }
+    bytes
+}
+
+fn quoted_extension_value_len(bytes: &[u8]) -> Option<usize> {
+    if !bytes.starts_with(b"\"") {
+        return None;
+    }
+    let mut index = 1;
+    while let Some(&byte) = bytes.get(index) {
+        match byte {
+            b'"' => return Some(index + 1),
+            b'\\' => {
+                let escaped = *bytes.get(index + 1)?;
+                if !(matches!(escaped, b'\t' | b' ')
+                    || (0x21..=0x7e).contains(&escaped)
+                    || escaped >= 0x80)
+                {
+                    return None;
+                }
+                index += 2;
+            }
+            b'\t' | b' ' | b'!' | b'#'..=b'[' | b']'..=b'~' => index += 1,
+            0x80..=0xff => index += 1,
+            _ => return None,
+        }
+    }
+    None
+}
+
+fn valid_chunk_extensions(mut bytes: &[u8]) -> bool {
+    while !bytes.is_empty() {
+        bytes = skip_optional_whitespace(bytes);
+        let Some(after_semicolon) = bytes.strip_prefix(b";") else {
+            return false;
+        };
+        bytes = skip_optional_whitespace(after_semicolon);
+        let name_len = bytes
+            .iter()
+            .take_while(|byte| is_http_token_byte(**byte))
+            .count();
+        if name_len == 0 {
+            return false;
+        }
+        let after_name = &bytes[name_len..];
+        if let Some(after_equals) = skip_optional_whitespace(after_name).strip_prefix(b"=") {
+            bytes = skip_optional_whitespace(after_equals);
+            let value_len = if bytes.starts_with(b"\"") {
+                let Some(value_len) = quoted_extension_value_len(bytes) else {
+                    return false;
+                };
+                value_len
+            } else {
+                bytes
+                    .iter()
+                    .take_while(|byte| is_http_token_byte(**byte))
+                    .count()
+            };
+            if value_len == 0 {
+                return false;
+            }
+            bytes = &bytes[value_len..];
+        } else {
+            bytes = after_name;
+        }
+    }
+    true
+}
+
+fn valid_trailer_field(line: &[u8]) -> bool {
+    let Some(colon) = line.iter().position(|byte| *byte == b':') else {
+        return false;
+    };
+    !line[..colon].is_empty()
+        && line[..colon].iter().copied().all(is_http_token_byte)
+        && line[colon + 1..].iter().all(|byte| {
+            matches!(byte, b'\t' | b' ') || (0x21..=0x7e).contains(byte) || *byte >= 0x80
+        })
 }
 
 fn dechunk(body: &[u8]) -> Result<Vec<u8>, TransportError> {
@@ -869,20 +992,52 @@ fn dechunk(body: &[u8]) -> Result<Vec<u8>, TransportError> {
             .windows(2)
             .position(|window| window == b"\r\n")
             .ok_or_else(|| TransportError::Io("bad chunk framing".to_owned()))?;
-        let size_line = std::str::from_utf8(&rest[..line_end])
+        let size_line = &rest[..line_end];
+        let size_end = size_line
+            .iter()
+            .position(|byte| !byte.is_ascii_hexdigit())
+            .unwrap_or(size_line.len());
+        let size_bytes = &size_line[..size_end];
+        let size_text = std::str::from_utf8(size_bytes)
             .map_err(|_| TransportError::Io("bad chunk size".to_owned()))?;
-        let size = usize::from_str_radix(size_line.trim(), 16)
+        if size_text.is_empty() {
+            return Err(TransportError::Io("bad chunk size".to_owned()));
+        }
+        if !valid_chunk_extensions(&size_line[size_end..]) {
+            return Err(TransportError::Io("bad chunk extension".to_owned()));
+        }
+        let size = usize::from_str_radix(size_text, 16)
             .map_err(|_| TransportError::Io("bad chunk size".to_owned()))?;
+        rest = &rest[line_end + 2..];
         if size == 0 {
+            loop {
+                let trailer_end = rest
+                    .windows(2)
+                    .position(|window| window == b"\r\n")
+                    .ok_or_else(|| TransportError::Io("bad chunk framing".to_owned()))?;
+                if trailer_end == 0 {
+                    rest = &rest[2..];
+                    break;
+                }
+                if !valid_trailer_field(&rest[..trailer_end]) {
+                    return Err(TransportError::Io("bad chunk trailer".to_owned()));
+                }
+                rest = &rest[trailer_end + 2..];
+            }
+            if !rest.is_empty() {
+                return Err(TransportError::Io(
+                    "extra data after chunked body".to_owned(),
+                ));
+            }
             return Ok(out);
         }
-        let after = &rest[line_end + 2..];
-        if after.len() < size {
+        if rest.len() < size {
             return Err(TransportError::Io("short chunk".to_owned()));
         }
-        out.extend_from_slice(&after[..size]);
-        rest = &after[size..];
-        rest = rest.strip_prefix(b"\r\n").unwrap_or(rest);
+        out.extend_from_slice(&rest[..size]);
+        rest = rest[size..]
+            .strip_prefix(b"\r\n")
+            .ok_or_else(|| TransportError::Io("bad chunk framing".to_owned()))?;
     }
 }
 
@@ -925,7 +1080,8 @@ impl CircuitBreaker {
     pub fn allow(&self, now: Instant) -> bool {
         let mut state = self.state.lock().unwrap_or_else(|p| p.into_inner());
         match *state {
-            BreakerState::Closed { .. } | BreakerState::HalfOpen => true,
+            BreakerState::Closed { .. } => true,
+            BreakerState::HalfOpen => false,
             BreakerState::Open { since } => {
                 if now.duration_since(since) >= BREAKER_HALF_OPEN_AFTER {
                     *state = BreakerState::HalfOpen;
@@ -958,6 +1114,32 @@ impl CircuitBreaker {
             }
             BreakerState::HalfOpen | BreakerState::Open { .. } => BreakerState::Open { since: now },
         };
+    }
+
+    /// Re-open after a half-open probe cannot establish recovery. Other
+    /// non-transient failures leave a closed breaker unchanged.
+    fn record_probe_failure(&self, now: Instant) {
+        let mut state = self.state.lock().unwrap_or_else(|p| p.into_inner());
+        if matches!(*state, BreakerState::HalfOpen) {
+            *state = BreakerState::Open { since: now };
+        }
+    }
+}
+
+/// Releases a half-open probe reservation when the admitted call ends
+/// without recording an outcome — above all when its future is
+/// cancelled while awaiting the transport: HalfOpen has no timed exit,
+/// so a dropped probe would refuse every later call for the alias
+/// forever. The guard re-opens the breaker on drop, which is a no-op
+/// unless the state is still HalfOpen, so calls that did record an
+/// outcome are unaffected.
+struct HalfOpenProbeGuard<'a> {
+    breaker: &'a CircuitBreaker,
+}
+
+impl Drop for HalfOpenProbeGuard<'_> {
+    fn drop(&mut self) {
+        self.breaker.record_probe_failure(Instant::now());
     }
 }
 
@@ -1039,8 +1221,20 @@ impl<T: Transport, C: CredentialResolver> LibsqlAdapter<T, C> {
             if !breaker.allow(Instant::now()) {
                 return Err(AdapterError::CircuitOpen(alias.to_owned()));
             }
+            // Held for the rest of the attempt: if this future is
+            // dropped before the attempt records an outcome (caller
+            // cancellation while awaiting the transport), the guard
+            // re-opens the breaker instead of stranding the half-open
+            // probe reservation.
+            let _probe_guard = HalfOpenProbeGuard { breaker: &breaker };
             // The token is resolved per attempt and never stored.
-            let token = self.credentials.resolve(&alias_config.credential_ref)?;
+            let token = match self.credentials.resolve(&alias_config.credential_ref) {
+                Ok(token) => token,
+                Err(error) => {
+                    breaker.record_probe_failure(Instant::now());
+                    return Err(error);
+                }
+            };
             let outcome = self
                 .transport
                 .post_pipeline(
@@ -1072,11 +1266,15 @@ impl<T: Transport, C: CredentialResolver> LibsqlAdapter<T, C> {
                 }
                 Err(AdapterError::Auth { .. }) => {
                     // Fatal and never retried; the token is not in the error.
+                    breaker.record_probe_failure(Instant::now());
                     return Err(AdapterError::Auth {
                         credential_ref: alias_config.credential_ref.clone(),
                     });
                 }
-                Err(error) => return Err(error),
+                Err(error) => {
+                    breaker.record_probe_failure(Instant::now());
+                    return Err(error);
+                }
             }
         }
     }
@@ -1270,15 +1468,81 @@ mod tests {
     }
 
     #[test]
+    fn test_chunked_body_accepts_chunk_extensions_and_trailers() {
+        // Oracle: RFC 9112 chunked coding; extensions decorate the size and
+        // trailer fields follow the zero-sized last chunk.
+        let raw = b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n4 ; foo = bar ; quoted=\"hello world\"\r\nWiki\r\n0\r\nX-Checksum: yes\r\n\r\n";
+        let response = parse_http_response(raw).expect("valid extensions and trailers parse");
+        assert_eq!(response.body, "Wiki");
+    }
+
+    #[test]
+    fn test_unsupported_transfer_codings_are_rejected() {
+        for coding in ["notchunked", "gzip, chunked", "chunked, gzip", ""] {
+            let raw = format!(
+                "HTTP/1.1 200 OK\r\nTransfer-Encoding: {coding}\r\n\r\n4\r\nWiki\r\n0\r\n\r\n"
+            );
+            assert!(
+                parse_http_response(raw.as_bytes()).is_err(),
+                "unsupported transfer coding must error: {coding:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_folded_header_fields_are_rejected() {
+        // A folded continuation line must not let an unsupported coding
+        // ride past the Transfer-Encoding check.
+        let raw = b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n , gzip\r\n\r\n4\r\nWiki\r\n0\r\n\r\n";
+        assert!(parse_http_response(raw).is_err());
+        let raw = b"HTTP/1.1 200 OK\r\nX-Note: a\r\n b\r\n\r\nhello";
+        assert!(parse_http_response(raw).is_err());
+    }
+
+    #[test]
+    fn test_transfer_coding_whitespace_is_ows_only() {
+        // Vertical tab is not HTTP optional whitespace: the field is
+        // malformed and must be rejected, not trimmed into "chunked".
+        let raw =
+            "HTTP/1.1 200 OK\r\nTransfer-Encoding: \u{b}chunked\r\n\r\n4\r\nWiki\r\n0\r\n\r\n";
+        assert!(parse_http_response(raw.as_bytes()).is_err());
+        // SP / HTAB around the coding remain fine.
+        let raw =
+            b"HTTP/1.1 200 OK\r\nTransfer-Encoding:\t chunked \t\r\n\r\n4\r\nWiki\r\n0\r\n\r\n";
+        let response = parse_http_response(raw).expect("OWS-wrapped chunked parses");
+        assert_eq!(response.body, "Wiki");
+    }
+
+    #[test]
     fn test_chunked_body_malformed_framing_errors_without_panic() {
         let head = b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n";
-        for body in [&b"zz\r\nabc\r\n0\r\n\r\n"[..], b"4\r\nWi", b"4"] {
+        for body in [
+            &b"zz\r\nabc\r\n0\r\n\r\n"[..],
+            b"4\r\nWi",
+            b"4",
+            b"4\r\nWiki0\r\n\r\n",
+            b"0\r\n",
+            b"0\r\nX-Checksum: yes\r\n",
+            b"4;;bad\r\nWiki\r\n0\r\n\r\n",
+            b"0\r\nnot-a-field\r\n\r\n",
+            b"4 \r\nWiki\r\n0\r\n\r\n",
+            b"4;foo=bar \r\nWiki\r\n0\r\n\r\n",
+        ] {
             let mut raw = head.to_vec();
             raw.extend_from_slice(body);
             assert!(
                 parse_http_response(&raw).is_err(),
                 "malformed framing must error: {body:?}"
             );
+        }
+    }
+
+    proptest::proptest! {
+        /// Oracle: for every byte sequence, the chunk decoder either returns
+        /// decoded bytes or a transport error; malformed wire data never panics.
+        #[test]
+        fn test_dechunk_never_panics_for_arbitrary_bytes(body in proptest::collection::vec(proptest::prelude::any::<u8>(), 0..512)) {
+            let _ = dechunk(&body);
         }
     }
 
@@ -1707,8 +1971,8 @@ mod tests {
     }
 
     /// Oracle: record item 7 — the breaker opens at the failure
-    /// threshold, refuses while open, half-opens after the timer, and
-    /// closes on a successful probe.
+    /// threshold, refuses while open, grants only one half-open probe,
+    /// reopens after a failed probe, and closes on a successful probe.
     #[test]
     fn test_circuit_breaker_opens_half_opens_and_closes() {
         let breaker = CircuitBreaker::new();
@@ -1719,9 +1983,123 @@ mod tests {
         }
         assert!(!breaker.allow(t0));
         assert!(!breaker.allow(t0 + BREAKER_HALF_OPEN_AFTER - Duration::from_secs(1)));
-        assert!(breaker.allow(t0 + BREAKER_HALF_OPEN_AFTER));
+        let probe_at = t0 + BREAKER_HALF_OPEN_AFTER;
+        assert!(breaker.allow(probe_at));
+        assert!(!breaker.allow(probe_at));
+        breaker.record_transient_failure(probe_at);
+        assert!(!breaker.allow(probe_at + BREAKER_HALF_OPEN_AFTER - Duration::from_secs(1)));
+        let retry_probe_at = probe_at + BREAKER_HALF_OPEN_AFTER;
+        assert!(breaker.allow(retry_probe_at));
+        assert!(!breaker.allow(retry_probe_at));
+        breaker.record_probe_failure(retry_probe_at);
+        assert!(!breaker.allow(retry_probe_at + BREAKER_HALF_OPEN_AFTER - Duration::from_secs(1)));
+        assert!(breaker.allow(retry_probe_at + BREAKER_HALF_OPEN_AFTER));
         breaker.record_success();
         assert!(breaker.allow(t0));
+    }
+
+    /// Oracle: PR #8848 review finding (Codex and CodeRabbit) — a
+    /// half-open probe dropped before it records an outcome (a
+    /// cancelled query future) must not strand the breaker in
+    /// HalfOpen, which has no timed exit: the probe guard re-opens
+    /// the breaker and the restarted cooldown admits a later probe.
+    #[test]
+    fn test_half_open_probe_guard_reopens_on_drop() {
+        let breaker = CircuitBreaker::new();
+        let t0 = Instant::now();
+        for _ in 0..BREAKER_FAILURE_THRESHOLD {
+            breaker.record_transient_failure(t0);
+        }
+        let probe_at = t0 + BREAKER_HALF_OPEN_AFTER;
+        assert!(breaker.allow(probe_at));
+        {
+            let _guard = HalfOpenProbeGuard { breaker: &breaker };
+            // Dropped here with no outcome recorded, exactly as a
+            // cancelled query future drops it.
+        }
+        // The guard re-opened the breaker at drop time (about t0):
+        // the restarted cooldown refuses a probe until a full delay
+        // after the drop, then admits one.
+        assert!(!breaker.allow(probe_at - Duration::from_millis(1)));
+        assert!(breaker.allow(probe_at + BREAKER_HALF_OPEN_AFTER));
+        breaker.record_success();
+        // A guard dropped after an outcome was recorded is a no-op:
+        // the closed breaker stays closed.
+        drop(HalfOpenProbeGuard { breaker: &breaker });
+        assert!(breaker.allow(t0));
+    }
+
+    /// Transport whose pipeline call never completes, so a test can
+    /// cancel a query while it is awaiting the transport.
+    #[derive(Debug, Default)]
+    struct PendingTransport {
+        attempts: StdMutex<usize>,
+    }
+
+    impl PendingTransport {
+        fn attempts(&self) -> usize {
+            *self.attempts.lock().unwrap()
+        }
+    }
+
+    impl Transport for PendingTransport {
+        fn post_pipeline<'a>(
+            &'a self,
+            base_url: &'a str,
+            token: &'a str,
+            body: &'a str,
+            _connect_timeout: Duration,
+            _deadline: Duration,
+        ) -> Pin<Box<dyn Future<Output = Result<TransportResponse, TransportError>> + Send + 'a>>
+        {
+            *self.attempts.lock().unwrap() += 1;
+            let _ = (base_url, token, body);
+            Box::pin(std::future::pending())
+        }
+    }
+
+    /// Oracle: PR #8848 review finding at the adapter level —
+    /// cancelling the admitted half-open probe while it awaits the
+    /// transport re-opens the breaker (restarted cooldown) instead of
+    /// stranding it in HalfOpen forever.
+    #[tokio::test]
+    async fn test_cancelled_half_open_probe_reopens_breaker() {
+        let adapter = LibsqlAdapter::with_parts(
+            test_config("https://example.invalid"),
+            PendingTransport::default(),
+            StaticCredentials,
+        );
+        // Open the breaker with its cooldown already elapsed, so the
+        // first query is admitted as the half-open probe.
+        let breaker = adapter.breaker_for("main");
+        let past = Instant::now() - BREAKER_HALF_OPEN_AFTER - Duration::from_secs(1);
+        for _ in 0..BREAKER_FAILURE_THRESHOLD {
+            breaker.record_transient_failure(past);
+        }
+        let adapter = Arc::new(adapter);
+        let probe = {
+            let adapter = Arc::clone(&adapter);
+            tokio::spawn(async move { adapter.query("main", &sample_query()).await })
+        };
+        // Wait until the probe is inside the transport, then cancel
+        // it the way a dropped caller future cancels it.
+        for _ in 0..10_000 {
+            if adapter.transport.attempts() > 0 {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+        assert_eq!(adapter.transport.attempts(), 1);
+        probe.abort();
+        let _ = probe.await;
+        // The guard re-opened the breaker: Open with a restarted
+        // cooldown, not HalfOpen with a stranded probe reservation.
+        {
+            let state = breaker.state.lock().unwrap();
+            assert!(matches!(*state, BreakerState::Open { .. }));
+        }
+        let error = adapter.query("main", &sample_query()).await.unwrap_err();
+        assert_eq!(error, AdapterError::CircuitOpen("main".to_owned()));
     }
 
     /// Oracle: record acceptance — the adapter queries a remote libsql

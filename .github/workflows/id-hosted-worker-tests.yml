@@ -19,6 +19,13 @@ name: id hosted-worker tests
 # pattern for test workflows (bin-tests.yml). Main tier only: not
 # a merge gate.
 #
+# The smoke step (#6370) runs smoke/smoke.mjs - the only coverage
+# for the UserDO and the worker fail-closed matrix (it boots local
+# wrangler dev for both the application worker and the test-only
+# UserDO harness). It was previously run by no workflow. The step
+# installs the package devDependencies first (wrangler), which the
+# routing suite does not need.
+#
 # The run step first fails if the suite or the package manifest is
 # missing, so a green run can never be a silently skipped suite.
 
@@ -41,7 +48,7 @@ jobs:
   hosted-worker-tests:
     name: "full (main tier): hosted-worker routing suite"
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v7
       - name: Set up Node
@@ -60,3 +67,12 @@ jobs:
             exit 1
           fi
           npm test
+      - name: Run the hosted-worker smoke (UserDO + fail-closed matrix)
+        working-directory: pkgs/id/hosted-worker
+        run: |
+          if [ ! -f smoke/smoke.mjs ]; then
+            echo "::error::pkgs/id/hosted-worker/smoke/smoke.mjs is missing - the smoke was not run."
+            exit 1
+          fi
+          npm install --no-audit --no-fund
+          npm run smoke

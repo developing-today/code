@@ -701,7 +701,11 @@ describe("status-request + session renders (#1154/#1156)", () => {
     title: "Request status change action",
     state: "open",
     contentKind: "issue",
-    status: "Todo",
+    // #5082: only active work (In Progress / In Review) or epics render
+    // the full card with the status-request form; every other status
+    // renders compact with action badges only. This fixture exercises
+    // the form, so the item is active work.
+    status: "In Progress",
     area: null,
     horizon: null,
     kind: null,

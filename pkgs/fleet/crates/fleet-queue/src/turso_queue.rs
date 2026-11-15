@@ -888,7 +888,7 @@ const SCHEMA: [&str; 17] = [
         priority INTEGER, status TEXT NOT NULL DEFAULT 'queued', \
         not_before TEXT, worker_id TEXT, claimed_at TEXT, lease_until TEXT, \
         lane_id TEXT, platform TEXT, attempts INTEGER NOT NULL DEFAULT 0, \
-        max_attempts INTEGER NOT NULL DEFAULT 4, \
+        max_attempts INTEGER NOT NULL DEFAULT 1000, \
         claim_provider TEXT, claim_model TEXT, claim_variant TEXT, claim_session_id TEXT, \
         progress TEXT NOT NULL DEFAULT '{}', result TEXT NOT NULL DEFAULT '{}', \
         last_error TEXT, park_kind TEXT, wait_kind TEXT, ready_condition TEXT, \
@@ -2074,7 +2074,9 @@ fn verb_enqueue(t: &TursoBackend, req: &Value) -> Value {
                 task.get("max_attempts")
                     .and_then(|v| v.as_i64())
                     .map(Arg::Int)
-                    .unwrap_or(Arg::Int(4)),
+                    .unwrap_or(Arg::Int(
+                        crate::validate::TASK_DEFAULT_MAX_ATTEMPTS as i64,
+                    )),
                 arg_str(platform.as_deref()),
                 Arg::Text(now.clone()),
                 Arg::Text(now),
@@ -6428,46 +6430,46 @@ fn verb_list(t: &TursoBackend, req: &Value) -> Value {
     // an unnamed queue must not become `queue = ''`, which by
     // construction returns zero rows and breaks exact-task readback
     // ({"task": id} / {"dedupe_key": key} with no queue).
-    let mut sql = format!("SELECT {select} FROM tasks WHERE 1 = 1");
+    let mut conds = String::from(" WHERE 1 = 1");
     let mut args: Vec<Arg> = vec![];
     if !queue.is_empty() {
-        sql += " AND queue = ?";
+        conds += " AND queue = ?";
         args.push(Arg::Text(queue));
     }
     if let Some(s) = req_str(req, "status") {
-        sql += " AND status = ?";
+        conds += " AND status = ?";
         args.push(Arg::Text(s.to_string()));
     }
     // #5444: recover a lane's or worker's live claims before lease
     // expiry — list filters end-to-end (client -> broker -> here).
     if let Some(l) = req_str(req, "lane") {
-        sql += " AND lane_id = ?";
+        conds += " AND lane_id = ?";
         args.push(Arg::Text(l.to_string()));
     }
     if let Some(w) = req_str(req, "worker") {
-        sql += " AND worker_id = ?";
+        conds += " AND worker_id = ?";
         args.push(Arg::Text(w.to_string()));
     }
     if let Some(nb) = req_str(req, "not_before") {
-        sql += " AND (not_before IS NULL OR not_before <= ?)";
+        conds += " AND (not_before IS NULL OR not_before <= ?)";
         args.push(Arg::Text(nb.to_string()));
     }
     // #7871: --task narrows to one task id (the PostgREST /list
     // path applies the same filter), and the client's paged fetch
     // advances OFFSET page by page.
     if let Some(id) = req_i64(req, "task") {
-        sql += " AND id = ?";
+        conds += " AND id = ?";
         args.push(Arg::Int(id));
     }
     // #9420: dedupe_key narrows to the task carrying that key (the
     // delivery publisher's enqueue readback verifies by dedupe key).
     if let Some(d) = req_str(req, "dedupe_key") {
-        sql += " AND dedupe_key = ?";
+        conds += " AND dedupe_key = ?";
         args.push(Arg::Text(d.to_string()));
     }
     let offset = crate::client::list_offset_or_default(req_i64(req, "offset"));
-    sql += &format!(
-        " ORDER BY (priority IS NULL), priority ASC, created_at ASC, id ASC LIMIT {limit} OFFSET {offset}"
+    let sql = format!(
+        "SELECT {select} FROM tasks{conds} ORDER BY (priority IS NULL), priority ASC, created_at ASC, id ASC LIMIT {limit} OFFSET {offset}"
     );
     let json_cols: &[&str] = if rich {
         &["progress", "payload", "blocked_deps"]
@@ -6475,7 +6477,18 @@ fn verb_list(t: &TursoBackend, req: &Value) -> Value {
         &[]
     };
     match t.query_objs(&sql, &args, json_cols) {
-        Ok(rows) => ok(json!({"rows": rows})),
+        Ok(rows) => {
+            // #10376 parity with the PostgREST /list: name the
+            // total matching count so a limited listing cannot
+            // read as complete. A failed count leaves the total
+            // unknown (null), never a fabricated number.
+            let count_sql = format!("SELECT COUNT(*) AS n FROM tasks{conds}");
+            let total = t
+                .query_objs(&count_sql, &args, &[])
+                .ok()
+                .and_then(|rs| rs.first().and_then(|r| r.get("n")).and_then(|v| v.as_i64()));
+            ok(crate::client::list_envelope(json!(rows), total, offset))
+        }
         Err(e) => terr(e),
     }
 }
@@ -7720,6 +7733,73 @@ mod tests {
     use proptest::prelude::*;
 
     #[test]
+    fn task_creation_defaults_max_attempts_1000_per_8973() {
+        // #8973 oracle: every task-creation default in this crate is
+        // 1000 (Drew order 2026-11-12) - the tasks schema default
+        // and the enqueue insert fallback (which reads the one
+        // TASK_DEFAULT_MAX_ATTEMPTS constant in validate.rs; the
+        // task_from_packet default is covered in validate tests).
+        // The creation_outbox retry cap is a different domain and
+        // intentionally stays at its own DEFAULT_MAX_ATTEMPTS.
+        let src = include_str!("turso_queue.rs");
+        assert!(
+            src.contains("max_attempts INTEGER NOT NULL DEFAULT 1000"),
+            "tasks schema default is 1000"
+        );
+        assert!(
+            src.contains("crate::validate::TASK_DEFAULT_MAX_ATTEMPTS as i64"),
+            "enqueue insert fallback uses the shared task default"
+        );
+        // The stale-default needle is built with format! so this
+        // test file does not itself contain the literal it bans.
+        let stale = format!("max_attempts INTEGER NOT NULL DEFAULT {}", 4);
+        assert!(!src.contains(&stale), "no stale tasks schema default");
+    }
+
+    #[test]
+    fn enqueue_dry_run_defaults_max_attempts_1000_per_8973() {
+        // #8973 acceptance, enqueue path: a valid packet that omits
+        // max_attempts in BOTH copies enqueues with the default
+        // applied. Dry-run returns the exact row shape the insert
+        // consumes, so this is a readback of the creation default
+        // without a live store; the insert fallback and the schema
+        // default are covered by the source-oracle test above.
+        let backend = TursoBackend::new(
+            "http://127.0.0.1:0".to_string(),
+            "test".to_string(),
+            ureq::agent(),
+        );
+        let packet = json!({
+            "title": "probe", "priority": 30,
+            "dedupe_key": "repo-health:v1:fix:developing-today/code:issue:8973",
+            "payload": {
+                "schema": "repo-task/v1",
+                "kind": "small_fix",
+                "repo": "developing-today/code",
+                "problem": "p",
+                "priority_reason": "r",
+                "evidence": ["e"],
+                "acceptance": ["a"],
+                "tests": ["t"],
+                "context_refs": [],
+                "scope": {"include": ["x"], "exclude": ["y"] },
+                "risk": {"level": "low", "flags": [] },
+                "timebox_minutes": 45,
+                "issue": {"number": 8973 },
+                "dedupe": {"checked_at": "2026-11-14T00:00:00Z", "basis": "test" }
+            }
+        });
+        let req = json!({
+            "queue": "repo-health-code-pilot",
+            "packet": packet,
+            "dry_run": true
+        });
+        let out = verb_enqueue(&backend, &req);
+        assert_eq!(out["ok"], true, "{out}");
+        assert_eq!(out["task"]["max_attempts"], 1000, "{out}");
+    }
+
+    #[test]
     fn model_stamp_detail_9046_carries_session_and_trigger() {
         // #9046 oracle: a stamp detail names the session it
         // belongs to (or null — a session is never fabricated),
@@ -7785,7 +7865,10 @@ mod tests {
         // PostgREST /list handler carries the same contract.
         let src = include_str!("turso_queue.rs");
         let seg = seg8217(src, "fn verb_list(", "\nfn verb_health");
-        assert!(seg.contains("req_i64(req, \"task\")"), "task filter present");
+        assert!(
+            seg.contains("req_i64(req, \"task\")"),
+            "task filter present"
+        );
         assert!(seg.contains("AND id = ?"), "task filter narrows by id");
         assert!(
             seg.contains("req_str(req, \"dedupe_key\")") && seg.contains("AND dedupe_key = ?"),

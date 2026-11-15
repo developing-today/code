@@ -190,7 +190,6 @@ rec {
       #inputs.nixpkgs.follows = "nixpkgs";
       inputs.nixpkgs.follows = "nixpkgs-unstable";
       inputs.flake-compat.follows = "flake-compat";
-      inputs.flake-utils.follows = "flake-utils";
     };
     nixvim = {
       # url = "github:nix-community/nixvim"; # ?shallow=1";
@@ -220,8 +219,6 @@ rec {
       # TODO: revert to nixpkgs, relates to 26 breaking changings, either impermanence/nix-sops conflict with systemd-mounts change or the breaking wireless hardening changes
       #inputs.nixpkgs.follows = "nixpkgs";
       inputs.nixpkgs.follows = "nixpkgs-unstable";
-      inputs.flake-utils.follows = "flake-utils";
-      inputs.pre-commit-hooks.follows = "pre-commit-hooks";
     };
     pre-commit-hooks = {
       # TODO: use this?
@@ -300,8 +297,13 @@ rec {
     # OpenClaw: declarative packaging for the OpenClaw gateway (peer
     # intelligence source on the laptop). Home Manager module + overlay;
     # consumed by home/openclaw. Pinned by flake.lock like everything else.
+    # developing-today fork (code#2257): carries the sessions_spawn
+    # headless patch (allow-sessions-spawn-headless) in the gateway
+    # build; upstream openclaw/nix-openclaw has no such patch. Keep
+    # the fork rebased on upstream; drop the fork when upstream takes
+    # the patch or the gate changes.
     nix-openclaw = {
-      url = "github:openclaw/nix-openclaw";
+      url = "github:developing-today/nix-openclaw";
       inputs.nixpkgs.follows = "nixpkgs";
       inputs.home-manager.follows = "home-manager";
     };
@@ -353,7 +355,6 @@ rec {
       url = "github:nix-community/bun2nix";
       inputs = {
         flake-parts.follows = "id-flake-parts";
-        import-tree.follows = "id-import-tree";
         nixpkgs.follows = "id-nixpkgs";
         systems.follows = "id-systems";
       };

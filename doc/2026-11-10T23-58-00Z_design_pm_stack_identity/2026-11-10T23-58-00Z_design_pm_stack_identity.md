@@ -11,7 +11,7 @@
     open): the defect this design removes. The migration in §5 is
     written against the comment/registry records #941 describes.
 - **Status:** design record. No implementation in this document's PR.
-  Open questions that are Drew's are named in §7 and are *not* decided
+  Open questions that are Drew's are named in §7 and are _not_ decided
   here.
 
 ## 1. Problem
@@ -33,19 +33,19 @@ stack carries that claim in a form the next layer can verify without
 trusting the caller; no layer ever accepts an identity from a request
 body.**
 
-| Hop | Mechanism | Verification |
-|---|---|---|
-| Browser → entry (#1182) | Cloudflare Access login (IdP-backed) | Access validates the IdP session and issues its JWT (`Cf-Access-Jwt-Assertion`) |
-| Entry → aggregator | The Access JWT is forwarded unchanged on proxied requests; direct (non-entry) routes to the aggregator do not exist publicly | Aggregator validates the JWT against the Access team's public keys (issuer, audience, expiry) on every request — no session cache longer than the JWT's own lifetime |
-| Aggregator → Kaneo / Pad / Grist (writes the aggregator brokers) | The aggregator mints a short-lived (≤ 5 min) **stack token**: a signed JWT whose claims are `sub` (the Access identity), `role`, `aud` (the target layer), `exp`, and `act` (the action class: comment, triage, dispatch, admin) | Target layer verifies the aggregator's signing key (published in the stack's shared config), audience, and expiry. The signing key is the aggregator's service credential — the one service secret this design introduces |
-| Human → Kaneo / Pad / Grist native UI (not via the aggregator) | Those tools sit behind the same Access application (per #1182's single-entry rule they have no separate public route); where a tool supports OIDC/SSO natively it consumes the same IdP; where it does not, it is reachable only through the entry proxy and receives the stack token like any brokered write | Same as above; a layer with neither native SSO nor entry proxying is not exposed until it has one of them — that gap is an implementation issue, not an exception |
-| Reads | Anonymous reads stay anonymous (§5). Authenticated reads carry the same claims so per-role read filtering is possible later without a second propagation design | Same validation as writes |
+| Hop                                                              | Mechanism                                                                                                                                                                                                                                                                                                     | Verification                                                                                                                                                                                                              |
+| ---------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Browser → entry (#1182)                                          | Cloudflare Access login (IdP-backed)                                                                                                                                                                                                                                                                          | Access validates the IdP session and issues its JWT (`Cf-Access-Jwt-Assertion`)                                                                                                                                           |
+| Entry → aggregator                                               | The Access JWT is forwarded unchanged on proxied requests; direct (non-entry) routes to the aggregator do not exist publicly                                                                                                                                                                                  | Aggregator validates the JWT against the Access team's public keys (issuer, audience, expiry) on every request — no session cache longer than the JWT's own lifetime                                                      |
+| Aggregator → Kaneo / Pad / Grist (writes the aggregator brokers) | The aggregator mints a short-lived (≤ 5 min) **stack token**: a signed JWT whose claims are `sub` (the Access identity), `role`, `aud` (the target layer), `exp`, and `act` (the action class: comment, triage, dispatch, admin)                                                                              | Target layer verifies the aggregator's signing key (published in the stack's shared config), audience, and expiry. The signing key is the aggregator's service credential — the one service secret this design introduces |
+| Human → Kaneo / Pad / Grist native UI (not via the aggregator)   | Those tools sit behind the same Access application (per #1182's single-entry rule they have no separate public route); where a tool supports OIDC/SSO natively it consumes the same IdP; where it does not, it is reachable only through the entry proxy and receives the stack token like any brokered write | Same as above; a layer with neither native SSO nor entry proxying is not exposed until it has one of them — that gap is an implementation issue, not an exception                                                         |
+| Reads                                                            | Anonymous reads stay anonymous (§5). Authenticated reads carry the same claims so per-role read filtering is possible later without a second propagation design                                                                                                                                               | Same validation as writes                                                                                                                                                                                                 |
 
 What this refuses: header trust ("the proxy said so" — an
 `X-User: alice` header is spoofable by anything that can reach the
-layer directly, so layers bind to loopback/stack-network only *and*
+layer directly, so layers bind to loopback/stack-network only _and_
 verify signatures anyway; network position is defence in depth, never
-the check), shared API tokens per role (a token *is* an identity —
+the check), shared API tokens per role (a token _is_ an identity —
 per-role tokens would recreate asserted authorship with extra steps),
 and per-layer account databases (the thing being removed).
 
@@ -53,12 +53,12 @@ and per-layer account databases (the thing being removed).
 
 Four roles, checked server-side on every write, per action class:
 
-| Role | May write | May not |
-|---|---|---|
-| `owner` | Everything, including role mapping changes and admin actions | — |
-| `orchestrator` | Comments, triage actions (labels, priorities, queue operations), dispatches | Role mapping, admin |
-| `agent` | Comments and triage actions **attributed to its own agent identity** (§4), dispatches only within its lane's grants | Anything as another identity; role mapping; admin |
-| `read-only` | Nothing (reads only) | All writes |
+| Role           | May write                                                                                                           | May not                                           |
+| -------------- | ------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------- |
+| `owner`        | Everything, including role mapping changes and admin actions                                                        | —                                                 |
+| `orchestrator` | Comments, triage actions (labels, priorities, queue operations), dispatches                                         | Role mapping, admin                               |
+| `agent`        | Comments and triage actions **attributed to its own agent identity** (§4), dispatches only within its lane's grants | Anything as another identity; role mapping; admin |
+| `read-only`    | Nothing (reads only)                                                                                                | All writes                                        |
 
 - **Where the mapping lives:** a single registry table in the
   aggregator's store — the stack's one identity store — mapping
@@ -93,7 +93,7 @@ exercise — is lost for exactly the actors who write the most.
 - Attribution: every write carries `sub` end to end, and every layer's
   audit event records `sub`, `role`, `act`, and the object written.
   "The fleet did it" stops being an answer; the lane and the run are.
-- An agent acting *for* Drew (a dispatch Drew ordered) is still
+- An agent acting _for_ Drew (a dispatch Drew ordered) is still
   attributed to the agent identity, with the dispatch reference in the
   audit event. Delegation is recorded, never impersonated: there is no
   mechanism in this design for a write to carry Drew's `sub` unless
@@ -128,7 +128,7 @@ When Access or the IdP is down, the stack must not choose between
   outage does not stop local reads).
 - **Writes queue, attributed-but-unverified:** a write attempted
   during an entry outage is accepted only from the stack-local
-  network, stamped `provenance: outage-queued` with the *claimed*
+  network, stamped `provenance: outage-queued` with the _claimed_
   identity kept visibly a claim, and held out of any surface that
   requires verified authorship until the entry recovers and the
   claimant's identity is confirmed by a fresh login — at which point

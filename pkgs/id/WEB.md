@@ -66,7 +66,7 @@ Open http://localhost:3000 in your browser (default port).
 
 The Nix dev shell provides all required tools:
 
-- Rust 1.99.0
+- Rust 1.99.1
 - Bun (for TypeScript bundling)
 - TypeScript
 - Chromium and Firefox (for E2E tests)
@@ -249,9 +249,10 @@ Three DaisyUI terminal-inspired themes with `#000000` black backgrounds. Switch 
 | `/api/new`            | POST   | Create new file                     |
 | `/api/rename`         | POST   | Rename file (with optional archive) |
 | `/api/copy`           | POST   | Copy file to new name               |
+| `/api/files/send`     | POST   | Send file to another server (server-side transfer, #5346) |
 | `/api/download`       | POST   | Download file content               |
 | `/api/delete`         | POST   | Soft-delete file                    |
-| `/api/restore`        | POST   | Restore deleted file                |
+| `/api/restore`        | POST   | Restore deleted file (404 if missing, 409 if not deleted) |
 | `/api/hard-delete`    | POST   | Permanently delete file             |
 | `/api/tags`           | GET    | Get tags for a file                 |
 | `/api/tags`           | POST   | Set a tag                           |

@@ -84,4 +84,47 @@ impl EventStore {
         records.sort_by_key(|record| *record.id.as_bytes());
         Ok(records)
     }
+
+    /// The blob references the gate index is built from: for every applied `document.put`
+    /// its author has not removed, the document's blob hash and the group the event names
+    /// (`None` when the event names none — such a document references its blob for no
+    /// world). Sorted by blob hash for a stable index build.
+    ///
+    /// # Errors
+    ///
+    /// Returns a redb error if the read fails, or [`StoreError::Corrupt`] for a stored
+    /// document event that carries no document, or a stored removal that names no document.
+    pub fn document_references(&self) -> Result<Vec<(iroh_blobs::Hash, Option<Hash>)>, StoreError> {
+        let records = self.documents()?;
+        let removed: std::collections::BTreeSet<[u8; 32]> = records
+            .iter()
+            .filter(|record| record.removal.is_some())
+            .map(|record| *record.id.as_bytes())
+            .collect();
+        let txn = self.db.begin_read()?;
+        let events = txn.open_table(EVENTS)?;
+        let applied_table = txn.open_table(APPLIED)?;
+        let mut references = Vec::new();
+        for row in events.iter()? {
+            let (_position, bytes) = row?;
+            let event = decode_stored(bytes.value())?;
+            if removed.contains(event.id.as_bytes()) {
+                continue;
+            }
+            if applied_table.get(event.id.as_bytes().as_slice())?.is_none() {
+                continue;
+            }
+            if event.header.extensions.kind != DOCUMENT_KIND {
+                continue;
+            }
+            let Some(document) = &event.header.extensions.document else {
+                return Err(corrupt(
+                    "a stored document event carries no document".to_owned(),
+                ));
+            };
+            references.push((document.blob_hash(), event.header.extensions.group));
+        }
+        references.sort_by_key(|(hash, _)| *hash.as_bytes());
+        Ok(references)
+    }
 }

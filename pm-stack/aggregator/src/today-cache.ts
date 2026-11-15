@@ -39,10 +39,13 @@
 //   health) are cached as-is: they ARE the honest degraded state of
 //   that read. A failed background refresh keeps serving the last
 //   good value and the next expired read retries the refresh.
-// - clear() still forces a full fresh read on the next request (the
-//   freshness-notice invalidation in server.ts relies on it), and a
-//   refresh started before a clear() can never repopulate the cache
-//   behind it (generation guard).
+// - clear() still forces a full fresh read on the next request
+//   (tests rely on it), and a refresh started before a clear() can
+//   never repopulate the cache behind it (generation guard).
+//   Freshness notices use invalidate() instead: the value is marked
+//   expired but stays servable, so the first post-notice request
+//   serves stale and refreshes behind it rather than paying the
+//   cold assembly on the request path (#5082, 2026-11-14).
 
 export const TODAY_CACHE_TTL_MS = 10_000;
 
@@ -62,6 +65,31 @@ export class TodayCache<T> {
     this.cached = null;
     this.inflight = null;
     this.generation++;
+  }
+
+  /**
+   * Mark the cached value expired WITHOUT dropping it (#5082): the
+   * next get() takes the stale-while-revalidate branch above — it
+   * serves the retained value immediately and refreshes behind it —
+   * instead of paying the full cold load on the request path.
+   *
+   * This is the freshness-invalidation contract server.ts uses for
+   * the overview/today assemblies. Dropping the value on every
+   * freshness notice (the old clear() wiring) made the first
+   * post-notice request pay the whole assembly synchronously;
+   * notices land every few minutes, so that first request is
+   * routinely an hourly watch with no warm traffic in between, and
+   * when the assembly chain inflated past the 10 s dashboard
+   * deadline under load the watch read a hard 503 (pool-quota-
+   * steward runs 378/379, 2026-11-14). A no-op when nothing is
+   * cached yet; an in-flight cold load is left alone — it is
+   * already fetching the newest read. A refresh already running
+   * stays single-flight via refresh().
+   */
+  invalidate(): void {
+    if (this.cached) {
+      this.cached = { at: this.now() - this.ttlMs, data: this.cached.data };
+    }
   }
 
   /**

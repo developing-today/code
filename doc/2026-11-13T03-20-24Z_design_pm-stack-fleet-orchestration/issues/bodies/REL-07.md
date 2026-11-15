@@ -76,7 +76,8 @@ explicit resource allowlist, policy effect set, `completing` recovery, no-webhoo
 - **P-R062 — design-only (candidate)**; occurrences `P-1486, P-1487, P-1488, P-1489`; full trace: census/requirements-crosswalk.jsonl
 - **P-R063 — design-only (candidate)**; occurrences `P-1490, P-1491, P-1492`; full trace: census/requirements-crosswalk.jsonl
 - **P-R068 — design-only (candidate)**; occurrences `P-1698, P-1699, P-1700, P-1701, P-1702, P-1703, P-1704`; full trace: census/requirements-crosswalk.jsonl
-Deliver this bounded slice only. It enables downstream work only after its stated contracts and prerequisites are accepted; it does not imply that other component specs, closed parent issues, source code, tests, deployments, or runtime behavior are complete.
+  Deliver this bounded slice only. It enables downstream work only after its stated contracts and prerequisites are accepted; it does not imply that other component specs, closed parent issues, source code, tests, deployments, or runtime behavior are complete.
+
 ## Owned files and boundaries
 
 - `pkgs/fleet/crates/fleet-queue/src/work/completion.rs`
@@ -91,9 +92,6 @@ Hard blockers named by the source slice, after granular-key normalization: REL-0
 File-collision sequencing edges added by stable topological serialization: none.
 Existing issue references retained as non-blocking runtime/evidence gates: none.
 Domain-starter parent references are never emitted as hard native blockers. Source parents normalized to granular slices or runtime gates: #9207→HYD-06, #9208→AUTH-01, #9196→runtime gate.
-
-
-
 
 Use only granular issue-key edges after all keys are resolved. Never make a whole domain starter a hard blocker when it creates a cycle. File collisions are hard sequencing edges. Parent integration adds native parent/blocker edges in a later pass after the command map, requirements IDs, and acyclic graph are verified.
 

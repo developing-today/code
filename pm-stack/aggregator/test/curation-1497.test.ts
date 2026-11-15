@@ -230,7 +230,10 @@ describe("the Projects merge into Program (#1497)", () => {
     expect(html.split('class="brief"').length - 1).toBe(2);
     expect(html.split('class="aform"').length - 1).toBe(2);
     const todoAt = html.indexOf("compact todo marker");
-    const todoCard = html.slice(html.lastIndexOf('<div class="card">', todoAt), html.indexOf('<div class="card">', todoAt));
+    const todoCard = html.slice(
+      html.lastIndexOf('<div class="card">', todoAt),
+      html.indexOf('<div class="card">', todoAt),
+    );
     expect(todoCard).not.toContain('class="brief"');
     expect(todoCard).not.toContain('class="aform"');
     expect(todoCard).toContain("developing-today/code#10");

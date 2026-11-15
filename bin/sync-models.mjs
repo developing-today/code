@@ -528,6 +528,39 @@ function resolveTargetProvider(config, targetProvider) {
   return { outcome: 'absent' };
 }
 
+// Order-insensitive deep equality for the plain JSON values a model
+// entry is made of (objects, arrays, scalars). Key order in the parsed
+// config follows the file, while the desired state is built in code —
+// a key-order difference is not drift and must not cause write churn.
+function jsonValueEqual(a, b) {
+  if (a === b) return true;
+  if (typeof a !== 'object' || typeof b !== 'object' || a === null || b === null) return false;
+  if (Array.isArray(a) !== Array.isArray(b)) return false;
+  const aKeys = Object.keys(a);
+  const bKeys = Object.keys(b);
+  if (aKeys.length !== bKeys.length) return false;
+  return aKeys.every((key) => Object.prototype.hasOwnProperty.call(b, key) && jsonValueEqual(a[key], b[key]));
+}
+
+// Plan the reconciliation of one existing model entry against its
+// desired state (#1799). Returns one update per drifted key: the full
+// desired `limit` whenever `context` OR `output` differs from the
+// desired limits (or the limit is missing), and the desired `variants`
+// whenever they differ from the variants built from the current effort
+// set. An already-correct entry plans no updates, so a converged sync
+// records no edits. A desired empty variants set plans nothing: the
+// sync never strips variants it did not build.
+function planModelReconciliation(existing, limits, variants) {
+  const updates = [];
+  if (Object.keys(variants).length > 0 && !jsonValueEqual(existing.variants, variants)) {
+    updates.push({ key: 'variants', value: variants });
+  }
+  if (!existing.limit || existing.limit.context !== limits.context || existing.limit.output !== limits.output) {
+    updates.push({ key: 'limit', value: limits });
+  }
+  return updates;
+}
+
 // -----------------------------------------------------------------------------
 // Main Sync Runner
 // -----------------------------------------------------------------------------
@@ -669,18 +702,12 @@ async function run() {
           edits.push({ set: [...modelsPath, baseId], value: modelEntry });
           totalAdded++;
         } else {
-          let changed = false;
-          if (Object.keys(variants).length > 0 && !prov.models[baseId].variants) {
-            prov.models[baseId].variants = variants;
-            edits.push({ set: [...modelsPath, baseId, 'variants'], value: variants });
-            changed = true;
+          const updates = planModelReconciliation(prov.models[baseId], limits, variants);
+          for (const update of updates) {
+            prov.models[baseId][update.key] = update.value;
+            edits.push({ set: [...modelsPath, baseId, update.key], value: update.value });
           }
-          if (prov.models[baseId].limit?.context !== limits.context) {
-            prov.models[baseId].limit = limits;
-            edits.push({ set: [...modelsPath, baseId, 'limit'], value: limits });
-            changed = true;
-          }
-          if (changed) {
+          if (updates.length > 0) {
             if (VERBOSE) console.log(`[sync-models] ~ Updated ${targetProvider}/${baseId}`);
             totalUpdated++;
           }

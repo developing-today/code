@@ -13,11 +13,13 @@ Nickname, archive visibility, hidden visibility and per-store user settings are 
 Limitations: snapshot per event is intentionally simple and bounded to 1.5 MB. History reads are not paginated yet; very large histories need pagination/checkpoints before large-scale use. No arbitrary remote database credentials or replication endpoints are accepted. Real-time push and automated AI extraction are not implemented.
 
 Local checks:
+
 - node --check worker/api.mjs
 - node tests/backend.mjs
-Tests use native Node SQLite through a D1-shaped adapter. Hosted D1 + gateway must still be verified after deployment.
+  Tests use native Node SQLite through a D1-shaped adapter. Hosted D1 + gateway must still be verified after deployment.
 
 ## V2 contract and limits
+
 POST /api/provision {initialState} creates an empty personal store per authenticated account and one Site default shared store seeded by its first creator, idempotently. The display name is a nickname or Personal; identity is server-derived, never a browser UUID. Subsequent callers do not join the default shared store. Bootstrap includes personalStoreId and defaultSharedStoreId only if accessible. Default audience types are locked; names remain editable.
 
 Open is an application audience, not public site access. Open stores start empty with their own categories. Signed-in Site visitors can read current visible items/tags, but unjoined readers get no notes, inventory, research, policy state or history. Only members with editor/admin may write. Conversion into/out of open is blocked to avoid exposing historical data. Archived open stores are inaccessible to nonmembers.

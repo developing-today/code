@@ -155,6 +155,22 @@ in
       StartLimitIntervalSec = "600";
       StartLimitBurst = 30;
     };
+    # Boot enablement (#9818): the nix-openclaw module renders this
+    # unit with NO [Install] section, so nothing ever pulled it in:
+    # `systemctl is-enabled` read "linked", the unit was absent from
+    # default.target.wants, and the gateway simply never started at
+    # boot/login — found inactive on 2026-11-14 by the pilot on
+    # issue #1190 (port 18789 refusing) and started by hand.
+    # Restart=always cannot help a unit that was never started.
+    # WantedBy=default.target makes home-manager link it into
+    # default.target.wants, exactly like openclaw-embedding above,
+    # so the gateway starts with the user session and Restart=always
+    # (module default) recovers it from any later death. The
+    # comment-loop pre-filter (comment-loop/) additionally carries
+    # a documented start step as the runtime backstop.
+    Install = {
+      WantedBy = [ "default.target" ];
+    };
     Service = {
       RestartSec = lib.mkForce "5s"; # module default is 1s — the burst spacing that let 2026-11-04 happen
       # Materialize the facade credential at every gateway start
@@ -431,6 +447,18 @@ in
           dmPolicy = "allowlist";
           allowFrom = [ "U0CBX163G8Z" ]; # Drew
           groupPolicy = "allowlist";
+          # Channel allowlist (groupPolicy = "allowlist" drops every
+          # channel not named here). #alignment (code#2170): the shared
+          # Muse/Aster room, bound and send/read/reply-verified
+          # 2026-11-03; topology ruled one shared channel, one thread
+          # per dispatch ID (Drew, 2026-11-10). Mention-gated, like
+          # every channel: OpenClaw answers mentions, not chatter.
+          channels = {
+            "C0CBYQR65LL" = {
+              enabled = true;
+              requireMention = true;
+            };
+          };
         };
         # Telegram wired 2026-11-07: bot @shed_openclaw_bot (Shed),
         # created via BotFather from Drew's account; token via env
@@ -473,12 +501,18 @@ in
               provider = "default";
               id = "OPENCODE_SERVER_AUTH";
             };
+            # Picker names are plain pool names (Drew order
+            # 2026-11-13, #9551 Part A): no "(OpenCode route pool)"
+            # suffix, and the Small pool is listed with the other
+            # five -- it exists as a route and was the only one not
+            # exposed here.
             models = [
-              (model "workhorse" "Workhorse (OpenCode route pool)")
-              (model "speed" "Speed (OpenCode route pool)")
-              (model "specialist" "Specialist (OpenCode route pool)")
-              (model "summit" "Summit (OpenCode route pool)")
-              (model "scout" "Scout (OpenCode route pool)")
+              (model "workhorse" "Workhorse pool")
+              (model "speed" "Speed pool")
+              (model "specialist" "Specialist pool")
+              (model "summit" "Summit pool")
+              (model "scout" "Scout pool")
+              (model "small" "Small pool")
             ];
           };
         };
@@ -601,7 +635,12 @@ in
           slack.enabled = true;
           telegram.enabled = true;
           codex.enabled = true;
-          copilot.enabled = true;
+          # Hidden from the model picker (Drew order 2026-11-13,
+          # #9551 Part A): the Copilot plugin's only live surface was
+          # its picker provider -- its ACP harness is already not in
+          # acpx allowedAgents above. Re-enable here in settings to
+          # make Copilot visible in the picker again.
+          copilot.enabled = false;
           "memory-lancedb" = {
             enabled = true;
             # Conversation access for the plugin's typed hooks. Without

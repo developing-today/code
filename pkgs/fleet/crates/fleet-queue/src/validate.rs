@@ -304,7 +304,9 @@ fn review_errors(p: &Value) -> Vec<String> {
     }
     if let Some(producer) = review.get("producer") {
         if !producer.is_object() {
-            errs.push("payload.review.producer: must be an object {task_id, session, pr}".to_string());
+            errs.push(
+                "payload.review.producer: must be an object {task_id, session, pr}".to_string(),
+            );
         }
     }
     if let Some(refs) = review.get("goal_context_refs") {
@@ -381,7 +383,14 @@ fn match_dedupe(key: &str) -> Option<DedupeMatch> {
         }
         return None;
     }
-    for fam in ["fix", "triage", "pr-set", "pr", "maintenance", "second-pass"] {
+    for fam in [
+        "fix",
+        "triage",
+        "pr-set",
+        "pr",
+        "maintenance",
+        "second-pass",
+    ] {
         let Some(after) = rest.strip_prefix(&format!("{fam}:")) else {
             continue;
         };
@@ -409,10 +418,9 @@ fn match_dedupe(key: &str) -> Option<DedupeMatch> {
                     // (design #2025 section 5.2): one live packet per
                     // (artifact, pass) by construction.
                     if let Some((issue_s, pass_s)) = tail.split_once(":pass-") {
-                        if let (Some(num), Some(pass)) = (
-                            canonical_number(issue_s),
-                            canonical_number(pass_s),
-                        ) {
+                        if let (Some(num), Some(pass)) =
+                            (canonical_number(issue_s), canonical_number(pass_s))
+                        {
                             return Some(DedupeMatch {
                                 family: fam.into(),
                                 repo: repo.to_string(),
@@ -456,7 +464,7 @@ fn match_dedupe(key: &str) -> Option<DedupeMatch> {
                             num: None,
                             nums: Some(nums),
                             origin: None,
-                                pass: None,
+                            pass: None,
                         });
                     }
                 }
@@ -887,6 +895,14 @@ pub fn validate_not_before(value: &Value, field: &str) -> Result<(), String> {
 /// strings name it, so the bound cannot drift between copies again.
 pub(crate) const MAX_ATTEMPTS_CEILING: u64 = 1000;
 
+/// The default max_attempts for a newly created task (#8973).
+/// Drew's 2026-11-12 order made 1000 the producer default
+/// everywhere a task is created, so the default sits at the
+/// ceiling. Every creation path that omits an explicit value
+/// (task_from_packet, the enqueue insert fallback) uses this one
+/// constant so the paths cannot drift apart again.
+pub(crate) const TASK_DEFAULT_MAX_ATTEMPTS: u64 = 1000;
+
 /// validate_packet: returns (errors, warnings).
 fn valid_max_attempts(value: &Value) -> bool {
     value
@@ -988,11 +1004,9 @@ pub fn validate_packet(packet: &Value) -> (Vec<String>, Vec<String>) {
     }
     if let Some(ma) = payload.get("max_attempts").and_then(|v| v.as_i64()) {
         let kind = payload.get("kind").and_then(|k| k.as_str()).unwrap_or("");
-        let want = if kind == "triage" || kind == "ci_investigation" {
-            6
-        } else {
-            4
-        };
+        // #8973: the design default is TASK_DEFAULT_MAX_ATTEMPTS for
+        // every kind since Drew's 2026-11-12 order.
+        let want = TASK_DEFAULT_MAX_ATTEMPTS as i64;
         if ma != want {
             warnings.push(format!(
                 "payload.max_attempts: design default for {kind} is {want}, packet says {ma}"
@@ -1011,7 +1025,7 @@ pub fn task_from_packet(packet: &Value, queue: &str) -> Value {
         .filter(|v| !v.is_null())
         .or_else(|| payload.get("max_attempts"))
         .cloned()
-        .unwrap_or(json!(4));
+        .unwrap_or(json!(TASK_DEFAULT_MAX_ATTEMPTS));
     json!({
         "queue": queue,
         "title": packet.get("title").cloned().unwrap_or(Value::Null),
@@ -1096,7 +1110,7 @@ mod tests {
                 .iter()
                 .any(|e| e.contains("max_attempts"))
         );
-        assert_eq!(task_from_packet(&packet, "q")["max_attempts"], 4);
+        assert_eq!(task_from_packet(&packet, "q")["max_attempts"], 1000);
         packet["payload"]["max_attempts"] = json!(7);
         assert_eq!(task_from_packet(&packet, "q")["max_attempts"], 7);
     }
@@ -1783,7 +1797,10 @@ mod tests {
             "payload": second_pass_payload(valid_review()),
         });
         let (errors, _warnings) = validate_packet(&packet);
-        assert!(errors.is_empty(), "well-formed second_pass packet must validate; got {errors:?}");
+        assert!(
+            errors.is_empty(),
+            "well-formed second_pass packet must validate; got {errors:?}"
+        );
     }
 
     #[test]
@@ -1863,17 +1880,21 @@ mod tests {
         );
         // The second-pass family is not valid for other kinds, and
         // other families are not valid for second_pass.
-        assert!(!dedupe_errs(
-            "repo-health:v1:second-pass:developing-today/code:2310:pass-1",
-            "small_fix",
-            json!({"issue": {"number": 2310}}),
-        )
-        .is_empty());
-        assert!(!dedupe_errs(
-            "repo-health:v1:fix:developing-today/code:issue:2310",
-            "second_pass",
-            json!({"issue": {"number": 2310}}),
-        )
-        .is_empty());
+        assert!(
+            !dedupe_errs(
+                "repo-health:v1:second-pass:developing-today/code:2310:pass-1",
+                "small_fix",
+                json!({"issue": {"number": 2310}}),
+            )
+            .is_empty()
+        );
+        assert!(
+            !dedupe_errs(
+                "repo-health:v1:fix:developing-today/code:issue:2310",
+                "second_pass",
+                json!({"issue": {"number": 2310}}),
+            )
+            .is_empty()
+        );
     }
 }

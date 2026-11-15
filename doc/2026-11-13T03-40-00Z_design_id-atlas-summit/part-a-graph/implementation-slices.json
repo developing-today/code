@@ -13,16 +13,25 @@
       "goal": "Define general typed-byte triple terms, object references, LogicalGraphId, source_record provenance and exact ContentId/PayloadId/EnvelopeId preimages. Own only term.rs, record.rs and their test; do not create or edit graph/mod.rs or crate-root exports.",
       "enables": "Graph and attribute surfaces share typed bytes and non-self-referential signed identities; adapters can add indexes without changing signed truth.",
       "owned_files": [
-        {"path": "pkgs/id/crates/id-core/src/graph/term.rs", "status": "new", "owner": "A-GRAPH-9125-01"},
-        {"path": "pkgs/id/crates/id-core/src/graph/record.rs", "status": "new", "owner": "A-GRAPH-9125-01"},
-        {"path": "pkgs/id/crates/id-core/tests/graph_term_codec.rs", "status": "new", "owner": "A-GRAPH-9125-01"}
+        { "path": "pkgs/id/crates/id-core/src/graph/term.rs", "status": "new", "owner": "A-GRAPH-9125-01" },
+        { "path": "pkgs/id/crates/id-core/src/graph/record.rs", "status": "new", "owner": "A-GRAPH-9125-01" },
+        { "path": "pkgs/id/crates/id-core/tests/graph_term_codec.rs", "status": "new", "owner": "A-GRAPH-9125-01" }
       ],
       "requires": [
-        {"ref": "9110-02", "description": "Creates the common graph/mod.rs skeleton and shared profile/vector interfaces, without exporting absent leaf modules. This slice uses direct-path leaf imports in its integration test. Final public module/export wiring is owned by 9110-09 after this slice completes."},
-        {"ref": "9110-11", "description": "Consume the additive identity-profile/legacy compatibility contract; do not edit or re-sign legacy artifact bytes."}
+        {
+          "ref": "9110-02",
+          "description": "Creates the common graph/mod.rs skeleton and shared profile/vector interfaces, without exporting absent leaf modules. This slice uses direct-path leaf imports in its integration test. Final public module/export wiring is owned by 9110-09 after this slice completes."
+        },
+        {
+          "ref": "9110-11",
+          "description": "Consume the additive identity-profile/legacy compatibility contract; do not edit or re-sign legacy artifact bytes."
+        }
       ],
       "after": [
-        {"ref": "9110-R2", "description": "Consume any later Atlas ContentId mapping only in an Atlas-specific adapter; the typed-byte graph core does not own or block on the producer investigation."}
+        {
+          "ref": "9110-R2",
+          "description": "Consume any later Atlas ContentId mapping only in an Atlas-specific adapter; the typed-byte graph core does not own or block on the producer investigation."
+        }
       ],
       "test": {
         "file": "pkgs/id/crates/id-core/tests/graph_term_codec.rs",
@@ -49,13 +58,19 @@
       "goal": "Add an initial redb materialization with rebuildable SPO/POS/OSP indexes and bounded continuation scans; index bytes remain derived and outside signed authority.",
       "enables": "Bounded graph patterns and pages execute without loading the entire LogicalGraphId.",
       "owned_files": [
-        {"path": "pkgs/id/crates/id-store/src/graph_index.rs", "status": "new", "owner": "A-GRAPH-9125-02"},
-        {"path": "pkgs/id/crates/id-store/tests/graph_index_rebuild.rs", "status": "new", "owner": "A-GRAPH-9125-02"}
+        { "path": "pkgs/id/crates/id-store/src/graph_index.rs", "status": "new", "owner": "A-GRAPH-9125-02" },
+        { "path": "pkgs/id/crates/id-store/tests/graph_index_rebuild.rs", "status": "new", "owner": "A-GRAPH-9125-02" }
       ],
       "requires": [
-        {"ref": "A-GRAPH-9125-01", "description": "Typed terms, AssertionId and graph record boundary."},
-        {"ref": "A-GRAPH-9125-03", "description": "Measured candidate-engine bake-off and selected V2 backend/profile recommendation."},
-        {"ref": "9110-02", "description": "Common id-store crate-root export/port registration; graph index remains a separate module."}
+        { "ref": "A-GRAPH-9125-01", "description": "Typed terms, AssertionId and graph record boundary." },
+        {
+          "ref": "A-GRAPH-9125-03",
+          "description": "Measured candidate-engine bake-off and selected V2 backend/profile recommendation."
+        },
+        {
+          "ref": "9110-02",
+          "description": "Common id-store crate-root export/port registration; graph index remains a separate module."
+        }
       ],
       "after": [],
       "test": {
@@ -84,13 +99,32 @@
       "goal": "Measure actual candidate engines on one shared typed-byte corpus: deterministic chunked binary, current redb tuple-key materialization, SQLite JSONB, and normalized SQLite BLOB rows; report storage, indexed query, streaming/page and write costs without choosing from the toy serialization result.",
       "enables": "A measured V2 storage recommendation with raw artifacts, engine/version/config metadata, repeatable fixture and explicit limits.",
       "owned_files": [
-        {"path": "pkgs/id/crates/id-store/tests/graph_encoding_bakeoff.rs", "status": "new", "owner": "A-GRAPH-9125-03"},
-        {"path": "doc/2026-11-13T03-40-00Z_design_id-atlas-summit/part-a-graph/real-encoding-bakeoff.md", "status": "new", "owner": "A-GRAPH-9125-03"},
-        {"path": "doc/2026-11-13T03-40-00Z_design_id-atlas-summit/part-a-graph/real-encoding-bakeoff-results.json", "status": "new", "owner": "A-GRAPH-9125-03"},
-        {"path": "doc/2026-11-13T03-40-00Z_design_id-atlas-summit/part-a-graph/validate_real_encoding_bakeoff.py", "status": "new", "owner": "A-GRAPH-9125-03"}
+        {
+          "path": "pkgs/id/crates/id-store/tests/graph_encoding_bakeoff.rs",
+          "status": "new",
+          "owner": "A-GRAPH-9125-03"
+        },
+        {
+          "path": "doc/2026-11-13T03-40-00Z_design_id-atlas-summit/part-a-graph/real-encoding-bakeoff.md",
+          "status": "new",
+          "owner": "A-GRAPH-9125-03"
+        },
+        {
+          "path": "doc/2026-11-13T03-40-00Z_design_id-atlas-summit/part-a-graph/real-encoding-bakeoff-results.json",
+          "status": "new",
+          "owner": "A-GRAPH-9125-03"
+        },
+        {
+          "path": "doc/2026-11-13T03-40-00Z_design_id-atlas-summit/part-a-graph/validate_real_encoding_bakeoff.py",
+          "status": "new",
+          "owner": "A-GRAPH-9125-03"
+        }
       ],
       "requires": [
-        {"ref": "A-GRAPH-9125-01", "description": "Canonical typed-byte terms and shared deterministic corpus/reference oracle."}
+        {
+          "ref": "A-GRAPH-9125-01",
+          "description": "Canonical typed-byte terms and shared deterministic corpus/reference oracle."
+        }
       ],
       "after": [],
       "research_evidence": [
@@ -126,16 +160,22 @@
       "goal": "Expose conjunctive patterns over TermPattern and LogicalGraphId with stable ordering, opaque snapshot cursor, mandatory page limit, server-side authorization and an operator-validated resource profile.",
       "enables": "Attributes, social projections and optional visualization share one authorized graph-read path and source_record provenance.",
       "owned_files": [
-        {"path": "pkgs/id/crates/id-core/src/graph/query.rs", "status": "new", "owner": "A-GRAPH-9126-01"},
-        {"path": "pkgs/id/crates/id-core/src/graph/cursor.rs", "status": "new", "owner": "A-GRAPH-9126-01"},
-        {"path": "pkgs/id/crates/id-core/tests/graph_query_reference.rs", "status": "new", "owner": "A-GRAPH-9126-01"}
+        { "path": "pkgs/id/crates/id-core/src/graph/query.rs", "status": "new", "owner": "A-GRAPH-9126-01" },
+        { "path": "pkgs/id/crates/id-core/src/graph/cursor.rs", "status": "new", "owner": "A-GRAPH-9126-01" },
+        { "path": "pkgs/id/crates/id-core/tests/graph_query_reference.rs", "status": "new", "owner": "A-GRAPH-9126-01" }
       ],
       "requires": [
-        {"ref": "A-GRAPH-9125-01", "description": "Typed terms, LogicalGraphId and source_record provenance."},
-        {"ref": "9110-02", "description": "Common crate-root export and interface registration; no graph ownership of lib.rs."}
+        { "ref": "A-GRAPH-9125-01", "description": "Typed terms, LogicalGraphId and source_record provenance." },
+        {
+          "ref": "9110-02",
+          "description": "Common crate-root export and interface registration; no graph ownership of lib.rs."
+        }
       ],
       "after": [
-        {"ref": "A-GRAPH-9125-02", "description": "Prefer the measured index adapter when available; API contract remains backend-independent."}
+        {
+          "ref": "A-GRAPH-9125-02",
+          "description": "Prefer the measured index adapter when available; API contract remains backend-independent."
+        }
       ],
       "test": {
         "file": "pkgs/id/crates/id-core/tests/graph_query_reference.rs",
@@ -162,12 +202,14 @@
       "goal": "Build an optional native-shell graph viewer over the same authorized paged query API, marking cycles, provenance, missing references and truncation.",
       "enables": "Humans can inspect graph neighborhoods without a second graph store or false-complete whole-graph picture.",
       "owned_files": [
-        {"path": "pkgs/id/crates/id-native-shell/src/commands/graph_view.rs", "status": "new", "owner": "A-GRAPH-9126-02"},
-        {"path": "pkgs/id/crates/id-native-shell/tests/graph_view.rs", "status": "new", "owner": "A-GRAPH-9126-02"}
+        {
+          "path": "pkgs/id/crates/id-native-shell/src/commands/graph_view.rs",
+          "status": "new",
+          "owner": "A-GRAPH-9126-02"
+        },
+        { "path": "pkgs/id/crates/id-native-shell/tests/graph_view.rs", "status": "new", "owner": "A-GRAPH-9126-02" }
       ],
-      "requires": [
-        {"ref": "A-GRAPH-9126-01", "description": "Authorized QueryPage and provenance contract."}
-      ],
+      "requires": [{ "ref": "A-GRAPH-9126-01", "description": "Authorized QueryPage and provenance contract." }],
       "after": [],
       "test": {
         "file": "pkgs/id/crates/id-native-shell/tests/graph_view.rs",
@@ -195,13 +237,23 @@
       "goal": "Compare typed patterns, SPARQL subset, SQL/PGQ, and traversal/API alternatives against concrete interoperability and safety needs; recommendation may adopt none and no parser is implied.",
       "enables": "Any later syntax remains an adapter over the typed API with explicitly bounded semantics, or the project records that no named language is justified.",
       "owned_files": [
-        {"path": "doc/2026-11-13T03-40-00Z_design_id-atlas-summit/part-a-graph/query-language-options.md", "status": "new", "owner": "A-GRAPH-9126-03"},
-        {"path": "doc/2026-11-13T03-40-00Z_design_id-atlas-summit/part-a-graph/query-language-options.json", "status": "new", "owner": "A-GRAPH-9126-03"},
-        {"path": "doc/2026-11-13T03-40-00Z_design_id-atlas-summit/part-a-graph/validate_query_language_options.py", "status": "new", "owner": "A-GRAPH-9126-03"}
+        {
+          "path": "doc/2026-11-13T03-40-00Z_design_id-atlas-summit/part-a-graph/query-language-options.md",
+          "status": "new",
+          "owner": "A-GRAPH-9126-03"
+        },
+        {
+          "path": "doc/2026-11-13T03-40-00Z_design_id-atlas-summit/part-a-graph/query-language-options.json",
+          "status": "new",
+          "owner": "A-GRAPH-9126-03"
+        },
+        {
+          "path": "doc/2026-11-13T03-40-00Z_design_id-atlas-summit/part-a-graph/validate_query_language_options.py",
+          "status": "new",
+          "owner": "A-GRAPH-9126-03"
+        }
       ],
-      "requires": [
-        {"ref": "A-GRAPH-9126-01", "description": "Typed API semantics form the comparison baseline."}
-      ],
+      "requires": [{ "ref": "A-GRAPH-9126-01", "description": "Typed API semantics form the comparison baseline." }],
       "after": [],
       "research_evidence": [
         "https://www.w3.org/TR/sparql11-query/ — SPARQL 1.1 feature and graph-pattern semantics (retrieved 2026-11-12).",
@@ -235,12 +287,15 @@
       "goal": "Define signed attribute objects, target scope and explicit closed/open/moderated policy, distinct from Atlas and content-location metadata.",
       "enables": "Append admission can apply a verified attribute policy before publishing accepted values.",
       "owned_files": [
-        {"path": "pkgs/id/crates/id-core/src/graph/attribute.rs", "status": "new", "owner": "A-GRAPH-9127-01"},
-        {"path": "pkgs/id/crates/id-core/tests/attribute_definition.rs", "status": "new", "owner": "A-GRAPH-9127-01"}
+        { "path": "pkgs/id/crates/id-core/src/graph/attribute.rs", "status": "new", "owner": "A-GRAPH-9127-01" },
+        { "path": "pkgs/id/crates/id-core/tests/attribute_definition.rs", "status": "new", "owner": "A-GRAPH-9127-01" }
       ],
       "requires": [
-        {"ref": "A-GRAPH-9125-01", "description": "Typed terms, LogicalGraphId and signed object identities."},
-        {"issue": 9083, "description": "Tenant-scope authorization interface for attribute definition and resolution; consume its owned boundary only."}
+        { "ref": "A-GRAPH-9125-01", "description": "Typed terms, LogicalGraphId and signed object identities." },
+        {
+          "issue": 9083,
+          "description": "Tenant-scope authorization interface for attribute definition and resolution; consume its owned boundary only."
+        }
       ],
       "after": [],
       "test": {
@@ -268,13 +323,20 @@
       "goal": "Verify signatures before pending/admission; force every non-group submitter to Pending even when open; directly accept only eligible in-group submitters; approve by CAS after membership, policy and revocation recheck.",
       "enables": "The accepted list is published only after its signed-evidence and moderation gate, with immutable authoritative order.",
       "owned_files": [
-        {"path": "pkgs/id/crates/id-core/src/graph/append_list.rs", "status": "new", "owner": "A-GRAPH-9127-02"},
-        {"path": "pkgs/id/crates/id-events/src/graph_admission.rs", "status": "new", "owner": "A-GRAPH-9127-02"},
-        {"path": "pkgs/id/crates/id-events/tests/append_list_state_machine.rs", "status": "new", "owner": "A-GRAPH-9127-02"}
+        { "path": "pkgs/id/crates/id-core/src/graph/append_list.rs", "status": "new", "owner": "A-GRAPH-9127-02" },
+        { "path": "pkgs/id/crates/id-events/src/graph_admission.rs", "status": "new", "owner": "A-GRAPH-9127-02" },
+        {
+          "path": "pkgs/id/crates/id-events/tests/append_list_state_machine.rs",
+          "status": "new",
+          "owner": "A-GRAPH-9127-02"
+        }
       ],
       "requires": [
-        {"ref": "A-GRAPH-9127-01", "description": "Signed attribute and open/closed/moderated policy."},
-        {"issue": 9083, "description": "Current tenant/membership authorization interface used by admission CAS; no policy is copied into graph code."}
+        { "ref": "A-GRAPH-9127-01", "description": "Signed attribute and open/closed/moderated policy." },
+        {
+          "issue": 9083,
+          "description": "Current tenant/membership authorization interface used by admission CAS; no policy is copied into graph code."
+        }
       ],
       "after": [],
       "test": {
@@ -302,13 +364,17 @@
       "goal": "Define immutable topic/comment/reaction/feed references and iterative bounded traversal without prescribing a specific app's ranking.",
       "enables": "Feeds, profiles and bulletin-board projections compose over signed graph objects.",
       "owned_files": [
-        {"path": "pkgs/id/crates/id-core/src/graph/social.rs", "status": "new", "owner": "A-GRAPH-9128-01"},
-        {"path": "pkgs/id/crates/id-core/tests/social_graph_traversal.rs", "status": "new", "owner": "A-GRAPH-9128-01"}
+        { "path": "pkgs/id/crates/id-core/src/graph/social.rs", "status": "new", "owner": "A-GRAPH-9128-01" },
+        {
+          "path": "pkgs/id/crates/id-core/tests/social_graph_traversal.rs",
+          "status": "new",
+          "owner": "A-GRAPH-9128-01"
+        }
       ],
       "requires": [
-        {"ref": "A-GRAPH-9125-01", "description": "Typed terms, logical graph IDs and signed provenance."},
-        {"ref": "A-GRAPH-9127-01", "description": "Attribute object/policy vocabulary."},
-        {"ref": "A-GRAPH-9127-02", "description": "Append acceptance projection and authoritative sequence."}
+        { "ref": "A-GRAPH-9125-01", "description": "Typed terms, logical graph IDs and signed provenance." },
+        { "ref": "A-GRAPH-9127-01", "description": "Attribute object/policy vocabulary." },
+        { "ref": "A-GRAPH-9127-02", "description": "Append acceptance projection and authoritative sequence." }
       ],
       "after": [],
       "test": {
@@ -336,12 +402,12 @@
       "goal": "Allocate a durable projection-ledger sequence for each complete `(tenant, query, generation)` feed entry, while retaining each source authority/epoch/sequence and pinned frontier; cursor `last_projection_seq` drives latest/since/before pages.",
       "enables": "Clients check latest/since/before without a full forum rescan and expired cursors never claim no changes.",
       "owned_files": [
-        {"path": "pkgs/id/crates/id-core/src/graph/feed_cursor.rs", "status": "new", "owner": "A-GRAPH-9128-02"},
-        {"path": "pkgs/id/crates/id-events/tests/feed_cursor_model.rs", "status": "new", "owner": "A-GRAPH-9128-02"}
+        { "path": "pkgs/id/crates/id-core/src/graph/feed_cursor.rs", "status": "new", "owner": "A-GRAPH-9128-02" },
+        { "path": "pkgs/id/crates/id-events/tests/feed_cursor_model.rs", "status": "new", "owner": "A-GRAPH-9128-02" }
       ],
       "requires": [
-        {"ref": "A-GRAPH-9127-02", "description": "Accepted server epoch/sequence log."},
-        {"ref": "A-GRAPH-9128-01", "description": "Feed projection and query scope."}
+        { "ref": "A-GRAPH-9127-02", "description": "Accepted server epoch/sequence log." },
+        { "ref": "A-GRAPH-9128-01", "description": "Feed projection and query scope." }
       ],
       "after": [],
       "test": {
@@ -369,12 +435,10 @@
       "goal": "Store `(predecessor_v1, succeeds, successor_v2)`, validate same logical object and acyclic lineage, adapt equivalent Supersede records explicitly, and preserve competing heads.",
       "enables": "Immutable edits and branch-aware current-version views without silent last-writer-wins.",
       "owned_files": [
-        {"path": "pkgs/id/crates/id-core/src/graph/version.rs", "status": "new", "owner": "A-GRAPH-9129-01"},
-        {"path": "pkgs/id/crates/id-core/tests/succeeds_dag.rs", "status": "new", "owner": "A-GRAPH-9129-01"}
+        { "path": "pkgs/id/crates/id-core/src/graph/version.rs", "status": "new", "owner": "A-GRAPH-9129-01" },
+        { "path": "pkgs/id/crates/id-core/tests/succeeds_dag.rs", "status": "new", "owner": "A-GRAPH-9129-01" }
       ],
-      "requires": [
-        {"ref": "A-GRAPH-9125-01", "description": "Assertion identity and source_record provenance."}
-      ],
+      "requires": [{ "ref": "A-GRAPH-9125-01", "description": "Assertion identity and source_record provenance." }],
       "after": [],
       "test": {
         "file": "pkgs/id/crates/id-core/tests/succeeds_dag.rs",
@@ -401,12 +465,20 @@
       "goal": "In the V3 social projection, carry eligible ancestor comments into the default descendant view with an old-version marker and transitive origin while retaining the original target and branch identity.",
       "enables": "Social readers see historical discussion on v2 without implying comments were authored against revised content; V2 only stores/version-checks succeeds edges.",
       "owned_files": [
-        {"path": "pkgs/id/crates/id-core/src/graph/comment_projection.rs", "status": "new", "owner": "A-GRAPH-9129-02"},
-        {"path": "pkgs/id/crates/id-core/tests/carried_comment_projection.rs", "status": "new", "owner": "A-GRAPH-9129-02"}
+        {
+          "path": "pkgs/id/crates/id-core/src/graph/comment_projection.rs",
+          "status": "new",
+          "owner": "A-GRAPH-9129-02"
+        },
+        {
+          "path": "pkgs/id/crates/id-core/tests/carried_comment_projection.rs",
+          "status": "new",
+          "owner": "A-GRAPH-9129-02"
+        }
       ],
       "requires": [
-        {"ref": "A-GRAPH-9129-01", "description": "Version DAG and selected branch ancestry."},
-        {"ref": "A-GRAPH-9128-01", "description": "Comment object identities and relation model."}
+        { "ref": "A-GRAPH-9129-01", "description": "Version DAG and selected branch ancestry." },
+        { "ref": "A-GRAPH-9128-01", "description": "Comment object identities and relation model." }
       ],
       "after": [],
       "test": {
@@ -434,12 +506,16 @@
       "goal": "Represent author/group deletion request, moderation queue, projection hide and server-policy true-delete as distinct signed states and bounded batch transitions.",
       "enables": "A server moderates locally without rewriting signed identity or claiming global erasure.",
       "owned_files": [
-        {"path": "pkgs/id/crates/id-core/src/graph/deletion.rs", "status": "new", "owner": "A-GRAPH-9130-01"},
-        {"path": "pkgs/id/crates/id-events/tests/deletion_state_machine.rs", "status": "new", "owner": "A-GRAPH-9130-01"}
+        { "path": "pkgs/id/crates/id-core/src/graph/deletion.rs", "status": "new", "owner": "A-GRAPH-9130-01" },
+        {
+          "path": "pkgs/id/crates/id-events/tests/deletion_state_machine.rs",
+          "status": "new",
+          "owner": "A-GRAPH-9130-01"
+        }
       ],
       "requires": [
-        {"ref": "A-GRAPH-9125-01", "description": "Signed assertion and source evidence identities."},
-        {"ref": "A-GRAPH-9127-01", "description": "Owner/group attribute authority boundaries."}
+        { "ref": "A-GRAPH-9125-01", "description": "Signed assertion and source evidence identities." },
+        { "ref": "A-GRAPH-9127-01", "description": "Owner/group attribute authority boundaries." }
       ],
       "after": [],
       "test": {
@@ -467,14 +543,17 @@
       "goal": "Fence references with a deletion-generation tombstone and CAS against reference-index generation/retention; consume #9137 and #9084 semantics before physical shared-object removal.",
       "enables": "GC cannot race a fresh reference or let an older worker delete after a newer retain/reference generation.",
       "owned_files": [
-        {"path": "pkgs/id/crates/id-store/src/graph_gc.rs", "status": "new", "owner": "A-GRAPH-9130-02"},
-        {"path": "pkgs/id/crates/id-store/tests/graph_gc_fencing.rs", "status": "new", "owner": "A-GRAPH-9130-02"}
+        { "path": "pkgs/id/crates/id-store/src/graph_gc.rs", "status": "new", "owner": "A-GRAPH-9130-02" },
+        { "path": "pkgs/id/crates/id-store/tests/graph_gc_fencing.rs", "status": "new", "owner": "A-GRAPH-9130-02" }
       ],
       "requires": [
-        {"ref": "A-GRAPH-9130-01", "description": "Distinct deletion/retention state machine."},
-        {"ref": "A-GRAPH-9125-02", "description": "Rebuildable reference-index generation and storage transaction boundary."},
-        {"issue": 9137, "description": "GC retention/large-object collection policy and fencing interface."},
-        {"issue": 9084, "description": "Reference-vs-copy semantics and authority boundary for shared objects."}
+        { "ref": "A-GRAPH-9130-01", "description": "Distinct deletion/retention state machine." },
+        {
+          "ref": "A-GRAPH-9125-02",
+          "description": "Rebuildable reference-index generation and storage transaction boundary."
+        },
+        { "issue": 9137, "description": "GC retention/large-object collection policy and fencing interface." },
+        { "issue": 9084, "description": "Reference-vs-copy semantics and authority boundary for shared objects." }
       ],
       "after": [],
       "test": {
@@ -503,12 +582,15 @@
       "goal": "Verify the canonical typed `[null, public-key-bytes]` binding offline; keep its address immutable and petnames local; successor control uses a verified chain there or an explicit signed redirect to a new address.",
       "enables": "Clients attribute a space binding to a signer without trusting its server or silently replacing the original key at the same coordinates.",
       "owned_files": [
-        {"path": "pkgs/id/crates/id-core/src/graph/space_binding.rs", "status": "new", "owner": "A-GRAPH-9131-01"},
-        {"path": "pkgs/id/crates/id-core/tests/signer_bound_space.rs", "status": "new", "owner": "A-GRAPH-9131-01"},
-        {"path": "pkgs/id/crates/id-core/src/petname.rs", "status": "existing", "owner": "A-GRAPH-9131-01"}
+        { "path": "pkgs/id/crates/id-core/src/graph/space_binding.rs", "status": "new", "owner": "A-GRAPH-9131-01" },
+        { "path": "pkgs/id/crates/id-core/tests/signer_bound_space.rs", "status": "new", "owner": "A-GRAPH-9131-01" },
+        { "path": "pkgs/id/crates/id-core/src/petname.rs", "status": "existing", "owner": "A-GRAPH-9131-01" }
       ],
       "requires": [
-        {"ref": "A-GRAPH-9125-01", "description": "Typed byte terms, ObjectRef and canonical signed-record verification."}
+        {
+          "ref": "A-GRAPH-9125-01",
+          "description": "Typed byte terms, ObjectRef and canonical signed-record verification."
+        }
       ],
       "after": [],
       "test": {
@@ -536,12 +618,12 @@
       "goal": "Implement scoped attenuation and distinct accepted transfer with replay protection, signed expiry, cycle rejection, finite chain budget and latest-frontier revocation freshness.",
       "enables": "A location write can be delegated without conflating a continuing grant with replacement ownership.",
       "owned_files": [
-        {"path": "pkgs/id/crates/id-core/src/graph/delegation.rs", "status": "new", "owner": "A-GRAPH-9132-01"},
-        {"path": "pkgs/id/crates/id-core/tests/delegation_model.rs", "status": "new", "owner": "A-GRAPH-9132-01"}
+        { "path": "pkgs/id/crates/id-core/src/graph/delegation.rs", "status": "new", "owner": "A-GRAPH-9132-01" },
+        { "path": "pkgs/id/crates/id-core/tests/delegation_model.rs", "status": "new", "owner": "A-GRAPH-9132-01" }
       ],
       "requires": [
-        {"ref": "A-GRAPH-9131-01", "description": "Immutable signer-bound address and successor presentation."},
-        {"ref": "A-GRAPH-9125-01", "description": "Canonical signed identities and typed array-address terms."}
+        { "ref": "A-GRAPH-9131-01", "description": "Immutable signer-bound address and successor presentation." },
+        { "ref": "A-GRAPH-9125-01", "description": "Canonical signed identities and typed array-address terms." }
       ],
       "after": [],
       "test": {
@@ -569,12 +651,14 @@
       "goal": "Represent mutual key-link claims over the same challenge bytes binding ordered pair, purpose/domain, scope, nonce and expiry; do not merge identity, account or authority from link status alone.",
       "enables": "Clients can display a verified mutual key claim without silently merging accounts or privileges.",
       "owned_files": [
-        {"path": "pkgs/id/crates/id-core/src/graph/cross_signing.rs", "status": "new", "owner": "A-GRAPH-9132-02"},
-        {"path": "pkgs/id/crates/id-core/tests/cross_signing_challenge.rs", "status": "new", "owner": "A-GRAPH-9132-02"}
+        { "path": "pkgs/id/crates/id-core/src/graph/cross_signing.rs", "status": "new", "owner": "A-GRAPH-9132-02" },
+        {
+          "path": "pkgs/id/crates/id-core/tests/cross_signing_challenge.rs",
+          "status": "new",
+          "owner": "A-GRAPH-9132-02"
+        }
       ],
-      "requires": [
-        {"ref": "A-GRAPH-9131-01", "description": "Signer-bound key identities and local trust display."}
-      ],
+      "requires": [{ "ref": "A-GRAPH-9131-01", "description": "Signer-bound key identities and local trust display." }],
       "after": [],
       "test": {
         "file": "pkgs/id/crates/id-core/tests/cross_signing_challenge.rs",

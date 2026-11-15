@@ -31,7 +31,9 @@ Covered:
 - a sink candidate whose by-id claim fails launches nothing.
 """
 
+import contextlib
 import importlib.util
+import io
 import json
 import os
 import unittest
@@ -75,14 +77,14 @@ def sink_row(**over):
     return row
 
 
-def serve(claimed=(), sink=()):
+def serve(claimed=(), sink=(), queue_name=QUEUE):
     """Patch poll's broker fetches to serve the fixture rows."""
 
     def fetch_claimed(queue):
-        return list(claimed) if queue == QUEUE else []
+        return list(claimed) if queue == queue_name else []
 
     def fetch_handed_off(queue):
-        return list(sink) if queue == QUEUE else []
+        return list(sink) if queue == queue_name else []
 
     return patch.multiple(
         poll, fetch_claimed_rows=fetch_claimed, fetch_handed_off_rows=fetch_handed_off
@@ -261,10 +263,20 @@ def no_journal():
 
 
 class TestLaunch(unittest.TestCase):
-    def run_launch(self, *, rows_kw, fq, server_kw=None, room=3, mode="live", hs=None):
+    def run_launch(
+        self,
+        *,
+        rows_kw,
+        fq,
+        server_kw=None,
+        room=3,
+        mode="live",
+        hs=None,
+        queue_name=QUEUE,
+    ):
         server_patches, deleted = fake_server(**(server_kw or {}))
         with (
-            serve(**rows_kw),
+            serve(**rows_kw, queue_name=queue_name),
             patch.object(claimant, "read_mode", return_value=mode),
             patch.object(claimant, "cap_step", return_value=room),
             patch.object(launch_one, "hard_stop_reason", return_value=hs),
@@ -273,7 +285,7 @@ class TestLaunch(unittest.TestCase):
             server_patches,
             no_journal(),
         ):
-            rec = launch_one.launch(QUEUE, 777)
+            rec = launch_one.launch(queue_name, 777)
         return rec, deleted
 
     def test_claimed_candidate_launches_end_to_end(self):
@@ -371,6 +383,19 @@ class TestLaunch(unittest.TestCase):
         checkpoint = fq.calls[2]
         self.assertIn("opencode-claimant", checkpoint)
 
+    def test_one_queue_code_launch_preserves_stream_and_summit_route(self):
+        row = sink_row(queue="code")
+        row["payload"]["route"] = "opencode-route/summit"
+        fq = FakeQueue(
+            claim_row={"task": {"id": 777, "worker_id": "opencode-claimant"}}
+        )
+        rec, _ = self.run_launch(rows_kw={"sink": [row]}, fq=fq, queue_name="code")
+        self.assertTrue(rec["ok"], rec)
+        self.assertEqual(fq.verbs(), ["claim", "bind", "checkpoint"])
+        claim = fq.calls[0]
+        self.assertEqual(claim[claim.index("--queue") + 1], "code")
+        self.assertEqual(claim[claim.index("--model-id") + 1], "summit")
+
     def test_sink_claim_failure_launches_nothing(self):
         fq = FakeQueue(claim_row=None, claim_rc=1)
         rec, deleted = self.run_launch(rows_kw={"sink": [sink_row()]}, fq=fq)
@@ -381,6 +406,34 @@ class TestLaunch(unittest.TestCase):
 
 
 class TestCli(unittest.TestCase):
+    def test_one_queue_code_stream_preflight_uses_exact_broker_queue(self):
+        def broker(path, body):
+            self.assertEqual(path, "/list")
+            if body["queue"] == "code" and body["status"] == "handed_off":
+                return {"rows": [sink_row(queue="code")]}
+            return {"rows": []}
+
+        out = io.StringIO()
+        with (
+            patch.object(poll, "_broker_post", side_effect=broker) as request,
+            live_and_room(),
+            patch.object(launch_one, "hard_stop_reason", return_value=None),
+            patch.object(launch_one, "queue") as mutate,
+            contextlib.redirect_stdout(out),
+        ):
+            rc = launch_one.main(["launch_one.py", "--preflight", "code:777"])
+        self.assertEqual(rc, 0)
+        self.assertEqual(
+            [(c.args[1]["queue"], c.args[1]["status"]) for c in request.call_args_list],
+            [("code", "claimed"), ("code", "handed_off")],
+        )
+        (record,) = json.loads(out.getvalue())
+        self.assertTrue(record["ok"], record)
+        self.assertEqual(record["repo"], "developing-today/code")
+        self.assertEqual(record["directory"], PRIMARY)
+        self.assertIn("--queue code", record["would"][0])
+        mutate.assert_not_called()
+
     def test_bad_spec_is_usage_error(self):
         self.assertEqual(launch_one.main(["launch_one.py", "--preflight", "bogus"]), 2)
         self.assertEqual(launch_one.main(["launch_one.py", "--launch", "nope:1"]), 2)

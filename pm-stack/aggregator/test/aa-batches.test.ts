@@ -312,6 +312,16 @@ describe("/aa selector", () => {
     expect(html).toContain("current-price overlay");
   });
 
+  test("provider multi-select ships in the explorer filter state (#9852 item 4)", () => {
+    const html = renderAa(section, PROV);
+    // The chip container, the filter-state fields, and the catalog
+    // predicate that filters by the selected provider set.
+    expect(html).toContain('id="xf-providers"');
+    expect(html).toContain("providerAny: false");
+    expect(html).toContain("S.providerAny && !S.providers[e.provider]");
+    expect(html).toContain("buildProviderOptions");
+  });
+
   test("latest default keeps the plain API link", () => {
     const html = renderAa({ ...section, batch: B1 }, PROV);
     expect(html).toContain(`value="${B1}" selected`);
@@ -379,11 +389,14 @@ describe("live AA batch selection", () => {
     );
 
     const source = liveSource(loadConfig({ PM_AGG_SOURCE: "live", PM_AGG_FEED_FILE: feedFile }));
-    expect((await source.aa())?.batch).toBe(B1);
+    const current = await source.aa();
+    if (current?.status !== "ok") throw new Error("expected an ok AA section");
+    expect(current.batch).toBe(B1);
     const selected = await source.aa(B3);
     expect(selected?.status).toBe("ok");
-    expect(selected?.batch).toBe(B3);
-    expect(selected?.batches?.map((batch) => batch.importBatch)).toEqual([B1, B3]);
+    if (selected?.status !== "ok") throw new Error("expected an ok AA section");
+    expect(selected.batch).toBe(B3);
+    expect(selected.batches?.map((batch) => batch.importBatch)).toEqual([B1, B3]);
     expect((await source.aa("44444444-4444-4444-8444-444444444444"))?.status).toBe("absent");
   });
 
@@ -435,8 +448,9 @@ describe("live AA batch selection", () => {
     const source = liveSource(loadConfig({ PM_AGG_SOURCE: "live", PM_AGG_FEED_FILE: feedFile }));
     const selected = await source.aa(B3);
     expect(selected?.status).toBe("ok");
-    expect(selected?.stale).toBe(true);
-    expect(selected?.staleReason).toContain("rebuilding");
+    if (selected?.status !== "ok") throw new Error("expected an ok AA section");
+    expect(selected.stale).toBe(true);
+    expect(selected.staleReason).toContain("rebuilding");
     const html = renderAa(selected ?? null, new Proxy({}, { get: () => "live" }) as Provenance);
     expect(html).toContain("The latest collection failed");
     expect(html).toContain("rebuilding");

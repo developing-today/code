@@ -56,9 +56,6 @@ File-collision sequencing edges added by stable topological serialization: none.
 Existing issue references retained as non-blocking runtime/evidence gates: none.
 Domain-starter parent references are never emitted as hard native blockers. Source parents normalized to granular slices or runtime gates: #9206→CLI-02, #9198→CEN-04.
 
-
-
-
 Use only granular issue-key edges after all keys are resolved. Never make a whole domain starter a hard blocker when it creates a cycle. File collisions are hard sequencing edges. Parent integration adds native parent/blocker edges in a later pass after the command map, requirements IDs, and acyclic graph are verified.
 
 ## Starting failing test, oracle, and done check
@@ -101,8 +98,8 @@ Negative coverage: closed issue alone implies Fleet complete, duplicate/supersed
 
 **Tier:** recommended, required before API parity. **Goal:** map all seven relation types and retain native GitHub blockedBy vs parent/child hierarchy separately; preserve tombstone/resolution history, never auto-close. **Owns:** `src/work/relations.rs`; adapter fixture at existing `pkgs/fleet/crates/fleet/src/gh.rs`, with no competing client. **Hard blockers:** DEP-02; granular #9206 resource-ref contract; #9198 adapter boundary; #9073/#9074 only if selected metadata interface requires it. **First failing oracle:** `pmo_dep_github_hierarchy_is_not_hard_blocking` covers epic close while child remains open and blockedBy separately. **Done command:** list then run `cargo test --manifest-path pkgs/fleet/Cargo.toml -p fleet-queue --lib --features client,queue-broker pmo_dep_github_hierarchy_is_not_hard_blocking`. **Negative:** closed issue alone implies Fleet complete, duplicate/supersedes cascades, same number cross-repo. **Migration:** retain provider provenance; quarantine uncertain imports; rollback preserves old source. **Docs:** authority/mapping table.
 
-
 ## Shared-file sequencing
 
 Added hard sequencing edges (the predecessor owns the same exact writable file):
+
 - blocked by `DEP-03` — `shared-file:pkgs/fleet/crates/fleet-queue/src/work/relations.rs`

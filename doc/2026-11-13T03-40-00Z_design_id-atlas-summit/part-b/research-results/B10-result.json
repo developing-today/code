@@ -1,0 +1,218 @@
+{
+  "assessments": [
+    {
+      "criterion_id": "data-model-history",
+      "evidence_refs": ["automerge-concepts", "b10-research-note"],
+      "option_id": "adopt-now",
+      "reason": "Automerge documents are histories of changes over structured (map/list/text) data, a plausible fit for structured collaborative documents; ID arrays/triples and generic federation are not equivalent data models, which bounds but does not negate the fit.",
+      "status": "supported"
+    },
+    {
+      "criterion_id": "convergence",
+      "evidence_refs": ["automerge-merge-rules", "automerge-concepts"],
+      "option_id": "adopt-now",
+      "reason": "Merge rules are deterministic per type and all nodes agree on the chosen value, so any two documents can always be merged and replicas converge; concurrent conflicts remain inspectable.",
+      "status": "supported"
+    },
+    {
+      "criterion_id": "scale-performance",
+      "evidence_refs": ["b10-research-note"],
+      "experiment_ref": "representative-workload-benchmark",
+      "option_id": "adopt-now",
+      "reason": "No measured workload or scale case exists for this design's workloads; full-history storage has real overhead and nothing in the evidence quantifies it. Adoption now would be an unmeasured commitment.",
+      "status": "unknown"
+    },
+    {
+      "criterion_id": "signed-history-compat",
+      "evidence_refs": ["b10-research-note", "automerge-concepts"],
+      "option_id": "adopt-now",
+      "reason": "Actor identifiers do not establish authenticated signer identity; signed envelopes must remain an independent layer. Adopting now as the shared layer does not by itself satisfy signed-history compatibility.",
+      "status": "unsupported"
+    },
+    {
+      "criterion_id": "cross-language-format-interop",
+      "evidence_refs": ["automerge-concepts", "automerge-rust-sync"],
+      "option_id": "adopt-now",
+      "reason": "The sync protocol is transport-agnostic and per document, the storage format is a compact binary format, and a first-party Rust API documents the sync surface; the concepts documentation is JavaScript-focused, which is a caveat, not a blocker.",
+      "status": "supported"
+    },
+    {
+      "criterion_id": "authority-boundary",
+      "evidence_refs": ["b10-research-note"],
+      "option_id": "adopt-now",
+      "reason": "Automerge carries no authority model; the design's authority boundary would still have to be built and enforced outside it, so adoption now leaves this criterion unmet by the adopted component.",
+      "status": "unsupported"
+    },
+    {
+      "criterion_id": "data-model-history",
+      "evidence_refs": ["automerge-concepts", "b10-research-note"],
+      "option_id": "adapter-after-v2",
+      "reason": "An isolated adapter scopes Automerge to the structured-document workloads where its history-of-changes model fits, and keeps non-equivalent models (ID arrays/triples, generic federation) outside it.",
+      "status": "supported"
+    },
+    {
+      "criterion_id": "convergence",
+      "evidence_refs": ["automerge-merge-rules", "automerge-concepts"],
+      "option_id": "adapter-after-v2",
+      "reason": "The adapter inherits the same deterministic merge rules and convergence guarantee, applied only inside the adapter's document boundary.",
+      "status": "supported"
+    },
+    {
+      "criterion_id": "scale-performance",
+      "evidence_refs": ["b10-research-note"],
+      "experiment_ref": "representative-workload-benchmark",
+      "option_id": "adapter-after-v2",
+      "reason": "Still unmeasured today; this option is defined by running the representative workload benchmark before any adoption, so the criterion is answered by the revisit gate rather than asserted now.",
+      "status": "unknown"
+    },
+    {
+      "criterion_id": "signed-history-compat",
+      "evidence_refs": ["b10-research-note"],
+      "option_id": "adapter-after-v2",
+      "reason": "The adapter keeps signed envelopes as an independent layer by construction, and the revisit conditions include signed-origin interoperability tests before adoption.",
+      "status": "supported"
+    },
+    {
+      "criterion_id": "cross-language-format-interop",
+      "evidence_refs": ["automerge-rust-sync", "automerge-concepts"],
+      "option_id": "adapter-after-v2",
+      "reason": "The per-document, transport-agnostic sync protocol is exactly the seam an adapter needs, and the Rust sync API is first-party.",
+      "status": "supported"
+    },
+    {
+      "criterion_id": "authority-boundary",
+      "evidence_refs": ["b10-research-note"],
+      "option_id": "adapter-after-v2",
+      "reason": "Authority stays in the existing layer; the adapter is a data-plane component behind that boundary and grants nothing on its own.",
+      "status": "supported"
+    },
+    {
+      "criterion_id": "data-model-history",
+      "evidence_refs": ["b10-research-note"],
+      "option_id": "adopt-none",
+      "reason": "Adopting none provides no history-of-changes structured-document capability; if that workload materializes, the criterion is simply unmet.",
+      "status": "unsupported"
+    },
+    {
+      "criterion_id": "convergence",
+      "evidence_refs": ["b10-research-note"],
+      "option_id": "adopt-none",
+      "reason": "Adopting none adds no deterministic convergence machinery; concurrent-change handling stays whatever the current design already has.",
+      "status": "unsupported"
+    },
+    {
+      "criterion_id": "scale-performance",
+      "evidence_refs": ["b10-research-note", "versioned-design-s141"],
+      "option_id": "adopt-none",
+      "reason": "Adopting none avoids the unmeasured history/merge overhead entirely; the B10 disposition records adopt-none as the valid result if measurements do not justify that overhead.",
+      "status": "supported"
+    },
+    {
+      "criterion_id": "signed-history-compat",
+      "evidence_refs": ["b10-research-note"],
+      "option_id": "adopt-none",
+      "reason": "The existing signed-envelope layer is untouched, so nothing in this option puts signed-history compatibility at risk.",
+      "status": "supported"
+    },
+    {
+      "criterion_id": "cross-language-format-interop",
+      "evidence_refs": ["automerge-rust-sync", "b10-research-note"],
+      "option_id": "adopt-none",
+      "reason": "Adopting none gains no CRDT interoperability; cross-language document exchange would need another mechanism if it becomes a requirement.",
+      "status": "unsupported"
+    },
+    {
+      "criterion_id": "authority-boundary",
+      "evidence_refs": ["b10-research-note"],
+      "option_id": "adopt-none",
+      "reason": "The authority boundary is unchanged by adopting none; no new component is introduced inside it.",
+      "status": "supported"
+    }
+  ],
+  "checked_at": "2026-11-14T17:05:00Z",
+  "criteria": [
+    {
+      "id": "data-model-history",
+      "question": "Does the option fit the data model and history the design needs (structured documents with inspectable change history)?"
+    },
+    { "id": "convergence", "question": "Does the option provide deterministic convergence for concurrent changes?" },
+    {
+      "id": "scale-performance",
+      "question": "Is the option's scale/performance cost (memory, CPU, wire) established for representative workloads?"
+    },
+    {
+      "id": "signed-history-compat",
+      "question": "Is the option compatible with signed history (authenticated signer identity stays verifiable)?"
+    },
+    {
+      "id": "cross-language-format-interop",
+      "question": "Does the option interoperate across languages and formats (including the Rust core and the per-document sync protocol)?"
+    },
+    {
+      "id": "authority-boundary",
+      "question": "Does the option preserve the design's authority boundary (actor identity is not authority; grants stay in the existing layer)?"
+    }
+  ],
+  "decision": {
+    "outcome": "defer",
+    "reason": "Adopt-now is rejected: no measured workload/scale case exists, and signatures/authority remain external to Automerge. The conditional candidate is an isolated adapter after V2 conflict reports and the representative workload benchmark (memory/CPU/wire plus signed-origin interoperability tests); adopt-none remains the valid final result if those measurements do not justify the history/merge overhead. This preserves the conflict-report-first posture and the contingent-tier trigger recorded on #9143 / S1.41."
+  },
+  "experiments": [
+    {
+      "checked_at": "2026-11-14T17:05:00Z",
+      "id": "representative-workload-benchmark",
+      "method": "Benchmark Automerge on a representative structured-document workload (memory, CPU, and wire cost of full-history documents and sync), plus signed-origin interoperability tests, per the B10 revisit conditions. Planned only in this slice; no runs were performed, so no measurements are asserted.",
+      "status": "unmeasured"
+    }
+  ],
+  "limitations": [
+    "The validator checks structural completeness and traceability only, not factual truth; this artifact is a synthesis of the B10 source ledger (evidence checked 2026-11-12) plus a fresh primary-source re-read of the three Automerge references on 2026-11-14, which confirmed the cited claims (history-of-changes documents, deterministic merge rules, per-document sync assuming a reliable in-order stream).",
+    "No measurements were run in this slice: scale/performance is unmeasured by design (contingent tier), so every scale assessment is unknown rather than estimated.",
+    "The Automerge documentation is living and undated; behavior claims hold as documented at the 2026-11-14 access time.",
+    "No code was compiled against Automerge in this slice; cross-language findings rest on the documented Rust sync API and the JavaScript-focused concepts documentation."
+  ],
+  "options": [
+    { "id": "adopt-now", "label": "Adopt Automerge now as the shared CRDT layer" },
+    {
+      "id": "adapter-after-v2",
+      "label": "Defer: isolated Automerge adapter after V2 conflict reports and a representative workload benchmark"
+    },
+    { "id": "adopt-none", "label": "Adopt none: keep the current design without Automerge" }
+  ],
+  "question": "Against the shared CRDT criteria for #9143 (statement S1.41), should ID/Atlas adopt Automerge now, adopt it later through an isolated adapter, or adopt none?",
+  "report_kind": "research-matrix",
+  "research_scope": "crdt-automerge",
+  "schema_version": 1,
+  "source_ledger": [
+    {
+      "accessed_at": "2026-11-14T17:05:00Z",
+      "id": "automerge-concepts",
+      "reference": "https://automerge.org/docs/reference/concepts/",
+      "undated_reason": "Living documentation page; no publication date is shown. Re-read fresh on 2026-11-14 for this result: documents are JSON-like maps with a git-like history of changes, any two documents can always be merged, the sync protocol is transport-agnostic and per-document, and a compact binary format stores the full editing history."
+    },
+    {
+      "accessed_at": "2026-11-14T17:05:00Z",
+      "id": "automerge-merge-rules",
+      "reference": "https://automerge.org/docs/reference/under-the-hood/merge-rules/",
+      "undated_reason": "Living documentation page; no publication date is shown. Re-read fresh on 2026-11-14: deterministic per-type merge rules for maps, lists, text, and counters; concurrent conflicts are resolved by rules all nodes agree on, so replicas converge."
+    },
+    {
+      "accessed_at": "2026-11-14T17:05:00Z",
+      "id": "automerge-rust-sync",
+      "reference": "https://automerge.org/automerge/automerge/sync/index.html",
+      "undated_reason": "Living API documentation page; no publication date is shown. Re-read fresh on 2026-11-14: the sync protocol is per document and assumes a reliable in-order stream between two peers, with per-peer sync state."
+    },
+    {
+      "accessed_at": "2026-11-14T17:05:00Z",
+      "id": "b10-research-note",
+      "reference": "doc/2026-11-13T03-40-00Z_design_id-atlas-summit/part-b/B10-research-automerge.md",
+      "undated_reason": "Repo research note for slice B10; its header records its own evidence as checked 2026-11-12. This result is the machine-readable form of that note's evaluation, options, and disposition."
+    },
+    {
+      "accessed_at": "2026-11-14T17:05:00Z",
+      "id": "versioned-design-s141",
+      "reference": "doc/2026-11-13T03-40-00Z_design_id-atlas-summit/part-b/versioned-design.md (Component dispositions and statement coverage; #9143, S1.41-S1.46)",
+      "undated_reason": "Repo design record; the shared criteria and the rule that a complete adopt-none result is valid, with no implementation before the evidence-based revisit threshold."
+    }
+  ]
+}

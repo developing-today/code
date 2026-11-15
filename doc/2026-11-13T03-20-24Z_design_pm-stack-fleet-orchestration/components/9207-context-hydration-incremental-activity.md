@@ -10,7 +10,7 @@ Pinned census `../census/track-b.md` finds a queue-focused `fleet-queue` CLI and
 
 ## 1. Purpose, boundaries, and ownership
 
-Hydration creates a durable, navigable, provenance-bearing snapshot of the Fleet work item and its linked context, then supports refresh/change queries that do not skip edits or present mixed/stale evidence as complete. Track B owner is #9207. It consumes canonical WorkId/resource links and lifecycle ownership from #9206; note/journal and checkpoint content authority from #9208; completion-time refresh and effect receipt from #9209. Checkpoint *command and state-transition* contract belongs to #9206/#9208; this component owns only recording checkpoint references in bundle/session context and cursor snapshots. Work with #9208 on private/public separation and hostile-content treatment; do not duplicate its field-authority rules.
+Hydration creates a durable, navigable, provenance-bearing snapshot of the Fleet work item and its linked context, then supports refresh/change queries that do not skip edits or present mixed/stale evidence as complete. Track B owner is #9207. It consumes canonical WorkId/resource links and lifecycle ownership from #9206; note/journal and checkpoint content authority from #9208; completion-time refresh and effect receipt from #9209. Checkpoint _command and state-transition_ contract belongs to #9206/#9208; this component owns only recording checkpoint references in bundle/session context and cursor snapshots. Work with #9208 on private/public separation and hostile-content treatment; do not duplicate its field-authority rules.
 
 Reuse existing Fleet queue/client, `fleet gh` boundary, and storage/artifact conventions after census confirms their exact API. Census at pinned commit finds no registered `fleet work hydrate/refresh/changes`, `fleet activity`, or `fleet sync` surfaces; current CLI registry is queue-focused. This is source/test evidence, not runtime/deployment evidence. No new queue, database, scheduler, binary, general GitHub client, or hidden polling service.
 
@@ -34,30 +34,32 @@ and changed-field fixtures; hashing a manifest including its own digest is not t
 ```json
 {
   "schema_version": "fleet.context-manifest/v1",
-  "work": {"authority_id":"local", "work_id":"842"},
+  "work": { "authority_id": "local", "work_id": "842" },
   "generation_id": "g-<stable unique id>",
   "created_at": "<RFC3339 UTC>",
   "status": "complete | partial | failed",
-  "source_pin": {"queue_version":"19", "lifecycle_version":"6"},
-  "sources": [{
-    "source_ref": "github://owner/repo/pulls/231",
-    "endpoint": "pull-request-detail",
-    "api_version": "<negotiated version>",
-    "query_fingerprint": "<stable digest>",
-    "status": "complete | partial | unavailable | forbidden | not_found | truncated",
-    "fetched_at": "<RFC3339 UTC>",
-    "source_updated_at": "<RFC3339 UTC or null>",
-    "remote_version": {"head_sha": "...", "etag": "..."},
-    "pages_fetched": 1,
-    "records_seen": 1,
-    "records_persisted": 1,
-    "truncation_reason": null,
-    "artifact_refs": [{"path":"...", "sha256":"...", "bytes":123}],
-    "error": null
-  }],
-  "summary_ref": {"path":"summary.md", "sha256":"..."},
+  "source_pin": { "queue_version": "19", "lifecycle_version": "6" },
+  "sources": [
+    {
+      "source_ref": "github://owner/repo/pulls/231",
+      "endpoint": "pull-request-detail",
+      "api_version": "<negotiated version>",
+      "query_fingerprint": "<stable digest>",
+      "status": "complete | partial | unavailable | forbidden | not_found | truncated",
+      "fetched_at": "<RFC3339 UTC>",
+      "source_updated_at": "<RFC3339 UTC or null>",
+      "remote_version": { "head_sha": "...", "etag": "..." },
+      "pages_fetched": 1,
+      "records_seen": 1,
+      "records_persisted": 1,
+      "truncation_reason": null,
+      "artifact_refs": [{ "path": "...", "sha256": "...", "bytes": 123 }],
+      "error": null
+    }
+  ],
+  "summary_ref": { "path": "summary.md", "sha256": "..." },
   "previous_generation": "...",
-  "integrity": {"algorithm":"sha256", "manifest_digest":"..."}
+  "integrity": { "algorithm": "sha256", "manifest_digest": "..." }
 }
 ```
 
@@ -107,33 +109,33 @@ Issue titles/bodies/comments, PR bodies, code diffs, test output and external me
 
 ## 5. Failure and recovery matrix
 
-| Failure/race | Contract |
-|---|---|
-| Fetch errors after some pages | Staging bundle retained as partial; cursor remains at last committed page; prior current generation remains published. |
-| Crash after object write before DB ingest | Refetch/re-ingest; content hash dedup; orphan staged objects eligible for delayed GC. |
-| Crash after page records but before cursor | Must be impossible if same local transaction; otherwise replay page safely through unique event key. |
-| Cursor committed before event data | Forbidden; invariant/test failure. |
-| New comment inserted while pagination proceeds | Continue `Link` pages, overlap newest window next refresh and dedup by ID/revision; disclose no global snapshot. |
-| Old comment edited after creation cursor advanced | Updated-since/overlap plus revision detection; periodic authoritative reconciliation; if endpoint cannot expose it, mark source coverage limitation (not “complete changes”). |
-| Comment deleted/minimized | Preserve tombstone/minimized event when observed; absent API evidence cannot be inferred from disappearance in a paginated list. |
-| PR head moves mid-hydration | Re-read PR head; quarantine generation's mixed PR artifacts as partial/stale; do not publish it as fully current. |
-| GitHub 250 commit / 3000 file cap | Use documented alternate pagination endpoint if available and verified; else explicit truncated status and source ref. |
-| Same issue/PR number in different repos | Canonical repository identity in stable artifact key prevents overwrite. |
-| Huge diff exceeds budget | Persist explicit truncated/external fetch reference or partial status; never omit silently; keep memory bounded. |
-| Private note accidentally included in public projection | Contract-level allowlist; serializer test proves absent unless explicit authorized mirror; immediate release blocker. |
-| Malicious body tries command injection/instruction override | Data rendered as quoted/untrusted source; no authority follows content; mutation API still enforces actor/capability. |
-| Cursor query/API version changes | Start distinct cursor generation/query fingerprint; don't reuse opaque token across incompatible query. |
-| Remote API unavailable at completion | Completion receives partial/unknown freshness and cannot claim clean reconciliation; #9209 controls whether operation remains pending. |
+| Failure/race                                                | Contract                                                                                                                                                                      |
+| ----------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Fetch errors after some pages                               | Staging bundle retained as partial; cursor remains at last committed page; prior current generation remains published.                                                        |
+| Crash after object write before DB ingest                   | Refetch/re-ingest; content hash dedup; orphan staged objects eligible for delayed GC.                                                                                         |
+| Crash after page records but before cursor                  | Must be impossible if same local transaction; otherwise replay page safely through unique event key.                                                                          |
+| Cursor committed before event data                          | Forbidden; invariant/test failure.                                                                                                                                            |
+| New comment inserted while pagination proceeds              | Continue `Link` pages, overlap newest window next refresh and dedup by ID/revision; disclose no global snapshot.                                                              |
+| Old comment edited after creation cursor advanced           | Updated-since/overlap plus revision detection; periodic authoritative reconciliation; if endpoint cannot expose it, mark source coverage limitation (not “complete changes”). |
+| Comment deleted/minimized                                   | Preserve tombstone/minimized event when observed; absent API evidence cannot be inferred from disappearance in a paginated list.                                              |
+| PR head moves mid-hydration                                 | Re-read PR head; quarantine generation's mixed PR artifacts as partial/stale; do not publish it as fully current.                                                             |
+| GitHub 250 commit / 3000 file cap                           | Use documented alternate pagination endpoint if available and verified; else explicit truncated status and source ref.                                                        |
+| Same issue/PR number in different repos                     | Canonical repository identity in stable artifact key prevents overwrite.                                                                                                      |
+| Huge diff exceeds budget                                    | Persist explicit truncated/external fetch reference or partial status; never omit silently; keep memory bounded.                                                              |
+| Private note accidentally included in public projection     | Contract-level allowlist; serializer test proves absent unless explicit authorized mirror; immediate release blocker.                                                         |
+| Malicious body tries command injection/instruction override | Data rendered as quoted/untrusted source; no authority follows content; mutation API still enforces actor/capability.                                                         |
+| Cursor query/API version changes                            | Start distinct cursor generation/query fingerprint; don't reuse opaque token across incompatible query.                                                                       |
+| Remote API unavailable at completion                        | Completion receives partial/unknown freshness and cannot claim clean reconciliation; #9209 controls whether operation remains pending.                                        |
 
 ## 6. Testing and oracles
 
 Required future test layers (none claimed to exist):
 
-* **MBT oracle:** a reference cursor/bundle model consumes generated page arrivals, edits, duplicate deliveries, failures and crashes. Assert page data and cursor advance together, no skipped IDs, replay idempotent, generations immutable, and published-current always complete per its manifest.
-* **PBT invariants:** generate arbitrary repo names, PR numbers, titles, paths, Unicode/control/`..` input; artifact paths stay under root and distinct source refs never collide. For any sequence of pages/retries, every durably committed source revision appears at most once in logical current view and edits remain distinguishable from creations. Resource memory stays within configured bound for generated page stream (instrumented byte oracle).
-* **Golden contract oracle:** versioned manifest/JSON result examples for complete, partial, forbidden, truncated, stale-head and unavailable. Validate schema, summary refs/hashes, no accidental private field serialization.
-* **Failure injection:** kill between fetch/store/ingest/cursor/publish; verify prior generation and resume behavior. Fake GitHub changes head/comment between pages; fake `Link` omitted/next, pagination cap, reordered/duplicate pages, 403/429/5xx, comment edit old ID, deleted/minimized records, same number across repositories.
-* **Acceptance commands:** future issue should name exact repo command after owner confirms harness, e.g. targeted `cargo test -p fleet-work-hydrator` plus golden CLI tests and fixture runner; this crate name is a proposal, not asserted to exist. Integration contract test against GitHub fixture/mock validates endpoint adapter. A live authenticated read-only test is separate evidence and cannot replace deterministic oracle.
+- **MBT oracle:** a reference cursor/bundle model consumes generated page arrivals, edits, duplicate deliveries, failures and crashes. Assert page data and cursor advance together, no skipped IDs, replay idempotent, generations immutable, and published-current always complete per its manifest.
+- **PBT invariants:** generate arbitrary repo names, PR numbers, titles, paths, Unicode/control/`..` input; artifact paths stay under root and distinct source refs never collide. For any sequence of pages/retries, every durably committed source revision appears at most once in logical current view and edits remain distinguishable from creations. Resource memory stays within configured bound for generated page stream (instrumented byte oracle).
+- **Golden contract oracle:** versioned manifest/JSON result examples for complete, partial, forbidden, truncated, stale-head and unavailable. Validate schema, summary refs/hashes, no accidental private field serialization.
+- **Failure injection:** kill between fetch/store/ingest/cursor/publish; verify prior generation and resume behavior. Fake GitHub changes head/comment between pages; fake `Link` omitted/next, pagination cap, reordered/duplicate pages, 403/429/5xx, comment edit old ID, deleted/minimized records, same number across repositories.
+- **Acceptance commands:** future issue should name exact repo command after owner confirms harness, e.g. targeted `cargo test -p fleet-work-hydrator` plus golden CLI tests and fixture runner; this crate name is a proposal, not asserted to exist. Integration contract test against GitHub fixture/mock validates endpoint adapter. A live authenticated read-only test is separate evidence and cannot replace deterministic oracle.
 
 ### V1 census evidence detail (not deployment evidence)
 
@@ -141,13 +143,13 @@ At pin `a038f084dbeb525494d7bb928ad91f597db2ac51`, `fleet-queue` is the queue do
 
 ### V1 reuse/collision row — existing PM projector webhook and hot ledger
 
-| Pinned surface | File/test evidence | V1 capability and strict limit | Track B compatibility |
-|---|---|---|---|
-| GitHub webhook authentication | `pm-stack/projector/src/webhook.ts:7–28,31–57`: bounded raw-body read, HMAC-SHA256, length-checked byte comparison. `src/server.ts:150–190`: delivery ID and signature gate before event application; `README.md:23–30` lists supported issue/comment/PR/review/review-comment/push events. | Existing authenticated projector ingress. Projector remains read/projection glue and disposable; `README.md:3–8` says it never writes back to GitHub/Kaneo/Pad/Grist and its rows rebuild from GitHub + link writes. Not a second Fleet command policy or durable authoritative work store. | #9203 reuses this HMAC/intake seam and fans authorized events into the shared Fleet command interface; do not implement a second webhook-signature service or put mutation policy in pure `webhook.ts`. Keep Project as its existing sole-writer projection boundary. |
-| Transport delivery dedupe | `test/webhook-delivery-id.test.ts:90–155`: invalid signature causes no data/freshness publish; missing/empty GUID rejected; same GUID applies once and redelivery returns duplicate with one projection row. Lines 157–180 test retries after freshness-publish failure. | `x-github-delivery` deduplication proves projector application semantics only. It does not prove a Fleet command was durably accepted, a session launched, or a remote mutation verified. Keep transport `delivery_id`, projector `event_id`, Fleet `operation_id` and outbox effect ID distinct. | Reuse delivery identity as `source_event_ref`; derive a separate Fleet operation ID/idempotency contract. Persist command acceptance/operation intent in canonical Fleet authority, not `pmp_deliveries`. Projection delivery acknowledgment != operation acceptance. |
-| Projector hot-event sweep | `pm-stack/projector/src/store.ts:602–739`: normalized `pmp_hot_events`, stable event IDs, bounded page, server-issued high-water, consumer checkpoint; `README.md:145–179` describes dedup and sweep. `test/hot.test.ts:65–117` covers duplicate event IDs, distinct deliveries, exclusive pagination/high-water, monotone ack and forged-future-high-water rejection. | This is a durable **projector-owned disposable ledger** and consumer cursor, not Fleet's authoritative journal, general transactional outbox or complete per-resource activity store. Protocol expects consumer ACK after its sweep; server validates monotonicity/high-water but cannot prove consumer-side durability. It is not Fleet's page-ingest/cursor transaction. | #9207 may consume as one observation adapter/input with source IDs and its own durable Fleet cursor; do not replace per-source/resource/endpoint/API cursors, raw GitHub hydration or incomplete/deleted/edited-record policy with the projector global hot cursor. |
-| Projector reconciliation cursors | `pm-stack/projector/src/reconcile.ts:211–243` loads/saves a cursor per `(repo, stream)`; `test/reconcile.test.ts:62–137,237–267,286–359` exercises pagination, independent issue/review-comment streams, per-PR failure handling and cursor advancement. README `:27–30` describes repair reconciliation. | Useful GitHub-source ingestion and recovery prior art, but limited to configured repos/GitHub streams and disposable `pmp_` projections. Reconciliation reads current API resources; schema-rebuild note `README.md:46–64` warns deleted comments/overwritten history no longer returned by GitHub cannot be reconstructed. Cursor is not proof all edits/deletes/events were observed or attribution is complete. | Reuse adapter/page/cursor lessons where API semantics match. #9207 still owns Fleet's versioned bundle and per `(authority,work,source,endpoint,query,API-version)` durable cursor/attribution; map projector rows as one source with confidence, not all-provider activity or canonical journal. Preserve deleted/old-edit blind spots explicitly. |
-| Queue/PM read view | `README.md:113–125`: `queue-view` consumes an exported broker task JSON snapshot plus projector hot list; read-only, no broker fetch and no new persistence. | Projected snapshot for view, not live claim-order authority or broker integration. | Hydration/work-next must use existing queue authority and identify snapshot age; cannot claim projector view is atomic/current queue state. |
+| Pinned surface                   | File/test evidence                                                                                                                                                                                                                                                                                                                                                     | V1 capability and strict limit                                                                                                                                                                                                                                                                                                                                                                                     | Track B compatibility                                                                                                                                                                                                                                                                                                                               |
+| -------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| GitHub webhook authentication    | `pm-stack/projector/src/webhook.ts:7–28,31–57`: bounded raw-body read, HMAC-SHA256, length-checked byte comparison. `src/server.ts:150–190`: delivery ID and signature gate before event application; `README.md:23–30` lists supported issue/comment/PR/review/review-comment/push events.                                                                            | Existing authenticated projector ingress. Projector remains read/projection glue and disposable; `README.md:3–8` says it never writes back to GitHub/Kaneo/Pad/Grist and its rows rebuild from GitHub + link writes. Not a second Fleet command policy or durable authoritative work store.                                                                                                                        | #9203 reuses this HMAC/intake seam and fans authorized events into the shared Fleet command interface; do not implement a second webhook-signature service or put mutation policy in pure `webhook.ts`. Keep Project as its existing sole-writer projection boundary.                                                                               |
+| Transport delivery dedupe        | `test/webhook-delivery-id.test.ts:90–155`: invalid signature causes no data/freshness publish; missing/empty GUID rejected; same GUID applies once and redelivery returns duplicate with one projection row. Lines 157–180 test retries after freshness-publish failure.                                                                                               | `x-github-delivery` deduplication proves projector application semantics only. It does not prove a Fleet command was durably accepted, a session launched, or a remote mutation verified. Keep transport `delivery_id`, projector `event_id`, Fleet `operation_id` and outbox effect ID distinct.                                                                                                                  | Reuse delivery identity as `source_event_ref`; derive a separate Fleet operation ID/idempotency contract. Persist command acceptance/operation intent in canonical Fleet authority, not `pmp_deliveries`. Projection delivery acknowledgment != operation acceptance.                                                                               |
+| Projector hot-event sweep        | `pm-stack/projector/src/store.ts:602–739`: normalized `pmp_hot_events`, stable event IDs, bounded page, server-issued high-water, consumer checkpoint; `README.md:145–179` describes dedup and sweep. `test/hot.test.ts:65–117` covers duplicate event IDs, distinct deliveries, exclusive pagination/high-water, monotone ack and forged-future-high-water rejection. | This is a durable **projector-owned disposable ledger** and consumer cursor, not Fleet's authoritative journal, general transactional outbox or complete per-resource activity store. Protocol expects consumer ACK after its sweep; server validates monotonicity/high-water but cannot prove consumer-side durability. It is not Fleet's page-ingest/cursor transaction.                                         | #9207 may consume as one observation adapter/input with source IDs and its own durable Fleet cursor; do not replace per-source/resource/endpoint/API cursors, raw GitHub hydration or incomplete/deleted/edited-record policy with the projector global hot cursor.                                                                                 |
+| Projector reconciliation cursors | `pm-stack/projector/src/reconcile.ts:211–243` loads/saves a cursor per `(repo, stream)`; `test/reconcile.test.ts:62–137,237–267,286–359` exercises pagination, independent issue/review-comment streams, per-PR failure handling and cursor advancement. README `:27–30` describes repair reconciliation.                                                              | Useful GitHub-source ingestion and recovery prior art, but limited to configured repos/GitHub streams and disposable `pmp_` projections. Reconciliation reads current API resources; schema-rebuild note `README.md:46–64` warns deleted comments/overwritten history no longer returned by GitHub cannot be reconstructed. Cursor is not proof all edits/deletes/events were observed or attribution is complete. | Reuse adapter/page/cursor lessons where API semantics match. #9207 still owns Fleet's versioned bundle and per `(authority,work,source,endpoint,query,API-version)` durable cursor/attribution; map projector rows as one source with confidence, not all-provider activity or canonical journal. Preserve deleted/old-edit blind spots explicitly. |
+| Queue/PM read view               | `README.md:113–125`: `queue-view` consumes an exported broker task JSON snapshot plus projector hot list; read-only, no broker fetch and no new persistence.                                                                                                                                                                                                           | Projected snapshot for view, not live claim-order authority or broker integration.                                                                                                                                                                                                                                                                                                                                 | Hydration/work-next must use existing queue authority and identify snapshot age; cannot claim projector view is atomic/current queue state.                                                                                                                                                                                                         |
 
 The queue view exposes machine and human faces of the same snapshot (`README.md:113–133`); `test/queue-view.test.ts:50–182,220+` and `test/queue-view-html.test.ts:87–162` prove pure ordering/rendering over supplied task-export/hot-list data. These tests do not demonstrate live broker fetch or persisted context hydration.
 

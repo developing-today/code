@@ -515,10 +515,22 @@ func TestTheSinkIsNeverCalledConcurrently(t *testing.T) {
 	needRuntime(t)
 	svc := service(t, store(t))
 	var inFlight, overlaps, emits, stdouts atomic.Int32
+	// The premise -- stdout split over several frames -- is established
+	// by construction, not timing. The script writes ~200 KB of stdout
+	// (200 lines padded to ~1 KB each), and os/exec delivers a child's
+	// stdout to the sink writer in writes of at most 32 KB, so stdout
+	// cannot arrive as a single frame no matter how the two processes
+	// are scheduled. The earlier shape of this test wrote ~1.6 KB,
+	// which a loaded builder could deliver in one read (darwin-nix
+	// system build: 200 emit, 1 stdout), failing the premise without
+	// testing anything. Retrying until the premise held is not an
+	// option (internal/AGENTS.md: never retry to get green), so the
+	// fixture makes the premise unavoidable instead.
 	_, err := svc.RunWith(context.Background(), runner.Options{
 		Source: `
 import { emit } from "./mcpx-client.ts";
-for (let i = 0; i < 200; i++) { console.log("out " + i); emit({ i }); }
+const pad = "x".repeat(1000);
+for (let i = 0; i < 200; i++) { console.log("out " + i + " " + pad); emit({ i }); }
 `,
 		ClientSource: minimalClient,
 		Permissions:  "all",

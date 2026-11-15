@@ -2244,7 +2244,7 @@ Spawning is **135× slower** than a warm socket, and almost all of it is
 process startup rather than transport. Irrelevant for something run once;
 decisive for anything on the path of every tool call.
 
-`plugin/opencode/mcpx/daemon.ts` therefore talks to the socket directly rather
+`plugin/core/daemon.ts` therefore talks to the socket directly rather
 than shelling out. It returns `undefined` when no daemon is reachable rather
 than throwing, because a plugin that fails to load has broken the editor for
 a tool the user may not even be using.

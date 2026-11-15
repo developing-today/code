@@ -330,8 +330,7 @@ export async function renewMetaSession(deps: MetaRenewalDeps): Promise<MetaRenew
   const previous = await readPreviousState(deps.statePath);
 
   const doc = await readLatest().catch(() => null);
-  const lastGoodAt =
-    doc?.status === "ok" && doc.measuredAt ? doc.measuredAt : (previous?.lastGoodAt ?? null);
+  const lastGoodAt = doc?.status === "ok" && doc.measuredAt ? doc.measuredAt : (previous?.lastGoodAt ?? null);
 
   const finish = async (
     partial: Omit<MetaRenewalState, "provider" | "checkedAt" | "alertSince" | "exporterStatus" | "lastGoodAt">,

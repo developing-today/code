@@ -35,9 +35,6 @@ File-collision sequencing edges added by stable topological serialization: none.
 Existing issue references retained as non-blocking runtime/evidence gates: #9178 (upstream claim/manual/takeover/resume semantics must be verified before mutation/cutover; offline compatibility models may proceed), #9179 (upstream park/resume safety semantics must be verified before mutation/cutover; offline fixtures may proceed).
 Domain-starter parent references are never emitted as hard native blockers. Source parents normalized to granular slices or runtime gates: #9200→PRI-01.
 
-
-
-
 Use only granular issue-key edges after all keys are resolved. Never make a whole domain starter a hard blocker when it creates a cycle. File collisions are hard sequencing edges. Parent integration adds native parent/blocker edges in a later pass after the command map, requirements IDs, and acyclic graph are verified.
 
 ## Starting failing test, oracle, and done check

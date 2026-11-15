@@ -55,16 +55,13 @@ File-collision sequencing edges added by stable topological serialization: none.
 Existing issue references retained as non-blocking runtime/evidence gates: none.
 Domain-starter parent references are never emitted as hard native blockers. Source parents normalized to granular slices or runtime gates: none.
 
-
-
-
 Use only granular issue-key edges after all keys are resolved. Never make a whole domain starter a hard blocker when it creates a cycle. File collisions are hard sequencing edges. Parent integration adds native parent/blocker edges in a later pass after the command map, requirements IDs, and acyclic graph are verified.
 
 ## Starting failing test, oracle, and done check
 
 - **First failing test:** `work_inspect_rejects_ambiguous_cross_repo_reference`
 - **Oracle:** The source slice’s stated reference model, golden fixture, or invariant; compare expected and observed state explicitly. No mock-only claim of deployed/live behavior.
-- **Done command:** `list-check each exact name occurs once; run `cargo test --manifest-path pkgs/fleet/Cargo.toml -p fleet-queue --lib --features client,queue-broker work_inspect_rejects_ambiguous_cross_repo_reference` and `cargo test --manifest-path pkgs/fleet/Cargo.toml -p fleet-queue --lib --features client,queue-broker work_inspect_by_id_rejects_nonmatching_result`; four state dimensions/provenance represented and explicit-ID mismatch cannot report another item. |`
+- **Done command:** `list-check each exact name occurs once; run `cargo test --manifest-path pkgs/fleet/Cargo.toml -p fleet-queue --lib --features client,queue-broker work_inspect_rejects_ambiguous_cross_repo_reference`and`cargo test --manifest-path pkgs/fleet/Cargo.toml -p fleet-queue --lib --features client,queue-broker work_inspect_by_id_rejects_nonmatching_result`; four state dimensions/provenance represented and explicit-ID mismatch cannot report another item. |`
 - Tests must first be listed by exact name in the owning target (`-- --list`); assert the test exists before execution. A zero-test filter passing is not acceptance.
 
 ## Acceptance and negative cases
@@ -98,8 +95,8 @@ Negative coverage: stale input, duplicate/replay, ambiguous resource, unauthoriz
 
 | `CLI-03` Read-only work inspect/status and identity resolution | #9206 | `work.inspect`, `work.status`, `--work/--repo/--issue/--pr`; REQ P-2/P-6, O-PART2 | `work/contracts.rs` and `work/lifecycle.rs` read projection; no independent resolver/backend and no CLI registration. | `CLI-02`, Queue Table Improvements crosswalk | **Failing tests:** `work_inspect_rejects_ambiguous_cross_repo_reference` and `work_inspect_by_id_rejects_nonmatching_result`. **Done:** list-check each exact name occurs once; run `cargo test --manifest-path pkgs/fleet/Cargo.toml -p fleet-queue --lib --features client,queue-broker work_inspect_rejects_ambiguous_cross_repo_reference` and `cargo test --manifest-path pkgs/fleet/Cargo.toml -p fleet-queue --lib --features client,queue-broker work_inspect_by_id_rejects_nonmatching_result`; four state dimensions/provenance represented and explicit-ID mismatch cannot report another item. |
 
-
 ## Shared-file sequencing
 
 Added hard sequencing edges (the predecessor owns the same exact writable file):
+
 - blocked by `CLI-01` — `shared-file:pkgs/fleet/crates/fleet-queue/src/work/lifecycle.rs`

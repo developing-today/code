@@ -53,7 +53,6 @@ Domain-starter parent references are never emitted as hard native blockers. Sour
 
 Source-local candidate aliases normalized for this packet: DSP-03 → REL-03.
 
-
 Use only granular issue-key edges after all keys are resolved. Never make a whole domain starter a hard blocker when it creates a cycle. File collisions are hard sequencing edges. Parent integration adds native parent/blocker edges in a later pass after the command map, requirements IDs, and acyclic graph are verified.
 
 ## Starting failing test, oracle, and done check
@@ -100,8 +99,8 @@ Negative coverage: stale input, duplicate/replay, ambiguous resource, unauthoriz
 - **Done/oracle:** inject crash at each listed boundary, replay delivery and compare effect graph to model; at most one external launch, no lost accepted request, no false verification. MBT + concurrency race, no arbitrary retry caps. Command: `cargo test --manifest-path pkgs/fleet/Cargo.toml -p fleet-queue --lib --features client,queue-broker pmo_dsp_09_crash_cut_never_duplicates_or_falsely_verifies`.
 - **Dependencies:** DSP-03/06/07 and #2668 launch design.
 
-
 ## Shared-file sequencing
 
 Added hard sequencing edges (the predecessor owns the same exact writable file):
+
 - blocked by `DSP-07` — `shared-file:pkgs/fleet/crates/fleet-queue/src/work/operations.rs`

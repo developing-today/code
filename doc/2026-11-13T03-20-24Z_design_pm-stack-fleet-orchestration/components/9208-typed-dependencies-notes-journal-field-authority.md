@@ -18,14 +18,14 @@ The existing `pm-stack/projector` is an additional V1 **read-model input**, not 
 
 ### #3424 six-piece collision crosswalk (pinned source, unverified deployment)
 
-| #3424 piece | Pinned source evidence / classification | Design consequence |
-|---|---|---|
-| 1. Absolute park datetime | At pinned `a038f084`, `pkgs/fleet/crates/fleet-queue/src/client.rs:2914–2977` `cmd_park` accepts `--not-before`, rejects pairing it with `--delay-seconds`, validates the timestamp before `/park` and sends the normalized value. Unit test `client.rs:6171` (`not_before_flag_is_validated`) and broker gate test `queue_broker.rs:1677` (`park_and_revive_not_before_are_gated_before_the_rpc`) cover invalid values. **CLI/broker-guard path implemented and source-tested; deployment unverified.** This supersedes the Nov 10 #3424 intake brief's stale “surface still open” observation. | Reuse this existing path; #9208 does not file a missing absolute-park CLI feature. #9179 remains the lifecycle semantic owner; do not infer deployed/runtime or downstream scheduling behavior from source tests. |
-| 2. Typed blocker links | `blocked_deps` field exists, but no verified typed canonical graph/cycle or claim readiness semantics in scoped census. **Field present; semantic coverage unverified.** | Treat raw legacy data as source input; build normalized edge contract and quarantine ambiguity, not duplicate JSON blob. |
-| 3. Long-park revalidation | `last_checked_at` and `check_outcome` fields exist; no cadence/worker behavior verified here. **Partial evidence.** | Preserve fields and verify current owner/schedule before any change; no new scheduler in this design. |
-| 4. Status reason + notes/mirror | Structured `result.park_reason` and status-adjacent fields exist; #3424 requests a notes table and automatic GitHub mirroring, neither established by census. **Partial status reason; notes/mirror unverified.** | Newer charter boundary: allowlisted public status reason may project; private notes/findings/checkpoints never auto-mirror. Extend existing task identity if #3424 storage already landed. |
-| 5. Full append-only event history | `events` table exists, but schema/census does not establish before/after for every task mutation or full reconstruction. **Not a proven domain journal.** | Crosswalk existing event producers/payloads first; extend same store, retain before/after, do not claim event-sourced resurrection. |
-| 6. Actor provenance on every write | lane/worker/session/claim model and claim-time session/model fields are evidence; no all-write principal/runtime provenance contract verified. **Partial.** | Add authenticated principal/op/source provenance through shared contracts; do not fabricate old actor data or add unapproved hostname/IP fields. |
+| #3424 piece                        | Pinned source evidence / classification                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          | Design consequence                                                                                                                                                                                                |
+| ---------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 1. Absolute park datetime          | At pinned `a038f084`, `pkgs/fleet/crates/fleet-queue/src/client.rs:2914–2977` `cmd_park` accepts `--not-before`, rejects pairing it with `--delay-seconds`, validates the timestamp before `/park` and sends the normalized value. Unit test `client.rs:6171` (`not_before_flag_is_validated`) and broker gate test `queue_broker.rs:1677` (`park_and_revive_not_before_are_gated_before_the_rpc`) cover invalid values. **CLI/broker-guard path implemented and source-tested; deployment unverified.** This supersedes the Nov 10 #3424 intake brief's stale “surface still open” observation. | Reuse this existing path; #9208 does not file a missing absolute-park CLI feature. #9179 remains the lifecycle semantic owner; do not infer deployed/runtime or downstream scheduling behavior from source tests. |
+| 2. Typed blocker links             | `blocked_deps` field exists, but no verified typed canonical graph/cycle or claim readiness semantics in scoped census. **Field present; semantic coverage unverified.**                                                                                                                                                                                                                                                                                                                                                                                                                         | Treat raw legacy data as source input; build normalized edge contract and quarantine ambiguity, not duplicate JSON blob.                                                                                          |
+| 3. Long-park revalidation          | `last_checked_at` and `check_outcome` fields exist; no cadence/worker behavior verified here. **Partial evidence.**                                                                                                                                                                                                                                                                                                                                                                                                                                                                              | Preserve fields and verify current owner/schedule before any change; no new scheduler in this design.                                                                                                             |
+| 4. Status reason + notes/mirror    | Structured `result.park_reason` and status-adjacent fields exist; #3424 requests a notes table and automatic GitHub mirroring, neither established by census. **Partial status reason; notes/mirror unverified.**                                                                                                                                                                                                                                                                                                                                                                                | Newer charter boundary: allowlisted public status reason may project; private notes/findings/checkpoints never auto-mirror. Extend existing task identity if #3424 storage already landed.                        |
+| 5. Full append-only event history  | `events` table exists, but schema/census does not establish before/after for every task mutation or full reconstruction. **Not a proven domain journal.**                                                                                                                                                                                                                                                                                                                                                                                                                                        | Crosswalk existing event producers/payloads first; extend same store, retain before/after, do not claim event-sourced resurrection.                                                                               |
+| 6. Actor provenance on every write | lane/worker/session/claim model and claim-time session/model fields are evidence; no all-write principal/runtime provenance contract verified. **Partial.**                                                                                                                                                                                                                                                                                                                                                                                                                                      | Add authenticated principal/op/source provenance through shared contracts; do not fabricate old actor data or add unapproved hostname/IP fields.                                                                  |
 
 The dated issue/component readback in `../census/track-a.md:37–43` and `../census/anchors.json:171–183` establishes #3424 CLOSED after intake/decomposition, not all six pieces complete; #8580, #8581, #8583, #8584 and #8585 remain OPEN, while #8582 is CLOSED. The merged #8180 is the intake brief, not proof every child requirement shipped. Keep #3424/#8580–#8585 as concrete overlap owners and crosswalk their current bodies/PRs before creating implementation slices; a closed parent never means all children are done. The #3424 brief also requires migration-discipline inventory before adding overlapping pieces (`../../2026-11-10_design_queue_task_data_model_3424.md:53–58`). Existing source evidence resolves the absolute `--not-before` CLI surface now; the other rows still distinguish fields from full behavior. This prevents both stale-gap re-filing and false completeness.
 
@@ -35,14 +35,14 @@ The dated issue/component readback in `../census/track-a.md:37–43` and `../cen
 
 Persist each relationship once in a canonical direction `source -> target`, with an explicit relation enum:
 
-| User-facing relation | Canonical stored edge | Execution effect |
-|---|---|---|
-| `A blocks B` | `A -> B`, kind `blocks` | If active + hard, B is blocked while A is unsatisfied. |
-| `B blocked_by A` | Normalize to the same `A -> B`, kind `blocks` | Same edge; CLI is ergonomic inverse, not second fact. |
-| `related_to` | `A -> B`, kind `related_to` | Advisory only. |
-| `parent_of` / `child_of` | Normalize to `parent -> child`, kind `hierarchy` with typed role | Hierarchy only; never creates blocking eligibility. |
-| `duplicates` | Normalize stable pair ordering, kind `duplicates` | No auto-close, no implicit merge. |
-| `supersedes` | `newer -> superseded`, kind `supersedes` | Historical linkage only; no auto-close or completion inference. |
+| User-facing relation     | Canonical stored edge                                            | Execution effect                                                |
+| ------------------------ | ---------------------------------------------------------------- | --------------------------------------------------------------- |
+| `A blocks B`             | `A -> B`, kind `blocks`                                          | If active + hard, B is blocked while A is unsatisfied.          |
+| `B blocked_by A`         | Normalize to the same `A -> B`, kind `blocks`                    | Same edge; CLI is ergonomic inverse, not second fact.           |
+| `related_to`             | `A -> B`, kind `related_to`                                      | Advisory only.                                                  |
+| `parent_of` / `child_of` | Normalize to `parent -> child`, kind `hierarchy` with typed role | Hierarchy only; never creates blocking eligibility.             |
+| `duplicates`             | Normalize stable pair ordering, kind `duplicates`                | No auto-close, no implicit merge.                               |
+| `supersedes`             | `newer -> superseded`, kind `supersedes`                         | Historical linkage only; no auto-close or completion inference. |
 
 The user-visible vocabulary remains all seven spellings from the charter/proposal: `blocks`, `blocked_by`, `related_to`, `parent_of`, `child_of`, `duplicates`, `supersedes`. Canonical storage may normalize inverse spellings but must preserve direction/meaning in APIs, display and audit. Parent-child and GitHub native sub-issue hierarchy are not hard dependencies. Existing GitHub native `blockedBy` remains a blocker relationship; Project/sub-issue parent is hierarchy. Projector/reconciler must not replace either with prose.
 
@@ -54,20 +54,20 @@ Logical versioned record, subject to existing storage conventions:
 {
   "edge_id": "stable Fleet ID",
   "revision": "3",
-  "source": {"kind":"fleet_work", "work":{"authority_id":"local", "work_id":"842"}},
-  "target": {"kind":"github_issue", "resource_ref":{"provider":"github", "repository_id":"...", "resource_id":"...", "kind":"issue"}},
+  "source": { "kind": "fleet_work", "work": { "authority_id": "local", "work_id": "842" } },
+  "target": { "kind": "github_issue", "resource_ref": { "provider": "github", "repository_id": "...", "resource_id": "...", "kind": "issue" } },
   "relation": "blocks",
   "hardness": "hard | soft",
   "status": "active | resolved | removed | quarantined",
   "reason_code": "explicit | imported | migrated | inferred_pending_review",
-  "provenance": {"principal_ref":"...", "actor_ref":"...", "session_ref":"...", "operation_id":"...", "source_ref":"..."},
+  "provenance": { "principal_ref": "...", "actor_ref": "...", "session_ref": "...", "operation_id": "...", "source_ref": "..." },
   "certainty": "verified | asserted | uncertain",
   "created_at": "...",
   "resolved_at": null,
   "resolution_evidence": null,
   "supersedes_revision": null,
-  "before": {"status":"active", "hardness":"hard"},
-  "after": {"status":"resolved", "hardness":"hard"}
+  "before": { "status": "active", "hardness": "hard" },
+  "after": { "status": "resolved", "hardness": "hard" }
 }
 ```
 
@@ -101,9 +101,9 @@ Results identify canonical edge IDs, normalized meaning, current graph/work vers
 
 ### 3.1 Separate three concepts
 
-* **Private work note:** Fleet-owned observation/finding/decision, private by default. Search/list/read only under actor/task access control; it is never copied to issue/PR or Project without explicit, scoped, authorized mirror operation.
-* **Status reason:** structured, allowlisted explanation of a workflow transition (reason code + optional concise user-safe text). It may be exposed as a status field or explicitly configured public projection. It is not permission to publish private note content. This reconciles #3424's `status_reason`/note-event goal with charter privacy.
-* **External GitHub comment/discussion:** GitHub-owned and mutable/deletable; hydration captures it as untrusted external activity. A Fleet write to GitHub is a distinct operation/outbox record, carries operation ID and explicit target/consent, and is not itself the private note.
+- **Private work note:** Fleet-owned observation/finding/decision, private by default. Search/list/read only under actor/task access control; it is never copied to issue/PR or Project without explicit, scoped, authorized mirror operation.
+- **Status reason:** structured, allowlisted explanation of a workflow transition (reason code + optional concise user-safe text). It may be exposed as a status field or explicitly configured public projection. It is not permission to publish private note content. This reconciles #3424's `status_reason`/note-event goal with charter privacy.
+- **External GitHub comment/discussion:** GitHub-owned and mutable/deletable; hydration captures it as untrusted external activity. A Fleet write to GitHub is a distinct operation/outbox record, carries operation ID and explicit target/consent, and is not itself the private note.
 
 ### 3.2 Journal event contract
 
@@ -130,19 +130,19 @@ version atomically and retain exact before/after evidence. Label removal never r
 protection. Shared PRI/DST/AUTH fixtures cover all entry surfaces, stale membership versions
 and allowed owner amendments. This consumes #7030 without asking for ratification again.
 
-| Field/resource | Authority and write rule | Mirror/consumer rule |
-|---|---|---|
-| Fleet queue/work ID, title, summary | Fleet; title/summary can be seeded from issue/PR at creation only. Then independently edited. | No continuous title/body copy. Resource links explicit. |
-| Workflow state, status reason, assignment, active lease/session | Fleet lifecycle/claim owner (#9178/#9179/#9209). Assignment != running session. | Project/board are projections; authorized transitions through shared service only. |
-| Intrinsic urgency / priority provenance | Priority-policy owner #9199/#9200; this component only records typed source/event. | GitHub labels are normalized inputs only under approved policy; no independent priority write here. |
-| Importance/effective pressure/directive | Distinct policy dimensions; #9199/#9200. | Dependency changes may supply evidence/version, not rewrite score. |
-| Dependencies and hard/advisory graph | Fleet typed relation store; native GitHub relationship ingestion retains provider provenance. | Project hierarchy/native issue blockers remain distinct; no prose replacement. |
-| GitHub issue/PR title, body, state, labels, comments, reviews, checks | GitHub source; mutations through existing `fleet gh` adapter + authorized operation. | Hydrated snapshot is versioned evidence; no claim of atomic current view. |
-| GitHub Project fields | Existing Project orchestrator is sole writer per charter/census. | No mobile/queue/agent direct second writer; consume projection API. |
-| Private notes, checkpoints, findings | Fleet journal; private by default, authorized readers only. | No automatic mirror; explicit note-mirror opt-in, exact text and target confirmation. |
-| Public status reason | Fleet status code; safe concise rendering only if configured/authorized. | Separate from note text; no comments table auto-mirror of all note kinds. |
-| Managed body section/comment | GitHub resource; Fleet owns only explicitly marked section or known managed comment ID. | #9208 can opt in; #9209 outbox records effect. Never overwrite outside section intentionally. |
-| Creation provenance / external actor | Fleet records verified identity and origin evidence. | External actor ID + source resource; usernames display only, not auth/session proof. |
+| Field/resource                                                        | Authority and write rule                                                                      | Mirror/consumer rule                                                                                |
+| --------------------------------------------------------------------- | --------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------- |
+| Fleet queue/work ID, title, summary                                   | Fleet; title/summary can be seeded from issue/PR at creation only. Then independently edited. | No continuous title/body copy. Resource links explicit.                                             |
+| Workflow state, status reason, assignment, active lease/session       | Fleet lifecycle/claim owner (#9178/#9179/#9209). Assignment != running session.               | Project/board are projections; authorized transitions through shared service only.                  |
+| Intrinsic urgency / priority provenance                               | Priority-policy owner #9199/#9200; this component only records typed source/event.            | GitHub labels are normalized inputs only under approved policy; no independent priority write here. |
+| Importance/effective pressure/directive                               | Distinct policy dimensions; #9199/#9200.                                                      | Dependency changes may supply evidence/version, not rewrite score.                                  |
+| Dependencies and hard/advisory graph                                  | Fleet typed relation store; native GitHub relationship ingestion retains provider provenance. | Project hierarchy/native issue blockers remain distinct; no prose replacement.                      |
+| GitHub issue/PR title, body, state, labels, comments, reviews, checks | GitHub source; mutations through existing `fleet gh` adapter + authorized operation.          | Hydrated snapshot is versioned evidence; no claim of atomic current view.                           |
+| GitHub Project fields                                                 | Existing Project orchestrator is sole writer per charter/census.                              | No mobile/queue/agent direct second writer; consume projection API.                                 |
+| Private notes, checkpoints, findings                                  | Fleet journal; private by default, authorized readers only.                                   | No automatic mirror; explicit note-mirror opt-in, exact text and target confirmation.               |
+| Public status reason                                                  | Fleet status code; safe concise rendering only if configured/authorized.                      | Separate from note text; no comments table auto-mirror of all note kinds.                           |
+| Managed body section/comment                                          | GitHub resource; Fleet owns only explicitly marked section or known managed comment ID.       | #9208 can opt in; #9209 outbox records effect. Never overwrite outside section intentionally.       |
+| Creation provenance / external actor                                  | Fleet records verified identity and origin evidence.                                          | External actor ID + source resource; usernames display only, not auth/session proof.                |
 
 Field mutation carries authenticated-principal capability, scope (work/ref/field), expected version or current baseline, reason code, operation/idempotency ID, visibility intent. Reject unauthorized or stale writes before local transaction. High-impact transitions (completion/merge, public note mirror, relationship removal/override) require explicit scoped confirmation/authorization according to existing policy; no new auth system. Field ownership conflicts return typed conflict with current owner/value, source revision and remediation. `dry_run` is read-only and must create no task/edge/note/event/outbox writes or remote effects. Never silently choose last-writer-wins across Fleet/GitHub/Project.
 
@@ -160,53 +160,53 @@ Status reason is emitted once with transition event in same local transaction. T
 
 ## 6. Alternatives, tradeoffs, and proposed recommendations
 
-| Alternative | Benefits | Costs/risks | Proposed decision |
-|---|---|---|---|
-| Free-text blockers only | Minimal schema and easy arbitrary notes | Not queryable for claims/completion; cannot type hierarchy vs hard blocker; unsafe inference | Reject as sole representation; preserve free text as status explanation only. |
-| Seven independent edge tables / duplicated inverse links | Easy per-relation queries | Duplicated truth, inverse divergence, hard to resolve/remove consistently | Prefer one typed canonical edge record with API aliases for inverse verbs. |
-| One `blocked_deps` JSON blob | Compact, aligns with existing task field | Hard uniqueness/indexing, concurrent graph cycle checks, source provenance and resolution history difficult | Keep as legacy/crosswalk input only until actual semantics verified; do not extend blindly. |
-| Parent relation automatically blocks children | Simplifies epic execution | Confuses hierarchy with readiness; parent/child cycles and closing parent can corrupt child state | Reject; only explicit active hard `blocks` blocks. |
-| Single mutable note field | Simple view | Destroys provenance/corrections/checkpoints and merges private/public concepts | Reject as canonical history; a current-note projection is fine over append-only events. |
-| Full event sourcing with all state reconstructed from journal | Perfect theoretical replay/audit | Schema/event evolution, projection consistency, migration and retention complexity; broad queue rewrite | Do not convert whole queue now. Append journal facts alongside existing authoritative row and prove coverage before any reconstruction claim. |
-| Implicit mirror every note/status reason | Easy external visibility | Private leaks, comment floods, remote write races | Reject; only allowlisted public status categories and explicit note mirror. |
-| Whole-body GitHub replacement | Simple API call | Erases external edits, no CAS in reviewed API contract | Reject. Managed section limited opt-in with known risk; default known comment ID/private journal. |
-| Manual explicit links only | Low false positives, clear provenance | Requires user/agent curation; imported native links need reconciliation | Preferred for hard blockers unless source relation is verified and mapped. |
-| Automatically infer/resolve external dependencies | Less manual work | Closed issue may not mean Fleet work done; ambiguity and provenance loss | Reject implicit resolution; explicit source-specific policy and evidence only. |
+| Alternative                                                   | Benefits                                 | Costs/risks                                                                                                 | Proposed decision                                                                                                                             |
+| ------------------------------------------------------------- | ---------------------------------------- | ----------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------- |
+| Free-text blockers only                                       | Minimal schema and easy arbitrary notes  | Not queryable for claims/completion; cannot type hierarchy vs hard blocker; unsafe inference                | Reject as sole representation; preserve free text as status explanation only.                                                                 |
+| Seven independent edge tables / duplicated inverse links      | Easy per-relation queries                | Duplicated truth, inverse divergence, hard to resolve/remove consistently                                   | Prefer one typed canonical edge record with API aliases for inverse verbs.                                                                    |
+| One `blocked_deps` JSON blob                                  | Compact, aligns with existing task field | Hard uniqueness/indexing, concurrent graph cycle checks, source provenance and resolution history difficult | Keep as legacy/crosswalk input only until actual semantics verified; do not extend blindly.                                                   |
+| Parent relation automatically blocks children                 | Simplifies epic execution                | Confuses hierarchy with readiness; parent/child cycles and closing parent can corrupt child state           | Reject; only explicit active hard `blocks` blocks.                                                                                            |
+| Single mutable note field                                     | Simple view                              | Destroys provenance/corrections/checkpoints and merges private/public concepts                              | Reject as canonical history; a current-note projection is fine over append-only events.                                                       |
+| Full event sourcing with all state reconstructed from journal | Perfect theoretical replay/audit         | Schema/event evolution, projection consistency, migration and retention complexity; broad queue rewrite     | Do not convert whole queue now. Append journal facts alongside existing authoritative row and prove coverage before any reconstruction claim. |
+| Implicit mirror every note/status reason                      | Easy external visibility                 | Private leaks, comment floods, remote write races                                                           | Reject; only allowlisted public status categories and explicit note mirror.                                                                   |
+| Whole-body GitHub replacement                                 | Simple API call                          | Erases external edits, no CAS in reviewed API contract                                                      | Reject. Managed section limited opt-in with known risk; default known comment ID/private journal.                                             |
+| Manual explicit links only                                    | Low false positives, clear provenance    | Requires user/agent curation; imported native links need reconciliation                                     | Preferred for hard blockers unless source relation is verified and mapped.                                                                    |
+| Automatically infer/resolve external dependencies             | Less manual work                         | Closed issue may not mean Fleet work done; ambiguity and provenance loss                                    | Reject implicit resolution; explicit source-specific policy and evidence only.                                                                |
 
 ## 7. Failure and recovery matrix
 
-| Scenario | Required behavior |
-|---|---|
-| Two workers add opposite hard edges concurrently | Graph-version/transaction serializes; one succeeds, other returns `DEPENDENCY_CYCLE`; never both accepted. |
-| Existing imported graph already cyclic | Quarantine affected edge(s) with provenance and visible IDs; readiness conservatively blocked; repair is explicit and journaled. |
-| One hard dependency resolved, another remains | Keep work blocked; response lists remaining edge IDs. |
-| External hard target cannot resolve/forbidden | Treat unresolved, conservatively block; report unknown rather than complete. |
-| User removes edge | Tombstone with actor/reason/version; history retained. |
-| Parent/epic closes | Do not cascade child completed states or clear blockers; separate hierarchy. |
-| Same GitHub issue number across repos | Full provider/owner/repo/resource ID disambiguates. |
-| Journal append fails after state update | Forbidden by atomic state+event transaction; transaction rollback or recovery invariant test. |
-| Note correction | Append superseding event; prior body retained/private under retention rules. |
-| Status reason marked public | Only allowlisted status category; private note/finding bytes absent from outbound payload. |
-| Public mirror permission revoked | Outbox terminal/auth failure; private note still retained, no repeated unauthorized retry. |
-| POST managed comment applies but acknowledgment lost | `unknown`; find exact operation marker, adopt one; if none uncertain/recheck before POST; multiple -> conflict. |
-| Two Fleet writers create managed comment | Local uniqueness/serialization; no double-intent. External race remains possible; reconcile duplicate markers, never delete unowned comment. |
+| Scenario                                                 | Required behavior                                                                                                                            |
+| -------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------- |
+| Two workers add opposite hard edges concurrently         | Graph-version/transaction serializes; one succeeds, other returns `DEPENDENCY_CYCLE`; never both accepted.                                   |
+| Existing imported graph already cyclic                   | Quarantine affected edge(s) with provenance and visible IDs; readiness conservatively blocked; repair is explicit and journaled.             |
+| One hard dependency resolved, another remains            | Keep work blocked; response lists remaining edge IDs.                                                                                        |
+| External hard target cannot resolve/forbidden            | Treat unresolved, conservatively block; report unknown rather than complete.                                                                 |
+| User removes edge                                        | Tombstone with actor/reason/version; history retained.                                                                                       |
+| Parent/epic closes                                       | Do not cascade child completed states or clear blockers; separate hierarchy.                                                                 |
+| Same GitHub issue number across repos                    | Full provider/owner/repo/resource ID disambiguates.                                                                                          |
+| Journal append fails after state update                  | Forbidden by atomic state+event transaction; transaction rollback or recovery invariant test.                                                |
+| Note correction                                          | Append superseding event; prior body retained/private under retention rules.                                                                 |
+| Status reason marked public                              | Only allowlisted status category; private note/finding bytes absent from outbound payload.                                                   |
+| Public mirror permission revoked                         | Outbox terminal/auth failure; private note still retained, no repeated unauthorized retry.                                                   |
+| POST managed comment applies but acknowledgment lost     | `unknown`; find exact operation marker, adopt one; if none uncertain/recheck before POST; multiple -> conflict.                              |
+| Two Fleet writers create managed comment                 | Local uniqueness/serialization; no double-intent. External race remains possible; reconcile duplicate markers, never delete unowned comment. |
 | Human changes managed comment/body between GET and PATCH | No documented CAS; re-read may detect but cannot guarantee no clobber. Surface conflict and preserve snapshots; never claim optimistic lock. |
-| Malformed/duplicate managed-section markers | Refuse mutation and return conflict; preserve body. |
-| Stale expected version on field/edge update | `VERSION_CONFLICT` with current version and safe refresh next step. |
-| Bot username matches another session | Operation/session mapping required; otherwise attribution `uncertain`, include in external-only results. |
-| Private note in hydration/Project serialization | Schema allowlist and golden serialization test fail build; release blocker. |
-| Completion invoked when epic closes but child open | Completion readiness uses explicit work/resource refs; no cascade/false completed. |
+| Malformed/duplicate managed-section markers              | Refuse mutation and return conflict; preserve body.                                                                                          |
+| Stale expected version on field/edge update              | `VERSION_CONFLICT` with current version and safe refresh next step.                                                                          |
+| Bot username matches another session                     | Operation/session mapping required; otherwise attribution `uncertain`, include in external-only results.                                     |
+| Private note in hydration/Project serialization          | Schema allowlist and golden serialization test fail build; release blocker.                                                                  |
+| Completion invoked when epic closes but child open       | Completion readiness uses explicit work/resource refs; no cascade/false completed.                                                           |
 
 ## 8. Tests, named oracles, and acceptance
 
 Tests are requirements for future implementation, not claims of current passing tests. Add pure model tests under `pkgs/fleet/crates/fleet-queue/src/work/relations.rs`/`journal.rs` unit-test modules and storage integration tests near `turso_queue.rs` after reviewing current test conventions.
 
-* **MBT oracle:** reference relation/journal model generates add/remove/resolve/import/quarantine/note-correct/transition sequences. Assert only active hard block edges affect readiness; cycles rejected; resolved/tombstoned history retained; corrections supersede; hierarchy never blocks; no one-edge removal clears other blocker.
-* **PBT oracle:** random directed graphs; mutation sequences plus concurrent transactions. Invariant: accepted active hard graph is acyclic; inverse `blocks`/`blocked_by` APIs canonicalize to one logical edge; graph traversal detects all reachable blockers or reports incomplete pagination. Random provenance never loses source. Random private strings absent from public serializer absent explicit mirror intent.
-* **Atomicity oracle:** transaction failure injection after state, event, edge, note and outbox updates; check either all local facts commit or none. No journal sequence gap, duplicate op, or current view inconsistent with last appended event for covered fields.
-* **Concurrency oracle:** reversed concurrent A→B/B→A insert; resolve/remove vs completion eligibility; two same-version field writers; two managed-comment creators; stale session writes. Exact expected result is one winning version and typed conflict for loser.
-* **Remote fake oracle:** GitHub fixtures for comments, known ID update, lost POST acknowledgment, outside-body mutation, duplicate/malformed section markers; assert no undocumented CAS assumption. No fake success from post-GET alone.
-* **Golden contract oracle:** JSON schemas for edge, event, private note, public status projection, checkpoint ref and conflict envelope. Verify field visibility/attribution and redaction explicitly.
+- **MBT oracle:** reference relation/journal model generates add/remove/resolve/import/quarantine/note-correct/transition sequences. Assert only active hard block edges affect readiness; cycles rejected; resolved/tombstoned history retained; corrections supersede; hierarchy never blocks; no one-edge removal clears other blocker.
+- **PBT oracle:** random directed graphs; mutation sequences plus concurrent transactions. Invariant: accepted active hard graph is acyclic; inverse `blocks`/`blocked_by` APIs canonicalize to one logical edge; graph traversal detects all reachable blockers or reports incomplete pagination. Random provenance never loses source. Random private strings absent from public serializer absent explicit mirror intent.
+- **Atomicity oracle:** transaction failure injection after state, event, edge, note and outbox updates; check either all local facts commit or none. No journal sequence gap, duplicate op, or current view inconsistent with last appended event for covered fields.
+- **Concurrency oracle:** reversed concurrent A→B/B→A insert; resolve/remove vs completion eligibility; two same-version field writers; two managed-comment creators; stale session writes. Exact expected result is one winning version and typed conflict for loser.
+- **Remote fake oracle:** GitHub fixtures for comments, known ID update, lost POST acknowledgment, outside-body mutation, duplicate/malformed section markers; assert no undocumented CAS assumption. No fake success from post-GET alone.
+- **Golden contract oracle:** JSON schemas for edge, event, private note, public status projection, checkpoint ref and conflict envelope. Verify field visibility/attribution and redaction explicitly.
 
 Exact package test form for unit-level issue slices is `cargo test --manifest-path pkgs/fleet/Cargo.toml -p fleet-queue --lib --features client,queue-broker pmo_<slice_key>`. Every proposed test below is future work, not existing evidence: add it failing first; confirm the exact test name appears in `cargo test --manifest-path pkgs/fleet/Cargo.toml -p fleet-queue --lib --features client,queue-broker -- --list`; run its exact filter; a zero-match command is not acceptance. Migration tests run through the actual migration target/command found by #9198; shared CLI golden tests run through their owning target. Unit tests, deployed rollout, production telemetry and live GitHub evidence are separate.
 
@@ -302,16 +302,16 @@ These are candidate work packets, not GitHub issues. Every spec has bounded owne
 
 ## 11. External blockers and issue graph guidance
 
-* **Hard semantic/design blockers:** #9178 claim/manual/takeover/resume semantics; #9179 park ownership; #9198 current schema/migration/source-of-truth census; Queue Table Improvements before any overlapping shared storage migration; #9206 canonical identity/CLI/version; #9209 operation ID/outbox contract for mirrored notes; #9200 priority authority for priority fields; Project single-writer contract.
-* **Conditionally hard:** #9073 create-path metadata and #9074 metadata DB only if chosen source identity/metadata write path requires these interfaces. Consume existing boundary; do not create a second metadata database. #9075 session state matters for session attribution; #9076 dual-ingestion matters only if it owns specific edge/note source events. Confirm live issue state/ownership before edges.
-* **Cross-links, not blockers:** #9207 hydration uses edge/checkpoint refs; #9209 completion consumes readiness/authority; #9203 owns authenticated comments/webhook routing/dispatch and #6533 live launch-and-bind proof. Do not perform #6533 from Track B.
-* **FDR candidates only:** `FDR-PMO-9208-001` canonical edge graph/cycles; `-002` notes/journal privacy and corrections; `-003` field authority/provenance; `-004` managed GitHub content no-CAS policy. Reconcile names/IDs with #9180 before adoption. Parent overlays stable `H-R-*`, `C-R-*`, `P-R-*`, `O-R-*` after atomic inventory allocation.
+- **Hard semantic/design blockers:** #9178 claim/manual/takeover/resume semantics; #9179 park ownership; #9198 current schema/migration/source-of-truth census; Queue Table Improvements before any overlapping shared storage migration; #9206 canonical identity/CLI/version; #9209 operation ID/outbox contract for mirrored notes; #9200 priority authority for priority fields; Project single-writer contract.
+- **Conditionally hard:** #9073 create-path metadata and #9074 metadata DB only if chosen source identity/metadata write path requires these interfaces. Consume existing boundary; do not create a second metadata database. #9075 session state matters for session attribution; #9076 dual-ingestion matters only if it owns specific edge/note source events. Confirm live issue state/ownership before edges.
+- **Cross-links, not blockers:** #9207 hydration uses edge/checkpoint refs; #9209 completion consumes readiness/authority; #9203 owns authenticated comments/webhook routing/dispatch and #6533 live launch-and-bind proof. Do not perform #6533 from Track B.
+- **FDR candidates only:** `FDR-PMO-9208-001` canonical edge graph/cycles; `-002` notes/journal privacy and corrections; `-003` field authority/provenance; `-004` managed GitHub content no-CAS policy. Reconcile names/IDs with #9180 before adoption. Parent overlays stable `H-R-*`, `C-R-*`, `P-R-*`, `O-R-*` after atomic inventory allocation.
 
 ## 12. Raw source references
 
-* Handoff: `../sources/01_handoff_pm_stack_fleet_orchestration.md` §§requirements to survive, lines 51–59; command inventory lines 105–119.
-* Charter: `../sources/02_charter_v1_1.md` §§10–16, especially private notes/field authority/dependencies §12, leases/outbox §13, completion §14.
-* Proposal: `../sources/03_full_orchestration_proposal.md` §§10–14, lines 978–1415, full text reviewed for field authority, managed comments/body, attribution/cursors, typed relationships, leases and outbox.
-* Original combined design: `../sources/04_recovered_original_combined_design.md` full flattened line 13; preservation source; verify future crosswalk for additions, do not infer structure from formatting.
-* Queue model brief #3424: [`../../2026-11-10_design_queue_task_data_model_3424.md`](../../2026-11-10_design_queue_task_data_model_3424.md), six pieces and migration question §§1–6.
-* Pinned repo census: `../census/track-b.md`, `../census/track-a.md`, `../census/commands.jsonl`; research evidence with exact pin `a038f084dbeb525494d7bb928ad91f597db2ac51`.
+- Handoff: `../sources/01_handoff_pm_stack_fleet_orchestration.md` §§requirements to survive, lines 51–59; command inventory lines 105–119.
+- Charter: `../sources/02_charter_v1_1.md` §§10–16, especially private notes/field authority/dependencies §12, leases/outbox §13, completion §14.
+- Proposal: `../sources/03_full_orchestration_proposal.md` §§10–14, lines 978–1415, full text reviewed for field authority, managed comments/body, attribution/cursors, typed relationships, leases and outbox.
+- Original combined design: `../sources/04_recovered_original_combined_design.md` full flattened line 13; preservation source; verify future crosswalk for additions, do not infer structure from formatting.
+- Queue model brief #3424: [`../../2026-11-10_design_queue_task_data_model_3424.md`](../../2026-11-10_design_queue_task_data_model_3424.md), six pieces and migration question §§1–6.
+- Pinned repo census: `../census/track-b.md`, `../census/track-a.md`, `../census/commands.jsonl`; research evidence with exact pin `a038f084dbeb525494d7bb928ad91f597db2ac51`.

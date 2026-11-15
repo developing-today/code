@@ -219,6 +219,9 @@ export interface RoadmapRow {
   links: Link[];
   /** Grist UI link for this row's document (#1136), when known. */
   gristUrl?: string;
+  /** Repo-file link for this row's source file + heading (#1738), when
+   * the row was parsed from a repo roadmap file rather than Grist. */
+  fileUrl?: string;
 }
 
 /** Where each facet's data came from, shown in the UI footer. */
@@ -1429,6 +1432,28 @@ export interface PaygLine {
   accruedUsd: number | null;
   collectedUsd?: number | null;
   estimate?: PaygEstimate | null;
+  /** Settled figure reconciled against an invoice record (#1056) — or,
+   * for the Meta line, the collected console figure (money that actually
+   * moved). Present only once the line has been reconciled. */
+  settledUsd?: number | null;
+  /** ISO date of the settling invoice/record. */
+  settledAt?: string | null;
+  /** Full timestamp of the settling record, when the line was reconciled
+   * from one — settledAt is date-only, and the write-back in
+   * recordsFromPaygLines must preserve the record's original instant so
+   * a same-day correction orders correctly (CodeRabbit, PR #10433). */
+  settledTs?: string | null;
+  /** Source class of the settling record ("invoice" for Cloudflare). */
+  settledSource?: UsageSourceClass | null;
+  /** settledUsd minus the comparison figure (the estimate's high when the
+   * line carries an estimate, else accruedUsd), signed USD. */
+  settledVarianceUsd?: number | null;
+  /** ISO date the estimate's period ended, when known — drives the
+   * stale-estimate flag below. */
+  estimatePeriodEnd?: string | null;
+  /** Stewardship flag rule (#1056): an unreconciled estimate whose period
+   * ended more than one invoice cycle ago, with no settled record. */
+  staleEstimate?: boolean;
   /** Unbilled accrual counted toward the $5 bubble (the counted figure). */
   unbilledUsd: number | null;
   note: string;

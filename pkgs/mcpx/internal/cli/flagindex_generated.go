@@ -92,6 +92,7 @@ var handFlagIndex = map[string][]HandFlag{
 	"exec": {
 		{Name: "ns", Usage: "restrict the client to these namespaces (comma separated)"},
 		{Name: "runtime", Usage: "javascript runtime: auto, deno, bun, node, a name from script.runtimes, or a path"},
+		{Name: "language", Usage: "script language: auto, typescript, javascript, or python (default: script.language)"},
 		{Name: "timeout", Usage: "kill the script after this long (0 = no limit)"},
 		{Name: "keep", Usage: "keep the generated client and script for inspection"},
 		{Name: "session", Usage: "session key (default: a fresh one per run)"},
@@ -220,6 +221,7 @@ var handFlagIndex = map[string][]HandFlag{
 	"run": {
 		{Name: "ns", Usage: "restrict the client to these namespaces (comma separated)"},
 		{Name: "runtime", Usage: "javascript runtime: auto, deno, bun, node, a name from script.runtimes, or a path"},
+		{Name: "language", Usage: "script language: auto, typescript, javascript, or python (default: script.language)"},
 		{Name: "timeout", Usage: "kill the script after this long (0 = no limit)"},
 		{Name: "keep", Usage: "keep the generated client and script for inspection"},
 		{Name: "session", Usage: "session key (default: a fresh one per run)"},
@@ -305,5 +307,9 @@ var handFlagIndex = map[string][]HandFlag{
 	},
 	"types": {
 		{Name: "no-instructions", Usage: "omit the server's own guidance, which can be long"},
+	},
+	"want": {
+		{Name: "kind", Usage: "list only this kind: request or search-miss"},
+		{Name: "limit", Usage: "list at most this many groups (default all)"},
 	},
 }

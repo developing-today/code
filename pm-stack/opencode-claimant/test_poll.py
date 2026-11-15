@@ -692,9 +692,7 @@ class TestStaleBinding(unittest.TestCase):
         self.assertFalse(poll.is_stale_binding(self.row(), None))
 
     def test_progress_bound_row_is_never_stale(self):
-        row = self.row(
-            progress={"lane": "opencode", "session_id": "ses_live"}
-        )
+        row = self.row(progress={"lane": "opencode", "session_id": "ses_live"})
         self.assertFalse(poll.is_stale_binding(row, self.binding()))
 
     def test_direct_lane_row_is_never_stale(self):
@@ -706,9 +704,7 @@ class TestStaleBinding(unittest.TestCase):
         unbound = self.row(id=2)
         no_row = self.row(id=3)
         bindings = {1: self.binding(), 2: self.binding(session_id=None)}
-        launchable, stale = poll.apply_ledger_filter(
-            [bound, unbound, no_row], bindings
-        )
+        launchable, stale = poll.apply_ledger_filter([bound, unbound, no_row], bindings)
         self.assertEqual(launchable, [unbound, no_row])
         self.assertEqual(stale, [bound])
 
@@ -761,9 +757,7 @@ class TestStaleBinding(unittest.TestCase):
         fake = unittest.mock.Mock(returncode=1, stdout="")
         with patch.object(poll.subprocess, "run", return_value=fake):
             self.assertIsNone(poll.fetch_ledger_bindings([4924]))
-        with patch.object(
-            poll.subprocess, "run", side_effect=OSError("no helper")
-        ):
+        with patch.object(poll.subprocess, "run", side_effect=OSError("no helper")):
             self.assertIsNone(poll.fetch_ledger_bindings([4924]))
 
     def test_fetch_ledger_bindings_no_ids_reads_nothing(self):

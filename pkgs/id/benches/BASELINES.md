@@ -152,6 +152,30 @@ latency criterion remains open for follow-up. The matching measurement is
 appended to `baseline.txt`; the four existing F11.8 baselines above are
 unchanged.
 
+Re-measurement (2026-11-14; rustc 1.99.0, cargo 1.99.0; AMD Ryzen 7
+7840U, 16 threads, Linux 6.18.60, NixOS; the laptop was under shared
+fleet load during the run), at `main` a824f622ae, after the #8316
+restore fix (PR #9995) unblocked a clean run:
+
+```text
+bench many_worlds unit=ms_per_command median=1065.462 min=4.841 reps=1 p50_ms=1065.462 p95_ms=3602.663 p99_ms=4549.272 target_p99_ms=50 target_met=false idle_worlds=1000 active_worlds=100 events_per_second=20 duration_secs=10 commands=20000 load_elapsed_secs=12.784 completed_events_per_second=1564.5 checkpoint_triggers=100 checkpoints=100 evicted=100 reopened=100
+```
+
+The checkpoint/reopen assertions passed again for all 100 active
+worlds (checkpoints=100, evicted=100, reopened=100). The latency
+target still did **not** pass: p99 was 4,549.272 ms versus the 50 ms
+target — an improvement of 1,101.520 ms (−19.5%) against the
+2026-11-02 reference above, with completed throughput up slightly
+(1,564.5/s versus 1,523.1/s) — but queueing behind per-append
+fdatasync still dominates, exactly as the #7064 profiling recorded
+(journal_append_fsync this run: median 5,443.164 us, in line with the
+5,180 us reference). The remaining gap is the group-commit work,
+split to #8239 (journal `append_batch` + actor-side drain), which is
+the next phase; #557 stays open until a recorded run shows
+target_met=true. The matching measurement is appended to
+`baseline.txt` under its own dated comment; the 2026-11-02 line is
+unchanged.
+
 ## Fuel-spin isolation measurement (#1067, F12.10 exit criterion)
 
 The `fuel_spin_isolation` workload measures one victim counter world
@@ -185,3 +209,51 @@ implements no scheduler, quota, or back-pressure, and this result is
 recorded rather than reported as acceptance. The matching measurement
 is appended to `baseline.txt`; the existing baselines above are
 unchanged.
+
+## Benchmark matrix results bundle (#5896)
+
+The four loadgen-core workloads (`journal_append_fsync`,
+`checkpoint_compaction`, `guest_replay`, `session_fanout`) also emit
+the per-interface benchmark matrix specified by the decision record
+on #5896. Every run of `world_bench` that executes at least one of
+them writes a `results.jsonl` bundle (path from `ID_BENCH_RESULTS`,
+default `./results.jsonl` in the working directory):
+
+- a **manifest record**: `schema_version`, `run_id`, `git_sha`
+  (`ID_BENCH_GIT_SHA` / `GITHUB_SHA`), `started_at_utc`,
+  `machine_class`, OS/arch, CPU threads, toolchain
+  (`ID_BENCH_TOOLCHAIN`), build profile, loadgen generator version
+  and seed;
+- one **cell record** per planned (workload × interface ×
+  configuration) tuple. Interfaces are `in_process` (the surface this
+  harness measures) and the shell-contract transports `iroh`,
+  `websocket`, `ssh-exec`; the configuration is #5894's
+  `standard-default`, with the scale (`S1` for full runs, `smoke`
+  for `--quick`) recorded as provenance. A cell with no adapter in
+  this harness is `unsupported` with a reason — never omitted, never
+  zero. A measured cell carries metric entries with metric,
+  statistic, unit, value, sample count and the raw samples.
+
+The comparison identity is `(machine_class, workload_id,
+interface_id, configuration_id, metric, statistic)`.
+`id-bench-compare.sh` compares two bundles by that identity (pass
+`.jsonl` files instead of the legacy text files); it never compares
+across machine classes, configurations, units, or workload/interface
+IDs. The legacy `bench` lines and `baseline.txt` remain the
+compatibility view for the `in_process` medians.
+
+Machine classes are #5894's canonical pair: `fleet-laptop` (this
+file's reference class; the default when `ID_BENCH_MACHINE_CLASS`
+is unset) and `ci-runner` (relative-only; the `id bench` workflow
+sets it explicitly). The workflow uploads `results.jsonl` with the
+raw bench output in the `bench-output` artifact and links it from
+the job summary, which is an index, not the record.
+
+`baseline.jsonl` beside this file is the committed fleet-laptop
+matrix baseline, produced by the same re-baseline procedure as
+`baseline.txt`: a full-size run on the reference machine, committed
+with its manifest (run id, commit, date) intact. `--quick` bundles
+are smoke evidence only and are never committed as baselines. The
+async workloads (`many_worlds`, `fuel_spin_isolation`) are not
+matrix cells yet — their pacing is the loadgen record's later
+executor steps — and keep their legacy lines above.

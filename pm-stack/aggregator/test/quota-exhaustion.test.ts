@@ -176,7 +176,19 @@ describe("deriveExhaustionForecasts (#3983)", () => {
           state: "ok",
           measuredAt: NOW.toISOString(),
           source: "test-gatherer",
-          windows: [{ name: "5h", pctOfLimit: 10, resetsAt: RESET }],
+          windows: [
+            {
+              name: "5h",
+              value: 10,
+              pctOfLimit: 10,
+              valueLabel: null,
+              windowSeconds: 18000,
+              resetsAt: RESET,
+              measuredAt: NOW.toISOString(),
+              source: "test-gatherer",
+              state: "ok",
+            },
+          ],
         },
       ],
     };

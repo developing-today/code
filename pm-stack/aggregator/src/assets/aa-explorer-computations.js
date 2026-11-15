@@ -263,6 +263,109 @@ export function projectTask(e, settings, aaPoints, caiPoints) {
   return { cost: cost, time: time, band: band };
 }
 
+
+// --- plan views: baselines, sorting, dominance (#9852 items 1-3) ----------
+// Pure computations for the /aa plan views, shared by the browser
+// client (render.ts delegates — no inline copies) and Bun tests.
+
+// baselineRatios(rows, baselineKeys): per row, its score-per-cost and
+// score-per-second ("speed" = score / time-per-task) alongside the same
+// ratios expressed as multiples of each selected baseline row. A ratio
+// is null when any input is missing or a denominator is zero, and a
+// baseline multiple is null when either side's ratio is null.
+export function baselineRatios(rows, baselineKeys) {
+  var byKey = {};
+  rows.forEach(function (p) { byKey[p.key] = p; });
+  function eff(p) {
+    if (!p) return { perCost: null, perSpeed: null };
+    return {
+      perCost: p.score != null && p.cost != null && p.cost > 0 ? p.score / p.cost : null,
+      perSpeed: p.score != null && p.time != null && p.time > 0 ? p.score / p.time : null,
+    };
+  }
+  var bases = (baselineKeys || []).filter(function (k) { return byKey[k]; })
+    .map(function (k) { return { key: k, e: eff(byKey[k]) }; });
+  var out = {};
+  rows.forEach(function (p) {
+    var e = eff(p);
+    var entry = { scorePerCost: e.perCost, scorePerSpeed: e.perSpeed, vs: {} };
+    bases.forEach(function (b) {
+      entry.vs[b.key] = {
+        scorePerCost: e.perCost != null && b.e.perCost ? e.perCost / b.e.perCost : null,
+        scorePerSpeed: e.perSpeed != null && b.e.perSpeed ? e.perSpeed / b.e.perSpeed : null,
+      };
+    });
+    out[p.key] = entry;
+  });
+  return out;
+}
+
+// sortRows(rows, key, dir): stable, null-safe ordering. `key` is a row
+// field name or a getter function; `dir` is "asc" or "desc". Nulls sort
+// last in BOTH directions (the module's cmpAsc/cmpDesc convention);
+// string values compare lexically, also nulls-last. Remaining ties
+// break on row key so the order is fully deterministic.
+export function sortRows(rows, key, dir) {
+  var out = rows.slice();
+  if (!key) return out;
+  var get = typeof key === "function" ? key : function (p) { return p[key]; };
+  out.sort(function (a, b) {
+    var va = get(a), vb = get(b);
+    var c;
+    if (typeof va === "string" || typeof vb === "string") {
+      if (va == null && vb == null) c = 0;
+      else if (va == null) c = 1;
+      else if (vb == null) c = -1;
+      else c = (dir === "asc" ? 1 : -1) * (va < vb ? -1 : va > vb ? 1 : 0);
+    } else {
+      c = dir === "asc" ? cmpAsc(va, vb) : cmpDesc(va, vb);
+    }
+    if (c !== 0) return c;
+    return a.key < b.key ? -1 : a.key > b.key ? 1 : 0;
+  });
+  return out;
+}
+
+// applyDominanceFilters(rows, opts): opts = { dominated, slower,
+// dumber, pricier } booleans. "dominated" keeps only the Pareto
+// frontier over (score high, cost low, time low) — the semantics of
+// computeRecommendations' dominance decision. The single-dimension
+// toggles hide a row when another row is no worse on all three
+// dimensions and strictly better on the toggled one ("slower" = time,
+// "dumber" = score, "pricier" = cost). Rows with a missing dimension
+// are never hidden: no complete comparison exists for them.
+export function applyDominanceFilters(rows, opts) {
+  opts = opts || {};
+  var out = rows.slice();
+  function complete(p) { return p.score != null && p.cost != null && p.time != null; }
+  if (opts.dominated) {
+    var frontier = paretoSet(out, [
+      { get: function (p) { return p.score; }, better: "high" },
+      { get: function (p) { return p.cost; }, better: "low" },
+      { get: function (p) { return p.time; }, better: "low" },
+    ]);
+    var keep = {};
+    frontier.forEach(function (p) { keep[p.key] = true; });
+    out = out.filter(function (p) { return keep[p.key] || !complete(p); });
+  }
+  var toggles = [
+    { on: opts.slower, strict: function (q, p) { return q.time < p.time; } },
+    { on: opts.dumber, strict: function (q, p) { return q.score > p.score; } },
+    { on: opts.pricier, strict: function (q, p) { return q.cost < p.cost; } },
+  ];
+  toggles.forEach(function (t) {
+    if (!t.on) return;
+    var pool = out.slice();
+    out = pool.filter(function (p) {
+      if (!complete(p)) return true;
+      return !pool.some(function (q) {
+        return q !== p && complete(q) && q.score >= p.score && q.cost <= p.cost && q.time <= p.time && t.strict(q, p);
+      });
+    });
+  });
+  return out;
+}
+
 // --- /aa chart zoom/pan viewBox behavior (#9581) ---------------------------
 // Pure, DOM-free chart-view math shared by the browser enhancer in
 // render.ts (which delegates to these functions — no inline copies)
@@ -320,4 +423,20 @@ export function resetChartView(st) {
 export function chartClickSuppressed(rawStamp, now) {
   var t = Number(rawStamp || 0);
   return !!t && now - t < 400;
+}
+export function unpricedScoredPoints(points) {
+  // #1400 remainder: configurations that carry a score but no published
+  // cost. They cannot appear on any cost chart, so the explorer lists
+  // them as detail-opening buttons instead. Input order is the caller's
+  // visible set (filters/hidden already applied); this helper only
+  // selects and orders: score descending, then family/effort for a
+  // stable, scannable list. No score/cost computation happens here.
+  return (points || [])
+    .filter(function (p) { return p && p.score != null && p.cost == null; })
+    .slice()
+    .sort(function (a, b) {
+      return (b.score - a.score)
+        || String(a.family || "").localeCompare(String(b.family || ""))
+        || String(a.effort || "").localeCompare(String(b.effort || ""));
+    });
 }

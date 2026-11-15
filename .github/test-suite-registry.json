@@ -220,19 +220,24 @@
     },
     {
       "id": "id.world-snapshot-arm64",
-      "paths": ["pkgs/id/src/world_fixture.rs"],
-      "invocation": "cargo test -p id --lib world_fixture::tests::replay_tests::checked_in_session_snapshot_hashes_are_stable -- --exact",
+      "paths": ["pkgs/id/crates/id-worlds/src/world_fixture.rs"],
+      "invocation": "nix develop ./pkgs/id --command cargo test --manifest-path pkgs/id/Cargo.toml --lib world_fixture::tests::replay_tests::checked_in_session_snapshot_hashes_are_stable -- --exact",
       "venue": {
         "workflow": ".github/workflows/id-check.yml",
         "job_step": "world-snapshot-arm64 / Run the checked-in session snapshot test natively",
         "state": "active",
         "dispatchable": true
       },
-      "status": "mapped"
+      "status": "mapped",
+      "notes": "Path trued up 2026-11-14 (#6188 ratchet): world_fixture moved from pkgs/id/src to the id-worlds crate; the registry's path named the pre-move file."
     },
     {
       "id": "id.hosted-worker.routing",
-      "paths": ["pkgs/id/hosted-worker/test/routing.test.ts"],
+      "paths": [
+        "pkgs/id/hosted-worker/test/routing.test.ts",
+        "pkgs/id/hosted-worker/test/blobs.test.ts",
+        "pkgs/id/hosted-worker/test/usage.test.ts"
+      ],
       "invocation": "cd pkgs/id/hosted-worker && npm test (node --test test/routing.test.ts)",
       "venue": {
         "workflow": ".github/workflows/id-hosted-worker-tests.yml",
@@ -241,7 +246,21 @@
         "dispatchable": true
       },
       "status": "mapped",
-      "related_issues": [6095]
+      "related_issues": [6095],
+      "notes": "Paths trued up 2026-11-14 (#6188 ratchet): the npm test script names routing, blobs, and usage test files; all three run under this row's invocation."
+    },
+    {
+      "id": "id.hosted-worker.smoke",
+      "paths": ["pkgs/id/hosted-worker/smoke/smoke.mjs"],
+      "invocation": "cd pkgs/id/hosted-worker && npm install && npm run smoke (node smoke/smoke.mjs)",
+      "venue": {
+        "workflow": ".github/workflows/id-hosted-worker-tests.yml",
+        "job_step": "hosted-worker-tests / Run the hosted-worker smoke suite",
+        "state": "active",
+        "dispatchable": true
+      },
+      "status": "mapped",
+      "related_issues": [6370]
     },
     {
       "id": "id.native-shell.transcript",
@@ -401,16 +420,22 @@
       "id": "mcpx.plugin.v2",
       "paths": [
         "pkgs/mcpx/plugin/opencode/v2/permission.test.ts",
+        "pkgs/mcpx/plugin/opencode/v2/picker.test.ts",
         "pkgs/mcpx/plugin/opencode/v2/sampling.test.ts",
         "pkgs/mcpx/plugin/opencode/v2/tool-filter.test.ts",
         "pkgs/mcpx/plugin/opencode/v2/tools.test.ts",
         "pkgs/mcpx/plugin/opencode/v2/v2.test.ts"
       ],
-      "invocation": "bun test plugin/opencode/v2/ (61 tests at filing)",
-      "venue": null,
-      "status": "uncovered",
+      "invocation": "bun test plugin/opencode/v2/ (73 tests)",
+      "venue": {
+        "workflow": ".github/workflows/mcpx.yml",
+        "job_step": "plugin / bun test (opencode plugin v2)",
+        "state": "active",
+        "dispatchable": true
+      },
+      "status": "mapped",
       "phase2_issue": 6092,
-      "reason": "mcpx.yml only invokes the v1 plugin directory; no v2 workflow reference exists."
+      "notes": "Wired 2026-11-14 (#6092): the plugin job runs the v2 directory and asserts the six registered files exist. Verified locally at wiring time: 73 pass, 0 fail, 6 files."
     },
     {
       "id": "mcpx.conformance.official",
@@ -442,8 +467,8 @@
     },
     {
       "id": "mcpx.container.tier2",
-      "paths": ["pkgs/mcpx/scripts/tier2-containers.sh", "pkgs/mcpx/Containerfile"],
-      "invocation": "docker build and tier2-containers.sh legs: alpine-nonexec, alpine-bunmusl-exec, scratch, distroless-static, distroless-cc-deno",
+      "paths": ["pkgs/mcpx/scripts/tier2-containers.sh", "pkgs/mcpx/container-image.nix"],
+      "invocation": "nix build .#packages.x86_64-linux.mcpx-container plus tier2-containers.sh legs: alpine-nonexec, alpine-bunmusl-exec, scratch, distroless-static, distroless-cc-deno",
       "venue": {
         "workflow": ".github/workflows/mcpx-tier2-containers.yml",
         "job_step": "image and legs",
@@ -514,20 +539,16 @@
     {
       "id": "t3code.seed-providers",
       "paths": ["pkgs/t3code-seed-providers/test_seed.py"],
-      "invocation": "Python test; exact command not established",
-      "venue": null,
-      "status": "uncovered",
+      "invocation": "python3 -m unittest discover -s pkgs/t3code-seed-providers -p test_seed.py -v",
+      "venue": {
+        "workflow": ".github/workflows/scripts-test.yml",
+        "job_step": "Run t3code-seed-providers seed regression tests (#5992)",
+        "state": "active",
+        "dispatchable": true
+      },
+      "status": "mapped",
       "phase2_issue": 5992,
-      "reason": "Production service invokes seed.sh; no test venue found."
-    },
-    {
-      "id": "pm-stack.pm-git-sync",
-      "paths": ["pm-stack/scripts/pm-git-sync.test.sh"],
-      "invocation": "bash pm-stack/scripts/pm-git-sync.test.sh",
-      "venue": null,
-      "status": "uncovered",
-      "phase2_issue": 5993,
-      "reason": "No workflow invokes this suite."
+      "reason": "Phase 2 of #6185 landed by #5992: the active, dispatchable scripts-test workflow names pkgs/t3code-seed-providers/test_seed.py explicitly, asserts the file exists first, and runs the 6-test suite on push to main with no continue-on-error."
     },
     {
       "id": "pm-stack.tailnet-bindings",
@@ -542,10 +563,14 @@
       "id": "opencode-config-normalize",
       "paths": ["pkgs/opencode-config-normalize/normalize_test.sh"],
       "invocation": "bash pkgs/opencode-config-normalize/normalize_test.sh",
-      "venue": null,
-      "status": "uncovered",
-      "phase2_issue": 6065,
-      "reason": "No test venue found."
+      "venue": {
+        "workflow": ".github/workflows/opencode-config-normalize-test.yml",
+        "job_step": "normalize-suite / Run normalize regression suite",
+        "state": "active",
+        "dispatchable": true
+      },
+      "status": "mapped",
+      "phase2_issue": 6065
     },
     {
       "id": "id-mail.deploy",
@@ -698,6 +723,23 @@
       "phase3_issue": 6187,
       "related_issues": [5951],
       "reason": "PR #5953 added the step, but no successful post-change run is evidenced. Latest API run is still queued on a non-main branch; prior main runs were cancelled or failed."
+    },
+    {
+      "id": "pm-stack.claimant.explicit-dispatch",
+      "paths": [
+        "pm-stack/opencode-claimant/test_launch_one.py",
+        "pm-stack/opencode-claimant/test_send_to_opencode.py",
+        "pm-stack/opencode-claimant/test_dispatch_batch.py"
+      ],
+      "invocation": "cd pm-stack/opencode-claimant && python3 -m unittest test_launch_one.py test_send_to_opencode.py test_dispatch_batch.py",
+      "venue": {
+        "workflow": ".github/workflows/pm-stack-tests.yml",
+        "job_step": "Test claimant launch, handoff, and batch dispatch (#9877)",
+        "state": "active",
+        "dispatchable": true
+      },
+      "status": "mapped",
+      "related_issues": [9877, 9103]
     },
     {
       "id": "pm-stack.grist.choice-options",
@@ -982,6 +1024,7 @@
     {
       "id": "nixos.home.shell-checks",
       "paths": [
+        "nixos/home/atlas-backup.test.sh",
         "nixos/home/laptop-backups-watchdog.test.sh",
         "nixos/home/pm-dashboard-backup*.test.sh",
         "nixos/home/laptop-autocommit-in-progress.test.sh",
@@ -1024,7 +1067,7 @@
     {
       "id": "fleet.rust",
       "paths": ["pkgs/fleet/crates/**/src/**", "pkgs/fleet/crates/*/tests/*.rs"],
-      "invocation": "cargo +1.99.0 test --manifest-path pkgs/fleet/Cargo.toml --workspace --all-targets --locked",
+      "invocation": "cargo +1.99.1 test --manifest-path pkgs/fleet/Cargo.toml --workspace --all-targets --locked",
       "venue": {
         "workflow": ".github/workflows/fleet-rust-tests.yml",
         "job_step": "fleet-rust-tests / Test the fleet Rust workspace",
@@ -1118,6 +1161,83 @@
       "status": "mapped",
       "related_issues": [7879],
       "notes": "Deletion-safety suite for the hourly yard-reaper (oracle: Drew's 2026-11-07 disposition rule, #7093). Ran nowhere before #7879: no workflow, flake check, or registry entry, while the timer runs the reaper with --apply hourly."
+    },
+    {
+      "id": "mcpx.plugin.core",
+      "paths": ["pkgs/mcpx/plugin/core/*.test.ts"],
+      "invocation": "bun test plugin/opencode/mcpx/ plugin/core/",
+      "venue": {
+        "workflow": ".github/workflows/mcpx.yml",
+        "job_step": "Plugin tests (bun)",
+        "state": "active",
+        "dispatchable": true
+      },
+      "status": "mapped",
+      "notes": "Registered 2026-11-14 (#6188 ratchet): the mcpx.yml Plugin tests step already runs plugin/core alongside the v1 plugin suite; the registry named only v1/v2 until now."
+    },
+    {
+      "id": "mcpx.scripts.conformance-record",
+      "paths": ["pkgs/mcpx/scripts/test_conformance_record.py"],
+      "invocation": "python3 scripts/test_conformance_record.py (mcpx.yml test leg, alongside test_gotest_report.py)",
+      "venue": {
+        "workflow": ".github/workflows/mcpx.yml",
+        "job_step": "test leg (go test with python suite reporters)",
+        "state": "active",
+        "dispatchable": true
+      },
+      "status": "mapped",
+      "notes": "Registered 2026-11-14 (#6188 ratchet): already invoked by mcpx.yml but named by no registry row."
+    },
+    {
+      "id": "id.rust.crate-integration",
+      "paths": [
+        "pkgs/id/crates/id-caps/tests/roc_import_policy.rs",
+        "pkgs/id/crates/id-cli/tests/aliases.rs",
+        "pkgs/id/crates/id-core/tests/probe_petname_load.rs",
+        "pkgs/id/crates/id-store/tests/store_traits.rs",
+        "pkgs/id/crates/id-web/tests/web_router_security.rs"
+      ],
+      "invocation": "cargo test (workspace member integration targets; candidate venue: the id flake package check, doCheck = true)",
+      "venue": null,
+      "status": "uncovered-in-fact",
+      "phase2_issue": 10329,
+      "reason": "Named by no registry entry and no evidenced run found in the #6188 inventory (2026-11-14): the --lib unit row and the pkgs/id/tests shard row do not reach member-crate tests/ targets, and whether the flake package check's cargo test phase executes them is unproven. #10329 owns proving or wiring them."
+    },
+    {
+      "id": "id.web.build-manifest",
+      "paths": ["pkgs/id/web/scripts/build-manifest.test.sh"],
+      "invocation": "bash pkgs/id/web/scripts/build-manifest.test.sh",
+      "venue": null,
+      "status": "uncovered",
+      "phase2_issue": 10329,
+      "reason": "No workflow, package script, or flake check references this suite (verified 2026-11-14, #6188 inventory). #10329 owns wiring or waiving it."
+    },
+    {
+      "id": "mcpx.scripts.spec-parity",
+      "paths": ["pkgs/mcpx/scripts/test_spec_parity.py"],
+      "invocation": "python3 pkgs/mcpx/scripts/test_spec_parity.py (candidate; no venue invocation found)",
+      "venue": null,
+      "status": "uncovered-in-fact",
+      "phase2_issue": 10330,
+      "reason": "Named by no registry entry and no workflow invocation found in the #6188 inventory (2026-11-14). #10330 owns proving or wiring it."
+    },
+    {
+      "id": "mcpx.scripts.test-seed",
+      "paths": ["pkgs/mcpx/scripts/tests/test_mcpx_test_seed.py"],
+      "invocation": "python3 -m unittest (candidate; the scripts-test.yml discovery steps are pattern-scoped to other suites and do not reach this file)",
+      "venue": null,
+      "status": "uncovered-in-fact",
+      "phase2_issue": 10330,
+      "reason": "Named by no registry entry and no venue invocation found in the #6188 inventory (2026-11-14). #10330 owns proving or wiring it."
+    },
+    {
+      "id": "mcpx.scripts.e2e-shard-packer-test",
+      "paths": ["pkgs/mcpx/scripts/tests/test_e2e_shard_packer.py"],
+      "invocation": "python3 -m unittest (candidate; mcpx-test.yml runs the packer script itself, not this test)",
+      "venue": null,
+      "status": "uncovered-in-fact",
+      "phase2_issue": 10330,
+      "reason": "Named by no registry entry and no venue invocation found in the #6188 inventory (2026-11-14). #10330 owns proving or wiring it."
     }
   ],
   "waivers": []

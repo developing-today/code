@@ -15,7 +15,16 @@ STATEMENT = re.compile(r"^\s*(S\d+)\.(\d+)\s+((?:\(implied\)\s*)?.*?)\s*$")
 MAP_TERM = re.compile(r"S(\d+)\.(\d+)(?:–S?(\d+)\.(\d+))?")
 BOLD = re.compile(r"\*\*(.*?)\*\*")
 HOME = re.compile(r"#\d+")
-ORACLE_COUNTS = {"S0": 17, "S1": 120, "S2": 19, "S3": 38, "S4": 93, "S5": 64, "S6": 17, "S7": 16}
+ORACLE_COUNTS = {
+    "S0": 17,
+    "S1": 120,
+    "S2": 19,
+    "S3": 38,
+    "S4": 93,
+    "S5": 64,
+    "S6": 17,
+    "S7": 16,
+}
 ORACLE_TOTAL = 384
 
 
@@ -56,7 +65,9 @@ def arguments(argv: list[str]) -> tuple[Path, Path]:
         try:
             same_file = source_path.samefile(output_path)
         except OSError as exc:
-            raise ValueError(f"cannot verify source/output path identity: {exc}") from exc
+            raise ValueError(
+                f"cannot verify source/output path identity: {exc}"
+            ) from exc
         if same_file:
             raise ValueError("--source and --json must not refer to the same file")
     return source_path, output_path
@@ -74,7 +85,9 @@ def parse_map_expression(expression: str, valid_ids: set[str]) -> list[str]:
             raise InventoryError(f"malformed map range token: {term!r}")
         section, first, end_section, end_number = match.groups()
         start_id = f"S{section}.{int(first)}"
-        finish_id = f"S{end_section}.{int(end_number)}" if end_section is not None else start_id
+        finish_id = (
+            f"S{end_section}.{int(end_number)}" if end_section is not None else start_id
+        )
         if start_id not in valid_ids:
             raise InventoryError(f"unknown map endpoint: {start_id}")
         if finish_id not in valid_ids:
@@ -85,11 +98,21 @@ def parse_map_expression(expression: str, valid_ids: set[str]) -> list[str]:
         finish_number = int(end_number) if end_number is not None else start_number
         if finish_number < start_number:
             raise InventoryError(f"reversed map range: {term!r}")
-        expanded.extend(f"S{section}.{number}" for number in range(start_number, finish_number + 1))
+        expanded.extend(
+            f"S{section}.{number}" for number in range(start_number, finish_number + 1)
+        )
     return expanded
 
 
-def parse(source: str) -> tuple[dict[str, int], list[dict], dict[str, list[str]], list[tuple[str, list[str]]], list[tuple[str, str]]]:
+def parse(
+    source: str,
+) -> tuple[
+    dict[str, int],
+    list[dict],
+    dict[str, list[str]],
+    list[tuple[str, list[str]]],
+    list[tuple[str, str]],
+]:
     lines = source.splitlines()
     counts: dict[str, int] = {}
     statements: list[dict] = []
@@ -131,8 +154,19 @@ def parse(source: str) -> tuple[dict[str, int], list[dict], dict[str, list[str]]
                     match = STATEMENT.match(segment.rsplit("** ", 1)[-1])
                 if match:
                     ident = f"{match.group(1)}.{match.group(2)}"
-                    statements.append({"id": ident, "text": match.group(3).strip(), "source_line": line_no, "issue_homes": []})
-        elif in_map and line.startswith("|") and not re.match(r"^\|\s*[-:| ]+\s*\|?$", line):
+                    statements.append(
+                        {
+                            "id": ident,
+                            "text": match.group(3).strip(),
+                            "source_line": line_no,
+                            "issue_homes": [],
+                        }
+                    )
+        elif (
+            in_map
+            and line.startswith("|")
+            and not re.match(r"^\|\s*[-:| ]+\s*\|?$", line)
+        ):
             cells = [cell.strip() for cell in line.strip().strip("|").split("|")]
             if len(cells) < 2:
                 continue
@@ -147,7 +181,9 @@ def parse(source: str) -> tuple[dict[str, int], list[dict], dict[str, list[str]]
             for token in bold_tokens:
                 token = token.strip()
                 if not HOME.fullmatch(token):
-                    raise InventoryError(f"malformed issue home in map row {expression!r}: {token!r}")
+                    raise InventoryError(
+                        f"malformed issue home in map row {expression!r}: {token!r}"
+                    )
                 homes.append(token)
             # This labeled row assigns sequencing work, not statement IDs.
             if expression == "Sequencing of all of the above":
@@ -167,7 +203,9 @@ def parse(source: str) -> tuple[dict[str, int], list[dict], dict[str, list[str]]
             if item["id"] in seen:
                 repeated.add(item["id"])
             seen.add(item["id"])
-        raise InventoryError("duplicate statement definitions: " + ", ".join(sorted(repeated)))
+        raise InventoryError(
+            "duplicate statement definitions: " + ", ".join(sorted(repeated))
+        )
     valid_ids = set(by_id)
     for expression, homes in map_rows:
         for ident in parse_map_expression(expression, valid_ids):
@@ -203,17 +241,23 @@ def main(argv: list[str]) -> int:
         actual_by_section.setdefault(section, []).append(int(number))
     errors: list[str] = []
     if counts != ORACLE_COUNTS:
-        errors.append(f"declared section counts differ from fixed oracle: expected {ORACLE_COUNTS}, found {counts}")
+        errors.append(
+            f"declared section counts differ from fixed oracle: expected {ORACLE_COUNTS}, found {counts}"
+        )
     for section, expected_count in ORACLE_COUNTS.items():
         actual = sorted(actual_by_section.get(section, []))
         if actual != list(range(1, expected_count + 1)):
-            errors.append(f"{section}: expected IDs 1..{expected_count}, found {len(actual)} definitions")
+            errors.append(
+                f"{section}: expected IDs 1..{expected_count}, found {len(actual)} definitions"
+            )
     for section in actual_by_section.keys() - ORACLE_COUNTS.keys():
         errors.append(f"{section}: definitions found without a fixed-oracle section")
     total_match = re.search(r"\*\*Inventory total: (\d+) statements\*\*", source_text)
     declared_total = int(total_match.group(1)) if total_match else None
     if declared_total != ORACLE_TOTAL or len(statements) != ORACLE_TOTAL:
-        errors.append(f"total: fixed oracle {ORACLE_TOTAL}, declared {declared_total}, parsed {len(statements)} definitions")
+        errors.append(
+            f"total: fixed oracle {ORACLE_TOTAL}, declared {declared_total}, parsed {len(statements)} definitions"
+        )
     unmapped = [item["id"] for item in statements if not item["issue_homes"]]
     if unmapped:
         errors.append("unmapped statements: " + ", ".join(unmapped))
@@ -222,21 +266,29 @@ def main(argv: list[str]) -> int:
         return 1
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
-    output_path.write_text(json.dumps(statements, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    output_path.write_text(
+        json.dumps(statements, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
+    )
     seen: set[str] = set()
     duplicate_assignments: dict[str, list[str]] = {}
     all_assignments: dict[str, list[str]] = {}
     for ident, home in assignments:
         all_assignments.setdefault(ident, []).append(home)
-    duplicate_assignments = {ident: homes for ident, homes in all_assignments.items() if len(homes) > 1}
+    duplicate_assignments = {
+        ident: homes for ident, homes in all_assignments.items() if len(homes) > 1
+    }
     for item in statements:
         seen.add(item["id"])
     print(f"fixed section counts: {json.dumps(ORACLE_COUNTS, sort_keys=True)}")
     print(f"parsed statements: {len(statements)} (declared total: {declared_total})")
     print(f"unique IDs: {len(seen)}; duplicate definitions: []")
     print("unmapped statements: 0")
-    print(f"map rows with multiple terms: {sum(',' in expression for expression, _ in map_rows)}")
-    print(f"multiply assigned statements: {json.dumps(duplicate_assignments, sort_keys=True)}")
+    print(
+        f"map rows with multiple terms: {sum(',' in expression for expression, _ in map_rows)}"
+    )
+    print(
+        f"multiply assigned statements: {json.dumps(duplicate_assignments, sort_keys=True)}"
+    )
     return 0
 
 

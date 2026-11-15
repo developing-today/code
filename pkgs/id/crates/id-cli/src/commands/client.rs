@@ -65,7 +65,34 @@ use crate::{CLIENT_KEY_FILE, load_or_create_keypair};
 pub async fn create_local_client_endpoint(
     serve_info: &ServeInfo,
 ) -> Result<(Endpoint, EndpointAddr)> {
-    let client_key = load_or_create_keypair(CLIENT_KEY_FILE).await?;
+    create_local_endpoint_with_key(serve_info, CLIENT_KEY_FILE).await
+}
+
+/// Creates an endpoint that connects to a local serve as its
+/// designated local operator (#2147 operator endpoint).
+///
+/// Publication control is operator-only: the serve handler answers
+/// publish/unpublish/list requests only from the serving node
+/// itself or the local operator identity serve designated -- this
+/// machine's client identity. The local publication CLI therefore
+/// presents the client keypair: an iroh endpoint cannot connect to
+/// itself ("Connecting to ourself is not supported"), so the
+/// node's own key cannot be the transport identity of a local
+/// operator connection (learned in the slice-3b acceptance walk,
+/// 2026-11-14). Holding either local key file is the operator
+/// credential -- the design's trade-off, chosen over widening the
+/// remote write policy to listener and route changes.
+pub async fn create_local_operator_endpoint(
+    serve_info: &ServeInfo,
+) -> Result<(Endpoint, EndpointAddr)> {
+    create_local_endpoint_with_key(serve_info, CLIENT_KEY_FILE).await
+}
+
+async fn create_local_endpoint_with_key(
+    serve_info: &ServeInfo,
+    key_file: &str,
+) -> Result<(Endpoint, EndpointAddr)> {
+    let client_key = load_or_create_keypair(key_file).await?;
     // The server's loopback addresses come from the lock file, so no relay and
     // no address lookup (DNS, pkarr, mDNS) are needed. Using the full N0 preset
     // here made every CLI command probe relays and publish this client's info

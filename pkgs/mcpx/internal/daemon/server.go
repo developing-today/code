@@ -31,6 +31,7 @@ import (
 	"github.com/developing-today/code/pkgs/mcpx/internal/logstore"
 	"github.com/developing-today/code/pkgs/mcpx/internal/mcpclient"
 	"github.com/developing-today/code/pkgs/mcpx/internal/mcpserver"
+	"github.com/developing-today/code/pkgs/mcpx/internal/pluginsession"
 	"github.com/developing-today/code/pkgs/mcpx/internal/pool"
 	"github.com/developing-today/code/pkgs/mcpx/internal/settings"
 	"github.com/developing-today/code/pkgs/mcpx/internal/tasks"
@@ -46,6 +47,17 @@ type Server struct {
 	// completeLimiter holds the completion/complete admission windows
 	// (#2387). The zero value is ready; every Server gets its own.
 	completeLimiter rateLimiter
+	// pluginSessions is the plugin-session registry (#1873): the
+	// sessions the daemon has issued to connecting plugins, and
+	// everything those sessions own. The zero value is ready;
+	// every Server gets its own.
+	pluginSessions pluginsession.Registry
+	// pluginHooks resolves plugin-session manifest hooks into live
+	// bus subscribers (#1873 slice 2, #10046). Built lazily by
+	// hookResolver, because tests construct Servers directly and a
+	// Server's bus exists only where New (or the test) put one.
+	pluginHooks     *pluginsession.Resolver
+	pluginHooksOnce sync.Once
 	// augment is Options.Augment, kept for reloads.
 	augment func(*config.Config) error
 	paths   Paths
@@ -793,6 +805,7 @@ func (s *Server) routes(mux *http.ServeMux) {
 	s.route(mux, "POST "+upgradeRoute, s.handleUpgrade)
 	s.route(mux, "GET /v1/status", s.handleStatus)
 	s.routesSessions(mux)
+	s.routesPluginSessions(mux)
 	// The permissive authorisation funnel's decision report (#1972
 	// step 2): counts by operation and principal, and the clear.
 	s.route(mux, "GET /v1/authz/decisions", s.handleAuthzDecisions)
@@ -936,13 +949,14 @@ func (s *Server) handleStatus(w http.ResponseWriter, _ *http.Request) {
 		// #1877: this daemon's instance identity, so an `mcpx serve`
 		// shim backed by this daemon can report the DAEMON's identity
 		// (not the shim process's) to its host.
-		"instance": pool.OwnInstanceID,
-		"pid":      os.Getpid(),
-		"uptime":   time.Since(s.started).Truncate(time.Second).String(),
-		"endpoint": s.endpoint,
-		"socket":   s.paths.Socket,
-		"config":   cfgPath,
-		"servers":  s.reg.Status(),
+		"instance":       pool.OwnInstanceID,
+		"pid":            os.Getpid(),
+		"uptime":         time.Since(s.started).Truncate(time.Second).String(),
+		"endpoint":       s.endpoint,
+		"socket":         s.paths.Socket,
+		"config":         cfgPath,
+		"servers":        s.reg.Status(),
+		"pluginSessions": s.pluginSessionStatus(),
 	})
 }
 

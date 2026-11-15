@@ -4,13 +4,13 @@
 
 ## Failure modes and controls
 
-| Abuse | Default design control | Residual limitation |
-|---|---|---|
-| Self-promotion / ballot stuffing | no self-rating weight; deduplicate evidence IDs; per-identity caps | Sybil identity cost is unresolved |
-| Retaliation / smear | claims are allegations, not verdicts; signed equal-auth right of reply; no unilateral score change | local policy can still be biased |
-| Spam / flooding | rate and byte caps; moderation and privacy-redacted commitments | operators choose caps |
-| Whitewashing | retain local identity continuity evidence and decay carefully | open federation cannot guarantee identity continuity |
-| Collusion | require independently verifiable scoped evidence; local weighting | colluding evidence producers can still deceive; no global oracle |
+| Abuse                            | Default design control                                                                             | Residual limitation                                              |
+| -------------------------------- | -------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------- |
+| Self-promotion / ballot stuffing | no self-rating weight; deduplicate evidence IDs; per-identity caps                                 | Sybil identity cost is unresolved                                |
+| Retaliation / smear              | claims are allegations, not verdicts; signed equal-auth right of reply; no unilateral score change | local policy can still be biased                                 |
+| Spam / flooding                  | rate and byte caps; moderation and privacy-redacted commitments                                    | operators choose caps                                            |
+| Whitewashing                     | retain local identity continuity evidence and decay carefully                                      | open federation cannot guarantee identity continuity             |
+| Collusion                        | require independently verifiable scoped evidence; local weighting                                  | colluding evidence producers can still deceive; no global oracle |
 
 ## Evidence and alternatives
 

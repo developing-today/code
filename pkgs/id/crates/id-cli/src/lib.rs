@@ -14,6 +14,30 @@ use anyhow::Result;
 use std::path::PathBuf;
 
 pub mod aliases;
+
+/// The blob gate, at its historical in-crate path: a facade over the
+/// split gate crates (`id_groups::blob_gate` for the verdicts and
+/// provider wiring, `id_worlds::blob_gate` for the folded worlds).
+pub mod blob_gate {
+    pub use id_groups::blob_gate::{
+        BlobPolicy, Request, blob_events, blob_events_with_blocks, decide, decide_with_blocks,
+        decide_with_local,
+    };
+    pub use id_worlds::blob_gate::{
+        FoldedWorlds, RefreshingWorlds, build_reference_index, fold_group_events, hashseq_children,
+        world_key,
+    };
+}
+
+/// The groups bridge, at its historical in-crate path.
+pub mod groups {
+    pub use id_worlds::groups::worlds;
+}
+
+/// The node's local event store, at its historical in-crate path.
+pub mod local_events {
+    pub use id_events::local_events::LocalEvents;
+}
 pub mod app_manifest;
 pub mod chat_presence;
 pub mod cli;

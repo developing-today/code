@@ -32,6 +32,14 @@
 // - service probes: a failed probe (ok === false) for Kaneo, Grist,
 //   or Pad breaches immediately; the probe cache (60 s, health.ts)
 //   is the debounce.
+// - host health (#10141): derived from the host-health collector's
+//   snapshot (host-health.ts) — claimant mode file missing /
+//   unreadable / invalid, a PM unit's failed last run, an inactive
+//   unit timer, pm-projector-reconcile stuck in `activating` past
+//   10 min, or pm-dashboard-backup without a success in 36 h (its
+//   cadence is daily) breach immediately; an absent snapshot or one
+//   stale past 15 min (3 missed 5-minute collections) breaches as
+//   its own item, so the surfacer cannot itself fail silently.
 import {
   ageMsText,
   FEED_STALE_MS,
@@ -39,6 +47,12 @@ import {
   ORCHESTRATION_STALE_MS,
   type SectionDiagnosis,
 } from "./feed.ts";
+import {
+  HOST_HEALTH_BACKUP_STALE_MS,
+  HOST_HEALTH_RECONCILE_STUCK_MS,
+  HOST_HEALTH_STALE_MS,
+  type HostHealthSnapshot,
+} from "./host-health.ts";
 import type { ProjectAudit, TierItem } from "./model.ts";
 
 /** Feed freshness bound — mirrors health.ts / live.ts FEED_STALE_MS. */
@@ -88,9 +102,16 @@ export interface WatchdogInputs {
   /** Probe outcomes for the topology services; only the
    *  WATCHDOG_PROBE_SERVICE_IDS rows are considered. */
   probes?: WatchdogProbe[];
+  /** Host-health snapshot (#10141), assembled by the caller from
+   *  host-health.ts's reader. `undefined` = not assembled (fixtures /
+   *  non-live mode: no host items); `null` = live mode but the
+   *  collector's snapshot is absent or unreadable, which is itself a
+   *  breach — the surfacer must never be silently absent. */
+  hostHealth?: HostHealthSnapshot | null;
 }
 
 const WATCHDOG_REF = "developing-today/code#1148" as TierItem["ref"];
+const HOST_HEALTH_REF = "developing-today/code#10141" as TierItem["ref"];
 
 function item(
   input: string,
@@ -100,6 +121,7 @@ function item(
   sinceMs: number,
   now: number,
   action: string,
+  ref: TierItem["ref"] = WATCHDOG_REF,
 ): TierItem {
   return {
     id: `watchdog:${input}`,
@@ -110,7 +132,7 @@ function item(
     reason,
     since: new Date(sinceMs).toISOString(),
     lastSeenAt: new Date(now).toISOString(),
-    ref: WATCHDOG_REF,
+    ref,
     recommendedAction: action,
   };
 }
@@ -322,5 +344,158 @@ export function watchdogTierItems(inputs: WatchdogInputs): TierItem[] {
     );
   }
 
+  // Host health (#10141): the silent-failure surface. The collector's
+  // snapshot is assembled by the caller only in live mode; `undefined`
+  // means this derivation has no host inputs and emits nothing.
+  if (inputs.hostHealth !== undefined) {
+    deriveHostHealthItems(inputs.hostHealth, now, put);
+  }
+
   return [...out.values()];
+}
+
+const HOST_UNIT_LABELS: Record<string, string> = {
+  "pm-git-sync": "pm-git-sync",
+  "pm-projector-reconcile": "pm-projector-reconcile",
+  "pm-kaneo-sync-guard": "Kaneo sync guard",
+  "pm-dashboard-backup": "PM dashboard backup",
+};
+
+/** #10141 derivation: claimant mode + PM unit states from the
+ *  host-health snapshot. Pure, like the rest of this module: same
+ *  snapshot in, same items out; recovery = the next snapshot no
+ *  longer breaches, and the card clears itself. Thresholds are the
+ *  constants in host-health.ts, named at their definition site. */
+function deriveHostHealthItems(snapshot: HostHealthSnapshot | null, now: number, put: (it: TierItem) => void): void {
+  if (snapshot === null) {
+    put(
+      item(
+        "host-health",
+        "Watchdog: host-health snapshot is absent — claimant mode and PM unit states are unobserved",
+        "watchdog: host health absent",
+        "The host-health collector (#10141) has produced no readable snapshot, so the silent-failure surface itself is down: claimant mode, pm-git-sync, pm-projector-reconcile, the Kaneo sync guard, and the dashboard backup are all unobserved right now.",
+        now,
+        now,
+        "Check the pm-host-health user timer/service on the laptop and the snapshot at ~/.local/state/pm-aggregator/host-health.json; the card clears itself when a fresh snapshot lands.",
+        HOST_HEALTH_REF,
+      ),
+    );
+    return;
+  }
+
+  const generatedMs = Date.parse(snapshot.generatedAt);
+  if (!Number.isNaN(generatedMs) && now - generatedMs > HOST_HEALTH_STALE_MS) {
+    put(
+      item(
+        "host-health",
+        `Watchdog: host-health snapshot is stale — last collected ${ageMsText(now - generatedMs)} ago`,
+        "watchdog: host health stale",
+        `The host-health collector (#10141) runs every 5 min; its snapshot is ${ageMsText(now - generatedMs)} old, past the 15 min bound (3 missed cycles), so every host-health verdict below may itself be out of date.`,
+        generatedMs + HOST_HEALTH_STALE_MS,
+        now,
+        "Check the pm-host-health user timer on the laptop; the card clears itself when the collector runs again.",
+        HOST_HEALTH_REF,
+      ),
+    );
+  }
+
+  // Claimant mode: missing/unreadable/invalid means read_mode() is
+  // silently defaulting to shadow — dispatch stalls with no other
+  // signal. A file that says "shadow" is a deliberate setting and
+  // does not breach; "live" is the healthy dispatch state.
+  const mode = snapshot.claimantMode;
+  if (mode.state === "missing" || mode.state === "unreadable" || mode.state === "invalid") {
+    put(
+      item(
+        "claimant-mode",
+        `Watchdog: opencode claimant mode file is ${mode.state} — claimant is silently in shadow`,
+        `watchdog: claimant mode ${mode.state}`,
+        `The claimant's mode file (~/.local/state/opencode-claimant/mode) is ${mode.state}${mode.detail ? ` (${mode.detail})` : ""}. read_mode() defaults to shadow, so dispatch returns mode_not_live and stalls — the safety default is correct, the silence was the bug (#10141).`,
+        Number.isNaN(generatedMs) ? now : generatedMs,
+        now,
+        "Restore the mode file with the intended mode (live or shadow) — the parallel #9106 unpark owns today's instance; this card clears itself when the collector reads a valid file.",
+        HOST_HEALTH_REF,
+      ),
+    );
+  }
+
+  // PM unit states: a failed last run, a dead timer, a stuck
+  // activation, or a stale backup each breach immediately — there is
+  // no grace period for a unit whose whole job is not failing
+  // silently. Units the collector could not read (state "unknown"
+  // with no activeState verdict) never breach on their own; the
+  // snapshot-level items above cover a dead collector.
+  for (const [unitId, label] of Object.entries(HOST_UNIT_LABELS)) {
+    const unit = snapshot.units[unitId];
+    if (!unit) continue;
+    const changedMs = unit.stateChangedAt ? Date.parse(unit.stateChangedAt) : NaN;
+    const since = Number.isNaN(changedMs) ? (Number.isNaN(generatedMs) ? now : generatedMs) : changedMs;
+    const failed = unit.activeState === "failed" || (unit.result != null && unit.result !== "success");
+    if (failed) {
+      put(
+        item(
+          `unit-${unitId}`,
+          `Watchdog: ${label} is failing — last run result ${unit.result ?? unit.activeState}`,
+          "watchdog: unit failing",
+          `${label} (${unitId}.service) last ran with result ${unit.result ?? "unknown"} (ActiveState ${unit.activeState}${unit.execMainStatus != null ? `, exit ${unit.execMainStatus}` : ""}). ${unitId === "pm-git-sync" ? "While it fails, merged repo changes stop reaching the laptop checkout — the deploy-by-merge path (#8171) is down." : unitId === "pm-kaneo-sync-guard" ? "While the guard fails, Kaneo statusTransitions drift can go unhealed — the close-authority guard (#10137) is not asserting." : ""} Diagnosed from the host-health snapshot (#10141).`,
+          since,
+          now,
+          `Check ${unitId}.service on the laptop (journalctl --user -u ${unitId}); the card clears itself when a run succeeds.`,
+          HOST_HEALTH_REF,
+        ),
+      );
+      continue;
+    }
+    if (unitId === "pm-projector-reconcile" && unit.activeState === "activating") {
+      const stuckFor = Number.isNaN(changedMs) ? 0 : now - changedMs;
+      if (stuckFor > HOST_HEALTH_RECONCILE_STUCK_MS) {
+        put(
+          item(
+            `unit-${unitId}`,
+            `Watchdog: ${label} is stuck activating — ${ageMsText(stuckFor)} in this state`,
+            "watchdog: unit stuck",
+            `pm-projector-reconcile has been in ActiveState 'activating' for ${ageMsText(stuckFor)}, past the 10 min stuck bound (#10141); its runs normally finish in seconds, so the projector's GitHub reconcile is not completing.`,
+            since,
+            now,
+            "Check pm-projector-reconcile.service on the laptop (journalctl --user -u pm-projector-reconcile); the card clears itself when the unit leaves 'activating'.",
+            HOST_HEALTH_REF,
+          ),
+        );
+        continue;
+      }
+    }
+    if (unitId === "pm-dashboard-backup") {
+      const lastOk = unit.lastSuccessAt ? Date.parse(unit.lastSuccessAt) : NaN;
+      if (Number.isNaN(lastOk) || now - lastOk > HOST_HEALTH_BACKUP_STALE_MS) {
+        put(
+          item(
+            `unit-${unitId}`,
+            `Watchdog: ${label} is stale — last success ${Number.isNaN(lastOk) ? "never recorded" : `${ageMsText(now - lastOk)} ago`}`,
+            "watchdog: backup stale",
+            `pm-dashboard-backup runs daily (~04:30, code#1516); no successful run is recorded within the 36 h bound (1.5 cadences, #10141), so the dashboard/Kaneo backup chain may have stopped without a failed unit to show for it.`,
+            Number.isNaN(lastOk) ? now : lastOk + HOST_HEALTH_BACKUP_STALE_MS,
+            now,
+            "Check pm-dashboard-backup.service and its timer on the laptop; the card clears itself after the next successful backup.",
+            HOST_HEALTH_REF,
+          ),
+        );
+        continue;
+      }
+    }
+    const timer = snapshot.timers[`${unitId}.timer`];
+    if (timer && timer.active === false) {
+      put(
+        item(
+          `unit-${unitId}`,
+          `Watchdog: ${label} timer is not active — the unit will not run on schedule`,
+          "watchdog: timer inactive",
+          `The ${unitId}.timer unit is ${timer.activeState ?? "not active"} in the host-health snapshot (#10141); a stopped timer fails silently exactly like a failed service.`,
+          Number.isNaN(generatedMs) ? now : generatedMs,
+          now,
+          `Re-enable ${unitId}.timer on the laptop (systemctl --user enable --now ${unitId}.timer); the card clears itself when the collector sees it active.`,
+          HOST_HEALTH_REF,
+        ),
+      );
+    }
+  }
 }

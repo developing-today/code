@@ -48,18 +48,18 @@ The common architecture is [`../architecture.md`](../architecture.md); it govern
 
 Crosswalk domain ownership:
 
-| Requirement family | Design/contract owner | V1 baseline/evidence | Primary residual gates |
-|---|---|---|---|
-| Census, source preservation, authority map, QTI | #9198 | Track A/B census, source packet, inventory | #9241 QTI result; #3424/#8575/#8579 compatibility; batch issue index pending |
-| Priority dimensions, mapping, rank and triage | #9199 | priority scalar and dispatch adapter mismatch; list/claim tie defect | exact profile, rank field, provenance, aging/triage tests |
-| Distributed command/projection provenance | #9200 | Project writer docs, action/projection and dispatch seams | #9028 producer reconciliation; accepted revision/operation schema; Project readback |
-| Mobile board/actions | #9201 | aggregator board/read model/action store | all action controls, accessibility, service operation results and hosted parity |
-| Authenticated comment/command/direct dispatch | #9203 | Projector has bounded HMAC delivery intake/dedup and disposable projection hot ledger; Fleet dispatch/PM route partial; #8187 baseline | canonical Fleet operation acceptance/authorization/receipt, #9028, #6533 live acceptance |
-| Normal selection/exploration/fairness | #9204 | atomic queue claim/order, no final tie, no sampler | exact claim parity, filtered lanes #8097, calibration, fairness objectives |
-| Lifecycle and command surface | #9206 | queue-oriented exact commands only | every command/option from JSONL; #9178/#9179; one CLI glue owner |
-| Hydration and activity | #9207 | no registered work hydrate/activity surface demonstrated | immutable bundle, cursor/page atomicity, endpoint limits, attribution |
-| Typed relations, journal, authority | #9208 | legacy blocker/event/status fields; no typed graph/journal proof | #3424 and schema home; privacy, cycle, field authority, managed-content CAS capability |
-| Lease/outbox/completion | #9209 | worker lease, creation pilot, stack merge intent, queue close substrate | fence, general mutation outbox, GitHub effects/readback, crash recovery |
+| Requirement family                              | Design/contract owner | V1 baseline/evidence                                                                                                                   | Primary residual gates                                                                   |
+| ----------------------------------------------- | --------------------- | -------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------- |
+| Census, source preservation, authority map, QTI | #9198                 | Track A/B census, source packet, inventory                                                                                             | #9241 QTI result; #3424/#8575/#8579 compatibility; batch issue index pending             |
+| Priority dimensions, mapping, rank and triage   | #9199                 | priority scalar and dispatch adapter mismatch; list/claim tie defect                                                                   | exact profile, rank field, provenance, aging/triage tests                                |
+| Distributed command/projection provenance       | #9200                 | Project writer docs, action/projection and dispatch seams                                                                              | #9028 producer reconciliation; accepted revision/operation schema; Project readback      |
+| Mobile board/actions                            | #9201                 | aggregator board/read model/action store                                                                                               | all action controls, accessibility, service operation results and hosted parity          |
+| Authenticated comment/command/direct dispatch   | #9203                 | Projector has bounded HMAC delivery intake/dedup and disposable projection hot ledger; Fleet dispatch/PM route partial; #8187 baseline | canonical Fleet operation acceptance/authorization/receipt, #9028, #6533 live acceptance |
+| Normal selection/exploration/fairness           | #9204                 | atomic queue claim/order, no final tie, no sampler                                                                                     | exact claim parity, filtered lanes #8097, calibration, fairness objectives               |
+| Lifecycle and command surface                   | #9206                 | queue-oriented exact commands only                                                                                                     | every command/option from JSONL; #9178/#9179; one CLI glue owner                         |
+| Hydration and activity                          | #9207                 | no registered work hydrate/activity surface demonstrated                                                                               | immutable bundle, cursor/page atomicity, endpoint limits, attribution                    |
+| Typed relations, journal, authority             | #9208                 | legacy blocker/event/status fields; no typed graph/journal proof                                                                       | #3424 and schema home; privacy, cycle, field authority, managed-content CAS capability   |
+| Lease/outbox/completion                         | #9209                 | worker lease, creation pilot, stack merge intent, queue close substrate                                                                | fence, general mutation outbox, GitHub effects/readback, crash recovery                  |
 
 ### Data, ownership and compatibility boundaries
 

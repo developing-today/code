@@ -1,0 +1,229 @@
+{
+  "assessments": [
+    {
+      "criterion_id": "data-model-history",
+      "evidence_refs": ["diamond-types-docs", "b11-research-note"],
+      "option_id": "adopt-now",
+      "reason": "Diamond Types currently supports plain text documents only; the design's data models (structured documents, ID arrays/triples, generic federation) are not text, so a generic merge-layer adoption does not fit the data model the design needs. The append-only operation log gives a text history, not the design's general inspectable history.",
+      "status": "unsupported"
+    },
+    {
+      "criterion_id": "convergence",
+      "evidence_refs": ["kleppmann-eg-walker", "diamond-types-docs"],
+      "option_id": "adopt-now",
+      "reason": "Eg-walker merges concurrent text edits into a consistent state and can be used peer-to-peer without a central server; the crate represents concurrency as a time DAG over an append-only operation log and replays it deterministically, so replicas converge for the text case.",
+      "status": "supported"
+    },
+    {
+      "criterion_id": "scale-performance",
+      "evidence_refs": ["kleppmann-eg-walker", "b11-research-note"],
+      "experiment_ref": "text-workload-benchmark",
+      "option_id": "adopt-now",
+      "reason": "The EuroSys 2025 paper reports strong results on its text-editing corpus (an order of magnitude less steady-state memory than existing CRDTs, far faster loads and long-branch merges), but no measurement exists for this design's workloads and the paper's figures must not be generalized beyond its corpus. Adoption now would be an unmeasured commitment.",
+      "status": "unknown"
+    },
+    {
+      "criterion_id": "signed-history-compat",
+      "evidence_refs": ["diamond-types-docs", "b11-research-note"],
+      "option_id": "adopt-now",
+      "reason": "An operation's ID is an agent ID plus a sequence number, and the agent ID is usually an opaque string; that identifies a session, not an authenticated signer. Signed envelopes would remain an independent layer the crate does not provide, so adopting now does not by itself satisfy signed-history compatibility.",
+      "status": "unsupported"
+    },
+    {
+      "criterion_id": "cross-language-format-interop",
+      "evidence_refs": ["diamond-types-docs", "egwalker-paper-repo"],
+      "option_id": "adopt-now",
+      "reason": "The maintained artifact is a single Rust crate whose API is explicitly in flux; the TypeScript code in the paper repository is a reference implementation of the algorithm for the paper, not a maintained port, and no stable cross-language wire format or per-document sync protocol is documented for the crate.",
+      "status": "unsupported"
+    },
+    {
+      "criterion_id": "authority-boundary",
+      "evidence_refs": ["diamond-types-docs", "b11-research-note"],
+      "option_id": "adopt-now",
+      "reason": "Diamond Types carries no authority model, and its own documentation recommends generating a fresh agent ID per editing session; actor identity inside the crate is self-asserted. Adopting now as the generic layer leaves the design's authority boundary entirely to be built outside it.",
+      "status": "unsupported"
+    },
+    {
+      "criterion_id": "data-model-history",
+      "evidence_refs": ["diamond-types-docs", "b11-research-note"],
+      "option_id": "text-adapter-after-benchmark",
+      "reason": "An isolated adapter scopes Diamond Types to the plain-text workloads its model actually fits, where the append-only operation log is exactly the inspectable history a text stream needs; non-text models stay outside the adapter.",
+      "status": "supported"
+    },
+    {
+      "criterion_id": "convergence",
+      "evidence_refs": ["kleppmann-eg-walker", "diamond-types-docs"],
+      "option_id": "text-adapter-after-benchmark",
+      "reason": "The adapter inherits Eg-walker's deterministic convergence for concurrent text edits, applied only inside the adapter's text boundary.",
+      "status": "supported"
+    },
+    {
+      "criterion_id": "scale-performance",
+      "evidence_refs": ["b11-research-note"],
+      "experiment_ref": "text-workload-benchmark",
+      "option_id": "text-adapter-after-benchmark",
+      "reason": "Still unmeasured for this design's workloads today; this option is defined by running the text-workload benchmark against Automerge before any adoption, so the criterion is answered by the revisit gate rather than asserted now.",
+      "status": "unknown"
+    },
+    {
+      "criterion_id": "signed-history-compat",
+      "evidence_refs": ["b11-research-note", "versioned-design-s142"],
+      "option_id": "text-adapter-after-benchmark",
+      "reason": "Per the versioned design, any later CRDT adapter consumes signed operations and emits deterministic state plus retained provenance without authenticating authorship itself; the adapter keeps signed envelopes as the independent layer by construction, and the revisit conditions include the interop/signature adapter contract.",
+      "status": "supported"
+    },
+    {
+      "criterion_id": "cross-language-format-interop",
+      "evidence_refs": ["diamond-types-docs", "b11-research-note"],
+      "option_id": "text-adapter-after-benchmark",
+      "reason": "The adapter seam is on the Rust side, where the design's core already lives and the crate is native; the crate's in-flux API and text-only format are contained at the adapter boundary instead of becoming a contract every consumer depends on.",
+      "status": "supported"
+    },
+    {
+      "criterion_id": "authority-boundary",
+      "evidence_refs": ["b11-research-note", "versioned-design-s142"],
+      "option_id": "text-adapter-after-benchmark",
+      "reason": "Authority stays in the existing layer; the adapter is a data-plane component behind that boundary and its self-asserted agent IDs grant nothing on their own.",
+      "status": "supported"
+    },
+    {
+      "criterion_id": "data-model-history",
+      "evidence_refs": ["b11-research-note"],
+      "option_id": "adopt-none",
+      "reason": "Adopting none provides no collaborative-text capability and no text history model; if a text workload materializes, the criterion is simply unmet.",
+      "status": "unsupported"
+    },
+    {
+      "criterion_id": "convergence",
+      "evidence_refs": ["b11-research-note"],
+      "option_id": "adopt-none",
+      "reason": "Adopting none adds no deterministic convergence machinery for concurrent text edits; concurrent-change handling stays whatever the current design already has.",
+      "status": "unsupported"
+    },
+    {
+      "criterion_id": "scale-performance",
+      "evidence_refs": ["versioned-design-s142", "b11-research-note"],
+      "option_id": "adopt-none",
+      "reason": "Adopting none avoids the unmeasured adoption entirely; the versioned design records a complete 'adopt none' outcome as valid for the #9143 CRDT comparison if measurements do not justify adoption.",
+      "status": "supported"
+    },
+    {
+      "criterion_id": "signed-history-compat",
+      "evidence_refs": ["b11-research-note"],
+      "option_id": "adopt-none",
+      "reason": "The existing signed-envelope layer is untouched, so nothing in this option puts signed-history compatibility at risk.",
+      "status": "supported"
+    },
+    {
+      "criterion_id": "cross-language-format-interop",
+      "evidence_refs": ["b11-research-note"],
+      "option_id": "adopt-none",
+      "reason": "Adopting none gains no text-CRDT interoperability; cross-language collaborative text would need another mechanism if it becomes a requirement.",
+      "status": "unsupported"
+    },
+    {
+      "criterion_id": "authority-boundary",
+      "evidence_refs": ["b11-research-note"],
+      "option_id": "adopt-none",
+      "reason": "The authority boundary is unchanged by adopting none; no new component is introduced inside it.",
+      "status": "supported"
+    }
+  ],
+  "checked_at": "2026-11-14T18:06:00Z",
+  "criteria": [
+    {
+      "id": "data-model-history",
+      "question": "Does the option fit the data model and history the design needs (structured documents with inspectable change history)?"
+    },
+    {
+      "id": "convergence",
+      "question": "Does the option provide deterministic convergence for concurrent changes?"
+    },
+    {
+      "id": "scale-performance",
+      "question": "Is the option's scale/performance cost (memory, CPU, wire) established for representative workloads?"
+    },
+    {
+      "id": "signed-history-compat",
+      "question": "Is the option compatible with signed history (authenticated signer identity stays verifiable)?"
+    },
+    {
+      "id": "cross-language-format-interop",
+      "question": "Does the option interoperate across languages and formats (including the Rust core and the per-document sync protocol)?"
+    },
+    {
+      "id": "authority-boundary",
+      "question": "Does the option preserve the design's authority boundary (actor identity is not authority; grants stay in the existing layer)?"
+    }
+  ],
+  "decision": {
+    "outcome": "defer",
+    "reason": "Adopt-now as the generic merge layer is rejected: the data model is text-specialized, agent IDs are unauthenticated session identifiers, and the crate API is in flux. The conditional candidate is a text-only Diamond Types adapter, benchmarked against Automerge on a measured text workload and gated on the versioned-design evidence threshold (no CRDT implementation work until evaluation gives measured reason plus an interop/signature adapter contract); adopt-none remains the valid final result if no text workload demonstrates a meaningful advantage. The intake word 'diamonds' stays an explicitly uncertain referent: Diamond Types' existence and text fit do not prove it was the intended project. This preserves the contingent-tier trigger recorded on #10149 / S1.42."
+  },
+  "experiments": [
+    {
+      "checked_at": "2026-11-14T18:06:00Z",
+      "id": "text-workload-benchmark",
+      "method": "Benchmark a text-only Diamond Types adapter against Automerge on a representative collaborative-text workload (memory, CPU, and wire cost; document load and long-branch merge), plus the interop/signature adapter contract checks, per the B11 revisit conditions. Planned only in this slice; no runs were performed, so no measurements are asserted. The paper's own benchmark suite (about 12 hours to reproduce) is the starting point, not a substitute for the design's workload.",
+      "status": "unmeasured"
+    }
+  ],
+  "limitations": [
+    "The validator checks structural completeness and traceability only, not factual truth; this artifact is a synthesis of the B11 source ledger (evidence checked 2026-11-12) plus a fresh primary-source re-read of the three Diamond Types / Eg-walker references on 2026-11-14, which confirmed the cited claims (text-only crate over an append-only operation log, EuroSys 2025 text-corpus performance results, agent IDs as opaque session identifiers).",
+    "Referent uncertainty is a finding, not a gap to paper over: 'diamonds' is a probable-but-unconfirmed referent for Diamond Types, and nothing in this artifact treats the identification as settled.",
+    "No measurements were run in this slice: scale/performance for this design's workloads is unmeasured by design (contingent tier), so every scale assessment is unknown rather than estimated, and the paper's benchmark figures are reported only for its own text corpus.",
+    "The docs.rs crate documentation is living and the crate API is stated to be in flux; behavior claims hold as documented at the 2026-11-14 access time.",
+    "No code was compiled against the diamond_types crate in this slice; interoperability findings rest on the documented crate surface and the paper repository's reference implementation."
+  ],
+  "options": [
+    {
+      "id": "adopt-now",
+      "label": "Adopt Diamond Types now as the generic merge layer"
+    },
+    {
+      "id": "text-adapter-after-benchmark",
+      "label": "Defer: benchmark a text-only Diamond Types adapter against Automerge on a measured text workload before any adoption"
+    },
+    {
+      "id": "adopt-none",
+      "label": "Adopt none: keep the current design without Diamond Types"
+    }
+  ],
+  "question": "Against the shared CRDT criteria for #9143 (statement S1.42), should ID/Atlas adopt Diamond Types (the probable but unconfirmed referent of intake 'diamonds') now as a generic merge layer, evaluate it later as a text-only adapter against a measured workload, or adopt none?",
+  "report_kind": "research-matrix",
+  "research_scope": "crdt-diamond-types",
+  "schema_version": 1,
+  "source_ledger": [
+    {
+      "accessed_at": "2026-11-14T18:06:00Z",
+      "id": "kleppmann-eg-walker",
+      "published_at": "2025-03-30T00:00:00Z",
+      "reference": "https://martin.kleppmann.com/2025/03/30/eg-walker-collaborative-text.html",
+      "undated_reason": "Publication page for Gentle & Kleppmann, EuroSys 2025 (doi:10.1145/3689031.3696076). Re-read fresh on 2026-11-14 for this result: Eg-walker is a collaboration algorithm for text; compared to existing CRDTs it uses an order of magnitude less memory in the steady state and loads documents orders of magnitude faster, compared to OT it merges long-running branches orders of magnitude faster, its worst case is comparable to existing CRDTs, and it can be used peer-to-peer without a central server."
+    },
+    {
+      "accessed_at": "2026-11-14T18:06:00Z",
+      "id": "egwalker-paper-repo",
+      "reference": "https://github.com/josephg/egwalker-paper",
+      "undated_reason": "Living repository (paper, experiments, and data for the EuroSys 2025 paper); no single publication date. Re-read fresh on 2026-11-14: the repository states Diamond-types is the name of the authors' optimized Rust Eg-walker implementation, contains the benchmark suite comparing DT, DT-CRDT, Automerge, Yjs/Yrs, and OT over seven editing traces, and holds the TypeScript reference implementation of the algorithm."
+    },
+    {
+      "accessed_at": "2026-11-14T18:06:00Z",
+      "id": "diamond-types-docs",
+      "reference": "https://docs.rs/diamond-types/latest/diamond_types/",
+      "undated_reason": "Living API documentation for the diamond_types crate; no publication date is shown. Re-read fresh on 2026-11-14: the crate currently only supports plain text documents; it is built on an append-only Operation Log and Branches; an operation's ID is an agent ID (usually an opaque string) plus a sequence number; the documentation recommends generating a new agent ID every editing session and notes the API is in flux and that the operation log does not yet support deleting operations."
+    },
+    {
+      "accessed_at": "2026-11-14T18:06:00Z",
+      "id": "b11-research-note",
+      "reference": "doc/2026-11-13T03-40-00Z_design_id-atlas-summit/part-b/B11-research-diamond.md",
+      "undated_reason": "Repo research note for slice B11; its header records evidence checked 2026-11-12. It scopes the slice (research-only, scope crdt-diamond), records the referent uncertainty, and gives the three options and the conclusion this artifact formalizes."
+    },
+    {
+      "accessed_at": "2026-11-14T18:06:00Z",
+      "id": "versioned-design-s142",
+      "reference": "doc/2026-11-13T03-40-00Z_design_id-atlas-summit/part-b/versioned-design.md",
+      "undated_reason": "Repo versioned design record for the ID/Atlas summit, Part B. Its #9143 lines (S1.41-S1.46) set the shared CRDT comparison, state that a complete 'adopt none' result is valid, bar implementation before the evidence-based revisit threshold, and specify that any later CRDT adapter consumes signed operations and emits deterministic state plus retained provenance without authenticating authorship."
+    }
+  ]
+}

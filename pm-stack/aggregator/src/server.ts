@@ -8,7 +8,7 @@
 // apply actions; the dashboard only records them.
 import { readFile, stat } from "node:fs/promises";
 import { createQuotaRefresher, systemdTrigger } from "./quota-refresh.ts";
-import { buildQuotaAnalytics, type QuotaAnalytics } from "./analytics-store.ts";
+import { buildQuotaAnalytics, primeAttemptAggregates, type QuotaAnalytics } from "./analytics-store.ts";
 import { decodePathSegment } from "./path-segment.ts";
 import { errorBoundaryResponse, notFoundResponse } from "./error-boundary.ts";
 import { ACTION_STATES, ActionsStore, validateNewAction, type DashAction } from "./actions.ts";
@@ -43,7 +43,9 @@ import {
   activityCoverageHtml,
   gapsHtml,
   ACTIVITY_SOURCE_COVERAGE,
+  type ActivitySourceStatus,
 } from "./activity.ts";
+import { GithubHotListConsumer, unconfiguredGithubStatus } from "./github-hot-list.ts";
 import { RoadmapAnnotationsStore, validateNewRoadmapAnnotation } from "./roadmap-annotations.ts";
 import { createAccessAuthorEnforcer, enforceAccessAuthor } from "./access-identity.ts";
 import {
@@ -112,6 +114,7 @@ import {
 import { manifestRouteFor } from "./pages.ts";
 import { conflictInbox, type ConflictInbox } from "./conflicts.ts";
 import { watchdogTierItems, WATCHDOG_PROBE_SERVICE_IDS } from "./watchdog.ts";
+import { readHostHealthSnapshot } from "./host-health.ts";
 import {
   allRefs,
   buildAttention,
@@ -141,7 +144,11 @@ import {
   buildProjectSummaries,
   projectConfigById,
 } from "./project-config.ts";
-import { identitiesFromRecords } from "./registry.ts";
+import { PHASE12_REPO, parsePhase12Steps, type Phase12Snapshot } from "./phase12.ts";
+import { PHASE_MAPPING_REPO, type PhaseMappingSnapshot } from "./phase-mapping.ts";
+import type { BuildHealthSnapshot } from "./build-health.ts";
+import { parseF12Items, type F12PrRef } from "./f12-readiness.ts";
+import { identitiesFromRecords, type AuthorIdentity } from "./registry.ts";
 import {
   attentionFragment,
   attentionSections,
@@ -197,6 +204,7 @@ import { recordSwProbe, swProbeSummary, VAPID_PUBLIC_KEY } from "./push.ts";
 import { resolveBwsSecret, resolveBwsSecretLookup } from "./secrets.ts";
 import { SW_SOURCE } from "./sw-source.ts";
 import { renderAlerts, renderNotificationPreferences, renderNotifications, renderDigest, esc } from "./render.ts";
+import type { QueueSnapshot } from "./queue.ts";
 import {
   deriveSoleDoorPoolIds,
   isNotificationTestClass,
@@ -337,6 +345,41 @@ const freshnessStore = new FreshnessStore(cfg.freshnessFile);
  *  Its health view feeds /health + /api/health via healthContext. */
 const freshnessReconciler = new FreshnessReconciler(freshnessStore, [fleetFeedRevisionReader(cfg.feedFile)]);
 const activityStore = new IngestionStore(cfg.activityFile);
+const githubHotListConsumer =
+  cfg.source === "live" && cfg.projector.baseUrl && cfg.projector.apiToken
+    ? new GithubHotListConsumer({
+        baseUrl: cfg.projector.baseUrl,
+        token: cfg.projector.apiToken,
+        store: activityStore,
+        events: eventsStore,
+      })
+    : null;
+
+async function githubActivityStatus(): Promise<ActivitySourceStatus> {
+  return (
+    (await activityStore.sourceStatuses()).find((status) => status.source === "github") ?? unconfiguredGithubStatus()
+  );
+}
+
+function activitySourceStatusHtml(status: ActivitySourceStatus): string {
+  const cursorDistance =
+    status.checkpointCursor !== null && status.highWater !== null
+      ? Math.max(0, status.highWater - status.checkpointCursor)
+      : null;
+  const cursorText = status.cursor === null ? "not checkpointed" : String(status.cursor);
+  const checkpointText = status.checkpointCursor === null ? "not checkpointed" : String(status.checkpointCursor);
+  const highWaterText = status.highWater === null ? "unknown" : String(status.highWater);
+  const lagText = cursorDistance === null ? "unknown" : String(cursorDistance);
+  const escapeHtml = (value: string) =>
+    value.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+  const error = status.error ? `; detail: ${escapeHtml(status.error)}` : "";
+  return (
+    `<p>GitHub hot-list consumer: <strong>${status.state}</strong>; processed cursor ${cursorText}; ` +
+    `acknowledged cursor ${checkpointText}; high-water ${highWaterText}; unacknowledged cursor distance ${lagText}; ` +
+    `last successful sweep ${escapeHtml(status.lastSuccessAt ?? "never")}${error}. ` +
+    `Current means caught up to the hot-list high-water, not complete GitHub history.</p>`
+  );
+}
 
 /** #1739: the event log's fire-and-forget sink for source-side
  *  writers (orchestration publishes, registry merges). Never awaited,
@@ -346,7 +389,7 @@ function recordStreamEvent(event: Parameters<typeof emitEvent>[1]): void {
 }
 
 /** #3321: the activity-ingestion sink for the source-side writers
- *  (watchdog episodes, Kaneo board changes). Dedupe + checkpoints
+ *  (watchdog episodes, Kaneo board changes, GitHub hot-list rows). Dedupe + checkpoints
  *  live in the store. The returned promise resolves true only when
  *  every delivery is durable (ingested or already seen): the live
  *  source awaits it as the acknowledgment that lets it discard its
@@ -530,10 +573,34 @@ async function healthContext(prime = true): Promise<HealthView> {
   });
 }
 
+/** The identities half of the comment form options, behind a
+ *  stale-while-revalidate cache (#5082, 2026-11-14). commentFormOpts
+ *  is awaited on the request path of /program, /api/program.json and
+ *  /board, and the registry read behind the identities merges the
+ *  feed with a live map of the laptop OpenCode server — ~0.5 s when
+ *  that server is healthy, but 6-10.5 s per call when it stalls under
+ *  load (mapServerSessions' sequential fetches burn their 10 s
+ *  aborts; a failed map was not cached, so every assembly paid the
+ *  stall again). Pool-quota-steward run 381 measured the result:
+ *  /program and /api/program.json 503 at ~10.5 s, /board 200 at
+ *  10.5 s, everything else fast. Identities are comment-form picker
+ *  metadata — they change when sessions start or end, on a minutes
+ *  timescale — so they take the same contract as the page
+ *  assemblies: the first load is awaited (and warmed at boot,
+ *  below); an expired entry serves stale behind a single-flight
+ *  background refresh, so no request ever waits on the registry
+ *  merge again. The per-request githubRefs half is never cached. */
+const commentIdentitiesCache = new TodayCache<AuthorIdentity[]>(TODAY_CACHE_TTL_MS);
+async function commentIdentities(): Promise<AuthorIdentity[]> {
+  return commentIdentitiesCache.get(async () => {
+    const records = await source.registry().catch(() => []);
+    return identitiesFromRecords(records);
+  });
+}
+
 /** Author identities for the comment form: standing + registry sessions. */
 async function commentFormOpts(githubRefs: RefKey[] = []): Promise<CommentFormOpts> {
-  const records = await source.registry().catch(() => []);
-  return { githubRefs, identities: identitiesFromRecords(records) };
+  return { githubRefs, identities: await commentIdentities() };
 }
 
 /** Resolve a discuss-page title for any object ref, best-effort. */
@@ -957,8 +1024,8 @@ ${submitBtn("submit")}
 </section>`;
   };
   const isSubmittedItem = (i: DecisionItem): boolean => i.questions.every((q) => q.resolution);
-    const submittedCount = set.items.filter(isSubmittedItem).length;
-    const body = groups
+  const submittedCount = set.items.filter(isSubmittedItem).length;
+  const body = groups
     .map((g) => {
       const groupItems = set.items
         .filter((i) => i.group === g)
@@ -1530,9 +1597,14 @@ const enqueueWatchdogGapSync = createWatchdogGapSyncQueue();
 // registry age from the source's already-loaded feed.
 async function deriveWatchdogItems(diagnosis?: ReturnType<NonNullable<Source["diagnostics"]>>["orchestration"]) {
   if (cfg.source !== "live") return [];
-  const [health, projectAudit] = await Promise.all([
+  const [health, projectAudit, hostHealth] = await Promise.all([
     healthContext(false),
     source.projectAudit ? source.projectAudit().catch(() => null) : Promise.resolve(null),
+    // #10141: the host-health collector's snapshot (claimant mode +
+    // PM unit states). A read failure yields null, which the watchdog
+    // surfaces as the snapshot-absent item — the surfacer's own
+    // silence is a breach, never a pass.
+    readHostHealthSnapshot(cfg.hostHealthFile).catch(() => null),
   ]);
   const items = watchdogTierItems({
     now: Date.now(),
@@ -1550,6 +1622,7 @@ async function deriveWatchdogItems(diagnosis?: ReturnType<NonNullable<Source["di
         detail: s.detail,
         ...(s.probedAt ? { probedAt: s.probedAt } : {}),
       })),
+    hostHealth,
   });
   // #3321: every derivation is also an ingestion pass — the current
   // breach episodes go to the stream (dedupe makes re-derivation a
@@ -1778,9 +1851,26 @@ async function overviewContext(): Promise<Awaited<ReturnType<typeof loadOverview
 // acceptance path — in-process recordFreshness, the IPC handler, and
 // the reconciler's synthetic invalidations all publish through the
 // same store.
+//
+// #5082 (2026-11-14): invalidate, don't clear. Notices land every few
+// minutes (115 in the 3 h before steward run 379), and clear() dropped
+// the cached assembly entirely, so the first post-notice request paid
+// the full cold assembly on the request path. That request is
+// routinely an hourly watch arriving after a quiet gap; when the
+// assembly chain inflated past the 10 s dashboard deadline under load
+// (steward runs 378/379: /api/overview.json 503 at 10.42 s, pass 2
+// clean), the deadline's last-good was always older than its 5-minute
+// staleness cap at that cadence, so the fallback was a hard 503.
+// invalidate() keeps the last assembly servable under the ordinary
+// SWR contract — the first post-notice request serves it immediately
+// and refreshes behind it — and the kick below starts that refresh
+// at notice time, so an accepted revision becomes visible one
+// assembly later without any request paying for the rebuild.
 freshnessStore.onNotice(() => {
-  overviewContextCache.clear();
-  todayContextCache.clear();
+  overviewContextCache.invalidate();
+  todayContextCache.invalidate();
+  void overviewContext().catch(() => {});
+  void todayContext().catch(() => {});
 });
 
 /** The live-source half of the /program assembly (#1046 + #1121): the
@@ -1849,6 +1939,8 @@ function poolItemLike(item: ProjectPoolItem): ViewItemLike {
     owner: item.author ?? null,
     state: item.state,
     epic: item.epicRef ?? null,
+    status: item.status,
+    kind: item.kind,
   };
 }
 
@@ -2360,6 +2452,7 @@ async function handler(req: Request): Promise<Response> {
         `<button type="submit">Filter</button></form>` +
         eventTableHtml(page.events) +
         (nextUrl ? `<p><a rel="next" href="${esc(nextUrl.pathname + nextUrl.search)}">Next page →</a></p>` : "") +
+        `<h2>Activity source status</h2>${activitySourceStatusHtml(await githubActivityStatus())}` +
         `<h2>Activity gaps</h2><div class="tblwrap">` +
         gapsHtml(await activityStore.gaps()) +
         `</div><h2>Activity source coverage</h2><div class="tblwrap">` +
@@ -2372,8 +2465,18 @@ async function handler(req: Request): Promise<Response> {
     // #3321: activity-ingestion state — per-source checkpoints, gap
     // records, and the documented source coverage. The machine twin
     // of the sections the /events page renders below its table.
-    const [checkpoints, gaps] = await Promise.all([activityStore.checkpoints(), activityStore.gaps()]);
-    return json({ checkpoints, gaps, coverage: ACTIVITY_SOURCE_COVERAGE });
+    const [checkpoints, gaps, sources] = await Promise.all([
+      activityStore.checkpoints(),
+      activityStore.gaps(),
+      activityStore.sourceStatuses(),
+    ]);
+    const github = sources.find((status) => status.source === "github") ?? unconfiguredGithubStatus();
+    return json({
+      checkpoints,
+      gaps,
+      sources: [{ ...github, completeHistory: false }],
+      coverage: ACTIVITY_SOURCE_COVERAGE,
+    });
   }
   if (path === "/api/views.json") {
     // #1276: the saved views, per owner (?owner=<kind>:<id>) or all.
@@ -2471,12 +2574,31 @@ async function handler(req: Request): Promise<Response> {
       // #9354: the Questions section lives in the SHELL, outside the
       // #today-main fragment div (see the /frag/today note below).
       return html(
-        renderTodayShell(prov(), provDetail(), signals.health, signals.quota, signals.quotaUnavailable, await questionsHtml()),
+        renderTodayShell(
+          prov(),
+          provDetail(),
+          signals.health,
+          signals.quota,
+          signals.quotaUnavailable,
+          await questionsHtml(),
+        ),
       );
     }
     const { today, view, coverage, quota, health, quotaUnavailable, queue, queueStale } = await todayContext();
     return html(
-      renderToday(today, view, quota, coverage, prov(), provDetail(), health, quotaUnavailable, queue, queueStale, await questionsHtml()),
+      renderToday(
+        today,
+        view,
+        quota,
+        coverage,
+        prov(),
+        provDetail(),
+        health,
+        quotaUnavailable,
+        queue,
+        queueStale,
+        await questionsHtml(),
+      ),
     );
   }
   if (path === "/frag/today") {
@@ -2821,6 +2943,10 @@ async function handler(req: Request): Promise<Response> {
     const area = url.searchParams.get("area");
     const keep = new URLSearchParams();
     if (area) keep.set("area", area);
+    for (const facet of ["status", "kind"]) {
+      const v = url.searchParams.get(facet);
+      if (v) keep.set(facet, v);
+    }
     for (const [k, v] of url.searchParams) {
       if (k === "view" || k === "viewer" || k.startsWith("vf.")) keep.set(k, v);
     }
@@ -2910,6 +3036,9 @@ async function handler(req: Request): Promise<Response> {
       renderProgram(data, items, prov(), provDetail(), {
         pool: viewPool,
         area: url.searchParams.get("area"),
+        status: url.searchParams.get("status"),
+        kind: url.searchParams.get("kind"),
+        audit: source.projectAudit ? await source.projectAudit().catch(() => null) : null,
         orchestration,
         coverage,
         actionsByObject,
@@ -2940,7 +3069,85 @@ async function handler(req: Request): Promise<Response> {
       source.projects().catch(() => []),
       source.roadmap().catch(() => []),
     ]);
-    return html(renderProgramProject(buildProjectDetail(config, items, pool, rows), items, prov(), provDetail(), pool));
+    // #9922: the id page's Path to Phase 12 panel — fetch the #1235
+    // body snapshot when the source carries one, and resolve the
+    // steps' refs into the items map so the join in render sees live
+    // state for every step, not just the config's tracked refs.
+    let phase12: Phase12Snapshot | null = null;
+    if (config.id === "id" && source.phase12) {
+      phase12 = await source.phase12().catch(() => null);
+      if (phase12) {
+        const stepRefs = parsePhase12Steps(phase12.body).map((s) => `${PHASE12_REPO}#${s.issueNumber}`);
+        const missing = stepRefs.filter((r) => !items.has(r));
+        if (missing.length) {
+          const resolved = await source.items(missing).catch(() => new Map());
+          for (const [k, v] of resolved) items.set(k, v);
+        }
+      }
+    }
+    // #9924: the id page's Build health panel — the Actions-API
+    // snapshot, when the source carries one.
+    let buildHealth: BuildHealthSnapshot | null = null;
+    if (config.id === "id" && source.buildHealth) {
+      buildHealth = await source.buildHealth().catch(() => null);
+    }
+    // #9921: the id page's Queue & fleet panel — the read-only
+    // fleet-queue collector snapshot (#9920), when the source
+    // carries one.
+    let queueSnap: QueueSnapshot | null = null;
+    if (config.id === "id" && source.queue) {
+      queueSnap = await source.queue().catch(() => null);
+    }
+    // #9926: the id page's Phase 12 readiness panel — #534's body
+    // (design checklist) and the F-item issues' timeline PR
+    // cross-references, when the source carries them; the F-item
+    // refs join the items map so the projection sees live states.
+    let f12: { design: Phase12Snapshot | null; prRefs: Map<number, F12PrRef[]> | null } | null = null;
+    if (config.id === "id") {
+      const [design, prRefs] = await Promise.all([
+        source.phase12Design ? source.phase12Design().catch(() => null) : Promise.resolve(null),
+        source.f12PrRefs ? source.f12PrRefs().catch(() => null) : Promise.resolve(null),
+      ]);
+      f12 = { design, prRefs };
+      if (phase12) {
+        const fRefs = parseF12Items(phase12.body).map((s) => `${PHASE12_REPO}#${s.issueNumber}`);
+        const missing = fRefs.filter((r) => !items.has(r));
+        if (missing.length) {
+          const resolved = await source.items(missing).catch(() => new Map());
+          for (const [k, v] of resolved) items.set(k, v);
+        }
+      }
+    }
+    // #9923 step 3: the Phase tracker's F-item mapping snapshot
+    // (planning/roadmaps/id.md via the source), when the source
+    // carries one, with the mapped refs resolved into the items map
+    // like the phase12 steps above.
+    let phaseMapping: PhaseMappingSnapshot | null = null;
+    if (config.id === "id" && source.phaseMapping) {
+      phaseMapping = await source.phaseMapping().catch(() => null);
+      if (phaseMapping) {
+        const mapRefs = [...new Set(phaseMapping.entries.map((e) => `${PHASE_MAPPING_REPO}#${e.number}`))];
+        const missing = mapRefs.filter((r) => !items.has(r));
+        if (missing.length) {
+          const resolved = await source.items(missing).catch(() => new Map());
+          for (const [k, v] of resolved) items.set(k, v);
+        }
+      }
+    }
+    return html(
+      renderProgramProject(
+        buildProjectDetail(config, items, pool, rows),
+        items,
+        prov(),
+        provDetail(),
+        pool,
+        phase12,
+        buildHealth,
+        f12,
+        queueSnap,
+        phaseMapping,
+      ),
+    );
   }
   if (path === "/api/program-project.json") {
     const id = url.searchParams.get("id") ?? "";
@@ -3212,8 +3419,6 @@ async function handler(req: Request): Promise<Response> {
   if (path === "/api/push/subscriptions") {
     const store = await getAlertsStore();
     if (!store) return json({ error: "alerts store unavailable" }, 503);
-    if (req.method === "GET")
-      return json({ subscriptions: (await store.listSubscriptions()).map(toPublicSubscription) });
     if (req.method === "POST") {
       try {
         const parsed = validateNewSubscription(await readJsonBody(req));
@@ -4059,28 +4264,43 @@ for (const server of servers) {
   console.log(`aggregator listening on http://${server.hostname}:${server.port} (source: ${cfg.source})`);
 }
 
-// #5082: warm the quota-analytics aggregates once at boot. The first
-// build pays the route_attempt scans synchronously (~10 s over the
-// 21 GB ledger); paying it here, off the request path, means no
-// /quota or /api/quota-analytics.json request ever waits on them —
-// later builds ride the stale-while-revalidate cache in
-// analytics-store.ts.
+// #5082: warm the quota-analytics aggregates once at boot, and the
+// page assemblies with them. The aggregates warm-up no longer calls
+// buildQuotaAnalytics synchronously: the first build's unsliced scans
+// measure ~12 s of uninterrupted event-loop time over the 21 GB
+// ledger, and a request that arrived during the old warm-up queued
+// behind the whole window — the first /api/program.json after a
+// restart measured 26.4 s against ~0.03 s warm (2026-11-13
+// follow-up). primeAttemptAggregates fills the same cache through
+// the day-sliced stale-while-revalidate refresh instead, so the loop
+// stays responsive; later builds ride that cache as before, and a
+// /quota request landing before the prime settles still pays the
+// synchronous cold build on its own path (unchanged semantics).
+// programSources joins the warmed assemblies in the same follow-up:
+// it was the one major assembly left out, so /program's first
+// post-restart request always paid its cold fan-out on the request
+// path, inside whatever loop backlog the boot window left behind.
 setTimeout(() => {
   void (async () => {
     try {
-      const [quota, usage] = await Promise.all([
-        source.quota().catch(() => emptyQuotaView()),
-        source.usage().catch(() => emptyUsageView()),
+      primeAttemptAggregates();
+      await Promise.allSettled([
+        boardContext(),
+        overviewContext(),
+        todayContext(),
+        programSources(),
+        commentIdentities(),
       ]);
-      buildQuotaAnalytics({ quota, usage, quotaCurrentPath: cfg.quotaCurrentFile });
-      // #5082 follow-up: warm the page assemblies too, so the first
-      // request after a restart never pays a cold board/overview/today
-      // fan-out either. With the caches now stale-while-revalidate,
-      // later expiries refresh behind the stale copy instead of on
-      // the request path.
-      await Promise.allSettled([boardContext(), overviewContext(), todayContext()]);
+      // #9781: warm the briefs' latest comments for the program pool
+      // too — the board briefs read a subset of the same refs, so one
+      // prime covers both pages, and neither page's first post-restart
+      // request pays the per-ref projector fan-out.
+      const warmed = await programSources().catch(() => null);
+      if (warmed?.pool.length) {
+        await briefCommentsFor(warmed.pool.map((p) => p.ref));
+      }
     } catch {
-      // fail-soft: the first real /quota request retries the build
+      // fail-soft: the first real request retries its own assembly
     }
   })();
 }, 0);
@@ -4120,6 +4340,37 @@ if (source.ingestSnapshots) {
   };
   void ingestSnapshots(); // recover the latest feed immediately on startup
   setInterval(() => void ingestSnapshots(), SNAPSHOT_INGEST_INTERVAL_MS);
+}
+
+// The hot-list consumer is a server-owned writer just like snapshot
+// ingestion: it runs immediately on startup and then periodically, never
+// as a side effect of rendering a page. A failed sweep leaves the remote
+// checkpoint untouched and is retried on the next tick.
+const GITHUB_HOT_LIST_INTERVAL_MS = 60_000;
+if (githubHotListConsumer) {
+  let githubSyncRunning = false;
+  const syncGithubHotList = async (): Promise<void> => {
+    if (githubSyncRunning) return;
+    githubSyncRunning = true;
+    try {
+      await githubHotListConsumer.sync();
+    } catch (error) {
+      console.error(
+        `[activity] WARNING: GitHub hot-list worker failed: ${error instanceof Error ? error.message : String(error)}`,
+      );
+    } finally {
+      githubSyncRunning = false;
+    }
+  };
+  void syncGithubHotList();
+  const timer = setInterval(() => void syncGithubHotList(), GITHUB_HOT_LIST_INTERVAL_MS);
+  timer.unref?.();
+} else {
+  void activityStore.setSourceStatus(unconfiguredGithubStatus()).catch((error) => {
+    console.error(
+      `[activity] WARNING: could not persist unconfigured GitHub source status: ${error instanceof Error ? error.message : String(error)}`,
+    );
+  });
 }
 
 // The alert throat's engine (#3676): the ~60s delivery/escalation
