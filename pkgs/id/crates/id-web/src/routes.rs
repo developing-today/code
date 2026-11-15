@@ -605,6 +605,9 @@ fn create_router_inner(state: AppState) -> Router {
         .route("/api/new", post(new_file_handler))
         .route("/api/rename", post(rename_handler))
         .route("/api/copy", post(copy_handler))
+        // Server-to-server send (#5346): the browser carries only file
+        // references; this node's server performs the transfer itself.
+        .route("/api/files/send", post(send_file_handler))
         .route("/api/download", post(download_handler))
         .route("/api/delete", post(delete_handler))
         .route("/api/restore", post(restore_handler))
@@ -2005,6 +2008,49 @@ struct CopyResponse {
     name: String,
     /// Content hash (same as source).
     hash: String,
+}
+
+/// Request body for sending a stored file to another server (#5346).
+///
+/// The browser carries only references — the file name here, the
+/// destination's node ID there — never file bytes: this server performs
+/// the transfer itself, with its own identity, through the shared
+/// transfer module from #5345 ([`id_sync::transfer::send_file`]).
+#[derive(Debug, Deserialize)]
+struct SendFileRequest {
+    /// Name of the stored file on this server.
+    name: String,
+    /// Destination server's node ID (64 hex characters), as exposed by
+    /// the peers surface.
+    dest: String,
+    /// Name to register on the destination. Defaults to `name`.
+    dest_name: Option<String>,
+    /// Whether an existing, different destination file may be archived
+    /// and replaced. Conflicts refuse by default, as in CLI/REPL.
+    #[serde(default)]
+    replace: bool,
+}
+
+/// Response from sending a file to another server (#5346).
+///
+/// Returned only after the destination has confirmed blob completion
+/// and name registration (the transfer module's receipt), so a 200 is
+/// never a send that did not land.
+#[derive(Debug, Serialize)]
+struct SendFileResponse {
+    /// Name of the file on this (source) server.
+    name: String,
+    /// Name registered on the destination.
+    dest_name: String,
+    /// Destination server's node ID.
+    dest: String,
+    /// Content hash that was transferred.
+    hash: String,
+    /// The destination already had the name pointing at this hash;
+    /// nothing was pushed (a retry of the same send is safe).
+    already_present: bool,
+    /// An existing, different destination file was archived and replaced.
+    replaced: bool,
 }
 
 /// Request body for downloading editor content.

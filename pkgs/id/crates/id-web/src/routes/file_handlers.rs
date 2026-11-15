@@ -946,6 +946,147 @@ pub(super) async fn copy_handler(
     }
 }
 
+/// Send one stored file to another server (`POST /api/files/send`, #5346).
+///
+/// The web adapter for the #5345 transfer: the request carries only
+/// references (file name, destination node ID), and this server performs
+/// the transfer itself through [`id_sync::transfer::send_file`] with its
+/// own endpoint identity — no bytes pass through the browser. Caller
+/// authorization is the web surface's own guard (the same one every
+/// file-mutation route sits behind); the destination authorizes *this
+/// server* under its write policy, exactly as for a CLI/REPL send, so an
+/// unallowlisted destination denies the registration and the send fails.
+/// Success is answered only from the transfer receipt, which exists
+/// only after the destination confirmed blob completion and name
+/// registration.
+pub(super) async fn send_file_handler(
+    State(state): State<AppState>,
+    Json(req): Json<SendFileRequest>,
+) -> Response {
+    let name = req.name.trim().to_owned();
+    if name.is_empty() {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({
+                "error": "File name cannot be empty",
+                "reason": "empty_name",
+            })),
+        )
+            .into_response();
+    }
+    let dest_id: EndpointId = match req.dest.trim().parse() {
+        Ok(id) => id,
+        Err(_) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({
+                    "error": "Destination must be a server node ID (64 hex characters)",
+                    "reason": "invalid_dest",
+                })),
+            )
+                .into_response();
+        }
+    };
+    let dest_name = req
+        .dest_name
+        .map(|n| n.trim().to_owned())
+        .filter(|n| !n.is_empty())
+        .unwrap_or_else(|| name.clone());
+    tracing::info!(
+        "[routes] send_file_handler: name={}, dest={}, dest_name={}, replace={}",
+        name,
+        dest_id,
+        dest_name,
+        req.replace
+    );
+    let Some(endpoint) = state.transfer_endpoint.clone() else {
+        return (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(serde_json::json!({
+                "error": "This server cannot initiate server-to-server transfers (no endpoint configured)",
+                "reason": "transfer_unavailable",
+            })),
+        )
+            .into_response();
+    };
+    let hash = match state.store.tags().get(&name).await {
+        Ok(Some(tag)) => tag.hash,
+        Ok(None) => {
+            return (
+                StatusCode::NOT_FOUND,
+                Json(serde_json::json!({
+                    "error": "File not found",
+                    "reason": "not_found",
+                })),
+            )
+                .into_response();
+        }
+        Err(err) => {
+            tracing::error!("[routes] send lookup failed for '{name}': {err}");
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({
+                    "error": "Failed to look up file",
+                    "reason": "lookup_failed",
+                })),
+            )
+                .into_response();
+        }
+    };
+    match id_sync::transfer::send_file(
+        &state.store,
+        &endpoint,
+        iroh::EndpointAddr::from(dest_id),
+        &name,
+        hash,
+        &dest_name,
+        req.replace,
+    )
+    .await
+    {
+        Ok(receipt) => {
+            tracing::info!(
+                "[routes] File sent: {} -> {}:{}, hash={}, already_present={}, replaced={}",
+                name,
+                receipt.dest,
+                receipt.dest_name,
+                receipt.hash,
+                receipt.already_present,
+                receipt.replaced
+            );
+            Json(SendFileResponse {
+                name,
+                dest_name: receipt.dest_name,
+                dest: receipt.dest.to_string(),
+                hash: receipt.hash.to_string(),
+                already_present: receipt.already_present,
+                replaced: receipt.replaced,
+            })
+            .into_response()
+        }
+        Err(err) => {
+            let message = format!("{err:#}");
+            // The transfer module refuses a conflicting destination name
+            // before moving any bytes; that refusal is the caller's to
+            // resolve (retry with replacement), not a server fault.
+            let (status, reason) = if message.contains("refusing to replace") {
+                (StatusCode::CONFLICT, "conflict")
+            } else {
+                (StatusCode::BAD_GATEWAY, "transfer_failed")
+            };
+            tracing::warn!("[routes] send of '{name}' to {dest_id} failed: {message}");
+            (
+                status,
+                Json(serde_json::json!({
+                    "error": message,
+                    "reason": reason,
+                })),
+            )
+                .into_response()
+        }
+    }
+}
+
 /// Download the current editor content in the requested format.
 ///
 /// Supports two formats:
@@ -1449,5 +1590,290 @@ pub(super) async fn archive_original_tag(
             tracing::error!("[routes] Failed to create archive tag: {}", err);
             None
         }
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+mod send_file_tests {
+    use std::sync::Arc;
+
+    use axum::{body::to_bytes, extract::State};
+    use iroh::address_lookup::memory::MemoryLookup;
+    use iroh::endpoint::{Endpoint, RelayMode, presets};
+    use iroh::protocol::Router;
+    use iroh_blobs::{BlobsProtocol, api::Store, store::mem::MemStore};
+    use iroh_docs::protocol::Docs;
+    use iroh_gossip::net::Gossip;
+
+    use super::*;
+    use crate::AppState;
+
+    /// An `AppState` over an in-memory store, on `endpoint`, with that
+    /// endpoint wired in as the transfer identity (as `id serve` does).
+    async fn state_on(endpoint: Endpoint, ns: &str) -> (AppState, Store, Docs) {
+        let store: Store = MemStore::new().into();
+        let gossip = Gossip::builder().spawn(endpoint.clone());
+        let docs = Docs::memory()
+            .spawn(endpoint.clone(), store.clone(), gossip)
+            .await
+            .unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let tags = Arc::new(
+            TagStore::init_in(&docs, ns, dir.path().join("meta"))
+                .await
+                .unwrap(),
+        );
+        let mut state = AppState::new(
+            store.clone(),
+            None,
+            ns.to_owned(),
+            tags,
+            [7; 32],
+            dir.path().join(".identity.redb"),
+        )
+        .await
+        .unwrap();
+        state.set_transfer_endpoint(Some(endpoint));
+        (state, store, docs)
+    }
+
+    async fn plain_endpoint() -> Endpoint {
+        Endpoint::builder(presets::Minimal)
+            .relay_mode(RelayMode::Disabled)
+            .bind()
+            .await
+            .unwrap()
+    }
+
+    async fn put_named(store: &Store, name: &str, data: &[u8]) -> iroh_blobs::Hash {
+        let outcome = store.blobs().add_bytes(data.to_vec()).await.unwrap();
+        store
+            .tags()
+            .set(iroh_blobs::api::Tag::from(name.to_owned()), outcome.hash)
+            .await
+            .unwrap();
+        outcome.hash
+    }
+
+    async fn send(state: AppState, name: &str, dest: &str, replace: bool) -> Response {
+        send_file_handler(
+            State(state),
+            Json(SendFileRequest {
+                name: name.to_owned(),
+                dest: dest.to_owned(),
+                dest_name: None,
+                replace,
+            }),
+        )
+        .await
+    }
+
+    async fn response_json(response: Response) -> serde_json::Value {
+        serde_json::from_slice(&to_bytes(response.into_body(), usize::MAX).await.unwrap()).unwrap()
+    }
+
+    const SOME_NODE: &str = "abababababababababababababababababababababababababababababababab";
+
+    #[tokio::test]
+    async fn empty_name_is_a_400() {
+        let (state, _store, _docs) = state_on(plain_endpoint().await, "send-t-empty").await;
+        let response = send(state, "  ", SOME_NODE, false).await;
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        assert_eq!(response_json(response).await["reason"], "empty_name");
+    }
+
+    #[tokio::test]
+    async fn invalid_destination_is_a_400() {
+        let (state, _store, _docs) = state_on(plain_endpoint().await, "send-t-dest").await;
+        let response = send(state, "report.txt", "not-a-node-id", false).await;
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        assert_eq!(response_json(response).await["reason"], "invalid_dest");
+    }
+
+    #[tokio::test]
+    async fn no_transfer_endpoint_is_a_503() {
+        let endpoint = plain_endpoint().await;
+        let dest = endpoint.id().to_string();
+        let (mut state, _store, _docs) = state_on(endpoint, "send-t-noep").await;
+        state.set_transfer_endpoint(None);
+        let response = send(state, "report.txt", &dest, false).await;
+        assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+        assert_eq!(
+            response_json(response).await["reason"],
+            "transfer_unavailable"
+        );
+    }
+
+    #[tokio::test]
+    async fn missing_file_is_a_404() {
+        let endpoint = plain_endpoint().await;
+        let dest = endpoint.id().to_string();
+        let (state, _store, _docs) = state_on(endpoint, "send-t-404").await;
+        let response = send(state, "nope.txt", &dest, false).await;
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+        assert_eq!(response_json(response).await["reason"], "not_found");
+    }
+
+    /// A destination node serving the meta + blobs protocols with a
+    /// write policy admitting only `allowed` — the in-process half of
+    /// the two-server probe, mirroring `LocalNode::serve`.
+    struct DestNode {
+        endpoint: Endpoint,
+        store: Store,
+        router: Router,
+        _docs: Docs,
+    }
+
+    async fn dest_node(lookup: &MemoryLookup, allowed: EndpointId, ns: &str) -> DestNode {
+        let endpoint = plain_endpoint().await;
+        let store: Store = MemStore::new().into();
+        let gossip = Gossip::builder().spawn(endpoint.clone());
+        let docs = Docs::memory()
+            .spawn(endpoint.clone(), store.clone(), gossip)
+            .await
+            .unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let tags = Arc::new(
+            TagStore::init_in(&docs, ns, dir.path().join("meta"))
+                .await
+                .unwrap(),
+        );
+        let access = id_core::access::AccessPolicy::restricted([allowed]);
+        let mut meta = id_sync::protocol::MetaProtocol::new(
+            &store,
+            None,
+            tags,
+            access.clone(),
+            endpoint.id(),
+            None,
+        );
+        if let Some(inner) = Arc::get_mut(&mut meta) {
+            inner.endpoint = Some(endpoint.clone());
+        }
+        let blobs = BlobsProtocol::new(&store, Some(id_core::access::blobs_events(access)));
+        let router = Router::builder(endpoint.clone())
+            .accept(id_sync::protocol::META_ALPN, meta)
+            .accept(iroh_blobs::ALPN, blobs)
+            .spawn();
+        lookup.add_endpoint_info(endpoint.addr());
+        DestNode {
+            endpoint,
+            store,
+            router,
+            _docs: docs,
+        }
+    }
+
+    #[tokio::test]
+    async fn send_through_the_handler_copies_the_file_and_retries_safely() {
+        let lookup = MemoryLookup::new();
+        let source_endpoint = Endpoint::builder(presets::Minimal)
+            .relay_mode(RelayMode::Disabled)
+            .address_lookup(lookup.clone())
+            .bind()
+            .await
+            .unwrap();
+        let source_id = source_endpoint.id();
+        let (state, source_store, _docs) = state_on(source_endpoint, "send-t-source").await;
+        let dest = dest_node(&lookup, source_id, "send-t-destnode").await;
+        let dest_id = dest.endpoint.id().to_string();
+
+        // Success: the receipt exists only after the destination
+        // confirmed, and the destination now names the hash.
+        let hash = put_named(&source_store, "report.txt", b"hello web send").await;
+        let response = send(state.clone(), "report.txt", &dest_id, false).await;
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = response_json(response).await;
+        assert_eq!(body["name"], "report.txt");
+        assert_eq!(body["dest_name"], "report.txt");
+        assert_eq!(body["dest"], dest_id);
+        assert_eq!(body["hash"], hash.to_string());
+        assert_eq!(body["already_present"], false);
+        assert_eq!(
+            dest.store
+                .tags()
+                .get("report.txt")
+                .await
+                .unwrap()
+                .map(|t| t.hash),
+            Some(hash)
+        );
+        // The source is untouched: a send is a copy, never a move.
+        assert_eq!(
+            source_store
+                .tags()
+                .get("report.txt")
+                .await
+                .unwrap()
+                .map(|t| t.hash),
+            Some(hash)
+        );
+
+        // Retry of the same send is idempotent, not a conflict.
+        let response = send(state.clone(), "report.txt", &dest_id, false).await;
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(response_json(response).await["already_present"], true);
+
+        // Conflict refuses by default (409, destination untouched) and
+        // an explicit replacement archives and lands.
+        let new_hash = put_named(&source_store, "data.bin", b"new content").await;
+        let old_hash = put_named(&dest.store, "data.bin", b"old content").await;
+        let response = send(state.clone(), "data.bin", &dest_id, false).await;
+        assert_eq!(response.status(), StatusCode::CONFLICT);
+        assert_eq!(
+            dest.store
+                .tags()
+                .get("data.bin")
+                .await
+                .unwrap()
+                .map(|t| t.hash),
+            Some(old_hash)
+        );
+        let response = send(state.clone(), "data.bin", &dest_id, true).await;
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = response_json(response).await;
+        assert_eq!(body["replaced"], true);
+        assert_eq!(
+            dest.store
+                .tags()
+                .get("data.bin")
+                .await
+                .unwrap()
+                .map(|t| t.hash),
+            Some(new_hash)
+        );
+
+        dest.router.shutdown().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn unallowlisted_destination_denies_the_send() {
+        let lookup = MemoryLookup::new();
+        let source_endpoint = Endpoint::builder(presets::Minimal)
+            .relay_mode(RelayMode::Disabled)
+            .address_lookup(lookup.clone())
+            .bind()
+            .await
+            .unwrap();
+        let (state, source_store, _docs) = state_on(source_endpoint, "send-t-denied-source").await;
+        // The destination admits a different writer, not this server.
+        let other = plain_endpoint().await;
+        let dest = dest_node(&lookup, other.id(), "send-t-denied-dest").await;
+        put_named(&source_store, "report.txt", b"not for you").await;
+
+        let response = send(state, "report.txt", &dest.endpoint.id().to_string(), false).await;
+        assert_eq!(response.status(), StatusCode::BAD_GATEWAY);
+        assert_eq!(
+            dest.store
+                .tags()
+                .get("report.txt")
+                .await
+                .unwrap()
+                .map(|t| t.hash),
+            None
+        );
+
+        dest.router.shutdown().await.unwrap();
     }
 }

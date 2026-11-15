@@ -1,5 +1,11 @@
 import { describe, expect, it } from "vitest";
-import { isCopyFileResponse, isNewFileResponse, isRenameFileResponse, isSaveFileResponse } from "./file-op-responses";
+import {
+  isCopyFileResponse,
+  isNewFileResponse,
+  isRenameFileResponse,
+  isSaveFileResponse,
+  isSendFileResponse,
+} from "./file-op-responses";
 
 // Regression tests for #7837: the /api/save, /api/new, /api/rename and
 // /api/copy handlers in main.ts shape-trusted their 200 responses via
@@ -31,6 +37,34 @@ describe("isSaveFileResponse", () => {
     expect(isSaveFileResponse({ hash: "abc123", name: "", archive_name: null })).toBe(false);
     expect(isSaveFileResponse({ hash: "abc123", name: "notes.md" })).toBe(false);
     expect(isSaveFileResponse({ hash: "abc123", name: "notes.md", archive_name: 7 })).toBe(false);
+  });
+});
+
+describe("isSendFileResponse", () => {
+  const valid = {
+    name: "report.txt",
+    dest_name: "report.txt",
+    dest: "ab".repeat(32),
+    hash: "abc123",
+    already_present: false,
+    replaced: false,
+  };
+
+  it("accepts a valid send receipt", () => {
+    expect(isSendFileResponse(valid)).toBe(true);
+    expect(isSendFileResponse({ ...valid, already_present: true })).toBe(true);
+    expect(isSendFileResponse({ ...valid, replaced: true })).toBe(true);
+  });
+
+  it("rejects wrong-shape bodies (a failed send must never read as success)", () => {
+    for (const body of wrongShapes) {
+      expect(isSendFileResponse(body)).toBe(false);
+    }
+    expect(isSendFileResponse({ ...valid, hash: 123 })).toBe(false);
+    expect(isSendFileResponse({ ...valid, dest: "" })).toBe(false);
+    expect(isSendFileResponse({ ...valid, already_present: "no" })).toBe(false);
+    const { replaced: _dropped, ...missingReplaced } = valid;
+    expect(isSendFileResponse(missingReplaced)).toBe(false);
   });
 });
 

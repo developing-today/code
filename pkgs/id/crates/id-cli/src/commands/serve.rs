@@ -2244,6 +2244,7 @@ pub async fn cmd_serve(opts: ServeOptions) -> Result<()> {
                 surfaces,
                 Some(groups_log.clone()),
                 seitan_state,
+                Some(endpoint.clone()),
             )
             .await?;
             publication_surface = Some(surface);
