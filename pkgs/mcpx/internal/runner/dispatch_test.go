@@ -814,11 +814,22 @@ func TestDispatchedWorkdirPolicyAllocatesARunnerDirectory(t *testing.T) {
 		t.Fatalf("Run(workdir dispatch): %v (stderr %q)", err, stderr.String())
 	}
 	got := strings.TrimSpace(stdout.String())
-	if got == "" || !strings.HasPrefix(got, root) {
-		t.Fatalf("dispatched workdir run executed in %q, want a directory under WorkRoot %q", got, root)
+	wantRoot := root
+	wantDir := dir
+	if resolved, err := filepath.EvalSymlinks(root); err == nil {
+		wantRoot = resolved
 	}
-	if got == dir {
-		t.Fatalf("dispatched workdir run executed in the script directory %q", dir)
+	if resolved, err := filepath.EvalSymlinks(got); err == nil {
+		got = resolved
+	}
+	if resolved, err := filepath.EvalSymlinks(dir); err == nil {
+		wantDir = resolved
+	}
+	if got == "" || !strings.HasPrefix(got, wantRoot) {
+		t.Fatalf("dispatched workdir run executed in %q, want a directory under WorkRoot %q", got, wantRoot)
+	}
+	if got == wantDir {
+		t.Fatalf("dispatched workdir run executed in the script directory %q", wantDir)
 	}
 }
 

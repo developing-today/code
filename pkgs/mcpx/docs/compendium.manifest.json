@@ -1041,6 +1041,13 @@
       "note": "docs-history change fragment for #1864 (ask-path cancel); history metadata consumed by the docs-history tooling, not a compendium page"
     },
     {
+      "path": "docs/changes/research-and-findings-nix-slice.md",
+      "chapter": null,
+      "role": "not-compendium",
+      "lines": 3,
+      "note": "docs-history change fragment for #1871 (research and findings Nix slice); history metadata consumed by the docs-history tooling, not a compendium page"
+    },
+    {
       "path": "docs/index.md",
       "chapter": null,
       "role": "not-compendium",
