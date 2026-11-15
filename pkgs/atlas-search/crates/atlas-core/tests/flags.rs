@@ -37,6 +37,7 @@ impl SearchBackend for FakeBackend {
                 })
                 .collect(),
             vector: Vec::new(),
+            candidate_models: Default::default(),
         })
     }
     fn chunk_details(&self, ids: &[i64]) -> Result<Vec<ChunkDetail>> {
