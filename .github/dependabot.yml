@@ -10,6 +10,11 @@ updates:
       interval: "daily"
     exclude-paths:
       - "pkgs/grok-cli/**"
+      - "pm-stack/voice-line-worker/**"
+  - package-ecosystem: "bun"
+    directory: "/pm-stack/voice-line-worker"
+    schedule:
+      interval: "weekly"
   - package-ecosystem: "docker"
     directory: "/"
     schedule:
