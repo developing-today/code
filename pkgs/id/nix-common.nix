@@ -154,15 +154,17 @@ in
 
     # id-native-shell runtime libraries (design #788 step 2): winit /
     # wgpu dlopen wayland, xkbcommon, X11 and Vulkan at runtime.
-    export LD_LIBRARY_PATH="${pkgs.lib.makeLibraryPath [
-      pkgs.wayland
-      pkgs.libxkbcommon
-      pkgs.xorg.libX11
-      pkgs.xorg.libXcursor
-      pkgs.xorg.libXrandr
-      pkgs.xorg.libXi
-      pkgs.vulkan-loader
-    ]}''${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+    export LD_LIBRARY_PATH="${
+      pkgs.lib.makeLibraryPath [
+        pkgs.wayland
+        pkgs.libxkbcommon
+        pkgs.xorg.libX11
+        pkgs.xorg.libXcursor
+        pkgs.xorg.libXrandr
+        pkgs.xorg.libXi
+        pkgs.vulkan-loader
+      ]
+    }''${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
 
     # Playwright E2E testing: use Nix-provided browsers
     export PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1

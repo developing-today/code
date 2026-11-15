@@ -61,10 +61,7 @@ export interface R2BucketLike {
  * to the package's single local binding (BLOBS); per-jurisdiction
  * production buckets plug in at this one point when the #3403
  * provisioning gate lands. A missing binding fails closed. */
-export function blobsBindingFor(
-  env: { BLOBS?: R2BucketLike },
-  jurisdiction: Jurisdiction,
-): R2BucketLike {
+export function blobsBindingFor(env: { BLOBS?: R2BucketLike }, jurisdiction: Jurisdiction): R2BucketLike {
   void jurisdiction;
   if (!env.BLOBS) {
     throw new FailClosed(503, "blobs_unavailable", "no blob bucket binding is configured; failing closed");

@@ -78,10 +78,7 @@ describe("loadFileTags response validation (#7841)", () => {
     window.idApp.renderEditorTags([{ key: "stale", value: "old" }]);
     expect(document.querySelectorAll(".tag-pill-removable").length).toBe(1);
 
-    vi.stubGlobal(
-      "fetch",
-      async () => ({ ok: true, status: 200, json: async () => ({}) }),
-    );
+    vi.stubGlobal("fetch", async () => ({ ok: true, status: 200, json: async () => ({}) }));
     try {
       await window.idApp.loadFileTags("other.md");
     } finally {
@@ -94,29 +91,24 @@ describe("loadFileTags response validation (#7841)", () => {
 
   it("renders the object control shape and filters system tags", async () => {
     await setup();
-    vi.stubGlobal(
-      "fetch",
-      async () => ({
-        ok: true,
-        status: 200,
-        json: async () => ({
-          tags: [
-            { key: "project", value: "alpha" },
-            { key: "created", value: "2026-01-01" },
-            { key: "plain", value: null },
-          ],
-        }),
+    vi.stubGlobal("fetch", async () => ({
+      ok: true,
+      status: 200,
+      json: async () => ({
+        tags: [
+          { key: "project", value: "alpha" },
+          { key: "created", value: "2026-01-01" },
+          { key: "plain", value: null },
+        ],
       }),
-    );
+    }));
     try {
       await window.idApp.loadFileTags("test.md");
     } finally {
       vi.unstubAllGlobals();
     }
 
-    const pills = [...document.querySelectorAll(".tag-pill-removable")].map((p) =>
-      p.textContent?.replace("×", ""),
-    );
+    const pills = [...document.querySelectorAll(".tag-pill-removable")].map((p) => p.textContent?.replace("×", ""));
     expect(pills).toEqual(["project: alpha", "plain"]);
   });
 });
