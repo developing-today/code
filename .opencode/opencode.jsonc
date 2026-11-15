@@ -2582,9 +2582,15 @@
         // 2026-11-15 (weights completeness): the opendesign leg was
         // missing from this map — an unweighted leg's tier placement
         // is undefined. Weighted as the minor leg.
+        // 2026-11-15 (Drew): Luna rides the OpenAI subscription
+        // door. Luna through OpenCode Go spends the shared Go weekly
+        // pool — the scarce one that walls every week — on the
+        // weakest GPT-6, while the subscription door carried all
+        // 71k+ Luna successes in the trailing 7d and the Go leg was
+        // never dealt once. Subscription leads; Go is overflow only.
         "weights": {
-          "opencode-go-plans/gpt-6-luna": 6,
-          "openai-plan/gpt-6-luna": 2.5,
+          "openai-plan/gpt-6-luna": 6,
+          "opencode-go-plans/gpt-6-luna": 1,
           "opendesign/gpt-6-luna": 1
         }
       },
@@ -2870,17 +2876,24 @@
         // 2026-10-30 (Drew): the agy leaf moved to antigravity-direct —
         // the same CLI wire protocol with no CLI spawn (the agy proxy
         // service is retired). Same model, same pool position.
+        // 2026-11-15 (Drew): never paid Argon through OpenCode —
+        // the Go leg is REMOVED. It produced 1 success in 135
+        // attempts in the trailing 7d (the rest hit the Go quota
+        // wall). Carbon is the better Gemini (AA high 60.0 vs Argon
+        // 50.4) but has no working door today: not served on Go, and
+        // served on Zen only against pay-as-you-go workspace credit
+        // the fleet does not carry (probe 2026-11-15: 402). The
+        // Gemini shelf returns through a Google-direct door (the
+        // provider watch's top sweep item), not through Go quota.
+        // The _antigravity leg stays as the plan's only target; that
+        // provider is disabled, so Argon has no live door until then
+        // — which matches the wire reality above.
         "targets": [
-          "opencode-go-plans/gemini-4-argon",
           "_antigravity/gemini-4-argon"
         ],
         "selection": "round-robin",
         "autonomy": "rules",
-        // 2026-11-15 (weights completeness): the _antigravity leg was
-        // missing from this map — an unweighted leg's tier placement
-        // is undefined. Weighted as the minor leg.
         "weights": {
-          "opencode-go-plans/gemini-4-argon": 3,
           "_antigravity/gemini-4-argon": 1
         }
       },
@@ -3153,26 +3166,31 @@
         // DeepSeek leaves out of the Flash pools' way is about burn
         // accounting, and MiMo is ClinePass's best seat), OpenDesign,
         // and Command Code as a minor leaf (weight 0.5, $10 credits/mo).
-        // 2026-11-15 (Drew, direct order): the Zen free door LEADS this
-        // plan — "why would you hit paid mimo 2.6 at all". The paid legs
-        // had zero successes in the current setup (ClinePass 131/131
-        // failures before its removal above; OpenDesign balance-
-        // exhausted) and the free leg had never been attempted once
-        // (code#10497). Free first per the placement law; the paid legs
-        // stay as overflow for when the free per-model cap is spent.
-        // The OpenDesign leg also gains the weights entry it was
-        // missing — an unweighted leg's tier placement is undefined.
+        // 2026-11-15 (Drew, direct order): the Zen free door is this
+        // plan's ONLY seated leg — "why would you hit paid mimo 2.6
+        // at all". The paid legs had zero successes in the current
+        // setup (ClinePass 131/131 failures before its removal above;
+        // OpenDesign balance-exhausted), the free leg had never been
+        // attempted once (code#10497), and paid MiMo on OpenCode Go
+        // spends the shared Go weekly pool while DeepSeek carries
+        // considerable dedicated quota of its own — the per-task
+        // price comparison ignored the quota source. The paid legs
+        // survive as paste-ready comments in targets/weights below;
+        // when the free cap is spent, callers fall through to the
+        // pool's next route instead of paying for MiMo.
         "targets": [
-          "opencode-zen-plans/mimo-v2.6-flash-free",
-          "opencode-go-plans/mimo-v2.6-flash",
-          "opendesign/mimo-v2.6-flash"
+          "opencode-zen-plans/mimo-v2.6-flash-free"
+          // Paid legs NOT seated (see the plan comment above). To
+          // re-seat one, paste it into targets and weights:
+          //   "opencode-go-plans/mimo-v2.6-flash"
+          //   "opendesign/mimo-v2.6-flash"
         ],
         "selection": "round-robin",
         "autonomy": "rules",
         "weights": {
-          "opencode-zen-plans/mimo-v2.6-flash-free": 3,
-          "opencode-go-plans/mimo-v2.6-flash": 1,
-          "opendesign/mimo-v2.6-flash": 1
+          "opencode-zen-plans/mimo-v2.6-flash-free": 3
+          // "opencode-go-plans/mimo-v2.6-flash": 1
+          // "opendesign/mimo-v2.6-flash": 1
         }
       },
       "glm-5-3-plan": {
@@ -3881,7 +3899,11 @@
           "opencode-route/sonnet-plan#high",
           "opencode-route/argon-plan#high",
         // 2026-11-01 (Drew): Spark seat drops max -> xhigh. AA v5: max scores 36 vs xhigh 34 — two points for roughly double the reasoning time (max measured 540s/task). Spark in specialist is the Meta-diversity seat behind Sonnet/Argon; xhigh keeps the failover responsive. This was the last #max target in the tier routes.
-          "opencode-route/spark-plan#xhigh",
+          // 2026-11-15: spark at #high — the rung our own history
+          // proves (9,243 successes at #high in workhorse-weighted in
+          // the trailing 7d vs 384 at #xhigh; AA publishes no Spark
+          // effort curve below max).
+          "opencode-route/spark-plan#high",
           "opencode-route/sol-plan#medium"
         ],
         "selection": "ordered",
@@ -3935,7 +3957,9 @@
           "opencode-route/argon-plan#high",
           "_antigravity/gemini-4-hydrogen#high",
           "_muse/muse-wonder-1.0-contributor#xhigh",
-          "opencode-route/sol-plan#xhigh",
+          // 2026-11-15 (Drew): sol at #high — AA xhigh 52.5 vs
+          // high 50.3; a near-flat step at materially fewer tokens.
+          "opencode-route/sol-plan#high",
           "opencode-route/specialist"
         ],
         "selection": "ordered",
