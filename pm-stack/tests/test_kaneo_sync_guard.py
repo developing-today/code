@@ -48,8 +48,7 @@ class FakePsql:
     def __call__(self, sql):
         if sql.startswith("SELECT id ||"):
             return "\n".join(
-                f"{integ_id}\t{json.dumps(cfg)}"
-                for integ_id, cfg in self.store.items()
+                f"{integ_id}\t{json.dumps(cfg)}" for integ_id, cfg in self.store.items()
             )
         if sql.startswith("UPDATE integration"):
             self.updates += 1

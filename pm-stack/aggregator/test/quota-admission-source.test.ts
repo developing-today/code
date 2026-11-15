@@ -43,10 +43,15 @@ const check = (doc: unknown, read = receipt) => normalizeQuotaWindowEvidence(doc
 const binding: Binding = {
   ...scope,
   aliases: ["route-credential"],
-  windows: [{
-    kind: receipt.kind, period: receipt.period, resetsAt: receipt.resetsAt,
-    freshnessMs: 20 * 60_000, collectionMs: 15 * 60_000,
-  }],
+  windows: [
+    {
+      kind: receipt.kind,
+      period: receipt.period,
+      resetsAt: receipt.resetsAt,
+      freshnessMs: 20 * 60_000,
+      collectionMs: 15 * 60_000,
+    },
+  ],
 };
 
 describe("quota-current admission source; oracle = exact provider window receipt (#10323)", () => {
@@ -55,9 +60,16 @@ describe("quota-current admission source; oracle = exact provider window receipt
     expect(result).toEqual({
       reason: null,
       observation: {
-        ...scope, kind: "weekly", period: "week-1", id: "receipt-a", source: "provider-source",
-        measuredAt: receipt.measuredAt, resetsAt: receipt.resetsAt, percent: 0,
-        state: "ok", denominator: "allowance-1",
+        ...scope,
+        kind: "weekly",
+        period: "week-1",
+        id: "receipt-a",
+        source: "provider-source",
+        measuredAt: receipt.measuredAt,
+        resetsAt: receipt.resetsAt,
+        percent: 0,
+        state: "ok",
+        denominator: "allowance-1",
       },
     });
     expect(check({ ...document, generatedAt: iso(now + 999_999) })).toEqual(result);
@@ -68,7 +80,10 @@ describe("quota-current admission source; oracle = exact provider window receipt
     const split = { ...row, serviceId: "display-alias" };
     const conflict = { ...split, windows: [{ ...window, pctOfLimit: 50 }] };
     expect(check({ ...document, providers: [row, split] })).toEqual(check(document));
-    for (const providers of [[row, conflict], [conflict, row]]) {
+    for (const providers of [
+      [row, conflict],
+      [conflict, row],
+    ]) {
       expect(check({ ...document, providers })).toEqual({ observation: null, reason: "conflicting_window_evidence" });
     }
   });
@@ -88,27 +103,45 @@ describe("quota-current admission source; oracle = exact provider window receipt
 
   test("null percentages, untrusted source/time, expired mapping fields, and malformed files fail closed", () => {
     for (const patch of [
-      { pctOfLimit: null }, { state: "error" }, { source: "display" }, { windowSeconds: 10 },
-      { measuredAt: iso(now) }, { resetsAt: null }, { resetsAt: "2026-11-31T18:01:00Z" },
-    ]) expect(check({ ...document, providers: [{ ...row, windows: [{ ...window, ...patch }] }] }).observation).toBeNull();
+      { pctOfLimit: null },
+      { state: "error" },
+      { source: "display" },
+      { windowSeconds: 10 },
+      { measuredAt: iso(now) },
+      { resetsAt: null },
+      { resetsAt: "2026-11-31T18:01:00Z" },
+    ])
+      expect(
+        check({ ...document, providers: [{ ...row, windows: [{ ...window, ...patch }] }] }).observation,
+      ).toBeNull();
     for (const patch of [{ denominator: "" }, { id: "" }, { measuredAt: now + 1 }, { percent: 101 }]) {
       expect(check(document, { ...receipt, ...patch }).reason).toBe("invalid_receipt");
     }
     expect(check({ ...document, version: 2 }).reason).toBe("invalid_document");
-    expect(check({ ...document, sanitized: { droppedProviders: 0, droppedWindows: 1 } }).reason).toBe("incomplete_document");
+    expect(check({ ...document, sanitized: { droppedProviders: 0, droppedWindows: 1 } }).reason).toBe(
+      "incomplete_document",
+    );
     expect(check({ ...document, providers: [{ ...row, windows: [window, null] }] }).reason).toBe("invalid_window_row");
   });
 
   test("projection uses the original stale window clock and preserves prior walls", () => {
     const measuredAt = now - 21 * 60_000;
-    const read = check({ ...document, providers: [{ ...row, windows: [{ ...window, measuredAt: iso(measuredAt) }] }] },
-      { ...receipt, measuredAt }).observation;
+    const read = check(
+      { ...document, providers: [{ ...row, windows: [{ ...window, measuredAt: iso(measuredAt) }] }] },
+      { ...receipt, measuredAt },
+    ).observation;
     expect(read?.measuredAt).toBe(measuredAt);
     const input = { generation: "g", bindings: [binding], observations: read ? [read] : [], stops: [], priorWalls: [] };
     expect(buildQuotaAdmission(input, now).accounts[0].windows[0].reasons).toEqual(["stale_observation"]);
-    const priorWalls = [{
-      ...scope, kind: receipt.kind, period: receipt.period, resetsAt: receipt.resetsAt, evidenceId: "wall",
-    }];
+    const priorWalls = [
+      {
+        ...scope,
+        kind: receipt.kind,
+        period: receipt.period,
+        resetsAt: receipt.resetsAt,
+        evidenceId: "wall",
+      },
+    ];
     expect(buildQuotaAdmission({ ...input, observations: [], priorWalls }, now).accounts[0].verdict).toBe("walled");
   });
 });
