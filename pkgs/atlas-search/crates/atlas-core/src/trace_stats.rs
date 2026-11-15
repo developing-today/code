@@ -46,6 +46,24 @@
 //! and material branch-survival skew shifts between the 7-day
 //! and 28-day windows. Thresholds are named constants below,
 //! recorded in each nomination, not buried magic numbers.
+//!
+//! Follow-on 5 (issue #9977) wires the feedback side of section
+//! 7 in: the normalisation pass (module `feedback_normalise`)
+//! classifies commented feedback into the section 6.2
+//! categories, and this module's aggregates carry those category
+//! counts per embed — with section 6.4 applied in full: agent
+//! self-feedback (a vote on a result served to a query the same
+//! agent issued, read from the trace's requester identity) is
+//! counted separately at weight 0 and never enters the weighted
+//! thumbs figures, and identical comments from one requester are
+//! collapsed per embed in the category counts. Per-query votes
+//! (`chunk_id: null`) aggregate at window level, and their
+//! `missing-result` comments nominate ingestion candidates. The
+//! weekly report's feedback nominations (retention + re-ingest,
+//! content review, ranking change, self-feedback process
+//! findings, ingestion) are nominations only, exactly like the
+//! statistics ones: no deletion, ranking, or weight change is
+//! made by this code.
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::path::{Path, PathBuf};
@@ -94,6 +112,23 @@ pub const RETENTION_MIN_EXPOSURE: u64 = 3;
 /// entries in the 7-day window, with at least this share below 5.
 pub const RANKING_MIN_SERVED: u64 = 3;
 pub const RANKING_BELOW5_SHARE: f64 = 0.5;
+
+/// Feedback nominations (section 7, follow-on 5): an embed's
+/// weighted down-votes must reach this total — from the unique
+/// requesters the nomination detail names — before a category
+/// nomination (`stale-content` / `wrong-content`) fires.
+pub const FEEDBACK_NOMINATION_MIN_WEIGHTED_DOWN: f64 = 1.0;
+
+/// `ranking-too-low` is a recurring-pattern signal: at least
+/// this many normalised votes on one embed in the 7-day window
+/// before it nominates a ranking-change candidate.
+pub const RANKING_TOO_LOW_MIN: u64 = 2;
+
+/// Agent self-feedback votes clustering on one embed at or
+/// above this count in the 7-day window surface as a section 7
+/// process finding (the workflow's retrieval step is the
+/// problem, not the weights).
+pub const SELF_FEEDBACK_CLUSTER_MIN: u64 = 2;
 
 /// The statistics-reports source registration (design sections
 /// 4 and 7): the weekly report's registry row, mirroring the
@@ -232,6 +267,15 @@ pub struct FeedbackStats {
     /// Down-votes on unopened results: snippet signal, excluded
     /// from the content-quality counts above (section 6.4).
     pub snippet_down_votes: u64,
+    /// Normalised comment category counts (section 6.2,
+    /// follow-on 5): from active commented votes on this embed,
+    /// with identical comments from one requester collapsed to
+    /// one count per embed (section 6.4).
+    pub categories: BTreeMap<String, u64>,
+    /// Agent self-feedback votes on this embed (section 6.4):
+    /// recorded and flagged, weight 0 — excluded from every
+    /// count above and from `unique_requesters`.
+    pub self_feedback_votes: u64,
     pub unique_requesters: BTreeSet<String>,
 }
 
@@ -248,6 +292,8 @@ impl FeedbackStats {
                 self.weighted_up / (self.weighted_up + self.weighted_down)
             } else { 0.0 },
             "snippet_down_votes": self.snippet_down_votes,
+            "normalised_categories": self.categories,
+            "self_feedback_votes": self.self_feedback_votes,
             "unique_requesters": self.unique_requesters.len(),
         })
     }
@@ -260,6 +306,10 @@ pub struct FeedbackVote {
     pub query_id: String,
     pub chunk_id: i64,
     pub up: bool,
+    /// The verbatim comment, when the vote carries one: the
+    /// normalisation pass (follow-on 5) classifies it into the
+    /// section 6.2 categories during aggregation.
+    pub comment: Option<String>,
     pub opened: bool,
     pub requester_kind: String,
     pub requester_id: String,
@@ -320,6 +370,10 @@ pub fn load_feedback_votes(paths: &[PathBuf]) -> Result<Vec<FeedbackVote>> {
                 query_id: query_id.to_string(),
                 chunk_id,
                 up,
+                comment: rec
+                    .get("comment")
+                    .and_then(Json::as_str)
+                    .map(str::to_string),
                 opened: rec.get("opened").and_then(Json::as_bool).unwrap_or(true),
                 requester_kind: kind,
                 requester_id: id,
@@ -327,6 +381,133 @@ pub fn load_feedback_votes(paths: &[PathBuf]) -> Result<Vec<FeedbackVote>> {
         }
     }
     Ok(votes)
+}
+
+/// One per-query feedback record (design section 6.1): a vote
+/// with `chunk_id: null` that judges the whole answer set —
+/// recall and ranking of the set — rather than one result.
+#[derive(Debug, Clone, PartialEq)]
+pub struct QueryFeedbackVote {
+    pub query_id: String,
+    pub up: bool,
+    pub comment: Option<String>,
+    pub requester_kind: String,
+    pub requester_id: String,
+}
+
+/// Load per-query votes from the same feedback JSONL files
+/// [`load_feedback_votes`] reads: the records it skips for
+/// carrying no `chunk_id`. Malformed lines are ignored, for
+/// the same reason as there.
+pub fn load_query_feedback_votes(paths: &[PathBuf]) -> Result<Vec<QueryFeedbackVote>> {
+    let mut votes = Vec::new();
+    for path in paths {
+        let body = std::fs::read_to_string(path).map_err(|e| {
+            Error::backend(format!(
+                "trace stats: cannot read feedback file {}: {e}",
+                path.display()
+            ))
+        })?;
+        for line in body.lines() {
+            let Ok(rec) = serde_json::from_str::<Json>(line.trim()) else {
+                continue;
+            };
+            let (Some(query_id), Some(vote)) = (
+                rec.get("query_id").and_then(Json::as_str),
+                rec.get("vote").and_then(Json::as_str),
+            ) else {
+                continue;
+            };
+            if rec.get("chunk_id").and_then(Json::as_i64).is_some() {
+                continue; // a per-result vote; load_feedback_votes owns it
+            }
+            let up = match vote {
+                "up" => true,
+                "down" => false,
+                _ => continue,
+            };
+            let (kind, id) = match rec.get("requester") {
+                Some(r) => (
+                    r.get("kind")
+                        .and_then(Json::as_str)
+                        .unwrap_or("")
+                        .to_string(),
+                    r.get("id").and_then(Json::as_str).unwrap_or("").to_string(),
+                ),
+                None => (String::new(), String::new()),
+            };
+            votes.push(QueryFeedbackVote {
+                query_id: query_id.to_string(),
+                up,
+                comment: rec
+                    .get("comment")
+                    .and_then(Json::as_str)
+                    .map(str::to_string),
+                requester_kind: kind,
+                requester_id: id,
+            });
+        }
+    }
+    Ok(votes)
+}
+
+/// Per-query feedback aggregates for one window (follow-on 5):
+/// reported at window level, never joined to an embed — a
+/// per-query vote judges the set. `missing_result_votes` feeds
+/// the section 7 ingestion nomination.
+#[derive(Debug, Clone, Default)]
+pub struct QueryFeedbackStats {
+    pub votes: u64,
+    pub up_votes: u64,
+    pub down_votes: u64,
+    pub missing_result_votes: u64,
+    pub categories: BTreeMap<String, u64>,
+    pub unique_requesters: BTreeSet<String>,
+}
+
+impl QueryFeedbackStats {
+    fn to_json(&self) -> Json {
+        json!({
+            "votes": self.votes,
+            "up_votes": self.up_votes,
+            "down_votes": self.down_votes,
+            "missing_result_votes": self.missing_result_votes,
+            "normalised_categories": self.categories,
+            "unique_requesters": self.unique_requesters.len(),
+        })
+    }
+}
+
+/// Query requester identities from every stored trace in
+/// `dir` (`query_id -> (kind, id)`, first record wins): the
+/// input the section 6.4 self-feedback test and the standalone
+/// normalisation pass need.
+pub fn load_query_requesters(dir: &Path) -> Result<crate::feedback_normalise::QueryRequesters> {
+    let mut map = crate::feedback_normalise::QueryRequesters::new();
+    for (path, _day) in hot_trace_files(dir)? {
+        let body = std::fs::read_to_string(&path).map_err(|e| {
+            Error::backend(format!("trace stats: cannot read {}: {e}", path.display()))
+        })?;
+        for line in body.lines() {
+            let Ok(rec) = serde_json::from_str::<Json>(line.trim()) else {
+                continue;
+            };
+            let (Some(query_id), Some(r)) = (
+                rec.get("query_id").and_then(Json::as_str),
+                rec.get("requester"),
+            ) else {
+                continue;
+            };
+            let kind = r
+                .get("kind")
+                .and_then(Json::as_str)
+                .unwrap_or("")
+                .to_string();
+            let id = r.get("id").and_then(Json::as_str).unwrap_or("").to_string();
+            map.entry(query_id.to_string()).or_insert((kind, id));
+        }
+    }
+    Ok(map)
 }
 
 /// The aggregates for one rolling window (design section 5).
@@ -343,6 +524,8 @@ pub struct WindowStats {
     /// Feedback votes that named a `(query_id, chunk_id)` pair no
     /// trace in the window resolves to an embed.
     pub feedback_unjoined: u64,
+    /// Per-query feedback aggregates (follow-on 5).
+    pub query_feedback: QueryFeedbackStats,
 }
 
 impl WindowStats {
@@ -358,6 +541,7 @@ impl WindowStats {
             "branches": self.branches.iter().map(BranchStats::to_json).collect::<Vec<_>>(),
             "feedback": self.feedback.iter().map(FeedbackStats::to_json).collect::<Vec<_>>(),
             "feedback_unjoined": self.feedback_unjoined,
+            "query_feedback": self.query_feedback.to_json(),
         })
     }
 }
@@ -396,6 +580,7 @@ pub fn aggregate_traces(
     today: (i64, u32, u32),
     window_days: i64,
     feedback: &[FeedbackVote],
+    query_feedback: &[QueryFeedbackVote],
 ) -> Result<WindowStats> {
     if window_days < 1 {
         return Err(Error::backend(format!(
@@ -409,6 +594,9 @@ pub fn aggregate_traces(
     let mut branches: BTreeMap<String, BranchStats> = BTreeMap::new();
     // (query_id, chunk_id) -> embed key, for the feedback join.
     let mut chunk_embed: HashMap<(String, i64), (String, String)> = HashMap::new();
+    // query_id -> (requester kind, id), for the section 6.4
+    // self-feedback test in the feedback join below.
+    let mut query_requesters: crate::feedback_normalise::QueryRequesters = HashMap::new();
     let mut traces = 0u64;
     let mut skipped_lines = 0usize;
     for (path, file_day) in hot_trace_files(dir)? {
@@ -450,6 +638,17 @@ pub fn aggregate_traces(
                 .and_then(Json::as_str)
                 .unwrap_or("")
                 .to_string();
+            if let Some(r) = rec.get("requester") {
+                let kind = r
+                    .get("kind")
+                    .and_then(Json::as_str)
+                    .unwrap_or("")
+                    .to_string();
+                let id = r.get("id").and_then(Json::as_str).unwrap_or("").to_string();
+                query_requesters
+                    .entry(query_id.clone())
+                    .or_insert((kind, id));
+            }
             let top_k = rec
                 .get("parameters")
                 .and_then(|p| p.get("top_k"))
@@ -560,6 +759,8 @@ pub fn aggregate_traces(
     // votes carry no requester id and cannot be deduplicated —
     // each is counted (at the 0.1 anonymous weight).
     let mut last_vote: HashMap<(String, String, i64), usize> = HashMap::new();
+    let mut seen_comments: std::collections::HashSet<(String, String, String, String)> =
+        std::collections::HashSet::new();
     for (i, v) in feedback.iter().enumerate() {
         if !v.requester_id.is_empty() {
             last_vote.insert((v.requester_id.clone(), v.query_id.clone(), v.chunk_id), i);
@@ -580,6 +781,20 @@ pub fn aggregate_traces(
             embed_id: key.1.clone(),
             ..Default::default()
         });
+        // Section 6.4 self-feedback: an agent voting on a
+        // result served to its own query is recorded and
+        // flagged at weight 0 — it enters none of the counts
+        // below, only the dedicated counter the weekly report
+        // surfaces as a process finding.
+        if crate::feedback_normalise::is_self_feedback(
+            &v.requester_kind,
+            &v.requester_id,
+            &v.query_id,
+            &query_requesters,
+        ) {
+            f.self_feedback_votes += 1;
+            continue;
+        }
         let w = requester_weight(&v.requester_kind);
         if v.up {
             f.up_votes += 1;
@@ -593,6 +808,59 @@ pub fn aggregate_traces(
         if !v.requester_id.is_empty() {
             f.unique_requesters.insert(v.requester_id.clone());
         }
+        // Section 6.2 category counts (follow-on 5), with the
+        // section 6.4 identical-comment collapse: one
+        // requester's identical comment counts once per embed,
+        // however many of the embed's chunks it was pasted onto.
+        if let Some(comment) = &v.comment
+            && !comment.trim().is_empty()
+        {
+            let collapse_key = (
+                key.0.clone(),
+                key.1.clone(),
+                v.requester_id.clone(),
+                comment.clone(),
+            );
+            if v.requester_id.is_empty() || seen_comments.insert(collapse_key) {
+                for category in crate::feedback_normalise::classify_comment(comment) {
+                    *f.categories.entry(category.to_string()).or_insert(0) += 1;
+                }
+            }
+        }
+    }
+    // Per-query feedback aggregates at window level: a
+    // per-query vote judges the answer set, not an embed
+    // (section 6.1). Category counts use the same normalisation
+    // pass, with the same identical-comment collapse per
+    // requester.
+    let mut query_stats = QueryFeedbackStats::default();
+    let mut q_seen: std::collections::HashSet<(String, String)> = std::collections::HashSet::new();
+    for v in query_feedback {
+        query_stats.votes += 1;
+        if v.up {
+            query_stats.up_votes += 1;
+        } else {
+            query_stats.down_votes += 1;
+        }
+        if !v.requester_id.is_empty() {
+            query_stats.unique_requesters.insert(v.requester_id.clone());
+        }
+        if let Some(comment) = &v.comment
+            && !comment.trim().is_empty()
+        {
+            let collapse = (v.requester_id.clone(), comment.clone());
+            if v.requester_id.is_empty() || q_seen.insert(collapse) {
+                for category in crate::feedback_normalise::classify_comment(comment) {
+                    if category == "missing-result" && !v.up {
+                        query_stats.missing_result_votes += 1;
+                    }
+                    *query_stats
+                        .categories
+                        .entry(category.to_string())
+                        .or_insert(0) += 1;
+                }
+            }
+        }
     }
     Ok(WindowStats {
         window_days,
@@ -604,6 +872,7 @@ pub fn aggregate_traces(
         branches: branches.into_values().collect(),
         feedback: fb.into_values().collect(),
         feedback_unjoined,
+        query_feedback: query_stats,
     })
 }
 
@@ -622,7 +891,7 @@ pub fn aggregate_consumers() -> Vec<(&'static str, &'static str)> {
         ("exposure", "retention review and ranking investigations"),
         (
             "feedback_aggregates",
-            "retention + re-ingestion nominations (decision wiring is follow-on 5)",
+            "retention + re-ingestion, content review, ranking-change and ingestion nominations (follow-on 5, #9977)",
         ),
         (
             "branch_survival_skew",
@@ -683,7 +952,7 @@ impl WeeklyReport {
             "unconsumed_aggregates": [],
             "notes": [
                 "Nominations only: no ranking behaviour change and no automated deletion or weight change is made by this report (issue #9975 scope).",
-                "Feedback aggregates are reported alongside retrieval statistics, never merged into them (design section 5.4); feedback capture is follow-on 4, so an empty feedback section means no votes were supplied, not zero signal quality.",
+                "Feedback aggregates are reported alongside retrieval statistics, never merged into them (design section 5.4); capture is follow-on 4 (#9976) and normalisation + decision wiring is follow-on 5 (#9977), so an empty feedback section means no votes were supplied, not zero signal quality.",
             ],
         })
     }
@@ -729,6 +998,39 @@ impl WeeklyReport {
                 ));
             }
             out.push('\n');
+            if !w.feedback.is_empty() || w.query_feedback.votes > 0 {
+                out.push_str("### Feedback (section 5.4 — alongside, never merged)\n\n");
+                out.push_str("| embed | up | down | weighted up | weighted down | snippet down | self-feedback | unique requesters | normalised categories |\n|---|---|---|---|---|---|---|---|---|\n");
+                for f in &w.feedback {
+                    let cats = f
+                        .categories
+                        .iter()
+                        .map(|(c, n)| format!("{c}:{n}"))
+                        .collect::<Vec<_>>()
+                        .join(", ");
+                    out.push_str(&format!(
+                        "| {} / {} | {} | {} | {:.2} | {:.2} | {} | {} | {} | {} |\n",
+                        f.source_file_id,
+                        f.embed_id,
+                        f.up_votes,
+                        f.down_votes,
+                        f.weighted_up,
+                        f.weighted_down,
+                        f.snippet_down_votes,
+                        f.self_feedback_votes,
+                        f.unique_requesters.len(),
+                        cats,
+                    ));
+                }
+                out.push_str(&format!(
+                    "\nPer-query feedback: {} vote(s) ({} up, {} down) from {} unique requesters; {} missing-result down-vote(s).\n\n",
+                    w.query_feedback.votes,
+                    w.query_feedback.up_votes,
+                    w.query_feedback.down_votes,
+                    w.query_feedback.unique_requesters.len(),
+                    w.query_feedback.missing_result_votes,
+                ));
+            }
         }
         out.push_str("## Nominations (section 7)\n\n");
         if self.nominations.is_empty() {
@@ -759,9 +1061,10 @@ pub fn weekly_report(
     dir: &Path,
     today: (i64, u32, u32),
     feedback: &[FeedbackVote],
+    query_feedback: &[QueryFeedbackVote],
 ) -> Result<WeeklyReport> {
-    let w7 = aggregate_traces(dir, today, DEFAULT_WINDOWS[0], feedback)?;
-    let w28 = aggregate_traces(dir, today, DEFAULT_WINDOWS[1], feedback)?;
+    let w7 = aggregate_traces(dir, today, DEFAULT_WINDOWS[0], feedback, query_feedback)?;
+    let w28 = aggregate_traces(dir, today, DEFAULT_WINDOWS[1], feedback, query_feedback)?;
     let mut nominations = Vec::new();
     for e in &w7.embeds {
         let top3 = e.rank1 + e.rank2 + e.rank3;
@@ -831,6 +1134,76 @@ pub fn weekly_report(
                 });
             }
         }
+    }
+    // Section 7 decision wiring for feedback (follow-on 5):
+    // every nomination below is a nomination only — re-ingestion,
+    // review, ranking, and ingestion all dispose elsewhere.
+    for f in &w7.feedback {
+        let subj = format!("{}/{}", f.source_file_id, f.embed_id);
+        let unique = f.unique_requesters.len();
+        let stale = f.categories.get("stale-content").copied().unwrap_or(0);
+        if f.weighted_down >= FEEDBACK_NOMINATION_MIN_WEIGHTED_DOWN && stale >= 1 {
+            nominations.push(Nomination {
+                kind: "retention_reingest_candidate",
+                subject: subj.clone(),
+                aggregate: "feedback_aggregates",
+                window: format!("{}..{}", w7.start_day, w7.end_day),
+                detail: format!(
+                    "weighted down-votes {:.2} from {unique} unique requesters with {stale} normalised stale-content comment(s); section 7: stale-content nominates re-ingestion first — no automated deletion",
+                    f.weighted_down
+                ),
+            });
+        }
+        let wrong = f.categories.get("wrong-content").copied().unwrap_or(0);
+        if f.weighted_down >= FEEDBACK_NOMINATION_MIN_WEIGHTED_DOWN && wrong >= 1 {
+            nominations.push(Nomination {
+                kind: "content_review_candidate",
+                subject: subj.clone(),
+                aggregate: "feedback_aggregates",
+                window: format!("{}..{}", w7.start_day, w7.end_day),
+                detail: format!(
+                    "weighted down-votes {:.2} from {unique} unique requesters with {wrong} normalised wrong-content comment(s); section 7: wrong-content goes to human review before any deletion",
+                    f.weighted_down
+                ),
+            });
+        }
+        let low = f.categories.get("ranking-too-low").copied().unwrap_or(0);
+        if low >= RANKING_TOO_LOW_MIN {
+            nominations.push(Nomination {
+                kind: "ranking_change_candidate",
+                subject: subj.clone(),
+                aggregate: "feedback_aggregates",
+                window: format!("{}..{}", w7.start_day, w7.end_day),
+                detail: format!(
+                    "{low} normalised ranking-too-low comments from {unique} unique requesters; section 7: production feedback nominates, the offline eval harness disposes — no ranking change is made here"
+                ),
+            });
+        }
+        if f.self_feedback_votes >= SELF_FEEDBACK_CLUSTER_MIN {
+            nominations.push(Nomination {
+                kind: "self_feedback_process_finding",
+                subject: subj.clone(),
+                aggregate: "feedback_aggregates",
+                window: format!("{}..{}", w7.start_day, w7.end_day),
+                detail: format!(
+                    "{} agent self-feedback votes (weight 0, section 6.4) cluster on this embed; section 7: the workflow's retrieval step is redesigned, not re-weighted",
+                    f.self_feedback_votes
+                ),
+            });
+        }
+    }
+    if w7.query_feedback.missing_result_votes >= 1 {
+        nominations.push(Nomination {
+            kind: "ingestion_candidate",
+            subject: "per-query feedback (chunk_id: null)".to_string(),
+            aggregate: "feedback_aggregates",
+            window: format!("{}..{}", w7.start_day, w7.end_day),
+            detail: format!(
+                "{} per-query down-vote(s) with normalised missing-result comments from {} unique requesters; section 7: filed as ingestion candidates for the #6018 program with the comments as evidence — this report nominates only",
+                w7.query_feedback.missing_result_votes,
+                w7.query_feedback.unique_requesters.len()
+            ),
+        });
     }
     Ok(WeeklyReport {
         report_day: format_day(today.0, today.1, today.2),
@@ -963,7 +1336,7 @@ mod tests {
     fn aggregation_counts_survival_ranks_and_exposure() {
         let dir = temp_dir("agg");
         fixture(&dir);
-        let w = aggregate_traces(&dir, (2026, 11, 14), 7, &[]).expect("aggregate");
+        let w = aggregate_traces(&dir, (2026, 11, 14), 7, &[], &[]).expect("aggregate");
         assert_eq!(w.traces, 2);
         assert_eq!(w.start_day, "2026-11-08");
         assert_eq!(w.end_day, "2026-11-14");
@@ -1023,7 +1396,7 @@ mod tests {
                 }
             }
         }
-        let w = aggregate_traces(&dir, (2026, 11, 14), 7, &[]).expect("aggregate");
+        let w = aggregate_traces(&dir, (2026, 11, 14), 7, &[], &[]).expect("aggregate");
         let agg_rank1: u64 = w.embeds.iter().map(|e| e.rank1).sum();
         assert_eq!(agg_rank1, raw_rank1);
         assert_eq!(agg_rank1, 1);
@@ -1042,10 +1415,10 @@ mod tests {
                 vec![result(9, "f9", "OLD", "fts", 1, Some(1), Some(1))],
             )],
         );
-        let w = aggregate_traces(&dir, (2026, 11, 14), 7, &[]).expect("aggregate");
+        let w = aggregate_traces(&dir, (2026, 11, 14), 7, &[], &[]).expect("aggregate");
         assert_eq!(w.traces, 2);
         assert!(w.embeds.iter().all(|e| e.embed_id != "OLD"));
-        let w28 = aggregate_traces(&dir, (2026, 11, 14), 28, &[]).expect("aggregate 28");
+        let w28 = aggregate_traces(&dir, (2026, 11, 14), 28, &[], &[]).expect("aggregate 28");
         assert_eq!(w28.traces, 2); // 2026-10-01 is 44 days out, still excluded
     }
 
@@ -1059,6 +1432,7 @@ mod tests {
                 chunk_id: 1,
                 up: true,
                 opened: true,
+                comment: None,
                 requester_kind: "drew".into(),
                 requester_id: "drew".into(),
             },
@@ -1067,6 +1441,7 @@ mod tests {
                 chunk_id: 1,
                 up: false,
                 opened: true,
+                comment: None,
                 requester_kind: "agent".into(),
                 requester_id: "sess-1".into(),
             },
@@ -1075,6 +1450,7 @@ mod tests {
                 chunk_id: 1,
                 up: false,
                 opened: false,
+                comment: None,
                 requester_kind: "user".into(),
                 requester_id: "u-2".into(),
             },
@@ -1083,11 +1459,12 @@ mod tests {
                 chunk_id: 99,
                 up: true,
                 opened: true,
+                comment: None,
                 requester_kind: "user".into(),
                 requester_id: "u-3".into(),
             },
         ];
-        let w = aggregate_traces(&dir, (2026, 11, 14), 7, &votes).expect("aggregate");
+        let w = aggregate_traces(&dir, (2026, 11, 14), 7, &votes, &[]).expect("aggregate");
         let f = w.feedback.iter().find(|x| x.embed_id == "A").expect("fb A");
         assert_eq!(f.up_votes, 1);
         assert_eq!(f.weighted_up, 1.0);
@@ -1124,7 +1501,7 @@ mod tests {
             ));
         }
         write_file(&dir, "atlas-traces-2026-11-14.jsonl", &lines14);
-        let report = weekly_report(&dir, (2026, 11, 14), &[]).expect("report");
+        let report = weekly_report(&dir, (2026, 11, 14), &[], &[]).expect("report");
         let kinds: Vec<&str> = report.nominations.iter().map(|n| n.kind).collect();
         assert!(kinds.contains(&"protected_embed"), "kinds: {kinds:?}");
         assert!(kinds.contains(&"retention_candidate"), "kinds: {kinds:?}");
@@ -1143,5 +1520,157 @@ mod tests {
         let md = report.render_markdown();
         assert!(md.contains("protected_embed"));
         assert!(md.contains("Atlas weekly statistics report"));
+    }
+
+    #[test]
+    fn self_feedback_weight_zero_and_categories_with_collapse() {
+        // Oracle: design sections 6.2-6.4. The fixture traces
+        // were issued by agent "test", so that agent's vote on
+        // its own query is self-feedback: weight 0, flagged in
+        // its own counter, absent from every other figure.
+        let dir = temp_dir("selffb");
+        fixture(&dir);
+        let votes = vec![
+            FeedbackVote {
+                query_id: "q1".into(),
+                chunk_id: 1,
+                up: false,
+                comment: Some("Stale — this is outdated.".into()),
+                opened: true,
+                requester_kind: "agent".into(),
+                requester_id: "test".into(),
+            },
+            FeedbackVote {
+                query_id: "q1".into(),
+                chunk_id: 1,
+                up: false,
+                comment: Some("Stale and outdated, please fix.".into()),
+                opened: true,
+                requester_kind: "drew".into(),
+                requester_id: "drew".into(),
+            },
+            FeedbackVote {
+                query_id: "q1".into(),
+                chunk_id: 1,
+                up: false,
+                comment: Some("Stale and outdated, please fix.".into()),
+                opened: true,
+                requester_kind: "agent".into(),
+                requester_id: "sess-2".into(),
+            },
+            // The same agent pastes the identical comment onto a
+            // second chunk of the same embed (q2): the category
+            // count collapses, the weighted count does not.
+            FeedbackVote {
+                query_id: "q2".into(),
+                chunk_id: 1,
+                up: false,
+                comment: Some("Stale and outdated, please fix.".into()),
+                opened: true,
+                requester_kind: "agent".into(),
+                requester_id: "sess-2".into(),
+            },
+        ];
+        let w = aggregate_traces(&dir, (2026, 11, 14), 7, &votes, &[]).expect("aggregate");
+        let f = w.feedback.iter().find(|x| x.embed_id == "A").expect("fb A");
+        assert_eq!(f.self_feedback_votes, 1);
+        assert_eq!(f.down_votes, 3, "self-feedback is not a content down-vote");
+        assert_eq!(f.weighted_down, 1.5, "drew 1.0 + agent 0.25 x2, self 0");
+        assert_eq!(f.unique_requesters.len(), 2, "drew + sess-2; self excluded");
+        assert_eq!(
+            f.categories.get("stale-content"),
+            Some(&2),
+            "drew's comment + sess-2's collapsed comment; self excluded"
+        );
+    }
+
+    #[test]
+    fn query_feedback_loader_and_missing_result_aggregation() {
+        // Oracle: design sections 6.1-6.2 — per-query records
+        // (chunk_id: null) load separately from per-result ones.
+        let dir = temp_dir("qfb");
+        fixture(&dir);
+        let fb_path = dir.join("feedback.jsonl");
+        std::fs::write(
+            &fb_path,
+            concat!(
+                "{\"query_id\":\"q1\",\"chunk_id\":null,\"vote\":\"down\",\"comment\":\"The migration guide is missing — the search didn't find it.\",\"requester\":{\"kind\":\"user\",\"id\":\"u-9\"}}\n",
+                "{\"query_id\":\"q1\",\"chunk_id\":1,\"vote\":\"down\",\"comment\":\"Stale.\",\"requester\":{\"kind\":\"user\",\"id\":\"u-9\"}}\n",
+                "not json\n",
+            ),
+        )
+        .expect("write feedback");
+        let paths = vec![fb_path];
+        let chunk_votes = load_feedback_votes(&paths).expect("chunk votes");
+        assert_eq!(chunk_votes.len(), 1);
+        assert_eq!(chunk_votes[0].comment.as_deref(), Some("Stale."));
+        let query_votes = load_query_feedback_votes(&paths).expect("query votes");
+        assert_eq!(query_votes.len(), 1);
+        assert!(!query_votes[0].up);
+        let w = aggregate_traces(&dir, (2026, 11, 14), 7, &chunk_votes, &query_votes)
+            .expect("aggregate");
+        assert_eq!(w.query_feedback.votes, 1);
+        assert_eq!(w.query_feedback.down_votes, 1);
+        assert_eq!(w.query_feedback.missing_result_votes, 1);
+        assert_eq!(w.query_feedback.unique_requesters.len(), 1);
+        assert_eq!(w.query_feedback.categories.get("missing-result"), Some(&1));
+    }
+
+    #[test]
+    fn weekly_report_feedback_nominations_carry_unique_requesters() {
+        // Oracle: design section 7 + issue #9977 acceptance —
+        // the weekly report carries the nomination sections
+        // with unique-requester figures.
+        let dir = temp_dir("fbnom");
+        fixture(&dir);
+        let votes = vec![FeedbackVote {
+            query_id: "q1".into(),
+            chunk_id: 1,
+            up: false,
+            comment: Some("Stale — outdated version of the runbook.".into()),
+            opened: true,
+            requester_kind: "user".into(),
+            requester_id: "u-1".into(),
+        }];
+        let query_votes = vec![QueryFeedbackVote {
+            query_id: "q1".into(),
+            up: false,
+            comment: Some("The migration guide is missing from the results.".into()),
+            requester_kind: "user".into(),
+            requester_id: "u-9".into(),
+        }];
+        let report = weekly_report(&dir, (2026, 11, 14), &votes, &query_votes).expect("report");
+        let kinds: Vec<&str> = report.nominations.iter().map(|n| n.kind).collect();
+        assert!(
+            kinds.contains(&"retention_reingest_candidate"),
+            "kinds: {kinds:?}"
+        );
+        assert!(kinds.contains(&"ingestion_candidate"), "kinds: {kinds:?}");
+        let reingest = report
+            .nominations
+            .iter()
+            .find(|n| n.kind == "retention_reingest_candidate")
+            .expect("reingest nomination");
+        assert!(
+            reingest.detail.contains("1 unique requesters"),
+            "detail names the unique-requester figure: {}",
+            reingest.detail
+        );
+        let j = report.to_json();
+        assert_eq!(
+            j["windows"][0]["feedback"][0]["normalised_categories"]["stale-content"],
+            json!(1)
+        );
+        assert_eq!(
+            j["windows"][0]["query_feedback"]["missing_result_votes"],
+            json!(1)
+        );
+        let md = report.render_markdown();
+        assert!(md.contains("Feedback (section 5.4"), "markdown: {md}");
+        assert!(md.contains("unique requesters"), "markdown: {md}");
+        assert!(
+            md.contains("retention_reingest_candidate"),
+            "markdown: {md}"
+        );
     }
 }

@@ -35,8 +35,9 @@ use atlas_core::{
     JsonlFeedbackSink, JsonlTraceSink, LocalBackend, QueryEmbedder, QueryEmbeddingCache,
     SearchBackend, SearchMode, SearchOptions, TraceContext, TraceDocument, TursoBackend,
     VectorBackend, Vote, aggregate_traces, feedback_for, ingest_traces, load_feedback_dir,
-    load_feedback_refs, load_feedback_votes, record_feedback, run_get_chunk, run_retention,
-    run_search_traced, search_traces, valid_civil_date, weekly_report, write_report,
+    load_feedback_refs, load_feedback_votes, load_query_feedback_votes, load_query_requesters,
+    normalise_records, record_feedback, run_get_chunk, run_retention, run_search_traced,
+    search_traces, valid_civil_date, weekly_report, write_normalised, write_report,
 };
 use atlas_proto::{
     FilterSpec, QueryVariant, SearchMode as ProtoSearchMode, SearchParametersV1, SearchRequest,
@@ -132,6 +133,8 @@ enum TracesCmd {
     Stats(TraceStatsArgs),
     /// weekly statistics report into the statistics-and-reports source set (design s7)
     Report(TraceReportArgs),
+    /// agent normalisation pass over the raw feedback store (design s6.2)
+    Normalise(TraceNormaliseArgs),
 }
 
 #[derive(Args)]
@@ -184,6 +187,22 @@ struct TraceReportArgs {
     /// feedback JSONL file with vote records (repeatable)
     #[arg(long)]
     feedback: Vec<PathBuf>,
+}
+
+#[derive(Args)]
+struct TraceNormaliseArgs {
+    /// traces directory, for query requester identities (default: the JsonlTraceSink default dir)
+    #[arg(long)]
+    dir: Option<PathBuf>,
+    /// feedback store directory (default: the JsonlFeedbackSink default dir)
+    #[arg(long)]
+    feedback_dir: Option<PathBuf>,
+    /// derivative output directory (default: <feedback store>/normalised)
+    #[arg(long)]
+    out_dir: Option<PathBuf>,
+    /// derivative day as YYYY-MM-DD (default: today, UTC)
+    #[arg(long)]
+    today: Option<String>,
 }
 
 #[derive(Args)]
@@ -1167,7 +1186,9 @@ fn cmd_traces(args: TracesArgs) -> Result<(), CliError> {
             let dir = a.dir.unwrap_or_else(JsonlTraceSink::default_dir);
             let today = parse_today_arg(&a.today)?;
             let votes = load_feedback_votes(&a.feedback).map_err(map_err)?;
-            let stats = aggregate_traces(&dir, today, a.window_days, &votes).map_err(map_err)?;
+            let query_votes = load_query_feedback_votes(&a.feedback).map_err(map_err)?;
+            let stats = aggregate_traces(&dir, today, a.window_days, &votes, &query_votes)
+                .map_err(map_err)?;
             println!(
                 "{}",
                 serde_json::to_string_pretty(&stats.to_json()).unwrap_or_default()
@@ -1178,7 +1199,8 @@ fn cmd_traces(args: TracesArgs) -> Result<(), CliError> {
             let dir = a.dir.unwrap_or_else(JsonlTraceSink::default_dir);
             let today = parse_today_arg(&a.today)?;
             let votes = load_feedback_votes(&a.feedback).map_err(map_err)?;
-            let report = weekly_report(&dir, today, &votes).map_err(map_err)?;
+            let query_votes = load_query_feedback_votes(&a.feedback).map_err(map_err)?;
+            let report = weekly_report(&dir, today, &votes, &query_votes).map_err(map_err)?;
             let report_file = write_report(&dir, &report).map_err(map_err)?;
             let md_file = dir.join(format!("atlas-statistics-report-{}.md", report.report_day));
             std::fs::write(&md_file, report.render_markdown())
@@ -1186,6 +1208,29 @@ fn cmd_traces(args: TracesArgs) -> Result<(), CliError> {
             let mut out = report.to_json();
             out["report_file"] = serde_json::json!(report_file.display().to_string());
             out["markdown_file"] = serde_json::json!(md_file.display().to_string());
+            println!("{}", serde_json::to_string_pretty(&out).unwrap_or_default());
+            Ok(())
+        }
+        TracesCmd::Normalise(a) => {
+            let dir = a.dir.unwrap_or_else(JsonlTraceSink::default_dir);
+            let today = parse_today_arg(&a.today)?;
+            let day = atlas_core::format_day(today.0, today.1, today.2);
+            let feedback_dir = a
+                .feedback_dir
+                .unwrap_or_else(JsonlFeedbackSink::default_dir);
+            let records = load_feedback_dir(&feedback_dir).map_err(map_err)?;
+            let requesters = load_query_requesters(&dir).map_err(map_err)?;
+            let normalised = normalise_records(&records, &requesters);
+            let out_dir = a.out_dir.unwrap_or_else(|| feedback_dir.join("normalised"));
+            let file = write_normalised(&out_dir, &day, &normalised).map_err(map_err)?;
+            let self_feedback = normalised.iter().filter(|n| n.self_feedback).count();
+            let out = serde_json::json!({
+                "feedback_dir": feedback_dir.display().to_string(),
+                "raw_records": records.len(),
+                "normalised": normalised.len(),
+                "self_feedback": self_feedback,
+                "normalised_file": file.display().to_string(),
+            });
             println!("{}", serde_json::to_string_pretty(&out).unwrap_or_default());
             Ok(())
         }

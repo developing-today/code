@@ -33,6 +33,7 @@ pub mod embed_cache;
 pub mod error;
 pub mod eval;
 pub mod feedback;
+pub mod feedback_normalise;
 pub mod filters;
 pub mod fusion;
 pub mod local;
@@ -66,6 +67,11 @@ pub use feedback::{
     MAX_COMMENT_BYTES, Vote, active_view, feedback_files, feedback_for, load_feedback_dir,
     load_feedback_records, record_feedback,
 };
+pub use feedback_normalise::{
+    FEEDBACK_CATEGORIES, NORMALISED_SCHEMA, NormalisedFeedback, QueryRequesters, about_chunk,
+    classify_comment, is_self_feedback, normalise_records, normalised_file_name, summarise,
+    write_normalised,
+};
 pub use filters::{Filters, Sensitivity};
 pub use fusion::FusedEntry;
 pub use local::LocalBackend;
@@ -85,9 +91,10 @@ pub use trace_ingest::{
     trace_file_day, trace_source_registration, valid_civil_date,
 };
 pub use trace_stats::{
-    DEFAULT_TOP_K, DEFAULT_WINDOWS, FeedbackStats, FeedbackVote, Nomination, REPORT_SCHEMA,
-    REPORT_SOURCE_ID, STATS_SCHEMA, WeeklyReport, WindowStats, aggregate_traces, format_day,
-    load_feedback_votes, report_file_name, report_source_registration, requester_weight,
+    DEFAULT_TOP_K, DEFAULT_WINDOWS, FeedbackStats, FeedbackVote, Nomination, QueryFeedbackStats,
+    QueryFeedbackVote, REPORT_SCHEMA, REPORT_SOURCE_ID, STATS_SCHEMA, WeeklyReport, WindowStats,
+    aggregate_traces, format_day, load_feedback_votes, load_query_feedback_votes,
+    load_query_requesters, report_file_name, report_source_registration, requester_weight,
     weekly_report, write_report,
 };
 pub use turso::TursoBackend;
