@@ -274,6 +274,27 @@
   // the monthly window back under 99.5% after its reset AND
   // restoration is proven by a live completion (the code#9397
   // re-seat condition).
+  // 2026-11-15 (Drew, direct order): "_commandcode" LEAVES the list.
+  // Drew's ruling: a quota-walled provider is enabled and skipped,
+  // not disabled. _commandcode has had ZERO seats since 2026-11-13
+  // (code#9397) - no route target references it anywhere in this
+  // file (verified 2026-11-15: no "_commandcode/" or bare
+  // "commandcode/" target strings, no commandcode-plan references) -
+  // so this enable is inert: no walk can reach the door whatever the
+  // skip machinery does, and its gathered read is not even full
+  // (monthly 99.513%, no reset stated; the aggregator calls it
+  // "near", not walled). This supersedes the 2026-11-14 re-enable
+  // condition above for this provider. _claude and _muse were NOT
+  // removed in the same pass: the proactive gathered-quota skip is
+  // proven for per-credential pools (Go/Zen legs are excluded as
+  // quota-known-full with zero attempts) but NOT for provider-wide
+  // snapshot pools - opendesign (7d 100%) took 42 attempts in 6h and
+  // cline-pass (monthly 100%) 8 in the same window on 2026-11-15,
+  // all quota failures, in the running build that contains the
+  // code#8086 plant. Filed as fork issue #2479; _claude/_muse
+  // un-disable when that closes, and _claude additionally only on a
+  // build that includes fork PR #2466 (code#9549). _antigravity
+  // stays: banned account, not a quota wall.
   "disabled_providers": [
     "google",
     "google-vertex",
@@ -289,8 +310,7 @@
     "deepseek",
     "_claude",
     "_antigravity",
-    "_muse",
-    "_commandcode"
+    "_muse"
   ],
   // 2026-11-03 (Drew): muse, antigravity-ls, antigravity-agy, code-design,
   // design-code, cloudflare-gateway and chatgpt left this list together with
