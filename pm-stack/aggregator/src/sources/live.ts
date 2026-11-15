@@ -2072,7 +2072,9 @@ export function liveSource(
     },
     async orchestration(): Promise<OrchestrationSection | null> {
       // #899: the orchestration section rides the fleet feed, embedded
-      // by the collector from the orchestrator's own output file. The
+      // by the collector from the latest orch_runs.document since the
+      // #10504 reader flip (orchestration.json export as its fallback).
+      // The
       // section carries its own provenance; absent = not measured yet.
       // #1140: three states, told apart — live (accepted, served in
       // the normalized contract shape, #1110), invalid (a section is

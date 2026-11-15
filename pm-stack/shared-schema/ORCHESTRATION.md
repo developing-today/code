@@ -69,9 +69,9 @@ One transaction per pass, in this order:
 2. Replace `orch_items` with the document's tiers: delete the
    previous snapshot, insert one row per item, carrying
    `first_seen_run_id` forward for items that already existed.
-3. Regenerate `orchestration.json` from the run's `document` (until
-   the reader flip, the file is still written every pass — it is
-   both the export and the rollback path).
+3. Regenerate `orchestration.json` from the run's `document` (the
+   file is still written every pass — it is both the export and the
+   rollback path).
 
 Until that slice lands and verifies (a pass reads its state back
 from the tables and the dashboard serves the generated export
@@ -82,6 +82,15 @@ one full cycle, per the migration plan's reversibility rule.
 
 Rollback at every stage is "point the pass back at the files": the
 files are never behind, because step 3 keeps writing them.
+
+Reader flip (#10504, landed after the writer dual cycle verified):
+the fleet-feed collector reads the latest `orch_runs.document`
+(`src/orchestration-db.ts` in the aggregator) and embeds that as the
+dashboard's orchestration section; on any DB read failure it serves
+the file document instead and marks the section in error so the
+failure is surfaced, and `ORCHESTRATION_SOURCE=file` points the
+reader back at the file outright — the rollback above, which loses
+nothing because step 3 never stopped writing the file.
 
 ## What this slice is not
 
