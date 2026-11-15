@@ -48,6 +48,7 @@ impl FeedbackRequest {
             requester_id: id,
             opened: self.opened.unwrap_or(false),
         };
-        input.validate().map_err(|e| e.to_string())
+        input.validate().map_err(|e| e.to_string())?;
+        Ok(input)
     }
 }
