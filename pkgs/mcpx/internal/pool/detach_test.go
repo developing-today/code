@@ -35,4 +35,14 @@ func TestDetachRefusesWhileACallIsInFlight(t *testing.T) {
 		t.Fatalf("want the one child handed on, got %d", len(h.Instances))
 	}
 	p.Commit()
+	// Commit transfers ownership of the handed-off children to a
+	// successor; this test has no successor, so it must adopt and
+	// close them itself.
+	ads, err := pool.Adopt(h.Instances)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, a := range ads {
+		a.Close()
+	}
 }
