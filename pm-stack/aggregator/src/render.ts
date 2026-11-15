@@ -7497,7 +7497,7 @@ export function queuePanelHtml(snapshot: QueueSnapshot | null): string {
         `<tr><td>${esc(q.queue)}</td><td>${q.queued}</td><td>${q.claimed}</td><td>${q.parked}</td><td>${q.blocked}</td><td>${q.done}</td><td>${esc(age(q.oldestQueuedAgeMs))}</td><td>${q.terminalEvents24h} / ${q.terminalEvents7d}</td></tr>`,
     )
     .join("");
-  const streams = `<table><thead><tr><th>Queue stream</th><th>Queued</th><th>Claimed</th><th>Parked</th><th>Blocked</th><th>Done</th><th>Oldest queued</th><th>Terminal 24h / 7d</th></tr></thead><tbody>${streamRows}</tbody></table>`;
+  const streams = `<table><caption>Queue streams</caption><thead><tr><th scope="col">Queue stream</th><th scope="col">Queued</th><th scope="col">Claimed</th><th scope="col">Parked</th><th scope="col">Blocked</th><th scope="col">Done</th><th scope="col">Oldest queued</th><th scope="col">Terminal 24h / 7d</th></tr></thead><tbody>${streamRows}</tbody></table>`;
   const idItems = snapshot.tasks.filter(
     (task) =>
       task.repo === "developing-today/code" &&
@@ -7513,7 +7513,7 @@ export function queuePanelHtml(snapshot: QueueSnapshot | null): string {
     })
     .join("");
   const items = idItems.length
-    ? `<h3>Claimed &amp; parked id items (${idItems.length})</h3><table><thead><tr><th>Task</th><th>Issue</th><th>Status</th><th>Worker / lane</th><th>Stage</th></tr></thead><tbody>${itemRows}</tbody></table>`
+    ? `<h3>Claimed &amp; parked id items (${idItems.length})</h3><table><caption>Claimed &amp; parked id items</caption><thead><tr><th scope="col">Task</th><th scope="col">Issue</th><th scope="col">Status</th><th scope="col">Worker / lane</th><th scope="col">Stage</th></tr></thead><tbody>${itemRows}</tbody></table>`
     : `<h3>Claimed &amp; parked id items</h3><p class="muted">None in the current snapshot.</p>`;
   return `${head}${sourceLine}${streams}${items}`;
 }
