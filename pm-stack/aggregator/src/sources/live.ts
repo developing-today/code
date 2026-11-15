@@ -54,6 +54,7 @@ import { describeRepoRoadmapSection, mergeRoadmapRows, readRepoRoadmaps } from "
 import { summarizeDns } from "../dns.ts";
 import {
   applyCloudflareExport,
+  applyPaygSettlements,
   applySupabaseExport,
   extractCharges,
   extractPaygLines,
@@ -1939,7 +1940,11 @@ export function liveSource(
         const partial = {
           services: applySupabaseExport(applyCloudflareExport(feed.saas, cfExport), supabaseExport),
           uninstrumentedServices,
-          payg: feed.payg ?? [],
+          // #1056: feed lines are built by the collector without
+          // settlements — reconcile them against local history here,
+          // before attention flags are built from them (CodeRabbit,
+          // PR #10433: this branch previously returned unreconciled).
+          payg: applyPaygSettlements(feed.payg ?? [], Object.values(history).flat()),
           charges: feedCharges,
           subscriptions: feed.subscriptions ?? [],
         };
@@ -1977,7 +1982,7 @@ export function liveSource(
         const partial = {
           services: applySupabaseExport(applyCloudflareExport(extractSaasServices(doc), cfExport), supabaseExport),
           uninstrumentedServices,
-          payg: extractPaygLines(doc, registryText),
+          payg: extractPaygLines(doc, registryText, { settlements: Object.values(history).flat() }),
           charges: mergeChargeRows(feedCharges, extractCharges(doc, registryText)),
           subscriptions: extractSubscriptions(doc),
         };

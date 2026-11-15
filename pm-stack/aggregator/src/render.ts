@@ -2250,12 +2250,23 @@ function paygCardHtml(usage: UsageView): string {
   const lines = usage.payg
     .map((l: PaygLine) => {
       const figures =
-        l.accruedUsd != null
-          ? `$${l.accruedUsd.toFixed(2)} accrued${l.collectedUsd != null ? ` · $${l.collectedUsd.toFixed(2)} collected` : ""} · $${(l.unbilledUsd ?? 0).toFixed(2)} unbilled`
-          : l.estimate
-            ? `counted $${countedEstimate(l.estimate).toFixed(2)} as used (1.2 × high) · estimate $${l.estimate.low.toFixed(2)}–$${l.estimate.high.toFixed(2)} ${esc(l.estimate.period)}`
-            : "not estimable from local records";
-      return `<div><strong>${esc(l.label)}</strong>: ${figures}<br><span class="muted">${esc(l.note)}</span><br>${freshnessStamp(l.measuredAt, l.sourceClass, 7)}</div>`;
+        l.settledUsd != null
+          ? `$${l.settledUsd.toFixed(2)} ${l.settledSource === "invoice" ? "invoiced" : "settled"}${
+              l.estimate
+                ? ` · estimates $${l.estimate.low.toFixed(2)}–$${l.estimate.high.toFixed(2)}`
+                : l.accruedUsd != null
+                  ? ` · $${l.accruedUsd.toFixed(2)} accrued`
+                  : ""
+            }${l.settledVarianceUsd != null ? ` · variance ${l.settledVarianceUsd < 0 ? "-$" : "+$"}${Math.abs(l.settledVarianceUsd).toFixed(2)}` : ""} · $${(l.unbilledUsd ?? 0).toFixed(2)} unbilled`
+          : l.accruedUsd != null
+            ? `$${l.accruedUsd.toFixed(2)} accrued${l.collectedUsd != null ? ` · $${l.collectedUsd.toFixed(2)} collected` : ""} · $${(l.unbilledUsd ?? 0).toFixed(2)} unbilled`
+            : l.estimate
+              ? `counted $${countedEstimate(l.estimate).toFixed(2)} as used (1.2 × high) · estimate $${l.estimate.low.toFixed(2)}–$${l.estimate.high.toFixed(2)} ${esc(l.estimate.period)}`
+              : "not estimable from local records";
+      const stale = l.staleEstimate
+        ? ` <span class="badge near">stale estimate — unreconciled &gt;1 invoice cycle</span>`
+        : "";
+      return `<div><strong>${esc(l.label)}</strong>${stale}: ${figures}<br><span class="muted">${esc(l.note)}</span><br>${freshnessStamp(l.measuredAt, l.sourceClass, 7)}</div>`;
     })
     .join("");
   const total = usage.payg.reduce((sum, l) => sum + (l.unbilledUsd ?? 0), 0);
