@@ -8,6 +8,7 @@ POST https://api.turso.tech/v3/organizations/{org-UUID}/databases
 ```
 
 Facts established empirically during the atlas shard restore (2026-11-04):
+
 - The field is `use_tursodb` (from turso-cli source, `internal/turso/databases_v3.go`: `CreateDatabaseV3Body.UseTursoDB`; the CLI's `--tursodb` flag sets the same field). Same route the CLI v1.0.34 uses.
 - The `{org-UUID}` path segment must be the organization **UUID** (`5980ebf0-b064-45ba-9d5f-f2f9ec077f6a` for dezren39) — the org slug returns `organization not found`. Group is likewise the group **UUID** (great-star-lord = `16d3864a-3343-11ee-b78e-3698c249076c`).
 - Auth: platform API token (`turso auth token` / a minted API token), `Authorization: Bearer …`. Database access afterwards is per-DB tokens as usual (`turso db tokens create`).

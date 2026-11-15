@@ -15,7 +15,11 @@ const binding: Binding = {
   ...scope,
   aliases: [route.alias],
   windows: required.map(({ kind }) => ({
-    kind, period: "p1", resetsAt: reset, freshnessMs: 3_600_000, collectionMs: 900_000,
+    kind,
+    period: "p1",
+    resetsAt: reset,
+    freshnessMs: 3_600_000,
+    collectionMs: 900_000,
   })),
 };
 function fixture(weekly = 100): AdmissionInput {
@@ -23,8 +27,16 @@ function fixture(weekly = 100): AdmissionInput {
     generation: "g1",
     bindings: [binding],
     observations: required.map(({ kind }) => ({
-      ...scope, kind, period: "p1", id: kind, source: "provider", measuredAt: now,
-      resetsAt: reset, percent: kind === "weekly" ? weekly : 30, state: "ok", denominator: "allowance",
+      ...scope,
+      kind,
+      period: "p1",
+      id: kind,
+      source: "provider",
+      measuredAt: now,
+      resetsAt: reset,
+      percent: kind === "weekly" ? weekly : 30,
+      state: "ok",
+      denominator: "allowance",
     })),
     stops: [],
     priorWalls: [],
@@ -38,9 +50,13 @@ describe("admission shadow: #10323 all applicable windows and exact billing scop
     const other = { ...route, model: "model-b" };
     const input = fixture();
     const before = JSON.stringify(input);
-    const result = evaluateAdmissionShadow(input, "launch", [route, other], [
-      receipt, { ...receipt, ...other, required: [required[1]] },
-    ], now);
+    const result = evaluateAdmissionShadow(
+      input,
+      "launch",
+      [route, other],
+      [receipt, { ...receipt, ...other, required: [required[1]] }],
+      now,
+    );
     expect(result.decisions.map((d) => d.verdict)).toEqual(["walled", "eligible"]);
     expect(result.wouldDefer).toBe(false);
     expect(result.generation).toBe("g1");
@@ -48,19 +64,27 @@ describe("admission shadow: #10323 all applicable windows and exact billing scop
   });
 
   test("missing, duplicate, empty, and effort-mismatched evidence cannot grant eligibility", () => {
-    for (const rows of [[], [receipt, receipt], [{ ...receipt, required: [] }],
-      [{ ...receipt, effort: "high" }], [{ ...receipt, verifiedUntil: now }], [{ ...receipt, required: [required[1], required[1]] }]]) {
+    for (const rows of [
+      [],
+      [receipt, receipt],
+      [{ ...receipt, required: [] }],
+      [{ ...receipt, effort: "high" }],
+      [{ ...receipt, verifiedUntil: now }],
+      [{ ...receipt, required: [required[1], required[1]] }],
+    ]) {
       expect(evaluate(fixture(0), rows).decisions[0].verdict).toBe("unknown");
       expect(evaluate(fixture(0), rows).wouldDefer).toBe(true);
     }
   });
 
   test("no implicit sibling account, missing bucket, or missing window substitution", () => {
-    for (const patch of [{ account: "billing-b" },
+    for (const patch of [
+      { account: "billing-b" },
       { required: [{ ...required[0], bucket: "other" }] },
       { required: [{ ...required[0], kind: "hourly" }] },
       { required: [{ ...required[0], period: "p0" }] },
-      { required: [{ ...required[0], resetsAt: reset + 1 }] }]) {
+      { required: [{ ...required[0], resetsAt: reset + 1 }] },
+    ]) {
       expect(evaluate(fixture(0), [{ ...receipt, ...patch }]).decisions[0].verdict).toBe("unknown");
     }
     const input = fixture(0);
@@ -73,7 +97,12 @@ describe("admission shadow: #10323 all applicable windows and exact billing scop
     input.observations = [];
     input.priorWalls = [{ ...scope, kind: "weekly", period: "p1", resetsAt: reset, evidenceId: "wall" }];
     expect(evaluate(input).decisions[0].windows[0]).toMatchObject({
-      bucket: "plan", kind: "weekly", period: "p1", verdict: "walled", evidenceIds: ["wall"], resetsAt: reset,
+      bucket: "plan",
+      kind: "weekly",
+      period: "p1",
+      verdict: "walled",
+      evidenceIds: ["wall"],
+      resetsAt: reset,
     });
     input.stops = [{ ...scope, id: "stop", reason: "steward_hold", effectiveAt: now - 1 }];
     expect(evaluate(input).decisions[0].verdict).toBe("stopped");

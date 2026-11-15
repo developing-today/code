@@ -151,7 +151,13 @@ export class VoiceSession {
       sttModel: STT_MODEL,
       ttsModel: TTS_MODEL,
     });
-    this.send(ws, { type: "done", sessionId, intent, audioSecondsIn: trimmed.secondsSubmitted, audioSecondsOut: secondsOut });
+    this.send(ws, {
+      type: "done",
+      sessionId,
+      intent,
+      audioSecondsIn: trimmed.secondsSubmitted,
+      audioSecondsOut: secondsOut,
+    });
   }
 
   async webSocketClose(ws: WebSocket, code: number): Promise<void> {

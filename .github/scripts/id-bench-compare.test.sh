@@ -136,8 +136,16 @@ man_fleet='{"type":"manifest","schema_version":1,"run_id":"1-1","git_sha":"abc",
 cell() { # <workload> <interface> <value>
   printf '{"type":"cell","run_id":"1-1","workload_id":"%s","interface_id":"%s","configuration_id":"standard-default","scale":"S1","status":"measured","metrics":[{"metric":"latency","statistic":"median","unit":"us_per_append","value":%s,"sample_count":5,"samples":[%s]}]}\n' "$1" "$2" "$3" "$3"
 }
-{ echo "$man_fleet"; cell alpha in_process 100.000; cell alpha iroh 100.000; } >"$tmp/base-matrix.jsonl"
-{ echo "$man_fleet"; cell alpha in_process 130.000; cell alpha iroh 100.000; } >"$tmp/cur-matrix.jsonl"
+{
+  echo "$man_fleet"
+  cell alpha in_process 100.000
+  cell alpha iroh 100.000
+} >"$tmp/base-matrix.jsonl"
+{
+  echo "$man_fleet"
+  cell alpha in_process 130.000
+  cell alpha iroh 100.000
+} >"$tmp/cur-matrix.jsonl"
 out="$("$compare" "$tmp/cur-matrix.jsonl" "$tmp/base-matrix.jsonl")"
 code=$?
 assert_exit "matrix mode exits 0" 0 "$code"
@@ -148,13 +156,18 @@ assert_contains "matrix summary counts one regression" "$out" "1 cell(s) regress
 
 # machine-class mismatch: incomparable, never compared across classes
 man_ci='{"type":"manifest","schema_version":1,"run_id":"2-2","git_sha":"def","started_at_utc":"2026-11-15T00:00:00Z","machine_class":"ci-runner","os":"linux","arch":"x86_64","cpu_threads":4,"toolchain":"unknown","build_profile":"release","generator_version":1,"seed":22897}'
-{ echo "$man_ci"; cell alpha in_process 50.000; cell alpha iroh 50.000; } >"$tmp/cur-ci.jsonl"
+{
+  echo "$man_ci"
+  cell alpha in_process 50.000
+  cell alpha iroh 50.000
+} >"$tmp/cur-ci.jsonl"
 out="$("$compare" "$tmp/cur-ci.jsonl" "$tmp/base-matrix.jsonl")"
 assert_contains "machine-class mismatch is incomparable" "$out" "incomparable (machine class differs)"
 assert_not_contains "machine-class mismatch prints no percent" "$out" "-50.0%"
 
 # explicit non-measured status in current is reported, not "not run"
-{ echo "$man_fleet"
+{
+  echo "$man_fleet"
   cell alpha in_process 100.000
   printf '%s\n' '{"type":"cell","run_id":"1-1","workload_id":"alpha","interface_id":"iroh","configuration_id":"standard-default","scale":"S1","status":"unsupported","reason":"no adapter","metrics":[]}'
 } >"$tmp/cur-unsup.jsonl"

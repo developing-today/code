@@ -101,8 +101,8 @@ let
   # derivation in programs.gh.package and home.packages below, so
   # buildEnv dedups exactly as it did for latestCli.gh.
   ghFleet = pkgs.callPackage ../../pkgs/gh-fleet {
-    gh = latestCli.gh;
-    fleet = fleetPkgs.fleet;
+    inherit (latestCli) gh;
+    inherit (fleetPkgs) fleet;
   };
   # Vendored from nixpkgs master; see the header in that file for why. Provides
   # `agy_acp_server`, which t3code's AcpRegistryDriver can drive.

@@ -3,7 +3,7 @@
 Design doc — 2026-11-04. Companion to the Atlas binary+service design
 (`doc/2026-11-04T08-07-13Z_design_atlas_binary_service/`, epic #5350) and to
 dezren39/hatch-personal#20 (writer stall + vector index) and #21 (search
-improvements; Drew's (b)+(c) ruling). This note revises the *data* side of
+improvements; Drew's (b)+(c) ruling). This note revises the _data_ side of
 Atlas for the Turso **Scaler** plan Drew signed up for on 2026-11-04. The
 binary/service design stands unchanged; this note changes where data lives,
 how it is written, and how it is cached.
@@ -69,18 +69,18 @@ Proven (recorded on hatch-personal#20):
   "no backfill" — "an index created for a table with existing data will
   be automatically populated with this data"
   (docs.turso.tech/features/ai-and-embeddings). So the empty shadow is
-  *not* documented behavior; it is an observed hosted defect or limit
+  _not_ documented behavior; it is an observed hosted defect or limit
   on this database (a public migration note cited on #20 reports the
   same observation in the wild). **Distinguishing test:** create a
   scratch table with ~100 pre-existing F32_BLOB(768) rows, `CREATE
-  INDEX`, and count the shadow — if a small table backfills and ours
+INDEX`, and count the shadow — if a small table backfills and ours
   didn't, the limit is scale/shape (107k rows × DiskANN shadow layout);
   if it doesn't, the deployed server build contradicts its own docs and
   the evidence package (our two attempts + timings) goes to Turso
   support. Either way the row-rewrite remains the working population
   path, and the test is cheap enough to run in the same maintenance
   window as the C2 drop.
-- **F4.** The load's own log stops *right before* its index step:
+- **F4.** The load's own log stops _right before_ its index step:
   `load.log` ends and the first swap agent ended silently at exactly the
   point where `CREATE INDEX` would have run against the just-populated
   107,639-row table.
@@ -103,7 +103,7 @@ Hypotheses:
 
 **Distinguishing test (next time, and as a standing rule):** Scaler's
 14-day audit log now records DDL server-side. If a write stall recurs,
-correlate its window against audit-log DDL/index activity *before*
+correlate its window against audit-log DDL/index activity _before_
 probing; then run the scratch probe twice — once while a known index
 operation is running on a scratch table (expect the wedge: writes queue)
 and once idle (expect <1 s). H1 predicts the wedge tracks index DDL
@@ -127,7 +127,7 @@ previously-failed batches. Each rewritten row costs ~1 s of writer time
 — incremental index maintenance on a 160,576 B/row shadow structure
 (§2) through the single writer — while unindexed scratch writes run
 0.5 s per transaction (F2). The write path is not broken; it is
-*serialized and expensive per indexed row*. Nothing about the current
+_serialized and expensive per indexed row_. Nothing about the current
 run should be disturbed; §4/§5 design so that no future index build
 ever again has to be a 26-hour single-file queue.
 
@@ -135,16 +135,16 @@ ever again has to be a 26-hour single-file queue.
 
 ## 2. Config inefficiency audit — current atlas setup
 
-| # | Finding | Evidence | Disposition |
-|---|---------|----------|-------------|
-| C1 | **Vector-index shadow costs 160,576 B/row** — 52× the 3,072 B vector it indexes. Full index ≈ 17.3 GB. | Measured uniform per-row shadow size, 2026-11-04 inventory | **Accept for this build** (Scaler: 4.8 GB + 17.3 GB ≈ 22.1 GB ≤ 24 GB included, ~1.9 GB headroom). **Spike the cause** before indexing any second corpus: a 52× blow-up is a representation bug (likely per-row page slack in the shadow's vector+graph layout), not a law of nature. Never index a staging DB. |
-| C2 | Legacy **BGE vector table (~221 MB)** still stored beside Snowflake vectors; dormant, flag-reachable fallback only. | Swap record 2026-11-03; drop was probe-gated during the DDL wedge | **Fix after the rewrite completes:** drop it in the same maintenance pattern (probe first, then DROP), freeing ~221 MB and removing a second vector column from every schema copy. Until then it is also the only rollback if the Snowflake gate ever re-opens — keep until the index verifies. |
-| C3 | **Location topology — audited, already minimal.** An earlier read ("org at 4/3 locations") suggested hosted replica fan-out in the write path. Direct check (`turso db show atlas`, 2026-11-04): **one location, `aws-us-east-1` primary, group `great-star-lord`** — there is nothing to trim, and no hosted fan-out cost exists to remove. Turso deprecated hosted edge replicas in the 2025 AWS migration; locality is now our job via embedded replicas (§5.5). | `turso db show` 2026-11-04 | **Accept + note:** keep the primary in us-east (closest hosted region to the laptop). The old "locations over limit" figure was org-level accounting on the retired plan model, not atlas replicas. Also: the CLI reports atlas at **4.8 GB** vs the 3.8 GB the web counters showed on 2026-11-04 — C8's counter-lag rule applies to our own notes too; 4.8 GB is the planning number (post-rewrite total ≈ 22.1 GB, still inside 24 GB included, headroom ~1.9 GB — thinner than earlier estimates, which strengthens the C1 spike). |
-| C4 | `messages` (1.15 GB, hydration) co-resident with chunks+vectors+FTS in one DB: every scan-store operation drags the hydration store's pages, and the single writer is shared by publish, search-adjacent writes, and DDL. | DB inventory | **Fix in rebuild (§4):** core splits into a scan store (chunks, vectors, FTS) and a content store (messages/full text) per sensitivity level. Interim: accept. |
-| C5 | **Scan-based search** while the index is down: 6.18 s wall / 5.94 s server for the pool-100 branch (Nov 3); Gate B golden queries 18.5–21.9 s end-to-end for the Rust scan arm (Nov 4, rewrite idle). | #20 measurements; gateb-results 2026-11-04 | **Accept as the designed default.** The sensitivity ceiling must apply *before* ranking — a pre-filtered scan is the correctness-preserving shape; the index (when verified) is an accelerator for unfiltered hot paths only, arbitrated by the golden-311 A/B (Gate B: parity confirmed, Δhits 0, ΔMRR +0.0016). See Appendix A for today's degraded in-flight numbers and why they strengthen §4/§5. |
-| C6 | **Cold-start model load** (~28 s sentence-transformers per process, ~35 s cold Python run). | #21 thread 3 | **Retired by the Step-6 cutover:** the Rust binary (embedded ONNX embedder) is the production CLI as of 2026-11-04. The remaining cold cost is per-query, not per-process — solved by §3 caching + §5.5 replicas, not by process lifetime. **Gap found:** the binary's `serve` role exists but **no search service is currently running on the laptop** (port 18760 refused; the wrapper falls back to standalone with a warning). Standing the serve role up is an operational follow-up, recorded in Appendix A. |
-| C7 | One DB is simultaneously the publish target, the search store, and the DDL playground — every maintenance operation queues behind (or blocks) serving traffic on one writer. | §1, all of #20 | **Fix in rebuild (§4):** staging tier takes all routine writes; core receives only aggregator promotions in bounded batches; DDL happens on staging/branch copies first. |
-| C8 | Turso size counters lagged direct reads all day on 2026-11-04 (org showed headroom that direct table reads contradicted). | Rewrite watch logs | **Accept + rule:** treat *write failures*, not the size counter, as the storage wall signal; the rewrite already records and retries them. |
+| #   | Finding                                                                                                                                                                                                                                                                                                                                                                                                                                                             | Evidence                                                          | Disposition                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           |
+| --- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| C1  | **Vector-index shadow costs 160,576 B/row** — 52× the 3,072 B vector it indexes. Full index ≈ 17.3 GB.                                                                                                                                                                                                                                                                                                                                                              | Measured uniform per-row shadow size, 2026-11-04 inventory        | **Accept for this build** (Scaler: 4.8 GB + 17.3 GB ≈ 22.1 GB ≤ 24 GB included, ~1.9 GB headroom). **Spike the cause** before indexing any second corpus: a 52× blow-up is a representation bug (likely per-row page slack in the shadow's vector+graph layout), not a law of nature. Never index a staging DB.                                                                                                                                                                                                                       |
+| C2  | Legacy **BGE vector table (~221 MB)** still stored beside Snowflake vectors; dormant, flag-reachable fallback only.                                                                                                                                                                                                                                                                                                                                                 | Swap record 2026-11-03; drop was probe-gated during the DDL wedge | **Fix after the rewrite completes:** drop it in the same maintenance pattern (probe first, then DROP), freeing ~221 MB and removing a second vector column from every schema copy. Until then it is also the only rollback if the Snowflake gate ever re-opens — keep until the index verifies.                                                                                                                                                                                                                                       |
+| C3  | **Location topology — audited, already minimal.** An earlier read ("org at 4/3 locations") suggested hosted replica fan-out in the write path. Direct check (`turso db show atlas`, 2026-11-04): **one location, `aws-us-east-1` primary, group `great-star-lord`** — there is nothing to trim, and no hosted fan-out cost exists to remove. Turso deprecated hosted edge replicas in the 2025 AWS migration; locality is now our job via embedded replicas (§5.5). | `turso db show` 2026-11-04                                        | **Accept + note:** keep the primary in us-east (closest hosted region to the laptop). The old "locations over limit" figure was org-level accounting on the retired plan model, not atlas replicas. Also: the CLI reports atlas at **4.8 GB** vs the 3.8 GB the web counters showed on 2026-11-04 — C8's counter-lag rule applies to our own notes too; 4.8 GB is the planning number (post-rewrite total ≈ 22.1 GB, still inside 24 GB included, headroom ~1.9 GB — thinner than earlier estimates, which strengthens the C1 spike). |
+| C4  | `messages` (1.15 GB, hydration) co-resident with chunks+vectors+FTS in one DB: every scan-store operation drags the hydration store's pages, and the single writer is shared by publish, search-adjacent writes, and DDL.                                                                                                                                                                                                                                           | DB inventory                                                      | **Fix in rebuild (§4):** core splits into a scan store (chunks, vectors, FTS) and a content store (messages/full text) per sensitivity level. Interim: accept.                                                                                                                                                                                                                                                                                                                                                                        |
+| C5  | **Scan-based search** while the index is down: 6.18 s wall / 5.94 s server for the pool-100 branch (Nov 3); Gate B golden queries 18.5–21.9 s end-to-end for the Rust scan arm (Nov 4, rewrite idle).                                                                                                                                                                                                                                                               | #20 measurements; gateb-results 2026-11-04                        | **Accept as the designed default.** The sensitivity ceiling must apply _before_ ranking — a pre-filtered scan is the correctness-preserving shape; the index (when verified) is an accelerator for unfiltered hot paths only, arbitrated by the golden-311 A/B (Gate B: parity confirmed, Δhits 0, ΔMRR +0.0016). See Appendix A for today's degraded in-flight numbers and why they strengthen §4/§5.                                                                                                                                |
+| C6  | **Cold-start model load** (~28 s sentence-transformers per process, ~35 s cold Python run).                                                                                                                                                                                                                                                                                                                                                                         | #21 thread 3                                                      | **Retired by the Step-6 cutover:** the Rust binary (embedded ONNX embedder) is the production CLI as of 2026-11-04. The remaining cold cost is per-query, not per-process — solved by §3 caching + §5.5 replicas, not by process lifetime. **Gap found:** the binary's `serve` role exists but **no search service is currently running on the laptop** (port 18760 refused; the wrapper falls back to standalone with a warning). Standing the serve role up is an operational follow-up, recorded in Appendix A.                    |
+| C7  | One DB is simultaneously the publish target, the search store, and the DDL playground — every maintenance operation queues behind (or blocks) serving traffic on one writer.                                                                                                                                                                                                                                                                                        | §1, all of #20                                                    | **Fix in rebuild (§4):** staging tier takes all routine writes; core receives only aggregator promotions in bounded batches; DDL happens on staging/branch copies first.                                                                                                                                                                                                                                                                                                                                                              |
+| C8  | Turso size counters lagged direct reads all day on 2026-11-04 (org showed headroom that direct table reads contradicted).                                                                                                                                                                                                                                                                                                                                           | Rewrite watch logs                                                | **Accept + rule:** treat _write failures_, not the size counter, as the storage wall signal; the rewrite already records and retries them.                                                                                                                                                                                                                                                                                                                                                                                            |
 
 ---
 
@@ -178,7 +178,7 @@ manifest row per promotion batch).
 
 - **Key:** `sha256(query_text || snapshot_id || ceiling || flags)`.
 - **Reuse rule:** while the snapshot id is unchanged, a cached result is
-  *correct*, not merely fresh — return it as-is.
+  _correct_, not merely fresh — return it as-is.
 - **TTL backstop:** 24 h, purely as a garbage-collection bound; expiry
   never changes correctness, only memory.
 - **Store:** service memory (per #5354: immutable fused ranking, paged by
@@ -191,7 +191,7 @@ manifest row per promotion batch).
 
 ### 3.3 Flags (CLI + service protocol)
 
-- `--no-cache` — bypass both cache *reads*; results still land in the
+- `--no-cache` — bypass both cache _reads_; results still land in the
   result cache (refresh semantics). For eval runs and debugging.
 - `--wait` — block until the full fused result is ready. Without it,
   service mode returns a job handle + first page immediately and the
@@ -223,8 +223,8 @@ never served to a grouped request or vice versa.
   level, state (open / closing / merged), schema version.
 - **Standard versioned schema** across every staging DB (`atlas_stage`
   v1: `items`, `chunks_raw`, `notes`, `kv`, `_schema_version`). Same DDL
-  file, applied by one tool; a staging DB can be promoted by *reading
-  it*, never by migrating it.
+  file, applied by one tool; a staging DB can be promoted by _reading
+  it_, never by migrating it.
 - **Writes are free and unmediated:** the unit's owner writes directly
   with its own token. No cross-writer contention exists because no two
   units share a writer queue. Detail is unlimited — stage everything,
@@ -247,11 +247,11 @@ never served to a grouped request or vice versa.
 Exactly **three physical sensitivity levels** — separate databases,
 separate credentials, no exceptions:
 
-| Level | Contents | Default? |
-|-------|----------|----------|
-| `public` | publishable corpora (public zettel, public docs) | |
-| `internal` | **everything by default** — sessions, notes, code docs, fleet data | ✔ |
-| `secret` | secret-bearing chunks (the 90 known), credential-adjacent material | |
+| Level      | Contents                                                           | Default? |
+| ---------- | ------------------------------------------------------------------ | -------- |
+| `public`   | publishable corpora (public zettel, public docs)                   |          |
+| `internal` | **everything by default** — sessions, notes, code docs, fleet data | ✔        |
+| `secret`   | secret-bearing chunks (the 90 known), credential-adjacent material |          |
 
 - **Within a level**, partition by corpus/topic: e.g.
   `internal-sessions`, `internal-notes`, `internal-codedocs`. Each core
@@ -273,7 +273,7 @@ separate credentials, no exceptions:
 **What the performance-first ordering changes — and what it doesn't.**
 Sensitivity is the outermost partition only because isolation must be
 physical (credentials, replicas, backups differ per level); every
-performance decision *inside* a level (sharding, indexing, replicas,
+performance decision _inside_ a level (sharding, indexing, replicas,
 caching) is made as if sensitivity didn't exist. It does **not** make
 sensitivity optional: three levels, default internal, is the whole
 taxonomy — no per-row labels in the hot path, no fourth level, no
@@ -310,7 +310,7 @@ all N concurrently: aggregate throughput ≈ N × 18.1k rows/s, wall time
 lives in exactly one shard, so a full-corpus query reads the same
 ~108k rows total; what multiplies is the CPU and disk IO pointed at
 them. (This is the honest version of "sharding gives more CPU/disk":
-it does, per query, *across databases* — a single database's scan is
+it does, per query, _across databases_ — a single database's scan is
 unchanged.)
 
 ### 5.2 Shard sizing
@@ -324,7 +324,7 @@ unchanged.)
   cost dominates; the useful band is **2,000–8,000 chunks/shard**. As
   the corpus grows, add shards; never let a shard exceed ~8k chunks
   without re-splitting.
-- With hundreds of parallel *workers* (the staging tier's writers, §4.1)
+- With hundreds of parallel _workers_ (the staging tier's writers, §4.1)
   the same math inverts: each worker owns its DB, so write throughput
   scales linearly with workers and no sizing is needed beyond "one unit,
   one DB" — a staging DB is typically 10–2,000 rows, far below any
@@ -346,7 +346,7 @@ unchanged.)
 
 ### 5.4 Do split indexes cost or save latency?
 
-Index *storage* is per-row (C1: 160,576 B/row), so splitting changes
+Index _storage_ is per-row (C1: 160,576 B/row), so splitting changes
 nothing about total index size — 24 shards still total ≈ 17.3 GB for
 today's corpus. What splitting buys is **build parallelism**: the
 current index population is one 26-hour serial rewrite because one
@@ -374,7 +374,7 @@ for the laptop, where the search service and most clients live.
   ~5 GB initial sync is 21 % of one month's 24 GB sync allowance —
   schedule it alone in its month, or accept overage at $0.25/GB ≈ $1.25).
   Steady-state delta sync ≈ promoted bytes ≈ our write volume
-  (≤ a few hundred MB/mo) — noise. Replicas of the *staging* tier are
+  (≤ a few hundred MB/mo) — noise. Replicas of the _staging_ tier are
   pointless (single-writer, short-lived) — none.
 - Turso's delta sync is page/WAL-based, not row-based: replicas receive
   changed pages, so a one-row promotion costs kilobytes of sync, not a
@@ -425,7 +425,7 @@ v1.0.33; Turso docs/blog as cited):
   touching the corpus. Pilot = create them as `--tursodb` from day one
   (after Drew enables the dashboard toggle), measure, and only then
   consider a core migration.
-- A core migration to TursoDB, if ever justified, is a *rebuild*
+- A core migration to TursoDB, if ever justified, is a _rebuild_
   (create new DBs per level/corpus, aggregator replays promotions,
   repoint, verify) — the §4 machinery already makes corpora rebuildable
   from staging + manifests, so the option stays open without designing
@@ -451,9 +451,9 @@ small managed fallback, and keep an Oracle-runnable equivalent possible.
 - **Phase B (lab k8s Postgres).** The large central store is self-hosted
   Postgres in the lab cluster: system of record for ops data migrates
   there when the cluster is real, with streaming replication to a second
-  node + WAL archiving (PITR) to R2. Supabase is *not* replicated into
+  node + WAL archiving (PITR) to R2. Supabase is _not_ replicated into
   it wholesale; schemas move with the versioned-schema rule below.
-- **Managed fallback subset (always).** A deliberately *small* subset —
+- **Managed fallback subset (always).** A deliberately _small_ subset —
   fleet config, queue state, provider registry, alert state — is kept
   continuously replicated to managed Postgres (Supabase + Neon as the
   two independent copies), sized so the fleet's core functions run
@@ -487,36 +487,36 @@ marked †):
 
 **Live — migrate:**
 
-| Item | Role today | Destination |
-|------|-----------|-------------|
-| `~/hatch-personal/workspace/turso-atlas/scripts/atlas_search.py` | Python reference search CLI (eval reference of record; production until the Step-6 cutover) | code repo `pkgs/atlas-search/` as the permanently-kept eval/reference implementation |
-| `~/hatch-personal/workspace/turso-atlas/scripts/eval3.py` + golden-311 corpus | Eval harness (all parity gates run through it) | code repo eval tooling beside pkgs/atlas-search |
-| `~/hatch-personal/workspace/turso-atlas/scripts/embed_pass3.py`, `embed_onnx.py` | Embedder passes (ST + ONNX) — the publish-side embedding pipeline | Absorbed by the §4.3 aggregator (`fleet serve` role) embedding stage |
-| `~/hatch-personal/workspace/turso-atlas/scripts/atlas-ingest.py` | Publish/ingest into production atlas | Absorbed by the §4.3 aggregator (promotion path replaces direct-to-core ingest) |
-| `~/tools/bin/atlas-search` (sh wrapper) | Production entry: tries the laptop service on :18760, falls back to the nix-store Rust binary | Replaced by the fleet `search` domain entry once the serve role is stood up; wrapper retires |
-| `atlas-backup` (laptop systemd unit, from ~/tmp/atlas-backup.sh, nix-declared 2026-10-30) † | Nightly atlas.db snapshot → laptop backups + R2 + Drive, sha256-verified | `fleet search` domain (backup verb) or a fleet serve maintenance role; verify the flake version matches the surviving shell copy first |
-| Snowflake model provisioning (`atlas-model-rev.tar`, model state dir) | Provisions the pinned model rev to clients | The #5355 nix provisioning path (already designed, Q1 in the binary/service note) |
+| Item                                                                                        | Role today                                                                                    | Destination                                                                                                                            |
+| ------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------- |
+| `~/hatch-personal/workspace/turso-atlas/scripts/atlas_search.py`                            | Python reference search CLI (eval reference of record; production until the Step-6 cutover)   | code repo `pkgs/atlas-search/` as the permanently-kept eval/reference implementation                                                   |
+| `~/hatch-personal/workspace/turso-atlas/scripts/eval3.py` + golden-311 corpus               | Eval harness (all parity gates run through it)                                                | code repo eval tooling beside pkgs/atlas-search                                                                                        |
+| `~/hatch-personal/workspace/turso-atlas/scripts/embed_pass3.py`, `embed_onnx.py`            | Embedder passes (ST + ONNX) — the publish-side embedding pipeline                             | Absorbed by the §4.3 aggregator (`fleet serve` role) embedding stage                                                                   |
+| `~/hatch-personal/workspace/turso-atlas/scripts/atlas-ingest.py`                            | Publish/ingest into production atlas                                                          | Absorbed by the §4.3 aggregator (promotion path replaces direct-to-core ingest)                                                        |
+| `~/tools/bin/atlas-search` (sh wrapper)                                                     | Production entry: tries the laptop service on :18760, falls back to the nix-store Rust binary | Replaced by the fleet `search` domain entry once the serve role is stood up; wrapper retires                                           |
+| `atlas-backup` (laptop systemd unit, from ~/tmp/atlas-backup.sh, nix-declared 2026-10-30) † | Nightly atlas.db snapshot → laptop backups + R2 + Drive, sha256-verified                      | `fleet search` domain (backup verb) or a fleet serve maintenance role; verify the flake version matches the surviving shell copy first |
+| Snowflake model provisioning (`atlas-model-rev.tar`, model state dir)                       | Provisions the pinned model rev to clients                                                    | The #5355 nix provisioning path (already designed, Q1 in the binary/service note)                                                      |
 
 **Historical — retire/archive after the migration lands:**
 
-| Item | Note |
-|------|------|
-| `~/atlas/v3/swap-2026-11-03/` † (~40 scripts: load_prod, gate/fix_gate, probe_*, rw_rewrite*, reindex, verify_*) | One-off swap/gate/remediation tooling. The rewrite scripts stay until the in-flight rewrite verifies, then archive as the #20 evidence record. staging.db (462 MB) † archives with them. |
-| `~/hatch-personal/workspace/turso-atlas/docs/` (bakeoff + design notes, Oct 26–31) | Design history; the living designs are the code-repo doc/ notes. Archive in place (hatch-personal is the record), no code destination. |
-| `/home/hatch/atlas-model-rev.tar` (1.2 GB), `atlas-step6-closure.nar` (300 MB), `~/tmp/atlas-migrate/`, `~/tmp/atlas-parts/`, assorted proof/backup logs | Deployment-transfer artifacts of the Nov 4 cutover. Delete once the provisioned model + nix closure are confirmed reproducible from code (~1.5 GB reclaimed). |
+| Item                                                                                                                                                     | Note                                                                                                                                                                                     |
+| -------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `~/atlas/v3/swap-2026-11-03/` † (~40 scripts: load_prod, gate/fix_gate, probe__, rw_rewrite_, reindex, verify_*)                                         | One-off swap/gate/remediation tooling. The rewrite scripts stay until the in-flight rewrite verifies, then archive as the #20 evidence record. staging.db (462 MB) † archives with them. |
+| `~/hatch-personal/workspace/turso-atlas/docs/` (bakeoff + design notes, Oct 26–31)                                                                       | Design history; the living designs are the code-repo doc/ notes. Archive in place (hatch-personal is the record), no code destination.                                                   |
+| `/home/hatch/atlas-model-rev.tar` (1.2 GB), `atlas-step6-closure.nar` (300 MB), `~/tmp/atlas-migrate/`, `~/tmp/atlas-parts/`, assorted proof/backup logs | Deployment-transfer artifacts of the Nov 4 cutover. Delete once the provisioned model + nix closure are confirmed reproducible from code (~1.5 GB reclaimed).                            |
 
 ## Appendix A — measurements, 2026-11-04
 
 Read latencies for `atlas-search search "fleet binary consolidation
 status"` (k=10, pool=100, hybrid, scan backend), production corpus:
 
-| When | Path | Wall | Note |
-|------|------|------|------|
-| Nov 3 | Python CLI (laptop), scan branch only | 6.18 s (5.94 s server) | pool-100 branch, #20 |
-| Nov 3 | Python CLI cold, end-to-end | ~35 s | ~28 s of it model load |
-| Nov 4 ~11:13 | Gate B golden set (laptop, **rewrite idle**) | py-scan 14.9–26.2 s; rs-scan 18.5–21.9 s per query | parity: Δhits 0, ΔMRR +0.0016 |
-| Nov 4 ~15:2x | Rust binary standalone (sandbox), cold | **582.9 s** (7.2 s CPU) | service on :18760 not running → standalone fallback |
-| Nov 4 ~15:3x | Rust binary standalone (sandbox), warm attempt | **did not finish** (>479 s, killed) | no output produced |
+| When         | Path                                           | Wall                                               | Note                                                |
+| ------------ | ---------------------------------------------- | -------------------------------------------------- | --------------------------------------------------- |
+| Nov 3        | Python CLI (laptop), scan branch only          | 6.18 s (5.94 s server)                             | pool-100 branch, #20                                |
+| Nov 3        | Python CLI cold, end-to-end                    | ~35 s                                              | ~28 s of it model load                              |
+| Nov 4 ~11:13 | Gate B golden set (laptop, **rewrite idle**)   | py-scan 14.9–26.2 s; rs-scan 18.5–21.9 s per query | parity: Δhits 0, ΔMRR +0.0016                       |
+| Nov 4 ~15:2x | Rust binary standalone (sandbox), cold         | **582.9 s** (7.2 s CPU)                            | service on :18760 not running → standalone fallback |
+| Nov 4 ~15:3x | Rust binary standalone (sandbox), warm attempt | **did not finish** (>479 s, killed)                | no output produced                                  |
 
 Today's two runs are **~25–30× worse than this morning's Gate B** on
 comparable work, and wait-dominated (no local CPU). Two candidate
@@ -542,7 +542,7 @@ completes (~2026-11-05 14:30 CST at the current rate).
 Write-latency evidence (no new probe — **the scratch write probe was
 skipped by rule because the index rewrite is in flight**): the
 2026-11-04 01:24 CST scratch probe (all steps 0.2–0.9 s, §1 F2) plus the
-rewrite's own batch timings (92–157 s per 100 *indexed* rows) are the
+rewrite's own batch timings (92–157 s per 100 _indexed_ rows) are the
 current state of knowledge: unindexed writes are fast; indexed-row
 writes cost ~1 s/row through the single writer.
 
@@ -553,7 +553,7 @@ writes cost ~1 s/row through the single writer.
    rewrite verifies.
 2. TursoDB pilot (§6): enabling the account-level concurrent-writes
    preview toggle is Drew's dashboard click; the pilot itself (registry
-   + embedding-cache DBs born as `--tursodb`) is recommended.
+   - embedding-cache DBs born as `--tursodb`) is recommended.
 3. Cache DB in the internal tier (§3.1): shared query-embedding cache is
    the one new always-on write path into a core-adjacent DB — async and
    best-effort by design; confirm acceptable.

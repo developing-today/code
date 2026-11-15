@@ -17,11 +17,7 @@ function pcm(...segments: Array<{ seconds: number; amplitude: number }>): Uint8A
 
 describe("trimSilence", () => {
   test("cuts head and tail silence, keeps the speech", () => {
-    const input = pcm(
-      { seconds: 1.0, amplitude: 0 },
-      { seconds: 0.5, amplitude: 0.5 },
-      { seconds: 1.0, amplitude: 0 },
-    );
+    const input = pcm({ seconds: 1.0, amplitude: 0 }, { seconds: 0.5, amplitude: 0.5 }, { seconds: 1.0, amplitude: 0 });
     const r = trimSilence(input, RATE);
     expect(r.allSilence).toBe(false);
     // 0.5 s of speech + at most 0.2 s of padding (5 frames each side).

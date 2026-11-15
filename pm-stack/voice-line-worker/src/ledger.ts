@@ -59,10 +59,7 @@ export class TursoClient {
         "Content-Type": "application/json",
       },
       body: JSON.stringify({
-        requests: [
-          ...statements.map((stmt) => ({ type: "execute", stmt })),
-          { type: "close" },
-        ],
+        requests: [...statements.map((stmt) => ({ type: "execute", stmt })), { type: "close" }],
       }),
     });
     if (!res.ok) throw new Error(`turso pipeline failed: HTTP ${res.status}`);
@@ -97,18 +94,26 @@ export class TursoClient {
          audio_seconds_in, audio_seconds_out, stt_model, tts_model)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
-        text(row.id), text(row.startedAt), text(row.endedAt), text(row.transcript),
-        text(row.intent), text(row.answer), float(row.audioSecondsIn),
-        float(row.audioSecondsOut), text(row.sttModel), text(row.ttsModel),
+        text(row.id),
+        text(row.startedAt),
+        text(row.endedAt),
+        text(row.transcript),
+        text(row.intent),
+        text(row.answer),
+        float(row.audioSecondsIn),
+        float(row.audioSecondsOut),
+        text(row.sttModel),
+        text(row.ttsModel),
       ],
     );
   }
 
   async putSnapshot(kind: string, payload: unknown, at: string): Promise<void> {
-    await this.execute(
-      `INSERT INTO status_snapshots (kind, payload, at) VALUES (?, ?, ?)`,
-      [text(kind), text(JSON.stringify(payload)), text(at)],
-    );
+    await this.execute(`INSERT INTO status_snapshots (kind, payload, at) VALUES (?, ?, ?)`, [
+      text(kind),
+      text(JSON.stringify(payload)),
+      text(at),
+    ]);
   }
 
   async latestQueueSnapshot(): Promise<QueueSnapshot | null> {

@@ -1,10 +1,12 @@
 # Atlas core-tier shard restore — working notes (2026-11-04)
 
 ## Precondition (verified)
+
 - Laptop `atlas-index-rewrite.service` = **inactive** (parallel coordinator's stop landed).
 - Hosted shadow count stable: 28,660 (spike reads) → 28,760 (read #3, one final batch) → 28,760 (read #4, ~5 min later). Rewrite stopped; production atlas untouched by this pass (reads only).
 
 ## Engine ruling (Drew 18:28 CST) + API route (empirically verified)
+
 - ALL new DBs = **TursoDB**. Standing creation route:
   `POST https://api.turso.tech/v3/organizations/{org-UUID}/databases`
   body `{"name": "...", "group_id": "16d3864a-3343-11ee-b78e-3698c249076c", "use_tursodb": true}`
@@ -24,17 +26,19 @@
   100-statement pipeline of single inserts → loader uses multi-row inserts (250 vec rows/stmt, 50 chunk rows/stmt), `INSERT OR IGNORE` for resumability.
 
 ## Source inventory (hosted `atlas`, source of record; all counts double-queried)
+
 - chunks 107,639 = vec rows 107,639; every vec exactly 3,072 B (768×f32); 0 chunks missing a vec; 0 orphan vecs; manifest set `snowflake_m_v2_768_f32` (Snowflake/snowflake-arctic-embed-m-v2.0, 768).
 - Sensitivity (chunk label == session label in 100% of rows): personal 100,060; local-only 6,941; secret-bearing 638.
 - Tier map (§4.2, exactly 3 levels, default internal): secret-bearing → **secret** (638); personal + local-only → **internal** (107,001); public = none in this corpus.
 - Sessions are atomic (never split): 11,981 chunk-bearing sessions; max session = 2,911 chunks.
-- **Laptop correction:** the laptop local DB's chunk content_hash set is *identical* to hosted
+- **Laptop correction:** the laptop local DB's chunk content_hash set is _identical_ to hosted
   (107,639 distinct; sorted-join SHA-256 `c7b50281…` both sides). The laptop adds **zero chunks**:
-  the packet's "2,226 local-only + 90 secret-bearing laptop chunks" were hosted *session* counts.
+  the packet's "2,226 local-only + 90 secret-bearing laptop chunks" were hosted _session_ counts.
   Laptop DB also has no vec table / no sensitivity / no labels; its extra messages (≈50k) belong to
   unchunked sessions and are referenced by no chunk (all chunk message_ids resolve inside hosted messages). Restore is hosted-only.
 
 ## Shard map (tier → topic → ordinal; sessions atomic; cap 4,800 chunks/shard per §5.2)
+
 Internal (28 shards, 107,001 chunks): agent-tooling ×4 (3,866 ea), cloudflare ×1 (1,250),
 fleet-repos ×3 (3,458/3,457/3,457), home-lab ×2 (4,070/4,069), infra-nix ×2 (4,094 ea),
 media ×1 (1,607), misc ×1 (841; finances+health+travel+unlabeled merged — each <500),
@@ -48,10 +52,12 @@ Every scan shard carries chunks + vec (identical DDL to source) + an `atlas_mani
 NO `libsql_vector_idx` anywhere (scan-over-shards default; TursoDB rejects the syntax regardless).
 
 ## Off-limits (untouched)
+
 Production `atlas` (reads only), the nine spike DBs, the two TursoDB pilots.
 `atlas-tursodb-probe` (200 test chunks) is a test artifact of this pass — kept, flagged for Drew's cleanup call.
 
 ## Completion addendum (2026-11-04, final)
+
 - All 29 scan shards loaded, counts exact (loader log: BAD: none). Content stores complete:
   internal sessions 18,235 / messages 70,987; secret sessions 90 / messages 564.
 - Verification (verify.py): per-tier content-hash set SHA-256 MATCH (internal + secret);

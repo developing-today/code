@@ -6,7 +6,7 @@ Context: the atlas hybrid design settled 2026-11-04 (see the shard-restore work 
 
 - Each chunk gains a stored **token-shingle set** (hashed word shingles) alongside its embedding and text.
 - Retrieval stays two-scorer (cosine + BM25). Jaccard is computed **only over the candidate union** (the top ~100 merged candidates), as a rescore-stage feature:
-  - **Near-exact boost**: a candidate whose shingle overlap with the query is very high is probably *the* text the user pasted or quoted (an error message, a passage, a title) — cosine alone ranks it "topically similar among many"; Jaccard identifies it as *the match*. Boost it decisively.
+  - **Near-exact boost**: a candidate whose shingle overlap with the query is very high is probably _the_ text the user pasted or quoted (an error message, a passage, a title) — cosine alone ranks it "topically similar among many"; Jaccard identifies it as _the match_. Boost it decisively.
   - **Tie-breaker / confirmation**: among semantically-equal candidates, prefer higher literal overlap when the query contains rare exact tokens.
 - Why not a full-corpus third scorer: set intersection per row across every shard is real scan cost for a signal that only matters near the top. Rescore-stage keeps it ~free.
 

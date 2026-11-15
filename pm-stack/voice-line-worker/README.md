@@ -9,7 +9,7 @@ answer, end to end, Cloudflare-direct.
   release.
 - **Silence is trimmed before transcription** (`src/vad.ts`):
   energy-based VAD cuts head/tail silence and collapses long internal
-  pauses, and *only the trimmed audio* is submitted — Workers AI
+  pauses, and _only the trimmed audio_ is submitted — Workers AI
   transcription bills per audio minute submitted, pauses included, so
   silence is never billed and never transcribed. The transcript event
   reports seconds submitted vs seconds recorded.
@@ -23,7 +23,7 @@ answer, end to end, Cloudflare-direct.
   line takes no write actions; anything else gets a spoken explanation
   of the one capability. Queue state comes from the newest
   `status_snapshots` row, pushed by the fleet via `POST /ingest-status`
-  (Bearer `STATUS_INGEST_TOKEN`) — a status *input*, not a voice write
+  (Bearer `STATUS_INGEST_TOKEN`) — a status _input_, not a voice write
   action.
 - **Session ledger in Turso** (`src/ledger.ts`, libsql HTTP pipeline,
   no SDK): every completed utterance writes a `sessions` row — session

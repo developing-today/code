@@ -56,11 +56,7 @@ export function frameRms(samples: Int16Array, start: number, len: number): numbe
   return n > 0 ? Math.sqrt(sum / n) : 0;
 }
 
-export function trimSilence(
-  pcm: Uint8Array,
-  sampleRate: number,
-  options: VadOptions = {},
-): VadResult {
+export function trimSilence(pcm: Uint8Array, sampleRate: number, options: VadOptions = {}): VadResult {
   const opts = { ...DEFAULTS, ...options };
   const samples = new Int16Array(pcm.buffer, pcm.byteOffset, Math.floor(pcm.byteLength / 2));
   const frame = opts.frameSamples;

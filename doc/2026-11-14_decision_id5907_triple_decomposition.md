@@ -48,18 +48,18 @@
 
 ## Decision summary
 
-| Question | Decision |
-| --- | --- |
-| Statement node identity | A **minted ID** at ingest, one per authored compound statement per ingest event. The canonical-JSON content hash is recorded **as a triple on the node** (`anchor-hash`), never as the ID itself (§2) |
-| Reimport / update | Reimport of the same canonical JSON from the same source is **idempotent** — it resolves to the existing statement node via `(anchor-hash, asserted-by)` and adds nothing. An edited statement is a **new** statement node linked to its predecessor by a `supersedes` triple; statements are never mutated (§2.3) |
-| Triple provenance linkage | **Triples, not a column.** Every atomic fact is an assertion node with `subject` / `predicate` / `object` / `stated-in` triples — the #5912 claim shape, generalised. The live `(subject, predicate, object)` edge is a projection over assertion nodes (§3) |
-| Assertion predicates | A small **core vocabulary**, settled in §3.2: `subject`, `predicate`, `object`, `stated-in`, `asserted-by`, `asserted-at`, `index`, `supersedes`, `is-a`, `in-namespace`, `anchor-hash`, `label`, `has-key`, `dtype`, `literal` — predicate IDs in the core namespace, themselves ordinary IDs |
-| N-ary facts | A statement node (ID'd) typed by an `is-a` triple, plus one binary triple per participant hanging off it, with role predicates taken from vocabulary IDs. The headline `(subject, action, target)` fact is the projection, not a privileged storage form (§4) |
-| Namespaces | A term's namespace is a triple: `(term, in-namespace, namespace)`. Qualified names resolve to term IDs at ingest; the string form is presentation (#5910), never identity. Same string, two namespaces → two term IDs (§5) |
-| Qualifiers | Triples on the **assertion node** (time, place, certainty, source, role), with vocabulary predicate IDs — never columns, tables, or parser branches (§6) |
-| Typed values (non-ID objects) | A literal is a **value node** whose ID is **derived** from `(dtype, canonical scalar form)` — equal literals are the same node, so joins over values work. A value node carries `dtype` and `literal` triples. Statement IDs are minted because claims differ; value IDs are derived because values don't (§7) |
-| Tag terms / signer keys (from #5912) | A tag term's ID is minted once per `(namespace, canonical string)` and recorded with `label` + `in-namespace` triples; vocabularies are data. A signer is an identity ID; the key mapping is a `(identity, has-key, key-value-node)` triple asserted at registration — decomposition never invents it (§7.3) |
-| Re-composition (for #5910) | The statement node is the grouping boundary, and `index` triples give the order. Export groups by statement node; any grouping beyond that is presentation heuristics, not identity (§9) |
+| Question                             | Decision                                                                                                                                                                                                                                                                                                           |
+| ------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| Statement node identity              | A **minted ID** at ingest, one per authored compound statement per ingest event. The canonical-JSON content hash is recorded **as a triple on the node** (`anchor-hash`), never as the ID itself (§2)                                                                                                              |
+| Reimport / update                    | Reimport of the same canonical JSON from the same source is **idempotent** — it resolves to the existing statement node via `(anchor-hash, asserted-by)` and adds nothing. An edited statement is a **new** statement node linked to its predecessor by a `supersedes` triple; statements are never mutated (§2.3) |
+| Triple provenance linkage            | **Triples, not a column.** Every atomic fact is an assertion node with `subject` / `predicate` / `object` / `stated-in` triples — the #5912 claim shape, generalised. The live `(subject, predicate, object)` edge is a projection over assertion nodes (§3)                                                       |
+| Assertion predicates                 | A small **core vocabulary**, settled in §3.2: `subject`, `predicate`, `object`, `stated-in`, `asserted-by`, `asserted-at`, `index`, `supersedes`, `is-a`, `in-namespace`, `anchor-hash`, `label`, `has-key`, `dtype`, `literal` — predicate IDs in the core namespace, themselves ordinary IDs                     |
+| N-ary facts                          | A statement node (ID'd) typed by an `is-a` triple, plus one binary triple per participant hanging off it, with role predicates taken from vocabulary IDs. The headline `(subject, action, target)` fact is the projection, not a privileged storage form (§4)                                                      |
+| Namespaces                           | A term's namespace is a triple: `(term, in-namespace, namespace)`. Qualified names resolve to term IDs at ingest; the string form is presentation (#5910), never identity. Same string, two namespaces → two term IDs (§5)                                                                                         |
+| Qualifiers                           | Triples on the **assertion node** (time, place, certainty, source, role), with vocabulary predicate IDs — never columns, tables, or parser branches (§6)                                                                                                                                                           |
+| Typed values (non-ID objects)        | A literal is a **value node** whose ID is **derived** from `(dtype, canonical scalar form)` — equal literals are the same node, so joins over values work. A value node carries `dtype` and `literal` triples. Statement IDs are minted because claims differ; value IDs are derived because values don't (§7)     |
+| Tag terms / signer keys (from #5912) | A tag term's ID is minted once per `(namespace, canonical string)` and recorded with `label` + `in-namespace` triples; vocabularies are data. A signer is an identity ID; the key mapping is a `(identity, has-key, key-value-node)` triple asserted at registration — decomposition never invents it (§7.3)       |
+| Re-composition (for #5910)           | The statement node is the grouping boundary, and `index` triples give the order. Export groups by statement node; any grouping beyond that is presentation heuristics, not identity (§9)                                                                                                                           |
 
 ## 1. What the parent already fixed (not re-decided here)
 
@@ -84,7 +84,7 @@
    seam.
 5. **The triple table is the storage fact** (§3.2): subject ID,
    predicate ID, object ID, "plus the statement/provenance linkage
-   from §2.2" — the *form* of that linkage is one of the questions
+   from §2.2" — the _form_ of that linkage is one of the questions
    #5906 left to this record, settled in §3.1.
 
 ## 2. Statement nodes and their identity
@@ -97,8 +97,8 @@ the ID'd anchor that every assertion decomposed from that document
 points back to with `stated-in` (§3). The statement node is the unit
 of grouping, provenance, retraction, and re-composition. It is not
 the document: the document is data (kept as the anchor payload,
-under #5908's boundary); the node is the claim *that this statement
-was asserted*, by someone, at some time.
+under #5908's boundary); the node is the claim _that this statement
+was asserted_, by someone, at some time.
 
 ### 2.2 Identity: minted, with the content hash as a triple
 
@@ -134,7 +134,7 @@ supersede. (Literals are the opposite case and do use derived IDs —
   `asserted-by` match an existing statement node is a no-op: the
   ingest resolves to that node and asserts nothing new. This is the
   reimport-idempotency answer #5910 §3.3 asked for, and it is keyed
-  on `(anchor-hash, asserted-by)` — the same bytes from a *different*
+  on `(anchor-hash, asserted-by)` — the same bytes from a _different_
   signer are a different claim (§2.2) and mint a new node.
 - **Update.** An edited statement mints a new statement node and a
   `supersedes` triple `(new-stmt, supersedes, old-stmt)`. The old
@@ -182,23 +182,23 @@ would fork tag claims from every other fact.
 The structural predicates are a fixed, small vocabulary. Their
 names — the question #5912 deferred here — are:
 
-| Predicate | Meaning |
-| --- | --- |
-| `subject` | assertion node → its subject ID |
-| `predicate` | assertion node → its predicate ID |
-| `object` | assertion node → its object ID or value node |
-| `stated-in` | assertion node → its statement node |
-| `asserted-by` | statement node → signer identity ID |
-| `asserted-at` | statement node → time value node |
-| `index` | assertion node → ordinal value node (order within the statement) |
-| `supersedes` | statement node → the statement node it replaces |
-| `is-a` | any node → its type / activity / class ID |
-| `in-namespace` | term ID → its namespace ID |
-| `anchor-hash` | statement node → canonical-JSON hash value node |
-| `label` | term ID → its canonical display string value node |
-| `has-key` | identity ID → its signing-key value node |
-| `dtype` | value node → its scalar type ID |
-| `literal` | value node → its canonical scalar string value node |
+| Predicate      | Meaning                                                          |
+| -------------- | ---------------------------------------------------------------- |
+| `subject`      | assertion node → its subject ID                                  |
+| `predicate`    | assertion node → its predicate ID                                |
+| `object`       | assertion node → its object ID or value node                     |
+| `stated-in`    | assertion node → its statement node                              |
+| `asserted-by`  | statement node → signer identity ID                              |
+| `asserted-at`  | statement node → time value node                                 |
+| `index`        | assertion node → ordinal value node (order within the statement) |
+| `supersedes`   | statement node → the statement node it replaces                  |
+| `is-a`         | any node → its type / activity / class ID                        |
+| `in-namespace` | term ID → its namespace ID                                       |
+| `anchor-hash`  | statement node → canonical-JSON hash value node                  |
+| `label`        | term ID → its canonical display string value node                |
+| `has-key`      | identity ID → its signing-key value node                         |
+| `dtype`        | value node → its scalar type ID                                  |
+| `literal`      | value node → its canonical scalar string value node              |
 
 These names are the spellings in this record and in #5912; as data
 they are predicate **IDs in the core namespace**, minted once, and
@@ -214,7 +214,7 @@ detail.
 
 The ordinary edge `(subject-ID, predicate-ID, object-ID)` is a
 **projection**: it is visible when at least one assertion node with
-those `subject` / `predicate` / `object` triples is *live* — its
+those `subject` / `predicate` / `object` triples is _live_ — its
 statement is not superseded on that assertion's chain and it has
 not been retracted — exactly the live-claim rule #5912 defined for
 tags, generalised to all facts. The projection retains its
@@ -248,7 +248,7 @@ are the participants directly (§3.1), and an n-ary fact's headline
 edge `(primary-participant, activity, …)` appears only in the
 projection if a corresponding binary assertion exists. What the
 graph query sees for an n-ary fact is the fact node and its role
-edges; that *is* the decomposition the parent §2.3 specified, with
+edges; that _is_ the decomposition the parent §2.3 specified, with
 the names filled in.
 
 ### 4.2 Worked example: Drew's person/activity statement
@@ -391,7 +391,7 @@ payloads** per the parent §2.4 — referenced by triples, never
 flattened. Where exactly the line falls, and the decision procedure
 for grey cases, is **#5908's** record. This record assumes only:
 a payload hangs off an ID'd node (statement, fact, or value node),
-and decomposition never reaches *inside* a payload. The `literal`
+and decomposition never reaches _inside_ a payload. The `literal`
 carrying of §7.1 is for short canonical scalars in #5906's typed
 forms, not a payload channel.
 
@@ -430,7 +430,7 @@ additive kind #5906's §9 pattern allows:
    this record's call. §3.1 chooses triples. Flagged explicitly
    because a reader of §3.2 could have assumed a column: none is
    created, and an implementation that adds one for provenance is
-   non-conformant with this record (a *cache* rebuilt from triples
+   non-conformant with this record (a _cache_ rebuilt from triples
    is not a column in this sense).
 2. **Statement identity candidate** — #5906 fixed the anchor and
    called its hash "the statement node's identity candidate,
@@ -451,8 +451,8 @@ the parent deliberately left blank.
 - A KDL document containing several statements is a presentation
   concatenation of statement reconstructions; document boundaries
   are not identity (#5910 §3.4's grouping question, answered at the
-  level this record owns: grouping *within* a statement is
-  decomposition's; grouping *across* statements is presentation).
+  level this record owns: grouping _within_ a statement is
+  decomposition's; grouping _across_ statements is presentation).
 - Re-composition reads the **live projection plus provenance**:
   superseded or retracted assertions do not re-export as current
   facts. Exporting history (the superseded chain itself) is a
@@ -503,7 +503,7 @@ hold:
    smell; invisible to graph queries; forks tag claims (already
    node-shaped) from all other facts.
 3. **Quads / a named-graph store (subject, predicate, object,
-   graph).** Rejected: the parent fixed a *triple* table with
+   graph).** Rejected: the parent fixed a _triple_ table with
    SQL/PGQ views over it (§3.2); a quad store is a different
    storage commitment, and the assertion-node shape expresses the
    same provenance inside the model the parent chose.

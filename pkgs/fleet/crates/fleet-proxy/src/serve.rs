@@ -1037,10 +1037,7 @@ fn run_inner(config: &Config, idle_exit: bool) -> i32 {
     // previously only the Python broker wrote it, so a fleet-proxy
     // takeover left it naming a dead pid.
     if let Some(dir) = socket_path.parent() {
-        let _ = std::fs::write(
-            dir.join("broker.pid"),
-            std::process::id().to_string(),
-        );
+        let _ = std::fs::write(dir.join("broker.pid"), std::process::id().to_string());
     }
     let size = pool_size();
     // The stamp is the FIRST line a starting broker writes, so it
@@ -1613,10 +1610,8 @@ mod tests {
 
     #[test]
     fn singleton_lock_is_exclusive_across_open_descriptions() {
-        let dir = std::env::temp_dir().join(format!(
-            "fleet-proxy-singleton-test-{}",
-            std::process::id()
-        ));
+        let dir =
+            std::env::temp_dir().join(format!("fleet-proxy-singleton-test-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let first = acquire_singleton_lock(&dir);
         assert!(first.is_some(), "first acquisition must succeed");

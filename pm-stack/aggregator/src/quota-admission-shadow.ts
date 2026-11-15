@@ -34,10 +34,18 @@ interface ShadowWindow {
   resetsAt: number | null;
 }
 const annotate = (
-  bucket: string, kind: string, verdict: Verdict, reasons: string[],
-  window?: WindowDecision, evidenceIds: string[] = window?.evidenceIds ?? [],
+  bucket: string,
+  kind: string,
+  verdict: Verdict,
+  reasons: string[],
+  window?: WindowDecision,
+  evidenceIds: string[] = window?.evidenceIds ?? [],
 ): ShadowWindow => ({
-  bucket, kind, verdict, reasons, evidenceIds,
+  bucket,
+  kind,
+  verdict,
+  reasons,
+  evidenceIds,
   period: window?.period ?? null,
   measuredAt: window?.measuredAt ?? null,
   resetsAt: window?.resetsAt ?? null,
@@ -83,9 +91,12 @@ export function evaluateAdmissionShadow(
       !nonempty(receipt.account) ||
       !nonempty(receipt.evidenceId) ||
       !receipt.required.length ||
-      receipt.required.some((w) => !nonempty(w.bucket) || !nonempty(w.kind) || !nonempty(w.period) || !Number.isFinite(w.resetsAt)) ||
+      receipt.required.some(
+        (w) => !nonempty(w.bucket) || !nonempty(w.kind) || !nonempty(w.period) || !Number.isFinite(w.resetsAt),
+      ) ||
       new Set(receipt.required.map((w) => JSON.stringify([w.bucket, w.kind]))).size !== receipt.required.length
-    ) return unknown("invalid_applicability");
+    )
+      return unknown("invalid_applicability");
 
     const seat = projection.seats.find((s) => s.provider === route.provider && s.alias === route.alias);
     if (seat?.account !== receipt.account) return unknown("unverified_billing_account");
@@ -100,7 +111,14 @@ export function evaluateAdmissionShadow(
       const row = rows[0];
       const window = row.windows.find((w) => w.kind === kind && w.period === period && w.resetsAt === resetsAt);
       if (row.verdict === "stopped") {
-        return annotate(bucket, kind, "stopped", ["active_stop"], window, row.activeStops.map((stop) => stop.id));
+        return annotate(
+          bucket,
+          kind,
+          "stopped",
+          ["active_stop"],
+          window,
+          row.activeStops.map((stop) => stop.id),
+        );
       }
       if (!window) return annotate(bucket, kind, "unknown", ["unverified_window"]);
       if (row.reasons.includes("invalid_stop")) {

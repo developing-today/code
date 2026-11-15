@@ -18,7 +18,11 @@ describe("matchIntent", () => {
 describe("buildAnswer", () => {
   test("speaks the snapshot numbers", () => {
     const answer = buildAnswer("queue_state", {
-      queued: 203, claimed: 6, parked: 17, blocked: 3, at: "2026-11-14T14:00:00Z",
+      queued: 203,
+      claimed: 6,
+      parked: 17,
+      blocked: 3,
+      at: "2026-11-14T14:00:00Z",
     });
     expect(answer).toContain("203 tasks waiting");
     expect(answer).toContain("6 being worked");

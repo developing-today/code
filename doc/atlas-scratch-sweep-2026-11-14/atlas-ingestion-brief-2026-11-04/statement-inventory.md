@@ -4,12 +4,14 @@ Source: Drew's dictation, main chat, 2026-11-04 23:15:44 CST ("We'll need a long
 Every statement below is numbered; the filing map at the end records the disposition of each (new issue filed / covered by an existing issue / comment on an existing issue).
 
 Interpretations flagged up front:
+
 - **"that tile cast"** (¶2) is read as **the Zettelkasten** (dezren39/zettel, the Emanote slip-box) — the sentence contrasts it with "repo", matching the standing zettel-vs-repo placement question. Flagged, proceeding.
 - **"the can repo"** (¶3) is read as **dezren39/cairn** (the 473-file personal corpus repo; "cairn" → "can" is a standard dictation garble). Flagged, proceeding.
 - **"what chart it was in"** (¶5) is read as **what shard** it was in (shard → "chart"). Flagged, proceeding.
 - **"tile cast"** aside, no other garbles required interpretation; "settlecasting" in the earlier docs brief was likewise Zettelkasten.
 
 Grounding state (verified via gh, 2026-11-04 ~23:20 CST):
+
 - Shard restoration complete: 31 new TursoDB shards; internal = 28 shards / 107,001 chunks; secret = exactly 1 shard / 638 chunks, secret material only in the 2 secret DBs; production monolith still libSQL; fan-out search [#5755](https://github.com/developing-today/code/issues/5755) (BM25 leg pending there); query front-end [#5773](https://github.com/developing-today/code/issues/5773); parameter surface with full vector logged per run [#5774](https://github.com/developing-today/code/issues/5774); Jaccard rescore + ingest dedup ≥0.9 recorded edge [#5733](https://github.com/developing-today/code/issues/5733); staging tier [#5669](https://github.com/developing-today/code/issues/5669). Storage rulings 2026-11-04: Turso + D1 both, embedded replicas first-class, cold tiers → rustfs; TursoDB for ALL new databases; production stays libSQL for now. Current spend anchor: Turso scaler $24.92/mo yearly.
 - **Provenance registry already exists as an issue:** [#3125](https://github.com/developing-today/code/issues/3125) — chunk_occurrences (every chunk records every source locator with spans + observed_at), content-addressed extracts (CAS), `repo@commit:path` pinning, multi-DB resolution. Drew's 2026-10-31 direction there: keep ALL data, only byte-identical dupes cleaned. Several statements below EXTEND #3125 rather than start greenfield; disposition = comment on #3125 + cross-links.
 - Provenance spans as mandatory metadata already designed tonight in the zettel/notes brain-dump design (content hash + provenance spans; Turso submission DB as system of record) — same pattern, tie in.
@@ -107,25 +109,25 @@ Grounding state (verified via gh, 2026-11-04 ~23:20 CST):
 
 Program tracker: [#6018](https://github.com/developing-today/code/issues/6018) — Atlas ingestion program (S39's tracking home; child list at [comment 6650433323](https://github.com/developing-today/code/issues/6018#issuecomment-6650433323)).
 
-| Statements | Disposition |
-|---|---|
-| S1–S5 (ingestion ops) | NEW design [#6019](https://github.com/developing-today/code/issues/6019) |
-| S6 (classification revalidation) | NEW task [#6021](https://github.com/developing-today/code/issues/6021) |
-| S7–S10 (agent notes / zettel / ID graph) | NEW design [#6022](https://github.com/developing-today/code/issues/6022); tie-ins #5545/#5686/#5955 + brain-dump envelope design named in body |
-| S11, S12, S14 (GitHub corpus + sequencing) | NEW task [#6023](https://github.com/developing-today/code/issues/6023) (external half build-gated on #6024) |
-| S13 (external licensing question) | NEW research [#6024](https://github.com/developing-today/code/issues/6024), licensing family; cross-link comment on [#5986](https://github.com/developing-today/code/issues/5986#issuecomment-6650432159) |
-| S15 (first pass) | NEW task [#6025](https://github.com/developing-today/code/issues/6025); doc sources from [#5981](https://github.com/developing-today/code/issues/5981) (cross-link comment 6650432839) |
-| S16–S20 (versioning + retention) | NEW design [#6026](https://github.com/developing-today/code/issues/6026) (incl. the #3125 keep-all tension, stated in body) |
-| S21–S22 (retrieval stats) | NEW design [#6027](https://github.com/developing-today/code/issues/6027) (with S23–S27) |
-| S23–S25 (feedback) | NEW design [#6027](https://github.com/developing-today/code/issues/6027) |
-| S26 (result↔query trace) | NEW design [#6027](https://github.com/developing-today/code/issues/6027) |
-| S27 (feedback uses → retention/search evolution) | NEW design [#6027](https://github.com/developing-today/code/issues/6027), consumed by [#6026](https://github.com/developing-today/code/issues/6026) |
-| S28, S31, S32, S33 (provenance standard + marks + association + logged states) | COVERED-BY [#3125](https://github.com/developing-today/code/issues/3125) + extension comment [6650431155](https://github.com/developing-today/code/issues/3125#issuecomment-6650431155) |
-| S29 (past/future selves) | [#3125](https://github.com/developing-today/code/issues/3125) comment (identity shared) + design [#6026](https://github.com/developing-today/code/issues/6026) |
-| S30 (git rename hygiene) | Design [#6026](https://github.com/developing-today/code/issues/6026) |
-| S34 (existing-embed audit) | NEW task [#6029](https://github.com/developing-today/code/issues/6029) |
-| S35–S36 (delta-only) | NEW design [#6028](https://github.com/developing-today/code/issues/6028) |
-| S37–S38 (offset embeds + joins) | NEW design [#6028](https://github.com/developing-today/code/issues/6028) |
-| S39–S40 (program shape + expansive design) | Tracker [#6018](https://github.com/developing-today/code/issues/6018) + NEW expansive design [#6020](https://github.com/developing-today/code/issues/6020) |
+| Statements                                                                     | Disposition                                                                                                                                                                                               |
+| ------------------------------------------------------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| S1–S5 (ingestion ops)                                                          | NEW design [#6019](https://github.com/developing-today/code/issues/6019)                                                                                                                                  |
+| S6 (classification revalidation)                                               | NEW task [#6021](https://github.com/developing-today/code/issues/6021)                                                                                                                                    |
+| S7–S10 (agent notes / zettel / ID graph)                                       | NEW design [#6022](https://github.com/developing-today/code/issues/6022); tie-ins #5545/#5686/#5955 + brain-dump envelope design named in body                                                            |
+| S11, S12, S14 (GitHub corpus + sequencing)                                     | NEW task [#6023](https://github.com/developing-today/code/issues/6023) (external half build-gated on #6024)                                                                                               |
+| S13 (external licensing question)                                              | NEW research [#6024](https://github.com/developing-today/code/issues/6024), licensing family; cross-link comment on [#5986](https://github.com/developing-today/code/issues/5986#issuecomment-6650432159) |
+| S15 (first pass)                                                               | NEW task [#6025](https://github.com/developing-today/code/issues/6025); doc sources from [#5981](https://github.com/developing-today/code/issues/5981) (cross-link comment 6650432839)                    |
+| S16–S20 (versioning + retention)                                               | NEW design [#6026](https://github.com/developing-today/code/issues/6026) (incl. the #3125 keep-all tension, stated in body)                                                                               |
+| S21–S22 (retrieval stats)                                                      | NEW design [#6027](https://github.com/developing-today/code/issues/6027) (with S23–S27)                                                                                                                   |
+| S23–S25 (feedback)                                                             | NEW design [#6027](https://github.com/developing-today/code/issues/6027)                                                                                                                                  |
+| S26 (result↔query trace)                                                       | NEW design [#6027](https://github.com/developing-today/code/issues/6027)                                                                                                                                  |
+| S27 (feedback uses → retention/search evolution)                               | NEW design [#6027](https://github.com/developing-today/code/issues/6027), consumed by [#6026](https://github.com/developing-today/code/issues/6026)                                                       |
+| S28, S31, S32, S33 (provenance standard + marks + association + logged states) | COVERED-BY [#3125](https://github.com/developing-today/code/issues/3125) + extension comment [6650431155](https://github.com/developing-today/code/issues/3125#issuecomment-6650431155)                   |
+| S29 (past/future selves)                                                       | [#3125](https://github.com/developing-today/code/issues/3125) comment (identity shared) + design [#6026](https://github.com/developing-today/code/issues/6026)                                            |
+| S30 (git rename hygiene)                                                       | Design [#6026](https://github.com/developing-today/code/issues/6026)                                                                                                                                      |
+| S34 (existing-embed audit)                                                     | NEW task [#6029](https://github.com/developing-today/code/issues/6029)                                                                                                                                    |
+| S35–S36 (delta-only)                                                           | NEW design [#6028](https://github.com/developing-today/code/issues/6028)                                                                                                                                  |
+| S37–S38 (offset embeds + joins)                                                | NEW design [#6028](https://github.com/developing-today/code/issues/6028)                                                                                                                                  |
+| S39–S40 (program shape + expansive design)                                     | Tracker [#6018](https://github.com/developing-today/code/issues/6018) + NEW expansive design [#6020](https://github.com/developing-today/code/issues/6020)                                                |
 
 **Unmapped statements: ZERO.** New issues: 12 (1 tracker, 6 designs, 4 tasks, 1 licensing-gate research). Comments on existing issues: 4 (#3125, #5986, #5981, #6018 child list).
