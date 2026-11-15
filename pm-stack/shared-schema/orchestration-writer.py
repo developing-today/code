@@ -19,9 +19,43 @@ Usage: orchestration-writer.py [path-to-orchestration.json]
 Exit 0 with a one-line JSON verdict on success; nonzero on any failure
 (the files remain authoritative — a failed write changes nothing the
 dashboard serves).
+
+Argument contract (#3352, doc/agents/operator-script-argument-contract.md):
+the whole command line is exactly one optional positional argument, the
+orchestration JSON path. Arguments are parsed strictly (argparse) BEFORE
+any subprocess, secret fetch, network request, or file read; any
+unaccounted argument (extra positional, unknown flag) is a usage error
+with exit 2.
 """
 
-import json, os, subprocess, sys, tempfile
+import argparse, json, os, subprocess, sys, tempfile
+
+
+DEFAULT_PATH = os.path.expanduser(
+    "~/workspace/goals/keep-the-four-repos-healthy/hidden_files/orchestration.json"
+)
+
+
+def parse_args(argv):
+    parser = argparse.ArgumentParser(
+        prog="orchestration-writer.py",
+        allow_abbrev=False,
+        description="Write the orchestration document to the shared schema "
+        "(#5005 / #3142).",
+    )
+    parser.add_argument(
+        "path",
+        nargs="?",
+        default=DEFAULT_PATH,
+        metavar="path-to-orchestration.json",
+        help="orchestration JSON path (default: %(default)s).",
+    )
+    return parser.parse_args(argv)
+
+
+# Strict parse first: a usage error (exit 2) must precede every secret
+# fetch, subprocess, network request, and file read below.
+ARGS = parse_args(sys.argv[1:])
 
 
 def secret(name):
@@ -90,13 +124,7 @@ def jsonb(obj):
 
 
 def main():
-    path = (
-        sys.argv[1]
-        if len(sys.argv) > 1
-        else os.path.expanduser(
-            "~/workspace/goals/keep-the-four-repos-healthy/hidden_files/orchestration.json"
-        )
-    )
+    path = ARGS.path
     with open(path) as f:
         doc = json.load(f)
     run_id = doc["runId"]
