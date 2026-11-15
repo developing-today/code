@@ -1182,17 +1182,30 @@ fn verb_events_count(t: &TursoBackend, req: &Value) -> Value {
 /// `kind` narrows to one kind; `limit` defaults to 200 and is
 /// clamped to 1..=1000.
 fn verb_events_list(t: &TursoBackend, req: &Value) -> Value {
-    let Some(task_id) = req_i64(req, "task_id") else {
-        return fail(2, "task_id is required".to_string());
-    };
-    let limit = req_i64(req, "limit").unwrap_or(200).clamp(1, 1000);
-    let mut sql = "SELECT id, worker_id, kind, detail, created_at FROM events \
-                   WHERE task_id = ?"
+    // #9046 per-task read, widened for the claim-link rollup
+    // (#10357): task_id is optional — without it the verb lists
+    // across tasks inside a `since` window (kind-filtered), the
+    // read `repo-queue models` aggregates over. Rows always
+    // carry their task_id so cross-task rows join back.
+    let task_id = req_i64(req, "task_id");
+    let limit = req_i64(req, "limit")
+        .unwrap_or(200)
+        .clamp(1, if task_id.is_some() { 1000 } else { 50_000 });
+    let mut sql = "SELECT id, task_id, worker_id, kind, detail, created_at FROM events \
+                   WHERE 1 = 1"
         .to_string();
-    let mut args: Vec<Arg> = vec![Arg::Int(task_id)];
+    let mut args: Vec<Arg> = vec![];
+    if let Some(id) = task_id {
+        sql += " AND task_id = ?";
+        args.push(Arg::Int(id));
+    }
     if let Some(k) = req_str(req, "kind") {
         sql += " AND kind = ?";
         args.push(Arg::Text(k.to_string()));
+    }
+    if let Some(s) = req_str(req, "since") {
+        sql += " AND created_at >= ?";
+        args.push(Arg::Text(s.to_string()));
     }
     sql += &format!(" ORDER BY id ASC LIMIT {limit}");
     let work = (|| -> Result<Value, TErr> {
@@ -7853,6 +7866,28 @@ mod tests {
         assert!(
             src.contains("worker_id, claimed_at, lease_until"),
             "rich list carries claimed_at"
+        );
+    }
+
+    #[test]
+    fn events_list_cross_task_window() {
+        // Claim-link rollup (#10357): /events-list also serves
+        // the cross-task window read — task_id optional, a since
+        // floor, and task_id among the selected columns — while
+        // the per-task #9046 read keeps its shape.
+        let src = include_str!("turso_queue.rs");
+        let seg = seg8217(src, "fn verb_events_list(", "\n/// prune_events, shared by");
+        assert!(
+            !seg.contains("task_id is required"),
+            "cross-task listing must not hard-require task_id"
+        );
+        assert!(
+            seg.contains("created_at >= ?"),
+            "the since floor filters on created_at"
+        );
+        assert!(
+            seg.contains("id, task_id, worker_id, kind, detail, created_at"),
+            "listed rows carry their task_id for the rollup join"
         );
     }
 

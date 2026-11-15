@@ -2343,6 +2343,314 @@ fn cmd_timeline(rest: &[String]) -> i32 {
     0
 }
 
+/// #10357 (claimant capture point) + #9046: the per-model
+/// rollup — the inversion of cmd_timeline. The link records
+/// (model_stamp / session_bound events) already land per task;
+/// this verb aggregates them across tasks over a window so
+/// per-model accounting — which models worked which tasks, with
+/// what outcome — is one query instead of hand-rolled SQL.
+/// Two sections: `stamped` (the claim/bind stamp timeline: the
+/// route or lane a task was claimed under) and `served` (the
+/// dominant serving leaf per binding window, from the same
+/// route_attempt join cmd_timeline prints — for routed stamps
+/// this is the model that actually did the work).
+#[derive(Debug, Clone, PartialEq)]
+struct RollupEvent {
+    task_id: i64,
+    ev: TimelineEvent,
+}
+
+fn rollup_event(row: &Value) -> Option<RollupEvent> {
+    let task_id = row.get("task_id").and_then(|v| v.as_i64())?;
+    let ev = timeline_event(row)?;
+    Some(RollupEvent { task_id, ev })
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+struct ModelKey {
+    provider: String,
+    model: String,
+    variant: Option<String>,
+}
+
+#[derive(Debug, Default, Clone, PartialEq)]
+struct ModelRollup {
+    tasks: std::collections::BTreeSet<i64>,
+    sessions: std::collections::BTreeSet<String>,
+    stamps: usize,
+    completed: usize,
+}
+
+/// The stamped section: one rollup per (provider, model,
+/// variant) over model_stamp records (already duplicate-
+/// collapsed per task by the caller). The completion count
+/// intersects the stamped task set with the window's completed
+/// set — a task counts once per model however many stamps it
+/// carries. (No per-model PR count: the store's pull_request
+/// events are a GitHub webhook mirror whose task_id is always
+/// NULL, and merge_intents link PRs to issues/sessions, not
+/// tasks — there is no task-linked PR signal to count yet.)
+fn rollup_models(
+    events: &[RollupEvent],
+    completed: &std::collections::BTreeSet<i64>,
+) -> Vec<(ModelKey, ModelRollup)> {
+    let mut map: std::collections::BTreeMap<ModelKey, ModelRollup> =
+        std::collections::BTreeMap::new();
+    for re in events {
+        if re.ev.kind != "model_stamp" {
+            continue;
+        }
+        let (Some(p), Some(m)) = (&re.ev.provider, &re.ev.model) else {
+            continue;
+        };
+        let key = ModelKey {
+            provider: p.clone(),
+            model: m.clone(),
+            variant: re.ev.variant.clone(),
+        };
+        let r = map.entry(key).or_default();
+        r.tasks.insert(re.task_id);
+        if let Some(sid) = &re.ev.session_id {
+            r.sessions.insert(sid.clone());
+        }
+        r.stamps += 1;
+    }
+    for r in map.values_mut() {
+        r.completed = r.tasks.iter().filter(|t| completed.contains(t)).count();
+    }
+    map.into_iter().collect()
+}
+
+#[derive(Debug, Default, Clone, PartialEq)]
+struct ServedRollup {
+    tasks: std::collections::BTreeSet<i64>,
+    windows: usize,
+    calls: i64,
+}
+
+/// The served section: one rollup per dominant serving leaf,
+/// over (task, leaf, route_attempt calls) rows the caller
+/// resolved per binding window.
+fn rollup_served(rows: &[(i64, ModelKey, i64)]) -> Vec<(ModelKey, ServedRollup)> {
+    let mut map: std::collections::BTreeMap<ModelKey, ServedRollup> =
+        std::collections::BTreeMap::new();
+    for (task_id, key, calls) in rows {
+        let r = map.entry(key.clone()).or_default();
+        r.tasks.insert(*task_id);
+        r.windows += 1;
+        r.calls += calls;
+    }
+    map.into_iter().collect()
+}
+
+/// Format a unix-seconds instant in the ISO-8601 UTC shape
+/// the events store writes (created_at compares
+/// lexicographically, so the since floor is a text compare).
+fn iso_utc(secs: i64) -> String {
+    let days = secs.div_euclid(86_400);
+    let tod = secs.rem_euclid(86_400);
+    // Civil-from-days (Howard Hinnant's algorithm).
+    let z = days + 719_468;
+    let era = z.div_euclid(146_097);
+    let doe = z.rem_euclid(146_097);
+    let yoe = (doe - doe / 1_460 + doe / 36_524 - doe / 146_096) / 365;
+    let y = yoe + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = doy - (153 * mp + 2) / 5 + 1;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 };
+    let y = if m <= 2 { y + 1 } else { y };
+    format!(
+        "{y:04}-{m:02}-{d:02}T{:02}:{:02}:{:02}Z",
+        tod / 3600,
+        (tod / 60) % 60,
+        tod % 60
+    )
+}
+
+/// `repo-queue models [--days N] [--json]` — the claim-link
+/// rollup (#10357): the inversion of `timeline`. timeline
+/// answers "which models worked task X" per task; this answers
+/// "which tasks did model Y touch" across the fleet, over the
+/// link #9046 records (model_stamp / session_bound events in
+/// the queue store, joined to route_attempt by binding window).
+/// Two sections: stamped — per (provider, model, variant) the
+/// distinct tasks + sessions its stamps touch and how many of
+/// those tasks completed in the window; served — per dominant
+/// serving leaf (the route actually used inside each binding
+/// window) the tasks, windows and provider calls. Needs the
+/// broker build whose /events-list makes task_id optional;
+/// against an older broker it says so and exits 3. The window
+/// clamps to the store's 30-day event retention.
+fn cmd_models(rest: &[String]) -> i32 {
+    let args = parse_args(rest, &["days"], &["json"]);
+    reject_extra_pos("models", &args, 0);
+    let days = args.get_i64("days").unwrap_or(7).clamp(1, 30);
+    let now_secs = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0);
+    let since = iso_utc(now_secs - days * 86_400);
+    // Fetch the window's link + outcome events across tasks.
+    let mut by_task: std::collections::BTreeMap<i64, Vec<TimelineEvent>> =
+        std::collections::BTreeMap::new();
+    let mut completed: std::collections::BTreeSet<i64> = std::collections::BTreeSet::new();
+    for kind in [
+        "model_stamp",
+        "session_bound",
+        "lane_session_bound",
+        "lane_session_unbound",
+        "session_unbound",
+        "session_binding_cleared",
+        "completed",
+    ] {
+        let resp = call(
+            "/events-list",
+            &json!({"kind": kind, "since": since, "limit": 50_000}),
+        );
+        // The broker answers /events-list with a flat
+        // {"events": [...]} (the shape cmd_timeline reads). Any
+        // other envelope — an old broker's error for the
+        // task-less call, say — means the widened read is not
+        // live yet; say so instead of printing an empty rollup.
+        let Some(rows) = resp.get("events").and_then(|r| r.as_array()).cloned() else {
+            eprint(
+                "repo-queue models: this broker does not serve cross-task \
+                 /events-list yet — the rollup activates with the broker \
+                 build that makes task_id optional (interim: repo-queue \
+                 timeline <task> answers per task).",
+            );
+            return 3;
+        };
+        if rows.len() >= 50_000 {
+            eprint(&format!(
+                "repo-queue models: warning: {kind} hit the 50000-row \
+                 window cap; its counts are truncated\n"
+            ));
+        }
+        for row in &rows {
+            let Some(task_id) = row.get("task_id").and_then(|v| v.as_i64()) else {
+                continue;
+            };
+            match kind {
+                "completed" => {
+                    completed.insert(task_id);
+                }
+                _ => {
+                    if let Some(re) = rollup_event(row) {
+                        by_task.entry(re.task_id).or_default().push(re.ev);
+                    }
+                }
+            }
+        }
+    }
+    // Collapse each task's timeline (the #9046 duplicate
+    // oracle) before aggregating, so a touch written by two
+    // surfaces counts once; resolve each binding window's
+    // dominant serving leaf on the way.
+    let mut flat: Vec<RollupEvent> = Vec::new();
+    let mut served_rows: Vec<(i64, ModelKey, i64)> = Vec::new();
+    let now_ms = now_secs * 1000;
+    for (task_id, mut evs) in by_task {
+        evs.sort_by_key(|e| e.id);
+        let evs = collapse_timeline(evs);
+        for (sid, start, end) in binding_windows(&evs) {
+            let start_ms = parse_ts_str(&start).map(|us| us / 1000).unwrap_or(0);
+            let end_ms = end
+                .as_ref()
+                .and_then(|e| parse_ts_str(e))
+                .map(|us| us / 1000)
+                .unwrap_or(now_ms);
+            if let Some(dom) = dominant_model_for_session(&sid, start_ms, end_ms) {
+                let key = ModelKey {
+                    provider: dom
+                        .get("provider")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("?")
+                        .to_string(),
+                    model: dom
+                        .get("model")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("?")
+                        .to_string(),
+                    variant: dom
+                        .get("variant")
+                        .and_then(|v| v.as_str())
+                        .map(|s| s.to_string()),
+                };
+                let calls = dom.get("calls").and_then(|v| v.as_i64()).unwrap_or(0);
+                served_rows.push((task_id, key, calls));
+            }
+        }
+        flat.extend(evs.into_iter().map(|ev| RollupEvent { task_id, ev }));
+    }
+    let stamped = rollup_models(&flat, &completed);
+    let served = rollup_served(&served_rows);
+    let disp = |k: &ModelKey| {
+        let variant = k
+            .variant
+            .as_ref()
+            .map(|v| format!("#{v}"))
+            .unwrap_or_default();
+        format!("{}/{}{}", k.provider, k.model, variant)
+    };
+    if args.has("json") {
+        let key_json =
+            |k: &ModelKey| json!({"provider": k.provider, "model": k.model, "variant": k.variant});
+        print_json(&json!({
+            "since": since,
+            "days": days,
+            "stamped": stamped.iter().map(|(k, r)| {
+                let mut o = key_json(k);
+                o["tasks"] = json!(r.tasks.len());
+                o["task_ids"] = json!(r.tasks.iter().collect::<Vec<_>>());
+                o["sessions"] = json!(r.sessions.len());
+                o["stamps"] = json!(r.stamps);
+                o["completed"] = json!(r.completed);
+                o
+            }).collect::<Vec<_>>(),
+            "served": served.iter().map(|(k, r)| {
+                let mut o = key_json(k);
+                o["tasks"] = json!(r.tasks.len());
+                o["task_ids"] = json!(r.tasks.iter().collect::<Vec<_>>());
+                o["windows"] = json!(r.windows);
+                o["calls"] = json!(r.calls);
+                o
+            }).collect::<Vec<_>>(),
+        }));
+        return 0;
+    }
+    println!("model rollup — last {days}d (since {since})");
+    println!("stamped (claim/bind stamps):");
+    if stamped.is_empty() {
+        println!("  (none)");
+    }
+    for (k, r) in &stamped {
+        println!(
+            "  {}  tasks={} sessions={} stamps={} completed={}",
+            disp(k),
+            r.tasks.len(),
+            r.sessions.len(),
+            r.stamps,
+            r.completed
+        );
+    }
+    println!("served (dominant leaf per binding window):");
+    if served.is_empty() {
+        println!("  (none)");
+    }
+    for (k, r) in &served {
+        println!(
+            "  {}  tasks={} windows={} calls={}",
+            disp(k),
+            r.tasks.len(),
+            r.windows,
+            r.calls
+        );
+    }
+    0
+}
+
 fn cmd_claim(rest: &[String]) -> i32 {
     let args = parse_args(
         rest,
@@ -5446,6 +5754,7 @@ pub fn run(args: &[String]) -> i32 {
         "fail" => cmd_fail(rest),
         "complete" => cmd_complete(rest),
         "timeline" => cmd_timeline(rest),
+        "models" => cmd_models(rest),
         "health" => cmd_health(rest),
         "signal" => cmd_signal(rest),
         "fallback" => crate::fallback::run(rest),
@@ -5491,6 +5800,84 @@ mod tests {
         ]);
         let ids: Vec<i64> = out.iter().map(|e| e.id).collect();
         assert_eq!(ids, vec![1, 3, 4]);
+    }
+
+    #[test]
+    fn rollup_event_reads_row_task_id() {
+        // Claim-link rollup: the row's own task_id column joins
+        // the stamp (fleet-cli stamp details carry no task_id).
+        let row = json!({
+            "id": 7, "task_id": 42, "kind": "model_stamp",
+            "detail": "{\"session_id\":\"ses_a1\",\"provider\":\"opencode-route\",\"model\":\"workhorse\",\"variant\":null,\"trigger\":\"bind\",\"via\":\"fleet-cli\"}",
+            "created_at": "2026-11-14T17:13:09Z",
+        });
+        let re = rollup_event(&row).expect("row parses");
+        assert_eq!(re.task_id, 42);
+        assert_eq!(re.ev.session_id.as_deref(), Some("ses_a1"));
+        let no_task = json!({"id": 8, "kind": "model_stamp", "detail": "{}", "created_at": "2026-11-14T17:13:09Z"});
+        assert!(rollup_event(&no_task).is_none());
+    }
+
+    #[test]
+    fn rollup_models_counts_tasks_once_per_model() {
+        let ev = |task: i64, sid: Option<&str>, p: &str, m: &str| RollupEvent {
+            task_id: task,
+            ev: TimelineEvent {
+                id: 0,
+                kind: "model_stamp".to_string(),
+                session_id: sid.map(|s| s.to_string()),
+                provider: Some(p.to_string()),
+                model: Some(m.to_string()),
+                variant: None,
+                trigger: Some("claim".to_string()),
+                created_at: "2026-11-14T00:00:00Z".to_string(),
+                created_us: 0,
+            },
+        };
+        let events = vec![
+            ev(1, Some("ses_a"), "opencode-route", "workhorse"),
+            ev(1, Some("ses_a"), "opencode-route", "workhorse"),
+            ev(2, None, "opencode-route", "workhorse"),
+            ev(3, None, "muse-lane", "muse-lane"),
+        ];
+        let completed: std::collections::BTreeSet<i64> = [1, 3].into_iter().collect();
+        let out = rollup_models(&events, &completed);
+        assert_eq!(out.len(), 2);
+        let wh = out.iter().find(|(k, _)| k.model == "workhorse").unwrap();
+        assert_eq!(wh.1.tasks.len(), 2, "task 1 counts once despite two stamps");
+        assert_eq!(wh.1.stamps, 3);
+        assert_eq!(wh.1.sessions.len(), 1);
+        assert_eq!(wh.1.completed, 1);
+        let ml = out.iter().find(|(k, _)| k.model == "muse-lane").unwrap();
+        assert_eq!(ml.1.completed, 1);
+        assert_eq!(ml.1.sessions.len(), 0);
+    }
+
+    #[test]
+    fn rollup_served_aggregates_windows_and_calls() {
+        let key = |p: &str, m: &str| ModelKey {
+            provider: p.to_string(),
+            model: m.to_string(),
+            variant: None,
+        };
+        let rows = vec![
+            (1, key("opencode-go.drewrypope", "beam-free"), 13),
+            (1, key("opencode-go.drewrypope", "beam-free"), 4),
+            (2, key("opencode-go.drewrypope", "beam-free"), 7),
+            (2, key("opencode-go.popesdrew", "beam-free"), 1),
+        ];
+        let out = rollup_served(&rows);
+        assert_eq!(out.len(), 2);
+        let top = &out[0].1;
+        assert_eq!(top.tasks.len(), 2);
+        assert_eq!(top.windows, 3);
+        assert_eq!(top.calls, 24);
+    }
+
+    #[test]
+    fn iso_utc_formats_the_store_shape() {
+        assert_eq!(iso_utc(0), "1970-01-01T00:00:00Z");
+        assert_eq!(iso_utc(1_794_676_389), "2026-11-14T17:13:09Z");
     }
 
     #[test]
