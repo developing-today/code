@@ -25,7 +25,7 @@ use iroh::endpoint::{Endpoint, RelayMode, presets};
 use iroh_base::{EndpointAddr, TransportAddr};
 
 use super::serve::ServeInfo;
-use crate::{CLIENT_KEY_FILE, KEY_FILE, load_or_create_keypair};
+use crate::{CLIENT_KEY_FILE, load_or_create_keypair};
 
 /// Creates a client endpoint configured to connect to a local serve.
 ///
@@ -68,20 +68,24 @@ pub async fn create_local_client_endpoint(
     create_local_endpoint_with_key(serve_info, CLIENT_KEY_FILE).await
 }
 
-/// Creates an endpoint that connects to a local serve AS the serve
-/// node itself (#2147 operator endpoint).
+/// Creates an endpoint that connects to a local serve as its
+/// designated local operator (#2147 operator endpoint).
 ///
 /// Publication control is operator-only: the serve handler answers
-/// publish/unpublish/list requests only from its own authenticated
-/// identity, so the local publication CLI presents the node's own
-/// keypair (the same `KEY_FILE` serve loaded). Holding that key
-/// file is the operator credential -- the design's trade-off,
-/// chosen over widening the remote write policy to listener and
-/// route changes.
+/// publish/unpublish/list requests only from the serving node
+/// itself or the local operator identity serve designated -- this
+/// machine's client identity. The local publication CLI therefore
+/// presents the client keypair: an iroh endpoint cannot connect to
+/// itself ("Connecting to ourself is not supported"), so the
+/// node's own key cannot be the transport identity of a local
+/// operator connection (learned in the slice-3b acceptance walk,
+/// 2026-11-14). Holding either local key file is the operator
+/// credential -- the design's trade-off, chosen over widening the
+/// remote write policy to listener and route changes.
 pub async fn create_local_operator_endpoint(
     serve_info: &ServeInfo,
 ) -> Result<(Endpoint, EndpointAddr)> {
-    create_local_endpoint_with_key(serve_info, KEY_FILE).await
+    create_local_endpoint_with_key(serve_info, CLIENT_KEY_FILE).await
 }
 
 async fn create_local_endpoint_with_key(

@@ -1864,8 +1864,19 @@ pub async fn cmd_serve(opts: ServeOptions) -> Result<()> {
     );
     // Server-to-server transfers (#5345) are initiated from this handler
     // with the server's own endpoint and identity.
+    // #2147: this machine's client identity is the handler's
+    // designated local operator for publication control -- the
+    // local CLI presents that key (an endpoint cannot connect to
+    // itself, so the node's own key cannot), and holding either
+    // local key file is the operator credential. Peers granted
+    // store writes (--allow-node, .iroh-allowed, open writes) are
+    // NOT operators.
+    let local_operator = load_or_create_keypair(crate::CLIENT_KEY_FILE)
+        .await?
+        .public();
     if let Some(inner) = Arc::get_mut(&mut meta) {
         inner.endpoint = Some(endpoint.clone());
+        inner.local_operator = Some(local_operator);
     }
 
     #[cfg(all(feature = "world", feature = "ssh"))]

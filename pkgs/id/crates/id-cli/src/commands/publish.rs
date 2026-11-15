@@ -6,10 +6,11 @@
 //! publication requests. Two design rules (2026-11-04 decision on
 //! #2147) shape everything here:
 //!
-//! - **Operator-only.** The connection presents the serve node's
-//!   own keypair ([`create_local_operator_endpoint`]); the handler
+//! - **Operator-only.** The connection presents this machine's
+//!   client keypair ([`create_local_operator_endpoint`]), which
+//!   serve designates as its local operator identity; the handler
 //!   refuses every other identity, however open the node's write
-//!   policy is. Holding the node's key file is the credential.
+//!   policy is. Holding a local key file is the credential.
 //! - **Never a local fallback.** If no serve is running, the
 //!   command fails with an actionable error. It does NOT edit the
 //!   persisted registry itself and does NOT open the local stores:

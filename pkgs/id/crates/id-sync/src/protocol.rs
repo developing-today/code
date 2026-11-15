@@ -665,12 +665,17 @@ pub enum MetaRequest {
     /// (#2147 dynamic publications).
     ///
     /// OPERATOR-ONLY: the handler answers this only when the
-    /// authenticated caller is the serving node's own identity --
-    /// the ordinary write gate is NOT sufficient, and `--open-writes`
-    /// / `--allow-node` never grant it (changing a node's listeners
-    /// and routes is an operator act, per the #2147 design decision
-    /// of 2026-11-04). The local CLI connects with the node's own
-    /// key to make these requests.
+    /// authenticated caller is the serving node's own identity or
+    /// the local operator identity the serve designated (its own
+    /// machine's client identity -- the two identities whose secret
+    /// keys live on the serve host). The ordinary write gate is NOT
+    /// sufficient, and `--open-writes` / `--allow-node` never grant
+    /// it (changing a node's listeners and routes is an operator
+    /// act, per the #2147 design decision of 2026-11-04). The local
+    /// CLI connects with the machine's client key: an iroh endpoint
+    /// cannot connect to itself, so the node's own key cannot be
+    /// the transport identity of a local operator connection
+    /// (learned in the slice-3b acceptance walk, 2026-11-14).
     Publish {
         /// The publication to apply.
         publication: WirePublication,
@@ -1080,6 +1085,14 @@ pub struct MetaProtocol {
     /// publication requests against an empty slot fail with an
     /// explanatory error, never a silent local success.
     pub publications: SharedPublicationControl,
+    /// The designated local operator identity for #2147
+    /// publication control: the serve host's own client identity,
+    /// set by `id serve` (see [`MetaRequest::Publish`]). Callers
+    /// authenticated as this identity -- or as the node itself --
+    /// are operators; nobody else is, whatever the write policy
+    /// says. `None` (in-process handlers) leaves the node itself
+    /// as the only operator.
+    pub local_operator: Option<EndpointId>,
 }
 
 impl MetaProtocol {
@@ -1104,6 +1117,7 @@ impl MetaProtocol {
             abuse,
             endpoint: None,
             publications: Arc::new(std::sync::Mutex::new(None)),
+            local_operator: None,
         })
     }
 
@@ -1140,13 +1154,15 @@ impl MetaProtocol {
             _ => None,
         };
         if let Some(op) = publication_op {
-            if remote != &self.node_id {
+            let is_operator =
+                remote == &self.node_id || self.local_operator.as_ref() == Some(remote);
+            if !is_operator {
                 return MetaResponse::Error {
                     message: format!(
                         "permission denied: publication control is operator-only \
-                         (node {remote} is not the serving node); only the serving \
-                         node's own identity may publish or unpublish, via the \
-                         local CLI on the serve host"
+                         (node {remote} is neither the serving node nor its \
+                         designated local operator); publishing and unpublishing \
+                         happen via the local CLI on the serve host"
                     ),
                 };
             }
@@ -2483,6 +2499,30 @@ mod publication_control_tests {
         }
         let resp = protocol
             .handle(&stranger, MetaRequest::ListPublications)
+            .await;
+        assert!(matches!(resp, MetaResponse::Error { .. }), "{resp:?}");
+    }
+
+    #[tokio::test]
+    async fn designated_local_operator_dispatches_but_other_writers_do_not() {
+        let (protocol, _dir) = protocol_with_open_access().await;
+        protocol.set_publication_control(PublicationControlHandle::new(Arc::new(FakeControl)));
+        let client = SecretKey::from_bytes(&[7; 32]).public();
+        // The handler is behind an Arc; the test holds the only
+        // reference, so the designation can be set directly.
+        let mut protocol = protocol;
+        Arc::get_mut(&mut protocol).unwrap().local_operator = Some(client);
+        let resp = protocol
+            .handle(&client, MetaRequest::ListPublications)
+            .await;
+        match resp {
+            MetaResponse::Publications { items } => assert!(items.is_empty()),
+            other => panic!("expected Publications for the local operator, got {other:?}"),
+        }
+        // A different key is not the operator, even with open writes.
+        let other_writer = SecretKey::from_bytes(&[8; 32]).public();
+        let resp = protocol
+            .handle(&other_writer, MetaRequest::ListPublications)
             .await;
         assert!(matches!(resp, MetaResponse::Error { .. }), "{resp:?}");
     }
