@@ -209,3 +209,51 @@ implements no scheduler, quota, or back-pressure, and this result is
 recorded rather than reported as acceptance. The matching measurement
 is appended to `baseline.txt`; the existing baselines above are
 unchanged.
+
+## Benchmark matrix results bundle (#5896)
+
+The four loadgen-core workloads (`journal_append_fsync`,
+`checkpoint_compaction`, `guest_replay`, `session_fanout`) also emit
+the per-interface benchmark matrix specified by the decision record
+on #5896. Every run of `world_bench` that executes at least one of
+them writes a `results.jsonl` bundle (path from `ID_BENCH_RESULTS`,
+default `./results.jsonl` in the working directory):
+
+- a **manifest record**: `schema_version`, `run_id`, `git_sha`
+  (`ID_BENCH_GIT_SHA` / `GITHUB_SHA`), `started_at_utc`,
+  `machine_class`, OS/arch, CPU threads, toolchain
+  (`ID_BENCH_TOOLCHAIN`), build profile, loadgen generator version
+  and seed;
+- one **cell record** per planned (workload × interface ×
+  configuration) tuple. Interfaces are `in_process` (the surface this
+  harness measures) and the shell-contract transports `iroh`,
+  `websocket`, `ssh-exec`; the configuration is #5894's
+  `standard-default`, with the scale (`S1` for full runs, `smoke`
+  for `--quick`) recorded as provenance. A cell with no adapter in
+  this harness is `unsupported` with a reason — never omitted, never
+  zero. A measured cell carries metric entries with metric,
+  statistic, unit, value, sample count and the raw samples.
+
+The comparison identity is `(machine_class, workload_id,
+interface_id, configuration_id, metric, statistic)`.
+`id-bench-compare.sh` compares two bundles by that identity (pass
+`.jsonl` files instead of the legacy text files); it never compares
+across machine classes, configurations, units, or workload/interface
+IDs. The legacy `bench` lines and `baseline.txt` remain the
+compatibility view for the `in_process` medians.
+
+Machine classes are #5894's canonical pair: `fleet-laptop` (this
+file's reference class; the default when `ID_BENCH_MACHINE_CLASS`
+is unset) and `ci-runner` (relative-only; the `id bench` workflow
+sets it explicitly). The workflow uploads `results.jsonl` with the
+raw bench output in the `bench-output` artifact and links it from
+the job summary, which is an index, not the record.
+
+`baseline.jsonl` beside this file is the committed fleet-laptop
+matrix baseline, produced by the same re-baseline procedure as
+`baseline.txt`: a full-size run on the reference machine, committed
+with its manifest (run id, commit, date) intact. `--quick` bundles
+are smoke evidence only and are never committed as baselines. The
+async workloads (`many_worlds`, `fuel_spin_isolation`) are not
+matrix cells yet — their pacing is the loadgen record's later
+executor steps — and keep their legacy lines above.
