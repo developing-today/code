@@ -237,6 +237,99 @@ impl Drop for SavePermit {
     }
 }
 
+/// Dynamic publication path mounts (#2147 slice 3): mount path ->
+/// world name, shared by every clone of an [`AppState`] (all web
+/// listeners of one serve process) and by the serve-owned publication
+/// manager's mount sink.
+///
+/// The Explorer router consults this table on every request, so a
+/// mount applies and reverts at runtime without rebuilding any
+/// router: publishing inserts a row, unpublishing removes it, and
+/// the Explorer route the mount shadowed answers again. The table
+/// is the live half only -- the persisted set is the publication
+/// registry in `id-cli`, which owns validation (canonical paths,
+/// shadow acknowledgement); rows here are already canonical.
+#[derive(Clone, Default)]
+pub struct PublicationMounts {
+    inner: Arc<std::sync::RwLock<std::collections::BTreeMap<String, String>>>,
+}
+
+impl std::fmt::Debug for PublicationMounts {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("PublicationMounts")
+            .field("mounts", &self.snapshot())
+            .finish()
+    }
+}
+
+impl PublicationMounts {
+    /// An empty mount table.
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    fn read(&self) -> std::sync::RwLockReadGuard<'_, std::collections::BTreeMap<String, String>> {
+        self.inner
+            .read()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
+    fn write(&self) -> std::sync::RwLockWriteGuard<'_, std::collections::BTreeMap<String, String>> {
+        self.inner
+            .write()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
+    /// Mount `world` at the canonical mount `path`, replacing any
+    /// mount already there (the registry refuses a second publish
+    /// at a taken placement before this is ever called).
+    pub fn mount(&self, world: &str, path: &str) {
+        self.write().insert(path.to_owned(), world.to_owned());
+    }
+
+    /// Remove the mount at `path`, restoring the Explorer route.
+    ///
+    /// # Errors
+    ///
+    /// Fails when nothing is mounted at `path` -- the publication
+    /// manager's `MountSink` contract relies on this: an error
+    /// means the route was NOT removed, so the manager restores
+    /// the persisted registry entry it had already saved away.
+    pub fn unmount(&self, path: &str) -> anyhow::Result<()> {
+        anyhow::ensure!(
+            self.write().remove(path).is_some(),
+            "no publication is mounted at {path}"
+        );
+        Ok(())
+    }
+
+    /// The mount governing `request_path`, if any: the longest
+    /// mount path that equals the request path or is a whole-segment
+    /// prefix of it. The root mount (`/`) governs every path.
+    /// Returns `(mount_path, world)`.
+    #[must_use]
+    pub fn lookup(&self, request_path: &str) -> Option<(String, String)> {
+        self.read()
+            .iter()
+            .filter(|(mount, _)| {
+                mount.as_str() == "/"
+                    || request_path == mount.as_str()
+                    || request_path
+                        .strip_prefix(mount.as_str())
+                        .is_some_and(|rest| rest.starts_with('/'))
+            })
+            .max_by_key(|(mount, _)| mount.len())
+            .map(|(mount, world)| (mount.clone(), world.clone()))
+    }
+
+    /// A snapshot of the live mounts (mount path -> world).
+    #[must_use]
+    pub fn snapshot(&self) -> std::collections::BTreeMap<String, String> {
+        self.read().clone()
+    }
+}
+
 /// Shared application state for web handlers.
 ///
 /// Contains references to the blob store, collaborative editing state,
@@ -282,6 +375,11 @@ pub struct AppState {
     /// phase 2), when this state's router is a program surface.
     /// `None` for Explorer routers. Set by `create_program_router`.
     pub program_world: Option<String>,
+    /// Dynamic publication path mounts (#2147 slice 3), shared with
+    /// the serve-owned publication manager: the live mount table
+    /// the Explorer router consults per request. Empty (inert) for
+    /// states that serve no publications.
+    pub publication_mounts: PublicationMounts,
     /// Mark the directory explorer's session cookies `Secure`.
     pub cookie_secure: bool,
     /// The resolved group-log path for the read-only `/groups` page
@@ -309,6 +407,7 @@ impl std::fmt::Debug for AppState {
             .field("identity", &self.identity)
             .field("local_events", &"<LocalEvents>")
             .field("world", &self.world)
+            .field("publication_mounts", &self.publication_mounts)
             .field("cookie_secure", &self.cookie_secure)
             .field("groups_log", &self.groups_log)
             .field("seitan", &self.seitan)
@@ -379,6 +478,7 @@ impl AppState {
             web_route: "/world".to_owned(),
             web_socket: Some("/ws/world".to_owned()),
             program_world: None,
+            publication_mounts: PublicationMounts::new(),
             cookie_secure: false,
             groups_log: None,
             seitan: SeitanState::default(),
@@ -544,6 +644,99 @@ pub async fn web_routers(
     groups_log: Option<std::path::PathBuf>,
     seitan: SeitanState,
 ) -> anyhow::Result<Vec<Router>> {
+    let (routers, _surface) = web_routers_with_surface(
+        store,
+        peers,
+        node_id,
+        tag_store,
+        secret_key,
+        identity_db_path,
+        securities,
+        world,
+        cookie_secure,
+        local_events,
+        surfaces,
+        groups_log,
+        seitan,
+    )
+    .await?;
+    Ok(routers)
+}
+
+/// A factory for building further routers over the SAME shared
+/// [`AppState`] the configured listeners were built from (#2147
+/// slice 3). The identity store opens exclusively, so a dynamic
+/// publication listener cannot build a second state -- it builds
+/// its program router here, over a clone of the one shared state,
+/// with its own per-bind [`WebSecurity`]. The factory also carries
+/// the process's [`PublicationMounts`] table (the same instance
+/// every router clone consults), which is how the serve-owned
+/// publication manager applies path mounts to the Explorer
+/// listeners without rebuilding them.
+#[derive(Clone)]
+pub struct WebSurfaceFactory {
+    state: AppState,
+    world: Option<id_worlds::world_hub::WorldHub>,
+    cookie_secure: bool,
+    groups_log: Option<std::path::PathBuf>,
+    seitan: SeitanState,
+}
+
+impl std::fmt::Debug for WebSurfaceFactory {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("WebSurfaceFactory")
+            .field("publication_mounts", &self.state.publication_mounts)
+            .field("world", &self.world.is_some())
+            .field("cookie_secure", &self.cookie_secure)
+            .field("groups_log", &self.groups_log)
+            .finish()
+    }
+}
+
+impl WebSurfaceFactory {
+    /// The shared dynamic-publication mount table.
+    #[must_use]
+    pub fn publication_mounts(&self) -> PublicationMounts {
+        self.state.publication_mounts.clone()
+    }
+
+    /// The program-only router for `world_name`, finished with
+    /// `security` -- exactly the router a configured program
+    /// listener for that world would serve (#2146 phase 2), built
+    /// on demand for a dynamic publication listener.
+    #[must_use]
+    pub fn program_router(&self, world_name: &str, security: WebSecurity) -> Router {
+        finish_router(
+            self.state.clone(),
+            security,
+            self.world.clone(),
+            self.cookie_secure,
+            Some(world_name.to_owned()),
+            self.groups_log.clone(),
+            self.seitan.clone(),
+        )
+    }
+}
+
+/// Like [`web_routers`], and also returns the [`WebSurfaceFactory`]
+/// over the shared state, for dynamic publication listeners and
+/// path mounts (#2147 slice 3).
+#[allow(clippy::too_many_arguments)]
+pub async fn web_routers_with_surface(
+    store: Store,
+    peers: Option<PeerDiscovery>,
+    node_id: String,
+    tag_store: Arc<TagStore>,
+    secret_key: [u8; 32],
+    identity_db_path: std::path::PathBuf,
+    securities: Vec<WebSecurity>,
+    world: Option<id_worlds::world_hub::WorldHub>,
+    cookie_secure: bool,
+    local_events: Option<Arc<Mutex<id_events::local_events::LocalEvents>>>,
+    surfaces: Vec<Option<String>>,
+    groups_log: Option<std::path::PathBuf>,
+    seitan: SeitanState,
+) -> anyhow::Result<(Vec<Router>, WebSurfaceFactory)> {
     let state = match local_events {
         Some(events) => {
             AppState::with_local_events(
@@ -569,7 +762,14 @@ pub async fn web_routers(
             .await?
         }
     };
-    Ok(securities
+    let surface = WebSurfaceFactory {
+        state: state.clone(),
+        world: world.clone(),
+        cookie_secure,
+        groups_log: groups_log.clone(),
+        seitan: seitan.clone(),
+    };
+    let routers = securities
         .into_iter()
         .zip(surfaces)
         .map(|(security, surface)| {
@@ -583,7 +783,8 @@ pub async fn web_routers(
                 seitan.clone(),
             )
         })
-        .collect())
+        .collect();
+    Ok((routers, surface))
 }
 
 /// Applies the world/cookie settings and delegates security to the public
@@ -1085,5 +1286,49 @@ mod tests {
 
         broadcast_chat(&mut explorer_client, &mut program_client, "from-explorer").await;
         broadcast_chat(&mut program_client, &mut explorer_client, "from-program").await;
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+mod publication_mounts_tests {
+    use super::PublicationMounts;
+
+    #[test]
+    fn lookup_matches_whole_segments_and_prefers_the_longest_mount() {
+        let mounts = PublicationMounts::new();
+        assert_eq!(mounts.lookup("/prog"), None);
+        mounts.mount("arena", "/prog");
+        mounts.mount("deep", "/prog/deep");
+        assert_eq!(
+            mounts.lookup("/prog"),
+            Some(("/prog".to_owned(), "arena".to_owned()))
+        );
+        assert_eq!(
+            mounts.lookup("/prog/"),
+            Some(("/prog".to_owned(), "arena".to_owned()))
+        );
+        assert_eq!(
+            mounts.lookup("/prog/deep/x"),
+            Some(("/prog/deep".to_owned(), "deep".to_owned()))
+        );
+        // A merely string-prefixed path is not under the mount.
+        assert_eq!(mounts.lookup("/program"), None);
+        assert_eq!(mounts.lookup("/other"), None);
+    }
+
+    #[test]
+    fn root_mount_governs_everything_and_unmount_reports_absence() {
+        let mounts = PublicationMounts::new();
+        mounts.mount("arena", "/");
+        assert_eq!(
+            mounts.lookup("/anything/at/all"),
+            Some(("/".to_owned(), "arena".to_owned()))
+        );
+        mounts.unmount("/").unwrap();
+        assert_eq!(mounts.lookup("/anything"), None);
+        // The MountSink contract: unmounting what is not mounted is
+        // an error (the route was not removed), never a silent Ok.
+        assert!(mounts.unmount("/").is_err());
     }
 }

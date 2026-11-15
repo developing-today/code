@@ -1534,9 +1534,11 @@ pub async fn cmd_serve(opts: ServeOptions) -> Result<()> {
     // startup log, and the boot shadow warnings the issue requires
     // are re-issued for any persisted mount that shadows an Explorer
     // route without an acknowledgement. Applying the set to live
-    // listeners is the next slice; a malformed registry fails startup
-    // loudly (in Registry::load) rather than restoring nothing
-    // silently.
+    // listeners happens below, once the web surface exists: the
+    // serve-owned PublicationManager restores it through the same
+    // apply path runtime publishes use (slice 3). A malformed
+    // registry fails startup loudly (in Registry::load) rather than
+    // restoring nothing silently.
     let publications =
         crate::publications::Registry::load(&crate::publications::publications_file())?;
     if !publications.publications.is_empty() {
@@ -2157,6 +2159,13 @@ pub async fn cmd_serve(opts: ServeOptions) -> Result<()> {
         }
     }
 
+    // #2147 slice 3: the web surface factory the configured
+    // listeners are built from, captured for the publication
+    // manager below (dynamic listeners and path mounts are built
+    // over the same shared web state).
+    #[cfg(feature = "web")]
+    let mut publication_surface: Option<id_web::WebSurfaceFactory> = None;
+
     // Start the web servers now that the lock file is written: one
     // serve task per bound listener (#2145), each listener serving
     // the router for its #2146 content target (Explorer by default,
@@ -2205,7 +2214,7 @@ pub async fn cmd_serve(opts: ServeOptions) -> Result<()> {
             );
             #[cfg(not(feature = "world"))]
             let seitan_state = id_web::SeitanState::default();
-            let web_routers = id_web::web_routers(
+            let (web_routers, surface) = id_web::web_routers_with_surface(
                 store_handle.clone(),
                 Some(peer_discovery.clone()),
                 node_id.to_string(),
@@ -2221,6 +2230,7 @@ pub async fn cmd_serve(opts: ServeOptions) -> Result<()> {
                 seitan_state,
             )
             .await?;
+            publication_surface = Some(surface);
             for ((listener_addr, listener, target), web_router) in
                 web_listeners.into_iter().zip(web_routers)
             {
@@ -2290,6 +2300,70 @@ pub async fn cmd_serve(opts: ServeOptions) -> Result<()> {
             }
         }
         handles
+    };
+
+    // #2147 slice 3: apply the persisted publication set to the
+    // live web surface through the serve-owned PublicationManager:
+    // listener placements bind real listeners serving the published
+    // world's program surface, path mounts land in the Explorer
+    // routers' shared mount table. Restore goes through the same
+    // apply path as runtime publishes; a failure rolls back what
+    // was applied and fails startup loudly rather than serving a
+    // half-applied set. The manager stays alive for the life of
+    // the process (dropping it would orphan its listeners' handles
+    // without closing them; unpublish closes them explicitly).
+    // When no web surface is running there is nothing to apply a
+    // publication TO in this build/configuration: say so in the
+    // startup log instead of pretending the set was restored.
+    #[cfg(feature = "web")]
+    let _publication_manager: Option<
+        crate::commands::serve_publications::ServePublicationManager,
+    > = match publication_surface {
+        Some(surface) => {
+            let has_explorer = web_bindings
+                .iter()
+                .any(|binding| matches!(binding.target(), WebContentTarget::Explorer));
+            let factory = crate::commands::serve_publications::ServeListenerFactory::new(
+                tokio::runtime::Handle::current(),
+                surface.clone(),
+                web_token.clone(),
+            );
+            let sink = crate::commands::serve_publications::ServeMountSink::new(
+                surface.publication_mounts(),
+                has_explorer,
+            );
+            let mut manager = crate::publications_runtime::PublicationManager::new(
+                publications,
+                crate::publications::publications_file(),
+                crate::publications::KNOWN_EXPLORER_ROUTES
+                    .iter()
+                    .map(|route| (*route).to_owned())
+                    .collect(),
+                factory,
+                sink,
+            );
+            // Boot shadow warnings were already issued by the
+            // slice-1 block above; restore's copies are dropped.
+            let _warnings = manager.restore()?;
+            if !manager.registry().publications.is_empty() {
+                status!(
+                    "publications: {} persisted publication(s) live",
+                    manager.registry().publications.len()
+                );
+            }
+            Some(manager)
+        }
+        None => {
+            if !publications.publications.is_empty() {
+                status!(
+                    "publications: {} persisted publication(s) NOT applied \u{2014} \
+                         no web surface is running in this serve (dynamic \
+                         publications need the web interface)",
+                    publications.publications.len()
+                );
+            }
+            None
+        }
     };
 
     #[cfg(feature = "ssh")]

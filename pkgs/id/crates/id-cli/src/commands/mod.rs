@@ -71,6 +71,8 @@ pub mod put;
 pub mod repl;
 pub mod send;
 pub mod serve;
+#[cfg(feature = "web")]
+pub mod serve_publications;
 pub mod tag;
 pub mod text;
 #[cfg(feature = "world")]
