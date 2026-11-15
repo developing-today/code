@@ -2475,8 +2475,13 @@
         ],
         "selection": "round-robin",
         "autonomy": "rules",
+        // 2026-11-15 (weights completeness): the cline-pass and
+        // opendesign legs were missing from this map — an unweighted
+        // leg's tier placement is undefined. Weighted as minor legs.
         "weights": {
-          "opencode-go-plans/deepseek-v4-pro": 3
+          "opencode-go-plans/deepseek-v4-pro": 3,
+          "cline-pass/deepseek-v4-pro": 1,
+          "opendesign/deepseek-v4-pro": 1
         }
       },
       "fable-plan": {
@@ -2574,9 +2579,13 @@
         ],
         "selection": "round-robin",
         "autonomy": "rules",
+        // 2026-11-15 (weights completeness): the opendesign leg was
+        // missing from this map — an unweighted leg's tier placement
+        // is undefined. Weighted as the minor leg.
         "weights": {
           "opencode-go-plans/gpt-6-luna": 6,
-          "openai-plan/gpt-6-luna": 2.5
+          "openai-plan/gpt-6-luna": 2.5,
+          "opendesign/gpt-6-luna": 1
         }
       },
       "luna-effort-rr": {
@@ -2786,8 +2795,12 @@
         ],
         "selection": "round-robin",
         "autonomy": "rules",
+        // 2026-11-15 (weights completeness): the opendesign leg was
+        // missing from this map — an unweighted leg's tier placement
+        // is undefined. Weighted as the minor leg.
         "weights": {
-          "openai-plan/gpt-6.1-sol": 3
+          "openai-plan/gpt-6.1-sol": 3,
+          "opendesign/gpt-6.1-sol": 1
         }
       },
       "terra-plan": {
@@ -2863,8 +2876,12 @@
         ],
         "selection": "round-robin",
         "autonomy": "rules",
+        // 2026-11-15 (weights completeness): the _antigravity leg was
+        // missing from this map — an unweighted leg's tier placement
+        // is undefined. Weighted as the minor leg.
         "weights": {
-          "opencode-go-plans/gemini-4-argon": 3
+          "opencode-go-plans/gemini-4-argon": 3,
+          "_antigravity/gemini-4-argon": 1
         }
       },
       "beam-plan": {
@@ -3136,19 +3153,26 @@
         // DeepSeek leaves out of the Flash pools' way is about burn
         // accounting, and MiMo is ClinePass's best seat), OpenDesign,
         // and Command Code as a minor leaf (weight 0.5, $10 credits/mo).
-        // 2026-11-14 (Zen pass): the Zen free door (mimo-v2.6-flash-free)
-        // joins as a fourth leaf at weight 0.5 — last resort (Drew:
-        // Zen free models carry limited context).
+        // 2026-11-15 (Drew, direct order): the Zen free door LEADS this
+        // plan — "why would you hit paid mimo 2.6 at all". The paid legs
+        // had zero successes in the current setup (ClinePass 131/131
+        // failures before its removal above; OpenDesign balance-
+        // exhausted) and the free leg had never been attempted once
+        // (code#10497). Free first per the placement law; the paid legs
+        // stay as overflow for when the free per-model cap is spent.
+        // The OpenDesign leg also gains the weights entry it was
+        // missing — an unweighted leg's tier placement is undefined.
         "targets": [
+          "opencode-zen-plans/mimo-v2.6-flash-free",
           "opencode-go-plans/mimo-v2.6-flash",
-          "opendesign/mimo-v2.6-flash",
-          "opencode-zen-plans/mimo-v2.6-flash-free"
+          "opendesign/mimo-v2.6-flash"
         ],
         "selection": "round-robin",
         "autonomy": "rules",
         "weights": {
-          "opencode-go-plans/mimo-v2.6-flash": 3,
-          "opencode-zen-plans/mimo-v2.6-flash-free": 0.5
+          "opencode-zen-plans/mimo-v2.6-flash-free": 3,
+          "opencode-go-plans/mimo-v2.6-flash": 1,
+          "opendesign/mimo-v2.6-flash": 1
         }
       },
       "glm-5-3-plan": {
