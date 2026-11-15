@@ -20,6 +20,7 @@ import type {
   PaygLine,
   SaasGroup,
   SaasService,
+  SnapshotRecord,
   UninstrumentedSaasService,
   UsageMetric,
 } from "./model.ts";
@@ -1147,47 +1148,146 @@ export function applySupabaseExport(
 
 // --- PAYG lines (§1.2) -------------------------------------------------------
 
+/** One invoice cycle for the stewardship stale-estimate flag rule
+ * (#1056): an unreconciled estimate whose period ended longer ago than
+ * this, with no settled record, is flagged on the PAYG card and named
+ * in the stewardship cycle log. */
+export const INVOICE_CYCLE_MS = 31 * 24 * 60 * 60 * 1000;
+
+const roundUsd = (n: number): number => Math.round(n * 100) / 100;
+const signedUsd = (n: number): string => `${n < 0 ? "-$" : "+$"}${Math.abs(n).toFixed(2)}`;
+
+/** Snapshot-store settlement records, keyed by PAYG line id: the settled
+ * counterpart records the reconciliation writes (invoice-source for
+ * Cloudflare; the collected-figure record for Meta). See
+ * recordsFromPaygLines for the writer side of the same keying. */
+const PAYG_SETTLEMENT_KEYS: Record<string, { serviceId: string; metricId: string }> = {
+  "cloudflare-gateway": { serviceId: "cloudflare", metricId: "gateway-accrual" },
+  "meta-payg": { serviceId: "meta", metricId: "payg-settled" },
+};
+
+/** The newest usable settlement record for a PAYG line, or null. A record
+ * settles a line only with a finite non-negative USD value; anything else
+ * is ignored rather than corrupting the card. */
+function newestSettlement(records: readonly SnapshotRecord[] | undefined, lineId: string): SnapshotRecord | null {
+  const key = PAYG_SETTLEMENT_KEYS[lineId];
+  if (!key || !records?.length) return null;
+  let best: SnapshotRecord | null = null;
+  for (const r of records) {
+    if (r.serviceId !== key.serviceId || r.metricId !== key.metricId) continue;
+    if (r.unit !== "usd" || typeof r.value !== "number" || !Number.isFinite(r.value) || r.value < 0) continue;
+    if (!best || r.ts > best.ts) best = r;
+  }
+  return best;
+}
+
+/** The stale-estimate flag (#1056): unreconciled, period ended more than
+ * one invoice cycle before now. An unknown period end never flags — the
+ * flag asserts a closed period, it does not guess one. */
+function isStaleEstimate(periodEnd: string | null, settled: boolean, nowMs: number): boolean {
+  if (settled || !periodEnd) return false;
+  const end = parseIsoDate(periodEnd);
+  if (end === null) return false;
+  return nowMs - end.getTime() > INVOICE_CYCLE_MS;
+}
+
+export interface PaygExtractOptions {
+  /** Snapshot-store records to reconcile against (invoice settlements). */
+  settlements?: readonly SnapshotRecord[];
+  /** Clock for the stale-estimate flag; defaults to Date.now(). */
+  nowMs?: number;
+}
+
 /**
  * The PAYG dollars card's lines. Sources: the Meta Model API section of
  * quota-view.md (console figures) and, when supplied, the provider
  * registry's billing-incidents section (the Cloudflare gateway accrual
- * the two sources price differently — shown, not resolved).
+ * the two sources price differently — shown, not resolved). When
+ * settlement records are supplied, a line whose settled record exists
+ * renders reconciled: settled figure, both estimates kept, variance
+ * named (#1056).
  */
-export function extractPaygLines(doc: string, registryText = ""): PaygLine[] {
+export function extractPaygLines(doc: string, registryText = "", opts: PaygExtractOptions = {}): PaygLine[] {
+  const nowMs = opts.nowMs ?? Date.now();
   const lines: PaygLine[] = [];
   const meta = sectionOf(doc, /^### Meta Model API/);
   const payg = /PAYG Oct 19–25: \$(\d+(?:\.\d+)?) accrued \/ \$(\d+(?:\.\d+)?) collected/.exec(meta);
   if (payg) {
     const accrued = Number(payg[1]);
     const collected = Number(payg[2]);
+    // Reconciled (#1056): the collected figure is the settled one — money
+    // actually moved (Visa card charges in the charges evidence). A
+    // snapshot-store settlement record, when one exists, is the same
+    // figure recorded; the console collected figure stands in for it.
+    const settlement = newestSettlement(opts.settlements, "meta-payg");
+    const settledUsd = settlement ? (settlement.value as number) : collected;
+    const settledVariance = roundUsd(settledUsd - accrued);
     lines.push({
       id: "meta-payg",
       label: "Meta Model API PAYG",
       accruedUsd: accrued,
       collectedUsd: collected,
+      settledUsd,
+      settledAt: settlement ? settlement.ts.slice(0, 10) : "2026-10-25",
+      settledSource: settlement ? settlement.source : "console",
+      settledVarianceUsd: settledVariance,
       unbilledUsd: Math.round((accrued - collected) * 100) / 100,
-      note: "Oct 19–25 console read (dev.meta.ai, 2026-10-25 09:38 CDT): spill past the plan's short window bills automatically — no charge-past-plan disable exists on the account.",
+      note: `Oct 19–25 console read (dev.meta.ai, 2026-10-25 09:38 CDT): spill past the plan's short window bills automatically — no charge-past-plan disable exists on the account. Reconciled (#1056): accrued $${accrued.toFixed(2)} vs settled $${settledUsd.toFixed(2)} collected — variance ${signedUsd(settledVariance)}; the collected figure is the settled one (console evidence; no separate Meta invoice document exists).`,
       measuredAt: "2026-10-25",
       sourceClass: "console",
     });
   }
   const gw = /\$(\d+(?:\.\d+)?) per budget alert vs \$(\d+(?:\.\d+)?) per gateway cost attribution/.exec(registryText);
   if (gw) {
-    lines.push({
-      id: "cloudflare-gateway",
-      label: "Cloudflare AI Gateway accrual (DeepSeek V4 Pro, Oct 24–25)",
-      accruedUsd: null,
-      estimate: {
-        low: Number(gw[1]),
-        high: Number(gw[2]),
-        period: "Oct 24–25 accrual",
-        note: "Budget alert vs gateway cost attribution disagree — both shown; the Nov 2 invoice is authoritative.",
-      },
-      unbilledUsd: Math.round(Number(gw[2]) * 1.2 * 100) / 100,
-      note: "Gateway providers were disabled fleet-wide 2026-10-25; accrual is closed, the invoice lands Nov 2.",
-      measuredAt: "2026-10-25",
-      sourceClass: "estimate",
-    });
+    const low = Number(gw[1]);
+    const high = Number(gw[2]);
+    const settlement = newestSettlement(opts.settlements, "cloudflare-gateway");
+    if (settlement) {
+      // Reconciled (#1056): the invoice record settles the estimate pair.
+      // Both estimates stay on the line with the variance against each —
+      // settled, not erased.
+      const invoiced = settlement.value as number;
+      const settledAt = settlement.ts.slice(0, 10);
+      lines.push({
+        id: "cloudflare-gateway",
+        label: "Cloudflare AI Gateway accrual (DeepSeek V4 Pro, Oct 24–25)",
+        accruedUsd: null,
+        estimate: {
+          low,
+          high,
+          period: "Oct 24–25 accrual",
+          note: "Budget alert vs gateway cost attribution disagreed — both shown; settled by the Nov 2 invoice (see line note).",
+        },
+        settledUsd: invoiced,
+        settledAt,
+        settledSource: settlement.source,
+        settledVarianceUsd: roundUsd(invoiced - high),
+        estimatePeriodEnd: "2026-10-25",
+        staleEstimate: false,
+        unbilledUsd: 0,
+        note: `Settled by the Nov 2 invoice: $${invoiced.toFixed(2)} paid (invoice record ${settledAt}, source: invoice). Estimates were $${low.toFixed(2)} (budget alert) vs $${high.toFixed(2)} (gateway cost attribution): variance ${signedUsd(roundUsd(invoiced - high))} vs the high estimate and ${signedUsd(roundUsd(invoiced - low))} vs the low — gateway attribution was the near-exact measure; the budget-alert figure is rejected. No line-item decomposition is exposed by the billing API, so the split is inferred from totals (#1056).`,
+        measuredAt: settledAt,
+        sourceClass: "invoice",
+      });
+    } else {
+      lines.push({
+        id: "cloudflare-gateway",
+        label: "Cloudflare AI Gateway accrual (DeepSeek V4 Pro, Oct 24–25)",
+        accruedUsd: null,
+        estimate: {
+          low,
+          high,
+          period: "Oct 24–25 accrual",
+          note: "Budget alert vs gateway cost attribution disagree — both shown; the Nov 2 invoice is authoritative.",
+        },
+        estimatePeriodEnd: "2026-10-25",
+        staleEstimate: isStaleEstimate("2026-10-25", false, nowMs),
+        unbilledUsd: Math.round(high * 1.2 * 100) / 100,
+        note: "Gateway providers were disabled fleet-wide 2026-10-25; accrual is closed, the invoice lands Nov 2.",
+        measuredAt: "2026-10-25",
+        sourceClass: "estimate",
+      });
+    }
   }
   const cf = extractSaasServices(doc).find((s) => s.id === "cloudflare");
   if (cf?.paygEstimate) {

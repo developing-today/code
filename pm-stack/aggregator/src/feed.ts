@@ -1084,6 +1084,18 @@ export function isPaygLine(v: unknown): v is PaygLine {
     nullableNonNegative(v.accruedUsd) &&
     (v.collectedUsd === undefined || nullableNonNegative(v.collectedUsd)) &&
     (v.estimate === undefined || isEstimate(v.estimate)) &&
+    (v.settledUsd === undefined || nullableNonNegative(v.settledUsd)) &&
+    (v.settledAt === undefined || v.settledAt === null || isIsoDate(v.settledAt)) &&
+    (v.settledSource === undefined ||
+      v.settledSource === null ||
+      v.settledSource === "api" ||
+      v.settledSource === "console" ||
+      v.settledSource === "manual" ||
+      v.settledSource === "estimate" ||
+      v.settledSource === "invoice") &&
+    (v.settledVarianceUsd === undefined || v.settledVarianceUsd === null || isFiniteNumber(v.settledVarianceUsd)) &&
+    (v.estimatePeriodEnd === undefined || v.estimatePeriodEnd === null || isIsoDate(v.estimatePeriodEnd)) &&
+    (v.staleEstimate === undefined || typeof v.staleEstimate === "boolean") &&
     nullableNonNegative(v.unbilledUsd) &&
     typeof v.note === "string" &&
     (v.measuredAt === null || isIsoDate(v.measuredAt)) &&
