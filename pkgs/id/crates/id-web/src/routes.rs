@@ -661,9 +661,74 @@ fn create_router_inner(state: AppState) -> Router {
         }
         None => router.merge(super::world_ws::world_http_routes().with_state(world_state)),
     };
-    router
+    let router = router
         .layer(DefaultBodyLimit::max(DEFAULT_BODY_LIMIT))
-        .with_state(state)
+        .with_state(state.clone());
+    // #2147 slice 3: dynamic publication mounts intercept here --
+    // inside the listener's security guard (applied by the caller
+    // around this router), above every Explorer route, so a mount
+    // overrides the Explorer route it shadows and unmounting
+    // restores it with no router rebuild.
+    router.layer(axum::middleware::from_fn_with_state(
+        state,
+        publication_mount_layer,
+    ))
+}
+
+/// #2147 slice 3: serve a dynamic publication mount. When the
+/// request path falls under a live mount (see
+/// [`PublicationMounts::lookup`]), the request is rewritten to the
+/// mount-relative path and answered by the mounted world's
+/// program-only router (the #2146 phase-2 surface, built on demand
+/// over the same shared state); anything else falls through to the
+/// Explorer routes unchanged.
+///
+/// The listener's own [`WebSecurity`] has already run (this layer
+/// sits inside `security::protect`), so the program router is
+/// built with the default policy -- re-applying the listener
+/// policy here would double-guard the request, not widen it.
+///
+/// Known limit: WebSocket upgrades under a mount do not complete,
+/// because the on-demand dispatch has no hyper upgrade handle to
+/// offer the world bridge; the program page and its HTTP surface
+/// serve normally. Dynamic publication *listeners* serve the same
+/// router through `axum::serve` directly and have no such limit.
+async fn publication_mount_layer(
+    State(state): State<AppState>,
+    req: axum::http::Request<Body>,
+    next: axum::middleware::Next,
+) -> Response {
+    let path = req.uri().path().to_owned();
+    let Some((mount, world)) = state.publication_mounts.lookup(&path) else {
+        return next.run(req).await;
+    };
+    let rest: String = if mount == "/" {
+        path.clone()
+    } else if path.len() == mount.len() {
+        "/".to_owned()
+    } else {
+        path[mount.len()..].to_owned()
+    };
+    let path_and_query = match req.uri().query() {
+        Some(query) => format!("{rest}?{query}"),
+        None => rest,
+    };
+    let Ok(path_and_query) = path_and_query.parse::<axum::http::uri::PathAndQuery>() else {
+        return next.run(req).await;
+    };
+    let mut uri_parts = req.uri().clone().into_parts();
+    uri_parts.path_and_query = Some(path_and_query);
+    let Ok(new_uri) = axum::http::Uri::from_parts(uri_parts) else {
+        return next.run(req).await;
+    };
+    let (mut parts, body) = req.into_parts();
+    parts.uri = new_uri;
+    let req = axum::http::Request::from_parts(parts, body);
+    let router = create_program_router(state, &world, WebSecurity::default());
+    match tower::ServiceExt::oneshot(router, req).await {
+        Ok(response) => response,
+        Err(error) => match error {},
+    }
 }
 
 /// The program-only surface's root: the program frontend for the
@@ -2318,6 +2383,52 @@ mod upload_router_tests {
                 admin.map(str::to_owned),
             ),
         )
+    }
+
+    #[tokio::test]
+    async fn publication_mount_overrides_explorer_and_unmount_restores_it() {
+        let (_, mut state, _dir, _endpoint, _docs) = router_with_state().await;
+        state.world = Some(hub_with_world("arena", Some("s3cret")));
+        let app = create_router(state.clone(), WebSecurity::default());
+
+        // Before any mount, /prog is not an Explorer route.
+        let before = app
+            .clone()
+            .oneshot(Request::builder().uri("/prog").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(before.status(), StatusCode::NOT_FOUND);
+
+        // Mounting at runtime (no router rebuild) makes /prog serve
+        // the mounted world's program surface.
+        state.publication_mounts.mount("arena", "/prog");
+        let mounted = app
+            .clone()
+            .oneshot(Request::builder().uri("/prog").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(mounted.status(), StatusCode::OK);
+        let body = to_bytes(mounted.into_body(), usize::MAX).await.unwrap();
+        let text = String::from_utf8_lossy(&body);
+        assert!(text.contains("data-world-program=\"arena\""), "{text}");
+
+        // The Explorer root is untouched while the mount lives.
+        let root = app
+            .clone()
+            .oneshot(Request::builder().uri("/").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(root.status(), StatusCode::OK);
+        let body = to_bytes(root.into_body(), usize::MAX).await.unwrap();
+        assert!(!String::from_utf8_lossy(&body).contains("data-world-program"));
+
+        // Unmounting restores the Explorer answer at /prog.
+        state.publication_mounts.unmount("/prog").unwrap();
+        let after = app
+            .oneshot(Request::builder().uri("/prog").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(after.status(), StatusCode::NOT_FOUND);
     }
 
     #[tokio::test]

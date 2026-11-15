@@ -55,3 +55,7 @@ These choices fit the current `MetaProtocol`/`AccessPolicy`, `cmd_serve` listene
 - `pkgs/id/src/publications.rs`
 - `pkgs/id/src/commands/serve.rs`
 - `pkgs/id/src/protocol.rs` and `pkgs/id/src/meta_client.rs`
+
+## 2026-11-14 addendum (slice 3b implementation): operator identity is the local client identity
+
+The 2026-11-04 decision said publication requests are authorized only when the authenticated caller is the serving node's own identity, with local commands connecting using that identity. The slice-3b acceptance walk showed that transport is impossible: an iroh endpoint refuses to connect to itself ("Connecting to ourself is not supported"), so a CLI presenting the node's own key can never reach its own serve process. Refinement, preserving the decision's security property (only key material on the serve host operates; remote writers never do): serve designates this machine's client identity -- the `CLIENT_KEY_FILE` keypair the access policy already trusts for local CLI/REPL work -- as its local operator, and the handler answers publication requests from the node itself (in-process) or from that designated identity. `--open-writes` and `--allow-node` identities are not operators. Recorded here and in the protocol/CLI code (PR #10410).

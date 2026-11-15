@@ -67,10 +67,13 @@ pub mod list;
 #[cfg(feature = "sandbox")]
 pub mod match_audit;
 pub mod peers;
+pub mod publish;
 pub mod put;
 pub mod repl;
 pub mod send;
 pub mod serve;
+#[cfg(feature = "web")]
+pub mod serve_publications;
 pub mod tag;
 pub mod text;
 #[cfg(feature = "world")]
@@ -78,7 +81,7 @@ pub mod world;
 pub mod writer_set;
 
 pub use claim::cmd_claim;
-pub use client::create_local_client_endpoint;
+pub use client::{create_local_client_endpoint, create_local_operator_endpoint};
 pub use doc::cmd_doc;
 pub use find::{
     PeekOptions, SearchOptions, cmd_find, cmd_find_matches, cmd_peek, cmd_search, cmd_show,
@@ -91,6 +94,7 @@ pub use list::{cmd_list, cmd_list_remote};
 #[cfg(feature = "sandbox")]
 pub use match_audit::cmd_match_audit;
 pub use peers::{PeersOptions, cmd_peers};
+pub use publish::{cmd_publications, cmd_publish, cmd_unpublish};
 pub use put::{
     cmd_put_hash, cmd_put_local_file, cmd_put_local_stdin, cmd_put_multi, cmd_put_one,
     cmd_put_one_remote,

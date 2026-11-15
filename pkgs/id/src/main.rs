@@ -437,6 +437,24 @@ async fn main() -> Result<()> {
         Some(Command::WriterSets { json, command }) => {
             id::commands::cmd_writer_sets(cli.event_store, json, command).await
         }
+        Some(Command::Publish {
+            world,
+            listen,
+            path,
+            acknowledge_shadow,
+        }) => {
+            id::commands::cmd_publish(
+                &world,
+                listen.as_deref(),
+                path.as_deref(),
+                acknowledge_shadow,
+            )
+            .await
+        }
+        Some(Command::Unpublish { listen, path }) => {
+            id::commands::cmd_unpublish(listen.as_deref(), path.as_deref()).await
+        }
+        Some(Command::Publications) => id::commands::cmd_publications().await,
         #[cfg(feature = "sandbox")]
         Some(Command::MatchAudit(command)) => id::commands::cmd_match_audit(command),
         #[cfg(feature = "world")]

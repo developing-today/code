@@ -646,6 +646,47 @@ pub enum Command {
     /// id serve --replace-defaults
     /// ```
     Serve(ServeArgs),
+    /// Publish a program (world) on the RUNNING `id serve` (#2147).
+    ///
+    /// Drives the serve process's publication manager: the program
+    /// goes live without restarting the node, and the publication
+    /// persists across restarts. Exactly one placement is required:
+    /// `--listen ADDR` for a dedicated listener, or `--path PATH`
+    /// for a mount on the primary Explorer listener. A path mount
+    /// that shadows an Explorer route is refused unless
+    /// `--acknowledge-shadow` is passed. Operator-only: the command
+    /// connects with the serve node's own key, and fails when no
+    /// serve is running (it never edits local state directly).
+    Publish {
+        /// The world (program) name to publish.
+        world: String,
+        /// Publish on a dedicated listener at this address
+        /// (e.g. `127.0.0.1:8080`; port 0 = OS-assigned).
+        #[arg(long, conflicts_with = "path")]
+        listen: Option<String>,
+        /// Publish as a path mount on the primary Explorer
+        /// listener (e.g. `/prog`).
+        #[arg(long)]
+        path: Option<String>,
+        /// Acknowledge that a path mount shadows an Explorer
+        /// route ("I know I'm doing this").
+        #[arg(long)]
+        acknowledge_shadow: bool,
+    },
+    /// Remove a dynamic publication from the RUNNING `id serve`
+    /// (#2147): the listener closes or the Explorer route is
+    /// restored, without restarting the node.
+    Unpublish {
+        /// Unpublish the dedicated listener at this address.
+        #[arg(long, conflicts_with = "path")]
+        listen: Option<String>,
+        /// Unpublish the path mount at this path.
+        #[arg(long)]
+        path: Option<String>,
+    },
+    /// List the RUNNING `id serve`'s dynamic publications (#2147),
+    /// with live listener addresses.
+    Publications,
     /// Start an interactive REPL for issuing commands.
     ///
     /// The REPL provides a shell-like interface for executing multiple
