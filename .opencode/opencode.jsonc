@@ -278,12 +278,9 @@
     "google",
     "google-vertex",
     "cloudflare-ai-gateway",
-    "groq",
-    "nvidia",
     "vercel",
     "huggingface",
     "github-copilot",
-    "openrouter",
     "cloudflare-workers-ai",
     "meta",
     "deepseek",
@@ -986,18 +983,76 @@
         "baseURL": "https://openrouter.ai/api/v1"
       },
       "models": {
-        "minimax/minimax-m3.1-flash:free": {
-          "name": "MiniMax M3.1 Flash (Free)",
+        "inclusionai/ling-3.2-flash:free": {
+          "name": "Ling 3.2 Flash (Free)",
           "limit": {
-            "context": 204800,
+            "context": 1048576,
             "output": 131072
           }
         },
-        "poolside/laguna-s-2.1:free": {
-          "name": "Poolside Laguna S 2.1 (Free)",
+        "nvidia/nemotron-3-ultra-550b-a55b:free": {
+          "name": "Nemotron 3 Ultra 550B (Free)",
           "limit": {
-            "context": 131072,
-            "output": 32768
+            "context": 1000000,
+            "output": 65536
+          }
+        },
+        "recursive/flint-v1.0:free": {
+          "name": "Flint v1.0 (Free)",
+          "limit": {
+            "context": 262144,
+            "output": 235929
+          }
+        },
+        "cohere/north-mini-code:free": {
+          "name": "North Mini Code (Free)",
+          "limit": {
+            "context": 256000,
+            "output": 64000
+          }
+        }
+      }
+    },
+    "nvidia": {
+      "npm": "@ai-sdk/openai-compatible",
+      "name": "NVIDIA NIM (Free Endpoint)",
+      "options": {
+        "baseURL": "https://integrate.api.nvidia.com/v1"
+      },
+      "models": {
+        "deepseek-ai/deepseek-v4.1-flash": {
+          "name": "DeepSeek V4.1 Flash (NVIDIA)",
+          "limit": {
+            "context": 1000000,
+            "output": 131072
+          }
+        },
+        "nvidia/nemotron-3-ultra-550b-a55b": {
+          "name": "Nemotron 3 Ultra 550B (NVIDIA)",
+          "limit": {
+            "context": 1000000,
+            "output": 65536
+          }
+        },
+        "minimaxai/minimax-m3.1-flash": {
+          "name": "MiniMax M3.1 Flash (NVIDIA)",
+          "limit": {
+            "context": 262144,
+            "output": 262144
+          }
+        },
+        "google/gemma-4-31b-it": {
+          "name": "Gemma 4 31B IT (NVIDIA)",
+          "limit": {
+            "context": 256000,
+            "output": 16384
+          }
+        },
+        "mistralai/mistral-large-4-1t-a52b": {
+          "name": "Mistral Large 4 (NVIDIA)",
+          "limit": {
+            "context": 1048576,
+            "output": 131072
           }
         }
       }
@@ -1026,20 +1081,11 @@
         "whisper-large-v3": {
           "name": "Whisper (Groq)"
         },
-        "llama-3.3-70b-versatile": {
-          "name": "Llama 3.3 70B (Groq)"
-        },
         "allam-2-7b": {
           "name": "ALLaM-2-7b (Groq)"
         },
         "whisper-large-v3-turbo": {
           "name": "Whisper Large V3 Turbo (Groq)"
-        },
-        "llama-3.1-8b-instant": {
-          "name": "Llama 3.1 8B (Groq)"
-        },
-        "qwen/qwen3.6-27b": {
-          "name": "Qwen 3.6 27B (Groq)"
         },
         "canopylabs/orpheus-arabic-saudi": {
           "name": "Canopy Labs Orpheus Arabic Saudi (Groq)"
@@ -3006,6 +3052,60 @@
           "opencode-zen-plans/deepseek-v4.1-flash-free": 3
         }
       },
+      "groq-free-plan": {
+        "name": "Groq Free - plan providers",
+        // NEW 2026-11-15 (Drew): Groq's free tier as its own plan. Groq's live catalog for our key serves exactly three chat models (llama-3.3-70b / llama-3.1-8b / qwen3.6-27b were removed from the provider block the same day — the endpoint no longer serves them). All three probe-verified live 2026-11-15. Groq's free limits are small (per-model daily caps), so this is a background/scout-class seat, valued for Groq's very fast decode.
+        "targets": [
+          "groq/openai/gpt-oss-120b",
+          "groq/openai/gpt-oss-20b",
+          "groq/qwen/qwen3.8-27b"
+        ],
+        "selection": "round-robin",
+        "autonomy": "rules",
+        "weights": {
+          "groq/openai/gpt-oss-120b": 3,
+          "groq/openai/gpt-oss-20b": 3,
+          "groq/qwen/qwen3.8-27b": 3
+        }
+      },
+      "nvidia-free-plan": {
+        "name": "NVIDIA NIM Free - plan providers",
+        // NEW 2026-11-15 (Drew): NVIDIA's free NIM endpoint (integrate.api.nvidia.com) as its own plan. Five chat models from its 83-model free catalog, each probe-verified live 2026-11-15 with our stored key (kimi-k2.6 and nemotron-3-super-120b are listed in the catalog but answer 404 'not found for account' — not seated). DeepSeek Flash, Nemotron Ultra and Mistral Large 4 carry ~1M context on this door; MiniMax Flash and Gemma are ~256k fallback-class. Background seat; the free endpoint is rate-limited per key and DeepSeek Flash cold-starts slowly (>90s first call).
+        "targets": [
+          "nvidia/deepseek-ai/deepseek-v4.1-flash",
+          "nvidia/nvidia/nemotron-3-ultra-550b-a55b",
+          "nvidia/minimaxai/minimax-m3.1-flash",
+          "nvidia/google/gemma-4-31b-it",
+          "nvidia/mistralai/mistral-large-4-1t-a52b"
+        ],
+        "selection": "round-robin",
+        "autonomy": "rules",
+        "weights": {
+          "nvidia/deepseek-ai/deepseek-v4.1-flash": 3,
+          "nvidia/nvidia/nemotron-3-ultra-550b-a55b": 3,
+          "nvidia/minimaxai/minimax-m3.1-flash": 3,
+          "nvidia/google/gemma-4-31b-it": 3,
+          "nvidia/mistralai/mistral-large-4-1t-a52b": 3
+        }
+      },
+      "openrouter-free-plan": {
+        "name": "OpenRouter Free - plan providers",
+        // NEW 2026-11-15 (Drew): OpenRouter's :free shelf as its own plan — chosen over Hugging Face (whose Inference Providers catalog is metered credit, not per-model free). Four models at $0/$0 pricing in OpenRouter's live catalog 2026-11-15, each probe-verified live the same day. Ling and Nemotron Ultra carry ~1M context, so this plan also joins scout's free cluster; Flint and North Mini Code are ~256k. NOT seated: inkling-2-small:free (403 'agentic harnesses only' on bare API calls, and already seated via Zen) and gemma-4-31b-it:free (upstream 429 at probe time — it answers on the NVIDIA door instead). Free tier: 50 requests/day without purchase. The block's old seats (minimax-m3.1-flash:free, laguna-s-2.1:free) rotated off the free shelf and were removed.
+        "targets": [
+          "openrouter/inclusionai/ling-3.2-flash:free",
+          "openrouter/nvidia/nemotron-3-ultra-550b-a55b:free",
+          "openrouter/recursive/flint-v1.0:free",
+          "openrouter/cohere/north-mini-code:free"
+        ],
+        "selection": "round-robin",
+        "autonomy": "rules",
+        "weights": {
+          "openrouter/inclusionai/ling-3.2-flash:free": 3,
+          "openrouter/nvidia/nemotron-3-ultra-550b-a55b:free": 3,
+          "openrouter/recursive/flint-v1.0:free": 3,
+          "openrouter/cohere/north-mini-code:free": 3
+        }
+      },
       "inkling-plan": {
         "name": "Inkling 2 Small Free (Zen) - plan providers",
         // NEW 2026-11-14 (Drew, Zen pass): Thinking Machines Lab's
@@ -3288,6 +3388,7 @@
           "opencode-route/longcat-plan",
           "opencode-route/iceman-plan",
           "opencode-route/inkling-plan",
+          "opencode-route/openrouter-free-plan",
           "opencode-route/deepseek-flash-plan#low",
           "opencode-route/haiku-plan#low",
           "opencode-route/background",
@@ -3380,6 +3481,9 @@
           "opencode-route/big-pickle-plan",
           "opencode-route/nemotron-vl-plan",
           "opencode-route/nemotron-lightning-plan",
+          "opencode-route/groq-free-plan",
+          "opencode-route/nvidia-free-plan",
+          "opencode-route/openrouter-free-plan",
           "opencode-route/workhorse"
         ],
         "selection": "ordered",
