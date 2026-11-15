@@ -58,7 +58,7 @@
 //! - [`MatchKind::Prefix`]: Name/hash starts with query (good)
 //! - [`MatchKind::Contains`]: Name/hash contains query anywhere (okay)
 
-use std::{sync::Arc, time::Duration};
+use std::{net::SocketAddr, sync::Arc, time::Duration};
 
 use futures_lite::StreamExt;
 use iroh::EndpointAddr;
@@ -661,6 +661,30 @@ pub enum MetaRequest {
         /// and replaced.
         replace: bool,
     },
+    /// Publish a program (world) on the running serve process
+    /// (#2147 dynamic publications).
+    ///
+    /// OPERATOR-ONLY: the handler answers this only when the
+    /// authenticated caller is the serving node's own identity --
+    /// the ordinary write gate is NOT sufficient, and `--open-writes`
+    /// / `--allow-node` never grant it (changing a node's listeners
+    /// and routes is an operator act, per the #2147 design decision
+    /// of 2026-11-04). The local CLI connects with the node's own
+    /// key to make these requests.
+    Publish {
+        /// The publication to apply.
+        publication: WirePublication,
+    },
+    /// Remove a dynamic publication from the running serve process
+    /// (#2147). OPERATOR-ONLY, like [`MetaRequest::Publish`].
+    Unpublish {
+        /// The placement to remove.
+        placement: WirePlacement,
+    },
+    /// List the running serve process's dynamic publications
+    /// (#2147), with live addresses. OPERATOR-ONLY, like
+    /// [`MetaRequest::Publish`]: the live set is operator state.
+    ListPublications,
 }
 
 impl MetaRequest {
@@ -676,9 +700,137 @@ impl MetaRequest {
                 | Self::DelTag { .. }
                 | Self::MigrateTags
                 | Self::Send { .. }
+                | Self::Publish { .. }
+                | Self::Unpublish { .. }
         )
     }
 }
+
+/// Where a published program is placed, on the wire (#2147).
+/// Mirrors the persisted placement model in `id-cli`'s publications
+/// registry; the serve-side control converts between the two.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum WirePlacement {
+    /// A dedicated listener for this program alone, serving at `/`.
+    Listener {
+        /// The listener's socket address (port 0 = OS-assigned).
+        addr: SocketAddr,
+    },
+    /// A path mount on the node's primary (Explorer) listener.
+    PathMount {
+        /// The canonical mount path.
+        path: String,
+    },
+}
+
+/// One published program on the wire (#2147): a world target at one
+/// placement.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WirePublication {
+    /// The world/program name being published.
+    pub world: String,
+    /// Where it is published.
+    pub placement: WirePlacement,
+    /// The operator's explicit "I know this shadows an Explorer
+    /// route" acknowledgement for path mounts.
+    pub acknowledge_shadow: bool,
+}
+
+/// One publication as [`MetaRequest::ListPublications`] reports it:
+/// the persisted record plus its live address.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WirePublicationStatus {
+    /// The world/program name.
+    pub world: String,
+    /// Where it is published.
+    pub placement: WirePlacement,
+    /// The shadow acknowledgement recorded for the publication.
+    pub acknowledge_shadow: bool,
+    /// The live bound address for a listener placement (differs
+    /// from the requested address when port 0 was requested).
+    /// `None` for path mounts.
+    pub actual_addr: Option<SocketAddr>,
+}
+
+/// A publication operation for a [`PublicationControl`] (#2147).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PublicationOp {
+    /// Publish this publication.
+    Publish(WirePublication),
+    /// Unpublish whatever sits at this placement.
+    Unpublish(WirePlacement),
+    /// List the live publications.
+    List,
+}
+
+/// The outcome of a [`PublicationOp`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PublicationOutcome {
+    /// Published; carries the loud shadow warning for an
+    /// acknowledged shadowing mount.
+    Published {
+        /// The shadow warning, if the publication shadows an
+        /// Explorer route with acknowledgement.
+        warning: Option<String>,
+    },
+    /// Unpublished.
+    Unpublished,
+    /// The live publications.
+    Listed {
+        /// The live publications.
+        items: Vec<WirePublicationStatus>,
+    },
+}
+
+/// The serve-side publication control the meta protocol dispatches
+/// operator publication requests to (#2147). Implemented by the
+/// serve process over its publication manager; kept as a trait
+/// here because the manager lives in `id-cli`, which depends on
+/// this crate, never the reverse.
+pub trait PublicationControl: Send + Sync {
+    /// Perform one publication operation.
+    fn call(
+        &self,
+        op: PublicationOp,
+    ) -> std::pin::Pin<
+        Box<dyn std::future::Future<Output = Result<PublicationOutcome, String>> + Send + '_>,
+    >;
+}
+
+/// A shareable handle to a [`PublicationControl`].
+#[derive(Clone)]
+pub struct PublicationControlHandle {
+    inner: Arc<dyn PublicationControl>,
+}
+
+impl PublicationControlHandle {
+    /// Wrap a publication control as a handle.
+    #[must_use]
+    pub fn new(control: Arc<dyn PublicationControl>) -> Self {
+        Self { inner: control }
+    }
+
+    /// Perform one publication operation through the handle.
+    pub async fn call(&self, op: PublicationOp) -> Result<PublicationOutcome, String> {
+        self.inner.call(op).await
+    }
+}
+
+impl std::fmt::Debug for PublicationControlHandle {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("PublicationControlHandle")
+            .finish_non_exhaustive()
+    }
+}
+
+/// The protocol handler's publication control slot (#2147): empty
+/// until the serve process has built its publication manager and
+/// registered its control, which happens after the handler itself
+/// is constructed (the manager needs the web surface, which is
+/// built later in startup). Interior mutability is the point: the
+/// handler is shared behind an `Arc` from the moment it is
+/// registered with the router.
+pub type SharedPublicationControl = Arc<std::sync::Mutex<Option<PublicationControlHandle>>>;
 
 /// Responses from a remote node via the meta protocol.
 ///
@@ -814,6 +966,22 @@ pub enum MetaResponse {
         /// replaced.
         replaced: bool,
     },
+    /// Response to [`MetaRequest::Publish`] (#2147).
+    Published {
+        /// The loud shadow warning for an acknowledged shadowing
+        /// mount, if the publication shadows an Explorer route.
+        warning: Option<String>,
+    },
+    /// Response to [`MetaRequest::Unpublish`] (#2147).
+    Unpublished {
+        /// Whether a publication was removed.
+        success: bool,
+    },
+    /// Response to [`MetaRequest::ListPublications`] (#2147).
+    Publications {
+        /// The live publications, with live addresses.
+        items: Vec<WirePublicationStatus>,
+    },
 }
 
 /// One row of [`MetaResponse::AbuseCounters`]: the frame and byte counters
@@ -905,6 +1073,13 @@ pub struct MetaProtocol {
     /// handlers: a `Send` request then fails with an explanatory error
     /// instead of silently doing nothing.
     pub endpoint: Option<Endpoint>,
+    /// The #2147 publication control slot: the serve process
+    /// registers its publication manager's control here once the
+    /// manager exists (see [`SharedPublicationControl`]). Empty
+    /// for in-process handlers and during serve startup; operator
+    /// publication requests against an empty slot fail with an
+    /// explanatory error, never a silent local success.
+    pub publications: SharedPublicationControl,
 }
 
 impl MetaProtocol {
@@ -928,7 +1103,19 @@ impl MetaProtocol {
             blob_wait: DEFAULT_BLOB_WAIT,
             abuse,
             endpoint: None,
+            publications: Arc::new(std::sync::Mutex::new(None)),
         })
+    }
+
+    /// Register the publication control operator requests dispatch
+    /// to (#2147). Called by the serve process once its publication
+    /// manager exists; see [`SharedPublicationControl`] for why the
+    /// slot is filled after construction.
+    pub fn set_publication_control(&self, control: PublicationControlHandle) {
+        *self
+            .publications
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(control);
     }
 
     /// Handle one request on behalf of `remote` and produce the response.
@@ -936,6 +1123,54 @@ impl MetaProtocol {
     /// This is the whole server-side behaviour of the protocol, independent of
     /// QUIC, so it can be exercised directly in tests.
     pub async fn handle(&self, remote: &EndpointId, req: MetaRequest) -> MetaResponse {
+        // #2147 publication control is OPERATOR-ONLY and is gated
+        // before (and independently of) the store write gate: only
+        // the serving node's own authenticated identity may change
+        // its listeners and routes, no matter how open its write
+        // policy is. The local publication CLI connects with the
+        // node's own key (see the #2147 design decision, 2026-11-04).
+        let publication_op = match &req {
+            MetaRequest::Publish { publication } => {
+                Some(PublicationOp::Publish(publication.clone()))
+            }
+            MetaRequest::Unpublish { placement } => {
+                Some(PublicationOp::Unpublish(placement.clone()))
+            }
+            MetaRequest::ListPublications => Some(PublicationOp::List),
+            _ => None,
+        };
+        if let Some(op) = publication_op {
+            if remote != &self.node_id {
+                return MetaResponse::Error {
+                    message: format!(
+                        "permission denied: publication control is operator-only \
+                         (node {remote} is not the serving node); only the serving \
+                         node's own identity may publish or unpublish, via the \
+                         local CLI on the serve host"
+                    ),
+                };
+            }
+            let control = self
+                .publications
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .clone();
+            let Some(control) = control else {
+                return MetaResponse::Error {
+                    message: "publication control is not available on this node: \
+                              no serve-owned publication manager is running here"
+                        .to_owned(),
+                };
+            };
+            return match control.call(op).await {
+                Ok(PublicationOutcome::Published { warning }) => {
+                    MetaResponse::Published { warning }
+                }
+                Ok(PublicationOutcome::Unpublished) => MetaResponse::Unpublished { success: true },
+                Ok(PublicationOutcome::Listed { items }) => MetaResponse::Publications { items },
+                Err(message) => MetaResponse::Error { message },
+            };
+        }
         if req.is_write() && !self.access.can_write(remote) {
             return MetaResponse::Error {
                 message: format!(
@@ -1164,6 +1399,16 @@ impl MetaProtocol {
                     }
                 }
             }
+            // Publication requests return from the operator gate
+            // above and never reach this match; the arms exist so
+            // the match stays exhaustive if that ever changes, and
+            // they answer with an error rather than falling through
+            // to any store behaviour.
+            MetaRequest::Publish { .. }
+            | MetaRequest::Unpublish { .. }
+            | MetaRequest::ListPublications => MetaResponse::Error {
+                message: "publication requests are handled by the operator gate".to_owned(),
+            },
             MetaRequest::Whoami => MetaResponse::Whoami {
                 node_id: self.node_id,
                 version: env!("CARGO_PKG_VERSION").to_owned(),
@@ -2119,5 +2364,160 @@ mod tests {
         let bytes = postcard::to_allocvec(&tag).unwrap();
         let back: WireTag = postcard::from_bytes(&bytes).unwrap();
         assert_eq!(back, tag);
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+mod publication_control_tests {
+    use std::sync::Arc;
+
+    use id_core::access::AccessPolicy;
+    use id_store::tags::TagStore;
+    use iroh::endpoint::{Endpoint, RelayMode, presets};
+    use iroh_base::SecretKey;
+    use iroh_blobs::{api::Store, store::mem::MemStore};
+    use iroh_docs::protocol::Docs;
+    use iroh_gossip::net::Gossip;
+
+    use super::{
+        MetaProtocol, MetaRequest, MetaResponse, PublicationControl, PublicationControlHandle,
+        PublicationOp, PublicationOutcome, WirePlacement, WirePublication,
+    };
+
+    struct FakeControl;
+
+    impl PublicationControl for FakeControl {
+        fn call(
+            &self,
+            op: PublicationOp,
+        ) -> std::pin::Pin<
+            Box<dyn std::future::Future<Output = Result<PublicationOutcome, String>> + Send + '_>,
+        > {
+            Box::pin(async move {
+                match op {
+                    PublicationOp::Publish(_) => {
+                        Ok(PublicationOutcome::Published { warning: None })
+                    }
+                    PublicationOp::Unpublish(_) => Ok(PublicationOutcome::Unpublished),
+                    PublicationOp::List => Ok(PublicationOutcome::Listed { items: Vec::new() }),
+                }
+            })
+        }
+    }
+
+    async fn protocol_with_open_access() -> (Arc<MetaProtocol>, tempfile::TempDir) {
+        let endpoint = Endpoint::builder(presets::Minimal)
+            .relay_mode(RelayMode::Disabled)
+            .bind()
+            .await
+            .unwrap();
+        let store: Store = MemStore::new().into();
+        let gossip = Gossip::builder().spawn(endpoint.clone());
+        let docs = Docs::memory()
+            .spawn(endpoint.clone(), store.clone(), gossip)
+            .await
+            .unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let tags = Arc::new(
+            TagStore::init_in(&docs, "publication-control-test", dir.path().join("meta"))
+                .await
+                .unwrap(),
+        );
+        let protocol = MetaProtocol::new(
+            &store,
+            None,
+            tags,
+            AccessPolicy::open(),
+            endpoint.id(),
+            None,
+        );
+        (protocol, dir)
+    }
+
+    fn publish_request() -> MetaRequest {
+        MetaRequest::Publish {
+            publication: WirePublication {
+                world: "arena".to_owned(),
+                placement: WirePlacement::PathMount {
+                    path: "/prog".to_owned(),
+                },
+                acknowledge_shadow: false,
+            },
+        }
+    }
+
+    #[test]
+    fn publication_requests_roundtrip_through_postcard() {
+        // The meta protocol's wire format is postcard; the new
+        // variants (SocketAddr inside WirePlacement included) must
+        // survive it, or the CLI and serve would disagree silently.
+        for req in [
+            publish_request(),
+            MetaRequest::Unpublish {
+                placement: WirePlacement::Listener {
+                    addr: "127.0.0.1:0".parse().unwrap(),
+                },
+            },
+            MetaRequest::ListPublications,
+        ] {
+            let bytes = postcard::to_allocvec(&req).unwrap();
+            let back: MetaRequest = postcard::from_bytes(&bytes).unwrap();
+            assert_eq!(format!("{back:?}"), format!("{req:?}"));
+        }
+    }
+
+    #[tokio::test]
+    async fn publication_requests_are_operator_only_even_with_open_writes() {
+        let (protocol, _dir) = protocol_with_open_access().await;
+        protocol.set_publication_control(PublicationControlHandle::new(Arc::new(FakeControl)));
+        let stranger = SecretKey::from_bytes(&[9; 32]).public();
+        // AccessPolicy::open() lets this peer write the store; it
+        // must still not reach publication control.
+        let resp = protocol.handle(&stranger, publish_request()).await;
+        match resp {
+            MetaResponse::Error { message } => {
+                assert!(message.contains("operator-only"), "{message}");
+            }
+            other => panic!("expected operator-only error, got {other:?}"),
+        }
+        let resp = protocol
+            .handle(&stranger, MetaRequest::ListPublications)
+            .await;
+        assert!(matches!(resp, MetaResponse::Error { .. }), "{resp:?}");
+    }
+
+    #[tokio::test]
+    async fn operator_without_a_registered_control_gets_an_explanatory_error() {
+        let (protocol, _dir) = protocol_with_open_access().await;
+        let operator = protocol.node_id;
+        let resp = protocol
+            .handle(&operator, MetaRequest::ListPublications)
+            .await;
+        match resp {
+            MetaResponse::Error { message } => {
+                assert!(message.contains("not available"), "{message}");
+            }
+            other => panic!("expected not-available error, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn operator_requests_dispatch_to_the_registered_control() {
+        let (protocol, _dir) = protocol_with_open_access().await;
+        protocol.set_publication_control(PublicationControlHandle::new(Arc::new(FakeControl)));
+        let operator = protocol.node_id;
+        let resp = protocol.handle(&operator, publish_request()).await;
+        assert!(
+            matches!(resp, MetaResponse::Published { warning: None }),
+            "{resp:?}"
+        );
+        let resp = protocol
+            .handle(&operator, MetaRequest::ListPublications)
+            .await;
+        match resp {
+            MetaResponse::Publications { items } => assert!(items.is_empty()),
+            other => panic!("expected Publications, got {other:?}"),
+        }
     }
 }

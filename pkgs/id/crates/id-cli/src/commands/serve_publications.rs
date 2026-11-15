@@ -17,11 +17,19 @@
 //!   Explorer routers consult per request, so a mount takes effect
 //!   -- and reverts -- with no router rebuild.
 
+use std::future::Future;
 use std::net::SocketAddr;
+use std::pin::Pin;
+use std::sync::{Arc, Mutex};
 
 use anyhow::{Context, Result};
 
-use crate::publications_runtime::{ListenerFactory, LiveListener, MountSink};
+use crate::protocol::{
+    PublicationControl, PublicationControlHandle, PublicationOp, PublicationOutcome, WirePlacement,
+    WirePublicationStatus,
+};
+use crate::publications::{Placement, Publication};
+use crate::publications_runtime::{ListenerFactory, LiveListener, MountSink, PublicationStatus};
 
 /// The publication manager as `cmd_serve` instantiates it.
 pub type ServePublicationManager =
@@ -157,5 +165,94 @@ mod tests {
         // Mounting itself is a table edit; the manager is what
         // refuses it when has_explorer() is false.
         sink.mount("arena", "/prog").unwrap();
+    }
+}
+
+/// The meta-protocol publication control over the serve-owned
+/// manager (#2147 slice 3b): the bridge the protocol handler's
+/// operator gate dispatches to. One control per serve process,
+/// registered with the handler once the manager exists.
+pub struct ServePublicationControl {
+    manager: Arc<Mutex<ServePublicationManager>>,
+}
+
+impl ServePublicationControl {
+    /// A control over the serve process's shared manager.
+    pub fn new(manager: Arc<Mutex<ServePublicationManager>>) -> Self {
+        Self { manager }
+    }
+
+    /// This control as the handle the protocol handler stores.
+    #[must_use]
+    pub fn handle(self) -> PublicationControlHandle {
+        PublicationControlHandle::new(Arc::new(self))
+    }
+}
+
+impl PublicationControl for ServePublicationControl {
+    fn call(
+        &self,
+        op: PublicationOp,
+    ) -> Pin<Box<dyn Future<Output = Result<PublicationOutcome, String>> + Send + '_>> {
+        Box::pin(async move {
+            // The manager's operations are synchronous and short
+            // (validate, bind a socket, save a small JSON registry,
+            // edit the mount table), so they run under the lock
+            // directly: the lock is also what serializes operator
+            // requests against each other, as the design requires
+            // of the serve-owned manager.
+            let mut manager = self
+                .manager
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            match op {
+                PublicationOp::Publish(wire) => {
+                    let warning = manager
+                        .publish(publication_from_wire(wire))
+                        .map_err(|error| format!("{error:#}"))?;
+                    Ok(PublicationOutcome::Published { warning })
+                }
+                PublicationOp::Unpublish(wire) => {
+                    manager
+                        .unpublish(&placement_from_wire(&wire))
+                        .map_err(|error| format!("{error:#}"))?;
+                    Ok(PublicationOutcome::Unpublished)
+                }
+                PublicationOp::List => Ok(PublicationOutcome::Listed {
+                    items: manager.list().into_iter().map(status_to_wire).collect(),
+                }),
+            }
+        })
+    }
+}
+
+fn publication_from_wire(wire: crate::protocol::WirePublication) -> Publication {
+    Publication {
+        world: wire.world,
+        placement: placement_from_wire(&wire.placement),
+        acknowledge_shadow: wire.acknowledge_shadow,
+    }
+}
+
+fn placement_from_wire(wire: &WirePlacement) -> Placement {
+    match wire {
+        WirePlacement::Listener { addr } => Placement::Listener { addr: *addr },
+        WirePlacement::PathMount { path } => Placement::PathMount { path: path.clone() },
+    }
+}
+
+fn placement_to_wire(placement: &Placement) -> WirePlacement {
+    match placement {
+        Placement::Listener { addr } => WirePlacement::Listener { addr: *addr },
+        Placement::PathMount { path } => WirePlacement::PathMount { path: path.clone() },
+    }
+}
+
+fn status_to_wire(status: PublicationStatus) -> WirePublicationStatus {
+    WirePublicationStatus {
+        world: status.publication.world.clone(),
+        placement: placement_to_wire(&status.publication.placement),
+        acknowledge_shadow: status.publication.acknowledge_shadow,
+        actual_addr: status.actual_addr,
     }
 }

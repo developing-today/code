@@ -1870,6 +1870,11 @@ pub async fn cmd_serve(opts: ServeOptions) -> Result<()> {
 
     #[cfg(all(feature = "world", feature = "ssh"))]
     let (ssh_tunnel, ssh_tunnel_port) = id_worlds::world_ssh::SshTunnelProtocol::deferred();
+    // #2147 slice 3b: a second handle on the meta handler, kept so
+    // the publication manager built below can register its
+    // operator control with the already-registered handler.
+    #[cfg(feature = "web")]
+    let meta_handle = Arc::clone(&meta);
     let router_builder = Router::builder(endpoint)
         .accept(META_ALPN, meta)
         .accept(BLOBS_ALPN, blobs)
@@ -2317,7 +2322,9 @@ pub async fn cmd_serve(opts: ServeOptions) -> Result<()> {
     // startup log instead of pretending the set was restored.
     #[cfg(feature = "web")]
     let _publication_manager: Option<
-        crate::commands::serve_publications::ServePublicationManager,
+        std::sync::Arc<
+            std::sync::Mutex<crate::commands::serve_publications::ServePublicationManager>,
+        >,
     > = match publication_surface {
         Some(surface) => {
             let has_explorer = web_bindings
@@ -2351,6 +2358,17 @@ pub async fn cmd_serve(opts: ServeOptions) -> Result<()> {
                     manager.registry().publications.len()
                 );
             }
+            // Slice 3b: share the manager with the meta protocol's
+            // operator-only publication control, so `id publish` /
+            // `id unpublish` / `id publications` drive THIS manager
+            // in the running process.
+            let manager = std::sync::Arc::new(std::sync::Mutex::new(manager));
+            meta_handle.set_publication_control(
+                crate::commands::serve_publications::ServePublicationControl::new(
+                    std::sync::Arc::clone(&manager),
+                )
+                .handle(),
+            );
             Some(manager)
         }
         None => {
