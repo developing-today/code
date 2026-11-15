@@ -32,6 +32,15 @@ bevy = { version = "0.17", default-features = false, features = [
 id = { path = "../..", default-features = false, features = ["world"] }
 iroh = "1"
 serde_json = "1"
+tokio = { version = "1", features = ["full"] }
+
+[dev-dependencies]
+# The live-session tests serve a real host in-process, the same way
+# id-web tests do: id-worlds with the sandbox feature, plus the
+# in-memory blob store the fixture recorder expects. Dev-only: none of
+# this reaches the shipped shell or the default `id` build.
+id-worlds = { path = "../id-worlds", default-features = false, features = ["sandbox"] }
+iroh-blobs = "0.103"
 
 [lints.rust]
 unsafe_code = "warn"

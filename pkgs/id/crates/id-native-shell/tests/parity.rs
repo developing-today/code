@@ -6,9 +6,9 @@
 //! terminal shell presents through.
 //!
 //! The durable world-outcome half of the design's parity criterion
-//! (same frames into a live host, same journal) needs a running host
-//! and lands with the live `WorldClient` session loop; what is proven
-//! here is the frame/presentation equivalence that loop will rely on.
+//! (same frames into a live host, same journal) is proven against a
+//! running host in `tests/live_session.rs`; what is proven here is
+//! the frame/presentation equivalence that loop relies on.
 
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 

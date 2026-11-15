@@ -4858,8 +4858,11 @@ dependencies = [
  "anyhow",
  "bevy",
  "id",
+ "id-worlds",
  "iroh",
+ "iroh-blobs",
  "serde_json",
+ "tokio",
 ]
 
 [[package]]
