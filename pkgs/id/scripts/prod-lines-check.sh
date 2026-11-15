@@ -18,6 +18,16 @@
 #   PROD_LINES_LIMIT  compare against this limit instead of 2,500
 set -euo pipefail
 
+usage() {
+  printf 'usage: %s\n' "$(basename "$0")" >&2
+}
+
+if [[ $# -ne 0 ]]; then
+  printf '%s: unexpected argument: %s\n' "$(basename "$0")" "$1" >&2
+  usage
+  exit 2
+fi
+
 pkg_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 root="${PROD_LINES_ROOT:-$pkg_dir}"
 root="$(cd "$root" && pwd)"

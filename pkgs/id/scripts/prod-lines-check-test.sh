@@ -48,6 +48,31 @@ check_fail() {
   fi
 }
 
+check_usage_fail() {
+  local label="$1"
+  shift
+  local status=0
+  if bash "$script" "$@" >"$out" 2>&1; then
+    echo "unexpected success: $label" >&2
+    exit 1
+  else
+    status=$?
+  fi
+  if [[ $status -ne 2 ]]; then
+    cat "$out"
+    echo "unexpected exit status $status (expected 2): $label" >&2
+    exit 1
+  fi
+  if ! grep -q "unexpected argument" "$out"; then
+    cat "$out"
+    echo "missing unexpected-argument message: $label" >&2
+    exit 1
+  fi
+}
+
+# Extra positional arguments must be rejected before any scan work.
+check_usage_fail 'extra positional argument' extra-arg-test
+
 # Clean tree: one small file, integration tests, vendored code and the
 # module-gated encryption and world-session tests are all out of scope and must not trip
 # a limit of 3.
