@@ -632,7 +632,7 @@ export interface DependencyRef {
   task: string;
   /** "owner/repo#123" when the prerequisite is a GitHub item. */
   ref?: RefKey;
-  status: "in-progress" | "queued" | "stalled" | "done" | "unknown";
+  status: import("./orchestration-dependency.ts").DependencyStatus;
   /** Session working the blocker, when one is. */
   workerSessionId?: string;
   /** Human label for the worker, e.g. "opencode-laptop · Jules 4259…". */
