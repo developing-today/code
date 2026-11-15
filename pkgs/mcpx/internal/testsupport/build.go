@@ -22,16 +22,36 @@ var (
 )
 
 // buildEnv returns the environment for a test-support build. The build
-// cache is pinned under the build's own temp dir: a caller (or a guard
-// test planting hostile values, see the e2e env guard) must never be
-// able to point the build at a path of its choosing — with an ambient
-// XDG_CACHE_HOME under a nonexistent root, go build dies with
-// "failed to initialize build cache" before any test logic runs.
-// GOCACHE is set explicitly as well as XDG_CACHE_HOME so the pin holds
-// even where a caller's GOCACHE was already set.
+// cache lives at a fixed location under the real user's cache dir,
+// chosen here: a caller (or a guard test planting hostile values, see
+// the e2e env guard) must never be able to point the build at a path of
+// its choosing — with an ambient XDG_CACHE_HOME under a nonexistent
+// root, go build dies with "failed to initialize build cache" before
+// any test logic runs. GOCACHE is set explicitly as well as
+// XDG_CACHE_HOME so the pin holds even where a caller's GOCACHE was
+// already set.
+//
+// The cache used to be pinned inside each build's own temp dir. That
+// made every test binary pay a full cold build of all dependencies
+// (~730 MB of cache writes per binary) and made a leaked build dir
+// cost the same again in disk. A fixed shared cache stays warm across
+// test binaries — Go's build cache is built for concurrent use — and
+// a build temp dir that does leak now holds only the ~57 MB binary.
+// If the shared cache dir cannot be created (a sandboxed build user
+// whose passwd home is not writable), the per-dir pin is the fallback,
+// preserving the old behaviour exactly there.
 func buildEnv(dir string) []string {
+	home := ""
+	if u, err := user.Current(); err == nil && u.HomeDir != "" {
+		home = u.HomeDir
+	} else if h, herr := os.UserHomeDir(); herr == nil {
+		home = h
+	}
 	cache := filepath.Join(dir, ".cache")
-	env := make([]string, 0, len(os.Environ())+2)
+	if shared, ok := sharedBuildCacheDir(home); ok {
+		cache = shared
+	}
+	env := make([]string, 0, len(os.Environ())+3)
 	for _, kv := range os.Environ() {
 		name, _, _ := strings.Cut(kv, "=")
 		if name == "GOCACHE" || name == "XDG_CACHE_HOME" || name == "HOME" || isProxyVar(name) {
@@ -48,12 +68,26 @@ func buildEnv(dir string) []string {
 	// cache under the caller's chosen root, making the build download
 	// every module into a temp dir it then cannot clean up. The build
 	// uses the invoking user's real home and its warm caches.
-	if u, err := user.Current(); err == nil && u.HomeDir != "" {
-		env = append(env, "HOME="+u.HomeDir)
-	} else if home, herr := os.UserHomeDir(); herr == nil {
+	if home != "" {
 		env = append(env, "HOME="+home)
 	}
 	return env
+}
+
+// sharedBuildCacheDir returns the fixed testsupport build cache root
+// under home, creating it (and its go-build subdir) if needed. ok is
+// false when home is unknown or the dir cannot be created, in which
+// case the caller falls back to pinning the cache inside the build's
+// own temp dir.
+func sharedBuildCacheDir(home string) (string, bool) {
+	if home == "" {
+		return "", false
+	}
+	cache := filepath.Join(home, ".cache", "mcpx-testsupport")
+	if err := os.MkdirAll(filepath.Join(cache, "go-build"), 0o755); err != nil {
+		return "", false
+	}
+	return cache, true
 }
 
 // isProxyVar reports whether name is a proxy variable in either case.
