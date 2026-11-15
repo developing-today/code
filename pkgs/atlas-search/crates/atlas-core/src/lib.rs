@@ -32,6 +32,7 @@ pub mod embed;
 pub mod embed_cache;
 pub mod error;
 pub mod eval;
+pub mod feedback;
 pub mod filters;
 pub mod fusion;
 pub mod local;
@@ -59,6 +60,11 @@ pub use error::{Error, Result};
 pub use eval::{
     EVAL_FORMAT, EvalData, EvalReport, MAX_GRADE, Metric, REPORT_FORMAT, Split, evaluate,
     select_best_signal,
+};
+pub use feedback::{
+    FEEDBACK_SCHEMA, FeedbackInput, FeedbackRecord, FeedbackSink, FeedbackView, JsonlFeedbackSink,
+    MAX_COMMENT_BYTES, Vote, active_view, feedback_files, feedback_for, load_feedback_dir,
+    load_feedback_records, record_feedback,
 };
 pub use filters::{Filters, Sensitivity};
 pub use fusion::FusedEntry;
