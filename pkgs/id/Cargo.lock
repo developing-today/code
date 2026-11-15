@@ -4645,6 +4645,7 @@ dependencies = [
  "iroh-blobs",
  "iroh-docs",
  "iroh-gossip",
+ "iroh-mainline-address-lookup",
  "iroh-mdns-address-lookup",
  "iroh-tickets",
  "libc",

@@ -845,12 +845,22 @@ mod tests {
             .is_err()
         );
         assert!(
-            auth.check_code("user0@x.co", PurposeKind::SignIn, &resent, now() + CODE_RESEND_MS)
-                .is_ok()
+            auth.check_code(
+                "user0@x.co",
+                PurposeKind::SignIn,
+                &resent,
+                now() + CODE_RESEND_MS
+            )
+            .is_ok()
         );
         assert!(
-            auth.check_code("user0@x.co", PurposeKind::SignIn, &resent, now() + CODE_RESEND_MS)
-                .is_err()
+            auth.check_code(
+                "user0@x.co",
+                PurposeKind::SignIn,
+                &resent,
+                now() + CODE_RESEND_MS
+            )
+            .is_err()
         );
     }
 
@@ -894,7 +904,10 @@ mod tests {
             )
             .unwrap();
         assert_eq!(auth.codes.len(), CODE_PENDING_PER_ACCOUNT + 1);
-        assert!(auth.check_code("other@x.co", PurposeKind::SignIn, &other, now()).is_ok());
+        assert!(
+            auth.check_code("other@x.co", PurposeKind::SignIn, &other, now())
+                .is_ok()
+        );
         // A resend for one of the account's own pending addresses still
         // replaces at the per-account cap. (Checking the other account's
         // code above consumed it, so the map is back to the account's own

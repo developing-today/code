@@ -39,7 +39,9 @@ tokio = { version = "1", features = ["full"] }
 # id-web tests do: id-worlds with the sandbox feature, plus the
 # in-memory blob store the fixture recorder expects. Dev-only: none of
 # this reaches the shipped shell or the default `id` build.
-id-worlds = { path = "../id-worlds", default-features = false, features = ["sandbox"] }
+id-worlds = { path = "../id-worlds", default-features = false, features = [
+  "sandbox",
+] }
 iroh-blobs = "0.103"
 
 [lints.rust]

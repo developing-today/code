@@ -915,8 +915,7 @@ fn write_results_jsonl(cells: &[MatrixCell], quick: bool) -> Result<()> {
     let git_sha = std::env::var("ID_BENCH_GIT_SHA")
         .or_else(|_| std::env::var("GITHUB_SHA"))
         .unwrap_or_else(|_| "unknown".to_owned());
-    let toolchain =
-        std::env::var("ID_BENCH_TOOLCHAIN").unwrap_or_else(|_| "unknown".to_owned());
+    let toolchain = std::env::var("ID_BENCH_TOOLCHAIN").unwrap_or_else(|_| "unknown".to_owned());
     let build_profile = if cfg!(debug_assertions) {
         "debug"
     } else {

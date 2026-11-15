@@ -15,6 +15,8 @@
 //! 5. Completeness consistency: while any row is not `gated`, the
 //!    inventory must state "Completeness: NOT COMPLETE".
 
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+
 use std::collections::BTreeSet;
 use std::fs;
 use std::path::{Path, PathBuf};

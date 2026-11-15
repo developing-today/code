@@ -59,7 +59,7 @@ function makeDO(env: Record<string, unknown> = {}) {
   const state = {
     id: { name: A },
     storage: { sql: fakeSql() },
-    blockConcurrencyWhile: async <T,>(fn: () => Promise<T>): Promise<T> => fn(),
+    blockConcurrencyWhile: async <T>(fn: () => Promise<T>): Promise<T> => fn(),
   };
   return { doA: new UserDO(state as never, { BLOBS: bucket, ...env } as never), bucket };
 }
