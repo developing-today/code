@@ -1304,7 +1304,9 @@ fn code_span_closes_within_paragraph(bytes: &[u8], from: usize, n: usize) -> boo
             }
             b'\n' => {
                 let mut m = k + 1;
-                while m < bytes.len() && (bytes[m] == b' ' || bytes[m] == b'\t' || bytes[m] == b'\r') {
+                while m < bytes.len()
+                    && (bytes[m] == b' ' || bytes[m] == b'\t' || bytes[m] == b'\r')
+                {
                     m += 1;
                 }
                 if m >= bytes.len() || bytes[m] == b'\n' {

@@ -42,9 +42,9 @@ use iroh::{EndpointAddr, endpoint::Endpoint};
 use iroh_base::EndpointId;
 use iroh_blobs::{Hash, api::Store};
 
-use crate::protocol::META_ALPN;
 use crate::meta_client::push_and_name;
 use crate::meta_client::{expect_ok, request_over};
+use crate::protocol::META_ALPN;
 use crate::protocol::{MetaRequest, MetaResponse};
 
 /// What a completed (or already-completed) transfer did.

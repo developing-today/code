@@ -1,13 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 
-import {
-  CborError,
-  decodeCanonical,
-  encodeCanonical,
-  validateRecord,
-  type CborValue,
-} from "../src/canonical-cbor.ts";
+import { CborError, decodeCanonical, encodeCanonical, validateRecord, type CborValue } from "../src/canonical-cbor.ts";
 
 // The golden table is shared with the Rust suite
 // (crates/id-core/tests/canonical_cbor_vectors.rs): same logical

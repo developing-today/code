@@ -236,31 +236,31 @@ Three DaisyUI terminal-inspired themes with `#000000` black backgrounds. Switch 
 
 ## API Routes
 
-| Route                 | Method | Description                         |
-| --------------------- | ------ | ----------------------------------- |
-| `/`                   | GET    | File browser (main page)            |
-| `/peers`              | GET    | Discovered peers (auto-refreshes)   |
-| `/settings`           | GET    | Settings page                       |
-| `/edit/{hash}`        | GET    | Editor/viewer for file by hash      |
-| `/file/{name}`        | GET    | Editor/viewer for file by name      |
-| `/blob/{hash}`        | GET    | Raw blob content with Content-Type  |
-| `/api/files`          | GET    | File list (HTML partial)            |
-| `/api/save`           | POST   | Save file content                   |
-| `/api/new`            | POST   | Create new file                     |
-| `/api/rename`         | POST   | Rename file (with optional archive) |
-| `/api/copy`           | POST   | Copy file to new name               |
+| Route                 | Method | Description                                               |
+| --------------------- | ------ | --------------------------------------------------------- |
+| `/`                   | GET    | File browser (main page)                                  |
+| `/peers`              | GET    | Discovered peers (auto-refreshes)                         |
+| `/settings`           | GET    | Settings page                                             |
+| `/edit/{hash}`        | GET    | Editor/viewer for file by hash                            |
+| `/file/{name}`        | GET    | Editor/viewer for file by name                            |
+| `/blob/{hash}`        | GET    | Raw blob content with Content-Type                        |
+| `/api/files`          | GET    | File list (HTML partial)                                  |
+| `/api/save`           | POST   | Save file content                                         |
+| `/api/new`            | POST   | Create new file                                           |
+| `/api/rename`         | POST   | Rename file (with optional archive)                       |
+| `/api/copy`           | POST   | Copy file to new name                                     |
 | `/api/files/send`     | POST   | Send file to another server (server-side transfer, #5346) |
-| `/api/download`       | POST   | Download file content               |
-| `/api/delete`         | POST   | Soft-delete file                    |
+| `/api/download`       | POST   | Download file content                                     |
+| `/api/delete`         | POST   | Soft-delete file                                          |
 | `/api/restore`        | POST   | Restore deleted file (404 if missing, 409 if not deleted) |
-| `/api/hard-delete`    | POST   | Permanently delete file             |
-| `/api/tags`           | GET    | Get tags for a file                 |
-| `/api/tags`           | POST   | Set a tag                           |
-| `/api/tags`           | DELETE | Delete a tag                        |
-| `/api/tags/search`    | GET    | Search tags                         |
-| `/ws/collab/{doc_id}` | WS     | Collaboration WebSocket             |
-| `/ws/tags`            | WS     | Tag change broadcast                |
-| `/assets/*`           | GET    | Static assets                       |
+| `/api/hard-delete`    | POST   | Permanently delete file                                   |
+| `/api/tags`           | GET    | Get tags for a file                                       |
+| `/api/tags`           | POST   | Set a tag                                                 |
+| `/api/tags`           | DELETE | Delete a tag                                              |
+| `/api/tags/search`    | GET    | Search tags                                               |
+| `/ws/collab/{doc_id}` | WS     | Collaboration WebSocket                                   |
+| `/ws/tags`            | WS     | Tag change broadcast                                      |
+| `/assets/*`           | GET    | Static assets                                             |
 
 ## Configuration
 

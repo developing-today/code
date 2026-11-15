@@ -1886,7 +1886,7 @@ pub async fn cmd_serve(opts: ServeOptions) -> Result<()> {
     // operator control with the already-registered handler.
     #[cfg(feature = "web")]
     let meta_handle = Arc::clone(&meta);
-    let router_builder = Router::builder(endpoint)
+    let router_builder = Router::builder(endpoint.clone())
         .accept(META_ALPN, meta)
         .accept(BLOBS_ALPN, blobs)
         .accept(iroh_gossip::net::GOSSIP_ALPN, gossip.clone())
