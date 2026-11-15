@@ -101,7 +101,7 @@ deploy)
       # Close-authority guard (code#10137): the GitHub sync transitions
       # live only in Kaneo's DB, and a fresh import can silently restore
       # the dangerous upstream default. Assert them on every deploy.
-      if ! python3 "$(dirname "$0")/kaneo-sync-guard.py"; then
+      if ! python3 "$STACK_DIR/kaneo-sync-guard.py"; then
         echo "kaneo sync guard failed or healed drift - deploy marked failed; see output above" >&2
         exit 1
       fi
