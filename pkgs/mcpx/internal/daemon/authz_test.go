@@ -11,12 +11,13 @@ import (
 	"testing"
 
 	"github.com/developing-today/code/pkgs/mcpx/internal/api"
+	"github.com/developing-today/code/pkgs/mcpx/internal/testsupport"
 )
 
 // A unix-socket connection's principal carries the peer uid the kernel
 // reports — on this machine, the test process's own uid.
 func TestPrincipalForUnixConnReadsPeerUID(t *testing.T) {
-	socket := filepath.Join(t.TempDir(), "probe.sock")
+	socket := filepath.Join(testsupport.SocketDir(t), "probe.sock")
 	ln, err := net.Listen("unix", socket)
 	if err != nil {
 		t.Fatal(err)

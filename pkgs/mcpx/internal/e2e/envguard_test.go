@@ -264,6 +264,7 @@ var safeMCPX = map[string]struct{}{
 	"MCPX_SCRIPT_IMPORTS_ON_DYNAMIC":            {},
 	"MCPX_SCRIPT_IMPORTS_ON_MISSING":            {},
 	"MCPX_SCRIPT_LAUNCHER":                      {},
+	"MCPX_SCRIPT_LANGUAGE":                      {},
 	"MCPX_SCRIPT_ON_ERROR":                      {},
 	"MCPX_SCRIPT_ON_SUCCESS":                    {},
 	"MCPX_SCRIPT_PREFIX":                        {},

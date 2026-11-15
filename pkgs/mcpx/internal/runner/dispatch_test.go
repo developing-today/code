@@ -814,6 +814,13 @@ func TestDispatchedWorkdirPolicyAllocatesARunnerDirectory(t *testing.T) {
 		t.Fatalf("Run(workdir dispatch): %v (stderr %q)", err, stderr.String())
 	}
 	got := strings.TrimSpace(stdout.String())
+	// The child reports its physical working directory (pwd resolves
+	// symlinks), while t.TempDir hands back the unresolved path: on
+	// macOS /var is a symlink to /private/var, so compare against the
+	// resolved root or this fails on every Mac (#10487).
+	if resolved, err := filepath.EvalSymlinks(root); err == nil {
+		root = resolved
+	}
 	if got == "" || !strings.HasPrefix(got, root) {
 		t.Fatalf("dispatched workdir run executed in %q, want a directory under WorkRoot %q", got, root)
 	}
