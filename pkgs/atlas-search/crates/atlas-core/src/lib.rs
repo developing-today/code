@@ -41,6 +41,7 @@ pub mod shingles;
 pub mod stage;
 pub mod trace;
 pub mod trace_ingest;
+pub mod trace_stats;
 pub mod turso;
 pub mod types;
 
@@ -76,6 +77,12 @@ pub use trace_ingest::{
     TRACE_SOURCE_ID, TraceCorpus, TraceDocument, TraceSourceRegistration, days_from_civil,
     ingest_traces, load_feedback_refs, record_included, run_retention, search_traces,
     trace_file_day, trace_source_registration, valid_civil_date,
+};
+pub use trace_stats::{
+    DEFAULT_TOP_K, DEFAULT_WINDOWS, FeedbackStats, FeedbackVote, Nomination, REPORT_SCHEMA,
+    REPORT_SOURCE_ID, STATS_SCHEMA, WeeklyReport, WindowStats, aggregate_traces, format_day,
+    load_feedback_votes, report_file_name, report_source_registration, requester_weight,
+    weekly_report, write_report,
 };
 pub use turso::TursoBackend;
 pub use types::{BranchQuery, DEFAULT_MODEL, DEFAULT_VEC_TABLE, VectorBackend};

@@ -33,8 +33,9 @@ use atlas_core::turso::{TURSO_HOST, resolve_turso_token};
 use atlas_core::{
     AtlasEmbedder, CachingEmbedder, Error as CoreError, FixedEmbedder, JsonlTraceSink,
     LocalBackend, QueryEmbedder, QueryEmbeddingCache, SearchBackend, SearchMode, SearchOptions,
-    TraceContext, TraceDocument, TursoBackend, VectorBackend, ingest_traces, load_feedback_refs,
-    run_get_chunk, run_retention, run_search_traced, search_traces, valid_civil_date,
+    TraceContext, TraceDocument, TursoBackend, VectorBackend, aggregate_traces, ingest_traces,
+    load_feedback_refs, load_feedback_votes, run_get_chunk, run_retention, run_search_traced,
+    search_traces, valid_civil_date, weekly_report, write_report,
 };
 use atlas_proto::{
     FilterSpec, QueryVariant, SearchMode as ProtoSearchMode, SearchParametersV1, SearchRequest,
@@ -84,6 +85,10 @@ enum TracesCmd {
     Ingest(TraceIngestArgs),
     /// run the 180-day hot retention pass (cold-tier move + compaction aggregate)
     Retention(TraceRetentionArgs),
+    /// daily batch aggregation over stored traces (design s5)
+    Stats(TraceStatsArgs),
+    /// weekly statistics report into the statistics-and-reports source set (design s7)
+    Report(TraceReportArgs),
 }
 
 #[derive(Args)]
@@ -105,6 +110,35 @@ struct TraceRetentionArgs {
     #[arg(long)]
     today: Option<String>,
     /// feedback JSONL file naming referenced query ids (repeatable)
+    #[arg(long)]
+    feedback: Vec<PathBuf>,
+}
+
+#[derive(Args)]
+struct TraceStatsArgs {
+    /// traces directory (default: the JsonlTraceSink default dir)
+    #[arg(long)]
+    dir: Option<PathBuf>,
+    /// window end as YYYY-MM-DD (default: today, UTC)
+    #[arg(long)]
+    today: Option<String>,
+    /// rolling window length in days (default: 7)
+    #[arg(long, default_value_t = 7)]
+    window_days: i64,
+    /// feedback JSONL file with vote records (repeatable)
+    #[arg(long)]
+    feedback: Vec<PathBuf>,
+}
+
+#[derive(Args)]
+struct TraceReportArgs {
+    /// traces directory (default: the JsonlTraceSink default dir)
+    #[arg(long)]
+    dir: Option<PathBuf>,
+    /// report day as YYYY-MM-DD (default: today, UTC)
+    #[arg(long)]
+    today: Option<String>,
+    /// feedback JSONL file with vote records (repeatable)
     #[arg(long)]
     feedback: Vec<PathBuf>,
 }
@@ -1009,7 +1043,64 @@ fn cmd_traces(args: TracesArgs) -> Result<(), CliError> {
             println!("{}", serde_json::to_string_pretty(&out).unwrap_or_default());
             Ok(())
         }
+        TracesCmd::Stats(a) => {
+            let dir = a.dir.unwrap_or_else(JsonlTraceSink::default_dir);
+            let today = parse_today_arg(&a.today)?;
+            let votes = load_feedback_votes(&a.feedback).map_err(map_err)?;
+            let stats = aggregate_traces(&dir, today, a.window_days, &votes).map_err(map_err)?;
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&stats.to_json()).unwrap_or_default()
+            );
+            Ok(())
+        }
+        TracesCmd::Report(a) => {
+            let dir = a.dir.unwrap_or_else(JsonlTraceSink::default_dir);
+            let today = parse_today_arg(&a.today)?;
+            let votes = load_feedback_votes(&a.feedback).map_err(map_err)?;
+            let report = weekly_report(&dir, today, &votes).map_err(map_err)?;
+            let report_file = write_report(&dir, &report).map_err(map_err)?;
+            let md_file = dir.join(format!("atlas-statistics-report-{}.md", report.report_day));
+            std::fs::write(&md_file, report.render_markdown())
+                .map_err(|e| (1, format!("cannot write {}: {e}", md_file.display())))?;
+            let mut out = report.to_json();
+            out["report_file"] = serde_json::json!(report_file.display().to_string());
+            out["markdown_file"] = serde_json::json!(md_file.display().to_string());
+            println!("{}", serde_json::to_string_pretty(&out).unwrap_or_default());
+            Ok(())
+        }
     }
+}
+
+/// Parse a `--today YYYY-MM-DD` argument (default: today, UTC)
+/// with the same strict calendar validation the retention pass
+/// applies: an out-of-range month/day must be a usage error,
+/// never a silently normalised date.
+fn parse_today_arg(arg: &Option<String>) -> Result<(i64, u32, u32), CliError> {
+    let today_str = match arg {
+        Some(t) => t.clone(),
+        None => {
+            let ms = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_millis() as u64)
+                .unwrap_or(0);
+            atlas_core::trace::rfc3339_utc(ms)[..10].to_string()
+        }
+    };
+    let parsed: Option<(i64, u32, u32)> = (|| {
+        let mut parts = today_str.split('-');
+        let y: i64 = parts.next()?.parse().ok()?;
+        let m: u32 = parts.next()?.parse().ok()?;
+        let d: u32 = parts.next()?.parse().ok()?;
+        if parts.next().is_some() || !valid_civil_date(y, m, d) {
+            return None;
+        }
+        Some((y, m, d))
+    })();
+    parsed.ok_or((
+        2,
+        format!("--today must be a valid YYYY-MM-DD date, got {today_str}"),
+    ))
 }
 
 fn cmd_fetch_model() -> Result<(), CliError> {
