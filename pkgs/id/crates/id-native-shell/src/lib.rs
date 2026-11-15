@@ -16,15 +16,17 @@
 //! the machine-readable contract. Step 2 (this code) adds the
 //! window/render plugin set, the styled [`render`] model + Bevy UI
 //! renderer for validated surfaces, and the [`events`] native
-//! input/paste/resize mapping with frame/presentation parity tests;
-//! the live `WorldClient` session loop that feeds the renderer is the
-//! remaining step-2 piece.
+//! input/paste/resize mapping with frame/presentation parity tests,
+//! and the live `WorldClient` session loop ([`run_session`]) that
+//! feeds the renderer through `render::PresentedView`;
+//! `tests/live_session.rs` proves the durable-outcome half of the
+//! parity criterion against a live host.
 
 pub mod events;
 pub mod render;
 mod session;
 
-pub use session::{ServerUpdate, SessionState, SessionView, join_frame};
+pub use session::{ServerUpdate, SessionState, SessionView, join_frame, run_session};
 
 use id::world_presentation::WorldSurface;
 use serde_json::{Value, json};

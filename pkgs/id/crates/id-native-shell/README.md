@@ -24,7 +24,7 @@ cargo test -p id-native-shell    # unit + transcript + parity tests
   `load_or_create_keypair`), contract frame builders, view fallback
   rule, transcript fixture checked against the machine-readable
   contract (`tests/transcript.rs`).
-- **Step 2 — in progress**: this crate now carries
+- **Step 2 — done**: this crate now carries
   - the Bevy window/render feature set and the Nix system-library
     wiring it needs (below),
   - a styled render model + Bevy UI renderer for validated surfaces
@@ -35,9 +35,14 @@ cargo test -p id-native-shell    # unit + transcript + parity tests
   - native event mapping (`src/events.rs`): key bytes, clipboard
     paste, and window-pixel resizes become the same contract frames
     the terminal builders produce (`tests/parity.rs` is the oracle),
-  - **remaining**: the live `WorldClient` session loop feeding the
-    renderer, and the live-host durable-outcome parity test that
-    comes with it.
+  - the live `WorldClient` session loop (`run_session` in
+    `src/session.rs`): join, validated host frames folded into
+    `SessionState`, every view published to the renderer
+    (`PresentedView` in the binary), outbound frames routed to the
+    session's world — plus the live-host durable-outcome parity
+    test that comes with it (`tests/live_session.rs`: one game
+    played through both the native loop and a terminal-style raw
+    client, with the host journal as the oracle).
 - Steps 3–4 (rich 3D/audio/widget surfaces) are conditional on the
   design's Q1 decision for Drew and are **not** in this crate.
 
@@ -57,12 +62,13 @@ the equivalent `-dev` packages for your distribution first.
 ## Running
 
 ```sh
-cargo run -p id-native-shell
+cargo run -p id-native-shell -- --node <node-id> --capability <cap> [--world <name>] [--addr <ip:port>] [--no-relay]
 ```
 
-opens the Bevy window with the renderer live. Until the session loop
-lands, the window presents an empty view; the startup line on stdout
-states the contract version and that the loop is not yet connected.
+opens the Bevy window with the renderer live and joins the world:
+host views feed the presented view as they arrive. Without
+`--node`/`--capability` the window opens without a session and the
+startup line on stdout says so.
 
 ## Recording / checking a session
 
