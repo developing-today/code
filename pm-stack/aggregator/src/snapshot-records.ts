@@ -149,7 +149,11 @@ export function recordsFromPaygLines(lines: PaygLine[], observedBy: string): Sna
             : null;
       if (key) {
         out.push({
-          ts: tsFor(line.settledAt),
+          // Preserve the settlement record's original instant when the
+          // line carries it (CodeRabbit, PR #10433): settledAt is
+          // date-only, and deriving noon from it would let this
+          // write-back outrank a later same-day correction.
+          ts: line.settledTs ?? tsFor(line.settledAt),
           serviceId: key.serviceId,
           metricId: key.metricId,
           value: line.settledUsd,

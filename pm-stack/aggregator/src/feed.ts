@@ -1086,6 +1086,7 @@ export function isPaygLine(v: unknown): v is PaygLine {
     (v.estimate === undefined || isEstimate(v.estimate)) &&
     (v.settledUsd === undefined || nullableNonNegative(v.settledUsd)) &&
     (v.settledAt === undefined || v.settledAt === null || isIsoDate(v.settledAt)) &&
+    (v.settledTs === undefined || v.settledTs === null || typeof v.settledTs === "string") &&
     (v.settledSource === undefined ||
       v.settledSource === null ||
       v.settledSource === "api" ||

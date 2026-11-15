@@ -1176,9 +1176,96 @@ function newestSettlement(records: readonly SnapshotRecord[] | undefined, lineId
   for (const r of records) {
     if (r.serviceId !== key.serviceId || r.metricId !== key.metricId) continue;
     if (r.unit !== "usd" || typeof r.value !== "number" || !Number.isFinite(r.value) || r.value < 0) continue;
-    if (!best || r.ts > best.ts) best = r;
+    if (!best) {
+      best = r;
+      continue;
+    }
+    // Compare as instants, not strings (CodeRabbit, PR #10433): offsets
+    // make lexical order lie — 2026-11-02T09:30:00-06:00 is LATER than
+    // 2026-11-02T10:00:00Z. Unparseable timestamps fall back to lexical
+    // order rather than dropping the record.
+    const t = Date.parse(r.ts);
+    const bt = Date.parse(best.ts);
+    if (Number.isNaN(t) || Number.isNaN(bt) ? r.ts > best.ts : t > bt) best = r;
   }
   return best;
+}
+
+/** The reconciled Cloudflare gateway line (#1056): the invoice record
+ * settles the estimate pair — both estimates stay on the line with the
+ * variance against each, and the note's conclusion about which estimate
+ * was closer is DERIVED from those variances, never hard-coded
+ * (CodeRabbit, PR #10433). Shared by extractPaygLines and
+ * applyPaygSettlements so every path renders the same settled line. */
+function settledGatewayLine(low: number, high: number, settlement: SnapshotRecord): PaygLine {
+  const invoiced = settlement.value as number;
+  const settledAt = settlement.ts.slice(0, 10);
+  const varHigh = roundUsd(invoiced - high);
+  const varLow = roundUsd(invoiced - low);
+  const closer =
+    Math.abs(varHigh) <= Math.abs(varLow)
+      ? `gateway cost attribution was the closer measure (variance ${signedUsd(varHigh)} vs it); the budget-alert figure is rejected`
+      : `the budget alert was the closer measure (variance ${signedUsd(varLow)} vs it); the gateway-attribution figure is rejected`;
+  return {
+    id: "cloudflare-gateway",
+    label: "Cloudflare AI Gateway accrual (DeepSeek V4 Pro, Oct 24–25)",
+    accruedUsd: null,
+    estimate: {
+      low,
+      high,
+      period: "Oct 24–25 accrual",
+      note: "Budget alert vs gateway cost attribution disagreed — both shown; settled by the Nov 2 invoice (see line note).",
+    },
+    settledUsd: invoiced,
+    settledAt,
+    settledTs: settlement.ts,
+    settledSource: settlement.source,
+    settledVarianceUsd: varHigh,
+    estimatePeriodEnd: "2026-10-25",
+    staleEstimate: false,
+    unbilledUsd: 0,
+    note: `Settled by the Nov 2 invoice: $${invoiced.toFixed(2)} paid (invoice record ${settledAt}, source: invoice). Estimates were $${low.toFixed(2)} (budget alert) vs $${high.toFixed(2)} (gateway cost attribution): variance ${signedUsd(varHigh)} vs the high estimate and ${signedUsd(varLow)} vs the low — ${closer}. No line-item decomposition is exposed by the billing API, so the split is inferred from totals (#1056).`,
+    measuredAt: settledAt,
+    sourceClass: "invoice",
+  };
+}
+
+/** Reconcile already-built PAYG lines against snapshot-store settlement
+ * records (#1056). The fleet-feed path builds its lines in the collector
+ * WITHOUT settlements; live.ts applies this with the local history
+ * before rendering, so the feed path settles the gateway card exactly
+ * like the direct-read path (CodeRabbit, PR #10433 — the feed branch
+ * previously returned before any reconciliation could apply). Lines
+ * with no matching settlement pass through untouched. */
+export function applyPaygSettlements(
+  lines: PaygLine[],
+  settlements?: readonly SnapshotRecord[],
+): PaygLine[] {
+  if (!settlements?.length) return lines;
+  return lines.map((line) => {
+    const settlement = newestSettlement(settlements, line.id);
+    if (!settlement) return line;
+    if (line.id === "cloudflare-gateway" && line.estimate) {
+      if (line.settledTs === settlement.ts && line.settledUsd === settlement.value) return line;
+      return { ...settledGatewayLine(line.estimate.low, line.estimate.high, settlement), label: line.label };
+    }
+    if (line.id === "meta-payg" && line.accruedUsd != null) {
+      const settledUsd = settlement.value as number;
+      if (line.settledTs === settlement.ts && line.settledUsd === settledUsd) return line;
+      const settledVariance = roundUsd(settledUsd - line.accruedUsd);
+      return {
+        ...line,
+        settledUsd,
+        settledAt: settlement.ts.slice(0, 10),
+        settledTs: settlement.ts,
+        settledSource: settlement.source,
+        settledVarianceUsd: settledVariance,
+        unbilledUsd: roundUsd(line.accruedUsd - settledUsd),
+        note: `Oct 19–25 console read (dev.meta.ai, 2026-10-25 09:38 CDT): spill past the plan's short window bills automatically — no charge-past-plan disable exists on the account. Reconciled (#1056): accrued $${line.accruedUsd.toFixed(2)} vs settled $${settledUsd.toFixed(2)} — variance ${signedUsd(settledVariance)}; the settled figure is the snapshot-store settlement record (source: ${settlement.source}), superseding the console collected figure of $${(line.collectedUsd ?? settledUsd).toFixed(2)}.`,
+      };
+    }
+    return line;
+  });
 }
 
 /** The stale-estimate flag (#1056): unreconciled, period ended more than
@@ -1229,9 +1316,15 @@ export function extractPaygLines(doc: string, registryText = "", opts: PaygExtra
       collectedUsd: collected,
       settledUsd,
       settledAt: settlement ? settlement.ts.slice(0, 10) : "2026-10-25",
+      settledTs: settlement ? settlement.ts : null,
       settledSource: settlement ? settlement.source : "console",
       settledVarianceUsd: settledVariance,
-      unbilledUsd: Math.round((accrued - collected) * 100) / 100,
+      // The remainder is against the authoritative settlement, not the
+      // console collected observation (CodeRabbit, PR #10433): a store
+      // settlement covering the accrual leaves nothing unbilled even
+      // when the console read showed only part collected. collectedUsd
+      // stays on the line as the original console observation.
+      unbilledUsd: roundUsd(accrued - settledUsd),
       note: `Oct 19–25 console read (dev.meta.ai, 2026-10-25 09:38 CDT): spill past the plan's short window bills automatically — no charge-past-plan disable exists on the account. Reconciled (#1056): accrued $${accrued.toFixed(2)} vs settled $${settledUsd.toFixed(2)} collected — variance ${signedUsd(settledVariance)}; the collected figure is the settled one (console evidence; no separate Meta invoice document exists).`,
       measuredAt: "2026-10-25",
       sourceClass: "console",
@@ -1244,31 +1337,7 @@ export function extractPaygLines(doc: string, registryText = "", opts: PaygExtra
     const settlement = newestSettlement(opts.settlements, "cloudflare-gateway");
     if (settlement) {
       // Reconciled (#1056): the invoice record settles the estimate pair.
-      // Both estimates stay on the line with the variance against each —
-      // settled, not erased.
-      const invoiced = settlement.value as number;
-      const settledAt = settlement.ts.slice(0, 10);
-      lines.push({
-        id: "cloudflare-gateway",
-        label: "Cloudflare AI Gateway accrual (DeepSeek V4 Pro, Oct 24–25)",
-        accruedUsd: null,
-        estimate: {
-          low,
-          high,
-          period: "Oct 24–25 accrual",
-          note: "Budget alert vs gateway cost attribution disagreed — both shown; settled by the Nov 2 invoice (see line note).",
-        },
-        settledUsd: invoiced,
-        settledAt,
-        settledSource: settlement.source,
-        settledVarianceUsd: roundUsd(invoiced - high),
-        estimatePeriodEnd: "2026-10-25",
-        staleEstimate: false,
-        unbilledUsd: 0,
-        note: `Settled by the Nov 2 invoice: $${invoiced.toFixed(2)} paid (invoice record ${settledAt}, source: invoice). Estimates were $${low.toFixed(2)} (budget alert) vs $${high.toFixed(2)} (gateway cost attribution): variance ${signedUsd(roundUsd(invoiced - high))} vs the high estimate and ${signedUsd(roundUsd(invoiced - low))} vs the low — gateway attribution was the near-exact measure; the budget-alert figure is rejected. No line-item decomposition is exposed by the billing API, so the split is inferred from totals (#1056).`,
-        measuredAt: settledAt,
-        sourceClass: "invoice",
-      });
+      lines.push(settledGatewayLine(low, high, settlement));
     } else {
       lines.push({
         id: "cloudflare-gateway",

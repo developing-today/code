@@ -1438,6 +1438,11 @@ export interface PaygLine {
   settledUsd?: number | null;
   /** ISO date of the settling invoice/record. */
   settledAt?: string | null;
+  /** Full timestamp of the settling record, when the line was reconciled
+   * from one — settledAt is date-only, and the write-back in
+   * recordsFromPaygLines must preserve the record's original instant so
+   * a same-day correction orders correctly (CodeRabbit, PR #10433). */
+  settledTs?: string | null;
   /** Source class of the settling record ("invoice" for Cloudflare). */
   settledSource?: UsageSourceClass | null;
   /** settledUsd minus the comparison figure (the estimate's high when the

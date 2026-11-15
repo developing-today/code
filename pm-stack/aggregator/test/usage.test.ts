@@ -10,6 +10,7 @@ import { buildAttentionFlags, freshness, projectPace, resetMarkers } from "../sr
 import { countedEstimate, type QuotaView, type SnapshotRecord, type UsageView } from "../src/model.ts";
 import { renderQuota, renderServiceDetail, fmtMetricValue, freshnessStamp } from "../src/render.ts";
 import {
+  applyPaygSettlements,
   extractCharges,
   extractPaygLines,
   extractSaasServices,
@@ -465,6 +466,61 @@ describe("payg lines + charges (§1.2, §2.4)", () => {
     const meta = records.find((r) => r.serviceId === "meta" && r.metricId === "payg-settled")!;
     expect(meta.value).toBe(23.91);
     expect(meta.source).toBe("console");
+  });
+
+  test("newest settlement compares timestamps as instants, not strings (#1056, CodeRabbit PR #10433)", () => {
+    const offsetLater: SnapshotRecord = { ...CF_INVOICE, ts: "2026-11-02T09:30:00-06:00", value: 50 };
+    const zuluEarlier: SnapshotRecord = { ...CF_INVOICE, ts: "2026-11-02T10:00:00Z", value: 46.86 };
+    const gw = extractPaygLines(VIEW, REGISTRY, { settlements: [zuluEarlier, offsetLater] }).find(
+      (l) => l.id === "cloudflare-gateway",
+    )!;
+    expect(gw.settledUsd).toBe(50); // 09:30-06:00 = 15:30Z, the later instant
+    expect(gw.settledTs).toBe("2026-11-02T09:30:00-06:00");
+  });
+
+  test("meta remainder is against the store settlement, not the console collected figure (#1056, CodeRabbit PR #10433)", () => {
+    const metaSettlement: SnapshotRecord = {
+      ts: "2026-11-02T12:00:00Z",
+      serviceId: "meta",
+      metricId: "payg-settled",
+      value: 23.92,
+      unit: "usd",
+      source: "invoice",
+      observedBy: "task-2989:test",
+    };
+    const meta = extractPaygLines(VIEW, REGISTRY, { settlements: [metaSettlement] }).find((l) => l.id === "meta-payg")!;
+    expect(meta.settledUsd).toBe(23.92);
+    expect(meta.collectedUsd).toBe(23.91); // console observation stays
+    expect(meta.unbilledUsd).toBe(0); // settlement covers the accrual
+  });
+
+  test("gateway note derives which estimate was closer from the actual variances (#1056, CodeRabbit PR #10433)", () => {
+    const lowInvoice: SnapshotRecord = { ...CF_INVOICE, value: 29.6 };
+    const gw = extractPaygLines(VIEW, REGISTRY, { settlements: [lowInvoice] }).find((l) => l.id === "cloudflare-gateway")!;
+    expect(gw.note).toContain("the budget alert was the closer measure");
+    const gwSettled = extractPaygLines(VIEW, REGISTRY, { settlements: [CF_INVOICE] }).find(
+      (l) => l.id === "cloudflare-gateway",
+    )!;
+    expect(gwSettled.note).toContain("gateway cost attribution was the closer measure");
+  });
+
+  test("settlement write-back preserves the record's original instant (#1056, CodeRabbit PR #10433)", () => {
+    const lines = extractPaygLines(VIEW, REGISTRY, { settlements: [CF_INVOICE] });
+    const cf = recordsFromPaygLines(lines, "test").find(
+      (r) => r.serviceId === "cloudflare" && r.metricId === "gateway-accrual",
+    )!;
+    expect(cf.ts).toBe("2026-11-02T10:43:17Z"); // not the date-derived noon
+  });
+
+  test("applyPaygSettlements reconciles feed-built lines against history (#1056, CodeRabbit PR #10433)", () => {
+    const raw = extractPaygLines(VIEW, REGISTRY); // collector shape: no settlements
+    const lines = applyPaygSettlements(raw, [CF_INVOICE]);
+    const gw = lines.find((l) => l.id === "cloudflare-gateway")!;
+    expect(gw.settledUsd).toBe(46.86);
+    expect(gw.unbilledUsd).toBe(0);
+    expect(gw.sourceClass).toBe("invoice");
+    const meta = lines.find((l) => l.id === "meta-payg")!;
+    expect(meta.settledUsd).toBe(23.91); // no meta settlement record: untouched
   });
 
   test("PAYG card renders the settled figure with variance, and badges a stale estimate (#1056)", () => {
