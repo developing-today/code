@@ -12,6 +12,7 @@ import type { CheckoutDrift } from "./checkout-drift.ts";
 import { isProjectAudit, isProjectPoolItem } from "./projects.ts";
 import { isRepoCensus, type RepoCensus } from "./coverage.ts";
 import { isSessionRecord } from "./registry.ts";
+import { isDependencyStatus } from "./orchestration-dependency.ts";
 import {
   arrayOf,
   isFiniteNumber,
@@ -381,14 +382,11 @@ function isTierElement(v: unknown): boolean {
   return isRecord(v) && typeof v.id === "string";
 }
 
-const DEPENDENCY_STATUSES: readonly string[] = ["in-progress", "queued", "stalled", "done", "unknown"];
-
 function isDependencyElement(v: unknown): boolean {
   if (!isRecord(v)) return false;
   return (
     typeof v.task === "string" &&
-    typeof v.status === "string" &&
-    DEPENDENCY_STATUSES.includes(v.status) &&
+    isDependencyStatus(v.status) &&
     (v.ref === undefined || typeof v.ref === "string") &&
     (v.taskRef === undefined || typeof v.taskRef === "string") &&
     (v.workerSessionId === undefined || typeof v.workerSessionId === "string") &&
