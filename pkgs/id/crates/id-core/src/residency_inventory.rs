@@ -306,7 +306,7 @@ pub fn admit_work_submission(
 }
 
 #[cfg(test)]
-#[allow(clippy::panic)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
     use super::*;
     use crate::residency::{Jurisdiction, Policy};

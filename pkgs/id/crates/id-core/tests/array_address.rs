@@ -8,6 +8,8 @@
 //! until that lands this test includes the module by path — the same file
 //! the export will name.
 
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+
 #[path = "../src/array_address.rs"]
 mod array_address;
 

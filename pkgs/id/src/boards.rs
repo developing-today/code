@@ -2414,7 +2414,7 @@ fn is_public_key(value: &str) -> bool {
 }
 
 #[cfg(test)]
-#[allow(clippy::unwrap_used, clippy::expect_used)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
     use ed25519_dalek::SigningKey;
     use proptest::prelude::*;

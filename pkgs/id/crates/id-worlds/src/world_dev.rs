@@ -2026,6 +2026,7 @@ pub async fn run_dev_fuzz(
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
     use super::*;
 
@@ -2220,6 +2221,7 @@ mod tests {
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod fuzz_tests {
     use super::*;
 
@@ -2679,6 +2681,7 @@ mod fuzz_tests {
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod watch_tests {
     use super::*;
 
