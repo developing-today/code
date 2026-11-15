@@ -440,14 +440,21 @@ fn accumulate_aggregate(
     }
 }
 
+/// Monotonic counter for unique temp-file names within a process,
+/// so concurrent writers never share a path.
+static ATOMIC_TMP_COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
 /// Replace `path` with `contents` atomically: write the full
-/// contents to a temporary file in the same directory, sync it,
-/// then rename over the destination. A failure at any step before
-/// the rename leaves the original file intact — a truncating
-/// `std::fs::write` could destroy the only complete copy of a
-/// feedback-exempt or previously archived record.
+/// contents to a unique, exclusively created temporary file in the
+/// same directory, sync it, then rename over the destination. A
+/// failure at any step before the rename leaves the original file
+/// intact — a truncating write could destroy the only complete
+/// copy of a feedback-exempt or previously archived record. The
+/// temporary path is unique per write (pid + counter + timestamp)
+/// and created with `create_new`, so concurrent writers cannot
+/// truncate each other's in-progress file before either rename.
 fn write_atomic(path: &Path, contents: &str) -> Result<()> {
-    use std::io::Write as _;
+    use std::io::{ErrorKind, Write as _};
     let parent = path.parent().ok_or_else(|| {
         Error::backend(format!("trace retention: no parent for {}", path.display()))
     })?;
@@ -455,22 +462,64 @@ fn write_atomic(path: &Path, contents: &str) -> Result<()> {
         .file_name()
         .map(|n| n.to_string_lossy().into_owned())
         .unwrap_or_default();
-    let tmp = parent.join(format!(".{name}.tmp-{}", std::process::id()));
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
+    let pid = std::process::id();
+    let mut last_err: Option<std::io::Error> = None;
+    let mut tmp = None;
+    let mut file = None;
+    for _ in 0..32 {
+        let n = ATOMIC_TMP_COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let candidate = parent.join(format!(".{name}.tmp-{pid}-{n}-{nanos}"));
+        match std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&candidate)
+        {
+            Ok(f) => {
+                tmp = Some(candidate);
+                file = Some(f);
+                break;
+            }
+            Err(e) if e.kind() == ErrorKind::AlreadyExists => {
+                last_err = Some(e);
+                continue;
+            }
+            Err(e) => {
+                last_err = Some(e);
+                break;
+            }
+        }
+    }
+    let (tmp_path, mut f) = match (tmp, file) {
+        (Some(p), Some(f)) => (p, f),
+        _ => {
+            let e = last_err
+                .map(|e| e.to_string())
+                .unwrap_or_else(|| "could not allocate unique temp file".to_string());
+            return Err(Error::backend(format!(
+                "trace retention: cannot write {}: {e}",
+                path.display()
+            )));
+        }
+    };
     let write = (|| -> std::io::Result<()> {
-        let mut f = std::fs::File::create(&tmp)?;
         f.write_all(contents.as_bytes())?;
         f.sync_all()?;
         Ok(())
     })();
     if let Err(e) = write {
-        let _ = std::fs::remove_file(&tmp);
+        let _ = std::fs::remove_file(&tmp_path);
         return Err(Error::backend(format!(
             "trace retention: cannot write {}: {e}",
             path.display()
         )));
     }
-    if let Err(e) = std::fs::rename(&tmp, path) {
-        let _ = std::fs::remove_file(&tmp);
+    drop(f);
+    if let Err(e) = std::fs::rename(&tmp_path, path) {
+        let _ = std::fs::remove_file(&tmp_path);
         return Err(Error::backend(format!(
             "trace retention: cannot write {}: {e}",
             path.display()
@@ -526,6 +575,46 @@ fn write_aggregate(
     )
 }
 
+/// Cross-process lock for the retention transaction, held for the
+/// full read-merge-write-cleanup pass so concurrent processes cannot
+/// apply updates from stale snapshots (e.g. overwrite the archive
+/// with a snapshot that predates another process's move and then
+/// drop the hot file). Uses an advisory directory lock in the
+/// traces dir (mkdir is atomic across processes) and removes it on
+/// drop.
+struct RetentionLock(PathBuf);
+
+impl RetentionLock {
+    fn acquire(dir: &Path) -> Result<Self> {
+        std::fs::create_dir_all(dir).map_err(|e| {
+            Error::backend(format!(
+                "trace retention: cannot create {}: {e}",
+                dir.display()
+            ))
+        })?;
+        let lock = dir.join(".retention.lock");
+        match std::fs::create_dir(&lock) {
+            Ok(()) => Ok(Self(lock)),
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => Err(Error::backend(
+                format!(
+                    "trace retention: another retention run is in progress (lock {} exists); if no run is active, a previous run was interrupted — remove the lock dir and retry",
+                    lock.display()
+                ),
+            )),
+            Err(e) => Err(Error::backend(format!(
+                "trace retention: cannot take lock {}: {e}",
+                lock.display()
+            ))),
+        }
+    }
+}
+
+impl Drop for RetentionLock {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir(&self.0);
+    }
+}
+
 /// Run the section 4 retention pass over the hot trace files in
 /// `dir`, ageing each file by its name's day stamp against
 /// `today` (a (year, month, day) triple, injected so the pass is
@@ -545,11 +634,14 @@ fn write_aggregate(
 /// The move is safe to retry: the cold file is merged
 /// idempotently (records keyed by query_id, archived exactly
 /// once), the aggregate is rebuilt from the complete resulting
-/// cold file, every replacement is written atomically (temp file
-/// + sync + rename in the same directory), and the hot cleanup
-/// happens only after the cold file and its aggregate are in
-/// place — a failure mid-pass leaves the hot file intact for a
-/// retry that cannot duplicate or lose records.
+/// cold file, every replacement is written atomically (a unique,
+/// exclusively created temp file + sync + rename in the same
+/// directory), and the hot cleanup happens only after the cold
+/// file and its aggregate are in place — a failure mid-pass
+/// leaves the hot file intact for a retry that cannot duplicate
+/// or lose records. The complete read-merge-write-cleanup pass is
+/// serialized by a cross-process directory lock so concurrent
+/// processes cannot apply updates from stale snapshots.
 ///
 /// Lines that do not parse as trace records are treated as
 /// compactable (they carry no query_id a feedback record could
@@ -566,6 +658,7 @@ pub fn run_retention(
             today.0, today.1, today.2
         )));
     }
+    let _lock = RetentionLock::acquire(dir)?;
     let today_days = days_from_civil(today.0, today.1, today.2);
     let cold_dir = dir.join(COLD_DIR_NAME);
     for path in trace_files(dir)? {
