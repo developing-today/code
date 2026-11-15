@@ -3227,18 +3227,27 @@
         // now seated in this tier (probe-verified 2026-11-14).
         // 2026-11-14 (Drew, Zen pass): Inkling 2 Small Free joins through
         // inkling-plan — AA v5 II 31, the strongest free generalist on
-        // either shelf after Flash. Seated LAST in this tier, just ahead
-        // of the workhorse escalation (Drew, later same day: the Zen
-        // free models carry limited context — last resort wherever they
-        // fit). Zen key wiring is verified per workspace after the
-        // switch.
+        // either shelf after Flash. Initially seated last on a limited-
+        // context assumption; that assumption was wrong (Inkling's
+        // context is 1,048,576), and under Drew's placement law (free +
+        // full context = front of the fitting pool, ahead of paid legs)
+        // it sits in the free cluster, behind the three Go free plans.
+        // The Zen shelf carried zero route attempts until the evening
+        // of 2026-11-14: the three Zen instances had no credentials in
+        // the credential store, so they never instantiated as providers
+        // (code#10425). Fixed live via the credential API — each Zen
+        // instance now holds its account's console key, copied from the
+        // matching Go instance credential — and verified on the wire
+        // (aggregate dealt opencode.developing-today-0/inkling-2-small-
+        // free, success; direct pin opencode.drewrypope/big-pickle,
+        // success).
         "targets": [
           "opencode-route/beam-plan",
           "opencode-route/longcat-plan",
           "opencode-route/iceman-plan",
+          "opencode-route/inkling-plan",
           "opencode-route/deepseek-flash-plan#low",
           "opencode-route/haiku-plan#low",
-          "opencode-route/inkling-plan",
           "opencode-route/background",
           "opencode-route/workhorse"
         ],
