@@ -21,11 +21,11 @@ make_tree() {
     "pkgs/atlas-search/crates/atlas-search/src/pyjson.rs" \
     "pkgs/atlas-search/crates/atlas-search/src/render.rs" \
     "pkgs/atlas-search/crates/atlas-search/src/server.rs" \
-    "pkgs/atlas-search/crates/atlas-search/src/server_feedback.rs" \
+    "pkgs/atlas-search/crates/atlas-search/src/server/server_feedback.rs" \
     "pkgs/fleet/crates/fleet-search/src/pyjson.rs" \
     "pkgs/fleet/crates/fleet-search/src/render.rs" \
     "pkgs/fleet/crates/fleet-search/src/server.rs" \
-    "pkgs/fleet/crates/fleet-search/src/server_feedback.rs"; do
+    "pkgs/fleet/crates/fleet-search/src/server/server_feedback.rs"; do
     cp "$REPO_ROOT/$pair" "$dest/$pair"
   done
 }
