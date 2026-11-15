@@ -1,19 +1,22 @@
 //! `id-native-shell` binary: the Bevy application target for F13.6.
 //!
-//! Step 1 keeps the app on [`MinimalPlugins`] (no window yet) so the
-//! package builds and starts without desktop system libraries; the
-//! window/render plugin set and the live session loop are step 2 of
-//! design #788. What step 1 proves is the shape the design requires:
-//! an isolated Bevy app target that boots on the shared client
-//! identity and speaks only F13.1 contract frames (see the library
-//! crate for the frame builders and view fallback).
+//! Step 2 (design #788) replaces step 1's `MinimalPlugins` placeholder
+//! with Bevy's window/render/UI plugin set (`DefaultPlugins` over the
+//! crate's selected features) and the shell's own render plugin
+//! ([`id_native_shell::render::ShellRenderPlugin`]), which presents
+//! the latest host view as a UI node tree. The live `WorldClient`
+//! session loop that feeds the presented view is the remaining step-2
+//! piece; until it lands the window opens on an empty view and the
+//! announce line says so, rather than pretending to be connected.
 
-use bevy::prelude::{App, MinimalPlugins, Startup};
+use bevy::prelude::{App, DefaultPlugins, Startup};
+use id_native_shell::render::ShellRenderPlugin;
 use id_native_shell::{CONTRACT_NAME, CONTRACT_VERSION};
 
 fn main() {
     App::new()
-        .add_plugins(MinimalPlugins)
+        .add_plugins(DefaultPlugins)
+        .add_plugins(ShellRenderPlugin)
         .add_systems(Startup, announce)
         .run();
 }
@@ -22,6 +25,6 @@ fn main() {
 fn announce() {
     println!(
         "id-native-shell: F13.6 native reference shell; {CONTRACT_NAME} contract v{CONTRACT_VERSION}; \
-         window/session wiring lands in design #788 step 2"
+         window/render wiring is live (design #788 step 2); the WorldClient session loop is not yet connected"
     );
 }
