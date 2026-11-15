@@ -595,12 +595,12 @@ impl RetentionLock {
         let lock = dir.join(".retention.lock");
         match std::fs::create_dir(&lock) {
             Ok(()) => Ok(Self(lock)),
-            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => Err(Error::backend(
-                format!(
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
+                Err(Error::backend(format!(
                     "trace retention: another retention run is in progress (lock {} exists); if no run is active, a previous run was interrupted — remove the lock dir and retry",
                     lock.display()
-                ),
-            )),
+                )))
+            }
             Err(e) => Err(Error::backend(format!(
                 "trace retention: cannot take lock {}: {e}",
                 lock.display()

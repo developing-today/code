@@ -15,11 +15,11 @@ The current evidence does not settle whether GitHub ToS §D.6 applies to comment
 
 The licensing-gate research on #6024 recorded this provisional three-zone posture:
 
-| Source zone | Interim posture recorded on #6024 |
-|---|---|
-| Repositories owned by Drew or the organization | Ingest may proceed, subject to content classification. |
-| External repositories where Drew participated | Private personal search only; no redistribution. |
-| External public repositories generally | Private personal search only for full text; factual metadata (such as titles, URLs, timestamps, counts, and hashes) remains outside that full-text gate. |
+| Source zone                                    | Interim posture recorded on #6024                                                                                                                        |
+| ---------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Repositories owned by Drew or the organization | Ingest may proceed, subject to content classification.                                                                                                   |
+| External repositories where Drew participated  | Private personal search only; no redistribution.                                                                                                         |
+| External public repositories generally         | Private personal search only for full text; factual metadata (such as titles, URLs, timestamps, counts, and hashes) remains outside that full-text gate. |
 
 This packet does not ratify that posture. The separate policy decision #6052 remains open and records Drew's ruling that ratification waits behind router and Wi-Fi work. Until a ruling changes it, the gate research says external Zones 2–3 full text remains personal-search-only; metadata and Zone 1 are not waiting on this packet. The deletion-propagation design is the engineering counterpart to Question 5.
 
@@ -77,15 +77,15 @@ The quotations below are short excerpts and must be read in their full context a
 
 The current [GitHub Terms of Service](https://docs.github.com/en/site-policy/github-terms/github-terms-of-service) state an effective date of **27 April 2026**.
 
-| Source | Short excerpt | Why counsel is asked |
-|---|---|---|
-| ToS §D.4, License Grant to Us | GitHub may “store, host, archive, parse, display, and make copies of Your Content” for its Service, including AI/ML training. | This grant is to GitHub and its Affiliates; does it grant any right to Atlas? |
-| ToS §D.5, License Grant to Other Users | Public content “including issues, comments, and contributions to other Users’ repositories, may be viewed by others”; permitted use is “through the Service as permitted by GitHub’s functionality.” | Viewing is explicit; does the grant extend to an independent corpus or copying comment text off-Service? |
-| ToS §D.6, Contributions Under Repository License | “Whenever you add Content to a repository containing notice of a license, you license that Content under the same terms.” | Does a tracker comment count as Content “add[ed] … to a repository,” and which repository license, if any, applies? |
-| ToS §D.8, Public Repositories and Lawful Access | “These Terms do not restrict lawful access to or use of the contents of public repositories.” | This does not itself supply a copyright license; what other restrictions determine whether a proposed use is lawful? |
-| ToS §D.3, termination | D.4–D.8 licenses “end when you remove Your Content, unless other Users have forked it.” | What follows for Atlas's external copies when the source is removed? The fork exception is framed around GitHub's Service. |
-| ToS §G.3, CC0 | The Agreement is CC0-licensed. | This refers to the Agreement; it does not say user comments are CC0. |
-| ToS §D.9, Access Reciprocity | Current Terms separately address automated access to public content for development or training of commercially available AI systems. | Likely outside the stated personal-search scope, but counsel should identify what change in use would trigger this clause. |
+| Source                                           | Short excerpt                                                                                                                                                                                        | Why counsel is asked                                                                                                       |
+| ------------------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------- |
+| ToS §D.4, License Grant to Us                    | GitHub may “store, host, archive, parse, display, and make copies of Your Content” for its Service, including AI/ML training.                                                                        | This grant is to GitHub and its Affiliates; does it grant any right to Atlas?                                              |
+| ToS §D.5, License Grant to Other Users           | Public content “including issues, comments, and contributions to other Users’ repositories, may be viewed by others”; permitted use is “through the Service as permitted by GitHub’s functionality.” | Viewing is explicit; does the grant extend to an independent corpus or copying comment text off-Service?                   |
+| ToS §D.6, Contributions Under Repository License | “Whenever you add Content to a repository containing notice of a license, you license that Content under the same terms.”                                                                            | Does a tracker comment count as Content “add[ed] … to a repository,” and which repository license, if any, applies?        |
+| ToS §D.8, Public Repositories and Lawful Access  | “These Terms do not restrict lawful access to or use of the contents of public repositories.”                                                                                                        | This does not itself supply a copyright license; what other restrictions determine whether a proposed use is lawful?       |
+| ToS §D.3, termination                            | D.4–D.8 licenses “end when you remove Your Content, unless other Users have forked it.”                                                                                                              | What follows for Atlas's external copies when the source is removed? The fork exception is framed around GitHub's Service. |
+| ToS §G.3, CC0                                    | The Agreement is CC0-licensed.                                                                                                                                                                       | This refers to the Agreement; it does not say user comments are CC0.                                                       |
+| ToS §D.9, Access Reciprocity                     | Current Terms separately address automated access to public content for development or training of commercially available AI systems.                                                                | Likely outside the stated personal-search scope, but counsel should identify what change in use would trigger this clause. |
 
 **API and acceptable-use overlay.** [Section H (API Terms)](https://docs.github.com/en/site-policy/github-terms/github-terms-of-service#h-api-terms) is part of the same ToS; it addresses access, rate limits, sharing tokens, and API abuse, but does not expressly settle external storage of comment text. The separate [GitHub Acceptable Use Policies](https://docs.github.com/en/site-policy/acceptable-use-policies/github-acceptable-use-policies) say the usage restrictions apply whether public information is scraped, obtained by API, or collected another way. Relevant excerpts:
 
@@ -105,9 +105,9 @@ Primary statutory text: [17 U.S.C. §101](https://uscode.house.gov/view.xhtml?re
 
 Judicial authorities useful as analogies, not decisions about GitHub comments, embeddings, or this product:
 
-- [*Authors Guild v. Google*, 804 F.3d 202, 216–21 (2d Cir. 2015)](https://www.govinfo.gov/content/pkg/USCOURTS-ca2-13-04829/pdf/USCOURTS-ca2-13-04829-0.pdf): upheld full-book digitization for a searchable index and limited snippets on its record.
-- [*Authors Guild v. HathiTrust*, 755 F.3d 87, 97–100 (2d Cir. 2014)](https://www.govinfo.gov/content/pkg/USCOURTS-ca2-12-04547/pdf/USCOURTS-ca2-12-04547-0.pdf): upheld a full-text search corpus with no general-user display of underlying text on its record; institutional facts distinguish it from this proposal.
-- [*Andy Warhol Foundation v. Goldsmith*, 598 U.S. 508 (2023)](https://www.supremecourt.gov/opinions/22pdf/21-869_87ad.pdf), decided 18 May 2023: emphasizes analysis of the specific challenged use; transformation in meaning alone is not dispositive.
+- [_Authors Guild v. Google_, 804 F.3d 202, 216–21 (2d Cir. 2015)](https://www.govinfo.gov/content/pkg/USCOURTS-ca2-13-04829/pdf/USCOURTS-ca2-13-04829-0.pdf): upheld full-book digitization for a searchable index and limited snippets on its record.
+- [_Authors Guild v. HathiTrust_, 755 F.3d 87, 97–100 (2d Cir. 2014)](https://www.govinfo.gov/content/pkg/USCOURTS-ca2-12-04547/pdf/USCOURTS-ca2-12-04547-0.pdf): upheld a full-text search corpus with no general-user display of underlying text on its record; institutional facts distinguish it from this proposal.
+- [_Andy Warhol Foundation v. Goldsmith_, 598 U.S. 508 (2023)](https://www.supremecourt.gov/opinions/22pdf/21-869_87ad.pdf), decided 18 May 2023: emphasizes analysis of the specific challenged use; transformation in meaning alone is not dispositive.
 
 No cited authority establishes a categorical rule for embeddings. Relevant facts for counsel include recoverability of expression from vectors, what source text is retained, what query outputs disclose, use purpose and commerciality, corpus scale, and market effects.
 
