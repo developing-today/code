@@ -14,6 +14,18 @@
 
 set -euo pipefail
 
+usage() {
+  echo "Usage: build.sh [variant] [profile]" >&2
+  echo "  variant: lib | web | assets (default: web)" >&2
+  echo "  profile: debug | release (default: debug)" >&2
+}
+
+if [[ $# -gt 2 ]]; then
+  usage
+  echo "Error: unaccounted argument(s): ${*:3}" >&2
+  exit 1
+fi
+
 # Default log level to info unless explicitly set
 export RUST_LOG="${RUST_LOG:-info}"
 

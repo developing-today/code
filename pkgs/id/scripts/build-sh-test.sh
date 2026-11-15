@@ -133,4 +133,20 @@ after="$(wc -l <"$tmp/cargo.log")"
 grep -q 'up to date' uptodate.out ||
   fail "exact-match re-run did not report 'up to date'"
 
+# ── Argument contract (#10501) ──────────────────────────────────────
+# Extra positional arguments must be rejected before any frontend or
+# Rust build work, with usage on stderr and non-zero exit.
+before="$(wc -l <"$tmp/cargo.log")"
+if bash ./build.sh lib debug extra >extra.out 2>extra.err; then
+  fail "extra argument was accepted"
+fi
+after="$(wc -l <"$tmp/cargo.log")"
+[ "$before" = "$after" ] || fail "extra argument invoked cargo"
+grep -q 'Usage: build.sh \[variant\] \[profile\]' extra.err ||
+  fail "extra argument did not print usage"
+grep -q 'unaccounted argument' extra.err ||
+  fail "extra argument did not report unaccounted argument"
+
+# ── Teardown: manifest/source rebuild path (#6883/#6869 fixed form) ─
+# Not part of the arg-contract case; keep the file ending stable.
 echo "build-sh tests passed"
