@@ -109,6 +109,14 @@ pub struct BranchHit {
 pub struct BranchPools {
     pub fts: Vec<BranchHit>,
     pub vector: Vec<BranchHit>,
+    /// Per-candidate embedding-model provenance (#7647, M5 of the
+    /// #6060 decision): chunk id -> the `embedding_model` recorded
+    /// in the `atlas_manifest` of the shard that produced the
+    /// candidate, copied at fan-out time. Empty for monolith-served
+    /// pools: those candidates carry no shard-manifest provenance
+    /// and trace as null (the trace module's null-until-known
+    /// convention), never an invented value.
+    pub candidate_models: std::collections::HashMap<i64, String>,
 }
 
 /// The branch inputs, mirroring `run_search`'s per-mode state.

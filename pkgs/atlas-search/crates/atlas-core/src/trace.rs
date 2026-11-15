@@ -10,6 +10,19 @@
 //! fail-closed (design invariant 2): a sink failure is a search
 //! failure, never a silently untraced success.
 //!
+//! Embedding-model provenance (#7647, M5 of the #6060 one-model
+//! decision): the record head carries `query_embedding_model`
+//! (the model the query was embedded with) once, and every result
+//! carries `embedding_model` copied from the manifest of the
+//! shard that produced that candidate (`BranchPools::
+//! candidate_models`; null when the candidate's provenance is
+//! unknown, per the identity note below). The distinct candidate
+//! models are listed at the head as `embedding_models`; when two
+//! or more distinct values appear, `embedding_model_breach` is
+//! true — positive evidence of an M1 breach, surfaced as-is,
+//! never silently normalised or split. Statistics stay computed
+//! over the whole result set without per-model conditioning.
+//!
 //! Identity note: the design resolves each chunk to
 //! `(source_file_id, embed_id, embed_content_hash)` via the chunk
 //! detail row and the versioning design's content version. That
@@ -265,6 +278,7 @@ pub fn build_trace_record(
         .map(|(i, id)| (*id, i + 1))
         .collect();
 
+    let mut distinct_models: Vec<String> = Vec::new();
     let mut results = Vec::new();
     for (i, e) in ranked.iter().enumerate() {
         let d = details.get(&e.chunk_id);
@@ -322,6 +336,19 @@ pub fn build_trace_record(
         );
         let mut r = Map::new();
         r.insert("chunk_id".into(), json!(e.chunk_id));
+        // Embedding-model provenance (#7647): the model recorded
+        // in the producing shard's atlas_manifest, or null when
+        // the candidate carries no manifest provenance.
+        let candidate_model = pools.candidate_models.get(&e.chunk_id);
+        if let Some(m) = candidate_model {
+            if !distinct_models.contains(m) {
+                distinct_models.push(m.clone());
+            }
+        }
+        r.insert(
+            "embedding_model".into(),
+            candidate_model.map_or(Json::Null, |m| Json::String(m.clone())),
+        );
         // Resolved embed identity: null until the versioning
         // design's detail columns land (see module note).
         r.insert("source_file_id".into(), Json::Null);
@@ -393,6 +420,19 @@ pub fn build_trace_record(
         },
     );
     rec.insert("parameters".into(), Json::Object(parameters));
+    // M5 head provenance (#7647): the query's embedding model
+    // once, the distinct candidate models, and the M1-breach flag
+    // (two or more distinct candidate models in one trace).
+    rec.insert(
+        "query_embedding_model".into(),
+        Json::String(opts.model.clone()),
+    );
+    distinct_models.sort();
+    rec.insert(
+        "embedding_model_breach".into(),
+        json!(distinct_models.len() > 1),
+    );
+    rec.insert("embedding_models".into(), json!(distinct_models));
     rec.insert("results".into(), Json::Array(results));
     rec.insert(
         "pool_counts".into(),
@@ -424,6 +464,103 @@ mod tests {
         assert_eq!(rfc3339_utc(0), "1970-01-01T00:00:00Z");
         assert_eq!(rfc3339_utc(1_731_328_000_000), "2024-11-11T12:26:40Z");
         assert_eq!(rfc3339_utc(1_763_000_000_000), "2025-11-13T02:13:20Z");
+    }
+
+    fn trace_fixture(candidate_models: std::collections::HashMap<i64, String>) -> Json {
+        let mut opts = SearchOptions::new("provenance query");
+        opts.model = "model-query-v1".to_string();
+        let pools = BranchPools {
+            fts: Vec::new(),
+            vector: vec![
+                crate::types::BranchHit {
+                    chunk_id: 1,
+                    dist: Some(0.1),
+                },
+                crate::types::BranchHit {
+                    chunk_id: 2,
+                    dist: Some(0.2),
+                },
+            ],
+            candidate_models,
+        };
+        let ranked = vec![
+            crate::fusion::FusedEntry {
+                chunk_id: 1,
+                score: 0.5,
+                fts_rank: None,
+                vector_rank: Some(1),
+            },
+            crate::fusion::FusedEntry {
+                chunk_id: 2,
+                score: 0.4,
+                fts_rank: None,
+                vector_rank: Some(2),
+            },
+        ];
+        let ctx = TraceContext::new("cli", "agent", "test");
+        build_trace_record(
+            "qid-test",
+            &ctx,
+            0,
+            1,
+            &opts,
+            &Filters::default(),
+            "turso",
+            &pools,
+            &ranked,
+            &HashMap::new(),
+            &HashMap::new(),
+            &[1, 2],
+        )
+    }
+
+    #[test]
+    fn trace_records_uniform_embedding_model_provenance() {
+        // Oracle (#7647 acceptance 1): a uniform-model trace shows
+        // query_embedding_model at the head and the matching
+        // embedding_model on every candidate, with no breach.
+        let mut models = std::collections::HashMap::new();
+        models.insert(1, "model-a".to_string());
+        models.insert(2, "model-a".to_string());
+        let rec = trace_fixture(models);
+        assert_eq!(rec["query_embedding_model"], json!("model-query-v1"));
+        assert_eq!(rec["embedding_model_breach"], json!(false));
+        assert_eq!(rec["embedding_models"], json!(["model-a"]));
+        let results = rec["results"].as_array().expect("results array");
+        assert_eq!(results.len(), 2);
+        for r in results {
+            assert_eq!(r["embedding_model"], json!("model-a"));
+        }
+    }
+
+    #[test]
+    fn trace_flags_mixed_embedding_models_as_m1_breach() {
+        // Oracle (#7647 acceptance 2): a mixed-model fixture
+        // exposes both model ids and flags the breach; the values
+        // are never normalised or split.
+        let mut models = std::collections::HashMap::new();
+        models.insert(1, "model-a".to_string());
+        models.insert(2, "model-b".to_string());
+        let rec = trace_fixture(models);
+        assert_eq!(rec["embedding_model_breach"], json!(true));
+        assert_eq!(rec["embedding_models"], json!(["model-a", "model-b"]));
+        let results = rec["results"].as_array().expect("results array");
+        assert_eq!(results[0]["embedding_model"], json!("model-a"));
+        assert_eq!(results[1]["embedding_model"], json!("model-b"));
+    }
+
+    #[test]
+    fn trace_without_manifest_provenance_records_null_models() {
+        // Oracle (#7647): candidates with no shard-manifest
+        // provenance record null, and a single distinct (absent)
+        // model set is not a breach.
+        let rec = trace_fixture(std::collections::HashMap::new());
+        assert_eq!(rec["embedding_model_breach"], json!(false));
+        assert_eq!(rec["embedding_models"], json!([]));
+        let results = rec["results"].as_array().expect("results array");
+        for r in results {
+            assert_eq!(r["embedding_model"], Json::Null);
+        }
     }
 
     #[test]
