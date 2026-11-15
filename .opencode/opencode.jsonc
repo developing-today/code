@@ -3150,7 +3150,7 @@
       },
       "groq-free-plan": {
         "name": "Groq Free - plan providers",
-        // NEW 2026-11-15 (Drew): Groq's free tier as its own plan. Groq's live catalog for our key serves exactly three chat models (llama-3.3-70b / llama-3.1-8b / qwen3.6-27b were removed from the provider block the same day — the endpoint no longer serves them). All three probe-verified live 2026-11-15. Groq's free limits are small (per-model daily caps), so this is a background/scout-class seat, valued for Groq's very fast decode.
+        // NEW 2026-11-15 (Drew): Groq's free tier as its own plan. Groq's live catalog for our key serves exactly three chat models (llama-3.3-70b / llama-3.1-8b / qwen3.6-27b were removed from the provider block the same day — the endpoint no longer serves them). All three probe-verified live 2026-11-15. Groq's free limits are small (per-model daily caps), so this is a scout/tiny-prompt-class seat, valued for Groq's very fast decode. HARD CEILING (code#10562, 2026-11-15): the free tier caps tokens per minute at 8000 for gpt-oss-120b/20b and the ITPM limit for qwen/qwen3.8-27b in our org is 7000, while a full agent session's first request runs ~26k tokens - no leg of this plan can EVER accept an agent session's first request (two scheduled sessions died at start on exactly this, 2026-11-15). Never seat this plan in a route that serves agent sessions (background was unseated the same day); tiny-prompt probes and completions only.
         "targets": [
           "groq/openai/gpt-oss-120b",
           "groq/openai/gpt-oss-20b",
@@ -3615,7 +3615,15 @@
           "opencode-route/big-pickle-plan",
           "opencode-route/nemotron-vl-plan",
           "opencode-route/nemotron-lightning-plan",
-          "opencode-route/groq-free-plan",
+          // groq-free-plan is NOT seated here (code#10562, 2026-11-15):
+          // every Groq free-tier model caps input tokens per minute
+          // below any agent session's first request (qwen/qwen3.8-27b
+          // ITPM limit 7000 in our org; gpt-oss-120b/20b publish
+          // 8000 TPM free tier) while a scheduled session's first
+          // request runs ~26k tokens, so a background session that
+          // fell through to this leg ended failed at start with a
+          // request-too-large error instead of doing its work. The
+          // plan stays defined below for tiny-prompt seats only.
           "opencode-route/nvidia-free-plan",
           "opencode-route/openrouter-free-plan",
           "opencode-route/workhorse"
