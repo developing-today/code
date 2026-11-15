@@ -139,6 +139,37 @@ function bearerAuthorized(req: Request, env: ServerEnv): boolean {
 export interface ServerDeps {
   healthDb?: Client;
   reconcileDb?: Client;
+  /** Background-refreshed /health snapshot source (#9850 round 2).
+   *  Wired by serve(); handleRequest falls back to the bounded live
+   *  probe when no snapshot source is provided. */
+  healthSnapshot?: () => HealthSnapshot | null;
+  /** Single-flight gate for POST /reconcile (#9850 round 2), wired by
+   *  serve(): beginReconcile returns false while a pass is in flight. */
+  beginReconcile?: () => boolean;
+  endReconcile?: () => void;
+}
+
+/** A point-in-time row-count snapshot served by /health (#9850 round 2). */
+export interface HealthSnapshot {
+  items: number;
+  comments: number;
+  links: number;
+  /** Epoch ms when the snapshot was taken. */
+  at: number;
+}
+
+/** A health snapshot older than this is itself evidence the process is
+ *  wedged (its refresher has not completed in that long) → 503. */
+export const HEALTH_SNAPSHOT_STALE_MS = 120_000;
+/** How often serve() refreshes the health snapshot in the background. */
+export const HEALTH_REFRESH_MS = 15_000;
+
+const HEALTH_COUNT_SQL =
+  "SELECT (SELECT COUNT(*) FROM pmp_items) AS items, (SELECT COUNT(*) FROM pmp_comments) AS comments, (SELECT COUNT(*) FROM pmp_links) AS links";
+
+async function readHealthCounts(client: Client): Promise<{ items: number; comments: number; links: number }> {
+  const r = await withTimeout(client.execute(HEALTH_COUNT_SQL), HEALTH_DB_TIMEOUT_MS, "health_db_timeout");
+  return r.rows[0] as unknown as { items: number; comments: number; links: number };
 }
 
 /** /health's DB probe is bounded: a health answer later than this is a down answer. */
@@ -170,15 +201,29 @@ export async function handleRequest(
 
   // -- health ---------------------------------------------------------------
   if (path === "/health" || path === "/api/health") {
+    // #9850 round 2: when serve() provides a snapshot, /health does NO
+    // database work on the request path — it serves counts a background
+    // refresher keeps current, so reconcile write load can neither
+    // stall the answer past the sentinel's probe timeout nor turn a
+    // slow-but-alive process into a "down" alert. The staleness bound
+    // keeps the signal honest: a genuinely wedged event loop cannot
+    // refresh, its snapshot ages out, and the answer becomes 503.
+    const snapshot = deps.healthSnapshot?.() ?? null;
+    if (snapshot) {
+      const snapshotAgeMs = Date.now() - snapshot.at;
+      if (snapshotAgeMs <= HEALTH_SNAPSHOT_STALE_MS) {
+        return jsonResponse(200, {
+          ok: true,
+          items: snapshot.items,
+          comments: snapshot.comments,
+          links: snapshot.links,
+          snapshotAgeMs,
+        });
+      }
+      return jsonResponse(503, { ok: false, error: "health_snapshot_stale", snapshotAgeMs });
+    }
     try {
-      const r = await withTimeout(
-        (deps.healthDb ?? db).execute(
-          "SELECT (SELECT COUNT(*) FROM pmp_items) AS items, (SELECT COUNT(*) FROM pmp_comments) AS comments, (SELECT COUNT(*) FROM pmp_links) AS links",
-        ),
-        HEALTH_DB_TIMEOUT_MS,
-        "health_db_timeout",
-      );
-      const row = r.rows[0] as unknown as Record<string, number>;
+      const row = await readHealthCounts(deps.healthDb ?? db);
       return jsonResponse(200, { ok: true, ...row });
     } catch (e) {
       return jsonResponse(503, { ok: false, error: String((e as Error).message) });
@@ -402,14 +447,58 @@ export async function handleRequest(
   // -- reconcile trigger ------------------------------------------------------
   if (path === "/reconcile" && method === "POST") {
     if (!bearerAuthorized(req, env)) return jsonResponse(401, { error: "unauthorized" });
-    const result = await reconcileRepos(deps.reconcileDb ?? db, env);
-    return jsonResponse(200, result);
+    // Single-flight (#9850 round 2): the reconcile timer fires every
+    // ~15 minutes whether or not the previous pass has finished, and
+    // overlapping passes multiply exactly the GitHub + write load that
+    // stalls the box. A trigger that arrives mid-pass is a no-op.
+    if (deps.beginReconcile && !deps.beginReconcile()) {
+      return jsonResponse(200, { ok: true, skipped: "reconcile_in_progress" });
+    }
+    try {
+      const result = await reconcileRepos(deps.reconcileDb ?? db, env);
+      return jsonResponse(200, result);
+    } finally {
+      deps.endReconcile?.();
+    }
   }
 
   return jsonResponse(404, { error: "not_found" });
 }
 
 export function serve(db: Client, env: ServerEnv, port: number, deps: ServerDeps = {}): Bun.Server {
+  // #9850 round 2 wiring: a background health-snapshot refresher and
+  // the reconcile single-flight gate, so the request path never waits
+  // on projection work. Explicit deps win (tests, embedders).
+  let snapshot: HealthSnapshot | null = null;
+  const refreshHealth = async () => {
+    try {
+      snapshot = { ...(await readHealthCounts(deps.healthDb ?? db)), at: Date.now() };
+    } catch {
+      // Keep the last good snapshot; /health's staleness bound turns a
+      // persistently failing refresher into a 503 on its own.
+    }
+  };
+  void refreshHealth();
+  const healthTimer = setInterval(() => void refreshHealth(), HEALTH_REFRESH_MS);
+  (healthTimer as unknown as { unref?: () => void }).unref?.();
+
+  let reconcileRunning = false;
+  const wiredDeps: ServerDeps = {
+    ...deps,
+    healthSnapshot: deps.healthSnapshot ?? (() => snapshot),
+    beginReconcile:
+      deps.beginReconcile ??
+      (() => {
+        if (reconcileRunning) return false;
+        reconcileRunning = true;
+        return true;
+      }),
+    endReconcile:
+      deps.endReconcile ??
+      (() => {
+        reconcileRunning = false;
+      }),
+  };
   return Bun.serve({
     port,
     hostname: env.HOSTNAME ?? "127.0.0.1",
@@ -424,7 +513,7 @@ export function serve(db: Client, env: ServerEnv, port: number, deps: ServerDeps
       // the poll itself was healthy (2026-11-01). Exempt just this
       // route from the idle timeout; every other route keeps 255s.
       if (new URL(req.url).pathname === "/reconcile") server.timeout(req, 0);
-      return handleRequest(req, db, env, deps);
+      return handleRequest(req, db, env, wiredDeps);
     },
   });
 }

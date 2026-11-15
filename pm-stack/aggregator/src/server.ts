@@ -1637,7 +1637,7 @@ async function deriveWatchdogItems(diagnosis?: ReturnType<NonNullable<Source["di
   return items;
 }
 
-async function attentionContext(opts: { census?: boolean } = {}) {
+async function loadAttentionContext(opts: { census?: boolean } = {}) {
   // #1226/#3970: the Needs-Drew census costs up to eight sequential
   // GitHub search calls (up to ~64 s when the API is unreachable). Only
   // the attention page render consumes it, so it opts in; the overview,
@@ -1676,6 +1676,22 @@ async function attentionContext(opts: { census?: boolean } = {}) {
     diagnosis,
     census,
   };
+}
+
+// #9850: /api/attention.json is a sentinel-probed health surface, but
+// the assembly above re-reads every source leg on every request — under
+// load that per-request cost is what flapped the feed (multi-second
+// answers at load ~10). Same contract as the today/overview assemblies
+// (#5082): a short-TTL cache with coalesced loads and
+// stale-while-revalidate, one cache per census variant — the census
+// assembly costs up to ~64 s of GitHub search calls and must never
+// ride the JSON path, or vice versa.
+const attentionContextCache = new TodayCache<Awaited<ReturnType<typeof loadAttentionContext>>>(TODAY_CACHE_TTL_MS);
+const attentionCensusContextCache = new TodayCache<Awaited<ReturnType<typeof loadAttentionContext>>>(TODAY_CACHE_TTL_MS);
+async function attentionContext(opts: { census?: boolean } = {}) {
+  return opts.census
+    ? attentionCensusContextCache.get(() => loadAttentionContext(opts))
+    : attentionContextCache.get(() => loadAttentionContext(opts));
 }
 
 /**
@@ -1869,6 +1885,8 @@ async function overviewContext(): Promise<Awaited<ReturnType<typeof loadOverview
 freshnessStore.onNotice(() => {
   overviewContextCache.invalidate();
   todayContextCache.invalidate();
+  attentionContextCache.invalidate();
+  attentionCensusContextCache.invalidate();
   void overviewContext().catch(() => {});
   void todayContext().catch(() => {});
 });
