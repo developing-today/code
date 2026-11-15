@@ -616,7 +616,8 @@ describe("serviceIdFor", () => {
   });
 
   test("OpenCode Zen door ids alias onto the Go pools (#10443)", () => {
-    // The Zen door (opencode-zen-plans in .opencode/route-fallbacks.md)
+    // The Zen door (zen-plans in .opencode/route-fallbacks.md;
+    // named opencode-zen-plans until the 2026-11-15 rename)
     // reads the same plan meters as the Go door — on the 2026-11-15
     // ticks its rows carried windows and reset instants identical to
     // the matching opencode-go.* rows — so its measured rows file
