@@ -890,6 +890,34 @@
         }
       }
     },
+    // NEW 2026-11-15 (Drew, free-provider pass): Z.ai direct door.
+    // GLM-4.7-Flash and GLM-4.5-Flash are $0 per token PERMANENTLY on
+    // Z.ai's own pricing page (verified 2026-11-15, docs.z.ai pricing;
+    // live chat probes on our key the same day). Explicit model list —
+    // NOT instanceOf the built-in catalog, which would also expose the
+    // paid GLM models. Key is ours: Bitwarden `zai.api-key`, bound via
+    // a credential-store row (integrationID zai) created 2026-11-15.
+    "zai": {
+      "npm": "@ai-sdk/openai-compatible",
+      "name": "Z.ai (GLM Free Tier)",
+      "options": {
+        "baseURL": "https://api.z.ai/api/paas/v4"
+      },
+      "models": {
+        "glm-4.7-flash": {
+          "name": "GLM-4.7-Flash (Z.ai Free)",
+          "limit": {
+            "context": 200000
+          }
+        },
+        "glm-4.5-flash": {
+          "name": "GLM-4.5-Flash (Z.ai Free)",
+          "limit": {
+            "context": 131072
+          }
+        }
+      }
+    },
     "deepseek": {
       "npm": "@ai-sdk/openai-compatible",
       "name": "DeepSeek Official API",
@@ -3008,6 +3036,28 @@
           "opencode-zen-plans/glm-5.3-flash-free": 3
         }
       },
+      "glm-flash-free-plan": {
+        "name": "GLM Flash Free (Z.ai direct) - plan providers",
+        // NEW 2026-11-15 (Drew, free-provider pass): Z.ai's own free
+        // tier behind our own key — a direct door, not a Zen/Go resale.
+        // GLM-4.7-Flash (200k ctx; vendor-claimed SWE-bench Verified
+        // 59.2, no AA listing yet) leads; GLM-4.5-Flash (131k ctx) is
+        // the second leg. Plain legs, no variant remaps — the free
+        // door's variant surface is unverified (same rationale as
+        // flash-free-plan). Seated in background's last-resort free
+        // cluster per the ~200k placement law; ordering inside the
+        // cluster is provisional until fleet burn data ranks it.
+        "targets": [
+          "zai/glm-4.7-flash",
+          "zai/glm-4.5-flash"
+        ],
+        "selection": "round-robin",
+        "autonomy": "rules",
+        "weights": {
+          "zai/glm-4.7-flash": 3,
+          "zai/glm-4.5-flash": 1
+        }
+      },
       "minimax-flash-plan": {
         "name": "MiniMax M3.1 Flash Free (Zen) - plan providers",
         // NEW 2026-11-14 (Drew, Zen pass): MiniMax M3.1 Flash, free on
@@ -3310,6 +3360,10 @@
         // Pickle (stealth, rotating backend — no score can attach), and
         // the two Nemotron free models last (VL 13.6, Lightning 5.5 —
         // the weakest measured seats in the fleet; free last resorts).
+        // 2026-11-15 (Drew, free-provider pass): the Z.ai direct
+        // free door (glm-flash-free-plan: GLM-4.7-Flash 200k +
+        // GLM-4.5-Flash 131k, $0 on our own key) joins this cluster
+        // behind the Zen GLM seat.
         // Drew (2026-11-14, later): the whole Zen shelf sits in this
         // last-resort position deliberately — limited context on the
         // Zen free models means they are never a first-choice leg.
@@ -3334,6 +3388,7 @@
           "opencode-route/flash-free-plan",
           "opencode-route/minimax-flash-plan",
           "opencode-route/glm-5-3-flash-zen-plan",
+          "opencode-route/glm-flash-free-plan",
           "opencode-route/flint-plan",
           "opencode-route/big-pickle-plan",
           "opencode-route/nemotron-vl-plan",
