@@ -11,6 +11,9 @@
 //!
 //! Commands:
 //!   serve      Start server (accepts put/get from peers)
+//!   publish    Publish a program (world) on the running serve node
+//!   unpublish  Remove a dynamic publication from the running serve node
+//!   publications List the running serve node's dynamic publications
 //!   repl       Interactive REPL (alias: shell)
 //!   put        Store files (aliases: in, add, store, import)
 //!   put-hash   Store content by hash only
