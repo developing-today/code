@@ -419,7 +419,9 @@ describe("payg lines + charges (§1.2, §2.4)", () => {
   };
 
   test("gateway line reconciles against the invoice record: settled figure, estimates kept, variance named (#1056)", () => {
-    const gw = extractPaygLines(VIEW, REGISTRY, { settlements: [CF_INVOICE] }).find((l) => l.id === "cloudflare-gateway")!;
+    const gw = extractPaygLines(VIEW, REGISTRY, { settlements: [CF_INVOICE] }).find(
+      (l) => l.id === "cloudflare-gateway",
+    )!;
     expect(gw.settledUsd).toBe(46.86);
     expect(gw.settledAt).toBe("2026-11-02");
     expect(gw.settledSource).toBe("invoice");
@@ -496,7 +498,9 @@ describe("payg lines + charges (§1.2, §2.4)", () => {
 
   test("gateway note derives which estimate was closer from the actual variances (#1056, CodeRabbit PR #10433)", () => {
     const lowInvoice: SnapshotRecord = { ...CF_INVOICE, value: 29.6 };
-    const gw = extractPaygLines(VIEW, REGISTRY, { settlements: [lowInvoice] }).find((l) => l.id === "cloudflare-gateway")!;
+    const gw = extractPaygLines(VIEW, REGISTRY, { settlements: [lowInvoice] }).find(
+      (l) => l.id === "cloudflare-gateway",
+    )!;
     expect(gw.note).toContain("the budget alert was the closer measure");
     const gwSettled = extractPaygLines(VIEW, REGISTRY, { settlements: [CF_INVOICE] }).find(
       (l) => l.id === "cloudflare-gateway",
