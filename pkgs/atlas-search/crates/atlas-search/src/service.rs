@@ -140,6 +140,73 @@ pub fn search(base: &str, request: &SearchRequest) -> Result<Json, String> {
     search_with_token(base, request, &token)
 }
 
+/// Cast one feedback vote through the service (`POST /v1/feedback`,
+/// design section 6.1, #9976). The payload is the section 6.1
+/// record minus the store-stamped fields; the service returns the
+/// stored raw record.
+pub fn post_feedback(base: &str, payload: &Json) -> Result<Json, String> {
+    let token = client_token()?;
+    post_feedback_with_token(base, payload, &token)
+}
+
+fn post_feedback_with_token(base: &str, payload: &Json, token: &str) -> Result<Json, String> {
+    let auth = format!("Bearer {token}");
+    let body = serde_json::to_string(payload)
+        .map_err(|e| format!("cannot serialize the feedback payload: {e}"))?;
+    let mut resp = agent()
+        .post(format!("{base}/v1/feedback"))
+        .header("Authorization", &auth)
+        .header("Content-Type", "application/json")
+        .send(body.as_str())
+        .map_err(|e| format!("service at {base} unreachable ({e})"))?;
+    let status = resp.status().as_u16();
+    let body = read_body(&mut resp)?;
+    if status != 201 {
+        return Err(format!(
+            "service at {base} rejected the feedback: {}",
+            error_detail(status, &body)
+        ));
+    }
+    serde_json::from_str(&body)
+        .map_err(|e| format!("service at {base} sent a malformed feedback response: {e}"))
+}
+
+/// Retrieve feedback through the service (`GET /v1/feedback`),
+/// narrowed to one result when `chunk_id` is given.
+pub fn get_feedback(base: &str, query_id: &str, chunk_id: Option<i64>) -> Result<Json, String> {
+    let token = client_token()?;
+    get_feedback_with_token(base, query_id, chunk_id, &token)
+}
+
+fn get_feedback_with_token(
+    base: &str,
+    query_id: &str,
+    chunk_id: Option<i64>,
+    token: &str,
+) -> Result<Json, String> {
+    let auth = format!("Bearer {token}");
+    let mut call = agent()
+        .get(format!("{base}/v1/feedback"))
+        .header("Authorization", &auth)
+        .query("query_id", query_id.to_string());
+    if let Some(chunk) = chunk_id {
+        call = call.query("chunk_id", chunk.to_string());
+    }
+    let mut resp = call
+        .call()
+        .map_err(|e| format!("service at {base} unreachable ({e})"))?;
+    let status = resp.status().as_u16();
+    let body = read_body(&mut resp)?;
+    if status != 200 {
+        return Err(format!(
+            "service at {base} failed the feedback retrieval: {}",
+            error_detail(status, &body)
+        ));
+    }
+    serde_json::from_str(&body)
+        .map_err(|e| format!("service at {base} sent a malformed feedback response: {e}"))
+}
+
 fn search_with_token(base: &str, request: &SearchRequest, token: &str) -> Result<Json, String> {
     search_with_agent(base, request, token, agent())
 }

@@ -31,11 +31,12 @@ use atlas_core::filters::{Filters, split_csv};
 use atlas_core::shards::{ShardedBackend, TierCeiling, open_from_spec};
 use atlas_core::turso::{TURSO_HOST, resolve_turso_token};
 use atlas_core::{
-    AtlasEmbedder, CachingEmbedder, Error as CoreError, FixedEmbedder, JsonlTraceSink,
-    LocalBackend, QueryEmbedder, QueryEmbeddingCache, SearchBackend, SearchMode, SearchOptions,
-    TraceContext, TraceDocument, TursoBackend, VectorBackend, aggregate_traces, ingest_traces,
-    load_feedback_refs, load_feedback_votes, run_get_chunk, run_retention, run_search_traced,
-    search_traces, valid_civil_date, weekly_report, write_report,
+    AtlasEmbedder, CachingEmbedder, Error as CoreError, FeedbackInput, FixedEmbedder,
+    JsonlFeedbackSink, JsonlTraceSink, LocalBackend, QueryEmbedder, QueryEmbeddingCache,
+    SearchBackend, SearchMode, SearchOptions, TraceContext, TraceDocument, TursoBackend,
+    VectorBackend, Vote, aggregate_traces, feedback_for, ingest_traces, load_feedback_dir,
+    load_feedback_refs, load_feedback_votes, record_feedback, run_get_chunk, run_retention,
+    run_search_traced, search_traces, valid_civil_date, weekly_report, write_report,
 };
 use atlas_proto::{
     FilterSpec, QueryVariant, SearchMode as ProtoSearchMode, SearchParametersV1, SearchRequest,
@@ -71,6 +72,48 @@ enum Cmd {
     FetchModel,
     /// ingest query traces as a statistics-and-reports corpus, or run trace retention (design s4)
     Traces(TracesArgs),
+    /// cast a thumbs vote on a served result, or retrieve feedback by its IDs (design s6.1)
+    Feedback(FeedbackArgs),
+}
+
+#[derive(Args)]
+struct FeedbackArgs {
+    /// the query_id the search response envelope carried (invariant 1)
+    #[arg(long)]
+    query: String,
+    /// the result's chunk_id; omit for a per-query vote (design s6.1)
+    #[arg(long)]
+    chunk: Option<i64>,
+    /// thumbs up (conflicts with --down)
+    #[arg(long, conflicts_with = "down")]
+    up: bool,
+    /// thumbs down (conflicts with --up)
+    #[arg(long)]
+    down: bool,
+    /// optional comment, verbatim; @file reads the comment from a file
+    #[arg(long)]
+    comment: Option<String>,
+    /// the result was opened/expanded before this vote (design s6.4)
+    #[arg(long)]
+    opened: bool,
+    /// requester kind: drew | agent | user | anonymous (design s6.3)
+    #[arg(long, default_value = "user")]
+    requester_kind: String,
+    /// stable requester id
+    #[arg(long, default_value = "cli")]
+    requester_id: String,
+    /// retrieve the feedback for --query [--chunk] instead of casting a vote
+    #[arg(long)]
+    get: bool,
+    /// feedback store directory (default: the JsonlFeedbackSink default dir)
+    #[arg(long)]
+    dir: Option<PathBuf>,
+    /// go through a running service instead of the local store
+    #[arg(long)]
+    via_service: bool,
+    /// service base URL for --via-service (env ATLAS_SEARCH_URL)
+    #[arg(long)]
+    service_url: Option<String>,
 }
 
 #[derive(Args)]
@@ -960,6 +1003,83 @@ fn cmd_serve(args: ServeArgs) -> Result<(), CliError> {
     server::serve_forever(settings, engine).map_err(|m| (1, m))
 }
 
+fn cmd_feedback(args: FeedbackArgs) -> Result<(), CliError> {
+    if args.get {
+        let out = if args.via_service {
+            let base = service::base_url(args.service_url.as_deref());
+            service::get_feedback(&base, &args.query, args.chunk).map_err(|m| (1, m))?
+        } else {
+            let dir = args
+                .dir
+                .clone()
+                .unwrap_or_else(JsonlFeedbackSink::default_dir);
+            let records = load_feedback_dir(&dir).map_err(map_err)?;
+            let views = feedback_for(&records, &args.query, args.chunk);
+            serde_json::json!({
+                "query_id": args.query,
+                "chunk_id": args.chunk,
+                "feedback": views.iter().map(|v| v.to_json()).collect::<Vec<_>>(),
+            })
+        };
+        println!("{}", serde_json::to_string_pretty(&out).unwrap_or_default());
+        return Ok(());
+    }
+    let vote = match (args.up, args.down) {
+        (true, false) => Vote::Up,
+        (false, true) => Vote::Down,
+        _ => {
+            return Err((
+                2,
+                "feedback needs exactly one of --up / --down (or --get to retrieve)".to_string(),
+            ));
+        }
+    };
+    let comment = match &args.comment {
+        Some(raw) if raw.starts_with('@') => {
+            let path = &raw[1..];
+            Some(
+                std::fs::read_to_string(path)
+                    .map_err(|e| (1, format!("cannot read comment file {path}: {e}")))?,
+            )
+        }
+        other => other.clone(),
+    };
+    if args.via_service {
+        let base = service::base_url(args.service_url.as_deref());
+        let payload = serde_json::json!({
+            "query_id": args.query,
+            "chunk_id": args.chunk,
+            "vote": vote.as_str(),
+            "comment": comment,
+            "opened": args.opened,
+            "requester": {"kind": args.requester_kind, "id": args.requester_id},
+        });
+        let out = service::post_feedback(&base, &payload).map_err(|m| (1, m))?;
+        println!("{}", serde_json::to_string_pretty(&out).unwrap_or_default());
+        return Ok(());
+    }
+    let input = FeedbackInput {
+        query_id: args.query.clone(),
+        chunk_id: args.chunk,
+        vote,
+        comment,
+        requester_kind: args.requester_kind.clone(),
+        requester_id: args.requester_id.clone(),
+        opened: args.opened,
+    };
+    let dir = args
+        .dir
+        .clone()
+        .unwrap_or_else(JsonlFeedbackSink::default_dir);
+    let sink = JsonlFeedbackSink::new(dir);
+    let record = record_feedback(&sink, &input).map_err(map_err)?;
+    println!(
+        "{}",
+        serde_json::to_string_pretty(&record.to_json()).unwrap_or_default()
+    );
+    Ok(())
+}
+
 fn cmd_traces(args: TracesArgs) -> Result<(), CliError> {
     match args.cmd {
         TracesCmd::Ingest(a) => {
@@ -1131,6 +1251,7 @@ fn run(cli: Cli) -> Result<(), CliError> {
         Cmd::Init(args) => cmd_init(args),
         Cmd::FetchModel => cmd_fetch_model(),
         Cmd::Traces(args) => cmd_traces(args),
+        Cmd::Feedback(args) => cmd_feedback(args),
     }
 }
 
@@ -1188,6 +1309,55 @@ mod tests {
         }))
         .unwrap();
         assert_eq!(cli_request.parameters, raw_request.parameters);
+    }
+
+    #[test]
+    fn feedback_cli_parses_the_design_invocation() {
+        // Oracle: design section 6.1's CLI form —
+        // `atlas feedback --query <query_id> --chunk <chunk_id>
+        // --up|--down [--comment <text|@file>]`.
+        let cli = Cli::try_parse_from([
+            "atlas-search",
+            "feedback",
+            "--query",
+            "q-1",
+            "--chunk",
+            "42",
+            "--down",
+            "--comment",
+            "stale chunk",
+        ])
+        .unwrap();
+        let Cmd::Feedback(args) = cli.cmd else {
+            panic!("expected feedback command")
+        };
+        assert_eq!(args.query, "q-1");
+        assert_eq!(args.chunk, Some(42));
+        assert!(args.down && !args.up);
+        assert_eq!(args.comment.as_deref(), Some("stale chunk"));
+        assert!(!args.get);
+
+        // Per-query vote: no --chunk, and --get retrieves.
+        let cli =
+            Cli::try_parse_from(["atlas-search", "feedback", "--query", "q-1", "--get"]).unwrap();
+        let Cmd::Feedback(args) = cli.cmd else {
+            panic!("expected feedback command")
+        };
+        assert_eq!(args.chunk, None);
+        assert!(args.get);
+
+        // --up and --down conflict at parse time.
+        assert!(
+            Cli::try_parse_from([
+                "atlas-search",
+                "feedback",
+                "--query",
+                "q-1",
+                "--up",
+                "--down",
+            ])
+            .is_err()
+        );
     }
 
     #[test]
