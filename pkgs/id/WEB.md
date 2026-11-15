@@ -249,6 +249,7 @@ Three DaisyUI terminal-inspired themes with `#000000` black backgrounds. Switch 
 | `/api/new`            | POST   | Create new file                     |
 | `/api/rename`         | POST   | Rename file (with optional archive) |
 | `/api/copy`           | POST   | Copy file to new name               |
+| `/api/files/send`     | POST   | Send file to another server (server-side transfer, #5346) |
 | `/api/download`       | POST   | Download file content               |
 | `/api/delete`         | POST   | Soft-delete file                    |
 | `/api/restore`        | POST   | Restore deleted file (404 if missing, 409 if not deleted) |

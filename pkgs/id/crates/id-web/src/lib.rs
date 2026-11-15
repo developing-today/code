@@ -338,6 +338,13 @@ impl PublicationMounts {
 pub struct AppState {
     /// The blob store for accessing files.
     pub store: Store,
+    /// This node's own iroh endpoint, when the serving process wired one
+    /// in (#5346): the server-to-server transfer behind the web send
+    /// route (`POST /api/files/send`) runs with this endpoint's identity,
+    /// exactly like the meta protocol's `Send` handler (#5345). `None`
+    /// for states built outside `id serve` (tests, embedded surfaces) —
+    /// the send route then answers 503 rather than inventing an identity.
+    pub transfer_endpoint: Option<iroh::endpoint::Endpoint>,
     /// State for collaborative editing sessions.
     pub collab: Arc<CollabState>,
     /// Asset URLs (with cache-busting hashes).
@@ -460,6 +467,7 @@ impl AppState {
     ) -> anyhow::Result<Self> {
         Ok(Self {
             store,
+            transfer_endpoint: None,
             collab: Arc::new(CollabState::new()),
             assets: load_asset_urls(),
             peers,
@@ -483,6 +491,14 @@ impl AppState {
             groups_log: None,
             seitan: SeitanState::default(),
         })
+    }
+
+    /// Wire the serving node's own endpoint in as the transfer identity
+    /// for the web send route (#5346). `id serve` passes its endpoint
+    /// through [`web_routers_with_surface`]; see
+    /// [`AppState::transfer_endpoint`].
+    pub fn set_transfer_endpoint(&mut self, endpoint: Option<iroh::endpoint::Endpoint>) {
+        self.transfer_endpoint = endpoint;
     }
 }
 
@@ -658,6 +674,7 @@ pub async fn web_routers(
         surfaces,
         groups_log,
         seitan,
+        None,
     )
     .await?;
     Ok(routers)
@@ -736,8 +753,9 @@ pub async fn web_routers_with_surface(
     surfaces: Vec<Option<String>>,
     groups_log: Option<std::path::PathBuf>,
     seitan: SeitanState,
+    transfer_endpoint: Option<iroh::endpoint::Endpoint>,
 ) -> anyhow::Result<(Vec<Router>, WebSurfaceFactory)> {
-    let state = match local_events {
+    let mut state = match local_events {
         Some(events) => {
             AppState::with_local_events(
                 store,
@@ -762,6 +780,7 @@ pub async fn web_routers_with_surface(
             .await?
         }
     };
+    state.set_transfer_endpoint(transfer_endpoint);
     let surface = WebSurfaceFactory {
         state: state.clone(),
         world: world.clone(),
