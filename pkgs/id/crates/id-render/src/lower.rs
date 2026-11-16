@@ -5,9 +5,10 @@
 //!
 //! Boundaries, stated rather than silent:
 //!
-//! * **Web only.** Native (#5852) and custom-GUI (#5853) lowering
-//!   consume their own tables through this same shape when they
-//!   land; nothing here branches on a target name — the web table
+//! * **Web only.** Native lowering (#5852) lives in
+//!   [`crate::lower_native`] and custom-GUI lowering (#5853)
+//!   consumes its own table through this same shape when it
+//!   lands; nothing here branches on a target name — the web table
 //!   is the input that makes this the web lowering.
 //! * **Attributes come from the validated IR.** Stage 3's resolved
 //!   IR carries each element's final assertion set but not its
@@ -413,7 +414,7 @@ pub fn emit_json(artefact: &WebArtefact, report: &LowerReport) -> String {
     out
 }
 
-fn push_json_string(out: &mut String, value: &str) {
+pub(crate) fn push_json_string(out: &mut String, value: &str) {
     out.push('"');
     for ch in value.chars() {
         match ch {
@@ -431,7 +432,7 @@ fn push_json_string(out: &mut String, value: &str) {
     out.push('"');
 }
 
-fn indent(out: &mut String, depth: usize) {
+pub(crate) fn indent(out: &mut String, depth: usize) {
     for _ in 0..depth {
         out.push_str("  ");
     }

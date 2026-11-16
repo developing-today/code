@@ -990,6 +990,8 @@ async fn run_world_session<I: SessionIo>(
         | ClientFrame::Resize { .. }
         | ClientFrame::Revoke { .. }
         | ClientFrame::Paste { .. }
+        | ClientFrame::ProviderOffer { .. }
+        | ClientFrame::ProviderReply { .. }
         | ClientFrame::FormResult { .. } => {
             let _ = send_error(
                 service.frame_meter(),
@@ -1188,9 +1190,15 @@ async fn query_session<I: SessionIo>(
                     io.mark_authorized();
                 }
                 let store = documents_store.as_ref().or(service.blobs.as_ref());
-                if let Err(message) =
-                    document_session(service.frame_meter(), service.world(), io, token, store, &name)
-                        .await
+                if let Err(message) = document_session(
+                    service.frame_meter(),
+                    service.world(),
+                    io,
+                    token,
+                    store,
+                    &name,
+                )
+                .await
                 {
                     let _ = send_error(service.frame_meter(), io, message).await;
                     return;
@@ -2156,6 +2164,7 @@ async fn joined<I: SessionIo>(
     // events at or below the cursor are skipped when delivered.
     let mut events = world.subscribe();
     let mut revocations = world.subscribe_revocations();
+    let mut provider_requests = world.shared_provider_broker().subscribe_requests();
     let Ok(participant_id) = world.participant_id(token.clone()).await else {
         let _ = send_error(service.frame_meter(), io, "join denied").await;
         return;
@@ -2395,6 +2404,28 @@ async fn joined<I: SessionIo>(
                 }
                 Err(_) => break,
             },
+            provider_request = provider_requests.recv() => match provider_request {
+                Ok(frame) if frame.session == session_id => {
+                    // F13.7 step 3: this frame is bound to this
+                    // session — the only session that may receive it.
+                    if !send_json(
+                        service.frame_meter(),
+                        io,
+                        &ServerFrame::ProviderRequest {
+                            nonce: &frame.nonce,
+                            provider: &frame.provider,
+                            args: frame.args.clone(),
+                            deadline_ms: frame.deadline_ms,
+                        },
+                    )
+                    .await
+                    {
+                        break;
+                    }
+                }
+                Ok(_) | Err(broadcast::error::RecvError::Lagged(_)) => {}
+                Err(broadcast::error::RecvError::Closed) => {}
+            },
             revoked = revocations.recv() => match revoked {
                 Ok(revoked_id) if revoked_id == participant_id => {
                     let _ = send_error(service.frame_meter(), io, "world capability revoked").await;
@@ -2405,6 +2436,10 @@ async fn joined<I: SessionIo>(
             }
         }
     }
+    // F13.7 step 3: a session that ends takes its provider offers
+    // with it, and any request still bound to it completes as
+    // disconnected — never re-routed to another client.
+    world.shared_provider_broker().remove_session(session_id);
 }
 
 /// Returns the participant's presence when the session ends, however it ends.
@@ -2655,6 +2690,38 @@ async fn handle_client_frame<I: SessionIo>(
         return send_error(service.frame_meter(), io, "invalid world frame").await;
     };
     let result = match frame {
+        ClientFrame::ProviderOffer { providers } => {
+            // F13.7 step 3: record what this session's shell can
+            // serve. An offer enables nothing by itself — the broker
+            // still runs the full policy order for every request.
+            world
+                .shared_provider_broker()
+                .register_offer(session_id, providers);
+            return true;
+        }
+        ClientFrame::ProviderReply {
+            nonce,
+            ok,
+            result_hex,
+            error,
+        } => {
+            // F13.7 step 3: hand the reply to the broker, which
+            // accepts exactly one reply per nonce, only from the
+            // bound session. A bad reply is never a session error.
+            let broker = world.shared_provider_broker();
+            match result_hex {
+                Some(hex) => match crate::world::hex_decode(&hex) {
+                    Some(bytes) => {
+                        let _ = broker.accept_reply(session_id, &nonce, ok, Some(bytes), error);
+                    }
+                    None => broker.note_malformed_reply(session_id, &nonce),
+                },
+                None => {
+                    let _ = broker.accept_reply(session_id, &nonce, ok, None, error);
+                }
+            }
+            return true;
+        }
         ClientFrame::Attenuate {
             name,
             scopes,

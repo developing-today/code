@@ -101,6 +101,11 @@ pub enum ServerUpdate {
     /// The host replaced the world's program mid-session (a live install
     /// sends snapshot, then this notification, then a replacement view).
     ProgramChanged,
+    /// The host sent an F13.7 `provider_request` (step 2 frame, step 4
+    /// local handling): the validated frame is queued on the state for
+    /// the session's provider adapter to answer; session state itself
+    /// does not interpret it.
+    ProviderRequest,
 }
 
 /// Accumulated host state for a single session stream.
@@ -110,6 +115,7 @@ pub struct SessionState {
     events: Vec<Value>,
     view: Option<SessionView>,
     program_module_hash: Option<String>,
+    provider_requests: Vec<Value>,
 }
 
 /// Maximum durable events retained since the most recent snapshot.
@@ -154,6 +160,20 @@ impl SessionState {
             "view" => {
                 self.view = Some(SessionView::from_frame(&frame)?);
                 Ok(ServerUpdate::View)
+            }
+            "provider_request" => {
+                // F13.7 step 4: a provider request is validated by the
+                // contract check above and queued for the provider
+                // adapter, which applies the local grant/bounds check
+                // and builds the reply. The frame must name its nonce
+                // and provider to be answerable at all.
+                if frame["nonce"].as_str().is_none_or(str::is_empty)
+                    || frame["provider"].as_str().is_none_or(str::is_empty)
+                {
+                    bail!("provider_request frame has no nonce or provider");
+                }
+                self.provider_requests.push(frame);
+                Ok(ServerUpdate::ProviderRequest)
             }
             "program_changed" => {
                 // A live program install is a normal point in a session
@@ -201,6 +221,14 @@ impl SessionState {
     pub fn program_module_hash(&self) -> Option<&str> {
         self.program_module_hash.as_deref()
     }
+
+    /// Drain the queued F13.7 `provider_request` frames, oldest
+    /// first. The session's provider adapter answers each one with a
+    /// `provider_reply`; an undrained request is never answered
+    /// implicitly.
+    pub fn take_provider_requests(&mut self) -> Vec<Value> {
+        std::mem::take(&mut self.provider_requests)
+    }
 }
 
 /// Lock the shared session state, mapping a poisoned lock to an error
@@ -241,14 +269,78 @@ pub async fn run_session(
     world: Option<&str>,
     capability: &str,
     after: Option<u64>,
+    outbound: mpsc::Receiver<Value>,
+    views: mpsc::UnboundedSender<SessionView>,
+) -> Result<SessionState> {
+    let (provider_requests, _dropped) = mpsc::unbounded_channel();
+    run_session_inner(
+        client,
+        world,
+        capability,
+        after,
+        outbound,
+        views,
+        provider_requests,
+        None,
+    )
+    .await
+}
+
+/// [`run_session`] with F13.7 step-4 provider handling: validated
+/// `provider_request` frames are forwarded on `provider_requests`
+/// for the caller's [`crate::ProviderAdapter`] to answer through the
+/// ordinary outbound channel, and `provider_offer` (the adapter's
+/// offer frame for this world, when it has one) is sent immediately
+/// after the join frame.
+///
+/// # Errors
+///
+/// Same failures as [`run_session`], plus a failure to send the
+/// offer frame.
+pub async fn run_session_with_providers(
+    client: WorldClient,
+    world: Option<&str>,
+    capability: &str,
+    after: Option<u64>,
+    outbound: mpsc::Receiver<Value>,
+    views: mpsc::UnboundedSender<SessionView>,
+    provider_requests: mpsc::UnboundedSender<Value>,
+    provider_offer: Option<Value>,
+) -> Result<SessionState> {
+    run_session_inner(
+        client,
+        world,
+        capability,
+        after,
+        outbound,
+        views,
+        provider_requests,
+        provider_offer,
+    )
+    .await
+}
+
+async fn run_session_inner(
+    client: WorldClient,
+    world: Option<&str>,
+    capability: &str,
+    after: Option<u64>,
     mut outbound: mpsc::Receiver<Value>,
     views: mpsc::UnboundedSender<SessionView>,
+    provider_requests: mpsc::UnboundedSender<Value>,
+    provider_offer: Option<Value>,
 ) -> Result<SessionState> {
     let (conn, mut send, mut recv) = client.into_parts();
     let join = route_frame(&join_frame(capability, after), world);
     write_frame(&mut send, join.as_bytes())
         .await
         .context("send join frame")?;
+    if let Some(offer) = provider_offer {
+        let routed = route_frame(&offer, world);
+        write_frame(&mut send, routed.as_bytes())
+            .await
+            .context("send provider offer frame")?;
+    }
 
     let shared = Arc::new(Mutex::new(SessionState::default()));
     let reader_state = Arc::clone(&shared);
@@ -261,6 +353,15 @@ pub async fn run_session(
             let view = {
                 let mut state = lock_state(&reader_state)?;
                 let update = state.apply_server_frame(frame)?;
+                if update == ServerUpdate::ProviderRequest {
+                    for request in state.take_provider_requests() {
+                        // A dropped receiver means the shell is not
+                        // answering provider requests this session;
+                        // the host broker times the request out and
+                        // the local refusal stays the default.
+                        let _ = provider_requests.send(request);
+                    }
+                }
                 if update == ServerUpdate::View {
                     state.view().cloned()
                 } else {
@@ -438,6 +539,31 @@ mod tests {
             ServerUpdate::View
         );
         assert_eq!(state.view().unwrap().text_projection(), "new program");
+    }
+
+    #[test]
+    fn provider_requests_are_queued_for_the_adapter_not_folded_into_state() {
+        let mut state = SessionState::default();
+        let frame = json!({
+            "type": "provider_request", "nonce": "ab12",
+            "provider": "client.file.read", "args": {"path": "notes.txt"},
+            "deadline_ms": 5000
+        });
+        assert_eq!(
+            state.apply_server_frame(frame.clone()).unwrap(),
+            ServerUpdate::ProviderRequest
+        );
+        assert_eq!(state.take_provider_requests(), vec![frame]);
+        assert!(state.take_provider_requests().is_empty());
+        // A request that cannot be answered (no nonce) is rejected.
+        assert!(
+            state
+                .apply_server_frame(json!({
+                    "type": "provider_request", "provider": "client.file.read",
+                    "args": {}, "deadline_ms": 5000
+                }))
+                .is_err()
+        );
     }
 
     #[test]
