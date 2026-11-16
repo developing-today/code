@@ -29,6 +29,7 @@ pub mod canonical_cbor;
 pub mod connectivity;
 pub mod discovery;
 pub mod frames;
+pub mod holders;
 pub mod graph;
 pub mod hex;
 pub mod intranet;
