@@ -422,6 +422,7 @@ pub fn sign_authorisation(
             rotation: None,
 
             chat: None,
+            anchor: None,
         },
     )?)
 }
@@ -457,6 +458,7 @@ pub fn sign_revoke(
             rotation: None,
 
             chat: None,
+            anchor: None,
         },
     )?)
 }

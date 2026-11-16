@@ -579,6 +579,14 @@ async fn run_world_session<I: SessionIo>(
             )
             .await;
         }
+        ClientFrame::FormResult { .. } => {
+            let _ = send_error(
+                service.frame_meter(),
+                io,
+                "form results need a joined session",
+            )
+            .await;
+        }
         ClientFrame::Invite {
             admin_token,
             display_name,

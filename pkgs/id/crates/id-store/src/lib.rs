@@ -25,6 +25,7 @@ pub use id_core::port;
 
 pub mod chain;
 pub mod chat;
+pub mod chat_anchor;
 pub mod documents;
 pub mod event_types;
 pub mod issuer_rotation;
