@@ -28,7 +28,8 @@ import {
   type FleetFeed,
   type SectionDiagnosis,
 } from "./feed.ts";
-import type { GhItem, ProvenanceDetail, RefKey } from "./model.ts";
+import type { GhItem, ProvenanceDetail, QuotaView, RefKey } from "./model.ts";
+import type { PushHealthView } from "./freshness-reconcile.ts";
 import { PAGES } from "./pages.ts";
 import { buildServices, type ServiceDef } from "./topology.ts";
 import {
@@ -124,6 +125,26 @@ export interface FeedSectionHealth {
   generatedAt?: string;
   ageMs?: number;
   note?: string;
+  /** Provider-reported total minus emitted entries; null means no comparable total. */
+  behindBy: number | null;
+  /** Latest successful source read, not the feed file's write time. */
+  lastSyncAt: string | null;
+  lagNote: string | null;
+}
+
+export interface QuotaGathererProviderHealth {
+  providerId: string;
+  serviceId: string;
+  state: "ok" | "stale" | "error" | "lapsed";
+  /** The latest successful sync, or null when the provider has never
+   * synced: an errored entry's measuredAt is the failed attempt's time,
+   * not a sync (Codex P2 on PR #5180). Retained (stale) and lapsed entries keep
+   * their last successful measuredAt. */
+  lastSyncAt: string | null;
+  /** Quota providers do not currently publish a comparable expected row total. */
+  behindBy: null;
+  lagNote: string;
+  credentialLabel?: string;
 }
 
 export interface PageHealth {
@@ -191,6 +212,12 @@ export interface HealthView {
     checkout: CheckoutDrift;
     sections: FeedSectionHealth[];
   };
+  quotaGatherer: {
+    generatedAt: string;
+    tickAt: string | null;
+    ok: boolean;
+    providers: QuotaGathererProviderHealth[];
+  } | null;
   jobs: {
     orchestration: {
       state: SectionDiagnosis["state"] | "unknown";
@@ -219,6 +246,14 @@ export interface HealthView {
    *  probe's HTTP 200. "down" with the error when the harness cannot
    *  be read; never an invented state. */
   rfa: RfaHealthFacet;
+  /** #3976: push health — the freshness journal + 5-minute reconciler
+   *  state (push up/degraded/down, last event, last successful
+   *  reconcile, per-source age/lag, open/reset gaps), assembled by
+   *  src/freshness-reconcile.ts. Separate from source freshness on
+   *  purpose: a connected stream is not proof of fresh data, and a
+   *  quiet source is not an outage. Null when the caller did not
+   *  assemble it (fixtures mode, older call sites) — never invented. */
+  push: PushHealthView | null;
 }
 
 // --- Render registry -------------------------------------------------------
@@ -295,10 +330,48 @@ function feedSections(feed: FleetFeed | null, now: number): FeedSectionHealth[] 
         : outcome?.status === "skipped"
           ? "intentionally skipped by collector"
           : undefined;
+    const reportedTotal = outcome?.reportedTotal;
+    const emittedEntries = outcome?.emittedEntries;
+    const validReportedTotal =
+      typeof reportedTotal === "number" && Number.isSafeInteger(reportedTotal) && reportedTotal >= 0
+        ? reportedTotal
+        : undefined;
+    const validEmittedEntries =
+      typeof emittedEntries === "number" && Number.isSafeInteger(emittedEntries) && emittedEntries >= 0
+        ? emittedEntries
+        : undefined;
+    const behindBy =
+      outcome?.status === "ok" &&
+      validReportedTotal !== undefined &&
+      validEmittedEntries !== undefined &&
+      validReportedTotal >= validEmittedEntries
+        ? validReportedTotal - validEmittedEntries
+        : null;
+    const lastSyncAt =
+      outcome?.status === "ok"
+        ? outcome.at
+        : generatedAt && Number.isFinite(Date.parse(generatedAt))
+          ? generatedAt
+          : null;
+    const lagNote =
+      behindBy !== null
+        ? null
+        : outcome?.status === "error"
+          ? "latest collection failed; no successful sync time is retained"
+          : outcome?.status === "skipped"
+            ? "collection was skipped; no sync time is reported"
+            : validReportedTotal !== undefined &&
+                validEmittedEntries !== undefined &&
+                validReportedTotal < validEmittedEntries
+              ? "emitted entry count exceeds the provider-reported total; lag is unknown"
+              : "source does not report a comparable expected entry total";
     return {
       key,
       status: outcome?.status ?? "unknown",
       ...from(outcome?.at ?? generatedAt, present, outcomeNote ?? note),
+      behindBy,
+      lastSyncAt,
+      lagNote,
     } as FeedSectionHealth;
   };
   return [
@@ -329,6 +402,7 @@ export interface HealthInputs {
   cfg: Config;
   feed: FleetFeed | null;
   feedFileMtimeMs: number | null;
+  quota?: QuotaView;
   diagnosis?: SectionDiagnosis;
   detail?: ProvenanceDetail;
   itemsCoverage?: ItemsCoverage | null;
@@ -336,6 +410,9 @@ export interface HealthInputs {
   /** Source-conflict inbox (#1282 slice 1) — counted on the stack health
    *  surface so the backlog is visible where the stack's state already is. */
   conflicts?: ConflictInbox | null;
+  /** #3976: the reconciler's current push-health view (server.ts
+   *  supplies it in live mode); absent/null renders as unassembled. */
+  pushHealth?: PushHealthView | null;
 }
 
 export interface HealthDeps {
@@ -465,6 +542,9 @@ export async function buildHealth(inputs: HealthInputs, deps: HealthDeps = {}): 
     (services.some((s) => s.ok === false) ||
       (feedAgeMs !== null && feedAgeMs >= FEED_STALE_MS) ||
       checkout.state === "behind" ||
+      // #3976: an unreadable freshness journal means push state
+      // cannot be proven — that is degraded, never silently ok.
+      (inputs.pushHealth != null && inputs.pushHealth.state === "down") ||
       // #1203: a harness whose GraphQL cannot be read (or whose backend
       // is not READY) is a degraded dependency, not an invisible one.
       rfa.state === "down" ||
@@ -485,6 +565,22 @@ export async function buildHealth(inputs: HealthInputs, deps: HealthDeps = {}): 
       checkout,
       sections: sectionHealth,
     },
+    quotaGatherer: inputs.quota?.gatherer
+      ? {
+          generatedAt: inputs.quota.gatherer.generatedAt,
+          tickAt: inputs.quota.gatherer.tickAt,
+          ok: inputs.quota.gatherer.ok,
+          providers: inputs.quota.gatherer.providers.map((provider) => ({
+            providerId: provider.providerId,
+            serviceId: provider.serviceId,
+            state: provider.state,
+            lastSyncAt: provider.state === "error" ? null : provider.measuredAt,
+            behindBy: null,
+            lagNote: "provider does not report a comparable expected entry total",
+            ...(provider.credentialLabel ? { credentialLabel: provider.credentialLabel } : {}),
+          })),
+        }
+      : null,
     jobs: {
       orchestration: {
         state: diagnosis?.state ?? "unknown",
@@ -504,6 +600,7 @@ export async function buildHealth(inputs: HealthInputs, deps: HealthDeps = {}): 
     },
     pages: pageHealth(now),
     rfa,
+    push: inputs.pushHealth ?? null,
     facets: inputs.detail ?? null,
     itemsCoverage: inputs.itemsCoverage ?? null,
     comments: inputs.comments ?? { pendingMessages: 0, pendingGithub: 0, total: 0 },

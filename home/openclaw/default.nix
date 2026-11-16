@@ -23,6 +23,7 @@
 # store) and is read at service start.
 let
   homeDir = "/home/user";
+  acpxPlugin = inputs.nix-openclaw.packages.${system}.openclaw-runtime-plugin-acpx;
   # Local service ports, repeated here because OpenClaw's config is
   # rendered as data, not shell env. (The provider-proxy ports that
   # once had to stay in sync with home/common/default.nix are all
@@ -42,6 +43,38 @@ let
     inherit models;
   };
   model = id: name: { inherit id name; };
+
+  # Telegram load fix (code#1029): nix-openclaw's stage-runtime creates
+  # lib/node_modules/openclaw/dist-runtime as a symlink to dist (module
+  # identity), and bundled-plugin discovery prefers the dist-runtime
+  # spelling — but the gateway's fs-safe plugin loader runs with
+  # rejectSymlinks, so the bundled telegram channel fails to load:
+  # "plugin module path escapes plugin root or fails alias checks:
+  # .../dist-runtime/extensions/telegram/index.js | symlink path
+  # component not allowed". Rebuild the gateway without the symlink:
+  # discovery then falls back to the canonical dist/extensions tree
+  # (same files, no symlink component, module identity preserved).
+  # The bundle only wraps the gateway binary via OPENCLAW_GATEWAY_BIN,
+  # so point it at the fixed gateway. Drop both overrides once
+  # upstream stops staging the symlink or the loader admits
+  # in-package aliases.
+  openclawGatewayNoDistRuntime = pkgs.openclaw-gateway.overrideAttrs (old: {
+    # Inside installPhase, not a post* hook: the npm gateway package
+    # sets dontFixup = true (no fixup phase), and its custom
+    # installPhase script path bypasses the postInstall hook — both
+    # were tried first and the symlink survived (code#1029).
+    installPhase = ''
+      runHook preInstall
+      ${old.installPhase}
+      rm -f $out/lib/node_modules/openclaw/dist-runtime
+      runHook postInstall
+    '';
+  });
+  openclawPackageNoDistRuntime = pkgs.openclaw.overrideAttrs (old: {
+    env = (old.env or { }) // {
+      OPENCLAW_GATEWAY_BIN = "${openclawGatewayNoDistRuntime}/bin/openclaw";
+    };
+  });
 in
 {
   imports = [ inputs.nix-openclaw.homeManagerModules.openclaw ];
@@ -51,17 +84,29 @@ in
   # the ACP-to-HTTP adapter in this repo (bin/opencode-acp-adapter.mjs,
   # #1243) so OpenClaw sessions land on the standing shared
   # `opencode serve` at 127.0.0.1:13420 instead of a private per-process
-  # server; claude/codex run the local wrappers in ~/.openclaw/acpx
-  # (bundled adapters, no npx fetch); agy is the system
-  # antigravity-acp server.
+  # server; codex runs the local wrapper in ~/.openclaw/acpx
+  # (bundled adapter, no npx fetch); agy is the system
+  # antigravity-acp server. There is deliberately NO claude agent
+  # here: Drew's order 2026-11-08 - nothing automated may spawn the
+  # real Claude Code CLI (code#7098); its old wrapper path is now a
+  # fail-closed stub.
   # FALLBACK (#1243): to revert opencode to the private-server path,
   # restore opencode.command below (and agents.opencode in the embedded
   # acpx override) to "/etc/profiles/per-user/user/bin/opencode acp".
+  # code#1711: the codex ACP adapter resolves from the Nix store via a
+  # stable symlink, and the managed wrapper below (separate name, so
+  # plugin admission cannot rewrite it) runs it. OpenClaw's generated
+  # wrappers in ~/.openclaw/acpx stay untouched as rollback until the
+  # plugin-captures tree is removed after verification.
+  home.file = {
+    ".openclaw/acpx/bin/codex-acp.mjs".source =
+      "${acpxPlugin}/node_modules/@agentclientprotocol/codex-acp/dist/index.js";
+    ".openclaw/acpx/managed-codex-acp-wrapper.mjs".source = ./acpx/codex-acp-wrapper.mjs;
+  };
   home.file.".acpx/config.json".text = builtins.toJSON {
     agents = {
       opencode.command = "/home/user/code/bin/opencode-acp-adapter.mjs --server http://127.0.0.1:13420";
-      claude.command = "/home/user/.openclaw/acpx/claude-agent-acp-wrapper.mjs";
-      codex.command = "/home/user/.openclaw/acpx/codex-acp-wrapper.mjs";
+      codex.command = "/home/user/.openclaw/acpx/managed-codex-acp-wrapper.mjs";
       agy.command = "/run/current-system/sw/bin/agy_acp_server";
     };
   };
@@ -99,6 +144,8 @@ in
     Install.WantedBy = [ "default.target" ];
   };
 
+  # Guarded by .github/scripts/check-openclaw-unit-wants.sh (#2581): a
+  # proxy unit in Wants that the guard's allowlist does not name fails
   systemd.user.services.openclaw-gateway = {
     Unit = {
       After = [
@@ -118,6 +165,22 @@ in
       # window, generous burst, slower restart spacing.
       StartLimitIntervalSec = "600";
       StartLimitBurst = 30;
+    };
+    # Boot enablement (#9818): the nix-openclaw module renders this
+    # unit with NO [Install] section, so nothing ever pulled it in:
+    # `systemctl is-enabled` read "linked", the unit was absent from
+    # default.target.wants, and the gateway simply never started at
+    # boot/login — found inactive on 2026-11-14 by the pilot on
+    # issue #1190 (port 18789 refusing) and started by hand.
+    # Restart=always cannot help a unit that was never started.
+    # WantedBy=default.target makes home-manager link it into
+    # default.target.wants, exactly like openclaw-embedding above,
+    # so the gateway starts with the user session and Restart=always
+    # (module default) recovers it from any later death. The
+    # comment-loop pre-filter (comment-loop/) additionally carries
+    # a documented start step as the runtime backstop.
+    Install = {
+      WantedBy = [ "default.target" ];
     };
     Service = {
       RestartSec = lib.mkForce "5s"; # module default is 1s — the burst spacing that let 2026-11-04 happen
@@ -163,6 +226,8 @@ in
 
   programs.openclaw = {
     enable = true;
+    # Telegram load fix (code#1029): see openclawGatewayNoDistRuntime above.
+    package = openclawPackageNoDistRuntime;
     systemd.enable = true;
 
     # Gateway runtime env: a value that names an existing file is read
@@ -268,7 +333,17 @@ in
       "matrix"
       "signal"
       "codex" # native Codex app-server harness
-      "copilot" # GitHub Copilot agent runtime
+      # NOTE: no "copilot" entry here — since #9551 Part A (Drew
+      # order 2026-11-13) the gateway settings below set
+      # plugins.entries.copilot.enabled = false (its only live
+      # surface was the model picker; its ACP harness is already
+      # excluded from acpx allowedAgents). The pinned nix-openclaw
+      # module asserts a selected runtime plugin is never disabled
+      # in plugins.entries, so selecting it here made the whole
+      # system evaluation fail (latent break, found at the
+      # 2026-11-15 switch). The plugin stays unpackaged and the
+      # picker stays clean; re-enable by restoring this line AND
+      # flipping the entries flag below together.
       "opencode" # OpenCode Zen/Go provider
       "deepseek" # DeepSeek provider (plan routes are via the local proxies below)
       "meta" # Meta provider
@@ -283,6 +358,13 @@ in
       "diffs" # diff rendering for code review in chat
       "tokenjuice" # context compression
       "memory-lancedb" # LanceDB long-term memory; owns plugins.slots.memory (#1300 phase 1)
+      # NOTE: no "memory-wiki" entry here — like telegram, it is a
+      # bundled core plugin (ships in the gateway package's
+      # dist/extensions), so it is absent from the runtime-plugin
+      # catalog and listing it here fails evaluation ("unsupported
+      # ids: memory-wiki", d42d6cb3c3; broke every amd switch from
+      # 2026-11-12 until this fix). It stays enabled via
+      # plugins.entries."memory-wiki".enabled below (#6167).
     ];
 
     # Instance-local skills that encode how this fleet works.
@@ -386,6 +468,18 @@ in
           dmPolicy = "allowlist";
           allowFrom = [ "U0CBX163G8Z" ]; # Drew
           groupPolicy = "allowlist";
+          # Channel allowlist (groupPolicy = "allowlist" drops every
+          # channel not named here). #alignment (code#2170): the shared
+          # Muse/Aster room, bound and send/read/reply-verified
+          # 2026-11-03; topology ruled one shared channel, one thread
+          # per dispatch ID (Drew, 2026-11-10). Mention-gated, like
+          # every channel: OpenClaw answers mentions, not chatter.
+          channels = {
+            "C0CBYQR65LL" = {
+              enabled = true;
+              requireMention = true;
+            };
+          };
         };
         # Telegram wired 2026-11-07: bot @shed_openclaw_bot (Shed),
         # created via BotFather from Drew's account; token via env
@@ -428,12 +522,18 @@ in
               provider = "default";
               id = "OPENCODE_SERVER_AUTH";
             };
+            # Picker names are plain pool names (Drew order
+            # 2026-11-13, #9551 Part A): no "(OpenCode route pool)"
+            # suffix, and the Small pool is listed with the other
+            # five -- it exists as a route and was the only one not
+            # exposed here.
             models = [
-              (model "workhorse" "Workhorse (OpenCode route pool)")
-              (model "speed" "Speed (OpenCode route pool)")
-              (model "specialist" "Specialist (OpenCode route pool)")
-              (model "summit" "Summit (OpenCode route pool)")
-              (model "scout" "Scout (OpenCode route pool)")
+              (model "workhorse" "Workhorse pool")
+              (model "speed" "Speed pool")
+              (model "specialist" "Specialist pool")
+              (model "summit" "Summit pool")
+              (model "scout" "Scout pool")
+              (model "small" "Small pool")
             ];
           };
         };
@@ -494,15 +594,18 @@ in
         # Every allowed agent gets a per-agent command override below,
         # so the acpx startup check never resolves a harness to an
         # npx-fetched adapter (that fetch hangs on this laptop's flaky
-        # npmjs route; 120s check timeout, 2026-10-26). claude/codex run
-        # the local wrappers in ~/.openclaw/acpx (adapters bundled with
-        # the acpx plugin; the store repoint is code#1711); agy runs the
+        # npmjs route; 120s check timeout, 2026-10-26). codex runs
+        # the managed wrapper in ~/.openclaw/acpx (adapter resolves
+        # from the Nix store, code#1711); agy runs the
         # system antigravity-acp binary. Drew enabled all four
-        # 2026-10-28. Claude/Codex ALSO work via their native runtime
+        # 2026-10-28; claude was REMOVED 2026-11-08 by Drew's order -
+        # the real Claude Code CLI must never be spawned headlessly
+        # (code#7098: a headless CLI run blanked
+        # ~/.claude/.credentials.json on 2026-11-07). Codex ALSO works
+        # via its native runtime
         # plugins for chat bindings — ACP is the background-spawn path.
         allowedAgents = [
           "opencode"
-          "claude"
           "codex"
           "agy"
         ];
@@ -542,11 +645,8 @@ in
                   "http://127.0.0.1:13420"
                 ];
               };
-              agents.claude = {
-                command = "/home/user/.openclaw/acpx/claude-agent-acp-wrapper.mjs";
-              };
               agents.codex = {
-                command = "/home/user/.openclaw/acpx/codex-acp-wrapper.mjs";
+                command = "/home/user/.openclaw/acpx/managed-codex-acp-wrapper.mjs";
               };
               agents.agy = {
                 command = "/run/current-system/sw/bin/agy_acp_server";
@@ -556,7 +656,12 @@ in
           slack.enabled = true;
           telegram.enabled = true;
           codex.enabled = true;
-          copilot.enabled = true;
+          # Hidden from the model picker (Drew order 2026-11-13,
+          # #9551 Part A): the Copilot plugin's only live surface was
+          # its picker provider -- its ACP harness is already not in
+          # acpx allowedAgents above. Re-enable here in settings to
+          # make Copilot visible in the picker again.
+          copilot.enabled = false;
           "memory-lancedb" = {
             enabled = true;
             # Conversation access for the plugin's typed hooks. Without
@@ -588,6 +693,7 @@ in
               autoCapture = true;
             };
           };
+          "memory-wiki".enabled = true;
         };
       };
 

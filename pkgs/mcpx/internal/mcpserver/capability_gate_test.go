@@ -25,8 +25,12 @@ func gateInit(t *testing.T, s *mcpserver.Server, c *mcpserver.Conn, version stri
 func TestCapabilityGateRefusesUnadvertisedMethods(t *testing.T) {
 	s := mcpserver.New(newBackend(), "mcpx", "test")
 	// A connection that cannot push: at 2024-11-05 the advertisement
-	// carries neither completions (the revision does not define it)
-	// nor resources.subscribe (nothing can push).
+	// does not carry resources.subscribe (nothing can push).
+	// completions is absent too, but that absence cannot gate
+	// completion/complete: the revision has no capability to declare
+	// it with, while the method itself is older than the capability
+	// (see FeatCompletions) — the gate applies only where the
+	// capability exists to be advertised (#2716).
 	c := s.ConnForTest("gate-old")
 	gateInit(t, s, c, "2024-11-05")
 
@@ -35,7 +39,6 @@ func TestCapabilityGateRefusesUnadvertisedMethods(t *testing.T) {
 		params any
 		want   string
 	}{
-		{"completion/complete", map[string]any{}, "capability completions not advertised"},
 		{"resources/subscribe", map[string]any{"uri": "mcpx://x"}, "capability resources.subscribe not advertised"},
 		{"resources/unsubscribe", map[string]any{"uri": "mcpx://x"}, "capability resources.subscribe not advertised"},
 	}
@@ -48,6 +51,31 @@ func TestCapabilityGateRefusesUnadvertisedMethods(t *testing.T) {
 			t.Errorf("%s: error = %d %q, want -32601 naming %q",
 				tc.method, resp.Error.Code, resp.Error.Message, tc.want)
 		}
+	}
+}
+
+// TestCapabilityGateAdmitsCompletionBeforeTheCapabilityExisted pins
+// the other half of the completions rule: at a revision that does
+// not define the completions capability (2024-11-05), the gate must
+// not refuse completion/complete — there was nothing the peer could
+// have been advertised. The request reaches the completion handler,
+// whose own -32602 for a missing ref is the answer. (The conformance
+// suite's completion-max-100 case at 2024-11-05 is the same rule
+// from the spec side; the #2436 gate's original refusal here was
+// the desync #2716 records.)
+func TestCapabilityGateAdmitsCompletionBeforeTheCapabilityExisted(t *testing.T) {
+	s := mcpserver.New(newBackend(), "mcpx", "test")
+	c := s.ConnForTest("gate-old-completion")
+	gateInit(t, s, c, "2024-11-05")
+
+	resp := s.HandleOn(context.Background(), c, mcpserver.Request(2, "completion/complete",
+		map[string]any{}))
+	if resp == nil || resp.Error == nil {
+		t.Fatalf("completion/complete: resp = %+v, want the handler's own answer", resp)
+	}
+	if resp.Error.Code != -32602 || strings.Contains(resp.Error.Message, "not advertised") {
+		t.Errorf("completion/complete: error = %d %q, want -32602 from the completion handler, not the gate's -32601",
+			resp.Error.Code, resp.Error.Message)
 	}
 }
 

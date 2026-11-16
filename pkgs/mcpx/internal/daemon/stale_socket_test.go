@@ -8,6 +8,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/developing-today/code/pkgs/mcpx/internal/testsupport"
 )
 
 // Tests for clearStaleSocket (#5742). Oracle: the filesystem state
@@ -74,7 +76,10 @@ func TestClearStaleSocketPreservesSymlinkToStaleSocket(t *testing.T) {
 	// with Stat, a symlink to a stale socket reports ModeSocket, the
 	// dial fails, and cleanup removes the symlink. The symlink must
 	// be preserved as a symlink, and its target left alone.
-	dir := t.TempDir()
+	// SocketDir, not t.TempDir(): the test binds a unix socket in this
+	// dir, and a nix build TMPDIR makes that path exceed Darwin's
+	// 100-byte sun_path ceiling (bind: invalid argument) (#237).
+	dir := testsupport.SocketDir(t)
 	target := filepath.Join(dir, "stale.sock")
 	ln, err := net.Listen("unix", target)
 	if err != nil {
@@ -105,7 +110,7 @@ func TestClearStaleSocketPreservesSymlinkToStaleSocket(t *testing.T) {
 }
 
 func TestClearStaleSocketRemovesStaleSocket(t *testing.T) {
-	sock := filepath.Join(t.TempDir(), "daemon.sock")
+	sock := filepath.Join(testsupport.SocketDir(t), "daemon.sock")
 	ln, err := net.Listen("unix", sock)
 	if err != nil {
 		t.Fatal(err)
@@ -125,7 +130,7 @@ func TestClearStaleSocketRemovesStaleSocket(t *testing.T) {
 }
 
 func TestClearStaleSocketProtectsActiveSocket(t *testing.T) {
-	sock := filepath.Join(t.TempDir(), "daemon.sock")
+	sock := filepath.Join(testsupport.SocketDir(t), "daemon.sock")
 	ln, err := net.Listen("unix", sock)
 	if err != nil {
 		t.Fatal(err)

@@ -14,8 +14,8 @@ alone; §9 states what implementation must wait for.
 
 ## 1. Problem
 
-#5675 covers *finding* things in ID when the user knows what they are
-looking for (search, local and remote). It does not cover *being shown*
+#5675 covers _finding_ things in ID when the user knows what they are
+looking for (search, local and remote). It does not cover _being shown_
 things the user did not ask for: "worlds like this one", "documents people
 in your position read next", "users working on similar things". Search
 answers intent; recommendations create discovery. #5732 requires this for
@@ -44,20 +44,20 @@ with a k-anonymity floor and a cheap opt-out (§6).
 
 The recommender treats every first-class ID object type uniformly:
 **worlds, documents, notes, boards, chats / message threads, programs,
-and users**. A user is both a subject (recommendations *for* them) and an
-object type (recommendations *of* people: "users working on similar
+and users**. A user is both a subject (recommendations _for_ them) and an
+object type (recommendations _of_ people: "users working on similar
 things" — rendered only as aggregate similarity, never as a history; §6).
 
 Edge record (logical shape; storage in §7):
 
-| Field | Meaning |
-|---|---|
+| Field                        | Meaning                                                                                                                                                                                      |
+| ---------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `subject_type`, `subject_id` | The object (or user) the recommendation is attached to. For item–item edges the subject is an object; for similar-user edges the subject is a user and the edge is served only to that user. |
-| `object_type`, `object_id` | The recommended object (any first-class type, including a user). |
-| `signal` | `cooccur` \| `similar-user` \| `content` — always carried to the surface, so cold-start and social proof can be presented differently. |
-| `score` | 0..1, normalized per subject (§4); comparable within one subject's list, not across subjects. |
-| `computed_at`, `expires_at` | Batch provenance and staleness bound (§7). Surfaces must not render expired edges. |
-| `batch_id` | The staging batch that produced the edge; the join key for evaluation and feedback-loop accounting (§8). |
+| `object_type`, `object_id`   | The recommended object (any first-class type, including a user).                                                                                                                             |
+| `signal`                     | `cooccur` \| `similar-user` \| `content` — always carried to the surface, so cold-start and social proof can be presented differently.                                                       |
+| `score`                      | 0..1, normalized per subject (§4); comparable within one subject's list, not across subjects.                                                                                                |
+| `computed_at`, `expires_at`  | Batch provenance and staleness bound (§7). Surfaces must not render expired edges.                                                                                                           |
+| `batch_id`                   | The staging batch that produced the edge; the join key for evaluation and feedback-loop accounting (§8).                                                                                     |
 
 Invariants: at most one edge per (subject, object, signal); an object is
 never recommended to itself; a user's own objects are never recommended
@@ -104,7 +104,7 @@ sensitivity story — v1 is per-server (per owner-data) only.
 - **Diversity (MMR-lite re-rank).** A subject's candidate edges are
   re-ranked with maximal-marginal-relevance at promotion time:
   `final = 0.7 × score − 0.3 × max similarity to an already-selected
-  object in this list`. λ = 0.7 is the v1 constant; tuning it is an
+object in this list`. λ = 0.7 is the v1 constant; tuning it is an
   evaluation-driven change (§8), not a taste change.
 - **Popularity cap.** An object in the **top 1% by decayed interaction
   count** may occupy at most **20% of the slots** in any one rendered
@@ -136,7 +136,7 @@ violates one is wrong even if its rankings are good.
    similarity computation. Honoring it is cheap by construction:
    opt-out is a flag checked at aggregation time in the staging tier
    (their interactions are excluded from every aggregate) and at
-   serve time (no `similar-user` edges are computed *for* them;
+   serve time (no `similar-user` edges are computed _for_ them;
    `cooccur` edges attached to public objects still render, since
    those are object properties, not personalization). Opt-out takes
    effect from the next batch; it is not retroactive edge surgery.
@@ -155,7 +155,7 @@ reads are simple lookups.
 - **Staging (per #5669):** daily interaction aggregates (subject-set
   counts by object, by day, decayed at read), the opt-out registry
   mirror, and per-batch scratch similarity output. Raw per-event logs
-  are *not* promoted.
+  are _not_ promoted.
 - **Core tables (logical):** `reco_edges` (the §3 shape, keyed by
   (subject_type, subject_id, signal)), `reco_optout` (user, opted_out,
   updated_at), `reco_feedback` (§8; evaluation data, never a ranking
@@ -171,7 +171,7 @@ reads are simple lookups.
 
 **Boundary with search.** Recommendations are precomputed discovery
 edges. #5675 query/search answers an expressed intent at request time;
-#5677's surfaces may *render* recommendation edges but own no ranking.
+#5677's surfaces may _render_ recommendation edges but own no ranking.
 Personalized search ranking (reordering search results per user) is a
 different system and is out of scope here — this record neither
 defines nor constrains it beyond §6.
@@ -201,6 +201,7 @@ defines nor constrains it beyond §6.
 ## 9. Dependencies and implementation slices
 
 **Hard prerequisites (implementation must wait):**
+
 - **#5683** — the residency & boundaries framework supplies the
   sensitivity/visibility classes §6 filters by. Until its classes are
   contract-stable, only the aggregation plumbing (slice 1) may be
@@ -215,6 +216,7 @@ surfaces for notes/boards).
 
 **Slices (each its own implementation issue, filed when its
 prerequisite lands — not before):**
+
 1. Interaction aggregation + opt-out registry (staging), no ranking.
 2. Item–item co-occurrence batch + `reco_edges` promotion + expiry.
 3. Similar-user edges with the §6 k-floor.

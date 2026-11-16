@@ -1,4 +1,4 @@
-import { describe, expect, test } from "bun:test";
+import { afterAll, describe, expect, test } from "bun:test";
 import { spawnSync } from "node:child_process";
 import {
   mkdir, mkdtemp, readFile, readdir, rm, writeFile,
@@ -17,6 +17,11 @@ const recoveryMigration = await readFile(
   join(here, "..", "migration-0022.sql"), "utf8",
 );
 const installer = join(here, "..", "install.mjs");
+const bunInstallState = await mkdtemp(join(tmpdir(), "opencode-claimant-bun-"));
+
+afterAll(async () => {
+  await rm(bunInstallState, { recursive: true, force: true });
+});
 
 async function makeStores() {
   const home = await mkdtemp(join(tmpdir(), "opencode-claimant-install-"));
@@ -43,14 +48,21 @@ async function makeStores() {
 function runInstaller(home, args) {
   return spawnSync(process.execPath, [installer, ...args], {
     encoding: "utf8",
-    env: { ...process.env, HOME: home },
+    env: { ...process.env, HOME: home, BUN_INSTALL: bunInstallState },
   });
 }
 
 async function expectNoWrites(stores) {
   expect(await readFile(stores.defaultStore, "utf8")).toBe(stores.original);
   expect(await readFile(stores.explicitStore, "utf8")).toBe(stores.original);
-  expect(await readdir(stores.home)).toEqual([
+  // Bun itself may drop a `.bun` cache/state directory into HOME when it
+  // runs the installer (observed on CI runners where bun is installed under
+  // ~/.bun); that is a runtime artifact, not an installer write, so it is
+  // excluded from the no-write assertion. See developing-today/code#9532.
+  const homeEntries = (await readdir(stores.home)).filter(
+    (name) => name !== ".bun",
+  );
+  expect(homeEntries).toEqual([
     ".config", "explicit-store.json",
   ]);
   expect(await readdir(stores.defaultDir)).toEqual([

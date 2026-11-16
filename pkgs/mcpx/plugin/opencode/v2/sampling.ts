@@ -37,7 +37,7 @@
  * second answer) leaves the question open for the next poll or
  * another answerer, and never fails the session or setup.
  */
-import type { DaemonClient } from "../mcpx/daemon.ts";
+import type { DaemonClient } from "../../core/daemon.ts";
 
 /** The slice of the daemon client the watcher uses. */
 export type SamplingDaemonLike = Pick<DaemonClient, "pendingElicitations" | "answer">;

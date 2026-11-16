@@ -22,8 +22,6 @@
 //! re-implemented here; the PoC question is whether the #2037 object
 //! shapes carry the attestation, not how bytes move.
 
-#![allow(clippy::unwrap_used, clippy::expect_used)]
-
 use p2panda_core::{Hash, SigningKey};
 use tempfile::TempDir;
 
@@ -58,6 +56,7 @@ struct Match {
 /// Plays the whole match as signed attestation events: genesis pair,
 /// then one result claim per player asserting `x_outcome` / `o_outcome`
 /// as the winner (a player id hex, or `"draw"`).
+#[allow(clippy::unwrap_used)]
 fn play_match(x_outcome: &str, o_outcome: &str) -> Match {
     let x = key(0);
     let o = key(100);
@@ -88,6 +87,7 @@ fn play_match(x_outcome: &str, o_outcome: &str) -> Match {
         &x,
         1,
         Some(genesis_x.id),
+        &agreement,
         &claim_x,
         vec![genesis_x.id, genesis_o.id],
     )
@@ -96,6 +96,7 @@ fn play_match(x_outcome: &str, o_outcome: &str) -> Match {
         &o,
         1,
         Some(genesis_o.id),
+        &agreement,
         &claim_o,
         vec![genesis_x.id, genesis_o.id],
     )
@@ -114,6 +115,7 @@ fn play_match(x_outcome: &str, o_outcome: &str) -> Match {
     }
 }
 
+#[allow(clippy::unwrap_used)]
 fn decoded_objects(
     played: &Match,
 ) -> (
@@ -139,6 +141,7 @@ fn computed_state(played: &Match) -> MatchState {
 }
 
 /// Ingests every match event into a store, in chain order per author.
+#[allow(clippy::unwrap_used)]
 fn ingest_match(store: &mut EventStore, played: &Match) {
     for (event, body) in played.genesis.iter().chain(played.claims.iter()) {
         let outcome = store.ingest_with_body(&event.bytes, Some(body), 0).unwrap();
@@ -153,6 +156,7 @@ fn ingest_match(store: &mut EventStore, played: &Match) {
 /// The viewer: reads a store's applied events for both players,
 /// decodes the attestation objects from the bodies those events
 /// commit to, and computes the match state from the objects alone.
+#[allow(clippy::unwrap_used, clippy::panic)]
 fn view(store: &EventStore, played: &Match) -> (MatchState, Vec<Hash>) {
     let mut ids = Vec::new();
     let mut genesis = Vec::new();
@@ -185,6 +189,7 @@ fn view(store: &EventStore, played: &Match) -> (MatchState, Vec<Hash>) {
 }
 
 #[test]
+#[allow(clippy::unwrap_used)]
 fn offline_match_attests_agreed_and_syncs_identical_state() {
     let x = key(0);
     let o = key(100);
@@ -210,6 +215,7 @@ fn offline_match_attests_agreed_and_syncs_identical_state() {
 }
 
 #[test]
+#[allow(clippy::unwrap_used)]
 fn wrong_winner_claim_computes_disputed_never_agreed() {
     let x = key(0);
     let o = key(100);
@@ -223,6 +229,7 @@ fn wrong_winner_claim_computes_disputed_never_agreed() {
 }
 
 #[test]
+#[allow(clippy::unwrap_used)]
 fn one_claim_only_stays_proposed() {
     let x = key(0);
     let mut played = play_match(&hex(&player_id(&x)), &hex(&player_id(&x)));
@@ -321,6 +328,7 @@ fn draw_is_a_valid_concurring_outcome() {
 }
 
 #[test]
+#[allow(clippy::expect_used)]
 fn out_of_domain_claim_from_a_player_does_not_create_a_fork() {
     let x = key(0);
     let played = play_match(&hex(&player_id(&x)), &hex(&player_id(&x)));
@@ -342,6 +350,7 @@ fn out_of_domain_claim_from_a_player_does_not_create_a_fork() {
 }
 
 #[test]
+#[allow(clippy::expect_used)]
 fn same_position_claims_with_different_frontiers_still_agree() {
     let x = key(0);
     let played = play_match(&hex(&player_id(&x)), &hex(&player_id(&x)));
@@ -387,6 +396,7 @@ fn duplicate_seat_agreement() -> (SigningKey, GenesisAgreement) {
     (a, agreement)
 }
 
+#[allow(clippy::unwrap_used)]
 fn claim_for(agreement: &GenesisAgreement, outcome: String, final_state_hash: Hash) -> ResultClaim {
     ResultClaim {
         agreement: agreement.agreement_hash().unwrap(),
@@ -446,6 +456,7 @@ fn duplicate_seat_agreement_stays_proposed_without_genesis_or_claims() {
 }
 
 #[test]
+#[allow(clippy::expect_used)]
 fn sign_genesis_refuses_duplicate_seat_agreement() {
     let (a, agreement) = duplicate_seat_agreement();
 
@@ -459,6 +470,7 @@ fn sign_genesis_refuses_duplicate_seat_agreement() {
 }
 
 #[test]
+#[allow(clippy::expect_used)]
 fn same_player_claims_with_different_position_fields_are_disputed() {
     let x = key(0);
     let played = play_match(&hex(&player_id(&x)), &hex(&player_id(&x)));
@@ -484,4 +496,120 @@ fn same_player_claims_with_different_position_fields_are_disputed() {
             MatchState::Disputed,
         );
     }
+}
+
+#[test]
+#[allow(clippy::unwrap_used)]
+fn v1_witness_decision_is_versioned_signed_and_bound_to_named_witness() {
+    use id::attestation::v1::{
+        V1SignError, VERSION, WitnessDecision, WitnessEvidence, sign_witness_decision,
+    };
+
+    let x = key(0);
+    let o = key(100);
+    let witness = key(200);
+    let agreement = GenesisAgreement {
+        game_id: "tic-tac-toe".to_owned(),
+        logic_hash: Hash::digest(b"pinned logic"),
+        players: [player_id(&x), player_id(&o)],
+        witness: Some(player_id(&witness)),
+        objection_window_secs: 3600,
+    };
+    let decision = WitnessDecision {
+        version: VERSION,
+        agreement: agreement.agreement_hash().unwrap(),
+        logic_hash: agreement.logic_hash,
+        outcome: hex(&player_id(&x)),
+        evidence: WitnessEvidence::Complete {
+            claim_a: Hash::digest(b"claim a"),
+            claim_b: Hash::digest(b"claim b"),
+            log_hash_a: Hash::digest(b"log a"),
+            log_hash_b: Hash::digest(b"log b"),
+        },
+    };
+
+    let body = decision.body().unwrap();
+    assert_eq!(WitnessDecision::from_body(&body).unwrap(), decision);
+    let event = sign_witness_decision(&witness, 0, None, &agreement, &decision, vec![]).unwrap();
+    let decoded = chain::decode(&event.bytes).unwrap();
+    assert_eq!(
+        decoded.header.extensions.kind,
+        "attestation.witness_decision"
+    );
+    assert_eq!(author_id(&decoded), player_id(&witness));
+    assert!(matches!(
+        sign_witness_decision(&x, 0, None, &agreement, &decision, vec![]),
+        Err(V1SignError::NotNamedWitness)
+    ));
+
+    let mut wrong_logic = decision;
+    wrong_logic.logic_hash = Hash::digest(b"other logic");
+    assert!(matches!(
+        sign_witness_decision(&witness, 0, None, &agreement, &wrong_logic, vec![]),
+        Err(V1SignError::WrongLogic)
+    ));
+}
+
+#[test]
+#[allow(clippy::unwrap_used)]
+fn v1_objection_is_append_only_and_only_seated_players_may_sign() {
+    use id::attestation::v1::{OBJECTION_KIND, Objection, V1SignError, VERSION, sign_objection};
+
+    let x = key(0);
+    let o = key(100);
+    let outsider = key(200);
+    let agreement = GenesisAgreement {
+        game_id: "tic-tac-toe".to_owned(),
+        logic_hash: Hash::digest(b"pinned logic"),
+        players: [player_id(&x), player_id(&o)],
+        witness: None,
+        objection_window_secs: 3600,
+    };
+    let objection = Objection {
+        version: VERSION,
+        target: Hash::digest(b"target claim"),
+        grounds: "replay evidence differs".to_owned(),
+        author_frontier: vec![Hash::digest(b"frontier")],
+    };
+    let body = objection.body().unwrap();
+    assert_eq!(Objection::from_body(&body).unwrap(), objection);
+    let event = sign_objection(&o, 0, None, &agreement, &objection, vec![]).unwrap();
+    let decoded = chain::decode(&event.bytes).unwrap();
+    assert_eq!(decoded.header.extensions.kind, OBJECTION_KIND);
+    assert_eq!(author_id(&decoded), player_id(&o));
+    assert!(matches!(
+        sign_objection(&outsider, 0, None, &agreement, &objection, vec![]),
+        Err(V1SignError::NotPlayer)
+    ));
+}
+
+#[test]
+#[allow(clippy::unwrap_used)]
+fn counting_policy_is_registry_local_and_names_accepted_witnesses_and_logic() {
+    use id::attestation::v1::{CountingPolicy, V1MatchState};
+
+    let x = key(0);
+    let o = key(100);
+    let witness = key(200);
+    let logic_hash = Hash::digest(b"pinned logic");
+    let agreement = GenesisAgreement {
+        game_id: "tic-tac-toe".to_owned(),
+        logic_hash,
+        players: [player_id(&x), player_id(&o)],
+        witness: Some(player_id(&witness)),
+        objection_window_secs: 3600,
+    };
+    let policy = CountingPolicy {
+        accepted_states: vec![V1MatchState::Final],
+        accepted_witnesses: vec![player_id(&witness)],
+        accepted_logic_hashes: vec![logic_hash],
+    };
+
+    assert!(policy.counts(&agreement, V1MatchState::Final));
+    assert!(!policy.counts(&agreement, V1MatchState::Disputed));
+    let rejecting_policy = CountingPolicy {
+        accepted_witnesses: vec![player_id(&x)],
+        ..policy
+    };
+    assert!(!rejecting_policy.counts(&agreement, V1MatchState::Final));
 }

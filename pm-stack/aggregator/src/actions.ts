@@ -27,10 +27,14 @@
 //   itself and its run log names "requested via dashboard, action
 //   da-…".
 // - kind "session" — routed by the action's sessionSource: the
-//   orchestration pass consumes the OpenCode sources
-//   ("opencode-sandbox", "opencode-laptop") for poke/answer/stop.
-//   Sources with no live control channel (claude-code, cron) render
-//   no enabled controls.
+//   fast session-action consumer (a dedicated minutely cron,
+//   #10118) consumes the OpenCode laptop source
+//   ("opencode-laptop") for poke/answer/stop, so an answer lands
+//   inside the question tool's ~600 s live window; it also rejects
+//   "opencode-sandbox" actions (that server is retired). The
+//   orchestration pass no longer polls this slice. Sources with no
+//   live control channel (claude-code, cron) render no enabled
+//   controls.
 // - kind "preference" — the orchestration pass: set-delegation-default
 //   records the standing auto toggle (#1290; Drew's 2026-10-27 decision
 //   is the initial record). The aggregator also reads these records to
@@ -136,7 +140,7 @@ export const VERBS_BY_KIND: Record<DashActionKind, readonly DashActionVerb[]> = 
 };
 
 const ACTION_KINDS = new Set<DashActionKind>(["triage", "status-request", "session", "preference"]);
-const ACTION_STATES = new Set(["new", "applied", "rejected", "superseded"]);
+export const ACTION_STATES = new Set(["new", "applied", "rejected", "superseded"]);
 
 function actionRecordProblem(value: unknown): string | null {
   if (!isRecord(value)) return "record must be an object";
@@ -286,10 +290,23 @@ function answerQuestionIds(action: Pick<NewAction, "verb" | "payload">): string[
 
 const SESSION_SOURCES = new Set(["opencode-sandbox", "opencode-laptop", "claude-code", "cron"]);
 
+// Cap `t` at `max` UTF-16 code units, but never leave half of a surrogate
+// pair at the cut (#7694, mirroring the #3178 guard in pm-dispatch
+// validate.ts): an astral character straddling the cap is dropped whole.
+function capUnits(t: string, max: number): string {
+  if (t.length <= max) return t;
+  let end = max;
+  const before = t.charCodeAt(end - 1);
+  const after = t.charCodeAt(end);
+  if (before >= 0xd800 && before <= 0xdbff && after >= 0xdc00 && after <= 0xdfff) end--;
+  return t.slice(0, end);
+}
+
 function cleanText(v: unknown, max: number): string | undefined {
   if (typeof v !== "string") return undefined;
   const t = v.trim();
-  return t === "" ? undefined : t.slice(0, max);
+  if (t === "") return undefined;
+  return capUnits(t, max);
 }
 
 /** Validate an untrusted POST body into a NewAction, or explain why not. */
@@ -320,7 +337,7 @@ export function validateNewAction(body: unknown): { ok: true; value: NewAction }
   const payload: DashActionPayload = {};
   const until = cleanText(rawPayload.until, 64);
   if (until !== undefined) {
-    if (Number.isNaN(Date.parse(until))) return { ok: false, error: "payload.until must be an ISO date/time" };
+    if (parseIsoDate(until) === null) return { ok: false, error: "payload.until must be an ISO date/time" };
     payload.until = until;
   }
   if (rawPayload.tier !== undefined) {
@@ -394,7 +411,7 @@ export function validateNewAction(body: unknown): { ok: true; value: NewAction }
   if (proposalRunId !== undefined) payload.proposalRunId = proposalRunId;
   const proposalUpdatedAt = cleanText(rawPayload.proposalUpdatedAt, 64);
   if (proposalUpdatedAt !== undefined) {
-    if (Number.isNaN(Date.parse(proposalUpdatedAt))) {
+    if (parseIsoDate(proposalUpdatedAt) === null) {
       return { ok: false, error: "payload.proposalUpdatedAt must be an ISO date/time" };
     }
     payload.proposalUpdatedAt = proposalUpdatedAt;
@@ -632,10 +649,28 @@ export class ActionsStore {
     );
     const valid: DashAction[] = [];
     const invalid: InvalidStoreRecord[] = [];
+    // Cross-row check (#9580, following the ViewsStore precedent in
+    // views.ts): the per-record validator cannot see that two valid
+    // rows share one id. Id-addressed consumers use find-first, so a
+    // duplicate silently shadows the later row while counts include
+    // both. Treat each later duplicate as an invalid record: it goes
+    // through the same #4151 quarantine (archive + diagnostics naming
+    // the row index and id) and never reaches the active store.
+    const firstIndexById = new Map<string, number>();
     parsed.actions.forEach((action, index) => {
       const reason = actionRecordProblem(action);
-      if (reason) invalid.push({ index, reason });
-      else valid.push(action as DashAction);
+      if (reason) {
+        invalid.push({ index, reason });
+        return;
+      }
+      const id = (action as DashAction).id;
+      const firstIndex = firstIndexById.get(id);
+      if (firstIndex !== undefined) {
+        invalid.push({ index, reason: `duplicates id "${id}" (first occurrence at row ${firstIndex})` });
+        return;
+      }
+      firstIndexById.set(id, index);
+      valid.push(action as DashAction);
     });
     this.actions = valid;
     if (invalid.length > 0) {
@@ -785,8 +820,11 @@ export class ActionsStore {
     if (a.state !== "new") return { action: a, transitioned: false };
     a.state = result.outcome;
     a.appliedAt = new Date().toISOString();
-    a.appliedByRun = result.byRun.slice(0, 200);
-    if (result.note) a.resultNote = result.note.slice(0, 2_000);
+    // Same surrogate-safe cap as cleanText (#7711): a raw slice here stored
+    // a lone high surrogate in appliedByRun/resultNote whenever an astral
+    // character straddled the cap.
+    a.appliedByRun = capUnits(result.byRun, 200);
+    if (result.note) a.resultNote = capUnits(result.note, 2_000);
     await this.persist();
     return { action: a, transitioned: true };
   }

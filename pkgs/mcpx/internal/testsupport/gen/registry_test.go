@@ -188,8 +188,32 @@ func TestConfigLayersProperty(t *testing.T) {
 }
 
 // loadStack writes a drawn stack as nested .mcpx.json layers
-// (farthest outermost) under an isolated HOME and loads it.
+// (farthest outermost) under an isolated HOME and loads exactly
+// those files.
+//
+// Hermeticity (#7686): the load must never consult the ambient
+// machine. Setting HOME/XDG_CONFIG_HOME alone is NOT enough:
+// config.SearchPathFrom walks up from the working directory to
+// the filesystem root adding config spellings at every ancestor,
+// so when TMPDIR lives under the real home (the fleet's Go
+// convention, TMPDIR=~/tmp), t.TempDir() is under the real home
+// too and the walk picks up the host's real
+// ~/.config/mcpx/config.json on its way past — the merged result
+// then contains every server the host happens to define.
+// Instead the fixture files are passed as the paths.config seed:
+// a seed with no null splice replaces the default walk outright
+// (config.ResolveChainFrom pass 1), so the chain is exactly the
+// fixture layers, nearest first, on any machine.
 func loadStack(t *testing.T, stack gen.ConfigLayers) map[string]string {
+	return loadStackSeeded(t, stack, false)
+}
+
+// loadStackSeeded is loadStack with an optional hostile host:
+// hostile plants host-style configs where a non-hermetic load
+// would find them — the isolated HOME's user config (the home
+// fallback) and an ancestor directory of the stack (the upward
+// walk) — each naming a server that is not in the stack.
+func loadStackSeeded(t *testing.T, stack gen.ConfigLayers, hostile bool) map[string]string {
 	t.Helper()
 	root := t.TempDir()
 	home := filepath.Join(root, "home")
@@ -205,6 +229,7 @@ func loadStack(t *testing.T, stack gen.ConfigLayers) map[string]string {
 
 	texts := stack.Render(true)
 	dir := filepath.Join(root, "l0")
+	var files []string // farthest first, in write order
 	for li, text := range texts {
 		if li > 0 {
 			dir = filepath.Join(dir, fmt.Sprintf("l%d", li))
@@ -212,10 +237,37 @@ func loadStack(t *testing.T, stack gen.ConfigLayers) map[string]string {
 		if err := os.MkdirAll(dir, 0o755); err != nil {
 			t.Fatal(err)
 		}
-		if err := os.WriteFile(filepath.Join(dir, ".mcpx.json"), []byte(text), 0o644); err != nil {
+		f := filepath.Join(dir, ".mcpx.json")
+		if err := os.WriteFile(f, []byte(text), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		files = append(files, f)
+	}
+	if hostile {
+		hostileCfg := `{"mcpServers":{"host-extra":{"command":"npx"}}}`
+		homeCfg := filepath.Join(home, ".config", "mcpx", "config.json")
+		if err := os.MkdirAll(filepath.Dir(homeCfg), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(homeCfg, []byte(hostileCfg), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		ancestorCfg := filepath.Join(root, ".config", "mcpx", "config.json")
+		if err := os.MkdirAll(filepath.Dir(ancestorCfg), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(ancestorCfg, []byte(hostileCfg), 0o644); err != nil {
 			t.Fatal(err)
 		}
 	}
+	// Seed the chain with exactly the fixture files, nearest
+	// (deepest) first: a no-null seed replaces the default
+	// ancestor/home walk outright, so no host file can enter.
+	seed := make([]string, 0, len(files))
+	for i := len(files) - 1; i >= 0; i-- {
+		seed = append(seed, files[i])
+	}
+	config.SetPathsConfigSeed(seed)
 	cfg, err := config.LoadFrom("", dir)
 	if err != nil {
 		t.Fatalf("LoadFrom: %v (stack %s)", err, stack.Canonical())
@@ -225,6 +277,26 @@ func loadStack(t *testing.T, stack gen.ConfigLayers) map[string]string {
 		out[name] = s.Command
 	}
 	return out
+}
+
+// TestConfigLayersHostIsolation is the #7686 regression guard:
+// with host-style configs planted in the isolated HOME and in an
+// ancestor of the stack directory, the merged servers are still
+// exactly the fixture stack's — the load exercises only its
+// fixture layers, never live host configuration. (On the laptop
+// this also covers the original failure shape, TMPDIR under the
+// real home; the planted ancestor config reproduces that leak
+// deterministically on any machine.)
+func TestConfigLayersHostIsolation(t *testing.T) {
+	stack := gen.ConfigLayers{Layers: []gen.ConfigLayer{
+		{Servers: []gen.LayerServer{{Name: "alpha", Command: "cmd-alpha"}, {Name: "beta", Command: "cmd-beta"}}},
+		{Servers: []gen.LayerServer{{Name: "beta", Command: "cmd-beta-near"}}},
+	}}
+	got := loadStackSeeded(t, stack, true)
+	assertWinners(t, 0, stack, got)
+	if _, ok := got["host-extra"]; ok {
+		t.Fatalf("host config leaked into the merged stack: %v", got)
+	}
 }
 
 func assertWinners(t *testing.T, i int, stack gen.ConfigLayers, got map[string]string) {

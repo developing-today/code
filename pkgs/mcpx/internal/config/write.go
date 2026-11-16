@@ -1,6 +1,7 @@
 package config
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -239,12 +240,12 @@ func adapterDocument(path string) (entries []any, bare bool, doc map[string]any,
 	}
 	trimmed := strings.TrimSpace(string(StripJSONC(b)))
 	if strings.HasPrefix(trimmed, "[") {
-		if err := json.Unmarshal([]byte(trimmed), &entries); err != nil {
+		if err := decodeUseNumber([]byte(trimmed), &entries); err != nil {
 			return nil, false, nil, fmt.Errorf("%s is not a valid adapter file: %w", path, err)
 		}
 		return entries, true, nil, nil
 	}
-	if err := json.Unmarshal([]byte(trimmed), &doc); err != nil {
+	if err := decodeUseNumber([]byte(trimmed), &doc); err != nil {
 		return nil, false, nil, fmt.Errorf("%s is not a valid adapter file: %w", path, err)
 	}
 	list, _ := doc["adapters"].([]any)
@@ -344,6 +345,149 @@ func AdapterDefinedIn(paths []string, name string) (string, bool, error) {
 		}
 		for _, e := range entries {
 			if adapterEntryName(e) == name {
+				return p, true, nil
+			}
+		}
+	}
+	return "", false, nil
+}
+
+// decodeUseNumber decodes JSON preserving exact numbers as json.Number,
+// the way config.parse does: a combined declaration document can carry
+// sibling values (e.g. a tool-view pinned ID above 2^53) that a plain
+// json.Unmarshal into map[string]any would silently round through
+// float64 on the next write (Codex P2, PR #4637).
+func decodeUseNumber(data []byte, v any) error {
+	dec := json.NewDecoder(bytes.NewReader(data))
+	dec.UseNumber()
+	return dec.Decode(v)
+}
+
+// ---- API declaration files ----
+//
+// An API declaration file is the same shape as an adapter one with a
+// different key: {"apis": [...]} or a bare array. Live add and remove
+// edit that list in place, preserving whichever shape the file already
+// uses and every sibling section a combined document carries, for the
+// same reason the adapter writers do (#2118, split of #1875).
+
+// apiDocument reads a declaration file and returns its API entries plus
+// whether the file uses the bare-array shape. A missing file reads as an
+// empty object-shaped document: the first live add creates it.
+func apiDocument(path string) (entries []any, bare bool, doc map[string]any, err error) {
+	b, rerr := os.ReadFile(path)
+	if rerr != nil {
+		if os.IsNotExist(rerr) {
+			return nil, false, nil, nil
+		}
+		return nil, false, nil, rerr
+	}
+	trimmed := strings.TrimSpace(string(StripJSONC(b)))
+	if strings.HasPrefix(trimmed, "[") {
+		if err := decodeUseNumber([]byte(trimmed), &entries); err != nil {
+			return nil, false, nil, fmt.Errorf("%s is not a valid API file: %w", path, err)
+		}
+		return entries, true, nil, nil
+	}
+	if err := decodeUseNumber([]byte(trimmed), &doc); err != nil {
+		return nil, false, nil, fmt.Errorf("%s is not a valid API file: %w", path, err)
+	}
+	list, _ := doc["apis"].([]any)
+	return list, false, doc, nil
+}
+
+func writeAPIEntries(path string, entries []any, bare bool, doc map[string]any) error {
+	var out []byte
+	var err error
+	if bare {
+		out, err = json.MarshalIndent(entries, "", "  ")
+	} else {
+		if doc == nil {
+			doc = map[string]any{}
+		}
+		doc["apis"] = entries
+		out, err = json.MarshalIndent(doc, "", "  ")
+	}
+	if err != nil {
+		return err
+	}
+	if dir := filepath.Dir(path); dir != "" && dir != "." {
+		if err := os.MkdirAll(dir, DirMode); err != nil {
+			return err
+		}
+	}
+	return os.WriteFile(path, append(out, '\n'), FileMode)
+}
+
+func apiEntryName(e any) string {
+	obj, _ := e.(map[string]any)
+	if obj == nil {
+		return ""
+	}
+	name, _ := obj["name"].(string)
+	return name
+}
+
+// AddAPIEntry inserts one API declaration into the file at path.
+//
+// Refusing a name the file already declares rather than replacing it,
+// for the same reason AddAdapterEntry does: a silent overwrite of a
+// declaration somebody wrote by hand is a loss noticed only when the
+// tool stops working.
+func AddAPIEntry(path string, entry map[string]any, replace bool) error {
+	name := apiEntryName(entry)
+	if name == "" {
+		return errors.New("an API declaration needs a name")
+	}
+	entries, bare, doc, err := apiDocument(path)
+	if err != nil {
+		return err
+	}
+	for i, e := range entries {
+		if apiEntryName(e) == name {
+			if !replace {
+				return fmt.Errorf("%s already declares API %q; remove it first or pick another name",
+					path, name)
+			}
+			entries[i] = entry
+			return writeAPIEntries(path, entries, bare, doc)
+		}
+	}
+	return writeAPIEntries(path, append(entries, entry), bare, doc)
+}
+
+// RemoveAPIEntry drops the declaration named name from the file at
+// path, reporting whether it was there.
+func RemoveAPIEntry(path, name string) (bool, error) {
+	entries, bare, doc, err := apiDocument(path)
+	if err != nil {
+		return false, err
+	}
+	for i, e := range entries {
+		if apiEntryName(e) == name {
+			return true, writeAPIEntries(path, append(entries[:i], entries[i+1:]...), bare, doc)
+		}
+	}
+	return false, nil
+}
+
+// APIDefinedIn returns the first of paths whose declaration file
+// declares an API named name. Removing an API has to edit the file that
+// defines it; editing any other would report success and change nothing.
+func APIDefinedIn(paths []string, name string) (string, bool, error) {
+	for _, p := range paths {
+		if p == "" {
+			continue
+		}
+		entries, _, _, err := apiDocument(p)
+		if err != nil {
+			if os.IsNotExist(err) {
+				continue
+			}
+			return "", false, err
+		}
+		for _, e := range entries {
+			if apiEntryName(e) == name {
 				return p, true, nil
 			}
 		}

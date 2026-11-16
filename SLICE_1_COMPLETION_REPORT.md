@@ -41,34 +41,40 @@ The slice-1 implementation for the OpenCode execution lane claimant/executor has
 ### Key Features Implemented
 
 #### ✅ Mode System
+
 - Shadow mode (default): Safe discovery and read-only operations
 - Live mode: Full execution with mutations
 - Controlled by `~/.local/state/opencode-claimant/mode`
 
 #### ✅ Concurrency Control
+
 - 36 active root sessions maximum (raised from 12→20→36 on 2026-11-05)
 - Monitored via OpenCode server API
 - Only root sessions without terminal markers count toward cap
 
 #### ✅ Recovery System (#4758, Phase 3 of #4912)
+
 - **Zero-Message Recovery**: Deletes sessions with no messages, reclaims tasks atomically
-- **Gone-Session Recovery**: Reclaims tasks with absent sessions atomically  
+- **Gone-Session Recovery**: Reclaims tasks with absent sessions atomically
 - **Exhausted Attempts**: Terminally fails tasks when attempts exhausted
 - Uses migration 0022 atomic operations with special `launched_by` values
 
 #### ✅ Atomic Operations
+
 - Bind operations use `repo-queue bind` with compare-and-clear
 - Recovery operations use atomic database updates
 - Session creation and deletion are atomic
 - Prevents race conditions and duplicate execution
 
 #### ✅ Session Management
+
 - Creates sessions via OpenCode server API (`POST /api/session`)
 - Verifies `location.directory` before binding (#4870 fix)
 - Binds atomically with task progress updates
 - Sends execution prompts to bound sessions
 
 #### ✅ Hard Rules Enforced
+
 1. ✅ Never work tasks directly (only claim/bind/launch/record)
 2. ✅ No credentials in prompts/logs (uses broker client tokens)
 3. ✅ No cap violations (never exceeds 36 sessions)
@@ -78,6 +84,7 @@ The slice-1 implementation for the OpenCode execution lane claimant/executor has
 7. ✅ Task state verification (re-verifies before launch)
 
 #### ✅ Queue System
+
 - Monitors 4 queues:
   1. `repo-health-code-pilot`
   2. `repo-health-opencode-pilot`
@@ -85,6 +92,7 @@ The slice-1 implementation for the OpenCode execution lane claimant/executor has
   4. `repo-health-nix-pilot`
 
 #### ✅ Fire Logging
+
 - Logs written to `~/.local/state/opencode-claimant/fires.jsonl`
 - JSON format with timestamp, mode, candidates, launches, cap room, skips
 - Each fire is one line in the log file
@@ -92,6 +100,7 @@ The slice-1 implementation for the OpenCode execution lane claimant/executor has
 ### Files Created/Modified
 
 #### New Files (8 total):
+
 1. `pm-stack/opencode-claimant/claimant.py` (14,761 bytes, executable)
 2. `pm-stack/opencode-claimant/poll.py` (12,561 bytes, executable)
 3. `pm-stack/opencode-claimant/README.md` (6,871 bytes)
@@ -102,10 +111,12 @@ The slice-1 implementation for the OpenCode execution lane claimant/executor has
 8. `pm-stack/opencode-claimant/CHANGES.md` (This report)
 
 #### Modified Files (2 total):
+
 1. `pm-stack/opencode-claimant/README.md` (Updated with hard rules and documentation)
 2. `pm-stack/opencode-claimant/claimant.py` (Completely rewritten)
 
 #### Existing Files Referenced:
+
 - Migration files: 0021, 0022, 0023, 0024 (already present)
 
 ## Testing Results
@@ -113,6 +124,7 @@ The slice-1 implementation for the OpenCode execution lane claimant/executor has
 ### Unit Tests: ✅ PASSING (12/12)
 
 All tests pass:
+
 - ✓ Mode file reading (4 tests)
 - ✓ Constants validation
 - ✓ Queue list verification
@@ -238,6 +250,7 @@ The following items are explicitly **out of scope for slice 1** and will be addr
 ## References
 
 ### Issues
+
 - #3026 - OpenCode lane claimant/executor (main issue)
 - #4758 - Zero-message session recovery (defect)
 - #4870 - Session location verification (defect)
@@ -245,12 +258,14 @@ The following items are explicitly **out of scope for slice 1** and will be addr
 - #5857 - Session creation request shape (defect)
 
 ### Migrations
+
 - 0021 - bind_repo_task_lane_session
 - 0022 - Atomic recovery operations
 - 0023 - Additional recovery operations
 - 0024 - Session tracking improvements
 
 ### Constants
+
 - CONCURRENCY_CAP = 36 (raised from 12→20→36 on 2026-11-05)
 - LAUNCHED_BY_RECOVERY_ZERO_MESSAGE = "opencode-claimant-recovery:zero-message-deleted"
 - LAUNCHED_BY_RECOVERY_GONE_SESSION = "opencode-claimant-recovery:gone-session"
@@ -260,12 +275,14 @@ The following items are explicitly **out of scope for slice 1** and will be addr
 The implementation has been verified against the detailed specification in the task instructions:
 
 ### ✅ Mode System
+
 - Reads mode from `~/.local/state/opencode-claimant/mode`
 - Defaults to `shadow` if file missing or unreadable
 - Shadow mode: discovery and read-only supervision only
 - Live mode: full execution including mutations
 
 ### ✅ Supervision Step (Step 1)
+
 - Runs on every live fire
 - Checks bound sessions for recovery candidates
 - Identifies zero-message sessions
@@ -275,17 +292,20 @@ The implementation has been verified against the detailed specification in the t
 - Handles attempts remaining/exhausted cases
 
 ### ✅ Gate Step (Step 2)
+
 - Runs `poll.py` to discover tasks
 - Filters for unbound opencode-lane candidates
 - Returns True if candidates exist, False otherwise
 
 ### ✅ Cap Step (Step 3)
+
 - Queries OpenCode server for active root sessions
 - Uses 36-session cap
 - Returns cap_room (available slots) or -1 if unknown
 - Respects cap before launching
 
 ### ✅ Launch Step (Step 4)
+
 - Re-verifies task state before launch
 - Creates worker sessions via `POST /api/session`
 - Verifies `location.directory` matches requested directory
@@ -296,17 +316,21 @@ The implementation has been verified against the detailed specification in the t
 - Respects queue priority (order in QUEUES list)
 
 ### ✅ Terminal States (Step 5)
+
 - Handled by worker sessions themselves
 - Workers use CLI terminal verbs (complete/park/block/fail)
 - Workers heartbeat to keep claim lease alive
 
 ### ✅ Logging (Step 6)
+
 - Appends JSON line to `~/.local/state/opencode-claimant/fires.jsonl`
 - Includes timestamp, mode, candidates_seen, sessions_launched, cap_room, skips
 - Shadow mode produces same format as working example
 
 ### ✅ Hard Rules
+
 All 7 hard rules are enforced and documented:
+
 1. Never work tasks directly ✓
 2. No credentials in prompts/logs ✓
 3. No cap violations ✓
@@ -316,12 +340,14 @@ All 7 hard rules are enforced and documented:
 7. Task state verification ✓
 
 ### ✅ Concurrency Control
+
 - 36 active root sessions cap ✓
 - Monitored via OpenCode server API ✓
 - Only root sessions without terminal markers count ✓
 - Cap room calculated correctly ✓
 
 ### ✅ Recovery System (#4758)
+
 - Zero-message recovery implemented ✓
 - Gone-session recovery implemented ✓
 - Exhausted attempts handling implemented ✓
@@ -329,6 +355,7 @@ All 7 hard rules are enforced and documented:
 - Special `launched_by` values used ✓
 
 ### ✅ Atomic Operations
+
 - Bind operations use compare-and-clear ✓
 - Recovery operations atomic ✓
 - Session creation and deletion atomic ✓
@@ -339,6 +366,7 @@ All 7 hard rules are enforced and documented:
 **Slice 1 of #3026 is fully implemented, tested, and verified.**
 
 The implementation meets all requirements from the specification:
+
 - ✅ All 6 execution steps implemented
 - ✅ Supervision with recovery system (#4758) implemented
 - ✅ Concurrency control (36 sessions) implemented
@@ -353,6 +381,7 @@ The implementation meets all requirements from the specification:
 ### Next Steps
 
 The implementation is ready for:
+
 1. **Shadow mode testing** (already verified - no mutations)
 2. **Live mode testing** (requires OpenCode server running)
 3. **Integration with fleet scheduler**

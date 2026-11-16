@@ -35,6 +35,7 @@
 // done-recently. Lower sorts first; ties keep section order.
 
 import type { DependencyRef, Horizon, LinedUpTask, OrchestrationSection, RefKey, TierItem } from "./model.ts";
+import { isDependencyStatus } from "./orchestration-dependency.ts";
 
 export type WorkItemStatus = "needs-drew" | "needs-orchestrator" | LinedUpTask["status"];
 
@@ -127,7 +128,7 @@ function asBlockers(value: unknown): DependencyRef[] {
     const blocker = d as Record<string, unknown>;
     return (
       typeof blocker.task === "string" &&
-      ["in-progress", "queued", "stalled", "done", "unknown"].includes(String(blocker.status)) &&
+      isDependencyStatus(blocker.status) &&
       (blocker.ref === undefined || typeof blocker.ref === "string")
     );
   });
