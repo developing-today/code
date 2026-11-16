@@ -83,6 +83,7 @@ records.
 - [Chat anchor data model: typed links and durable part selectors](../../doc/2026-11-09T01-27-00Z_design_chat_anchor_data_model/2026-11-09T01-27-00Z_design_chat_anchor_data_model.md)
 - [Atlas chunk-boundary policy v2 — structural first](../../doc/2026-11-09T01-31-29Z_design_atlas_chunk_boundary_policy_v2/2026-11-09T01-31-29Z_design_atlas_chunk_boundary_policy_v2.md)
 - [Benchmark regression gates, waivers, and result retention](../../doc/2026-11-08T23-45-30Z_design_id5897_regression_gates/2026-11-08T23-45-30Z_design_id5897_regression_gates.md)
+- [Where agent notes live — scratch, memory, repo, Zettelkasten, or ID graph](../../doc/2026-11-08T13-55-51Z_design_agent_note_placement/2026-11-08T13-55-51Z_design_agent_note_placement.md)
 
 ## Package architecture docs (living, with the code)
 
