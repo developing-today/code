@@ -32,7 +32,10 @@
 //! serves what it finds, so a secret minted moments ago is visible
 //! immediately instead of at the next TTL refresh (#6275).
 //!
-//! Env: SECRETS_BROKER_BIND (default 100.99.113.103:4800),
+//! Env: SECRETS_BROKER_BIND (default 100.99.113.103:4800; the
+//!      literal `none` disables the TCP listener entirely —
+//!      UDS-only mode for hosts that must never open a network
+//!      listener, #10582),
 //!      SECRETS_BROKER_SOCKET (Unix socket dual-bind, #6216; default
 //!      ~/.config/secrets-broker/broker.sock via fleet-config),
 //!      SECRETS_BROKER_TOKEN_FILE (default ~/.config/secrets-broker/token),
@@ -629,10 +632,24 @@ pub fn parse_ttl_s(raw: Option<&str>) -> Result<TtlParse, String> {
     }
 }
 
+/// The TCP bind for this broker, resolved from `SECRETS_BROKER_BIND`
+/// (#10582): unset selects the laptop tailnet default; the literal
+/// `none` (any case, surrounding whitespace ignored) selects NO TCP
+/// listener at all — UDS-only mode, for a host that must never open
+/// a network listener (the sandbox dual-host, whose consumers reach
+/// the broker over its Unix socket). Any other value is used as the
+/// bind address as-is.
+fn tcp_bind(raw: Option<&str>) -> Option<String> {
+    match raw {
+        None => Some("100.99.113.103:4800".to_string()),
+        Some(v) if v.trim().eq_ignore_ascii_case("none") => None,
+        Some(v) => Some(v.to_string()),
+    }
+}
+
 pub fn run() -> i32 {
     use std::io::Read as _;
-    let bind =
-        std::env::var("SECRETS_BROKER_BIND").unwrap_or_else(|_| "100.99.113.103:4800".to_string());
+    let bind = tcp_bind(std::env::var("SECRETS_BROKER_BIND").ok().as_deref());
     let home = match crate::home::from_env() {
         Ok(home) => home,
         Err(error) => {
@@ -686,23 +703,40 @@ pub fn run() -> i32 {
         });
     }
 
-    let server = match Server::http(&bind) {
-        Ok(server) => server,
-        Err(e) => {
-            crate::log::info("secrets-broker", &format!("cannot bind {bind}: {e:?}"));
-            return 3;
+    let server = match &bind {
+        Some(bind) => match Server::http(bind) {
+            Ok(server) => {
+                crate::log::info("secrets-broker", &format!("listening on {bind}"));
+                Some(server)
+            }
+            Err(e) => {
+                crate::log::info("secrets-broker", &format!("cannot bind {bind}: {e:?}"));
+                return 3;
+            }
+        },
+        None => {
+            crate::log::info(
+                "secrets-broker",
+                "TCP listener disabled (SECRETS_BROKER_BIND=none); UDS only",
+            );
+            None
         }
     };
-    crate::log::info("secrets-broker", &format!("listening on {bind}"));
 
-    // Dual-bind (#6216): the same handler over a Unix socket. A bind
-    // failure or a live owner degrades to TCP only, never to exit:
-    // the TCP listener is the established surface.
+    // Dual-bind (#6216): the same handler over a Unix socket. With a
+    // TCP listener, a bind failure or a live owner degrades to TCP
+    // only, never to exit: the TCP listener is the established
+    // surface. In UDS-only mode (#10582) the socket IS the only
+    // surface: a live owner means this invocation is a duplicate
+    // (exit 0, the owner keeps serving), and a bind failure leaves
+    // no listener at all (exit 3).
     let socket_path = fleet_config::Config::load()
         .unwrap_or_default()
         .secrets_broker_socket();
+    let mut uds_serving = false;
     match crate::uds_http::bind_socket(&socket_path) {
         Ok(Some(listener)) => {
+            uds_serving = true;
             let st = Arc::clone(&state);
             let tok = token.clone();
             crate::log::info(
@@ -748,18 +782,56 @@ pub fn run() -> i32 {
                 );
             });
         }
-        Ok(None) => crate::log::info(
-            "secrets-broker",
-            &format!(
-                "uds {} already owned by a live broker; TCP only",
-                socket_path.display()
-            ),
-        ),
-        Err(e) => crate::log::info(
-            "secrets-broker",
-            &format!("cannot bind uds {}: {e}; TCP only", socket_path.display()),
-        ),
+        Ok(None) => {
+            if bind.is_none() {
+                crate::log::info(
+                    "secrets-broker",
+                    &format!(
+                        "uds {} already owned by a live broker; UDS-only duplicate exiting",
+                        socket_path.display()
+                    ),
+                );
+                return 0;
+            }
+            crate::log::info(
+                "secrets-broker",
+                &format!(
+                    "uds {} already owned by a live broker; TCP only",
+                    socket_path.display()
+                ),
+            );
+        }
+        Err(e) => {
+            if bind.is_none() {
+                crate::log::info(
+                    "secrets-broker",
+                    &format!(
+                        "cannot bind uds {}: {e}; UDS-only mode has no other listener",
+                        socket_path.display()
+                    ),
+                );
+                return 3;
+            }
+            crate::log::info(
+                "secrets-broker",
+                &format!("cannot bind uds {}: {e}; TCP only", socket_path.display()),
+            );
+        }
     }
+
+    let Some(server) = server else {
+        // UDS-only mode (#10582): the UDS serve thread owns every
+        // request; park the main thread so the process (and its
+        // background refresh loop) stays resident until killed.
+        // Reaching here without a serving socket is impossible —
+        // the arms above return first — but never park listenerless.
+        if !uds_serving {
+            return 3;
+        }
+        loop {
+            std::thread::sleep(Duration::from_secs(3600));
+        }
+    };
 
     for mut req in server.incoming_requests() {
         let state = Arc::clone(&state);
@@ -844,8 +916,35 @@ mod tests {
     use super::{
         CachedSecret, DEFAULT_TTL_S, MIN_TTL_S, State, fetch_through_with, handle_request,
         install_refresh, now_unix, parse_list_entries, parse_ttl_s, pre_body_refusal,
-        resolve_list_id, url_decode,
+        resolve_list_id, tcp_bind, url_decode,
     };
+
+    #[test]
+    fn tcp_bind_unset_is_the_tailnet_default() {
+        // Oracle: the laptop's established listener is unchanged
+        // when SECRETS_BROKER_BIND is not set (#10582 must not move
+        // the existing dual-host's TCP surface).
+        assert_eq!(tcp_bind(None).as_deref(), Some("100.99.113.103:4800"));
+    }
+
+    #[test]
+    fn tcp_bind_none_disables_the_tcp_listener() {
+        // Oracle: UDS-only mode is selected by the literal `none`,
+        // case-insensitively and ignoring surrounding whitespace —
+        // and by nothing else, so a real bind address (including a
+        // loopback one) still passes through untouched.
+        assert_eq!(tcp_bind(Some("none")), None);
+        assert_eq!(tcp_bind(Some("NONE")), None);
+        assert_eq!(tcp_bind(Some("  None  ")), None);
+        assert_eq!(
+            tcp_bind(Some("127.0.0.1:4800")).as_deref(),
+            Some("127.0.0.1:4800")
+        );
+        assert_eq!(
+            tcp_bind(Some("100.99.113.103:4800")).as_deref(),
+            Some("100.99.113.103:4800")
+        );
+    }
 
     #[test]
     fn pre_body_refusal_decides_from_headers_alone() {

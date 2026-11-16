@@ -285,12 +285,16 @@ rather than working around it silently.
 `fleet init` is location-aware: it resolves this machine's
 location and role set from the `[host]` section of `fleet.toml`
 (or `FLEET_HOST_CONFIG` / `FLEET_LOCATION`) and ensures exactly
-those roles — sandbox = the session proxy under `init_mode =
-"spawn"`; laptop/lab = the daemon roles under `init_mode =
-"systemd"`, reported via their `fleet-<role>.service` units and
-started only through `systemctl --user`. An unknown location
-reports state, starts nothing, and exits 69. The full design is
-issue #5687 §§1–6.
+those roles — sandbox = the session proxy plus the dual-hosted
+secrets broker under `init_mode = "spawn"` (the broker is
+spawn-managed UDS-only since #10582: `fleet init` spawns
+`fleet serve secrets-broker` with `SECRETS_BROKER_BIND=none`, so
+it never opens a network listener, and sandbox consumers reach it
+directly over its role socket); laptop/lab = the daemon roles
+under `init_mode = "systemd"`, reported via their
+`fleet-<role>.service` units and started only through
+`systemctl --user`. An unknown location reports state, starts
+nothing, and exits 69. The full design is issue #5687 §§1–6.
 
 **The deploy sequence is part of the feature** (§6): the
 location-aware binary has NO "no manifest ⇒ assume proxy"
@@ -299,7 +303,10 @@ location-aware build replaces either live install:
 
 1. Write the `[host]` section into that machine's `fleet.toml`
    (sandbox: `location = "sandbox"`, `init_mode = "spawn"`,
-   `[host.roles] proxy = {}`).
+   `[host.roles] proxy = {}` and, since #10582,
+   `secrets-broker = {}`; the sandbox broker also needs its token
+   file at `~/.config/secrets-broker/token`, holding the same
+   secrets-broker token the host's consumers already present).
 2. Pin the sandbox's `init-ensure.sh` call site to
    `FLEET_LOCATION=sandbox fleet init` (belt-and-braces: the env
    var makes the caller's assumption explicit and survives a

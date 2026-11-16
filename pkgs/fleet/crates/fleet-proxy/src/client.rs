@@ -512,8 +512,10 @@ Autostart this host's fleet roles if they are not running. The
 FLEET_HOST_CONFIG) names this machine's location and roles: on
 the sandbox that is the session proxy (probe the broker socket,
 sync the PATH shims when a broker answers, start one when none
-does — a strict no-op when a broker is already running). An
-unknown location reports state, starts nothing, and exits 69.
+does — a strict no-op when a broker is already running) and the
+UDS-only secrets-broker (probe its role socket, spawn it when
+nothing answers — likewise a strict no-op when it is running).
+An unknown location reports state, starts nothing, and exits 69.
 
 Takes no arguments.";
 
@@ -595,10 +597,17 @@ fn run_init_resolved(
             for role in &active {
                 if role == "proxy" {
                     proxy_active = true;
+                } else if spawn_managed_role(role) {
+                    // #10582: the secrets-broker is spawn-managed —
+                    // the sandbox dual-hosts it UDS-only, kept alive
+                    // by this same init path (the init-ensure pgrep
+                    // pattern calls `fleet init` on every prelude).
+                    ensure_secrets_broker_spawn(config);
                 } else {
-                    // v1 spawn semantics exist for the proxy only
-                    // (the sandbox's one role, §5); any other role
-                    // in a spawn manifest is reported, not spawned.
+                    // v1 spawn semantics exist for the proxy (and,
+                    // since #10582, the secrets-broker); any other
+                    // role in a spawn manifest is reported, not
+                    // spawned.
                     println!(
                         "fleet: role {role}: not spawn-managed in this build — reported, skipped"
                     );
@@ -616,6 +625,91 @@ fn run_init_resolved(
             Ok(0)
         }
     }
+}
+
+/// Roles `fleet init` spawn-manages in `InitMode::Spawn` beyond
+/// the session proxy itself (#10582). A pure classification so the
+/// set is pinnable in tests without spawning anything.
+fn spawn_managed_role(role: &str) -> bool {
+    role == "secrets-broker"
+}
+
+/// Ensure the spawn-managed secrets-broker (#10582): probe its UDS
+/// socket first — a live broker is a strict no-op, exactly like the
+/// proxy. Only an unanswered socket spawns, detached, with
+/// `SECRETS_BROKER_BIND=none`: the sandbox broker is UDS-only and
+/// never opens a network listener. A spawn that never answers is
+/// reported, not fatal — the proxy remains init's critical path,
+/// and the next init line retries the broker.
+fn ensure_secrets_broker_spawn(config: &Config) {
+    let socket = config.secrets_broker_socket();
+    if fleet_config::probe_socket(&socket) {
+        println!(
+            "fleet: role secrets-broker: already running (uds {})",
+            socket.display()
+        );
+        return;
+    }
+    match spawn_secrets_broker(&socket) {
+        Ok(()) => {
+            for _ in 0..50 {
+                if fleet_config::probe_socket(&socket) {
+                    println!(
+                        "fleet: role secrets-broker: started (uds {})",
+                        socket.display()
+                    );
+                    return;
+                }
+                std::thread::sleep(Duration::from_millis(100));
+            }
+            println!(
+                "fleet: role secrets-broker: spawned but socket {} did not answer within 5s — see broker.log beside the socket",
+                socket.display()
+            );
+        }
+        Err(e) => println!("fleet: role secrets-broker: spawn failed: {e}"),
+    }
+}
+
+/// Spawn `fleet serve secrets-broker` detached (setsid, output
+/// appended to broker.log beside the role socket — the proxy
+/// spawn's shape), pinned to UDS-only mode via the environment so
+/// no fleet.toml spelling can give the sandbox broker a TCP
+/// listener (#10582).
+fn spawn_secrets_broker(socket: &std::path::Path) -> Result<(), ClientError> {
+    use std::os::unix::process::CommandExt;
+    let sock_dir = socket
+        .parent()
+        .map(|p| p.to_path_buf())
+        .unwrap_or_else(|| std::path::PathBuf::from("."));
+    std::fs::create_dir_all(&sock_dir)
+        .map_err(|e| ClientError::Transport(format!("socket dir: {e}")))?;
+    let log = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(sock_dir.join("broker.log"))
+        .map_err(|e| ClientError::Transport(format!("broker.log: {e}")))?;
+    let exe =
+        std::env::current_exe().map_err(|e| ClientError::Transport(format!("current exe: {e}")))?;
+    let mut cmd = std::process::Command::new(exe);
+    cmd.args(["serve", "secrets-broker"])
+        .env("SECRETS_BROKER_BIND", "none")
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::from(log.try_clone().map_err(|e| {
+            ClientError::Transport(format!("broker.log: {e}"))
+        })?))
+        .stderr(std::process::Stdio::from(log));
+    unsafe {
+        cmd.pre_exec(|| {
+            if libc::setsid() == -1 {
+                return Err(std::io::Error::last_os_error());
+            }
+            Ok(())
+        });
+    }
+    cmd.spawn()
+        .map_err(|e| ClientError::Transport(format!("spawn secrets-broker: {e}")))?;
+    Ok(())
 }
 
 /// The unknown-location report (#5687 §4): every source consulted
@@ -828,6 +922,21 @@ mod tests {
         let config = Config::default();
         let code = run_init_resolved(Some(host), &config, "test-client", &[]).unwrap();
         assert_eq!(code, 0);
+    }
+
+    #[test]
+    fn spawn_managed_role_is_exactly_the_secrets_broker() {
+        // #10582 oracle: in spawn mode only the secrets-broker is
+        // spawn-managed beyond the proxy; every other daemon role
+        // keeps the report-only semantics, so a typo'd or future
+        // role can never silently acquire a spawn path.
+        assert!(spawn_managed_role("secrets-broker"));
+        for role in ["queue-broker", "search", "laptop-agent", "proxy", "prox"] {
+            assert!(
+                !spawn_managed_role(role),
+                "{role} must not be spawn-managed"
+            );
+        }
     }
 
     #[test]
