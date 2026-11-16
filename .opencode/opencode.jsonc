@@ -4125,8 +4125,22 @@
         // while still bounding a truly dead leg to one minute.
         "health": { "firstTokenTimeoutMs": 60000 }
       },
+      // 2026-11-16 (Drew, direct order): Claude goes UP FRONT in
+      // workhorse - _claude/claude-sonnet-5-5#high is the first
+      // target. Anthropic refilled the Claude windows early (7d 2%,
+      // Fable 7d 0% at the 2026-11-16 14:15Z read) but kept the
+      // same reset date (Wed 2026-11-18 13:00 CST), so the pool
+      // holds ~2 days of nearly-full quota that evaporates if not
+      // burned. Door probe-verified live before seating (one-shot
+      // session 2026-11-16 ~08:47 CST - the #9549 success
+      // condition). On yield (5h cap, bench, failure) the chain
+      // falls through to beam-plan and the Flash primary exactly
+      // as before; nothing else in the chain changes. Credential
+      // watch: the stored credential expires 2026-11-16T19:15:18Z
+      // and auto-renewal is the open Claude gap on #6120 - if the
+      // door dies at that boundary the chain sheds it on its own.
       "workhorse": {
-        "name": "Workhorse - standard work: Flash primary, weighted relief pool behind it, Fable #low last resort if all else is down",
+        "name": "Workhorse - standard work: Claude Sonnet 5.5 #high (_claude) up front burning its refilled 7d window to the Wed Nov 18 13:00 CST reset, then beam-plan, Flash primary, weighted relief pool behind it, Fable #low last resort if all else is down",
         // Class fallback (Drew 2026-11-13): on exhaustion this class
         // escalates to the route(s) appended at the END of its targets.
         // Per-call visited-set semantics: the route expander prunes
@@ -4181,6 +4195,7 @@
         // no weights map (the convention for every ordered route in
         // this file); position is the mechanism.
         "targets": [
+          "_claude/claude-sonnet-5-5#high",
           "opencode-route/beam-plan",
           "opencode-route/workhorse-ordered",
           "opencode-route/workhorse-primary",
