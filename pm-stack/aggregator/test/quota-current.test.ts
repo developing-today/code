@@ -6,6 +6,11 @@ import {
   QUOTA_CURRENT_FRESH_MS,
   QUOTA_CURRENT_FUTURE_SKEW_MS,
 } from "../src/quota-current.ts";
+import {
+  GO_DREWRYPOPE_SERVICE_ID,
+  GO_POPESDREW_SERVICE_ID,
+  GO_DEVELOPING_TODAY_0_SERVICE_ID,
+} from "../src/quota-gather-map.ts";
 import type { QuotaCurrentEntry, QuotaCurrentFile, QuotaPool, QuotaView, SaasService } from "../src/model.ts";
 
 // The final visibility hop (#1151): the gatherer's quota-current.json
@@ -862,6 +867,107 @@ describe("overlay: split gatherer rows land on the four split hub pools (#1331)"
         state: "ok",
       });
     }
+  });
+});
+
+describe("overlay: aliased OpenCode Zen rows (#10443, #10591)", () => {
+  // The Zen door reads the same plan meters as the Go door, so its
+  // rows file under the Go pool ids (serviceIdFor). The overlay must
+  // never turn one meter into two pools, must keep the provider-level
+  // census, and must surface a genuinely divergent Zen reading instead
+  // of silently dropping it. #10591: the steward's step-6 check must
+  // compare rendered pool coverage against distinct pool service IDs,
+  // not raw provider rows, so this aliasing is not a regression.
+
+  const goEntry = (pct: number, measuredAt: string) =>
+    entry({
+      serviceId: GO_DEVELOPING_TODAY_0_SERVICE_ID,
+      providerId: "opencode-go.developing-today-0",
+      credentialLabel: "OpenCode Go (developing-today-0)",
+      measuredAt,
+      windows: [win("monthly", pct, measuredAt)],
+    });
+
+  const zenEntry = (pct: number, measuredAt: string) =>
+    entry({
+      serviceId: GO_DEVELOPING_TODAY_0_SERVICE_ID,
+      providerId: "opencode.developing-today-0",
+      credentialLabel: "OpenCode Zen (developing-today-0)",
+      measuredAt,
+      windows: [win("monthly", pct, measuredAt)],
+    });
+
+  const viewWithGoPools = () => {
+    const view = baseView();
+    view.pools.push(
+      pool("opencode-go.drewrypope", []),
+      pool("opencode-go.popesdrew", []),
+      pool(GO_DEVELOPING_TODAY_0_SERVICE_ID, []),
+    );
+    return view;
+  };
+
+  test("identical Zen and Go readings render one pool, not a duplicate", () => {
+    const view = viewWithGoPools();
+    const out = overlayQuotaCurrent(
+      view,
+      file([
+        goEntry(54, iso(5 * 60_000)),
+        zenEntry(54, iso(4 * 60_000)), // identical percent, slightly older
+      ]),
+      NOW,
+    );
+    // Only one pool for this service id
+    const ids = out.pools.map((p) => p.id);
+    expect(ids).not.toContain("opencode.developing-today-0");
+    expect(out.pools).toHaveLength(view.pools.length);
+    // Headline uses the newest fresh read (Go, 54)
+    const goPool = out.pools.find((p) => p.id === GO_DEVELOPING_TODAY_0_SERVICE_ID)!;
+    expect(goPool.windows.map((w) => w.percent)).toEqual([54]);
+    // No credential rows because the two reads are identical
+    expect(goPool.credentials).toBeUndefined();
+  });
+
+  test("the provider-level census keeps both Zen and Go rows", () => {
+    const view = viewWithGoPools();
+    const out = overlayQuotaCurrent(
+      view,
+      file([
+        goEntry(54, iso(5 * 60_000)),
+        zenEntry(54, iso(4 * 60_000)),
+      ]),
+      NOW,
+    );
+    const g = out.gatherer?.providers ?? [];
+    expect(g.some((p) => p.providerId === "opencode-go.developing-today-0")).toBe(true);
+    expect(g.some((p) => p.providerId === "opencode.developing-today-0")).toBe(true);
+    // Both rows should have state ok
+    const goRow = g.find((p) => p.providerId === "opencode-go.developing-today-0")!;
+    const zenRow = g.find((p) => p.providerId === "opencode.developing-today-0")!;
+    expect(goRow.state).toBe("ok");
+    expect(zenRow.state).toBe("ok");
+  });
+
+  test("a divergent Zen reading surfaces as a credential row instead of being hidden", () => {
+    const view = viewWithGoPools();
+    // Go entry is newer (4 min ago) than Zen (5 min ago) — headline from Go
+    const out = overlayQuotaCurrent(
+      view,
+      file([
+        goEntry(54, iso(4 * 60_000)),
+        zenEntry(10, iso(5 * 60_000)), // genuinely different meter
+      ]),
+      NOW,
+    );
+    const goPool = out.pools.find((p) => p.id === GO_DEVELOPING_TODAY_0_SERVICE_ID)!;
+    // Headline from the newest fresh read (Go, 54)
+    expect(goPool.windows.map((w) => w.percent)).toEqual([54]);
+    // But credential rows surface the divergence
+    expect(goPool.credentials).toBeDefined();
+    expect(goPool.credentials!.length).toBe(2);
+    const byLabel = new Map(goPool.credentials!.map((c) => [c.label, c]));
+    expect(byLabel.get("OpenCode Go (developing-today-0)")!.windows[0].percent).toBe(54);
+    expect(byLabel.get("OpenCode Zen (developing-today-0)")!.windows[0].percent).toBe(10);
   });
 });
 
