@@ -7,8 +7,9 @@
 //! only; consumers reach it through the sandbox session proxy.
 //!
 //! Endpoints (header `X-Agent-Token` required except /health):
-//!   GET /health        -> {ok, secrets, last_refresh_unix, refreshing,
-//!                          oldest_secret_age_seconds}
+//!   GET /health        -> {ok, serving, secrets, last_refresh_unix, refreshing,
+//!                          oldest_secret_age_seconds} | 503 while `serving`
+//!                          is false (no successful refresh yet, #10868)
 //!   GET /secrets       -> {names: [...]}
 //!   GET /secret/<name> -> {key, value, fetched_at_unix, age_seconds,
 //!                          source} | 404 | 503 (not loaded yet)
@@ -534,12 +535,15 @@ fn handle_request(
             .values()
             .map(|c| now.saturating_sub(c.fetched_at_unix))
             .max();
+        let last_refresh_unix = state.last_refresh.read().unwrap().clone();
+        let serving = last_refresh_unix.is_some();
         (
-            200,
+            if serving { 200 } else { 503 },
             json!({
-                "ok": true,
+                "ok": serving,
+                "serving": serving,
                 "secrets": state.secrets.read().unwrap().len(),
-                "last_refresh_unix": state.last_refresh.read().unwrap().clone(),
+                "last_refresh_unix": last_refresh_unix,
                 "refreshing": *state.refreshing.read().unwrap(),
                 "oldest_secret_age_seconds": oldest_secret_age_seconds,
             }),
@@ -925,6 +929,27 @@ mod tests {
             refreshing: RwLock::new(false),
             inflight: Mutex::new(HashMap::new()),
         })
+    }
+
+    #[test]
+    fn health_reports_serving_only_after_a_successful_refresh() {
+        // oracle (#10868): a live process whose refresh never
+        // succeeded (stripped PATH, bws unspawnable) is not serving,
+        // so the health probe must fail and init-ensure can replace
+        // it; a loaded broker answers 200 with serving=true.
+        let state = empty_state();
+        *state.last_refresh.write().unwrap() = None;
+        let (status, body) = handle_request(&state, "tok", "GET", "/health", None);
+        assert_eq!(status, 503);
+        assert_eq!(body["serving"], false);
+        assert_eq!(body["ok"], false);
+        assert!(body.get("refresh_error").is_none());
+
+        *state.last_refresh.write().unwrap() = Some(1);
+        let (status, body) = handle_request(&state, "tok", "GET", "/health", None);
+        assert_eq!(status, 200);
+        assert_eq!(body["serving"], true);
+        assert_eq!(body["ok"], true);
     }
 
     #[test]
