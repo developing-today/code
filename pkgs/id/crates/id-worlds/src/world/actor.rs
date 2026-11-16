@@ -109,6 +109,11 @@ impl WorldCommand {
             Self::AdminSetScheduleGrant { .. } => "AdminSetScheduleGrant",
             Self::DeliverSchedule { .. } => "DeliverSchedule",
             Self::SetScheduleDelivery { .. } => "SetScheduleDelivery",
+            Self::AdminSetPortalGrant { .. } => "AdminSetPortalGrant",
+            Self::PortalGrantsInfo { .. } => "PortalGrantsInfo",
+            Self::SendPortal { .. } => "SendPortal",
+            Self::DeliverPortal { .. } => "DeliverPortal",
+            Self::SetPortalDelivery { .. } => "SetPortalDelivery",
             Self::CapsInfo { .. } => "CapsInfo",
             Self::SetIsolation { .. } => "SetIsolation",
             Self::IsolationInfo { .. } => "IsolationInfo",
@@ -378,6 +383,44 @@ pub(crate) enum WorldCommand {
         delivery: std::sync::Arc<dyn ScheduleDelivery>,
         reply: oneshot::Sender<()>,
     },
+    /// Admin: set this world's F12.14 portal grant for one peer
+    /// (code#1068 wiring slice): `granted: true` grants the portal,
+    /// `granted: false` revokes a live grant. Replies with the full
+    /// grant book after the change.
+    AdminSetPortalGrant {
+        peer: String,
+        granted: bool,
+        reply: oneshot::Sender<Result<id_caps::portal::PortalGrants>>,
+    },
+    /// Read this world's current portal grant book (the transport
+    /// reads the peer's book through this before a send).
+    PortalGrantsInfo {
+        reply: oneshot::Sender<id_caps::portal::PortalGrants>,
+    },
+    /// Send one portal message to `target` (code#1068 wiring slice).
+    /// The actor runs the mutual check against its own book and the
+    /// peer's (fetched through the installed sink), admits against
+    /// its per-pair rate window, and records the send-side audit
+    /// shape for the outcome.
+    SendPortal {
+        target: String,
+        message: String,
+        reply: oneshot::Sender<Result<(), PortalSendError>>,
+    },
+    /// A portal message arriving from `source` (code#1068 wiring
+    /// slice). Replies `Ok` only when this world accepted it (its
+    /// own grant re-checked, message delivered to the program); a
+    /// policy refusal is recorded in this world's audit log.
+    DeliverPortal {
+        source: String,
+        message: String,
+        reply: oneshot::Sender<Result<(), PortalSendError>>,
+    },
+    /// Install the portal transport sink (composition layer).
+    SetPortalDelivery {
+        delivery: std::sync::Arc<dyn PortalDelivery>,
+        reply: oneshot::Sender<()>,
+    },
     /// Admin: read the capability report.
     CapsInfo {
         reply: oneshot::Sender<Result<CapsReport>>,
@@ -505,6 +548,17 @@ pub(crate) struct WorldActor {
     /// the composition layer. `None` leaves cross-world schedules
     /// pending: no sink, no delivery.
     pub(crate) schedule_delivery: Option<std::sync::Arc<dyn ScheduleDelivery>>,
+    /// F12.14 portal transport sink (code#1068 wiring slice),
+    /// installed by the composition layer. `None` means no peer's
+    /// grant can be evidenced, so every send refuses as
+    /// peer-not-granted.
+    pub(crate) portal_delivery: Option<std::sync::Arc<dyn PortalDelivery>>,
+    /// Per-ordered-pair portal rate windows (code#1068 wiring
+    /// slice), keyed by target peer world: this actor is always the
+    /// source half of the pair. Actor-lifetime only, like the
+    /// schedule receipts' in-memory mirrors — the kernel window is a
+    /// send-side admission control, not durable state.
+    pub(crate) portal_rate: BTreeMap<String, id_caps::portal::PortalRateWindow>,
     /// Host metrics registry (F11.7), shared with the handle and the
     /// session layer; see [`WorldMetrics`].
     pub(crate) metrics: WorldMetrics,
@@ -2310,6 +2364,203 @@ impl WorldActor {
         true
     }
 
+    /// Record one F12.14 portal audit shape (code#1068 wiring
+    /// slice) in this world's retained audit log, in the exact
+    /// fields the kernel built it in.
+    fn audit_portal_shape(&self, shape: &id_caps::portal::PortalAuditShape) {
+        self.audit_record(
+            "portal",
+            shape.action,
+            shape.parameters.clone(),
+            shape.outcome,
+        );
+    }
+
+    /// Refuse a portal send on this (sending) world: record the
+    /// refusal shape in this world's audit log and return it.
+    fn refuse_portal_send(
+        &self,
+        refusal: id_caps::portal::PortalRefusal,
+        from_world: &str,
+        to_world: &str,
+        message_bytes: usize,
+    ) -> PortalSendError {
+        self.audit_portal_shape(&id_caps::portal::audit_for_refusal(
+            id_caps::portal::PORTAL_SEND_ACTION,
+            &refusal,
+            from_world,
+            to_world,
+            message_bytes,
+        ));
+        PortalSendError::Refused(refusal)
+    }
+
+    /// Send one portal message to `target` (F12.14, code#1068 wiring
+    /// slice). The mutual check runs grant-before-bounds exactly as
+    /// the kernel orders it: this world's own grant is judged
+    /// locally first (so an ungranted or revoked send refuses even
+    /// with no transport installed), then the peer's book is fetched
+    /// through the sink and `check_portal_message` runs in full,
+    /// then the per-ordered-pair rate window admits. An accepted
+    /// send records `portal.send` accepted here; the target records
+    /// `portal.deliver` on its side. Every refusal is recorded here
+    /// as `portal.send` refused with the refusal's stable code.
+    async fn send_portal_message(
+        &mut self,
+        target: &str,
+        message: String,
+    ) -> Result<(), PortalSendError> {
+        let from_world = self.core.world_id().to_owned();
+        let bytes = message.len();
+        match self.core.portal_grants.state(target) {
+            Some(id_caps::portal::PortalGrantState::Granted) => {}
+            Some(id_caps::portal::PortalGrantState::Revoked) => {
+                return Err(self.refuse_portal_send(
+                    id_caps::portal::PortalRefusal::SenderRevoked {
+                        peer: target.to_owned(),
+                    },
+                    &from_world,
+                    target,
+                    bytes,
+                ));
+            }
+            None => {
+                return Err(self.refuse_portal_send(
+                    id_caps::portal::PortalRefusal::SenderNotGranted {
+                        peer: target.to_owned(),
+                    },
+                    &from_world,
+                    target,
+                    bytes,
+                ));
+            }
+        }
+        // No sink (or an unreachable peer) means no grant on the
+        // peer's side can be evidenced: refuse as peer-not-granted,
+        // the kernel's verdict for a book that does not name us.
+        let Some(sink) = self.portal_delivery.clone() else {
+            return Err(self.refuse_portal_send(
+                id_caps::portal::PortalRefusal::PeerNotGranted {
+                    peer: from_world.clone(),
+                },
+                &from_world,
+                target,
+                bytes,
+            ));
+        };
+        let Some(peer_grants) = sink.peer_portal_grants(target).await else {
+            return Err(self.refuse_portal_send(
+                id_caps::portal::PortalRefusal::PeerNotGranted {
+                    peer: from_world.clone(),
+                },
+                &from_world,
+                target,
+                bytes,
+            ));
+        };
+        if let Err(refusal) = id_caps::portal::check_portal_message(
+            &self.core.portal_grants,
+            &peer_grants,
+            &from_world,
+            target,
+            bytes,
+        ) {
+            return Err(self.refuse_portal_send(refusal, &from_world, target, bytes));
+        }
+        let now_ms = self.core.clock().now_ms();
+        if let Err(refusal) = self
+            .portal_rate
+            .entry(target.to_owned())
+            .or_default()
+            .admit(now_ms)
+        {
+            return Err(self.refuse_portal_send(refusal, &from_world, target, bytes));
+        }
+        match sink.deliver_portal(&from_world, target, &message).await {
+            Ok(()) => {
+                self.audit_portal_shape(&id_caps::portal::audit_for_send(
+                    &from_world,
+                    target,
+                    bytes,
+                ));
+                Ok(())
+            }
+            Err(PortalSendError::Refused(refusal)) => {
+                Err(self.refuse_portal_send(refusal, &from_world, target, bytes))
+            }
+            Err(unavailable) => Err(unavailable),
+        }
+    }
+
+    /// Accept (or refuse) one portal message arriving from `source`
+    /// (F12.14, code#1068 wiring slice). The receiving side re-checks
+    /// its own book — the send-side check read a snapshot, and a
+    /// grant revoked in between must refuse here as revoked — and
+    /// the size bound, then delivers the message to the program as a
+    /// host event naming its source. Acceptance records
+    /// `portal.deliver` accepted in this world's audit log; refusal
+    /// records `portal.deliver` refused with the refusal's code.
+    async fn accept_portal_delivery(
+        &mut self,
+        source: &str,
+        message: String,
+    ) -> Result<(), PortalSendError> {
+        let to_world = self.core.world_id().to_owned();
+        let bytes = message.len();
+        let refuse = |actor: &Self, refusal: id_caps::portal::PortalRefusal| {
+            actor.audit_portal_shape(&id_caps::portal::audit_for_refusal(
+                id_caps::portal::PORTAL_DELIVER_ACTION,
+                &refusal,
+                source,
+                &to_world,
+                bytes,
+            ));
+            PortalSendError::Refused(refusal)
+        };
+        match self.core.portal_grants.state(source) {
+            Some(id_caps::portal::PortalGrantState::Granted) => {}
+            Some(id_caps::portal::PortalGrantState::Revoked) => {
+                return Err(refuse(
+                    self,
+                    id_caps::portal::PortalRefusal::PeerRevoked {
+                        peer: source.to_owned(),
+                    },
+                ));
+            }
+            None => {
+                return Err(refuse(
+                    self,
+                    id_caps::portal::PortalRefusal::PeerNotGranted {
+                        peer: source.to_owned(),
+                    },
+                ));
+            }
+        }
+        if bytes > id_caps::portal::MAX_PORTAL_MESSAGE_BYTES {
+            return Err(refuse(
+                self,
+                id_caps::portal::PortalRefusal::MessageTooLarge {
+                    bytes,
+                    max: id_caps::portal::MAX_PORTAL_MESSAGE_BYTES,
+                },
+            ));
+        }
+        if self.read_only {
+            return Err(PortalSendError::Unavailable(
+                "read-only replica does not accept portal deliveries".to_owned(),
+            ));
+        }
+        if !self.deliver(portal_message_event(source, &message)).await {
+            return Err(PortalSendError::Unavailable(
+                "target program did not accept the portal message".to_owned(),
+            ));
+        }
+        self.audit_portal_shape(&id_caps::portal::audit_for_deliver(
+            source, &to_world, bytes,
+        ));
+        Ok(())
+    }
+
     /// `schedule.at`: pend a fire of `id` at `at` (unix ms). With
     /// `interval_ms` and `count` the schedule is recurring (#1355): it
     /// re-arms fixed-rate after each fire until `count` total fires have
@@ -3692,6 +3943,68 @@ impl WorldActor {
             }
             WorldCommand::SetScheduleDelivery { delivery, reply } => {
                 self.schedule_delivery = Some(delivery);
+                let _ = reply.send(());
+            }
+            WorldCommand::AdminSetPortalGrant {
+                peer,
+                granted,
+                reply,
+            } => {
+                let audit_peer = peer.clone();
+                let result = (|| -> Result<id_caps::portal::PortalGrants> {
+                    self.check_writable()?;
+                    crate::world_hub::validate_world_name(&peer)?;
+                    if granted {
+                        self.persist(JournalEntry::PortalGrantSet {
+                            peer: peer.clone(),
+                            granted: true,
+                        })?;
+                        self.core.portal_grants.grant(&peer);
+                    } else if self.core.portal_grants.state(&peer)
+                        == Some(id_caps::portal::PortalGrantState::Granted)
+                    {
+                        // Only a live grant's revocation is journaled:
+                        // revoking a peer that was never granted (or is
+                        // already revoked) changes no recorded state,
+                        // so it must not mint a revoked tombstone the
+                        // live book does not have.
+                        self.persist(JournalEntry::PortalGrantSet {
+                            peer: peer.clone(),
+                            granted: false,
+                        })?;
+                        self.core.portal_grants.revoke(&peer);
+                    }
+                    Ok(self.core.portal_grants.clone())
+                })();
+                self.audit_admin_result(
+                    "admin",
+                    "AdminSetPortalGrant",
+                    serde_json::json!({"peer": audit_peer, "granted": granted}),
+                    result.is_ok(),
+                );
+                let _ = reply.send(result);
+            }
+            WorldCommand::PortalGrantsInfo { reply } => {
+                let _ = reply.send(self.core.portal_grants.clone());
+            }
+            WorldCommand::SendPortal {
+                target,
+                message,
+                reply,
+            } => {
+                let result = self.send_portal_message(&target, message).await;
+                let _ = reply.send(result);
+            }
+            WorldCommand::DeliverPortal {
+                source,
+                message,
+                reply,
+            } => {
+                let result = self.accept_portal_delivery(&source, message).await;
+                let _ = reply.send(result);
+            }
+            WorldCommand::SetPortalDelivery { delivery, reply } => {
+                self.portal_delivery = Some(delivery);
                 let _ = reply.send(());
             }
             WorldCommand::SetIsolation {
@@ -5630,6 +5943,8 @@ impl WorldActor {
             location_fix_received_at: None,
             loc_watches: BTreeMap::new(),
             schedule_delivery: None,
+            portal_delivery: None,
+            portal_rate: BTreeMap::new(),
             auth: crate::directory_auth::DirectoryAuth::default(),
             metrics: WorldMetrics::default(),
             audit: WorldAuditLog::new(),

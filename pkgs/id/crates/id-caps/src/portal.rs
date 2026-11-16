@@ -102,6 +102,22 @@ impl PortalGrants {
         }
     }
 
+    /// Restore one peer's recorded state from durable storage (the
+    /// wiring slice's journal replay): `Some(state)` records exactly
+    /// that state — including a [`PortalGrantState::Revoked`]
+    /// tombstone for a peer that was never live-granted in this
+    /// process — and `None` removes the peer from the book entirely.
+    pub fn restore_state(&mut self, peer: &str, state: Option<PortalGrantState>) {
+        match state {
+            Some(state) => {
+                self.by_peer.insert(peer.to_owned(), state);
+            }
+            None => {
+                self.by_peer.remove(peer);
+            }
+        }
+    }
+
     /// The recorded state for `peer`, or `None` when this world has
     /// never granted that peer a portal.
     #[must_use]

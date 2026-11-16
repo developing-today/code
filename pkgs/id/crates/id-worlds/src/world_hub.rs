@@ -30,7 +30,10 @@ use serde::Serialize;
 use tokio::sync::{OnceCell, OwnedSemaphorePermit, Semaphore};
 use tokio::task::JoinHandle;
 
-use crate::world::{Isolation, ScheduleDelivery, ScheduleDeliveryFuture};
+use crate::world::{
+    Isolation, PortalDelivery, PortalDeliveryFuture, PortalGrants, PortalSendError,
+    ScheduleDelivery, ScheduleDeliveryFuture,
+};
 use crate::world_session::WorldService;
 
 /// Longest world name, in bytes.
@@ -682,6 +685,18 @@ impl WorldHub {
     #[must_use]
     pub fn schedule_delivery(&self) -> Arc<dyn ScheduleDelivery> {
         Arc::new(HubScheduleDelivery { hub: self.clone() })
+    }
+
+    /// The F12.14 portal transport sink backed by this hub
+    /// (code#1068 wiring slice): install it on a world's handle
+    /// (`WorldHandle::set_portal_delivery`) and that world's outbound
+    /// portal sends are checked against the peer's grant book and
+    /// delivered through the hub to the target world. The sink
+    /// leases worlds (never creates them); policy stays in the
+    /// actors.
+    #[must_use]
+    pub fn portal_delivery(&self) -> Arc<dyn PortalDelivery> {
+        Arc::new(HubPortalDelivery { hub: self.clone() })
     }
 
     /// Open the default world (creating it), for startup.
@@ -1476,6 +1491,48 @@ mod tests {
 /// source occurrence pending for a later retry.
 struct HubScheduleDelivery {
     hub: WorldHub,
+}
+
+/// [`PortalDelivery`] through a [`WorldHub`]: read the peer's grant
+/// book and deliver checked messages by leasing the target world.
+/// Any failure to lease is `None` / `Unavailable`, which the sending
+/// actor turns into the kernel's peer-not-granted refusal (for a
+/// book it cannot read) or a transport error (for a delivery that
+/// never arrived).
+struct HubPortalDelivery {
+    hub: WorldHub,
+}
+
+impl PortalDelivery for HubPortalDelivery {
+    fn peer_portal_grants<'a>(
+        &'a self,
+        world: &'a str,
+    ) -> PortalDeliveryFuture<'a, Option<PortalGrants>> {
+        Box::pin(async move {
+            let lease = self.hub.lease(Some(world), None).await.ok()?;
+            lease.service().world().portal_grants().await.ok()
+        })
+    }
+
+    fn deliver_portal<'a>(
+        &'a self,
+        source: &'a str,
+        target: &'a str,
+        message: &'a str,
+    ) -> PortalDeliveryFuture<'a, Result<(), PortalSendError>> {
+        Box::pin(async move {
+            let lease = self
+                .hub
+                .lease(Some(target), None)
+                .await
+                .map_err(|error| PortalSendError::Unavailable(format!("{error:?}")))?;
+            lease
+                .service()
+                .world()
+                .deliver_portal_message(source.to_owned(), message.to_owned())
+                .await
+        })
+    }
 }
 
 impl ScheduleDelivery for HubScheduleDelivery {

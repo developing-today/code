@@ -77,13 +77,16 @@ pub use hotness::{FiredSignal, HotnessBand, HotnessReport, HotnessSignal};
 pub(crate) use journal::JournalAdminHistory;
 pub use journal::{
     CoordinatorJournalEntry, JOURNAL_VERSION, JOURNAL_VERSION_CHECKPOINT_PARTS,
-    JOURNAL_VERSION_EXECUTION_PROFILE, JOURNAL_VERSION_OPEN_PRESENCE,
+    JOURNAL_VERSION_EXECUTION_PROFILE, JOURNAL_VERSION_OPEN_PRESENCE, JOURNAL_VERSION_PORTALS,
     JOURNAL_VERSION_REGION_HANDOFF, JOURNAL_VERSION_SCHEDULE_RECURRENCE,
     JOURNAL_VERSION_SIGNED_PLAY, JOURNAL_VERSION_WORLD_BUDGET, JOURNAL_VERSION_WRITE_LEASE,
     JournalEntry, JournalSignedMove, JournalSnapshot, JournalSnapshotSource, MAX_JOURNAL_VERSION,
     TrustBasis, TrustDecision, WorldJournal, journal_version_required_by,
 };
 pub use audit::{GrantsState, WorldAuditLog, export_otlp_json, replay_grants};
+/// The F12.14 portal policy types (code#1068), re-exported so the
+/// handle/hub portal surface names the same types the kernel checks.
+pub use id_caps::portal::{PortalGrantState, PortalGrants, PortalRefusal};
 pub use metrics::{
     HistogramSnapshot, MetricsSnapshot, RegionWrites, WorldMetrics, WriteLocalitySnapshot,
 };
@@ -1310,6 +1313,75 @@ pub(crate) type ScheduleDeliveryFuture<'a> =
 /// like a target that refuses. `true` means the target durably accepted
 /// the fire (its receipt is journaled), so the source may consume the
 /// occurrence.
+/// Why a portal send or delivery did not happen (F12.14 wiring,
+/// code#1068). A policy refusal is the kernel's own verdict and is
+/// audit-recorded by the refusing side; `Unavailable` is a transport
+/// failure (no sink installed, unknown peer world, closed actor,
+/// target program did not accept) — no policy decision was made, so
+/// no portal audit entry is written for it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum PortalSendError {
+    /// The mutual-grant/bounds/rate check refused the message.
+    Refused(id_caps::portal::PortalRefusal),
+    /// The transport could not carry the message at all.
+    Unavailable(String),
+}
+
+impl std::fmt::Display for PortalSendError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Refused(refusal) => write!(f, "portal refused: {}", refusal.code()),
+            Self::Unavailable(reason) => write!(f, "portal transport unavailable: {reason}"),
+        }
+    }
+}
+
+impl std::error::Error for PortalSendError {}
+
+/// A boxed future, so [`PortalDelivery`] stays object-safe (the
+/// [`ScheduleDelivery`] pattern).
+pub(crate) type PortalDeliveryFuture<'a, T> =
+    std::pin::Pin<Box<dyn std::future::Future<Output = T> + Send + 'a>>;
+
+/// Carries F12.14 portal messages between world actors (code#1068
+/// wiring slice). Installed on an actor by the composition layer
+/// (the hub); an actor with no sink cannot evidence a peer's grant
+/// and refuses every send as peer-not-granted. The sink is the
+/// transport only: policy lives in the actors, which run
+/// `id_caps::portal::check_portal_message` against both worlds'
+/// books and record the audit shapes on their own sides.
+pub(crate) trait PortalDelivery: Send + Sync {
+    /// The named world's current portal grant book, or `None` when
+    /// the world cannot be reached (unknown, busy, closed).
+    fn peer_portal_grants<'a>(
+        &'a self,
+        world: &'a str,
+    ) -> PortalDeliveryFuture<'a, Option<id_caps::portal::PortalGrants>>;
+
+    /// Deliver one already-checked message to `target`'s actor,
+    /// which re-checks its own book before accepting.
+    fn deliver_portal<'a>(
+        &'a self,
+        source: &'a str,
+        target: &'a str,
+        message: &'a str,
+    ) -> PortalDeliveryFuture<'a, Result<(), PortalSendError>>;
+}
+
+/// The host event a program receives when a portal message from
+/// `source` is delivered here: it names its source world as `from`
+/// and carries the message text (bounded by the portal check to
+/// `MAX_PORTAL_MESSAGE_BYTES` before delivery).
+pub(crate) fn portal_message_event(source: &str, message: &str) -> String {
+    serde_json::json!({
+        "cap": "portal",
+        "event": "message",
+        "from": source,
+        "message": message,
+    })
+    .to_string()
+}
+
 pub(crate) trait ScheduleDelivery: Send + Sync {
     /// Deliver the fire of schedule `id`, planned for `at_ms`, from
     /// `source` to `target`.

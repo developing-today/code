@@ -315,6 +315,8 @@ impl WorldHandle {
             location_fix_received_at: None,
             loc_watches: BTreeMap::new(),
             schedule_delivery: None,
+            portal_delivery: None,
+            portal_rate: BTreeMap::new(),
             auth: crate::directory_auth::DirectoryAuth::default(),
             admission_gate,
         };
@@ -791,6 +793,133 @@ impl WorldHandle {
         response
             .await
             .context("world actor dropped delivery-install response")
+    }
+
+    /// Admin: set this world's F12.14 portal grant for one peer world
+    /// (code#1068 wiring slice): `granted: true` grants the portal to
+    /// `peer`, `granted: false` revokes a live grant (a no-op for a
+    /// peer never granted). Journaled before it is visible and
+    /// audit-recorded like every admin command. Returns the full
+    /// grant book after the change.
+    ///
+    /// # Errors
+    ///
+    /// A malformed peer name or world storage failure.
+    pub async fn admin_set_portal_grant(
+        &self,
+        peer: String,
+        granted: bool,
+    ) -> Result<id_caps::portal::PortalGrants> {
+        let (reply, response) = oneshot::channel();
+        self.commands
+            .send(WorldCommand::AdminSetPortalGrant {
+                peer,
+                granted,
+                reply,
+            })
+            .await
+            .map_err(|_| anyhow::anyhow!("world actor is closed"))?;
+        response
+            .await
+            .context("world actor dropped portal grant response")?
+    }
+
+    /// This world's current F12.14 portal grant book.
+    ///
+    /// # Errors
+    ///
+    /// Fails if the world actor is closed.
+    pub async fn portal_grants(&self) -> Result<id_caps::portal::PortalGrants> {
+        let (reply, response) = oneshot::channel();
+        self.commands
+            .send(WorldCommand::PortalGrantsInfo { reply })
+            .await
+            .map_err(|_| anyhow::anyhow!("world actor is closed"))?;
+        response
+            .await
+            .context("world actor dropped portal grants response")
+    }
+
+    /// Send one F12.14 portal message to `target` (code#1068 wiring
+    /// slice). The send runs the mutual-grant check against both
+    /// worlds' books, the 16 KiB size bound, and the per-ordered-pair
+    /// rate window (32 per 60 s), and records the send-side audit
+    /// entry; the target records the deliver-side entry on
+    /// acceptance.
+    ///
+    /// # Errors
+    ///
+    /// `PortalSendError::Refused` with the kernel's refusal for a
+    /// policy refusal, or `PortalSendError::Unavailable` for a
+    /// transport failure (including a closed actor).
+    pub async fn send_portal_message(
+        &self,
+        target: String,
+        message: String,
+    ) -> Result<(), PortalSendError> {
+        let (reply, response) = oneshot::channel();
+        self.commands
+            .send(WorldCommand::SendPortal {
+                target,
+                message,
+                reply,
+            })
+            .await
+            .map_err(|_| PortalSendError::Unavailable("world actor is closed".to_owned()))?;
+        response.await.unwrap_or_else(|_| {
+            Err(PortalSendError::Unavailable(
+                "world actor dropped portal send response".to_owned(),
+            ))
+        })
+    }
+
+    /// Deliver one F12.14 portal message arriving from `source`
+    /// (code#1068 wiring slice): the receiving half of the transport,
+    /// called by the hub sink. `Ok` only when this world accepted it.
+    ///
+    /// # Errors
+    ///
+    /// A policy refusal or transport failure, as for
+    /// [`WorldHandle::send_portal_message`].
+    pub async fn deliver_portal_message(
+        &self,
+        source: String,
+        message: String,
+    ) -> Result<(), PortalSendError> {
+        let (reply, response) = oneshot::channel();
+        self.commands
+            .send(WorldCommand::DeliverPortal {
+                source,
+                message,
+                reply,
+            })
+            .await
+            .map_err(|_| PortalSendError::Unavailable("world actor is closed".to_owned()))?;
+        response.await.unwrap_or_else(|_| {
+            Err(PortalSendError::Unavailable(
+                "world actor dropped portal delivery response".to_owned(),
+            ))
+        })
+    }
+
+    /// Install the F12.14 portal transport sink used by this world's
+    /// actor for its outbound portal sends (code#1068 wiring slice).
+    ///
+    /// # Errors
+    ///
+    /// Fails if the world actor is closed.
+    pub async fn set_portal_delivery(
+        &self,
+        delivery: std::sync::Arc<dyn PortalDelivery>,
+    ) -> Result<()> {
+        let (reply, response) = oneshot::channel();
+        self.commands
+            .send(WorldCommand::SetPortalDelivery { delivery, reply })
+            .await
+            .map_err(|_| anyhow::anyhow!("world actor is closed"))?;
+        response
+            .await
+            .context("world actor dropped portal delivery-install response")
     }
 
     /// Admin: cancel a pending schedule by id (a no-op when absent),
