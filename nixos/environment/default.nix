@@ -444,6 +444,11 @@ let
 in
 {
   nixpkgs.overlays = [
+    # antigravity-cli (agy) from the auto-tracking flake (flake.nix
+    # input antigravity-cli-nix): newest upstream (1.5.9 as of
+    # 2026-11-16) in place of the fleet nixpkgs pin's 1.4.8. Drew's
+    # order: agy tracks the newest Google release, not the pin.
+    inputs.antigravity-cli-nix.overlays.default
     # zulip-term: 4 tests fail on nixpkgs master 2026-08-21 (upstream test breakage)
     (final: prev: {
       zulip-term = prev.zulip-term.overridePythonAttrs (_: {

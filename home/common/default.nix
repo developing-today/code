@@ -1790,6 +1790,11 @@ in
     packages =
       with pkgs;
       [
+        # agy (antigravity-cli, overlaid to the newest upstream in
+        # nixos/environment): in home.packages so the user profile
+        # carries the newest agy on PATH ahead of the system profile
+        # copy; both resolve to the same overlaid package.
+        antigravity-cli
         libnotify
         # On-screen keyboard (wvkbd-mobintl) for touch use over the
         # Sunshine/Moonlight stream: launched only while a stream is
