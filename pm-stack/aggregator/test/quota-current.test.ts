@@ -930,14 +930,7 @@ describe("overlay: aliased OpenCode Zen rows (#10443, #10591)", () => {
 
   test("the provider-level census keeps both Zen and Go rows", () => {
     const view = viewWithGoPools();
-    const out = overlayQuotaCurrent(
-      view,
-      file([
-        goEntry(54, iso(5 * 60_000)),
-        zenEntry(54, iso(4 * 60_000)),
-      ]),
-      NOW,
-    );
+    const out = overlayQuotaCurrent(view, file([goEntry(54, iso(5 * 60_000)), zenEntry(54, iso(4 * 60_000))]), NOW);
     const g = out.gatherer?.providers ?? [];
     expect(g.some((p) => p.providerId === "opencode-go.developing-today-0")).toBe(true);
     expect(g.some((p) => p.providerId === "opencode.developing-today-0")).toBe(true);

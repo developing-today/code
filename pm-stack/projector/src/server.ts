@@ -91,7 +91,14 @@ export const MAX_REFS = 500;
 /** Split a comma-separated `refs` parameter into a de-duplicated ref list. */
 export function parseRefs(raw: string | null): string[] {
   if (!raw) return [];
-  return [...new Set(raw.split(",").map((s) => s.trim()).filter(Boolean))];
+  return [
+    ...new Set(
+      raw
+        .split(",")
+        .map((s) => s.trim())
+        .filter(Boolean),
+    ),
+  ];
 }
 
 /**

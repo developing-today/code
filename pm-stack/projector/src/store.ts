@@ -244,11 +244,7 @@ export async function upsertItem(db: Client, i: Omit<ItemRow, "fetched_at">): Pr
   await db.batch(upsertItemStatements(i), "write");
 }
 
-export async function getItems(
-  db: Client,
-  refs: string[],
-  opts: { limit?: number } = {},
-): Promise<ItemRow[]> {
+export async function getItems(db: Client, refs: string[], opts: { limit?: number } = {}): Promise<ItemRow[]> {
   if (refs.length === 0) return [];
   const placeholders = refs.map(() => "?").join(",");
   const r = await db.execute({
