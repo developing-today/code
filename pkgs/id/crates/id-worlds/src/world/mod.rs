@@ -708,14 +708,17 @@ pub const WRITE_LEASE_RENEWAL_INTERVAL_MS: u64 = 10_000;
 /// Why the append gate refused a writer (design #2819, phase 2 of
 /// issue #3804). A refusal is retryable in every case: the writer catches
 /// up, waits for a grant, or retries under the new holder.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, thiserror::Error)]
 #[serde(rename_all = "snake_case")]
 pub enum LeaseRejectionReason {
     /// The writer is not the current lease holder (or there is none).
+    #[error("world write rejected: not_holder (retryable)")]
     NotHolder,
     /// The writer presented an epoch other than the current one.
+    #[error("world write rejected: stale_epoch (retryable)")]
     StaleEpoch,
     /// The current lease term had expired on the authority's clock.
+    #[error("world write rejected: expired (retryable)")]
     Expired,
 }
 
