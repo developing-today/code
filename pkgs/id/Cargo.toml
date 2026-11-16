@@ -26,6 +26,7 @@ members = [
   "crates/id-worlds",
   "crates/id-directory",
   "crates/id-web",
+  "crates/id-render",
   "crates/id-native-shell",
   "crates/id-cli",
 ]
@@ -46,6 +47,7 @@ default-members = [
   "crates/id-worlds",
   "crates/id-directory",
   "crates/id-web",
+  "crates/id-render",
   "crates/id-cli",
 ]
 
