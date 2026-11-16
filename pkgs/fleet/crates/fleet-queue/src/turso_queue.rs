@@ -6069,6 +6069,9 @@ fn quarantine_recheck_verdict(row: &Value) -> QuarantineRecheck {
 // this opaque string avoids lossy malformed-JSON normalization and detects
 // same-second replacements, not only updated_at changes. The event ID is
 // selected in the same SQLite statement; unknown block provenance fails closed.
+// Conservatively require the latest event, including non-transition events: an
+// unrelated newer event or pruned provenance needs explicit reconciliation, not
+// automatic release. This patch does not solve sweep fairness/history repair.
 fn quarantine_select() -> String {
     format!(
         "SELECT {TASK_COLS}, json_array({TASK_COLS}) AS quarantine_snapshot, \

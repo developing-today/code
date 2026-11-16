@@ -39,6 +39,7 @@
   rustPlatform,
   pkgsStatic,
   binutils,
+  python3,
   callPackage,
   craneLib ? null,
   sourceRev ? "unknown",
@@ -196,6 +197,8 @@ let
           # Override the check command to keep the workspace-wide
           # run; the build keeps the -p fleet scope via
           # cargoExtraArgs.
+          # SQLite concurrency regressions use Python's stdlib sqlite3.
+          nativeCheckInputs = [ python3 ];
           doCheck = true;
           checkPhaseCargoCommand = "cargoWithProfile test --locked";
 
@@ -211,6 +214,7 @@ let
         sourceRoot = "${fleetSrc.name}/fleet";
         cargoLock.lockFile = ./Cargo.lock;
 
+        nativeCheckInputs = [ python3 ];
         cargoBuildFlags = cargoFlags;
 
         env = envAttrs;
@@ -250,6 +254,7 @@ in
   # one of these; they retire only at the epic's close, not before.
   fleet-brokers = rustPlatform.buildRustPackage {
     pname = "fleet-brokers";
+    nativeCheckInputs = [ python3 ];
     version = "0.1.0";
     src = fleetSrc;
     sourceRoot = "${fleetSrc.name}/fleet";
