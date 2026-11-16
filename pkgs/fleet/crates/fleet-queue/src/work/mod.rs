@@ -5,4 +5,5 @@
 //! their design gates clear.
 
 pub mod authority;
+pub mod completion;
 pub mod selection;
