@@ -11,6 +11,13 @@
 //!   registry record as JSON.
 //! * `atlas-stage units --state open --registry <path>` — list units
 //!   in a lifecycle state (what the aggregator's poll reads).
+//! * `atlas-stage ingest --db <path> --unit <id> --repo <r>
+//!   --path <p> --file <f> --commit <sha> [--kind config]
+//!   [--language yaml] [--sensitivity internal]` — stage one
+//!   code/config artifact as an embedding entry (#1518): one
+//!   `items` row plus its `chunks_raw` in the unit's staging DB.
+//! * `atlas-stage items --db <path> [--unit <id>]` — list the
+//!   items staged in a unit's DB, with chunk counts.
 //!
 //! All three are offline: a staging DB is a local libSQL/SQLite file
 //! today; hosted Turso creation is the aggregator slice's deployment
@@ -59,6 +66,45 @@ enum Command {
         unit: String,
         #[arg(long)]
         registry: PathBuf,
+    },
+    /// Stage one code/config artifact file as an embedding entry (#1518).
+    Ingest {
+        /// The unit's staging database file (already provisioned).
+        #[arg(long)]
+        db: PathBuf,
+        /// The staging-unit id the entry belongs to.
+        #[arg(long)]
+        unit: String,
+        /// The repository the artifact came from.
+        #[arg(long)]
+        repo: String,
+        /// The artifact's path inside the repo.
+        #[arg(long)]
+        path: String,
+        /// The local file whose bytes are staged.
+        #[arg(long)]
+        file: PathBuf,
+        /// The commit SHA the bytes were read at.
+        #[arg(long)]
+        commit: String,
+        /// The entry kind (prose|code|config).
+        #[arg(long, default_value = "config")]
+        kind: String,
+        /// The artifact language (yaml, toml, rust, ...).
+        #[arg(long, default_value = "")]
+        language: String,
+        /// Physical sensitivity level (public|internal|secret; default internal).
+        #[arg(long, default_value = "internal")]
+        sensitivity: String,
+    },
+    /// List the items staged in a unit's staging DB.
+    Items {
+        /// The staging database file to read.
+        #[arg(long)]
+        db: PathBuf,
+        /// Only this unit's items (default: all units in the DB).
+        #[arg(long)]
+        unit: Option<String>,
     },
     /// List units in a lifecycle state (open|closing|merged).
     Units {
@@ -128,6 +174,69 @@ fn run(cli: Cli) -> Result<(), String> {
                 }
                 None => Err(format!("no staging unit {unit:?} in the registry")),
             }
+        }
+        Command::Ingest {
+            db,
+            unit,
+            repo,
+            path,
+            file,
+            commit,
+            kind,
+            language,
+            sensitivity,
+        } => {
+            let sensitivity = parse_tier(&sensitivity)?;
+            let text = std::fs::read_to_string(&file)
+                .map_err(|e| format!("reading {}: {e}", file.display()))?;
+            let language = if language.is_empty() {
+                file.extension()
+                    .and_then(|x| x.to_str())
+                    .unwrap_or("")
+                    .to_string()
+            } else {
+                language
+            };
+            let entry = atlas_core::stage::ArtifactEntry {
+                kind,
+                repo,
+                path,
+                commit_sha: commit,
+                language,
+                sensitivity,
+                text,
+            };
+            let item_id = atlas_core::stage::stage_artifact_in_db(&db, &unit, &entry, &now_utc())
+                .map_err(|e| e.to_string())?;
+            println!(
+                "{{\"item_id\":{item_id},\"unit\":{},\"source\":{}}}",
+                json_str(&unit),
+                json_str(&format!(
+                    "{}:{}@{}",
+                    entry.repo, entry.path, entry.commit_sha
+                )),
+            );
+            Ok(())
+        }
+        Command::Items { db, unit } => {
+            let items = atlas_core::stage::list_staged_items_in_db(&db, unit.as_deref())
+                .map_err(|e| e.to_string())?;
+            for item in &items {
+                println!(
+                    "{{\"id\":{},\"unit_id\":{},\"kind\":{},\"source\":{},\"sensitivity\":{},\"chunks\":{},\"meta\":{}}}",
+                    item.id,
+                    json_str(&item.unit_id),
+                    json_str(&item.kind),
+                    item.source
+                        .as_deref()
+                        .map(json_str)
+                        .unwrap_or_else(|| "null".to_string()),
+                    json_str(&item.sensitivity),
+                    item.chunk_count,
+                    item.meta.as_deref().unwrap_or("null"),
+                );
+            }
+            Ok(())
         }
         Command::Units { state, registry } => {
             let state = parse_state(&state)?;
