@@ -1780,6 +1780,10 @@ func (s *Server) handleElicitList(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
 		return
 	}
+	// This list is the answerer-facing surface: whatever polls it is
+	// looking for questions to answer, so it heartbeats answerer
+	// presence for the broker's no-audience signal (#2438).
+	_ = s.reg.broker.NoteAnswerer(elicit.Audience(r.URL.Query().Get("audience")))
 	if pending == nil {
 		pending = []elicit.Request{}
 	}
