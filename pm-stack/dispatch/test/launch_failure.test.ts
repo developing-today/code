@@ -83,6 +83,60 @@ describe("handleLaunchFailure", () => {
     expect(calls.closes).toEqual([["developing-today/code", 9, "not_planned"]]);
   });
 
+  test("notes a deleted session without the may-still-be-live hedge when cleanup succeeds (#10632)", async () => {
+    const sessionId = "session/deleted-7";
+    const launchError = new Error("prompt failed");
+    const calls = {
+      deleted: [] as string[],
+      cancels: [] as [number, string][],
+      comments: [] as [string, number, string][],
+      closes: [] as [string, number, string | undefined][],
+      events: [] as string[],
+    };
+    const queue = {
+      async cancelTask(id: number, reason: string): Promise<void> {
+        calls.events.push("cancel");
+        calls.cancels.push([id, reason]);
+      },
+    };
+    const github = {
+      async comment(repo: string, issueNumber: number, body: string): Promise<void> {
+        calls.events.push("comment");
+        calls.comments.push([repo, issueNumber, body]);
+      },
+      async closeIssue(repo: string, issueNumber: number, stateReason?: "not_planned" | "completed"): Promise<void> {
+        calls.events.push("close");
+        calls.closes.push([repo, issueNumber, stateReason]);
+      },
+    };
+    const msg = await handleLaunchFailure(
+      queue,
+      github,
+      "developing-today/code",
+      4135,
+      2901,
+      launchError,
+      sessionId,
+      async (id: string) => {
+        calls.events.push("delete");
+        calls.deleted.push(id);
+      },
+    );
+    expect(msg).toBe(launchError.message);
+    // The cancel reason is written before the DELETE runs, so its hedge
+    // is still accurate and stays out of scope for this fix.
+    expect(calls.cancels).toEqual([
+      [4135, `dispatch launch failed: prompt failed; OpenCode session ${sessionId} may still be live`],
+    ]);
+    expect(calls.deleted).toEqual([sessionId]);
+    expect(calls.comments).toHaveLength(1);
+    expect(calls.comments[0][2]).toContain(`OpenCode session ${sessionId} was deleted`);
+    expect(calls.comments[0][2]).toContain("session cleanup succeeded");
+    expect(calls.comments[0][2]).not.toContain("may still be live");
+    expect(calls.events).toEqual(["cancel", "delete", "comment", "close"]);
+    expect(calls.closes).toEqual([["developing-today/code", 2901, "not_planned"]]);
+  });
+
   async function assertCreatedSessionFailure(stage: "sendPrompt" | "claim patch") {
     const sessionId = "session/created-42";
     const launchError = new Error(`${stage} failed`);

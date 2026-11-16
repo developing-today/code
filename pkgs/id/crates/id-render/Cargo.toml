@@ -1,0 +1,53 @@
+[package]
+name = "id-render"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.96"
+description = "Rendering pipeline compiler core for the id programme: parse and vocabulary validation of semantic markup (decision records #5849/#5855)"
+license = "MIT OR Apache-2.0"
+
+# Compiler core for the rendering pipeline settled in decision record
+# #5855 (doc/2026-11-08_decision_id5855_rendering_pipeline_conformance.md),
+# implementation follow-up #7918. This crate currently implements stage 1
+# (parse) and the vocabulary half of stage 2 (validate) against the #5849
+# semantic markup vocabulary v1, which is consumed here as data
+# (src/vocabulary.rs), never as pipeline code branches (#5855 invariant 6).
+# The assertion half of validation, and stages 3-5 (compose, lower, emit),
+# consume the #5850 assertion vocabulary and the #5851/#5852/#5853 mapping
+# tables; #5850 is not settled yet, so the `assert` slot is carried
+# opaquely until it lands.
+
+[dependencies]
+
+[lints.rust]
+unsafe_code = "warn"
+rust_2018_idioms = { level = "warn", priority = -1 }
+rust_2024_compatibility = { level = "warn", priority = -1 }
+missing_debug_implementations = "warn"
+missing_docs = "warn"
+trivial_casts = "warn"
+trivial_numeric_casts = "warn"
+unused_lifetimes = "warn"
+unused_qualifications = "warn"
+
+[lints.clippy]
+all = { level = "warn", priority = -1 }
+pedantic = { level = "warn", priority = -1 }
+nursery = { level = "warn", priority = -1 }
+cargo = { level = "warn", priority = -1 }
+unwrap_used = "deny"
+expect_used = "deny"
+panic = "deny"
+unimplemented = "deny"
+todo = "deny"
+dbg_macro = "deny"
+print_stdout = "allow"
+print_stderr = "allow"
+module_name_repetitions = "allow"
+must_use_candidate = "allow"
+missing_errors_doc = "allow"
+missing_panics_doc = "allow"
+multiple_crate_versions = "allow"
+cargo_common_metadata = "allow"
+too_many_lines = "allow"
+too_many_arguments = "allow"

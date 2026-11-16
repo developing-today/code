@@ -52,18 +52,18 @@
 
 ## Decision summary
 
-| Question | Decision |
-| --- | --- |
+| Question                     | Decision                                                                                                                                                                                                                                                                  |
+| ---------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | What "lossless-enough" means | A **two-tier** promise: **Tier A (required)** — the document tree and every typed scalar survive KDL→JSON→KDL and JSON→KDL→JSON with semantic equality; **Tier B (not promised)** — comments, whitespace, quoting style, escape spelling, and raw-string hash counts (§2) |
-| Canonical JSON | A **plain-data node tree**: `{"kdl":2,"nodes":[…]}`, each node `{name, type?, args:[], props:{}, children:[]}`, each value a JSON scalar plus an optional `type` wrapper only where JSON cannot carry it (§3) |
-| Where annotations live | A single annotation is a sibling `"type"` key; the fork's **multiple** annotations become `"types":[…]` in the same slot, never a second structural form (§3.4) |
-| Ordering | Argument order and child order are **load-bearing and preserved**; property order is **not** load-bearing and is canonicalised to sorted-by-key (§2.3) |
-| Numbers | Integers are emitted as JSON integers when they round-trip through IEEE-754 exactly, otherwise as `{"$int":"…"}`; floats as JSON numbers when finite and exact, otherwise `{"$float":"…"}`; `inf`/`nan` always the wrapper (§3.5) |
-| XML | **One-way export only** (KDL→XML), with an explicit lossy-edge list; XML→KDL is not a supported path (§4) |
-| YAML | **Both ways**, but YAML is a *rendering*, not a canonical form: YAML→KDL must first go through JSON (§4.2) |
-| Canonical form | **JSON is the canonical form.** KDL is the human presentation; YAML and XML are renderings. The fixed point is `JSON → KDL → JSON` (§3.1) |
-| Round-trip corpus | A checked-in corpus with three classes — **must-round-trip**, **must-normalise**, **must-reject** — plus property tests over generated documents (§6) |
-| Statement anchor | The canonical JSON document for one authored compound statement **is** the provenance anchor §2.2 stage 2 names; its content hash is the statement node's identity candidate, decided in #5907 (§5) |
+| Canonical JSON               | A **plain-data node tree**: `{"kdl":2,"nodes":[…]}`, each node `{name, type?, args:[], props:{}, children:[]}`, each value a JSON scalar plus an optional `type` wrapper only where JSON cannot carry it (§3)                                                             |
+| Where annotations live       | A single annotation is a sibling `"type"` key; the fork's **multiple** annotations become `"types":[…]` in the same slot, never a second structural form (§3.4)                                                                                                           |
+| Ordering                     | Argument order and child order are **load-bearing and preserved**; property order is **not** load-bearing and is canonicalised to sorted-by-key (§2.3)                                                                                                                    |
+| Numbers                      | Integers are emitted as JSON integers when they round-trip through IEEE-754 exactly, otherwise as `{"$int":"…"}`; floats as JSON numbers when finite and exact, otherwise `{"$float":"…"}`; `inf`/`nan` always the wrapper (§3.5)                                         |
+| XML                          | **One-way export only** (KDL→XML), with an explicit lossy-edge list; XML→KDL is not a supported path (§4)                                                                                                                                                                 |
+| YAML                         | **Both ways**, but YAML is a _rendering_, not a canonical form: YAML→KDL must first go through JSON (§4.2)                                                                                                                                                                |
+| Canonical form               | **JSON is the canonical form.** KDL is the human presentation; YAML and XML are renderings. The fixed point is `JSON → KDL → JSON` (§3.1)                                                                                                                                 |
+| Round-trip corpus            | A checked-in corpus with three classes — **must-round-trip**, **must-normalise**, **must-reject** — plus property tests over generated documents (§6)                                                                                                                     |
+| Statement anchor             | The canonical JSON document for one authored compound statement **is** the provenance anchor §2.2 stage 2 names; its content hash is the statement node's identity candidate, decided in #5907 (§5)                                                                       |
 
 ## 1. What the parent already fixed (not re-decided here)
 
@@ -71,7 +71,7 @@
 
 1. **KDL is the human presentation format** over ID data — not the
    wire format (#2036's postcard decision stands) and not the query
-   substrate. This record is about the *conversion*, not about
+   substrate. This record is about the _conversion_, not about
    promotion or demotion of KDL's role.
 2. **The pipeline is parse → canonical JSON → atomic triples →
    resolve through IDs** (§2.2). The canonical JSON is stage 2, "the
@@ -79,7 +79,7 @@
    "the audit / provenance anchor for the decomposition that
    follows".
 3. **Decomposition is into `(subject, action, target)` triples**,
-   with namespaces and qualifiers expressed as *more triples*, never
+   with namespaces and qualifiers expressed as _more triples_, never
    special cases (§2.3), and a payload boundary for things that stay
    attached rather than decomposed (§2.4, owned by #5908).
 4. **"Lossless-enough" is to be defined precisely by this ticket**
@@ -112,15 +112,15 @@ fork's superset dialect):
 
 1. **Tree shape.** The ordered list of top-level nodes, and for each
    node its ordered children, are identical after any round trip.
-2. **Names.** Each node name's *string value* is identical. (Its
+2. **Names.** Each node name's _string value_ is identical. (Its
    lexical form — bare identifier vs quoted vs raw — is Tier B.)
 3. **Entries.** Arguments and properties are preserved, with
    argument order intact and each property's key and value intact.
-   The *interleaving* of properties among arguments is Tier B
+   The _interleaving_ of properties among arguments is Tier B
    (the spec says property order is not semantically meaningful,
    §3.17 and §3.2 of the spec).
-4. **Typed scalars.** Every value's *type* (string / integer / float
-   / boolean / null) and its *value* are identical, including:
+4. **Typed scalars.** Every value's _type_ (string / integer / float
+   / boolean / null) and its _value_ are identical, including:
    - integer magnitude, up to the full `i128` range the spec allows;
    - float bit pattern for every finite IEEE-754 double, including
      `-0.0` and subnormals;
@@ -144,7 +144,7 @@ If any of these fails, the round trip is **broken**, not
 
 ### 2.2 Tier B — explicitly outside the promise
 
-These are *presentation*, not data, and the parent already says so
+These are _presentation_, not data, and the parent already says so
 (§1.2 "comments and formatting: explicitly out of the losslessness
 promise"):
 
@@ -160,7 +160,7 @@ promise"):
 - the order of properties relative to arguments and to each other.
 
 A round trip **may** change any of these and remain conformant. The
-fork's parser preserves them for *editing* (kdl-rs is
+fork's parser preserves them for _editing_ (kdl-rs is
 format-preserving, #5753 §3); the conversion layer is allowed to drop
 them, and dropping them is what makes the JSON canonical.
 
@@ -174,14 +174,14 @@ tree), Tier B has none and needs none.
 
 ### 2.3 Ordering guarantees, stated precisely
 
-| Element | Load-bearing? | Guarantee |
-| --- | --- | --- |
-| Top-level nodes | **Yes** | Order preserved exactly; two documents differing only in top-level order are *different* documents |
-| Children within a node | **Yes** | Order preserved exactly |
-| Arguments within a node | **Yes** | Order preserved exactly (spec §3.2: "Arguments are ordered relative to each other and that order must be preserved") |
-| Properties (key/value) | **No** | Order is canonicalised — sorted by key in canonical JSON. A repeated key is a **must-reject** case (spec: a node may not carry two properties with the same name; a parser that accepts it must report it, not silently last-wins) |
-| Interleaving of props among args | **No** | Not representable in the canonical JSON; a document that relies on it has no semantic meaning to preserve |
-| Annotations on one part | **Yes** | List order preserved (the fork's extension; order is the only way to distinguish `(a)(b)` from `(b)(a)` and a consumer may read positionally) |
+| Element                          | Load-bearing? | Guarantee                                                                                                                                                                                                                          |
+| -------------------------------- | ------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Top-level nodes                  | **Yes**       | Order preserved exactly; two documents differing only in top-level order are _different_ documents                                                                                                                                 |
+| Children within a node           | **Yes**       | Order preserved exactly                                                                                                                                                                                                            |
+| Arguments within a node          | **Yes**       | Order preserved exactly (spec §3.2: "Arguments are ordered relative to each other and that order must be preserved")                                                                                                               |
+| Properties (key/value)           | **No**        | Order is canonicalised — sorted by key in canonical JSON. A repeated key is a **must-reject** case (spec: a node may not carry two properties with the same name; a parser that accepts it must report it, not silently last-wins) |
+| Interleaving of props among args | **No**        | Not representable in the canonical JSON; a document that relies on it has no semantic meaning to preserve                                                                                                                          |
+| Annotations on one part          | **Yes**       | List order preserved (the fork's extension; order is the only way to distinguish `(a)(b)` from `(b)(a)` and a consumer may read positionally)                                                                                      |
 
 The canonical JSON therefore has **three ordered lists** (nodes,
 args, children) and **one sorted map** (props). That asymmetry is
@@ -200,7 +200,7 @@ otherwise". **This ticket decides: they stay out.** Reasons:
   case (#5753 §3), so nothing is lost: a person editing KDL keeps
   their comments; a person round-tripping through JSON does not
   expect to.
-- If a comment is *data* (an annotation the author wants to keep),
+- If a comment is _data_ (an annotation the author wants to keep),
   the answer is to write it as an annotation, not a comment — which
   is what `limit.kdl` already does with `/*(result)*/`-style
   experiments (and which the fork's dialect makes legal as a real
@@ -215,8 +215,8 @@ This is not a reversal of the parent — the parent's pipeline already
 makes JSON the intermediate that "is the canonical record of what was
 authored" (§2.2 stage 2), and §4 says the conversion layer is
 "KDL AST ⇄ canonical JSON". This record states the direction
-explicitly because it determines which round trip is the *fixed
-point*:
+explicitly because it determines which round trip is the _fixed
+point_:
 
 - **`JSON → KDL → JSON` is byte-identical** under the canonical
   serialisation rules in §3.6. This is the invariant the
@@ -285,15 +285,14 @@ canonical JSON uses the obvious sibling key:
 ```
 
 ```json
-{ "name": "node", "args": [ { "type": "u8", "value": 123 } ] }
+{ "name": "node", "args": [{ "type": "u8", "value": 123 }] }
 ```
 
 Property keys carry theirs as a parallel map, because a JSON object
 key cannot itself be an object:
 
 ```json
-{ "name": "person", "props": { "name": "Foo McBar" },
-  "propTypes": { "name": "contributor" } }
+{ "name": "person", "props": { "name": "Foo McBar" }, "propTypes": { "name": "contributor" } }
 ```
 
 #### 3.4.2 The multiple-annotation case (fork extension)
@@ -303,9 +302,7 @@ canonical JSON expresses that as the same slot, with a plural key,
 **only when the list has more than one element**:
 
 ```json
-{ "name": "writesBooks", "types": ["predicate", "NotVeryWell"],
-  "args": [ { "types": ["object","book","author:BrianGriffin"],
-              "value": "Wish It, Want It, Do It" } ] }
+{ "name": "writesBooks", "types": ["predicate", "NotVeryWell"], "args": [{ "types": ["object", "book", "author:BrianGriffin"], "value": "Wish It, Want It, Do It" }] }
 ```
 
 Two rules keep this from becoming a second structural form:
@@ -320,8 +317,8 @@ Two rules keep this from becoming a second structural form:
    structured sub-grammar or stays opaque. **This record decides:
    opaque.** The conversion layer never interprets `#` or `:` inside
    an annotation; it carries the string. Interpretation is a
-   *schema* concern (the statement-shape validator in #5907), not a
-   *conversion* concern. This keeps the conversion layer's contract
+   _schema_ concern (the statement-shape validator in #5907), not a
+   _conversion_ concern. This keeps the conversion layer's contract
    small enough to test exhaustively, and it means a future decision
    to give the payload structure is a change to the validator, not
    to the format.
@@ -360,22 +357,22 @@ null** — with no integer/float distinction and no exact `i128`.
 The decision is **plain JSON wherever plain JSON is exact, and a
 one-key wrapper only where it is not**:
 
-| KDL value | Canonical JSON | Why |
-| --- | --- | --- |
-| string | JSON string | exact |
-| boolean | JSON boolean | exact |
-| null | JSON null | exact |
-| integer, `|n| ≤ 2^53−1` | JSON integer | exact in every JSON consumer, including JS |
-| integer, larger | `{"$int":"123456789012345678901234567890"}` | JSON numbers are IEEE-754 doubles in the dominant consumers; a bare 30-digit integer silently loses precision in JS |
-| float, finite | JSON number, shortest round-tripping decimal (Rust `f64` `Display` / Ryu) | exact by construction |
-| float, `-0.0` | `{"$float":"-0"}` | JSON `-0` and `0` are indistinguishable after a JS parse |
-| float, `inf` / `-inf` / `nan` | `{"$float":"inf"}` / `"-inf"` / `"nan"` | JSON has no non-finite numbers |
-| string that would collide with a wrapper | never wrapped — wrappers are objects, strings are strings | no collision possible |
+| KDL value                                | Canonical JSON                                                            | Why                                                                                                                 |
+| ---------------------------------------- | ------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------- |
+| string                                   | JSON string                                                               | exact                                                                                                               |
+| boolean                                  | JSON boolean                                                              | exact                                                                                                               |
+| null                                     | JSON null                                                                 | exact                                                                                                               |
+| integer, `                               | n                                                                         | ≤ 2^53−1`                                                                                                           | JSON integer | exact in every JSON consumer, including JS |
+| integer, larger                          | `{"$int":"123456789012345678901234567890"}`                               | JSON numbers are IEEE-754 doubles in the dominant consumers; a bare 30-digit integer silently loses precision in JS |
+| float, finite                            | JSON number, shortest round-tripping decimal (Rust `f64` `Display` / Ryu) | exact by construction                                                                                               |
+| float, `-0.0`                            | `{"$float":"-0"}`                                                         | JSON `-0` and `0` are indistinguishable after a JS parse                                                            |
+| float, `inf` / `-inf` / `nan`            | `{"$float":"inf"}` / `"-inf"` / `"nan"`                                   | JSON has no non-finite numbers                                                                                      |
+| string that would collide with a wrapper | never wrapped — wrappers are objects, strings are strings                 | no collision possible                                                                                               |
 
 The `$` prefix marks the wrapper as reserved: **a KDL node or
 property named `$int` is unaffected** (node names are strings in a
 different position), and the wrapper only ever appears in the
-*value* position. An object in value position is otherwise
+_value_ position. An object in value position is otherwise
 impossible in KDL, so there is no ambiguity.
 
 **Rejected alternative:** always wrapping numbers as
@@ -430,7 +427,7 @@ serde path cannot guarantee it.
 becomes
 
 ```json
-{"kdl":2,"nodes":[{"name":"character","type":"subject","args":["Brian"],"children":[{"name":"writesBooks","type":"predicate","args":["Wish It, Want It, Do It","Faster Than the Speed of Love"]}]}]}
+{ "kdl": 2, "nodes": [{ "name": "character", "type": "subject", "args": ["Brian"], "children": [{ "name": "writesBooks", "type": "predicate", "args": ["Wish It, Want It, Do It", "Faster Than the Speed of Love"] }] }] }
 ```
 
 Note what survives: the `(subject)` / `(predicate)` annotations (the
@@ -447,7 +444,7 @@ supported by this contract.**
 
 Reasons:
 
-- XML's element model has no place for an *argument list* distinct
+- XML's element model has no place for an _argument list_ distinct
   from child elements, so a KDL node with three arguments has three
   plausible XML encodings and no canonical one. A round trip would
   have to pick one, and every pick loses something (argument order
@@ -456,20 +453,20 @@ Reasons:
   type-fidelity problem as JSON appears, with no plain-data escape
   because XML has no scalar type system at all.
 - The parent lists KDL ⇄ XML as a conversion (§1.2) but does not
-  make it a *round trip*; §1.2's "lossless-enough" bullet list is
+  make it a _round trip_; §1.2's "lossless-enough" bullet list is
   about the conversion, and the known-lossy-edge requirement exists
   precisely to name cases like this.
 
 The export mapping (normative for the exporter):
 
-| KDL | XML |
-| --- | --- |
-| node name | element name (invalid XML names are escaped per a documented scheme, e.g. `_xHHHH_`) |
-| type annotation | `kdl:type` attribute |
-| argument | `<kdl:arg>` child element, in order, with `kdl:type` if annotated |
-| property | attribute `kdl:prop-<key>` (or `<kdl:prop name="…">` when the key is not a valid XML name) |
-| children | child elements, in order |
-| value type | `kdl:value-type` attribute (`string`/`int`/`float`/`bool`/`null`) |
+| KDL             | XML                                                                                        |
+| --------------- | ------------------------------------------------------------------------------------------ |
+| node name       | element name (invalid XML names are escaped per a documented scheme, e.g. `_xHHHH_`)       |
+| type annotation | `kdl:type` attribute                                                                       |
+| argument        | `<kdl:arg>` child element, in order, with `kdl:type` if annotated                          |
+| property        | attribute `kdl:prop-<key>` (or `<kdl:prop name="…">` when the key is not a valid XML name) |
+| children        | child elements, in order                                                                   |
+| value type      | `kdl:value-type` attribute (`string`/`int`/`float`/`bool`/`null`)                          |
 
 **Known-lossy edges for XML (each needs a test, §6.4):**
 
@@ -595,7 +592,7 @@ Coverage (each is at least one fixture):
   payloads containing `#`, `:`, spaces, parentheses (quoted
   annotation strings).
 - **Ordering**: two documents differing only in top-level order
-  must produce *different* canonical JSON (the anti-oracle: a
+  must produce _different_ canonical JSON (the anti-oracle: a
   converter that sorts nodes fails this).
 - **The real corpus**: `pkgs/mappy/migrations/limit.kdl`,
   `pkgs/roc/out-in.kdl`, `pkgs/roc/platform.kdl`,
@@ -655,7 +652,7 @@ layer has strong ones):
 The generator produces KDL documents from the grammar (nodes with
 random names from all three string forms, random entries, random
 nesting, random annotations), which is exactly the model-based
-testing the repo doctrine asks for: the grammar *is* the model.
+testing the repo doctrine asks for: the grammar _is_ the model.
 
 ### 6.5 Where the corpus lives
 
@@ -730,9 +727,9 @@ reasons, in order of weight:
 1. **The deliverable does not depend on the missing source.** The
    contract above is derived from the KDL 2.0 spec, the in-tree
    `limit.kdl`, and #5753's recovered material — all present and
-   read. The late-2023 brainstorming could change *emphasis* (which
+   read. The late-2023 brainstorming could change _emphasis_ (which
    annotation payloads matter, whether triples were already
-   spelled a particular way) but not the *shape* of the contract:
+   spelled a particular way) but not the _shape_ of the contract:
    a round-trip contract is constrained by the formats, not by the
    author's intent.
 2. **The ordering was a sequencing preference, not a hard
@@ -748,7 +745,7 @@ reasons, in order of weight:
    invariants are format-driven and would survive.
 
 **What would change if the export lands**: if the recovered
-brainstorming shows that Drew's late-2023 design *already* fixed a
+brainstorming shows that Drew's late-2023 design _already_ fixed a
 canonical JSON shape, or that the annotation payload was intended
 to be structured (not opaque), this record's §3.4.2 opaque-payload
 decision and §3.3 shape are the two places to revisit. Both are
@@ -783,30 +780,30 @@ query model, postcard stays the wire format.
 
 ## 10. Alternatives rejected, and why
 
-| Alternative | Why rejected |
-| --- | --- |
-| **Byte-identical round trip for everything, comments included** | Impossible through JSON (no comment or whitespace concept). Promising it would make the contract unsatisfiable, and a promise that cannot be kept is worse than a precise smaller one. The fork's parser still preserves formatting for *editing* (#5753 §3), so nothing is lost in the use case that needs it. |
-| **KDL as the canonical form, JSON as a rendering** | Reverses the parent's pipeline (§2.2 stage 2 makes JSON the intermediate and the provenance anchor) and makes the fixed point a format with comments and formatting, which cannot be hashed stably. JSON is the canonical form precisely because it has no presentation layer. |
-| **A bespoke JSON dialect with typed wrappers everywhere** (`{"$type":"int","$value":"…"}` for every scalar) | Trivially lossless, but violates "most boring, conventional JSON" (§2.2 stage 2): every consumer would have to unwrap before use. The §3.5 gap rule pays the wrapper cost only where JSON would actually lose data. |
-| **JSON5 / JSONC (comments allowed)** | Would let comments survive, but is not JSON: no standard consumer reads it, no canonical serialiser exists, and it re-opens the Tier B boundary for whitespace anyway. |
-| **XML as a bidirectional format** | XML has no argument/child distinction, no scalar type system, and no `null`; three plausible encodings and no canonical one. Export-only with a named lossy-edge list is honest; a "round trip" would be a lie with a test that passes by accident. |
-| **YAML as an independent canonical form** | YAML's data model is a superset of JSON's (anchors, aliases, tags), so "canonical YAML" would have to either refuse most YAML or silently expand it. Routing through JSON gives one implementation and one oracle. |
-| **Structured annotation payloads** (`(object#book#author:BrianGriffin)` parsed into a sub-structure) | #5753 §4b leaves this open. This record chooses **opaque** because the conversion layer's job is to carry structure, not interpret it (§I10); interpretation belongs to the statement-shape validator (#5907). A future structured decision changes the validator, not the format — which is the property that makes the small contract worth having. |
-| **Sorting nodes/arguments for canonical output** | Would make `canon` idempotent but would destroy order, which the spec says is load-bearing (§3.2). The anti-oracle fixture in §6.1 exists to catch exactly this. |
-| **Dropping the `kdl` version field** | The version marker is data-bearing (it tells a fallback parser which grammar to try), and the canonical JSON must be able to say whether it is a strict or extended document (§3.4.4). Without it, a strict-KDL consumer cannot detect an extended document before choking. |
-| **Waiting for #5911 before drafting** | #5911 is blocked on a ChatGPT export that does not exist on the laptop and may never arrive. The contract is format-driven and does not depend on the missing source; §8 records the dependency and the amendment path. Waiting would mean the design does not exist. |
+| Alternative                                                                                                 | Why rejected                                                                                                                                                                                                                                                                                                                                          |
+| ----------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Byte-identical round trip for everything, comments included**                                             | Impossible through JSON (no comment or whitespace concept). Promising it would make the contract unsatisfiable, and a promise that cannot be kept is worse than a precise smaller one. The fork's parser still preserves formatting for _editing_ (#5753 §3), so nothing is lost in the use case that needs it.                                       |
+| **KDL as the canonical form, JSON as a rendering**                                                          | Reverses the parent's pipeline (§2.2 stage 2 makes JSON the intermediate and the provenance anchor) and makes the fixed point a format with comments and formatting, which cannot be hashed stably. JSON is the canonical form precisely because it has no presentation layer.                                                                        |
+| **A bespoke JSON dialect with typed wrappers everywhere** (`{"$type":"int","$value":"…"}` for every scalar) | Trivially lossless, but violates "most boring, conventional JSON" (§2.2 stage 2): every consumer would have to unwrap before use. The §3.5 gap rule pays the wrapper cost only where JSON would actually lose data.                                                                                                                                   |
+| **JSON5 / JSONC (comments allowed)**                                                                        | Would let comments survive, but is not JSON: no standard consumer reads it, no canonical serialiser exists, and it re-opens the Tier B boundary for whitespace anyway.                                                                                                                                                                                |
+| **XML as a bidirectional format**                                                                           | XML has no argument/child distinction, no scalar type system, and no `null`; three plausible encodings and no canonical one. Export-only with a named lossy-edge list is honest; a "round trip" would be a lie with a test that passes by accident.                                                                                                   |
+| **YAML as an independent canonical form**                                                                   | YAML's data model is a superset of JSON's (anchors, aliases, tags), so "canonical YAML" would have to either refuse most YAML or silently expand it. Routing through JSON gives one implementation and one oracle.                                                                                                                                    |
+| **Structured annotation payloads** (`(object#book#author:BrianGriffin)` parsed into a sub-structure)        | #5753 §4b leaves this open. This record chooses **opaque** because the conversion layer's job is to carry structure, not interpret it (§I10); interpretation belongs to the statement-shape validator (#5907). A future structured decision changes the validator, not the format — which is the property that makes the small contract worth having. |
+| **Sorting nodes/arguments for canonical output**                                                            | Would make `canon` idempotent but would destroy order, which the spec says is load-bearing (§3.2). The anti-oracle fixture in §6.1 exists to catch exactly this.                                                                                                                                                                                      |
+| **Dropping the `kdl` version field**                                                                        | The version marker is data-bearing (it tells a fallback parser which grammar to try), and the canonical JSON must be able to say whether it is a strict or extended document (§3.4.4). Without it, a strict-KDL consumer cannot detect an extended document before choking.                                                                           |
+| **Waiting for #5911 before drafting**                                                                       | #5911 is blocked on a ChatGPT export that does not exist on the laptop and may never arrive. The contract is format-driven and does not depend on the missing source; §8 records the dependency and the amendment path. Waiting would mean the design does not exist.                                                                                 |
 
 ## 11. What this record leaves open (and to whom)
 
-| Question | Owner | Why not here |
-| --- | --- | --- |
-| Statement-node identity (content hash vs minted vs derived) | #5907 | The anchor's hash is fixed here (§5); whether that hash *is* the statement node's ID is a decomposition decision |
-| Annotation payload grammar (opaque vs structured) | #5907 (schema side) | This record fixes the *conversion* as opaque (§3.4.2); the validator may interpret |
-| Payload boundary (decompose vs attach) | #5908 | The parent §2.4 owns it; this record only guarantees the anchor carries what was authored |
-| Parser fork's exact extension-marker spelling | #5753 follow-on | A parser-dialect concern; the canonical JSON only needs to carry it (§3.4.4) |
-| KDL spec version policy (pin v1, adopt v2, accept both) | #5753 / parser fork | This record's envelope carries the version and both are supported (§3.2) |
-| Whether XML export is ever made bidirectional | parent #5688, if ever | Flagged as a refinement in §9; not decided here |
-| SQL/PGQ query shapes over the triples | parent §3 / capability ticket | Untouched by the conversion contract |
+| Question                                                    | Owner                         | Why not here                                                                                                     |
+| ----------------------------------------------------------- | ----------------------------- | ---------------------------------------------------------------------------------------------------------------- |
+| Statement-node identity (content hash vs minted vs derived) | #5907                         | The anchor's hash is fixed here (§5); whether that hash _is_ the statement node's ID is a decomposition decision |
+| Annotation payload grammar (opaque vs structured)           | #5907 (schema side)           | This record fixes the _conversion_ as opaque (§3.4.2); the validator may interpret                               |
+| Payload boundary (decompose vs attach)                      | #5908                         | The parent §2.4 owns it; this record only guarantees the anchor carries what was authored                        |
+| Parser fork's exact extension-marker spelling               | #5753 follow-on               | A parser-dialect concern; the canonical JSON only needs to carry it (§3.4.4)                                     |
+| KDL spec version policy (pin v1, adopt v2, accept both)     | #5753 / parser fork           | This record's envelope carries the version and both are supported (§3.2)                                         |
+| Whether XML export is ever made bidirectional               | parent #5688, if ever         | Flagged as a refinement in §9; not decided here                                                                  |
+| SQL/PGQ query shapes over the triples                       | parent §3 / capability ticket | Untouched by the conversion contract                                                                             |
 
 ## 12. Change log
 

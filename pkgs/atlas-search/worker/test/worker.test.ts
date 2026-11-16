@@ -58,10 +58,7 @@ beforeAll(() => {
     })
     .reply(embedReply("bad"))
     .persist();
-  origin
-    .intercept({ path: "/v1/embed", method: "POST" })
-    .reply(embedReply("good"))
-    .persist();
+  origin.intercept({ path: "/v1/embed", method: "POST" }).reply(embedReply("good")).persist();
   origin
     .intercept({
       path: "/v1/search",
@@ -77,10 +74,7 @@ beforeAll(() => {
       };
     })
     .persist();
-  origin
-    .intercept({ path: "/v1/search", method: "POST" })
-    .reply(searchReply)
-    .persist();
+  origin.intercept({ path: "/v1/search", method: "POST" }).reply(searchReply).persist();
 });
 
 afterEach(() => {
@@ -130,10 +124,7 @@ describe("atlas-search worker", () => {
     expect(counts.embed).toBe(e0 + 1);
     expect(counts.search).toBe(s0 + 1);
 
-    const inspect = await SELF.fetch(
-      "https://worker.test/v1/cache/inspect?query=alpha%20beta",
-      { headers: GATE },
-    );
+    const inspect = await SELF.fetch("https://worker.test/v1/cache/inspect?query=alpha%20beta", { headers: GATE });
     expect(inspect.status).toBe(200);
     const meta = (await inspect.json()) as Record<string, unknown>;
     expect(meta.exists).toBe(true);
@@ -149,10 +140,7 @@ describe("atlas-search worker", () => {
     const s0 = counts.search;
     const deniedSearch = await search({ query: "   " });
     expect(deniedSearch.status).toBe(400);
-    const inspect = await SELF.fetch(
-      "https://worker.test/v1/cache/inspect?query=%20%20%20",
-      { headers: GATE },
-    );
+    const inspect = await SELF.fetch("https://worker.test/v1/cache/inspect?query=%20%20%20", { headers: GATE });
     expect(inspect.status).toBe(400);
     const body = (await inspect.json()) as { error?: { message?: string } };
     expect(body.error?.message).toBe("query must not be empty");
@@ -164,10 +152,7 @@ describe("atlas-search worker", () => {
   it("refuses to cache a wrong-space embedding", async () => {
     const resp = await search({ query: "badspace query" });
     expect(resp.status).toBe(502);
-    const inspect = await SELF.fetch(
-      "https://worker.test/v1/cache/inspect?query=badspace%20query",
-      { headers: GATE },
-    );
+    const inspect = await SELF.fetch("https://worker.test/v1/cache/inspect?query=badspace%20query", { headers: GATE });
     const meta = (await inspect.json()) as Record<string, unknown>;
     // Nothing stored at all: validation happens before the DO
     // write, so a bad-space vector cannot enter the cache.
@@ -180,10 +165,9 @@ describe("atlas-search worker", () => {
     expect(resp.status).toBe(502);
     const body = (await resp.json()) as { error?: { message?: string } };
     expect(body.error?.message).toContain("non-object response (null)");
-    const inspect = await SELF.fetch(
-      "https://worker.test/v1/cache/inspect?query=nullsearch%20query",
-      { headers: GATE },
-    );
+    const inspect = await SELF.fetch("https://worker.test/v1/cache/inspect?query=nullsearch%20query", {
+      headers: GATE,
+    });
     const meta = (await inspect.json()) as Record<string, unknown>;
     // The embedding was stored before the search ran (the entry stays
     // retryable in the embedded state); no result was cached.

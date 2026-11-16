@@ -46,7 +46,8 @@ function exactRecord(value: unknown, keys: readonly string[]): value is Record<s
   const prototype = Object.getPrototypeOf(value);
   if (prototype !== Object.prototype && prototype !== null) return false;
   const actual = Reflect.ownKeys(value);
-  if (actual.length !== keys.length || actual.some((key) => typeof key !== "string" || !keys.includes(key))) return false;
+  if (actual.length !== keys.length || actual.some((key) => typeof key !== "string" || !keys.includes(key)))
+    return false;
   return keys.every((key) => {
     const descriptor = Object.getOwnPropertyDescriptor(value, key);
     return descriptor !== undefined && descriptor.enumerable && Object.hasOwn(descriptor, "value");
@@ -109,7 +110,12 @@ function normalizeNotice(value: unknown): FreshnessNotice {
 function normalizeJournal(value: unknown): JournalFile {
   if (!exactRecord(value, JOURNAL_KEYS)) throw new Error("invalid freshness journal shape");
   const row = value as Record<string, unknown>;
-  if (row.version !== 1 || !Number.isSafeInteger(row.cursor) || (row.cursor as number) < 0 || !Array.isArray(row.events)) {
+  if (
+    row.version !== 1 ||
+    !Number.isSafeInteger(row.cursor) ||
+    (row.cursor as number) < 0 ||
+    !Array.isArray(row.events)
+  ) {
     throw new Error("invalid freshness journal metadata");
   }
   const events = row.events.map(normalizeNotice);
@@ -134,7 +140,9 @@ function normalizeOutboxEntry(value: unknown): OutboxEntry {
 
 function retention(events: FreshnessNotice[], now: number): FreshnessNotice[] {
   const cutoff = now - RETENTION_MS;
-  return events.filter((event) => (parseIsoDate(event.observedAt)?.getTime() ?? -Infinity) >= cutoff).slice(-MAX_NOTICES);
+  return events
+    .filter((event) => (parseIsoDate(event.observedAt)?.getTime() ?? -Infinity) >= cutoff)
+    .slice(-MAX_NOTICES);
 }
 
 function makeNotice(input: FreshnessInput, sequence: number, observedAt: string): FreshnessNotice {
@@ -152,8 +160,32 @@ export class FreshnessStore {
   private loaded = false;
   private operationChain: Promise<void> = Promise.resolve();
   private writeSequence = 0;
+  private noticeListeners = new Set<(notice: FreshnessNotice) => void>();
 
   constructor(private readonly file: string) {}
+
+  /** Subscribe to notices becoming durable in the journal. Fires once
+   *  per notice at the moment it is durable (a direct publish persist,
+   *  or an outbox flush) — never for duplicates and never for notices
+   *  still pending in the outbox. Server.ts uses this to invalidate
+   *  the assembly caches a notice can make stale (#3976, Codex review
+   *  on PR #9193): every acceptance path (in-process, IPC, reconciler)
+   *  lands here, so no publisher can bypass the invalidation. A
+   *  throwing listener is swallowed — a cache hint must never break
+   *  durability. */
+  onNotice(listener: (notice: FreshnessNotice) => void): void {
+    this.noticeListeners.add(listener);
+  }
+
+  private emitNotice(notice: FreshnessNotice): void {
+    for (const listener of this.noticeListeners) {
+      try {
+        listener(copyNotice(notice));
+      } catch {
+        // A listener must never break the store; see onNotice.
+      }
+    }
+  }
 
   publish(input: FreshnessInput): Promise<{ notice: FreshnessNotice; duplicate: boolean; pending: boolean }> {
     return this.serialize(async () => {
@@ -186,8 +218,10 @@ export class FreshnessStore {
         await this.persist(candidate, candidateCursor);
         this.events = candidate;
         this.cursor = candidateCursor;
+        const notice = candidate.find((event) => event.sequence === candidateCursor)!;
+        this.emitNotice(notice);
         return {
-          notice: copyNotice(candidate.find((event) => event.sequence === candidateCursor)!),
+          notice: copyNotice(notice),
           duplicate: false,
           pending: false,
         };
@@ -200,7 +234,10 @@ export class FreshnessStore {
     });
   }
 
-  listAfter(after: number, scope?: string): Promise<{ cursor: number; resetRequired: boolean; events: FreshnessNotice[] }> {
+  listAfter(
+    after: number,
+    scope?: string,
+  ): Promise<{ cursor: number; resetRequired: boolean; events: FreshnessNotice[] }> {
     return this.serialize(async () => {
       if (!Number.isSafeInteger(after) || after < 0) throw new Error("after must be a non-negative safe integer");
       if (scope !== undefined && typeof scope !== "string") throw new Error("scope must be a string");
@@ -209,7 +246,8 @@ export class FreshnessStore {
       await this.flush(now);
       const visible = retention(this.events, now.getTime());
       const firstSequence = visible[0]?.sequence;
-      const resetRequired = after > this.cursor || (after < this.cursor && (firstSequence === undefined || after < firstSequence - 1));
+      const resetRequired =
+        after > this.cursor || (after < this.cursor && (firstSequence === undefined || after < firstSequence - 1));
       return {
         cursor: this.cursor,
         resetRequired,
@@ -220,9 +258,61 @@ export class FreshnessStore {
     });
   }
 
+  /** Verify the durable journal on disk still matches the in-memory
+   *  journal this store is serving. load() runs once, so without this
+   *  seam a journal file deleted, replaced, or made unreadable after
+   *  startup is invisible: listAfter keeps answering from memory and
+   *  the reconciler keeps reporting push up over a journal that no
+   *  longer exists (#3976, Codex review on PR #9193). Resolves when
+   *  the durable state matches; throws when the file is missing while
+   *  the in-memory journal is non-empty, unreadable, corrupt, or
+   *  diverges in cursor/length/last notice. A not-yet-created journal
+   *  with an empty in-memory state is healthy (first run). Runs inside
+   *  the operation chain so it can never race a persist. */
+  verifyDurable(): Promise<void> {
+    return this.serialize(async () => {
+      await this.load();
+      let raw: string;
+      try {
+        raw = await readFile(this.file, "utf8");
+      } catch (error) {
+        if ((error as { code?: unknown })?.code === "ENOENT") {
+          if (this.cursor > 0 || this.events.length > 0) {
+            throw new Error(
+              "freshness journal file is missing but the in-memory journal is not empty — durable state lost",
+            );
+          }
+          return;
+        }
+        throw new Error("cannot read freshness journal");
+      }
+      let journal: JournalFile;
+      try {
+        journal = normalizeJournal(JSON.parse(raw) as unknown);
+      } catch {
+        throw new Error("invalid freshness journal; original file left untouched");
+      }
+      const lastMine = this.events.at(-1);
+      const lastDurable = journal.events.at(-1);
+      if (
+        journal.cursor !== this.cursor ||
+        journal.events.length !== this.events.length ||
+        lastMine?.sequence !== lastDurable?.sequence ||
+        lastMine?.eventId !== lastDurable?.eventId
+      ) {
+        throw new Error(
+          "freshness journal on disk diverges from the in-memory journal — durable state was replaced or lost",
+        );
+      }
+    });
+  }
+
   private serialize<T>(operation: () => Promise<T>): Promise<T> {
     const run = this.operationChain.then(operation, operation);
-    this.operationChain = run.then(() => undefined, () => undefined);
+    this.operationChain = run.then(
+      () => undefined,
+      () => undefined,
+    );
     return run;
   }
 
@@ -318,6 +408,9 @@ export class FreshnessStore {
         if ((error as { code?: unknown })?.code === "ENOENT") this.pending = [];
       }
     }
+    // The flushed outbox notices became durable with this persist;
+    // that is their one onNotice moment (see onNotice).
+    for (const notice of pendingNotices) this.emitNotice(notice);
     return true;
   }
 

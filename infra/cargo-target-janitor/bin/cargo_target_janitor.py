@@ -274,6 +274,32 @@ MAX_CLAIM_PAGES = 100
 STATES_CHUNK = 500
 
 
+def _shape_int(reader: str, field: str, value) -> int:
+    # int() alone accepts bools and truncates floats, and raises raw
+    # TypeError/ValueError on the shapes a malformed row can carry --
+    # neither is acceptable in a reader (#6844): validate the shape
+    # and name the reader and the field in the SafetyError.
+    if isinstance(value, bool) or not isinstance(value, (int, str)):
+        raise SafetyError(
+            f"{reader}: invalid shape: {field} is "
+            f"{type(value).__name__}, expected an integer"
+        )
+    try:
+        return int(value)
+    except ValueError as exc:
+        raise SafetyError(
+            f"{reader}: invalid shape: {field}={value!r} is not an integer"
+        ) from exc
+
+
+def _shape_row(reader: str, row) -> dict:
+    if not isinstance(row, dict):
+        raise SafetyError(
+            f"{reader}: invalid shape: row is {type(row).__name__}, expected an object"
+        )
+    return row
+
+
 def queue_claims(client) -> set[int]:
     """Read ALL the pilot's claimed IDs through the existing helper.
 
@@ -302,6 +328,20 @@ def queue_claims(client) -> set[int]:
             f"&id=gt.{after}&order=id.asc&limit={CLAIMS_PAGE}"
         )
         page = module.http("GET", query, key) or []
+        if not isinstance(page, list):
+            raise SafetyError(
+                f"queue_claims: invalid shape: page is "
+                f"{type(page).__name__}, expected a list of rows"
+            )
+        for row in page:
+            _shape_row("queue_claims", row)
+            _shape_int("queue_claims", "id", row.get("id"))
+            payload = row.get("payload")
+            if payload is not None and not isinstance(payload, dict):
+                raise SafetyError(
+                    f"queue_claims: invalid shape: payload is "
+                    f"{type(payload).__name__}, expected an object"
+                )
         rows.extend(page)
         if len(page) < CLAIMS_PAGE:
             break
@@ -345,6 +385,19 @@ def queue_task_states(client, task_ids: set[int]) -> dict[int, str]:
             )
             or []
         )
+        if not isinstance(rows, list):
+            raise SafetyError(
+                f"queue_task_states: invalid shape: page is "
+                f"{type(rows).__name__}, expected a list of rows"
+            )
+        for row in rows:
+            _shape_row("queue_task_states", row)
+            _shape_int("queue_task_states", "id", row.get("id"))
+            if not isinstance(row.get("status"), str):
+                raise SafetyError(
+                    f"queue_task_states: invalid shape: status is "
+                    f"{type(row.get('status')).__name__}, expected a string"
+                )
         states.update({int(row["id"]): str(row["status"]) for row in rows})
     return states
 
@@ -389,11 +442,33 @@ def parse_fallback_scan(scan: dict) -> set[int]:
     # under it. Stale/released/free do not protect here; the
     # queue/claimed label union in FallbackClaimsSource covers the
     # ambiguous broker-era residue separately.
+    if not isinstance(scan, dict):
+        raise SafetyError(
+            f"parse_fallback_scan: invalid shape: scan is "
+            f"{type(scan).__name__}, expected an object"
+        )
+    items = scan.get("items", [])
+    if not isinstance(items, list):
+        raise SafetyError(
+            f"parse_fallback_scan: invalid shape: items is "
+            f"{type(items).__name__}, expected a list"
+        )
     issues = set()
-    for item in scan.get("items", []):
+    for item in items:
+        if not isinstance(item, dict):
+            raise SafetyError(
+                f"parse_fallback_scan: invalid shape: item is "
+                f"{type(item).__name__}, expected an object"
+            )
         claim = item.get("claim") or {}
+        if not isinstance(claim, dict):
+            raise SafetyError(
+                f"parse_fallback_scan: invalid shape: claim is "
+                f"{type(claim).__name__}, expected an object"
+            )
+        number = _shape_int("parse_fallback_scan", "number", item.get("number"))
         if claim.get("state") in {"live", "contested"}:
-            issues.add(int(item["number"]))
+            issues.add(number)
     return issues
 
 
@@ -611,7 +686,9 @@ def discover_targets(
                 or dir_task_id(entry.name)
             )
             issue_id = issue_id_from(branch or "") or issue_id_from(entry.name)
-            candidates.append((target, worktree, branch, task_id, issue_id, worktree, False))
+            candidates.append(
+                (target, worktree, branch, task_id, issue_id, worktree, False)
+            )
 
     result = []
     for path, worktree, branch, task_id, issue_id, owner_dir, adhoc in candidates:
@@ -623,8 +700,13 @@ def discover_targets(
         except OSError as exc:
             result.append(
                 Target(
-                    path, 0, 0, branch, task_id,
-                    protected=f"stat-failed: {exc}", issue_id=issue_id,
+                    path,
+                    0,
+                    0,
+                    branch,
+                    task_id,
+                    protected=f"stat-failed: {exc}",
+                    issue_id=issue_id,
                 )
             )
             continue
@@ -862,9 +944,7 @@ def main() -> int:
                     f"issue {target.issue_id} became claimed; stopping before {path}"
                 )
             if target.reason == "terminal-task":
-                fresh_status = source.states({target.task_id}).get(
-                    target.task_id
-                )
+                fresh_status = source.states({target.task_id}).get(target.task_id)
                 if fresh_status not in {"done", "failed", "cancelled"}:
                     raise SafetyError(
                         f"task {target.task_id} is no longer terminal; stopping"

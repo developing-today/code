@@ -116,7 +116,7 @@ describe("collect-github-billing argument validation (#3419)", () => {
       const stub = join(binDir, "gh");
       await writeFile(
         stub,
-        "#!/bin/sh\nprintf '{\"usageItems\":[{\"date\":\"2026-10-15\",\"product\":\"actions\",\"unitType\":\"minutes\",\"quantity\":10,\"grossAmount\":1,\"netAmount\":1}]}\n'",
+        '#!/bin/sh\nprintf \'{"usageItems":[{"date":"2026-10-15","product":"actions","unitType":"minutes","quantity":10,"grossAmount":1,"netAmount":1}]}\n\'',
       );
       await chmod(stub, 0o755);
       const env = { ...process.env };

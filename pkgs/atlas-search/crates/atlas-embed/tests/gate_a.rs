@@ -108,11 +108,7 @@ fn loaded_ort_version(ort_lib: &std::path::Path) -> Option<String> {
         .collect();
     found.sort();
     found.dedup();
-    if found.len() == 1 {
-        found.pop()
-    } else {
-        None
-    }
+    if found.len() == 1 { found.pop() } else { None }
 }
 
 #[test]

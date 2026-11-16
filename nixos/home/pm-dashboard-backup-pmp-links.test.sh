@@ -77,7 +77,9 @@ ok() { echo "ok: $1"; }
 BIN="$TMP_ROOT/bin"
 mkdir -p "$BIN"
 
-{ printf '#!%s\n' "$BASH"; cat <<'STUB'
+{
+  printf '#!%s\n' "$BASH"
+  cat <<'STUB'
 if [[ "${1:-} ${2:-}" == "secret list" ]]; then
   printf '%s\n' '[{"key":"cloudflare.r2-backups-access-key-id","value":"fake-access-key-id"},{"key":"cloudflare.r2-backups-secret-access-key","value":"fake-secret-access-key"},{"key":"cloudflare.r2-endpoint","value":"https://example.invalid"}]'
   exit 0
@@ -87,13 +89,17 @@ exit 1
 STUB
 } >"$BIN/bws"
 
-{ printf '#!%s\n' "$BASH"; cat <<'STUB'
+{
+  printf '#!%s\n' "$BASH"
+  cat <<'STUB'
 echo "stub journal line"
 exit 0
 STUB
 } >"$BIN/journalctl"
 
-{ printf '#!%s\n' "$BASH"; cat <<'STUB'
+{
+  printf '#!%s\n' "$BASH"
+  cat <<'STUB'
 store="${RCLONE_STUB_DIR:?RCLONE_STUB_DIR unset}"
 calls="${RCLONE_CALLS_LOG:?RCLONE_CALLS_LOG unset}"
 mkdir -p "$store"
@@ -200,13 +206,13 @@ sys.exit(1)
 }
 
 no_upload() { # $1 scenario name
-  [[ ! -f "$TMP_ROOT/$1/rclone-calls.log" ]] \
-    || ! grep -q '^copyto' "$TMP_ROOT/$1/rclone-calls.log"
+  [[ ! -f "$TMP_ROOT/$1/rclone-calls.log" ]] ||
+    ! grep -q '^copyto' "$TMP_ROOT/$1/rclone-calls.log"
 }
 
 copied_both() { # $1 scenario name — copyto recorded for BOTH offsite legs
   local log="$TMP_ROOT/$1/rclone-calls.log"
-  [[ -f "$log" ]] || return 1
+  [[ -f $log ]] || return 1
   grep -qE '^copyto .*/dashboard-2026-10-28\.tar\.zst r2bak:.*/dashboard-2026-10-28\.tar\.zst$' "$log" &&
     grep -qE '^copyto .*/dashboard-2026-10-28\.tar\.zst drive:.*/dashboard-2026-10-28\.tar\.zst$' "$log"
 }
@@ -219,7 +225,7 @@ canonical_links() { # $1 = sqlite db path; canonical pmp_links content
 setup_home with-db
 make_fixture_db "$RUN_HOME/.local/state/pm-projector/projector.db" 'first-link-note'
 run_backup with-db
-if [[ "$RC" -eq 0 ]]; then
+if [[ $RC -eq 0 ]]; then
   ok "with-db: script exited 0"
 else
   fail "with-db: expected exit 0, got $RC; log: $(cat "$TMP_ROOT/with-db.log")"
@@ -235,17 +241,17 @@ if grep -q 'CREATE INDEX pmp_links_subject' "$D/projector/pmp_links.sql" 2>/dev/
 else
   fail "with-db: export lacks the pmp_links index definitions"
 fi
-if grep -q 'DECOY-PROJECTION-ROW' "$D/projector/pmp_links.sql" 2>/dev/null \
-  || grep -q 'pmp_items' "$D/projector/pmp_links.sql" 2>/dev/null; then
+if grep -q 'DECOY-PROJECTION-ROW' "$D/projector/pmp_links.sql" 2>/dev/null ||
+  grep -q 'pmp_items' "$D/projector/pmp_links.sql" 2>/dev/null; then
   fail "with-db: export leaks non-pmp_links content (projection tables must not be archived)"
 else
   ok "with-db: export is pmp_links-only (no projection tables)"
 fi
 SCRATCH="$TMP_ROOT/with-db-scratch.db"
 rm -f "$SCRATCH"
-if sqlite3 "$SCRATCH" <"$D/projector/pmp_links.sql" 2>/dev/null \
-  && [[ "$(canonical_links "$SCRATCH")" == "$(canonical_links "$RUN_HOME/.local/state/pm-projector/projector.db")" ]] \
-  && [[ "$(canonical_links "$SCRATCH")" == *"first-link-note"* ]]; then
+if sqlite3 "$SCRATCH" <"$D/projector/pmp_links.sql" 2>/dev/null &&
+  [[ "$(canonical_links "$SCRATCH")" == "$(canonical_links "$RUN_HOME/.local/state/pm-projector/projector.db")" ]] &&
+  [[ "$(canonical_links "$SCRATCH")" == *"first-link-note"* ]]; then
   ok "with-db: isolated restore reproduces pmp_links content exactly"
 else
   fail "with-db: restored pmp_links content differs from source"
@@ -265,7 +271,7 @@ printf '%s=file:%s\n' 'DATABASE_URL' "$RUN_HOME/elsewhere/custom.db" \
   >"$RUN_HOME/.local/state/pm-projector/.env"
 run_backup env-url
 D="$(archive_dir env-url)"
-if [[ "$RC" -eq 0 ]] && grep -q 'env-url-link-note' "$D/projector/pmp_links.sql" 2>/dev/null; then
+if [[ $RC -eq 0 ]] && grep -q 'env-url-link-note' "$D/projector/pmp_links.sql" 2>/dev/null; then
   ok "env-url: export sourced from the env-configured database"
 else
   fail "env-url: export did not come from the env-configured database (rc=$RC); log: $(cat "$TMP_ROOT/env-url.log")"
@@ -283,9 +289,9 @@ make_fixture_db "$RUN_HOME/elsewhere/live.db" 'last-assignment-link-note'
 } >"$RUN_HOME/.local/state/pm-projector/.env"
 run_backup env-last
 D="$(archive_dir env-last)"
-if [[ "$RC" -eq 0 ]] \
-  && grep -q 'last-assignment-link-note' "$D/projector/pmp_links.sql" 2>/dev/null \
-  && ! grep -q 'stale-first-link-note' "$D/projector/pmp_links.sql" 2>/dev/null; then
+if [[ $RC -eq 0 ]] &&
+  grep -q 'last-assignment-link-note' "$D/projector/pmp_links.sql" 2>/dev/null &&
+  ! grep -q 'stale-first-link-note' "$D/projector/pmp_links.sql" 2>/dev/null; then
   ok "env-last: export sourced from the last DATABASE_URL assignment"
 else
   fail "env-last: export did not come from the last assignment (rc=$RC); log: $(cat "$TMP_ROOT/env-last.log")"
@@ -299,7 +305,7 @@ printf 'DATABASE_URL = "file:%s/with%%20space/quoted%%20db.db" \r\n' "$RUN_HOME"
   >"$RUN_HOME/.local/state/pm-projector/.env"
 run_backup env-quoted
 D="$(archive_dir env-quoted)"
-if [[ "$RC" -eq 0 ]] && grep -q 'quoted-encoded-link-note' "$D/projector/pmp_links.sql" 2>/dev/null; then
+if [[ $RC -eq 0 ]] && grep -q 'quoted-encoded-link-note' "$D/projector/pmp_links.sql" 2>/dev/null; then
   ok "env-quoted: quoted, CR-terminated, percent-encoded URL resolved to the real DB"
 else
   fail "env-quoted: quoted/encoded URL was not resolved (rc=$RC); log: $(cat "$TMP_ROOT/env-quoted.log")"
@@ -313,13 +319,13 @@ make_fixture_db "$RUN_HOME/.local/state/pm-projector/projector.db" 'fallback-mus
 printf '%s=postgres://user:sup3rsecret@db.example.invalid/app\n' 'DATABASE_URL' \
   >"$RUN_HOME/.local/state/pm-projector/.env"
 run_backup env-remote
-if [[ "$RC" -ne 0 ]]; then
+if [[ $RC -ne 0 ]]; then
   ok "env-remote: remote DATABASE_URL fails the run ($RC)"
 else
   fail "env-remote: remote DATABASE_URL silently accepted (exit 0)"
 fi
-if grep -q 'pmp_links' "$TMP_ROOT/env-remote.log" \
-  && ! grep -q 'sup3rsecret' "$TMP_ROOT/env-remote.log"; then
+if grep -q 'pmp_links' "$TMP_ROOT/env-remote.log" &&
+  ! grep -q 'sup3rsecret' "$TMP_ROOT/env-remote.log"; then
   ok "env-remote: failure names pmp_links and does not leak the DSN"
 else
   fail "env-remote: failure output missing pmp_links or leaked the DSN: $(cat "$TMP_ROOT/env-remote.log")"
@@ -329,7 +335,7 @@ if no_upload env-remote; then
 else
   fail "env-remote: an upload was attempted"
 fi
-if [[ "$MARKER_AFTER" == "$PRESET" ]]; then
+if [[ $MARKER_AFTER == "$PRESET" ]]; then
   ok "env-remote: journal marker unchanged"
 else
   fail "env-remote: marker advanced — was $PRESET, now $MARKER_AFTER"
@@ -342,7 +348,7 @@ make_fixture_db "$RUN_HOME/projector/rel.db" 'relative-dir-link-note'
 printf '%s=file:rel.db\n' 'DATABASE_URL' >"$RUN_HOME/.local/state/pm-projector/.env"
 run_backup env-relative PM_PROJECTOR_DIR="$RUN_HOME/projector"
 D="$(archive_dir env-relative)"
-if [[ "$RC" -eq 0 ]] && grep -q 'relative-dir-link-note' "$D/projector/pmp_links.sql" 2>/dev/null; then
+if [[ $RC -eq 0 ]] && grep -q 'relative-dir-link-note' "$D/projector/pmp_links.sql" 2>/dev/null; then
   ok "env-relative: relative DB resolved under PM_PROJECTOR_DIR"
 else
   fail "env-relative: relative DB not resolved under PM_PROJECTOR_DIR (rc=$RC); log: $(cat "$TMP_ROOT/env-relative.log")"
@@ -356,9 +362,9 @@ make_fixture_db "$RUN_HOME/projector/projector.db" 'stale-root-link-note'
 make_fixture_db "$RUN_HOME/.local/state/pm-projector/projector.db" 'state-dir-fallback-link-note'
 run_backup projector-dir PM_PROJECTOR_DIR="$RUN_HOME/projector"
 D="$(archive_dir projector-dir)"
-if [[ "$RC" -eq 0 ]] \
-  && grep -q 'projector-dir-link-note' "$D/projector/pmp_links.sql" 2>/dev/null \
-  && ! grep -q 'stale-root-link-note' "$D/projector/pmp_links.sql" 2>/dev/null   && ! grep -q 'state-dir-fallback-link-note' "$D/projector/pmp_links.sql" 2>/dev/null; then
+if [[ $RC -eq 0 ]] &&
+  grep -q 'projector-dir-link-note' "$D/projector/pmp_links.sql" 2>/dev/null &&
+  ! grep -q 'stale-root-link-note' "$D/projector/pmp_links.sql" 2>/dev/null && ! grep -q 'state-dir-fallback-link-note' "$D/projector/pmp_links.sql" 2>/dev/null; then
   ok "projector-dir: PM_PROJECTOR_DIR/data DB chosen before stale-root and state-dir DBs"
 else
   fail "projector-dir: PM_PROJECTOR_DIR/data DB not chosen (rc=$RC); log: $(cat "$TMP_ROOT/projector-dir.log")"
@@ -369,10 +375,10 @@ setup_home env-encoded-q
 mkdir -p "$RUN_HOME/elsewhere" "$RUN_HOME/.local/state/pm-projector"
 make_fixture_db "$RUN_HOME/elsewhere/projector?prod.db" 'encoded-q-link-note'
 printf '%s=file:%s
-' 'DATABASE_URL' "$RUN_HOME/elsewhere/projector%3Fprod.db"   >"$RUN_HOME/.local/state/pm-projector/.env"
+' 'DATABASE_URL' "$RUN_HOME/elsewhere/projector%3Fprod.db" >"$RUN_HOME/.local/state/pm-projector/.env"
 run_backup env-encoded-q
 D="$(archive_dir env-encoded-q)"
-if [[ "$RC" -eq 0 ]] && grep -q 'encoded-q-link-note' "$D/projector/pmp_links.sql" 2>/dev/null; then
+if [[ $RC -eq 0 ]] && grep -q 'encoded-q-link-note' "$D/projector/pmp_links.sql" 2>/dev/null; then
   ok "env-encoded-q: percent-decoded ? filename exported as-is"
 else
   fail "env-encoded-q: decoded ? filename not exported (rc=$RC); log: $(cat "$TMP_ROOT/env-encoded-q.log")"
@@ -381,7 +387,7 @@ fi
 # --- no-db: not applicable, recorded optional + missing ------------------------
 setup_home no-db
 run_backup no-db
-if [[ "$RC" -eq 0 ]]; then
+if [[ $RC -eq 0 ]]; then
   ok "no-db: script exited 0"
 else
   fail "no-db: expected exit 0, got $RC; log: $(cat "$TMP_ROOT/no-db.log")"
@@ -393,7 +399,7 @@ setup_home corrupt-db
 mkdir -p "$RUN_HOME/.local/state/pm-projector"
 printf 'this is not a sqlite database\n' >"$RUN_HOME/.local/state/pm-projector/projector.db"
 run_backup corrupt-db
-if [[ "$RC" -ne 0 ]]; then
+if [[ $RC -ne 0 ]]; then
   ok "corrupt-db: script exited non-zero ($RC)"
 else
   fail "corrupt-db: expected non-zero exit, got 0; log: $(cat "$TMP_ROOT/corrupt-db.log")"
@@ -408,13 +414,13 @@ if no_upload corrupt-db; then
 else
   fail "corrupt-db: an upload was attempted"
 fi
-if [[ "$MARKER_AFTER" == "$PRESET" ]]; then
+if [[ $MARKER_AFTER == "$PRESET" ]]; then
   ok "corrupt-db: journal marker unchanged"
 else
   fail "corrupt-db: marker advanced — was $PRESET, now $MARKER_AFTER"
 fi
 
-if (( failures > 0 )); then
+if ((failures > 0)); then
   echo "pm-dashboard-backup pmp_links tests: $failures failure(s)" >&2
   exit 1
 fi
