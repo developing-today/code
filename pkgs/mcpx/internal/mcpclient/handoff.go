@@ -2,13 +2,10 @@ package mcpclient
 
 import (
 	"bufio"
-	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
-	"strconv"
-	"strings"
 	"syscall"
 	"time"
 
@@ -20,8 +17,9 @@ import (
 // process to take the child over without restarting it.
 type StdioHandoff struct {
 	PID int `json:"pid"`
-	// StartTime is the child's start time from /proc. With the pid it names
-	// one process, so a recycled pid is not mistaken for the child.
+	// StartTime is the child's process start time (see procStat; the
+	// units are platform-defined). With the pid it names one process,
+	// so a recycled pid is not mistaken for the child.
 	StartTime uint64 `json:"startTime"`
 	Label     string `json:"label"`
 	// Stdin, Stdout and Stderr are this process's ends of the child's pipes.
@@ -170,34 +168,12 @@ func childAlive(pid int, start uint64) bool {
 	return st == start && state != 'Z'
 }
 
-// ProcessStartTime is the start time of pid, in clock ticks since boot.
+// ProcessStartTime is the start time of pid, in the platform's
+// procStat units (Linux: clock ticks since boot; darwin: microseconds
+// since the epoch). It is only compared for equality on one machine.
 func ProcessStartTime(pid int) (uint64, error) {
 	st, _, err := procStat(pid)
 	return st, err
-}
-
-// procStat reads a process's start time and state from /proc/<pid>/stat.
-func procStat(pid int) (uint64, byte, error) {
-	raw, err := os.ReadFile("/proc/" + strconv.Itoa(pid) + "/stat")
-	if err != nil {
-		return 0, 0, err
-	}
-	// The command name is parenthesised and may contain spaces or parens,
-	// so fields are counted from the last ')'.
-	i := bytes.LastIndexByte(raw, ')')
-	if i < 0 {
-		return 0, 0, fmt.Errorf("unparseable /proc/%d/stat", pid)
-	}
-	fields := strings.Fields(string(raw[i+1:]))
-	// fields[0] is field 3 (state); starttime is field 22.
-	if len(fields) < 20 || len(fields[0]) != 1 {
-		return 0, 0, fmt.Errorf("unparseable /proc/%d/stat", pid)
-	}
-	start, err := strconv.ParseUint(fields[19], 10, 64)
-	if err != nil {
-		return 0, 0, fmt.Errorf("unparseable /proc/%d/stat: %w", pid, err)
-	}
-	return start, fields[0][0], nil
 }
 
 // Detach stops the read loop and gives the transport to the caller. Nothing

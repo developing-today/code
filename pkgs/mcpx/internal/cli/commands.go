@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"github.com/developing-today/code/pkgs/mcpx/internal/defaults"
+	"github.com/developing-today/code/pkgs/mcpx/internal/homeutil"
 	"github.com/developing-today/code/pkgs/mcpx/internal/settings"
 	"github.com/developing-today/code/pkgs/mcpx/plugin/opencode/skills"
 	"io"
@@ -69,6 +70,11 @@ type App struct {
 	// Used by the MCP server, which must return what a script produced
 	// rather than write it to a stream the host is parsing as protocol.
 	stdoutOverride interface{ Write([]byte) (int, error) }
+	// environ is the environment Run was invoked with, recorded at the
+	// entrypoint for stage 2 of #1980 (threading it through ResolvePaths,
+	// settings.Environ and the plumbing source). Nil when the App was
+	// built directly; Environ() then falls back to os.Environ().
+	environ Env
 	settingsState
 }
 
@@ -627,6 +633,8 @@ func (a *App) runScript(ctx context.Context, args []string, inline bool) error {
 	nsFlag := fs.String("ns", "", "restrict the client to these namespaces (comma separated)")
 	rt := fs.String("runtime", "",
 		"javascript runtime: auto, deno, bun, node, a name from script.runtimes, or a path")
+	lang := fs.String("language", "",
+		"script language: auto, typescript, javascript, or python (default: script.language)")
 	timeout := fs.Duration("timeout", 0, "kill the script after this long (0 = no limit)")
 	keep := fs.Bool("keep", false, "keep the generated client and script for inspection")
 	session := fs.String("session", "", "session key (default: a fresh one per run)")
@@ -682,6 +690,8 @@ func (a *App) runScript(ctx context.Context, args []string, inline bool) error {
 	// enum with three values is not two booleans.
 	remote := fs.Bool("remote", false, "run the script on the daemon rather than here")
 	local := fs.Bool("local", false, "run the script in this process (the default when the daemon is local)")
+	remoteFile := fs.Bool("remote-file", false,
+		"with --remote, send the script's name and let the daemon resolve it on its own script search path (#2168), instead of sending the file's text")
 	// parseFlags binds everything the registry declares for this command that
 	// the hand-written flags above have not already claimed, then folds what
 	// was given into the resolved settings.
@@ -802,6 +812,12 @@ func (a *App) runScript(ctx context.Context, args []string, inline bool) error {
 	if werr != nil {
 		return werr
 	}
+	if *remoteFile && inline {
+		return errors.New("--remote-file names a script for the daemon to resolve; inline source has no name to resolve")
+	}
+	if *remoteFile && !elsewhere {
+		return errors.New("--remote-file asks the daemon to resolve the script name, so it only applies to a remote run; drop it, or add --remote")
+	}
 	// One identifier for this execution, used by the artifact index to group
 	// what the script produced and by a stream consumer to name the run.
 	runID := execsvc.NewRunID()
@@ -847,10 +863,29 @@ func (a *App) runScript(ctx context.Context, args []string, inline bool) error {
 		}
 	}
 
+	// The language comes from the fully merged settings. A preset is
+	// parsed into the hand-written --language pointer before the
+	// command line runs, so preferring that pointer would let a
+	// preset's --language discard an explicit --script-language,
+	// which the binding records in the resolved set at the flag
+	// layer, above the preset layer (Codex review, PR #7818). The
+	// resolved setting wins whenever one was given; a --language on
+	// the command line itself still wins over both, because the
+	// final parse set the pointer after every preset ran.
+	languagePref := *lang
+	if a.Settings().Given("script.language") {
+		languagePref = a.Settings().String("script.language")
+	}
+	if _, given := scanFlag(fs, args, "language"); given {
+		languagePref = *lang
+	}
+
 	if elsewhere {
 		return a.execOnDaemon(ctx, c, fs, inline, ns, sessionKey, eo,
 			execRemoteFlags{timeout: *timeout, runtime: *rt, permissions: *perms,
-				export: *export, session: sessionKey, shape: shape, dryRun: *dryRunFlag})
+				language: languagePref,
+				export:   *export, session: sessionKey, shape: shape, dryRun: *dryRunFlag,
+				remoteFile: *remoteFile})
 	}
 	// This process is about to start the script, so it checks first. The
 	// daemon would refuse a script it was asked to run; this one is not asked.
@@ -996,8 +1031,10 @@ func (a *App) runScript(ctx context.Context, args []string, inline bool) error {
 		Clients:        clients,
 		CaptureConsole: shape.captureConsole,
 		Runtime:        runtimePref,
+		Language:       languagePref,
 		Interpreter:    interpreterPref,
 		CwdPolicy:      cwdPolicy,
+		Devshell:       set.String("script.devshell"),
 		ConfigDir:      configDir,
 		Setup:          rtSetup,
 		Timeout:        *timeout,
@@ -1061,6 +1098,8 @@ func (a *App) runScript(ctx context.Context, args []string, inline bool) error {
 		opts.Env["MCPX_TRANSPORT_BEARER_TOKEN"] = tok
 	}
 	opts.TypeCheck = shape.typecheck
+	opts.TypeCheckOnError = shape.checkOnError
+	opts.TypeCheckOnUnsupported = shape.checkOnUnsupported
 	opts.Imports = shape.imports
 	opts.ImportsOnDynamic = shape.importsOnDynamic
 	opts.ImportsOnMissing = shape.importsOnMissing
@@ -1149,7 +1188,7 @@ func (a *App) runScript(ctx context.Context, args []string, inline bool) error {
 	if derr != nil {
 		return derr
 	}
-	svc := a.localService(store, c.Socket())
+	svc := a.localService(store, c.Socket(), cfg)
 	wire := execsvc.Options{
 		Session:   sessionKey,
 		Output:    eo.Output,
@@ -1187,7 +1226,7 @@ func (a *App) runScript(ctx context.Context, args []string, inline bool) error {
 			return err
 		}
 		if res.ExitCode != 0 {
-			os.Exit(res.ExitCode)
+			return &exitStatusError{code: res.ExitCode}
 		}
 		return nil
 	}
@@ -1224,10 +1263,12 @@ func (a *App) runScript(ctx context.Context, args []string, inline bool) error {
 			return err
 		}
 	} else if eo.Output != execsvc.OutputStream {
+		a.reportFinalResult(res)
 		a.reportArtifacts(res)
+		a.reportHooks(res)
 	}
 	if res.ExitCode != 0 {
-		os.Exit(res.ExitCode)
+		return &exitStatusError{code: res.ExitCode}
 	}
 	return nil
 }
@@ -1246,6 +1287,23 @@ func runEnvelope(res *execsvc.Result, stdout string, logs []logging.Record, stre
 	if res.TimedOut {
 		env["timedOut"] = true
 	}
+	if res.Error != "" {
+		env["error"] = res.Error
+	}
+	if res.ErrorKind != "" {
+		// The typed failure kind (CODE-30) travels with the error, so
+		// a CLI consumer can branch on it exactly like an HTTP caller
+		// reading the structured Result (Codex review, PR #9205).
+		env["errorKind"] = res.ErrorKind
+	}
+	// Retained hook frames ride in the envelope: a prompt hook's
+	// advice and warnings live only in its frame, and this path
+	// runs with a nil sink, so without this a --json caller paid
+	// for a model call whose entire effect was discarded (Codex
+	// review, PR #9021).
+	if len(res.Hooks) > 0 {
+		env["hooks"] = res.Hooks
+	}
 	if res.StdoutTruncated {
 		env["stdoutTruncated"] = true
 	}
@@ -1256,6 +1314,15 @@ func runEnvelope(res *execsvc.Result, stdout string, logs []logging.Record, stre
 		if json.Unmarshal([]byte(trimmed), &parsed) == nil {
 			env["result"] = parsed
 		}
+	}
+	// The service's result outranks the envelope's own stdout parse:
+	// a final-expression capture (CODE-19) or a hook replacement is
+	// the run's answer even when stdout parses to something else,
+	// and a deliberate null is an answer too.
+	if res.Result != nil {
+		env["result"] = res.Result
+	} else if res.ResultPresent {
+		env["result"] = nil
 	}
 	if len(streamed) > 0 {
 		values := make([]json.RawMessage, 0, len(streamed))
@@ -1779,7 +1846,10 @@ func (a *App) CmdInit(ctx context.Context, args []string) error {
 	}
 	path := ".mcpx.json"
 	if *global {
-		home, _ := os.UserHomeDir()
+		home, err := homeutil.Home()
+		if err != nil {
+			return err
+		}
 		path = filepath.Join(home, ".config", "mcpx", "config.json")
 	}
 	if _, err := os.Stat(path); err == nil && !*force {
@@ -1985,25 +2055,44 @@ func (a *App) CmdSkills(ctx context.Context, args []string) error {
 
 	if subcmd == "install" {
 		dest := toDir
+		globalDest := func(parts ...string) (string, error) {
+			home, err := homeutil.Home()
+			if err != nil {
+				return "", err
+			}
+			return filepath.Join(append([]string{home}, parts...)...), nil
+		}
 		if dest == "" {
 			switch agent {
 			case "claude":
 				if st, err := os.Stat(".claude"); err == nil && st.IsDir() {
 					dest = ".claude/skills"
 				} else {
-					dest = filepath.Join(os.Getenv("HOME"), ".claude", "skills")
+					gd, err := globalDest(".claude", "skills")
+					if err != nil {
+						return err
+					}
+					dest = gd
 				}
 			case "codex":
 				if st, err := os.Stat(".codex"); err == nil && st.IsDir() {
 					dest = ".codex/skills"
 				} else {
-					dest = filepath.Join(os.Getenv("HOME"), ".codex", "skills")
+					gd, err := globalDest(".codex", "skills")
+					if err != nil {
+						return err
+					}
+					dest = gd
 				}
 			case "agy":
 				if st, err := os.Stat(".agents"); err == nil && st.IsDir() {
 					dest = ".agents/skills"
 				} else {
-					dest = filepath.Join(os.Getenv("HOME"), ".gemini", "antigravity", "skills")
+					gd, err := globalDest(".gemini", "antigravity", "skills")
+					if err != nil {
+						return err
+					}
+					dest = gd
 				}
 			default:
 				if st, err := os.Stat(".opencode"); err == nil && st.IsDir() {
@@ -2011,7 +2100,11 @@ func (a *App) CmdSkills(ctx context.Context, args []string) error {
 				} else if st, err := os.Stat(".agents"); err == nil && st.IsDir() {
 					dest = ".agents/skills"
 				} else {
-					dest = filepath.Join(os.Getenv("HOME"), ".config", "opencode", "skills")
+					gd, err := globalDest(".config", "opencode", "skills")
+					if err != nil {
+						return err
+					}
+					dest = gd
 				}
 			}
 		}
@@ -2309,18 +2402,18 @@ type scriptFlags struct {
 type scriptShape struct {
 	// hooks carries the autonomy gate so the caller can report which
 	// configured phases were withheld, and why.
-	hooks                      *hookGate
-	env                        map[string]string
-	typecheck                  string
-	imports, importsOnDynamic  string
-	importsOnMissing           string
-	importsCrossProject        string
-	importsNetwork             string
-	launcher, launcherName     string
-	allowRepeat                []string
-	captureConsole             bool
-	prefix, suffix             []string
-	before, onSuccess, onError []string
+	hooks                                       *hookGate
+	env                                         map[string]string
+	typecheck, checkOnError, checkOnUnsupported string
+	imports, importsOnDynamic                   string
+	importsOnMissing                            string
+	importsCrossProject                         string
+	importsNetwork                              string
+	launcher, launcherName                      string
+	allowRepeat                                 []string
+	captureConsole                              bool
+	prefix, suffix                              []string
+	before, onSuccess, onError                  []string
 }
 
 // inlineSource splices prefix and suffix lines around a snippet. A snippet is
@@ -2424,6 +2517,8 @@ func (a *App) resolveScriptShape(cfg *config.Config, f scriptFlags) (scriptShape
 	// Read the canonical setting after resolution so legacy path, variable,
 	// and flag spellings all pass through the same value normalization.
 	sh.typecheck = a.Settings().String("script.check")
+	sh.checkOnError = a.Settings().String("script.checkOnError")
+	sh.checkOnUnsupported = a.Settings().String("script.checkOnUnsupported")
 
 	// No short flag spelling: the registry value is the whole story, from
 	// the generated --script-imports flag, a variable, or the config file.

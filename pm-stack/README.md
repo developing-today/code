@@ -10,8 +10,8 @@ forks of upstream projects.
 
 | Piece      | Image                                    | Notes                                                                                 |
 | ---------- | ---------------------------------------- | ------------------------------------------------------------------------------------- |
-| Kaneo      | `ghcr.io/usekaneo/kaneo:2.47.0` (pinned) | Web UI + API on container port 5173, bound to host `127.0.0.1:5173` only              |
-| PostgreSQL | `postgres:16-alpine`                     | Kaneo's database; named volume `pm-stack_postgres_data`; never exposed on a host port |
+| Kaneo      | `ghcr.io/usekaneo/kaneo:2.47.0` + digest | Web UI + API on container port 5173, bound to host `127.0.0.1:5173` only              |
+| PostgreSQL | `postgres:16-alpine` + digest            | Kaneo's database; named volume `pm-stack_postgres_data`; never exposed on a host port |
 
 Phase 2 (2026-10-24) added three layers, each in its own subdirectory
 with the same deploy shape (SOPS → mode-600 env → compose/unit →
@@ -237,7 +237,12 @@ What syncs (verified against Kaneo v2.47.0): issues ↔ tasks, comments
 (create-only; edits/deletes do not sync), open/close both ways,
 `status:*`/`priority:*` labels both ways, title/body edits. PRs are
 read-only to Kaneo — they only move tasks (push → in-progress, PR
-opened → in-review, merged → done). Bot-authored comments are not
+opened → in-review, merged → in-review). A merge must never move a
+task to Done by itself: until 2026-11-14 `pr_merged` mapped to Done,
+which made the two-way close sync close GitHub issues that a merged
+PR merely referenced (defect #7610). The rule, why, and how to
+re-apply it after a re-connect live in
+[KANEO-GITHUB-SYNC.md](KANEO-GITHUB-SYNC.md). Bot-authored comments are not
 imported inbound. Each Kaneo project connects to exactly one
 repository (upstream issue usekaneo/kaneo#791).
 
@@ -394,11 +399,11 @@ developing-today/code` (dispatch).
   restart). Each Phase 2 subdirectory has the same `deploy.sh`
   contract (Pad, Grist); ready-for-agent refreshes via
   `ready-for-agent/install.sh`.
-- **Update Kaneo:** bump the pinned tag in `compose.yml` after reading
-  the upstream release notes, then `./deploy.sh`. Never float on
-  `:latest`. Same rule per component: Pad/Grist image pins (tag +
-  digest) in their `compose.yml`, ready-for-agent's `PINNED_VERSION`
-  in `ready-for-agent/install.sh`.
+- **Update Kaneo or PostgreSQL:** after reviewing the upstream release
+  notes, bump the tag and digest together in `compose.yml`, then
+  `./deploy.sh`. Never float on a mutable tag. Same rule per component:
+  Pad/Grist image pins (tag + digest) in their `compose.yml`,
+  ready-for-agent's `PINNED_VERSION` in `ready-for-agent/install.sh`.
 - **Pad API token:** expires 90 days after minting (current:
   2027-01-22) — re-mint, re-file (SOPS + both vaults), restart
   nothing (the token is used by external automation, not the

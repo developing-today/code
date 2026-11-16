@@ -94,6 +94,11 @@ def main() -> int:
                 got = json.loads(r.stdout)
             except json.JSONDecodeError as e:
                 return fail(f"{name}: stdout not JSON: {e}")
+            # query_id is a per-run random UUID (slice 2) and is not
+            # part of the recorded identity; drop it before comparing.
+            # Everything else must stay byte-identical to the Python
+            # recording — that identity is the point of this check.
+            got.pop("query_id", None)
             if got != cases[name]["envelope"]:
                 return fail(
                     f"{name}: envelope differs from the recorded Python envelope"

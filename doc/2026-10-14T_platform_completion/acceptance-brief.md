@@ -73,6 +73,6 @@ Initial inventory: complete. The roadmap's Phase 8 items P8.2–P8.6 have merged
 
 - [x] P7.2: write the Cloudflare Workers pkarr design using the already-collected round-2 research. See [`doc/2026-10-14T10-18-19Z_design_p7_2_cloudflare_workers.md`](../2026-10-14T10-18-19Z_design_p7_2_cloudflare_workers.md). Design is complete; deployment and implementation remain out of scope for P7.2.
 - [ ] P7.5/P3.7: real two-network and account-backed deployment matrix cannot be truthfully verified without the required networks/accounts. Keep the code-side test harness ready and leave the live matrix explicitly blocked, not falsely passed.
-- [ ] Wire the existing freshness-window and pull-policy configuration into server/world settings and CLI defaults (handoff gap).
+- [x] Wire the existing freshness-window and pull-policy configuration into server/world settings and CLI defaults (handoff gap). Wired on the serve surface by PR #8529 (issue #8487, task 14862): `serve_freshness_window` mirrors `serve_pull_policy` over `ServerConfig::freshness()`, and the seitan admission path consumes the configured window at the admission boundary, with the no-config `DEFAULT_WINDOW` behavior tested.
 - [ ] Finish or explicitly scope the `group join` CLI path; replace local unsigned group-log stand-ins if the phase contract requires portable signed group events.
 - [ ] Resolve/document the remaining protocol questions tracked as #194, #185, #160, #183, and #195 before claiming the complete original plan.

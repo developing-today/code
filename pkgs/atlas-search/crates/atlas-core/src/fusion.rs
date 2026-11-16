@@ -8,9 +8,6 @@ use serde_json::{Map, Value as Json};
 
 use crate::types::BranchHit;
 
-/// Production RRF constant (decided 2026-10-31; the Python's `RRF_K`).
-pub const RRF_K: usize = 10;
-
 /// The Python's `fts_match_expr` (the eval3.py hybrid-branch
 /// construction): content words OR-joined as quoted phrases. Words
 /// >3 chars, plus short tokens containing a digit (r2, s3, b2) which
@@ -88,6 +85,24 @@ pub fn fuse(
     fts: &[BranchHit],
     vector: &[BranchHit],
 ) -> (Vec<FusedEntry>, HashMap<i64, Option<f64>>) {
+    let defaults = atlas_proto::SearchParametersV1::default();
+    fuse_with_parameters(
+        fts,
+        vector,
+        defaults.rrf_k,
+        defaults.fts_weight,
+        defaults.vector_weight,
+    )
+}
+
+/// Fuse using query-time RRF and per-signal multipliers.
+pub fn fuse_with_parameters(
+    fts: &[BranchHit],
+    vector: &[BranchHit],
+    rrf_k: usize,
+    fts_weight: f64,
+    vector_weight: f64,
+) -> (Vec<FusedEntry>, HashMap<i64, Option<f64>>) {
     let mut entries: Vec<FusedEntry> = Vec::new();
     let mut by_id: HashMap<i64, usize> = HashMap::new();
     let mut get_or_insert = |entries: &mut Vec<FusedEntry>, cid: i64| -> usize {
@@ -107,14 +122,14 @@ pub fn fuse(
     for (i, hit) in fts.iter().enumerate() {
         let rank = i + 1;
         let idx = get_or_insert(&mut entries, hit.chunk_id);
-        entries[idx].score += 1.0 / (RRF_K + rank) as f64;
+        entries[idx].score += fts_weight / (rrf_k + rank) as f64;
         entries[idx].fts_rank = Some(rank);
     }
     let mut vec_dist: HashMap<i64, Option<f64>> = HashMap::new();
     for (i, hit) in vector.iter().enumerate() {
         let rank = i + 1;
         let idx = get_or_insert(&mut entries, hit.chunk_id);
-        entries[idx].score += 1.0 / (RRF_K + rank) as f64;
+        entries[idx].score += vector_weight / (rrf_k + rank) as f64;
         entries[idx].vector_rank = Some(rank);
         vec_dist.insert(hit.chunk_id, hit.dist);
     }
@@ -186,6 +201,14 @@ mod tests {
         let e42 = fused.iter().find(|e| e.chunk_id == 42).unwrap();
         assert_eq!(round6(e42.score), 0.087561);
         assert_eq!(dist.get(&42), Some(&Some(0.5)));
+    }
+
+    #[test]
+    fn query_parameters_control_rrf_and_signal_weights() {
+        let (fused, _) = fuse_with_parameters(&[hit(1, None)], &[hit(1, Some(0.1))], 20, 2.0, 1.0);
+        assert_eq!(round6(fused[0].score), 0.142857);
+        let (fts_only, _) = fuse_with_parameters(&[hit(1, None)], &[], 20, 0.0, 1.0);
+        assert_eq!(round6(fts_only[0].score), 0.0);
     }
 
     #[test]

@@ -19,8 +19,8 @@ procedure; the audit stays the evidence of record.
 ## The stream (as of the 2026-11-06 audit; PG has been down since)
 
 - `agent.events(id bigint identity, ts timestamptz, worker_id text,
-  task_id bigint FK -> agent.tasks(id), kind text NOT NULL,
-  detail jsonb NOT NULL DEFAULT '{}')`; 88.8 MB, 213,066 rows,
+task_id bigint FK -> agent.tasks(id), kind text NOT NULL,
+detail jsonb NOT NULL DEFAULT '{}')`; 88.8 MB, 213,066 rows,
   ~33k rows/day (~23/min), insert-only workload. RLS on, no
   triggers, no inbound FKs except its own FK to tasks.
 - Kind census (top): checkpoint 70,091 · claimed 39,129 · issues
@@ -32,22 +32,22 @@ procedure; the audit stays the evidence of record.
 
 ## Writers
 
-| # | Writer | Mechanism | Transaction scope |
-|---|--------|-----------|-------------------|
-| W1 | 17 queue RPCs (`claim_repo_task`, `checkpoint_task`, `complete_task`, `fail_repo_task`, `park_task`, `block_task`, `cancel_repo_task`, `enqueue_repo_task(_fleet)`, lane assign/bind/record, `expire_leases`, …) | `INSERT INTO agent.events` inside the function body | **Same PG transaction as the `agent.tasks` state change** — atomic |
-| W2 | `expire_leases()` via pg_cron `agent-expire-leases` (every minute) | part of W1's family | same |
-| W3 | `github-ci` Edge Function (webhooks: push / issues / pull_request) | `supabase.schema("agent").from("events").insert(...)`, task_id NULL | standalone insert; **the function returns HTTP 500 if it fails** (GitHub retries, then disables the webhook) |
-| W4 | `fleet-fetch.py` (sandbox systemd timer, every 10 min) | one `snapshot_refresh` insert via supabase-exec | standalone; rides in the same SQL batch as an `agent.watermarks` upsert |
-| W5 | `prune_events(30)` via pg_cron `agent-prune-events` (daily 04:17) | self-logging `events_pruned` insert after its DELETE | same transaction as the delete |
+| #   | Writer                                                                                                                                                                                                           | Mechanism                                                           | Transaction scope                                                                                            |
+| --- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------ |
+| W1  | 17 queue RPCs (`claim_repo_task`, `checkpoint_task`, `complete_task`, `fail_repo_task`, `park_task`, `block_task`, `cancel_repo_task`, `enqueue_repo_task(_fleet)`, lane assign/bind/record, `expire_leases`, …) | `INSERT INTO agent.events` inside the function body                 | **Same PG transaction as the `agent.tasks` state change** — atomic                                           |
+| W2  | `expire_leases()` via pg_cron `agent-expire-leases` (every minute)                                                                                                                                               | part of W1's family                                                 | same                                                                                                         |
+| W3  | `github-ci` Edge Function (webhooks: push / issues / pull_request)                                                                                                                                               | `supabase.schema("agent").from("events").insert(...)`, task_id NULL | standalone insert; **the function returns HTTP 500 if it fails** (GitHub retries, then disables the webhook) |
+| W4  | `fleet-fetch.py` (sandbox systemd timer, every 10 min)                                                                                                                                                           | one `snapshot_refresh` insert via supabase-exec                     | standalone; rides in the same SQL batch as an `agent.watermarks` upsert                                      |
+| W5  | `prune_events(30)` via pg_cron `agent-prune-events` (daily 04:17)                                                                                                                                                | self-logging `events_pruned` insert after its DELETE                | same transaction as the delete                                                                               |
 
 ## Readers
 
-| # | Reader | What it needs | Cross-database problem |
-|---|--------|---------------|------------------------|
-| R1 | `revalidate_parked_tasks()` (pg_cron `park-revalidation-daily` 05:17) | `EXISTS (events WHERE task_id = parked.id AND kind = <the kind named in a {"kind":"event_seen"} ready_condition>)` | **Yes — the blocker.** PG cannot query Turso |
-| R2 | `agent.repo_queue_health` view → broker `/health` (fleet-watchdog 15 min, claimant, worker shifts) | `terminal_events_24h` / `terminal_events_7d` per queue = events ⋈ tasks on terminal kinds | Yes, as a PG view; **no** once events and tasks share a database |
-| R3 | Ad-hoc observability SQL via the Management API | `count(*) WHERE kind = ?`, rows `WHERE kind = ? AND ts > ?` | Needs an equivalent query route |
-| R4 | pg_dump backup (`supabase/muse-dev/backup/config.json`, 12 h cycle, 90 d retention) | events is inside the `agent` schema dump | Backup-of-record must re-point consciously |
+| #   | Reader                                                                                             | What it needs                                                                                                      | Cross-database problem                                           |
+| --- | -------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------ | ---------------------------------------------------------------- |
+| R1  | `revalidate_parked_tasks()` (pg_cron `park-revalidation-daily` 05:17)                              | `EXISTS (events WHERE task_id = parked.id AND kind = <the kind named in a {"kind":"event_seen"} ready_condition>)` | **Yes — the blocker.** PG cannot query Turso                     |
+| R2  | `agent.repo_queue_health` view → broker `/health` (fleet-watchdog 15 min, claimant, worker shifts) | `terminal_events_24h` / `terminal_events_7d` per queue = events ⋈ tasks on terminal kinds                          | Yes, as a PG view; **no** once events and tasks share a database |
+| R3  | Ad-hoc observability SQL via the Management API                                                    | `count(*) WHERE kind = ?`, rows `WHERE kind = ? AND ts > ?`                                                        | Needs an equivalent query route                                  |
+| R4  | pg_dump backup (`supabase/muse-dev/backup/config.json`, 12 h cycle, 90 d retention)                | events is inside the `agent` schema dump                                                                           | Backup-of-record must re-point consciously                       |
 
 ## Coupling verdict
 
@@ -55,12 +55,12 @@ procedure; the audit stays the evidence of record.
    (the queue RPC family) write events atomically with task state.
    That coupling is preserved by construction in the Turso queue
    backend: `turso_queue::event()` runs in the same broker dispatch
-   and the same database as the task write. What libSQL does *not*
+   and the same database as the task write. What libSQL does _not_
    give is PG's single-transaction rollback: the task UPDATE and
    the event INSERT are separate pipeline statements, so a crash
    mid-verb can land one without the other (the queue runbook's
    atomicity section). The PG semantics worth keeping — "a state
-   change and its event are never *silently* separated" — is
+   change and its event are never _silently_ separated" — is
    approximated by single-writer serialization + same-dispatch
    ordering; strict atomicity would need a batched pipeline
    transaction and is recorded as a known deviation, not a blocker,
@@ -97,7 +97,7 @@ dispatch and the production default are untouched:
   the sink endpoint for non-queue writers once the broker is
   Turso-backed; returns the inserted row id.
 - `POST /events-seen {task_id, kind}` → `{seen, count,
-  latest_created_at}` — the R1 primitive.
+latest_created_at}` — the R1 primitive.
 - `POST /events-count {kind?, since?}` → `{count}` — R3 parity.
 - `POST /events-prune {keep_days? = 30}` — the `prune_events`
   port: deletes older rows and self-logs `events_pruned`.
@@ -114,7 +114,7 @@ Writer flips prepared outside this repo, defaults unchanged:
   preserves today's 500-on-loss semantics) + PG skipped. Target is
   `fleet-queue` via new secrets `AGENT_EVENTS_TURSO_URL` /
   `AGENT_EVENTS_TURSO_AUTH_TOKEN` (the ci mirror's `TURSO_*`
-  secrets point at muse-platform and are *not* reused).
+  secrets point at muse-platform and are _not_ reused).
 - `fleet-fetch.py`: `AGENT_EVENTS_SINK=pg|dual|turso`, default
   `pg`; the `snapshot_refresh` row goes to the PG batch, the Turso
   pipeline (token by name `turso.fleet-queue-rw-token` via the
@@ -165,7 +165,7 @@ reversible until C5.
   `agent.events WHERE id <= watermark` (the DIY pg_dump backup is
   a valid source), and import into a new `agent_events_pg_history`
   table in fleet-queue (columns mirror PG: `pg_id, ts, worker_id,
-  task_id, kind, detail`) — an archive beside the live stream,
+task_id, kind, detail`) — an archive beside the live stream,
   never merged (id spaces differ, §2). Anything past the watermark
   is covered by C1 dual-write overlap.
 - **C5 — flip the external writers.** `AGENT_EVENTS_SINK=turso`

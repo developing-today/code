@@ -155,9 +155,7 @@ export function reevaluateProviderAuth(
 ): ProviderAuthAlert[] {
   return alerts.map((a) => {
     if (a.reporting !== "ok" || !a.checkedAt) return a;
-    return now.getTime() - Date.parse(a.checkedAt) > staleMs
-      ? { ...a, reporting: "stale" as const }
-      : a;
+    return now.getTime() - Date.parse(a.checkedAt) > staleMs ? { ...a, reporting: "stale" as const } : a;
   });
 }
 

@@ -200,5 +200,59 @@ func settingsOps() []Op {
 					Desc: "the adapter to remove, by its declared name"},
 			},
 		},
+		{
+			Name: "apis_add", Method: "POST", Path: "/v1/apis",
+			Permission: PermissionAdmin,
+			Command:    "api add",
+			Summary:    "Add an API declaration, live",
+			Description: "Writes the declaration to the first file paths.apis " +
+				"names and reloads, so the API is callable immediately and " +
+				"is still there after a restart. The body is the declaration " +
+				"itself: name, spec, and the filters that select its tools. " +
+				"A name another configured file already declares is refused " +
+				"rather than duplicated across files, and a replacement edits " +
+				"the file that defines it. Refused, with the remedy, when " +
+				"paths.apis names no file, because a declaration written " +
+				"somewhere nothing reads would report success and change " +
+				"nothing.",
+			Admin: true, Mutating: true,
+			Params: []Param{
+				{Name: "name", In: InBody, Type: "string", Required: true,
+					Desc: "the API's name, which is also its namespace"},
+				{Name: "spec", In: InBody, Type: "string", Required: true,
+					Desc: "the OpenAPI document: a path or a URL"},
+				{Name: "baseUrl", In: InBody, Type: "string",
+					Desc: "override the server URL the document declares"},
+				{Name: "include", In: InBody, Type: "array", Desc: "only operations matching these words, comma separated or repeated",
+					Schema: `{"type":"array","items":{"type":"string"}}`},
+				{Name: "exclude", In: InBody, Type: "array", Desc: "drop operations matching these words",
+					Schema: `{"type":"array","items":{"type":"string"}}`},
+				{Name: "methods", In: InBody, Type: "array", Desc: "HTTP methods to expose; 'all' for every one (default: read-only)",
+					Schema: `{"type":"array","items":{"type":"string"}}`},
+				{Name: "includeDeprecated", In: InBody, Type: "boolean",
+					Desc: "include operations the document marks deprecated"},
+				{Name: "headers", In: InBody, Type: "object", Desc: "headers sent with every operation call; values may reference ${VAR} environment variables",
+					Schema: `{"type":"object","additionalProperties":{"type":"string"}}`},
+				{Name: "description", In: InBody, Type: "string",
+					Desc: "one line shown beside the namespace"},
+				{Name: "replace", In: InBody, Type: "boolean",
+					Desc: "overwrite a declaration of the same name instead of refusing"},
+			},
+		},
+		{
+			Name: "apis_remove", Method: "DELETE", Path: "/v1/apis/{name}",
+			Permission: PermissionAdmin,
+			Idempotent: true,
+			Command:    "api remove",
+			Summary:    "Remove an API declaration, live",
+			Description: "Deletes the declaration from whichever configured " +
+				"apis file defines it and reloads. Instances of that " +
+				"API stop; a caller mid-call against it fails.",
+			Admin: true, Mutating: true, Destructive: true,
+			Params: []Param{
+				{Name: "name", In: InPath, Type: "string", Required: true,
+					Desc: "the API to remove, by its declared name"},
+			},
+		},
 	}
 }

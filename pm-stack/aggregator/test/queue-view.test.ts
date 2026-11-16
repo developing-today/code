@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import type { BoardItem, GhItem, OrchestrationSection, ProjectPoolItem } from "../src/model.ts";
-import { buildQueueView, queueInputsStale } from "../src/queue-view.ts";
+import { buildQueueView, queueInputsStale, reconciledInProgress } from "../src/queue-view.ts";
 import { renderQueue, renderQueueBody } from "../src/render.ts";
 import { PAGES } from "../src/pages.ts";
 
@@ -97,7 +97,17 @@ describe("buildQueueView (#1160)", () => {
         ...fresh,
         feed: {
           ...fresh.feed,
-          sections: [{ key: "projects", present: false, status: "unknown", ageMs: 60_000 }],
+          sections: [
+            {
+              key: "projects",
+              present: false,
+              status: "unknown",
+              ageMs: 60_000,
+              behindBy: null,
+              lastSyncAt: null,
+              lagNote: null,
+            },
+          ],
         },
       }),
     ).toBe(true);
@@ -195,6 +205,25 @@ describe("buildQueueView (#1160)", () => {
     expect(view.nextUp[0].blockedBy).toEqual(["Prerequisite (queued)"]);
   });
 
+  test("same-horizon next-up candidates keep insertion order across sources (#8352)", () => {
+    // Oracle: with the dead priority tier removed, the next-up sort is
+    // horizonRank then insertion sequence — candidates are collected
+    // orchestration first, then the Project pool, and neither source
+    // order nor cross-source order is disturbed by title or ref.
+    const view = buildQueueView({
+      board: [],
+      pool: [
+        poolItem({ ref: "developing-today/code#61", title: "Alpha pool", status: "queued", horizon: "today" }),
+        poolItem({ ref: "developing-today/code#62", title: "Mike pool", status: "queued", horizon: "today" }),
+      ],
+      items: new Map(),
+      orchestration: section([task("Zulu orch", "queued", "today", { ref: "developing-today/code#60" })]),
+      now: NOW,
+    });
+    expect(view.nextUp.map((item) => item.title)).toEqual(["Zulu orch", "Alpha pool", "Mike pool"]);
+    expect(view.nextUp.map((item) => item.source)).toEqual(["orchestration", "project-pool", "project-pool"]);
+  });
+
   test("keeps lined-up tasks with invalid refs but omits their URLs", () => {
     const view = buildQueueView({
       board: [],
@@ -235,7 +264,9 @@ describe("buildQueueView (#1160)", () => {
     expect(view.nextUp[0].url).toBe("https://github.com/developing-today/code/issues/51");
     expect(view.nextUp[0].epic).toEqual({ ref: epicRef, title: epicRef });
     expect(renderQueueBody(view)).toContain(`Epic: ${epicRef}`);
-    expect(renderQueueBody(view)).not.toContain(`<a href="https://github.com/developing-today/code/issues/99999999999999999999">`);
+    expect(renderQueueBody(view)).not.toContain(
+      `<a href="https://github.com/developing-today/code/issues/99999999999999999999">`,
+    );
   });
 
   test("keeps generated URLs for valid lined-up refs and out-of-pool epic refs", () => {
@@ -288,5 +319,89 @@ describe("buildQueueView (#1160)", () => {
         aa: "fixtures",
       }),
     ).toContain('href="/api/queue.json"');
+  });
+});
+
+describe("buildQueueView reconciled in-progress parity (#1162)", () => {
+  test("a lined-up session puts a Todo pool item in progress with signals and a disagreement badge", () => {
+    const view = buildQueueView({
+      board: [],
+      pool: [
+        poolItem({ ref: "developing-today/code#42", title: "Session-driven work", status: "Todo", updatedAt: recent }),
+      ],
+      items: new Map(),
+      orchestration: section([
+        task("Work on developing-today/code#42", "in-progress", "today", { ref: "developing-today/code#42" }),
+      ]),
+      now: NOW,
+    });
+    const row = view.inProgress.find((r) => r.ref === "developing-today/code#42");
+    expect(row).toBeDefined();
+    expect(row?.signals).toContain("active-session");
+    expect(row?.signals).not.toContain("project-status");
+    expect(row?.disagreement?.project).toBe("Todo");
+    expect(row?.disagreement).not.toBeNull();
+    const body = renderQueueBody(view);
+    expect(body).toContain("Active session");
+    expect(body).toContain("⚠ project: Todo");
+  });
+
+  test("an open PR pool item joins the set on the open-pr signal alone", () => {
+    const view = buildQueueView({
+      board: [],
+      pool: [
+        poolItem({
+          ref: "developing-today/code#77",
+          title: "Open PR without project status",
+          status: null,
+          contentKind: "pr",
+          state: "open",
+          updatedAt: recent,
+        }),
+      ],
+      items: new Map(),
+      orchestration: null,
+      now: NOW,
+    });
+    const row = view.inProgress.find((r) => r.ref === "developing-today/code#77");
+    expect(row).toBeDefined();
+    expect(row?.signals).toEqual(["open-pr"]);
+  });
+
+  test("a Project In Progress item carries the project-status signal", () => {
+    const view = buildQueueView({
+      board: [],
+      pool: [
+        poolItem({
+          ref: "developing-today/code#9",
+          title: "Project-driven work",
+          status: "In Progress",
+          updatedAt: recent,
+        }),
+      ],
+      items: new Map(),
+      orchestration: null,
+      now: NOW,
+    });
+    const row = view.inProgress.find((r) => r.ref === "developing-today/code#9");
+    expect(row).toBeDefined();
+    expect(row?.signals).toContain("project-status");
+    // Parity is the requirement: the disagreement is whatever the shared
+    // reconciled set computes for the same input (here the Project status
+    // is uncorroborated by any other source, so it reports a clash).
+    const shared = reconciledInProgress({
+      pool: [
+        poolItem({
+          ref: "developing-today/code#9",
+          title: "Project-driven work",
+          status: "In Progress",
+          updatedAt: recent,
+        }),
+      ],
+      board: [],
+      items: new Map(),
+      orchestration: null,
+    });
+    expect(row?.disagreement).toEqual(shared[0]?.disagreement);
   });
 });

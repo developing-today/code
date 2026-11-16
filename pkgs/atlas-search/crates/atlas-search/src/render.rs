@@ -101,6 +101,9 @@ pub fn render_text(out: &Json) -> String {
             py_str(out.get("mode")),
             py_str(out.get("backend")),
         ));
+        if let Some(qid) = out.get("query_id") {
+            lines.push(format!("query_id: {}", py_str(Some(qid))));
+        }
         let empty = Json::Object(serde_json::Map::new());
         lines.push(format!(
             "filters: {}",

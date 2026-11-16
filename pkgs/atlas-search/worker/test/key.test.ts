@@ -24,13 +24,8 @@ describe("queryKey", () => {
       `{"v":1,"q":"alpha beta","ceiling":"${CEILING}",` +
       `"model_rev":"${MODEL_REV}","vec_table":"${VEC_TABLE}","k":10}`;
     expect(keyMaterial({ q: "alpha beta", k: 10 })).toBe(canonical);
-    const digest = await crypto.subtle.digest(
-      "SHA-256",
-      new TextEncoder().encode(canonical),
-    );
-    const expected = [...new Uint8Array(digest)]
-      .map((b) => b.toString(16).padStart(2, "0"))
-      .join("");
+    const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(canonical));
+    const expected = [...new Uint8Array(digest)].map((b) => b.toString(16).padStart(2, "0")).join("");
     expect(await queryKey({ q: "alpha beta", k: 10 })).toBe(expected);
   });
 
