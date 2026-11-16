@@ -28,6 +28,7 @@
 //! never per-request.
 
 pub mod backend;
+pub mod detect;
 pub mod embed;
 pub mod embed_cache;
 pub mod error;
@@ -53,6 +54,10 @@ pub mod types;
 pub const MAX_EXPAND_NEIGHBORS: usize = 100;
 
 pub use backend::SearchBackend;
+pub use detect::{
+    DETECTION_LEDGER_SCHEMA, DetectionLedger, DetectionPass, LandedState, Mechanism, PathVerdict,
+    SourceLedger, Verdict, VerdictCounts, default_ledger_path, git_tree_detection, resolve_commit,
+};
 pub use embed::{AtlasEmbedder, FixedEmbedder, QUERY_PROMPT, QueryEmbedder};
 pub use embed_cache::{
     CachingEmbedder, QueryEmbeddingCache, RawQueryEmbedder, SharedEmbeddingStore,
