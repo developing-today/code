@@ -1473,11 +1473,7 @@ mod tests {
         mk(&home_bws);
         let path_var = std::env::join_paths([&path_dir]).unwrap();
         assert_eq!(
-            resolve_bws_program_from(
-                Some(override_bws.to_str().unwrap()),
-                Some(&path_var),
-                &home
-            ),
+            resolve_bws_program_from(Some(override_bws.to_str().unwrap()), Some(&path_var), &home),
             std::fs::canonicalize(&override_bws).unwrap()
         );
         assert_eq!(
@@ -1502,10 +1498,7 @@ mod tests {
         } else {
             PathBuf::from("bws")
         };
-        assert_eq!(
-            resolve_bws_program_from(None, None, &empty_home),
-            expected
-        );
+        assert_eq!(resolve_bws_program_from(None, None, &empty_home), expected);
         let _ = std::fs::remove_dir_all(&dir);
     }
 
