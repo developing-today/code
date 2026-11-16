@@ -29,6 +29,38 @@ pub(crate) struct AuditRecord {
     pub(crate) parameters: serde_json::Value,
     /// `accepted`, `refused`, or a provider-use decision.
     pub(crate) outcome: String,
+    /// What the action acted on: the world for administrative commands,
+    /// the capability for provider use, the named world (or `hub`) for
+    /// session admin frames. Added in schema version 2 (#1063); absent
+    /// (empty) in version-1 records.
+    #[serde(default)]
+    pub(crate) target: String,
+    /// Correlation id tying this record to the frame or command that
+    /// produced it; unique and monotonic per process. Added in schema
+    /// version 2 (#1063); absent (empty) in version-1 records.
+    #[serde(default)]
+    pub(crate) correlation_id: String,
+}
+
+/// Monotonic sequence behind audit correlation ids, shared by the
+/// actor and the session layer so every audit line a process emits
+/// carries a unique correlation id (#1063).
+static AUDIT_CORRELATION_SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+
+pub(crate) fn next_audit_correlation_id() -> String {
+    let seq = AUDIT_CORRELATION_SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    format!("audit:{seq}")
+}
+
+/// Emit one audit record on the reserved target — the single emission
+/// point for the whole audit stream, so the actor and the session
+/// layer can never drift in shape.
+pub(crate) fn emit_audit_record(record: &AuditRecord) {
+    if let Ok(json) = serde_json::to_string(record) {
+        tracing::info!(target: AUDIT_TRACE_TARGET, audit_record = %json);
+    } else {
+        tracing::error!(target: AUDIT_TRACE_TARGET, action = %record.action, "could not serialize audit record");
+    }
 }
 
 fn authority_identity(authority: &Authority) -> String {
@@ -578,20 +610,18 @@ impl WorldActor {
         parameters: serde_json::Value,
         outcome: &str,
     ) {
-        let record = AuditRecord {
-            schema_version: 1,
+        let target = self.core.world_id().to_owned();
+        emit_audit_record(&AuditRecord {
+            schema_version: 2,
             timestamp_ms: self.core.clock().now_ms(),
             world_id: self.core.world_id().to_owned(),
             actor: actor.into(),
             action: action.to_owned(),
             parameters,
             outcome: outcome.to_owned(),
-        };
-        if let Ok(json) = serde_json::to_string(&record) {
-            tracing::info!(target: AUDIT_TRACE_TARGET, audit_record = %json);
-        } else {
-            tracing::error!(target: AUDIT_TRACE_TARGET, action, "could not serialize audit record");
-        }
+            target,
+            correlation_id: next_audit_correlation_id(),
+        });
     }
 
     fn audit_admin_result(
@@ -615,12 +645,17 @@ impl WorldActor {
             Decision::AllowAndGrant => "first_use_grant",
             Decision::Deny(_) => "denied",
         };
-        self.audit_record(
+        emit_audit_record(&AuditRecord {
+            schema_version: 2,
+            timestamp_ms: self.core.clock().now_ms(),
+            world_id: self.core.world_id().to_owned(),
             actor,
-            "provider_use",
-            serde_json::json!({"capability": capability}),
-            outcome,
-        );
+            action: "provider_use".to_owned(),
+            parameters: serde_json::json!({"capability": capability}),
+            outcome: outcome.to_owned(),
+            target: capability.to_owned(),
+            correlation_id: next_audit_correlation_id(),
+        });
     }
 
     pub(crate) async fn run(mut self, mut receiver: mpsc::Receiver<WorldCommand>, restored: bool) {

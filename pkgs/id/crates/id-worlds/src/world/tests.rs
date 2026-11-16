@@ -10572,6 +10572,65 @@ mod audit_tests {
         }
     }
 
+    // #1063: schema-v2 records carry a target and a unique correlation
+    // id on every line, admin commands included.
+    #[test]
+    fn audit_records_carry_target_correlation_and_schema_v2() {
+        let records = Arc::new(Mutex::new(Vec::new()));
+        let subscriber = tracing_subscriber::registry().with(AuditCapture(records.clone()));
+        let _guard = tracing::subscriber::set_default(subscriber);
+
+        let core = WorldCore::new("audit-correlation", WorldLimits::default()).unwrap();
+        let mut actor = WorldActor::for_test(core, Box::new(FirstUseProgram), None);
+
+        futures_lite::future::block_on(async {
+            let (reply, response) = tokio::sync::oneshot::channel();
+            actor
+                .handle(WorldCommand::UpdateCaps {
+                    grant: vec!["time.now".to_owned()],
+                    revoke: vec![],
+                    reply,
+                })
+                .await;
+            response.await.unwrap().unwrap();
+
+            let (reply, response) = tokio::sync::oneshot::channel();
+            actor
+                .handle(WorldCommand::UpdateCaps {
+                    grant: vec![],
+                    revoke: vec!["time.now".to_owned()],
+                    reply,
+                })
+                .await;
+            response.await.unwrap().unwrap();
+        });
+
+        let captured = records.lock().unwrap().clone();
+        let updates: Vec<_> = captured
+            .iter()
+            .filter(|record| record["action"] == "UpdateCaps")
+            .collect();
+        assert_eq!(
+            updates.len(),
+            2,
+            "one record per admin command: {captured:?}"
+        );
+        let mut correlation_ids = BTreeSet::new();
+        for record in updates {
+            assert_eq!(record["schema_version"], 2);
+            assert_eq!(record["target"], "audit-correlation");
+            let correlation_id = record["correlation_id"].as_str().unwrap();
+            assert!(
+                correlation_id.starts_with("audit:"),
+                "correlation id shape: {correlation_id}"
+            );
+            assert!(
+                correlation_ids.insert(correlation_id.to_owned()),
+                "correlation ids are unique per record"
+            );
+        }
+    }
+
     #[test]
     fn admin_audit_replays_grants_and_ceiling_and_records_refusal_once() {
         let records = Arc::new(Mutex::new(Vec::new()));
@@ -10682,7 +10741,7 @@ mod audit_tests {
                 && record["actor"] == "program"
         }));
         assert!(captured.iter().all(|record| {
-            record["schema_version"] == 1
+            record["schema_version"] == 2
                 && record["world_id"] == "audit-test"
                 && record.get("admin_token").is_none()
         }));
