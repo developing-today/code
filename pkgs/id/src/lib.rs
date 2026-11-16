@@ -350,6 +350,7 @@ pub use discovery::{
     MAX_PEERS, PeerAnnouncement, PeerDiscovery, PeerInfo, ResolvedConfig, STALE_CHECK_INTERVAL,
     STALE_THRESHOLD, defaults, parse_defaults, resolve_config,
 };
+pub use id_core::holders;
 pub use id_cli::cli::{Cli, Command, KeyCommand, TagCommand};
 pub use id_cli::commands::{
     PeekOptions, PeersOptions, ReplContext, ReplContextInner, SearchOptions, ServeInfo,
