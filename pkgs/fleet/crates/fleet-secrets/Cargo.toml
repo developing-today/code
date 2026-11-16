@@ -10,3 +10,4 @@ description = "The one secrets-by-name path for fleet: secrets-broker protocol f
 fleet-config = { workspace = true }
 fleet-proxy-proto = { workspace = true }
 serde_json = { workspace = true }
+libc = "0.2"
