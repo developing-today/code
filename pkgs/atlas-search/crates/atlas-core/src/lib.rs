@@ -37,6 +37,7 @@ pub mod feedback_normalise;
 pub mod filters;
 pub mod fusion;
 pub mod local;
+pub mod manifest;
 pub mod search;
 pub mod shards;
 pub mod shingles;
@@ -75,6 +76,10 @@ pub use feedback_normalise::{
 pub use filters::{Filters, Sensitivity};
 pub use fusion::FusedEntry;
 pub use local::LocalBackend;
+pub use manifest::{
+    LoadedManifest, Manifest, ManifestRow, ManifestSource, builtin_manifest, load_manifest,
+    parse_manifest_rows,
+};
 pub use search::{
     BackendBranchExecutor, BranchPoolExecutor, SearchMode, SearchOptions, TraceJob, run_get_chunk,
     run_search, run_search_traced, run_search_with_executor, run_search_with_executor_traced,
