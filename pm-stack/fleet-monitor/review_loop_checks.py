@@ -74,7 +74,13 @@ PASS_LABEL_RE = re.compile(r"^review/pass-(\d+)$")
 def parse_ts(value):
     if value is None:
         return None
-    return datetime.fromisoformat(value.replace("Z", "+00:00"))
+    parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    if parsed.tzinfo is None:
+        # Fixtures and some producers emit naive ISO timestamps; the
+        # loop's timestamps are UTC by convention, and a naive value
+        # must not crash the age arithmetic in check_stale_pass.
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed
 
 
 def parse_verdict_footers(comment_bodies):
@@ -197,10 +203,12 @@ def check_count_divergence(artifacts, packets):
 
 def check_stale_pass(packets, now, claim_latency_seconds=DEFAULT_CLAIM_LATENCY_SECONDS):
     """§7.3.3 — unclaimed past claim latency, or claimed but
-    unverdicted past the effort-class deadline. The caller supplies
-    `verdicted_issues` on packets pre-joined with their artifact: a
-    packet whose issue has a verdict footer at or after the packet's
-    pass is not stale."""
+    unverdicted past the effort-class deadline. `run_checks` supplies
+    each packet's `verdicted` flag, computed pass-aware from the
+    artifact's verdict footers: a packet whose issue has a verdict
+    footer at or after the packet's pass is not stale. (Direct
+    callers may preset `verdicted` on a packet; `run_checks` always
+    recomputes it and never trusts a preset value.)"""
     findings = []
     for packet in packets:
         if packet.get("status") not in LIVE_PACKET_STATUSES:
@@ -249,15 +257,29 @@ def run_checks(state, now=None):
     now = now or datetime.now(timezone.utc)
     artifacts = state.get("artifacts", [])
     packets = state.get("packets", [])
-    verdicted = {
-        a["number"]: bool(a.get("verdicts")) for a in artifacts
-    }
+    # Join verdicts onto COPIES of the packets: the checks are
+    # report-only and must not mutate the caller's state (a preset
+    # `verdicted` value in the input is recomputed, never trusted).
+    # The join is pass-aware: only a verdict at or after the packet's
+    # own pass marks it verdicted.
+    max_verdict_pass = {}
+    for artifact in artifacts:
+        passes = [v["pass"] for v in artifact.get("verdicts", [])]
+        if passes:
+            max_verdict_pass[artifact["number"]] = max(passes)
+    joined = []
     for packet in packets:
-        packet.setdefault("verdicted", verdicted.get(packet.get("issue"), False))
+        joined_packet = dict(packet)
+        highest = max_verdict_pass.get(packet.get("issue"))
+        review_pass = packet.get("review_pass")
+        joined_packet["verdicted"] = bool(
+            highest is not None and review_pass is not None and highest >= review_pass
+        )
+        joined.append(joined_packet)
     findings = []
     findings += check_verdict_without_packet(artifacts, packets)
     findings += check_count_divergence(artifacts, packets)
-    findings += check_stale_pass(packets, now)
+    findings += check_stale_pass(joined, now)
     return findings
 
 
@@ -265,7 +287,9 @@ def run_checks(state, now=None):
 
 
 def _run(cmd):
-    return subprocess.run(cmd, capture_output=True, text=True, check=True).stdout
+    return subprocess.run(
+        cmd, capture_output=True, text=True, check=True, timeout=60
+    ).stdout
 
 
 def collect_live_state(repo, queue):
@@ -318,6 +342,28 @@ def collect_live_state(repo, queue):
                 "claimed_at": row.get("claimed_at"),
             }
         )
+    # A packet's issue may carry no review/* label anymore (removed
+    # after its verdict) and so be missing from the pull above; its
+    # verdicts still decide staleness, so fetch verdict-only records
+    # for packet issues not already covered.
+    covered = {a["number"] for a in artifacts}
+    for issue in sorted({p["issue"] for p in packets} - covered):
+        comments = _run(
+            [
+                "gh", "issue", "view", str(issue), "--repo", repo,
+                "--json", "comments", "--jq", "[.comments[].body]",
+            ]
+        )
+        artifacts.append(
+            {
+                "repo": repo,
+                "number": issue,
+                "kind": "issue",
+                "state": "open",
+                "labels": [],
+                "verdicts": parse_verdict_footers(json.loads(comments or "[]")),
+            }
+        )
     return {"artifacts": artifacts, "packets": packets}
 
 
@@ -329,13 +375,22 @@ def main(argv=None):
     parser.add_argument("--now", help="ISO timestamp override (fixtures/tests)")
     args = parser.parse_args(argv)
 
-    if args.fixture:
-        with open(args.fixture, encoding="utf-8") as fh:
-            state = json.load(fh)
-    elif args.repo:
-        state = collect_live_state(args.repo, args.queue)
-    else:
-        parser.error("one of --fixture or --repo is required")
+    try:
+        if args.fixture:
+            with open(args.fixture, encoding="utf-8") as fh:
+                state = json.load(fh)
+        elif args.repo:
+            state = collect_live_state(args.repo, args.queue)
+        else:
+            parser.error("one of --fixture or --repo is required")
+    except (OSError, ValueError, subprocess.SubprocessError) as exc:
+        # Report-only contract: a failed lookup emits an error record
+        # and still exits 0, so one bad pull cannot lose the pass.
+        print(json.dumps(
+            {"check": "collection_error", "detail": f"{type(exc).__name__}: {exc}"},
+            sort_keys=True,
+        ))
+        return 0
     now = parse_ts(args.now) if args.now else None
     findings = run_checks(state, now=now)
     for finding in findings:

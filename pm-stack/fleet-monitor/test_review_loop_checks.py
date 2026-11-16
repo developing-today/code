@@ -162,13 +162,67 @@ class ReportOnlyTests(unittest.TestCase):
         }
         snapshot = copy.deepcopy(state)
         checks.run_checks(state, now=NOW)
-        # run_checks may annotate packets with the joined `verdicted`
-        # flag only; artifacts and packet records are otherwise
-        # untouched, and nothing is written anywhere.
-        for original, current in zip(snapshot["packets"], state["packets"]):
-            for key, value in original.items():
-                self.assertEqual(current[key], value)
-        self.assertEqual(state["artifacts"], snapshot["artifacts"])
+        # run_checks joins verdicts onto copies: the caller's state,
+        # packets included, is byte-for-byte untouched.
+        self.assertEqual(state, snapshot)
+
+
+class ShepherdRegressionTests(unittest.TestCase):
+    """Regressions from the PR #10676 shepherd pass (CodeRabbit majors)."""
+
+    def test_preset_verdicted_flag_is_recomputed_not_trusted(self):
+        # A stale preset `verdicted: True` in the input must not
+        # suppress a stale finding for an unverdicted claimed packet.
+        stale_packet = packet(9010, 111, 1, status="claimed",
+                              created="2026-11-15T08:00:00Z",
+                              claimed="2026-11-15T09:00:00Z", effort="s")
+        stale_packet["verdicted"] = True
+        state = {"artifacts": [artifact(111)], "packets": [stale_packet]}
+        findings = checks.run_checks(state, now=NOW)
+        self.assertEqual([f["check"] for f in findings], ["stale_pass"])
+
+    def test_earlier_pass_verdict_does_not_cover_later_pass_packet(self):
+        # A pass-1 verdict must not mark a claimed pass-2 packet
+        # verdicted; a pass-2 verdict must.
+        base_packet = packet(9011, 112, 2, status="claimed",
+                             created="2026-11-15T08:00:00Z",
+                             claimed="2026-11-15T09:00:00Z", effort="s")
+        state = {
+            "artifacts": [artifact(112, verdicts=[{"pass": 1, "cap": 2, "at": "2026-11-15T10:00:00Z"}])],
+            "packets": [dict(base_packet)],
+        }
+        # (The pass-1 footer also fires verdict_without_packet and
+        # count_divergence against the pass-2 packet — correctly;
+        # what matters here is that it does NOT suppress staleness.)
+        self.assertIn("stale_pass",
+                      [f["check"] for f in checks.run_checks(state, now=NOW)])
+        state["artifacts"] = [artifact(112, verdicts=[{"pass": 2, "cap": 2, "at": "2026-11-15T10:00:00Z"}])]
+        self.assertEqual(checks.run_checks(state, now=NOW), [])
+
+    def test_naive_timestamps_do_not_crash_stale_check(self):
+        state = {
+            "artifacts": [artifact(113)],
+            "packets": [packet(9012, 113, 1, created="2026-11-16T08:00:00")],
+        }
+        findings = checks.run_checks(state, now=NOW)
+        self.assertEqual([f["check"] for f in findings], ["stale_pass"])
+
+    def test_live_collection_failure_is_an_error_record_not_a_crash(self):
+        import io
+        import subprocess as sp
+        from contextlib import redirect_stdout
+        from unittest import mock
+
+        with mock.patch.object(
+            checks, "collect_live_state",
+            side_effect=sp.CalledProcessError(1, ["gh"]),
+        ):
+            out = io.StringIO()
+            with redirect_stdout(out):
+                rc = checks.main(["--repo", "developing-today/code"])
+        self.assertEqual(rc, 0)
+        record = __import__("json").loads(out.getvalue().strip())
+        self.assertEqual(record["check"], "collection_error")
 
 
 class VerdictFooterParsingTests(unittest.TestCase):
