@@ -4604,6 +4604,10 @@ impl GhCreator {
     /// `gh api search/issues -f q=...` form makes gh use POST,
     /// /search/issues has no POST route (404), and the failure read
     /// as proven absence, so every uncertain entry was re-created.
+    /// Search absence alone never proves absence for issue-kind
+    /// entries (#8331): the search index lags, so the REST issues
+    /// list is scanned as a second leg before `Absent` (see
+    /// `find_issue_in_recent_list`).
     fn find_by_marker(&mut self, entry: &Value) -> MarkerLookup {
         let repo = s(entry, "repo");
         let kind = s(entry, "kind");
@@ -4650,7 +4654,67 @@ impl GhCreator {
                 Err(class) => return MarkerLookup::CouldNotCheck(class),
             }
         }
+        // #8331: search is only eventually consistent -- an issue
+        // created seconds-to-minutes before a drainer restart (the
+        // crash window the outbox exists to protect) can be missing
+        // from the index while already existing, and concluding
+        // Absent from search alone re-creates it. For issue-kind
+        // entries, absence must also survive a scan of the strongly
+        // consistent REST issues list before it is proven.
+        if kind == "issue" {
+            match self.find_issue_in_recent_list(entry) {
+                Ok(Some(found)) => return MarkerLookup::Found(found.0, found.1),
+                Ok(None) => {}
+                Err(class) => return MarkerLookup::CouldNotCheck(class),
+            }
+        }
         MarkerLookup::Absent
+    }
+
+    /// Scan the repo's most recent issues through the REST issues
+    /// list -- a strongly consistent source, unlike the search
+    /// index -- for an issue-kind entry's marker (#8331). Returns
+    /// the (number, html_url) of the issue carrying the marker, or
+    /// None when the scan terminated (a non-full page) without
+    /// finding it. Any failed or misshaped page, and a listing
+    /// that still has not terminated at the page bound, is an
+    /// `Err` carrying the error class -- never a proven absence,
+    /// the same discipline as the comment-list bound in
+    /// `find_comment_on_issue`. The bound covers the 500 most
+    /// recently created issues: a create that landed in the crash
+    /// window this leg protects is necessarily among them.
+    fn find_issue_in_recent_list(
+        &mut self,
+        entry: &Value,
+    ) -> Result<Option<(i64, String)>, String> {
+        let repo = s(entry, "repo");
+        let id = s(entry, "id");
+        const PER_PAGE: usize = 100;
+        const MAX_PAGES: usize = 5;
+        for page in 1..=MAX_PAGES {
+            let issues = self.gh.json(&[
+                "api".into(),
+                format!(
+                    "repos/{repo}/issues?state=all&sort=created&direction=desc&per_page={PER_PAGE}&page={page}"
+                ),
+            ])?;
+            let Some(list) = issues.as_array() else {
+                return Err("unexpected_issues_list_shape".to_string());
+            };
+            let full_page = list.len() == PER_PAGE;
+            for issue in list {
+                if crate::creation_outbox::marker_id(&s(issue, "body")) == Some(id.clone()) {
+                    let Some(number) = issue.get("number").and_then(|n| n.as_i64()) else {
+                        continue;
+                    };
+                    return Ok(Some((number, s(issue, "html_url"))));
+                }
+            }
+            if !full_page {
+                return Ok(None);
+            }
+        }
+        Err("issues_list_unbounded".to_string())
     }
 
     /// Resolve a comment entry's marker on one candidate issue:
@@ -7538,8 +7602,15 @@ esac
     #[test]
     fn marker_search_empty_result_is_checked_absent() {
         let _gh_stub_guard = GH_STUB_LOCK.lock().unwrap();
-        let (bin, _log) =
-            stub_gh_8361("absent", "printf '%s' '{\"total_count\":0,\"items\":[]}'\n");
+        let (bin, _log) = stub_gh_8361(
+            "absent",
+            r#"case "$*" in
+  *search/issues*) printf '%s' '{"total_count":0,"items":[]}' ;;
+  *issues?state=all*) printf '%s' '[]' ;;
+  *) echo "unexpected argv: $*" >&2; exit 3 ;;
+esac
+"#,
+        );
         let mut creator = GhCreator::with_runner(GhRunner::with_bin(bin.to_string_lossy()));
         assert_eq!(
             creator.find_by_marker(&outbox_entry_8361()),
@@ -7576,6 +7647,101 @@ esac
         assert_eq!(
             creator.find_by_marker(&outbox_entry_8361()),
             MarkerLookup::CouldNotCheck("http_404".to_string())
+        );
+        let _ = std::fs::remove_dir_all(bin.parent().unwrap());
+    }
+
+    // ---- #8331: REST issues-list scan before trusting search absence ----
+    // Oracle: search indexing lags, so a landed issue can be absent
+    // from search results while already present in the repo's issue
+    // list. Reconcile must consult the list before concluding
+    // Absent for issue-kind entries; a list failure is
+    // CouldNotCheck, never Absent.
+
+    #[test]
+    fn marker_in_list_but_not_search_reconciles_found() {
+        let _gh_stub_guard = GH_STUB_LOCK.lock().unwrap();
+        let (bin, log) = stub_gh_8361(
+            "listhit8331",
+            r#"case "$*" in
+  *search/issues*) printf '%s' '{"total_count":0,"items":[]}' ;;
+  *issues?state=all*) printf '%s' '[{"number":99,"html_url":"https://github.com/developing-today/code/issues/99","body":"landed <!-- fleet-outbox:OB-test-1 -->"},{"number":98,"html_url":"https://github.com/developing-today/code/issues/98","body":"unrelated"}]' ;;
+  *) echo "unexpected argv: $*" >&2; exit 3 ;;
+esac
+"#,
+        );
+        let mut creator = GhCreator::with_runner(GhRunner::with_bin(bin.to_string_lossy()));
+        assert_eq!(
+            creator.find_by_marker(&outbox_entry_8361()),
+            MarkerLookup::Found(
+                99,
+                "https://github.com/developing-today/code/issues/99".to_string()
+            )
+        );
+        let argv_log = std::fs::read_to_string(&log).unwrap();
+        assert!(
+            argv_log.contains("issues?state=all"),
+            "reconcile must scan the REST issues list, argv was: {argv_log}"
+        );
+        let _ = std::fs::remove_dir_all(bin.parent().unwrap());
+    }
+
+    #[test]
+    fn marker_absent_from_search_and_list_is_checked_absent() {
+        let _gh_stub_guard = GH_STUB_LOCK.lock().unwrap();
+        let (bin, _log) = stub_gh_8361(
+            "bothabsent8331",
+            r#"case "$*" in
+  *search/issues*) printf '%s' '{"total_count":0,"items":[]}' ;;
+  *issues?state=all*) printf '%s' '[{"number":98,"html_url":"https://github.com/developing-today/code/issues/98","body":"unrelated"}]' ;;
+  *) echo "unexpected argv: $*" >&2; exit 3 ;;
+esac
+"#,
+        );
+        let mut creator = GhCreator::with_runner(GhRunner::with_bin(bin.to_string_lossy()));
+        assert_eq!(
+            creator.find_by_marker(&outbox_entry_8361()),
+            MarkerLookup::Absent
+        );
+        let _ = std::fs::remove_dir_all(bin.parent().unwrap());
+    }
+
+    #[test]
+    fn issues_list_failure_is_could_not_check_not_absent() {
+        let _gh_stub_guard = GH_STUB_LOCK.lock().unwrap();
+        let (bin, _log) = stub_gh_8361(
+            "listfail8331",
+            r#"case "$*" in
+  *search/issues*) printf '%s' '{"total_count":0,"items":[]}' ;;
+  *issues?state=all*) echo 'gh: Forbidden (HTTP 403)' >&2; exit 1 ;;
+  *) echo "unexpected argv: $*" >&2; exit 3 ;;
+esac
+"#,
+        );
+        let mut creator = GhCreator::with_runner(GhRunner::with_bin(bin.to_string_lossy()));
+        assert_eq!(
+            creator.find_by_marker(&outbox_entry_8361()),
+            MarkerLookup::CouldNotCheck("http_403".to_string())
+        );
+        let _ = std::fs::remove_dir_all(bin.parent().unwrap());
+    }
+
+    #[test]
+    fn issues_list_unexpected_shape_is_could_not_check() {
+        let _gh_stub_guard = GH_STUB_LOCK.lock().unwrap();
+        let (bin, _log) = stub_gh_8361(
+            "listshape8331",
+            r#"case "$*" in
+  *search/issues*) printf '%s' '{"total_count":0,"items":[]}' ;;
+  *issues?state=all*) printf '%s' '{"total_count":0,"items":[]}' ;;
+  *) echo "unexpected argv: $*" >&2; exit 3 ;;
+esac
+"#,
+        );
+        let mut creator = GhCreator::with_runner(GhRunner::with_bin(bin.to_string_lossy()));
+        assert_eq!(
+            creator.find_by_marker(&outbox_entry_8361()),
+            MarkerLookup::CouldNotCheck("unexpected_issues_list_shape".to_string())
         );
         let _ = std::fs::remove_dir_all(bin.parent().unwrap());
     }
