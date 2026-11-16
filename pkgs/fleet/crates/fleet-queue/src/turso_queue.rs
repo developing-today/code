@@ -62,6 +62,7 @@ const TASK_COLS: &str = "id, queue, title, body, payload, dedupe_key, priority, 
     not_before, worker_id, claimed_at, lease_until, lane_id, platform, attempts, max_attempts, \
     claim_provider, claim_model, claim_variant, claim_session_id, \
     progress, result, last_error, park_kind, wait_kind, ready_condition, \
+    required_budget_minutes, \
     last_checked_at, check_outcome, created_at, updated_at, completed_at, \
     blocked_deps, dep_next_recheck_at, dep_blocked_until, dep_recheck_seconds";
 const LEDGER_COLS: &str = "id, queue, task_id, assigned_lane, executed_lane, \
@@ -802,6 +803,7 @@ impl TursoBackend {
             ("dep_next_recheck_at", "TEXT"),
             ("dep_blocked_until", "TEXT"),
             ("dep_recheck_seconds", "INTEGER"),
+            ("required_budget_minutes", "INTEGER"),
         ] {
             let has = cols
                 .iter()
@@ -892,6 +894,7 @@ const SCHEMA: [&str; 17] = [
         claim_provider TEXT, claim_model TEXT, claim_variant TEXT, claim_session_id TEXT, \
         progress TEXT NOT NULL DEFAULT '{}', result TEXT NOT NULL DEFAULT '{}', \
         last_error TEXT, park_kind TEXT, wait_kind TEXT, ready_condition TEXT, \
+        required_budget_minutes INTEGER, \
         last_checked_at TEXT, check_outcome TEXT, \
         created_at TEXT NOT NULL, updated_at TEXT NOT NULL, \
         completed_at TEXT, \
@@ -3945,6 +3948,7 @@ fn claim_update_sql(pick_predicate: &str) -> String {
            attempts = attempts + (CASE WHEN status IN ('parked', 'handed_off') THEN 0 ELSE 1 END), \
            lane_id = ?, platform = COALESCE(?, platform), \
            park_kind = NULL, wait_kind = NULL, not_before = NULL, \
+           required_budget_minutes = NULL, \
            updated_at = ? \
          WHERE id = ? \
            AND ( {pick_predicate} ) {PLATFORM_LIMIT_PICK_CLAUSE}"
@@ -3968,12 +3972,45 @@ fn claim_update_sql(pick_predicate: &str) -> String {
 /// needs no sink exclusion — genuine wait parks release through
 /// claim at not_before, and only there. The sink branch carries
 /// no `?` placeholder, so the pick SELECT and the claim UPDATE
-/// re-check keep their two `now` arguments.
+/// re-check keep their four leading arguments: the two `now`s of
+/// the queued/parked branches, then the claimer's declared
+/// remaining budget twice (#3418: the capacity-wait bypass gate
+/// and the outer budget gate).
+/// #3418: a row's effective required budget in minutes — the
+/// park-stamped column wins; otherwise the packet's own declared
+/// `required_budget_minutes`. NULL means no requirement: the row
+/// matches every claim exactly as before this feature.
+const REQUIRED_BUDGET_EXPR: &str = "COALESCE(required_budget_minutes, \
+    CAST(json_extract(payload, '$.required_budget_minutes') AS INTEGER))";
+
+/// #3418: the budget gate. A requirement-bearing row matches only
+/// a claim declaring at least that many remaining minutes; the
+/// placeholder binds NULL for an undeclared budget and
+/// COALESCE(?, -1) makes an undeclared budget fail every
+/// requirement (a claimer that cannot state its budget cannot
+/// prove the fit) while requirement-free rows pass for all claims.
+fn budget_gate_sql() -> String {
+    format!("({REQUIRED_BUDGET_EXPR} IS NULL OR COALESCE(?, -1) >= {REQUIRED_BUDGET_EXPR})")
+}
+
+/// #3418: the capacity-wait timer bypass. Only a requirement-
+/// bearing capacity park may be taken before its timer by a
+/// claim whose declared budget fits — a requirement-free
+/// capacity park (a quota-reset wait is the standing example)
+/// keeps its timer exactly as before.
+fn budget_bypass_sql() -> String {
+    format!("({REQUIRED_BUDGET_EXPR} IS NOT NULL AND COALESCE(?, -1) >= {REQUIRED_BUDGET_EXPR})")
+}
+
 fn default_pick_predicate() -> String {
+    let gate = budget_gate_sql();
+    let bypass = budget_bypass_sql();
     format!(
-        "(status = 'queued' AND attempts < max_attempts \
+        "(((status = 'queued' AND attempts < max_attempts \
          AND (not_before IS NULL OR not_before <= ?)) \
-       OR (status = 'parked' AND not_before IS NOT NULL AND not_before <= ?) \
+       OR (status = 'parked' AND ((not_before IS NOT NULL AND not_before <= ?) \
+         OR (wait_kind = 'capacity' AND {bypass})))) \
+       AND {gate}) \
        OR ({HANDOFF_SQL})"
     )
 }
@@ -4254,6 +4291,7 @@ fn claim_pick_once(
     claim_session: Option<String>,
     model: &Option<ClaimModel>,
     handoff_pick: bool,
+    remaining_budget_minutes: Option<i64>,
 ) -> Result<Option<Value>, TErr> {
     let now_unix = now_unix();
     let now = iso(now_unix);
@@ -4308,10 +4346,16 @@ fn claim_pick_once(
          ORDER BY (priority IS NULL), priority ASC, created_at ASC LIMIT 1",
             scope.sql
         );
+        let budget_arg = match remaining_budget_minutes {
+            Some(v) => Arg::Int(v),
+            None => Arg::Null,
+        };
         let mut pick_args: Vec<Arg> = Vec::new();
         if !handoff_pick {
             pick_args.push(Arg::Text(now.clone()));
             pick_args.push(Arg::Text(now.clone()));
+            pick_args.push(budget_arg.clone());
+            pick_args.push(budget_arg.clone());
         }
         pick_args.push(arg_str(family.as_deref()));
         pick_args.push(arg_str(family.as_deref()));
@@ -4336,6 +4380,8 @@ fn claim_pick_once(
         if !handoff_pick {
             upd_args.push(Arg::Text(now.clone()));
             upd_args.push(Arg::Text(now.clone()));
+            upd_args.push(budget_arg.clone());
+            upd_args.push(budget_arg.clone());
         }
         upd_args.push(arg_str(family.as_deref()));
         upd_args.push(arg_str(family.as_deref()));
@@ -4483,6 +4529,7 @@ fn verb_claim_batch(
     claim_session: &Option<String>,
     model: &Option<ClaimModel>,
     handoff_pick: bool,
+    remaining_budget_minutes: Option<i64>,
     count: i64,
 ) -> Value {
     let work = (|| -> Result<Vec<Value>, TErr> {
@@ -4499,6 +4546,7 @@ fn verb_claim_batch(
                 claim_session.clone(),
                 model,
                 handoff_pick,
+                remaining_budget_minutes,
             )?
             else {
                 break;
@@ -4547,6 +4595,11 @@ fn verb_claim(t: &TursoBackend, req: &Value) -> Value {
     // task's own requires.pool, never as a filter.
     let pool = req_str(req, "pool").map(str::to_string);
     let lease_seconds = req_i64(req, "lease_seconds").unwrap_or(CLAIM_DEFAULT_LEASE_SECONDS);
+    // #3418: the claimer's declared remaining shift budget. Absent
+    // is a claim that cannot prove budget fit: requirement-bearing
+    // rows skip it (see budget_gate_sql); requirement-free rows
+    // behave exactly as before.
+    let remaining_budget_minutes = req_i64(req, "remaining_budget_minutes");
     let lane = req_str(req, "lane").map(str::to_string);
     // #8187 (demoting #8097 Rule 2): the claim's declared platform
     // is a MARK, never a filter — it is stamped on the claimed row
@@ -4627,6 +4680,7 @@ fn verb_claim(t: &TursoBackend, req: &Value) -> Value {
             &claim_session,
             &model,
             handoff_pick,
+            remaining_budget_minutes,
             count,
         );
     }
@@ -4682,6 +4736,7 @@ fn verb_claim(t: &TursoBackend, req: &Value) -> Value {
             claim_session,
             &model,
             handoff_pick,
+            remaining_budget_minutes,
         )
     })();
     match work {
@@ -5295,6 +5350,28 @@ fn apply_wait_floor(
     }
 }
 
+/// #3418: the required budget a park records. An explicit
+/// `required_budget_minutes` in the park request wins. Otherwise a
+/// capacity wait (ready-condition kind `capacity`) defaults the
+/// requirement from the packet's own `timebox_minutes` — the
+/// natural default source in the #3418 design sketch — so a
+/// capacity park is budget-matched without the parker restating
+/// the packet's number. Any other park records no requirement and
+/// keeps behaving exactly as before. Non-positive values record
+/// no requirement.
+fn park_required_budget(explicit: Option<i64>, condition: &Value, payload: &Value) -> Option<i64> {
+    if let Some(v) = explicit {
+        return (v > 0).then_some(v);
+    }
+    if condition.get("kind").and_then(|k| k.as_str()) == Some("capacity") {
+        return payload
+            .get("timebox_minutes")
+            .and_then(|v| v.as_i64())
+            .filter(|v| *v > 0);
+    }
+    None
+}
+
 fn verb_park(t: &TursoBackend, req: &Value) -> Value {
     let task_id = req_i64(req, "task_id").unwrap_or(0);
     let worker = req_str(req, "worker").unwrap_or("").to_string();
@@ -5338,6 +5415,22 @@ fn verb_park(t: &TursoBackend, req: &Value) -> Value {
     } else {
         condition
     };
+    // #3418: the budget requirement this park records (explicit in
+    // the request, or defaulted from the packet timebox for a
+    // capacity wait). A capacity park stays timer-floored as
+    // before, but a claim declaring enough remaining budget takes
+    // it immediately through the pick predicate's capacity bypass;
+    // external-wait parks record no requirement unless the parker
+    // sets one explicitly, and the two conditions then compose.
+    let required_budget = park_required_budget(
+        req_i64(req, "required_budget_minutes"),
+        &condition,
+        row.get("payload").unwrap_or(&Value::Null),
+    );
+    let required_budget_arg = match required_budget {
+        Some(v) => Arg::Int(v),
+        None => Arg::Null,
+    };
     let (progress, cleared) = clear_binding(
         &row.get("progress").cloned().unwrap_or(json!({})),
         "park_task",
@@ -5360,6 +5453,7 @@ fn verb_park(t: &TursoBackend, req: &Value) -> Value {
             t.exec(
                 "UPDATE tasks SET status = 'handed_off', worker_id = NULL, lease_until = NULL, \
                    not_before = NULL, park_kind = NULL, wait_kind = NULL, ready_condition = NULL, \
+                   required_budget_minutes = NULL, \
                    last_checked_at = ?, check_outcome = NULL, progress = ?, result = ?, \
                    updated_at = ? WHERE id = ?",
                 &[
@@ -5374,6 +5468,7 @@ fn verb_park(t: &TursoBackend, req: &Value) -> Value {
             t.exec(
                 "UPDATE tasks SET status = 'parked', worker_id = NULL, lease_until = NULL, \
                    not_before = ?, park_kind = ?, wait_kind = ?, ready_condition = ?, \
+                   required_budget_minutes = ?, \
                    last_checked_at = ?, check_outcome = NULL, progress = ?, result = ?, \
                    updated_at = ? WHERE id = ?",
                 &[
@@ -5381,6 +5476,7 @@ fn verb_park(t: &TursoBackend, req: &Value) -> Value {
                     Arg::Text(park_kind.to_string()),
                     Arg::Text(wk.to_string()),
                     Arg::Text(condition.to_string()),
+                    required_budget_arg,
                     Arg::Text(now_iso()),
                     Arg::Text(progress.to_string()),
                     Arg::Text(result.to_string()),
@@ -5405,6 +5501,7 @@ fn verb_park(t: &TursoBackend, req: &Value) -> Value {
                 "reason": reason, "status": "parked",
                 "park_kind": park_kind, "wait_kind": wk,
                 "not_before": not_before, "ready_condition": condition,
+                "required_budget_minutes": required_budget,
                 "cleared_session_id": cleared,
             })
         };
@@ -7939,6 +8036,52 @@ mod tests {
     use proptest::prelude::*;
 
     #[test]
+    fn budget_gate_3418_predicate_shape() {
+        // #3418 oracle (broker level): the default pick predicate
+        // budget-gates BOTH the queued and the parked branches,
+        // gives capacity waits a budget bypass of their timer, and
+        // carries exactly four placeholders ahead of the
+        // platform-limit clause — the two branch `now`s, then the
+        // claimer's declared remaining budget twice (bypass gate,
+        // outer gate). claim_pick_once pushes its arguments in
+        // exactly that order for both the pick SELECT and the
+        // claim UPDATE re-check, which embeds the same predicate.
+        let pred = default_pick_predicate();
+        assert_eq!(pred.matches('?').count(), 4, "{pred}");
+        assert_eq!(pred.matches("COALESCE(?, -1)").count(), 2, "{pred}");
+        assert!(pred.contains("wait_kind = 'capacity'"), "{pred}");
+        assert!(
+            pred.contains("json_extract(payload, '$.required_budget_minutes')"),
+            "{pred}"
+        );
+        assert!(claim_update_sql(&pred).contains(&pred));
+        assert!(claim_update_sql(&pred).contains("required_budget_minutes = NULL"));
+        // An undeclared budget (NULL) fails the gate for a
+        // requirement-bearing row and passes a requirement-free
+        // one — that is the COALESCE(?, -1) shape asserted above:
+        // -1 >= any positive requirement is false, and the
+        // `IS NULL` arm passes rows with no requirement.
+    }
+
+    #[test]
+    fn park_required_budget_3418_defaults() {
+        // #3418: explicit wins; a capacity wait defaults from the
+        // packet timebox; every other park records no requirement.
+        let payload = json!({"timebox_minutes": 120});
+        let capacity = json!({"kind": "capacity"});
+        let ci = json!({"kind": "ci", "pr": 1});
+        assert_eq!(park_required_budget(None, &capacity, &payload), Some(120));
+        assert_eq!(park_required_budget(None, &ci, &payload), None);
+        assert_eq!(
+            park_required_budget(Some(30), &capacity, &payload),
+            Some(30)
+        );
+        assert_eq!(park_required_budget(Some(30), &ci, &payload), Some(30));
+        assert_eq!(park_required_budget(None, &capacity, &json!({})), None);
+        assert_eq!(park_required_budget(Some(0), &capacity, &payload), None);
+    }
+
+    #[test]
     fn task_creation_defaults_max_attempts_1000_per_8973() {
         // #8973 oracle: every task-creation default in this crate is
         // 1000 (Drew order 2026-11-12) - the tasks schema default
@@ -8648,12 +8791,15 @@ mod tests {
         // row cannot be 'parked' — and the sink branch keys on the
         // status, never on a reconstructed stage (#8192). The
         // queued branch keeps its attempts cap, and the sink branch
-        // adds no placeholder: the predicate still carries exactly
-        // the two `now` arguments the pick SELECT and claim UPDATE
-        // bind.
+        // adds no placeholder: the predicate carries the two `now`
+        // arguments the pick SELECT and claim UPDATE bind — plus,
+        // since #3418, the claimer's declared remaining budget
+        // twice (capacity bypass gate + outer budget gate).
         let pred = default_pick_predicate();
         assert!(pred.contains("status = 'queued' AND attempts < max_attempts"));
-        assert!(pred.contains("status = 'parked' AND not_before IS NOT NULL AND not_before <= ?"));
+        assert!(
+            pred.contains("status = 'parked' AND ((not_before IS NOT NULL AND not_before <= ?)")
+        );
         assert!(
             !pred.contains("NOT ("),
             "no sink exclusion since #8234: {pred}"
@@ -8668,7 +8814,11 @@ mod tests {
         let sink_branch = format!("OR ({HANDOFF_SQL})");
         assert!(pred.contains(&sink_branch), "sink branch present: {pred}");
         assert_eq!(pred.matches("not_before <= ?").count(), 2);
-        assert_eq!(pred.matches('?').count(), 2, "no new placeholders: {pred}");
+        assert_eq!(
+            pred.matches('?').count(),
+            4,
+            "two `now`s + the two #3418 budget bindings: {pred}"
+        );
         // And the claim UPDATE re-check carries the same sink branch,
         // and collecting a sink row costs no attempt (#8234).
         let upd = claim_update_sql(&pred);
@@ -10283,13 +10433,14 @@ mod tests {
         }
         // Both pick statements carry the clause after the
         // eligibility predicate, with the claim's family bound
-        // twice: 7 fixed placeholders + 2 predicate + 2 clause.
+        // twice: 7 fixed placeholders + 4 predicate (the two
+        // `now`s + the two #3418 budget bindings) + 2 clause.
         let upd = claim_update_sql(&default_pick_predicate());
         assert!(
             upd.contains("AND NOT EXISTS (SELECT 1 FROM repo_task_lane_ledger"),
             "{upd}"
         );
-        assert_eq!(upd.matches('?').count(), 11, "claim UPDATE bindings: {upd}");
+        assert_eq!(upd.matches('?').count(), 13, "claim UPDATE bindings: {upd}");
         let src = include_str!("turso_queue.rs");
         let pick = seg8217(src, "fn claim_pick_once(", "\nfn parse_batch_count(");
         assert_eq!(
