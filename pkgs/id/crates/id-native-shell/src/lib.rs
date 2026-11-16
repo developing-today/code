@@ -23,10 +23,17 @@
 //! parity criterion against a live host.
 
 pub mod events;
+pub mod providers;
 pub mod render;
 mod session;
 
-pub use session::{ServerUpdate, SessionState, SessionView, join_frame, run_session};
+pub use providers::{
+    ClientProviderExecutor, LocalAuditEntry, LocalBounds, ProviderAdapter,
+};
+pub use session::{
+    ServerUpdate, SessionState, SessionView, join_frame, run_session,
+    run_session_with_providers,
+};
 
 use id::world_presentation::WorldSurface;
 use serde_json::{Value, json};
