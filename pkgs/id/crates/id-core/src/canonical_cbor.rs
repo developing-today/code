@@ -81,6 +81,8 @@ pub enum CborError {
         /// The unknown critical field name.
         field: String,
     },
+    /// Nesting exceeded `MAX_NESTING_DEPTH`.
+    TooDeeplyNested,
 }
 
 impl fmt::Display for CborError {
@@ -101,6 +103,7 @@ impl fmt::Display for CborError {
             Self::UnknownCriticalField { field } => {
                 write!(f, "unknown critical field: {field}")
             }
+            Self::TooDeeplyNested => write!(f, "nesting exceeds the profile's depth limit"),
         }
     }
 }
@@ -188,6 +191,13 @@ struct Reader<'a> {
     pos: usize,
 }
 
+/// Maximum nesting depth for decoded values. Each open array or
+/// map consumes at least one input byte, so without this bound a
+/// few KB of `0x81` bytes would overflow the thread stack via
+/// `value_inner` recursion; with it, hostile nesting is a typed
+/// error instead of a crash.
+pub const MAX_NESTING_DEPTH: u32 = 64;
+
 impl<'a> Reader<'a> {
     fn byte(&mut self) -> Result<u8, CborError> {
         let byte = *self.bytes.get(self.pos).ok_or(CborError::UnexpectedEof)?;
@@ -254,6 +264,13 @@ impl<'a> Reader<'a> {
     }
 
     fn value(&mut self) -> Result<Value, CborError> {
+        self.value_inner(0)
+    }
+
+    fn value_inner(&mut self, depth: u32) -> Result<Value, CborError> {
+        if depth > MAX_NESTING_DEPTH {
+            return Err(CborError::TooDeeplyNested);
+        }
         let initial = self.byte()?;
         let major = initial >> 5;
         let additional = initial & 0x1f;
@@ -267,30 +284,45 @@ impl<'a> Reader<'a> {
                 Ok(Value::Int(-1 - n as i64))
             }
             2 => {
-                let len = self.argument(additional)? as usize;
+                let len = usize::try_from(self.argument(additional)?)
+                    .map_err(|_| CborError::UnexpectedEof)?;
                 Ok(Value::Bytes(self.take(len)?.to_vec()))
             }
             3 => {
-                let len = self.argument(additional)? as usize;
+                let len = usize::try_from(self.argument(additional)?)
+                    .map_err(|_| CborError::UnexpectedEof)?;
                 let bytes = self.take(len)?;
                 let text = std::str::from_utf8(bytes).map_err(|_| CborError::InvalidUtf8)?;
                 Ok(Value::Text(text.to_string()))
             }
             4 => {
                 let len = self.argument(additional)?;
+                // Every array item consumes at least one input
+                // byte, so a declared count larger than the
+                // remaining input is truncated, not huge: reject
+                // before `with_capacity` can over-allocate.
+                if len > (self.bytes.len() - self.pos) as u64 {
+                    return Err(CborError::UnexpectedEof);
+                }
                 let mut items = Vec::with_capacity(len as usize);
                 for _ in 0..len {
-                    items.push(self.value()?);
+                    items.push(self.value_inner(depth + 1)?);
                 }
                 Ok(Value::Array(items))
             }
             5 => {
                 let len = self.argument(additional)?;
+                // As above: each entry needs at least a key byte
+                // and a value byte, so at most one entry per two
+                // remaining bytes — bound the preallocation by that.
+                if len > ((self.bytes.len() - self.pos) / 2) as u64 {
+                    return Err(CborError::UnexpectedEof);
+                }
                 let mut entries: Vec<(Value, Value)> = Vec::with_capacity(len as usize);
                 let mut previous_key_bytes: Option<Vec<u8>> = None;
                 for _ in 0..len {
                     let key_start = self.pos;
-                    let key = self.value()?;
+                    let key = self.value_inner(depth + 1)?;
                     if !matches!(key, Value::Text(_) | Value::UInt(_) | Value::Int(_)) {
                         return Err(CborError::InvalidMapKey);
                     }
@@ -304,7 +336,7 @@ impl<'a> Reader<'a> {
                         }
                     }
                     previous_key_bytes = Some(key_bytes);
-                    let val = self.value()?;
+                    let val = self.value_inner(depth + 1)?;
                     entries.push((key, val));
                 }
                 Ok(Value::Map(entries))
