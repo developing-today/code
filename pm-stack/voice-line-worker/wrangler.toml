@@ -18,4 +18,4 @@ new_sqlite_classes = ["VoiceSession"]
 # Turso session ledger (#9800). TURSO_TOKEN and STATUS_INGEST_TOKEN are
 # secrets (wrangler secret put), never vars in this file.
 [vars]
-TURSO_URL = "REPLACE_WITH_TURSO_DATABASE_URL"
+TURSO_URL = "https://voice-line-ledger-dezren39.aws-us-east-1.turso.io"

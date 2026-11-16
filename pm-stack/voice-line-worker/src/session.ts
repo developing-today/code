@@ -45,6 +45,33 @@ function base64ToBytes(b64: string): Uint8Array {
   return out;
 }
 
+export function wavEncodePcm16(pcm: Uint8Array, sampleRate: number): Uint8Array {
+  // Wrap raw PCM16LE mono in a 44-byte RIFF/WAVE header. Whisper
+  // rejects headerless PCM with AiError "Invalid input" (code 8001) —
+  // found live during the task 16482 deploy proof, 2026-11-16: the
+  // binding call threw, the utterance died silently, no ledger row.
+  const out = new Uint8Array(44 + pcm.byteLength);
+  const view = new DataView(out.buffer);
+  const writeAscii = (off: number, text: string) => {
+    for (let i = 0; i < text.length; i++) view.setUint8(off + i, text.charCodeAt(i));
+  };
+  writeAscii(0, "RIFF");
+  view.setUint32(4, 36 + pcm.byteLength, true);
+  writeAscii(8, "WAVE");
+  writeAscii(12, "fmt ");
+  view.setUint32(16, 16, true);
+  view.setUint16(20, 1, true);
+  view.setUint16(22, 1, true);
+  view.setUint32(24, sampleRate, true);
+  view.setUint32(28, sampleRate * 2, true);
+  view.setUint16(32, 2, true);
+  view.setUint16(34, 16, true);
+  writeAscii(36, "data");
+  view.setUint32(40, pcm.byteLength, true);
+  out.set(pcm, 44);
+  return out;
+}
+
 export class VoiceSession {
   private chunks: Uint8Array[] = [];
   private startedAt = new Date().toISOString();
@@ -86,7 +113,14 @@ export class VoiceSession {
       this.startedAt = new Date().toISOString();
       this.send(ws, { type: "ready" });
     } else if (control.type === "stop") {
-      await this.processUtterance(ws);
+      try {
+        await this.processUtterance(ws);
+      } catch (err) {
+        this.send(ws, {
+          type: "error",
+          error: `processing failed: ${err instanceof Error ? err.message : String(err)}`,
+        });
+      }
     } else {
       this.send(ws, { type: "error", error: `unknown control type: ${control.type ?? "(none)"}` });
     }
@@ -113,7 +147,7 @@ export class VoiceSession {
     // Speech-to-text: ONLY the trimmed audio is submitted (never billed
     // for silence — #9800).
     const stt = (await this.env.AI.run(STT_MODEL, {
-      audio: bytesToBase64(trimmed.audio),
+      audio: bytesToBase64(wavEncodePcm16(trimmed.audio, SAMPLE_RATE)),
     })) as { text?: string };
     const transcript = (stt.text ?? "").trim();
     this.send(ws, {
