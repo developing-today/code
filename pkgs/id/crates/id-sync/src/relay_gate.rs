@@ -201,7 +201,11 @@ impl<F: MembershipFrontier> RelayGate<F> {
 
     /// This relay's account ID: the hex of its public key.
     pub fn relay_id(&self) -> String {
-        hex_encode(&SigningKey::from_bytes(&self.relay_secret).verifying_key().to_bytes())
+        hex_encode(
+            &SigningKey::from_bytes(&self.relay_secret)
+                .verifying_key()
+                .to_bytes(),
+        )
     }
 
     /// How many distinct message IDs this gate has forwarded.
@@ -329,7 +333,10 @@ mod tests {
         };
         let decision = gate.decide(&RelayedMessage::new(forged), 2_000);
         assert!(
-            matches!(decision, GateDecision::Refuse(GateRefusal::InvalidEnvelope(_))),
+            matches!(
+                decision,
+                GateDecision::Refuse(GateRefusal::InvalidEnvelope(_))
+            ),
             "forged envelope must be refused, got {decision:?}"
         );
         assert_eq!(gate.forwarded(), 0);
@@ -365,7 +372,10 @@ mod tests {
         assert_eq!(again, GateDecision::Refuse(GateRefusal::Duplicate));
         let fork = RelayedMessage::new(envelope(1, 1));
         assert_ne!(first.message_id().unwrap(), fork.message_id().unwrap());
-        assert!(matches!(gate.decide(&fork, 2_002), GateDecision::Forward(_)));
+        assert!(matches!(
+            gate.decide(&fork, 2_002),
+            GateDecision::Forward(_)
+        ));
         assert_eq!(gate.forwarded(), 2);
     }
 
@@ -373,17 +383,20 @@ mod tests {
     fn loop_and_cap_refuse_without_forwarding() {
         // Acceptance: loop/cap rules hold — the relay never signs a hop
         // it should not forward.
-        let mut gate = RelayGate::with_max_hops(&key(7), {
-            let mut frontier = AllowlistFrontier::new();
-            frontier.allow("group-1", &key_id(1));
-            frontier
-        }, 2);
+        let mut gate = RelayGate::with_max_hops(
+            &key(7),
+            {
+                let mut frontier = AllowlistFrontier::new();
+                frontier.allow("group-1", &key_id(1));
+                frontier
+            },
+            2,
+        );
         // Build a 2-hop chain through other relays ending at us-adjacent.
         let cap_env = envelope(1, 0);
         let cap_id = RelayedMessage::new(cap_env.clone()).message_id().unwrap();
         let first = HopRecord::signed(&key(2), &cap_id, None, 2_000).unwrap();
-        let second =
-            HopRecord::signed(&key(3), &cap_id, Some(&key_id(2)), 2_001).unwrap();
+        let second = HopRecord::signed(&key(3), &cap_id, Some(&key_id(2)), 2_001).unwrap();
         let at_cap = RelayedMessage {
             envelope: cap_env,
             hops: vec![first, second],
@@ -413,7 +426,9 @@ mod tests {
         // the chain check, never the envelope — and is not forwarded.
         let mut gate = member_gate(7, 1);
         let mut relayed = RelayedMessage::new(envelope(1, 0));
-        relayed.hops.push(HopRecord::signed(&key(2), &relayed.message_id().unwrap(), None, 2_000).unwrap());
+        relayed
+            .hops
+            .push(HopRecord::signed(&key(2), &relayed.message_id().unwrap(), None, 2_000).unwrap());
         relayed.hops[0].signature = "00".repeat(64);
         relayed.verify_envelope().unwrap();
         let decision = gate.decide(&relayed, 2_001);
@@ -452,7 +467,10 @@ mod tests {
         assert_eq!(after_b.hops.len(), 2);
         assert_eq!(after_b.hops[0].relay, key_id(2));
         assert_eq!(after_b.hops[1].relay, key_id(3));
-        assert_eq!(after_b.hops[1].previous_hop.as_deref(), Some(key_id(2).as_str()));
+        assert_eq!(
+            after_b.hops[1].previous_hop.as_deref(),
+            Some(key_id(2).as_str())
+        );
         assert_eq!(gate_a.forwarded(), 1);
         assert_eq!(gate_b.forwarded(), 1);
     }
