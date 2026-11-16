@@ -1326,6 +1326,34 @@ impl WorldHandle {
             .context("world actor dropped entity import response")?
     }
 
+    /// Hand the write lease to `to` at `epoch` (design #2819, #3805).
+    /// The actor journals `LeaseHandedOff` before changing its live lease;
+    /// from that boundary this actor refuses world mutations unless it is the
+    /// holder. Commands queued behind the handoff are refused with a
+    /// retryable `not_holder` error and are never executed. The host adapter
+    /// must authenticate the caller and have drained/replayed the
+    /// destination before calling this.
+    pub async fn handoff_write_lease(
+        &self,
+        to: impl Into<String>,
+        epoch: u64,
+        expires_at_ms: Option<u64>,
+    ) -> Result<u64> {
+        let (reply, response) = oneshot::channel();
+        self.commands
+            .send(WorldCommand::HandoffWriteLease {
+                to: to.into(),
+                epoch,
+                expires_at_ms,
+                reply,
+            })
+            .await
+            .map_err(|_| anyhow::anyhow!("world actor is closed"))?;
+        response
+            .await
+            .context("world actor dropped lease handoff response")?
+    }
+
     /// Read a world snapshot.
     pub async fn snapshot(&self, token: JoinCapability) -> Result<WorldSnapshot> {
         let (reply, response) = oneshot::channel();

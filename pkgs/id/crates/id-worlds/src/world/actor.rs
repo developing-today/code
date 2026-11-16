@@ -56,6 +56,7 @@ impl WorldCommand {
             Self::EntityInput { .. } => "EntityInput",
             Self::ExportEntity { .. } => "ExportEntity",
             Self::ImportEntity { .. } => "ImportEntity",
+            Self::HandoffWriteLease { .. } => "HandoffWriteLease",
             Self::Snapshot { .. } => "Snapshot",
             Self::HostView { .. } => "HostView",
             Self::EventsAfter { .. } => "EventsAfter",
@@ -205,6 +206,15 @@ pub(crate) enum WorldCommand {
         payload: Vec<u8>,
         payload_digest: String,
         reply: oneshot::Sender<Result<HandoffTransferState>>,
+    },
+    /// DO-authority control request. The actor derives the source holder
+    /// from its journaled state and serializes the durable boundary with all
+    /// world commands.
+    HandoffWriteLease {
+        to: String,
+        epoch: u64,
+        expires_at_ms: Option<u64>,
+        reply: oneshot::Sender<Result<u64>>,
     },
     Snapshot {
         token: JoinCapability,
@@ -670,7 +680,7 @@ impl WorldActor {
     /// A read-only replica never wakes for ticks or schedules: it serves
     /// spectators from its verified journal and fires nothing locally.
     pub(crate) fn next_deadline(&self) -> Option<std::time::Instant> {
-        if self.read_only {
+        if self.read_only || !self.holds_live_do_lease() {
             return None;
         }
         let deliverable = self.program_healthy && !self.storage_failed;
@@ -711,7 +721,82 @@ impl WorldActor {
 
     fn check_writable(&self) -> Result<()> {
         self.check_not_replica()?;
-        self.check_storage()
+        self.check_storage()?;
+        self.check_do_lease()
+    }
+
+    fn check_do_lease(&self) -> Result<()> {
+        let lease = self.core.write_lease();
+        lease
+            .check_writer(
+                DO_WRITE_LEASE_HOLDER,
+                lease.epoch,
+                self.core.clock().now_ms(),
+            )
+            .map_err(anyhow::Error::new)
+    }
+
+    fn holds_live_do_lease(&self) -> bool {
+        self.check_do_lease().is_ok()
+    }
+
+    /// Persist a DO-mediated ownership boundary before changing the live
+    /// lease. The host adapter is responsible for authenticating this control
+    /// request and meeting the drain/replay barrier before invoking it.
+    fn handoff_write_lease(
+        &mut self,
+        to: String,
+        epoch: u64,
+        expires_at_ms: Option<u64>,
+    ) -> Result<u64> {
+        self.check_not_replica()?;
+        self.check_storage()?;
+        ensure!(
+            self.journal.is_some(),
+            "write lease handoff requires a durable journal"
+        );
+        let from = self
+            .core
+            .write_lease()
+            .holder
+            .clone()
+            .context("write lease has no current holder")?;
+        ensure!(from != to, "write lease handoff must change holders");
+        ensure!(
+            from == DO_WRITE_LEASE_HOLDER || to == DO_WRITE_LEASE_HOLDER,
+            "write lease handoff must include the DO authority"
+        );
+        // Expiry already fenced a native holder at the append gate, but
+        // recovery must use revoke/grant, not handoff. Refuse here so an
+        // expired term cannot be renewed by changing the holder.
+        let now_ms = self.core.clock().now_ms();
+        self.core
+            .write_lease()
+            .check_writer(&from, self.core.write_lease().epoch, now_ms)
+            .map_err(anyhow::Error::new)?;
+        if to == DO_WRITE_LEASE_HOLDER {
+            ensure!(
+                expires_at_ms.is_none(),
+                "the DO write lease must not have a term expiry"
+            );
+        } else {
+            ensure!(
+                expires_at_ms.is_some_and(|expiry| expiry > now_ms),
+                "a native write lease requires a future expiry"
+            );
+        }
+
+        let mut next_lease = self.core.write_lease().clone();
+        next_lease.apply_handoff(&from, &to, epoch, expires_at_ms)?;
+        self.persist(JournalEntry::LeaseHandedOff {
+            from,
+            to,
+            epoch,
+            expires_at_ms,
+        })?;
+        self.core.write_lease = next_lease;
+        self.core.since_checkpoint = self.core.since_checkpoint.saturating_add(1);
+        Ok(epoch)
     }
 
     /// Policy-B admission, checked at every token-admission entry
@@ -1290,7 +1375,7 @@ impl WorldActor {
     /// at a restored open are refused, not executed (see
     /// [`stale_wants_at_open`](Self::stale_wants_at_open)).
     pub(crate) async fn after_change(&mut self) {
-        if self.read_only {
+        if self.read_only || !self.holds_live_do_lease() {
             return;
         }
         for _ in 0..64 {
@@ -1468,7 +1553,7 @@ impl WorldActor {
 
     /// Deliver one tick event per due interval and re-arm.
     pub(crate) async fn fire_ticks(&mut self) {
-        if self.read_only {
+        if self.read_only || !self.holds_live_do_lease() {
             return;
         }
         let now = self.core.clock().now_instant();
@@ -1499,7 +1584,7 @@ impl WorldActor {
     /// active subscriptions. With consent standing but no host fix,
     /// nothing is delivered — a reading is never fabricated.
     pub(crate) async fn fire_loc_watches(&mut self) {
-        if self.read_only {
+        if self.read_only || !self.holds_live_do_lease() {
             return;
         }
         let now = self.core.clock().now_instant();
@@ -1543,7 +1628,7 @@ impl WorldActor {
     /// journaled, leaves its schedule pending, so the next run delivers it.
     /// A read-only replica never fires: schedules are writer authority.
     pub(crate) async fn fire_schedules(&mut self) {
-        if self.read_only {
+        if self.read_only || !self.holds_live_do_lease() {
             return;
         }
         let now = self.core.clock().now_ms();
@@ -2971,6 +3056,15 @@ impl WorldActor {
                     target_region,
                     prior_owner_epoch,
                 );
+                let _ = reply.send(result);
+            }
+            WorldCommand::HandoffWriteLease {
+                to,
+                epoch,
+                expires_at_ms,
+                reply,
+            } => {
+                let result = self.handoff_write_lease(to, epoch, expires_at_ms);
                 let _ = reply.send(result);
             }
             WorldCommand::ImportEntity {
