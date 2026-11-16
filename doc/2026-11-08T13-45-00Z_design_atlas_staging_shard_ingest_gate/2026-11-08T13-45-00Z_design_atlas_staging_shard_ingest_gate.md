@@ -237,11 +237,17 @@ remain invisible while reconciliation runs (§6.4).
 | classify | every row has one of three levels at acceptable confidence | never | `classify_unresolved` |
 | dedup | every row has a disposition; no deletion required | never | `dedup_undispositioned` |
 | provenance-check | every mark parses, content resolves, attestation present, occurrences spanned | never | `provenance_unresolvable` |
-| publish | count + hash identity, bounded candidate writes, hidden prepare, atomic catalog commit, committed snapshot id, tier split | tier unit had zero survivors after dedup suppression | `publish_partial` |
+| publish | count + hash identity, bounded candidate writes, hidden prepare, atomic catalog commit, committed snapshot id, tier split | tier unit had zero survivors after dedup suppression **and no occurrence additions pending** | `publish_partial` |
 
 `skip` is never a pass and never advances a snapshot id. Only the write
-stage (empty batch) and publish (zero survivors) can be skipped, and each
-requires a recorded reason.
+stage (empty batch) and publish (zero survivors **and** no occurrence
+additions pending) can be skipped, and each requires a recorded reason.
+A tier unit whose every chunk was suppressed into occurrences is *not*
+skippable: publish is the only stage that writes the visible occurrence
+set (§3.5), so skipping it would drop exactly the occurrence records
+§3.3 requires suppressed near-duplicates to leave behind. Occurrence-only
+units publish like any other unit; their catalog commit advances the
+snapshot id even though no chunk survives.
 
 ## 5. Failure and quarantine handling
 
@@ -277,7 +283,16 @@ write, unless the failure was `write_invalid` or `write_bypass` (in which
 case the producer must fix and re-write). Because content is
 content-addressed (#3125), a retry that re-lands identical bytes is a no-op
 for those bytes; a retry that lands changed bytes is a new version under
-#6026's versioning model, not an overwrite. A retry never duplicates an
+#6026's versioning model, not an overwrite. Content addressing prevents
+overwrites; it does not make earlier verdicts valid for new inputs. Every
+stage verdict is therefore bound to its stage-input identity — the batch
+id plus the content hashes of that stage's inputs, recorded in the gate
+record. A retry re-enters at the failing stage only when the input
+identity of every upstream stage is unchanged. If any input bytes changed,
+the retry re-enters at the earliest stage whose input identity changed,
+and every verdict downstream of that stage is invalidated and recomputed:
+changed bytes never inherit a classification or a dedup verdict obtained
+for different content. A retry never duplicates an
 occurrence: occurrences are keyed by (chunk, source locator, span,
 observed_at).
 
