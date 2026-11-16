@@ -13,6 +13,9 @@ pub struct WorldHandle {
     /// The world's retained audit log (F12.6), shared with the actor
     /// and the session layer.
     audit: WorldAuditLog,
+    /// The world's client-provider broker (F13.7 step 3), shared with
+    /// the actor and the session layer.
+    provider_broker: ProviderBroker,
     /// Whether the actor runs in F12.13 read-only replica mode.
     read_only: bool,
     /// The F12.14 portal transport sink (code#1068), shared by all
@@ -280,6 +283,7 @@ impl WorldHandle {
             .collect();
         let metrics = WorldMetrics::default();
         let audit = WorldAuditLog::new();
+        let provider_broker = ProviderBroker::new(core.world_id.clone(), audit.clone());
         // A restored program's current `wants` predates the restart: its
         // request ids are captured now so the first `after_change` passes
         // refuse rather than re-execute them (see
@@ -295,6 +299,7 @@ impl WorldHandle {
             journal,
             metrics: metrics.clone(),
             audit: audit.clone(),
+            provider_broker: provider_broker.clone(),
             storage_failed: false,
             read_only,
             program_healthy,
@@ -335,6 +340,7 @@ impl WorldHandle {
             view_changed,
             metrics,
             audit,
+            provider_broker,
             read_only,
             portal_delivery: PortalDeliverySlot::default(),
         }
@@ -352,6 +358,14 @@ impl WorldHandle {
     #[must_use]
     pub fn shared_audit_log(&self) -> WorldAuditLog {
         self.audit.clone()
+    }
+
+    /// The world's shared client-provider broker (F13.7 step 3): the
+    /// actor begins requests through it, the session layer registers
+    /// offers and replies and receives routed request frames.
+    #[must_use]
+    pub fn shared_provider_broker(&self) -> ProviderBroker {
+        self.provider_broker.clone()
     }
 
     /// A snapshot of the world's retained audit records (F12.6),
