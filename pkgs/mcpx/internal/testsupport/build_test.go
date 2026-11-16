@@ -2,6 +2,7 @@ package testsupport
 
 import (
 	"os"
+	"os/exec"
 	"os/user"
 	"path/filepath"
 	"strings"
@@ -99,6 +100,7 @@ func homeDirForTest(t *testing.T) string {
 	}
 	return home
 }
+
 // The override resolver is the whole contract of MCPX_TEST_BINARY
 // (#1980): unset builds as before; set must yield the named executable
 // or a loud error. Oracle: the filesystem state each case plants.
@@ -159,4 +161,58 @@ func TestResolveMCPXOverrideNotExecutable(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "not executable") {
 		t.Fatalf("non-executable override err = %v, want a not-executable error", err)
 	}
+}
+
+func TestChildEnvCarriesCoverDirOnceEstablished(t *testing.T) {
+	prev := mcpxCoverDir
+	t.Cleanup(func() { mcpxCoverDir = prev })
+
+	mcpxCoverDir = ""
+	if _, ok := envValue(ChildEnv(nil, t.TempDir()), "GOCOVERDIR"); ok {
+		t.Fatal("GOCOVERDIR present before the cover dir is established")
+	}
+
+	mcpxCoverDir = filepath.Join(t.TempDir(), "cover")
+	got, ok := envValue(ChildEnv(nil, t.TempDir()), "GOCOVERDIR")
+	if !ok || got != mcpxCoverDir {
+		t.Fatalf("GOCOVERDIR = %q, %v; want %q", got, ok, mcpxCoverDir)
+	}
+
+	// A test's own GOCOVERDIR in extra still wins: os/exec keeps the
+	// last value for a duplicated key, and extra is appended last.
+	last := ""
+	for _, kv := range ChildEnv(nil, t.TempDir(), "GOCOVERDIR=/elsewhere") {
+		if k, v, ok := strings.Cut(kv, "="); ok && k == "GOCOVERDIR" {
+			last = v
+		}
+	}
+	if last != "/elsewhere" {
+		t.Fatalf("extra GOCOVERDIR did not win: last = %q", last)
+	}
+}
+
+func TestMCPXBinaryEmitsCoverage(t *testing.T) {
+	if os.Getenv(mcpxBinaryOverrideEnv) != "" {
+		t.Skip("override binary in use; whether it is a cover build is the packager's choice")
+	}
+	bin := MCPXBinary(t)
+	if MCPXCoverDir() == "" {
+		t.Fatal("MCPXBinary did not establish a cover dir")
+	}
+	dir := t.TempDir()
+	cmd := exec.Command(bin, "--help")
+	cmd.Env = append(os.Environ(), "GOCOVERDIR="+dir)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("run mcpx --help: %v\n%s", err, out)
+	}
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, e := range entries {
+		if strings.HasPrefix(e.Name(), "covmeta.") || strings.HasPrefix(e.Name(), "covcounters.") {
+			return
+		}
+	}
+	t.Fatalf("no coverage files written to GOCOVERDIR by the suite binary; dir holds %v", entries)
 }
