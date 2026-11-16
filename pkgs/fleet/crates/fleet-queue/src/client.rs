@@ -1519,6 +1519,19 @@ fn resolve_opencode_auth_file(env_file: Option<&str>, home: &str) -> String {
 /// has; a claim must never fail because its stamp could not be
 /// derived.
 fn derive_claim_model_stamp(session_id: &str) -> Option<(String, String, Option<String>)> {
+    let session = fetch_session_record(session_id)?;
+    session_model_stamp(&session)
+}
+
+/// Read one session record from the OpenCode server (its GET
+/// /api/session/<id> shape, enveloped in `data` or bare). The
+/// credential is the server's state file password, Basic auth with
+/// the `opencode` user — the same route claimant.py takes; the
+/// value is used for the header only, never logged. FAIL-SOFT: any
+/// miss returns None so callers that derive from the record (the
+/// claim stamp above, the completion telemetry below) degrade to
+/// their other sources instead of failing the verb.
+fn fetch_session_record(session_id: &str) -> Option<Value> {
     let session_id = session_id.trim();
     if session_id.is_empty() {
         return None;
@@ -1548,8 +1561,136 @@ fn derive_claim_model_stamp(session_id: &str) -> Option<(String, String, Option<
         .call()
         .ok()?;
     let text = resp.body_mut().read_to_string().ok()?;
-    let session: Value = serde_json::from_str(&text).ok()?;
-    session_model_stamp(&session)
+    serde_json::from_str(&text).ok()
+}
+
+/// A trimmed, non-empty string field of a JSON object, or None.
+/// Used by the completion-telemetry derivation for both the claim
+/// row and the session record.
+fn nonempty_str<'a>(obj: &'a Value, key: &str) -> Option<&'a str> {
+    obj.get(key)
+        .and_then(|v| v.as_str())
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+}
+
+/// The configured route (pool) a session was dispatched through:
+/// its DECLARED model, and only when it is addressed under the
+/// route provider (`opencode-route/<route-id>`). A session whose
+/// declared model is a concrete provider/model was not dispatched
+/// through a route, so it names no pool. This is the route the
+/// session was configured with, never an effort inference from the
+/// route name (meta-reviewer guideline 2026-10-27).
+fn session_declared_pool(session: &Value) -> Option<String> {
+    let inner = if session.get("model").is_some() {
+        session
+    } else {
+        session.get("data")?
+    };
+    let model = inner.get("model")?;
+    if nonempty_str(model, "providerID")? != ROUTE_PROVIDER {
+        return None;
+    }
+    nonempty_str(model, "id").map(str::to_string)
+}
+
+/// #4919: the completion telemetry a task's own record supports,
+/// filled in by `complete` when the caller left a field out. Every
+/// source is a record the queue already holds — nothing is
+/// inferred from a route name and `cost_usd` is never invented
+/// (there is no cost readout to source it from, so it stays null).
+///
+/// - `model`: the claim stamp's serving leaf, else the session
+///   record's serving leaf.
+/// - `effort`: the claim stamp's variant (a real one — the server
+///   writes "default" when none was chosen), else the session
+///   record's variant.
+/// - `pool`: the session's declared route, per
+///   `session_declared_pool`.
+/// - `cost_usd`: always null.
+///
+/// The map ALWAYS carries all four keys, each null when no source
+/// could supply it: a present null says "this run had no source",
+/// which reports can distinguish from a field nobody filled in.
+fn derive_completion_telemetry(claim: &Value, session: Option<&Value>) -> Map<String, Value> {
+    let leaf: Option<(String, String, Option<String>)> = session.and_then(session_model_stamp);
+    let model = nonempty_str(claim, "claim_model")
+        .map(str::to_string)
+        .or_else(|| leaf.as_ref().map(|s| s.1.clone()));
+    let effort = nonempty_str(claim, "claim_variant")
+        .filter(|v| *v != "default")
+        .map(str::to_string)
+        .or_else(|| leaf.as_ref().and_then(|s| s.2.clone()));
+    let pool = session.and_then(session_declared_pool);
+    let mut out = Map::new();
+    out.insert("pool".to_string(), json!(pool));
+    out.insert("model".to_string(), json!(model));
+    out.insert("effort".to_string(), json!(effort));
+    out.insert("cost_usd".to_string(), Value::Null);
+    out
+}
+
+/// Merge derived telemetry into a completion result: a caller
+/// supplied value always wins, a missing one is filled.
+fn merge_completion_telemetry(result_obj: &mut Value, derived: Map<String, Value>) {
+    let Some(obj) = result_obj.as_object_mut() else {
+        return;
+    };
+    for (field, value) in derived {
+        obj.entry(field).or_insert(value);
+    }
+}
+
+/// The session a completion's telemetry is derived from: the
+/// completing session's id from the environment (set in the
+/// worker's own session), else the claim row's bound session
+/// (`progress.session_id`).
+fn completion_session_id(env_value: Option<&str>, claim: &Value) -> Option<String> {
+    env_value
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_string)
+        .or_else(|| {
+            claim
+                .get("progress")
+                .and_then(|p| p.get("session_id"))
+                .and_then(|v| v.as_str())
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .map(str::to_string)
+        })
+}
+
+/// The claim row a completion reads its telemetry sources from.
+/// `/list` with no queue name (the broker omits the predicate when
+/// unnamed — #9420) so a task id resolves regardless of queue, and
+/// fail-soft: an unreachable or unreadable broker leaves the
+/// caller with the environment-derived sources only.
+fn completion_claim_row(task_id: i64) -> Option<Value> {
+    if task_id <= 0 {
+        return None;
+    }
+    let resp = call_result("/list", &json!({"rich": true, "task": task_id, "limit": 1})).ok()?;
+    if resp.get("ok").and_then(|v| v.as_bool()) == Some(false) {
+        return None;
+    }
+    let row = list_rows(&resp).ok()?.into_iter().next()?;
+    (row.get("id").and_then(|v| v.as_i64()) == Some(task_id)).then_some(row)
+}
+
+/// #4919: fill absent completion telemetry at `complete` time. The
+/// helper is the queue's single writer, so defaulting the fields
+/// here is what makes them present regardless of whether a worker
+/// remembered `--telemetry`. Explicit caller values (top-level
+/// `--result` keys or `--telemetry`) always win; every field is
+/// inserted, null when unsourceable.
+fn fill_completion_telemetry(task_id: i64, result_obj: &mut Value) {
+    let claim = completion_claim_row(task_id).unwrap_or(Value::Null);
+    let session_id =
+        completion_session_id(std::env::var("OPENCODE_SESSION_ID").ok().as_deref(), &claim);
+    let session = session_id.as_deref().and_then(fetch_session_record);
+    let derived = derive_completion_telemetry(&claim, session.as_ref());
+    merge_completion_telemetry(result_obj, derived);
 }
 
 fn cmd_validate(rest: &[String]) -> i32 {
@@ -3919,6 +4060,11 @@ fn cmd_complete(rest: &[String]) -> i32 {
             result_obj["dominant_model"] = dom;
         }
     }
+    // #4919: completion telemetry (pool/model/effort/cost_usd) is
+    // defaulted here, from the claim record and the completing
+    // session, so it no longer depends on a worker remembering
+    // --telemetry. Explicit caller values always win.
+    fill_completion_telemetry(args.pos_i64(0, "task_id"), &mut result_obj);
     let mut body = json!({
         "task_id": args.pos_i64(0, "task_id"),
         "worker": opt_worker(&args),
@@ -7416,5 +7562,82 @@ esac
             MarkerLookup::CouldNotCheck("http_404".to_string())
         );
         let _ = std::fs::remove_dir_all(bin.parent().unwrap());
+    }
+
+    // --- #4919 completion telemetry defaults -------------------------
+
+    #[test]
+    fn completion_telemetry_reads_model_and_effort_from_the_claim_stamp() {
+        let claim = json!({"claim_model": "claude-sonnet-4-5", "claim_variant": "high"});
+        let derived = derive_completion_telemetry(&claim, None);
+        assert_eq!(derived["model"], json!("claude-sonnet-4-5"));
+        assert_eq!(derived["effort"], json!("high"));
+        assert_eq!(derived["pool"], Value::Null);
+        assert_eq!(derived["cost_usd"], Value::Null);
+        assert_eq!(derived.len(), TELEMETRY_FIELDS.len());
+    }
+
+    #[test]
+    fn completion_telemetry_falls_back_to_the_session_serving_leaf_and_route() {
+        // A routed session: the declared model names the POOL; the
+        // serving-leaf readout names the model and effort.
+        let session = json!({"data": {
+            "model": {"providerID": "opencode-route", "id": "workhorse"},
+            "route_usage": {"lastServing": {
+                "providerID": "anthropic", "modelID": "claude-opus-4-1", "variant": "medium"
+            }},
+        }});
+        let derived = derive_completion_telemetry(&json!({}), Some(&session));
+        assert_eq!(derived["model"], json!("claude-opus-4-1"));
+        assert_eq!(derived["effort"], json!("medium"));
+        assert_eq!(derived["pool"], json!("workhorse"));
+        // A concrete declared model names no pool.
+        let concrete = json!({"model": {"providerID": "anthropic", "id": "claude-haiku-4-5"}});
+        assert_eq!(session_declared_pool(&concrete), None);
+    }
+
+    #[test]
+    fn completion_telemetry_claim_wins_and_default_variant_is_absence() {
+        let claim = json!({"claim_model": "claim-model", "claim_variant": "default"});
+        let session =
+            json!({"model": {"providerID": "anthropic", "id": "leaf-model", "variant": "low"}});
+        let derived = derive_completion_telemetry(&claim, Some(&session));
+        assert_eq!(derived["model"], json!("claim-model"));
+        // "default" is the server saying no variant was chosen, so
+        // the session's real variant supplies effort.
+        assert_eq!(derived["effort"], json!("low"));
+    }
+
+    #[test]
+    fn completion_telemetry_always_carries_all_four_keys() {
+        let derived = derive_completion_telemetry(&json!({}), None);
+        for field in TELEMETRY_FIELDS {
+            assert!(derived.contains_key(field), "{field} must be present");
+            assert_eq!(derived[field], Value::Null, "{field} has no source here");
+        }
+    }
+
+    #[test]
+    fn completion_telemetry_merge_never_overwrites_the_caller() {
+        let mut result = json!({"model": "caller-model", "outcome": "pr_opened"});
+        let derived = derive_completion_telemetry(&json!({"claim_model": "claim-model"}), None);
+        merge_completion_telemetry(&mut result, derived);
+        assert_eq!(result["model"], json!("caller-model"));
+        assert_eq!(result["effort"], Value::Null);
+        assert_eq!(result["outcome"], json!("pr_opened"));
+    }
+
+    #[test]
+    fn completion_session_id_prefers_env_then_the_claim_row() {
+        let claim = json!({"progress": {"session_id": "ses_row"}});
+        assert_eq!(
+            completion_session_id(Some("ses_env"), &claim).as_deref(),
+            Some("ses_env")
+        );
+        assert_eq!(
+            completion_session_id(Some("   "), &claim).as_deref(),
+            Some("ses_row")
+        );
+        assert_eq!(completion_session_id(None, &json!({})), None);
     }
 }
