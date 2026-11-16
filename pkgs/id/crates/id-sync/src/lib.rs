@@ -22,6 +22,7 @@
 //! there, over this crate's [`meta_client`] plumbing.
 
 pub mod artifact;
+pub mod chained_message;
 pub mod dht;
 pub mod envelope;
 pub mod envelope_net;
