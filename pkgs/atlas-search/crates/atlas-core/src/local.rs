@@ -100,6 +100,11 @@ pub struct LocalBackend {
     /// Diagnostics the Python keeps; not part of the envelope.
     pub sens_source: String,
     pub chunk_sens_source: String,
+    /// The effective classification-manifest surface (design §7):
+    /// the loaded manifest (or the built-in fallback) and its
+    /// provenance, in the same pattern as `sens_source`.
+    pub manifest: crate::manifest::Manifest,
+    pub manifest_source: String,
     vec_sources: Vec<VecSource>,
     matrix: Mutex<Option<Option<Matrix>>>,
 }
@@ -132,12 +137,34 @@ impl LocalBackend {
             notes: Mutex::new(Vec::new()),
             sens_source: String::new(),
             chunk_sens_source: String::new(),
+            manifest: crate::manifest::builtin_manifest(),
+            manifest_source: String::new(),
             vec_sources: Vec::new(),
             matrix: Mutex::new(None),
         };
         be.setup_views()?;
+        be.load_manifest_surface();
         be.vec_sources = be.find_vec_sources(vecdb_arg)?;
         Ok(be)
+    }
+
+    /// Load the classification manifest (design §§3/7): from the
+    /// corpus DB itself, or the attached publish copy — the same
+    /// places `session_labels` comes from. A rejected manifest falls
+    /// back to the built-in surface with a warning note, never an
+    /// error (§7: fall back, loudly, never widen).
+    fn load_manifest_surface(&mut self) {
+        let loaded = {
+            let con = self.con.lock().expect("connection mutex");
+            crate::manifest::load_manifest(&con, &["main", "aux"])
+        };
+        if let Some(w) = &loaded.warning {
+            self.push_note(format!(
+                "WARNING: classification manifest rejected ({w}) — built-in filter surface applies"
+            ));
+        }
+        self.manifest_source = loaded.describe();
+        self.manifest = loaded.manifest;
     }
 
     fn push_note(&self, note: String) {
