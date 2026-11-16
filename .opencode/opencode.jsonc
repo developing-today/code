@@ -3321,6 +3321,35 @@
           "zen-plans/iceman-free": 3
         }
       },
+      "hy4-flash-plan": {
+        "name": "Hy4 Flash Free - plan providers",
+        // NEW 2026-11-16 (provider/model watch): Tencent's Hy4 Flash,
+        // served FREE on both OpenCode Go and OpenCode Zen (the
+        // providers' own /models endpoints, verified 2026-11-16:
+        // release-dated 2026-11-16, 1,048,576 context, $0/$0, image
+        // input, reasoning efforts none/high). No Artificial
+        // Analysis benchmark exists yet; the only capability
+        // evidence is Tencent's own blind test claiming
+        // Haiku 5.5-class everyday work -- a vendor claim,
+        // unverified. The free listing may also be a launch
+        // promotion (Tencent's own page still said "scheduled for
+        // release soon" on launch morning), so its durability is
+        // unverified too. Placement per the watch's toss-up rule:
+        // background free cluster only, until route_attempt history
+        // or an AA score establishes equivalence; if the model
+        // vanishes from either roster, the watch removes its seats
+        // in the run that notices.
+        "targets": [
+          "opencode-go-plans/hy4-flash-free",
+          "zen-plans/hy4-flash-free"
+        ],
+        "selection": "round-robin",
+        "autonomy": "rules",
+        "weights": {
+          "opencode-go-plans/hy4-flash-free": 3,
+          "zen-plans/hy4-flash-free": 3
+        }
+      },
       "flash-free-plan": {
         "name": "DeepSeek V4.1 Flash Free (Zen) - plan providers",
         // NEW 2026-11-14 (Drew, Zen pass): Zen's free DeepSeek Flash gets
@@ -3836,6 +3865,12 @@
         // free door (exaone-free-plan: K-EXAONE 2.5, 524k context,
         // $0 on our own key) joins this cluster behind the Gemini
         // legs and ahead of the ~200k legs per the placement law.
+        // 2026-11-16 (provider/model watch): the Hy4 Flash free
+        // door (hy4-flash-plan: Tencent Hy4 Flash, 1M context, $0
+        // on Go + Zen) joins this cluster behind the EXAONE legs --
+        // an unbenchmarked vendor-claim model, so it takes a
+        // toss-up background seat ahead of the ~200k legs, not a
+        // scout front seat, until its history proves equivalence.
         // Drew (2026-11-14, later): the whole Zen shelf sits in this
         // last-resort position deliberately — limited context on the
         // Zen free models means they are never a first-choice leg.
@@ -3860,6 +3895,7 @@
           "opencode-route/flash-free-plan",
           "opencode-route/gemini-free-plan",
           "opencode-route/exaone-free-plan",
+          "opencode-route/hy4-flash-plan",
           "opencode-route/minimax-flash-plan",
           "opencode-route/glm-5-3-flash-zen-plan",
           "opencode-route/glm-flash-free-plan",
