@@ -2992,6 +2992,11 @@
         // serves claude-sonnet-5-5 and bridges tool calls; the pool
         // is single-live-door on the direct door, plus claude-code's
         // return.
+        // 2026-11-16 (Drew, direct order): UNSEATED -- every live seat
+        // that consumed this plan moved to haiku-plan#high (Anthropic-door
+        // Sonnet replaced by Haiku; Fable carries the quality head on
+        // this door). The definition and both members stay, ready to
+        // re-seat.
         "targets": [
           "_claude/claude-sonnet-5-5",
           {
@@ -4406,7 +4411,10 @@
         // tail REMOVED: its <=36 ceiling is below this tier's band.
         "targets": [
           "opencode-route/fable-plan#low",
-          "opencode-route/sonnet-plan#high",
+          // 2026-11-16 (Drew, direct order): Anthropic-door Sonnet seat
+          // replaced by Haiku #high; Fable carries the quality head on
+          // this door.
+          "opencode-route/haiku-plan#high",
           "opencode-route/argon-plan#high",
         // 2026-11-01 (Drew): Spark seat drops max -> xhigh. AA v5: max scores 36 vs xhigh 34 — two points for roughly double the reasoning time (max measured 540s/task). Spark in specialist is the Meta-diversity seat behind Sonnet/Argon; xhigh keeps the failover responsive. This was the last #max target in the tier routes.
           // 2026-11-15: spark at #high — the rung our own history
@@ -4463,7 +4471,10 @@
         // $9.95 and ~30 min: the fast execution seat in the design
         // chain, drawing the Antigravity Gemini pool.
         "targets": [
-          "opencode-route/fable-plan#medium",
+          // 2026-11-16 (Drew, direct order): Fable #medium -> #low --
+          // Fable is low in every seat; this reverses the 2026-11-11
+          // summit raise (also Drew's order).
+          "opencode-route/fable-plan#low",
           "opencode-route/opus-plan#high",
           "opencode-route/argon-plan#high",
           "_antigravity/gemini-4-hydrogen#high",
