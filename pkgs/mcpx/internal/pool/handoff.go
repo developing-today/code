@@ -469,7 +469,7 @@ func (p *Pool) ExecIdentity() string {
 // a pool that already serves the default lane are all quiet no-ops:
 // the ordinary spawn path (attach-or-spawn) covers them on first use.
 func (p *Pool) AdoptRunningSupervised(ctx context.Context) bool {
-	if p.cfg == nil || !p.cfg.Stdio() || p.cfg.Mcpx == nil || !p.cfg.Mcpx.Supervised {
+	if p.cfg == nil || !p.cfg.Stdio() || !p.cfg.Mcpx.SupervisedEnabled() {
 		return false
 	}
 	rs := p.cfg.Scope.Resolve(config.CallContext{})
@@ -481,11 +481,21 @@ func (p *Pool) AdoptRunningSupervised(ctx context.Context) bool {
 	p.starting++
 	p.mu.Unlock()
 
-	in, err := p.startLaneMode(ctx, false, rs, true)
+	in, err := p.startLaneMode(ctx, false, rs, dialAttachOnly)
 
 	p.mu.Lock()
 	p.starting--
 	if err != nil {
+		// A supervisor protocol-version refusal is the one adoption
+		// failure status must name (#9963): record it as the pool's
+		// last error instead of silently working around the
+		// supervisor, so `mcpx status` shows why this server is not
+		// running. Other adoption failures (no supervisor yet,
+		// another daemon attached) stay quiet no-ops: the ordinary
+		// spawn path covers them on first use.
+		if mcpclient.IsProtocolRefusal(err) {
+			p.lastErr = err
+		}
 		p.cond.Broadcast()
 		p.mu.Unlock()
 		return false
