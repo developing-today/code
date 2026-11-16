@@ -1068,6 +1068,16 @@ fn safe_blob_content_type(filename: &str) -> (&'static str, bool) {
     }
 }
 
+/// Reduce a multipart upload filename to a plain file name (#10585).
+///
+/// A client can send a path (`../../x.png`, `C:\fakepath\x.png`) or a
+/// padded name; uploads are stored as plain names, so everything before
+/// the final path separator is dropped and the remainder trimmed. The
+/// result is validated against the canonical-name rule before use.
+fn normalize_upload_filename(name: &str) -> &str {
+    name.rsplit(['/', '\\']).next().unwrap_or(name).trim()
+}
+
 /// Reconcile an uploaded file's name with its validated content type
 /// (#908): a name whose extension disagrees with the type the upload
 /// was validated as gets that extension replaced (or appended when it
@@ -3397,6 +3407,201 @@ mod upload_router_tests {
             }
         }
         assert_eq!((oks, conflicts), (1, 1));
+    }
+
+    /// POST a JSON `{ "name": ... }` body to a file route.
+    async fn post_name(router: Router, uri: &str, name: &str) -> (StatusCode, String) {
+        let response = router
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri(uri)
+                    .header("content-type", "application/json")
+                    .body(Body::from(serde_json::json!({ "name": name }).to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let status = response.status();
+        let bytes = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        (status, String::from_utf8_lossy(&bytes).into_owned())
+    }
+
+    const NON_CANONICAL_NAMES: [&str; 4] = [
+        "a/../b.md",
+        "../escape.md",
+        "/rooted.md",
+        "doc.md.archive.1234567890",
+    ];
+
+    // #10549: create holds web names to the canonical rule. A padded name
+    // is normalized to its trimmed form; rooted/traversal names and the
+    // reserved archive namespace are refused before any tag write.
+    #[tokio::test]
+    async fn create_rejects_non_canonical_names_and_trims_padding() {
+        let (router, state, _dir, _endpoint, _docs) = router_with_state().await;
+
+        let (status, body) = post_name(router.clone(), "/api/new", " padded.md ").await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        assert!(
+            upload_name_owner(&state.store, "padded.md")
+                .await
+                .unwrap()
+                .is_some()
+        );
+        assert!(
+            upload_name_owner(&state.store, " padded.md ")
+                .await
+                .unwrap()
+                .is_none()
+        );
+
+        for name in NON_CANONICAL_NAMES {
+            let (status, body) = post_name(router.clone(), "/api/new", name).await;
+            assert_eq!(status, StatusCode::BAD_REQUEST, "{name}: {body}");
+            assert!(
+                upload_name_owner(&state.store, name)
+                    .await
+                    .unwrap()
+                    .is_none(),
+                "{name} must not be stored"
+            );
+        }
+    }
+
+    // #10549: save refuses the same non-canonical shapes before it
+    // publishes, archives, or writes any tag; a valid name still saves.
+    #[tokio::test]
+    async fn save_rejects_non_canonical_names() {
+        let (router, state, _dir, _endpoint, _docs) = router_with_state().await;
+        let doc = serde_json::json!({
+            "type": "doc",
+            "content": [{"type": "paragraph", "content": [{"type": "text", "text": "hi"}]}],
+        });
+        let save = |name: &str| {
+            let router = router.clone();
+            let body = serde_json::json!({
+                "doc_id": iroh_blobs::Hash::from_bytes([42; 32]).to_string(),
+                "name": name,
+                "doc": doc.clone(),
+            })
+            .to_string();
+            async move {
+                let response = router
+                    .oneshot(
+                        Request::builder()
+                            .method("POST")
+                            .uri("/api/save")
+                            .header("content-type", "application/json")
+                            .body(Body::from(body))
+                            .unwrap(),
+                    )
+                    .await
+                    .unwrap();
+                response.status()
+            }
+        };
+
+        for name in NON_CANONICAL_NAMES {
+            let status = save(name).await;
+            assert_eq!(status, StatusCode::BAD_REQUEST, "{name}");
+            assert!(
+                upload_name_owner(&state.store, name)
+                    .await
+                    .unwrap()
+                    .is_none(),
+                "{name} must not be stored"
+            );
+        }
+
+        assert_eq!(save("notes.md").await, StatusCode::OK);
+        assert!(
+            upload_name_owner(&state.store, "notes.md")
+                .await
+                .unwrap()
+                .is_some()
+        );
+    }
+
+    // #10573: soft delete and restore hold their name to the canonical
+    // rule before the `deleted` tag is written, and normalize padding to
+    // the trimmed (stored) name.
+    #[tokio::test]
+    async fn delete_and_restore_reject_non_canonical_names() {
+        let (router, state, _dir, _endpoint, _docs) = router_with_state().await;
+        let (status, body) = post_name(router.clone(), "/api/new", "notes.md").await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+
+        for name in NON_CANONICAL_NAMES {
+            for uri in ["/api/delete", "/api/restore"] {
+                let (status, body) = post_name(router.clone(), uri, name).await;
+                assert_eq!(status, StatusCode::BAD_REQUEST, "{uri} {name}: {body}");
+                let tags = state
+                    .tag_store
+                    .get_by_key(&state.tag_store.global, name.as_bytes(), b"deleted")
+                    .await
+                    .unwrap();
+                assert!(tags.is_empty(), "{uri} {name} wrote a deleted tag");
+            }
+        }
+
+        let (status, body) = post_name(router.clone(), "/api/delete", " notes.md ").await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        assert!(body.contains("\"name\":\"notes.md\""), "body: {body}");
+        let tags = state
+            .tag_store
+            .get_by_key(&state.tag_store.global, b"notes.md", b"deleted")
+            .await
+            .unwrap();
+        assert_eq!(tags.len(), 1, "padded delete marks the trimmed name");
+
+        let (status, body) = post_name(router.clone(), "/api/restore", " notes.md ").await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        let tags = state
+            .tag_store
+            .get_by_key(&state.tag_store.global, b"notes.md", b"deleted")
+            .await
+            .unwrap();
+        assert!(tags.is_empty(), "padded restore clears the trimmed name");
+    }
+
+    // #10585: a multipart filename carrying a path or padding is stored as
+    // its plain, canonical file name (drop the leading path, trim), never
+    // verbatim.
+    #[tokio::test]
+    async fn upload_normalizes_path_shaped_and_padded_filenames() {
+        let (router, state, _dir, _endpoint, _docs) = router_with_state().await;
+        for (sent, stored) in [
+            ("../../x.png", "x.png"),
+            ("/abs.png", "abs.png"),
+            ("C:\\fakepath\\ie.png", "ie.png"),
+            (" padded.png ", "padded.png"),
+        ] {
+            let (status, body) = upload(
+                router.clone(),
+                multipart_body_named(sent, "image/png", b"\x89PNG\r\n\x1a\nbytes"),
+            )
+            .await;
+            assert_eq!(status, StatusCode::OK, "{sent}: {body}");
+            assert!(
+                body.contains(&format!("\"name\":\"{stored}\"")),
+                "{sent}: {body}"
+            );
+            assert!(
+                upload_name_owner(&state.store, stored)
+                    .await
+                    .unwrap()
+                    .is_some(),
+                "{sent} stored as {stored}"
+            );
+            assert!(
+                upload_name_owner(&state.store, sent)
+                    .await
+                    .unwrap()
+                    .is_none(),
+                "{sent} stored verbatim"
+            );
+        }
     }
 
     // #1549: a second upload under the same filename with different
