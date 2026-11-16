@@ -4774,6 +4774,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "id-currency-registry"
+version = "0.1.0"
+
+[[package]]
 name = "id-directory"
 version = "0.1.0"
 dependencies = [
