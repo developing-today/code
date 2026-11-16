@@ -1050,7 +1050,9 @@ pub fn task_from_packet(packet: &Value, queue: &str) -> Value {
     if let Some(obj) = payload.as_object_mut() {
         obj.insert("max_attempts".to_string(), max_attempts.clone());
     }
-    let size = serde_json::to_string(&payload).map(|s| s.len()).unwrap_or(0);
+    let size = serde_json::to_string(&payload)
+        .map(|s| s.len())
+        .unwrap_or(0);
     if size > PAYLOAD_MAX_BYTES {
         if let Some(obj) = payload.as_object_mut() {
             match prior_mirror {
