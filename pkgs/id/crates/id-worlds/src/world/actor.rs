@@ -29,6 +29,38 @@ pub(crate) struct AuditRecord {
     pub(crate) parameters: serde_json::Value,
     /// `accepted`, `refused`, or a provider-use decision.
     pub(crate) outcome: String,
+    /// What the action acted on: the world for administrative commands,
+    /// the capability for provider use, the named world (or `hub`) for
+    /// session admin frames. Added in schema version 2 (#1063); absent
+    /// (empty) in version-1 records.
+    #[serde(default)]
+    pub(crate) target: String,
+    /// Correlation id tying this record to the frame or command that
+    /// produced it; unique and monotonic per process. Added in schema
+    /// version 2 (#1063); absent (empty) in version-1 records.
+    #[serde(default)]
+    pub(crate) correlation_id: String,
+}
+
+/// Monotonic sequence behind audit correlation ids, shared by the
+/// actor and the session layer so every audit line a process emits
+/// carries a unique correlation id (#1063).
+static AUDIT_CORRELATION_SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+
+pub(crate) fn next_audit_correlation_id() -> String {
+    let seq = AUDIT_CORRELATION_SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    format!("audit:{seq}")
+}
+
+/// Emit one audit record on the reserved target — the single emission
+/// point for the whole audit stream, so the actor and the session
+/// layer can never drift in shape.
+pub(crate) fn emit_audit_record(record: &AuditRecord) {
+    if let Ok(json) = serde_json::to_string(record) {
+        tracing::info!(target: AUDIT_TRACE_TARGET, audit_record = %json);
+    } else {
+        tracing::error!(target: AUDIT_TRACE_TARGET, action = %record.action, "could not serialize audit record");
+    }
 }
 
 fn authority_identity(authority: &Authority) -> String {
@@ -56,6 +88,7 @@ impl WorldCommand {
             Self::EntityInput { .. } => "EntityInput",
             Self::ExportEntity { .. } => "ExportEntity",
             Self::ImportEntity { .. } => "ImportEntity",
+            Self::HandoffWriteLease { .. } => "HandoffWriteLease",
             Self::Snapshot { .. } => "Snapshot",
             Self::HostView { .. } => "HostView",
             Self::EventsAfter { .. } => "EventsAfter",
@@ -205,6 +238,15 @@ pub(crate) enum WorldCommand {
         payload: Vec<u8>,
         payload_digest: String,
         reply: oneshot::Sender<Result<HandoffTransferState>>,
+    },
+    /// DO-authority control request. The actor derives the source holder
+    /// from its journaled state and serializes the durable boundary with all
+    /// world commands.
+    HandoffWriteLease {
+        to: String,
+        epoch: u64,
+        expires_at_ms: Option<u64>,
+        reply: oneshot::Sender<Result<u64>>,
     },
     Snapshot {
         token: JoinCapability,
@@ -466,6 +508,9 @@ pub(crate) struct WorldActor {
     /// Host metrics registry (F11.7), shared with the handle and the
     /// session layer; see [`WorldMetrics`].
     pub(crate) metrics: WorldMetrics,
+    /// Retained audit log (F12.6), shared with the handle and the
+    /// session layer; see [`WorldAuditLog`].
+    pub(crate) audit: WorldAuditLog,
     pub(crate) storage_failed: bool,
     /// F12.13 replica mode: the world serves spectators from a verified
     /// journal and refuses every local mutation and side effect. Set only
@@ -568,20 +613,20 @@ impl WorldActor {
         parameters: serde_json::Value,
         outcome: &str,
     ) {
+        let target = self.core.world_id().to_owned();
         let record = AuditRecord {
-            schema_version: 1,
+            schema_version: 2,
             timestamp_ms: self.core.clock().now_ms(),
             world_id: self.core.world_id().to_owned(),
             actor: actor.into(),
             action: action.to_owned(),
             parameters,
             outcome: outcome.to_owned(),
+            target,
+            correlation_id: next_audit_correlation_id(),
         };
-        if let Ok(json) = serde_json::to_string(&record) {
-            tracing::info!(target: AUDIT_TRACE_TARGET, audit_record = %json);
-        } else {
-            tracing::error!(target: AUDIT_TRACE_TARGET, action, "could not serialize audit record");
-        }
+        self.audit.record(record.clone());
+        emit_audit_record(&record);
     }
 
     fn audit_admin_result(
@@ -605,12 +650,19 @@ impl WorldActor {
             Decision::AllowAndGrant => "first_use_grant",
             Decision::Deny(_) => "denied",
         };
-        self.audit_record(
+        let record = AuditRecord {
+            schema_version: 2,
+            timestamp_ms: self.core.clock().now_ms(),
+            world_id: self.core.world_id().to_owned(),
             actor,
-            "provider_use",
-            serde_json::json!({"capability": capability}),
-            outcome,
-        );
+            action: "provider_use".to_owned(),
+            parameters: serde_json::json!({"capability": capability}),
+            outcome: outcome.to_owned(),
+            target: capability.to_owned(),
+            correlation_id: next_audit_correlation_id(),
+        };
+        self.audit.record(record.clone());
+        emit_audit_record(&record);
     }
 
     pub(crate) async fn run(mut self, mut receiver: mpsc::Receiver<WorldCommand>, restored: bool) {
@@ -670,7 +722,7 @@ impl WorldActor {
     /// A read-only replica never wakes for ticks or schedules: it serves
     /// spectators from its verified journal and fires nothing locally.
     pub(crate) fn next_deadline(&self) -> Option<std::time::Instant> {
-        if self.read_only {
+        if self.read_only || !self.holds_live_do_lease() {
             return None;
         }
         let deliverable = self.program_healthy && !self.storage_failed;
@@ -711,7 +763,82 @@ impl WorldActor {
 
     fn check_writable(&self) -> Result<()> {
         self.check_not_replica()?;
-        self.check_storage()
+        self.check_storage()?;
+        self.check_do_lease()
+    }
+
+    fn check_do_lease(&self) -> Result<()> {
+        let lease = self.core.write_lease();
+        lease
+            .check_writer(
+                DO_WRITE_LEASE_HOLDER,
+                lease.epoch,
+                self.core.clock().now_ms(),
+            )
+            .map_err(anyhow::Error::new)
+    }
+
+    fn holds_live_do_lease(&self) -> bool {
+        self.check_do_lease().is_ok()
+    }
+
+    /// Persist a DO-mediated ownership boundary before changing the live
+    /// lease. The host adapter is responsible for authenticating this control
+    /// request and meeting the drain/replay barrier before invoking it.
+    fn handoff_write_lease(
+        &mut self,
+        to: String,
+        epoch: u64,
+        expires_at_ms: Option<u64>,
+    ) -> Result<u64> {
+        self.check_not_replica()?;
+        self.check_storage()?;
+        ensure!(
+            self.journal.is_some(),
+            "write lease handoff requires a durable journal"
+        );
+        let from = self
+            .core
+            .write_lease()
+            .holder
+            .clone()
+            .context("write lease has no current holder")?;
+        ensure!(from != to, "write lease handoff must change holders");
+        ensure!(
+            from == DO_WRITE_LEASE_HOLDER || to == DO_WRITE_LEASE_HOLDER,
+            "write lease handoff must include the DO authority"
+        );
+        // Expiry already fenced a native holder at the append gate, but
+        // recovery must use revoke/grant, not handoff. Refuse here so an
+        // expired term cannot be renewed by changing the holder.
+        let now_ms = self.core.clock().now_ms();
+        self.core
+            .write_lease()
+            .check_writer(&from, self.core.write_lease().epoch, now_ms)
+            .map_err(anyhow::Error::new)?;
+        if to == DO_WRITE_LEASE_HOLDER {
+            ensure!(
+                expires_at_ms.is_none(),
+                "the DO write lease must not have a term expiry"
+            );
+        } else {
+            ensure!(
+                expires_at_ms.is_some_and(|expiry| expiry > now_ms),
+                "a native write lease requires a future expiry"
+            );
+        }
+
+        let mut next_lease = self.core.write_lease().clone();
+        next_lease.apply_handoff(&from, &to, epoch, expires_at_ms)?;
+        self.persist(JournalEntry::LeaseHandedOff {
+            from,
+            to,
+            epoch,
+            expires_at_ms,
+        })?;
+        self.core.write_lease = next_lease;
+        self.core.since_checkpoint = self.core.since_checkpoint.saturating_add(1);
+        Ok(epoch)
     }
 
     /// Policy-B admission, checked at every token-admission entry
@@ -1290,7 +1417,7 @@ impl WorldActor {
     /// at a restored open are refused, not executed (see
     /// [`stale_wants_at_open`](Self::stale_wants_at_open)).
     pub(crate) async fn after_change(&mut self) {
-        if self.read_only {
+        if self.read_only || !self.holds_live_do_lease() {
             return;
         }
         for _ in 0..64 {
@@ -1468,7 +1595,7 @@ impl WorldActor {
 
     /// Deliver one tick event per due interval and re-arm.
     pub(crate) async fn fire_ticks(&mut self) {
-        if self.read_only {
+        if self.read_only || !self.holds_live_do_lease() {
             return;
         }
         let now = self.core.clock().now_instant();
@@ -1499,7 +1626,7 @@ impl WorldActor {
     /// active subscriptions. With consent standing but no host fix,
     /// nothing is delivered — a reading is never fabricated.
     pub(crate) async fn fire_loc_watches(&mut self) {
-        if self.read_only {
+        if self.read_only || !self.holds_live_do_lease() {
             return;
         }
         let now = self.core.clock().now_instant();
@@ -1543,7 +1670,7 @@ impl WorldActor {
     /// journaled, leaves its schedule pending, so the next run delivers it.
     /// A read-only replica never fires: schedules are writer authority.
     pub(crate) async fn fire_schedules(&mut self) {
-        if self.read_only {
+        if self.read_only || !self.holds_live_do_lease() {
             return;
         }
         let now = self.core.clock().now_ms();
@@ -2971,6 +3098,15 @@ impl WorldActor {
                     target_region,
                     prior_owner_epoch,
                 );
+                let _ = reply.send(result);
+            }
+            WorldCommand::HandoffWriteLease {
+                to,
+                epoch,
+                expires_at_ms,
+                reply,
+            } => {
+                let result = self.handoff_write_lease(to, epoch, expires_at_ms);
                 let _ = reply.send(result);
             }
             WorldCommand::ImportEntity {
@@ -5496,6 +5632,7 @@ impl WorldActor {
             schedule_delivery: None,
             auth: crate::directory_auth::DirectoryAuth::default(),
             metrics: WorldMetrics::default(),
+            audit: WorldAuditLog::new(),
         }
     }
 }

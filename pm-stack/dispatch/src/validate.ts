@@ -9,8 +9,14 @@ export class ValidationError extends Error {
 }
 
 /** The queue's design priority scale (repo-queue.py PRIORITY_SCALE).
- * Lower claims sooner: 10 critical, 20 high, 30-50 normal, 70-90 low. */
-export const PRIORITY_SCALE = [10, 20, 30, 40, 50, 70, 90] as const;
+ * Lower claims sooner: 10 critical, 20 high, 30-50 normal, 70-90 low.
+ * Ratified band values expedite=15 and next-up=25 are preserved losslessly
+ * (DST-02, #9452) alongside the standard scale. */
+export const PRIORITY_SCALE = [10, 15, 20, 25, 30, 40, 50, 70, 90] as const;
+
+/** Ratified priority band values preserved exactly and never aliased to
+ * another scale value by snapping (#9452 DST-02). */
+export const RATIFIED_BAND_VALUES = [15, 25] as const;
 
 export const PRIORITY_NAMES: Record<string, number> = {
   critical: 10,
@@ -21,10 +27,16 @@ export const PRIORITY_NAMES: Record<string, number> = {
 
 const DEFAULT_PRIORITY = 40;
 
+function isRatifiedBandValue(input: number): boolean {
+  return (RATIFIED_BAND_VALUES as readonly number[]).includes(input);
+}
+
 /**
  * Resolve a request priority (integer 10-90, its decimal string, a scale name, or absent) to a
- * value on the queue's design scale. Off-scale integers in range snap to
- * the nearest scale value (ties snap down); anything else is a 400.
+ * queue priority value. Scale values and the ratified band values (expedite=15, next-up=25)
+ * pass through exactly (lossless, never aliased). Other off-scale integers in range snap to
+ * the nearest standard scale value, excluding ratified band values from the snap target so
+ * nothing is aliased onto them (ties snap down); anything else is a 400.
  */
 export function resolvePriority(input: unknown): number {
   if (input === undefined || input === null) return DEFAULT_PRIORITY;
@@ -48,13 +60,15 @@ export function resolvePriority(input: unknown): number {
     return PRIORITY_NAMES[key];
   }
   if (typeof input === "number" && Number.isInteger(input)) {
+    if (isRatifiedBandValue(input)) return input;
     if ((PRIORITY_SCALE as readonly number[]).includes(input)) return input;
     if (input >= 10 && input <= 90) {
-      let best: number = PRIORITY_SCALE[0];
+      let best: number | undefined;
       for (const v of PRIORITY_SCALE) {
-        if (Math.abs(v - input) < Math.abs(best - input)) best = v;
+        if (isRatifiedBandValue(v)) continue;
+        if (best === undefined || Math.abs(v - input) < Math.abs(best - input)) best = v;
       }
-      return best;
+      return best ?? DEFAULT_PRIORITY;
     }
   }
   throw new ValidationError(`priority: must be a name (critical|high|normal|low) or an integer 10-90`);
@@ -319,7 +333,7 @@ export function parseTaskRequest(body: unknown): TaskRequest {
     model: parseModel(b.model),
     issue: optBool(b, "issue", false),
     issueNumber: parseIssueNumber(b.issue_number),
-    dedupeKey: optString(b, "dedupe_key"),
+    dedupeKey: optNonBlankString(b, "dedupe_key"),
   };
 }
 

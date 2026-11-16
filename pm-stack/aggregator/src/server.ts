@@ -56,6 +56,7 @@ import {
   type RepoCensus,
 } from "./coverage.ts";
 import { loadConfig } from "./config.ts";
+import { createSupabaseRemotes } from "./remote-stores.ts";
 import { itemServiceLinks } from "./service-links.ts";
 import { loadFeed } from "./feed.ts";
 import { AA_PLAN_FACTS, sectionPoolIdsFromConfig } from "./aa.ts";
@@ -333,7 +334,12 @@ async function coverageSnapshot(
   }
   return next;
 }
-const actionsStore = new ActionsStore(cfg.actionsFile);
+// #6815: the four formerly laptop-local stores (actions, activity
+// ingestion, usage snapshots, aa-last-good) move to muse-dev2 when
+// PM_AGG_STORE_BACKEND=supabase. Exactly one backend is active: with
+// "file" (the default) no remote exists and no database call is made.
+const storeRemotes = cfg.storeBackend === "supabase" ? createSupabaseRemotes() : null;
+const actionsStore = new ActionsStore(cfg.actionsFile, undefined, storeRemotes?.actions);
 const viewsStore = new ViewsStore(cfg.viewsFile);
 const eventsStore = new EventsStore(cfg.eventsFile);
 const freshnessStore = new FreshnessStore(cfg.freshnessFile);
@@ -344,7 +350,7 @@ const freshnessStore = new FreshnessStore(cfg.freshnessFile);
  *  collector's notice identity (generatedAt + sha256 of the file).
  *  Its health view feeds /health + /api/health via healthContext. */
 const freshnessReconciler = new FreshnessReconciler(freshnessStore, [fleetFeedRevisionReader(cfg.feedFile)]);
-const activityStore = new IngestionStore(cfg.activityFile);
+const activityStore = new IngestionStore(cfg.activityFile, storeRemotes?.activity);
 const githubHotListConsumer =
   cfg.source === "live" && cfg.projector.baseUrl && cfg.projector.apiToken
     ? new GithubHotListConsumer({
@@ -459,6 +465,7 @@ function pickSource(): Source {
         onFreshness: recordFreshness,
         onSourceGap: recordSourceGap,
         seenActivityIds: (source) => activityStore.seenIds(source),
+        snapshotRemote: storeRemotes?.usage,
       })
     : fixtureSource();
 }
@@ -1637,7 +1644,7 @@ async function deriveWatchdogItems(diagnosis?: ReturnType<NonNullable<Source["di
   return items;
 }
 
-async function attentionContext(opts: { census?: boolean } = {}) {
+async function loadAttentionContext(opts: { census?: boolean } = {}) {
   // #1226/#3970: the Needs-Drew census costs up to eight sequential
   // GitHub search calls (up to ~64 s when the API is unreachable). Only
   // the attention page render consumes it, so it opts in; the overview,
@@ -1678,10 +1685,32 @@ async function attentionContext(opts: { census?: boolean } = {}) {
   };
 }
 
+// #9850: /api/attention.json is a sentinel-probed health surface, but
+// the assembly above re-reads every source leg on every request — under
+// load that per-request cost is what flapped the feed (multi-second
+// answers at load ~10). Same contract as the today/overview assemblies
+// (#5082): a short-TTL cache with coalesced loads and
+// stale-while-revalidate, one cache per census variant — the census
+// assembly costs up to ~64 s of GitHub search calls and must never
+// ride the JSON path, or vice versa.
+const attentionContextCache = new TodayCache<Awaited<ReturnType<typeof loadAttentionContext>>>(TODAY_CACHE_TTL_MS);
+const attentionCensusContextCache = new TodayCache<Awaited<ReturnType<typeof loadAttentionContext>>>(
+  TODAY_CACHE_TTL_MS,
+);
+async function attentionContext(opts: { census?: boolean } = {}) {
+  return opts.census
+    ? attentionCensusContextCache.get(() => loadAttentionContext(opts))
+    : attentionContextCache.get(() => loadAttentionContext(opts));
+}
+
 /**
- * One Datastar patch-elements event (#1444). The fragment root
- * carries its own id + data-on-load attributes, so "outer" mode
- * replaces the shell's placeholder with a self-refreshing container.
+ * One Datastar patch-elements event (#1444). The fragment root carries
+ * its own id + `data-on:dashrefresh__window` refresh hook, so "outer"
+ * mode replaces the shell's placeholder with a self-refreshing
+ * container. The payload deliberately carries NO `data-init` (#10605):
+ * an outer-mode patch re-mounts the element, so an init trigger inside
+ * the payload would fetch itself again on every patch — a loop. First
+ * paint is driven by the shell placeholder's `data-init` instead.
  */
 function ssePatch(selector: string, elementHtml: string): string {
   const lines = elementHtml
@@ -1869,6 +1898,8 @@ async function overviewContext(): Promise<Awaited<ReturnType<typeof loadOverview
 freshnessStore.onNotice(() => {
   overviewContextCache.invalidate();
   todayContextCache.invalidate();
+  attentionContextCache.invalidate();
+  attentionCensusContextCache.invalidate();
   void overviewContext().catch(() => {});
   void todayContext().catch(() => {});
 });
@@ -2533,7 +2564,7 @@ async function handler(req: Request): Promise<Response> {
   }
   if (path === "/frag/overview") {
     const data = await overviewContext();
-    const wrapped = `<div id="overview-main" data-frag data-on-load="@get('/frag/overview')" data-on:dashrefresh__window="@get('/frag/overview')">${renderOverviewBody(deriveOverview(data))}</div>`;
+    const wrapped = `<div id="overview-main" data-frag data-on:dashrefresh__window="@get('/frag/overview')">${renderOverviewBody(deriveOverview(data))}</div>`;
     return sseResponse(ssePatch("#overview-main", wrapped));
   }
   if (path === "/board") {
@@ -2564,7 +2595,7 @@ async function handler(req: Request): Promise<Response> {
     const fragUrl = fragBoardUrl(url.searchParams);
     const resolved = await resolveView(url);
     const view = resolved ? filterBoardForView(board, items, act.poolByRef, resolved.filters) : { board, items };
-    const wrapped = `<div id="board-main" data-frag data-on-load="@get('${fragUrl}')" data-on:dashrefresh__window="@get('${fragUrl}')">${renderBoardBody(view.board, view.items, counts, act, { showAllDone: url.searchParams.get("done") === "all" })}</div>`;
+    const wrapped = `<div id="board-main" data-frag data-on:dashrefresh__window="@get('${fragUrl}')">${renderBoardBody(view.board, view.items, counts, act, { showAllDone: url.searchParams.get("done") === "all" })}</div>`;
     return sseResponse(ssePatch("#board-main", wrapped));
   }
 
@@ -2609,7 +2640,7 @@ async function handler(req: Request): Promise<Response> {
     // is from page load, which its footer states. (?full=1 never uses
     // the shell, so it passes questionsHtml via renderToday instead.)
     const { today, view, coverage, quota, health, quotaUnavailable, queue, queueStale } = await todayContext();
-    const wrapped = `<div id="today-main" data-frag data-on-load="@get('/frag/today')" data-on:dashrefresh__window="@get('/frag/today')">${renderTodayBody(today, view, quota, coverage, health, quotaUnavailable, queue, queueStale)}</div>`;
+    const wrapped = `<div id="today-main" data-frag data-on:dashrefresh__window="@get('/frag/today')">${renderTodayBody(today, view, quota, coverage, health, quotaUnavailable, queue, queueStale)}</div>`;
     return sseResponse(ssePatch("#today-main", wrapped));
   }
 
@@ -2633,7 +2664,7 @@ async function handler(req: Request): Promise<Response> {
   }
   if (path === "/frag/queue") {
     const view = await queueContext();
-    const wrapped = `<div id="queue-main" data-frag data-on-load="@get('/frag/queue')" data-on:dashrefresh__window="@get('/frag/queue')">${renderQueueBody(view)}</div>`;
+    const wrapped = `<div id="queue-main" data-frag data-on:dashrefresh__window="@get('/frag/queue')">${renderQueueBody(view)}</div>`;
     return sseResponse(ssePatch("#queue-main", wrapped));
   }
 
@@ -3064,10 +3095,13 @@ async function handler(req: Request): Promise<Response> {
         404,
       );
     }
-    const [items, pool, rows] = await Promise.all([
+    const [items, pool, rows, orchestration, formOpts, actionsByObject] = await Promise.all([
       source.items(allProjectRefs()).catch(() => new Map()),
       source.projects().catch(() => []),
       source.roadmap().catch(() => []),
+      source.orchestration().catch(() => null),
+      commentFormOpts(),
+      actionsStore.byObject(),
     ]);
     // #9922: the id page's Path to Phase 12 panel — fetch the #1235
     // body snapshot when the source carries one, and resolve the
@@ -3146,6 +3180,12 @@ async function handler(req: Request): Promise<Response> {
         f12,
         queueSnap,
         phaseMapping,
+        {
+          orchestration,
+          actionsByObject,
+          identities: formOpts.identities,
+          orchestrationState: source.diagnostics?.().orchestration.state,
+        },
       ),
     );
   }

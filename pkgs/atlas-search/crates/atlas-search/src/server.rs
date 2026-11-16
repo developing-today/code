@@ -29,11 +29,10 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use atlas_core::types::BranchPools;
 use atlas_core::{
-    BranchPoolExecutor, BranchQuery, Error as CoreError, FeedbackInput, Filters, JsonlFeedbackSink,
+    BranchPoolExecutor, BranchQuery, Error as CoreError, Filters, JsonlFeedbackSink,
     JsonlTraceSink, QueryEmbedder, SearchBackend, SearchMode as CoreSearchMode, SearchOptions,
-    Sensitivity as CoreSensitivity, TraceContext, VectorBackend as CoreVectorBackend, Vote,
-    feedback_for, load_feedback_dir, record_feedback, run_get_chunk,
-    run_search_with_executor_traced,
+    Sensitivity as CoreSensitivity, TraceContext, VectorBackend as CoreVectorBackend, feedback_for,
+    load_feedback_dir, record_feedback, run_get_chunk, run_search_with_executor_traced,
 };
 use atlas_proto::{
     BranchState, BranchStates, EmbedRequest, EmbedResponse, ErrorResponse, HealthResponse,
@@ -2188,53 +2187,9 @@ fn write_response(stream: &mut TcpStream, resp: &HttpResponse) {
 
 // ---------------------------------------------------------- feedback ----
 
-/// One feedback submission (design section 6.1): a thumbs vote on
-/// `(query_id, chunk_id)` — `chunk_id` omitted or null is a
-/// per-query vote — with an optional verbatim comment and the
-/// surface's `opened` report (section 6.4).
-#[derive(Debug, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct FeedbackRequest {
-    query_id: String,
-    chunk_id: Option<i64>,
-    vote: String,
-    comment: Option<String>,
-    opened: Option<bool>,
-    requester: Option<FeedbackRequester>,
-}
+mod server_feedback;
 
-#[derive(Debug, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct FeedbackRequester {
-    kind: Option<String>,
-    id: Option<String>,
-}
-
-impl FeedbackRequest {
-    fn into_input(self) -> Result<FeedbackInput, ServerError> {
-        let vote = Vote::parse(&self.vote).map_err(|e| ServerError::bad_request(e.to_string()))?;
-        let (kind, id) = match self.requester {
-            Some(r) => (
-                r.kind.unwrap_or_else(|| "anonymous".to_string()),
-                r.id.unwrap_or_default(),
-            ),
-            None => ("anonymous".to_string(), String::new()),
-        };
-        let input = FeedbackInput {
-            query_id: self.query_id,
-            chunk_id: self.chunk_id,
-            vote,
-            comment: self.comment,
-            requester_kind: kind,
-            requester_id: id,
-            opened: self.opened.unwrap_or(false),
-        };
-        input
-            .validate()
-            .map_err(|e| ServerError::bad_request(e.to_string()))?;
-        Ok(input)
-    }
-}
+use server_feedback::FeedbackRequest;
 
 // ------------------------------------------------------------ routing ----
 
@@ -2393,7 +2348,7 @@ impl ServerInner {
                 // the response echoes the stored record.
                 self.require_client(req)?;
                 let request: FeedbackRequest = req.json()?;
-                let input = request.into_input()?;
+                let input = request.into_input().map_err(ServerError::bad_request)?;
                 let sink = JsonlFeedbackSink::new(self.feedback_dir.clone());
                 let record = record_feedback(&sink, &input)
                     .map_err(|e| ServerError::new(500, "feedback_store", e.to_string()))?;

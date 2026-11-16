@@ -141,7 +141,7 @@ describe("server boots from fixtures", () => {
     // in from the fragment endpoints. The honesty assertions (#1139)
     // now run against the header fragment that carries them.
     expect(attention.includes("/assets/datastar.js")).toBe(true);
-    expect(attention.includes("data-on-load=\"@get('/frag/attention/header')\"")).toBe(true);
+    expect(attention.includes("data-init=\"@get('/frag/attention/header')\"")).toBe(true);
     const header = await (await fetch(`http://127.0.0.1:${port}/frag/attention/header`)).text();
     // Fixtures carry no orchestration section, so the tier honesty
     // banner renders and the tier counts are "unknown", never 0 (#1139).
@@ -165,6 +165,11 @@ describe("server boots from fixtures", () => {
     const queues = await (await fetch(`http://127.0.0.1:${port}/frag/attention/queues`)).text();
     expect(queues).toContain('id="attn-queues"');
     expect(queues).toContain('id="drew"');
+    // #10605: every /frag/* payload is outer-mode and carries no init
+    // trigger; only the shell placeholders own the first fetch.
+    for (const payload of [board, queues]) expect(payload).not.toContain("data-init");
+    const attentionShell = await (await fetch(`http://127.0.0.1:${port}/attention`)).text();
+    expect(attentionShell).toContain(`data-init="@get('/frag/attention/queues'`);
   });
 
   test("today page + slice-2 JSON endpoints (today, coverage, horizons)", async () => {
@@ -199,11 +204,24 @@ describe("server boots from fixtures", () => {
     const shell = await (await fetch(`http://127.0.0.1:${port}/queue`)).text();
     expect(shell).toContain("Queue visibility");
     expect(shell).toContain("/frag/queue");
+    // #10605: first paint must fetch the fragment with no freshness
+    // event. `data-init` is the Datastar v1 one-shot init; the old
+    // `data-on-load` was a v0-era attribute the bundle never fired.
+    expect(shell).toContain(`data-init="@get('/frag/queue')"`);
+    expect(shell).toContain(`data-on:dashrefresh__window="@get('/frag/queue')"`);
+    expect(shell).not.toContain("data-on-load");
     const full = await (await fetch(`http://127.0.0.1:${port}/queue?full=1`)).text();
     for (const heading of ["In progress", "Blocked", "Done recently", "Next up"]) expect(full).toContain(heading);
     const fragment = await (await fetch(`http://127.0.0.1:${port}/frag/queue`)).text();
     expect(fragment).toContain("datastar-patch-elements");
     expect(fragment).toContain('id="queue-main"');
+    // The fragment replaces the shell element in `mode outer`, so it must
+    // carry NO init/load trigger (#10605): a re-initialising payload would
+    // fetch itself again on every patch — an infinite fetch loop. Refresh
+    // stays on dashrefresh only.
+    expect(fragment).not.toContain("data-init");
+    expect(fragment).not.toContain("data-on-load");
+    expect(fragment).toContain(`data-on:dashrefresh__window="@get('/frag/queue')"`);
     const api = (await (await fetch(`http://127.0.0.1:${port}/api/queue.json`)).json()) as {
       inProgress: unknown[];
       blocked: unknown[];

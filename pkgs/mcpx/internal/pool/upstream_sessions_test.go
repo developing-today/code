@@ -527,3 +527,63 @@ func TestARecoveredSessionIsPersistedWithItsOwnProtocolState(t *testing.T) {
 		}
 	}
 }
+
+// #1414, ruling shutdown-delete-1414: the daemon's restart path closes the
+// pool without an upstream DELETE, so the successor process resumes the very
+// session the restart kept alive instead of reinitialising.
+func TestARestartIntentShutdownKeepsTheUpstreamSession(t *testing.T) {
+	up := newSessionUpstream(t)
+	path := filepath.Join(t.TempDir(), pool.UpstreamSessionsFile)
+
+	first := sessionPool(t, httpServerCfg(up.URL), pool.OpenSessionFile(path))
+	pingThrough(t, first, "k")
+	first.CloseDrainedWithinForRestart(pool.ExecDrainTimeout)
+	first.WaitDrained()
+
+	up.mu.Lock()
+	deletes := up.deletes
+	up.mu.Unlock()
+	if deletes != 0 {
+		t.Fatalf("a restart-intent shutdown ended the upstream session with %d DELETE(s); the successor would have nothing to resume", deletes)
+	}
+
+	second := sessionPool(t, httpServerCfg(up.URL), pool.OpenSessionFile(path))
+	pingThrough(t, second, "k")
+
+	up.mu.Lock()
+	defer up.mu.Unlock()
+	if up.issued != 1 {
+		t.Fatalf("the successor issued %d sessions, want 1: it should resume the session the restart kept alive", up.issued)
+	}
+	if up.deletes != 0 {
+		t.Fatalf("the resumed session was ended with %d DELETE(s)", up.deletes)
+	}
+}
+
+// The other half of #1414: an explicit shutdown still ends the upstream
+// session, so the successor initialises a fresh one.
+func TestAnExplicitShutdownEndsTheUpstreamSession(t *testing.T) {
+	up := newSessionUpstream(t)
+	path := filepath.Join(t.TempDir(), pool.UpstreamSessionsFile)
+
+	first := sessionPool(t, httpServerCfg(up.URL), pool.OpenSessionFile(path))
+	pingThrough(t, first, "k")
+	first.CloseDrainedWithin(pool.ExecDrainTimeout)
+	first.WaitDrained()
+
+	up.mu.Lock()
+	deletes := up.deletes
+	up.mu.Unlock()
+	if deletes != 1 {
+		t.Fatalf("an explicit shutdown sent %d DELETE(s), want 1", deletes)
+	}
+
+	second := sessionPool(t, httpServerCfg(up.URL), pool.OpenSessionFile(path))
+	pingThrough(t, second, "k")
+
+	up.mu.Lock()
+	defer up.mu.Unlock()
+	if up.issued != 2 {
+		t.Fatalf("the successor issued %d sessions, want 2: a session ended by an explicit shutdown must not resume", up.issued)
+	}
+}

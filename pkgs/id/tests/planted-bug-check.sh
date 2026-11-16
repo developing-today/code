@@ -9,12 +9,25 @@
 # baseline must pass first, so a red baseline cannot fake a catch.
 #
 # Usage:  pkgs/id/tests/planted-bug-check.sh        (or: just planted-bug-check)
+#         Accepts no positional arguments (operator-script argument contract,
+#         #3352 / #10568): extra arguments are rejected before any checks.
 # Exit:   0 = baseline green and every planted bug caught
-#         1 = a planted bug survived (a suite passed with the mutation in)
+#         1 = a planted bug survived (a suite passed with the mutation in),
+#             or unaccounted CLI arguments were passed
 #         2 = baseline red, a patch did not apply, or the tree was dirty
 #
 # The mutated files are restored after every run, including on error/interrupt.
 set -u
+
+usage() {
+  echo "Usage: planted-bug-check.sh" >&2
+}
+
+if [[ $# -ne 0 ]]; then
+  usage
+  echo "Error: unaccounted argument(s): $*" >&2
+  exit 1
+fi
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ID_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
@@ -115,4 +128,38 @@ check_mutation "tag-fold-clear" "$PATCH_DIR/tag-fold-clear.patch" "$SUITES_tag_f
 if [ "$failed" -ne 0 ]; then
   exit 1
 fi
+
+# ── Own argument contract (#10568) ───────────────────────────────────
+# This script takes no arguments either: a copy invoked with an extra
+# argument must be rejected (exit 1, usage + unaccounted-argument on
+# stderr) before dirty-tree checks or suite runs. TMPDIR is pointed at
+# a fresh dir so a broken preflight would leave its temp tree behind.
+_self_tmp="$(mktemp -d)"
+mkdir -p "$_self_tmp/empty"
+cp "$SCRIPT_DIR/planted-bug-check.sh" "$_self_tmp/planted-bug-check.sh"
+_self_rc=0
+TMPDIR="$_self_tmp/empty" bash "$_self_tmp/planted-bug-check.sh" extra \
+  >"$_self_tmp/out" 2>"$_self_tmp/err" || _self_rc=$?
+if [ "$_self_rc" -ne 1 ]; then
+  echo "planted-bug-check: FAIL: own extra argument exited $_self_rc instead of 1" >&2
+  rm -rf "$_self_tmp"
+  exit 1
+fi
+if ! grep -q 'Usage: planted-bug-check.sh' "$_self_tmp/err"; then
+  echo "planted-bug-check: FAIL: own extra argument did not print usage" >&2
+  rm -rf "$_self_tmp"
+  exit 1
+fi
+if ! grep -q 'unaccounted argument' "$_self_tmp/err"; then
+  echo "planted-bug-check: FAIL: own extra argument did not report unaccounted argument" >&2
+  rm -rf "$_self_tmp"
+  exit 1
+fi
+if [ -n "$(ls -A "$_self_tmp/empty")" ]; then
+  echo "planted-bug-check: FAIL: own extra argument did work before rejection" >&2
+  rm -rf "$_self_tmp"
+  exit 1
+fi
+rm -rf "$_self_tmp"
+
 echo "planted-bug-check: OK — baseline green, all planted bugs caught"

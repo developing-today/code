@@ -568,7 +568,7 @@ func firstSentence(s string) string {
 }
 
 var helpRowRE = regexp.MustCompile(`^\s{1,6}(\S+)\s{2,}(\S.*)$`)
-var usageBracketRE = regexp.MustCompile("\\[([^\\[\\]]*)\\]")
+var usageBracketRE = regexp.MustCompile(`\[([^\[\]]*)\]`)
 
 // optionalPositionalNames extracts the positional names a help text's
 // usage block marks optional: the bracketed [name] form (argparse

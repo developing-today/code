@@ -172,7 +172,9 @@ function initWorld(): void {
     Array.isArray(value.participants) &&
     value.participants.every(
       (participant) =>
-        isRecord(participant) && isSafeNonNegativeInteger(participant.id) && typeof participant.display_name === "string",
+        isRecord(participant) &&
+        isSafeNonNegativeInteger(participant.id) &&
+        typeof participant.display_name === "string",
     );
   const isWorldEvent = (value: unknown): value is NonNullable<WorldFrame["event"]> => {
     if (

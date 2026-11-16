@@ -598,7 +598,6 @@ impl BoardGraph {
             .collect()
     }
 
-
     fn validate_links(&self, signed: &SignedBoardObject) -> Result<()> {
         let author = signed.artifact.author.as_str();
         match &signed.object {
@@ -2415,7 +2414,7 @@ fn is_public_key(value: &str) -> bool {
 }
 
 #[cfg(test)]
-#[allow(clippy::unwrap_used, clippy::expect_used)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
     use ed25519_dalek::SigningKey;
     use proptest::prelude::*;
@@ -6975,9 +6974,11 @@ mod tests {
         assert_eq!(embeds[0].0, post_hash);
         assert_eq!(embeds[0].1, &note_ref);
         assert_eq!(graph.note_backlinks(&note_object), vec![post_hash.clone()]);
-        assert!(graph
-            .note_backlinks(&ArtifactHash::new("d".repeat(64)).unwrap())
-            .is_empty());
+        assert!(
+            graph
+                .note_backlinks(&ArtifactHash::new("d".repeat(64)).unwrap())
+                .is_empty()
+        );
         assert_ne!(plain_hash, post_hash);
 
         // The signed body carries the reference fields only: pinned
@@ -6989,7 +6990,10 @@ mod tests {
         };
         let stored_ref = stored_post.note_ref.as_ref().unwrap();
         assert_eq!(stored_ref.pinned_version.as_str(), "b".repeat(64).as_str());
-        assert_eq!(stored_ref.pinned_content_hash.as_str(), "c".repeat(64).as_str());
+        assert_eq!(
+            stored_ref.pinned_content_hash.as_str(),
+            "c".repeat(64).as_str()
+        );
         assert_eq!(stored_post.body, "sharing a note");
     }
 
@@ -7006,27 +7010,31 @@ mod tests {
         // Signed by the creator but naming someone else as sharer.
         let mut foreign = sample_note_ref(&creator);
         foreign.sharer = hex_encode(&other.verifying_key().to_bytes());
-        assert!(graph
-            .insert(post_with_note_ref(
-                &creator,
-                root_hash.clone(),
-                thread_hash.clone(),
-                foreign,
-                "misattributed share",
-            ))
-            .is_err());
+        assert!(
+            graph
+                .insert(post_with_note_ref(
+                    &creator,
+                    root_hash.clone(),
+                    thread_hash.clone(),
+                    foreign,
+                    "misattributed share",
+                ))
+                .is_err()
+        );
 
         // Signed by the other key while naming the creator as sharer:
         // the signature must be the sharer's either way.
-        assert!(graph
-            .insert(post_with_note_ref(
-                &other,
-                root_hash,
-                thread_hash,
-                sample_note_ref(&creator),
-                "forged share",
-            ))
-            .is_err());
+        assert!(
+            graph
+                .insert(post_with_note_ref(
+                    &other,
+                    root_hash,
+                    thread_hash,
+                    sample_note_ref(&creator),
+                    "forged share",
+                ))
+                .is_err()
+        );
     }
 
     #[test]
@@ -7037,39 +7045,43 @@ mod tests {
 
         let mut bad_sharer = sample_note_ref(&creator);
         bad_sharer.sharer = "not-a-public-key".to_owned();
-        assert!(SignedBoardObject::sign(
-            &creator,
-            1,
-            "",
-            BoardObject::Post(Post {
-                board: board_hash.clone(),
-                thread: thread_hash.clone(),
-                parent_post: None,
-                body: "x".to_owned(),
-                attachments: Vec::new(),
-                embed_ref: None,
-                note_ref: Some(bad_sharer),
-            }),
-        )
-        .is_err());
+        assert!(
+            SignedBoardObject::sign(
+                &creator,
+                1,
+                "",
+                BoardObject::Post(Post {
+                    board: board_hash.clone(),
+                    thread: thread_hash.clone(),
+                    parent_post: None,
+                    body: "x".to_owned(),
+                    attachments: Vec::new(),
+                    embed_ref: None,
+                    note_ref: Some(bad_sharer),
+                }),
+            )
+            .is_err()
+        );
 
         let mut no_home = sample_note_ref(&creator);
         no_home.home_server = String::new();
-        assert!(SignedBoardObject::sign(
-            &creator,
-            1,
-            "",
-            BoardObject::Post(Post {
-                board: board_hash,
-                thread: thread_hash,
-                parent_post: None,
-                body: "x".to_owned(),
-                attachments: Vec::new(),
-                embed_ref: None,
-                note_ref: Some(no_home),
-            }),
-        )
-        .is_err());
+        assert!(
+            SignedBoardObject::sign(
+                &creator,
+                1,
+                "",
+                BoardObject::Post(Post {
+                    board: board_hash,
+                    thread: thread_hash,
+                    parent_post: None,
+                    body: "x".to_owned(),
+                    attachments: Vec::new(),
+                    embed_ref: None,
+                    note_ref: Some(no_home),
+                }),
+            )
+            .is_err()
+        );
     }
 
     #[test]
@@ -7090,5 +7102,4 @@ mod tests {
         let decoded: BoardObject = serde_json::from_value(value).unwrap();
         assert_eq!(decoded, object);
     }
-
 }

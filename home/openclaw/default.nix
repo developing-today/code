@@ -23,6 +23,7 @@
 # store) and is read at service start.
 let
   homeDir = "/home/user";
+  acpxPlugin = inputs.nix-openclaw.packages.${system}.openclaw-runtime-plugin-acpx;
   # Local service ports, repeated here because OpenClaw's config is
   # rendered as data, not shell env. (The provider-proxy ports that
   # once had to stay in sync with home/common/default.nix are all
@@ -92,11 +93,29 @@ in
   # FALLBACK (#1243): to revert opencode to the private-server path,
   # restore opencode.command below (and agents.opencode in the embedded
   # acpx override) to "/etc/profiles/per-user/user/bin/opencode acp".
+  # code#1711: the codex ACP adapter resolves from the Nix store via a
+  # stable symlink, and the managed wrapper below (separate name, so
+  # plugin admission cannot rewrite it) runs it. OpenClaw's generated
+  # wrappers in ~/.openclaw/acpx stay untouched as rollback until the
+  # plugin-captures tree is removed after verification.
+  home.file = {
+    ".openclaw/acpx/bin/codex-acp.mjs".source =
+      "${acpxPlugin}/node_modules/@agentclientprotocol/codex-acp/dist/index.js";
+    ".openclaw/acpx/managed-codex-acp-wrapper.mjs".source = ./acpx/codex-acp-wrapper.mjs;
+    ".openclaw/acpx/managed-muse-agent-acp-wrapper.mjs".source =
+      ./acpx/muse-agent-acp-wrapper.mjs;
+  };
   home.file.".acpx/config.json".text = builtins.toJSON {
     agents = {
       opencode.command = "/home/user/code/bin/opencode-acp-adapter.mjs --server http://127.0.0.1:13420";
-      codex.command = "/home/user/.openclaw/acpx/codex-acp-wrapper.mjs";
+      codex.command = "/home/user/.openclaw/acpx/managed-codex-acp-wrapper.mjs";
       agy.command = "/run/current-system/sw/bin/agy_acp_server";
+      # muse (#2012, Drew GO 2026-10-28): the ACP<->MSP adapter in this
+      # repo (home/openclaw/acpx/muse-agent-acp-wrapper.mjs) driving the
+      # laptop Muse CLI's `muse serve`. Not a model route: the agent
+      # loop is the muse program itself, auth is its own OAuth login,
+      # and the adapter deletes META_API_KEY from the child env.
+      muse.command = "/home/user/.openclaw/acpx/managed-muse-agent-acp-wrapper.mjs";
     };
   };
 
@@ -152,6 +171,18 @@ in
       # start-limit-hit — down for a day, silently. A transient
       # pre-start failure must never be able to do that again: wide
       # window, generous burst, slower restart spacing.
+      # #2875: the gateway's tokens come from /run/secrets/openclaw/*,
+      # which sops-nix materializes only on hosts that declare
+      # nixos/hosts/amd-openclaw-secrets.nix (the amd host block). This
+      # home module is imported for every host that includes
+      # nixos/users/user, so on a host without those secrets (the Intel
+      # `nixos` host) the unit could only ever fail. Skip it explicitly
+      # there instead of letting it crash-loop against a missing
+      # credential file: a condition-skipped unit is inactive and quiet,
+      # and it starts by itself the moment the host declares the
+      # secrets. Delete this when every host carrying the user env also
+      # carries its own openclaw secrets.
+      ConditionPathExists = "/run/secrets/openclaw/gateway-token";
       StartLimitIntervalSec = "600";
       StartLimitBurst = 30;
     };
@@ -322,7 +353,17 @@ in
       "matrix"
       "signal"
       "codex" # native Codex app-server harness
-      "copilot" # GitHub Copilot agent runtime
+      # NOTE: no "copilot" entry here — since #9551 Part A (Drew
+      # order 2026-11-13) the gateway settings below set
+      # plugins.entries.copilot.enabled = false (its only live
+      # surface was the model picker; its ACP harness is already
+      # excluded from acpx allowedAgents). The pinned nix-openclaw
+      # module asserts a selected runtime plugin is never disabled
+      # in plugins.entries, so selecting it here made the whole
+      # system evaluation fail (latent break, found at the
+      # 2026-11-15 switch). The plugin stays unpackaged and the
+      # picker stays clean; re-enable by restoring this line AND
+      # flipping the entries flag below together.
       "opencode" # OpenCode Zen/Go provider
       "deepseek" # DeepSeek provider (plan routes are via the local proxies below)
       "meta" # Meta provider
@@ -574,8 +615,8 @@ in
         # so the acpx startup check never resolves a harness to an
         # npx-fetched adapter (that fetch hangs on this laptop's flaky
         # npmjs route; 120s check timeout, 2026-10-26). codex runs
-        # the local wrapper in ~/.openclaw/acpx (adapter bundled with
-        # the acpx plugin; the store repoint is code#1711); agy runs the
+        # the managed wrapper in ~/.openclaw/acpx (adapter resolves
+        # from the Nix store, code#1711); agy runs the
         # system antigravity-acp binary. Drew enabled all four
         # 2026-10-28; claude was REMOVED 2026-11-08 by Drew's order -
         # the real Claude Code CLI must never be spawned headlessly
@@ -587,6 +628,7 @@ in
           "opencode"
           "codex"
           "agy"
+          "muse"
         ];
         dispatch.enabled = true;
       };
@@ -625,7 +667,10 @@ in
                 ];
               };
               agents.codex = {
-                command = "/home/user/.openclaw/acpx/codex-acp-wrapper.mjs";
+                command = "/home/user/.openclaw/acpx/managed-codex-acp-wrapper.mjs";
+              };
+              agents.muse = {
+                command = "/home/user/.openclaw/acpx/managed-muse-agent-acp-wrapper.mjs";
               };
               agents.agy = {
                 command = "/run/current-system/sw/bin/agy_acp_server";

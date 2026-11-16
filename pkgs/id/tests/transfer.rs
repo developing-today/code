@@ -12,7 +12,6 @@ use id::transfer::send_file;
 use id::{MetaRequest, MetaResponse};
 use iroh_blobs::Hash;
 
-
 /// Put `data` on `node` under `name`; returns the content hash.
 async fn put_named(node: &LocalNode, name: &str, data: &[u8]) -> Hash {
     let (hash, _guard) = add_raw(&node.blobs(), data.to_vec()).await.unwrap();

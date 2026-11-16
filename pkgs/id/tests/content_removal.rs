@@ -1,14 +1,20 @@
 //! Content on removal (Phase 5, P5.6; design decision 4: "Content is kept. Removal stops new
-//! content"). The author of a document may remove it. The removal is a signed `document.remove`
-//! event that names the document's event ID, and it does not delete anything:
+//! content"). The author of a document may remove it, and so may a device key the author has
+//! authorized in the document's group — an agent acting for the owner (decision on #195,
+//! 2026-11-16). The removal is a signed `document.remove` event that names the document's
+//! event ID, and it does not delete anything:
 //!
 //! 1. Content is kept. The removal is an event like any other, and it stays in the store. The
 //!    document, its blob and its tags are unchanged, and a member of the world may still fetch the
 //!    bytes.
-//! 2. Only the removal by the document's author marks the document. A removal from anyone else is
-//!    stored and has no effect.
+//! 2. Only an effective removal marks the document: the document's author's, or one signed
+//!    by a device key the author authorized in the document's group at Write scope or above.
+//!    A removal from anyone else is stored and has no effect.
 //! 3. The record and the tags do not depend on the order events arrive in.
 //! 4. A removal takes no body, and it carries no tag and no document.
+//! 5. New content stops: a `tag.set` on the document whose causal past contains an effective
+//!    removal does not fold — its author had seen the removal. A tag concurrent with the
+//!    removal, whose author had not seen it, is kept, and a `tag.clear` still folds.
 
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
@@ -20,22 +26,31 @@ use common::within;
 
 use id::{
     access::AccessPolicy,
-    blob_gate::{BlobPolicy, WorldAccess, blob_events},
-    chain::{ChainExt, Event, sign},
+    blob_gate::{blob_events, BlobPolicy, WorldAccess},
+    chain::{sign, ChainExt, Event},
     commands::put::add_raw,
-    documents::{DOCUMENT_KIND, DocumentRef, REMOVAL_KIND},
+    documents::{DocumentRef, DOCUMENT_KIND, REMOVAL_KIND},
     event_store::{EventStore, Ingest, Refusal},
-    tag_claims::{SET_KIND, TagOp},
+    groups::{
+        event::encode as encode_group_event, Body as GroupBody, DeviceOp, Event as GroupEvent,
+        Role as GroupRole,
+    },
+    membership::{body::encode_body, AuthId},
+    tag_claims::{TagOp, SET_KIND},
     waiting::WaitingLimits,
 };
 use iroh::{
-    Endpoint, EndpointAddr,
-    endpoint::{RelayMode, presets},
+    endpoint::{presets, RelayMode},
     protocol::Router,
+    Endpoint, EndpointAddr,
 };
 use iroh_base::{EndpointId, SecretKey};
 use iroh_blobs::{
-    BlobsProtocol, Hash as BlobHash, api::Store, get::request::get_blob, store::mem::MemStore,
+    api::Store, get::request::get_blob, store::mem::MemStore, BlobsProtocol, Hash as BlobHash,
+};
+use p2panda_auth::{
+    group::{GroupAction, GroupMember},
+    Access,
 };
 use p2panda_core::{Hash, SeqNum, SigningKey};
 
@@ -87,6 +102,38 @@ impl Writer {
         self.last = Some(event.id);
         event
     }
+
+    /// Signs `ext` with a body after the writer's last event (group operations travel
+    /// with their bodies, as in `tag_clear_authority.rs`).
+    fn send_with_body(&mut self, ext: ChainExt, body: &[u8]) -> Event {
+        let event = sign(&self.key, self.seq, self.last, Some(body), ext).unwrap();
+        self.seq += 1;
+        self.last = Some(event.id);
+        event
+    }
+
+    /// This writer's author key bytes.
+    fn author(&self) -> [u8; 32] {
+        *self.key.verifying_key().as_bytes()
+    }
+}
+
+/// A group operation's header extensions: no tag, document, or removal beside it.
+fn group_ext(kind: &str, group: Option<Hash>, after: Vec<Hash>) -> ChainExt {
+    ChainExt {
+        kind: kind.to_owned(),
+        group,
+        after,
+        tag: None,
+        document: None,
+        removes: None,
+        note: None,
+        link: None,
+        checkpoint: None,
+        rotation: None,
+        chat: None,
+        anchor: None,
+    }
 }
 
 fn document_ext(doc: &DocumentRef, after: Vec<Hash>) -> ChainExt {
@@ -102,6 +149,7 @@ fn document_ext(doc: &DocumentRef, after: Vec<Hash>) -> ChainExt {
         checkpoint: None,
         rotation: None,
         chat: None,
+        anchor: None,
     }
 }
 
@@ -122,6 +170,7 @@ fn tag_ext(subject: Hash, name: &str, value: &str, after: Vec<Hash>) -> ChainExt
         checkpoint: None,
         rotation: None,
         chat: None,
+        anchor: None,
     }
 }
 
@@ -138,6 +187,7 @@ fn removal_ext(target: Hash, after: Vec<Hash>) -> ChainExt {
         checkpoint: None,
         rotation: None,
         chat: None,
+        anchor: None,
     }
 }
 
@@ -145,6 +195,15 @@ fn open() -> (tempfile::TempDir, EventStore) {
     let dir = tempfile::tempdir().unwrap();
     let store = EventStore::open(dir.path(), WaitingLimits::default(), 0).unwrap();
     (dir, store)
+}
+
+/// Delivers one event with its body, and checks that it was accepted.
+fn deliver_body(store: &mut EventStore, event: &Event, body: &[u8]) {
+    let outcome = store.ingest_with_body(&event.bytes, Some(body), 0).unwrap();
+    assert!(
+        matches!(outcome, Ingest::Accepted { .. }),
+        "not accepted: {outcome:?}"
+    );
 }
 
 /// Delivers one event's bytes, as sync does, and checks that it was not refused.
@@ -390,12 +449,14 @@ fn test_a_removal_names_its_target_and_carries_nothing_else() {
     let missing = ChainExt {
         removes: None,
         note: None,
+        anchor: None,
         ..removal_ext(target, vec![])
     };
     assert!(sign(&key, 0, None, None, missing).is_err());
     // A document or a tag beside the target.
     let with_document = ChainExt {
         document: Some(doc),
+        anchor: None,
         ..removal_ext(target, vec![])
     };
     assert!(sign(&key, 0, None, None, with_document).is_err());
@@ -405,6 +466,7 @@ fn test_a_removal_names_its_target_and_carries_nothing_else() {
             name: "kind".to_owned(),
             value: Some("memo".to_owned()),
         }),
+        anchor: None,
         ..removal_ext(target, vec![])
     };
     assert!(sign(&key, 0, None, None, with_tag).is_err());
@@ -412,9 +474,130 @@ fn test_a_removal_names_its_target_and_carries_nothing_else() {
     let stray = ChainExt {
         kind: DOCUMENT_KIND.to_owned(),
         document: Some(DocumentRef::for_bytes("text/plain", b"notes").unwrap()),
+        anchor: None,
         ..removal_ext(target, vec![])
     };
     assert!(sign(&key, 0, None, None, stray).is_err());
     // The well-formed removal is signed.
     assert!(sign(&key, 0, None, None, removal_ext(target, vec![])).is_ok());
+}
+
+#[test]
+fn test_owner_removal_stops_tags_whose_author_had_seen_it() {
+    // Oracle: the 2026-11-16 decision on #195 — an effective removal stops new content.
+    // A tag set whose causal past contains the removal was written with knowledge of
+    // it, so it does not fold; the tag from before the removal does.
+    let doc = DocumentRef::for_bytes("text/markdown", BODY).unwrap();
+    let mut author = Writer::new(31);
+    let mut other = Writer::new(32);
+    let published = author.send(document_ext(&doc, vec![]));
+    let early = author.send(tag_ext(published.id, "kind", "minutes", vec![published.id]));
+    let removal = author.send(removal_ext(published.id, vec![early.id]));
+    // The author's own later tag: its backlink is the removal and `after` names it.
+    let late_author = author.send(tag_ext(published.id, "late", "a", vec![removal.id]));
+    // Another writer's later tag that names the removal in `after`: had seen it too.
+    let late_other = other.send(tag_ext(
+        published.id,
+        "late",
+        "b",
+        vec![published.id, removal.id],
+    ));
+
+    let (_dir, mut store) = open();
+    for event in [&published, &early, &removal, &late_author, &late_other] {
+        deliver(&mut store, event);
+    }
+    let claims = store.tag_claims().unwrap();
+    assert_eq!(claims.len(), 1, "{claims:?}");
+    assert_eq!(claims[0].id, early.id);
+    // The stopped tags stay stored and applied; only the default view loses them.
+    assert!(store.event_applied(&late_author.id).unwrap());
+    assert!(store.event_applied(&late_other.id).unwrap());
+}
+
+#[test]
+fn test_concurrent_tag_that_never_saw_the_removal_is_kept() {
+    // Oracle: the causal rule stated on #195 — concurrent tags are kept. This tag is
+    // delivered after the removal, but its causal past (`after` plus its author's
+    // backlink chain) does not contain the removal, so arrival order does not stop it.
+    let doc = DocumentRef::for_bytes("text/markdown", BODY).unwrap();
+    let mut author = Writer::new(41);
+    let mut other = Writer::new(42);
+    let published = author.send(document_ext(&doc, vec![]));
+    let removal = author.send(removal_ext(published.id, vec![]));
+    let concurrent = other.send(tag_ext(published.id, "project", "p5", vec![published.id]));
+
+    let (_dir, mut store) = open();
+    deliver(&mut store, &published);
+    deliver(&mut store, &removal);
+    deliver(&mut store, &concurrent);
+
+    let claims = store.tag_claims().unwrap();
+    assert_eq!(claims.len(), 1, "{claims:?}");
+    assert_eq!(claims[0].id, concurrent.id);
+    // The document is still marked removed; only the tag survives.
+    assert_eq!(store.documents().unwrap()[0].removal, Some(removal.id));
+}
+
+#[test]
+fn test_removal_by_an_agent_the_owner_authorized_marks_and_stops() {
+    // Oracle: the 2026-11-16 decision on #195 — who may remove is the document's owner
+    // and agents acting for them. The agent here is a device key the owner authorized
+    // in the document's group (P8.3) at Admin scope.
+    let doc = DocumentRef::for_bytes("text/markdown", BODY).unwrap();
+    let mut owner = Writer::new(51);
+    let mut device = Writer::new(52);
+
+    // The owner creates a group; the settled fold gives the creator Admin.
+    let create_body = encode_body(&GroupAction::Create {
+        initial_members: vec![(
+            GroupMember::Individual(AuthId::Key(owner.author())),
+            Access::manage(),
+        )],
+    })
+    .unwrap();
+    let create = owner.send_with_body(group_ext("group.op", None, vec![]), &create_body);
+    let group = create.id;
+
+    // The owner authorizes the device key in that group at Admin scope.
+    let grant_wire = GroupEvent {
+        id: Hash::digest(b"agent-removal device grant"),
+        author: owner.author(),
+        after: vec![create.id],
+        group: Some(group),
+        body: GroupBody::Device(DeviceOp::Add {
+            device: device.author(),
+            scope: GroupRole::Admin,
+        }),
+    };
+    let grant_body = encode_group_event(&grant_wire).unwrap();
+    let grant = owner.send_with_body(
+        group_ext("group.event", Some(group), vec![create.id]),
+        &grant_body,
+    );
+
+    // The owner publishes the document in that group.
+    let mut doc_ext = document_ext(&doc, vec![grant.id]);
+    doc_ext.group = Some(group);
+    let published = owner.send(doc_ext);
+
+    // The device — the owner's agent — removes it.
+    let removal = device.send(removal_ext(published.id, vec![]));
+    // The owner's later tag had seen the agent's removal: stopped.
+    let late = owner.send(tag_ext(published.id, "late", "x", vec![removal.id]));
+
+    let (_dir, mut store) = open();
+    deliver_body(&mut store, &create, &create_body);
+    deliver_body(&mut store, &grant, &grant_body);
+    deliver(&mut store, &published);
+    deliver(&mut store, &removal);
+    deliver(&mut store, &late);
+
+    let record = store.documents().unwrap();
+    assert_eq!(record.len(), 1, "{record:?}");
+    assert_eq!(record[0].removal, Some(removal.id), "{record:?}");
+    assert!(
+        store.tag_claims().unwrap().is_empty(),
+        "the post-removal tag must not fold"
+    );
 }

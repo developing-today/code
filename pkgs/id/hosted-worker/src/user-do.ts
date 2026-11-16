@@ -22,7 +22,14 @@
 //      equals the routed identity — a mismatch fails closed.
 // Any guard failure returns before side effects.
 
-import { FailClosed, blobsBindingFor, parseBindingId, parseJurisdiction, type Jurisdiction, type R2BucketLike } from "./routing.ts";
+import {
+  FailClosed,
+  blobsBindingFor,
+  parseBindingId,
+  parseJurisdiction,
+  type Jurisdiction,
+  type R2BucketLike,
+} from "./routing.ts";
 
 export const SCHEMA_VERSION = 2;
 
@@ -91,7 +98,11 @@ export class UserDO {
     if (raw === undefined || raw === "") return null;
     const n = Number(raw);
     if (!Number.isInteger(n) || n < 0) {
-      throw new FailClosed(500, "ceiling_misconfigured", "USER_CEILING_BYTES is not a non-negative integer; writes fail closed");
+      throw new FailClosed(
+        500,
+        "ceiling_misconfigured",
+        "USER_CEILING_BYTES is not a non-negative integer; writes fail closed",
+      );
     }
     return n;
   }
@@ -207,7 +218,11 @@ export class UserDO {
           jurisdiction,
           usage: this.usage(),
           kv: Object.fromEntries(kvRows.map((r) => [String(r.key), String(r.value)])),
-          blobs: blobRows.map((r) => ({ hash: String(r.hash), size: Number(r.size), created_at: String(r.created_at) })),
+          blobs: blobRows.map((r) => ({
+            hash: String(r.hash),
+            size: Number(r.size),
+            created_at: String(r.created_at),
+          })),
         });
       }
       if (url.pathname === "/v1/state" && req.method === "GET") {
@@ -242,9 +257,7 @@ export class UserDO {
       }
       if (blobHashMatch && req.method === "GET") {
         const hash = blobHashMatch[1];
-        const rows = this.state.storage.sql
-          .exec("SELECT size FROM blobs WHERE hash = ?", hash)
-          .toArray();
+        const rows = this.state.storage.sql.exec("SELECT size FROM blobs WHERE hash = ?", hash).toArray();
         if (rows.length === 0) return json({ error: "not_found" }, 404);
         const bucket = blobsBindingFor(this.env, jurisdiction as Jurisdiction);
         const obj = await bucket.get(hash);
@@ -260,9 +273,7 @@ export class UserDO {
       }
       if (blobHashMatch && req.method === "DELETE") {
         const hash = blobHashMatch[1];
-        const rows = this.state.storage.sql
-          .exec("SELECT hash FROM blobs WHERE hash = ?", hash)
-          .toArray();
+        const rows = this.state.storage.sql.exec("SELECT hash FROM blobs WHERE hash = ?", hash).toArray();
         if (rows.length === 0) return json({ error: "not_found" }, 404);
         this.state.storage.sql.exec("DELETE FROM blobs WHERE hash = ?", hash);
         // The reference is gone, so this user can no longer reach
@@ -277,7 +288,9 @@ export class UserDO {
       const kvMatch = url.pathname.match(/^\/v1\/kv\/([A-Za-z0-9._-]{1,128})$/);
       if (kvMatch && req.method === "PUT") {
         const value = await req.text();
-        const prior = this.state.storage.sql.exec("SELECT LENGTH(value) AS n FROM kv WHERE key = ?", kvMatch[1]).toArray();
+        const prior = this.state.storage.sql
+          .exec("SELECT LENGTH(value) AS n FROM kv WHERE key = ?", kvMatch[1])
+          .toArray();
         const priorBytes = prior.length === 0 ? 0 : Number(prior[0].n);
         this.assertWritable(new TextEncoder().encode(value).byteLength - priorBytes);
         this.state.storage.sql.exec(
