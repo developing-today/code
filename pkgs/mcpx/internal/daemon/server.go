@@ -394,6 +394,9 @@ func (s *Server) Listen(tcpPort int) error {
 	}
 	s.endpoint = "http://" + tcpLn.Addr().String()
 	s.started = time.Now()
+	// Adopt supervised instances a previous daemon left running
+	// (#9962): their supervisors outlive the daemon by design.
+	s.reg.AdoptSupervised(context.Background())
 	return s.publish()
 }
 
