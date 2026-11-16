@@ -90,6 +90,13 @@
       enable = true;
       package = pkgs.plocate;
       interval = "hourly";
+      # Generated fleet trees (git worktrees and the watcher-bench fixture
+      # corpora, e.g. watcher-bench-195/fixtures/manydirs) have no locate
+      # value and are enormous: updatedb exhausted its 131072 fd limit
+      # scanning manydirs, exited 1, and the coincidentally-failed unit
+      # made an otherwise-healthy `nixos-rebuild switch` report failure
+      # (#10589). Prune them instead of indexing them.
+      prunePaths = [ "/home/user/git/fleet" ];
       #localuser = null;
     };
     displayManager = {
