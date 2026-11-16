@@ -5,6 +5,8 @@ schema_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 migrations="$schema_dir/migrations"
 up="$migrations/20261105_0001_action_event_store.up.sql"
 down="$migrations/20261105_0001_action_event_store.down.sql"
+up2="$migrations/20261116_0001_aggregator_remote_stores.up.sql"
+down2="$migrations/20261116_0001_aggregator_remote_stores.down.sql"
 container="pm-action-schema-test-$$"
 
 if ! command -v docker >/dev/null 2>&1; then
@@ -48,6 +50,9 @@ psql_test() {
 # the role can actually operate under the RLS model, not just hold grants.
 psql_test -c 'CREATE ROLE service_role BYPASSRLS LOGIN;'
 psql_test <"$up"
+# #6815: the add-on stores depend on the action contract above, so the
+# test applies them in the documented order and rolls them back in reverse.
+psql_test <"$up2"
 
 # A pre-token action is valid, as are modern actions and the source's JSON
 # object payload/author contracts.
@@ -234,6 +239,80 @@ if psql_test <"$down" >/dev/null 2>&1; then
   exit 1
 fi
 echo "ok - down migration protects non-empty tables"
+
+# --- #6815 remote stores: shape, grants, and constraints --------------------
+psql_test -c "INSERT INTO public.agg_activity_ingestion
+  (source, checkpoint, seen_ids, source_status)
+  VALUES ('watchdog', '{\"since\":\"2026-11-01T00:00:00Z\"}', ARRAY['d1','d2'],
+    '{\"state\":\"current\"}');"
+psql_test -c "INSERT INTO public.agg_activity_gaps
+  (id, source, gap_from, gap_to, status, detected_at)
+  VALUES ('gap-1', 'watchdog', '2026-11-01T00:00:00Z', '2026-11-01T01:00:00Z',
+    'open', now());"
+psql_test -c "INSERT INTO public.agg_usage_snapshots
+  (snapshot_key, ts, service_id, metric_id, unit, source, value, observed_by)
+  VALUES ('svc|metric|2026-11-01T00:00:00Z|5', '2026-11-01T00:00:00Z',
+    'svc', 'metric', 'tokens', 'usage-snapshot', '5'::jsonb, 'pm-aggregator.service');"
+psql_test -c "INSERT INTO public.agg_usage_snapshots
+  (snapshot_key, ts, service_id, metric_id, unit, source, value, observed_by)
+  VALUES ('svc|metric|2026-11-01T01:00:00Z|range', '2026-11-01T01:00:00Z',
+    'svc', 'metric', 'percent', 'usage-snapshot',
+    '{\"low\":10,\"high\":20}'::jsonb, 'pm-aggregator.service');"
+psql_test -c "INSERT INTO public.agg_store_documents (store, version, document, writer)
+  VALUES ('aa-last-good', 1, '{\"collector\":\"current\"}', 'fleet-feed-collector');"
+
+agg_privs="$(psql_test -Atc "SELECT concat(
+  (SELECT relrowsecurity::text FROM pg_class WHERE oid = 'public.agg_activity_ingestion'::regclass), ':',
+  (SELECT relrowsecurity::text FROM pg_class WHERE oid = 'public.agg_usage_snapshots'::regclass), ':',
+  has_table_privilege('service_role', 'public.agg_activity_ingestion', 'UPDATE')::text, ':',
+  has_table_privilege('service_role', 'public.agg_usage_snapshots', 'DELETE')::text, ':',
+  has_table_privilege('service_role', 'public.agg_store_documents', 'UPDATE')::text)")"
+if [[ $agg_privs != "true:true:true:true:true" ]]; then
+  echo "unexpected RLS/service_role privileges on #6815 tables: $agg_privs" >&2
+  exit 1
+fi
+echo "ok - #6815 tables have RLS enabled and service_role grants"
+
+expect_rejected "#6815 empty ingestion source" "INSERT INTO public.agg_activity_ingestion (source) VALUES ('  ')"
+expect_rejected "#6815 unknown gap status" "INSERT INTO public.agg_activity_gaps
+  (id, source, gap_from, gap_to, status, detected_at)
+  VALUES ('gap-bad', 'watchdog', '2026-11-01T00:00:00Z', '2026-11-01T01:00:00Z',
+    'closed', now())"
+expect_rejected "#6815 reversed gap window" "INSERT INTO public.agg_activity_gaps
+  (id, source, gap_from, gap_to, status, detected_at)
+  VALUES ('gap-rev', 'watchdog', '2026-11-01T02:00:00Z', '2026-11-01T01:00:00Z',
+    'open', now())"
+expect_rejected "#6815 open gap with a resolution time" "INSERT INTO public.agg_activity_gaps
+  (id, source, gap_from, gap_to, status, detected_at, resolved_at)
+  VALUES ('gap-resolved', 'watchdog', '2026-11-01T00:00:00Z', '2026-11-01T01:00:00Z',
+    'open', now(), now())"
+expect_rejected "#6815 non-numeric snapshot value" "INSERT INTO public.agg_usage_snapshots
+  (snapshot_key, ts, service_id, metric_id, unit, source, value, observed_by)
+  VALUES ('bad', now(), 'svc', 'metric', 'tokens', 'src', '\"high\"'::jsonb, 'writer')"
+expect_rejected "#6815 empty snapshot unit" "INSERT INTO public.agg_usage_snapshots
+  (snapshot_key, ts, service_id, metric_id, unit, source, value, observed_by)
+  VALUES ('bad-2', now(), 'svc', 'metric', ' ', 'src', '1'::jsonb, 'writer')"
+expect_rejected "#6815 document version below 1" "INSERT INTO public.agg_store_documents (store, version, document)
+  VALUES ('aa-last-good', 0, '{}')"
+
+
+if psql_test <"$down2" >/dev/null 2>&1; then
+  echo "#6815 down migration should refuse populated tables" >&2
+  exit 1
+fi
+echo "ok - #6815 down migration protects non-empty tables"
+psql_test -c 'DELETE FROM public.agg_store_documents; DELETE FROM public.agg_usage_snapshots;
+  DELETE FROM public.agg_activity_gaps; DELETE FROM public.agg_activity_ingestion;'
+psql_test <"$down2"
+agg_remaining="$(psql_test -Atc "SELECT (to_regclass('public.agg_activity_ingestion') IS NULL
+  AND to_regclass('public.agg_activity_gaps') IS NULL
+  AND to_regclass('public.agg_usage_snapshots') IS NULL
+  AND to_regclass('public.agg_store_documents') IS NULL)::text")"
+if [[ $agg_remaining != true ]]; then
+  echo "#6815 down migration left schema objects behind" >&2
+  exit 1
+fi
+echo "ok - #6815 store tables created and removed by the paired migrations"
 
 psql_test -c 'DELETE FROM public.shared_events; DELETE FROM public.agg_actions;'
 psql_test <"$down"

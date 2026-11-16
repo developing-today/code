@@ -4,6 +4,7 @@
 // explicit PM_AGG_DEV=1 switch (#1195).
 import { homedir } from "node:os";
 import { join } from "node:path";
+import { parseStoreBackend, type StoreBackendKind } from "./store-backend.ts";
 
 const s = (v: string | undefined, d: string): string => (v && v.trim() !== "" ? v.trim() : d);
 
@@ -41,6 +42,10 @@ function parseAggregatorHosts(value: string | undefined): string[] {
 }
 
 export interface Config {
+  /** #6815: where the four Supabase-migrated stores live. "file" is the
+   *  dev/test path and rollback target; "supabase" is the deployed
+   *  canonical backend. Exactly one is active — never both. */
+  storeBackend: StoreBackendKind;
   /** Default Source: "live" when PM_AGG_SOURCE=live; "fixtures" when
    * explicitly requested, or when PM_AGG_DEV=1 allows the implicit
    * (unset/invalid PM_AGG_SOURCE) fixture default. Anything else
@@ -195,6 +200,7 @@ function parseAggregatorSource(env: Record<string, string | undefined>): "fixtur
 
 export function loadConfig(env: Record<string, string | undefined> = process.env): Config {
   return {
+    storeBackend: parseStoreBackend(env),
     source: parseAggregatorSource(env),
     port: parseAggregatorPort(env.PM_AGG_PORT),
     hosts: parseAggregatorHosts(env.PM_AGG_HOSTS),
