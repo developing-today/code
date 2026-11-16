@@ -10,6 +10,9 @@ pub struct WorldHandle {
     /// The world's host metrics registry (F11.7), shared with the actor
     /// and the session layer.
     metrics: WorldMetrics,
+    /// The world's retained audit log (F12.6), shared with the actor
+    /// and the session layer.
+    audit: WorldAuditLog,
     /// Whether the actor runs in F12.13 read-only replica mode.
     read_only: bool,
 }
@@ -269,6 +272,7 @@ impl WorldHandle {
             .map(|(id, _)| id.clone())
             .collect();
         let metrics = WorldMetrics::default();
+        let audit = WorldAuditLog::new();
         // A restored program's current `wants` predates the restart: its
         // request ids are captured now so the first `after_change` passes
         // refuse rather than re-execute them (see
@@ -283,6 +287,7 @@ impl WorldHandle {
             program,
             journal,
             metrics: metrics.clone(),
+            audit: audit.clone(),
             storage_failed: false,
             read_only,
             program_healthy,
@@ -321,6 +326,7 @@ impl WorldHandle {
             records,
             view_changed,
             metrics,
+            audit,
             read_only,
         }
     }
@@ -330,6 +336,20 @@ impl WorldHandle {
     #[must_use]
     pub fn shared_metrics(&self) -> WorldMetrics {
         self.metrics.clone()
+    }
+
+    /// The world's shared retained audit log (F12.6): the actor
+    /// appends every record it emits.
+    #[must_use]
+    pub fn shared_audit_log(&self) -> WorldAuditLog {
+        self.audit.clone()
+    }
+
+    /// A snapshot of the world's retained audit records (F12.6),
+    /// oldest first.
+    #[must_use]
+    pub fn audit_records(&self) -> Vec<AuditRecord> {
+        self.audit.records()
     }
 
     /// A snapshot of the world's host metrics (F11.7), as surfaced by

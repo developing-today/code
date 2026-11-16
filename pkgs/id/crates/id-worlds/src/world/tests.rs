@@ -10941,6 +10941,72 @@ mod audit_tests {
         );
     }
 
+
+    #[tokio::test]
+    async fn retained_audit_log_replays_to_the_final_grants() {
+        // F12.6 exit test (issue #1063), retained-log half: the admin
+        // actions below each produce exactly one record in the
+        // world's retained audit log, and replaying that log
+        // reconstructs the final grants the world reports.
+        let core = WorldCore::new("audit-retained", WorldLimits::default()).unwrap();
+        let world = WorldHandle::spawn(core);
+        world
+            .update_caps(
+                vec!["chat.say".to_owned(), "time.now".to_owned()],
+                Vec::new(),
+            )
+            .await
+            .unwrap();
+        world
+            .update_caps(Vec::new(), vec!["time.now".to_owned()])
+            .await
+            .unwrap();
+        // A refused ceiling change is audited and replays as nothing.
+        assert!(world.set_caps_ceiling(vec!["*".to_owned()]).await.is_err());
+        world
+            .set_caps_ceiling(vec!["chat.say".to_owned(), "time.now".to_owned()])
+            .await
+            .unwrap();
+
+        let records = world.audit_records();
+        let admin_actions: Vec<(&str, &str)> = records
+            .iter()
+            .filter(|record| {
+                matches!(record.action.as_str(), "UpdateCaps" | "SetCapsCeiling")
+            })
+            .map(|record| (record.action.as_str(), record.outcome.as_str()))
+            .collect();
+        assert_eq!(
+            admin_actions,
+            [
+                ("UpdateCaps", "accepted"),
+                ("UpdateCaps", "accepted"),
+                ("SetCapsCeiling", "refused"),
+                ("SetCapsCeiling", "accepted"),
+            ]
+        );
+
+        let report = world.caps_report().await.unwrap();
+        let replayed = replay_grants(&records);
+        assert_eq!(
+            replayed.granted,
+            report.granted.iter().cloned().collect::<BTreeSet<String>>()
+        );
+        assert_eq!(
+            replayed.ceiling,
+            Some(report.ceiling.iter().cloned().collect::<BTreeSet<String>>())
+        );
+
+        // The same records export as one OTLP log record each.
+        let payload = export_otlp_json(&records);
+        assert_eq!(
+            payload["resourceLogs"][0]["scopeLogs"][0]["logRecords"]
+                .as_array()
+                .map(Vec::len),
+            Some(records.len())
+        );
+    }
+
     #[test]
     fn revocation_on_a_read_only_replica_is_audited_once_as_refused() {
         let records = Arc::new(Mutex::new(Vec::new()));

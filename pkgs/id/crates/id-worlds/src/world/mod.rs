@@ -39,6 +39,7 @@ mod handle;
 mod handoff_operations;
 pub mod hotness;
 mod journal;
+pub(crate) mod audit;
 mod metrics;
 mod replica;
 mod replication;
@@ -82,6 +83,7 @@ pub use journal::{
     JournalEntry, JournalSignedMove, JournalSnapshot, JournalSnapshotSource, MAX_JOURNAL_VERSION,
     TrustBasis, TrustDecision, WorldJournal, journal_version_required_by,
 };
+pub use audit::{GrantsState, WorldAuditLog, export_otlp_json, replay_grants};
 pub use metrics::{
     HistogramSnapshot, MetricsSnapshot, RegionWrites, WorldMetrics, WriteLocalitySnapshot,
 };
