@@ -698,6 +698,18 @@ func NewSupervised(opts SupervisedOptions) (*SupervisedTransport, error) {
 	return newSupervised(opts, nil)
 }
 
+// AttachSupervised attaches to the server's already-running supervisor
+// and never spawns one (#9962). It is the probe a daemon's state-dir
+// scan adopts supervised instances through: no socket, a dead socket,
+// or a live supervisor's refusal (another daemon attached, version
+// mismatch) are all errors, and nothing is started in their place.
+func AttachSupervised(opts SupervisedOptions) (*SupervisedTransport, error) {
+	if opts.StateDir == "" {
+		opts.StateDir = StateDir()
+	}
+	return attachSupervisor(SupervisorSocketPath(opts.StateDir, opts.Name), opts)
+}
+
 // spawnFunc starts a supervisor for the socket; nil means re-exec.
 type spawnFunc func(sock string, opts SupervisedOptions) error
 
