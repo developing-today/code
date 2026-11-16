@@ -262,6 +262,20 @@ function baseWindowsExpired(pool: QuotaPool, entry: QuotaCurrentEntry): boolean 
   });
 }
 
+/**
+ * #10684: pools whose extraction is intentionally uninstrumented
+ * (opendesign, deepseek, mistral, openrouter — no dated-read
+ * extractor by design) carry no extractor samples, so a failed or
+ * stale gatherer tick must not relabel them "error"/"stale" over
+ * their real window state. Their pool state recomputes from the
+ * standing (or adopted) windows via poolState; the gatherer
+ * failure still rides honestly on freshness. Instrumented pools
+ * keep the error/stale surfacing below.
+ */
+function isIntentionallyUninstrumented(pool: QuotaPool): boolean {
+  return pool.extractionHealth?.status === "intentional" && pool.extractionHealth?.reason === "uninstrumented";
+}
+
 function applyEntry(pool: QuotaPool, entry: QuotaCurrentEntry, state: FreshState, legError?: string): boolean {
   // Returns true when the pool's windows were replaced by a fresh read.
   const freshness: PoolFreshness = {
@@ -281,8 +295,8 @@ function applyEntry(pool: QuotaPool, entry: QuotaCurrentEntry, state: FreshState
   // the honest state until the next collector derivation.
   delete pool.exhaustion;
   if (state === "error") {
-    pool.state = "error";
     adoptEntryWindows(pool, entry);
+    pool.state = isIntentionallyUninstrumented(pool) ? poolState(pool) : "error";
     return false;
   }
   if (state === "lapsed") {
@@ -295,6 +309,15 @@ function applyEntry(pool: QuotaPool, entry: QuotaCurrentEntry, state: FreshState
     return true;
   }
   if (state === "stale") {
+    // #10684: an uninstrumented pool never takes the error/stale
+    // label — its state recomputes from the standing (or adopted)
+    // windows while freshness keeps the stale stamp. The #6942 /
+    // #7033 leg-error conversions below stay for instrumented pools.
+    if (isIntentionallyUninstrumented(pool)) {
+      adoptEntryWindows(pool, entry);
+      pool.state = poolState(pool);
+      return false;
+    }
     // #6942: a retained entry whose gatherer leg errored is that
     // read error surfacing, not mere staleness — but only a pool
     // with no dated windows of its own changes rendering for it.
