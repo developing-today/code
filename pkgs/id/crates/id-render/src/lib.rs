@@ -20,6 +20,13 @@
 //!   sibling rules of #5849 §4.5, and the names-not-expressions rule for
 //!   binding slots (#5849 §8) are build errors with source locations.
 //!
+//! * **Stage 3 — compose** ([`compose`]): the #5854 cascade over
+//!   data-supplied composition tables (theme layering, assertion and
+//!   override resolution, the web-only raw-CSS layer), producing the
+//!   resolved IR and composition report for one target. Conditional
+//!   blocks await a #5849 vocabulary representation; see the module
+//!   documentation for the stated boundary.
+//!
 //! The assertion half of stage 2 is deliberately not implemented yet:
 //! the `assert` attribute's grammar and role vocabulary are #5850's,
 //! and #5850 is not settled. The slot is parsed and carried opaquely,
@@ -28,6 +35,7 @@
 //! both vocabularies as versioned data). Stages 3–5 land with the
 //! mapping tables as follow-on work on #7918.
 
+pub mod compose;
 mod parse;
 mod validate;
 pub mod vocabulary;
@@ -177,6 +185,20 @@ pub fn parse(source: &str) -> Result<Document, BuildError> {
 /// signature: `Err` carries the full list.
 pub fn validate(doc: &Document) -> Result<(), Vec<BuildError>> {
     validate::validate(doc)
+}
+
+/// Stage 3: compose a validated document for one target.
+/// See [`compose::compose`] for the cascade and its data inputs.
+///
+/// # Errors
+///
+/// Returns every same-specificity tie found (each located).
+pub fn compose_document(
+    doc: &Document,
+    target: &compose::TargetSpec,
+    data: &compose::ComposeData,
+) -> Result<compose::ComposedDocument, Vec<BuildError>> {
+    compose::compose(doc, target, data)
 }
 
 /// Stages 1 + 2: parse a source document and validate it against the
