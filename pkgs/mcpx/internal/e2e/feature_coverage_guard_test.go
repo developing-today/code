@@ -318,7 +318,7 @@ func TestFeatureCoverageGuardSkipsPartialExecutionModes(t *testing.T) {
 			t.Fatalf("set %s: %v", name, err)
 		}
 		if violations := featureCoverageGuardViolations(0, nil); violations != nil {
-			flag.Set(name, orig)
+			_ = flag.Set(name, orig)
 			t.Fatalf("with %s set, guard returned %v, want nil (evaluation excluded)", name, violations)
 		}
 		if err := flag.Set(name, orig); err != nil {

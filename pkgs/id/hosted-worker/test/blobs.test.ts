@@ -60,7 +60,7 @@ function makeDO(name: string, bucket: ReturnType<typeof fakeBucket>) {
   const state = {
     id: { name },
     storage: { sql: fakeSql() },
-    blockConcurrencyWhile: async <T,>(fn: () => Promise<T>): Promise<T> => fn(),
+    blockConcurrencyWhile: async <T>(fn: () => Promise<T>): Promise<T> => fn(),
   };
   return new UserDO(state as never, { BLOBS: bucket } as never);
 }
@@ -121,7 +121,9 @@ test("delete removes only the caller's reference; shared bytes survive", async (
   const doA = makeDO(A, bucket);
   const doB = makeDO(B, bucket);
   const bytes = new TextEncoder().encode("delete me not");
-  const { hash } = (await (await doA.fetch(routed("/v1/blobs", A, { method: "PUT", body: bytes }))).json()) as { hash: string };
+  const { hash } = (await (await doA.fetch(routed("/v1/blobs", A, { method: "PUT", body: bytes }))).json()) as {
+    hash: string;
+  };
   await doB.fetch(routed("/v1/blobs", B, { method: "PUT", body: bytes }));
 
   const del = await doA.fetch(routed("/v1/blobs/" + hash, A, { method: "DELETE" }));

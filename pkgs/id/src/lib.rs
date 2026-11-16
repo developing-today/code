@@ -358,8 +358,8 @@ pub use id_cli::commands::{
     cmd_get_one_remote, cmd_gethash, cmd_id, cmd_list, cmd_list_remote, cmd_migrate_tags, cmd_peek,
     cmd_peers, cmd_put_hash, cmd_put_local_file, cmd_put_local_stdin, cmd_put_multi, cmd_put_one,
     cmd_put_one_remote, cmd_search, cmd_send, cmd_serve, cmd_show, cmd_tag,
-    create_local_client_endpoint,
-    create_serve_lock, get_serve_info, is_process_alive, remove_serve_lock,
+    create_local_client_endpoint, create_serve_lock, get_serve_info, is_process_alive,
+    remove_serve_lock,
 };
 pub use id_cli::helpers::{
     download_output_path, parse_get_spec, parse_put_spec, print_match_cli, print_match_repl,

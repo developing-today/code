@@ -29,6 +29,8 @@ import {
 } from "../src/feed.ts";
 import { isProjectPoolItem, resolveEpicRefs } from "../src/projects.ts";
 import { isSessionRecord } from "../src/registry.ts";
+import { resolveOrchestrationDocument } from "../src/orchestration-db.ts";
+import { assembleWorkItems, formatBlockers } from "../src/work-items.ts";
 
 const CORPUS = join(import.meta.dir, "contract-corpus", "v1");
 
@@ -61,6 +63,35 @@ describe("contract corpus: orchestration section (incl. the #1110 object-provena
     const normalized = normalizeOrchestrationSection(section);
     expect(normalized?.runId).toBe("orch-2026-10-27T03:14:56Z");
     expect(() => todayFromSection(normalized!)).not.toThrow();
+  });
+
+  test("both readers preserve blocked dependencies and derived work items", async () => {
+    const document = await loadJson("orchestration.json");
+    for (const source of ["db", "file"] as const) {
+      const result = await resolveOrchestrationDocument({
+        source,
+        readDb: async () => document,
+        readFile: async () => document,
+        validate: orchestrationSectionProblem,
+      });
+      expect(result.source).toBe(source);
+      const section = normalizeOrchestrationSection(result.document);
+      expect(section?.dependencies.map((dep) => dep.status)).toEqual(["queued", "blocked"]);
+      const item = assembleWorkItems(section!).find((row) => row.title === "Example dependent task");
+      expect(item?.blockers).toHaveLength(1);
+      expect(formatBlockers(item?.blockers ?? [])).toBe("Example upstream work (blocked)");
+    }
+  });
+
+  test("both top-level and nested unknown dependency literals still fail", async () => {
+    const section = normalizeOrchestrationSection(await loadJson("orchestration.json"))!;
+    const blocker = { ...section.dependencies[1], status: "unexpected" };
+    expect(orchestrationSectionProblem({ ...section, dependencies: [blocker] })).toBe(
+      "dependencies (per-dependency shape)",
+    );
+    const goal = section.goals[0];
+    const task = { ...goal.linedUp[0], blockedBy: [blocker] };
+    expect(normalizeOrchestrationSection({ ...section, goals: [{ ...goal, linedUp: [task] }] })).toBeNull();
   });
 
   test("the corpus pins the publisher's object provenance form (the #1110 contract)", async () => {

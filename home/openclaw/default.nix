@@ -322,7 +322,17 @@ in
       "matrix"
       "signal"
       "codex" # native Codex app-server harness
-      "copilot" # GitHub Copilot agent runtime
+      # NOTE: no "copilot" entry here — since #9551 Part A (Drew
+      # order 2026-11-13) the gateway settings below set
+      # plugins.entries.copilot.enabled = false (its only live
+      # surface was the model picker; its ACP harness is already
+      # excluded from acpx allowedAgents). The pinned nix-openclaw
+      # module asserts a selected runtime plugin is never disabled
+      # in plugins.entries, so selecting it here made the whole
+      # system evaluation fail (latent break, found at the
+      # 2026-11-15 switch). The plugin stays unpackaged and the
+      # picker stays clean; re-enable by restoring this line AND
+      # flipping the entries flag below together.
       "opencode" # OpenCode Zen/Go provider
       "deepseek" # DeepSeek provider (plan routes are via the local proxies below)
       "meta" # Meta provider

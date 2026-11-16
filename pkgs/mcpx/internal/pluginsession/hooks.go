@@ -1,4 +1,4 @@
-// Manifest-hook resolution for plugin sessions (#1873 slice 2,
+// Package pluginsession provides manifest-hook resolution for plugin sessions (#1873 slice 2,
 // #10046): the declarations Registry.Open records become live bus
 // subscribers, owned by the session and dropped by its Close.
 //

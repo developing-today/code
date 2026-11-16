@@ -447,10 +447,21 @@ function summarize(file: QuotaCurrentFile, nowMs: number): GathererSummary {
  * antigravity-direct.gemini / antigravity-direct.claude-gpt — and
  * opencode-go.drewrypope / opencode-go.popesdrew, produced by
  * entriesWithPoolSplits in quota-gather-map.ts). Synthesizing pools
- * for them would double-render the same read. Every OTHER serviceId
- * the read reports renders as a pool — see the synthesis below.
+ * for them would double-render the same read. "groq" (#10575) is a
+ * different shape of non-pool: Groq exposes no first-party quota
+ * surface at all (its gatherer row is permanently error-state,
+ * failureClass "no-quota-surface", with no windows), so synthesizing
+ * a pool for it would render an identity-only pool that can never
+ * carry a measurement. Every OTHER serviceId the read reports
+ * renders as a pool — see the synthesis below.
  */
-const NON_POOL_SERVICE_IDS: ReadonlySet<string> = new Set(["turso", "antigravity", "_antigravity", "opencode-go"]);
+const NON_POOL_SERVICE_IDS: ReadonlySet<string> = new Set([
+  "turso",
+  "antigravity",
+  "_antigravity",
+  "opencode-go",
+  "groq",
+]);
 
 /**
  * Overlay a parsed quota-current document onto a quota view. Pure:

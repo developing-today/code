@@ -876,7 +876,10 @@ mod tests {
         let over_long = "a".repeat(129);
         for nonce in ["", &over_long, "bad nonce"] {
             assert!(
-                matches!(sign_request(&client, &req, 10_000, nonce), Err(GatewayError::Envelope)),
+                matches!(
+                    sign_request(&client, &req, 10_000, nonce),
+                    Err(GatewayError::Envelope)
+                ),
                 "nonce {nonce:?} must map to GatewayError::Envelope"
             );
         }

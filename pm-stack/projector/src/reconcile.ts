@@ -12,6 +12,22 @@ type Env = Record<string, string | undefined>;
 const REPO_STREAMS = ["issues", "prs", "issue_comments", "review_comments", "reviews"] as const;
 type Stream = (typeof REPO_STREAMS)[number];
 
+/** Overlap subtracted from the reviews cursor before it bounds the PR
+ *  sweep (#9850 round 2): covers the skew between a review's
+ *  submitted_at (what the cursor stores) and its PR's updated_at (what
+ *  the sweep filters on), and keeps a just-failed PR retryable for a
+ *  few passes. Five minutes costs a handful of extra PR fetches. */
+export const REVIEWS_CURSOR_OVERLAP_MS = 5 * 60 * 1000;
+
+/** The reviews sweep cutoff for a stored cursor, or null for a full
+ *  bootstrap sweep (no cursor yet, or an unparseable one). */
+export function reviewsCutoff(since: string | null): string | null {
+  if (!since) return null;
+  const ms = Date.parse(since);
+  if (!Number.isFinite(ms)) return null;
+  return new Date(ms - REVIEWS_CURSOR_OVERLAP_MS).toISOString();
+}
+
 function csv(env: Env): string[] {
   return (env.PM_REPOS ?? "")
     .split(",")
@@ -56,7 +72,23 @@ async function reconcileStream(
   // so upserts from it store the truth on first sight and heal any legacy
   // false-default rows on a later pass. The issues stream is unchanged.
   if (stream === "prs") {
-    const pulls = await listResource<Record<string, any>>(auth, `repos/${repo}/pulls?per_page=100&state=all`, fetchFn);
+    // Incremental (#9850 round 2): the list is walked newest-first and
+    // the walk stops at the stored cursor; rows at or below the cursor
+    // are not re-upserted. That is safe because the cursor only ever
+    // covers PRs an earlier unfiltered pass already upserted from
+    // pulls-shaped data — a PR is re-upserted on the first pass that
+    // sees it change, which is also what heals rows first written by
+    // another stream. The cursor still advances over the full walk.
+    const pulls = await listResource<Record<string, any>>(
+      auth,
+      `repos/${repo}/pulls?per_page=100&state=all&sort=updated&direction=desc`,
+      fetchFn,
+      since
+        ? {
+            stopAfterPage: (page) => page.every((p) => typeof p?.updated_at === "string" && p.updated_at <= since),
+          }
+        : {},
+    );
     let cursor: string | null = null;
     let skipped = 0;
     const rows: ReturnType<typeof fromIssueOrPr>[] = [];
@@ -65,9 +97,10 @@ async function reconcileStream(
         skipped++;
         continue;
       }
-      rows.push(fromIssueOrPr(repo, pr, "pr"));
       const u = pr.updated_at ?? pr.created_at;
       if (typeof u === "string" && (!cursor || u > cursor)) cursor = u;
+      if (since && typeof pr.updated_at === "string" && pr.updated_at <= since) continue;
+      rows.push(fromIssueOrPr(repo, pr, "pr"));
     }
     // One batched write for the whole stream, not a round trip per row (#9850).
     await store.upsertItems(db, rows);
@@ -149,10 +182,31 @@ async function reconcileStream(
     // a failure fetching or upserting one PR's reviews is recorded in
     // `errors` and contained to that PR — later PRs still reconcile in
     // the same run, `written` counts the upserts that actually landed,
-    // and the cursor advances over those upserted reviews. The failing
-    // PR is retried next poll: the stream re-reads the PR list
-    // unfiltered each time, so no PR is skipped permanently.
-    const prs = await listResource<Record<string, any>>(auth, `repos/${repo}/pulls?per_page=100&state=all`, fetchFn);
+    // and the cursor advances over those upserted reviews.
+    //
+    // Incremental (#9850 round 2): the first version of this stream
+    // ignored its cursor and re-fetched the reviews of EVERY PR on
+    // every pass — for developing-today/code that is ~4,700 GitHub
+    // calls and ~5,400 review upserts per pass, and a full pass took
+    // ~30 minutes of sustained DB writes, which is what stalled
+    // /health. A new review updates its PR, so only PRs updated at or
+    // after the cursor (minus a small overlap for clock skew between
+    // a review's submitted_at and its PR's updated_at) can hold
+    // reviews the cursor has not covered. A failing PR stays a
+    // candidate while it is inside that window and re-enters the
+    // moment the PR changes again; when a PR is fetched, its full
+    // review list comes back, so nothing is skipped permanently.
+    const cutoff = reviewsCutoff(since);
+    const prs = await listResource<Record<string, any>>(
+      auth,
+      `repos/${repo}/pulls?per_page=100&state=all&sort=updated&direction=desc`,
+      fetchFn,
+      cutoff
+        ? {
+            stopAfterPage: (page) => page.every((p) => typeof p?.updated_at === "string" && p.updated_at < cutoff),
+          }
+        : {},
+    );
     let cursor: string | null = null;
     let skipped = 0;
     const errors: { pr: number; error: string }[] = [];
@@ -161,6 +215,10 @@ async function reconcileStream(
         skipped++;
         continue;
       }
+      // Positively stale: the PR has not changed since before the
+      // cursor window, so its reviews are already projected. A missing
+      // updated_at is never treated as stale.
+      if (cutoff && typeof pr.updated_at === "string" && pr.updated_at < cutoff) continue;
       try {
         const reviews = await listResource<Record<string, any>>(
           auth,

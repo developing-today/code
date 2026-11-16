@@ -10,7 +10,7 @@
 //! matrix (missing module, wrong signature) are the `roc-cap-demo`
 //! tests, already wired through `roc-test.sh`; this suite covers the
 //! gate-level rows.
-#![allow(clippy::unwrap_used, clippy::expect_used)]
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
 use std::collections::{BTreeSet, HashMap};
 use std::path::PathBuf;

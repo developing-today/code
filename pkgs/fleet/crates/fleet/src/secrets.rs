@@ -143,11 +143,7 @@ fn cmd_list(config: &Config, args: &[String]) -> i32 {
     // session-broker source reads the same route.
     let names_result = match fleet_secrets::DirectBrokerSource::from_config(config) {
         Some(direct) => direct.list_names(),
-        None => BrokerSource {
-            broker_socket: config.broker_socket(),
-            token_file: config.secrets_token_file(),
-        }
-        .list_names(),
+        None => BrokerSource::new(config.broker_socket(), config.secrets_token_file()).list_names(),
     };
     match names_result {
         Ok(names) => {

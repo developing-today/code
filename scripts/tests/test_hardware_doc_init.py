@@ -45,6 +45,25 @@ def commit_file(repo, name, content, message):
 
 
 class TestHardwareDocInit(unittest.TestCase):
+    def test_unexpected_argument_is_rejected_without_side_effects(self):
+        # Absent target: valid invocation would clone and create symlink.
+        env = os.environ.copy()
+        env.update(ENV_EXTRA)
+        env["HARDWARE_DOC_URL"] = str(self.origin)
+        result = subprocess.run(
+            ["bash", str(SCRIPT), "unexpected-arg"],
+            cwd=self.main_repo,
+            text=True,
+            capture_output=True,
+            check=False,
+            env=env,
+        )
+        self.assertEqual(result.returncode, 2, result)
+        self.assertIn("usage error", result.stderr)
+        self.assertNotIn("cloned", (result.stdout + result.stderr).lower())
+        self.assertFalse((self.target / ".git").is_dir())
+        self.assertFalse((self.main_repo / "doc" / "hardware").exists())
+
     def setUp(self):
         self._tmp = tempfile.TemporaryDirectory(prefix="hardware-doc-init-")
         self.addCleanup(self._tmp.cleanup)

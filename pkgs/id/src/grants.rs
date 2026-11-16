@@ -483,6 +483,7 @@ impl GrantState {
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
     use super::*;
 
@@ -702,6 +703,7 @@ mod tests {
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod property_tests {
     //! Property/model coverage per the repo testing doctrine
     //! (AGENTS.md): canonicalisation and fingerprinting are ID-format

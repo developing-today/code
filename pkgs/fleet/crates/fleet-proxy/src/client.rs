@@ -460,6 +460,9 @@ pub fn run_connect(
             body: req.body.clone(),
             port: req.service_port,
             token_file: req.token_file.clone(),
+            trip: None,
+            transport: None,
+            cf_ok: None,
         };
         // A legacy broker already spent its first reply eating the
         // hello; the round-trip proceeds identically from here.
@@ -509,8 +512,10 @@ Autostart this host's fleet roles if they are not running. The
 FLEET_HOST_CONFIG) names this machine's location and roles: on
 the sandbox that is the session proxy (probe the broker socket,
 sync the PATH shims when a broker answers, start one when none
-does — a strict no-op when a broker is already running). An
-unknown location reports state, starts nothing, and exits 69.
+does — a strict no-op when a broker is already running) plus the
+standing secrets broker (probe its Unix socket, start one bound
+to loopback when none answers). An unknown location reports
+state, starts nothing, and exits 69.
 
 Takes no arguments.";
 
@@ -589,22 +594,33 @@ fn run_init_resolved(
     match host.init_mode {
         InitMode::Spawn => {
             let mut proxy_active = false;
+            let mut secrets_broker_active = false;
             for role in &active {
                 if role == "proxy" {
                     proxy_active = true;
+                } else if role == "secrets-broker" {
+                    secrets_broker_active = true;
                 } else {
-                    // v1 spawn semantics exist for the proxy only
-                    // (the sandbox's one role, §5); any other role
-                    // in a spawn manifest is reported, not spawned.
+                    // v1 spawn semantics exist for the proxy and the
+                    // standing sandbox secrets broker (stage-2 broker
+                    // resilience) only; any other role in a spawn
+                    // manifest is reported, not spawned.
                     println!(
                         "fleet: role {role}: not spawn-managed in this build — reported, skipped"
                     );
                 }
             }
+            let mut code = 0;
             if proxy_active {
-                return run_init_proxy(config, client, capabilities);
+                code = run_init_proxy(config, client, capabilities)?;
             }
-            Ok(0)
+            if secrets_broker_active {
+                let sb_code = run_init_secrets_broker(config)?;
+                if code == 0 {
+                    code = sb_code;
+                }
+            }
+            Ok(code)
         }
         InitMode::Systemd => {
             for role in &active {
@@ -767,6 +783,94 @@ fn run_init_proxy(
         sync.tools.join(", ")
     );
     Ok(0)
+}
+
+/// The secrets-broker role's spawn-mode ensure (stage-2 broker
+/// resilience): probe the broker's own Unix socket first — a live
+/// owner means status and out, never a spawn, never a restart
+/// (the init strict no-op, §8). Only an unanswered socket spawns
+/// `fleet serve secrets-broker` detached, bound to loopback: the
+/// sandbox broker is a local capability, never a LAN surface.
+///
+/// The loopback bind is enforced twice: the spawn sets
+/// `SECRETS_BROKER_BIND=127.0.0.1:4800` explicitly, and the broker
+/// itself forces loopback when `FLEET_LOCATION=sandbox`, so a stale
+/// environment can never widen it.
+fn run_init_secrets_broker(config: &Config) -> Result<i32, ClientError> {
+    let socket = config.secrets_broker_socket();
+    if fleet_config::probe_socket(&socket) {
+        println!(
+            "fleet: secrets-broker already running ({}); nothing spawned",
+            socket.display()
+        );
+        return Ok(0);
+    }
+    ensure_secrets_broker(config)?;
+    println!(
+        "fleet: secrets-broker started ({}; loopback only)",
+        socket.display()
+    );
+    Ok(0)
+}
+
+/// Wait for the spawned secrets broker's socket to answer, like
+/// `ensure_broker`'s post-spawn wait: the spawn returns as soon as
+/// the daemon execs, and callers (and the proof) need the socket
+/// to be dialable before init reports success.
+fn ensure_secrets_broker(config: &Config) -> Result<(), ClientError> {
+    spawn_secrets_broker(config)?;
+    let socket = config.secrets_broker_socket();
+    for _ in 0..50 {
+        std::thread::sleep(Duration::from_millis(100));
+        if fleet_config::probe_socket(&socket) {
+            return Ok(());
+        }
+    }
+    Err(ClientError::Transport(format!(
+        "secrets-broker did not come up at {}",
+        socket.display()
+    )))
+}
+
+/// Spawn the secrets-broker serve role detached (setsid, output
+/// appended to secrets-broker.log beside the socket — the proxy
+/// spawn's shape). The argv is the post-rename spelling, `fleet
+/// serve secrets-broker`.
+fn spawn_secrets_broker(config: &Config) -> Result<(), ClientError> {
+    use std::os::unix::process::CommandExt;
+    let socket = config.secrets_broker_socket();
+    let sock_dir = socket
+        .parent()
+        .map(|p| p.to_path_buf())
+        .unwrap_or_else(|| std::path::PathBuf::from("."));
+    std::fs::create_dir_all(&sock_dir)
+        .map_err(|e| ClientError::Transport(format!("socket dir: {e}")))?;
+    let log = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(sock_dir.join("secrets-broker.log"))
+        .map_err(|e| ClientError::Transport(format!("secrets-broker.log: {e}")))?;
+    let exe =
+        std::env::current_exe().map_err(|e| ClientError::Transport(format!("current exe: {e}")))?;
+    let mut cmd = std::process::Command::new(exe);
+    cmd.args(["serve", "secrets-broker"])
+        .env("SECRETS_BROKER_BIND", "127.0.0.1:4800")
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::from(log.try_clone().map_err(|e| {
+            ClientError::Transport(format!("secrets-broker.log: {e}"))
+        })?))
+        .stderr(std::process::Stdio::from(log));
+    unsafe {
+        cmd.pre_exec(|| {
+            if libc::setsid() == -1 {
+                return Err(std::io::Error::last_os_error());
+            }
+            Ok(())
+        });
+    }
+    cmd.spawn()
+        .map_err(|e| ClientError::Transport(format!("spawn secrets-broker: {e}")))?;
+    Ok(())
 }
 
 #[cfg(test)]

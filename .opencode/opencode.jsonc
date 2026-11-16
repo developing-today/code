@@ -16,6 +16,14 @@
   //   Gemini path is wanted one day, use the "google" provider below — it is
   //   THE token path (Gemini API key; working muse-sandbox free-tier key is
   //   in the credential store as "Google API (muse-sandbox)").
+  //   2026-11-16 (Drew): the earmark is EXERCISED -- the "google" provider
+  //   is defined and enabled below (AI Studio free tier, our own key;
+  //   see its block note).
+  //   2026-11-16 (Drew, later): reshaped the same day into per-project
+  //   aliases -- google.muse / google.gen-lang / google.personal /
+  //   google.drew (free) and google.developing-today (PAYG) -- grouped
+  //   by the google-free / google-payg provider routes below. The bare
+  //   "google" id returns to the tombstone set (no definition).
   // - THE Antigravity provider is "antigravity-ls" (warm language-server
   //   route). "antigravity-agy" (CLI spawn route) sat disabled as the
   //   fallback until 2026-10-28, when Drew re-enabled it for one seated
@@ -331,6 +339,18 @@
   // they are listed here (verified live 2026-11-03 -- with the entries removed
   // all five reappeared in the running server within minutes). The entries are
   // the only trace of them left; there are no definitions to flip back on.
+  // 2026-11-16 (Drew, free-provider pass): google LEAVES the tombstone set
+  // in this pass -- it carries a full definition again below (AI Studio
+  // free tier) and its entry leaves disabled_providers above. The other
+  // four stay tombstoned.
+  // 2026-11-16 (Drew, later the same day): google RETURNS to the
+  // tombstone set. The exercised door was reshaped into per-project
+  // alias providers (google.muse, google.gen-lang, google.personal,
+  // google.drew, google.developing-today), each with its own
+  // definition and credential row, so the bare id once again has no
+  // definition -- and without this entry the catalog would
+  // auto-activate it. The aliases are distinct ids; this entry does
+  // not touch them.
   // openai-codex followed on 2026-11-03: its ten route legs were re-seated
   // onto openai-plan (the ChatGPT provider route) and the definition was
   // deleted with the rest. It is a custom id with no catalog entry, so --
@@ -944,6 +964,1094 @@
           "name": "GLM-4.5-Flash (Z.ai Free)",
           "limit": {
             "context": 131072
+          }
+        }
+      }
+    },
+    // Google AI Studio (Gemini) doors -- per-project alias
+    // providers (2026-11-16, Drew): one alias per Google project,
+    // following the _openai.main/_openai.alt and opencode-go.*
+    // convention. The four FREE projects (google.muse,
+    // google.gen-lang, google.personal, google.drew) are grouped
+    // by the google-free provider route (round-robin) below; the
+    // paid project (google.developing-today) is grouped by
+    // google-payg, wired and credentialed but seated NOWHERE
+    // (Drew: set up and confirmed, not configured for use).
+    // Consumers name the groups, never the raw aliases. The only
+    // working doors to the Gemini shelf while _antigravity is
+    // banned (account disabled 2026-11-14; never re-enable).
+    // Every alias carries the same explicit 5-model list -- NOT
+    // instanceOf the built-in catalog, which would also expose
+    // image/TTS/embedding models. Free-tier serving verified live
+    // 2026-11-16 on all four free keys: gemini-3.5-flash and both
+    // Flash-Lites answer generateContent 200 on every project;
+    // gemini-4-hydrogen answers 200 on gen-lang/personal/drew and
+    // is entitled on muse (503 high-demand at probe time);
+    // gemini-3.8-flash is entitled on every project (503
+    // high-demand at probe times -- a capacity answer, not a
+    // quota or auth refusal). NOT listed: gemini-4-carbon /
+    // gemini-4-argon (429 -- no free-tier quota) and the
+    // gemini-2.5 line (404 -- retired for new users). Limits
+    // carry context AND output (schema rule, code#5934). Variants
+    // mirror the models.dev effort sets and pin thinkingLevel
+    // through the native provider's gemini protocol. Free quota
+    // is per model PER PROJECT, so the four projects multiply the
+    // daily buckets; seats take each model's TOP effort variant
+    // (the tier meters requests per day, not tokens -- Drew,
+    // 2026-11-16).
+    // muse project -- the original door from PR #10618,
+    // reshaped into the alias scheme the same day. Key:
+    // Bitwarden `google.gemini-api-key` (the same key that
+    // serves /v1beta/decisions for Gemini Decision 1),
+    // credential row cred_1a1e31a2756001K8DAZCcJAYfd
+    // (integrationID google.muse), created 2026-11-16.
+    "google.muse": {
+      "npm": "@opencode/ai/providers/google",
+      "name": "Google AI Studio (Gemini Free - muse project)",
+      "options": {
+        "baseURL": "https://generativelanguage.googleapis.com/v1beta"
+      },
+      "models": {
+        "gemini-4-hydrogen": {
+          "name": "Gemini 4 Hydrogen (AI Studio Free)",
+          "variants": {
+            "low": {
+              "options": {
+                "thinkingConfig": {
+                  "includeThoughts": true,
+                  "thinkingLevel": "low"
+                }
+              }
+            },
+            "medium": {
+              "options": {
+                "thinkingConfig": {
+                  "includeThoughts": true,
+                  "thinkingLevel": "medium"
+                }
+              }
+            },
+            "high": {
+              "options": {
+                "thinkingConfig": {
+                  "includeThoughts": true,
+                  "thinkingLevel": "high"
+                }
+              }
+            },
+            "xhigh": {
+              "options": {
+                "thinkingConfig": {
+                  "includeThoughts": true,
+                  "thinkingLevel": "xhigh"
+                }
+              }
+            }
+          },
+          "limit": {
+            "context": 1048576,
+            "output": 65536
+          }
+        },
+        "gemini-3.8-flash": {
+          "name": "Gemini 3.8 Flash (AI Studio Free)",
+          "variants": {
+            "low": {
+              "options": {
+                "thinkingConfig": {
+                  "includeThoughts": true,
+                  "thinkingLevel": "low"
+                }
+              }
+            },
+            "medium": {
+              "options": {
+                "thinkingConfig": {
+                  "includeThoughts": true,
+                  "thinkingLevel": "medium"
+                }
+              }
+            },
+            "high": {
+              "options": {
+                "thinkingConfig": {
+                  "includeThoughts": true,
+                  "thinkingLevel": "high"
+                }
+              }
+            }
+          },
+          "limit": {
+            "context": 1048576,
+            "output": 65536
+          }
+        },
+        "gemini-3.5-flash": {
+          "name": "Gemini 3.5 Flash (AI Studio Free)",
+          "variants": {
+            "minimal": {
+              "options": {
+                "thinkingConfig": {
+                  "includeThoughts": true,
+                  "thinkingLevel": "minimal"
+                }
+              }
+            },
+            "low": {
+              "options": {
+                "thinkingConfig": {
+                  "includeThoughts": true,
+                  "thinkingLevel": "low"
+                }
+              }
+            },
+            "medium": {
+              "options": {
+                "thinkingConfig": {
+                  "includeThoughts": true,
+                  "thinkingLevel": "medium"
+                }
+              }
+            },
+            "high": {
+              "options": {
+                "thinkingConfig": {
+                  "includeThoughts": true,
+                  "thinkingLevel": "high"
+                }
+              }
+            }
+          },
+          "limit": {
+            "context": 1048576,
+            "output": 65536
+          }
+        },
+        "gemini-3.5-flash-lite": {
+          "name": "Gemini 3.5 Flash Lite (AI Studio Free)",
+          "variants": {
+            "minimal": {
+              "options": {
+                "thinkingConfig": {
+                  "includeThoughts": true,
+                  "thinkingLevel": "minimal"
+                }
+              }
+            },
+            "low": {
+              "options": {
+                "thinkingConfig": {
+                  "includeThoughts": true,
+                  "thinkingLevel": "low"
+                }
+              }
+            },
+            "medium": {
+              "options": {
+                "thinkingConfig": {
+                  "includeThoughts": true,
+                  "thinkingLevel": "medium"
+                }
+              }
+            },
+            "high": {
+              "options": {
+                "thinkingConfig": {
+                  "includeThoughts": true,
+                  "thinkingLevel": "high"
+                }
+              }
+            }
+          },
+          "limit": {
+            "context": 1048576,
+            "output": 65536
+          }
+        },
+        "gemini-3.1-flash-lite": {
+          "name": "Gemini 3.1 Flash Lite (AI Studio Free)",
+          "variants": {
+            "minimal": {
+              "options": {
+                "thinkingConfig": {
+                  "includeThoughts": true,
+                  "thinkingLevel": "minimal"
+                }
+              }
+            },
+            "low": {
+              "options": {
+                "thinkingConfig": {
+                  "includeThoughts": true,
+                  "thinkingLevel": "low"
+                }
+              }
+            },
+            "medium": {
+              "options": {
+                "thinkingConfig": {
+                  "includeThoughts": true,
+                  "thinkingLevel": "medium"
+                }
+              }
+            },
+            "high": {
+              "options": {
+                "thinkingConfig": {
+                  "includeThoughts": true,
+                  "thinkingLevel": "high"
+                }
+              }
+            }
+          },
+          "limit": {
+            "context": 1048576,
+            "output": 65536
+          }
+        }
+      }
+    },
+    // gen-lang project -- Drew-supplied key 2026-11-16.
+    // Key: Bitwarden `google.aistudio.free-gen-lang-api-key`,
+    // credential row cred_1a1e31a2b54001V4cvy5RTp0yS
+    // (integrationID google.gen-lang), created 2026-11-16.
+    "google.gen-lang": {
+      "npm": "@opencode/ai/providers/google",
+      "name": "Google AI Studio (Gemini Free - gen-lang project)",
+      "options": {
+        "baseURL": "https://generativelanguage.googleapis.com/v1beta"
+      },
+      "models": {
+        "gemini-4-hydrogen": {
+          "name": "Gemini 4 Hydrogen (AI Studio Free)",
+          "variants": {
+            "low": {
+              "options": {
+                "thinkingConfig": {
+                  "includeThoughts": true,
+                  "thinkingLevel": "low"
+                }
+              }
+            },
+            "medium": {
+              "options": {
+                "thinkingConfig": {
+                  "includeThoughts": true,
+                  "thinkingLevel": "medium"
+                }
+              }
+            },
+            "high": {
+              "options": {
+                "thinkingConfig": {
+                  "includeThoughts": true,
+                  "thinkingLevel": "high"
+                }
+              }
+            },
+            "xhigh": {
+              "options": {
+                "thinkingConfig": {
+                  "includeThoughts": true,
+                  "thinkingLevel": "xhigh"
+                }
+              }
+            }
+          },
+          "limit": {
+            "context": 1048576,
+            "output": 65536
+          }
+        },
+        "gemini-3.8-flash": {
+          "name": "Gemini 3.8 Flash (AI Studio Free)",
+          "variants": {
+            "low": {
+              "options": {
+                "thinkingConfig": {
+                  "includeThoughts": true,
+                  "thinkingLevel": "low"
+                }
+              }
+            },
+            "medium": {
+              "options": {
+                "thinkingConfig": {
+                  "includeThoughts": true,
+                  "thinkingLevel": "medium"
+                }
+              }
+            },
+            "high": {
+              "options": {
+                "thinkingConfig": {
+                  "includeThoughts": true,
+                  "thinkingLevel": "high"
+                }
+              }
+            }
+          },
+          "limit": {
+            "context": 1048576,
+            "output": 65536
+          }
+        },
+        "gemini-3.5-flash": {
+          "name": "Gemini 3.5 Flash (AI Studio Free)",
+          "variants": {
+            "minimal": {
+              "options": {
+                "thinkingConfig": {
+                  "includeThoughts": true,
+                  "thinkingLevel": "minimal"
+                }
+              }
+            },
+            "low": {
+              "options": {
+                "thinkingConfig": {
+                  "includeThoughts": true,
+                  "thinkingLevel": "low"
+                }
+              }
+            },
+            "medium": {
+              "options": {
+                "thinkingConfig": {
+                  "includeThoughts": true,
+                  "thinkingLevel": "medium"
+                }
+              }
+            },
+            "high": {
+              "options": {
+                "thinkingConfig": {
+                  "includeThoughts": true,
+                  "thinkingLevel": "high"
+                }
+              }
+            }
+          },
+          "limit": {
+            "context": 1048576,
+            "output": 65536
+          }
+        },
+        "gemini-3.5-flash-lite": {
+          "name": "Gemini 3.5 Flash Lite (AI Studio Free)",
+          "variants": {
+            "minimal": {
+              "options": {
+                "thinkingConfig": {
+                  "includeThoughts": true,
+                  "thinkingLevel": "minimal"
+                }
+              }
+            },
+            "low": {
+              "options": {
+                "thinkingConfig": {
+                  "includeThoughts": true,
+                  "thinkingLevel": "low"
+                }
+              }
+            },
+            "medium": {
+              "options": {
+                "thinkingConfig": {
+                  "includeThoughts": true,
+                  "thinkingLevel": "medium"
+                }
+              }
+            },
+            "high": {
+              "options": {
+                "thinkingConfig": {
+                  "includeThoughts": true,
+                  "thinkingLevel": "high"
+                }
+              }
+            }
+          },
+          "limit": {
+            "context": 1048576,
+            "output": 65536
+          }
+        },
+        "gemini-3.1-flash-lite": {
+          "name": "Gemini 3.1 Flash Lite (AI Studio Free)",
+          "variants": {
+            "minimal": {
+              "options": {
+                "thinkingConfig": {
+                  "includeThoughts": true,
+                  "thinkingLevel": "minimal"
+                }
+              }
+            },
+            "low": {
+              "options": {
+                "thinkingConfig": {
+                  "includeThoughts": true,
+                  "thinkingLevel": "low"
+                }
+              }
+            },
+            "medium": {
+              "options": {
+                "thinkingConfig": {
+                  "includeThoughts": true,
+                  "thinkingLevel": "medium"
+                }
+              }
+            },
+            "high": {
+              "options": {
+                "thinkingConfig": {
+                  "includeThoughts": true,
+                  "thinkingLevel": "high"
+                }
+              }
+            }
+          },
+          "limit": {
+            "context": 1048576,
+            "output": 65536
+          }
+        }
+      }
+    },
+    // personal project -- Drew-supplied key 2026-11-16.
+    // Key: Bitwarden `google.aistudio.free-personal-api-key`,
+    // credential row cred_1a1e31a2ec9001eC5fCvlVLOv7
+    // (integrationID google.personal), created 2026-11-16.
+    "google.personal": {
+      "npm": "@opencode/ai/providers/google",
+      "name": "Google AI Studio (Gemini Free - personal project)",
+      "options": {
+        "baseURL": "https://generativelanguage.googleapis.com/v1beta"
+      },
+      "models": {
+        "gemini-4-hydrogen": {
+          "name": "Gemini 4 Hydrogen (AI Studio Free)",
+          "variants": {
+            "low": {
+              "options": {
+                "thinkingConfig": {
+                  "includeThoughts": true,
+                  "thinkingLevel": "low"
+                }
+              }
+            },
+            "medium": {
+              "options": {
+                "thinkingConfig": {
+                  "includeThoughts": true,
+                  "thinkingLevel": "medium"
+                }
+              }
+            },
+            "high": {
+              "options": {
+                "thinkingConfig": {
+                  "includeThoughts": true,
+                  "thinkingLevel": "high"
+                }
+              }
+            },
+            "xhigh": {
+              "options": {
+                "thinkingConfig": {
+                  "includeThoughts": true,
+                  "thinkingLevel": "xhigh"
+                }
+              }
+            }
+          },
+          "limit": {
+            "context": 1048576,
+            "output": 65536
+          }
+        },
+        "gemini-3.8-flash": {
+          "name": "Gemini 3.8 Flash (AI Studio Free)",
+          "variants": {
+            "low": {
+              "options": {
+                "thinkingConfig": {
+                  "includeThoughts": true,
+                  "thinkingLevel": "low"
+                }
+              }
+            },
+            "medium": {
+              "options": {
+                "thinkingConfig": {
+                  "includeThoughts": true,
+                  "thinkingLevel": "medium"
+                }
+              }
+            },
+            "high": {
+              "options": {
+                "thinkingConfig": {
+                  "includeThoughts": true,
+                  "thinkingLevel": "high"
+                }
+              }
+            }
+          },
+          "limit": {
+            "context": 1048576,
+            "output": 65536
+          }
+        },
+        "gemini-3.5-flash": {
+          "name": "Gemini 3.5 Flash (AI Studio Free)",
+          "variants": {
+            "minimal": {
+              "options": {
+                "thinkingConfig": {
+                  "includeThoughts": true,
+                  "thinkingLevel": "minimal"
+                }
+              }
+            },
+            "low": {
+              "options": {
+                "thinkingConfig": {
+                  "includeThoughts": true,
+                  "thinkingLevel": "low"
+                }
+              }
+            },
+            "medium": {
+              "options": {
+                "thinkingConfig": {
+                  "includeThoughts": true,
+                  "thinkingLevel": "medium"
+                }
+              }
+            },
+            "high": {
+              "options": {
+                "thinkingConfig": {
+                  "includeThoughts": true,
+                  "thinkingLevel": "high"
+                }
+              }
+            }
+          },
+          "limit": {
+            "context": 1048576,
+            "output": 65536
+          }
+        },
+        "gemini-3.5-flash-lite": {
+          "name": "Gemini 3.5 Flash Lite (AI Studio Free)",
+          "variants": {
+            "minimal": {
+              "options": {
+                "thinkingConfig": {
+                  "includeThoughts": true,
+                  "thinkingLevel": "minimal"
+                }
+              }
+            },
+            "low": {
+              "options": {
+                "thinkingConfig": {
+                  "includeThoughts": true,
+                  "thinkingLevel": "low"
+                }
+              }
+            },
+            "medium": {
+              "options": {
+                "thinkingConfig": {
+                  "includeThoughts": true,
+                  "thinkingLevel": "medium"
+                }
+              }
+            },
+            "high": {
+              "options": {
+                "thinkingConfig": {
+                  "includeThoughts": true,
+                  "thinkingLevel": "high"
+                }
+              }
+            }
+          },
+          "limit": {
+            "context": 1048576,
+            "output": 65536
+          }
+        },
+        "gemini-3.1-flash-lite": {
+          "name": "Gemini 3.1 Flash Lite (AI Studio Free)",
+          "variants": {
+            "minimal": {
+              "options": {
+                "thinkingConfig": {
+                  "includeThoughts": true,
+                  "thinkingLevel": "minimal"
+                }
+              }
+            },
+            "low": {
+              "options": {
+                "thinkingConfig": {
+                  "includeThoughts": true,
+                  "thinkingLevel": "low"
+                }
+              }
+            },
+            "medium": {
+              "options": {
+                "thinkingConfig": {
+                  "includeThoughts": true,
+                  "thinkingLevel": "medium"
+                }
+              }
+            },
+            "high": {
+              "options": {
+                "thinkingConfig": {
+                  "includeThoughts": true,
+                  "thinkingLevel": "high"
+                }
+              }
+            }
+          },
+          "limit": {
+            "context": 1048576,
+            "output": 65536
+          }
+        }
+      }
+    },
+    // Drew project -- Drew-supplied key 2026-11-16.
+    // Key: Bitwarden `google.aistudio.free-drew-api-key`,
+    // credential row cred_1a1e31a32a3001PJGZOrc1f4NN
+    // (integrationID google.drew), created 2026-11-16.
+    "google.drew": {
+      "npm": "@opencode/ai/providers/google",
+      "name": "Google AI Studio (Gemini Free - Drew project)",
+      "options": {
+        "baseURL": "https://generativelanguage.googleapis.com/v1beta"
+      },
+      "models": {
+        "gemini-4-hydrogen": {
+          "name": "Gemini 4 Hydrogen (AI Studio Free)",
+          "variants": {
+            "low": {
+              "options": {
+                "thinkingConfig": {
+                  "includeThoughts": true,
+                  "thinkingLevel": "low"
+                }
+              }
+            },
+            "medium": {
+              "options": {
+                "thinkingConfig": {
+                  "includeThoughts": true,
+                  "thinkingLevel": "medium"
+                }
+              }
+            },
+            "high": {
+              "options": {
+                "thinkingConfig": {
+                  "includeThoughts": true,
+                  "thinkingLevel": "high"
+                }
+              }
+            },
+            "xhigh": {
+              "options": {
+                "thinkingConfig": {
+                  "includeThoughts": true,
+                  "thinkingLevel": "xhigh"
+                }
+              }
+            }
+          },
+          "limit": {
+            "context": 1048576,
+            "output": 65536
+          }
+        },
+        "gemini-3.8-flash": {
+          "name": "Gemini 3.8 Flash (AI Studio Free)",
+          "variants": {
+            "low": {
+              "options": {
+                "thinkingConfig": {
+                  "includeThoughts": true,
+                  "thinkingLevel": "low"
+                }
+              }
+            },
+            "medium": {
+              "options": {
+                "thinkingConfig": {
+                  "includeThoughts": true,
+                  "thinkingLevel": "medium"
+                }
+              }
+            },
+            "high": {
+              "options": {
+                "thinkingConfig": {
+                  "includeThoughts": true,
+                  "thinkingLevel": "high"
+                }
+              }
+            }
+          },
+          "limit": {
+            "context": 1048576,
+            "output": 65536
+          }
+        },
+        "gemini-3.5-flash": {
+          "name": "Gemini 3.5 Flash (AI Studio Free)",
+          "variants": {
+            "minimal": {
+              "options": {
+                "thinkingConfig": {
+                  "includeThoughts": true,
+                  "thinkingLevel": "minimal"
+                }
+              }
+            },
+            "low": {
+              "options": {
+                "thinkingConfig": {
+                  "includeThoughts": true,
+                  "thinkingLevel": "low"
+                }
+              }
+            },
+            "medium": {
+              "options": {
+                "thinkingConfig": {
+                  "includeThoughts": true,
+                  "thinkingLevel": "medium"
+                }
+              }
+            },
+            "high": {
+              "options": {
+                "thinkingConfig": {
+                  "includeThoughts": true,
+                  "thinkingLevel": "high"
+                }
+              }
+            }
+          },
+          "limit": {
+            "context": 1048576,
+            "output": 65536
+          }
+        },
+        "gemini-3.5-flash-lite": {
+          "name": "Gemini 3.5 Flash Lite (AI Studio Free)",
+          "variants": {
+            "minimal": {
+              "options": {
+                "thinkingConfig": {
+                  "includeThoughts": true,
+                  "thinkingLevel": "minimal"
+                }
+              }
+            },
+            "low": {
+              "options": {
+                "thinkingConfig": {
+                  "includeThoughts": true,
+                  "thinkingLevel": "low"
+                }
+              }
+            },
+            "medium": {
+              "options": {
+                "thinkingConfig": {
+                  "includeThoughts": true,
+                  "thinkingLevel": "medium"
+                }
+              }
+            },
+            "high": {
+              "options": {
+                "thinkingConfig": {
+                  "includeThoughts": true,
+                  "thinkingLevel": "high"
+                }
+              }
+            }
+          },
+          "limit": {
+            "context": 1048576,
+            "output": 65536
+          }
+        },
+        "gemini-3.1-flash-lite": {
+          "name": "Gemini 3.1 Flash Lite (AI Studio Free)",
+          "variants": {
+            "minimal": {
+              "options": {
+                "thinkingConfig": {
+                  "includeThoughts": true,
+                  "thinkingLevel": "minimal"
+                }
+              }
+            },
+            "low": {
+              "options": {
+                "thinkingConfig": {
+                  "includeThoughts": true,
+                  "thinkingLevel": "low"
+                }
+              }
+            },
+            "medium": {
+              "options": {
+                "thinkingConfig": {
+                  "includeThoughts": true,
+                  "thinkingLevel": "medium"
+                }
+              }
+            },
+            "high": {
+              "options": {
+                "thinkingConfig": {
+                  "includeThoughts": true,
+                  "thinkingLevel": "high"
+                }
+              }
+            }
+          },
+          "limit": {
+            "context": 1048576,
+            "output": 65536
+          }
+        }
+      }
+    },
+    // developing-today project -- the PAYG door, grouped as
+    // google-payg and seated NOWHERE (Drew: set up and
+    // confirmed, not configured for use anywhere). Key:
+    // Bitwarden `google.aistudio.payg-api-key`, credential
+    // row cred_1a1e31a32bd0012ke9R3NZh3NZ (integrationID
+    // google.developing-today), created 2026-11-16. At setup
+    // the key authenticates but its AI Studio prepay balance
+    // is depleted (402 RESOURCE_EXHAUSTED), so it cannot
+    // serve until funded -- funding is Drew's call.
+    "google.developing-today": {
+      "npm": "@opencode/ai/providers/google",
+      "name": "Google AI Studio (Gemini PAYG - developing-today project)",
+      "options": {
+        "baseURL": "https://generativelanguage.googleapis.com/v1beta"
+      },
+      "models": {
+        "gemini-4-hydrogen": {
+          "name": "Gemini 4 Hydrogen (AI Studio Free)",
+          "variants": {
+            "low": {
+              "options": {
+                "thinkingConfig": {
+                  "includeThoughts": true,
+                  "thinkingLevel": "low"
+                }
+              }
+            },
+            "medium": {
+              "options": {
+                "thinkingConfig": {
+                  "includeThoughts": true,
+                  "thinkingLevel": "medium"
+                }
+              }
+            },
+            "high": {
+              "options": {
+                "thinkingConfig": {
+                  "includeThoughts": true,
+                  "thinkingLevel": "high"
+                }
+              }
+            },
+            "xhigh": {
+              "options": {
+                "thinkingConfig": {
+                  "includeThoughts": true,
+                  "thinkingLevel": "xhigh"
+                }
+              }
+            }
+          },
+          "limit": {
+            "context": 1048576,
+            "output": 65536
+          }
+        },
+        "gemini-3.8-flash": {
+          "name": "Gemini 3.8 Flash (AI Studio Free)",
+          "variants": {
+            "low": {
+              "options": {
+                "thinkingConfig": {
+                  "includeThoughts": true,
+                  "thinkingLevel": "low"
+                }
+              }
+            },
+            "medium": {
+              "options": {
+                "thinkingConfig": {
+                  "includeThoughts": true,
+                  "thinkingLevel": "medium"
+                }
+              }
+            },
+            "high": {
+              "options": {
+                "thinkingConfig": {
+                  "includeThoughts": true,
+                  "thinkingLevel": "high"
+                }
+              }
+            }
+          },
+          "limit": {
+            "context": 1048576,
+            "output": 65536
+          }
+        },
+        "gemini-3.5-flash": {
+          "name": "Gemini 3.5 Flash (AI Studio Free)",
+          "variants": {
+            "minimal": {
+              "options": {
+                "thinkingConfig": {
+                  "includeThoughts": true,
+                  "thinkingLevel": "minimal"
+                }
+              }
+            },
+            "low": {
+              "options": {
+                "thinkingConfig": {
+                  "includeThoughts": true,
+                  "thinkingLevel": "low"
+                }
+              }
+            },
+            "medium": {
+              "options": {
+                "thinkingConfig": {
+                  "includeThoughts": true,
+                  "thinkingLevel": "medium"
+                }
+              }
+            },
+            "high": {
+              "options": {
+                "thinkingConfig": {
+                  "includeThoughts": true,
+                  "thinkingLevel": "high"
+                }
+              }
+            }
+          },
+          "limit": {
+            "context": 1048576,
+            "output": 65536
+          }
+        },
+        "gemini-3.5-flash-lite": {
+          "name": "Gemini 3.5 Flash Lite (AI Studio Free)",
+          "variants": {
+            "minimal": {
+              "options": {
+                "thinkingConfig": {
+                  "includeThoughts": true,
+                  "thinkingLevel": "minimal"
+                }
+              }
+            },
+            "low": {
+              "options": {
+                "thinkingConfig": {
+                  "includeThoughts": true,
+                  "thinkingLevel": "low"
+                }
+              }
+            },
+            "medium": {
+              "options": {
+                "thinkingConfig": {
+                  "includeThoughts": true,
+                  "thinkingLevel": "medium"
+                }
+              }
+            },
+            "high": {
+              "options": {
+                "thinkingConfig": {
+                  "includeThoughts": true,
+                  "thinkingLevel": "high"
+                }
+              }
+            }
+          },
+          "limit": {
+            "context": 1048576,
+            "output": 65536
+          }
+        },
+        "gemini-3.1-flash-lite": {
+          "name": "Gemini 3.1 Flash Lite (AI Studio Free)",
+          "variants": {
+            "minimal": {
+              "options": {
+                "thinkingConfig": {
+                  "includeThoughts": true,
+                  "thinkingLevel": "minimal"
+                }
+              }
+            },
+            "low": {
+              "options": {
+                "thinkingConfig": {
+                  "includeThoughts": true,
+                  "thinkingLevel": "low"
+                }
+              }
+            },
+            "medium": {
+              "options": {
+                "thinkingConfig": {
+                  "includeThoughts": true,
+                  "thinkingLevel": "medium"
+                }
+              }
+            },
+            "high": {
+              "options": {
+                "thinkingConfig": {
+                  "includeThoughts": true,
+                  "thinkingLevel": "high"
+                }
+              }
+            }
+          },
+          "limit": {
+            "context": 1048576,
+            "output": 65536
           }
         }
       }
@@ -2376,6 +3484,29 @@
         "providers": ["opencode.drewrypope", "opencode.popesdrew", "opencode.developing-today-0"],
         "selection": "weighted",
         "weights": { "opencode.drewrypope": 1, "opencode.popesdrew": 1, "opencode.developing-today-0": 1 }
+      },
+      // google-free (2026-11-16, Drew): the four AI Studio free
+      // projects as ONE virtual provider (provider route).
+      // Consumers name google-free/<model> in lieu of the
+      // per-project alias providers. Round-robin (Drew's explicit
+      // setting): free quota is per model per project, so the
+      // rotation draws all four projects' daily bucket sets
+      // evenly. Quota/health rules still demote a walled member
+      // inside the group.
+      "google-free": {
+        "providers": ["google.muse", "google.gen-lang", "google.personal", "google.drew"],
+        "selection": "round-robin"
+      },
+      // google-payg (2026-11-16, Drew): the paid developing-today
+      // AI Studio project as a provider route of one. READY BUT
+      // SEATED NOWHERE -- no route or pool names google-payg yet
+      // (Drew: the PAYG key is set up and confirmed, not
+      // configured for use). Seating it later is a one-line route
+      // change; note its prepay balance was depleted at setup
+      // (402), so it also needs funding before it can serve.
+      "google-payg": {
+        "providers": ["google.developing-today"],
+        "selection": "round-robin"
       }
     },
     "model_routes": {
@@ -2778,7 +3909,23 @@
         // Hydrogen carries a native xhigh tier (II 54), so the
         // variants clamp is max -> xhigh only. The Flash-era notes
         // above stay as written; they are this pool's history.
+        // 2026-11-16 (Drew, free-provider pass): the google AI
+        // Studio free door joins as the FIRST target -- the
+        // _antigravity account was disabled by Google 2026-11-14
+        // and every seat on it is dead, so this pool was dark.
+        // Later the same day (Drew): the door is the google-free
+        // provider route, so this leg round-robins across the
+        // four free projects' Hydrogen buckets (20 RPD each).
+        // The earlier clamp to #medium is REMOVED (Drew: the free
+        // tier meters requests, not tokens): high and xhigh pass
+        // through at Hydrogen's top variant, and max clamps to
+        // xhigh -- the highest effort the free doors serve.
+        // The _antigravity leg stays as the inert second door.
         "targets": [
+          {
+            "model": "google-free/gemini-4-hydrogen",
+            "variants": { "max": "xhigh" }
+          },
           {
             "model": "_antigravity/gemini-4-hydrogen",
             "variants": { "max": "xhigh" }
@@ -3256,6 +4403,36 @@
           "zai/glm-4.5-flash": 1
         }
       },
+      "gemini-free-plan": {
+        "name": "Gemini Free (AI Studio direct) - plan providers",
+        // NEW 2026-11-16 (Drew, free-provider pass): Google AI
+        // Studio free tier behind our own keys -- direct doors,
+        // and the only working doors to the Gemini shelf while
+        // _antigravity is dead. Every leg names the google-free
+        // provider route, so each leg round-robins across the
+        // four free projects (muse, gen-lang, personal, drew)
+        // and draws four per-model daily bucket sets. Efforts
+        // are each model's TOP variant (Drew, 2026-11-16: the
+        // free tier meters requests per day, not tokens, so a
+        // request costs the same 1 RPD at any effort -- take the
+        // highest): Hydrogen #xhigh (its top; AA v5.0.1 high
+        // II 50.8), the Flash and Flash-Lite legs #high (their
+        // top). TPM nuance: the 250k input TPM cap per model per
+        // project can pace large-context background sessions
+        // below the RPM cap -- acceptable, not a blocker. Seated
+        // in background's free cluster (1M context and free,
+        // ahead of the ~200k legs per the placement law) and as
+        // the live door inside gemini-hydrogen-plan.
+        "targets": [
+          "google-free/gemini-4-hydrogen#xhigh",
+          "google-free/gemini-3.8-flash#high",
+          "google-free/gemini-3.5-flash#high",
+          "google-free/gemini-3.5-flash-lite#high",
+          "google-free/gemini-3.1-flash-lite#high"
+        ],
+        "selection": "round-robin",
+        "autonomy": "rules"
+      },
       "minimax-flash-plan": {
         "name": "MiniMax M3.1 Flash Free (Zen) - plan providers",
         // NEW 2026-11-14 (Drew, Zen pass): MiniMax M3.1 Flash, free on
@@ -3586,6 +4763,10 @@
         // free door (glm-flash-free-plan: GLM-4.7-Flash 200k +
         // GLM-4.5-Flash 131k, $0 on our own key) joins this cluster
         // behind the Zen GLM seat.
+        // 2026-11-16 (Drew, free-provider pass): the Google AI Studio
+        // free door (gemini-free-plan: Hydrogen + Flash legs, 1M
+        // context, $0 on our own key) joins this cluster ahead of
+        // the ~200k legs per the placement law.
         // Drew (2026-11-14, later): the whole Zen shelf sits in this
         // last-resort position deliberately — limited context on the
         // Zen free models means they are never a first-choice leg.
@@ -3608,6 +4789,7 @@
           },
           "opencode-route/mimo-flash-plan",
           "opencode-route/flash-free-plan",
+          "opencode-route/gemini-free-plan",
           "opencode-route/minimax-flash-plan",
           "opencode-route/glm-5-3-flash-zen-plan",
           "opencode-route/glm-flash-free-plan",
@@ -4213,7 +5395,8 @@
           "opencode-route/argon-plan#high",
           "_antigravity/gemini-4-hydrogen#high",
           // 2026-11-15 (Drew, direct order): Wonder #xhigh -> #high.
-          "_muse/muse-wonder-1.0-contributor#high",
+          // 2026-11-16 (Drew, direct order): Wonder seat in summit moves #high -> #medium (efficiency: Spark/Wonder effort ladder evidence points down-ladder; #high unproven).
+          "_muse/muse-wonder-1.0-contributor#medium",
           // 2026-11-15 (Drew): sol at #high — AA xhigh 52.5 vs
           // high 50.3; a near-flat step at materially fewer tokens.
           "opencode-route/sol-plan#high",

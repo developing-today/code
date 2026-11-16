@@ -86,7 +86,8 @@ export function normalizeResetAt(v: unknown): string | null {
  * their split pool ids. Antigravity's per-model windows likewise keep
  * their flattened names here; the pool grouping is a split-row step.
  * The OpenCode Zen door (provider ids `opencode.<workspace>`, the
- * opencode-zen-plans door set in .opencode/route-fallbacks.md) reads
+ * zen-plans door set in .opencode/route-fallbacks.md;
+ * the group was named opencode-zen-plans until the 2026-11-15 rename) reads
  * the SAME plan meters as the Go door: on the 2026-11-15 ticks its
  * per-workspace rows carried windows and reset instants identical to
  * the matching `opencode-go.<workspace>` rows (#10443). Its rows

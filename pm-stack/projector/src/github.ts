@@ -211,7 +211,12 @@ export function nextPageFromLink(linkHeader: string | null): string | null {
   return null;
 }
 
-export async function listResource<T>(auth: GitHubAuth, initialPath: string, fetchFn: typeof fetch): Promise<T[]> {
+export async function listResource<T>(
+  auth: GitHubAuth,
+  initialPath: string,
+  fetchFn: typeof fetch,
+  opts: { stopAfterPage?: (page: T[]) => boolean } = {},
+): Promise<T[]> {
   const out: T[] = [];
   let path: string | null = initialPath;
   while (path) {
@@ -239,6 +244,10 @@ export async function listResource<T>(auth: GitHubAuth, initialPath: string, fet
       );
     }
     out.push(...(page as T[]));
+    // Early stop (#9850): callers paging a list sorted newest-first can
+    // end the walk once a whole page is older than their cursor instead
+    // of fetching every page of history on every pass.
+    if (opts.stopAfterPage?.(page as T[])) break;
     path = nextPageFromLink(res.headers.get("link"));
   }
   return out;

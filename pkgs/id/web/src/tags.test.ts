@@ -1,5 +1,4 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { init } from "./main";
 
 class FakeWebSocket {
   static readonly CONNECTING = 0;
@@ -30,6 +29,42 @@ class FakeWebSocket {
   }
 }
 
+// `main.ts` runs `init()` as an import side effect (immediately, or on
+// DOMContentLoaded), and every `init()` opens the tag WebSocket. Import it
+// lazily here, after the stubs below are installed, so neither the
+// import-time run nor any per-test run ever constructs a real WebSocket.
+async function initApp(): Promise<void> {
+  const { init } = await import("./main");
+  await init();
+}
+
+// Every `init()` call opens the tag WebSocket. Without a stub, Happy DOM dials
+// the real `ws://<host>/ws/tags`, and in CI the refused connection surfaces as an
+// uncaught error that fails the whole run. Stub the socket for the entire file so
+// no test depends on a live server being up.
+beforeEach(() => {
+  FakeWebSocket.instances = [];
+  vi.stubGlobal("WebSocket", FakeWebSocket);
+  // The identity bootstrap runs on every `init()`; keep it off the network
+  // too, or a dead dev server turns its rejection into an uncaught error.
+  vi.stubGlobal(
+    "fetch",
+    vi.fn(async () => {
+      throw new Error("offline test fetch");
+    }),
+  );
+  // Dummy token so ensureIdentity does not hit the network in Happy DOM.
+  localStorage.setItem("id_identity_token", "dummy-token");
+  localStorage.setItem("id_identity_client_id", "dummy-client");
+});
+
+afterEach(() => {
+  window.idApp?.disconnectTagsWs();
+  vi.unstubAllGlobals();
+  localStorage.clear();
+  document.body.innerHTML = "";
+});
+
 describe("editor tag removal accessibility", () => {
   it("renders tag remove buttons with descriptive aria-label", async () => {
     // Setup minimal DOM required by init and renderEditorTags
@@ -43,7 +78,7 @@ describe("editor tag removal accessibility", () => {
     localStorage.setItem("id_identity_token", "dummy-token");
     localStorage.setItem("id_identity_client_id", "dummy-client");
 
-    await init();
+    await initApp();
 
     window.idApp.renderEditorTags([
       { key: "project", value: "alpha" },
@@ -70,7 +105,7 @@ describe("loadFileTags response validation (#7841)", () => {
     `;
     localStorage.setItem("id_identity_token", "dummy-token");
     localStorage.setItem("id_identity_client_id", "dummy-client");
-    await init();
+    await initApp();
   };
 
   it("replaces stale pills with the load-failure state on a wrong-shape 200", async () => {
@@ -78,10 +113,7 @@ describe("loadFileTags response validation (#7841)", () => {
     window.idApp.renderEditorTags([{ key: "stale", value: "old" }]);
     expect(document.querySelectorAll(".tag-pill-removable").length).toBe(1);
 
-    vi.stubGlobal(
-      "fetch",
-      async () => ({ ok: true, status: 200, json: async () => ({}) }),
-    );
+    vi.stubGlobal("fetch", async () => ({ ok: true, status: 200, json: async () => ({}) }));
     try {
       await window.idApp.loadFileTags("other.md");
     } finally {
@@ -94,29 +126,24 @@ describe("loadFileTags response validation (#7841)", () => {
 
   it("renders the object control shape and filters system tags", async () => {
     await setup();
-    vi.stubGlobal(
-      "fetch",
-      async () => ({
-        ok: true,
-        status: 200,
-        json: async () => ({
-          tags: [
-            { key: "project", value: "alpha" },
-            { key: "created", value: "2026-01-01" },
-            { key: "plain", value: null },
-          ],
-        }),
+    vi.stubGlobal("fetch", async () => ({
+      ok: true,
+      status: 200,
+      json: async () => ({
+        tags: [
+          { key: "project", value: "alpha" },
+          { key: "created", value: "2026-01-01" },
+          { key: "plain", value: null },
+        ],
       }),
-    );
+    }));
     try {
       await window.idApp.loadFileTags("test.md");
     } finally {
       vi.unstubAllGlobals();
     }
 
-    const pills = [...document.querySelectorAll(".tag-pill-removable")].map((p) =>
-      p.textContent?.replace("×", ""),
-    );
+    const pills = [...document.querySelectorAll(".tag-pill-removable")].map((p) => p.textContent?.replace("×", ""));
     expect(pills).toEqual(["project: alpha", "plain"]);
   });
 });
@@ -124,30 +151,22 @@ describe("loadFileTags response validation (#7841)", () => {
 describe("tag WebSocket resync", () => {
   beforeEach(() => {
     vi.useFakeTimers();
-    FakeWebSocket.instances = [];
-    vi.stubGlobal("WebSocket", FakeWebSocket);
     vi.stubGlobal(
       "fetch",
       vi.fn(async () => {
         throw new Error("offline test fetch");
       }),
     );
-    localStorage.setItem("id_identity_token", "dummy-token");
-    localStorage.setItem("id_identity_client_id", "dummy-client");
     document.body.innerHTML = '<div id="main"><div id="file-list-content"></div></div>';
   });
 
   afterEach(() => {
-    window.idApp?.disconnectTagsWs();
     vi.useRealTimers();
-    vi.unstubAllGlobals();
-    localStorage.clear();
-    document.body.innerHTML = "";
   });
 
   it("refreshes the visible file list after the server closes a lagged socket", async () => {
     const fetchMock = vi.mocked(fetch);
-    await init();
+    await initApp();
 
     const first = FakeWebSocket.instances[0];
     expect(first).toBeDefined();

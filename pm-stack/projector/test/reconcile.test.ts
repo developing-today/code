@@ -3,7 +3,7 @@ import { createClient, type Client } from "@libsql/client";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { migrate, getItems, getComments, getSyncCursor, upsertItem } from "../src/store";
+import { migrate, getItems, getComments, getSyncCursor, setSyncCursor, upsertItem } from "../src/store";
 import { fromIssueOrPr } from "../src/projector";
 import { listResource, type GitHubAuth } from "../src/github";
 import { reconcileRepos } from "../src/reconcile";
@@ -367,5 +367,86 @@ describe("wrong-shape list elements (#7009)", () => {
     expect(reviews.written).toBe(1);
     expect(reviews.skipped).toBe(4);
     expect((await getComments(db, [`${repo}#1`])).map((c) => c.id).sort()).toEqual(["7001", "701"]);
+  });
+});
+
+describe("reconcile streams are incremental (#9850 round 2)", () => {
+  const incPr = (repo: string, n: number, updatedAt: string) => ({
+    number: n,
+    html_url: `https://github.com/${repo}/pull/${n}`,
+    url: `https://api.github.com/repos/${repo}/pulls/${n}`,
+    title: `pr ${n}`,
+    state: "open",
+    user: { login: "drew" },
+    labels: [],
+    assignees: [],
+    draft: false,
+    merged_at: null,
+    created_at: "2026-10-01T00:00:00Z",
+    updated_at: updatedAt,
+  });
+
+  test("reviews stream fetches reviews only for PRs updated inside the cursor window", async () => {
+    const repo = "developing-today/reviews-incremental";
+    await setSyncCursor(db, repo, "reviews", "2026-10-06T00:00:00Z");
+    const seen: string[] = [];
+    const fetchFn = (async (url: string) => {
+      seen.push(url);
+      if (url.includes("/pulls?")) {
+        return jsonRes([incPr(repo, 1, "2026-10-01T00:00:00Z"), incPr(repo, 2, "2026-10-07T00:00:00Z")]);
+      }
+      if (url.includes("/pulls/1/reviews")) {
+        return jsonRes([
+          {
+            id: 101,
+            body: "old",
+            user: { login: "drew" },
+            state: "APPROVED",
+            submitted_at: "2026-10-01T12:00:00Z",
+            html_url: "https://github.com/x#r101",
+          },
+        ]);
+      }
+      if (url.includes("/pulls/2/reviews")) {
+        return jsonRes([
+          {
+            id: 102,
+            body: "new",
+            user: { login: "drew" },
+            state: "APPROVED",
+            submitted_at: "2026-10-07T12:00:00Z",
+            html_url: "https://github.com/x#r102",
+          },
+        ]);
+      }
+      return jsonRes([]);
+    }) as unknown as typeof fetch;
+    const result = await reconcileRepos(db, { PM_REPOS: repo, GITHUB_TOKEN: "test-token" }, fetchFn);
+    expect(result.ok).toBe(true);
+    const reviews = (result.streams as unknown as Record<string, unknown>[]).find((s) => s.stream === "reviews");
+    expect(reviews?.written).toBe(1);
+    expect(seen.some((u) => u.includes("/pulls/1/reviews"))).toBe(false);
+    expect(seen.some((u) => u.includes("/pulls/2/reviews"))).toBe(true);
+    expect(await getSyncCursor(db, repo, "reviews")).toBe("2026-10-07T12:00:00Z");
+    expect((await getComments(db, [`${repo}#2`])).map((c) => c.id)).toEqual(["102"]);
+    expect(await getComments(db, [`${repo}#1`])).toEqual([]);
+  });
+
+  test("prs stream does not re-upsert PRs at or below its cursor, and the cursor still advances", async () => {
+    const repo = "developing-today/prs-incremental";
+    await setSyncCursor(db, repo, "prs", "2026-10-05T00:00:00Z");
+    const fetchFn = (async (url: string) => {
+      if (url.includes("/pulls?")) {
+        return jsonRes([incPr(repo, 3, "2026-10-06T00:00:00Z"), incPr(repo, 4, "2026-10-04T00:00:00Z")]);
+      }
+      return jsonRes([]);
+    }) as unknown as typeof fetch;
+    const result = await reconcileRepos(db, { PM_REPOS: repo, GITHUB_TOKEN: "test-token" }, fetchFn);
+    expect(result.ok).toBe(true);
+    const prs = (result.streams as unknown as Record<string, unknown>[]).find((s) => s.stream === "prs");
+    expect(prs?.written).toBe(1);
+    expect(await getItems(db, [`${repo}#3`])).toHaveLength(1);
+    expect(await getItems(db, [`${repo}#4`])).toHaveLength(0);
+    expect(await getSyncCursor(db, repo, "prs")).toBe("2026-10-06T00:00:00Z");
   });
 });

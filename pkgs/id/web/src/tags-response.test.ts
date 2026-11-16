@@ -23,9 +23,7 @@ describe("parseTagsResponse control shapes", () => {
   });
 
   it("parses the flat array form", () => {
-    expect(parseTagsResponse([{ key: "project", value: "alpha" }])).toEqual([
-      { key: "project", value: "alpha" },
-    ]);
+    expect(parseTagsResponse([{ key: "project", value: "alpha" }])).toEqual([{ key: "project", value: "alpha" }]);
   });
 
   it("parses an empty tag list as an empty array, not a failure", () => {

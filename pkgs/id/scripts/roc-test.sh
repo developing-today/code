@@ -3,7 +3,19 @@
 # pinned Roc compiler (#813). Invoked as `bash scripts/roc-test.sh` by
 # the roc-test just recipe: a just shebang recipe cannot execute in
 # the Nix check sandbox, which has no /usr/bin/env (os error 2).
+# Usage: roc-test.sh
+#   Accepts no positional arguments.
 set -euo pipefail
+
+usage() {
+  echo "Usage: roc-test.sh" >&2
+}
+
+if [[ $# -ne 0 ]]; then
+  usage
+  echo "Error: unaccounted argument(s): $*" >&2
+  exit 1
+fi
 
 cd "$(dirname "$0")/.."
 

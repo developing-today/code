@@ -683,6 +683,9 @@ impl<'a, L: LedgerBackend> RegistrationService<'a, L> {
     /// The §2.5 confirm step, shared by `register` and `reconcile`:
     /// re-check applicable adverse events FIRST; only then advance
     /// Presented → PendingHold.
+    // The two expects below name store invariants: the transition is
+    // listed in the state table, and the grant was read from this store.
+    #[allow(clippy::expect_used)]
     fn confirm(&mut self, grant: GrantRecord, now: u64) -> RegistrationOutcome {
         if let Some(event) = self.adverse.adverse_event_for(&grant) {
             return RegistrationOutcome::IntentPending {
@@ -763,6 +766,9 @@ impl<'a, L: LedgerBackend> RegistrationService<'a, L> {
     /// the transfer under the same deterministic id, then confirm.
     /// A ledger lookup that ERRORS decides nothing: the grant is
     /// left for the next scan and counted, never guessed at.
+    // The expect below names a store invariant: a grant in the store
+    // always has its storefront in the config built from the same store.
+    #[allow(clippy::expect_used)]
     pub fn reconcile(&mut self, now: u64, freshness_bound_secs: u64) -> ReconcileReport {
         let mut report = ReconcileReport::default();
         for grant in self.store.stranded_presented(now, freshness_bound_secs) {
@@ -820,6 +826,7 @@ pub struct ReconcileReport {
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
     use super::*;
     use crate::currency_poc::ledger::InMemoryLedger;

@@ -216,21 +216,33 @@ impl<'a> Reader<'a> {
                 Ok(value)
             }
             25 => {
-                let value = u16::from_be_bytes(self.take(2)?.try_into().unwrap()) as u64;
+                let value = u16::from_be_bytes(
+                    self.take(2)?
+                        .try_into()
+                        .map_err(|_| CborError::UnexpectedEof)?,
+                ) as u64;
                 if value <= u8::MAX as u64 {
                     return Err(CborError::NonShortestForm);
                 }
                 Ok(value)
             }
             26 => {
-                let value = u32::from_be_bytes(self.take(4)?.try_into().unwrap()) as u64;
+                let value = u32::from_be_bytes(
+                    self.take(4)?
+                        .try_into()
+                        .map_err(|_| CborError::UnexpectedEof)?,
+                ) as u64;
                 if value <= u16::MAX as u64 {
                     return Err(CborError::NonShortestForm);
                 }
                 Ok(value)
             }
             27 => {
-                let value = u64::from_be_bytes(self.take(8)?.try_into().unwrap());
+                let value = u64::from_be_bytes(
+                    self.take(8)?
+                        .try_into()
+                        .map_err(|_| CborError::UnexpectedEof)?,
+                );
                 if value <= u32::MAX as u64 {
                     return Err(CborError::NonShortestForm);
                 }

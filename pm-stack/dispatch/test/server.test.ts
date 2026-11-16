@@ -2,7 +2,7 @@
 // Drives the exported handler with a stubbed-JWKS OIDC token: no network,
 // no queue, no GitHub — any non-JWKS fetch throws, so a test that tried
 // to create an issue/task/session would fail loudly instead of 400ing.
-import { describe, expect, test } from "bun:test";
+import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { createSign, generateKeyPairSync } from "node:crypto";
 
 const { publicKey, privateKey } = generateKeyPairSync("rsa", { modulusLength: 2048 });
@@ -14,15 +14,36 @@ jwk.alg = "RS256";
 // old bogus .json URL is exactly how code#4886 stayed hidden by tests.
 import { GITHUB_JWKS_URL as JWKS_URL } from "../src/auth.ts";
 const realFetch = globalThis.fetch;
-globalThis.fetch = (async (input: unknown) => {
-  if (String(input) === JWKS_URL) {
-    return new Response(JSON.stringify({ keys: [jwk] }), {
-      status: 200,
-      headers: { "content-type": "application/json" },
-    });
-  }
-  throw new Error(`unexpected network fetch in test: ${String(input)}`);
-}) as typeof fetch;
+
+// #10609: install the throw-on-network stub inside this file's own hook and
+// restore the captured snapshot in afterAll. At module scope it leaked into
+// every later file in the same Bun process: when opencode.test.ts ran after
+// this file, its real http://127.0.0.1 requests hit this guard and 4 tests
+// failed only when the file order happened to be that way (CI run 43807605419
+// vs. a green re-dispatch of the identical head). installFetchStub stays a
+// function so no assignment happens at import time.
+function installFetchStub() {
+  globalThis.fetch = (async (input: unknown) => {
+    if (String(input) === JWKS_URL) {
+      return new Response(JSON.stringify({ keys: [jwk] }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    }
+    throw new Error(`unexpected network fetch in test: ${String(input)}`);
+  }) as typeof fetch;
+}
+
+beforeAll(installFetchStub);
+
+afterAll(() => {
+  globalThis.fetch = realFetch;
+  // The runtime's own fetch is native code; a JS function still installed
+  // here is the leaked stub (or a stub another file left for us to capture).
+  // Failing in this hook is deliberate: it is the explicit restore assertion
+  // for #10609, so removing the restore above cannot pass silently.
+  expect(Function.prototype.toString.call(globalThis.fetch)).toContain("[native code]");
+});
 
 function b64url(data: Buffer | string): string {
   return Buffer.from(data).toString("base64").replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");

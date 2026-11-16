@@ -46,6 +46,20 @@ pub const DEFAULT_TARGET_HOST: &str = "100.99.113.103";
 /// `HTTPS_PROXY` — fixed by the tunnel setup, as in
 /// laptop-proxy-connect.py (the URL's own port is not used).
 pub const DEFAULT_EGRESS_PROXY_PORT: u16 = 3130;
+/// The named Cloudflare tunnel hostname the broker's Cloudflare
+/// leg dials for the laptop-agent daemon (code#10356, Drew's
+/// 2026-11-15 transport ruling): the tunnel's ingress lands on
+/// the daemon's own listener from the laptop side, so the daemon
+/// is untouched and its token auth is preserved end to end.
+pub const DEFAULT_CF_HOST: &str = "sandbox-link.security.cab";
+/// The Cloudflare Access service-token file for the tunnel
+/// (home-relative, like [`DEFAULT_BROKER_TOKEN_FILE`]): a JSON
+/// object with `client_id` / `client_secret`, mode 600, read by
+/// the broker per request and sent only as `CF-Access-*` headers
+/// — never stored, never logged. The file's EXISTENCE is what
+/// puts the Cloudflare leg in play (the Python broker's rule);
+/// no file, no leg, the tailnet path carries everything.
+pub const DEFAULT_CF_ACCESS_FILE: &str = "tools/laptop-agent-cf-access.json";
 
 /// Default listen address for the CONNECT-UDP endpoint
 /// (RFC 9298 spike, #6109) when `[proxy] connect_udp` enables
@@ -345,6 +359,16 @@ pub struct ProxyConfig {
     /// [`DEFAULT_EGRESS_PROXY_PORT`]). `0` is rejected at load
     /// (#6412): port 0 cannot be dialled.
     pub egress_proxy_port: Option<u16>,
+    /// Hostname of the named Cloudflare tunnel the broker's
+    /// Cloudflare leg dials for the laptop-agent daemon (default
+    /// [`DEFAULT_CF_HOST`]; code#10356). Blank is rejected at load
+    /// (#6405's rule, same as `target_host`).
+    pub cf_host: Option<String>,
+    /// Cloudflare Access service-token file for the tunnel,
+    /// home-relative (default [`DEFAULT_CF_ACCESS_FILE`]). The
+    /// broker reads it per request; its existence enables the
+    /// Cloudflare leg for the daemon port.
+    pub cf_access_file: Option<String>,
     /// Dial the target directly instead of through a CONNECT tunnel
     /// (a broker running on the target host itself; also the
     /// hermetic-test mode). Default false — today's topology.
@@ -731,6 +755,8 @@ impl Config {
         for (value, field) in [
             (&self.proxy.broker_socket, "[proxy] broker_socket"),
             (&self.proxy.target_host, "[proxy] target_host"),
+            (&self.proxy.cf_host, "[proxy] cf_host"),
+            (&self.proxy.cf_access_file, "[proxy] cf_access_file"),
             (&self.proxy.connect_udp_listen, "[proxy] connect_udp_listen"),
             (&self.secrets.token_file, "[secrets] token_file"),
             (&self.dispatch.url, "[dispatch] url"),
@@ -821,7 +847,10 @@ impl Config {
     /// its own `[host]` section instead of growing this table.
     pub fn builtin_host(location: &str) -> Option<(InitMode, Vec<String>)> {
         match location {
-            "sandbox" => Some((InitMode::Spawn, vec!["proxy".to_string()])),
+            "sandbox" => Some((
+                InitMode::Spawn,
+                vec!["proxy".to_string(), "secrets-broker".to_string()],
+            )),
             "laptop" => Some((
                 InitMode::Systemd,
                 vec![
@@ -1132,6 +1161,22 @@ impl Config {
         self.proxy
             .egress_proxy_port
             .unwrap_or(DEFAULT_EGRESS_PROXY_PORT)
+    }
+
+    /// The named Cloudflare tunnel hostname for the broker's
+    /// Cloudflare leg (see [`DEFAULT_CF_HOST`]).
+    pub fn cf_host(&self) -> &str {
+        self.proxy.cf_host.as_deref().unwrap_or(DEFAULT_CF_HOST)
+    }
+
+    /// The Cloudflare Access service-token file (see
+    /// [`DEFAULT_CF_ACCESS_FILE`]), resolved under $HOME like the
+    /// other token files.
+    pub fn cf_access_file(&self) -> PathBuf {
+        match &self.proxy.cf_access_file {
+            Some(raw) => resolve_under_home(raw),
+            None => resolve_under_home(DEFAULT_CF_ACCESS_FILE),
+        }
     }
 
     /// Whether the broker dials the target directly (no CONNECT).
@@ -2284,7 +2329,10 @@ socket = "rel/s.sock"
     fn host_env_location_sandbox_builtin_map_is_proxy_spawn() {
         // The hermetic-provisioning shape: FLEET_LOCATION alone on
         // a machine with no [host] section resolves to exactly
-        // today's sandbox behaviour (design #5687 §5/§6).
+        // today's sandbox behaviour (design #5687 §5/§6): the
+        // session proxy plus the standing sandbox secrets broker
+        // (stage-2 broker resilience: secrets resolve locally, no
+        // laptop round trip).
         let cfg = Config::default();
         let path = PathBuf::from("/nonexistent/fleet.toml");
         let resolved = cfg
@@ -2292,7 +2340,10 @@ socket = "rel/s.sock"
             .unwrap()
             .unwrap();
         assert_eq!(resolved.init_mode, InitMode::Spawn);
-        assert_eq!(resolved.roles, vec!["proxy".to_string()]);
+        assert_eq!(
+            resolved.roles,
+            vec!["proxy".to_string(), "secrets-broker".to_string()]
+        );
     }
 
     #[test]

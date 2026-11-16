@@ -29,10 +29,10 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use atlas_core::types::BranchPools;
 use atlas_core::{
-    BranchPoolExecutor, BranchQuery, Error as CoreError, Filters, JsonlFeedbackSink,
-    QueryEmbedder, SearchBackend, SearchMode as CoreSearchMode, SearchOptions,
-    Sensitivity as CoreSensitivity, VectorBackend as CoreVectorBackend, feedback_for,
-    load_feedback_dir, record_feedback, run_get_chunk, run_search_with_executor,
+    BranchPoolExecutor, BranchQuery, Error as CoreError, Filters, JsonlFeedbackSink, QueryEmbedder,
+    SearchBackend, SearchMode as CoreSearchMode, SearchOptions, Sensitivity as CoreSensitivity,
+    VectorBackend as CoreVectorBackend, feedback_for, load_feedback_dir, record_feedback,
+    run_get_chunk, run_search_with_executor,
 };
 use atlas_proto::{
     BranchState, BranchStates, EmbedRequest, EmbedResponse, ErrorResponse, HealthResponse,

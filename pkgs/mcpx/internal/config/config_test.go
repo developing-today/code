@@ -166,6 +166,10 @@ func TestAnUnknownKeyInTheMcpxBlockIsRefused(t *testing.T) {
 }
 
 func TestServerKeysAnotherHostWritesAreRecordedNotRefused(t *testing.T) {
+	// MCPX_CONFIG short-circuits the search path (chain.go); the devshell
+	// sets it, so without this the merged load below reads that file
+	// instead of the test fixtures and the ignored key is lost.
+	t.Setenv("MCPX_CONFIG", "")
 	// A server entry is shared with every other MCP host. Claude Code
 	// writes "type" and Cline writes "alwaysAllow"; refusing them would
 	// make a config that works everywhere else fail here.

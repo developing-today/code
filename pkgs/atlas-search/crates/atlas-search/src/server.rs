@@ -31,9 +31,8 @@ use atlas_core::types::BranchPools;
 use atlas_core::{
     BranchPoolExecutor, BranchQuery, Error as CoreError, Filters, JsonlFeedbackSink,
     JsonlTraceSink, QueryEmbedder, SearchBackend, SearchMode as CoreSearchMode, SearchOptions,
-    Sensitivity as CoreSensitivity, TraceContext, VectorBackend as CoreVectorBackend,
-    feedback_for, load_feedback_dir, record_feedback, run_get_chunk,
-    run_search_with_executor_traced,
+    Sensitivity as CoreSensitivity, TraceContext, VectorBackend as CoreVectorBackend, feedback_for,
+    load_feedback_dir, record_feedback, run_get_chunk, run_search_with_executor_traced,
 };
 use atlas_proto::{
     BranchState, BranchStates, EmbedRequest, EmbedResponse, ErrorResponse, HealthResponse,
