@@ -805,7 +805,8 @@ fn is_executable_file(p: &Path) -> bool {
     let Ok(c) = std::ffi::CString::new(p.as_os_str().as_bytes()) else {
         return false;
     };
-    unsafe { libc::access(c.as_ptr(), libc::X_OK) } == 0
+    let rc = unsafe { libc::access(c.as_ptr(), libc::X_OK) };
+    rc == 0
 }
 
 /// The pure core of [`resolve_bws_program`], split out for tests:
