@@ -3915,6 +3915,250 @@ fn cmd_complete(rest: &[String]) -> i32 {
     0
 }
 
+/// `verify-disposition` (#10611): build the verified-disposition record
+/// a terminal completion must carry, by reading GitHub back now — never
+/// from a remembered claim. Prints the record `complete --result` wants
+/// (`--json` for the raw object, a summary otherwise). Exits 1 when the
+/// record would not pass the broker's gate, so a lane cannot paste a
+/// record it did not check.
+fn cmd_verify_disposition(rest: &[String]) -> i32 {
+    let args = parse_args(
+        rest,
+        &[
+            "repo",
+            "pr",
+            "follow-up-task",
+            "follow-up-issue",
+            "reason",
+            "staleness-seconds",
+        ],
+        &["json"],
+    );
+    reject_extra_pos("verify-disposition", &args, 1);
+    let issue = args.pos_i64(0, "issue");
+    let repo = args.get("repo").unwrap_or_else(|| {
+        die(
+            2,
+            "verify-disposition: --repo owner/name is required (the readback \
+             is only meaningful against a named repository)",
+        )
+    });
+    let staleness = args
+        .get_i64("staleness-seconds")
+        .unwrap_or(crate::disposition::DEFAULT_STALENESS_SECONDS);
+    if staleness <= 0 {
+        die(2, "argument --staleness-seconds: must be positive");
+    }
+
+    // `--pr 12,34` — the parser rejects duplicate flags, so the linked
+    // set is one comma-separated value (#10611 provenance column).
+    let mut linked: Vec<i64> = Vec::new();
+    if let Some(raw) = args.get("pr") {
+        for part in raw.split(',') {
+            let part = part.trim();
+            if part.is_empty() {
+                continue;
+            }
+            let n = part
+                .trim_start_matches('#')
+                .parse::<i64>()
+                .unwrap_or_else(|_| die(2, &format!("argument --pr: invalid PR number {part:?}")));
+            if !linked.contains(&n) {
+                linked.push(n);
+            }
+        }
+    }
+
+    let hash = issue.to_string();
+    let gh = GhRunner::system();
+    let issue_json = gh
+        .json(&[
+            "issue".to_string(),
+            "view".to_string(),
+            hash.clone(),
+            "--repo".to_string(),
+            repo.clone(),
+            "--json".to_string(),
+            "number,state,stateReason,closedAt".to_string(),
+        ])
+        .unwrap_or_else(|e| {
+            die(
+                1,
+                &format!("verify-disposition: cannot read issue #{issue} in {repo}: {e}"),
+            )
+        });
+    let prs_json = gh
+        .json(&[
+            "pr".to_string(),
+            "list".to_string(),
+            "--repo".to_string(),
+            repo.clone(),
+            "--state".to_string(),
+            "all".to_string(),
+            "--limit".to_string(),
+            "300".to_string(),
+            "--json".to_string(),
+            "number,state,isDraft,mergedAt,body".to_string(),
+        ])
+        .unwrap_or_else(|e| {
+            die(
+                1,
+                &format!("verify-disposition: cannot list PRs in {repo}: {e}"),
+            )
+        });
+    // The 300 newest PRs are not the whole history: #9245 — a draft
+    // that still carries the #9155 work — sits below that window. Ask
+    // search for bodies naming the issue (a failed search is not
+    // evidence of absence, so it never aborts the readback), union by
+    // number, then fetch any explicitly linked PR the union lacks.
+    let mut prs: Vec<Value> = prs_json.as_array().cloned().unwrap_or_default();
+    let search = format!("{issue} in:body");
+    if let Ok(found) = gh.json(&[
+        "pr".to_string(),
+        "list".to_string(),
+        "--repo".to_string(),
+        repo.clone(),
+        "--state".to_string(),
+        "all".to_string(),
+        "--search".to_string(),
+        search,
+        "--limit".to_string(),
+        "100".to_string(),
+        "--json".to_string(),
+        "number,state,isDraft,mergedAt,body".to_string(),
+    ]) {
+        for item in found.as_array().cloned().unwrap_or_default() {
+            let number = item.get("number").and_then(|n| n.as_i64());
+            if let Some(n) = number {
+                if !prs
+                    .iter()
+                    .any(|p| p.get("number").and_then(|x| x.as_i64()) == Some(n))
+                {
+                    prs.push(item);
+                }
+            }
+        }
+    }
+    for n in &linked {
+        if prs
+            .iter()
+            .any(|p| p.get("number").and_then(|x| x.as_i64()) == Some(*n))
+        {
+            continue;
+        }
+        match gh.json(&[
+            "pr".to_string(),
+            "view".to_string(),
+            n.to_string(),
+            "--repo".to_string(),
+            repo.clone(),
+            "--json".to_string(),
+            "number,state,isDraft,mergedAt,body".to_string(),
+        ]) {
+            Ok(item) => prs.push(item),
+            Err(e) => die(
+                1,
+                &format!("verify-disposition: cannot read linked PR #{n} in {repo}: {e}"),
+            ),
+        }
+    }
+    let prs_json = Value::Array(prs);
+
+    let mut follow_up = Map::new();
+    if let Some(task) = args.get("follow-up-task") {
+        match task.parse::<i64>() {
+            Ok(n) => {
+                follow_up.insert("task_id".to_string(), json!(n));
+            }
+            Err(_) => die(
+                2,
+                &format!("argument --follow-up-task: invalid int value {task:?}"),
+            ),
+        }
+    }
+    if let Some(url) = args.get("follow-up-issue") {
+        follow_up.insert("issue_url".to_string(), json!(url));
+    }
+    if let Some(reason) = args.get("reason") {
+        follow_up.insert("reason".to_string(), json!(reason));
+    }
+    let record = crate::disposition::from_gh(
+        &issue_json,
+        &prs_json,
+        &linked,
+        if follow_up.is_empty() {
+            None
+        } else {
+            Some(Value::Object(follow_up))
+        },
+        &utcnow_iso(),
+    );
+
+    let checked = crate::disposition::parse_record(&record).and_then(|rec| {
+        crate::disposition::check(
+            &rec,
+            Some(issue),
+            &linked,
+            now_micros() / 1_000_000,
+            staleness,
+        )
+    });
+
+    if args.has("json") {
+        print_json(&record);
+    } else {
+        let verdict = s(&record, "verdict");
+        let pulls = record
+            .get("pulls")
+            .and_then(|p| p.as_array())
+            .map(|p| {
+                p.iter()
+                    .map(|x| {
+                        format!(
+                            "#{} {} {}",
+                            x.get("number").and_then(|n| n.as_i64()).unwrap_or(0),
+                            s(x, "state"),
+                            if x.get("is_draft").and_then(|d| d.as_bool()).unwrap_or(false) {
+                                "draft"
+                            } else {
+                                ""
+                            }
+                        )
+                        .trim_end()
+                        .to_string()
+                    })
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            })
+            .unwrap_or_default();
+        println!(
+            "issue #{issue} in {repo}: {}",
+            record["issue"]["state"].as_str().unwrap_or("?")
+        );
+        println!("verdict: {verdict}");
+        println!(
+            "pulls: {}",
+            if pulls.is_empty() {
+                "none".to_string()
+            } else {
+                pulls
+            }
+        );
+        println!("checked_at: {}", s(&record, "checked_at"));
+        match &checked {
+            Ok(()) => println!("gate: would pass"),
+            Err(e) => println!("gate: would REJECT — {e}"),
+        }
+    }
+    match checked {
+        Ok(()) => 0,
+        Err(e) => {
+            eprint(&format!("verify-disposition: {e}"));
+            1
+        }
+    }
+}
+
 /// Value flags the `health` verb accepts (#7349). `--worker` is
 /// accepted for attribution only: the opencode-claimant packet
 /// mandates `--worker` on every verb, and a packet-literal fire used
@@ -5725,7 +5969,7 @@ fn cmd_outbox(rest: &[String]) -> i32 {
 pub fn run(args: &[String]) -> i32 {
     if args.is_empty() {
         eprint(
-            "usage: repo-queue <validate|list|enqueue|claim|release|lane|bind|heartbeat|checkpoint|park|wake|block|unblock|dep-recheck|cancel|fail|complete|timeline|revive|health|signal|fallback|outbox|dispatch|session|surfaces|stack> ...",
+            "usage: repo-queue <validate|list|enqueue|claim|release|lane|bind|heartbeat|checkpoint|park|wake|block|unblock|dep-recheck|cancel|fail|complete|verify-disposition|timeline|revive|health|signal|fallback|outbox|dispatch|session|surfaces|stack> ...",
         );
         return 2;
     }
@@ -5753,6 +5997,7 @@ pub fn run(args: &[String]) -> i32 {
         "revive" => cmd_revive(rest),
         "fail" => cmd_fail(rest),
         "complete" => cmd_complete(rest),
+        "verify-disposition" => cmd_verify_disposition(rest),
         "timeline" => cmd_timeline(rest),
         "models" => cmd_models(rest),
         "health" => cmd_health(rest),

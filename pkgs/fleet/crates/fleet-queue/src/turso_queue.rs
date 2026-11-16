@@ -6177,8 +6177,14 @@ enum TriageOutcome {
 
 /// The broker-side completion gate. Err = the completion is
 /// rejected and the task stays claimed.
+///
+/// #10611: a terminal exit that claims the issue is finished must
+/// carry the verified disposition readback (`result.disposition`),
+/// so a shape-only evidence string can no longer end an item while
+/// the issue is open and a linked draft still carries work.
 fn gate_completion(
     class: &CompletionClass,
+    expected_issue: Option<i64>,
     result: &Value,
 ) -> Result<Option<TriageOutcome>, String> {
     match class {
@@ -6190,6 +6196,7 @@ fn gate_completion(
                      verified-closure note); the task remains claimed"
                     .to_string());
             }
+            crate::disposition::require_verified(result, expected_issue, now_unix())?;
             Ok(None)
         }
         CompletionClass::Triage => {
@@ -6223,6 +6230,7 @@ fn gate_completion(
                              remains claimed"
                             .to_string());
                     }
+                    crate::disposition::require_verified(result, expected_issue, now_unix())?;
                     Ok(Some(TriageOutcome::ExitAlreadySolved))
                 }
                 other => Err(format!(
@@ -6257,7 +6265,19 @@ fn verb_complete(t: &TursoBackend, req: &Value) -> Value {
     let payload = row.get("payload").cloned().unwrap_or(json!({}));
     let class = completion_class(&payload);
     let gate_result = req.get("result").cloned().unwrap_or(json!({}));
-    let triage_outcome = match gate_completion(&class, &gate_result) {
+    // The issue a completion must match: the packet's own `issue`
+    // object, else the repo-health dedupe key the broker already
+    // trusts for coverage (#10611).
+    let expected_issue = payload
+        .get("issue")
+        .and_then(|i| i.get("number"))
+        .and_then(|n| n.as_i64())
+        .or_else(|| {
+            let key = row.get("dedupe_key").and_then(|k| k.as_str())?;
+            let repo = payload.get("repo").and_then(|r| r.as_str())?;
+            issue_number_for_repo(key, repo)
+        });
+    let triage_outcome = match gate_completion(&class, expected_issue, &gate_result) {
         Ok(o) => o,
         Err(e) => return fail(2, e),
     };
@@ -9258,64 +9278,166 @@ mod tests {
         assert_eq!(merge_obj(&json!(null), &json!({"a": 1})), json!({"a": 1}));
     }
 
+    /// A disposition that a gate accepts for "no work left": the
+    /// issue closed, the linked pull merged, readback taken now.
+    fn live_disposition(issue: i64, pulls: Value) -> Value {
+        json!({
+            "checked_at": now_iso(),
+            "source": "fleet gh readback",
+            "issue": {"number": issue, "state": "closed", "closed_at": now_iso()},
+            "pulls": pulls,
+            "verdict": "merged_verified",
+        })
+    }
+
     #[test]
     fn completion_gate_fix_class_requires_evidence() {
         let fix = CompletionClass::Fix;
-        assert!(gate_completion(&fix, &json!({})).is_err());
-        assert!(gate_completion(&fix, &json!({"note": "did stuff"})).is_err());
-        assert!(gate_completion(&fix, &json!({"evidence": ""})).is_err());
-        assert!(gate_completion(&fix, &json!({"evidence": []})).is_err());
+        let merged = live_disposition(
+            1,
+            json!([{"number": 1, "state": "closed",
+                                                "merged_at": now_iso()}]),
+        );
+        assert!(gate_completion(&fix, None, &json!({})).is_err());
+        assert!(gate_completion(&fix, None, &json!({"note": "did stuff"})).is_err());
+        assert!(gate_completion(&fix, None, &json!({"evidence": ""})).is_err());
+        assert!(gate_completion(&fix, None, &json!({"evidence": []})).is_err());
+        // #10611: evidence alone is no longer a completion.
         assert!(
             gate_completion(
                 &fix,
+                None,
                 &json!({"pr_url": "https://github.com/developing-today/code/pull/1"})
             )
-            .is_ok()
+            .is_err()
         );
-        assert!(gate_completion(&fix, &json!({"commit": "abc123"})).is_ok());
         assert!(
             gate_completion(
                 &fix,
-                &json!({"verified_closure": "closed by #1, verified on the issue"})
+                None,
+                &json!({"pr_url": "https://github.com/developing-today/code/pull/1",
+                        "disposition": merged})
             )
             .is_ok()
         );
-        assert!(gate_completion(&fix, &json!({"evidence": ["artifact"]})).is_ok());
+        assert!(
+            gate_completion(
+                &fix,
+                None,
+                &json!({"commit": "abc123", "disposition": merged})
+            )
+            .is_ok()
+        );
+        assert!(
+            gate_completion(
+                &fix,
+                None,
+                &json!({"verified_closure": "closed by #1, verified on the issue",
+                        "disposition": merged})
+            )
+            .is_ok()
+        );
+        assert!(
+            gate_completion(
+                &fix,
+                None,
+                &json!({"evidence": ["artifact"], "disposition": merged})
+            )
+            .is_ok()
+        );
+        // A disposition that does not cover the claimed PR is a rejection.
+        assert!(
+            gate_completion(
+                &fix,
+                None,
+                &json!({"pr_url": "https://x/pull/2", "disposition": merged})
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn completion_gate_rejects_disposition_for_another_issue() {
+        // #10611: the readback must describe the packet's issue — a
+        // stale readback for a sibling issue is not closure evidence.
+        let merged = live_disposition(
+            1,
+            json!([{"number": 1, "state": "closed", "merged_at": now_iso()}]),
+        );
+        let err = gate_completion(
+            &CompletionClass::Fix,
+            Some(10611),
+            &json!({"pr_url": "https://x/pull/1", "disposition": merged}),
+        )
+        .unwrap_err();
+        assert!(err.contains("10611"), "{err}");
+    }
+
+    #[test]
+    fn completion_gate_rejects_stale_disposition() {
+        let fix = CompletionClass::Fix;
+        let mut stale = live_disposition(
+            1,
+            json!([{"number": 1, "state": "closed", "merged_at": now_iso()}]),
+        );
+        stale["checked_at"] = json!("2020-01-01T00:00:00Z");
+        let err = gate_completion(
+            &fix,
+            None,
+            &json!({"pr_url": "https://x/pull/1", "disposition": stale}),
+        )
+        .unwrap_err();
+        assert!(err.contains("old"), "{err}");
     }
 
     #[test]
     fn completion_gate_triage_doctrine() {
         let triage = CompletionClass::Triage;
+        let merged = live_disposition(
+            1,
+            json!([{"number": 2, "state": "closed", "merged_at": now_iso()}]),
+        );
         // Default: the issue goes back in the queue as a follow-on.
         assert_eq!(
-            gate_completion(&triage, &json!({})).unwrap(),
+            gate_completion(&triage, None, &json!({})).unwrap(),
             Some(TriageOutcome::FollowOn)
         );
         assert_eq!(
-            gate_completion(&triage, &json!({"triage_outcome": "follow_on"})).unwrap(),
+            gate_completion(&triage, None, &json!({"triage_outcome": "follow_on"})).unwrap(),
             Some(TriageOutcome::FollowOn)
         );
         // Invalid is an exit only with the validation evidence.
-        assert!(gate_completion(&triage, &json!({"triage_outcome": "invalid"})).is_err());
+        assert!(gate_completion(&triage, None, &json!({"triage_outcome": "invalid"})).is_err());
         assert_eq!(
-            gate_completion(
-                &triage,
-                &json!({"triage_outcome": "invalid", "triage_note": "not a real issue: duplicate of #1"})
+            gate_completion(&triage, None, &json!({"triage_outcome": "invalid", "triage_note": "not a real issue: duplicate of #1"})
             )
             .unwrap(),
             Some(TriageOutcome::ExitInvalid)
         );
-        // Already-solved needs a real evidence reference.
-        assert!(gate_completion(&triage, &json!({"triage_outcome": "already_solved"})).is_err());
+        // Already-solved needs a real evidence reference AND the
+        // verified disposition (#10611: the #9155/15345 replay).
+        assert!(
+            gate_completion(&triage, None, &json!({"triage_outcome": "already_solved"})).is_err()
+        );
+        assert!(
+            gate_completion(
+                &triage,
+                None,
+                &json!({"triage_outcome": "already_solved", "pr_url": "https://x/pull/2"})
+            )
+            .is_err()
+        );
         assert_eq!(
             gate_completion(
                 &triage,
-                &json!({"triage_outcome": "already_solved", "pr_url": "https://x/pull/2"})
+                None,
+                &json!({"triage_outcome": "already_solved", "pr_url": "https://x/pull/2",
+                        "disposition": merged})
             )
             .unwrap(),
             Some(TriageOutcome::ExitAlreadySolved)
         );
-        assert!(gate_completion(&triage, &json!({"triage_outcome": "done"})).is_err());
+        assert!(gate_completion(&triage, None, &json!({"triage_outcome": "done"})).is_err());
     }
 
     fn claimable_row(payload: Value) -> Value {
@@ -9687,7 +9809,7 @@ mod tests {
         assert_eq!(completion_class(&json!({})), CompletionClass::Ungated);
         // Ungated completions never gate, whatever the result.
         assert_eq!(
-            gate_completion(&CompletionClass::Ungated, &json!({})).unwrap(),
+            gate_completion(&CompletionClass::Ungated, None, &json!({})).unwrap(),
             None
         );
         assert_eq!(
