@@ -949,3 +949,52 @@ fn golden_scenario_pins_the_contract() {
     check_against_reference(&cfg(), &local, &remote, Some(&policy), &all_pass(), NOW);
     let _ = ExchangePlan::default().is_empty();
 }
+
+#[test]
+fn config_builder_and_capacity_helper_agree_on_the_bounds() {
+    // The builder is the supported way to describe a scope; the struct
+    // literal used elsewhere must produce the same configuration.
+    let built = SyncScopeConfig::new(SCOPE, DOMAIN)
+        .with_capacity(2)
+        .with_retention(50);
+    let literal = SyncScopeConfig {
+        scope: SCOPE.to_string(),
+        trust_domain: DOMAIN.to_string(),
+        capacity: 2,
+        retention: Some(50),
+    };
+    assert_eq!(built, literal);
+    assert_eq!(
+        SyncScopeConfig::new(SCOPE, DOMAIN).capacity,
+        b08::DEFAULT_CAPACITY
+    );
+
+    // Retention is measured from admission, at exactly the window.
+    let records = vec![live("a", "d", NOW - 49), live("b", "d", NOW - 50)];
+    let (kept, held_back) = b08::within_capacity(&records, &built, NOW);
+    assert_eq!(
+        kept.iter()
+            .map(|r| r.record_id.as_str())
+            .collect::<Vec<_>>(),
+        ["a"]
+    );
+    assert!(
+        held_back.is_empty(),
+        "expired records are not capacity pressure"
+    );
+
+    // Capacity trims oldest-admission first and reports the rest.
+    let records = vec![
+        live("old", "d", NOW - 3),
+        live("mid", "d", NOW - 2),
+        live("new", "d", NOW - 1),
+    ];
+    let (kept, held_back) = b08::within_capacity(&records, &built, NOW);
+    assert_eq!(
+        kept.iter()
+            .map(|r| r.record_id.as_str())
+            .collect::<Vec<_>>(),
+        ["old", "mid"]
+    );
+    assert_eq!(held_back, vec!["new".to_string()]);
+}
