@@ -95,9 +95,12 @@ export function openImageBrowser(view: EditorView, schema: Schema): void {
   header.appendChild(title);
   header.appendChild(closeBtn);
 
-  // Grid container
+  // Grid container (live region: loading / empty states are announced,
+  // mirroring the search panel's aria-live match count).
   const grid = document.createElement("div");
   grid.className = "pm-image-browser-grid";
+  grid.setAttribute("role", "status");
+  grid.setAttribute("aria-live", "polite");
   grid.textContent = "Loading…";
 
   // Footer with insert button
@@ -191,6 +194,7 @@ export function openImageBrowser(view: EditorView, schema: Schema): void {
       card.setAttribute("role", "button");
       card.setAttribute("tabindex", "0");
       card.setAttribute("aria-label", `Select image ${img.name}`);
+      card.setAttribute("aria-pressed", "false");
 
       const thumb = document.createElement("img");
       thumb.src = img.url;
@@ -208,8 +212,10 @@ export function openImageBrowser(view: EditorView, schema: Schema): void {
       card.addEventListener("click", () => {
         for (const c of grid.querySelectorAll(".pm-image-browser-card.selected")) {
           c.classList.remove("selected");
+          c.setAttribute("aria-pressed", "false");
         }
         card.classList.add("selected");
+        card.setAttribute("aria-pressed", "true");
         selectedImage = img;
         insertBtn.disabled = false;
       });
@@ -243,7 +249,11 @@ export function openImageBrowser(view: EditorView, schema: Schema): void {
   function showLoadError(err: unknown): void {
     // Keep already-loaded cards visible if a later page fails.
     if (!hasCards) {
-      grid.textContent = `Failed to load images: ${err instanceof Error ? err.message : String(err)}`;
+      grid.textContent = "";
+      const alert = document.createElement("div");
+      alert.setAttribute("role", "alert");
+      alert.textContent = `Failed to load images: ${err instanceof Error ? err.message : String(err)}`;
+      grid.appendChild(alert);
     }
   }
 
@@ -263,9 +273,20 @@ export function openImageBrowser(view: EditorView, schema: Schema): void {
     }
     document.removeEventListener("keydown", onKeyDown);
     overlay.remove();
+    // Return focus to the editor, mirroring search-panel / goto-line.
+    // Guarded: closeImageBrowser() also runs on editor teardown (#1381).
+    try {
+      view.focus();
+    } catch {
+      // View already destroyed — nothing to refocus.
+    }
   }
 
   activeBrowser = { view, close };
+
+  // Move focus into the dialog so keyboard and screen-reader users land
+  // inside it instead of staying behind in the editor.
+  closeBtn.focus();
 }
 
 // ============================================================================

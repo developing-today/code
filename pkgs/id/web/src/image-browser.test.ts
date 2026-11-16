@@ -369,6 +369,47 @@ describe("openImageBrowser", () => {
 
     expect(document.querySelector(".pm-image-browser-overlay")).toBeNull();
   });
+
+  it("announces status, exposes selection, and manages focus", async () => {
+    openImageBrowser(view, richSchema);
+
+    // Focus moves into the dialog on open.
+    expect(document.activeElement?.className).toContain("pm-image-browser-close");
+
+    // Loading / empty states are announced via the grid live region.
+    const grid = document.querySelector(".pm-image-browser-grid");
+    expect(grid?.getAttribute("role")).toBe("status");
+    expect(grid?.getAttribute("aria-live")).toBe("polite");
+
+    await vi.waitFor(() => {
+      expect(document.querySelector(".pm-image-browser-card")).not.toBeNull();
+    });
+
+    // Selection state is exposed to assistive tech.
+    const firstCard = document.querySelector<HTMLElement>(".pm-image-browser-card");
+    expect(firstCard?.getAttribute("aria-pressed")).toBe("false");
+    firstCard?.click();
+    expect(firstCard?.getAttribute("aria-pressed")).toBe("true");
+
+    // Closing returns focus to the editor.
+    document.querySelector<HTMLButtonElement>(".pm-image-browser-close")?.click();
+    expect(document.activeElement).toBe(view.dom);
+  });
+
+  it("announces load failures as an alert", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => {
+        throw new Error("offline");
+      }),
+    );
+    openImageBrowser(view, richSchema);
+
+    await vi.waitFor(() => {
+      expect(document.querySelector('[role="alert"]')).not.toBeNull();
+    });
+    expect(document.querySelector('[role="alert"]')?.textContent).toContain("Failed to load images");
+  });
 });
 
 // ── Malformed /api/images payloads (#7812) ─────────────────────────
