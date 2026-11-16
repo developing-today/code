@@ -72,6 +72,7 @@ enum RefOutcome {
     Replay,
     BindingConflict,
     AtCapacity,
+    ClockRegressed,
 }
 
 /// Reference admission state: bindings keyed by event ID, with the
@@ -135,6 +136,7 @@ fn classify(result: Result<Accepted, ReplayError>) -> RefOutcome {
         Err(ReplayError::Replay { .. }) => RefOutcome::Replay,
         Err(ReplayError::BindingConflict { .. }) => RefOutcome::BindingConflict,
         Err(ReplayError::LedgerSaturated { .. }) => RefOutcome::AtCapacity,
+        Err(ReplayError::ClockRegressed { .. }) => RefOutcome::ClockRegressed,
     }
 }
 
@@ -434,4 +436,35 @@ proptest! {
             prop_assert_eq!(guard.ledger_len(), reference.admitted.len(), "trace:\n{}", trace);
         }
     }
+}
+
+#[test]
+fn regressed_clock_cannot_readmit_a_pruned_event() {
+    // Regression test (review finding on the B03 PR): pruning is only
+    // sound while the caller's clock is non-decreasing. After an event
+    // ages out at a later `now`, re-presenting it at the earlier `now`
+    // must fail closed — never be admitted a second time.
+    let mut guard = ReplayGuard::new(window(), 2);
+    let ev = event(7, 1, 1_000);
+
+    assert_eq!(classify(guard.admit(ev, 1_000)), RefOutcome::Accepted);
+
+    let late = 1_000 + MAX_AGE + 1;
+    assert_eq!(
+        guard.admit(ev, late),
+        Err(ReplayError::Expired {
+            issued_at: 1_000,
+            now: late,
+            max_age: MAX_AGE,
+        })
+    );
+    assert_eq!(guard.ledger_len(), 0);
+
+    assert_eq!(
+        guard.admit(ev, 1_000),
+        Err(ReplayError::ClockRegressed {
+            highest_now: late,
+            now: 1_000,
+        })
+    );
 }

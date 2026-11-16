@@ -125,6 +125,14 @@ pub enum ReplayError {
     /// The retained replay ledger is full. New admissions are refused
     /// rather than evicting a live entry, which would re-open replay.
     LedgerSaturated { capacity: usize },
+    /// The caller's logical clock moved backwards: `now` is below the
+    /// highest time previously presented to `admit`. Fail-closed: with
+    /// a regressed clock, an event ID pruned as expired could otherwise
+    /// be admitted a second time, breaking the at-most-once contract.
+    ClockRegressed {
+        highest_now: LogicalTime,
+        now: LogicalTime,
+    },
 }
 
 impl fmt::Display for ReplayError {
@@ -157,6 +165,10 @@ impl fmt::Display for ReplayError {
             Self::LedgerSaturated { capacity } => {
                 write!(f, "replay ledger saturated at {capacity} entries")
             }
+            Self::ClockRegressed { highest_now, now } => write!(
+                f,
+                "logical clock regressed: now {now} is below the highest seen {highest_now}"
+            ),
         }
     }
 }
@@ -180,6 +192,10 @@ pub struct ReplayGuard {
     window: FreshnessWindow,
     capacity: usize,
     ledger: BTreeMap<EventId, Binding>,
+    /// Highest logical time ever presented to `admit`. Pruning is only
+    /// sound while the caller's clock is non-decreasing, so `admit`
+    /// rejects a regressed `now` (see `ReplayError::ClockRegressed`).
+    highest_now: Option<LogicalTime>,
 }
 
 impl ReplayGuard {
@@ -193,6 +209,7 @@ impl ReplayGuard {
             window,
             capacity,
             ledger: BTreeMap::new(),
+            highest_now: None,
         }
     }
 
@@ -212,7 +229,9 @@ impl ReplayGuard {
     /// Ordering is part of the contract: structural validity, then
     /// freshness, then replay/binding, then capacity. Checking
     /// freshness first means a late re-presentation is `Expired`, never
-    /// admitted merely because its ledger entry had aged out.
+    /// admitted merely because its ledger entry had aged out. The
+    /// caller's clock must be non-decreasing across calls: a `now`
+    /// below the highest previously seen is `ClockRegressed`.
     pub fn admit(
         &mut self,
         event: PresentedEvent,
@@ -223,6 +242,16 @@ impl ReplayGuard {
                 event_id: event.event_id,
             });
         }
+
+        // Fail closed on a regressed clock before any state changes:
+        // pruning at a backwards `now` could re-open admission for an
+        // ID that already aged out at a later time.
+        if let Some(highest_now) = self.highest_now {
+            if now < highest_now {
+                return Err(ReplayError::ClockRegressed { highest_now, now });
+            }
+        }
+        self.highest_now = Some(now);
 
         // Keep only IDs that could still be presented as fresh.
         self.prune(now);
@@ -273,7 +302,9 @@ impl ReplayGuard {
 
     /// Drop entries whose event can no longer be fresh at `now`. A
     /// pruned ID cannot be replayed into acceptance, because the
-    /// freshness check above answers any later presentation.
+    /// freshness check above answers any later presentation — and
+    /// `admit` rejects a regressed clock, so `now` never moves
+    /// backwards across calls.
     fn prune(&mut self, now: LogicalTime) {
         let window = self.window;
         self.ledger
