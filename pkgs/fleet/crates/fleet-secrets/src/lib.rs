@@ -1461,7 +1461,11 @@ mod tests {
                 let (mut stream, _) = listener.accept().unwrap();
                 let req: Request = fleet_proxy_proto::read_typed(&mut stream).unwrap();
                 assert_eq!(req.path, "/secret/wanted.name");
-                let resp = Response { status, body, transport: None };
+                let resp = Response {
+                    status,
+                    body,
+                    transport: None,
+                };
                 fleet_proxy_proto::write_frame(&mut stream, &resp).unwrap();
                 served += 1;
             }

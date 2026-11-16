@@ -397,12 +397,26 @@ describe("reconcile streams are incremental (#9850 round 2)", () => {
       }
       if (url.includes("/pulls/1/reviews")) {
         return jsonRes([
-          { id: 101, body: "old", user: { login: "drew" }, state: "APPROVED", submitted_at: "2026-10-01T12:00:00Z", html_url: "https://github.com/x#r101" },
+          {
+            id: 101,
+            body: "old",
+            user: { login: "drew" },
+            state: "APPROVED",
+            submitted_at: "2026-10-01T12:00:00Z",
+            html_url: "https://github.com/x#r101",
+          },
         ]);
       }
       if (url.includes("/pulls/2/reviews")) {
         return jsonRes([
-          { id: 102, body: "new", user: { login: "drew" }, state: "APPROVED", submitted_at: "2026-10-07T12:00:00Z", html_url: "https://github.com/x#r102" },
+          {
+            id: 102,
+            body: "new",
+            user: { login: "drew" },
+            state: "APPROVED",
+            submitted_at: "2026-10-07T12:00:00Z",
+            html_url: "https://github.com/x#r102",
+          },
         ]);
       }
       return jsonRes([]);

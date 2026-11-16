@@ -455,7 +455,13 @@ function summarize(file: QuotaCurrentFile, nowMs: number): GathererSummary {
  * carry a measurement. Every OTHER serviceId the read reports
  * renders as a pool — see the synthesis below.
  */
-const NON_POOL_SERVICE_IDS: ReadonlySet<string> = new Set(["turso", "antigravity", "_antigravity", "opencode-go", "groq"]);
+const NON_POOL_SERVICE_IDS: ReadonlySet<string> = new Set([
+  "turso",
+  "antigravity",
+  "_antigravity",
+  "opencode-go",
+  "groq",
+]);
 
 /**
  * Overlay a parsed quota-current document onto a quota view. Pure:

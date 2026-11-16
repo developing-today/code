@@ -1687,7 +1687,9 @@ async function loadAttentionContext(opts: { census?: boolean } = {}) {
 // assembly costs up to ~64 s of GitHub search calls and must never
 // ride the JSON path, or vice versa.
 const attentionContextCache = new TodayCache<Awaited<ReturnType<typeof loadAttentionContext>>>(TODAY_CACHE_TTL_MS);
-const attentionCensusContextCache = new TodayCache<Awaited<ReturnType<typeof loadAttentionContext>>>(TODAY_CACHE_TTL_MS);
+const attentionCensusContextCache = new TodayCache<Awaited<ReturnType<typeof loadAttentionContext>>>(
+  TODAY_CACHE_TTL_MS,
+);
 async function attentionContext(opts: { census?: boolean } = {}) {
   return opts.census
     ? attentionCensusContextCache.get(() => loadAttentionContext(opts))

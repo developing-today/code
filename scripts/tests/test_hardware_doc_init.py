@@ -63,6 +63,7 @@ class TestHardwareDocInit(unittest.TestCase):
         self.assertNotIn("cloned", (result.stdout + result.stderr).lower())
         self.assertFalse((self.target / ".git").is_dir())
         self.assertFalse((self.main_repo / "doc" / "hardware").exists())
+
     def setUp(self):
         self._tmp = tempfile.TemporaryDirectory(prefix="hardware-doc-init-")
         self.addCleanup(self._tmp.cleanup)

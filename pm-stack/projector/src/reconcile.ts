@@ -85,8 +85,7 @@ async function reconcileStream(
       fetchFn,
       since
         ? {
-            stopAfterPage: (page) =>
-              page.every((p) => typeof p?.updated_at === "string" && p.updated_at <= since),
+            stopAfterPage: (page) => page.every((p) => typeof p?.updated_at === "string" && p.updated_at <= since),
           }
         : {},
     );
@@ -204,8 +203,7 @@ async function reconcileStream(
       fetchFn,
       cutoff
         ? {
-            stopAfterPage: (page) =>
-              page.every((p) => typeof p?.updated_at === "string" && p.updated_at < cutoff),
+            stopAfterPage: (page) => page.every((p) => typeof p?.updated_at === "string" && p.updated_at < cutoff),
           }
         : {},
     );

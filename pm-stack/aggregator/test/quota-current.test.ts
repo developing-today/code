@@ -1301,7 +1301,11 @@ describe("non-pool registration (#10575)", () => {
     const out = overlayQuotaCurrent(
       baseView(),
       file([
-        entry({ serviceId: "groq", state: "error", error: "Groq exposes no first-party usage/quota endpoint for an API key" }),
+        entry({
+          serviceId: "groq",
+          state: "error",
+          error: "Groq exposes no first-party usage/quota endpoint for an API key",
+        }),
         entry({ serviceId: "some-new-provider", windows: [win("monthly", 3, iso(5 * 60_000))] }),
       ]),
       NOW,
