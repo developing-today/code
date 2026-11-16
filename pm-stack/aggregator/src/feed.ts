@@ -12,6 +12,7 @@ import type { CheckoutDrift } from "./checkout-drift.ts";
 import { isProjectAudit, isProjectPoolItem } from "./projects.ts";
 import { isRepoCensus, type RepoCensus } from "./coverage.ts";
 import { isSessionRecord } from "./registry.ts";
+import { isDependencyStatus } from "./orchestration-dependency.ts";
 import {
   arrayOf,
   isFiniteNumber,
@@ -39,6 +40,7 @@ import type {
   QuotaView,
   QuotaWindow,
   SaasService,
+  UninstrumentedSaasService,
   SessionFeedEntry,
   SessionRecord,
   SnapshotRecord,
@@ -98,6 +100,10 @@ export interface FleetFeed {
   /** Usage & billing hub (design §2.3): family-2 services extracted from
    * quota-view.md Part (b) by the collector; absent in older feeds. */
   saas?: SaasService[];
+  /** Tracker-derived services without an instrumented quota card. */
+  uninstrumentedServices?: UninstrumentedSaasService[];
+  /** Malformed tracker rows dropped by loadFeed (#1172). */
+  uninstrumentedServicesDropped?: number;
   /** Hub PAYG lines (§1.2), from quota-view.md + the provider registry. */
   payg?: PaygLine[];
   /** Hub charges evidence (§2.4), from the same dated records. */
@@ -123,10 +129,10 @@ export interface FleetFeed {
   projects?: ProjectPoolItem[];
   /** Scheduled Project #4 audit snapshot (fields, views, totals, and distributions). */
   projectAudit?: ProjectAudit;
-  /** Project #4 coverage census (#1220): per-repo open-issue and
-   * gate-label counts from the collector's Search API reads, embedded
-   * beside the projects section. Absent when the collector had no
-   * GitHub token or the census failed. */
+  /** Project #4 coverage census (#1220/#1224): per-repo open-issue,
+   * gate-label, and timestamped >90-day untouched-issue counts from the
+   * collector's Search API reads, embedded beside the projects section.
+   * Absent when the collector had no GitHub token or the census failed. */
   coverage?: RepoCensus[];
   /** AA cost explorer section: the ainventory (AA import) data read
    * by the collector from Supabase, plus pool/catalog coverage computed
@@ -137,6 +143,43 @@ export interface FleetFeed {
   /** Optional collector outcomes. Older feeds have no metadata and keep
    *  their historical presence-only health/provenance behavior. */
   meta?: FeedMetadata;
+  /** #8568: Drew's answers to needs-Drew questions, read by the
+   * collector from the aggregator's needs-drew store; the fleet lane
+   * consumes this to resume blocked workers. Absent in older feeds. */
+  answers?: FleetFeedAnswer[];
+  /** #8766: Drew's per-question resolutions from the decisions page
+   * (answers AND defer-to-orchestrator records), read by the collector
+   * from the aggregator's decision-set store; the dropped-thread
+   * catcher applies them to the decisions ledger. Absent in older feeds. */
+  decisionResolutions?: FleetFeedDecisionResolution[];
+}
+
+export interface FleetFeedAnswer {
+  ledgerId: string;
+  optionId?: string;
+  freeText?: string;
+  answeredAt: string;
+  via: string;
+}
+
+export interface FleetFeedDecisionResolution {
+  setId: string;
+  ledgerId: string;
+  qid: string;
+  /** 1-based index of the question within its ledger item. */
+  questionIndex: number;
+  kind: "answered" | "deferred" | "request-info";
+  optionId?: string;
+  optionLabel?: string;
+  freeText?: string;
+  /** Deferred only: the lean recorded with the defer. */
+  lean?: "none" | "skeptical" | "approve";
+  /** Request-info only: what Drew said is missing (optional). */
+  note?: string;
+  /** Any kind: Drew's remark attached to the resolution. */
+  comment?: string;
+  at: string;
+  via: string;
 }
 
 export type FeedSectionStatus = "ok" | "error" | "skipped";
@@ -147,10 +190,27 @@ export interface FeedSectionCollectionStatus {
   at: string;
   /** Sanitized diagnostic for an error outcome only. */
   error?: string;
+  /** Provider-reported expected entry count, when comparable to emittedEntries. */
+  reportedTotal?: number;
+  /** Number of entries actually emitted for this section. */
+  emittedEntries?: number;
 }
 
 export interface FeedMetadata {
   sections: Record<string, FeedSectionCollectionStatus>;
+}
+
+// Cap `t` at `max` UTF-16 code units, but never leave half of a surrogate
+// pair at the cut (#7741, mirroring the #7694 capUnits guard in actions.ts):
+// an astral character straddling the cap is dropped whole. Local copy, like
+// comments.ts (#7731) — a shared import would tangle module dependencies.
+function capUnits(t: string, max: number): string {
+  if (t.length <= max) return t;
+  let end = max;
+  const before = t.charCodeAt(end - 1);
+  const after = t.charCodeAt(end);
+  if (before >= 0xd800 && before <= 0xdbff && after >= 0xdc00 && after <= 0xdfff) end--;
+  return t.slice(0, end);
 }
 
 /** Keep collector diagnostics useful without allowing credentials or
@@ -174,8 +234,8 @@ export function sanitizeCollectionError(value: unknown): string {
     )
     .replace(/(https?:\/\/)[^/@\s:]+(?::[^/@\s]*)?@/gi, "$1[redacted]@")
     .replace(/\b[A-Za-z0-9_-]{40,}\b/g, "[redacted]")
-    .replace(/[\r\n\t]+/g, " ")
-    .slice(0, 240);
+    .replace(/[\r\n\t]+/g, " ");
+  message = capUnits(message, 240);
   return message || "collection failed";
 }
 
@@ -199,7 +259,15 @@ export function sanitizeFeedMetadata(value: unknown): FeedMetadata | undefined {
     ) {
       continue;
     }
-    sections[key] = feedSectionStatus(raw.status, at, raw.error);
+    sections[key] = {
+      ...feedSectionStatus(raw.status, at, raw.error),
+      ...(Number.isSafeInteger(raw.reportedTotal) && (raw.reportedTotal as number) >= 0
+        ? { reportedTotal: raw.reportedTotal as number }
+        : {}),
+      ...(Number.isSafeInteger(raw.emittedEntries) && (raw.emittedEntries as number) >= 0
+        ? { emittedEntries: raw.emittedEntries as number }
+        : {}),
+    };
   }
   return Object.keys(sections).length ? { sections } : undefined;
 }
@@ -249,8 +317,7 @@ function isLinedUpElement(v: unknown): boolean {
     // its blockers were silently dropped by the canonical layer
     // (asBlockers), rendering a blocked task as unblocked. Absence is
     // fine; a present value must be an array of dependency elements.
-    (v.blockedBy === undefined ||
-      (Array.isArray(v.blockedBy) && v.blockedBy.every(isDependencyElement)))
+    (v.blockedBy === undefined || (Array.isArray(v.blockedBy) && v.blockedBy.every(isDependencyElement)))
   );
 }
 
@@ -315,14 +382,11 @@ function isTierElement(v: unknown): boolean {
   return isRecord(v) && typeof v.id === "string";
 }
 
-const DEPENDENCY_STATUSES: readonly string[] = ["in-progress", "queued", "stalled", "done", "unknown"];
-
 function isDependencyElement(v: unknown): boolean {
   if (!isRecord(v)) return false;
   return (
     typeof v.task === "string" &&
-    typeof v.status === "string" &&
-    DEPENDENCY_STATUSES.includes(v.status) &&
+    isDependencyStatus(v.status) &&
     (v.ref === undefined || typeof v.ref === "string") &&
     (v.taskRef === undefined || typeof v.taskRef === "string") &&
     (v.workerSessionId === undefined || typeof v.workerSessionId === "string") &&
@@ -547,7 +611,7 @@ export function isQuotaWindow(v: unknown): v is QuotaWindow {
   );
 }
 
-const QUOTA_STATES = ["healthy", "near", "walled", "error", "stale"];
+const QUOTA_STATES = ["healthy", "near", "walled", "error", "stale", "lapsed"];
 
 /** One quota pool whose own shape is safe to hand to the renderers
  * (#2429): an object with a `windows` ARRAY — a non-array windows value
@@ -565,7 +629,7 @@ export function isQuotaPool(v: unknown): v is QuotaPool {
   return true;
 }
 
-const QUOTA_FRESHNESS_STATES = ["ok", "stale", "error"];
+const QUOTA_FRESHNESS_STATES = ["ok", "stale", "error", "lapsed"];
 
 function isQuotaFreshness(v: unknown): v is PoolFreshness {
   return (
@@ -915,7 +979,8 @@ export function isFleetFeed(v: unknown): v is FleetFeed {
     // unguarded, so — like burn/choices above — the feed is rejected
     // whole. Malformed ELEMENTS inside an array are loadFeed's
     // drop-and-count concern, not the gate's.
-    (f.chargesAttention === undefined || Array.isArray(f.chargesAttention))
+    (f.chargesAttention === undefined || Array.isArray(f.chargesAttention)) &&
+    (f.uninstrumentedServices === undefined || Array.isArray(f.uninstrumentedServices))
   );
 }
 
@@ -946,6 +1011,32 @@ export function sanitizeSubscriptions(v: unknown): SubscriptionSanitization {
   if (v === undefined) return { dropped: 0 };
   if (!Array.isArray(v)) return { dropped: 1 };
   const rows = v.filter(isSubscriptionRow);
+  return { rows, dropped: v.length - rows.length };
+}
+
+export interface UninstrumentedServiceSanitization {
+  rows?: UninstrumentedSaasService[];
+  dropped: number;
+}
+
+/** A tracker row safe to hand to renderers (#1172). */
+export function isUninstrumentedSaasService(v: unknown): v is UninstrumentedSaasService {
+  if (!isRecord(v)) return false;
+  return (
+    typeof v.name === "string" &&
+    typeof v.whatFor === "string" &&
+    typeof v.status === "string" &&
+    (v.checkedAt === null || isIsoDate(v.checkedAt)) &&
+    typeof v.overageBehavior === "string" &&
+    typeof v.guardrailNotes === "string"
+  );
+}
+
+/** Drop malformed tracker rows at the shared feed boundary. */
+export function sanitizeUninstrumentedServices(v: unknown): UninstrumentedServiceSanitization {
+  if (v === undefined) return { dropped: 0 };
+  if (!Array.isArray(v)) return { dropped: 1 };
+  const rows = v.filter(isUninstrumentedSaasService);
   return { rows, dropped: v.length - rows.length };
 }
 
@@ -991,6 +1082,19 @@ export function isPaygLine(v: unknown): v is PaygLine {
     nullableNonNegative(v.accruedUsd) &&
     (v.collectedUsd === undefined || nullableNonNegative(v.collectedUsd)) &&
     (v.estimate === undefined || isEstimate(v.estimate)) &&
+    (v.settledUsd === undefined || nullableNonNegative(v.settledUsd)) &&
+    (v.settledAt === undefined || v.settledAt === null || isIsoDate(v.settledAt)) &&
+    (v.settledTs === undefined || v.settledTs === null || typeof v.settledTs === "string") &&
+    (v.settledSource === undefined ||
+      v.settledSource === null ||
+      v.settledSource === "api" ||
+      v.settledSource === "console" ||
+      v.settledSource === "manual" ||
+      v.settledSource === "estimate" ||
+      v.settledSource === "invoice") &&
+    (v.settledVarianceUsd === undefined || v.settledVarianceUsd === null || isFiniteNumber(v.settledVarianceUsd)) &&
+    (v.estimatePeriodEnd === undefined || v.estimatePeriodEnd === null || isIsoDate(v.estimatePeriodEnd)) &&
+    (v.staleEstimate === undefined || typeof v.staleEstimate === "boolean") &&
     nullableNonNegative(v.unbilledUsd) &&
     typeof v.note === "string" &&
     (v.measuredAt === null || isIsoDate(v.measuredAt)) &&
@@ -1034,6 +1138,7 @@ export async function loadFeed(path: string): Promise<FleetFeed | null> {
     const charges =
       parsed.chargesAttention === undefined ? undefined : arrayOf(isUnmatchedCharge)(parsed.chargesAttention);
     const subs = sanitizeSubscriptions(parsed.subscriptions);
+    const uninstrumented = sanitizeUninstrumentedServices(parsed.uninstrumentedServices);
     // Registry rows feed both the session registry and coverage, so sanitize
     // once here rather than letting the two consumers see different inputs.
     const registry = sanitizeRegistry(parsed.registry);
@@ -1079,6 +1184,8 @@ export async function loadFeed(path: string): Promise<FleetFeed | null> {
       ...(charges && charges.dropped > 0 ? { chargesAttentionDropped: charges.dropped } : {}),
       subscriptions: subs.rows,
       ...(subs.dropped > 0 ? { subscriptionsDropped: subs.dropped } : {}),
+      ...(uninstrumented.rows ? { uninstrumentedServices: uninstrumented.rows } : {}),
+      ...(uninstrumented.dropped > 0 ? { uninstrumentedServicesDropped: uninstrumented.dropped } : {}),
       ...(registry.rows !== undefined ? { registry: registry.rows } : {}),
       ...(registry.dropped > 0 ? { registryDropped: registry.dropped } : {}),
       ...(payg.rows !== undefined ? { payg: payg.rows } : {}),

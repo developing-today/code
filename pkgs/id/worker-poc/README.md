@@ -51,6 +51,8 @@ evolution only, never on execution-budget behaviour.
 
 - `smoke/participant-validation.mjs` — the #4074 regression pin: `PlazaGuest.update` must reject participant value classes the native u64 host can never produce (NaN, -Infinity, negative/fractional) instead of silently coercing them. Run it on its own with `npm run participant-validation`; it also runs as part of `npm run smoke`.
 
+- `smoke/participant-clamp.mjs` — the PR #3726 clamp-vs-wrap regression pin: participant IDs above `i32::MAX` must clamp like the native host instead of wrapping to a different participant. Run it on its own with `npm run participant-clamp`; it also runs as part of `npm run smoke`.
+
 ## Status vs #2271 acceptance
 
 - [x] Scaffold: TS isolate host instantiating the prebuilt counter guest,

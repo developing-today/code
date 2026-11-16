@@ -236,6 +236,19 @@ func scriptSettings() []Setting {
 				"basename is one of the three. See docs/runtimes.md.",
 		},
 		{
+			Path: "script.language", Commands: runCommands, Kind: KindEnum, Default: "auto",
+			Scope:       ScopeClient,
+			Enum:        []string{"auto", "typescript", "javascript", "python"},
+			FlagAliases: []string{"language"},
+			Name:        "Script language", Short: "language a script is written in: auto, typescript, javascript or python",
+			Long: "auto detects from the shebang, then the file extension, as before. " +
+				"python runs the script under the machine's Python with the generated " +
+				"Python client installed; typescript and javascript run under " +
+				"script.runtime with the TypeScript client. An explicit --language " +
+				"flag or the /v1/exec language option beats this setting for one " +
+				"run; a shebang or script.interpreter dispatch still beats both.",
+		},
+		{
 			Path: "script.runtimes", Commands: runCommands, Kind: KindString, Default: "",
 			Scope: ScopeClient,
 			Name:  "Declared runtimes",
@@ -365,6 +378,22 @@ func scriptSettings() []Setting {
 				"flag and --typecheck flag remain accepted; the old value on means types.",
 		},
 		{
+			Path: "script.checkOnError", Commands: runCommands, Kind: KindEnum, Default: "fail",
+			Scope: ScopeClient,
+			Enum:  []string{"fail", "warn", "run"},
+			Name:  "Script check errors",
+			Short: "what to do when script checking finds an error",
+			Long:  "fail stops before running the script, warn reports the error and runs it, and run continues without reporting the check error.",
+		},
+		{
+			Path: "script.checkOnUnsupported", Commands: runCommands, Kind: KindEnum, Default: "warn",
+			Scope: ScopeClient,
+			Enum:  []string{"skip", "warn", "switch"},
+			Name:  "Unsupported script check runtime",
+			Short: "what to do when the selected runtime cannot check the script",
+			Long:  "skip omits the check, warn reports that it could not run, and switch uses Deno only for checking while the configured runtime still runs the script.",
+		},
+		{
 			Path: "script.imports", Commands: runCommands, Kind: KindEnum, Default: "report",
 			Scope: ScopeClient,
 			Enum:  []string{"off", "report", "prepare"},
@@ -421,6 +450,18 @@ func scriptSettings() []Setting {
 			Scope:       ScopeClient,
 			FlagAliases: []string{"env"},
 			Name:        "Extra environment", Short: "KEY=VALUE pairs added to the script's environment",
+		},
+		{
+			Path: "script.devshell", Commands: runCommands, Kind: KindString, Default: "host",
+			Scope: ScopeClient,
+			Name:  "Script environment",
+			Short: "environment the script runs inside: host, or flake:<ref> for a Nix flake devshell",
+			Long: "\"host\" runs the script with the caller's environment, as before. " +
+				"\"flake:<ref>\" runs it inside the named flake's devshell via " +
+				"nix develop <ref> -c, so the runtime and tools come from the flake. " +
+				"An absent nix or an unresolvable ref fails the run loudly; there is " +
+				"no silent fallback to host. A devshell is a reproducible " +
+				"environment, not a security sandbox.",
 		},
 	}
 }

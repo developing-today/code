@@ -14,8 +14,14 @@ set -uo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" >/dev/null 2>&1 && pwd)"
 UNDER_TEST="$SCRIPT_DIR/bws-freshness-drift-issue.sh"
-[ -f "$UNDER_TEST" ] || { echo "FAIL: $UNDER_TEST not found" >&2; exit 1; }
-command -v jq >/dev/null 2>&1 || { echo "FAIL: jq not found in PATH" >&2; exit 1; }
+[ -f "$UNDER_TEST" ] || {
+  echo "FAIL: $UNDER_TEST not found" >&2
+  exit 1
+}
+command -v jq >/dev/null 2>&1 || {
+  echo "FAIL: jq not found in PATH" >&2
+  exit 1
+}
 
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT

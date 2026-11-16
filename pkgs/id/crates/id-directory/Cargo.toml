@@ -1,0 +1,130 @@
+[package]
+name = "id-directory"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.96"
+description = "Directory layer of the id crate: home-server directory, views, auth, mail, invites and seitan admission (pkgs/id crate split step 6b, #4409)"
+license = "MIT OR Apache-2.0"
+
+# Step 6b of the pkgs/id crate split (#3447 umbrella, #4409): the
+# directory cluster lives here. Dependencies per the design map plus
+# the step-6a seam work: id-core (kernel: petname, hex, test
+# forgeries), id-caps (the WorldScopes vocabulary), id-events (group
+# roles), id-sync (artifacts and the envelope outbox). This crate
+# must never depend on id-worlds; id-worlds depends on it, because
+# WorldCore holds the Directory as its own persisted state.
+
+[features]
+default = []
+
+[dependencies]
+anyhow = "1"
+base64 = "0.22"
+crypto_secretbox = "0.1"
+ed25519-dalek = { version = "3", features = ["rand_core"] }
+hmac = "0.13"
+id-caps = { path = "../id-caps", default-features = false }
+id-core = { path = "../id-core", default-features = false, features = [
+  "world",
+] }
+id-events = { path = "../id-events", default-features = false }
+id-sync = { path = "../id-sync", default-features = false }
+iroh-tickets = "1"
+libc = "0.2"
+p2panda-core = { git = "https://github.com/p2panda/p2panda", rev = "da80c05b95269926bf58121cf6a2d3dd5ca41dfc" }
+rand = "0.10"
+rmp-serde = "1"
+scrypt = "0.12"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha2 = "0.11"
+subtle = "2"
+tracing = "0.1"
+
+[dev-dependencies]
+id-core = { path = "../id-core", default-features = false, features = [
+  "test-utils",
+] }
+# The directory tests sign artifacts through the id-sync test seam
+# (SignedArtifact::sign_unchecked), as the facade dev build did.
+id-sync = { path = "../id-sync", default-features = false, features = [
+  "test-utils",
+] }
+iroh = "1"
+iroh-base = "1"
+proptest = "1.12"
+serde_bytes = "0.11"
+tempfile = "3"
+
+[lints.rust]
+unsafe_code = "warn"
+rust_2018_idioms = { level = "warn", priority = -1 }
+rust_2024_compatibility = { level = "warn", priority = -1 }
+missing_debug_implementations = "warn"
+missing_docs = "warn"
+trivial_casts = "warn"
+trivial_numeric_casts = "warn"
+unused_lifetimes = "warn"
+unused_qualifications = "warn"
+
+[lints.clippy]
+all = { level = "warn", priority = -1 }
+pedantic = { level = "warn", priority = -1 }
+nursery = { level = "warn", priority = -1 }
+cargo = { level = "warn", priority = -1 }
+unwrap_used = "deny"
+expect_used = "deny"
+panic = "deny"
+unimplemented = "deny"
+todo = "deny"
+dbg_macro = "deny"
+print_stdout = "allow"
+print_stderr = "allow"
+clone_on_ref_ptr = "warn"
+create_dir = "warn"
+deref_by_slicing = "warn"
+empty_structs_with_brackets = "warn"
+filetype_is_file = "warn"
+float_cmp_const = "warn"
+fn_to_numeric_cast_any = "warn"
+format_push_string = "warn"
+get_unwrap = "warn"
+if_then_some_else_none = "warn"
+lossy_float_literal = "warn"
+map_err_ignore = "warn"
+mem_forget = "warn"
+mixed_read_write_in_expression = "warn"
+mutex_atomic = "warn"
+rc_buffer = "warn"
+rc_mutex = "warn"
+redundant_type_annotations = "warn"
+rest_pat_in_fully_bound_structs = "warn"
+same_name_method = "warn"
+self_named_module_files = "warn"
+str_to_string = "warn"
+string_add = "warn"
+suspicious_xor_used_as_pow = "warn"
+try_err = "warn"
+undocumented_unsafe_blocks = "warn"
+unnecessary_safety_comment = "warn"
+unnecessary_safety_doc = "warn"
+unnecessary_self_imports = "warn"
+unneeded_field_pattern = "warn"
+verbose_file_reads = "warn"
+module_name_repetitions = "allow"
+must_use_candidate = "allow"
+missing_errors_doc = "allow"
+missing_panics_doc = "allow"
+redundant_pub_crate = "allow"
+significant_drop_tightening = "allow"
+option_if_let_else = "allow"
+multiple_crate_versions = "allow"
+cargo_common_metadata = "allow"
+too_many_lines = "allow"
+too_many_arguments = "allow"
+fn_params_excessive_bools = "allow"
+struct_excessive_bools = "allow"
+cognitive_complexity = "allow"
+future_not_send = "allow"
+assert_is_empty = "allow"
+chunks_exact_to_as_chunks = "allow"

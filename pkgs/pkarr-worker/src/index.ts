@@ -43,7 +43,6 @@ const PACKET_CONTENT_TYPE = "application/x-pkarr-signed-packet";
 const DOH_CONTENT_TYPE = "application/dns-message";
 const MAX_DOH_BODY = 4096;
 
-
 /**
  * The record table stores the packet timestamp through a JS Number
  * (SQLite INTEGER binding), which is exact only for integers a double

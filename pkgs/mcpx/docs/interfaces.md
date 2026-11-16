@@ -25,7 +25,7 @@ declaration come:
 - the `mcpx_<op>` MCP tool,
 - a generated CLI command, for operations that have one,
 - a typed plugin method on `DaemonClient.ops`
-  (`plugin/opencode/mcpx/ops.gen.ts`, generated the same way),
+  (`plugin/core/ops.gen.ts`, generated the same way),
 - the operation's entry in `/v1/openapi.json` and in the document
   `mcpx openapi` prints — one document now, generated from the table;
   the stale hand-written serve-surface document it replaced is
@@ -119,9 +119,14 @@ import tools from "./mcpx-client.ts";
 
 Discovery is in the same surface: scripts can call `search()` and
 `describe()` to find a tool and read its signature at run time
-rather than having every schema loaded up front. The contract a
-script runs under — stdout is the result, `emit()` streams, a
-default export is the entry point — is the
+rather than having every schema loaded up front. `search()` also
+finds saved scripts (recipes): every match carries a `kind` --
+`"tool"`, with a callable, or `"recipe"`, with the script's name
+and placeholders -- and both kinds are ranked and paged together
+in one stable order (CODE-36). The contract a
+script runs under — for an exec snippet a final expression,
+otherwise stdout, is the result, `emit()` streams, a default
+export is the entry point — is the
 [scripts page](./scripts.md#script).
 
 ### The CLI — for people, shells and CI
@@ -140,7 +145,7 @@ JavaScript runtime involved at all. The whole surface is the
 
 ### `DaemonClient` and `connect()` — for harnesses and Bun/TypeScript programs
 
-The opencode plugin's client (`plugin/opencode/mcpx/daemon.ts`)
+The opencode plugin's client (`plugin/core/daemon.ts`)
 talks to the daemon over its unix socket — measured at about
 0.17 ms per call against about 23 ms for spawning the binary. It is
 not published as a package; harness plugins vendor it, and any

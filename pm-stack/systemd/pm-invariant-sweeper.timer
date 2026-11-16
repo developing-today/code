@@ -1,0 +1,10 @@
+[Unit]
+Description=Daily epic-invariant sweeper (code#10139)
+
+[Timer]
+OnCalendar=*-*-* 05:47:00
+Persistent=true
+Unit=pm-invariant-sweeper.service
+
+[Install]
+WantedBy=timers.target

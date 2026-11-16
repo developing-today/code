@@ -4,6 +4,11 @@
  *
  * Handles both pre-hashed files (Bun JS output) and unhashed files
  * (Tailwind CLI CSS output) by computing SHA256 hashes as needed.
+ *
+ * Re-runnable on an already-built dist (#6969): the CSS step adopts an
+ * existing contract-valid hashed stylesheet instead of deleting it, so
+ * `bun run build:manifest` twice leaves dist styled and the manifest
+ * entry intact.
  */
 
 import { createHash } from "node:crypto";
@@ -12,13 +17,6 @@ import { join } from "node:path";
 
 const distDir = "dist";
 const manifest: Record<string, string> = {};
-
-// Remove stale hashed CSS files before processing
-for (const file of readdirSync(distDir)) {
-  if (file.match(/^styles\.[a-f0-9]+\.css$/)) {
-    unlinkSync(join(distDir, file));
-  }
-}
 
 // Find the newest JS bundle by mtime and remove stale ones
 const jsFiles: { name: string; mtime: number }[] = [];
@@ -40,16 +38,39 @@ if (jsFiles.length > 0) {
   }
 }
 
-for (const file of readdirSync(distDir)) {
-  // Tailwind CLI outputs "styles.css" (unhashed) — compute hash and rename
-  const cssExact = file === "styles.css";
+// Stylesheet names this script owns follow the emitted-name contract in
+// pkgs/id/src/web/assets.rs (#6779): `styles.` + exactly 8 lowercase hex
+// chars (a truncated SHA-256) + `.css`. Names outside the contract
+// (e.g. styles.darkmode.css) are not build outputs and are never
+// deleted or adopted here.
+const hashedStylesRe = /^styles\.[0-9a-f]{8}\.css$/;
+const cssFiles = readdirSync(distDir);
+const hashedStyles = cssFiles
+  .filter((file) => hashedStylesRe.test(file))
+  .map((name) => ({ name, mtime: statSync(join(distDir, name)).mtimeMs }))
+  .sort((a, b) => b.mtime - a.mtime);
 
-  if (cssExact) {
-    const content = readFileSync(join(distDir, file));
-    const hash = createHash("sha256").update(content).digest("hex").slice(0, 8);
-    const hashedName = `styles.${hash}.css`;
-    renameSync(join(distDir, file), join(distDir, hashedName));
-    manifest["styles.css"] = hashedName;
+if (cssFiles.includes("styles.css")) {
+  // Tailwind CLI outputs "styles.css" (unhashed) — compute hash and rename
+  const content = readFileSync(join(distDir, "styles.css"));
+  const hash = createHash("sha256").update(content).digest("hex").slice(0, 8);
+  const hashedName = `styles.${hash}.css`;
+  renameSync(join(distDir, "styles.css"), join(distDir, hashedName));
+  manifest["styles.css"] = hashedName;
+  // Rotation: any other hashed stylesheet is stale now.
+  for (const stale of hashedStyles) {
+    if (stale.name !== hashedName) {
+      unlinkSync(join(distDir, stale.name));
+    }
+  }
+} else if (hashedStyles.length > 0) {
+  // Re-run on an already-built dist: there is no unhashed styles.css to
+  // rename, so adopt the newest contract-valid hashed stylesheet (the
+  // JS-bundle newest-wins rule above) instead of deleting the only
+  // stylesheet and dropping its manifest entry (#6969).
+  manifest["styles.css"] = hashedStyles[0].name;
+  for (const stale of hashedStyles.slice(1)) {
+    unlinkSync(join(distDir, stale.name));
   }
 }
 

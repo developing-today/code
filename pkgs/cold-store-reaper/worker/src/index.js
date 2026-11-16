@@ -139,7 +139,16 @@ export class BundleFlight {
 
   async accessToken() {
     const cached = await this.state.storage.get("google_token");
-    if (cached && cached.expires_at_ms > Date.now() + 60_000) {
+    // A cached entry is trusted only with a usable token (#6989): an
+    // entry poisoned before this validation existed (or written by
+    // anything else) is treated as absent, so it self-heals by
+    // re-exchanging instead of serving the bogus token until expiry.
+    if (
+      cached &&
+      typeof cached.token === "string" &&
+      cached.token !== "" &&
+      cached.expires_at_ms > Date.now() + 60_000
+    ) {
       return cached.token;
     }
     const form = new URLSearchParams({
@@ -156,10 +165,44 @@ export class BundleFlight {
     if (!resp.ok) {
       throw new HttpError(502, `google token exchange failed (HTTP ${resp.status})`);
     }
-    const payload = await resp.json();
+    // Validate the 200 body BEFORE caching it (#6989): the parsed
+    // result is written to Durable Object storage and trusted by the
+    // early return above, so one wrong-shape 200 (proxy error-page
+    // JSON, a Google-side shape change) would otherwise poison every
+    // rehydration on this bundle DO until the bogus expiry passed.
+    // A rejected response writes nothing, so the next call
+    // re-exchanges. The Python sibling shaped this same boundary in
+    // #6846.
+    let payload;
+    try {
+      payload = await resp.json();
+    } catch {
+      throw new HttpError(
+        502,
+        "google token exchange failed (response body was not JSON)",
+      );
+    }
+    if (
+      typeof payload !== "object" ||
+      payload === null ||
+      Array.isArray(payload) ||
+      typeof payload.access_token !== "string" ||
+      payload.access_token === ""
+    ) {
+      throw new HttpError(
+        502,
+        "google token exchange failed (response did not contain an access_token)",
+      );
+    }
+    const expiresIn =
+      typeof payload.expires_in === "number" &&
+      Number.isFinite(payload.expires_in) &&
+      payload.expires_in > 0
+        ? payload.expires_in
+        : 3600;
     const entry = {
       token: payload.access_token,
-      expires_at_ms: Date.now() + (payload.expires_in ?? 3600) * 1000,
+      expires_at_ms: Date.now() + expiresIn * 1000,
     };
     await this.state.storage.put("google_token", entry);
     return entry.token;

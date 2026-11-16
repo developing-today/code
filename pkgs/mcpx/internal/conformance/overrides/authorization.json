@@ -1,0 +1,14 @@
+{
+  "authz-no-token-passthrough": {
+    "server": "applies",
+    "why": "#1950 remainder (task 14860): the merged #1975 bearer work (PR #2711) is traced end to end by daemon.TestProxyKeepsUpstreamKeyWhenBearerSet -- the upstream receives the configured provider key, never the token the client presented to the daemon. Bound in coverage_authz.go."
+  },
+  "authz-accept-only-own-tokens": {
+    "server": "applies",
+    "why": "#1950 remainder (task 14860): since the #1975 bearer gate (PR #2711) the daemon accepts exactly one token -- its own configured bearer token -- on every route including /mcp, and refuses every other token with 401; daemon.TestMCPRejectsUnauthenticatedWhenBearerSet is the conformance scenario. The catalogue note's '(accepts no tokens)' predates the gate. OAuth-issued-token validation remains not-implemented-by-choice (authz-server-validates-token is a different row and is untouched)."
+  },
+  "authz-stdio-use-environment": {
+    "server": "applies",
+    "why": "#1950 remainder (task 14860): re-judged so the recorded gap in coverage_authz.go (pointing at live #1950, with the reason) renders instead of the blanket pointer at closed #1975. The client side is untouched and keeps the #1950 blanket gap per the recorded deferral."
+  }
+}

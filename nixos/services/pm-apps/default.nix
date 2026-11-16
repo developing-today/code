@@ -45,17 +45,47 @@
 #   3. Verify 8484, 7777, and 6056 all answer with the pre-switch
 #      data intact.
 #
-# Differences from compose, deliberately accepted: compose
-# healthchecks have no oci-containers equivalent.
+# Readiness (code#8940): compose healthchecks have no oci-containers
+# equivalent, and docker-level --health-cmd is not used either - the
+# pinned images do not guarantee a probe binary inside the container,
+# and ready-for-agent is not a container at all. Instead the
+# pm-apps-health probe below replaces the compose healthchecks from
+# the host side: a systemd oneshot plus a 1-minute timer curls each
+# app's loopback endpoint (Grist 8484, Pad 7777, ready-for-agent
+# 6056); an app still dark past its 180-second start-period/grace
+# fails the unit, which is the systemd-visible unhealthy surface
+# (the same convention as opencode-watchdog). The probe is
+# report-only - it never restarts anything, so readiness can never
+# destroy in-progress work; process failures are already restarted
+# by the oci-containers units themselves.
 {
   config,
   lib,
+  pkgs,
   ...
 }:
 let
   cfg = config.services.pm-apps;
   home = "/home/${cfg.user}";
   pmDir = "${home}/pm-stack";
+
+  # The readiness probe (code#8940): see the header note and
+  # pm-apps-health.sh for the semantics. The grace is the compose
+  # healthchecks' start-period analogue: an app may be dark this
+  # long after first sighting before the probe calls it unhealthy.
+  healthGraceSeconds = 180;
+  healthApps = "grist=http://127.0.0.1:8484/ pad=http://127.0.0.1:7777/ ready-for-agent=http://127.0.0.1:6056/";
+  pmAppsHealth = pkgs.writeShellScript "pm-apps-health" (
+    lib.replaceStrings
+      [ "@curl@" "@stateDir@" "@graceSeconds@" "@apps@" ]
+      [
+        "${pkgs.curl}/bin/curl"
+        "/var/lib/pm-apps-health"
+        (toString healthGraceSeconds)
+        healthApps
+      ]
+      (builtins.readFile ./pm-apps-health.sh)
+  );
 in
 {
   options.services.pm-apps = {
@@ -113,6 +143,29 @@ in
       };
     };
 
+    systemd.services.pm-apps-health = {
+      description = "PM app readiness probe - fails while any PM app stays dark past its grace (code#8940)";
+      after = [
+        "docker-pm-grist.service"
+        "docker-pm-pad.service"
+      ];
+      serviceConfig = {
+        Type = "oneshot";
+        ExecStart = "${pmAppsHealth}";
+        StateDirectory = "pm-apps-health";
+      };
+    };
+
+    systemd.timers.pm-apps-health = {
+      description = "Run the PM app readiness probe every minute (code#8940)";
+      wantedBy = [ "timers.target" ];
+      timerConfig = {
+        OnBootSec = "2min";
+        OnUnitActiveSec = "1min";
+        Unit = "pm-apps-health.service";
+      };
+    };
+
     home-manager.users.${cfg.user} = {
       systemd.user.services.ready-for-agent = {
         Unit = {
@@ -153,6 +206,19 @@ in
         };
 
         Install.WantedBy = [ "sockets.target" ];
+      };
+
+      # The app's own loopback listener as a socket unit (#1822,
+      # slice 1 of task 15848): DEFINED but not enabled — the app
+      # still binds 127.0.0.1:6056 itself today (the tailnet socket
+      # above forwards into that bind). Slice 2 adds LISTEN_FDS
+      # acceptance to ready-for-agent; slice 3 enables this socket
+      # (Install.WantedBy = [ "sockets.target" ]).
+      systemd.user.sockets.ready-for-agent = {
+        Socket = {
+          ListenStream = "127.0.0.1:6056";
+          Service = "ready-for-agent.service";
+        };
       };
 
       systemd.user.services.ready-for-agent-tailnet = {

@@ -253,6 +253,87 @@ test("junk --fresh-hours: invalid-argument (not store-stale) failure document, e
   assert.equal(doc.sessions, undefined);
 });
 
+test("trailing --db: invalid-argument failure document, exit 2, default store not exported (#6934)", async () => {
+  const { home, outDir } = await fakeHome();
+  await makeStore(defaultDb(home), { sessions: [{ id: "ses_live" }] });
+  const { exitCode, doc } = await run({ home, now: NOW, argv: ["--out-dir", outDir, "--db"] });
+  assert.equal(exitCode, 2);
+  assert.equal(doc.status, "invalid-argument");
+  assert.match(doc.detail, /--db/);
+  assert.equal(doc.sessions, undefined);
+  const latest = JSON.parse(await readFile(join(outDir, "latest.json"), "utf8"));
+  assert.equal(latest.status, "invalid-argument");
+});
+
+test("empty --db: invalid-argument failure document, exit 2, no env fallback (#6934)", async () => {
+  const { home, outDir } = await fakeHome();
+  await makeStore(defaultDb(home), { sessions: [{ id: "ses_live" }] });
+  const { exitCode, doc } = await run({
+    home, now: NOW,
+    env: { OPENCODE_USAGE_DB: defaultDb(home) },
+    argv: ["--out-dir", outDir, "--db", ""],
+  });
+  assert.equal(exitCode, 2);
+  assert.equal(doc.status, "invalid-argument");
+  assert.match(doc.detail, /--db/);
+  assert.equal(doc.sessions, undefined);
+});
+
+test("flag-like --db value: invalid-argument naming --db, exit 2, run() does not throw (#6934)", async () => {
+  const { home, outDir } = await fakeHome();
+  await makeStore(defaultDb(home), { sessions: [{ id: "ses_live" }] });
+  const { exitCode, doc } = await run({ home, now: NOW, argv: ["--db", "--out-dir", outDir] });
+  assert.equal(exitCode, 2);
+  assert.equal(doc.status, "invalid-argument");
+  assert.match(doc.detail, /--db/);
+  assert.equal(doc.sessions, undefined);
+});
+
+test("trailing --out-dir: invalid-argument failure document, exit 2 (#6934)", async () => {
+  const { home, outDir } = await fakeHome();
+  await makeStore(defaultDb(home), { sessions: [{ id: "ses_live" }] });
+  const { exitCode, doc } = await run({ home, now: NOW, argv: ["--out-dir"] });
+  assert.equal(exitCode, 2);
+  assert.equal(doc.status, "invalid-argument");
+  assert.match(doc.detail, /--out-dir/);
+  assert.equal(doc.sessions, undefined);
+  const latest = JSON.parse(await readFile(join(home, "atlas/opencode-usage-export", "latest.json"), "utf8"));
+  assert.equal(latest.status, "invalid-argument");
+});
+
+test("duplicate scalar value options fail before probing or writing", async () => {
+  const { home } = await fakeHome();
+  const first = join(home, "first-output");
+  const second = join(home, "second-output");
+  const cases = [
+    ["--db", "first.db", "--db", "second.db"],
+    ["--out-dir", first, "--out-dir", second],
+    ["--window-hours", "6", "--window-hours", "12"],
+    ["--fresh-hours", "6", "--fresh-hours", "12"],
+  ];
+  for (const argv of cases) {
+    const { exitCode, doc } = await run({ home, now: NOW, argv });
+    assert.equal(exitCode, 2);
+    assert.equal(doc.status, "invalid-argument");
+    assert.match(doc.detail, new RegExp(`duplicate option ${argv[0]}`));
+  }
+  assert.equal(fs.existsSync(first), false);
+  assert.equal(fs.existsSync(second), false);
+  assert.equal(fs.existsSync(join(home, "atlas/opencode-usage-export")), false);
+});
+
+test("valid --db / --out-dir behave as before (#6934 control)", async () => {
+  const { home, outDir } = await fakeHome();
+  const dbPath = join(home, "explicit.db");
+  await makeStore(dbPath, { sessions: [{ id: "ses_explicit", updated: NOW - HOUR }] });
+  const { exitCode, doc } = await run({ home, now: NOW, argv: ["--db", dbPath, "--out-dir", outDir] });
+  assert.equal(exitCode, 0);
+  assert.equal(doc.status, "ok");
+  assert.equal(doc.storePath, dbPath);
+  assert.equal(doc.sessions.length, 1);
+  assert.equal(doc.sessions[0].id, "ses_explicit");
+});
+
 test("valid positive --window-hours / --fresh-hours behave as before", async () => {
   const { home, outDir } = await fakeHome();
   await makeStore(defaultDb(home), {

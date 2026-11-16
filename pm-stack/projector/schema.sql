@@ -3,6 +3,16 @@
 -- Kaneo/Grist stay the source of truth for their own layers, and this
 -- database only holds links and projections. It is disposable — every row
 -- can be rebuilt from GitHub + the link writes. It never writes back.
+--
+-- PROJECTION CONTRACT (#4302, audited in #4303 — the README's "Projection
+-- contract" section carries the writer inventory behind this statement):
+-- A projection writes only what the event proves. An absent field proves
+-- nothing — it neither defaults a value nor erases a stored one — and the
+-- only timestamps a row carries are ones its own payload reported.
+-- Deliveries dedupe on the delivery id, which intake requires; a comment's
+-- guard key is the last-update time its payload reports (submitted_at for
+-- reviews); deletion is a state every projected kind can reach, and it is
+-- absorbing — no later write resurrects a deleted row.
 
 PRAGMA journal_mode = WAL;
 PRAGMA foreign_keys = ON;
@@ -54,7 +64,7 @@ CREATE TABLE IF NOT EXISTS pmp_item_deletions (
 -- comment-activity projection (aggregator requirement #2).
 -- ---------------------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS pmp_comments (
-  id             TEXT PRIMARY KEY,           -- GitHub comment/review id
+  id             TEXT NOT NULL,              -- GitHub comment/review id
   ref            TEXT NOT NULL,              -- item ref this comment belongs to
   kind           TEXT NOT NULL,              -- 'issue_comment' | 'review' | 'review_comment'
   author         TEXT,
@@ -71,8 +81,9 @@ CREATE TABLE IF NOT EXISTS pmp_comments (
   submitted_at   TEXT,
   commit_id      TEXT,
   deleted        INTEGER NOT NULL DEFAULT 0, -- set to 1 on GitHub delete events
-  source_updated_at TEXT NOT NULL,           -- created_at (or updated_at) monotonic guard
-  fetched_at     TEXT NOT NULL
+  source_updated_at TEXT NOT NULL,           -- last-update time the payload reports (updated_at; submitted_at for reviews) — monotonic guard key, never fabricated
+  fetched_at     TEXT NOT NULL,
+  PRIMARY KEY (id, kind)
 );
 
 CREATE INDEX IF NOT EXISTS pmp_comments_ref ON pmp_comments(ref);

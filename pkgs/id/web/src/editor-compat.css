@@ -1473,7 +1473,23 @@ img.ProseMirror-separator {
   padding: 0.75em 1.25em;
   border-top: 1px solid oklch(var(--bc) / 0.1);
   display: flex;
+  gap: 0.5em;
   justify-content: flex-end;
+}
+
+.pm-image-browser-load-more {
+  padding: 0.4em 1.2em;
+  background: oklch(var(--b2));
+  color: oklch(var(--bc));
+  border: 1px solid oklch(var(--bc) / 0.2);
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 0.9em;
+}
+
+.pm-image-browser-load-more:disabled {
+  opacity: 0.5;
+  cursor: wait;
 }
 
 .pm-image-browser-insert {
@@ -1501,4 +1517,42 @@ img.ProseMirror-separator {
   color: oklch(var(--bc) / 0.4);
   padding: 2em 1em;
   font-style: italic;
+}
+
+/* #1790: cursor tooltip modes — chrome, enlarged label, minimal segment */
+.collab-cursor-chrome {
+  display: flex;
+  gap: 0.5rem;
+  align-items: center;
+  padding: 0.25rem 0;
+  font-size: 11px;
+}
+
+.collab-cursor-mode,
+.collab-cursor-restore {
+  cursor: pointer;
+}
+
+.collab-cursor-label-big {
+  font-size: 13px;
+  padding: 4px 8px;
+  display: inline-flex;
+  gap: 6px;
+  align-items: center;
+}
+
+.collab-cursor-action {
+  cursor: pointer;
+  font-size: 10px;
+  line-height: 1;
+}
+
+.collab-cursor-bar-segment-minimal {
+  min-width: 6px;
+  padding: 0 2px;
+}
+
+.collab-cursor-bar-segment-big {
+  font-size: 12px;
+  padding: 2px 6px;
 }

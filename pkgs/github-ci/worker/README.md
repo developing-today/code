@@ -9,7 +9,10 @@ during the dual-run diff period.
 ## Shape
 
 - `src/index.ts` — HMAC-SHA256 gate (Web Crypto, same semantics as
-  the Edge Function), routing, workflow_run ingest.
+  the Edge Function), routing, workflow_run ingest. The gate is
+  unconditional (#6936): with `GITHUB_WEBHOOK_SECRET` unset or empty,
+  every POST is rejected 503 "webhook secret not configured" before
+  any write — the Worker fails closed, never open.
 - `src/policy.ts` — the v4 ingest policy as pure functions:
   completed runs only, conclusion != skipped, raw payload kept
   only for failures, dedupe_key `github:<repo>:<run>:<attempt>:<action>`.
@@ -74,3 +77,85 @@ npm run deploy  # wrangler deploy (fleet Cloudflare account)
 Cutover state lives on #5693: deploy dark → replay smoke → one
 repo-level dual-run webhook → (later, separately) org/App flip.
 The Edge Function stays deployed as rollback until then.
+
+## Cutover closeout (2026-11-14, task 16806)
+
+The flip is complete and the Edge Function is retired:
+
+- **Dedupe diff clean.** Every `dedupe_key` in the Postgres
+  `ci.events` ledger (11,203 keys) exists in Turso `ci_events`.
+  The only gap was the Postgres ledger's final 4 rows
+  (2026-11-06T17:47–18:00Z, received after the backfill watermark);
+  those 4 rows were backfilled into Turso and the diff re-ran at
+  zero missing. Turso held 27,648 rows at closeout, 16,445 of them
+  written after the Postgres ledger stopped.
+- **Postgres write-silence verified.** `ci.events` last write is
+  2026-11-06T18:00:26Z — eight days of silence while the fleet
+  produced ~16k Turso events. No sender still reaches the old
+  receiver; every fleet repo's webhook points at this Worker
+  (verified per repo: code, opencode, openchamber, darwin-nix).
+- **Edge Function retired.** `github-ci` (the last Edge Function
+  on muse-dev2, v9) was deleted via the Supabase Management API
+  on 2026-11-14; the project now has zero Edge Functions. The
+  Worker → Turso write path was verified live after the deletion
+  (new `ci_events` rows within a minute). Rollback, if ever
+  needed, is a redeploy of this Worker — its behavior is the
+  behavior-for-behavior port of the Edge Function.
+- **The Postgres table stays.** `ci.events` remains read-only in
+  place for one retention window; dropping it is a separate,
+  separately-approved decision (not part of the cutover).
+
+## Retention (90 days hot)
+
+`ci_events` keeps 90 days hot in Turso, per the #5693 design.
+The prune is `scripts/prune-ci-events.py` in this package:
+
+```sh
+python3 scripts/prune-ci-events.py            # delete past 90 days
+python3 scripts/prune-ci-events.py --dry-run  # count only
+```
+
+It resolves the Turso token by name (`turso.fleet-platform-rw-token`)
+and prints counts only. First run 2026-11-14 deleted 0 rows — the
+ledger's oldest row is the 2026-10-30 backfill head, so the window
+first binds in late January 2027; run the prune on fleet maintenance
+cadence so the window is enforced from then on.
+
+## GitHub mirror (#8580)
+
+Fleet-repo `issues` / `pull_request` / `issue_comment` deliveries also
+upsert the GitHub mirror in **fleet-queue** (`src/mirror.ts`; DDL in
+`mirror.sql`): `github_mirror_issues` (title, body hash, state, labels,
+assignees, comments count, latest agent-note pointer),
+`github_mirror_pull_requests` (+ merged, draft, head/base), and
+`github_mirror_meta` (per-repo staleness: `last_webhook_at` /
+`last_webhook_event` stamped here; `last_backfill_at` stamped by the
+backfill/repair sweep).
+
+The mirror is a **read model**: rebuildable from GitHub at any time,
+never a second truth. Staleness is reported, never gated on (#8575).
+Mirror write failures are fatal (500 -> GitHub retries), matching the
+ci_events policy.
+
+### Backfill / repair sweep
+
+`scripts/backfill.ts` reconciles the mirror from the GitHub API —
+the repair path for anything the webhooks missed (a Worker outage,
+a repo whose hook was added late, a deletion, which GitHub never
+replays). It diffs every issue/PR in a repo against the stored rows
+on `(gh_updated_at, body_hash)`, re-upserts changed rows through the
+same statement builders the webhook paths use (all guards apply
+identically), tombstones + deletes stored numbers the API no longer
+returns, re-derives the latest-agent-note pointer for changed items
+from their surviving comments, and stamps
+`github_mirror_meta.last_backfill_at`. It never stamps the webhook
+fields. Run it from this directory:
+
+```sh
+GH_TOKEN=$(gh auth token) \
+TURSO_QUEUE_TOKEN=$(fleet secrets get turso.fleet-queue-rw-token) \
+npm run backfill -- [owner/repo ...]   # default: every FLEET_REPOS repo
+```
+
+Output is one JSON summary line per repo (seen / upserted /
+vanished_deleted / pointers_set / pointers_cleared / unchanged).

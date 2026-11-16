@@ -321,7 +321,7 @@ added before it could decrypt.
 
 ```sh
 gemini extensions install https://github.com/gemini-cli-extensions/jules
-gh secret set JULES_API_KEY            # for .github/workflows/jules.yml
+gh secret set JULES_API_KEY            # local Jules CLI only; the repo secret was deleted (#5098) -- pm-dispatch.yml uses OIDC
 jules login                            # or use JULES_API_KEY to skip the keyring
 ```
 

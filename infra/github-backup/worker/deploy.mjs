@@ -178,8 +178,21 @@ reportLive();
 // it and has no secret bindings. The version to advertise — and the
 // only sound rollback target — is the final configured live version,
 // re-read after provisioning, not the pre-secrets upload.
+// If the re-read cannot name a live version (read/parse failure, empty
+// deployments list, no version at 100%), the uploaded version must NOT
+// be advertised in its place (#6507): fail loudly instead.
 const configuredLive = liveVersionIds();
-const liveId = configuredLive.join(", ") || version.id;
+if (configuredLive.length === 0) {
+  console.error(
+    `error: could not determine the configured live version after provisioning secrets ` +
+    `(deployments list was empty, unreadable, or had no version at 100%). ` +
+    `Rollback target UNKNOWN: do NOT use the uploaded version ${version.id} (${tag}); it predates ` +
+    `the secret bindings (#3475). Check \`wrangler deployments list --name ${WORKER}\` and ` +
+    `use the configured version it shows.`
+  );
+  process.exit(1);
+}
+const liveId = configuredLive.join(", ");
 console.log(`live: ${WORKER_URL} at version ${liveId} (${tag})`);
 if (liveId !== version.id) {
   console.log(

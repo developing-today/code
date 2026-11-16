@@ -94,6 +94,16 @@ let
   # See pkgs/latest-cli/default.nix for the rationale, the tradeoffs, and the
   # list of things deliberately NOT bumped.
   latestCli = pkgs.callPackage ../../pkgs/latest-cli { };
+  # `gh` routed through `fleet gh` (token rotation across the
+  # personal token and the three App installations), wrapping the
+  # latest-cli gh above; the pristine binary stays as `gh-orig`.
+  # Drew, 2026-11-14 — see pkgs/gh-fleet. Deliberately the SAME
+  # derivation in programs.gh.package and home.packages below, so
+  # buildEnv dedups exactly as it did for latestCli.gh.
+  ghFleet = pkgs.callPackage ../../pkgs/gh-fleet {
+    inherit (latestCli) gh;
+    inherit (fleetPkgs) fleet;
+  };
   # Vendored from nixpkgs master; see the header in that file for why. Provides
   # `agy_acp_server`, which t3code's AcpRegistryDriver can drive.
   antigravity-acp = pkgs.callPackage ../../pkgs/antigravity-acp { };
@@ -129,6 +139,7 @@ let
   # flake's own packages.<system>.opencode). Named once here: the
   # wrapper below execs it, and the wrapped package joins over it.
   opencodeCascade = inputs.openchamber.inputs.opencode.packages.${system}.opencode;
+
   # Drew's opencode wrapper -- formerly a standalone home.packages
   # entry (writeShellScriptBin "opencode"), logic unchanged:
   # Cloudflare env top-up and the stamp-gated sync-models
@@ -269,14 +280,16 @@ let
     CLAUDE_BIN = "${claude-code}/bin/claude";
     CODEX_BIN = "${latestCli.codex}/bin/codex";
     ANTIGRAVITY_BIN = "${pkgs.antigravity-cli}/bin/agy";
-    PATH = lib.makeBinPath [
-      inputs.opencode.packages.${system}.opencode
-      claude-code
-      latestCli.codex
-      pkgs.antigravity-cli
-      pkgs.git
-      pkgs.openssh
-    ];
+    PATH =
+      lib.makeBinPath [
+        inputs.opencode.packages.${system}.opencode
+        claude-code
+        latestCli.codex
+        pkgs.antigravity-cli
+        pkgs.git
+        pkgs.openssh
+      ]
+      + ":/home/user/.local/bin:/home/user/bin";
   };
   # The daemon's configuration (the former ~/code/.mcpx.json), and the
   # config file the mcpx module renders from it: reproduced here so
@@ -633,6 +646,7 @@ in
         "%h/.config/opencode/opencode.jsonc"
         "%h/.local/share/t3code/userdata/settings.json"
         "%h/.claude.json"
+        "%h/.claude/.credentials.json"
         "%h/.codex/auth.json"
         "%h/.grok/auth.json"
         "%h/.pi/agent/auth.json"
@@ -744,7 +758,9 @@ in
   # bin programs and the agyProxyPort/antigravityLsProxyPort lets from
   # git history, drop the session-variable removals below, and
   # re-point the plan seats in opencode.jsonc back from
-  # antigravity-direct.
+  # antigravity-direct. Before retiring any future provider door, run
+  # the retirement gate (scripts/check-provider-retirement-gate.sh, #5610)
+  # to verify zero active configuration references remain.
 
   # Design Code proxy removed (2026-11-03, Drew): its unit definition
   # stood here. Drew removed the design persona routes and the whole
@@ -916,10 +932,18 @@ in
       Environment = [
         "OPENCODE_CONFIG_PATH=%h/.local/state/opencode/opencode-runtime.jsonc"
       ];
+      # #883: run sync-models from the checkout ($HOME/code/bin), not via
+      # a ${../../bin} store copy — the home layer is sourced from the
+      # flake source snapshot (lib.from-root -> inputs.self.outPath), so a
+      # store copy silently bakes whatever bin/ tree that snapshot held.
       ExecStart = toString (
         pkgs.writeShellScript "sync-models-run" ''
           export PATH="/run/current-system/sw/bin:$HOME/.gemini/bin:$HOME/.local/bin:$PATH"
-          exec ${pkgs.nodejs}/bin/node ${../../bin/sync-models.mjs}
+          if [ ! -f "$HOME/code/bin/sync-models.mjs" ]; then
+            echo "sync-models: $HOME/code/bin/sync-models.mjs not found — the developing-today/code checkout is required on this host" >&2
+            exit 1
+          fi
+          exec ${pkgs.nodejs}/bin/node "$HOME/code/bin/sync-models.mjs"
         ''
       );
     };
@@ -1154,6 +1178,17 @@ in
   # "mistral") is its source — verified live 2026-11-06 (the leg
   # returns the API-budget 402, not an auth error, with the env var
   # absent).
+  # ANTIGRAVITY_OAUTH_CLIENT_SECRET for the same server: the
+  # _antigravity provider refreshes the agy keyring token with the agy
+  # installed-app client's secret, read from the process environment
+  # since fork commit 80d6b2f1f6 (2026-11-08) retired the runtime
+  # extraction from the agy binary. The value lives in the vault as
+  # google.antigravity-oauth-client-secret (one-time extraction from
+  # the installed agy binary, sanctioned by Drew 2026-11-09, code#8086)
+  # and the materializer below fetches it by name into the same
+  # EnvironmentFile at every server start — it is never stored in this
+  # repo or the Nix store. The quota gatherer reads the same file (see
+  # nixos/services/pm-stack) so its `opencode quota` refresh works too.
   systemd.user.services.opencode.Service = {
     ExecStartPre = toString (
       pkgs.writeShellScript "opencode-env-key-materialize" ''
@@ -1161,9 +1196,15 @@ in
         umask 077
         mkdir -p "$HOME/.local/state/opencode"
         printf 'DEEPSEEK_API_KEY=%s\n' "$(cat /run/secrets/agent-auth/deepseek-api-key)" >> "$HOME/.local/state/opencode/mistral-api-key.env"
+        agy_client_secret="$("${fleetPkgs.fleet}/bin/fleet" secrets get google.antigravity-oauth-client-secret 2>/dev/null || true)"
+        if [ -n "$agy_client_secret" ]; then
+          printf 'ANTIGRAVITY_OAUTH_CLIENT_SECRET=%s\n' "$agy_client_secret" >> "$HOME/.local/state/opencode/mistral-api-key.env"
+        fi
       ''
     );
-    EnvironmentFile = "%h/.local/state/opencode/mistral-api-key.env";
+    # Let ExecStartPre run when the file is absent; systemd reads it again
+    # for ExecStart after the materializer has created it.
+    EnvironmentFile = "-%h/.local/state/opencode/mistral-api-key.env";
   };
 
   services.mcpx = {
@@ -1315,7 +1356,7 @@ in
             muse-code # 1.4.13            -- driver "muse"
             pi-coding-agent # 0.84.3, >= 0.80.5   -- driver "pi"
             mcpx # fleet MCP gateway binary, for shells and agents t3 spawns
-            latestCli.gh # `gh` for threads that shell out to GitHub
+            ghFleet # `gh` for threads that shell out to GitHub (fleet-routed)
             pkgs.antigravity-cli # binary is `agy` -- t3 driver "antigravity"
             pkgs.tailscale # MUST be here or --tailscale-serve fails (see above)
             pkgs.git
@@ -1477,8 +1518,9 @@ in
     };
     gh = {
       enable = true;
-      # nixpkgs trails upstream (2.97.0 vs 2.102.0); prebuilt release binary.
-      package = latestCli.gh;
+      # nixpkgs trails upstream (2.97.0 vs 2.102.0); prebuilt release
+      # binary, wrapped by ghFleet so calls route through fleet gh.
+      package = ghFleet;
       extensions = [ pkgs.gh-dash ]; # gh dash: TUI for PRs/issues
     };
     # git-credential-oauth.enable = true; # can't get browser to return back
@@ -1748,7 +1790,17 @@ in
     packages =
       with pkgs;
       [
+        # agy (antigravity-cli, overlaid to the newest upstream in
+        # nixos/environment): in home.packages so the user profile
+        # carries the newest agy on PATH ahead of the system profile
+        # copy; both resolve to the same overlaid package.
+        antigravity-cli
         libnotify
+        # On-screen keyboard (wvkbd-mobintl) for touch use over the
+        # Sunshine/Moonlight stream: launched only while a stream is
+        # live, by Sunshine's global_prep_cmd (nixos/hosts/amd-sunshine.nix);
+        # SUPER+SHIFT+O re-shows it (bind in config/hypr/hyprland.lua).
+        wvkbd
         # Atlas search CLI + service binary (pkgs/atlas-search);
         # step-6 cutover (#5356): the Rust binary is the resolved
         # `atlas-search` (the Python CLI is kept as atlas-search-py).
@@ -1763,11 +1815,19 @@ in
         # native openai provider replaced the CLI bridge).
         (pkgs.writeShellScriptBin "sync-models" ''
           export PATH="/run/current-system/sw/bin:$HOME/.gemini/bin:$HOME/.local/bin:$PATH"
-          exec ${pkgs.nodejs}/bin/node ${../../bin/sync-models.mjs} "$@"
+          if [ ! -f "$HOME/code/bin/sync-models.mjs" ]; then
+            echo "sync-models: $HOME/code/bin/sync-models.mjs not found — the developing-today/code checkout is required on this host" >&2
+            exit 1
+          fi
+          exec ${pkgs.nodejs}/bin/node "$HOME/code/bin/sync-models.mjs" "$@"
         '')
         (pkgs.writeShellScriptBin "update-models" ''
           export PATH="/run/current-system/sw/bin:$HOME/.gemini/bin:$HOME/.local/bin:$PATH"
-          exec ${pkgs.nodejs}/bin/node ${../../bin/sync-models.mjs} "$@"
+          if [ ! -f "$HOME/code/bin/sync-models.mjs" ]; then
+            echo "sync-models: $HOME/code/bin/sync-models.mjs not found — the developing-today/code checkout is required on this host" >&2
+            exit 1
+          fi
+          exec ${pkgs.nodejs}/bin/node "$HOME/code/bin/sync-models.mjs" "$@"
         '')
         # No standalone "opencode" script in this list: the CLI is
         # services.opencode.package -- the cascade build with the
@@ -2065,7 +2125,7 @@ in
         fw
         fzf
         # same derivation as programs.gh.package above; buildEnv dedups
-        latestCli.gh
+        ghFleet
         gimp
         git
         git-absorb

@@ -81,17 +81,19 @@ func TestManualMarkdownCoversEverySurface(t *testing.T) {
 }
 
 // TestGlobalFlagsAreDeclaredInMain holds GlobalFlags() against the
-// switch in cmd/mcpx/main.go: a flag main() accepts must be on the
-// list, and a flag on the list must be one main() accepts.
+// switch in cli.Run (run.go): since #1980 stage 1 the entrypoint's
+// global-flag switch lives in Run, not cmd/mcpx/main.go -- a flag Run
+// accepts must be on the list, and a flag on the list must be one Run
+// accepts.
 func TestGlobalFlagsAreDeclaredInMain(t *testing.T) {
-	b, err := os.ReadFile("../../cmd/mcpx/main.go")
+	b, err := os.ReadFile("run.go")
 	if err != nil {
 		t.Fatal(err)
 	}
 	src := string(b)
 	for _, f := range cli.GlobalFlags() {
 		if !strings.Contains(src, "\"--"+f.Name+"\"") && !strings.Contains(src, "\"-"+f.Name+"\"") {
-			t.Errorf("global flag --%s is declared in GlobalFlags but main.go never switches on it", f.Name)
+			t.Errorf("global flag --%s is declared in GlobalFlags but cli.Run never switches on it", f.Name)
 		}
 	}
 }

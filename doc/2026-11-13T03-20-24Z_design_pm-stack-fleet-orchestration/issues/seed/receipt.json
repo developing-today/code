@@ -1,0 +1,57 @@
+{
+  "recorded_at": "2026-11-13T03:51:03Z",
+  "operation": "create-or-reuse research-only Queue Table Improvements provenance issue and same-pass triage task",
+  "created": true,
+  "issue": {
+    "repository": "developing-today/code",
+    "number": 9241,
+    "database_id": 6364286048,
+    "title": "research(pm-orchestration): recover Queue Table Improvements provenance and schema crosswalk",
+    "url": "https://github.com/developing-today/code/issues/9241",
+    "state": "open",
+    "durable_marker": "<!-- pmo-9196:QTI-PROVENANCE -->",
+    "readback": {
+      "method": "fleet gh api repos/developing-today/code/issues/9241",
+      "observed_at": "2026-11-13T03:50:54Z",
+      "verified": ["number", "exact title", "open state", "URL", "marker in body", "labels"]
+    },
+    "labels": ["app/fleet", "app/pm-stack", "kind/design", "status:to-do"],
+    "native_parent": {
+      "number": 9198,
+      "url": "https://github.com/developing-today/code/issues/9198",
+      "added_with": "fleet gh api repos/developing-today/code/issues/9198/sub_issues --method POST -F sub_issue_id=6364286048",
+      "readback_with": "fleet gh api repos/developing-today/code/issues/9241/parent",
+      "observed_at": "2026-11-13T03:50:54Z",
+      "verified": true
+    }
+  },
+  "queue": {
+    "queue": "repo-health-code-pilot",
+    "priority": 30,
+    "dedupe_key": "repo-health:v1:triage:developing-today/code:issue:9241",
+    "task_id": 15480,
+    "enqueue_response_status": "queued",
+    "enqueued_at": "2026-11-13T03:50:54Z",
+    "live_readback_status": "claimed",
+    "live_readback_at": "2026-11-13T03:51:03Z",
+    "live_readback": {
+      "method": "read-only queue broker POST /coverage for developing-today/code#9241; same coverage path used by scripts/fleet/queue-reconcile/check_coverage.py",
+      "result": "covered=1, uncovered=0; covered_issues=[{number:9241, task:15480, status:claimed}]",
+      "verified_live": true
+    },
+    "repo_queue_list_note": "repo-queue list --queue repo-health-code-pilot --task 15480 --limit 1 did not honor the task filter in this installed CLI/broker path (returned task 1111); coverage readback identified task 15480 as claimed and live. No direct database access used.",
+    "packet": "doc/2026-11-13T03-20-24Z_design_pm-stack-fleet-orchestration/issues/seed/packet.json",
+    "validation": "repo-queue validate succeeded (valid repo-task/v1 packet)."
+  },
+  "source_context": {
+    "pinned_commit": "a038f084dbeb525494d7bb928ad91f597db2ac51",
+    "census": "doc/2026-11-13T03-20-24Z_design_pm-stack-fleet-orchestration/census/track-a.md",
+    "anchors": "doc/2026-11-13T03-20-24Z_design_pm-stack-fleet-orchestration/census/anchors.json",
+    "context_refs": [
+      "https://github.com/developing-today/code/issues/9196",
+      "https://github.com/developing-today/code/issues/9198",
+      "https://github.com/developing-today/code/pull/9225"
+    ]
+  },
+  "scope_boundary": "Research/design issue and triage task only. No production, schema, queue, Project, deployment, or migration changes. No blocking relation added; parent batch will set dependency graph."
+}

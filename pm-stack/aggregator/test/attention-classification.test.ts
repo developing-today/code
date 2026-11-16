@@ -67,3 +67,20 @@ describe("attention classification", () => {
     expect(classifyAttention(phase13!, now).state).toBe("stuck-retrying");
   });
 });
+
+describe("tierEntry tierSince (#7193 Codex)", () => {
+  test("a locally classified decision question carries tierSince from last activity, not creation", () => {
+    const entry = classifyAttention(
+      {
+        sessionId: "old-session-new-question",
+        createdAt: "2026-10-20T00:00:00Z",
+        lastActivityAt: "2026-10-25T01:30:00Z",
+        awaitingQuestion: "Which option should we pick for the migration?",
+      },
+      Date.parse("2026-10-25T02:00:00Z"),
+    );
+    const tiered = tierEntry(entry);
+    expect(tiered.tier).toBe("needs-drew");
+    expect(tiered.tierSince).toBe("2026-10-25T01:30:00Z");
+  });
+});
