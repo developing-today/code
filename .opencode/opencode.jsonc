@@ -2398,7 +2398,8 @@
   },
   "instructions": [
     ".opencode/instructions/mcpx.md",
-    ".opencode/instructions/subagents.md"
+    ".opencode/instructions/subagents.md",
+    ".opencode/instructions/routing-policy.md"
   ],
   "compaction": {
     "reserved": 8192
