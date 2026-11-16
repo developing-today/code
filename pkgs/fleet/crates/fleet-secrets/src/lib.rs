@@ -505,10 +505,27 @@ impl BrokerSource {
             status => Err(SecretError::Unavailable {
                 source: "secrets-broker",
                 name: name.to_string(),
-                detail: format!("secrets-broker answered HTTP {status}"),
+                detail: broker_error_detail(status, &response.body),
             }),
         }
     }
+}
+
+/// The `Unavailable` detail for a non-200 broker answer: the HTTP
+/// status plus the broker's own `error` / `refresh_error` fields
+/// when it sent them. A broker that has never loaded because its
+/// vault refresh is failing (#10743) says so in `refresh_error`;
+/// surfacing it turns a silent 503 retry loop into a named failure
+/// the moment the retry budget is spent.
+fn broker_error_detail(status: u16, body: &serde_json::Value) -> String {
+    let mut detail = format!("secrets-broker answered HTTP {status}");
+    if let Some(e) = body.get("error").and_then(|v| v.as_str()) {
+        detail.push_str(&format!(": {e}"));
+    }
+    if let Some(e) = body.get("refresh_error").and_then(|v| v.as_str()) {
+        detail.push_str(&format!(" (refresh failed: {e})"));
+    }
+    detail
 }
 
 /// The secrets-broker token file for direct (laptop-local)
@@ -694,7 +711,7 @@ impl DirectBrokerSource {
             status => Err(SecretError::Unavailable {
                 source: "secrets-broker",
                 name: name.to_string(),
-                detail: format!("secrets-broker answered HTTP {status}"),
+                detail: broker_error_detail(status, &body),
             }),
         }
     }
@@ -757,6 +774,66 @@ fn bws_access_token() -> Option<String> {
     )
 }
 
+/// Resolve the `bws` program to spawn: an explicit `BWS_BIN`
+/// override first, then the ambient PATH, then the well-known
+/// install locations a fleet host carries even when the calling
+/// process was launched with a stripped PATH. The 2026-11-16
+/// incident (#10743): the sandbox secrets-broker was restarted
+/// without ~/tools/bin on its PATH, so a bare
+/// `Command::new("bws")` failed every vault refresh with spawn
+/// NotFound ("entity not found") while the broker served 503s and
+/// every `fleet gh` call burned its full retry budget. Falls back
+/// to the bare name, so a host with none of these keeps the
+/// historical error shape.
+pub fn resolve_bws_program() -> String {
+    resolve_bws_program_from(
+        std::env::var("BWS_BIN").ok().as_deref(),
+        std::env::var_os("PATH").as_deref(),
+        &fleet_config::Config::home_dir(),
+    )
+}
+
+fn is_executable_file(p: &Path) -> bool {
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::metadata(p)
+        .map(|m| m.is_file() && m.permissions().mode() & 0o111 != 0)
+        .unwrap_or(false)
+}
+
+/// The pure core of [`resolve_bws_program`], split out for tests:
+/// a candidate wins only when it is an executable file, in
+/// override -> PATH -> well-known-locations order.
+fn resolve_bws_program_from(
+    env_override: Option<&str>,
+    path_var: Option<&std::ffi::OsStr>,
+    home: &Path,
+) -> String {
+    if let Some(p) = env_override {
+        let p = p.trim();
+        if !p.is_empty() && is_executable_file(Path::new(p)) {
+            return p.to_string();
+        }
+    }
+    if let Some(path_var) = path_var {
+        for dir in std::env::split_paths(path_var) {
+            let cand = dir.join("bws");
+            if is_executable_file(&cand) {
+                return cand.to_string_lossy().into_owned();
+            }
+        }
+    }
+    for cand in [
+        home.join("tools/bin/bws"),
+        home.join(".nix-profile/bin/bws"),
+        PathBuf::from("/run/current-system/sw/bin/bws"),
+    ] {
+        if is_executable_file(&cand) {
+            return cand.to_string_lossy().into_owned();
+        }
+    }
+    "bws".to_string()
+}
+
 /// A [`ProcessRunner`] that hands the child the resolved
 /// Bitwarden token explicitly. Before this runner existed, the
 /// `bws` fallback inherited the ambient environment only — and
@@ -785,6 +862,16 @@ impl BwsTokenRunner {
 
 impl CommandRunner for BwsTokenRunner {
     fn run(&self, program: &str, args: &[&str]) -> Result<String, String> {
+        // The fallback must find `bws` even under a stripped PATH
+        // (#10743) -- resolve the bare name through the same
+        // well-known locations the broker uses.
+        let resolved;
+        let program = if program == "bws" {
+            resolved = resolve_bws_program();
+            &resolved
+        } else {
+            program
+        };
         let mut cmd = Command::new(program);
         cmd.args(args);
         match &self.token {
@@ -1347,6 +1434,71 @@ mod tests {
     }
 
     /// A unique temp dir for a socket-level test.
+    #[test]
+    fn bws_program_resolution_order() {
+        // oracle (#10743): override > PATH > well-known home
+        // location, a candidate wins only when it is an executable
+        // file, and with nothing anywhere the bare name is kept
+        // (the historical error shape).
+        use std::os::unix::fs::PermissionsExt;
+        let dir = test_temp_dir("bws-resolve");
+        let override_dir = dir.join("override");
+        let path_dir = dir.join("pathbin");
+        let home = dir.join("home");
+        for d in [&override_dir, &path_dir, &home.join("tools/bin")] {
+            std::fs::create_dir_all(d).unwrap();
+        }
+        let mk = |p: &Path| {
+            std::fs::write(p, "#!/bin/sh\n").unwrap();
+            std::fs::set_permissions(p, std::fs::Permissions::from_mode(0o755)).unwrap();
+        };
+        let override_bws = override_dir.join("bws");
+        let path_bws = path_dir.join("bws");
+        let home_bws = home.join("tools/bin/bws");
+        mk(&override_bws);
+        mk(&path_bws);
+        mk(&home_bws);
+        let path_var = std::env::join_paths([&path_dir]).unwrap();
+        assert_eq!(
+            resolve_bws_program_from(
+                Some(override_bws.to_str().unwrap()),
+                Some(&path_var),
+                &home
+            ),
+            override_bws.to_string_lossy()
+        );
+        assert_eq!(
+            resolve_bws_program_from(None, Some(&path_var), &home),
+            path_bws.to_string_lossy()
+        );
+        assert_eq!(
+            resolve_bws_program_from(None, None, &home),
+            home_bws.to_string_lossy()
+        );
+        // A non-executable override is skipped, not trusted.
+        let plain = dir.join("plain-bws");
+        std::fs::write(&plain, "x").unwrap();
+        assert_eq!(
+            resolve_bws_program_from(Some(plain.to_str().unwrap()), Some(&path_var), &home),
+            path_bws.to_string_lossy()
+        );
+        // Nothing in the override, PATH, or home: the NixOS system
+        // location when the host has one, else the bare name.
+        let empty_home = dir.join("empty-home");
+        std::fs::create_dir_all(&empty_home).unwrap();
+        let sys = Path::new("/run/current-system/sw/bin/bws");
+        let expected = if is_executable_file(sys) {
+            sys.to_string_lossy().into_owned()
+        } else {
+            "bws".to_string()
+        };
+        assert_eq!(
+            resolve_bws_program_from(None, None, &empty_home),
+            expected
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     fn test_temp_dir(tag: &str) -> PathBuf {
         let dir = std::env::temp_dir().join(format!(
             "fleet-secrets-{tag}-{}-{}",
