@@ -8,6 +8,7 @@ import {
   parseModel,
   parseSessionRequest,
   parseTaskRequest,
+  RATIFIED_BAND_VALUES,
   resolvePriority,
   resolveSessionDirectory,
   titleFromPrompt,
@@ -31,6 +32,17 @@ describe("priority mapping", () => {
     for (const v of [10, 20, 30, 40, 50, 70, 90]) expect(resolvePriority(v)).toBe(v);
   });
 
+  test("resolve_priority_preserves_ratified_15_25_without_snapping", () => {
+    // DST-02 (#9452): ratified expedite=15 and next-up=25 are preserved
+    // losslessly — never aliased to 10/20 or to each other.
+    expect(resolvePriority(15)).toBe(15);
+    expect(resolvePriority(25)).toBe(25);
+    expect(resolvePriority("15")).toBe(15);
+    expect(resolvePriority("25")).toBe(25);
+    expect(RATIFIED_BAND_VALUES).toContain(15);
+    expect(RATIFIED_BAND_VALUES).toContain(25);
+  });
+
   test("decimal integer strings follow the numeric scale and validation", () => {
     for (let v = 10; v <= 90; v++) expect(resolvePriority(String(v))).toBe(resolvePriority(v));
     for (const v of ["5", "95", "50.5", "", "0x32", "5e1"]) {
@@ -38,9 +50,12 @@ describe("priority mapping", () => {
     }
   });
 
-  test("off-scale integers in range snap to the nearest scale value", () => {
-    expect(resolvePriority(15)).toBe(10); // tie -> down
+  test("off-scale integers in range snap to the nearest standard scale value", () => {
+    // Ratified band values (15, 25) are preserved losslessly and excluded as
+    // snap targets so nothing aliases onto them (#9452 DST-02).
     expect(resolvePriority(16)).toBe(20);
+    expect(resolvePriority(24)).toBe(20); // tie between 20 and 30 -> down
+    expect(resolvePriority(26)).toBe(30);
     expect(resolvePriority(45)).toBe(40); // tie -> down
     expect(resolvePriority(60)).toBe(50); // tie -> down
     expect(resolvePriority(80)).toBe(70); // tie -> down
