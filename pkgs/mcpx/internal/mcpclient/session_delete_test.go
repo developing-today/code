@@ -128,3 +128,42 @@ func TestCloseSessionDoesNotReissueAServerStatus(t *testing.T) {
 		t.Fatalf("the DELETE was issued %d time(s), want 1", n)
 	}
 }
+
+// #1414, ruling shutdown-delete-1414: a restart-intent graceful shutdown
+// leaves the upstream session alive so the persisted record still resumes
+// after the cold restart. No DELETE may be sent.
+func TestCloseSessionRestartIntentSkipsTheDelete(t *testing.T) {
+	rt := &countingRT{fn: okResponse}
+	tr := closeSessionOn(t, rt)
+	tr.MarkRestartIntent()
+
+	if err := tr.closeSession(); err != nil {
+		t.Fatalf("closeSession: %v", err)
+	}
+	if n := rt.n.Load(); n != 0 {
+		t.Fatalf("the DELETE was issued %d time(s) for a restart-intent close, want 0: the session must survive for the next daemon process", n)
+	}
+	if got := tr.Handoff().SessionID; got != "sess-1" {
+		t.Fatalf("the closed transport reports session %q, want sess-1 kept for the persisted record", got)
+	}
+}
+
+// The other half of #1414: an explicit session end still sends the DELETE,
+// even after a transport was told nothing about a restart.
+func TestCloseSessionExplicitEndSendsTheDelete(t *testing.T) {
+	var deletes atomic.Int32
+	rt := &countingRT{fn: func(req *http.Request) (*http.Response, error) {
+		if req.Method == http.MethodDelete {
+			deletes.Add(1)
+		}
+		return okResponse(req)
+	}}
+	tr := closeSessionOn(t, rt)
+
+	if err := tr.closeSession(); err != nil {
+		t.Fatalf("closeSession: %v", err)
+	}
+	if got := deletes.Load(); got != 1 {
+		t.Fatalf("an explicit close sent %d DELETE(s), want 1", got)
+	}
+}
