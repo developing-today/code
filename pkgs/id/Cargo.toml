@@ -25,6 +25,7 @@ members = [
   "crates/id-sync",
   "crates/id-worlds",
   "crates/id-directory",
+  "crates/id-currency-registry",
   "crates/id-web",
   "crates/id-native-shell",
   "crates/id-cli",
@@ -45,6 +46,7 @@ default-members = [
   "crates/id-sync",
   "crates/id-worlds",
   "crates/id-directory",
+  "crates/id-currency-registry",
   "crates/id-web",
   "crates/id-cli",
 ]
