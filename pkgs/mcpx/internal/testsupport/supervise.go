@@ -19,6 +19,10 @@ import (
 // and returns at once otherwise.
 func SuperviseReExec() {
 	if len(os.Args) < 2 || os.Args[1] != "supervise" {
+		// Suite process: arm the supervisor owner watch (#10774) so
+		// a test binary killed mid-run (timeout, OOM) cannot leak
+		// the detached supervisors it spawned.
+		mcpclient.EnableSupervisorOwnerWatch()
 		return
 	}
 	os.Exit(runSupervise(os.Args[2:]))

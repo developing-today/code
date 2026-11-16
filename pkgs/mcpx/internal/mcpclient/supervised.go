@@ -14,6 +14,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -36,6 +37,43 @@ import (
 // SupervisorProtocolVersion is the attach-handshake version. A mismatch
 // is refused with an explicit error; there is no silent fallback.
 const SupervisorProtocolVersion = 1
+
+// SupervisorOwnerEnv names the environment variable that arms the
+// supervisor owner watch: its value is the PID of the process a
+// supervisor belongs to. When that process dies, the supervisor
+// terminates its child and exits instead of leaking (#10774).
+// Production daemons never set it — surviving the daemon is the
+// supervisor's defining property — but test suites arm it (via
+// EnableSupervisorOwnerWatch) because a test binary that is killed
+// (timeout, OOM) cannot close its pools, and every supervisor it
+// spawned then leaked for the child's whole lifetime: the
+// 2026-11-16 pool.test runaway accumulated ~6,100 supervisor
+// processes and OOM-killed the host's OpenCode server three times.
+const SupervisorOwnerEnv = "MCPX_SUPERVISOR_OWNER_PID"
+
+// EnableSupervisorOwnerWatch arms the owner watch for every
+// supervisor this process spawns from now on, naming this process
+// as the owner. It is a no-op when the watch is already armed: an
+// inherited owner outranks this process (a daemon a test suite
+// started still belongs to the suite).
+func EnableSupervisorOwnerWatch() {
+	if os.Getenv(SupervisorOwnerEnv) == "" {
+		_ = os.Setenv(SupervisorOwnerEnv, strconv.Itoa(os.Getpid()))
+	}
+}
+
+// supervisorOwnerPID reads the armed owner PID, if any.
+func supervisorOwnerPID() int {
+	pid, err := strconv.Atoi(os.Getenv(SupervisorOwnerEnv))
+	if err != nil || pid <= 0 {
+		return 0
+	}
+	return pid
+}
+
+// ownerWatchPoll bounds how long a leaked supervisor outlives its
+// owner. It is a variable so tests can shorten it.
+var ownerWatchPoll = 2 * time.Second
 
 // DefaultUnattachedBuffer bounds the child output a supervisor retains
 // while no daemon is attached (1 MiB, tail-keep; see tailBuffer).
@@ -249,6 +287,9 @@ type supervisor struct {
 
 	pumpDone chan struct{}
 	waitDone chan struct{}
+	// done closes when RunSupervisor returns; it stops the owner
+	// watch goroutine.
+	done chan struct{}
 }
 
 // RunSupervisor runs the supervisor in the current process: it spawns
@@ -291,12 +332,17 @@ func RunSupervisor(opts SupervisorOptions) error {
 		pumpDone:     make(chan struct{}),
 		waitDone:     make(chan struct{}),
 		stateChanged: make(chan struct{}, 1),
+		done:         make(chan struct{}),
 	}
+	defer close(s.done)
 	if err := s.spawnChild(); err != nil {
 		return err
 	}
 	s.ln = ln
 	s.launchWatchers(0, s.pumpDone, s.waitDone)
+	if owner := supervisorOwnerPID(); owner > 0 && owner != os.Getpid() {
+		go s.watchOwner(owner)
+	}
 
 	for {
 		conn, err := ln.Accept()
@@ -718,6 +764,37 @@ func writeReply(conn net.Conn, reply supervisorReply) error {
 	return err
 }
 
+// watchOwner terminates the supervisor when its owner process dies
+// (#10774): it kills the child the way a terminate handshake does,
+// then closes the listener so RunSupervisor returns and removes the
+// socket. Without it, a killed owner — a test binary under a
+// timeout or OOM, the only arming case — leaks the supervisor and
+// its child forever, because the child outliving the daemon is the
+// supervised design and nothing else ever tells it to stop.
+func (s *supervisor) watchOwner(pid int) {
+	tick := time.NewTicker(ownerWatchPoll)
+	defer tick.Stop()
+	for {
+		select {
+		case <-s.done:
+			return
+		case <-tick.C:
+		}
+		if err := syscall.Kill(pid, 0); !errors.Is(err, syscall.ESRCH) {
+			continue // owner alive, or not ours to judge (EPERM)
+		}
+		fmt.Fprintf(os.Stderr, "supervise: owner process %d is gone; terminating child\n", pid)
+		s.mu.Lock()
+		waitDone := s.waitDone
+		s.mu.Unlock()
+		s.killChild(syscall.SIGTERM, 2*time.Second, waitDone)
+		if s.ln != nil {
+			_ = s.ln.Close()
+		}
+		return
+	}
+}
+
 // finishWhenDone ends the supervisor once the child has exited and
 // its remaining output has drained: an attached daemon gets EOF after
 // the drain, which is how a direct child's exit surfaces today. If no
@@ -1035,6 +1112,14 @@ func spawnSupervisorProcess(sock string, opts SupervisedOptions) error {
 	}
 	for k, v := range opts.Env {
 		env = append(env, k+"="+v)
+	}
+	if !opts.InheritEnv {
+		// Carry the owner watch (#10774) even when the child
+		// environment is not inherited: the supervisor reads the
+		// owner PID from its own environment.
+		if v := os.Getenv(SupervisorOwnerEnv); v != "" {
+			env = append(env, SupervisorOwnerEnv+"="+v)
+		}
 	}
 	cmd.Env = env
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
