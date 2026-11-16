@@ -16,6 +16,19 @@ function parseAggregatorPort(value: string | undefined, name = "PM_AGG_PORT", de
   return port;
 }
 
+function parseAggregatorCount(
+  value: string | undefined,
+  name: string,
+  defaultValue: string
+): number {
+  const normalized = s(value, defaultValue);
+  const count = Number(normalized);
+  if (!/^\d+$/.test(normalized) || !Number.isSafeInteger(count) || count < 1) {
+    throw new Error(`Invalid ${name}=${JSON.stringify(value)}; expected a decimal integer >= 1`);
+  }
+  return count;
+}
+
 function parseAggregatorHosts(value: string | undefined): string[] {
   const hosts = s(value, "127.0.0.1")
     .split(",")
@@ -303,7 +316,7 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
     },
     publicOrigin: s(env.PM_AGG_PUBLIC_ORIGIN, "https://amd-6.raptor-pumpkinseed.ts.net").replace(/\/+$/, ""),
     alerts: {
-      ackWindowMin: Math.max(1, Math.floor(Number(s(env.ALERT_ACK_WINDOW_MIN, "15"))) || 15),
+      ackWindowMin: parseAggregatorCount(env.ALERT_ACK_WINDOW_MIN, "ALERT_ACK_WINDOW_MIN", "15"),
       tickMs: 60_000,
     },
   };
