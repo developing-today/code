@@ -177,6 +177,14 @@ if [ "$CHANGED" -eq 1 ]; then
     echo "PM_AGG_QUOTA_CURRENT_FILE=${STATE_DIR}/quota-current.json"
     echo "PM_AGG_COVERAGE_SNAPSHOT_FILE=${STATE_DIR}/coverage-snapshot.json"
     echo "PM_AGG_ROADMAP_ANNOTATIONS_FILE=${STATE_DIR}/roadmap-annotations.json"
+    # #6815: the four stores that used to be laptop-local files
+    # (actions, activity-ingestion, usage snapshots, aa-last-good) are
+    # canonical in Supabase muse-dev2; the local files remain a
+    # rebuildable cache. PM_AGG_STORE_BACKEND=file is the rollback.
+    echo "PM_AGG_STORE_BACKEND=supabase"
+    echo "PM_AGG_STORE_WRITER=pm-aggregator.service"
+    echo "BWS_BIN=/run/current-system/sw/bin/bws"
+    echo "BWS_ACCESS_TOKEN_FILE=${HOME}/.config/bws/access-token"
     echo "PM_PROJECTOR_URL=http://127.0.0.1:7801"
     # The hot-list consumer shares only the projector's checkpoint-ack
     # credential, not its webhook secret or GitHub App private key.
