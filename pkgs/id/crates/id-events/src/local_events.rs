@@ -26,6 +26,7 @@ use crate::local_claims::LocalClaims;
 use id_core::waiting::{AuthorKey, WaitingLimits};
 use id_store::chain::{ChainExt, Event, MAX_AFTER, sign};
 use id_store::chat::{CHAT_MESSAGE_KIND, ChatMessage, ChatRecord, SendRate};
+use id_store::chat_anchor::{AnchorProjection, CHAT_ANCHOR_KIND, ChatAnchor, project_anchors};
 use id_store::documents::{DOCUMENT_KIND, DocumentRef, REMOVAL_KIND};
 use id_store::notes::{
     AppliedNote, CREATE_KIND as NOTE_CREATE_KIND, NoteFoldError, NoteOp, NoteRecord,
@@ -372,6 +373,7 @@ impl LocalEvents {
             None,
             None,
             None,
+            None,
             &[],
         )?;
         let mut claims = Vec::with_capacity(tags.len());
@@ -420,8 +422,53 @@ impl LocalEvents {
             None,
             None,
             Some(message),
+            None,
             &[],
         )
+    }
+
+    /// Sends `anchor` as a `chat.anchor.v1` event in the conversation `group`, and
+    /// returns the event's ID.
+    ///
+    /// Admission is refused before anything is signed when the anchor's operation is
+    /// malformed, or when the node's key is not a member of the group under its policy.
+    /// The detailed binding-authority rules belong to #5871; this admission keeps the
+    /// v1 channel-membership rule that every chat-family write already uses.
+    ///
+    /// # Errors
+    ///
+    /// Fails if the anchor is refused by [`ChatAnchor::check`], the node is not a
+    /// member, or the store cannot record the event.
+    pub fn send_anchor(&mut self, group: Hash, anchor: ChatAnchor) -> Result<Hash> {
+        anchor.check()?;
+        let author = self.author();
+        if !self.store.roster(&group)?.contains(&author) {
+            bail!(
+                "the node's key is not a member of the channel group, so its anchor write is refused at admission"
+            );
+        }
+        self.record(
+            CHAT_ANCHOR_KIND,
+            Some(group),
+            None,
+            None,
+            None,
+            None,
+            None,
+            Some(anchor),
+            &[],
+        )
+    }
+
+    /// The folded anchor projection of `group` as this node may see it: the store's
+    /// read, gated on this node's membership and cut by the group's history policy.
+    ///
+    /// # Errors
+    ///
+    /// Fails if the node is not a member of the group, or the store cannot be read.
+    pub fn anchor_projection(&self, group: Hash) -> Result<AnchorProjection> {
+        let records = self.store.anchor_records(&group, &self.author())?;
+        Ok(project_anchors(records))
     }
 
     /// The chat timeline of `group` as this node may see it: the store's read, gated on
@@ -475,7 +522,7 @@ impl LocalEvents {
                     name: name.to_owned(),
                     value: value.map(str::to_owned),
                 };
-                self.record(SET_KIND, None, Some(op), None, None, None, None, &[])
+                self.record(SET_KIND, None, Some(op), None, None, None, None, None, &[])
             }
         }
     }
@@ -548,6 +595,7 @@ impl LocalEvents {
                 Some(TagOp::Clear {
                     claims: group.to_vec(),
                 }),
+                None,
                 None,
                 None,
                 None,
@@ -665,6 +713,7 @@ impl LocalEvents {
                 None,
                 None,
                 None,
+                None,
                 &required,
             )?);
         }
@@ -749,6 +798,7 @@ impl LocalEvents {
             None,
             Some(op),
             None,
+            None,
             &[],
         )
     }
@@ -810,6 +860,7 @@ impl LocalEvents {
             None,
             None,
             Some(op),
+            None,
             None,
             &required,
         )
@@ -1035,6 +1086,7 @@ impl LocalEvents {
         removes: Option<Hash>,
         note: Option<NoteOp>,
         chat: Option<ChatMessage>,
+        anchor: Option<ChatAnchor>,
         required: &[Hash],
     ) -> Result<Hash> {
         let author = self.author();
@@ -1052,6 +1104,7 @@ impl LocalEvents {
             checkpoint: None,
             rotation: None,
             chat,
+            anchor,
         };
         let event = sign(&self.key, chain.next_seq, chain.head, None, ext)?;
         match self.store.ingest(&event.bytes, now_ms())? {
@@ -1375,6 +1428,7 @@ mod tests {
                 rotation: None,
 
                 chat: None,
+                anchor: None,
             },
         )
         .unwrap();
@@ -1772,11 +1826,11 @@ mod chat_tests {
             document: None,
             removes: None,
             chat: None,
-
             note: None,
             link: None,
             checkpoint: None,
             rotation: None,
+            anchor: None,
         };
         let event = sign(alice, 0, None, Some(&body), ext).unwrap();
         (event, body)
@@ -1791,17 +1845,37 @@ mod chat_tests {
         node
     }
 
-    /// Moves `from`'s applied chat events into `to`'s store, as a sync session would.
+    /// Moves `from`'s applied chat-family events into `to`'s store, as a sync session
+    /// would.
     fn exchange(from: &LocalEvents, to: &mut LocalEvents) {
         let events = from
             .store
             .applied_events(&from.author(), None, None, usize::MAX)
             .unwrap();
         for event in &events {
-            if event.header.extensions.kind == CHAT_MESSAGE_KIND {
+            if matches!(
+                event.header.extensions.kind.as_str(),
+                CHAT_MESSAGE_KIND | CHAT_ANCHOR_KIND
+            ) {
                 to.store.ingest(&event.bytes, now_ms()).unwrap();
             }
         }
+    }
+
+    /// How many applied `chat.anchor.v1` events `node` holds.
+    fn anchor_events(node: &LocalEvents) -> usize {
+        node.store
+            .applied_events(&node.author(), None, None, usize::MAX)
+            .unwrap()
+            .iter()
+            .filter(|event| event.header.extensions.kind == CHAT_ANCHOR_KIND)
+            .count()
+    }
+
+    /// An `about` anchor of `conversation` to `object` by its `author`.
+    fn about_anchor(object: Hash, author: AuthorKey) -> ChatAnchor {
+        use id_store::chat_anchor::{AnchorRelation, ObjectRef};
+        ChatAnchor::bind(ObjectRef::new(object, author), AnchorRelation::About, None).unwrap()
     }
 
     #[test]
@@ -1852,6 +1926,64 @@ mod chat_tests {
         let ids: Vec<Hash> = timeline_a.iter().map(|record| record.id).collect();
         assert!(ids.contains(&first));
         assert!(ids.contains(&second));
+    }
+
+    #[test]
+    fn test_two_members_exchange_anchors_and_a_non_member_is_refused() {
+        use id_store::chat_anchor::LinkState;
+
+        let (alice, bob, carol) = (key(61), key(62), key(63));
+        let (alice_key, bob_key) = (
+            *alice.verifying_key().as_bytes(),
+            *bob.verifying_key().as_bytes(),
+        );
+        let (create, body) = create_event(&alice, &bob);
+        let group = create.id;
+        let dir_a = tempfile::tempdir().unwrap();
+        let dir_b = tempfile::tempdir().unwrap();
+        let dir_c = tempfile::tempdir().unwrap();
+        let mut node_a = node(dir_a.path(), alice, &create, &body);
+        let mut node_b = node(dir_b.path(), bob, &create, &body);
+        let mut node_c = node(dir_c.path(), carol, &create, &body);
+
+        // A non-member's anchor is refused at admission: nothing is signed or recorded,
+        // and the non-member's read stays closed.
+        let refused = node_c.send_anchor(
+            group,
+            about_anchor(Hash::digest(b"first object"), alice_key),
+        );
+        assert!(refused.is_err());
+        assert_eq!(anchor_events(&node_c), 0);
+        assert!(node_c.anchor_projection(group).is_err());
+
+        // Two members bind this conversation to two objects.
+        let first = node_a
+            .send_anchor(
+                group,
+                about_anchor(Hash::digest(b"first object"), alice_key),
+            )
+            .unwrap();
+        let second = node_b
+            .send_anchor(group, about_anchor(Hash::digest(b"second object"), bob_key))
+            .unwrap();
+
+        exchange(&node_a, &mut node_b);
+        exchange(&node_b, &mut node_a);
+
+        let projection_a = node_a.anchor_projection(group).unwrap();
+        let projection_b = node_b.anchor_projection(group).unwrap();
+        assert_eq!(projection_a, projection_b);
+
+        let link_ids: Vec<Hash> = projection_a.links.iter().map(|link| link.link_id).collect();
+        assert!(link_ids.contains(&first));
+        assert!(link_ids.contains(&second));
+        assert_eq!(link_ids.len(), 2);
+        assert!(
+            projection_a
+                .links
+                .iter()
+                .all(|link| { link.state == LinkState::Current && link.conversation == group })
+        );
     }
 
     #[test]

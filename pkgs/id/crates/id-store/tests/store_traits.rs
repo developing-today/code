@@ -282,6 +282,7 @@ fn event(
         checkpoint: None,
         rotation: None,
         chat: None,
+        anchor: None,
     };
     sign(signer, seq, backlink, body, ext).unwrap()
 }

@@ -102,6 +102,7 @@ fn document_ext(doc: &DocumentRef, after: Vec<Hash>) -> ChainExt {
         checkpoint: None,
         rotation: None,
         chat: None,
+        anchor: None,
     }
 }
 
@@ -122,6 +123,7 @@ fn tag_ext(subject: Hash, name: &str, value: &str, after: Vec<Hash>) -> ChainExt
         checkpoint: None,
         rotation: None,
         chat: None,
+        anchor: None,
     }
 }
 
@@ -138,6 +140,7 @@ fn removal_ext(target: Hash, after: Vec<Hash>) -> ChainExt {
         checkpoint: None,
         rotation: None,
         chat: None,
+        anchor: None,
     }
 }
 
@@ -390,12 +393,14 @@ fn test_a_removal_names_its_target_and_carries_nothing_else() {
     let missing = ChainExt {
         removes: None,
         note: None,
+        anchor: None,
         ..removal_ext(target, vec![])
     };
     assert!(sign(&key, 0, None, None, missing).is_err());
     // A document or a tag beside the target.
     let with_document = ChainExt {
         document: Some(doc),
+        anchor: None,
         ..removal_ext(target, vec![])
     };
     assert!(sign(&key, 0, None, None, with_document).is_err());
@@ -405,6 +410,7 @@ fn test_a_removal_names_its_target_and_carries_nothing_else() {
             name: "kind".to_owned(),
             value: Some("memo".to_owned()),
         }),
+        anchor: None,
         ..removal_ext(target, vec![])
     };
     assert!(sign(&key, 0, None, None, with_tag).is_err());
@@ -412,6 +418,7 @@ fn test_a_removal_names_its_target_and_carries_nothing_else() {
     let stray = ChainExt {
         kind: DOCUMENT_KIND.to_owned(),
         document: Some(DocumentRef::for_bytes("text/plain", b"notes").unwrap()),
+        anchor: None,
         ..removal_ext(target, vec![])
     };
     assert!(sign(&key, 0, None, None, stray).is_err());

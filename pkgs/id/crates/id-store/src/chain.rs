@@ -23,6 +23,7 @@ use serde::{Deserialize, Serialize};
 use unicode_normalization::is_nfc;
 
 use crate::chat::{ChatLink, ChatMessage, is_chat_message_kind};
+use crate::chat_anchor::{ChatAnchor, check_chat_anchor, is_chat_anchor_kind};
 use crate::documents::{DocumentRef, is_document_kind, is_removal_kind};
 use crate::issuer_rotation::{IssuerRotation, check_rotation, is_rotation_kind};
 use crate::note_links::{NoteLinkOp, check_note_link_op, is_note_link_kind};
@@ -152,6 +153,10 @@ pub struct ChainExt {
     /// message's body (#3799): it is signed with the header, so an event carries its
     /// message, and sync needs no separate body.
     pub chat: Option<ChatMessage>,
+    /// The anchor operation of a `chat.anchor.v1`, and `None` for every other kind. It is
+    /// the anchor's body (#5872/#5870): signed with the header, so an event carries its
+    /// whole anchor and sync needs no separate body.
+    pub anchor: Option<ChatAnchor>,
 }
 
 #[derive(Serialize)]
@@ -266,6 +271,8 @@ struct Wire {
     rotation: Option<IssuerRotation>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     chat: Option<HeaderChatMessage>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    anchor: Option<ChatAnchor>,
 }
 
 impl From<ChainExt> for Wire {
@@ -283,6 +290,7 @@ impl From<ChainExt> for Wire {
             checkpoint: ext.checkpoint,
             rotation: ext.rotation,
             chat: ext.chat.map(HeaderChatMessage),
+            anchor: ext.anchor,
         }
     }
 }
@@ -306,6 +314,7 @@ impl TryFrom<Wire> for ChainExt {
             checkpoint: wire.checkpoint,
             rotation: wire.rotation,
             chat: wire.chat.map(|message| message.0),
+            anchor: wire.anchor,
         };
         ext.validate()?;
         Ok(ext)
@@ -329,7 +338,9 @@ impl ChainExt {
     /// A session checkpoint kind must carry a session checkpoint that passes
     /// [`check_session_checkpoint`], and any other kind must carry none.
     /// A rotation kind must carry an issuer rotation that passes
-    /// [`check_rotation`], and any other kind must carry none.
+    /// [`check_rotation`], and any other kind must carry none. A chat-anchor kind
+    /// must carry an anchor operation that passes [`check_chat_anchor`], and any
+    /// other kind must carry none.
     pub fn validate(&self) -> Result<(), ChainError> {
         if self.after.len() > MAX_AFTER {
             return Err(ChainError::TooManyAfter(self.after.len()));
@@ -495,6 +506,25 @@ impl ChainExt {
                     .map_err(|err| ChainError::Extension(err.to_string()))?;
             }
         }
+        match (is_chat_anchor_kind(&self.kind), &self.anchor) {
+            (false, None) => {}
+            (false, Some(_)) => {
+                return Err(ChainError::Extension(format!(
+                    "kind {:?} carries a chat anchor",
+                    self.kind
+                )));
+            }
+            (true, None) => {
+                return Err(ChainError::Extension(format!(
+                    "kind {:?} needs its chat anchor",
+                    self.kind
+                )));
+            }
+            (true, Some(anchor)) => {
+                check_chat_anchor(&self.kind, anchor)
+                    .map_err(|err| ChainError::Extension(err.to_string()))?;
+            }
+        }
         Ok(())
     }
 }
@@ -629,6 +659,7 @@ mod tests {
     use p2panda_core::Extensions;
 
     use super::*;
+    use crate::chat_anchor::{AnchorRelation, ChatAnchor, ObjectRef, PartAnchor, PartSelector};
     use crate::issuer_rotation::issuer_id;
     use crate::issuer_rotation::{ISSUER_ROTATION_KIND, RotationMode};
 
@@ -654,6 +685,7 @@ mod tests {
             checkpoint: None,
             rotation: None,
             chat: None,
+            anchor: None,
         }
     }
 
@@ -763,6 +795,121 @@ mod tests {
             .expect("a well-formed rotation is signed");
         assert_eq!(decode(&event.bytes).unwrap(), event);
         assert_eq!(event.header.extensions.rotation, Some(rotation));
+    }
+
+    /// A valid `about` anchor on the anchor kind, for the admission tests.
+    fn key_bytes(seed: u8) -> [u8; 32] {
+        let key = SigningKey::from_bytes(&[seed; 32]);
+        *key.verifying_key().as_bytes()
+    }
+
+    /// A valid `about` anchor on the anchor kind, for the admission tests.
+    fn anchor() -> ChatAnchor {
+        ChatAnchor::bind(
+            ObjectRef::new(hash(7), key_bytes(7)),
+            AnchorRelation::About,
+            None,
+        )
+        .expect("an about bind is valid")
+    }
+
+    /// The anchor kind carrying `anchor`: it signs, and it decodes back.
+    fn anchor_ext(op: ChatAnchor) -> ChainExt {
+        let mut ext = ext(crate::chat_anchor::CHAT_ANCHOR_KIND, Some(hash(3)), vec![]);
+        ext.anchor = Some(op);
+        ext
+    }
+
+    #[test]
+    fn test_anchor_admission_keeps_kind_and_operation_together() {
+        // The anchor event signs and round-trips through the decoder.
+        let event =
+            sign(&key(), 0, None, None, anchor_ext(anchor())).expect("a valid anchor is signed");
+        assert_eq!(decode(&event.bytes).unwrap(), event);
+
+        // An anchor operation on a message kind is refused at signing.
+        assert!(
+            sign(
+                &key(),
+                0,
+                None,
+                None,
+                ChainExt {
+                    chat: Some(crate::chat::ChatMessage::new("hello", Vec::new()).unwrap()),
+                    ..anchor_ext(anchor())
+                }
+            )
+            .is_err()
+        );
+
+        // An anchor event without its operation is refused at signing.
+        assert!(
+            sign(
+                &key(),
+                0,
+                None,
+                None,
+                ext(crate::chat_anchor::CHAT_ANCHOR_KIND, Some(hash(3)), vec![])
+            )
+            .is_err()
+        );
+
+        // A malformed operation (an anchored-to-part bind with no selector) is
+        // refused with the anchor, before anything is signed.
+        assert!(
+            sign(
+                &key(),
+                0,
+                None,
+                None,
+                ChainExt {
+                    anchor: Some(ChatAnchor {
+                        op: crate::chat_anchor::AnchorOp::Bind {
+                            target: ObjectRef::new(hash(7), key_bytes(7)),
+                            relation: AnchorRelation::AnchoredToPart,
+                            part: None,
+                        },
+                    }),
+                    ..ext(crate::chat_anchor::CHAT_ANCHOR_KIND, Some(hash(3)), vec![])
+                }
+            )
+            .is_err()
+        );
+
+        // A forged anchor on a non-anchor kind is refused at decode.
+        #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+        struct ForgedAnchor {
+            domain: String,
+            kind: String,
+            group: Option<Hash>,
+            after: Vec<Hash>,
+            anchor: ChatAnchor,
+        }
+        let forged = sign_raw(ForgedAnchor {
+            domain: DOMAIN_TAG.to_owned(),
+            kind: "m".to_owned(),
+            group: None,
+            after: Vec::new(),
+            anchor: anchor(),
+        });
+        assert!(decode(&forged).is_err());
+    }
+
+    #[test]
+    fn test_anchor_free_exts_encode_as_before() {
+        // The anchor key is skipped exactly when it is `None`, so a v1-only event
+        // header encodes byte-identically with the feature compiled in, and decoding
+        // then re-encoding it must not drift.
+        let event =
+            sign(&key(), 0, None, None, ext("m", None, vec![])).expect("a plain event is signed");
+        let wire = hex(&event.bytes);
+        let decoded = decode(&event.bytes).unwrap();
+        assert!(decoded.header.extensions.anchor.is_none());
+        assert_eq!(hex(&decoded.bytes), wire);
+        // No anchor key at all: the map entry is skipped, not nulled.
+        let value =
+            postcard::to_allocvec(&decoded.header.extensions).expect("an extension encodes");
+        assert!(!value.windows(6).any(|window| window == b"anchor"));
     }
 
     #[test]
@@ -1136,6 +1283,7 @@ mod tests {
                 rotation: None,
 
                 chat: None,
+                anchor: None,
             },
         )
         .unwrap()
@@ -1366,6 +1514,7 @@ mod golden {
                 checkpoint: None,
                 rotation: None,
                 chat: None,
+                anchor: None,
             },
         )
         .unwrap();
@@ -1387,6 +1536,7 @@ mod golden {
                 checkpoint: None,
                 rotation: None,
                 chat: None,
+                anchor: None,
             },
         )
         .unwrap();
