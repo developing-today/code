@@ -1,15 +1,16 @@
-import { createExecutionContext, env, fetchMock, waitOnExecutionContext } from "cloudflare:test";
-import { describe, expect, it, beforeAll, afterEach } from "vitest";
+import { createExecutionContext, env, waitOnExecutionContext } from "cloudflare:test";
+import { fetchMock } from "./fetch-mock";
+import { describe, expect, it, beforeAll, afterEach, vi } from "vitest";
 import worker from "../src/index";
 
 const SECRET = "test-webhook-secret";
 const PLATFORM = "https://fleet-platform-dezren39.aws-us-east-1.turso.io";
 const QUEUE = "https://fleet-queue-dezren39.aws-us-east-1.turso.io";
 
-async function sign(body: string): Promise<string> {
+async function sign(body: string, secret = SECRET): Promise<string> {
   const key = await crypto.subtle.importKey(
     "raw",
-    new TextEncoder().encode(SECRET),
+    new TextEncoder().encode(secret),
     { name: "HMAC", hash: "SHA-256" },
     false,
     ["sign"],
@@ -24,7 +25,12 @@ function tursoOk() {
   });
 }
 
-async function post(body: string, event: string, sig?: string): Promise<Response> {
+async function post(
+  body: string,
+  event: string,
+  sig?: string,
+  webhookSecret: string | null = SECRET,
+): Promise<Response> {
   const req = new Request("https://github-ci.test/", {
     method: "POST",
     headers: {
@@ -34,7 +40,13 @@ async function post(body: string, event: string, sig?: string): Promise<Response
     body,
   });
   const ctx = createExecutionContext();
-  const res = await worker.fetch(req, env as unknown as Parameters<typeof worker.fetch>[1]);
+  const workerEnv = { ...env } as unknown as Record<string, unknown>;
+  if (webhookSecret === null) {
+    delete workerEnv.GITHUB_WEBHOOK_SECRET;
+  } else {
+    workerEnv.GITHUB_WEBHOOK_SECRET = webhookSecret;
+  }
+  const res = await worker.fetch(req, workerEnv as unknown as Parameters<typeof worker.fetch>[1]);
   await waitOnExecutionContext(ctx);
   return res;
 }
@@ -62,12 +74,66 @@ beforeAll(() => {
   fetchMock.activate();
   fetchMock.disableNetConnect();
 });
-afterEach(() => fetchMock.assertNoPendingInterceptors());
+afterEach(() => {
+  vi.restoreAllMocks();
+  fetchMock.assertNoPendingInterceptors();
+});
 
 describe("github-ci worker", () => {
+  it.each([
+    ["unset", null],
+    ["empty", ""],
+  ])("rejects unsigned webhooks when the secret is %s and logs the configuration error", async (_name, secret) => {
+    const log = vi.spyOn(console, "error").mockImplementation(() => {});
+    const res = await post(runPayload, "workflow_run", undefined, secret);
+
+    expect(res.status).toBe(503);
+    expect(await res.text()).toBe("webhook secret not configured");
+    expect(log).toHaveBeenCalledWith("github-ci worker rejected webhook: GITHUB_WEBHOOK_SECRET is not configured");
+    log.mockRestore();
+  });
+
+  it.each([
+    ["unset", null],
+    ["empty", ""],
+  ])("rejects ping when the secret is %s", async (_name, secret) => {
+    const res = await post("{}", "ping", undefined, secret);
+    expect(res.status).toBe(503);
+    expect(await res.text()).toBe("webhook secret not configured");
+  });
+
+  it("rejects a signature made with the wrong secret", async () => {
+    const res = await post(runPayload, "workflow_run", await sign(runPayload, "wrong-secret"));
+    expect(res.status).toBe(401);
+  });
+
   it("rejects a bad signature with 401", async () => {
     const res = await post(runPayload, "workflow_run", "sha256=00");
     expect(res.status).toBe(401);
+  });
+
+  it("rejects a signed null body with 400 for workflow_run (#6946)", async () => {
+    const body = "null";
+    const res = await post(body, "workflow_run", await sign(body));
+    expect(res.status).toBe(400);
+  });
+
+  it("rejects a signed null body with 400 for push (#6946)", async () => {
+    const body = "null";
+    const res = await post(body, "push", await sign(body));
+    expect(res.status).toBe(400);
+  });
+
+  it("rejects a signed array body with 400 (#6946)", async () => {
+    const body = "[]";
+    const res = await post(body, "workflow_run", await sign(body));
+    expect(res.status).toBe(400);
+  });
+
+  it("rejects a signed scalar body with 400 (#6946)", async () => {
+    const body = '"hello"';
+    const res = await post(body, "push", await sign(body));
+    expect(res.status).toBe(400);
   });
 
   it("answers ping", async () => {
@@ -108,11 +174,15 @@ describe("github-ci worker", () => {
     });
     const res = await post(p, "workflow_run", await sign(p));
     expect(res.status).toBe(200);
-    expect((await res.json()) as { skipped?: string }).toMatchObject({ skipped: "not_completed" });
+    expect((await res.json()) as { skipped?: string }).toMatchObject({
+      skipped: "not_completed",
+    });
   });
 
   it("ignores unknown events with 202", async () => {
-    const p = JSON.stringify({ repository: { full_name: "developing-today/code" } });
+    const p = JSON.stringify({
+      repository: { full_name: "developing-today/code" },
+    });
     const res = await post(p, "star", await sign(p));
     expect(res.status).toBe(202);
   });
@@ -122,12 +192,10 @@ describe("github-ci worker", () => {
     const queueMock = fetchMock.get(QUEUE);
     // snapshot read (1 pipeline) + upsert (1) + event insert (1)
     for (let i = 0; i < 3; i++) {
-      queueMock
-        .intercept({ path: "/v2/pipeline", method: "POST" })
-        .reply(200, (opts) => {
-          seen.push(String(opts.body));
-          return tursoOk();
-        });
+      queueMock.intercept({ path: "/v2/pipeline", method: "POST" }).reply(200, (opts) => {
+        seen.push(String(opts.body));
+        return tursoOk();
+      });
     }
     const p = JSON.stringify({
       ref: "refs/heads/main",
@@ -140,5 +208,69 @@ describe("github-ci worker", () => {
     expect(all).toContain("agent_repo_snapshots");
     expect(all).toContain("INSERT INTO events");
     expect(all).toContain("github-webhook");
+  });
+
+  it("issues on a fleet repo upserts the #8580 mirror row", async () => {
+    const seen: string[] = [];
+    const queueMock = fetchMock.get(QUEUE);
+    // sink event insert (1) + watermark (1) + mirror DDL batch (1)
+    // + mirror column probe (1) + mirror writes batch (1)
+    for (let i = 0; i < 5; i++) {
+      queueMock.intercept({ path: "/v2/pipeline", method: "POST" }).reply(200, (opts) => {
+        seen.push(String(opts.body));
+        return tursoOk();
+      });
+    }
+    const p = JSON.stringify({
+      action: "opened",
+      issue: {
+        number: 8580,
+        title: "Fleet unification slice 2",
+        body: "mirror everything",
+        state: "open",
+        labels: [{ name: "task/small-fix" }],
+        assignees: [],
+        comments: 0,
+        user: { login: "dezren39" },
+        html_url: "https://example.invalid/issues/8580",
+        created_at: "2026-11-11T01:00:00Z",
+        updated_at: "2026-11-11T01:00:00Z",
+      },
+      repository: { full_name: "developing-today/code" },
+    });
+    const res = await post(p, "issues", await sign(p));
+    expect(res.status).toBe(200);
+    const all = seen.join("\n");
+    expect(all).toContain("INSERT INTO github_mirror_issues");
+    expect(all).toContain("INSERT INTO github_mirror_meta");
+    expect(all).toContain("Fleet unification slice 2");
+  });
+
+  it("issue_comment refreshes the mirror comments count and agent-note pointer", async () => {
+    const seen: string[] = [];
+    const queueMock = fetchMock.get(QUEUE);
+    // sink event insert (1) + watermark (1) + mirror DDL batch (1)
+    // + mirror column probe (1) + mirror writes batch (1)
+    for (let i = 0; i < 5; i++) {
+      queueMock.intercept({ path: "/v2/pipeline", method: "POST" }).reply(200, (opts) => {
+        seen.push(String(opts.body));
+        return tursoOk();
+      });
+    }
+    const p = JSON.stringify({
+      action: "created",
+      issue: { number: 8580, comments: 7 },
+      comment: {
+        id: 31337,
+        html_url: "https://example.invalid/issues/8580#c31337",
+        body: "🤖 **Agent note** · checkpoint\n<!-- agent-note:v1 agent=repo-worker-code -->",
+      },
+      repository: { full_name: "developing-today/code" },
+    });
+    const res = await post(p, "issue_comment", await sign(p));
+    expect(res.status).toBe(200);
+    const all = seen.join("\n");
+    expect(all).toContain("UPDATE github_mirror_issues SET");
+    expect(all).toContain("31337");
   });
 });

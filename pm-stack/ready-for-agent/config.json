@@ -30,13 +30,13 @@
       "projectPath": "developing-today-forks/openchamber"
     },
     {
-      "cloneUrl": "https://github.com/dezren39/nix.git",
+      "cloneUrl": "https://github.com/dezren39/darwin-nix.git",
       "defaultModel": "opencode-go/kimi-k3.1-pro",
       "includeAllIssueAuthors": true,
       "localDir": "nix",
       "mergePolicy": "OFF",
       "paused": false,
-      "projectPath": "dezren39/nix"
+      "projectPath": "dezren39/darwin-nix"
     }
   ],
   "version": 1

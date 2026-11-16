@@ -24,6 +24,35 @@
 //                                POST /api/session/:id/permission/
 //                                :permId/reply ({decision})
 //   ACP session/cancel        -> POST /api/session/:id/interrupt
+//   Reconnect / fence probes  -> GET /api/session/active (the v2
+//                                active-set read; a map keyed by
+//                                session id)
+// There is no v1 route shape left in this file: every serve call
+// above is the pinned server's v2 contract (#4706 rule 1, #4614).
+// No DELETE /api/session/:id call exists here — see the #4707
+// closing-audit disposition of the sessions map (issue #4707).
+//
+// Prompt lifecycle (design #4706, closing audit #4707) — the four
+// rules every state container below obeys:
+//   1. The pinned server's v2 API is the only contract (above).
+//   2. Prompt state is scoped to the prompt: pendingPrompts,
+//      cancelledSessions and staleTerminalFences are keyed by
+//      session and cleaned for exactly the finishing session —
+//      never another session's. (The v1 partTextSent offset map is
+//      gone: the v2 stream sends deltas, not cumulative text, so
+//      no client-side per-part offsets exist to scope.)
+//   3. Cancellation is a property of an in-flight prompt:
+//      session/cancel records its marker only while a prompt is
+//      pending for that session, and every terminal path (execution
+//      succeeded/failed, submission failure, reconciliation
+//      failure) exits through finishPrompt, which clears that
+//      session's pending entry and cancel marker together.
+//   4. Lost continuity is a terminal event: on event-stream
+//      reconnect, pending prompts are reconciled against
+//      GET /api/session/active — proven finished completes
+//      normally, still-active keeps waiting, state that cannot be
+//      proven fails the prompt explicitly. No prompt stays pending
+//      across a continuity gap on hope.
 //
 // Config:
 //   --server <url>            shared serve base URL
@@ -61,17 +90,59 @@ const debug = (...args) => {
   }
 };
 
+// Strict argv (#6939, umbrella #3352): --server is this adapter's one
+// operator flag, and every value for it is validated HERE, at startup,
+// before the event stream or any ACP traffic — a bad value used to be
+// silently dropped (trailing --server), silently dialled forever in a
+// per-request "Failed to parse URL" reconnect loop (--server=, a
+// flag-like or non-URL value), or silently ignored (a typo'd flag
+// falling back to the default serve). All of those now fail fast: a
+// usage error on stderr naming the flag and the offending value, and
+// a non-zero exit.
+function usageError(message) {
+  process.stderr.write(`[${AGENT_NAME}] usage error: ${message}\n`);
+  process.stderr.write(`usage: ${AGENT_NAME} [--server <http(s)://host:port>]\n`);
+  process.exit(2);
+}
+
+function validateServerValue(value, source) {
+  if (!value) {
+    usageError(`${source} requires a non-empty URL value (got an empty value)`);
+  }
+  if (value.startsWith('--')) {
+    usageError(`${source} requires a URL value, not another flag (got "${value}")`);
+  }
+  let parsed;
+  try {
+    parsed = new URL(value);
+  } catch {
+    usageError(`${source} value is not a parseable URL (got "${value}")`);
+  }
+  if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+    usageError(`${source} value must be an http: or https: URL (got "${value}")`);
+  }
+  return value.replace(/\/+$/, '');
+}
+
 function parseServerUrl(argv) {
   let server = process.env.OPENCODE_ACP_SERVER || 'http://127.0.0.1:13420';
+  let source = 'OPENCODE_ACP_SERVER';
   for (let i = 0; i < argv.length; i += 1) {
-    if (argv[i] === '--server' && argv[i + 1]) {
+    if (argv[i] === '--server') {
+      if (i + 1 >= argv.length) {
+        usageError('--server requires a URL value (got end of arguments)');
+      }
       server = argv[i + 1];
+      source = '--server';
       i += 1;
     } else if (argv[i].startsWith('--server=')) {
       server = argv[i].slice('--server='.length);
+      source = '--server';
+    } else {
+      usageError(`unknown argument "${argv[i]}" (the only supported flag is --server)`);
     }
   }
-  return server.replace(/\/+$/, '');
+  return validateServerValue(server, source);
 }
 
 const serverBase = parseServerUrl(process.argv.slice(2));
@@ -193,7 +264,43 @@ function requestClient(method, params) {
 // ---------------------------------------------------------------------------
 
 const sessions = new Map(); // acpSessionId -> { directory }
-const pendingPrompts = new Map(); // acpSessionId -> { requestId }
+const pendingPrompts = new Map(); // acpSessionId -> { requestId, submitted }
+// Terminal events a reconnect reconciliation finished locally may still
+// arrive afterwards on the reconnected stream: reconciliation completes
+// the ACP request without consuming the serve's own
+// session.execution.succeeded / .failed for that prompt. Those late
+// events carry only the session id, so without a fence the first one
+// would finish the NEXT prompt on the session (Codex review on
+// PR #4632). Each reconciliation finish records one fence; the first
+// terminal event seen while a fence is armed is verified against the
+// active set before it is allowed to finish a newer prompt.
+const staleTerminalFences = new Map(); // acpSessionId -> count
+
+function fenceStaleTerminalEvent(sessionId) {
+  staleTerminalFences.set(sessionId, (staleTerminalFences.get(sessionId) || 0) + 1);
+}
+
+function consumeStaleTerminalFence(sessionId) {
+  const n = staleTerminalFences.get(sessionId) || 0;
+  if (n <= 1) staleTerminalFences.delete(sessionId);
+  else staleTerminalFences.set(sessionId, n - 1);
+  return n > 0;
+}
+
+// The serve's active session set (GET /api/session/active), as a Set of
+// session ids, or null when it cannot be read / has an unexpected shape.
+async function fetchActiveSessionIds() {
+  const active = await serveJson('/api/session/active');
+  // The v2 active set is a map keyed by session id (a list shape
+  // is accepted too, as in the claimant's poll.py reader).
+  if (Array.isArray(active)) {
+    return new Set(active.filter((x) => typeof x === 'string'));
+  }
+  if (active && typeof active === 'object') {
+    return new Set(Object.keys(active));
+  }
+  return null;
+}
 const cancelledSessions = new Set(); // acpSessionId
 
 function sessionUpdate(sessionId, update) {
@@ -223,10 +330,65 @@ async function ensureEventStream(timeoutMs = 5000) {
   ]);
 }
 
+// After a reconnect, prompts whose session finished while the stream
+// was down never get their session.execution.succeeded / .failed
+// event, so without reconciliation they would stay in pendingPrompts
+// forever (and every later prompt would be rejected as already in
+// flight, #4617). Ask the serve for its active session set instead
+// (GET /api/session/active, the v2 successor of the v1 status map):
+// sessions in the active set are still running and their completion
+// event will arrive on the new stream; idle or absent sessions
+// finished during the gap and are completed here exactly as
+// session.execution.succeeded would have; if the active set cannot
+// be read at all, fail the pending prompts explicitly rather than
+// leaving them hanging.
+async function reconcilePendingPrompts() {
+  // Capture submission state up front: a prompt whose prompt POST
+  // has not resolved yet has no server-side execution for the status
+  // snapshot to reflect, so an idle/absent entry must not finish it.
+  // (The entry object is mutated on submission, so copy the flag here.)
+  const pendingAtRequest = [...pendingPrompts.entries()].map(([sessionId, pending]) => [
+    sessionId,
+    pending,
+    pending.submitted === true,
+  ]);
+  if (pendingAtRequest.length === 0) return;
+  let activeIds = null;
+  try {
+    activeIds = await fetchActiveSessionIds();
+  } catch (err) {
+    debug(`reconcile after reconnect: GET /api/session/active failed: ${err.message}`);
+  }
+  for (const [sessionId, pending, wasSubmitted] of pendingAtRequest) {
+    // The active-set snapshot may have been taken before a prompt started after
+    // this reconciliation began. Only finish the exact prompt we observed.
+    if (pendingPrompts.get(sessionId) !== pending) continue;
+    // The serve had not accepted this prompt when reconciliation began;
+    // its completion will arrive on the reconnected stream (and the POST
+    // failure path cleans up if submission itself failed).
+    if (!wasSubmitted) continue;
+    if (!activeIds) {
+      fenceStaleTerminalEvent(sessionId);
+      finishPrompt(
+        sessionId,
+        null,
+        'event stream reconnected and the session state could not be verified; prompt aborted',
+      );
+      continue;
+    }
+    if (activeIds.has(sessionId)) continue;
+    const wasCancelled = cancelledSessions.has(sessionId);
+    cancelledSessions.delete(sessionId);
+    fenceStaleTerminalEvent(sessionId);
+    finishPrompt(sessionId, { stopReason: wasCancelled ? 'cancelled' : 'end_turn' });
+  }
+}
+
 async function runEventStream() {
   eventStreamReady = new Promise((resolve) => {
     eventStreamReadyResolve = resolve;
   });
+  let connectedOnce = false;
   while (!shuttingDown) {
     try {
       const res = await fetch(`${serverBase}/api/event`, {
@@ -235,6 +397,8 @@ async function runEventStream() {
       if (!res.ok || !res.body) throw new Error(`GET /api/event -> ${res.status}`);
       markEventStreamReady();
       debug('event stream connected');
+      if (connectedOnce) void reconcilePendingPrompts();
+      connectedOnce = true;
       const reader = res.body.getReader();
       const decoder = new TextDecoder();
       let buffer = '';
@@ -348,6 +512,51 @@ function finishPrompt(sessionId, result, error) {
   else sendResult(pending.requestId, result);
 }
 
+function finishFromTerminalEvent(type, sessionId, data) {
+  if (!pendingPrompts.has(sessionId)) return;
+  if (type === 'session.execution.succeeded') {
+    const wasCancelled = cancelledSessions.has(sessionId);
+    cancelledSessions.delete(sessionId);
+    finishPrompt(sessionId, { stopReason: wasCancelled ? 'cancelled' : 'end_turn' });
+    return;
+  }
+  const message =
+    data?.error?.message || data?.message || data?.error?.name || 'session execution failed';
+  cancelledSessions.delete(sessionId);
+  finishPrompt(sessionId, null, `serve session error: ${message}`);
+}
+
+// A terminal event arriving while a stale-event fence is armed may
+// belong to the prompt reconciliation already finished, not to the
+// prompt now pending on the session. The two carry identical payloads
+// (session id only), so arbitrate with the active set: a session that
+// is active again is running the newer prompt, so the event is the
+// stale one and is dropped; a session no longer active has no newer
+// execution the event could be stealing from, so the event is the
+// newer prompt's own and finishes it. If the active set cannot be
+// read, fall back to the pre-fence behaviour (finish) rather than
+// hanging the prompt on a failed probe.
+async function resolveTerminalEvent(type, sessionId, data) {
+  if (!consumeStaleTerminalFence(sessionId)) {
+    finishFromTerminalEvent(type, sessionId, data);
+    return;
+  }
+  if (!pendingPrompts.has(sessionId)) return; // stale event; nobody to finish
+  let activeIds = null;
+  try {
+    activeIds = await fetchActiveSessionIds();
+  } catch (err) {
+    debug(`stale-event fence: GET /api/session/active failed: ${err.message}`);
+  }
+  if (activeIds && activeIds.has(sessionId)) {
+    debug(
+      `stale-event fence: dropped late ${type} for session ${sessionId} (session active again)`,
+    );
+    return;
+  }
+  finishFromTerminalEvent(type, sessionId, data);
+}
+
 function handleServeEvent(event) {
   const { type, data } = event;
   const sessionId = eventSessionId(data || {});
@@ -366,21 +575,9 @@ function handleServeEvent(event) {
       void handlePermissionAsked(data || {});
       break;
     case 'session.execution.succeeded':
-      if (sessionId && pendingPrompts.has(sessionId)) {
-        const wasCancelled = cancelledSessions.has(sessionId);
-        cancelledSessions.delete(sessionId);
-        finishPrompt(sessionId, { stopReason: wasCancelled ? 'cancelled' : 'end_turn' });
-      }
+    case 'session.execution.failed':
+      if (sessionId) void resolveTerminalEvent(type, sessionId, data);
       break;
-    case 'session.execution.failed': {
-      if (sessionId && pendingPrompts.has(sessionId)) {
-        const message =
-          data?.error?.message || data?.message || data?.error?.name || 'session execution failed';
-        cancelledSessions.delete(sessionId);
-        finishPrompt(sessionId, null, `serve session error: ${message}`);
-      }
-      break;
-    }
     default:
       break;
   }
@@ -472,8 +669,12 @@ const handlers = {
     const body = acpBlocksToPromptBody(params.prompt);
     // Register before posting so fast events are not missed; the reply is
     // sent by finishPrompt when the serve reports
-    // session.execution.succeeded / .failed.
-    pendingPrompts.set(sessionId, { requestId });
+    // session.execution.succeeded / .failed. `submitted` flips only
+    // after the serve accepts the prompt, so a reconnect
+    // reconciliation racing the in-flight POST knows this entry
+    // has no server-side state to reconcile yet and leaves it alone.
+    const pending = { requestId, submitted: false };
+    pendingPrompts.set(sessionId, pending);
     try {
       await serveJson(`/api/session/${sessionId}/prompt`, {
         method: 'POST',
@@ -484,6 +685,7 @@ const handlers = {
       cancelledSessions.delete(sessionId);
       throw err;
     }
+    pending.submitted = true;
     return undefined; // response deferred to finishPrompt
   },
 

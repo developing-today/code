@@ -12,6 +12,15 @@
 //! chunk 6 (local-only) is nearly as close — both must be absent
 //! at the default ceiling (filter-before-rank), and chunk 5 must
 //! surface at vector rank 1 under a secret-bearing ceiling.
+//!
+//! Intentional deviation (code#5375, Gate B / code#5356): the Python
+//! builds topics/projects filters as unescaped `LIKE ?` patterns, so
+//! `%`/`_` act as wildcards and a `"` crosses JSON element boundaries.
+//! atlas-core appends ` ESCAPE '\'` to those clauses and escapes the
+//! pattern. For ordinary values (the recorded cases) the params are
+//! identical; only the SQL text differs by that suffix, which
+//! `assert_stmts_eq` normalizes away. The Python is deliberately left
+//! unchanged (out of scope of #5375) and carries the same bug.
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -67,6 +76,74 @@ fn build_fixture_db(tag: &str) -> PathBuf {
     }
     drop(con);
     db
+}
+
+/// Build the isolated DNS-source fixture for code#2469. Its toy vector
+/// proves the local vector-search path returns the named source chunk;
+/// it is not production embedding or corpus-ingestion evidence.
+fn build_dns_fixture_db() -> (PathBuf, Json) {
+    let dir = std::env::temp_dir().join(format!("atlas-core-dns-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).expect("create temp dir");
+    let db = dir.join("dns-fixture.db");
+    let _ = std::fs::remove_file(&db);
+    let sql = std::fs::read_to_string(fixtures_dir().join("dns-search-corpus.sql"))
+        .expect("read DNS corpus SQL");
+    let spec: Json = serde_json::from_str(
+        &std::fs::read_to_string(fixtures_dir().join("dns-search-spec.json"))
+            .expect("read DNS search spec"),
+    )
+    .expect("parse DNS search spec");
+    let con = rusqlite::Connection::open(&db).expect("open DNS fixture DB");
+    con.execute_batch(&sql).expect("load DNS corpus SQL");
+    for (cid, vec) in spec["vectors"].as_object().expect("spec vectors") {
+        let mut blob = Vec::new();
+        for x in vec.as_array().expect("vector array") {
+            blob.extend_from_slice(&(x.as_f64().expect("vector value") as f32).to_le_bytes());
+        }
+        con.execute(
+            "INSERT INTO vec_snowflake_m_v2_768_f32 (chunk_id, vec) VALUES (?, ?)",
+            rusqlite::params![cid.parse::<i64>().expect("chunk id"), blob],
+        )
+        .expect("insert DNS vector");
+    }
+    drop(con);
+    (db, spec)
+}
+
+#[test]
+fn dns_config_source_is_retrievable_by_vector_search_fixture() {
+    let (db, spec) = build_dns_fixture_db();
+    let be = LocalBackend::new(db.to_str().unwrap(), None, DEFAULT_VEC_TABLE, 0)
+        .expect("DNS fixture backend");
+    let query_vector: Vec<f32> = spec["query_vector"]
+        .as_array()
+        .expect("query vector")
+        .iter()
+        .map(|x| x.as_f64().expect("query vector value") as f32)
+        .collect();
+    let query = spec["query"].as_str().expect("query text");
+    let mut options = SearchOptions::new(query);
+    options.mode = SearchMode::Vector;
+    options.k = 1;
+    let got = run_search(
+        &be,
+        &FixedEmbedder { raw: query_vector },
+        &default_filters(),
+        &options,
+    )
+    .expect("DNS vector search");
+    let first = &got["results"][0];
+    assert_eq!(
+        first["session"]["title"], spec["expected_source"],
+        "query should retrieve the named DNS source"
+    );
+    assert!(
+        first["text"]
+            .as_str()
+            .expect("result text")
+            .contains(spec["expected_record"].as_str().expect("record text")),
+        "retrieved source should contain the known DNS record"
+    );
 }
 
 fn filters(
@@ -248,7 +325,8 @@ fn assert_stmts_eq(got: &[Stmt], recorded: &Json, ctx: &str) {
     let recorded = recorded.as_array().unwrap();
     assert_eq!(got.len(), recorded.len(), "{ctx}: statement count");
     for (i, (g, r)) in got.iter().zip(recorded.iter()).enumerate() {
-        assert_eq!(g.sql, r["sql"].as_str().unwrap(), "{ctx}: stmt {i} sql");
+        let sql = g.sql.replace(" LIKE ? ESCAPE '\\'", " LIKE ?");
+        assert_eq!(sql, r["sql"].as_str().unwrap(), "{ctx}: stmt {i} sql");
         assert_eq!(
             g.args,
             json_params_to_values(&r["params"]),

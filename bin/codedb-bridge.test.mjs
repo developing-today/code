@@ -8,7 +8,14 @@ import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
 import { fileURLToPath, pathToFileURL } from 'node:url';
-import { CODEDB_TOOLS, createHandler, parseDaemonUrl, routeForTool } from './codedb-bridge.mjs';
+import {
+  CODEDB_TOOLS,
+  createHandler,
+  DEFAULT_DAEMON_FETCH_TIMEOUT_MS,
+  parseDaemonFetchTimeoutMs,
+  parseDaemonUrl,
+  routeForTool,
+} from './codedb-bridge.mjs';
 
 const binDir = path.dirname(fileURLToPath(import.meta.url));
 
@@ -27,6 +34,47 @@ test('daemon URL rejects query, fragment and userinfo by name instead of silentl
   assert.throws(() => parseDaemonUrl('http://127.0.0.1:7719/#frag'), /CODEDB_DAEMON_URL.*fragment/);
   assert.throws(() => parseDaemonUrl('http://user:pass@127.0.0.1:7719/'), /CODEDB_DAEMON_URL.*userinfo/);
   assert.throws(() => parseDaemonUrl('http://user@127.0.0.1:7719'), /CODEDB_DAEMON_URL.*userinfo/);
+});
+
+test('daemon URL errors never echo credentials, query values or fragment values (#9829)', () => {
+  const messageOf = (fn) => {
+    try {
+      fn();
+    } catch (err) {
+      return err.message;
+    }
+    throw new Error('expected parseDaemonUrl to throw');
+  };
+  // userinfo branch: neither the username nor the password may appear
+  // (distinctive sentinels -- the word userinfo itself contains user).
+  const userinfo = messageOf(() => parseDaemonUrl('http://svcacct:hunterpass@127.0.0.1:7719/'));
+  assert.match(userinfo, /CODEDB_DAEMON_URL.*userinfo/);
+  assert.ok(!userinfo.includes('hunterpass'), userinfo);
+  assert.ok(!userinfo.includes('svcacct'), userinfo);
+  const userinfoPass = messageOf(() => parseDaemonUrl('http://user:pass@127.0.0.1:7719/'));
+  assert.ok(!userinfoPass.includes('pass'), userinfoPass);
+  // query branch: the token value may not appear.
+  const query = messageOf(() => parseDaemonUrl('http://127.0.0.1:7719/?token=secret'));
+  assert.match(query, /CODEDB_DAEMON_URL.*query/);
+  assert.ok(!query.includes('secret'), query);
+  // fragment branch: the fragment value may not appear.
+  const fragment = messageOf(() => parseDaemonUrl('http://127.0.0.1:7719/#secretfrag'));
+  assert.match(fragment, /CODEDB_DAEMON_URL.*fragment/);
+  assert.ok(!fragment.includes('secretfrag'), fragment);
+  // the pre-existing branches are covered too: a credentialed value that
+  // fails URL parsing or the origin check must not be echoed either.
+  const invalid = messageOf(() => parseDaemonUrl('http://user:pass@127.0.0.1:bad/'));
+  assert.ok(!invalid.includes('pass'), invalid);
+  const nonOrigin = messageOf(() => parseDaemonUrl('https://user:pass@127.0.0.1:7719'));
+  assert.ok(!nonOrigin.includes('pass'), nonOrigin);
+});
+
+test('daemon fetch timeout defaults to a named deadline and accepts a positive integer override', () => {
+  assert.equal(DEFAULT_DAEMON_FETCH_TIMEOUT_MS, 10_000);
+  assert.equal(parseDaemonFetchTimeoutMs(undefined), DEFAULT_DAEMON_FETCH_TIMEOUT_MS);
+  assert.equal(parseDaemonFetchTimeoutMs('250'), 250);
+  assert.throws(() => parseDaemonFetchTimeoutMs('0'), /positive integer/);
+  assert.throws(() => parseDaemonFetchTimeoutMs('nope'), /positive integer/);
 });
 
 test('every advertised tool maps to a verified daemon route', () => {
@@ -130,6 +178,45 @@ test('tools/call forwards to the daemon and returns its payload', async () => {
   assert.deepEqual(JSON.parse(hot.result.content[0].text).files, ['a']);
 });
 
+test('arguments in no tool schema are rejected by name, never silently dropped (#4216)', () => {
+  const neverNamed = {
+    codedb_tree: { bogus_tree_opt: 1 },
+    codedb_outline: { path: 'x', bogus_outline_opt: 1 },
+    codedb_symbol: { name: 'x', bogus_symbol_opt: 1 },
+    codedb_search: { query: 'x', bogus_search_opt: 1 },
+    codedb_word: { word: 'x', bogus_word_opt: 1 },
+    codedb_hot: { bogus_hot_opt: 1 },
+    codedb_deps: { path: 'x', bogus_deps_opt: 1 },
+  };
+  for (const t of CODEDB_TOOLS) {
+    const key = Object.keys(neverNamed[t.name]).find((k) => k.startsWith('bogus_'));
+    assert.throws(() => routeForTool(t.name, neverNamed[t.name]), new RegExp(`"${key}"`));
+  }
+  // The typo case from the issue: max_result (no s) is not max_results.
+  assert.throws(() => routeForTool('codedb_search', { query: 'x', max_result: 2 }), /"max_result"/);
+});
+
+test('a typoed max_result surfaces as an MCP error naming the argument, not the full result set (#4216)', async () => {
+  const handle = createHandler({
+    fetchFn: stubFetch({
+      '/explore/search?q=x': {
+        query: 'x',
+        results: [
+          { path: 'a.rs', line: 1, text: 'a' },
+          { path: 'b.rs', line: 2, text: 'b' },
+          { path: 'c.rs', line: 3, text: 'c' },
+          { path: 'd.rs', line: 4, text: 'd' },
+          { path: 'e.rs', line: 5, text: 'e' },
+        ],
+      },
+    }),
+    daemonUrl: 'http://127.0.0.1:7719',
+  });
+  const typo = await call(handle, 'codedb_search', { query: 'x', max_result: 2 });
+  assert.equal(typo.result.isError, true);
+  assert.match(typo.result.content[0].text, /"max_result"/);
+});
+
 test('a slow daemon call does not head-of-line block a later ping (PR #4171 Codex P2)', async () => {
   const daemon = http.createServer((req, res) => {
     const respond = () => {
@@ -167,6 +254,51 @@ test('a slow daemon call does not head-of-line block a later ping (PR #4171 Code
   } finally {
     child.stdin.end();
     child.kill();
+    daemon.close();
+  }
+});
+
+test('a never-resolving daemon fetch returns a timeout MCP error naming URL, route and deadline', async () => {
+  const timeoutMs = 25;
+  const daemonUrl = 'http://127.0.0.1:7719';
+  const handle = createHandler({ fetchFn: () => new Promise(() => {}), daemonUrl, timeoutMs });
+  const response = await call(handle, 'codedb_tree', {});
+  assert.equal(response.result.isError, true);
+  assert.match(response.result.content[0].text, /timed out after 25ms/);
+  assert.match(response.result.content[0].text, /http:\/\/127\.0\.0\.1:7719\/explore\/tree/);
+});
+
+test('bridge exits after stdin closes while a hanging daemon call times out', async () => {
+  const daemon = http.createServer(() => {});
+  await new Promise((resolve) => daemon.listen(0, '127.0.0.1', resolve));
+  const daemonUrl = `http://127.0.0.1:${daemon.address().port}`;
+  const child = spawn(process.execPath, [path.join(binDir, 'codedb-bridge.mjs')], {
+    env: { ...process.env, CODEDB_DAEMON_URL: daemonUrl, CODEDB_DAEMON_TIMEOUT_MS: '50' },
+    stdio: ['pipe', 'pipe', 'inherit'],
+  });
+  try {
+    let received = '';
+    child.stdout.on('data', (chunk) => {
+      received += chunk;
+    });
+    const exited = new Promise((resolve, reject) => {
+      const timer = setTimeout(() => reject(new Error('bridge did not exit after its daemon timeout')), 2_000);
+      child.once('exit', (code) => {
+        clearTimeout(timer);
+        resolve(code);
+      });
+    });
+    child.stdin.write(`${JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name: 'codedb_tree', arguments: {} } })}\n`);
+    child.stdin.end();
+    assert.equal(await exited, 0);
+    const response = JSON.parse(received.trim());
+    assert.equal(response.id, 1);
+    assert.equal(response.result.isError, true);
+    assert.match(response.result.content[0].text, /timed out after 50ms/);
+    assert.match(response.result.content[0].text, /\/explore\/tree/);
+  } finally {
+    child.kill();
+    daemon.closeAllConnections();
     daemon.close();
   }
 });

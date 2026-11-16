@@ -8,6 +8,23 @@ embedded singly and in one fixed mixed batch. Provenance (model
 revision, file hashes, runtime version, thread counts, padding and
 pooling semantics) is recorded inside the JSON itself.
 
+## DNS source retrieval fixture (code#2469)
+
+`dns-search-corpus.sql` and `dns-search-spec.json` are a small,
+isolated synthetic fixture for the `atlas-core` vector-search path.
+`dns_config_source_is_retrievable_by_vector_search_fixture` proves
+that a DNS-record query returns a result titled
+`infra/dns/dns_config.yaml` containing the known MX record. Its fixed
+toy vectors exercise retrieval plumbing only; they are **not** a
+production embedding-quality or production-corpus claim.
+
+The production Atlas corpus is maintained outside this repository by
+the local corpus pipeline. First-pass ingestion of code-repository
+documents is tracked separately by code#6025; that work remains gated
+on its corpus-ingestion prerequisites. Do not add this source to the
+personal conversation corpus or claim production ingestion from this
+fixture alone.
+
 Bit-identity is a **version-matched** claim (code#6663): the gate
 must load the ONNX Runtime version named in the provenance
 (1.31.1, the atlas venv build). A different runtime — e.g. the nix
@@ -46,3 +63,15 @@ text into this repo. The generator re-derives the text from
 corpus.db on every run. The synthetic probes (the opencode#1554
 spike texts, an empty string, a query-shaped sentence) carry their
 text inline.
+
+## Intentional parity deviation: topics/projects LIKE escaping (code#5375)
+
+`core-expectations.json` records the production Python's topics/projects
+filter as `l.topics LIKE ?` with param `%"<value>"%`. atlas-core
+(`Filters::where_clause` / `Filters::session_clauses`) deliberately
+deviates for Gate B (code#5356): the clause is `LIKE ? ESCAPE '\'` and the
+pattern escapes `%`, `_`, `\` and the JSON-encoded form of `"`, so a value
+matches only a JSON element exactly equal to it. For ordinary values the
+params are identical to the recorded ones; `tests/parity.rs` normalizes the
+`ESCAPE` suffix before comparing SQL text. The Python `Filters` is
+unchanged and has the same wildcard bug; fixing it is a separate follow-up.

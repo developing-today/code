@@ -331,21 +331,23 @@ fn interval_verdicts(
                 }
             }
             if state != VerdictState::Violated {
-                let last = *anchors.last().expect("anchors is not empty");
-                if end <= now {
-                    let gap = end - last;
-                    if gap > max_seconds {
-                        state = VerdictState::Violated;
-                        detail = format!("{gap}s from the last record to the span's end");
-                    }
-                } else {
-                    let gap = now - last;
-                    if gap > max_seconds {
-                        state = VerdictState::Overdue;
-                        detail = format!("{gap}s since the last record, the max is {max_seconds}s");
-                    } else if gap >= min_seconds {
-                        state = VerdictState::Due;
-                        detail = format!("{gap}s since the last record");
+                if let Some(&last) = anchors.last() {
+                    if end <= now {
+                        let gap = end - last;
+                        if gap > max_seconds {
+                            state = VerdictState::Violated;
+                            detail = format!("{gap}s from the last record to the span's end");
+                        }
+                    } else {
+                        let gap = now - last;
+                        if gap > max_seconds {
+                            state = VerdictState::Overdue;
+                            detail =
+                                format!("{gap}s since the last record, the max is {max_seconds}s");
+                        } else if gap >= min_seconds {
+                            state = VerdictState::Due;
+                            detail = format!("{gap}s since the last record");
+                        }
                     }
                 }
             }
@@ -391,10 +393,30 @@ fn count_periods(tz: Tz, window: &Window, now: i64) -> Result<((i64, i64), (i64,
         }
         Period::Week => {
             let today = local_date(now, tz)?;
-            let monday = today - Duration::days(i64::from(today.weekday().num_days_from_monday()));
+            // Checked arithmetic (#7771): the plain `-`/`+` operators on
+            // NaiveDate panic at the calendar boundary (chrono implements
+            // them via expect), where the Day branch above answers
+            // OutOfRange via succ_opt/pred_opt. A week whose Monday, end,
+            // or previous start the calendar cannot represent is
+            // OutOfRange, the same ruling as Day.
+            let monday = today
+                .checked_sub_signed(Duration::days(i64::from(
+                    today.weekday().num_days_from_monday(),
+                )))
+                .ok_or(EvalError::OutOfRange)?;
             let start = midnight(tz, monday)?;
-            let end = midnight(tz, monday + Duration::days(7))?;
-            let previous_start = midnight(tz, monday - Duration::days(7))?;
+            let end = midnight(
+                tz,
+                monday
+                    .checked_add_signed(Duration::days(7))
+                    .ok_or(EvalError::OutOfRange)?,
+            )?;
+            let previous_start = midnight(
+                tz,
+                monday
+                    .checked_sub_signed(Duration::days(7))
+                    .ok_or(EvalError::OutOfRange)?,
+            )?;
             Ok(((start, end), (previous_start, start)))
         }
         Period::Custom(custom) => {
@@ -402,10 +424,24 @@ fn count_periods(tz: Tz, window: &Window, now: i64) -> Result<((i64, i64), (i64,
             if length <= 0 {
                 return Err(EvalError::OutOfRange);
             }
-            let index = (now - custom.anchor).div_euclid(length);
-            let start = custom.anchor + index * length;
-            let end = start + length;
-            Ok(((start, end), (start - length, start)))
+            // Checked arithmetic (#7766): the anchor is any i64 a body
+            // can carry (Period::check rejects only a zero length), so
+            // the plain operators overflow — a panic in debug builds,
+            // a silently wrapped (wrong or end-before-start) window in
+            // release. An unrepresentable window is OutOfRange, the
+            // same ruling the Day branch gets from the calendar (the
+            // Week branch uses checked arithmetic since #7771).
+            let index = now
+                .checked_sub(custom.anchor)
+                .ok_or(EvalError::OutOfRange)?
+                .div_euclid(length);
+            let start = custom
+                .anchor
+                .checked_add(index.checked_mul(length).ok_or(EvalError::OutOfRange)?)
+                .ok_or(EvalError::OutOfRange)?;
+            let end = start.checked_add(length).ok_or(EvalError::OutOfRange)?;
+            let previous_start = start.checked_sub(length).ok_or(EvalError::OutOfRange)?;
+            Ok(((start, end), (previous_start, start)))
         }
     }
 }
@@ -547,9 +583,13 @@ fn resolve_local(tz: Tz, naive: NaiveDateTime) -> i64 {
     if let Some(datetime) = tz.from_local_datetime(&naive).earliest() {
         return datetime.timestamp();
     }
-    let shifted = naive + Duration::hours(1);
-    if let Some(datetime) = tz.from_local_datetime(&shifted).earliest() {
-        return datetime.timestamp();
+    // Checked (#7771): `+` on NaiveDateTime panics at the top of the
+    // representable range; an unrepresentable shift falls through to
+    // the UTC interpretation below instead.
+    if let Some(shifted) = naive.checked_add_signed(Duration::hours(1)) {
+        if let Some(datetime) = tz.from_local_datetime(&shifted).earliest() {
+            return datetime.timestamp();
+        }
     }
     tz.from_utc_datetime(&naive).timestamp()
 }

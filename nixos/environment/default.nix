@@ -180,12 +180,12 @@ let
           nspr
           nss
           udev
-          xorg.libX11
-          xorg.libXcursor
-          xorg.libXext
-          xorg.libXi
-          xorg.libXrandr
-          xorg.libXrender
+          libx11
+          libxcursor
+          libxext
+          libxi
+          libxrandr
+          libxrender
           zlib
         ];
       runScript = "${squareline-run}/bin/squareline-run";
@@ -444,6 +444,11 @@ let
 in
 {
   nixpkgs.overlays = [
+    # antigravity-cli (agy) from the auto-tracking flake (flake.nix
+    # input antigravity-cli-nix): newest upstream (1.5.9 as of
+    # 2026-11-16) in place of the fleet nixpkgs pin's 1.4.8. Drew's
+    # order: agy tracks the newest Google release, not the pin.
+    inputs.antigravity-cli-nix.overlays.default
     # zulip-term: 4 tests fail on nixpkgs master 2026-08-21 (upstream test breakage)
     (final: prev: {
       zulip-term = prev.zulip-term.overridePythonAttrs (_: {
@@ -462,11 +467,11 @@ in
         doCheck = false;
       });
     })
-    # cargo-llvm-cov 0.9.0 (code#5275): its integration tests emit profraw
-    # that the pinned llvm-22.1.8 llvm-profdata refuses to merge
-    # ("no profile can be merged") -- package-vs-LLVM drift at the
-    # current nixpkgs pin, same class as zulip-term/mise above.
-    # Package stays in the system; only its check phase is skipped.
+    # cargo-llvm-cov 0.9.0: its integration tests spawn LLVM-instrumented
+    # test binaries that SIGSEGV under the pinned Rust 1.99 toolchain in
+    # the sandbox (14 tests fail, verified 2026-11-14 against the drv
+    # log); the tool itself builds and runs — the failing suite is
+    # upstreams, not the fleets.
     (final: prev: {
       cargo-llvm-cov = prev.cargo-llvm-cov.overrideAttrs (_: {
         doCheck = false;

@@ -12,8 +12,9 @@
 # break the contract.
 #
 # server.rs is held the same way: the service must behave identically
-# whether it runs as `atlas-search serve` or `fleet serve search`, so
-# its two copies differ only in their own pinned header.
+# whether it runs as `atlas-search serve` or `fleet serve search`. The
+# only intentional body difference is the binary name in the HOME error
+# (#5640); the guard pins and normalizes exactly that diagnostic.
 #
 # Rule: after removing each file's parity header -- the four `//!`
 # lines at lines 2-5, directly after the shared first line -- the two
@@ -53,10 +54,35 @@ FLEET_HEADER_SERVER='//! Rehomed verbatim from pkgs/atlas-search'\''s bin crate 
 //! under either name, so mirror every change in both copies.
 //! Drift guard: .github/scripts/check-fleet-search-parity.sh.'
 
+ATLAS_HEADER_FEEDBACK='//! Source of the verbatim copy in pkgs/fleet'\''s fleet-search crate,
+//! split from server.rs in #10446 to satisfy the production-line
+//! limit: mirror every change there. Drift guard:
+//! .github/scripts/check-fleet-search-parity.sh.'
+
+FLEET_HEADER_FEEDBACK='//! Rehomed verbatim copy of pkgs/atlas-search'\''s server_feedback.rs,
+//! split from server.rs in #10446 to satisfy the production-line
+//! limit: mirror every change in both copies. Drift guard:
+//! .github/scripts/check-fleet-search-parity.sh.'
+
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
 
 fail=0
+
+normalize_server_home_error() { # <file> <binary-name>
+  local file="$1" binary="$2"
+  local expected="HOME is not set or is empty: $binary requires a non-empty HOME to resolve its state/config paths (issue #5640)"
+  local normalized="HOME is not set or is empty: search service requires a non-empty HOME to resolve its state/config paths (issue #5640)"
+  local count
+  # -o counts every occurrence, including two occurrences on one line.
+  count="$(grep -F -o "$expected" "$file" | wc -l || true)"
+  count="${count//[[:space:]]/}"
+  if [ "$count" != "1" ]; then
+    echo "::error::check-fleet-search-parity: expected exactly one #5640 HOME diagnostic for $binary in $file (found $count)"
+    return 1
+  fi
+  sed -i "s|$expected|$normalized|" "$file"
+}
 
 # check_pair <name> <atlas-header> <fleet-header> : compare
 # $ATLAS_DIR/<name> with $FLEET_DIR/<name>.
@@ -86,8 +112,15 @@ check_pair() {
   fi
 
   # Everything except the parity header (line 1 + lines 6+) must match.
+  mkdir -p "$(dirname "$TMP/$name")"
   sed '2,5d' "$atlas" >"$TMP/$name.atlas"
   sed '2,5d' "$fleet" >"$TMP/$name.fleet"
+  if [ "$name" = "server.rs" ]; then
+    # #5640 intentionally names the binary in its HOME diagnostic. Pin
+    # each exact variant above, then compare the rest of the service.
+    normalize_server_home_error "$TMP/$name.atlas" atlas-search || return 1
+    normalize_server_home_error "$TMP/$name.fleet" fleet-search || return 1
+  fi
   if ! diff -u "$TMP/$name.atlas" "$TMP/$name.fleet" >"$TMP/$name.diff"; then
     echo "::error::check-fleet-search-parity: $name diverged between atlas-search and fleet-search beyond the parity header -- the #5433/#5604 byte-parity contract is broken; mirror the change in both copies (#5920)"
     cat "$TMP/$name.diff"
@@ -98,8 +131,9 @@ check_pair() {
 check_pair pyjson.rs "$ATLAS_HEADER_WRITERS" "$FLEET_HEADER_WRITERS"
 check_pair render.rs "$ATLAS_HEADER_WRITERS" "$FLEET_HEADER_WRITERS"
 check_pair server.rs "$ATLAS_HEADER_SERVER" "$FLEET_HEADER_SERVER"
+check_pair server/server_feedback.rs "$ATLAS_HEADER_FEEDBACK" "$FLEET_HEADER_FEEDBACK"
 
 if [ "$fail" -ne 0 ]; then
   exit 1
 fi
-echo "fleet-search parity: OK - pyjson.rs, render.rs and server.rs match atlas-search byte-for-byte outside the pinned parity headers (#5433 contract, guard #5920)"
+echo "fleet-search parity: OK - pyjson.rs, render.rs, server.rs and server/server_feedback.rs match atlas-search byte-for-byte outside the pinned parity headers (#5433 contract, guard #5920)"

@@ -49,9 +49,45 @@ export function computeRecommendations<
   empty: string | null;
 };
 export function normName(value: unknown): string;
+export function baselineRatios<
+  T extends { key: string; score?: number | null; cost?: number | null; time?: number | null },
+>(
+  rows: T[],
+  baselineKeys: string[],
+): Record<
+  string,
+  {
+    scorePerCost: number | null;
+    scorePerSpeed: number | null;
+    vs: Record<string, { scorePerCost: number | null; scorePerSpeed: number | null }>;
+  }
+>;
+export function sortRows<T extends { key: string }>(
+  rows: T[],
+  key: string | ((row: T) => number | string | null | undefined) | null,
+  dir: "asc" | "desc",
+): T[];
+export function applyDominanceFilters<
+  T extends { key: string; score?: number | null; cost?: number | null; time?: number | null },
+>(rows: T[], opts: { dominated?: boolean; slower?: boolean; dumber?: boolean; pricier?: boolean }): T[];
+export function unpricedScoredPoints<
+  T extends { score?: number | null; cost?: number | null; family?: string; effort?: string | null },
+>(points: T[]): T[];
 export function projectTask(
   model: any,
   settings: Record<string, number | string>,
   aaPoints: any[],
   caiPoints: any[],
 ): { cost: number | null; time: number | null; band: any };
+
+export interface ChartViewState {
+  base: number[];
+  cur: number[] | null;
+}
+export function parseChartViewBox(s: string | null | undefined): number[] | null;
+export function effectiveChartView(st: ChartViewState): number[];
+export function clampChartView(st: ChartViewState): void;
+export function zoomChartView(st: ChartViewState, factor: number, fx: number | null, fy: number | null): void;
+export function panChartView(st: ChartViewState, dx: number, dy: number, width: number, height: number): boolean;
+export function resetChartView(st: ChartViewState): void;
+export function chartClickSuppressed(rawStamp: string | number | null | undefined, now: number): boolean;

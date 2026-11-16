@@ -191,7 +191,6 @@ class JanitorTests(unittest.TestCase):
         self.assertTrue(path.exists())
         self.assertIn('"event": "plan"', log.read_text())
 
-
     def test_owner_changed_when_worktree_switched_branch(self):
         target = self.make_target("task-43/pkgs/id/target")
         recorded = janitor.Target(target.resolve(), 10, 0, "queue/42-old", 42)
@@ -235,7 +234,9 @@ class StubQueueModule:
         if "id=in." in query:
             ids = {
                 int(x)
-                for x in re.search(r"id=in\.\%28([0-9,]+)\%29", query).group(1).split(",")
+                for x in re.search(r"id=in\.\%28([0-9,]+)\%29", query)
+                .group(1)
+                .split(",")
             }
             return [r for r in self.rows if r["id"] in ids][:limit]
         if "id=gt." in query:
@@ -250,6 +251,17 @@ class StubQueueModule:
         if self.always_full:
             return self.rows[:limit]
         return self.rows[offset : offset + limit]
+
+
+class RawQueueModule:
+    """Queue-module stub returning one fixed page verbatim, so tests
+    can feed the readers shapes StubQueueModule cannot express."""
+
+    def __init__(self, page):
+        self.page = page
+
+    def http(self, method, query, key):
+        return self.page
 
 
 class JanitorPaginationTests(unittest.TestCase):
@@ -294,6 +306,76 @@ class JanitorPaginationTests(unittest.TestCase):
         with self.assertRaises(janitor.SafetyError):
             janitor.queue_claims((stub, "key"))
 
+    def test_queue_claims_malformed_shapes_raise_safety_error(self):
+        """#6844: a malformed broker page/row must surface as a
+        SafetyError naming queue_claims, never a raw shape error --
+        a raw error kills the janitor with no refused run record."""
+        pages = [
+            {"error": "boom"},  # error-dict page
+            ["not-a-row"],  # string row
+            [
+                {
+                    "queue": janitor.QUEUE,
+                    "status": "claimed",
+                    "payload": {"repo": janitor.REPO},
+                }
+            ],  # missing row id
+            [
+                {
+                    "id": "zz",
+                    "queue": janitor.QUEUE,
+                    "status": "claimed",
+                    "payload": {"repo": janitor.REPO},
+                }
+            ],  # non-int id
+            [
+                {
+                    "id": {"n": 1},
+                    "queue": janitor.QUEUE,
+                    "status": "claimed",
+                    "payload": {"repo": janitor.REPO},
+                }
+            ],  # dict id
+            [
+                {
+                    "id": 1,
+                    "queue": janitor.QUEUE,
+                    "status": "claimed",
+                    "payload": "not-an-object",
+                }
+            ],  # string payload
+        ]
+        for page in pages:
+            with self.subTest(page=page):
+                with self.assertRaises(janitor.SafetyError) as caught:
+                    janitor.queue_claims((RawQueueModule(page), "key"))
+                self.assertIn("queue_claims", str(caught.exception))
+
+    def test_queue_task_states_malformed_shapes_raise_safety_error(self):
+        """#6844: same shape discipline for queue_task_states."""
+        pages = [
+            {"error": "boom"},  # error-dict page
+            ["not-a-row"],  # string row
+            [{"status": "claimed"}],  # missing row id
+            [{"id": "zz", "status": "claimed"}],  # non-int id
+            [{"id": 1}],  # missing status
+            [{"id": 1, "status": {"s": "claimed"}}],  # dict status
+        ]
+        for page in pages:
+            with self.subTest(page=page):
+                with self.assertRaises(janitor.SafetyError) as caught:
+                    janitor.queue_task_states((RawQueueModule(page), "key"), {1})
+                self.assertIn("queue_task_states", str(caught.exception))
+
+    def test_queue_readers_well_formed_controls_unchanged(self):
+        """#6844 control: well-formed rows return exactly what the
+        unguarded readers returned."""
+        stub = StubQueueModule([claimed_row(i) for i in range(1, 6)])
+        self.assertEqual(janitor.queue_claims((stub, "key")), {1, 2, 3, 4, 5})
+        rows = [{"id": i, "status": "claimed"} for i in range(1, 4)]
+        got = janitor.queue_task_states((RawQueueModule(rows), "key"), {1, 2, 3})
+        self.assertEqual(got, {1: "claimed", 2: "claimed", 3: "claimed"})
+
     def fake_gh(self, total, always_full=False):
         calls = []
 
@@ -333,8 +415,7 @@ class JanitorPaginationTests(unittest.TestCase):
 
     def test_queue_task_states_chunks_beyond_1000_ids(self):
         rows = [
-            {"id": i, "status": "claimed" if i % 2 else "done"}
-            for i in range(1, 1201)
+            {"id": i, "status": "claimed" if i % 2 else "done"} for i in range(1, 1201)
         ]
         stub = StubQueueModule(rows)
         got = janitor.queue_task_states((stub, "key"), set(range(1, 1201)))
@@ -393,6 +474,28 @@ class JanitorFallbackSourceTests(unittest.TestCase):
             ]
         }
         self.assertEqual(janitor.parse_fallback_scan(scan), {1, 2})
+
+    def test_parse_fallback_scan_malformed_shapes_raise_safety_error(self):
+        """#6844: a malformed scan document must surface as a
+        SafetyError naming parse_fallback_scan, never a raw shape
+        error -- a raw error kills the janitor with no refused
+        run record (the #6812 invisible-death mode)."""
+        scans = [
+            [],  # list scan
+            {"items": {"number": 1}},  # dict items
+            {"items": ["not-an-item"]},  # string item
+            {"items": [{"number": 1, "claim": "live"}]},  # string claim
+            {"items": [{"claim": {"state": "live"}}]},  # missing number
+            {
+                "items": [{"number": {"n": 1}, "claim": {"state": "live"}}]
+            },  # dict number
+            {"items": [{"number": "zz", "claim": {"state": "live"}}]},  # non-int number
+        ]
+        for scan in scans:
+            with self.subTest(scan=scan):
+                with self.assertRaises(janitor.SafetyError) as caught:
+                    janitor.parse_fallback_scan(scan)
+                self.assertIn("parse_fallback_scan", str(caught.exception))
 
     def test_fallback_claimed_issue_protects_fb_worktree(self):
         target = self.make_target("fb-6757/pkgs/id/target")
@@ -499,7 +602,13 @@ class JanitorFallbackSourceTests(unittest.TestCase):
         os.utime(target_dir, (stamp, stamp))
         os.utime(probe / "target", (stamp, stamp))
         found = janitor.discover_targets(
-            self.root, {}, set(), {}, set(), [], time.time() - 48 * 3600,
+            self.root,
+            {},
+            set(),
+            {},
+            set(),
+            [],
+            time.time() - 48 * 3600,
         )
         self.assertEqual(len(found), 1)
         self.assertEqual(found[0].path, (probe / "target").resolve())
@@ -538,10 +647,14 @@ class JanitorFallbackSourceTests(unittest.TestCase):
         state_dir = Path(self.tmp.name) / "state"
         argv = [
             "janitor",
-            "--fleet-root", str(self.root),
-            "--primary", str(Path(self.tmp.name) / "not-a-repo"),
-            "--queue-helper", str(Path(self.tmp.name) / "nope.py"),
-            "--state-dir", str(state_dir),
+            "--fleet-root",
+            str(self.root),
+            "--primary",
+            str(Path(self.tmp.name) / "not-a-repo"),
+            "--queue-helper",
+            str(Path(self.tmp.name) / "nope.py"),
+            "--state-dir",
+            str(state_dir),
         ]
         with mock.patch.object(sys, "argv", argv):
             rc = janitor.main()
@@ -549,7 +662,6 @@ class JanitorFallbackSourceTests(unittest.TestCase):
         records = list((state_dir / "runs").glob("*.jsonl"))
         self.assertEqual(len(records), 1)
         self.assertIn('"event": "refused"', records[0].read_text())
-
 
 
 if __name__ == "__main__":

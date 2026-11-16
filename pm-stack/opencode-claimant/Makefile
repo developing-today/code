@@ -1,6 +1,6 @@
 # Makefile for OpenCode Claimant/Executor
 
-.PHONY: all install clean test-poll test-claimant shadow live shadow-mode test-requirements
+.PHONY: all install clean test-poll test-claimant shadow live shadow-mode test-requirements test test-harness
 
 all: claimant.py poll.py
 	chmod +x claimant.py poll.py
@@ -14,15 +14,14 @@ clean:
 	rm -f ~/.local/state/opencode-claimant/*.lock
 	@echo "Lock files cleaned"
 
-test-poll:
-	@echo "Testing poll.py functions..."
-	python3 poll.py --candidates
-	python3 poll.py --cap-only
-	python3 poll.py --stuck-bound
+# All test aliases are offline; none invokes an operator entry point.
+test-poll test-claimant test-requirements: test
 
-test-claimant:
-	@echo "Testing claimant execution..."
-	python3 claimant.py --dry-run
+test:
+	python3 -I run_hermetic_tests.py
+
+test-harness:
+	python3 -I test_harness_safety.py
 
 shadow:
 	@echo "Running in SHADOW mode..."
@@ -37,7 +36,3 @@ shadow-mode:
 	@echo "Setting mode to SHADOW..."
 	echo "shadow" > ~/.local/state/opencode-claimant/mode
 	@echo "Mode set to shadow"
-
-test-requirements:
-	@echo "Running requirements test suite..."
-	python3 -c "import sys; sys.path.insert(0, '.'); from claimant import QUEUES, poll; print('✅ Constants verified'); print(f'  QUEUES: {len(QUEUES)} queues'); print(f'  CONCURRENCY_CAP: {poll.CAP}')"

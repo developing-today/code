@@ -1,5 +1,16 @@
 #!/usr/bin/env bash
 set -euo pipefail
+
+usage() {
+  printf 'usage: %s\n' "$(basename "$0")" >&2
+}
+
+if [[ $# -ne 0 ]]; then
+  printf '%s: unexpected argument: %s\n' "$(basename "$0")" "$1" >&2
+  usage
+  exit 2
+fi
+
 # Anchor to this script's own tree: `just --dump` and the committed
 # just-recipes.json are only meaningful for the pkgs/id justfile, so
 # resolve them there regardless of the caller's CWD (the convention

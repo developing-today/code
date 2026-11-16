@@ -59,8 +59,8 @@ describe("titleRefs", () => {
       "developing-today/code#985",
     ]);
     expect(titleRefs("nix #889 queued; nix #848 bump task 1127 re-queued")).toEqual([
-      "dezren39/nix#889",
-      "dezren39/nix#848",
+      "dezren39/darwin-nix#889",
+      "dezren39/darwin-nix#848",
     ]);
     expect(titleRefs("Jules PR #927 for code #811 - still OPEN draft")).toEqual([
       "developing-today/code#927",
@@ -75,6 +75,14 @@ describe("titleRefs", () => {
     ]);
     expect(titleRefs("queue task 1116 revived, items 3/4/5 picked")).toEqual([]);
     expect(titleRefs("Daily morning readout")).toEqual([]);
+  });
+
+  test("prototype-spelling title tokens stay unlinked like unknown aliases", () => {
+    const unknown = titleRefs("unknown #3106");
+    for (const token of ["constructor", "__proto__", "toString", "hasOwnProperty", "valueOf"]) {
+      expect(titleRefs(`${token} #3106`)).toEqual(unknown);
+    }
+    expect(titleRefs("code #3106")).toEqual(["developing-today/code#3106"]);
   });
 
   test("does not re-attribute an explicit non-fleet ref as nearby shorthand", () => {
@@ -92,7 +100,7 @@ describe("titleRefs", () => {
     ).toEqual([
       "developing-today/opencode#927",
       "developing-today-forks/kaneo#42",
-      "dezren39/nix#889",
+      "dezren39/darwin-nix#889",
       "developing-today-forks/openchamber#492",
     ]);
   });
@@ -302,7 +310,7 @@ describe("inFlightBoardItems", () => {
     );
     const by944 = out.find((i) => i.title.includes("#944"));
     expect(by944?.links.map((l) => l.ref)).toContain("developing-today/code#985");
-    expect(out.find((i) => i.title.includes("#889"))?.repo).toBe("dezren39/nix");
+    expect(out.find((i) => i.title.includes("#889"))?.repo).toBe("dezren39/darwin-nix");
     expect(out.find((i) => i.title.includes("#492"))?.links.map((l) => l.ref)).toEqual([
       "developing-today-forks/openchamber#492",
     ]);
@@ -362,7 +370,9 @@ describe("renderBoard in-flight lane", () => {
     const html = renderBoard([...lane, ...existing], items, provenance);
 
     expect(html).toContain('href="https://github.com/developing-today-forks/openchamber/issues/492"');
-    expect(html.match(/href="https:\/\/github.com\/developing-today-forks\/openchamber\/issues\/492"/g)).toHaveLength(1);
+    expect(html.match(/href="https:\/\/github.com\/developing-today-forks\/openchamber\/issues\/492"/g)).toHaveLength(
+      1,
+    );
     expect(html.match(/href="https:\/\/github.com\/developing-today\/code\/issues\/944"/g)).toHaveLength(1);
   });
 

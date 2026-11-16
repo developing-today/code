@@ -45,7 +45,15 @@ import json, os, sys, time, urllib.request, urllib.parse
 from datetime import datetime, timezone
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from ghb_common import load_config, backup_root, load_plan, load_state, report_problems
+from ghb_common import (
+    load_config,
+    backup_root,
+    load_plan,
+    load_state,
+    report_problems,
+    save_json,
+    state_lock,
+)
 import fetch_mirrors
 
 COALESCE_S = 15 * 60
@@ -146,6 +154,8 @@ def event_age_s(ev, now):
     The Worker stamps ts with `new Date().toISOString()`; accept epoch
     numbers too so a format change degrades to 'unknown', not a crash.
     """
+    if not isinstance(ev, dict):
+        return None
     ts = ev.get("ts")
     if isinstance(ts, (int, float)):
         return max(0, int(now - ts))
@@ -173,6 +183,8 @@ def event_repo(ev):
     webhook-shaped payload too (repository.full_name) so hand-built or
     future payloads drain identically.
     """
+    if not isinstance(ev, dict):
+        return None
     repo = ev.get("repo")
     if isinstance(repo, str) and repo:
         return repo
@@ -192,6 +204,8 @@ def event_owner(ev):
     then installation.account.login — the fallback for payloads that
     carry an installation but no repository owner.
     """
+    if not isinstance(ev, dict):
+        return None
     rep = ev.get("repository")
     if isinstance(rep, dict):
         owner = rep.get("owner")
@@ -213,6 +227,13 @@ def event_owner(ev):
 def main():
     cfg = load_config()
     root = backup_root(cfg)
+    # #3240: same shared state lock as the daily fetch — see
+    # fetch_mirrors.main. The lock spans load -> modify -> save.
+    with state_lock(root):
+        return _main_locked(cfg, root)
+
+
+def _main_locked(cfg, root):
     state_path = os.path.join(root, "state.json")
     state, problems = load_state(root)
     report_problems(problems)
@@ -239,7 +260,24 @@ def main():
     # by repo; events without a repo carry nothing the drainer can act
     # on, so they are acked immediately.
     by_repo, ack, dropped = {}, [], []
+    dropped_malformed = 0
     for ev in events:
+        # Event shape itself (#6575): a non-dict element, or a dict
+        # event whose id is missing or not a non-empty string, can
+        # never be acked (ack is by id) and must never abort the
+        # drain — the #3331 poison pill one level up. Drop it loudly,
+        # count it in the summary, and keep draining.
+        if (
+            not isinstance(ev, dict)
+            or not isinstance(ev.get("id"), str)
+            or not ev.get("id")
+        ):
+            dropped_malformed += 1
+            log(
+                f"{stamp} DRAIN-DROP malformed event={ev!r:.120} "
+                f"reason=non-dict-or-missing-id"
+            )
+            continue
         owner = event_owner(ev)
         repo = event_repo(ev)
         if owner is None or owner.lower() not in allowed:
@@ -299,8 +337,7 @@ def main():
         failed.append(
             {"repo": repo, "result": res, "consecutive_failures": fs["count"]}
         )
-    with open(state_path, "w") as f:
-        json.dump(state, f, indent=0)
+    save_json(state_path, state)
     if ack:
         ack_events(cfg, ack)
     print(
@@ -311,6 +348,7 @@ def main():
                 "failed": failed,
                 "unplanned": unplanned,
                 "dropped_foreign": len(dropped),
+                "dropped_malformed": dropped_malformed,
                 "coalesced_pending": pending,
                 "acked": len(ack),
             }

@@ -4,7 +4,9 @@
 # Renders .env (mode 600) from the SOPS-encrypted secrets in
 # ../secrets/pm-stack.sops.yaml (relative to this repo checkout), then
 # pulls and (re)creates the containers, then renders the Cloudflare
-# Tunnel token file used by the pm-tunnel systemd user unit.
+# Tunnel token files used by the pm-tunnel systemd user unit
+# (tunnel.token, read by cloudflared via --token-file, #8933; the
+# legacy tunnel.env env-file rendering is kept for rollback).
 #
 # Usage:
 #   ./deploy.sh             render env, pull images, start/refresh stack
@@ -70,11 +72,15 @@ render() {
   } >.env
   chmod 600 .env
 
-  # cloudflared reads TUNNEL_TOKEN from its environment; the systemd
-  # unit (systemd/pm-tunnel.service) loads this file.
+  # cloudflared reads the tunnel token from tunnel.token via
+  # --token-file (#8933: never through the connector's argv or
+  # environment). tunnel.env is still rendered for rollback to the
+  # pre-#8933 unit; nothing consumes it in the current unit.
+  printf '%s' "$(get cloudflare_tunnel_token)" >tunnel.token
+  chmod 600 tunnel.token
   echo "TUNNEL_TOKEN=$(get cloudflare_tunnel_token)" >tunnel.env
   chmod 600 tunnel.env
-  echo "rendered .env and tunnel.env from $SECRETS_FILE"
+  echo "rendered .env, tunnel.token and tunnel.env from $SECRETS_FILE"
 }
 
 case "${1:-deploy}" in
@@ -92,6 +98,13 @@ deploy)
   for i in $(seq 1 30); do
     if curl --fail --silent http://127.0.0.1:5173/api/health >/dev/null; then
       echo "kaneo is healthy: $(curl --silent http://127.0.0.1:5173/api/health)"
+      # Close-authority guard (code#10137): the GitHub sync transitions
+      # live only in Kaneo's DB, and a fresh import can silently restore
+      # the dangerous upstream default. Assert them on every deploy.
+      if ! python3 "$STACK_DIR/kaneo-sync-guard.py"; then
+        echo "kaneo sync guard failed or healed drift - deploy marked failed; see output above" >&2
+        exit 1
+      fi
       exit 0
     fi
     sleep 5

@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/developing-today/code/pkgs/mcpx/internal/daemon"
+	"github.com/developing-today/code/pkgs/mcpx/internal/testsupport"
 )
 
 // longState returns a state directory whose in-state socket path exceeds
@@ -138,7 +139,7 @@ func TestRelocated(t *testing.T) {
 	if preferred != filepath.Join(state, "daemon-abcdef123456.sock") {
 		t.Fatalf("preferred = %q", preferred)
 	}
-	short := daemon.Paths{State: t.TempDir()}.ForConfig("abcdef123456")
+	short := daemon.Paths{State: testsupport.SocketDir(t)}.ForConfig("abcdef123456")
 	if _, relocated := short.Relocated(); relocated {
 		t.Fatal("short state path must not report relocation")
 	}

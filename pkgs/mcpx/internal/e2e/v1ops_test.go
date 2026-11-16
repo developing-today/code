@@ -265,6 +265,42 @@ func TestATaskCanBeCancelled(t *testing.T) {
 	}
 }
 
+func TestATaskCancellationSurvivesCompletion(t *testing.T) {
+	// The sticky half of the cancel contract at the HTTP surface: a
+	// cancellation that lands while the work is running stands even
+	// after the work finishes. The store-level test
+	// (TestCancelImmediateIsTerminalAndSticky) proves the state
+	// machine; this proves the /v1 handler wires it that way. With
+	// the old CancelWithReason wiring the finishing call overwrote
+	// the cancellation and the final read said "completed" (#8457;
+	// CodeRabbit review on PR #10289).
+	e := newEnv(t, oneServer)
+	e.run("ls")
+	c := e.socketClient(t)
+
+	_, doc := postJSON(t, c, "/v1/call",
+		`{"server":"demo","tool":"slow","args":{"ms":1200},"task":{}}`)
+	task, _ := doc["task"].(map[string]any)
+	id, _ := task["taskId"].(string)
+	if id == "" {
+		t.Fatalf("no handle: %v", doc)
+	}
+	code, cancelled := postJSON(t, c, "/v1/tasks/"+id+"/cancel", `{}`)
+	if code != http.StatusOK {
+		t.Fatalf("status %d: %v", code, cancelled)
+	}
+	if cancelled["status"] != "cancelled" {
+		t.Fatalf("status = %v", cancelled["status"])
+	}
+	// The slow call takes 1200ms; wait well past its finish, then
+	// read the task back. Completion must not replace the
+	// cancellation.
+	time.Sleep(3 * time.Second)
+	if got := getJSON(t, c, "/v1/tasks/"+id); got["status"] != "cancelled" {
+		t.Errorf("after completion, status = %v, want cancelled", got["status"])
+	}
+}
+
 func TestTasksMaxAgeIsReachableFromEnvironment(t *testing.T) {
 	e := newEnv(t, oneServer)
 	e.envVars = append(e.envVars, "MCPX_TASKS_MAX_AGE=5s")

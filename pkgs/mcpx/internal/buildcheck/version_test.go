@@ -12,7 +12,7 @@ var (
 	nixVersionDerivation = regexp.MustCompile(`version = lib\.removeSuffix "\\n" \(builtins\.readFile \./VERSION\);`)
 	ldVersionStamp       = regexp.MustCompile(`-X main\.version=([^"\s]+)`)
 	mainVersionVar       = regexp.MustCompile(`(?m)^var version = "([^"]+)"`)
-	containerVersionArg  = regexp.MustCompile(`(?m)^ARG VERSION=(\S+)$`)
+	containerImageTag    = regexp.MustCompile(`(?m)^\s*tag = mcpx\.version;$`)
 )
 
 // devSentinel is the one version literal allowed outside VERSION
@@ -24,8 +24,10 @@ const devSentinel = "0.0.0-dev"
 // decision 0005 §3 (#1881 slice 2): pkgs/mcpx/VERSION is the version's
 // single source. package.nix derives its version from that file and
 // interpolates it into the ldflags stamp; cmd/mcpx/main.go's default
-// and the Containerfile's ARG default are the 0.0.0-dev sentinel, so
-// no second copy of the release literal exists to drift.
+// is the 0.0.0-dev sentinel, and the container image's tag is the
+// package's version (container-image.nix, #5771 — the Containerfile
+// it superseded carried an ARG default instead), so no second copy
+// of the release literal exists to drift.
 func TestVersionHasOneSourceOfTruth(t *testing.T) {
 	vb, err := os.ReadFile(filepath.Join(moduleRoot, "VERSION"))
 	if err != nil {
@@ -68,15 +70,14 @@ func TestVersionHasOneSourceOfTruth(t *testing.T) {
 		t.Errorf("cmd/mcpx/main.go default is %q; want the %q sentinel (decision 0005 §3) — release binaries are stamped from VERSION via ldflags", mainMatch[1], devSentinel)
 	}
 
-	cf, err := os.ReadFile(filepath.Join(moduleRoot, "Containerfile"))
+	ci, err := os.ReadFile(filepath.Join(moduleRoot, "container-image.nix"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	cfMatch := containerVersionArg.FindStringSubmatch(string(cf))
-	if cfMatch == nil {
-		t.Fatal("Containerfile has no `ARG VERSION=` line")
+	if !containerImageTag.MatchString(string(ci)) {
+		t.Error("container-image.nix does not set `tag = mcpx.version;` — the image tag must be the package version package.nix derives from ./VERSION (decision 0005 §3, #5771)")
 	}
-	if cfMatch[1] != devSentinel {
-		t.Errorf("Containerfile ARG VERSION default is %q; want the %q sentinel — the release workflow passes VERSION's contents as a build arg (decision 0005 §3)", cfMatch[1], devSentinel)
+	if strings.Contains(string(ci), `"`+version+`"`) {
+		t.Errorf("container-image.nix contains the version literal %q; VERSION is the only place it may be written", version)
 	}
 }

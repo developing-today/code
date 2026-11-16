@@ -124,7 +124,7 @@ export async function handleLaunchFailure(
       sessionId == null
         ? ""
         : cleanupError == null
-          ? `\n\nOpenCode session ${sessionId} may still be live; session cleanup succeeded.`
+          ? `\n\nOpenCode session ${sessionId} was deleted; session cleanup succeeded.`
           : `\n\nOpenCode session ${sessionId} may still be live; session cleanup failed: ${cleanupError}`;
     const note =
       cancelError == null

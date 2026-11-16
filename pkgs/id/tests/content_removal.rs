@@ -101,6 +101,7 @@ fn document_ext(doc: &DocumentRef, after: Vec<Hash>) -> ChainExt {
         link: None,
         checkpoint: None,
         rotation: None,
+        chat: None,
     }
 }
 
@@ -120,6 +121,7 @@ fn tag_ext(subject: Hash, name: &str, value: &str, after: Vec<Hash>) -> ChainExt
         link: None,
         checkpoint: None,
         rotation: None,
+        chat: None,
     }
 }
 
@@ -135,6 +137,7 @@ fn removal_ext(target: Hash, after: Vec<Hash>) -> ChainExt {
         link: None,
         checkpoint: None,
         rotation: None,
+        chat: None,
     }
 }
 
@@ -218,6 +221,7 @@ async fn provider(store: &Store, graph: Graph) -> (Router, EndpointAddr) {
         Arc::new(graph),
         BlobPolicy::default(),
         AccessPolicy::restricted([]),
+        std::collections::BTreeSet::new(),
     );
     let router = Router::builder(endpoint)
         .accept(iroh_blobs::ALPN, BlobsProtocol::new(store, Some(events)))

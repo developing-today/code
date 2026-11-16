@@ -38,6 +38,13 @@ import (
 type Options struct {
 	// Source is the TypeScript to run. Exactly one of Source or File.
 	Source string
+	// SourceName is the name of the file Source was rendered from,
+	// when the caller rendered a declared file's body itself (a
+	// script-backed tool view, #1933 slice 2). It is language
+	// evidence only -- the runner executes Source, never a file by
+	// this name -- so a .py declaration with no shebang is Python
+	// even though its rendered body arrives as text.
+	SourceName string
 	// File is a path to a script. Its directory is used as the working dir.
 	File string
 	// ClientSource is the generated client module of the default target,
@@ -69,6 +76,12 @@ type Options struct {
 	// Runtime is "auto", a kind (deno, bun, node), a name declared in
 	// Setup.Runtimes, or a path or binary name whose basename is a kind.
 	Runtime string
+	// Language is the explicit script-language selection for this run
+	// (script.language / --language / ExecOptions.language): auto,
+	// typescript, javascript or python. Empty means auto. It decides the
+	// language -- and so which generated client is installed -- when no
+	// shebang or configured interpreter dispatch decides first (#1917).
+	Language string
 	// Setup carries the configured runtimes, auto-detection order and
 	// permission profiles. The zero value means the built-ins.
 	Setup Setup
@@ -92,8 +105,24 @@ type Options struct {
 	CollectLogs func(logging.Record)
 	// OnResult receives values a script streamed with emit().
 	OnResult func(logging.Streamed)
+
+	// OnFinal fires when the generated client reports the snippet's
+	// final top-level expression (CODE-19): Run rewrites an inline
+	// source whose last statement is an expression so the client
+	// captures its value, and the record arrives here kept apart
+	// from stdout and from result()/emit() values. Nil drops it,
+	// like OnResult.
+	OnFinal func(logging.Streamed)
 	// OnArtifact receives files a script registered with artifact().
 	OnArtifact func(logging.Artifacted)
+	// OnWarning receives each non-fatal preflight diagnostic, in order,
+	// as the runner produces it. The same text still goes to Stderr; a
+	// caller that captures Stderr and only surfaces it on a non-zero
+	// exit (the daemon's exec buffer) uses this to deliver the
+	// diagnostic through its own result and stream even when the run
+	// succeeds, where a stderr-only caller never saw it (Codex review,
+	// PR #6111).
+	OnWarning func(string)
 	// Export names the function to call instead of the default export.
 	Export string
 	// Permissions is the sandbox setting; empty means wide open.
@@ -132,6 +161,10 @@ type Options struct {
 	PlaceholderFiles []string
 	// TypeCheck resolves and checks the generated program before running it.
 	TypeCheck string
+	// TypeCheckOnError selects how a failed checker affects execution.
+	TypeCheckOnError string
+	// TypeCheckOnUnsupported selects what to do when the runtime cannot check.
+	TypeCheckOnUnsupported string
 	// TypeCheckTimeout bounds that check.
 	TypeCheckTimeout time.Duration
 	// Imports selects the preflight import-graph stage: "off" or "report"
@@ -149,6 +182,11 @@ type Options struct {
 	ImportsNetwork string
 	// ImportsTimeout bounds the graph computation.
 	ImportsTimeout time.Duration
+	// Devshell selects the environment the script process runs inside
+	// (script.devshell): "" or "host" runs the runtime directly, and
+	// "flake:<ref>" wraps the spawn in `nix develop <ref> -c`. The CLI
+	// resolves the registry default into it.
+	Devshell       string
 	Stdout, Stderr interface{ Write([]byte) (int, error) }
 	// Stdin is what the script reads. Nil inherits the caller's, which is
 	// right for a terminal and wrong for a daemon: a script run on somebody
@@ -219,6 +257,20 @@ func warnSink(opts Options) io.Writer {
 		return opts.Stderr
 	}
 	return os.Stderr
+}
+
+// reportWarning emits one non-fatal preflight diagnostic: to the
+// caller's diagnostic writer, and to OnWarning when one is installed.
+// A service that captures Stderr and only reads it on a non-zero exit
+// (execsvc) delivers the first write nowhere on success, so the
+// callback is how a `checkOnError=warn` diagnostic reaches a remote
+// caller whose script otherwise runs fine (Codex review, PR #6111).
+func reportWarning(opts Options, w preflight.Problem) {
+	msg := w.String()
+	_, _ = fmt.Fprintln(warnSink(opts), "mcpx:", msg)
+	if opts.OnWarning != nil {
+		opts.OnWarning(msg)
+	}
 }
 
 // workDirKeyMaterial is the WorkRoot directory key's input: the
@@ -346,10 +398,68 @@ func workDirKeyMaterial(kind string, opts Options) string {
 	return material
 }
 
+// evidenceFile names the file whose extension may speak for the
+// script's language: the execution target when there is one, else the
+// file Source was rendered from.
+func (o Options) evidenceFile() string {
+	if o.File != "" {
+		return o.File
+	}
+	return o.SourceName
+}
+
 // Run generates the client, writes the script and executes it.
+// wrapDevshell applies the script.devshell setting to a spawn: "host"
+// (or empty) is the runtime command unchanged; "flake:<ref>" prefixes
+// `nix develop <ref> -c` so the runtime resolves inside the flake's
+// devshell. The environment the caller built is inherited by nix
+// develop unchanged, so MCPX_* values and script.env survive, with the
+// devshell's PATH taking precedence inside. A missing nix or an
+// unknown value is a loud error naming the setting — never a silent
+// host fallback.
+// devshellIsFlake reports whether the setting selects a flake devshell.
+func devshellIsFlake(devshell string) bool {
+	return strings.HasPrefix(devshell, "flake:")
+}
+
+// devshellSpawnName picks the command a spawn should invoke. Under a
+// flake devshell the shell owns command resolution, so the unresolved
+// invocation name is what must reach `nix develop -c`: handing it the
+// host-resolved absolute path would run the host's runtime version
+// inside the shell, defeating the pin (Codex review, PR #8381). On the
+// host the resolved binary is used exactly as before.
+func devshellSpawnName(devshell, bin, invoke string) string {
+	if devshellIsFlake(devshell) && invoke != "" {
+		return invoke
+	}
+	return bin
+}
+
+func wrapDevshell(devshell, bin string, args []string, lookPath func(string) (string, error)) (string, []string, error) {
+	switch {
+	case devshell == "" || devshell == "host":
+		return bin, args, nil
+	case strings.HasPrefix(devshell, "flake:"):
+		ref := strings.TrimPrefix(devshell, "flake:")
+		if ref == "" {
+			return "", nil, fmt.Errorf("script.devshell %q: the flake reference is empty", devshell)
+		}
+		nix, err := lookPath("nix")
+		if err != nil {
+			return "", nil, fmt.Errorf("script.devshell %q requires nix on PATH: %w", devshell, err)
+		}
+		return nix, append([]string{"develop", ref, "-c", bin}, args...), nil
+	default:
+		return "", nil, fmt.Errorf("script.devshell %q: want \"host\" or \"flake:<ref>\"", devshell)
+	}
+}
+
 func Run(ctx context.Context, opts Options) (*Result, error) {
 	if opts.Source == "" && opts.File == "" {
 		return nil, errors.New("runner: need Source or File")
+	}
+	if _, lerr := NormalizeLanguage(opts.Language); lerr != nil {
+		return nil, lerr
 	}
 	// Dispatch ranks 1-2 (#2167): a shebang or a configured interpreter
 	// runs the script under that interpreter, before any JavaScript
@@ -373,7 +483,7 @@ func Run(ctx context.Context, opts Options) (*Result, error) {
 		// harness path honours what the raw path preserves.
 		opts.Runtime = js.runtime
 		jsEnv = js
-	} else if ScriptLanguage(opts.File, opts.Source) == codegen.Python.Name {
+	} else if EffectiveScriptLanguage(opts.evidenceFile(), opts.Source, opts.Language) == codegen.Python.Name {
 		// Rank 3: nothing named an interpreter and the script is Python
 		// by extension, so the run is a Python harness run rather than a
 		// TypeScript one. Installing the client is the difference from a
@@ -396,11 +506,25 @@ func Run(ctx context.Context, opts Options) (*Result, error) {
 		// review). The later block fills in Bin, and reports a runtime
 		// that is missing from both.
 		if jsEnv.runtime == "" {
-			return nil, err
-		}
-		rt, err = ResolveDeferred(jsEnv.runtime, opts.Permissions, opts.Setup)
-		if err != nil {
-			return nil, err
+			// A flake devshell may provide a runtime the host lacks:
+			// defer the lookup to the shell the same way the shebang
+			// case below defers it, so the run reaches the spawn and
+			// the shell's pinned runtime is what executes (Codex
+			// review, PR #8381). Only an explicit kind name can be
+			// deferred; auto order has no single name to hand the
+			// shell, so its error stands.
+			if !devshellIsFlake(opts.Devshell) {
+				return nil, err
+			}
+			rt, err = ResolveDeferred(opts.Runtime, opts.Permissions, opts.Setup)
+			if err != nil {
+				return nil, err
+			}
+		} else {
+			rt, err = ResolveDeferred(jsEnv.runtime, opts.Permissions, opts.Setup)
+			if err != nil {
+				return nil, err
+			}
 		}
 	}
 
@@ -464,7 +588,27 @@ func Run(ctx context.Context, opts Options) (*Result, error) {
 		// the same program, the same program run twice reuses the path and
 		// so hits the runtime's type-check cache, and a different program
 		// cannot be mistaken for it.
-		src := opts.Prelude + opts.Source
+		source := opts.Source
+		if opts.Export == "" && strings.TrimSpace(opts.Launcher) != LauncherNone && opts.Log != nil && opts.OnFinal != nil && strings.Contains(opts.ClientSource, "__mcpxFinal") && launcherInstallsCaptureGlobal(opts) {
+			// CODE-19: a snippet's final top-level expression is
+			// its result; rewrite it to report through the client
+			// (whose capture global exists only when the client
+			// carries it). With no launcher shim there are no
+			// globals at all, so bare-runtime runs keep their
+			// source too. The rewrite also requires a consumer:
+			// records are demultiplexed only when a Log writer
+			// is set, and a caller without an OnFinal handler
+			// (saved-recipe and resolve executions, for one)
+			// would leak the record into its stderr and lose
+			// the answer, so those sources run as written. A
+			// selected named export is an entry
+			// point with its own result rule, like the default
+			// export the transform itself abstains on. The
+			// transform abstains on anything it cannot classify,
+			// leaving the source as written.
+			source, _ = rewriteFinalExpression(source)
+		}
+		src := opts.Prelude + source
 		sum := sha256.Sum256([]byte(src))
 		scriptPath = filepath.Join(workDir, "script-"+hex.EncodeToString(sum[:])[:16]+".ts")
 		// Written only when absent or different, so a concurrent run of the
@@ -530,16 +674,16 @@ func Run(ctx context.Context, opts Options) (*Result, error) {
 		}
 		if opts.Deps.frozenNPM(rt.Kind) {
 			if cerr := installFrozenNPM(runCtx, workDir, opts.Deps, opts.Env); cerr != nil {
-				return nil, cerr
+				return nil, preflightErr(runCtx, cerr)
 			}
 		}
 		if opts.Deps.frozenBun(rt.Kind) {
 			if cerr := installFrozenBun(runCtx, rt.Bin, workDir, opts.Deps, opts.Env); cerr != nil {
-				return nil, cerr
+				return nil, preflightErr(runCtx, cerr)
 			}
 		} else if rt.Kind == KindBun && (opts.Deps.AutoInstall == "fallback" || opts.Deps.AutoInstall == "always") && (len(opts.Deps.Packages) > 0 || opts.Deps.Manifest != "") {
 			if cerr := installBun(runCtx, rt.Bin, workDir, opts.Deps, opts.Env); cerr != nil {
-				return nil, cerr
+				return nil, preflightErr(runCtx, cerr)
 			}
 		}
 		// A file script resolves bare imports from its own directory
@@ -571,7 +715,7 @@ func Run(ctx context.Context, opts Options) (*Result, error) {
 			}
 			unlock, lerr2 := lockScriptDirs(runCtx, lockDirs...)
 			if lerr2 != nil {
-				return nil, lerr2
+				return nil, preflightErr(runCtx, lerr2)
 			}
 			defer unlock()
 			// The set must also be visible at the selected
@@ -638,6 +782,14 @@ func Run(ctx context.Context, opts Options) (*Result, error) {
 			rt.Bin = abs
 		}
 	}
+	if rt.Kind == KindNode && (!devshellIsFlake(opts.Devshell) || rt.Bin != rt.Invoke) {
+		// A devshell-deferred runtime has no host binary to probe: Bin
+		// is still the bare name the shell will resolve. Probing it
+		// here would fail the run before the shell gets its chance.
+		if err := checkNodeTransformTypes(rt.Bin); err != nil {
+			return nil, err
+		}
+	}
 
 	// Checked after the launcher is written, because the launcher is what
 	// actually gets run and therefore what has to be valid. Doing it here
@@ -647,13 +799,23 @@ func Run(ctx context.Context, opts Options) (*Result, error) {
 		if timeout == 0 {
 			timeout = defaults.TypecheckTimeout
 		}
-		rep := preflight.TypeCheckResolved(ctx, rt.Bin, scriptPath, preflight.TypeCheckMode(mode), timeout,
-			append(append([]string{}, rt.ConfigArgs...), depsFlags...), opts.Dir)
+		// The checker is not necessarily the execution runtime: the
+		// switch policy checks a Node or Bun script with Deno. depsFlags
+		// describes the EXECUTION runtime (Bun's --no-install, or none
+		// for Node), and ResolutionArgs drops what a checker cannot use,
+		// so a deps.autoInstall=off set would let the Deno checker fetch
+		// uncached dependencies before execution even starts. Give the
+		// checker the flags its own runtime would carry for this set
+		// (Codex review, PR #6111).
+		checkerFlags := checkerDepsFlags(rt.Kind, opts.TypeCheckOnUnsupported, opts.Deps, depsFlags)
+		rep := preflight.TypeCheckWithPolicy(ctx, rt.Bin, scriptPath, preflight.TypeCheckMode(mode), timeout,
+			append(append([]string{}, rt.ConfigArgs...), checkerFlags...), opts.Dir,
+			opts.TypeCheckOnError, opts.TypeCheckOnUnsupported)
 		if err := rep.Err(); err != nil {
 			return nil, err
 		}
 		for _, w := range rep.Warnings() {
-			_, _ = fmt.Fprintln(warnSink(opts), "mcpx:", w.String())
+			reportWarning(opts, w)
 		}
 	}
 
@@ -710,7 +872,7 @@ func Run(ctx context.Context, opts Options) (*Result, error) {
 			return nil, err
 		}
 		for _, w := range rep.Warnings() {
-			_, _ = fmt.Fprintln(warnSink(opts), "mcpx:", w.String())
+			reportWarning(opts, w)
 		}
 	}
 
@@ -718,7 +880,11 @@ func Run(ctx context.Context, opts Options) (*Result, error) {
 	// through to the script, so no "--" separator is needed.
 	args := append(rt.Args(scriptPath), opts.Args...)
 
-	cmd := exec.Command(rt.Bin, args...)
+	bin, cmdArgs, werr := wrapDevshell(opts.Devshell, devshellSpawnName(opts.Devshell, rt.Bin, rt.Invoke), args, exec.LookPath)
+	if werr != nil {
+		return nil, werr
+	}
+	cmd := exec.Command(bin, cmdArgs...)
 	// The script.cwd policy decides the working directory. The default,
 	// caller, inherits the caller's directory rather than the script's:
 	// a relative path in a script should mean what it means on the
@@ -769,6 +935,7 @@ func Run(ctx context.Context, opts Options) (*Result, error) {
 				Collect:     opts.CollectLogs,
 				Result:      opts.OnResult,
 				Artifact:    opts.OnArtifact,
+				Final:       opts.OnFinal,
 			})
 		}()
 		defer func() {
@@ -845,6 +1012,24 @@ var fileScriptLocks sync.Map // map[string]chan struct{}
 // vice versa) cannot deadlock by acquiring in opposite orders
 // (Codex review, PR #2589). The returned function releases every
 // acquired lock.
+// preflightErr preserves the run deadline's signal on a preparation
+// failure. The ctx-bound preflight steps (dependency installs,
+// directory-lock waits) run on the run's timeout context, but an
+// install killed by that context reports only "signal: killed", so
+// without this wrap a pre-execution timeout is indistinguishable
+// from a plain startup failure downstream (Codex review, PR #9205).
+// When the context has fired, its error leads and the step's own
+// error stays in the chain; otherwise the error passes unchanged.
+func preflightErr(ctx context.Context, err error) error {
+	if err == nil {
+		return nil
+	}
+	if cerr := ctx.Err(); cerr != nil && !errors.Is(err, cerr) {
+		return fmt.Errorf("%w: %w", cerr, err)
+	}
+	return err
+}
+
 func lockScriptDirs(ctx context.Context, dirs ...string) (func(), error) {
 	cleaned := make([]string, 0, len(dirs))
 	seen := map[string]bool{}
@@ -1054,6 +1239,30 @@ func textScanSource(opts Options, scriptPath string) string {
 		scan += "\n" + string(b)
 	}
 	return scan
+}
+
+// launcherInstallsCaptureGlobal reports whether the selected
+// launcher actually installs the globals (installGlobals), which is
+// what defines __mcpxFinal at run time. The built-in launcher always
+// does. A custom template does only when it reaches the globals --
+// through the @globals placeholder or by calling installGlobals
+// itself; a template that references @import or @entry but never
+// @globals leaves __mcpxFinal undefined, so the CODE-19 rewrite must
+// not run for it (CODE-19 review, PR #9344).
+func launcherInstallsCaptureGlobal(opts Options) bool {
+	custom := strings.TrimSpace(opts.Launcher)
+	if custom == "" {
+		return true
+	}
+	if strings.Contains(custom, "installGlobals(") {
+		return true
+	}
+	for _, p := range launcher.Used(launcher.Template{Text: custom}) {
+		if p == launcher.Globals {
+			return true
+		}
+	}
+	return false
 }
 
 // LauncherNone given as the launcher means no shim at all: the script is

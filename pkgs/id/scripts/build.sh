@@ -14,6 +14,18 @@
 
 set -euo pipefail
 
+usage() {
+  echo "Usage: build.sh [variant] [profile]" >&2
+  echo "  variant: lib | web | assets (default: web)" >&2
+  echo "  profile: debug | release (default: debug)" >&2
+}
+
+if [[ $# -gt 2 ]]; then
+  usage
+  echo "Error: unaccounted argument(s): ${*:3}" >&2
+  exit 1
+fi
+
 # Default log level to info unless explicitly set
 export RUST_LOG="${RUST_LOG:-info}"
 
@@ -97,13 +109,22 @@ fi
 # Step 2: Build Rust binary if needed (for lib and web variants)
 # ─────────────────────────────────────────────────────────────────────────────
 needs_backend=false
-OTHER_VARIANT=$([[ $VARIANT == "web" ]] && echo "lib" || echo "web")
 
 if [[ ! -f $BINARY ]]; then
   echo "[rust] No binary found, build needed"
   needs_backend=true
-elif [[ -f $VARIANT_FILE ]] && [[ "$(cat "$VARIANT_FILE")" == "$OTHER_VARIANT" ]]; then
-  echo "[rust] Last build was '$OTHER_VARIANT' variant, rebuilding as '$VARIANT'"
+elif [[ ! -f $VARIANT_FILE ]]; then
+  # The marker is the only evidence of which variant the on-disk binary
+  # is. A missing marker means the variant is UNKNOWN (partial target/
+  # cleanup, a copied-in binary, an interrupted earlier build) — unknown
+  # state must rebuild, never trust the binary (#6883).
+  echo "[rust] No variant marker found, binary variant unknown, rebuilding as '$VARIANT'"
+  needs_backend=true
+elif [[ "$(cat "$VARIANT_FILE")" != "$VARIANT" ]]; then
+  # Covers the other variant, an empty marker, and garbage content:
+  # only an exact match for the requested variant may fall through to
+  # the up-to-date path (#6883).
+  echo "[rust] Variant marker ('$(cat "$VARIANT_FILE")') does not match '$VARIANT', rebuilding"
   needs_backend=true
 elif [[ ${frontend_just_built:-false} == "true" ]]; then
   echo "[rust] Frontend assets were just rebuilt, need to re-embed"
@@ -150,7 +171,12 @@ if [[ $needs_backend == "true" ]]; then
   touch "$BINARY"
 
   mkdir -p target
-  echo "$VARIANT" >"$VARIANT_FILE"
+  # Write the marker atomically (temp file in the same directory +
+  # rename), so an interrupted build cannot leave an empty or truncated
+  # marker behind (#6883).
+  marker_tmp="$(mktemp "target/.build-variant.tmp.XXXXXX")"
+  echo "$VARIANT" >"$marker_tmp"
+  mv "$marker_tmp" "$VARIANT_FILE"
 else
   echo "[rust] $VARIANT $PROFILE variant up to date"
 fi

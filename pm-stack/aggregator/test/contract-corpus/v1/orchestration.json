@@ -31,6 +31,12 @@
       "ref": "example-owner/example-repo#807",
       "status": "queued",
       "taskRef": "example-owner/example-repo#818"
+    },
+    {
+      "task": "Example upstream work",
+      "ref": "example-owner/example-repo#809",
+      "status": "blocked",
+      "taskRef": "example-owner/example-repo#819"
     }
   ],
   "goals": [
@@ -40,7 +46,22 @@
       "momentum": "moving",
       "summary": "Example progress recorded since the previous run.",
       "progressedSinceLastRun": ["Example task closed via merged PR"],
-      "linedUp": [],
+      "linedUp": [
+        {
+          "title": "Example dependent task",
+          "ref": "example-owner/example-repo#819",
+          "status": "blocked",
+          "horizon": "today",
+          "horizonWhy": "Waiting on the prerequisite",
+          "blockedBy": [
+            {
+              "task": "Example upstream work",
+              "ref": "example-owner/example-repo#809",
+              "status": "blocked"
+            }
+          ]
+        }
+      ],
       "stalled": [],
       "gaps": []
     }

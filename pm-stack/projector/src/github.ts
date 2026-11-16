@@ -103,6 +103,14 @@ export interface GitHubAuth {
   token: string;
 }
 
+/**
+ * Every GitHub fetch carries a hard timeout (#9850): an unbounded fetch
+ * that hangs under load wedges the reconcile pass that awaits it — and,
+ * through the shared work it delays, everything downstream of the pass.
+ * 30s is far beyond a healthy API response and far below a pass length.
+ */
+export const GITHUB_FETCH_TIMEOUT_MS = 30_000;
+
 const discoveredInstallations = new Map<string, number>();
 
 function parseConfiguredInstallId(raw: string | undefined): number | undefined {
@@ -126,6 +134,7 @@ async function discoverInstallationId(
   const jwt = await appJwt(env);
   const res = await fetchFn(`https://api.github.com/repos/${repo}/installation`, {
     headers: { authorization: `Bearer ${jwt}`, accept: "application/vnd.github+json", "user-agent": "pm-projector" },
+    signal: AbortSignal.timeout(GITHUB_FETCH_TIMEOUT_MS),
   });
   if (!res.ok) return undefined;
   const body: unknown = await res.json();
@@ -159,6 +168,7 @@ export async function apiTokenFor(
     const res = await fetchFn(`https://api.github.com/app/installations/${installId}/access_tokens`, {
       method: "POST",
       headers: { authorization: `Bearer ${jwt}`, accept: "application/vnd.github+json" },
+      signal: AbortSignal.timeout(GITHUB_FETCH_TIMEOUT_MS),
     });
     if (!res.ok) throw new Error(`installation_token_failed_${res.status}`);
     const body: unknown = await res.json();
@@ -167,8 +177,7 @@ export async function apiTokenFor(
     // instead of returning { token: undefined } as success (every later
     // call would 401 as "Bearer undefined") or throwing a raw
     // property-access TypeError on null (#6954).
-    const token =
-      body !== null && typeof body === "object" ? (body as { token?: unknown }).token : undefined;
+    const token = body !== null && typeof body === "object" ? (body as { token?: unknown }).token : undefined;
     if (typeof token !== "string" || token === "") {
       throw new Error("installation_token_failed_shape: access_tokens response carried no string token");
     }
@@ -185,6 +194,7 @@ async function ghJson<T>(auth: GitHubAuth, path: string, fetchFn: typeof fetch):
       accept: "application/vnd.github+json",
       "user-agent": "pm-projector",
     },
+    signal: AbortSignal.timeout(GITHUB_FETCH_TIMEOUT_MS),
   });
   if (res.status === 404) throw new Error("not_found");
   if (!res.ok) throw new Error(`github_api_${res.status}`);
@@ -201,7 +211,12 @@ export function nextPageFromLink(linkHeader: string | null): string | null {
   return null;
 }
 
-export async function listResource<T>(auth: GitHubAuth, initialPath: string, fetchFn: typeof fetch): Promise<T[]> {
+export async function listResource<T>(
+  auth: GitHubAuth,
+  initialPath: string,
+  fetchFn: typeof fetch,
+  opts: { stopAfterPage?: (page: T[]) => boolean } = {},
+): Promise<T[]> {
   const out: T[] = [];
   let path: string | null = initialPath;
   while (path) {
@@ -215,6 +230,7 @@ export async function listResource<T>(auth: GitHubAuth, initialPath: string, fet
         accept: "application/vnd.github+json",
         "user-agent": "pm-projector",
       },
+      signal: AbortSignal.timeout(GITHUB_FETCH_TIMEOUT_MS),
     });
     if (!res.ok) throw new Error(`github_api_${res.status}`);
     const page: unknown = await res.json();
@@ -228,6 +244,10 @@ export async function listResource<T>(auth: GitHubAuth, initialPath: string, fet
       );
     }
     out.push(...(page as T[]));
+    // Early stop (#9850): callers paging a list sorted newest-first can
+    // end the walk once a whole page is older than their cursor instead
+    // of fetching every page of history on every pass.
+    if (opts.stopAfterPage?.(page as T[])) break;
     path = nextPageFromLink(res.headers.get("link"));
   }
   return out;

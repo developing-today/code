@@ -10,11 +10,23 @@
 //! decision — no shell frame depends on the guest ABI (F12.8/#1065 is a
 //! separate layer a shell never sees).
 //!
-//! Step 1 (this code) lands the isolated app package, the identity /
-//! connection bootstrap, the contract frame builders, and the view
-//! fallback rule, with a transcript fixture checked against the
-//! machine-readable contract. Step 2 adds the window/render plugins and
-//! the live contract-parity session harness.
+//! Step 1 (merged, PR #5573) landed the isolated app package, the
+//! identity / connection bootstrap, the contract frame builders, and
+//! the view fallback rule, with a transcript fixture checked against
+//! the machine-readable contract. Step 2 (this code) adds the
+//! window/render plugin set, the styled [`render`] model + Bevy UI
+//! renderer for validated surfaces, and the [`events`] native
+//! input/paste/resize mapping with frame/presentation parity tests,
+//! and the live `WorldClient` session loop ([`run_session`]) that
+//! feeds the renderer through `render::PresentedView`;
+//! `tests/live_session.rs` proves the durable-outcome half of the
+//! parity criterion against a live host.
+
+pub mod events;
+pub mod render;
+mod session;
+
+pub use session::{ServerUpdate, SessionState, SessionView, join_frame, run_session};
 
 use id::world_presentation::WorldSurface;
 use serde_json::{Value, json};

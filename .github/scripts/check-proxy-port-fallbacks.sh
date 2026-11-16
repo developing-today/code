@@ -122,3 +122,12 @@ if [[ $failed -ne 0 ]]; then
 fi
 
 echo "proxy port fallbacks match the home/common/default.nix definitions (${#proxies[@]} proxies)."
+
+# Retirement gate (#5610): a proxy or provider door may only be retired
+# when no configuration still names it. The port guard above proves fallback
+# copies agree; this gate verifies that when a provider is retired, no active
+# configuration references remain in the tracked or deployed config.
+# Run explicitly during decommissioning:
+#   scripts/check-provider-retirement-gate.sh <provider-id>
+# For example, before removing a proxy door/unit:
+#   scripts/check-provider-retirement-gate.sh opencode-route
