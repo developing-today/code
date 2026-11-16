@@ -1,0 +1,218 @@
+[
+  {
+    "source_id": "ADD-A-009",
+    "canonical_requirement_id": "fnox-evaluation",
+    "proposal_id": "ARCH-01",
+    "design_section": "Scope and affected surface — coordinates canonical credential schema with SEC-02; this seam is identity/reference behavior only",
+    "test_oracle": "Version-pinned fnox evaluation records crate/API surface, adapters and maintenance; a synthetic proof identifies the Fleet component that can reuse it.",
+    "disposition": "partial",
+    "reason": "PARTIAL: The architecture proposal only covers the Fleet identity/reference seam and explicitly leaves provider adapters and credential schema to other proposals; it does not itself satisfy the fnox evaluation."
+  },
+  {
+    "source_id": "ADD-A-010",
+    "canonical_requirement_id": "fnox-integration-boundary",
+    "proposal_id": "ARCH-01",
+    "design_section": "Scope and affected surface — no new crate; establish only the Fleet identity/reference boundary",
+    "test_oracle": "Three-path prototype/evidence table compares embed, executable invocation and internal adaptation for build/API stability, with the selected integration path justified in an ADR.",
+    "disposition": "unresolved-cross-domain",
+    "reason": "UNRESOLVED/CROSS-DOMAIN: ARCH-01 defines Fleet's seam but makes no embed-versus-executable decision. GEN proposals cover generation APIs, not the fnox integration decision; the source outcome needs a dedicated integration proposal."
+  },
+  {
+    "source_id": "ADD-A-012",
+    "canonical_requirement_id": "fleet-resolver-ownership",
+    "proposal_id": "ARCH-01",
+    "design_section": "Scope and affected surface — additive Fleet resolver identity/reference API; existing CLI compatibility retained",
+    "test_oracle": "Existing `fleet secrets get/list` stdout, stderr, exit semantics and broker/BWS order match the pinned V1 golden corpus; resolver callers compile and pass compatibility tests.",
+    "disposition": "partial",
+    "reason": "PARTIAL: ARCH-01 retains Fleet ownership and compatibility at the secret-read seam, but expressly excludes a competing resolver decision beyond that bounded API and does not implement the overall fnox boundary."
+  },
+  {
+    "source_id": "ADD-A-013",
+    "canonical_requirement_id": "sops-age-deployment",
+    "proposal_id": "OPS-04",
+    "design_section": "Outcome — safe filesystem sinks with staged, validated, recoverable commits",
+    "test_oracle": "Synthetic NixOS activation decrypts a test secret to the declared protected runtime path; assert plaintext is absent from Git and the Nix store.",
+    "disposition": "partial",
+    "reason": "PARTIAL: OPS-04 supplies generic atomic file/archive transactions, not SOPS/age or sops-nix integration or NixOS activation."
+  },
+  {
+    "source_id": "ADD-A-014",
+    "canonical_requirement_id": "versioned-ciphertext",
+    "proposal_id": "OPS-04",
+    "design_section": "Acceptance and oracle — manifest/hash validation and recoverable archive/file transactions",
+    "test_oracle": "Commit a fixture containing configuration and encrypted ciphertext; repository inspection finds ciphertext only and decryption returns the expected synthetic value.",
+    "disposition": "partial",
+    "reason": "PARTIAL: OPS-04 addresses safe transactions and integrity but does not specify versioning selected deployment ciphertext alongside configuration."
+  },
+  {
+    "source_id": "ADD-A-015",
+    "canonical_requirement_id": "age-identity-boundary",
+    "proposal_id": "OPS-04",
+    "design_section": "Current repository evidence and boundary — temporary-root tests only; no operator-home mutation",
+    "test_oracle": "Rebuild a synthetic host with its provisioned age identity; activation succeeds and scans find neither private identity nor plaintext in Git or the Nix store.",
+    "disposition": "unresolved-cross-domain",
+    "reason": "UNRESOLVED/CROSS-DOMAIN: OPS-04 protects file writes but does not provision laptop decryption identities or define their custody. No architecture/generator/operations proposal covers that atomic outcome."
+  },
+  {
+    "source_id": "ADD-A-016",
+    "canonical_requirement_id": "recovery-recipient",
+    "proposal_id": "OPS-04",
+    "design_section": "Outcome — recoverable archive transactions; generic sink only",
+    "test_oracle": "Restore a synthetic encrypted archive using only the designated recovery recipient; ordinary recipient cross-decryption is denied.",
+    "disposition": "unresolved-cross-domain",
+    "reason": "UNRESOLVED/CROSS-DOMAIN: OPS-04 provides filesystem/archive transaction safety, not age recipient policy, encryption, or recovery-key custody. The recipient outcome has no covering proposal in this mapping domain."
+  },
+  {
+    "source_id": "ADD-A-017",
+    "canonical_requirement_id": "sops-operations-interface",
+    "proposal_id": "OPS-03",
+    "design_section": "Outcome and API/errors — plan/apply/verify/resume/report for generator and local-artifact batches",
+    "test_oracle": "Contract tests execute generate/encrypt/rekey/sync/inspect/restore/deploy against a synthetic fixture; migration import followed by rollback restores the prior encrypted version.",
+    "disposition": "partial",
+    "reason": "PARTIAL: OPS-03 covers generic local-artifact plan/apply/verify/recover and explicitly excludes provider credential reconciliation, but does not define the SOPS/age operations or unified fnox interface."
+  },
+  {
+    "source_id": "ADD-A-018",
+    "canonical_requirement_id": "root-escrow-laptop",
+    "proposal_id": "OPS-10",
+    "design_section": "Outcome and Current evidence and boundary — operation approval and custody gates; production root operation prohibited",
+    "test_oracle": "Custody plan names the exact encrypted local path and recovery dependency; synthetic restore validates integrity without production key material.",
+    "disposition": "approval-blocked",
+    "reason": "APPROVAL-BLOCKED: OPS-10 defines approval gates and forbids production root generation/export/sync. It does not select or implement the laptop destination; only synthetic custody design/evidence is supportable pending separate approval."
+  },
+  {
+    "source_id": "ADD-A-019",
+    "canonical_requirement_id": "root-escrow-bws",
+    "proposal_id": "OPS-10",
+    "design_section": "Outcome and Acceptance — scoped provider-write/root-custody hazard approval; ROOT-09/10 own closed escrow mechanics",
+    "test_oracle": "Synthetic BWS project receipt proves retrieval only by the specifically approved project/identity; no other project receives the encrypted test archive.",
+    "disposition": "approval-blocked",
+    "reason": "APPROVAL-BLOCKED: OPS-10 expressly prohibits live vault writes and delegates custody implementation. It can gate the operation but does not authorize or implement BWS root escrow."
+  },
+  {
+    "source_id": "ADD-A-020",
+    "canonical_requirement_id": "root-escrow-op",
+    "proposal_id": "OPS-10",
+    "design_section": "Outcome and Acceptance — provider-write/root-custody approval gates; no live authorization",
+    "test_oracle": "Synthetic OP vault receipt proves approved-vault access and denies an unscoped account; archive remains encrypted and integrity-checked.",
+    "disposition": "approval-blocked",
+    "reason": "APPROVAL-BLOCKED: OPS-10 gates but does not perform live vault operations and delegates closed escrow mechanics to ROOT-09/10. Production OP escrow remains separately approval-gated."
+  },
+  {
+    "source_id": "ADD-A-021",
+    "canonical_requirement_id": "root-custody-policy",
+    "proposal_id": "OPS-10",
+    "design_section": "Outcome — operation-level approval contract, not a second custody policy; ROOT-09/10 own custody mechanics",
+    "test_oracle": "Policy matrix permits exactly laptop/BWS/OP approved destinations, denies a fourth mock backend, verifies archive hash/restore, and distinguishes active signer from escrow copy.",
+    "disposition": "partial",
+    "reason": "PARTIAL: OPS-10 maps root custody to a scoped approval hazard and requires destination/restore completeness, but the actual three-destination policy and independent restores belong to PKI root custody proposals, not this proposal."
+  },
+  {
+    "source_id": "ADD-A-022",
+    "canonical_requirement_id": "root-archive-granularity",
+    "proposal_id": "OPS-04",
+    "design_section": "Outcome — file and archive transactions validate manifests/hashes and recover per-file state",
+    "test_oracle": "Synthetic recovery restores each root independently and the complete bundle; recipient key separation is demonstrated by cross-decryption denial.",
+    "disposition": "partial",
+    "reason": "PARTIAL: OPS-04 handles generic archive integrity and transactions, but not root archive granularity, encryption, or independently separated recovery recipients."
+  },
+  {
+    "source_id": "ADD-A-023",
+    "canonical_requirement_id": "r2-research",
+    "proposal_id": "OPS-10",
+    "design_section": "Current evidence and boundary — no live provider writes or production root sync",
+    "test_oracle": "Research brief demonstrates synthetic client-side encrypted R2 upload, versioned readback, and denial to ordinary worker credentials; plaintext mode remains disabled.",
+    "disposition": "unresolved-cross-domain",
+    "reason": "UNRESOLVED/CROSS-DOMAIN: OPS-10 prohibits live writes but does not research or evaluate R2. R2 is an explicitly research-only extra destination and has no covering architecture/generator/operations proposal."
+  },
+  {
+    "source_id": "ADD-A-024",
+    "canonical_requirement_id": "offline-root-migration",
+    "proposal_id": "ARCH-06",
+    "design_section": "Scope and technical boundaries — shared signer authorization interface only; domain implementation later",
+    "test_oracle": "Synthetic offline signing and recovery scenario demonstrates a non-circular bootstrap and a migration path from initial escrow to an isolated signer.",
+    "disposition": "partial",
+    "reason": "PARTIAL: ARCH-06 establishes a signer-authority seam and rejects ambient signing authority, but explicitly excludes PKI root custody and signer implementation; it does not design the future migration."
+  },
+  {
+    "source_id": "ADD-A-025",
+    "canonical_requirement_id": "securestore-evaluation",
+    "proposal_id": "OPS-04",
+    "design_section": "Outcome — generic file/archive sink contract; no storage-provider implementation",
+    "test_oracle": "Version-pinned SecureStore build/import-export test produces a portable encrypted synthetic file and records crate maintenance/API state.",
+    "disposition": "unresolved-cross-domain",
+    "reason": "UNRESOLVED/CROSS-DOMAIN: OPS-04 specifies transaction safety, not SecureStore candidate research, encrypted format interoperability, or a library selection. No covering proposal here."
+  },
+  {
+    "source_id": "ADD-A-026",
+    "canonical_requirement_id": "securestore-use-cases",
+    "proposal_id": "ARCH-01",
+    "design_section": "Scope and affected surface — resolver identity seam only; provider and credential storage remain outside scope",
+    "test_oracle": "Synthetic data exercises backup, offline cache, standalone/local store and versioned-bundle use cases; report whether Fleet provider operations preserve format without loss.",
+    "disposition": "unresolved-cross-domain",
+    "reason": "UNRESOLVED/CROSS-DOMAIN: ARCH-01 expressly excludes provider adapters and credential serialization/reconciliation. It cannot decide SecureStore use cases or fnox/SOPS integration fit."
+  },
+  {
+    "source_id": "ADD-A-027",
+    "canonical_requirement_id": "securestore-security-review",
+    "proposal_id": "OPS-04",
+    "design_section": "Current repository evidence and boundary — no credential files; refuse unsupported atomicity",
+    "test_oracle": "Independent security/maintenance matrix records exact crypto/KDF, concurrency and format-evolution evidence and a go/no-go; select no adapter if no unique advantage is established.",
+    "disposition": "unresolved-cross-domain",
+    "reason": "UNRESOLVED/CROSS-DOMAIN: OPS-04 does not review encryption algorithms, KDF, maintenance, compatibility, or compare SecureStore with age/SOPS and maintained AEAD."
+  },
+  {
+    "source_id": "ADD-A-028",
+    "canonical_requirement_id": "openbao-nonblocking",
+    "proposal_id": "ARCH-07",
+    "design_section": "Scope and affected surface — Fleet registry remains the sole CLI/capability source; no new domain behavior here",
+    "test_oracle": "Current implementation dependency graph builds and tests with no OpenBao dependency; roadmap records its independent research go/no-go.",
+    "disposition": "partial",
+    "reason": "PARTIAL: ARCH-07 prevents a competing CLI and owns registry/feature wiring but does not assess OpenBao's service role or place its evaluation on the future roadmap."
+  },
+  {
+    "source_id": "ADD-A-031",
+    "canonical_requirement_id": "openbao-kubernetes-future",
+    "proposal_id": "ARCH-10",
+    "design_section": "Scope and affected surface — minimal/admin profiles and feature closure; no runtime infrastructure deployment",
+    "test_oracle": "Roadmap and architecture label Kubernetes deployment as long-term research; current build/test succeeds without cluster deployment artifacts.",
+    "disposition": "partial",
+    "reason": "PARTIAL: ARCH-10 proves profile dependency closure and avoids infrastructure dependencies, but does not establish the requested long-term Kubernetes research direction or roadmap."
+  },
+  {
+    "source_id": "ADD-A-035",
+    "canonical_requirement_id": "crate-boundaries-and-features",
+    "proposal_id": "ARCH-10",
+    "design_section": "Scope and affected surface — profile-to-feature mapping and build proof for consumer-min, agent, fleet, admin and serve",
+    "test_oracle": "Cargo feature-tree/build matrix compiles each target profile and proves disabled integrations are absent while public APIs remain compatible.",
+    "disposition": "partial",
+    "reason": "PARTIAL: ARCH-10 directly covers feature closure and minimal consumer/admin profiles, but does not fully specify crate boundaries, stable interfaces, or optional feature contracts across all providers and algorithms."
+  },
+  {
+    "source_id": "ADD-A-036",
+    "canonical_requirement_id": "runtime-and-admin-profiles",
+    "proposal_id": "ARCH-10",
+    "design_section": "Scope and affected surface; Proposed budgets and measurable acceptance — consumer-min, agent and admin profiles",
+    "test_oracle": "Benchmark minimal consumer against admin profile; assert admin-only dependencies are absent from minimal profile and measured startup/binary budgets are recorded.",
+    "disposition": "covered-with-limits",
+    "reason": "PARTIAL: ARCH-10 defines these two profile classes and their dependency/build proof. Its size/startup figures are provisional, unratified targets, not release gates until measured and approved."
+  },
+  {
+    "source_id": "ADD-A-037",
+    "canonical_requirement_id": "cache-and-runtime-performance",
+    "proposal_id": "ARCH-10",
+    "design_section": "Proposed budgets and measurable acceptance — profile size and startup measurements only",
+    "test_oracle": "Fault-inject rotation/revocation and assert stale cache is denied whenever freshness is required; inject partial provider outage and assert recoverable, redacted results.",
+    "disposition": "partial",
+    "reason": "PARTIAL: ARCH-10 covers profile size/startup and dependency closure but not detailed subprocess/network/allocation/disk costs, pooling, cache freshness, revocation, outage recovery or redaction. Those source outcomes need other proposals."
+  },
+  {
+    "source_id": "ADD-A-038",
+    "canonical_requirement_id": "api-cli-and-observability",
+    "proposal_id": "ARCH-07",
+    "design_section": "Acceptance criteria — one registry source for help, JSON capability output, completion and dispatch; preserve secrets CLI compatibility",
+    "test_oracle": "Equivalent synthetic request through CLI and Rust API yields the same typed result/receipt; serialized diagnostics contain no secret canary and recovery reproduces committed state.",
+    "disposition": "partial",
+    "reason": "PARTIAL: ARCH-07 covers coherent command registry/profile behavior and existing secret CLI compatibility, but not typed secret results, structured redacted observability or recovery receipts."
+  }
+]

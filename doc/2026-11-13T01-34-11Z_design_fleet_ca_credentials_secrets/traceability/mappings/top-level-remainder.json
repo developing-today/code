@@ -1,0 +1,218 @@
+[
+  {
+    "source_id": "INPUT3-C-0001",
+    "canonical_requirement_id": "",
+    "proposal_id": "",
+    "design_section": "Not applicable — historical/context at source_input_3_architectural_perspective.txt, transition into the specification; no proposal section applies because the source row has no canonical requirement.",
+    "test_oracle": "Not applicable — verify the source remains historical/context only and is not treated as an implementation result: The author frames the following text as a specification intended for the implementing agent; this describes the source document’s intended audience, not current authority or implementation.",
+    "disposition": "historical",
+    "reason": "COVERED: Historical input-3 context only. This records intended audience only; it confers no implementation authority and adds no requirement."
+  },
+  {
+    "source_id": "INPUT3-C-0002",
+    "canonical_requirement_id": "",
+    "proposal_id": "",
+    "design_section": "Not applicable — historical/context at source_input_3_architectural_perspective.txt, Part I heading; §2 heading and introductory sentence; no proposal section applies because the source row has no canonical requirement.",
+    "test_oracle": "Not applicable — verify the source remains historical/context only and is not treated as an implementation result: The document groups architectural/security principles under Part I and §2, and introduces the following list as implementation principles. The heading/introduction is organizational context; the substantive principles are inventoried separately.",
+    "disposition": "historical",
+    "reason": "COVERED: Historical input-3 context only. This is an organizational heading/introduction; substantive principles are inventoried separately."
+  },
+  {
+    "source_id": "INPUT3-C-0003",
+    "canonical_requirement_id": "",
+    "proposal_id": "",
+    "design_section": "Not applicable — historical/context at source_input_3_architectural_perspective.txt, Part II heading; no proposal section applies because the source row has no canonical requirement.",
+    "test_oracle": "Not applicable — verify the source remains historical/context only and is not treated as an implementation result: The source organizes subsequent material as root trust architecture.",
+    "disposition": "historical",
+    "reason": "COVERED: Historical input-3 context only. This is a structural heading; substantive claims are separately inventoried and the heading adds no independent implementation outcome."
+  },
+  {
+    "source_id": "INPUT3-C-0004",
+    "canonical_requirement_id": "",
+    "proposal_id": "",
+    "design_section": "Not applicable — historical/context at source_input_3_architectural_perspective.txt, Part III heading; no proposal section applies because the source row has no canonical requirement.",
+    "test_oracle": "Not applicable — verify the source remains historical/context only and is not treated as an implementation result: The source organizes subsequent material as intermediate CA architecture.",
+    "disposition": "historical",
+    "reason": "COVERED: Historical input-3 context only. This is a structural heading; substantive claims are separately inventoried and the heading adds no independent implementation outcome."
+  },
+  {
+    "source_id": "INPUT3-C-0005",
+    "canonical_requirement_id": "",
+    "proposal_id": "",
+    "design_section": "Not applicable — historical/context at source_input_3_architectural_perspective.txt, Part IV heading; no proposal section applies because the source row has no canonical requirement.",
+    "test_oracle": "Not applicable — verify the source remains historical/context only and is not treated as an implementation result: The source organizes subsequent material as certificate issuance.",
+    "disposition": "historical",
+    "reason": "COVERED: Historical input-3 context only. This is a structural heading; substantive claims are separately inventoried and the heading adds no independent implementation outcome."
+  },
+  {
+    "source_id": "INPUT3-C-0006",
+    "canonical_requirement_id": "",
+    "proposal_id": "",
+    "design_section": "Not applicable — historical/context at source_input_3_architectural_perspective.txt, Part V heading; no proposal section applies because the source row has no canonical requirement.",
+    "test_oracle": "Not applicable — verify the source remains historical/context only and is not treated as an implementation result: The source organizes subsequent material as AIA, CRL, OCSP and distribution.",
+    "disposition": "historical",
+    "reason": "COVERED: Historical input-3 context only. This is a structural heading; substantive claims are separately inventoried and the heading adds no independent implementation outcome."
+  },
+  {
+    "source_id": "INPUT3-C-0007",
+    "canonical_requirement_id": "",
+    "proposal_id": "",
+    "design_section": "Not applicable — historical/context at source_input_3_architectural_perspective.txt, Part VI heading; no proposal section applies because the source row has no canonical requirement.",
+    "test_oracle": "Not applicable — verify the source remains historical/context only and is not treated as an implementation result: The source organizes subsequent material as bundles, manifests and storage.",
+    "disposition": "historical",
+    "reason": "COVERED: Historical input-3 context only. This is a structural heading; substantive claims are separately inventoried and the heading adds no independent implementation outcome."
+  },
+  {
+    "source_id": "INPUT3-C-0008",
+    "canonical_requirement_id": "",
+    "proposal_id": "",
+    "design_section": "Not applicable — historical/context at source_input_3_architectural_perspective.txt, Part VII heading; no proposal section applies because the source row has no canonical requirement.",
+    "test_oracle": "Not applicable — verify the source remains historical/context only and is not treated as an implementation result: The source organizes subsequent material as organization and naming defaults.",
+    "disposition": "historical",
+    "reason": "COVERED: Historical input-3 context only. This is a structural heading; substantive claims are separately inventoried and the heading adds no independent implementation outcome."
+  },
+  {
+    "source_id": "INPUT3-C-0009",
+    "canonical_requirement_id": "",
+    "proposal_id": "",
+    "design_section": "Not applicable — historical/context at source_input_3_architectural_perspective.txt, Part VIII heading; no proposal section applies because the source row has no canonical requirement.",
+    "test_oracle": "Not applicable — verify the source remains historical/context only and is not treated as an implementation result: The source organizes subsequent material as CLI design.",
+    "disposition": "historical",
+    "reason": "COVERED: Historical input-3 context only. This is a structural heading; substantive claims are separately inventoried and the heading adds no independent implementation outcome."
+  },
+  {
+    "source_id": "INPUT3-C-0011",
+    "canonical_requirement_id": "",
+    "proposal_id": "",
+    "design_section": "Not applicable — historical/context at source_input_3_architectural_perspective.txt, Part X heading; no proposal section applies because the source row has no canonical requirement.",
+    "test_oracle": "Not applicable — verify the source remains historical/context only and is not treated as an implementation result: The source organizes subsequent material as SSH and other certificate systems.",
+    "disposition": "historical",
+    "reason": "COVERED: Historical input-3 context only. This is a structural heading; substantive claims are separately inventoried and the heading adds no independent implementation outcome."
+  },
+  {
+    "source_id": "INPUT3-C-0012",
+    "canonical_requirement_id": "",
+    "proposal_id": "",
+    "design_section": "Not applicable — historical/context at source_input_3_architectural_perspective.txt, Part XIV heading; no proposal section applies because the source row has no canonical requirement.",
+    "test_oracle": "Not applicable — verify the source remains historical/context only and is not treated as an implementation result: The source labels the following section additional engineering requirements.",
+    "disposition": "historical",
+    "reason": "COVERED: Historical input-3 context only. This is a structural heading; substantive claims are separately inventoried and the heading adds no independent implementation outcome."
+  },
+  {
+    "source_id": "INPUT3-C-0014",
+    "canonical_requirement_id": "",
+    "proposal_id": "",
+    "design_section": "Not applicable — historical/context at source_input_3_architectural_perspective.txt, blank lines and Markdown horizontal-rule separators; no proposal section applies because the source row has no canonical requirement.",
+    "test_oracle": "Not applicable — verify the source remains historical/context only and is not treated as an implementation result: These source spans contain only blank lines and/or Markdown horizontal-rule separators. They are explicitly mapped as formatting-only: no architectural claim, requirement, implementation status or precedence decision is inferred.",
+    "disposition": "historical",
+    "reason": "COVERED: Historical input-3 context only. Inventory identifies only blank lines and Markdown separators; no claim, requirement, status, or precedence decision exists."
+  },
+  {
+    "source_id": "INPUT3-0045",
+    "canonical_requirement_id": "",
+    "proposal_id": "",
+    "design_section": "Not applicable — historical/context at source_input_3_architectural_perspective.txt, §19 Implementation discretion; no proposal section applies because the source row has no canonical requirement.",
+    "test_oracle": "Not applicable — verify the source remains historical/context only and is not treated as an implementation result: Allow improvements over examples while preserving usable/recoverable system and essential outcomes; explain conflicts with standards, client behavior or security invariants.",
+    "disposition": "historical",
+    "reason": "COVERED: Historical input-3 context only. §47 treats input 3 as historical user-provided proposal; its implementation-discretion text cannot override integrated source precedence and adds no independent canonical requirement."
+  },
+  {
+    "source_id": "HANDOFF-GATE-01",
+    "canonical_requirement_id": "implementation-handoff.gate-01",
+    "proposal_id": "",
+    "design_section": "Not applicable pending assignment — exact missing owner: one reconnaissance deliverable covering pinned revision, registry, resolver/get-list, Nix/profile budgets, and active work.",
+    "test_oracle": "Not applicable pending owner: require a pinned-revision census with observed behavior/tests for each named subsystem; leave unchecked facts unknown.",
+    "disposition": "unresolved-cross-domain",
+    "reason": "UNRESOLVED/CROSS-DOMAIN: No single proposal owns pinned-revision reconnaissance across current registry, resolver/get-list behavior, Nix/profile budgets, and active work. ARCH-10 owns future profile closure/budgets and TRACE-02 characterizes selected V1 behavior only."
+  },
+  {
+    "source_id": "HANDOFF-GATE-02",
+    "canonical_requirement_id": "implementation-handoff.gate-02",
+    "proposal_id": "TRACE-01",
+    "design_section": "proposals/traceability/mapping.json#TRACE-01 (Gate canonical source traceability and issue-evidence coverage in CI) — Gate canonical source traceability and issue-evidence coverage in CI; measurable acceptance and negative tests.",
+    "test_oracle": "Run TRACE-01 fixture validator over source IDs, mapping/proposal/evidence links; fail on missing/contradictory source links. Gate-02 still needs explicit API/CLI, provider, risk, and failure columns in its matrix schema.",
+    "disposition": "partial",
+    "reason": "PARTIAL: TRACE-01 owns CI source-to-requirement-to-proposal/test/evidence traceability and required packet fields, but does not explicitly define all gate-02 matrix columns (API/CLI, provider, risk, failure) as one reviewed schema."
+  },
+  {
+    "source_id": "HANDOFF-GATE-03",
+    "canonical_requirement_id": "implementation-handoff.gate-03",
+    "proposal_id": "",
+    "design_section": "Not applicable pending assignment — exact missing owner: integrated OP/BWS/bw synthetic probe matrix for read/list/create/update/rename/field/attachments/revisions/IDs/rollback.",
+    "test_oracle": "Not applicable pending integrated owner: assert readback, native-ID/revision stability and rollback for every operation; unauthorized bw must deny without enumeration.",
+    "disposition": "unresolved-cross-domain",
+    "reason": "UNRESOLVED/CROSS-DOMAIN: SEC-03 owns capability descriptors/fake-adapter conformance; SEC-04/05/06 separately own BWS/OP/bw adapter work. No single proposal owns/proves the complete cross-provider operation matrix and separately authorized bw behavior."
+  },
+  {
+    "source_id": "HANDOFF-GATE-04",
+    "canonical_requirement_id": "implementation-handoff.gate-04",
+    "proposal_id": "",
+    "design_section": "Not applicable pending assignment — exact missing owner: integration proposal binding all named SEC/REC components and production-cleanup approval gate.",
+    "test_oracle": "Not applicable pending integration owner: synthetic crash/replay/readback/reference-state tests plus secret-canary scan; production cleanup requires backup, inventory, approval and readback.",
+    "disposition": "unresolved-cross-domain",
+    "reason": "UNRESOLVED/CROSS-DOMAIN: Ownership is split across SEC-02/03 and REC-01/03/04/05/07/08. No proposal owns the complete schema/resolver/sidecar/lock/history/journal+SQL replay/readback/sync-plan/reconcile-CLI engine and production-cleanup gate."
+  },
+  {
+    "source_id": "HANDOFF-GATE-05",
+    "canonical_requirement_id": "implementation-handoff.gate-05",
+    "proposal_id": "ROOT-01",
+    "design_section": "proposals/pki.json#ROOT-01 (Define root algorithm registry and fail-closed capability contract) — Define root algorithm registry and fail-closed capability contract; outcome and acceptance sections.",
+    "test_oracle": "Exercise versioned per-operation capability matrix and synthetic smoke fixtures with independent signature verification; unsupported operations/OIDs fail closed. Serial, trust, publication, profile and no-implicit-signer clauses remain owned by separate ROOT/CERT/OPS proposals.",
+    "disposition": "partial",
+    "reason": "PARTIAL: ROOT-01 owns PKI algorithm registry and fail-closed capability dispatch only; serials, trust, publication, profile policy and implicit-root-signer approval span other ROOT/CERT/OPS proposals."
+  },
+  {
+    "source_id": "HANDOFF-GATE-06",
+    "canonical_requirement_id": "implementation-handoff.gate-06",
+    "proposal_id": "OPS-07",
+    "design_section": "proposals/generators-ops.json#OPS-07 (Generate client-specific public deployment kits and verify guides) — Generate client-specific public deployment kits and verify guides; outcome and acceptance sections.",
+    "test_oracle": "For a synthetic manifest and pinned client/version, verify selected chain/profile and generated guide against hashes and independent verifier receipts; verify AIA-disabled clients using supplied chains. SSH-native installation remains GEN-08/OPS-11.",
+    "disposition": "partial",
+    "reason": "PARTIAL: OPS-07 owns client-specific public deployment kits and verify/install/rotation/rollback guides. It does not own native SSH installation guidance (GEN-08/OPS-11) or establish proactive chain delivery when AIA is unavailable."
+  },
+  {
+    "source_id": "HANDOFF-GATE-07",
+    "canonical_requirement_id": "implementation-handoff.gate-07",
+    "proposal_id": "",
+    "design_section": "Not applicable pending assignment — exact missing owner: platform-boundary ADR covering Nix/Fleet authority, SOPS/age custody and Flux/Helm/OpenBao/optional platform migration choices.",
+    "test_oracle": "Not applicable pending platform owner: synthetic deployment/store-scan plus ADR completeness oracle; no live migration is implied.",
+    "disposition": "unresolved-cross-domain",
+    "reason": "UNRESOLVED/CROSS-DOMAIN: PERF-04 owns the Fleet SOPS/age adapter, PERF-06 provisioning/recovery, and FUT-01 an isolated OpenBao lab. No proposal owns the full Nix/Fleet authority and Flux/Helm/OpenBao/optional-platform comparison ADR before migration."
+  },
+  {
+    "source_id": "HANDOFF-GATE-08",
+    "canonical_requirement_id": "implementation-handoff.gate-08",
+    "proposal_id": "",
+    "design_section": "Not applicable pending assignment — exact missing owner: integrated test-plan/evidence manifest spanning all listed secrets failures, PKI paths, independent clients, and performance baselines.",
+    "test_oracle": "Not applicable pending integrated owner: coverage validator requires a fixture, oracle, pinned command/version and pass/fail/unsupported result for every named case.",
+    "disposition": "unresolved-cross-domain",
+    "reason": "UNRESOLVED/CROSS-DOMAIN: Tests are distributed across REC proposals (sync, permissions, cache, tombstones, crash recovery), PKI/CERT proposals (valid/invalid paths and clients), and PERF proposals (baselines). OPS-08 covers generated-artifact evidence only, not this full matrix."
+  },
+  {
+    "source_id": "HANDOFF-GATE-09",
+    "canonical_requirement_id": "implementation-handoff.gate-09",
+    "proposal_id": "OPS-10",
+    "design_section": "proposals/generators-ops.json#OPS-10 (Specify production approval, custody and recovery gates) — Specify production approval, custody and recovery gates; legacy activation, approval contract and acceptance sections.",
+    "test_oracle": "Run synthetic approval evaluator: missing/expired/wrong-scope approval causes zero signer/provider/network mutations and yields a blocker. Require a separate built-Fleet transcript and test-only/production label; OPS-10 does not prove artifact generation.",
+    "disposition": "partial",
+    "reason": "PARTIAL: OPS-10 owns scoped production approval/custody/recovery gates. It does not own built-Fleet artifact generation evidence or test-only labeling/blocker reporting (OPS-08 and delivery evidence)."
+  },
+  {
+    "source_id": "HANDOFF-GATE-10",
+    "canonical_requirement_id": "implementation-handoff.gate-10",
+    "proposal_id": "",
+    "design_section": "Not applicable pending assignment — exact missing owner: final delivery-manifest owner joining every requested artifact category to path/hash/status or explicit not-delivered reason and each unresolved requirement to a disposition.",
+    "test_oracle": "Not applicable pending delivery owner: validate every listed deliverable category and requirement-to-evidence join; fail on missing evidence or silently dropped unresolved requirements.",
+    "disposition": "unresolved-cross-domain",
+    "reason": "UNRESOLVED/CROSS-DOMAIN: TRACE-01 joins requirements to evidence; OPS-08 owns generated-artifact evidence; OPS-11 runbooks; domain proposals own code/schema/tests. No single proposal owns the full delivery bundle and unresolved-requirement disposition."
+  },
+  {
+    "source_id": "SPEC-A-PKI2-015-dns-plan",
+    "canonical_requirement_id": "pki2-015.dns-caa-ct-plan",
+    "proposal_id": "CERT-15",
+    "design_section": "proposals/pki.json#CERT-15 — Generate DNS and publication runbooks without applying them; Outcome and Acceptance/oracle sections.",
+    "test_oracle": "Render a DNS/CAA/CT plan from a synthetic zone fixture; compare the zone diff and CAA/CT artifacts to a reference parser, assert no mutation is applied, and verify exact rollback entries are present.",
+    "disposition": "mapped",
+    "reason": "COVERED: CERT-15 is the exact owner for a validated DNS/publication plan and runbook without application. Its body validates zone/schema and artifact-path consistency, keeps placeholders non-executable, distinguishes public CAA/CT from private trust, and does not execute DNS; the separately future ACME workflow is not included."
+  }
+]

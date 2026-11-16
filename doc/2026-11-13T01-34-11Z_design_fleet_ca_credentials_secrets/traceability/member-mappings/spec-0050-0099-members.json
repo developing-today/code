@@ -1,0 +1,862 @@
+[
+  {
+    "member_id": "SPEC-0084-refined01",
+    "parent_source_id": "SPEC-0084",
+    "canonical_requirement_id": "artifacts.manifest-identity",
+    "proposal_id": "ROOT-02",
+    "design_section": "proposals/pki.json#ROOT-02; designs/pki-roots.md §§67-71",
+    "test_oracle": "Decider: manifest schema fixture validation Input/evidence: Generate root/issuer/leaf manifests with schema, identity, subject, purpose, lineage, generation/partition and provenance fields. Expected invariant: Every logical root set, issuer set and leaf delivery has a schema-versioned `manifest.json` (machine canonical) plus optional YAML rendering (human). Reference oracle: Proposed: §7.1 and §28.3 bundle acceptance; evaluate this member independently. Not executed.",
+    "disposition": "proposal",
+    "reason": "COVERED: The proposal owns the PKI manifest schema/identity outcome and its acceptance covers deterministic public/private manifest projections and the corresponding PKI metadata. This member-specific outcome is “Every logical root set, issuer set and leaf delivery has a schema-versioned `manifest.json` (machine canonical) plus optional YAML rendering (human).” and is covered by ROOT-02 (proposals/pki.json#ROOT-02); this mapping relies on the proposal/design clause, not a parent mapping or starter issue."
+  },
+  {
+    "member_id": "SPEC-0084-refined02",
+    "parent_source_id": "SPEC-0084",
+    "canonical_requirement_id": "artifacts.manifest-identity",
+    "proposal_id": "",
+    "design_section": "Unmapped; member source context only: sources/fleet_architecture_spec_v0_3.md §7.1 manifest identity/schema",
+    "test_oracle": "Decider: manifest schema fixture validation Input/evidence: Generate root/issuer/leaf manifests with schema, identity, subject, purpose, lineage, generation/partition and provenance fields. Expected invariant: It must describe: Reference oracle: Proposed: §7.1 and §28.3 bundle acceptance; evaluate this member independently. Not executed.",
+    "disposition": "unresolved-cross-domain",
+    "reason": "UNRESOLVED/CROSS-DOMAIN: no proposal body specifically owns this standalone member outcome: “It must describe:”. The related proposal/design scopes do not state this exact deliverable or acceptance clause; the missing owner is a member-level design/issue decision. No parent mapping or starter-issue reference is inherited."
+  },
+  {
+    "member_id": "SPEC-0084-refined03",
+    "parent_source_id": "SPEC-0084",
+    "canonical_requirement_id": "artifacts.manifest-identity",
+    "proposal_id": "ROOT-02",
+    "design_section": "proposals/pki.json#ROOT-02; designs/pki-roots.md §§67-71",
+    "test_oracle": "Decider: manifest schema fixture validation Input/evidence: Generate root/issuer/leaf manifests with schema, identity, subject, purpose, lineage, generation/partition and provenance fields. Expected invariant: - `schema`, `bundle_id`, `bundle_type`, `bundle_version`, `created_at`, `organization`, display names, subject DN/OU, `purpose`, `parent_refs`, generation/partition, renewal/revision, organization ID/namespace, source/build revision and policy/algorithm provider versions; Reference oracle: Proposed: §7.1 and §28.3 bundle acceptance; evaluate this member independently. Not executed.",
+    "disposition": "proposal",
+    "reason": "COVERED: The proposal owns the PKI manifest schema/identity outcome and its acceptance covers deterministic public/private manifest projections and the corresponding PKI metadata. This member-specific outcome is “- `schema`, `bundle_id`, `bundle_type`, `bundle_version`, `created_at`, `organization`, display names, subject DN/OU, `purpose`, `parent_refs`, generation/partition, renewal/revision, organization ID/namespace, source/build revision and policy/algorithm provider versions;” and is covered by ROOT-02 (proposals/pki.json#ROOT-02); this mapping relies on the proposal/design clause, not a parent mapping or starter issue."
+  },
+  {
+    "member_id": "SPEC-0085-refined01",
+    "parent_source_id": "SPEC-0085",
+    "canonical_requirement_id": "artifacts.manifest-crypto-provenance",
+    "proposal_id": "ROOT-02",
+    "design_section": "proposals/pki.json#ROOT-02; designs/pki-roots.md §§67-71",
+    "test_oracle": "Decider: manifest crypto-graph consistency validator Input/evidence: Use signed certificate fixtures covering algorithm/key handle/exportability, hashes, validity, cross-cert graph, paths, roots, CRL and publication. Expected invariant: - cross-cert relationships, trust paths/chain variants, root fingerprints, public distribution references, CRL signatures/freshness, signed publication records; Reference oracle: Proposed: §7.1 and §28.3 PKI acceptance; evaluate this member independently. Not executed.",
+    "disposition": "proposal",
+    "reason": "COVERED: The proposal owns the PKI manifest schema/identity outcome and its acceptance covers deterministic public/private manifest projections and the corresponding PKI metadata. This member-specific outcome is “- algorithm set, per-algo `key_id`, storage handle, key exportability, X.509 certificate fingerprint/serial/issuer/SKI/AKI, DER/public artifact hashes, validity times, key usage/EKU/policies/name constraints, AIA/CDP URLs, OCSP status;” and is covered by ROOT-02 (proposals/pki.json#ROOT-02); this mapping relies on the proposal/design clause, not a parent mapping or starter issue."
+  },
+  {
+    "member_id": "SPEC-0085-refined02",
+    "parent_source_id": "SPEC-0085",
+    "canonical_requirement_id": "artifacts.manifest-crypto-provenance",
+    "proposal_id": "ROOT-02",
+    "design_section": "proposals/pki.json#ROOT-02; designs/pki-roots.md §§67-71",
+    "test_oracle": "Decider: manifest crypto-graph consistency validator Input/evidence: Use signed certificate fixtures covering algorithm/key handle/exportability, hashes, validity, cross-cert graph, paths, roots, CRL and publication. Expected invariant: - cross-cert relationships, trust paths/chain variants, root fingerprints, public distribution references, CRL signatures/freshness, signed publication records; Reference oracle: Proposed: §7.1 and §28.3 PKI acceptance; evaluate this member independently. Not executed.",
+    "disposition": "proposal",
+    "reason": "COVERED: The proposal owns the PKI manifest schema/identity outcome and its acceptance covers deterministic public/private manifest projections and the corresponding PKI metadata. This member-specific outcome is “- cross-cert relationships, trust paths/chain variants, root fingerprints, public distribution references, CRL signatures/freshness, signed publication records;” and is covered by ROOT-02 (proposals/pki.json#ROOT-02); this mapping relies on the proposal/design clause, not a parent mapping or starter issue."
+  },
+  {
+    "member_id": "SPEC-0086-refined01",
+    "parent_source_id": "SPEC-0086",
+    "canonical_requirement_id": "artifacts.manifest-files-sync",
+    "proposal_id": "ROOT-02",
+    "design_section": "proposals/pki.json#ROOT-02; designs/pki-roots.md §§67-71",
+    "test_oracle": "Decider: artifact-index and provider-receipt schema tests Input/evidence: Create public/private artifacts and fake provider receipt; inspect index fields and scan serialized manifest for payload. Expected invariant: - creation engine version, config snapshot excluding secrets, cryptographic provider version, feature/algorithm registry revision and warnings; trace to renewal/rotation predecessor bundle; Reference oracle: Proposed: §7.1 and §28.3 bundle/secrets acceptance; evaluate this member independently. Not executed.",
+    "disposition": "proposal",
+    "reason": "COVERED: The proposal owns the PKI manifest schema/identity outcome and its acceptance covers deterministic public/private manifest projections and the corresponding PKI metadata. This member-specific outcome is “- file index with `relative_path`, artifact type, encoding/MIME, visibility (public/private), encryption, checksum and semantic role;” and is covered by ROOT-02 (proposals/pki.json#ROOT-02); this mapping relies on the proposal/design clause, not a parent mapping or starter issue."
+  },
+  {
+    "member_id": "SPEC-0086-refined02",
+    "parent_source_id": "SPEC-0086",
+    "canonical_requirement_id": "artifacts.manifest-files-sync",
+    "proposal_id": "",
+    "design_section": "Unmapped; member source context only: sources/fleet_architecture_spec_v0_3.md §7.1 file index/provider receipts",
+    "test_oracle": "Decider: artifact-index and provider-receipt schema tests Input/evidence: Create public/private artifacts and fake provider receipt; inspect index fields and scan serialized manifest for payload. Expected invariant: - creation engine version, config snapshot excluding secrets, cryptographic provider version, feature/algorithm registry revision and warnings; trace to renewal/rotation predecessor bundle; Reference oracle: Proposed: §7.1 and §28.3 bundle/secrets acceptance; evaluate this member independently. Not executed.",
+    "disposition": "unresolved-cross-domain",
+    "reason": "UNRESOLVED/CROSS-DOMAIN: no proposal body specifically owns this standalone member outcome: “- provider sync receipts and logical secret IDs **without plaintext**, canonical secret key path, configured privilege policy, validation results and status;”. The related proposal/design scopes do not state this exact deliverable or acceptance clause; the missing owner is a member-level design/issue decision. No parent mapping or starter-issue reference is inherited."
+  },
+  {
+    "member_id": "SPEC-0086-refined03",
+    "parent_source_id": "SPEC-0086",
+    "canonical_requirement_id": "artifacts.manifest-files-sync",
+    "proposal_id": "ROOT-02",
+    "design_section": "proposals/pki.json#ROOT-02; designs/pki-roots.md §§67-71",
+    "test_oracle": "Decider: artifact-index and provider-receipt schema tests Input/evidence: Create public/private artifacts and fake provider receipt; inspect index fields and scan serialized manifest for payload. Expected invariant: - creation engine version, config snapshot excluding secrets, cryptographic provider version, feature/algorithm registry revision and warnings; trace to renewal/rotation predecessor bundle; Reference oracle: Proposed: §7.1 and §28.3 bundle/secrets acceptance; evaluate this member independently. Not executed.",
+    "disposition": "proposal",
+    "reason": "COVERED: The proposal owns the PKI manifest schema/identity outcome and its acceptance covers deterministic public/private manifest projections and the corresponding PKI metadata. This member-specific outcome is “- creation engine version, config snapshot excluding secrets, cryptographic provider version, feature/algorithm registry revision and warnings; trace to renewal/rotation predecessor bundle;” and is covered by ROOT-02 (proposals/pki.json#ROOT-02); this mapping relies on the proposal/design clause, not a parent mapping or starter issue."
+  },
+  {
+    "member_id": "SPEC-0087-refined01",
+    "parent_source_id": "SPEC-0087",
+    "canonical_requirement_id": "artifacts.manifest-integrity-migration",
+    "proposal_id": "",
+    "design_section": "Unmapped; member source context only: sources/fleet_architecture_spec_v0_3.md §7.1 signatures/migration",
+    "test_oracle": "Decider: manifest trust-mode and migration fixture matrix Input/evidence: Validate attestations, public/private split, strict/legacy modes and forward/backward migrations; rename directory without changing manifest. Expected invariant: - audit-signature/attestation where available; preserve forward/backward schema migrations. Reference oracle: Proposed: §7.1 and §28.3 migration acceptance; evaluate this member independently. Not executed.",
+    "disposition": "unresolved-cross-domain",
+    "reason": "UNRESOLVED/CROSS-DOMAIN: no proposal body specifically owns this standalone member outcome: “- audit-signature/attestation where available; preserve forward/backward schema migrations.”. The related proposal/design scopes do not state this exact deliverable or acceptance clause; the missing owner is a member-level design/issue decision. No parent mapping or starter-issue reference is inherited."
+  },
+  {
+    "member_id": "SPEC-0087-refined02",
+    "parent_source_id": "SPEC-0087",
+    "canonical_requirement_id": "artifacts.manifest-integrity-migration",
+    "proposal_id": "ROOT-02",
+    "design_section": "proposals/pki.json#ROOT-02; designs/pki-roots.md §§67-71",
+    "test_oracle": "Decider: manifest trust-mode and migration fixture matrix Input/evidence: Validate attestations, public/private split, strict/legacy modes and forward/backward migrations; rename directory without changing manifest. Expected invariant: Never derive authoritative state solely from directory names; bundle ID and signed/verified metadata are needed. Reference oracle: Proposed: §7.1 and §28.3 migration acceptance; evaluate this member independently. Not executed.",
+    "disposition": "proposal",
+    "reason": "COVERED: The proposal owns the PKI manifest schema/identity outcome and its acceptance covers deterministic public/private manifest projections and the corresponding PKI metadata. This member-specific outcome is “Never derive authoritative state solely from directory names; bundle ID and signed/verified metadata are needed.” and is covered by ROOT-02 (proposals/pki.json#ROOT-02); this mapping relies on the proposal/design clause, not a parent mapping or starter issue."
+  },
+  {
+    "member_id": "SPEC-0087-refined03",
+    "parent_source_id": "SPEC-0087",
+    "canonical_requirement_id": "artifacts.manifest-integrity-migration",
+    "proposal_id": "ROOT-02",
+    "design_section": "proposals/pki.json#ROOT-02; designs/pki-roots.md §§67-71",
+    "test_oracle": "Decider: manifest trust-mode and migration fixture matrix Input/evidence: Validate attestations, public/private split, strict/legacy modes and forward/backward migrations; rename directory without changing manifest. Expected invariant: Consider public/private manifest separation, with a public distributable manifest scrubbed of private store paths or sensitive infrastructure if necessary. Reference oracle: Proposed: §7.1 and §28.3 migration acceptance; evaluate this member independently. Not executed.",
+    "disposition": "proposal",
+    "reason": "COVERED: The proposal owns the PKI manifest schema/identity outcome and its acceptance covers deterministic public/private manifest projections and the corresponding PKI metadata. This member-specific outcome is “Consider public/private manifest separation, with a public distributable manifest scrubbed of private store paths or sensitive infrastructure if necessary.” and is covered by ROOT-02 (proposals/pki.json#ROOT-02); this mapping relies on the proposal/design clause, not a parent mapping or starter issue."
+  },
+  {
+    "member_id": "SPEC-0087-refined04",
+    "parent_source_id": "SPEC-0087",
+    "canonical_requirement_id": "artifacts.manifest-integrity-migration",
+    "proposal_id": "",
+    "design_section": "Unmapped; member source context only: sources/fleet_architecture_spec_v0_3.md §7.1 signatures/migration",
+    "test_oracle": "Decider: manifest trust-mode and migration fixture matrix Input/evidence: Validate attestations, public/private split, strict/legacy modes and forward/backward migrations; rename directory without changing manifest. Expected invariant: Bundle read modes: strict schema verification, legacy inference with warnings, and migration to new schema. Reference oracle: Proposed: §7.1 and §28.3 migration acceptance; evaluate this member independently. Not executed.",
+    "disposition": "unresolved-cross-domain",
+    "reason": "UNRESOLVED/CROSS-DOMAIN: no proposal body specifically owns this standalone member outcome: “Bundle read modes: strict schema verification, legacy inference with warnings, and migration to new schema.”. The related proposal/design scopes do not state this exact deliverable or acceptance clause; the missing owner is a member-level design/issue decision. No parent mapping or starter-issue reference is inherited."
+  },
+  {
+    "member_id": "SPEC-0088-refined01",
+    "parent_source_id": "SPEC-0088",
+    "canonical_requirement_id": "artifacts.root-public-package",
+    "proposal_id": "ROOT-08",
+    "design_section": "proposals/pki.json#ROOT-08; designs/pki-roots.md §§54-65",
+    "test_oracle": "Decider: root public package golden-tree test Input/evidence: Generate root fixture with roots/cross-certs/trust bundles/CRLs/formats and compare paths and manifest. Expected invariant: ```\nroot-set-g1a/\n  README.md\n  MANIFEST.json\n  manifest.yaml\n  policy.yaml\n  CHANGELOG.md\n  NEXT-STEPS.md\n  PUBLISH.md\n  publish-plan.yaml\n  dns.zone\n  public/\n    roots/{rsa-4096,p256,ed25519,ml-dsa-44}/g1a/{root.crt,root.pem}\n    cross/<certified-algo>/g1a/{signed-by-<signer>.crt,issuers.p7c,...}\n    bundles/{roots-all.pem,roots-classical.pem,roots-pq.pem,cross-certs.pem}\n    crl/roots/<algo>/g1a.crl\n    formats/... Reference oracle: Proposed: §7.2 and §28.3 root bundle acceptance; evaluate this member independently. Not executed.",
+    "disposition": "proposal",
+    "reason": "COVERED: The proposal owns the deterministic public root-package outcome, including root manifests, artifact files, trust subsets, checksums and root-specific guides. This member-specific outcome is “```\nroot-set-g1a/\n  README.md\n  MANIFEST.json\n  manifest.yaml\n  policy.yaml\n  CHANGELOG.md\n  NEXT-STEPS.md\n  PUBLISH.md\n  publish-plan.yaml\n  dns.zone\n  public/\n    roots/{rsa-4096,p256,ed25519,ml-dsa-44}/g1a/{root.crt,root.pem}\n    cross/<certified-algo>/g1a/{signed-by-<signer>.crt,issuers.p7c,...}\n    bundles/{roots-all.pem,roots-classical.pem,roots-pq.pem,cross-certs.pem}\n    crl/roots/<algo>/g1a.crl\n    formats/...” and is covered by ROOT-08 (proposals/pki.json#ROOT-08); this mapping relies on the proposal/design clause, not a parent mapping or starter issue."
+  },
+  {
+    "member_id": "SPEC-0089-refined01",
+    "parent_source_id": "SPEC-0089",
+    "canonical_requirement_id": "artifacts.root-private-custody",
+    "proposal_id": "",
+    "design_section": "Unmapped; member source context only: sources/fleet_architecture_spec_v0_3.md §7.2 root private custody",
+    "test_oracle": "Decider: root private-custody archive policy matrix Input/evidence: Package root with export forbidden, allowed and encrypted-authorized modes; inspect modes, archive and filenames. Expected invariant: private/           # present ONLY when allowed; otherwise handles/refs only\n    keys/<algo>/...  # encrypted, permission-guarded Reference oracle: Proposed: §7.2 and §28.3 custody/archive acceptance; evaluate this member independently. Not executed.",
+    "disposition": "unresolved-cross-domain",
+    "reason": "UNRESOLVED/CROSS-DOMAIN: no proposal body specifically owns this standalone member outcome: “private/           # present ONLY when allowed; otherwise handles/refs only\n    keys/<algo>/...  # encrypted, permission-guarded”. The related proposal/design scopes do not state this exact deliverable or acceptance clause; the missing owner is a member-level design/issue decision. No parent mapping or starter-issue reference is inherited."
+  },
+  {
+    "member_id": "SPEC-0089-refined02",
+    "parent_source_id": "SPEC-0089",
+    "canonical_requirement_id": "artifacts.root-private-custody",
+    "proposal_id": "",
+    "design_section": "Unmapped; member source context only: sources/fleet_architecture_spec_v0_3.md §7.2 root private custody",
+    "test_oracle": "Decider: root private-custody archive policy matrix Input/evidence: Package root with export forbidden, allowed and encrypted-authorized modes; inspect modes, archive and filenames. Expected invariant: NEVER public upload\n  refs/key-handles.json\n  chains/...\n  tests/{verification-matrix.json,publication-checks.json}\n  checksums.sha256 Reference oracle: Proposed: §7.2 and §28.3 custody/archive acceptance; evaluate this member independently. Not executed.",
+    "disposition": "unresolved-cross-domain",
+    "reason": "UNRESOLVED/CROSS-DOMAIN: no proposal body specifically owns this standalone member outcome: “NEVER public upload\n  refs/key-handles.json\n  chains/...\n  tests/{verification-matrix.json,publication-checks.json}\n  checksums.sha256”. The related proposal/design scopes do not state this exact deliverable or acceptance clause; the missing owner is a member-level design/issue decision. No parent mapping or starter-issue reference is inherited."
+  },
+  {
+    "member_id": "SPEC-0089-refined03",
+    "parent_source_id": "SPEC-0089",
+    "canonical_requirement_id": "artifacts.root-private-custody",
+    "proposal_id": "",
+    "design_section": "Unmapped; member source context only: sources/fleet_architecture_spec_v0_3.md §7.2 root private custody",
+    "test_oracle": "Decider: root private-custody archive policy matrix Input/evidence: Package root with export forbidden, allowed and encrypted-authorized modes; inspect modes, archive and filenames. Expected invariant: ```\n\nActual on-disk names must be deterministic, readable and collision-resistant. Only root-appropriate secret keys/handles belong in `private/`; never include raw root secrets in a default distributable zip. Reference oracle: Proposed: §7.2 and §28.3 custody/archive acceptance; evaluate this member independently. Not executed.",
+    "disposition": "unresolved-cross-domain",
+    "reason": "UNRESOLVED/CROSS-DOMAIN: no proposal body specifically owns this standalone member outcome: “```\n\nActual on-disk names must be deterministic, readable and collision-resistant. Only root-appropriate secret keys/handles belong in `private/`; never include raw root secrets in a default distributable zip.”. The related proposal/design scopes do not state this exact deliverable or acceptance clause; the missing owner is a member-level design/issue decision. No parent mapping or starter-issue reference is inherited."
+  },
+  {
+    "member_id": "SPEC-0089-refined04",
+    "parent_source_id": "SPEC-0089",
+    "canonical_requirement_id": "artifacts.root-private-custody",
+    "proposal_id": "",
+    "design_section": "Unmapped; member source context only: sources/fleet_architecture_spec_v0_3.md §7.2 root private custody",
+    "test_oracle": "Decider: archive scan and filesystem permission check Input/evidence: root archive under forbidden and authorized custody policies Expected invariant: Actual on-disk names must be deterministic, readable and collision-resistant. Only root-appropriate secret keys/handles belong in `private/`; never include raw root secrets in a default distributable zip. Reference oracle: Proposed: this exact source line and the parent-row acceptance reference; not executed.",
+    "disposition": "unresolved-cross-domain",
+    "reason": "UNRESOLVED/CROSS-DOMAIN: no proposal body specifically owns this standalone member outcome: “Actual on-disk names must be deterministic, readable and collision-resistant. Only root-appropriate secret keys/handles belong in `private/`; never include raw root secrets in a default distributable zip.”. The related proposal/design scopes do not state this exact deliverable or acceptance clause; the missing owner is a member-level design/issue decision. No parent mapping or starter-issue reference is inherited."
+  },
+  {
+    "member_id": "SPEC-0090-refined01",
+    "parent_source_id": "SPEC-0090",
+    "canonical_requirement_id": "artifacts.issuer-package",
+    "proposal_id": "",
+    "design_section": "Unmapped; member source context only: sources/fleet_architecture_spec_v0_3.md §7.3 issuer package",
+    "test_oracle": "Decider: issuer package golden-tree/README test Input/evidence: Generate issuer fixture; inspect manifest/policy, cert/CRL/P7C/chains/handles and README. Expected invariant: ```\nissuer-set-internal-web-g1a/\n  README.md, MANIFEST.json, policy.yaml, NEXT-STEPS.md\n  PUBLISH.md, publish-plan.yaml, dns.zone, checksums.sha256\n  public/certs/<algo>/ca.crt + ca.pem\n  public/crl/<algo>.crl\n  public/ca-issuers/<algo>.p7c   # where useful\n  public/chains/<algo>/<root-anchor>.pem\n  private/key-handles.json      # opaque references by default\n  private/keys/...              # encrypted only when permitted\n  tests/issuer-matrix.json\n``` Reference oracle: Proposed: §7.3 and §28.3 issuer acceptance; evaluate this member independently. Not executed.",
+    "disposition": "unresolved-cross-domain",
+    "reason": "UNRESOLVED/CROSS-DOMAIN: no proposal body specifically owns this standalone member outcome: “```\nissuer-set-internal-web-g1a/\n  README.md, MANIFEST.json, policy.yaml, NEXT-STEPS.md\n  PUBLISH.md, publish-plan.yaml, dns.zone, checksums.sha256\n  public/certs/<algo>/ca.crt + ca.pem\n  public/crl/<algo>.crl\n  public/ca-issuers/<algo>.p7c   # where useful\n  public/chains/<algo>/<root-anchor>.pem\n  private/key-handles.json      # opaque references by default\n  private/keys/...              # encrypted only when permitted\n  tests/issuer-matrix.json\n```”. The related proposal/design scopes do not state this exact deliverable or acceptance clause; the missing owner is a member-level design/issue decision. No parent mapping or starter-issue reference is inherited."
+  },
+  {
+    "member_id": "SPEC-0090-refined02",
+    "parent_source_id": "SPEC-0090",
+    "canonical_requirement_id": "artifacts.issuer-package",
+    "proposal_id": "",
+    "design_section": "Unmapped; member source context only: sources/fleet_architecture_spec_v0_3.md §7.3 issuer package",
+    "test_oracle": "Decider: issuer package golden-tree/README test Input/evidence: Generate issuer fixture; inspect manifest/policy, cert/CRL/P7C/chains/handles and README. Expected invariant: Provide `README.md` with commands for each expected publish step (`cp <generated relative file> <served absolute path>` or API upload), DNS verification, CRL maintenance, parent root/issuer inventory, EKU/name-constraint caveats and exact expected leaf usage. Reference oracle: Proposed: §7.3 and §28.3 issuer acceptance; evaluate this member independently. Not executed.",
+    "disposition": "unresolved-cross-domain",
+    "reason": "UNRESOLVED/CROSS-DOMAIN: no proposal body specifically owns this standalone member outcome: “Provide `README.md` with commands for each expected publish step (`cp <generated relative file> <served absolute path>` or API upload), DNS verification, CRL maintenance, parent root/issuer inventory, EKU/name-constraint caveats and exact expected leaf usage.”. The related proposal/design scopes do not state this exact deliverable or acceptance clause; the missing owner is a member-level design/issue decision. No parent mapping or starter-issue reference is inherited."
+  },
+  {
+    "member_id": "SPEC-0090-refined03",
+    "parent_source_id": "SPEC-0090",
+    "canonical_requirement_id": "artifacts.issuer-package",
+    "proposal_id": "",
+    "design_section": "Unmapped; member source context only: sources/fleet_architecture_spec_v0_3.md §7.3 issuer package",
+    "test_oracle": "Decider: issuer package golden-tree/README test Input/evidence: Generate issuer fixture; inspect manifest/policy, cert/CRL/P7C/chains/handles and README. Expected invariant: The same format can be created for a wholly unrelated organization/reason; avoid hard-coded Developing Today identifiers in the engine. Reference oracle: Proposed: §7.3 and §28.3 issuer acceptance; evaluate this member independently. Not executed.",
+    "disposition": "unresolved-cross-domain",
+    "reason": "UNRESOLVED/CROSS-DOMAIN: no proposal body specifically owns this standalone member outcome: “The same format can be created for a wholly unrelated organization/reason; avoid hard-coded Developing Today identifiers in the engine.”. The related proposal/design scopes do not state this exact deliverable or acceptance clause; the missing owner is a member-level design/issue decision. No parent mapping or starter-issue reference is inherited."
+  },
+  {
+    "member_id": "SPEC-0091-refined01",
+    "parent_source_id": "SPEC-0091",
+    "canonical_requirement_id": "artifacts.leaf-handoff-identity",
+    "proposal_id": "CERT-12",
+    "design_section": "proposals/pki.json#CERT-12; designs/pki-issuance.md §§5.1, 5.4, 7.1",
+    "test_oracle": "Decider: handoff content and private-key policy matrix Input/evidence: Generate handoff with SAN/expiry/public formats/compatible paths; repeat with encrypted authorized key output. Expected invariant: `--delivery handoff` produces an install-ready directory or authenticated/encrypted archive including: Reference oracle: Proposed: §7.4 and §28.3 leaf delivery acceptance; evaluate this member independently. Not executed.",
+    "disposition": "proposal",
+    "reason": "COVERED: The proposal explicitly owns certificate delivery-kit formats, PEM/DER, certs-only CMS/P7C, precomposed chains, and policy-gated private formats. This member-specific outcome is “`--delivery handoff` produces an install-ready directory or authenticated/encrypted archive including:” and is covered by CERT-12 (proposals/pki.json#CERT-12); this mapping relies on the proposal/design clause, not a parent mapping or starter issue."
+  },
+  {
+    "member_id": "SPEC-0091-refined02",
+    "parent_source_id": "SPEC-0091",
+    "canonical_requirement_id": "artifacts.leaf-handoff-identity",
+    "proposal_id": "OPS-07",
+    "design_section": "proposals/generators-ops.json#OPS-07; designs/operations-evidence.md §3 and §4 (OPS-07)",
+    "test_oracle": "Decider: handoff content and private-key policy matrix Input/evidence: Generate handoff with SAN/expiry/public formats/compatible paths; repeat with encrypted authorized key output. Expected invariant: - public leaf `.crt` DER and `.pem`, public key SPKI, selected JWK/JWKS, chain PEMs per appropriate trust anchor, server/fullchain PEMs, PKCS#7/P7C (certificates only), PKCS#12/PFX if requested and safely encrypted, fingerprints and manifest Reference oracle: Proposed: §7.4 and §28.3 leaf delivery acceptance; evaluate this member independently. Not executed.",
+    "disposition": "proposal",
+    "reason": "COVERED: The proposal explicitly owns per-client deployment kits and client-specific install/verify/rotation/removal guidance, consuming verified manifest and client evidence. This member-specific outcome is “- `README.md` showing purpose, identities/SANs, expiry, password/secret-handle retrieval instructions, capability limitations and exactly which certificate to install in which application;” and is covered by OPS-07 (proposals/generators-ops.json#OPS-07); this mapping relies on the proposal/design clause, not a parent mapping or starter issue."
+  },
+  {
+    "member_id": "SPEC-0091-refined03",
+    "parent_source_id": "SPEC-0091",
+    "canonical_requirement_id": "artifacts.leaf-handoff-identity",
+    "proposal_id": "CERT-12",
+    "design_section": "proposals/pki.json#CERT-12; designs/pki-issuance.md §§5.1, 5.4, 7.1",
+    "test_oracle": "Decider: handoff content and private-key policy matrix Input/evidence: Generate handoff with SAN/expiry/public formats/compatible paths; repeat with encrypted authorized key output. Expected invariant: - public leaf `.crt` DER and `.pem`, public key SPKI, selected JWK/JWKS, chain PEMs per appropriate trust anchor, server/fullchain PEMs, PKCS#7/P7C (certificates only), PKCS#12/PFX if requested and safely encrypted, fingerprints and manifest Reference oracle: Proposed: §7.4 and §28.3 leaf delivery acceptance; evaluate this member independently. Not executed.",
+    "disposition": "proposal",
+    "reason": "COVERED: The proposal explicitly owns certificate delivery-kit formats, PEM/DER, certs-only CMS/P7C, precomposed chains, and policy-gated private formats. This member-specific outcome is “- public leaf `.crt` DER and `.pem`, public key SPKI, selected JWK/JWKS, chain PEMs per appropriate trust anchor, server/fullchain PEMs, PKCS#7/P7C (certificates only), PKCS#12/PFX if requested and safely encrypted, fingerprints and manifest” and is covered by CERT-12 (proposals/pki.json#CERT-12); this mapping relies on the proposal/design clause, not a parent mapping or starter issue."
+  },
+  {
+    "member_id": "SPEC-0091-refined04",
+    "parent_source_id": "SPEC-0091",
+    "canonical_requirement_id": "artifacts.leaf-handoff-identity",
+    "proposal_id": "",
+    "design_section": "Unmapped; member source context only: sources/fleet_architecture_spec_v0_3.md §7.4 handoff identity outputs",
+    "test_oracle": "Decider: handoff content and private-key policy matrix Input/evidence: Generate handoff with SAN/expiry/public formats/compatible paths; repeat with encrypted authorized key output. Expected invariant: - `chains/default.pem`, `chains/for-rsa-root.pem`, `chains/for-p256-root.pem`, `chains/for-ed25519-root.pem`, `chains/for-ml-dsa-root.pem` **when a valid compatible path exists**; do not fabricate universal paths or duplicate chains for all roots when unnecessary; Reference oracle: Proposed: §7.4 and §28.3 leaf delivery acceptance; evaluate this member independently. Not executed.",
+    "disposition": "unresolved-cross-domain",
+    "reason": "UNRESOLVED/CROSS-DOMAIN: no proposal body specifically owns this standalone member outcome: “`.cer` aliases only where needed;”. The related proposal/design scopes do not state this exact deliverable or acceptance clause; the missing owner is a member-level design/issue decision. No parent mapping or starter-issue reference is inherited."
+  },
+  {
+    "member_id": "SPEC-0091-refined05",
+    "parent_source_id": "SPEC-0091",
+    "canonical_requirement_id": "artifacts.leaf-handoff-identity",
+    "proposal_id": "CERT-12",
+    "design_section": "proposals/pki.json#CERT-12; designs/pki-issuance.md §§5.1, 5.4, 7.1",
+    "test_oracle": "Decider: handoff content and private-key policy matrix Input/evidence: Generate handoff with SAN/expiry/public formats/compatible paths; repeat with encrypted authorized key output. Expected invariant: - `chains/default.pem`, `chains/for-rsa-root.pem`, `chains/for-p256-root.pem`, `chains/for-ed25519-root.pem`, `chains/for-ml-dsa-root.pem` **when a valid compatible path exists**; do not fabricate universal paths or duplicate chains for all roots when unnecessary; Reference oracle: Proposed: §7.4 and §28.3 leaf delivery acceptance; evaluate this member independently. Not executed.",
+    "disposition": "proposal",
+    "reason": "COVERED: The proposal explicitly owns certificate delivery-kit formats, PEM/DER, certs-only CMS/P7C, precomposed chains, and policy-gated private formats. This member-specific outcome is “- private keys **only in protected/encrypted output when explicitly authorized**; default handoff may instead contain private-key store references and a secure import guide;” and is covered by CERT-12 (proposals/pki.json#CERT-12); this mapping relies on the proposal/design clause, not a parent mapping or starter issue."
+  },
+  {
+    "member_id": "SPEC-0091-refined06",
+    "parent_source_id": "SPEC-0091",
+    "canonical_requirement_id": "artifacts.leaf-handoff-identity",
+    "proposal_id": "CERT-12",
+    "design_section": "proposals/pki.json#CERT-12; designs/pki-issuance.md §§5.1, 5.4, 7.1",
+    "test_oracle": "Decider: handoff content and private-key policy matrix Input/evidence: Generate handoff with SAN/expiry/public formats/compatible paths; repeat with encrypted authorized key output. Expected invariant: - `chains/default.pem`, `chains/for-rsa-root.pem`, `chains/for-p256-root.pem`, `chains/for-ed25519-root.pem`, `chains/for-ml-dsa-root.pem` **when a valid compatible path exists**; do not fabricate universal paths or duplicate chains for all roots when unnecessary; Reference oracle: Proposed: §7.4 and §28.3 leaf delivery acceptance; evaluate this member independently. Not executed.",
+    "disposition": "proposal",
+    "reason": "COVERED: The proposal explicitly owns certificate delivery-kit formats, PEM/DER, certs-only CMS/P7C, precomposed chains, and policy-gated private formats. This member-specific outcome is “- `chains/default.pem`, `chains/for-rsa-root.pem`, `chains/for-p256-root.pem`, `chains/for-ed25519-root.pem`, `chains/for-ml-dsa-root.pem` **when a valid compatible path exists**; do not fabricate universal paths or duplicate chains for all roots when unnecessary;” and is covered by CERT-12 (proposals/pki.json#CERT-12); this mapping relies on the proposal/design clause, not a parent mapping or starter issue."
+  },
+  {
+    "member_id": "SPEC-0091-refined07",
+    "parent_source_id": "SPEC-0091",
+    "canonical_requirement_id": "artifacts.leaf-handoff-identity",
+    "proposal_id": "CERT-12",
+    "design_section": "proposals/pki.json#CERT-12; designs/pki-issuance.md §§5.1, 5.4, 7.1",
+    "test_oracle": "Decider: artifact index checks plus private-byte scan Input/evidence: default, denied-export and authorized encrypted-export handoffs Expected invariant: - private keys **only in protected/encrypted output when explicitly authorized**; default handoff may instead contain private-key store references and a secure import guide; Reference oracle: Proposed: this exact source line and the parent-row acceptance reference; not executed.",
+    "disposition": "proposal",
+    "reason": "COVERED: The proposal explicitly owns certificate delivery-kit formats, PEM/DER, certs-only CMS/P7C, precomposed chains, and policy-gated private formats. This member-specific outcome is “- private keys **only in protected/encrypted output when explicitly authorized**; default handoff may instead contain private-key store references and a secure import guide;” and is covered by CERT-12 (proposals/pki.json#CERT-12); this mapping relies on the proposal/design clause, not a parent mapping or starter issue."
+  },
+  {
+    "member_id": "SPEC-0091-refined08",
+    "parent_source_id": "SPEC-0091",
+    "canonical_requirement_id": "artifacts.leaf-handoff-identity",
+    "proposal_id": "CERT-12",
+    "design_section": "proposals/pki.json#CERT-12; designs/pki-issuance.md §§5.1, 5.4, 7.1",
+    "test_oracle": "Decider: independent chain verifier and path-set equality Input/evidence: fixture with valid and invalid algorithm paths Expected invariant: - `chains/default.pem`, `chains/for-rsa-root.pem`, `chains/for-p256-root.pem`, `chains/for-ed25519-root.pem`, `chains/for-ml-dsa-root.pem` **when a valid compatible path exists**; do not fabricate universal paths or duplicate chains for all roots when unnecessary; Reference oracle: Proposed: this exact source line and the parent-row acceptance reference; not executed.",
+    "disposition": "proposal",
+    "reason": "COVERED: The proposal explicitly owns certificate delivery-kit formats, PEM/DER, certs-only CMS/P7C, precomposed chains, and policy-gated private formats. This member-specific outcome is “- `chains/default.pem`, `chains/for-rsa-root.pem`, `chains/for-p256-root.pem`, `chains/for-ed25519-root.pem`, `chains/for-ml-dsa-root.pem` **when a valid compatible path exists**; do not fabricate universal paths or duplicate chains for all roots when unnecessary;” and is covered by CERT-12 (proposals/pki.json#CERT-12); this mapping relies on the proposal/design clause, not a parent mapping or starter issue."
+  },
+  {
+    "member_id": "SPEC-0092-refined01",
+    "parent_source_id": "SPEC-0092",
+    "canonical_requirement_id": "artifacts.handoff-guides-scripts",
+    "proposal_id": "OPS-07",
+    "design_section": "proposals/generators-ops.json#OPS-07; designs/operations-evidence.md §3 and §4 (OPS-07)",
+    "test_oracle": "Decider: handoff guide/script selection and safety tests Input/evidence: Create TLS and SSH handoffs; inspect selected platform guides, scripts, publication/DNS, renewal/revocation and archive variants. Expected invariant: - a public-only distribution variant and an explicitly encrypted credential package; avoid a default unencrypted archive that is safe to email only by accident. Reference oracle: Proposed: §7.4 and §28.3 delivery acceptance; evaluate this member independently. Not executed.",
+    "disposition": "proposal",
+    "reason": "COVERED: The proposal explicitly owns per-client deployment kits and client-specific install/verify/rotation/removal guidance, consuming verified manifest and client evidence. This member-specific outcome is “- `install/linux.md`, `install/windows.md`, `install/macos.md`, `install/java.md`, `install/firefox.md`, `install/chrome.md`, `install/nginx.md`, `install/apache.md`, `install/caddy.md`, `install/ssh.md`, `install/email.md`, `install/kubernetes.md`, and other relevant guides selected by credential family; examples must distinguish *trust-store CA import* from *server identity/key deployment*;” and is covered by OPS-07 (proposals/generators-ops.json#OPS-07); this mapping relies on the proposal/design clause, not a parent mapping or starter issue."
+  },
+  {
+    "member_id": "SPEC-0092-refined02",
+    "parent_source_id": "SPEC-0092",
+    "canonical_requirement_id": "artifacts.handoff-guides-scripts",
+    "proposal_id": "",
+    "design_section": "Unmapped; member source context only: sources/fleet_architecture_spec_v0_3.md §7.4 guides and safe scripts",
+    "test_oracle": "Decider: handoff guide/script selection and safety tests Input/evidence: Create TLS and SSH handoffs; inspect selected platform guides, scripts, publication/DNS, renewal/revocation and archive variants. Expected invariant: - a public-only distribution variant and an explicitly encrypted credential package; avoid a default unencrypted archive that is safe to email only by accident. Reference oracle: Proposed: §7.4 and §28.3 delivery acceptance; evaluate this member independently. Not executed.",
+    "disposition": "unresolved-cross-domain",
+    "reason": "UNRESOLVED/CROSS-DOMAIN: no proposal body specifically owns this standalone member outcome: “- `PUBLISH.md` and `dns.zone` if public artifacts or DNS changes are required, `verify.sh` and `verify.ps1` containing safe reproducible checks, and `NEXT-STEPS.md` for revocation/renewal;”. The related proposal/design scopes do not state this exact deliverable or acceptance clause; the missing owner is a member-level design/issue decision. No parent mapping or starter-issue reference is inherited."
+  },
+  {
+    "member_id": "SPEC-0092-refined03",
+    "parent_source_id": "SPEC-0092",
+    "canonical_requirement_id": "artifacts.handoff-guides-scripts",
+    "proposal_id": "CERT-12",
+    "design_section": "proposals/pki.json#CERT-12; designs/pki-issuance.md §§5.1, 5.4, 7.1",
+    "test_oracle": "Decider: handoff guide/script selection and safety tests Input/evidence: Create TLS and SSH handoffs; inspect selected platform guides, scripts, publication/DNS, renewal/revocation and archive variants. Expected invariant: - a public-only distribution variant and an explicitly encrypted credential package; avoid a default unencrypted archive that is safe to email only by accident. Reference oracle: Proposed: §7.4 and §28.3 delivery acceptance; evaluate this member independently. Not executed.",
+    "disposition": "proposal",
+    "reason": "COVERED: The proposal explicitly owns certificate delivery-kit formats, PEM/DER, certs-only CMS/P7C, precomposed chains, and policy-gated private formats. This member-specific outcome is “- a public-only distribution variant and an explicitly encrypted credential package; avoid a default unencrypted archive that is safe to email only by accident.” and is covered by CERT-12 (proposals/pki.json#CERT-12); this mapping relies on the proposal/design clause, not a parent mapping or starter issue."
+  },
+  {
+    "member_id": "SPEC-0093-refined01",
+    "parent_source_id": "SPEC-0093",
+    "canonical_requirement_id": "artifacts.delivery-modes-guides",
+    "proposal_id": "CERT-12",
+    "design_section": "proposals/pki.json#CERT-12; designs/pki-issuance.md §§5.1, 5.4, 7.1",
+    "test_oracle": "Decider: delivery subset and platform-claim tests Input/evidence: Run subset modes and flags; inspect version-qualified browser/OS docs and SSH fixture. Expected invariant: `--delivery minimal` produces the essential requested file objects and a compact manifest Reference oracle: Proposed: §7.4 and §28.3 documentation acceptance; evaluate this member independently. Not executed.",
+    "disposition": "proposal",
+    "reason": "COVERED: The proposal explicitly owns certificate delivery-kit formats, PEM/DER, certs-only CMS/P7C, precomposed chains, and policy-gated private formats. This member-specific outcome is “`--delivery minimal` produces the essential requested file objects and a compact manifest” and is covered by CERT-12 (proposals/pki.json#CERT-12); this mapping relies on the proposal/design clause, not a parent mapping or starter issue."
+  },
+  {
+    "member_id": "SPEC-0093-refined02",
+    "parent_source_id": "SPEC-0093",
+    "canonical_requirement_id": "artifacts.delivery-modes-guides",
+    "proposal_id": "CERT-12",
+    "design_section": "proposals/pki.json#CERT-12; designs/pki-issuance.md §§5.1, 5.4, 7.1",
+    "test_oracle": "Decider: delivery subset and platform-claim tests Input/evidence: Run subset modes and flags; inspect version-qualified browser/OS docs and SSH fixture. Expected invariant: `--delivery public-only` excludes all private material Reference oracle: Proposed: §7.4 and §28.3 documentation acceptance; evaluate this member independently. Not executed.",
+    "disposition": "proposal",
+    "reason": "COVERED: The proposal explicitly owns certificate delivery-kit formats, PEM/DER, certs-only CMS/P7C, precomposed chains, and policy-gated private formats. This member-specific outcome is “`--delivery public-only` excludes all private material” and is covered by CERT-12 (proposals/pki.json#CERT-12); this mapping relies on the proposal/design clause, not a parent mapping or starter issue."
+  },
+  {
+    "member_id": "SPEC-0093-refined03",
+    "parent_source_id": "SPEC-0093",
+    "canonical_requirement_id": "artifacts.delivery-modes-guides",
+    "proposal_id": "",
+    "design_section": "Unmapped; member source context only: sources/fleet_architecture_spec_v0_3.md §7.4 delivery modes/platform accuracy",
+    "test_oracle": "Decider: delivery subset and platform-claim tests Input/evidence: Run subset modes and flags; inspect version-qualified browser/OS docs and SSH fixture. Expected invariant: `--delivery key-only` outputs specified key representations to authorized destinations only. Reference oracle: Proposed: §7.4 and §28.3 documentation acceptance; evaluate this member independently. Not executed.",
+    "disposition": "unresolved-cross-domain",
+    "reason": "UNRESOLVED/CROSS-DOMAIN: no proposal body specifically owns this standalone member outcome: “`--delivery key-only` outputs specified key representations to authorized destinations only.”. The related proposal/design scopes do not state this exact deliverable or acceptance clause; the missing owner is a member-level design/issue decision. No parent mapping or starter-issue reference is inherited."
+  },
+  {
+    "member_id": "SPEC-0093-refined04",
+    "parent_source_id": "SPEC-0093",
+    "canonical_requirement_id": "artifacts.delivery-modes-guides",
+    "proposal_id": "",
+    "design_section": "Unmapped; member source context only: sources/fleet_architecture_spec_v0_3.md §7.4 delivery modes/platform accuracy",
+    "test_oracle": "Decider: delivery subset and platform-claim tests Input/evidence: Run subset modes and flags; inspect version-qualified browser/OS docs and SSH fixture. Expected invariant: `--no-chains`, `--no-docs`, `--formats`, `--artifact` and `--only` select subsets without disabling security guards. Reference oracle: Proposed: §7.4 and §28.3 documentation acceptance; evaluate this member independently. Not executed.",
+    "disposition": "unresolved-cross-domain",
+    "reason": "UNRESOLVED/CROSS-DOMAIN: no proposal body specifically owns this standalone member outcome: “`--no-chains`, `--no-docs`, `--formats`, `--artifact` and `--only` select subsets without disabling security guards.”. The related proposal/design scopes do not state this exact deliverable or acceptance clause; the missing owner is a member-level design/issue decision. No parent mapping or starter-issue reference is inherited."
+  },
+  {
+    "member_id": "SPEC-0093-refined05",
+    "parent_source_id": "SPEC-0093",
+    "canonical_requirement_id": "artifacts.delivery-modes-guides",
+    "proposal_id": "OPS-07",
+    "design_section": "proposals/generators-ops.json#OPS-07; designs/operations-evidence.md §3 and §4 (OPS-07)",
+    "test_oracle": "Decider: delivery subset and platform-claim tests Input/evidence: Run subset modes and flags; inspect version-qualified browser/OS docs and SSH fixture. Expected invariant: **Platform-specific accuracy:** Chrome/Firefox may use system and/or application-specific trust stores depending on OS/policy Reference oracle: Proposed: §7.4 and §28.3 documentation acceptance; evaluate this member independently. Not executed.",
+    "disposition": "proposal",
+    "reason": "COVERED: The proposal explicitly owns per-client deployment kits and client-specific install/verify/rotation/removal guidance, consuming verified manifest and client evidence. This member-specific outcome is “**Platform-specific accuracy:** Chrome/Firefox may use system and/or application-specific trust stores depending on OS/policy” and is covered by OPS-07 (proposals/generators-ops.json#OPS-07); this mapping relies on the proposal/design clause, not a parent mapping or starter issue."
+  },
+  {
+    "member_id": "SPEC-0093-refined06",
+    "parent_source_id": "SPEC-0093",
+    "canonical_requirement_id": "artifacts.delivery-modes-guides",
+    "proposal_id": "OPS-07",
+    "design_section": "proposals/generators-ops.json#OPS-07; designs/operations-evidence.md §3 and §4 (OPS-07)",
+    "test_oracle": "Decider: delivery subset and platform-claim tests Input/evidence: Run subset modes and flags; inspect version-qualified browser/OS docs and SSH fixture. Expected invariant: Java uses configured JKS/PKCS#12 trust stores Reference oracle: Proposed: §7.4 and §28.3 documentation acceptance; evaluate this member independently. Not executed.",
+    "disposition": "proposal",
+    "reason": "COVERED: The proposal explicitly owns per-client deployment kits and client-specific install/verify/rotation/removal guidance, consuming verified manifest and client evidence. This member-specific outcome is “Java uses configured JKS/PKCS#12 trust stores” and is covered by OPS-07 (proposals/generators-ops.json#OPS-07); this mapping relies on the proposal/design clause, not a parent mapping or starter issue."
+  },
+  {
+    "member_id": "SPEC-0093-refined07",
+    "parent_source_id": "SPEC-0093",
+    "canonical_requirement_id": "artifacts.delivery-modes-guides",
+    "proposal_id": "OPS-07",
+    "design_section": "proposals/generators-ops.json#OPS-07; designs/operations-evidence.md §3 and §4 (OPS-07)",
+    "test_oracle": "Decider: delivery subset and platform-claim tests Input/evidence: Run subset modes and flags; inspect version-qualified browser/OS docs and SSH fixture. Expected invariant: Windows/macOS/Linux have platform-specific admin/enterprise root installation. Reference oracle: Proposed: §7.4 and §28.3 documentation acceptance; evaluate this member independently. Not executed.",
+    "disposition": "proposal",
+    "reason": "COVERED: The proposal explicitly owns per-client deployment kits and client-specific install/verify/rotation/removal guidance, consuming verified manifest and client evidence. This member-specific outcome is “Windows/macOS/Linux have platform-specific admin/enterprise root installation.” and is covered by OPS-07 (proposals/generators-ops.json#OPS-07); this mapping relies on the proposal/design clause, not a parent mapping or starter issue."
+  },
+  {
+    "member_id": "SPEC-0093-refined08",
+    "parent_source_id": "SPEC-0093",
+    "canonical_requirement_id": "artifacts.delivery-modes-guides",
+    "proposal_id": "OPS-07",
+    "design_section": "proposals/generators-ops.json#OPS-07; designs/operations-evidence.md §3 and §4 (OPS-07)",
+    "test_oracle": "Decider: delivery subset and platform-claim tests Input/evidence: Run subset modes and flags; inspect version-qualified browser/OS docs and SSH fixture. Expected invariant: Do not claim one exact command works on every distribution, Java version or browser. Reference oracle: Proposed: §7.4 and §28.3 documentation acceptance; evaluate this member independently. Not executed.",
+    "disposition": "proposal",
+    "reason": "COVERED: The proposal explicitly owns per-client deployment kits and client-specific install/verify/rotation/removal guidance, consuming verified manifest and client evidence. This member-specific outcome is “Do not claim one exact command works on every distribution, Java version or browser.” and is covered by OPS-07 (proposals/generators-ops.json#OPS-07); this mapping relies on the proposal/design clause, not a parent mapping or starter issue."
+  },
+  {
+    "member_id": "SPEC-0093-refined09",
+    "parent_source_id": "SPEC-0093",
+    "canonical_requirement_id": "artifacts.delivery-modes-guides",
+    "proposal_id": "OPS-07",
+    "design_section": "proposals/generators-ops.json#OPS-07; designs/operations-evidence.md §3 and §4 (OPS-07)",
+    "test_oracle": "Decider: delivery subset and platform-claim tests Input/evidence: Run subset modes and flags; inspect version-qualified browser/OS docs and SSH fixture. Expected invariant: Version and test documented commands. Reference oracle: Proposed: §7.4 and §28.3 documentation acceptance; evaluate this member independently. Not executed.",
+    "disposition": "proposal",
+    "reason": "COVERED: The proposal explicitly owns per-client deployment kits and client-specific install/verify/rotation/removal guidance, consuming verified manifest and client evidence. This member-specific outcome is “Version and test documented commands.” and is covered by OPS-07 (proposals/generators-ops.json#OPS-07); this mapping relies on the proposal/design clause, not a parent mapping or starter issue."
+  },
+  {
+    "member_id": "SPEC-0093-refined10",
+    "parent_source_id": "SPEC-0093",
+    "canonical_requirement_id": "artifacts.delivery-modes-guides",
+    "proposal_id": "OPS-07",
+    "design_section": "proposals/generators-ops.json#OPS-07; designs/operations-evidence.md §3 and §4 (OPS-07)",
+    "test_oracle": "Decider: delivery subset and platform-claim tests Input/evidence: Run subset modes and flags; inspect version-qualified browser/OS docs and SSH fixture. Expected invariant: For SSH, `known_hosts` and `ssh_config` snippets are relevant only to actual SSH host keys/certificates and trust anchors, not X.509 TLS certificates. Reference oracle: Proposed: §7.4 and §28.3 documentation acceptance; evaluate this member independently. Not executed.",
+    "disposition": "proposal",
+    "reason": "COVERED: The proposal explicitly owns per-client deployment kits and client-specific install/verify/rotation/removal guidance, consuming verified manifest and client evidence. This member-specific outcome is “For SSH, `known_hosts` and `ssh_config` snippets are relevant only to actual SSH host keys/certificates and trust anchors, not X.509 TLS certificates.” and is covered by OPS-07 (proposals/generators-ops.json#OPS-07); this mapping relies on the proposal/design clause, not a parent mapping or starter issue."
+  },
+  {
+    "member_id": "SPEC-0093-refined11",
+    "parent_source_id": "SPEC-0093",
+    "canonical_requirement_id": "artifacts.delivery-modes-guides",
+    "proposal_id": "OPS-07",
+    "design_section": "proposals/generators-ops.json#OPS-07; designs/operations-evidence.md §3 and §4 (OPS-07)",
+    "test_oracle": "Decider: delivery subset and platform-claim tests Input/evidence: Run subset modes and flags; inspect version-qualified browser/OS docs and SSH fixture. Expected invariant: SSH certificates cannot simply be derived from X.509 leaf certificates by changing extension. Reference oracle: Proposed: §7.4 and §28.3 documentation acceptance; evaluate this member independently. Not executed.",
+    "disposition": "proposal",
+    "reason": "COVERED: The proposal explicitly owns per-client deployment kits and client-specific install/verify/rotation/removal guidance, consuming verified manifest and client evidence. This member-specific outcome is “SSH certificates cannot simply be derived from X.509 leaf certificates by changing extension.” and is covered by OPS-07 (proposals/generators-ops.json#OPS-07); this mapping relies on the proposal/design clause, not a parent mapping or starter issue."
+  },
+  {
+    "member_id": "SPEC-0093-refined12",
+    "parent_source_id": "SPEC-0093",
+    "canonical_requirement_id": "artifacts.delivery-modes-guides",
+    "proposal_id": "",
+    "design_section": "Unmapped; member source context only: sources/fleet_architecture_spec_v0_3.md §7.4 delivery modes/platform accuracy",
+    "test_oracle": "Decider: authorization matrix and zero writes Input/evidence: each subset selector combined with unauthorized private export Expected invariant: `--delivery minimal` produces the essential requested file objects and a compact manifest; `--delivery public-only` excludes all private material; `--delivery key-only` outputs specified key representations to authorized destinations only. `--no-chains`, `--no-docs`, `--formats`, `--artifact` and `--only` select subsets without disabling security guards. Reference oracle: Proposed: this exact source line and the parent-row acceptance reference; not executed.",
+    "disposition": "unresolved-cross-domain",
+    "reason": "UNRESOLVED/CROSS-DOMAIN: no proposal body specifically owns this standalone member outcome: “`--delivery minimal` produces the essential requested file objects and a compact manifest; `--delivery public-only` excludes all private material; `--delivery key-only` outputs specified key representations to authorized destinations only. `--no-chains`, `--no-docs`, `--formats`, `--artifact` and `--only` select subsets without disabling security guards.”. The related proposal/design scopes do not state this exact deliverable or acceptance clause; the missing owner is a member-level design/issue decision. No parent mapping or starter-issue reference is inherited."
+  },
+  {
+    "member_id": "SPEC-0093-refined13",
+    "parent_source_id": "SPEC-0093",
+    "canonical_requirement_id": "artifacts.delivery-modes-guides",
+    "proposal_id": "OPS-07",
+    "design_section": "proposals/generators-ops.json#OPS-07; designs/operations-evidence.md §3 and §4 (OPS-07)",
+    "test_oracle": "Decider: credential-family consistency and version-claim assertions Input/evidence: SSH and X.509 docs fixtures across tested/untested platform versions Expected invariant: **Platform-specific accuracy:** Chrome/Firefox may use system and/or application-specific trust stores depending on OS/policy; Java uses configured JKS/PKCS#12 trust stores; Windows/macOS/Linux have platform-specific admin/enterprise root installation. Do not claim one exact command works on every distribution, Java version or browser. Version and test documented commands. For SSH, `known_hosts` and `ssh_config` snippets are relevant only to actual SSH host keys/certificates and trust anchors, not X.509 TLS certificates. SSH certificates cannot simply be derived from X.509 leaf certificates by changing extension. Reference oracle: Proposed: this exact source line and the parent-row acceptance reference; not executed.",
+    "disposition": "proposal",
+    "reason": "COVERED: The proposal explicitly owns per-client deployment kits and client-specific install/verify/rotation/removal guidance, consuming verified manifest and client evidence. This member-specific outcome is “**Platform-specific accuracy:** Chrome/Firefox may use system and/or application-specific trust stores depending on OS/policy; Java uses configured JKS/PKCS#12 trust stores; Windows/macOS/Linux have platform-specific admin/enterprise root installation. Do not claim one exact command works on every distribution, Java version or browser. Version and test documented commands. For SSH, `known_hosts` and `ssh_config` snippets are relevant only to actual SSH host keys/certificates and trust anchors, not X.509 TLS certificates. SSH certificates cannot simply be derived from X.509 leaf certificates by changing extension.” and is covered by OPS-07 (proposals/generators-ops.json#OPS-07); this mapping relies on the proposal/design clause, not a parent mapping or starter issue."
+  },
+  {
+    "member_id": "SPEC-0094-refined01",
+    "parent_source_id": "SPEC-0094",
+    "canonical_requirement_id": "artifacts.format-registry",
+    "proposal_id": "GEN-10",
+    "design_section": "proposals/generators-ops.json#GEN-10; designs/generators.md §4 (GEN-10)",
+    "test_oracle": "Decider: format registry capability matrix test Input/evidence: Register fixture adapters for X.509, PKCS12, SPKI/JWK, TLS, SSH, OpenPGP, JWT, DID and archives; query capabilities. Expected invariant: | Class | Examples | Intended capability |\n|---|---|---|\n| X.509 objects | DER `.crt`/`.cer`, PEM, CMS certs-only `.p7c`/`.p7b` | Baseline, tested |\n| Bundled identity | PKCS#12 `.p12`/`.pfx` | Opt-in encrypted import/export with private key |\n| Public key | SPKI DER/PEM, JWK/JWKS, SSH public key when algorithm supported | Encoding/representation; public only |\n| Private key | PKCS#8 encrypted PEM/DER, supported native SEC1, OpenSSH private key | Explicit policy/protected destination; no default plaintext |\n| TLS deployment | Fullchain PEM, Nginx/Apache/Caddy configs, kube secret templates | Profiles; actual private secret deployment guarded |\n| SSH | OpenSSH host/user CA certs, public-key formats, known_hosts/ssh config | **Separate** native SSH CA/signing workflow |\n| OpenPGP | OpenPGP certificate/key/subkeys and public export | **Separate** PGP semantics and expiration/trust |\n| JWT/JWS/JWK/x5c | Claims/signing, JWK metadata, certificate chain embedding | JWT is a signed assertion, not a cert format |\n| DID/W3C/JSON-LD/Multikey/IPFS | Exportable descriptors or publication resolvers | Optional adapters requiring concrete trust/resolver profile |\n| Archives/objects | zip, tar, tar.gz, tar.zst, zstd, JSON, YAML, JSONC output | Artifact packaging and structured exchange |\n| Future | KDL, CBOR, JOSE/COSE, CSV metadata, OCI artifact, S3/NATS | Registry-driven extension | Reference oracle: Proposed: §7.5 and §28.3 format acceptance; evaluate this member independently. Not executed.",
+    "disposition": "proposal",
+    "reason": "COVERED: The proposal explicitly owns additive, versioned algorithm/format capability registries, adapter metadata and compatibility fixtures. This member-specific outcome is “| Class | Examples | Intended capability |\n|---|---|---|\n| X.509 objects | DER `.crt`/`.cer`, PEM, CMS certs-only `.p7c`/`.p7b` | Baseline, tested |\n| Bundled identity | PKCS#12 `.p12`/`.pfx` | Opt-in encrypted import/export with private key |\n| Public key | SPKI DER/PEM, JWK/JWKS, SSH public key when algorithm supported | Encoding/representation; public only |\n| Private key | PKCS#8 encrypted PEM/DER, supported native SEC1, OpenSSH private key | Explicit policy/protected destination; no default plaintext |\n| TLS deployment | Fullchain PEM, Nginx/Apache/Caddy configs, kube secret templates | Profiles; actual private secret deployment guarded |\n| SSH | OpenSSH host/user CA certs, public-key formats, known_hosts/ssh config | **Separate** native SSH CA/signing workflow |\n| OpenPGP | OpenPGP certificate/key/subkeys and public export | **Separate** PGP semantics and expiration/trust |\n| JWT/JWS/JWK/x5c | Claims/signing, JWK metadata, certificate chain embedding | JWT is a signed assertion, not a cert format |\n| DID/W3C/JSON-LD/Multikey/IPFS | Exportable descriptors or publication resolvers | Optional adapters requiring concrete trust/resolver profile |\n| Archives/objects | zip, tar, tar.gz, tar.zst, zstd, JSON, YAML, JSONC output | Artifact packaging and structured exchange |\n| Future | KDL, CBOR, JOSE/COSE, CSV metadata, OCI artifact, S3/NATS | Registry-driven extension |” and is covered by GEN-10 (proposals/generators-ops.json#GEN-10); this mapping relies on the proposal/design clause, not a parent mapping or starter issue."
+  },
+  {
+    "member_id": "SPEC-0094-refined02",
+    "parent_source_id": "SPEC-0094",
+    "canonical_requirement_id": "artifacts.format-registry",
+    "proposal_id": "GEN-10",
+    "design_section": "proposals/generators-ops.json#GEN-10; designs/generators.md §4 (GEN-10)",
+    "test_oracle": "Decider: format registry capability matrix test Input/evidence: Register fixture adapters for X.509, PKCS12, SPKI/JWK, TLS, SSH, OpenPGP, JWT, DID and archives; query capabilities. Expected invariant: A new algorithm or format should require **one adapter + registration metadata + profile compatibility declarations + fixture tests**; no global enum explosion or duplicated implementations for each CLI command. Reference oracle: Proposed: §7.5 and §28.3 format acceptance; evaluate this member independently. Not executed.",
+    "disposition": "proposal",
+    "reason": "COVERED: The proposal explicitly owns additive, versioned algorithm/format capability registries, adapter metadata and compatibility fixtures. This member-specific outcome is “A new algorithm or format should require **one adapter + registration metadata + profile compatibility declarations + fixture tests**; no global enum explosion or duplicated implementations for each CLI command.” and is covered by GEN-10 (proposals/generators-ops.json#GEN-10); this mapping relies on the proposal/design clause, not a parent mapping or starter issue."
+  },
+  {
+    "member_id": "SPEC-0094-refined03",
+    "parent_source_id": "SPEC-0094",
+    "canonical_requirement_id": "artifacts.format-registry",
+    "proposal_id": "GEN-10",
+    "design_section": "proposals/generators-ops.json#GEN-10; designs/generators.md §4 (GEN-10)",
+    "test_oracle": "Decider: format registry capability matrix test Input/evidence: Register fixture adapters for X.509, PKCS12, SPKI/JWK, TLS, SSH, OpenPGP, JWT, DID and archives; query capabilities. Expected invariant: Format registry must distinguish `can_export_public`, `can_export_private`, `supports_chain`, `supports_algorithm`, `credential_family`, `mime`, file extension, security/policy requirements and streaming support. Reference oracle: Proposed: §7.5 and §28.3 format acceptance; evaluate this member independently. Not executed.",
+    "disposition": "proposal",
+    "reason": "COVERED: The proposal explicitly owns additive, versioned algorithm/format capability registries, adapter metadata and compatibility fixtures. This member-specific outcome is “Format registry must distinguish `can_export_public`, `can_export_private`, `supports_chain`, `supports_algorithm`, `credential_family`, `mime`, file extension, security/policy requirements and streaming support.” and is covered by GEN-10 (proposals/generators-ops.json#GEN-10); this mapping relies on the proposal/design clause, not a parent mapping or starter issue."
+  },
+  {
+    "member_id": "SPEC-0095-a01",
+    "parent_source_id": "SPEC-0095",
+    "canonical_requirement_id": "test.reference-run",
+    "proposal_id": "OPS-08",
+    "design_section": "proposals/generators-ops.json#OPS-08; designs/operations-evidence.md §2 and §4 (OPS-08)",
+    "test_oracle": "Decider: Compare the observed outcome for this separately testable condition: Use Fleet CLI/library to generate isolated test root. Input/evidence: Construct one isolated conforming case for “Use Fleet CLI/library to generate isolated test root” and one counterexample changing only this condition; capture the command/API result and resulting state. Expected invariant: The conforming case satisfies “Use Fleet CLI/library to generate isolated test root”; the counterexample is rejected or reported unsupported where the source requires. Check the specific observable state/result, not mere command completion. Reference oracle: Verbatim source evidence at fleet_architecture_spec_v0_3.md:701: “generate an isolated deterministic-profile **test** root set, `Base` issuer, `Internal Web` issuer, one general one-year leaf, and one web SAN/wildcard leaf with the implemented CLI, then test all outputs via CLI and library. Use”. Assert this child condition only; no test execution is claimed.",
+    "disposition": "proposal",
+    "reason": "COVERED: The proposal explicitly owns the Fleet-produced synthetic reference evidence suite and independent validation of generated PKI/reference outputs. This member-specific outcome is “Use Fleet CLI/library to generate isolated test root.” and is covered by OPS-08 (proposals/generators-ops.json#OPS-08); this mapping relies on the proposal/design clause, not a parent mapping or starter issue."
+  },
+  {
+    "member_id": "SPEC-0095-a01-r02",
+    "parent_source_id": "SPEC-0095",
+    "canonical_requirement_id": "test.reference-run",
+    "proposal_id": "OPS-08",
+    "design_section": "proposals/generators-ops.json#OPS-08; designs/operations-evidence.md §2 and §4 (OPS-08)",
+    "test_oracle": "Decider: Compare the observed outcome for this separately testable condition: Base. Input/evidence: Construct one isolated conforming case for “Base” and one counterexample changing only this condition; capture the command/API result and resulting state. Expected invariant: The conforming case satisfies “Base”; the counterexample is rejected or reported unsupported where the source requires. Check the specific observable state/result, not mere command completion. Reference oracle: Verbatim source evidence at fleet_architecture_spec_v0_3.md:701: “The implementer must generate an isolated deterministic-profile **test** root set, `Base` issuer, `Internal Web` issuer, one general one-year leaf, and one web SAN/wildcard leaf with the implemented CLI, then test all outputs via CLI and library. Use ephemeral test store providers and local HTTP fixtures for CRL/AIA; do not use production roots or secret-store credentials in CI.”. Assert this child condition only; no test execution is claimed.",
+    "disposition": "proposal",
+    "reason": "COVERED: The proposal explicitly owns the Fleet-produced synthetic reference evidence suite and independent validation of generated PKI/reference outputs. This member-specific outcome is “Base.” and is covered by OPS-08 (proposals/generators-ops.json#OPS-08); this mapping relies on the proposal/design clause, not a parent mapping or starter issue."
+  },
+  {
+    "member_id": "SPEC-0095-a01-r03",
+    "parent_source_id": "SPEC-0095",
+    "canonical_requirement_id": "test.reference-run",
+    "proposal_id": "OPS-08",
+    "design_section": "proposals/generators-ops.json#OPS-08; designs/operations-evidence.md §2 and §4 (OPS-08)",
+    "test_oracle": "Decider: Compare the observed outcome for this separately testable condition: Internal Web. Input/evidence: Construct one isolated conforming case for “Internal Web” and one counterexample changing only this condition; capture the command/API result and resulting state. Expected invariant: The conforming case satisfies “Internal Web”; the counterexample is rejected or reported unsupported where the source requires. Check the specific observable state/result, not mere command completion. Reference oracle: Verbatim source evidence at fleet_architecture_spec_v0_3.md:701: “web”. Assert this child condition only; no test execution is claimed.",
+    "disposition": "proposal",
+    "reason": "COVERED: The proposal explicitly owns the Fleet-produced synthetic reference evidence suite and independent validation of generated PKI/reference outputs. This member-specific outcome is “Internal Web.” and is covered by OPS-08 (proposals/generators-ops.json#OPS-08); this mapping relies on the proposal/design clause, not a parent mapping or starter issue."
+  },
+  {
+    "member_id": "SPEC-0095-a01-r04",
+    "parent_source_id": "SPEC-0095",
+    "canonical_requirement_id": "test.reference-run",
+    "proposal_id": "OPS-08",
+    "design_section": "proposals/generators-ops.json#OPS-08; designs/operations-evidence.md §2 and §4 (OPS-08)",
+    "test_oracle": "Decider: Compare the observed outcome for this separately testable condition: reference leaves using ephemeral stores/local HTTP fixtures. Input/evidence: Construct one isolated conforming case for “reference leaves using ephemeral stores/local HTTP fixtures” and one counterexample changing only this condition; capture the command/API result and resulting state. Expected invariant: The conforming case satisfies “reference leaves using ephemeral stores/local HTTP fixtures”; the counterexample is rejected or reported unsupported where the source requires. Check the specific observable state/result, not mere command completion. Reference oracle: Verbatim source evidence at fleet_architecture_spec_v0_3.md:701: “ephemeral test store providers and local HTTP fixtures”. Assert this child condition only; no test execution is claimed.",
+    "disposition": "proposal",
+    "reason": "COVERED: The proposal explicitly owns the Fleet-produced synthetic reference evidence suite and independent validation of generated PKI/reference outputs. This member-specific outcome is “reference leaves using ephemeral stores/local HTTP fixtures.” and is covered by OPS-08 (proposals/generators-ops.json#OPS-08); this mapping relies on the proposal/design clause, not a parent mapping or starter issue."
+  },
+  {
+    "member_id": "SPEC-0095-a01-r05",
+    "parent_source_id": "SPEC-0095",
+    "canonical_requirement_id": "test.reference-run",
+    "proposal_id": "OPS-08",
+    "design_section": "proposals/generators-ops.json#OPS-08; designs/operations-evidence.md §2 and §4 (OPS-08)",
+    "test_oracle": "Decider: Compare the observed outcome for this separately testable condition: never production credentials. Input/evidence: Construct one isolated conforming case for “never production credentials” and one counterexample changing only this condition; capture the command/API result and resulting state. Expected invariant: The conforming case satisfies “never production credentials”; the counterexample is rejected or reported unsupported where the source requires. Check the specific observable state/result, not mere command completion. Reference oracle: Verbatim source evidence at fleet_architecture_spec_v0_3.md:701: “production roots or secret-store credentials”. Assert this child condition only; no test execution is claimed.",
+    "disposition": "proposal",
+    "reason": "COVERED: The proposal explicitly owns the Fleet-produced synthetic reference evidence suite and independent validation of generated PKI/reference outputs. This member-specific outcome is “never production credentials.” and is covered by OPS-08 (proposals/generators-ops.json#OPS-08); this mapping relies on the proposal/design clause, not a parent mapping or starter issue."
+  },
+  {
+    "member_id": "SPEC-0096-a02",
+    "parent_source_id": "SPEC-0096",
+    "canonical_requirement_id": "test.pki.path-matrix",
+    "proposal_id": "CERT-13",
+    "design_section": "proposals/pki.json#CERT-13; designs/pki-issuance.md §§5.4, 7.1",
+    "test_oracle": "Decider: Compare the observed outcome for this separately testable condition: conditional PASS requires verifier support. Input/evidence: Construct one isolated conforming case for “conditional PASS requires verifier support” and one counterexample changing only this condition; capture the command/API result and resulting state. Expected invariant: The conforming case satisfies “conditional PASS requires verifier support”; the counterexample is rejected or reported unsupported where the source requires. Check the specific observable state/result, not mere command completion. Reference oracle: Verbatim source evidence at fleet_architecture_spec_v0_3.md:714: “PASS is **conditional on the verifier's actual signature support”. Assert this child condition only; no test execution is claimed.",
+    "disposition": "proposal",
+    "reason": "COVERED: The proposal explicitly owns trust-profile export and the PKI trust/path test matrix, including explicit chains, PQ-only acceptance/rejection and fail-closed unsupported results. This member-specific outcome is “conditional PASS requires verifier support.” and is covered by CERT-13 (proposals/pki.json#CERT-13); this mapping relies on the proposal/design clause, not a parent mapping or starter issue."
+  },
+  {
+    "member_id": "SPEC-0096-a02-r02",
+    "parent_source_id": "SPEC-0096",
+    "canonical_requirement_id": "test.pki.path-matrix",
+    "proposal_id": "CERT-13",
+    "design_section": "proposals/pki.json#CERT-13; designs/pki-issuance.md §§5.4, 7.1",
+    "test_oracle": "Decider: Compare the observed outcome for this separately testable condition: PQ-only must reject all classical paths. Input/evidence: Construct one isolated conforming case for “PQ-only must reject all classical paths” and one counterexample changing only this condition; capture the command/API result and resulting state. Expected invariant: The conforming case satisfies “PQ-only must reject all classical paths”; the counterexample is rejected or reported unsupported where the source requires. Check the specific observable state/result, not mere command completion. Reference oracle: Verbatim source evidence at fleet_architecture_spec_v0_3.md:714: “PQ-only trust profile must **reject** all three classical issuer paths”. Assert this child condition only; no test execution is claimed.",
+    "disposition": "proposal",
+    "reason": "COVERED: The proposal explicitly owns trust-profile export and the PKI trust/path test matrix, including explicit chains, PQ-only acceptance/rejection and fail-closed unsupported results. This member-specific outcome is “PQ-only must reject all classical paths.” and is covered by CERT-13 (proposals/pki.json#CERT-13); this mapping relies on the proposal/design clause, not a parent mapping or starter issue."
+  },
+  {
+    "member_id": "SPEC-0096-a01",
+    "parent_source_id": "SPEC-0096",
+    "canonical_requirement_id": "test.pki.path-matrix",
+    "proposal_id": "CERT-13",
+    "design_section": "proposals/pki.json#CERT-13; designs/pki-issuance.md §§5.4, 7.1",
+    "test_oracle": "Decider: Compare the matrix/test result for this exact condition: RSA issuer path to RSA trust root: PASS with suitable root bridge. Input/evidence: Construct the RSA issuer chain and the RSA trust root; explicitly provide that path candidate and run the configured verifier. For conditional PASS cells, run with supported and unsupported verifier capability; for the PQ-only cell, include classical issuer and assert rejection. Expected invariant: Accept the path only for the exact stated matching signature condition. Reference oracle: Exact source cell at fleet_architecture_spec_v0_3.md:709: “| RSA issuer | PASS with suitable root bridge | PASS if RSA+P-256 supported | PASS if RSA+Ed supported | **FAIL** (PQ-only) |” No test execution is claimed.",
+    "disposition": "proposal",
+    "reason": "COVERED: The proposal explicitly owns trust-profile export and the PKI trust/path test matrix, including explicit chains, PQ-only acceptance/rejection and fail-closed unsupported results. This member-specific outcome is “RSA issuer path to RSA trust root: PASS with suitable root bridge.” and is covered by CERT-13 (proposals/pki.json#CERT-13); this mapping relies on the proposal/design clause, not a parent mapping or starter issue."
+  },
+  {
+    "member_id": "SPEC-0096-a01-rsa-p-256",
+    "parent_source_id": "SPEC-0096",
+    "canonical_requirement_id": "test.pki.path-matrix",
+    "proposal_id": "CERT-13",
+    "design_section": "proposals/pki.json#CERT-13; designs/pki-issuance.md §§5.4, 7.1",
+    "test_oracle": "Decider: Compare the matrix/test result for this exact condition: RSA issuer path to P-256 trust root: PASS if RSA+P-256 supported. Input/evidence: Construct the RSA issuer chain and the P-256 trust root; explicitly provide that path candidate and run the configured verifier. For conditional PASS cells, run with supported and unsupported verifier capability; for the PQ-only cell, include classical issuer and assert rejection. Expected invariant: PASS only when the stated verifier support/chain preconditions hold; otherwise record unsupported. Reference oracle: Exact source cell at fleet_architecture_spec_v0_3.md:709: “| RSA issuer | PASS with suitable root bridge | PASS if RSA+P-256 supported | PASS if RSA+Ed supported | **FAIL** (PQ-only) |” No test execution is claimed.",
+    "disposition": "proposal",
+    "reason": "COVERED: The proposal explicitly owns trust-profile export and the PKI trust/path test matrix, including explicit chains, PQ-only acceptance/rejection and fail-closed unsupported results. This member-specific outcome is “RSA issuer path to P-256 trust root: PASS if RSA+P-256 supported.” and is covered by CERT-13 (proposals/pki.json#CERT-13); this mapping relies on the proposal/design clause, not a parent mapping or starter issue."
+  },
+  {
+    "member_id": "SPEC-0096-a01-rsa-ed25519",
+    "parent_source_id": "SPEC-0096",
+    "canonical_requirement_id": "test.pki.path-matrix",
+    "proposal_id": "CERT-13",
+    "design_section": "proposals/pki.json#CERT-13; designs/pki-issuance.md §§5.4, 7.1",
+    "test_oracle": "Decider: Compare the matrix/test result for this exact condition: RSA issuer path to Ed25519 trust root: PASS if RSA+Ed supported. Input/evidence: Construct the RSA issuer chain and the Ed25519 trust root; explicitly provide that path candidate and run the configured verifier. For conditional PASS cells, run with supported and unsupported verifier capability; for the PQ-only cell, include classical issuer and assert rejection. Expected invariant: PASS only when the stated verifier support/chain preconditions hold; otherwise record unsupported. Reference oracle: Exact source cell at fleet_architecture_spec_v0_3.md:709: “| RSA issuer | PASS with suitable root bridge | PASS if RSA+P-256 supported | PASS if RSA+Ed supported | **FAIL** (PQ-only) |” No test execution is claimed.",
+    "disposition": "proposal",
+    "reason": "COVERED: The proposal explicitly owns trust-profile export and the PKI trust/path test matrix, including explicit chains, PQ-only acceptance/rejection and fail-closed unsupported results. This member-specific outcome is “RSA issuer path to Ed25519 trust root: PASS if RSA+Ed supported.” and is covered by CERT-13 (proposals/pki.json#CERT-13); this mapping relies on the proposal/design clause, not a parent mapping or starter issue."
+  },
+  {
+    "member_id": "SPEC-0096-a01-rsa-ml-dsa",
+    "parent_source_id": "SPEC-0096",
+    "canonical_requirement_id": "test.pki.path-matrix",
+    "proposal_id": "CERT-13",
+    "design_section": "proposals/pki.json#CERT-13; designs/pki-issuance.md §§5.4, 7.1",
+    "test_oracle": "Decider: Compare the matrix/test result for this exact condition: RSA issuer path to ML-DSA trust root: FAIL (PQ-only). Input/evidence: Construct the RSA issuer chain and the ML-DSA trust root; explicitly provide that path candidate and run the configured verifier. For conditional PASS cells, run with supported and unsupported verifier capability; for the PQ-only cell, include classical issuer and assert rejection. Expected invariant: Reject the classical path under PQ-only trust. Reference oracle: Exact source cell at fleet_architecture_spec_v0_3.md:709: “| RSA issuer | PASS with suitable root bridge | PASS if RSA+P-256 supported | PASS if RSA+Ed supported | **FAIL** (PQ-only) |” No test execution is claimed.",
+    "disposition": "proposal",
+    "reason": "COVERED: The proposal explicitly owns trust-profile export and the PKI trust/path test matrix, including explicit chains, PQ-only acceptance/rejection and fail-closed unsupported results. This member-specific outcome is “RSA issuer path to ML-DSA trust root: FAIL (PQ-only).” and is covered by CERT-13 (proposals/pki.json#CERT-13); this mapping relies on the proposal/design clause, not a parent mapping or starter issue."
+  },
+  {
+    "member_id": "SPEC-0096-a01-p-256-rsa",
+    "parent_source_id": "SPEC-0096",
+    "canonical_requirement_id": "test.pki.path-matrix",
+    "proposal_id": "CERT-13",
+    "design_section": "proposals/pki.json#CERT-13; designs/pki-issuance.md §§5.4, 7.1",
+    "test_oracle": "Decider: Compare the matrix/test result for this exact condition: P-256 issuer path to RSA trust root: PASS if ECDSA+RSA supported. Input/evidence: Construct the P-256 issuer chain and the RSA trust root; explicitly provide that path candidate and run the configured verifier. For conditional PASS cells, run with supported and unsupported verifier capability; for the PQ-only cell, include classical issuer and assert rejection. Expected invariant: PASS only when the stated verifier support/chain preconditions hold; otherwise record unsupported. Reference oracle: Exact source cell at fleet_architecture_spec_v0_3.md:710: “| P-256 issuer | PASS if ECDSA+RSA supported | PASS | PASS if ECDSA+Ed supported | **FAIL** (PQ-only) |” No test execution is claimed.",
+    "disposition": "proposal",
+    "reason": "COVERED: The proposal explicitly owns trust-profile export and the PKI trust/path test matrix, including explicit chains, PQ-only acceptance/rejection and fail-closed unsupported results. This member-specific outcome is “P-256 issuer path to RSA trust root: PASS if ECDSA+RSA supported.” and is covered by CERT-13 (proposals/pki.json#CERT-13); this mapping relies on the proposal/design clause, not a parent mapping or starter issue."
+  },
+  {
+    "member_id": "SPEC-0096-a01-p-256-p-256",
+    "parent_source_id": "SPEC-0096",
+    "canonical_requirement_id": "test.pki.path-matrix",
+    "proposal_id": "CERT-13",
+    "design_section": "proposals/pki.json#CERT-13; designs/pki-issuance.md §§5.4, 7.1",
+    "test_oracle": "Decider: Compare the matrix/test result for this exact condition: P-256 issuer path to P-256 trust root: PASS. Input/evidence: Construct the P-256 issuer chain and the P-256 trust root; explicitly provide that path candidate and run the configured verifier. For conditional PASS cells, run with supported and unsupported verifier capability; for the PQ-only cell, include classical issuer and assert rejection. Expected invariant: Accept the path only for the exact stated matching signature condition. Reference oracle: Exact source cell at fleet_architecture_spec_v0_3.md:710: “| P-256 issuer | PASS if ECDSA+RSA supported | PASS | PASS if ECDSA+Ed supported | **FAIL** (PQ-only) |” No test execution is claimed.",
+    "disposition": "proposal",
+    "reason": "COVERED: The proposal explicitly owns trust-profile export and the PKI trust/path test matrix, including explicit chains, PQ-only acceptance/rejection and fail-closed unsupported results. This member-specific outcome is “P-256 issuer path to P-256 trust root: PASS.” and is covered by CERT-13 (proposals/pki.json#CERT-13); this mapping relies on the proposal/design clause, not a parent mapping or starter issue."
+  },
+  {
+    "member_id": "SPEC-0096-a01-p-256-ed25519",
+    "parent_source_id": "SPEC-0096",
+    "canonical_requirement_id": "test.pki.path-matrix",
+    "proposal_id": "CERT-13",
+    "design_section": "proposals/pki.json#CERT-13; designs/pki-issuance.md §§5.4, 7.1",
+    "test_oracle": "Decider: Compare the matrix/test result for this exact condition: P-256 issuer path to Ed25519 trust root: PASS if ECDSA+Ed supported. Input/evidence: Construct the P-256 issuer chain and the Ed25519 trust root; explicitly provide that path candidate and run the configured verifier. For conditional PASS cells, run with supported and unsupported verifier capability; for the PQ-only cell, include classical issuer and assert rejection. Expected invariant: PASS only when the stated verifier support/chain preconditions hold; otherwise record unsupported. Reference oracle: Exact source cell at fleet_architecture_spec_v0_3.md:710: “| P-256 issuer | PASS if ECDSA+RSA supported | PASS | PASS if ECDSA+Ed supported | **FAIL** (PQ-only) |” No test execution is claimed.",
+    "disposition": "proposal",
+    "reason": "COVERED: The proposal explicitly owns trust-profile export and the PKI trust/path test matrix, including explicit chains, PQ-only acceptance/rejection and fail-closed unsupported results. This member-specific outcome is “P-256 issuer path to Ed25519 trust root: PASS if ECDSA+Ed supported.” and is covered by CERT-13 (proposals/pki.json#CERT-13); this mapping relies on the proposal/design clause, not a parent mapping or starter issue."
+  },
+  {
+    "member_id": "SPEC-0096-a01-p-256-ml-dsa",
+    "parent_source_id": "SPEC-0096",
+    "canonical_requirement_id": "test.pki.path-matrix",
+    "proposal_id": "CERT-13",
+    "design_section": "proposals/pki.json#CERT-13; designs/pki-issuance.md §§5.4, 7.1",
+    "test_oracle": "Decider: Compare the matrix/test result for this exact condition: P-256 issuer path to ML-DSA trust root: FAIL (PQ-only). Input/evidence: Construct the P-256 issuer chain and the ML-DSA trust root; explicitly provide that path candidate and run the configured verifier. For conditional PASS cells, run with supported and unsupported verifier capability; for the PQ-only cell, include classical issuer and assert rejection. Expected invariant: Reject the classical path under PQ-only trust. Reference oracle: Exact source cell at fleet_architecture_spec_v0_3.md:710: “| P-256 issuer | PASS if ECDSA+RSA supported | PASS | PASS if ECDSA+Ed supported | **FAIL** (PQ-only) |” No test execution is claimed.",
+    "disposition": "proposal",
+    "reason": "COVERED: The proposal explicitly owns trust-profile export and the PKI trust/path test matrix, including explicit chains, PQ-only acceptance/rejection and fail-closed unsupported results. This member-specific outcome is “P-256 issuer path to ML-DSA trust root: FAIL (PQ-only).” and is covered by CERT-13 (proposals/pki.json#CERT-13); this mapping relies on the proposal/design clause, not a parent mapping or starter issue."
+  },
+  {
+    "member_id": "SPEC-0096-a01-ed25519-rsa",
+    "parent_source_id": "SPEC-0096",
+    "canonical_requirement_id": "test.pki.path-matrix",
+    "proposal_id": "CERT-13",
+    "design_section": "proposals/pki.json#CERT-13; designs/pki-issuance.md §§5.4, 7.1",
+    "test_oracle": "Decider: Compare the matrix/test result for this exact condition: Ed25519 issuer path to RSA trust root: PASS if Ed+RSA supported. Input/evidence: Construct the Ed25519 issuer chain and the RSA trust root; explicitly provide that path candidate and run the configured verifier. For conditional PASS cells, run with supported and unsupported verifier capability; for the PQ-only cell, include classical issuer and assert rejection. Expected invariant: PASS only when the stated verifier support/chain preconditions hold; otherwise record unsupported. Reference oracle: Exact source cell at fleet_architecture_spec_v0_3.md:711: “| Ed25519 issuer | PASS if Ed+RSA supported | PASS if Ed+P256 supported | PASS | **FAIL** (PQ-only) |” No test execution is claimed.",
+    "disposition": "proposal",
+    "reason": "COVERED: The proposal explicitly owns trust-profile export and the PKI trust/path test matrix, including explicit chains, PQ-only acceptance/rejection and fail-closed unsupported results. This member-specific outcome is “Ed25519 issuer path to RSA trust root: PASS if Ed+RSA supported.” and is covered by CERT-13 (proposals/pki.json#CERT-13); this mapping relies on the proposal/design clause, not a parent mapping or starter issue."
+  },
+  {
+    "member_id": "SPEC-0096-a01-ed25519-p-256",
+    "parent_source_id": "SPEC-0096",
+    "canonical_requirement_id": "test.pki.path-matrix",
+    "proposal_id": "CERT-13",
+    "design_section": "proposals/pki.json#CERT-13; designs/pki-issuance.md §§5.4, 7.1",
+    "test_oracle": "Decider: Compare the matrix/test result for this exact condition: Ed25519 issuer path to P-256 trust root: PASS if Ed+P256 supported. Input/evidence: Construct the Ed25519 issuer chain and the P-256 trust root; explicitly provide that path candidate and run the configured verifier. For conditional PASS cells, run with supported and unsupported verifier capability; for the PQ-only cell, include classical issuer and assert rejection. Expected invariant: PASS only when the stated verifier support/chain preconditions hold; otherwise record unsupported. Reference oracle: Exact source cell at fleet_architecture_spec_v0_3.md:711: “| Ed25519 issuer | PASS if Ed+RSA supported | PASS if Ed+P256 supported | PASS | **FAIL** (PQ-only) |” No test execution is claimed.",
+    "disposition": "proposal",
+    "reason": "COVERED: The proposal explicitly owns trust-profile export and the PKI trust/path test matrix, including explicit chains, PQ-only acceptance/rejection and fail-closed unsupported results. This member-specific outcome is “Ed25519 issuer path to P-256 trust root: PASS if Ed+P256 supported.” and is covered by CERT-13 (proposals/pki.json#CERT-13); this mapping relies on the proposal/design clause, not a parent mapping or starter issue."
+  },
+  {
+    "member_id": "SPEC-0096-a01-ed25519-ed25519",
+    "parent_source_id": "SPEC-0096",
+    "canonical_requirement_id": "test.pki.path-matrix",
+    "proposal_id": "CERT-13",
+    "design_section": "proposals/pki.json#CERT-13; designs/pki-issuance.md §§5.4, 7.1",
+    "test_oracle": "Decider: Compare the matrix/test result for this exact condition: Ed25519 issuer path to Ed25519 trust root: PASS. Input/evidence: Construct the Ed25519 issuer chain and the Ed25519 trust root; explicitly provide that path candidate and run the configured verifier. For conditional PASS cells, run with supported and unsupported verifier capability; for the PQ-only cell, include classical issuer and assert rejection. Expected invariant: Accept the path only for the exact stated matching signature condition. Reference oracle: Exact source cell at fleet_architecture_spec_v0_3.md:711: “| Ed25519 issuer | PASS if Ed+RSA supported | PASS if Ed+P256 supported | PASS | **FAIL** (PQ-only) |” No test execution is claimed.",
+    "disposition": "proposal",
+    "reason": "COVERED: The proposal explicitly owns trust-profile export and the PKI trust/path test matrix, including explicit chains, PQ-only acceptance/rejection and fail-closed unsupported results. This member-specific outcome is “Ed25519 issuer path to Ed25519 trust root: PASS.” and is covered by CERT-13 (proposals/pki.json#CERT-13); this mapping relies on the proposal/design clause, not a parent mapping or starter issue."
+  },
+  {
+    "member_id": "SPEC-0096-a01-ed25519-ml-dsa",
+    "parent_source_id": "SPEC-0096",
+    "canonical_requirement_id": "test.pki.path-matrix",
+    "proposal_id": "CERT-13",
+    "design_section": "proposals/pki.json#CERT-13; designs/pki-issuance.md §§5.4, 7.1",
+    "test_oracle": "Decider: Compare the matrix/test result for this exact condition: Ed25519 issuer path to ML-DSA trust root: FAIL (PQ-only). Input/evidence: Construct the Ed25519 issuer chain and the ML-DSA trust root; explicitly provide that path candidate and run the configured verifier. For conditional PASS cells, run with supported and unsupported verifier capability; for the PQ-only cell, include classical issuer and assert rejection. Expected invariant: Reject the classical path under PQ-only trust. Reference oracle: Exact source cell at fleet_architecture_spec_v0_3.md:711: “| Ed25519 issuer | PASS if Ed+RSA supported | PASS if Ed+P256 supported | PASS | **FAIL** (PQ-only) |” No test execution is claimed.",
+    "disposition": "proposal",
+    "reason": "COVERED: The proposal explicitly owns trust-profile export and the PKI trust/path test matrix, including explicit chains, PQ-only acceptance/rejection and fail-closed unsupported results. This member-specific outcome is “Ed25519 issuer path to ML-DSA trust root: FAIL (PQ-only).” and is covered by CERT-13 (proposals/pki.json#CERT-13); this mapping relies on the proposal/design clause, not a parent mapping or starter issue."
+  },
+  {
+    "member_id": "SPEC-0096-a01-ml-dsa-rsa",
+    "parent_source_id": "SPEC-0096",
+    "canonical_requirement_id": "test.pki.path-matrix",
+    "proposal_id": "CERT-13",
+    "design_section": "proposals/pki.json#CERT-13; designs/pki-issuance.md §§5.4, 7.1",
+    "test_oracle": "Decider: Compare the matrix/test result for this exact condition: ML-DSA issuer path to RSA trust root: PASS if ML-DSA+RSA supported. Input/evidence: Construct the ML-DSA issuer chain and the RSA trust root; explicitly provide that path candidate and run the configured verifier. For conditional PASS cells, run with supported and unsupported verifier capability; for the PQ-only cell, include classical issuer and assert rejection. Expected invariant: PASS only when the stated verifier support/chain preconditions hold; otherwise record unsupported. Reference oracle: Exact source cell at fleet_architecture_spec_v0_3.md:712: “| ML-DSA issuer | PASS if ML-DSA+RSA supported | PASS if ML-DSA+P256 supported | PASS if ML-DSA+Ed supported | PASS with **all ML-DSA** signatures |” No test execution is claimed.",
+    "disposition": "proposal",
+    "reason": "COVERED: The proposal explicitly owns trust-profile export and the PKI trust/path test matrix, including explicit chains, PQ-only acceptance/rejection and fail-closed unsupported results. This member-specific outcome is “ML-DSA issuer path to RSA trust root: PASS if ML-DSA+RSA supported.” and is covered by CERT-13 (proposals/pki.json#CERT-13); this mapping relies on the proposal/design clause, not a parent mapping or starter issue."
+  },
+  {
+    "member_id": "SPEC-0096-a01-ml-dsa-p-256",
+    "parent_source_id": "SPEC-0096",
+    "canonical_requirement_id": "test.pki.path-matrix",
+    "proposal_id": "CERT-13",
+    "design_section": "proposals/pki.json#CERT-13; designs/pki-issuance.md §§5.4, 7.1",
+    "test_oracle": "Decider: Compare the matrix/test result for this exact condition: ML-DSA issuer path to P-256 trust root: PASS if ML-DSA+P256 supported. Input/evidence: Construct the ML-DSA issuer chain and the P-256 trust root; explicitly provide that path candidate and run the configured verifier. For conditional PASS cells, run with supported and unsupported verifier capability; for the PQ-only cell, include classical issuer and assert rejection. Expected invariant: PASS only when the stated verifier support/chain preconditions hold; otherwise record unsupported. Reference oracle: Exact source cell at fleet_architecture_spec_v0_3.md:712: “| ML-DSA issuer | PASS if ML-DSA+RSA supported | PASS if ML-DSA+P256 supported | PASS if ML-DSA+Ed supported | PASS with **all ML-DSA** signatures |” No test execution is claimed.",
+    "disposition": "proposal",
+    "reason": "COVERED: The proposal explicitly owns trust-profile export and the PKI trust/path test matrix, including explicit chains, PQ-only acceptance/rejection and fail-closed unsupported results. This member-specific outcome is “ML-DSA issuer path to P-256 trust root: PASS if ML-DSA+P256 supported.” and is covered by CERT-13 (proposals/pki.json#CERT-13); this mapping relies on the proposal/design clause, not a parent mapping or starter issue."
+  },
+  {
+    "member_id": "SPEC-0096-a01-ml-dsa-ed25519",
+    "parent_source_id": "SPEC-0096",
+    "canonical_requirement_id": "test.pki.path-matrix",
+    "proposal_id": "CERT-13",
+    "design_section": "proposals/pki.json#CERT-13; designs/pki-issuance.md §§5.4, 7.1",
+    "test_oracle": "Decider: Compare the matrix/test result for this exact condition: ML-DSA issuer path to Ed25519 trust root: PASS if ML-DSA+Ed supported. Input/evidence: Construct the ML-DSA issuer chain and the Ed25519 trust root; explicitly provide that path candidate and run the configured verifier. For conditional PASS cells, run with supported and unsupported verifier capability; for the PQ-only cell, include classical issuer and assert rejection. Expected invariant: PASS only when the stated verifier support/chain preconditions hold; otherwise record unsupported. Reference oracle: Exact source cell at fleet_architecture_spec_v0_3.md:712: “| ML-DSA issuer | PASS if ML-DSA+RSA supported | PASS if ML-DSA+P256 supported | PASS if ML-DSA+Ed supported | PASS with **all ML-DSA** signatures |” No test execution is claimed.",
+    "disposition": "proposal",
+    "reason": "COVERED: The proposal explicitly owns trust-profile export and the PKI trust/path test matrix, including explicit chains, PQ-only acceptance/rejection and fail-closed unsupported results. This member-specific outcome is “ML-DSA issuer path to Ed25519 trust root: PASS if ML-DSA+Ed supported.” and is covered by CERT-13 (proposals/pki.json#CERT-13); this mapping relies on the proposal/design clause, not a parent mapping or starter issue."
+  },
+  {
+    "member_id": "SPEC-0096-a01-ml-dsa-ml-dsa",
+    "parent_source_id": "SPEC-0096",
+    "canonical_requirement_id": "test.pki.path-matrix",
+    "proposal_id": "CERT-13",
+    "design_section": "proposals/pki.json#CERT-13; designs/pki-issuance.md §§5.4, 7.1",
+    "test_oracle": "Decider: Compare the matrix/test result for this exact condition: ML-DSA issuer path to ML-DSA trust root: PASS with all ML-DSA signatures. Input/evidence: Construct the ML-DSA issuer chain and the ML-DSA trust root; explicitly provide that path candidate and run the configured verifier. For conditional PASS cells, run with supported and unsupported verifier capability; for the PQ-only cell, include classical issuer and assert rejection. Expected invariant: Accept the path only for the exact stated matching signature condition. Reference oracle: Exact source cell at fleet_architecture_spec_v0_3.md:712: “| ML-DSA issuer | PASS if ML-DSA+RSA supported | PASS if ML-DSA+P256 supported | PASS if ML-DSA+Ed supported | PASS with **all ML-DSA** signatures |” No test execution is claimed.",
+    "disposition": "proposal",
+    "reason": "COVERED: The proposal explicitly owns trust-profile export and the PKI trust/path test matrix, including explicit chains, PQ-only acceptance/rejection and fail-closed unsupported results. This member-specific outcome is “ML-DSA issuer path to ML-DSA trust root: PASS with all ML-DSA signatures.” and is covered by CERT-13 (proposals/pki.json#CERT-13); this mapping relies on the proposal/design clause, not a parent mapping or starter issue."
+  },
+  {
+    "member_id": "SPEC-0097-a01",
+    "parent_source_id": "SPEC-0097",
+    "canonical_requirement_id": "test.pki.negative-paths",
+    "proposal_id": "CERT-13",
+    "design_section": "proposals/pki.json#CERT-13; designs/pki-issuance.md §§5.4, 7.1",
+    "test_oracle": "Decider: Run a single-condition acceptance assertion for SPEC-0097-a01; pass only when the observed result equals this condition’s expected result. Input/evidence: Use an isolated fixture containing the object, policy, or operation named by this condition: reject forbidden reverse trust edges. Include one conforming case and a paired case violating only this condition; capture the CLI/library result and state change. Expected invariant: Accept the conforming case and reject, preserve, or report unsupported for the violating case as required by: reject forbidden reverse trust edges. Assert this observable result, not merely successful execution. Reference oracle: Verbatim requirement at fleet_architecture_spec_v0_3.md:714: “Each PASS is **conditional on the verifier's actual signature support and receipt of the required chain**; a test harness must prove it by explicitly constructing path candidates, not rely on AIA heuristics. A PQ-only trust profile must **reject** all three classical issuer paths, even if a client is capable of those algorithms. With all four roots installed, each matching issuer should validate directly. Add negative tests for injected classical→PQ forbidden reverse trust, expired cross-cert, wrong AKI, mismatched subject public key, revoked CA, invalid/pathLen, unsupported OID and unacceptable EKU.” Apply only the portion tested by this child: “reject forbidden reverse trust edges”. Compare fixture output to that source-defined condition; no test execution is claimed.",
+    "disposition": "proposal",
+    "reason": "COVERED: The proposal explicitly owns trust-profile export and the PKI trust/path test matrix, including explicit chains, PQ-only acceptance/rejection and fail-closed unsupported results. This member-specific outcome is “reject forbidden reverse trust edges.” and is covered by CERT-13 (proposals/pki.json#CERT-13); this mapping relies on the proposal/design clause, not a parent mapping or starter issue."
+  },
+  {
+    "member_id": "SPEC-0097-a01-m02",
+    "parent_source_id": "SPEC-0097",
+    "canonical_requirement_id": "test.pki.negative-paths",
+    "proposal_id": "CERT-13",
+    "design_section": "proposals/pki.json#CERT-13; designs/pki-issuance.md §§5.4, 7.1",
+    "test_oracle": "Decider: Run a single-condition acceptance assertion for SPEC-0097-a01-m02; pass only when the observed result equals this condition’s expected result. Input/evidence: Use an isolated fixture containing the object, policy, or operation named by this condition: reject expired cross-certificates. Include one conforming case and a paired case violating only this condition; capture the CLI/library result and state change. Expected invariant: Accept the conforming case and reject, preserve, or report unsupported for the violating case as required by: reject expired cross-certificates. Assert this observable result, not merely successful execution. Reference oracle: Verbatim requirement at fleet_architecture_spec_v0_3.md:714: “Each PASS is **conditional on the verifier's actual signature support and receipt of the required chain**; a test harness must prove it by explicitly constructing path candidates, not rely on AIA heuristics. A PQ-only trust profile must **reject** all three classical issuer paths, even if a client is capable of those algorithms. With all four roots installed, each matching issuer should validate directly. Add negative tests for injected classical→PQ forbidden reverse trust, expired cross-cert, wrong AKI, mismatched subject public key, revoked CA, invalid/pathLen, unsupported OID and unacceptable EKU.” Apply only the portion tested by this child: “reject expired cross-certificates”. Compare fixture output to that source-defined condition; no test execution is claimed.",
+    "disposition": "proposal",
+    "reason": "COVERED: The proposal explicitly owns trust-profile export and the PKI trust/path test matrix, including explicit chains, PQ-only acceptance/rejection and fail-closed unsupported results. This member-specific outcome is “reject expired cross-certificates.” and is covered by CERT-13 (proposals/pki.json#CERT-13); this mapping relies on the proposal/design clause, not a parent mapping or starter issue."
+  },
+  {
+    "member_id": "SPEC-0097-a01-m03",
+    "parent_source_id": "SPEC-0097",
+    "canonical_requirement_id": "test.pki.negative-paths",
+    "proposal_id": "CERT-13",
+    "design_section": "proposals/pki.json#CERT-13; designs/pki-issuance.md §§5.4, 7.1",
+    "test_oracle": "Decider: Run a single-condition acceptance assertion for SPEC-0097-a01-m03; pass only when the observed result equals this condition’s expected result. Input/evidence: Use an isolated fixture containing the object, policy, or operation named by this condition: reject wrong AKI. Include one conforming case and a paired case violating only this condition; capture the CLI/library result and state change. Expected invariant: Accept the conforming case and reject, preserve, or report unsupported for the violating case as required by: reject wrong AKI. Assert this observable result, not merely successful execution. Reference oracle: Verbatim requirement at fleet_architecture_spec_v0_3.md:714: “Each PASS is **conditional on the verifier's actual signature support and receipt of the required chain**; a test harness must prove it by explicitly constructing path candidates, not rely on AIA heuristics. A PQ-only trust profile must **reject** all three classical issuer paths, even if a client is capable of those algorithms. With all four roots installed, each matching issuer should validate directly. Add negative tests for injected classical→PQ forbidden reverse trust, expired cross-cert, wrong AKI, mismatched subject public key, revoked CA, invalid/pathLen, unsupported OID and unacceptable EKU.” Apply only the portion tested by this child: “reject wrong AKI”. Compare fixture output to that source-defined condition; no test execution is claimed.",
+    "disposition": "proposal",
+    "reason": "COVERED: The proposal explicitly owns trust-profile export and the PKI trust/path test matrix, including explicit chains, PQ-only acceptance/rejection and fail-closed unsupported results. This member-specific outcome is “reject wrong AKI.” and is covered by CERT-13 (proposals/pki.json#CERT-13); this mapping relies on the proposal/design clause, not a parent mapping or starter issue."
+  },
+  {
+    "member_id": "SPEC-0097-a01-m04",
+    "parent_source_id": "SPEC-0097",
+    "canonical_requirement_id": "test.pki.negative-paths",
+    "proposal_id": "CERT-13",
+    "design_section": "proposals/pki.json#CERT-13; designs/pki-issuance.md §§5.4, 7.1",
+    "test_oracle": "Decider: Run a single-condition acceptance assertion for SPEC-0097-a01-m04; pass only when the observed result equals this condition’s expected result. Input/evidence: Use an isolated fixture containing the object, policy, or operation named by this condition: reject mismatched subject public keys. Include one conforming case and a paired case violating only this condition; capture the CLI/library result and state change. Expected invariant: Accept the conforming case and reject, preserve, or report unsupported for the violating case as required by: reject mismatched subject public keys. Assert this observable result, not merely successful execution. Reference oracle: Verbatim requirement at fleet_architecture_spec_v0_3.md:714: “Each PASS is **conditional on the verifier's actual signature support and receipt of the required chain**; a test harness must prove it by explicitly constructing path candidates, not rely on AIA heuristics. A PQ-only trust profile must **reject** all three classical issuer paths, even if a client is capable of those algorithms. With all four roots installed, each matching issuer should validate directly. Add negative tests for injected classical→PQ forbidden reverse trust, expired cross-cert, wrong AKI, mismatched subject public key, revoked CA, invalid/pathLen, unsupported OID and unacceptable EKU.” Apply only the portion tested by this child: “reject mismatched subject public keys”. Compare fixture output to that source-defined condition; no test execution is claimed.",
+    "disposition": "proposal",
+    "reason": "COVERED: The proposal explicitly owns trust-profile export and the PKI trust/path test matrix, including explicit chains, PQ-only acceptance/rejection and fail-closed unsupported results. This member-specific outcome is “reject mismatched subject public keys.” and is covered by CERT-13 (proposals/pki.json#CERT-13); this mapping relies on the proposal/design clause, not a parent mapping or starter issue."
+  },
+  {
+    "member_id": "SPEC-0097-a01-m05",
+    "parent_source_id": "SPEC-0097",
+    "canonical_requirement_id": "test.pki.negative-paths",
+    "proposal_id": "CERT-13",
+    "design_section": "proposals/pki.json#CERT-13; designs/pki-issuance.md §§5.4, 7.1",
+    "test_oracle": "Decider: Run a single-condition acceptance assertion for SPEC-0097-a01-m05; pass only when the observed result equals this condition’s expected result. Input/evidence: Use an isolated fixture containing the object, policy, or operation named by this condition: reject revoked CAs. Include one conforming case and a paired case violating only this condition; capture the CLI/library result and state change. Expected invariant: Accept the conforming case and reject, preserve, or report unsupported for the violating case as required by: reject revoked CAs. Assert this observable result, not merely successful execution. Reference oracle: Verbatim requirement at fleet_architecture_spec_v0_3.md:714: “Each PASS is **conditional on the verifier's actual signature support and receipt of the required chain**; a test harness must prove it by explicitly constructing path candidates, not rely on AIA heuristics. A PQ-only trust profile must **reject** all three classical issuer paths, even if a client is capable of those algorithms. With all four roots installed, each matching issuer should validate directly. Add negative tests for injected classical→PQ forbidden reverse trust, expired cross-cert, wrong AKI, mismatched subject public key, revoked CA, invalid/pathLen, unsupported OID and unacceptable EKU.” Apply only the portion tested by this child: “reject revoked CAs”. Compare fixture output to that source-defined condition; no test execution is claimed.",
+    "disposition": "proposal",
+    "reason": "COVERED: The proposal explicitly owns trust-profile export and the PKI trust/path test matrix, including explicit chains, PQ-only acceptance/rejection and fail-closed unsupported results. This member-specific outcome is “reject revoked CAs.” and is covered by CERT-13 (proposals/pki.json#CERT-13); this mapping relies on the proposal/design clause, not a parent mapping or starter issue."
+  },
+  {
+    "member_id": "SPEC-0097-a01-m06",
+    "parent_source_id": "SPEC-0097",
+    "canonical_requirement_id": "test.pki.negative-paths",
+    "proposal_id": "CERT-13",
+    "design_section": "proposals/pki.json#CERT-13; designs/pki-issuance.md §§5.4, 7.1",
+    "test_oracle": "Decider: Run a single-condition acceptance assertion for SPEC-0097-a01-m06; pass only when the observed result equals this condition’s expected result. Input/evidence: Use an isolated fixture containing the object, policy, or operation named by this condition: reject invalid pathLen. Include one conforming case and a paired case violating only this condition; capture the CLI/library result and state change. Expected invariant: Accept the conforming case and reject, preserve, or report unsupported for the violating case as required by: reject invalid pathLen. Assert this observable result, not merely successful execution. Reference oracle: Verbatim requirement at fleet_architecture_spec_v0_3.md:714: “Each PASS is **conditional on the verifier's actual signature support and receipt of the required chain**; a test harness must prove it by explicitly constructing path candidates, not rely on AIA heuristics. A PQ-only trust profile must **reject** all three classical issuer paths, even if a client is capable of those algorithms. With all four roots installed, each matching issuer should validate directly. Add negative tests for injected classical→PQ forbidden reverse trust, expired cross-cert, wrong AKI, mismatched subject public key, revoked CA, invalid/pathLen, unsupported OID and unacceptable EKU.” Apply only the portion tested by this child: “reject invalid pathLen”. Compare fixture output to that source-defined condition; no test execution is claimed.",
+    "disposition": "proposal",
+    "reason": "COVERED: The proposal explicitly owns trust-profile export and the PKI trust/path test matrix, including explicit chains, PQ-only acceptance/rejection and fail-closed unsupported results. This member-specific outcome is “reject invalid pathLen.” and is covered by CERT-13 (proposals/pki.json#CERT-13); this mapping relies on the proposal/design clause, not a parent mapping or starter issue."
+  },
+  {
+    "member_id": "SPEC-0097-a01-m07",
+    "parent_source_id": "SPEC-0097",
+    "canonical_requirement_id": "test.pki.negative-paths",
+    "proposal_id": "CERT-13",
+    "design_section": "proposals/pki.json#CERT-13; designs/pki-issuance.md §§5.4, 7.1",
+    "test_oracle": "Decider: Run a single-condition acceptance assertion for SPEC-0097-a01-m07; pass only when the observed result equals this condition’s expected result. Input/evidence: Use an isolated fixture containing the object, policy, or operation named by this condition: reject unsupported OIDs. Include one conforming case and a paired case violating only this condition; capture the CLI/library result and state change. Expected invariant: Accept the conforming case and reject, preserve, or report unsupported for the violating case as required by: reject unsupported OIDs. Assert this observable result, not merely successful execution. Reference oracle: Verbatim requirement at fleet_architecture_spec_v0_3.md:714: “Each PASS is **conditional on the verifier's actual signature support and receipt of the required chain**; a test harness must prove it by explicitly constructing path candidates, not rely on AIA heuristics. A PQ-only trust profile must **reject** all three classical issuer paths, even if a client is capable of those algorithms. With all four roots installed, each matching issuer should validate directly. Add negative tests for injected classical→PQ forbidden reverse trust, expired cross-cert, wrong AKI, mismatched subject public key, revoked CA, invalid/pathLen, unsupported OID and unacceptable EKU.” Apply only the portion tested by this child: “reject unsupported OIDs”. Compare fixture output to that source-defined condition; no test execution is claimed.",
+    "disposition": "proposal",
+    "reason": "COVERED: The proposal explicitly owns trust-profile export and the PKI trust/path test matrix, including explicit chains, PQ-only acceptance/rejection and fail-closed unsupported results. This member-specific outcome is “reject unsupported OIDs.” and is covered by CERT-13 (proposals/pki.json#CERT-13); this mapping relies on the proposal/design clause, not a parent mapping or starter issue."
+  },
+  {
+    "member_id": "SPEC-0097-a01-m08",
+    "parent_source_id": "SPEC-0097",
+    "canonical_requirement_id": "test.pki.negative-paths",
+    "proposal_id": "CERT-13",
+    "design_section": "proposals/pki.json#CERT-13; designs/pki-issuance.md §§5.4, 7.1",
+    "test_oracle": "Decider: Run a single-condition acceptance assertion for SPEC-0097-a01-m08; pass only when the observed result equals this condition’s expected result. Input/evidence: Use an isolated fixture containing the object, policy, or operation named by this condition: reject unacceptable EKUs. Include one conforming case and a paired case violating only this condition; capture the CLI/library result and state change. Expected invariant: Accept the conforming case and reject, preserve, or report unsupported for the violating case as required by: reject unacceptable EKUs. Assert this observable result, not merely successful execution. Reference oracle: Verbatim requirement at fleet_architecture_spec_v0_3.md:714: “Each PASS is **conditional on the verifier's actual signature support and receipt of the required chain**; a test harness must prove it by explicitly constructing path candidates, not rely on AIA heuristics. A PQ-only trust profile must **reject** all three classical issuer paths, even if a client is capable of those algorithms. With all four roots installed, each matching issuer should validate directly. Add negative tests for injected classical→PQ forbidden reverse trust, expired cross-cert, wrong AKI, mismatched subject public key, revoked CA, invalid/pathLen, unsupported OID and unacceptable EKU.” Apply only the portion tested by this child: “reject unacceptable EKUs”. Compare fixture output to that source-defined condition; no test execution is claimed.",
+    "disposition": "proposal",
+    "reason": "COVERED: The proposal explicitly owns trust-profile export and the PKI trust/path test matrix, including explicit chains, PQ-only acceptance/rejection and fail-closed unsupported results. This member-specific outcome is “reject unacceptable EKUs.” and is covered by CERT-13 (proposals/pki.json#CERT-13); this mapping relies on the proposal/design clause, not a parent mapping or starter issue."
+  },
+  {
+    "member_id": "SPEC-0098-a01",
+    "parent_source_id": "SPEC-0098",
+    "canonical_requirement_id": "test.pki.independent-validation",
+    "proposal_id": "CERT-17",
+    "design_section": "proposals/pki.json#CERT-17; designs/pki-issuance.md §§7.1-7.2",
+    "test_oracle": "Decider: Compare the observed outcome for this separately testable condition: Validate emitted paths with pinned OpenSSL. Input/evidence: Construct one isolated conforming case for “Validate emitted paths with pinned OpenSSL” and one counterexample changing only this condition; capture the command/API result and resulting state. Expected invariant: The conforming case satisfies “Validate emitted paths with pinned OpenSSL”; the counterexample is rejected or reported unsupported where the source requires. Check the specific observable state/result, not mere command completion. Reference oracle: Verbatim source evidence at fleet_architecture_spec_v0_3.md:718: “OpenSSL”. Assert this child condition only; no test execution is claimed.",
+    "disposition": "proposal",
+    "reason": "COVERED: The proposal explicitly owns version-pinned backend capability evidence and independent validation per PKI artifact, with unsupported capability reported honestly. This member-specific outcome is “Validate emitted paths with pinned OpenSSL.” and is covered by CERT-17 (proposals/pki.json#CERT-17); this mapping relies on the proposal/design clause, not a parent mapping or starter issue."
+  },
+  {
+    "member_id": "SPEC-0098-a02",
+    "parent_source_id": "SPEC-0098",
+    "canonical_requirement_id": "test.pki.independent-validation",
+    "proposal_id": "",
+    "design_section": "Unmapped; member source context only: sources/fleet_architecture_spec_v0_3.md §11.2 independent validators",
+    "test_oracle": "Decider: Compare the observed outcome for this separately testable condition: attempt third implementation where viable. Input/evidence: Construct one isolated conforming case for “attempt third implementation where viable” and one counterexample changing only this condition; capture the command/API result and resulting state. Expected invariant: The conforming case satisfies “attempt third implementation where viable”; the counterexample is rejected or reported unsupported where the source requires. Check the specific observable state/result, not mere command completion. Reference oracle: Verbatim source evidence at fleet_architecture_spec_v0_3.md:720: “Attempt a third independent implementation (Java PKIX/Windows system validator or similar) where viable”. Assert this child condition only; no test execution is claimed.",
+    "disposition": "unresolved-cross-domain",
+    "reason": "UNRESOLVED/CROSS-DOMAIN: no proposal body specifically owns this standalone member outcome: “attempt third implementation where viable.”. The related proposal/design scopes do not state this exact deliverable or acceptance clause; the missing owner is a member-level design/issue decision. No parent mapping or starter-issue reference is inherited."
+  },
+  {
+    "member_id": "SPEC-0098-a01-r02",
+    "parent_source_id": "SPEC-0098",
+    "canonical_requirement_id": "test.pki.independent-validation",
+    "proposal_id": "CERT-17",
+    "design_section": "proposals/pki.json#CERT-17; designs/pki-issuance.md §§7.1-7.2",
+    "test_oracle": "Decider: Compare the observed outcome for this separately testable condition: at least one real Rust path verifier. Input/evidence: Construct one isolated conforming case for “at least one real Rust path verifier” and one counterexample changing only this condition; capture the command/API result and resulting state. Expected invariant: The conforming case satisfies “at least one real Rust path verifier”; the counterexample is rejected or reported unsupported where the source requires. Check the specific observable state/result, not mere command completion. Reference oracle: Verbatim source evidence at fleet_architecture_spec_v0_3.md:719: “least **one independent Rust X.509 path verifier”. Assert this child condition only; no test execution is claimed.",
+    "disposition": "proposal",
+    "reason": "COVERED: The proposal explicitly owns version-pinned backend capability evidence and independent validation per PKI artifact, with unsupported capability reported honestly. This member-specific outcome is “at least one real Rust path verifier.” and is covered by CERT-17 (proposals/pki.json#CERT-17); this mapping relies on the proposal/design clause, not a parent mapping or starter issue."
+  },
+  {
+    "member_id": "SPEC-0098-a02-r02",
+    "parent_source_id": "SPEC-0098",
+    "canonical_requirement_id": "test.pki.independent-validation",
+    "proposal_id": "CERT-17",
+    "design_section": "proposals/pki.json#CERT-17; designs/pki-issuance.md §§7.1-7.2",
+    "test_oracle": "Decider: Compare the observed outcome for this separately testable condition: mark unsupported honestly. Input/evidence: Construct one isolated conforming case for “mark unsupported honestly” and one counterexample changing only this condition; capture the command/API result and resulting state. Expected invariant: The conforming case satisfies “mark unsupported honestly”; the counterexample is rejected or reported unsupported where the source requires. Check the specific observable state/result, not mere command completion. Reference oracle: Verbatim source evidence at fleet_architecture_spec_v0_3.md:720: “unsupported”. Assert this child condition only; no test execution is claimed.",
+    "disposition": "proposal",
+    "reason": "COVERED: The proposal explicitly owns version-pinned backend capability evidence and independent validation per PKI artifact, with unsupported capability reported honestly. This member-specific outcome is “mark unsupported honestly.” and is covered by CERT-17 (proposals/pki.json#CERT-17); this mapping relies on the proposal/design clause, not a parent mapping or starter issue."
+  },
+  {
+    "member_id": "SPEC-0099-a01",
+    "parent_source_id": "SPEC-0099",
+    "canonical_requirement_id": "test.credential-family-interoperability",
+    "proposal_id": "OPS-09",
+    "design_section": "proposals/generators-ops.json#OPS-09; designs/operations-evidence.md §2 and §4 (OPS-09)",
+    "test_oracle": "Decider: Run a single-condition acceptance assertion for SPEC-0099-a01; pass only when the observed result equals this condition’s expected result. Input/evidence: Use an isolated fixture containing the object, policy, or operation named by this condition: Test RSA/P-256/Ed25519 TLS negotiation. Include one conforming case and a paired case violating only this condition; capture the CLI/library result and state change. Expected invariant: Accept the conforming case and reject, preserve, or report unsupported for the violating case as required by: Test RSA/P-256/Ed25519 TLS negotiation. Assert this observable result, not merely successful execution. Reference oracle: Verbatim requirement at fleet_architecture_spec_v0_3.md:721: “- TLS handshake tests with RSA/P-256/Ed25519 leaves and certificate selection; test ML-DSA TLS **only when both client and server have verified implementation support**. SSH/OpenPGP/JWT tests have their own native verification suites, not the X.509 matrix.” Apply only the portion tested by this child: “Test RSA/P-256/Ed25519 TLS negotiation”. Compare fixture output to that source-defined condition; no test execution is claimed.",
+    "disposition": "proposal",
+    "reason": "COVERED: The proposal explicitly owns the versioned client/OS compatibility evidence matrix and separates TLS negotiation evidence from X.509 path and SSH authentication claims. This member-specific outcome is “Test RSA/P-256/Ed25519 TLS negotiation.” and is covered by OPS-09 (proposals/generators-ops.json#OPS-09); this mapping relies on the proposal/design clause, not a parent mapping or starter issue."
+  },
+  {
+    "member_id": "SPEC-0099-a02",
+    "parent_source_id": "SPEC-0099",
+    "canonical_requirement_id": "test.credential-family-interoperability",
+    "proposal_id": "",
+    "design_section": "Unmapped; member source context only: sources/fleet_architecture_spec_v0_3.md §11.2 TLS and native-family tests",
+    "test_oracle": "Decider: Inspect the recorded capability gate and whether the test was skipped or run. Input/evidence: Provide two explicit capability reports: (1) both client and server confirm tested ML-DSA TLS support; (2) either side lacks verified support. Expected invariant: Run ML-DSA TLS handshake test only in case (1); in case (2), report unsupported and do not count as failure or claim a pass. Reference oracle: Exact source requirement at fleet_architecture_spec_v0_3.md:721: “- TLS handshake tests with RSA/P-256/Ed25519 leaves and certificate selection; test ML-DSA TLS **only when both client and server have verified implementation support**. SSH/OpenPGP/JWT tests have their own native verification suites, not the X.509 matrix.” No test execution is claimed.",
+    "disposition": "unresolved-cross-domain",
+    "reason": "UNRESOLVED/CROSS-DOMAIN: no proposal body specifically owns this standalone member outcome: “Require verified ML-DSA TLS implementation support on both client and server before attempting an ML-DSA TLS test.”. The related proposal/design scopes do not state this exact deliverable or acceptance clause; the missing owner is a member-level design/issue decision. No parent mapping or starter-issue reference is inherited."
+  },
+  {
+    "member_id": "SPEC-0099-a03",
+    "parent_source_id": "SPEC-0099",
+    "canonical_requirement_id": "test.credential-family-interoperability",
+    "proposal_id": "",
+    "design_section": "Unmapped; member source context only: sources/fleet_architecture_spec_v0_3.md §11.2 TLS and native-family tests",
+    "test_oracle": "Decider: Run a single-condition acceptance assertion for SPEC-0099-a03; pass only when the observed result equals this condition’s expected result. Input/evidence: Use an isolated fixture containing the object, policy, or operation named by this condition: run SSH/OpenPGP/JWT through native verification suites. Include one conforming case and a paired case violating only this condition; capture the CLI/library result and state change. Expected invariant: Accept the conforming case and reject, preserve, or report unsupported for the violating case as required by: run SSH/OpenPGP/JWT through native verification suites. Assert this observable result, not merely successful execution. Reference oracle: Verbatim requirement at fleet_architecture_spec_v0_3.md:721: “- TLS handshake tests with RSA/P-256/Ed25519 leaves and certificate selection; test ML-DSA TLS **only when both client and server have verified implementation support**. SSH/OpenPGP/JWT tests have their own native verification suites, not the X.509 matrix.” Apply only the portion tested by this child: “run SSH/OpenPGP/JWT through native verification suites”. Compare fixture output to that source-defined condition; no test execution is claimed.",
+    "disposition": "unresolved-cross-domain",
+    "reason": "UNRESOLVED/CROSS-DOMAIN: no proposal body specifically owns this standalone member outcome: “run SSH/OpenPGP/JWT through native verification suites.”. The related proposal/design scopes do not state this exact deliverable or acceptance clause; the missing owner is a member-level design/issue decision. No parent mapping or starter-issue reference is inherited."
+  },
+  {
+    "member_id": "SPEC-0099-a02-both-sides",
+    "parent_source_id": "SPEC-0099",
+    "canonical_requirement_id": "test.credential-family-interoperability",
+    "proposal_id": "",
+    "design_section": "Unmapped; member source context only: sources/fleet_architecture_spec_v0_3.md §11.2 TLS and native-family tests",
+    "test_oracle": "Decider: Compare the matrix/test result for this exact condition: Require both client and server to have verified ML-DSA TLS support. Input/evidence: Use separate client and server capability fixtures, with one fixture where both are supported and one where exactly one is unsupported. Expected invariant: The test gate opens only when both implementations have verified support; otherwise report unsupported and do not run the handshake test. Reference oracle: Exact source cell at fleet_architecture_spec_v0_3.md:721: “- TLS handshake tests with RSA/P-256/Ed25519 leaves and certificate selection; test ML-DSA TLS **only when both client and server have verified implementation support**. SSH/OpenPGP/JWT tests have their own native verification suites, not the X.509 matrix.” No test execution is claimed.",
+    "disposition": "unresolved-cross-domain",
+    "reason": "UNRESOLVED/CROSS-DOMAIN: no proposal body specifically owns this standalone member outcome: “Require both client and server to have verified ML-DSA TLS support.”. The related proposal/design scopes do not state this exact deliverable or acceptance clause; the missing owner is a member-level design/issue decision. No parent mapping or starter-issue reference is inherited."
+  }
+]

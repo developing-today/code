@@ -1,0 +1,53 @@
+{
+  "version": 1,
+  "resolutions": [
+    {
+      "source_id": "ADD-A-009",
+      "selected_from": "secrets-reconciliation-performance.json",
+      "selected_row_sha256": "b84370bcd652f124a368b93eac78f34a0d92012efbd2d4994f0aae9103a59d7d",
+      "reason": "PERF-03 owns the bounded fnox evaluation/prototype with version pinning and comparative integration. ARCH-01 owns the separate identity/reference seam and explicitly does not perform the fnox evaluation; it is not the primary owner of this source outcome."
+    },
+    {
+      "source_id": "ADD-A-010",
+      "selected_from": "secrets-reconciliation-performance.json",
+      "selected_row_sha256": "ca75eb5f516c92c95d25ef0f47d661d1c68f902639bcceceadcd9921fb135631",
+      "reason": "PERF-03 is the closest owner for evaluating public client/daemon integration; its mapping remains PARTIAL because the complete embed-versus-executable-versus-adapt decision is not fully specified. ARCH-01 excludes provider adapters and does not own this choice."
+    },
+    {
+      "source_id": "ADD-A-012",
+      "selected_from": "secrets-reconciliation-performance.json",
+      "selected_row_sha256": "351db0eaf2eb224249e2ea6d73ac86bd308f8a501909c825949733e9e6375a4b",
+      "reason": "PERF-03 explicitly remains optional/read-only and leaves freshness and authority with Fleet, directly supporting no wholesale fnox adoption. ARCH-01 owns the narrower typed runtime seam and does not decide fnox adoption."
+    },
+    {
+      "source_id": "ADD-A-013",
+      "selected_from": "secrets-reconciliation-performance.json",
+      "selected_row_sha256": "feac3db25fcb1056a38bcf95ef0ddd7769c30e2da025759bc1960bd57cf445c5",
+      "reason": "PERF-04 owns the Fleet SOPS/age adapter and format integration. It remains PARTIAL because declarative NixOS activation is owned separately by PERF-06; OPS-04 is only generic file/archive transaction machinery."
+    },
+    {
+      "source_id": "ADD-A-014",
+      "selected_from": "secrets-reconciliation-performance.json",
+      "selected_row_sha256": "859a1d6ae6084cccc65206149d3a24f0ed751822bb80687365c2352e16a87f18",
+      "reason": "PERF-04 owns the SOPS/age format adapter and manifest boundary. It remains PARTIAL because version-control policy and deployment lifecycle are not specified there; OPS-04's transaction safety does not cover ciphertext versioning."
+    },
+    {
+      "source_id": "ADD-A-015",
+      "selected_from": "secrets-reconciliation-performance.json",
+      "selected_row_sha256": "a90daa332009d24b79afff0d5550bdc95bd619797994b94e5d822d3a36676337",
+      "reason": "PERF-06 explicitly owns synthetic NixOS provisioning/recovery validation and keeps age identities/plaintext outside Git and the Nix store. OPS-04's generic atomic file transactions do not own identity custody."
+    },
+    {
+      "source_id": "ADD-A-016",
+      "selected_from": "secrets-reconciliation-performance.json",
+      "selected_row_sha256": "531a963ed86f3e6b66a670653664be5705b5945295f45d11bf055598a35d6ce1",
+      "reason": "PERF-06 directly tests an independent recovery recipient and offline recovery for deployment secrets. OPS-04 covers generic archive transactions, not age recipient policy or custody."
+    },
+    {
+      "source_id": "ADD-A-017",
+      "selected_from": "secrets-reconciliation-performance.json",
+      "selected_row_sha256": "7d59a2e171ec0641a18e3845770e9cb9b754ca24b106ee568f0894a41a49316e",
+      "reason": "PERF-04 owns the SOPS/age operations interface and adapter. It remains PARTIAL because generate/rekey/sync/restore/deploy and unified fnox-interface evaluation exceed the proposal's inspect/validate/encrypt/decrypt/verify scope; OPS-03 is a generic artifact saga rather than a SOPS interface owner."
+    }
+  ]
+}

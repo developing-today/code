@@ -1,0 +1,938 @@
+[
+  {
+    "source_id": "ADD-CONTEXT-0001",
+    "canonical_requirement_id": "addendum-context",
+    "proposal_id": "",
+    "design_section": "Not applicable — sources/ADDENDUM_secrets_architecture_performance_infrastructure.md preamble: explicit administrative disposition; this record does not assert a separately testable implementation outcome.",
+    "test_oracle": "Not applicable: verify the source retains its administrative classification and is not used as evidence that an implementation or production action occurred.",
+    "disposition": "administrative",
+    "reason": "COVERED: Administrative disposition for this source-specific explanatory/context record; no proposal is applicable because it is context, process, evidence/history, or a research agenda rather than a bounded implementation outcome."
+  },
+  {
+    "source_id": "ADD-0001",
+    "canonical_requirement_id": "provider-scope-and-reconciliation",
+    "proposal_id": "SEC-04",
+    "design_section": "proposals/secrets-reconciliation.json#SEC-04 — Implement BWS adapter against explicit project scope; Outcome and Acceptance/Oracle in the full proposal body.",
+    "test_oracle": "Provider scope tests and lossless reconciliation; no unauthorized bw inventory",
+    "disposition": "partial",
+    "reason": "PARTIAL: SEC-04 is the reviewed proposal whose full body and acceptance section address canonical requirement provider-scope-and-reconciliation; this row maps only the stated source outcome and does not claim adjacent requirements, deployment, or operational completion."
+  },
+  {
+    "source_id": "ADD-0002",
+    "canonical_requirement_id": "provider-benchmarks",
+    "proposal_id": "PERF-01",
+    "design_section": "proposals/performance.json#PERF-01 — Establish synthetic Fleet/provider performance baseline; Outcome and Acceptance/Oracle in the full proposal body.",
+    "test_oracle": "Reproducible report including current Fleet resolver and broker; redact values",
+    "disposition": "partial",
+    "reason": "PARTIAL: PERF-01 is the reviewed proposal whose full body and acceptance section address canonical requirement provider-benchmarks; this row maps only the stated source outcome and does not claim adjacent requirements, deployment, or operational completion."
+  },
+  {
+    "source_id": "ADD-0003",
+    "canonical_requirement_id": "fnox-integration",
+    "proposal_id": "PERF-03",
+    "design_section": "proposals/performance.json#PERF-03 — Evaluate optional fnox daemon read-cache adapter; Outcome and Acceptance/Oracle in the full proposal body.",
+    "test_oracle": "Demonstrate bounded resolution and benchmark SDK/direct/Fleet; ensure no values in shell histories/logs/arguments",
+    "disposition": "partial",
+    "reason": "PARTIAL: PERF-03 is the reviewed proposal whose full body and acceptance section address canonical requirement fnox-integration; this row maps only the stated source outcome and does not claim adjacent requirements, deployment, or operational completion."
+  },
+  {
+    "source_id": "ADD-0004",
+    "canonical_requirement_id": "sops-age-integration",
+    "proposal_id": "PERF-04",
+    "design_section": "proposals/performance.json#PERF-04 — Add Fleet-side SOPS/age deployment adapter; Outcome and Acceptance/Oracle in the full proposal body.",
+    "test_oracle": "Synthetic NixOS deployment and restore/rekey tests",
+    "disposition": "partial",
+    "reason": "PARTIAL: PERF-04 is the reviewed proposal whose full body and acceptance section address canonical requirement sops-age-integration; this row maps only the stated source outcome and does not claim adjacent requirements, deployment, or operational completion."
+  },
+  {
+    "source_id": "ADD-0006",
+    "canonical_requirement_id": "securestore-evaluation",
+    "proposal_id": "PERF-05",
+    "design_section": "proposals/performance.json#PERF-05 — Complete bounded SecureStore and AEAD-envelope evaluation; Outcome and Acceptance/Oracle in the full proposal body.",
+    "test_oracle": "Security/maintenance assessment and interoperable synthetic proof",
+    "disposition": "partial",
+    "reason": "PARTIAL: PERF-05 is the reviewed proposal whose full body and acceptance section address canonical requirement securestore-evaluation; this row maps only the stated source outcome and does not claim adjacent requirements, deployment, or operational completion."
+  },
+  {
+    "source_id": "ADD-0007",
+    "canonical_requirement_id": "openbao-future-infrastructure",
+    "proposal_id": "FUT-01",
+    "design_section": "proposals/future-infrastructure.json#FUT-01 — Prove isolated OpenBao Raft lab behavior and recovery; Outcome and Acceptance/Oracle in the full proposal body.",
+    "test_oracle": "Falsifiable synthetic lab and topology/recovery evidence",
+    "disposition": "research",
+    "reason": "PARTIAL: FUT-01 is a bounded research proposal aligned to this source outcome; it supplies only the stated synthetic evidence/go-no-go scope and does not authorize production implementation or deployment."
+  },
+  {
+    "source_id": "ADD-A-029",
+    "canonical_requirement_id": "openbao-single-failure-domain",
+    "proposal_id": "FUT-01",
+    "design_section": "proposals/future-infrastructure.json#FUT-01 — Prove isolated OpenBao Raft lab behavior and recovery; Outcome and Acceptance/Oracle in the full proposal body.",
+    "test_oracle": "Failure-domain diagram groups all local containers under one host; injected host loss removes all nodes and test report does not claim HA.",
+    "disposition": "research",
+    "reason": "PARTIAL: FUT-01 is a bounded research proposal aligned to this source outcome; it supplies only the stated synthetic evidence/go-no-go scope and does not authorize production implementation or deployment."
+  },
+  {
+    "source_id": "ADD-A-030",
+    "canonical_requirement_id": "openbao-topology-evaluation",
+    "proposal_id": "FUT-05",
+    "design_section": "proposals/future-infrastructure.json#FUT-05 — Assess OCI Always Free feasibility for a nonproduction OpenBao site; Outcome and Acceptance/Oracle in the full proposal body.",
+    "test_oracle": "Topology study lists measured resource and recovery outcomes for each candidate; a simulated node/site loss tests recovery claims against declared RPO/RTO.",
+    "disposition": "research",
+    "reason": "PARTIAL: FUT-05 is a bounded research proposal aligned to this source outcome; it supplies only the stated synthetic evidence/go-no-go scope and does not authorize production implementation or deployment."
+  },
+  {
+    "source_id": "ADD-A-032",
+    "canonical_requirement_id": "openbao-service-boundary",
+    "proposal_id": "FUT-02",
+    "design_section": "proposals/future-infrastructure.json#FUT-02 — Map OpenBao secret, lease, Transit, PKI and SSH capabilities; Outcome and Acceptance/Oracle in the full proposal body.",
+    "test_oracle": "Synthetic capability matrix tests only named OpenBao API operations and maps each responsibility to one owner; unsupported features remain unsupported, not inferred.",
+    "disposition": "research",
+    "reason": "PARTIAL: FUT-02 is a bounded research proposal aligned to this source outcome; it supplies only the stated synthetic evidence/go-no-go scope and does not authorize production implementation or deployment."
+  },
+  {
+    "source_id": "ADD-0008",
+    "canonical_requirement_id": "provider-federation-and-replication-policy",
+    "proposal_id": "SEC-03",
+    "design_section": "proposals/secrets-reconciliation.json#SEC-03 — Add provider capability and scope descriptors with typed errors; Outcome and Acceptance/Oracle in the full proposal body.",
+    "test_oracle": "Policy tests proving non-inheritance of privileges and nonreplication by default",
+    "disposition": "partial",
+    "reason": "PARTIAL: SEC-03 is the reviewed proposal whose full body and acceptance section address canonical requirement provider-federation-and-replication-policy; this row maps only the stated source outcome and does not claim adjacent requirements, deployment, or operational completion."
+  },
+  {
+    "source_id": "ADD-A-033",
+    "canonical_requirement_id": "provider-federation",
+    "proposal_id": "REC-07",
+    "design_section": "proposals/secrets-reconciliation.json#REC-07 — Add guarded apply, crash injection, and resumable item saga; Outcome and Acceptance/Oracle in the full proposal body.",
+    "test_oracle": "Policy matrix has shared, provider-only and short-lived credentials; assert destinations per policy and that a dynamic lease is not copied as a static password.",
+    "disposition": "partial",
+    "reason": "PARTIAL: REC-07 is the reviewed proposal whose full body and acceptance section address canonical requirement provider-federation; this row maps only the stated source outcome and does not claim adjacent requirements, deployment, or operational completion."
+  },
+  {
+    "source_id": "ADD-A-034",
+    "canonical_requirement_id": "federation-blast-radius",
+    "proposal_id": "SEED-20",
+    "design_section": "proposals/idea-seeds.json#SEED-20 — Specify isolated multi-tenant namespaces and independent root ownership; Outcome and Acceptance/Oracle in the full proposal body.",
+    "test_oracle": "Synthetic principal-policy matrix proves least-privilege reads across CLI/library/broker/SDK and a provider compromise scenario identifies every exposed replica.",
+    "disposition": "research",
+    "reason": "PARTIAL: SEED-20 is a bounded research proposal aligned to this source outcome; it supplies only the stated synthetic evidence/go-no-go scope and does not authorize production implementation or deployment."
+  },
+  {
+    "source_id": "ADD-0009",
+    "canonical_requirement_id": "rust-architecture-performance",
+    "proposal_id": "ARCH-10",
+    "design_section": "proposals/architecture.json#ARCH-10 — Prove minimal profile dependency closure and ratify size/startup budgets; Outcome and Acceptance/Oracle in the full proposal body.",
+    "test_oracle": "Profile/size and latency tests; stale cache cannot defeat freshness requirements",
+    "disposition": "partial",
+    "reason": "PARTIAL: ARCH-10 is the reviewed proposal whose full body and acceptance section address canonical requirement rust-architecture-performance; this row maps only the stated source outcome and does not claim adjacent requirements, deployment, or operational completion."
+  },
+  {
+    "source_id": "ADD-0010",
+    "canonical_requirement_id": "delivery-staging",
+    "proposal_id": "",
+    "design_section": "Not applicable — sources/ADDENDUM_secrets_architecture_performance_infrastructure.md §10: explicit administrative disposition; this record does not assert a separately testable implementation outcome.",
+    "test_oracle": "Not applicable: verify the source retains its administrative classification and is not used as evidence that an implementation or production action occurred.",
+    "disposition": "administrative",
+    "reason": "COVERED: Administrative disposition for this source-specific sequencing / delivery requirement record; no proposal is applicable because it is context, process, evidence/history, or a research agenda rather than a bounded implementation outcome."
+  },
+  {
+    "source_id": "ADD-A-039",
+    "canonical_requirement_id": "immediate-sequence",
+    "proposal_id": "",
+    "design_section": "Not applicable — sources/ADDENDUM_secrets_architecture_performance_infrastructure.md §10: explicit administrative disposition; this record does not assert a separately testable implementation outcome.",
+    "test_oracle": "Not applicable: verify the source retains its administrative classification and is not used as evidence that an implementation or production action occurred.",
+    "disposition": "administrative",
+    "reason": "COVERED: Administrative disposition for this source-specific binding requirement record; no proposal is applicable because it is context, process, evidence/history, or a research agenda rather than a bounded implementation outcome."
+  },
+  {
+    "source_id": "ADD-A-040",
+    "canonical_requirement_id": "next-sequence",
+    "proposal_id": "",
+    "design_section": "Not applicable — sources/ADDENDUM_secrets_architecture_performance_infrastructure.md §10: explicit administrative disposition; this record does not assert a separately testable implementation outcome.",
+    "test_oracle": "Not applicable: verify the source retains its administrative classification and is not used as evidence that an implementation or production action occurred.",
+    "disposition": "administrative",
+    "reason": "COVERED: Administrative disposition for this source-specific binding requirement record; no proposal is applicable because it is context, process, evidence/history, or a research agenda rather than a bounded implementation outcome."
+  },
+  {
+    "source_id": "ADD-A-041",
+    "canonical_requirement_id": "long-term-evidence-plan",
+    "proposal_id": "",
+    "design_section": "Not applicable — sources/ADDENDUM_secrets_architecture_performance_infrastructure.md §10: explicit research disposition; this record does not assert a separately testable implementation outcome.",
+    "test_oracle": "Not applicable: verify the source retains its research classification and is not used as evidence that an implementation or production action occurred.",
+    "disposition": "research",
+    "reason": "PARTIAL: This source is a research direction, not implementation authorization; no single reviewed proposal covers its full scope. Each resulting research packet must define a bounded synthetic question, explicit go/no-go criteria and evidence before any implementation proposal."
+  },
+  {
+    "source_id": "COMPANION-0001",
+    "canonical_requirement_id": "pm-program-boundary-and-priority-semantics",
+    "proposal_id": "",
+    "design_section": "Not applicable — sources/COMPANION_pm_charter_shared_conventions.md §§1-3: explicit administrative disposition; this record does not assert a separately testable implementation outcome.",
+    "test_oracle": "Not applicable: verify the source retains its administrative classification and is not used as evidence that an implementation or production action occurred.",
+    "disposition": "administrative",
+    "reason": "COVERED: Administrative disposition for this source-specific scope boundary / shared convention record; no proposal is applicable because it is context, process, evidence/history, or a research agenda rather than a bounded implementation outcome."
+  },
+  {
+    "source_id": "COMPANION-0002",
+    "canonical_requirement_id": "issue-hierarchy-and-single-writer",
+    "proposal_id": "",
+    "design_section": "Not applicable — sources/COMPANION_pm_charter_shared_conventions.md §6: explicit administrative disposition; this record does not assert a separately testable implementation outcome.",
+    "test_oracle": "Not applicable: verify the source retains its administrative classification and is not used as evidence that an implementation or production action occurred.",
+    "disposition": "administrative",
+    "reason": "COVERED: Administrative disposition for this source-specific shared convention record; no proposal is applicable because it is context, process, evidence/history, or a research agenda rather than a bounded implementation outcome."
+  },
+  {
+    "source_id": "COMPANION-0003",
+    "canonical_requirement_id": "evidence-and-status-semantics",
+    "proposal_id": "",
+    "design_section": "Not applicable — sources/COMPANION_pm_charter_shared_conventions.md §§18-19: explicit administrative disposition; this record does not assert a separately testable implementation outcome.",
+    "test_oracle": "Not applicable: verify the source retains its administrative classification and is not used as evidence that an implementation or production action occurred.",
+    "disposition": "administrative",
+    "reason": "COVERED: Administrative disposition for this source-specific shared reporting convention record; no proposal is applicable because it is context, process, evidence/history, or a research agenda rather than a bounded implementation outcome."
+  },
+  {
+    "source_id": "COORD-PREAMBLE-0001",
+    "canonical_requirement_id": "coordinator-source-metadata",
+    "proposal_id": "",
+    "design_section": "Not applicable — sources/COORDINATOR_summit_handoff.md document title and metadata: explicit administrative disposition; this record does not assert a separately testable implementation outcome.",
+    "test_oracle": "Not applicable: verify the source retains its administrative classification and is not used as evidence that an implementation or production action occurred.",
+    "disposition": "administrative",
+    "reason": "COVERED: Administrative disposition for this source-specific administrative metadata record; no proposal is applicable because it is context, process, evidence/history, or a research agenda rather than a bounded implementation outcome."
+  },
+  {
+    "source_id": "COORD-ADMIN-0001",
+    "canonical_requirement_id": "summit-design-scope",
+    "proposal_id": "",
+    "design_section": "Not applicable — sources/COORDINATOR_summit_handoff.md §0: explicit administrative disposition; this record does not assert a separately testable implementation outcome.",
+    "test_oracle": "Not applicable: verify the source retains its administrative classification and is not used as evidence that an implementation or production action occurred.",
+    "disposition": "administrative",
+    "reason": "COVERED: Administrative disposition for this source-specific administrative run scope record; no proposal is applicable because it is context, process, evidence/history, or a research agenda rather than a bounded implementation outcome."
+  },
+  {
+    "source_id": "COORD-ADMIN-0010",
+    "canonical_requirement_id": "summit-prompt-contract",
+    "proposal_id": "",
+    "design_section": "Not applicable — sources/COORDINATOR_summit_handoff.md §6.1: explicit administrative disposition; this record does not assert a separately testable implementation outcome.",
+    "test_oracle": "Not applicable: verify the source retains its administrative classification and is not used as evidence that an implementation or production action occurred.",
+    "disposition": "administrative",
+    "reason": "COVERED: Administrative disposition for this source-specific future prompt / administrative scope record; no proposal is applicable because it is context, process, evidence/history, or a research agenda rather than a bounded implementation outcome."
+  },
+  {
+    "source_id": "COORD-SEC7-HEADING-0001",
+    "canonical_requirement_id": "coordinator-section-7",
+    "proposal_id": "",
+    "design_section": "Not applicable — sources/COORDINATOR_summit_handoff.md §7 heading: explicit administrative disposition; this record does not assert a separately testable implementation outcome.",
+    "test_oracle": "Not applicable: verify the source retains its administrative classification and is not used as evidence that an implementation or production action occurred.",
+    "disposition": "administrative",
+    "reason": "COVERED: Administrative disposition for this source-specific structural context record; no proposal is applicable because it is context, process, evidence/history, or a research agenda rather than a bounded implementation outcome."
+  },
+  {
+    "source_id": "COORD7-0001",
+    "canonical_requirement_id": "rust-architecture-and-performance",
+    "proposal_id": "ARCH-10",
+    "design_section": "proposals/architecture.json#ARCH-10 — Prove minimal profile dependency closure and ratify size/startup budgets; Outcome and Acceptance/Oracle in the full proposal body.",
+    "test_oracle": "Profile/size, latency, API/CLI parity, redaction tests",
+    "disposition": "partial",
+    "reason": "PARTIAL: ARCH-10 is the reviewed proposal whose full body and acceptance section address canonical requirement rust-architecture-and-performance; this row maps only the stated source outcome and does not claim adjacent requirements, deployment, or operational completion."
+  },
+  {
+    "source_id": "COORD7-0002",
+    "canonical_requirement_id": "credential-model-and-reconciliation",
+    "proposal_id": "SEC-02",
+    "design_section": "proposals/secrets-reconciliation.json#SEC-02 — Define versioned typed Credential schema and compatibility parser; Outcome and Acceptance/Oracle in the full proposal body.",
+    "test_oracle": "Provider failure, false deletion, conflict, native ID and metadata privacy tests",
+    "disposition": "partial",
+    "reason": "PARTIAL: SEC-02 is the reviewed proposal whose full body and acceptance section address canonical requirement credential-model-and-reconciliation; this row maps only the stated source outcome and does not claim adjacent requirements, deployment, or operational completion."
+  },
+  {
+    "source_id": "COORD7-0003",
+    "canonical_requirement_id": "provider-benchmarks-and-fnox",
+    "proposal_id": "PERF-01",
+    "design_section": "proposals/performance.json#PERF-01 — Establish synthetic Fleet/provider performance baseline; Outcome and Acceptance/Oracle in the full proposal body.",
+    "test_oracle": "Reproducible benchmark report with no secrets in logs",
+    "disposition": "partial",
+    "reason": "PARTIAL: PERF-01 is the reviewed proposal whose full body and acceptance section address canonical requirement provider-benchmarks-and-fnox; this row maps only the stated source outcome and does not claim adjacent requirements, deployment, or operational completion."
+  },
+  {
+    "source_id": "COORD7-0004",
+    "canonical_requirement_id": "sops-age-bootstrap-and-cache",
+    "proposal_id": "PERF-04",
+    "design_section": "proposals/performance.json#PERF-04 — Add Fleet-side SOPS/age deployment adapter; Outcome and Acceptance/Oracle in the full proposal body.",
+    "test_oracle": "Synthetic encryption/decryption/rekey/restore and cache freshness tests",
+    "disposition": "partial",
+    "reason": "PARTIAL: PERF-04 is the reviewed proposal whose full body and acceptance section address canonical requirement sops-age-bootstrap-and-cache; this row maps only the stated source outcome and does not claim adjacent requirements, deployment, or operational completion."
+  },
+  {
+    "source_id": "COORD7-0005",
+    "canonical_requirement_id": "pki-reference-matrix-and-custody",
+    "proposal_id": "ROOT-02",
+    "design_section": "proposals/pki.json#ROOT-02 — Implement PKI opaque identity, serial ledger, and manifest schema; Outcome and Acceptance/Oracle in the full proposal body.",
+    "test_oracle": "Independent path/matrix and restoration proof; no circular recovery",
+    "disposition": "partial",
+    "reason": "PARTIAL: ROOT-02 is the reviewed proposal whose full body and acceptance section address canonical requirement pki-reference-matrix-and-custody; this row maps only the stated source outcome and does not claim adjacent requirements, deployment, or operational completion."
+  },
+  {
+    "source_id": "COORD7-0006",
+    "canonical_requirement_id": "issuers-leaves-publication-interoperability",
+    "proposal_id": "CERT-15",
+    "design_section": "proposals/pki.json#CERT-15 — Generate DNS and publication runbooks without applying them; Outcome and Acceptance/Oracle in the full proposal body.",
+    "test_oracle": "Client validation and strict PQ-only rejection; functional endpoint checks",
+    "disposition": "partial",
+    "reason": "PARTIAL: CERT-15 is the reviewed proposal whose full body and acceptance section address canonical requirement issuers-leaves-publication-interoperability; this row maps only the stated source outcome and does not claim adjacent requirements, deployment, or operational completion."
+  },
+  {
+    "source_id": "COORD7-0007",
+    "canonical_requirement_id": "documentation-automation-and-proof",
+    "proposal_id": "OPS-08",
+    "design_section": "proposals/generators-ops.json#OPS-08 — Build synthetic Fleet-generated reference artifact evidence suite; Outcome and Acceptance/Oracle in the full proposal body.",
+    "test_oracle": "Test suite names independent oracle/reference; record artifacts and verification",
+    "disposition": "partial",
+    "reason": "PARTIAL: OPS-08 is the reviewed proposal whose full body and acceptance section address canonical requirement documentation-automation-and-proof; this row maps only the stated source outcome and does not claim adjacent requirements, deployment, or operational completion."
+  },
+  {
+    "source_id": "COORD7-0008",
+    "canonical_requirement_id": "future-infrastructure-research",
+    "proposal_id": "FUT-01",
+    "design_section": "proposals/future-infrastructure.json#FUT-01 — Prove isolated OpenBao Raft lab behavior and recovery; Outcome and Acceptance/Oracle in the full proposal body.",
+    "test_oracle": "Evidence sources, bounded prototype, falsifiable go/no-go",
+    "disposition": "research",
+    "reason": "PARTIAL: FUT-01 is a bounded research proposal aligned to this source outcome; it supplies only the stated synthetic evidence/go-no-go scope and does not authorize production implementation or deployment."
+  },
+  {
+    "source_id": "COORD8-0001",
+    "canonical_requirement_id": "traceability-and-coverage-audit",
+    "proposal_id": "TRACE-01",
+    "design_section": "proposals/census.json#TRACE-01 — Gate canonical source traceability and issue-evidence coverage in CI; Outcome and Acceptance/Oracle in the full proposal body.",
+    "test_oracle": "Coverage audit counts requirements and dispositions; unresolved unexplained mappings fail completion",
+    "disposition": "partial",
+    "reason": "PARTIAL: TRACE-01 is the reviewed proposal whose full body and acceptance section address canonical requirement traceability-and-coverage-audit; this row maps only the stated source outcome and does not claim adjacent requirements, deployment, or operational completion."
+  },
+  {
+    "source_id": "COORD-ADMIN-0011",
+    "canonical_requirement_id": "adr-evidence-and-production-safety",
+    "proposal_id": "",
+    "design_section": "Not applicable — sources/COORDINATOR_summit_handoff.md §§9–10: explicit administrative disposition; this record does not assert a separately testable implementation outcome.",
+    "test_oracle": "Not applicable: verify the source retains its administrative classification and is not used as evidence that an implementation or production action occurred.",
+    "disposition": "administrative",
+    "reason": "COVERED: Administrative disposition for this source-specific design quality and binding safety context record; no proposal is applicable because it is context, process, evidence/history, or a research agenda rather than a bounded implementation outcome."
+  },
+  {
+    "source_id": "DECISION-0001",
+    "canonical_requirement_id": "provider-roles-proposal",
+    "proposal_id": "SEC-03",
+    "design_section": "proposals/secrets-reconciliation.json#SEC-03 — Add provider capability and scope descriptors with typed errors; Outcome and Acceptance/Oracle in the full proposal body.",
+    "test_oracle": "Verify candidate capabilities against live code/providers before ADR",
+    "disposition": "partial",
+    "reason": "PARTIAL: SEC-03 is the reviewed proposal whose full body and acceptance section address canonical requirement provider-roles-proposal; this row maps only the stated source outcome and does not claim adjacent requirements, deployment, or operational completion."
+  },
+  {
+    "source_id": "DECISION-CONTEXT-0001",
+    "canonical_requirement_id": "decision-review-layout",
+    "proposal_id": "",
+    "design_section": "Not applicable — sources/DECISION_REVIEW_AND_NEXT_STEPS.md section separators: explicit historical disposition; this record does not assert a separately testable implementation outcome.",
+    "test_oracle": "Not applicable: verify the source retains its historical classification and is not used as evidence that an implementation or production action occurred.",
+    "disposition": "historical",
+    "reason": "COVERED: Historical/evidence record only; it preserves source precedence or verified-evidence limits and does not establish a new implementation outcome or deployment receipt."
+  },
+  {
+    "source_id": "DECISION-0002",
+    "canonical_requirement_id": "reference-pki-and-reconciliation-corrections",
+    "proposal_id": "ROOT-04",
+    "design_section": "proposals/pki.json#ROOT-04 — Construct and validate the nine-certificate asymmetric root graph; Outcome and Acceptance/Oracle in the full proposal body.",
+    "test_oracle": "PKI matrix, client validation, retention/reconcile and manifest tests",
+    "disposition": "partial",
+    "reason": "PARTIAL: ROOT-04 is the reviewed proposal whose full body and acceptance section address canonical requirement reference-pki-and-reconciliation-corrections; this row maps only the stated source outcome and does not claim adjacent requirements, deployment, or operational completion."
+  },
+  {
+    "source_id": "DECISION-0003",
+    "canonical_requirement_id": "evidence-and-research-backlog",
+    "proposal_id": "",
+    "design_section": "Not applicable — sources/DECISION_REVIEW_AND_NEXT_STEPS.md §§D-E: explicit research disposition; this record does not assert a separately testable implementation outcome.",
+    "test_oracle": "Not applicable: verify the source retains its research classification and is not used as evidence that an implementation or production action occurred.",
+    "disposition": "research",
+    "reason": "PARTIAL: This source is a research direction, not implementation authorization; no single reviewed proposal covers its full scope. Each resulting research packet must define a bounded synthetic question, explicit go/no-go criteria and evidence before any implementation proposal."
+  },
+  {
+    "source_id": "HANDOFF-0001",
+    "canonical_requirement_id": "source-completeness-and-scope",
+    "proposal_id": "",
+    "design_section": "Not applicable — sources/HANDOFF_claude_fleet_ca_credentials_secrets.md §§1-2: explicit administrative disposition; this record does not assert a separately testable implementation outcome.",
+    "test_oracle": "Not applicable: verify the source retains its administrative classification and is not used as evidence that an implementation or production action occurred.",
+    "disposition": "administrative",
+    "reason": "COVERED: Administrative disposition for this source-specific execution instruction record; no proposal is applicable because it is context, process, evidence/history, or a research agenda rather than a bounded implementation outcome."
+  },
+  {
+    "source_id": "HANDOFF-0002",
+    "canonical_requirement_id": "reference-pki-and-custody",
+    "proposal_id": "",
+    "design_section": "Not applicable — sources/HANDOFF_claude_fleet_ca_credentials_secrets.md §§3-4: explicit administrative disposition; this record does not assert a separately testable implementation outcome.",
+    "test_oracle": "Not applicable: verify the source retains its administrative classification and is not used as evidence that an implementation or production action occurred.",
+    "disposition": "administrative",
+    "reason": "COVERED: Administrative disposition for this source-specific requirements summary / safety boundary record; no proposal is applicable because it is context, process, evidence/history, or a research agenda rather than a bounded implementation outcome."
+  },
+  {
+    "source_id": "HANDOFF-0003",
+    "canonical_requirement_id": "design-phase-safety",
+    "proposal_id": "",
+    "design_section": "Not applicable — sources/HANDOFF_claude_fleet_ca_credentials_secrets.md §§5-6: explicit administrative disposition; this record does not assert a separately testable implementation outcome.",
+    "test_oracle": "Not applicable: verify the source retains its administrative classification and is not used as evidence that an implementation or production action occurred.",
+    "disposition": "administrative",
+    "reason": "COVERED: Administrative disposition for this source-specific execution instruction / authority boundary record; no proposal is applicable because it is context, process, evidence/history, or a research agenda rather than a bounded implementation outcome."
+  },
+  {
+    "source_id": "HANDOFF-0004",
+    "canonical_requirement_id": "mtc-experiment",
+    "proposal_id": "MTC-02",
+    "design_section": "proposals/mtc.json#MTC-02 — Run synthetic MTC CA, cosigner, mirror and independent verifier lab; Outcome and Acceptance/Oracle in the full proposal body.",
+    "test_oracle": "Controlled synthetic prototype, fallback and no-classical-downgrade tests",
+    "disposition": "partial",
+    "reason": "PARTIAL: MTC-02 is the reviewed proposal whose full body and acceptance section address canonical requirement mtc-experiment; this row maps only the stated source outcome and does not claim adjacent requirements, deployment, or operational completion."
+  },
+  {
+    "source_id": "README-0001",
+    "canonical_requirement_id": "source-package-index-and-status",
+    "proposal_id": "",
+    "design_section": "Not applicable — sources/README.md §§1-3, hand-off checklist: explicit historical disposition; this record does not assert a separately testable implementation outcome.",
+    "test_oracle": "Not applicable: verify the source retains its historical classification and is not used as evidence that an implementation or production action occurred.",
+    "disposition": "historical",
+    "reason": "COVERED: Historical/evidence record only; it preserves source precedence or verified-evidence limits and does not establish a new implementation outcome or deployment receipt."
+  },
+  {
+    "source_id": "RESEARCH-0001",
+    "canonical_requirement_id": "backend-landscape",
+    "proposal_id": "SEC-03",
+    "design_section": "proposals/secrets-reconciliation.json#SEC-03 — Add provider capability and scope descriptors with typed errors; Outcome and Acceptance/Oracle in the full proposal body.",
+    "test_oracle": "Source-backed capability matrix and synthetic verification",
+    "disposition": "partial",
+    "reason": "PARTIAL: SEC-03 is the reviewed proposal whose full body and acceptance section address canonical requirement backend-landscape; this row maps only the stated source outcome and does not claim adjacent requirements, deployment, or operational completion."
+  },
+  {
+    "source_id": "RESEARCH-CONTEXT-0001",
+    "canonical_requirement_id": "research-dossier-layout",
+    "proposal_id": "",
+    "design_section": "Not applicable — source section separators are formatting-only; no proposal or implementation outcome applies.",
+    "test_oracle": "Not applicable: verify the source record remains formatting-only and is not treated as a requirement or implementation result.",
+    "disposition": "historical",
+    "reason": "COVERED: Historical/formatting-only source record; the inventory explicitly says separators carry no independent outcome, so no proposal or implementation oracle applies."
+  },
+  {
+    "source_id": "RESEARCH-0002",
+    "canonical_requirement_id": "reconciliation-recovery-and-audit",
+    "proposal_id": "REC-07",
+    "design_section": "proposals/secrets-reconciliation.json#REC-07 — Add guarded apply, crash injection, and resumable item saga; Outcome and Acceptance/Oracle in the full proposal body.",
+    "test_oracle": "Failure injection, no-false-delete, restore, audit privacy and read-back",
+    "disposition": "partial",
+    "reason": "PARTIAL: REC-07 is the reviewed proposal whose full body and acceptance section address canonical requirement reconciliation-recovery-and-audit; this row maps only the stated source outcome and does not claim adjacent requirements, deployment, or operational completion."
+  },
+  {
+    "source_id": "RESEARCH-0004",
+    "canonical_requirement_id": "research-provenance-and-limitations",
+    "proposal_id": "",
+    "design_section": "Not applicable — sources/SECRETS_BACKEND_RESEARCH_2026-11-06.md §12 and source references/limitations: explicit historical disposition; this record does not assert a separately testable implementation outcome.",
+    "test_oracle": "Not applicable: verify the source retains its historical classification and is not used as evidence that an implementation or production action occurred.",
+    "disposition": "historical",
+    "reason": "COVERED: Historical/evidence record only; it preserves source precedence or verified-evidence limits and does not establish a new implementation outcome or deployment receipt."
+  },
+  {
+    "source_id": "IMPLEMENTER-0002",
+    "canonical_requirement_id": "future-implementation-acceptance",
+    "proposal_id": "",
+    "design_section": "Not applicable — sources/fleet_agent_handoff_prompt_v0_3.md §§5-10: explicit administrative disposition; this record does not assert a separately testable implementation outcome.",
+    "test_oracle": "Not applicable: verify the source retains its administrative classification and is not used as evidence that an implementation or production action occurred.",
+    "disposition": "administrative",
+    "reason": "COVERED: Administrative disposition for this source-specific future implementation obligation / safety invariant record; no proposal is applicable because it is context, process, evidence/history, or a research agenda rather than a bounded implementation outcome."
+  },
+  {
+    "source_id": "SPEC-OPS-001",
+    "canonical_requirement_id": "OPS-001",
+    "proposal_id": "REC-08",
+    "design_section": "proposals/secrets-reconciliation.json#REC-08 — Define full-scan versus incremental scheduling and checkpoint policy; Outcome and Acceptance/Oracle in the full proposal body.",
+    "test_oracle": "Execute §21.7, systemd integration against a synthetic fixture for the exact outcome: Laptop systemd timer, persistent catch-up, lock and audit. Record the observable result and verify the stated invariant; unsupported capability must be reported as unsupported, not pass.",
+    "disposition": "partial",
+    "reason": "PARTIAL: REC-08 is the reviewed proposal whose full body and acceptance section address canonical requirement OPS-001; this row maps only the stated source outcome and does not claim adjacent requirements, deployment, or operational completion."
+  },
+  {
+    "source_id": "SPEC-OPS-002",
+    "canonical_requirement_id": "OPS-002",
+    "proposal_id": "REC-06",
+    "design_section": "proposals/secrets-reconciliation.json#REC-06 — Add authoritative deletion-candidate confirmation and scope-move handling; Outcome and Acceptance/Oracle in the full proposal body.",
+    "test_oracle": "Execute §20, fault injection against a synthetic fixture for the exact outcome: Test store outage/missing scope must not cause deletion. Record the observable result and verify the stated invariant; unsupported capability must be reported as unsupported, not pass.",
+    "disposition": "partial",
+    "reason": "PARTIAL: REC-06 is the reviewed proposal whose full body and acceptance section address canonical requirement OPS-002; this row maps only the stated source outcome and does not claim adjacent requirements, deployment, or operational completion."
+  },
+  {
+    "source_id": "SPEC-OPS-003",
+    "canonical_requirement_id": "OPS-003",
+    "proposal_id": "REC-04",
+    "design_section": "proposals/secrets-reconciliation.json#REC-04 — Persist append-only local journal and metadata-only outbox; Outcome and Acceptance/Oracle in the full proposal body.",
+    "test_oracle": "Execute §21, readback report against a synthetic fixture for the exact outcome: Stable structured metrics/event identity and privacy. Record the observable result and verify the stated invariant; unsupported capability must be reported as unsupported, not pass.",
+    "disposition": "partial",
+    "reason": "PARTIAL: REC-04 is the reviewed proposal whose full body and acceptance section address canonical requirement OPS-003; this row maps only the stated source outcome and does not claim adjacent requirements, deployment, or operational completion."
+  },
+  {
+    "source_id": "SPEC-OPS-004",
+    "canonical_requirement_id": "OPS-004",
+    "proposal_id": "OPS-05",
+    "design_section": "proposals/generators-ops.json#OPS-05 — Generate Fleet help manpages completions and schemas from registry; Outcome and Acceptance/Oracle in the full proposal body.",
+    "test_oracle": "Execute §§25,29, snapshots against a synthetic fixture for the exact outcome: User-facing CLI help/completions and skills docs for all new domains. Record the observable result and verify the stated invariant; unsupported capability must be reported as unsupported, not pass.",
+    "disposition": "partial",
+    "reason": "PARTIAL: OPS-05 is the reviewed proposal whose full body and acceptance section address canonical requirement OPS-004; this row maps only the stated source outcome and does not claim adjacent requirements, deployment, or operational completion."
+  },
+  {
+    "source_id": "SPEC-OPS-005",
+    "canonical_requirement_id": "OPS-005",
+    "proposal_id": "TRACE-02",
+    "design_section": "proposals/census.json#TRACE-02 — Freeze V1 Fleet CLI and capability-profile compatibility golden corpus; Outcome and Acceptance/Oracle in the full proposal body.",
+    "test_oracle": "Execute §1, smoke matrix against a synthetic fixture for the exact outcome: Preserve all preexisting Fleet commands/variants/contracts. Record the observable result and verify the stated invariant; unsupported capability must be reported as unsupported, not pass.",
+    "disposition": "partial",
+    "reason": "PARTIAL: TRACE-02 is the reviewed proposal whose full body and acceptance section address canonical requirement OPS-005; this row maps only the stated source outcome and does not claim adjacent requirements, deployment, or operational completion."
+  },
+  {
+    "source_id": "SPEC-OPS-006",
+    "canonical_requirement_id": "OPS-006",
+    "proposal_id": "OPS-08",
+    "design_section": "proposals/generators-ops.json#OPS-08 — Build synthetic Fleet-generated reference artifact evidence suite; Outcome and Acceptance/Oracle in the full proposal body.",
+    "test_oracle": "Execute §28.3, command evidence against a synthetic fixture for the exact outcome: Use Fleet itself for reference demos and verify independently. Record the observable result and verify the stated invariant; unsupported capability must be reported as unsupported, not pass.",
+    "disposition": "partial",
+    "reason": "PARTIAL: OPS-08 is the reviewed proposal whose full body and acceptance section address canonical requirement OPS-006; this row maps only the stated source outcome and does not claim adjacent requirements, deployment, or operational completion."
+  },
+  {
+    "source_id": "EVIDENCE-CACHE-6767-0001",
+    "canonical_requirement_id": "broker-cache-freshness",
+    "proposal_id": "",
+    "design_section": "Not applicable — intake note.md §V1 line 36; parent-session evidence correction (PR #8491 commit c676d1c41c07; no source line in repo file asserted): explicit historical disposition; this record does not assert a separately testable implementation outcome.",
+    "test_oracle": "Not applicable: verify the source retains its historical classification and is not used as evidence that an implementation or production action occurred.",
+    "disposition": "historical",
+    "reason": "COVERED: Historical/evidence record only; it preserves source precedence or verified-evidence limits and does not establish a new implementation outcome or deployment receipt."
+  },
+  {
+    "source_id": "INPUT3-0001",
+    "canonical_requirement_id": "PKI-001",
+    "proposal_id": "",
+    "design_section": "Not applicable — source_input_3_architectural_perspective.txt, opening refinements: explicit historical disposition; this record does not assert a separately testable implementation outcome.",
+    "test_oracle": "Not applicable: verify the source retains its historical classification and is not used as evidence that an implementation or production action occurred.",
+    "disposition": "historical",
+    "reason": "COVERED: Historical/evidence record only; it preserves source precedence or verified-evidence limits and does not establish a new implementation outcome or deployment receipt."
+  },
+  {
+    "source_id": "INPUT3-0002",
+    "canonical_requirement_id": "PKI-001",
+    "proposal_id": "",
+    "design_section": "sources/fleet_architecture_spec_v0_3.md §47 historical input-3 crosswalk",
+    "test_oracle": "Non-behavioral crosswalk check: verify source INPUT3-0002 with canonical requirement ID PKI-001 is represented as a historical input-3 witness under spec §47 precedence; do not run or infer an implementation behavior test.",
+    "disposition": "historical",
+    "reason": "HISTORICAL: This row records canonical_requirement_id PKI-001 as an input-3 proposal witness reconciled by authoritative v0.3 spec §47; the old source witness itself is not an implementation task."
+  },
+  {
+    "source_id": "INPUT3-0003",
+    "canonical_requirement_id": "PKI-052",
+    "proposal_id": "",
+    "design_section": "sources/fleet_architecture_spec_v0_3.md §47 historical input-3 crosswalk",
+    "test_oracle": "Non-behavioral crosswalk check: verify source INPUT3-0003 with canonical requirement ID PKI-052 is represented as a historical input-3 witness under spec §47 precedence; do not run or infer an implementation behavior test.",
+    "disposition": "historical",
+    "reason": "HISTORICAL: This row records canonical_requirement_id PKI-052 as an input-3 proposal witness reconciled by authoritative v0.3 spec §47; the old source witness itself is not an implementation task."
+  },
+  {
+    "source_id": "INPUT3-0004",
+    "canonical_requirement_id": "PKI-049",
+    "proposal_id": "",
+    "design_section": "sources/fleet_architecture_spec_v0_3.md §47 historical input-3 crosswalk",
+    "test_oracle": "Non-behavioral crosswalk check: verify source INPUT3-0004 with canonical requirement ID PKI-049 is represented as a historical input-3 witness under spec §47 precedence; do not run or infer an implementation behavior test.",
+    "disposition": "historical",
+    "reason": "HISTORICAL: This row records canonical_requirement_id PKI-049 as an input-3 proposal witness reconciled by authoritative v0.3 spec §47; the old source witness itself is not an implementation task."
+  },
+  {
+    "source_id": "INPUT3-0005",
+    "canonical_requirement_id": "PKI-055",
+    "proposal_id": "",
+    "design_section": "sources/fleet_architecture_spec_v0_3.md §47 historical input-3 crosswalk",
+    "test_oracle": "Non-behavioral crosswalk check: verify source INPUT3-0005 with canonical requirement ID PKI-055 is represented as a historical input-3 witness under spec §47 precedence; do not run or infer an implementation behavior test.",
+    "disposition": "historical",
+    "reason": "HISTORICAL: This row records canonical_requirement_id PKI-055 as an input-3 proposal witness reconciled by authoritative v0.3 spec §47; the old source witness itself is not an implementation task."
+  },
+  {
+    "source_id": "INPUT3-0006",
+    "canonical_requirement_id": "PKI-070",
+    "proposal_id": "",
+    "design_section": "sources/fleet_architecture_spec_v0_3.md §47 historical input-3 crosswalk",
+    "test_oracle": "Non-behavioral crosswalk check: verify source INPUT3-0006 with canonical requirement ID PKI-070 is represented as a historical input-3 witness under spec §47 precedence; do not run or infer an implementation behavior test.",
+    "disposition": "historical",
+    "reason": "HISTORICAL: This row records canonical_requirement_id PKI-070 as an input-3 proposal witness reconciled by authoritative v0.3 spec §47; the old source witness itself is not an implementation task."
+  },
+  {
+    "source_id": "INPUT3-0007",
+    "canonical_requirement_id": "PKI-051",
+    "proposal_id": "",
+    "design_section": "sources/fleet_architecture_spec_v0_3.md §47 historical input-3 crosswalk",
+    "test_oracle": "Non-behavioral crosswalk check: verify source INPUT3-0007 with canonical requirement ID PKI-051 is represented as a historical input-3 witness under spec §47 precedence; do not run or infer an implementation behavior test.",
+    "disposition": "historical",
+    "reason": "HISTORICAL: This row records canonical_requirement_id PKI-051 as an input-3 proposal witness reconciled by authoritative v0.3 spec §47; the old source witness itself is not an implementation task."
+  },
+  {
+    "source_id": "INPUT3-0008",
+    "canonical_requirement_id": "PKI-006",
+    "proposal_id": "",
+    "design_section": "sources/fleet_architecture_spec_v0_3.md §47 historical input-3 crosswalk",
+    "test_oracle": "Non-behavioral crosswalk check: verify source INPUT3-0008 with canonical requirement ID PKI-006 is represented as a historical input-3 witness under spec §47 precedence; do not run or infer an implementation behavior test.",
+    "disposition": "historical",
+    "reason": "HISTORICAL: This row records canonical_requirement_id PKI-006 as an input-3 proposal witness reconciled by authoritative v0.3 spec §47; the old source witness itself is not an implementation task."
+  },
+  {
+    "source_id": "INPUT3-0009",
+    "canonical_requirement_id": "PKI-001",
+    "proposal_id": "",
+    "design_section": "sources/fleet_architecture_spec_v0_3.md §47 historical input-3 crosswalk",
+    "test_oracle": "Non-behavioral crosswalk check: verify source INPUT3-0009 with canonical requirement ID PKI-001 is represented as a historical input-3 witness under spec §47 precedence; do not run or infer an implementation behavior test.",
+    "disposition": "historical",
+    "reason": "HISTORICAL: This row records canonical_requirement_id PKI-001 as an input-3 proposal witness reconciled by authoritative v0.3 spec §47; the old source witness itself is not an implementation task."
+  },
+  {
+    "source_id": "INPUT3-0010",
+    "canonical_requirement_id": "PKI-056",
+    "proposal_id": "",
+    "design_section": "sources/fleet_architecture_spec_v0_3.md §47 historical input-3 crosswalk",
+    "test_oracle": "Non-behavioral crosswalk check: verify source INPUT3-0010 with canonical requirement ID PKI-056 is represented as a historical input-3 witness under spec §47 precedence; do not run or infer an implementation behavior test.",
+    "disposition": "historical",
+    "reason": "HISTORICAL: This row records canonical_requirement_id PKI-056 as an input-3 proposal witness reconciled by authoritative v0.3 spec §47; the old source witness itself is not an implementation task."
+  },
+  {
+    "source_id": "INPUT3-0011",
+    "canonical_requirement_id": "PKI-001",
+    "proposal_id": "",
+    "design_section": "sources/fleet_architecture_spec_v0_3.md §47 historical input-3 crosswalk",
+    "test_oracle": "Non-behavioral crosswalk check: verify source INPUT3-0011 with canonical requirement ID PKI-001 is represented as a historical input-3 witness under spec §47 precedence; do not run or infer an implementation behavior test.",
+    "disposition": "historical",
+    "reason": "HISTORICAL: This row records canonical_requirement_id PKI-001 as an input-3 proposal witness reconciled by authoritative v0.3 spec §47; the old source witness itself is not an implementation task."
+  },
+  {
+    "source_id": "INPUT3-0012",
+    "canonical_requirement_id": "PKI-006",
+    "proposal_id": "",
+    "design_section": "sources/fleet_architecture_spec_v0_3.md §47 historical input-3 crosswalk",
+    "test_oracle": "Non-behavioral crosswalk check: verify source INPUT3-0012 with canonical requirement ID PKI-006 is represented as a historical input-3 witness under spec §47 precedence; do not run or infer an implementation behavior test.",
+    "disposition": "historical",
+    "reason": "HISTORICAL: This row records canonical_requirement_id PKI-006 as an input-3 proposal witness reconciled by authoritative v0.3 spec §47; the old source witness itself is not an implementation task."
+  },
+  {
+    "source_id": "INPUT3-0013",
+    "canonical_requirement_id": "PKI-012",
+    "proposal_id": "",
+    "design_section": "sources/fleet_architecture_spec_v0_3.md §47 historical input-3 crosswalk",
+    "test_oracle": "Non-behavioral crosswalk check: verify source INPUT3-0013 with canonical requirement ID PKI-012 is represented as a historical input-3 witness under spec §47 precedence; do not run or infer an implementation behavior test.",
+    "disposition": "historical",
+    "reason": "HISTORICAL: This row records canonical_requirement_id PKI-012 as an input-3 proposal witness reconciled by authoritative v0.3 spec §47; the old source witness itself is not an implementation task."
+  },
+  {
+    "source_id": "INPUT3-0014",
+    "canonical_requirement_id": "PKI-019",
+    "proposal_id": "",
+    "design_section": "sources/fleet_architecture_spec_v0_3.md §47 historical input-3 crosswalk",
+    "test_oracle": "Non-behavioral crosswalk check: verify source INPUT3-0014 with canonical requirement ID PKI-019 is represented as a historical input-3 witness under spec §47 precedence; do not run or infer an implementation behavior test.",
+    "disposition": "historical",
+    "reason": "HISTORICAL: This row records canonical_requirement_id PKI-019 as an input-3 proposal witness reconciled by authoritative v0.3 spec §47; the old source witness itself is not an implementation task."
+  },
+  {
+    "source_id": "INPUT3-0015",
+    "canonical_requirement_id": "PKI-042",
+    "proposal_id": "",
+    "design_section": "sources/fleet_architecture_spec_v0_3.md §47 historical input-3 crosswalk",
+    "test_oracle": "Non-behavioral crosswalk check: verify source INPUT3-0015 with canonical requirement ID PKI-042 is represented as a historical input-3 witness under spec §47 precedence; do not run or infer an implementation behavior test.",
+    "disposition": "historical",
+    "reason": "HISTORICAL: This row records canonical_requirement_id PKI-042 as an input-3 proposal witness reconciled by authoritative v0.3 spec §47; the old source witness itself is not an implementation task."
+  },
+  {
+    "source_id": "INPUT3-0016",
+    "canonical_requirement_id": "PKI-009",
+    "proposal_id": "",
+    "design_section": "sources/fleet_architecture_spec_v0_3.md §47 historical input-3 crosswalk",
+    "test_oracle": "Non-behavioral crosswalk check: verify source INPUT3-0016 with canonical requirement ID PKI-009 is represented as a historical input-3 witness under spec §47 precedence; do not run or infer an implementation behavior test.",
+    "disposition": "historical",
+    "reason": "HISTORICAL: This row records canonical_requirement_id PKI-009 as an input-3 proposal witness reconciled by authoritative v0.3 spec §47; the old source witness itself is not an implementation task."
+  },
+  {
+    "source_id": "INPUT3-0017",
+    "canonical_requirement_id": "PKI-009",
+    "proposal_id": "",
+    "design_section": "sources/fleet_architecture_spec_v0_3.md §47 historical input-3 crosswalk",
+    "test_oracle": "Non-behavioral crosswalk check: verify source INPUT3-0017 with canonical requirement ID PKI-009 is represented as a historical input-3 witness under spec §47 precedence; do not run or infer an implementation behavior test.",
+    "disposition": "historical",
+    "reason": "HISTORICAL: This row records canonical_requirement_id PKI-009 as an input-3 proposal witness reconciled by authoritative v0.3 spec §47; the old source witness itself is not an implementation task."
+  },
+  {
+    "source_id": "INPUT3-0018",
+    "canonical_requirement_id": "PKI-023",
+    "proposal_id": "",
+    "design_section": "sources/fleet_architecture_spec_v0_3.md §47 historical input-3 crosswalk",
+    "test_oracle": "Non-behavioral crosswalk check: verify source INPUT3-0018 with canonical requirement ID PKI-023 is represented as a historical input-3 witness under spec §47 precedence; do not run or infer an implementation behavior test.",
+    "disposition": "historical",
+    "reason": "HISTORICAL: This row records canonical_requirement_id PKI-023 as an input-3 proposal witness reconciled by authoritative v0.3 spec §47; the old source witness itself is not an implementation task."
+  },
+  {
+    "source_id": "INPUT3-0019",
+    "canonical_requirement_id": "PKI-024",
+    "proposal_id": "",
+    "design_section": "sources/fleet_architecture_spec_v0_3.md §47 historical input-3 crosswalk",
+    "test_oracle": "Non-behavioral crosswalk check: verify source INPUT3-0019 with canonical requirement ID PKI-024 is represented as a historical input-3 witness under spec §47 precedence; do not run or infer an implementation behavior test.",
+    "disposition": "historical",
+    "reason": "HISTORICAL: This row records canonical_requirement_id PKI-024 as an input-3 proposal witness reconciled by authoritative v0.3 spec §47; the old source witness itself is not an implementation task."
+  },
+  {
+    "source_id": "INPUT3-0020",
+    "canonical_requirement_id": "PKI-027",
+    "proposal_id": "",
+    "design_section": "sources/fleet_architecture_spec_v0_3.md §47 historical input-3 crosswalk",
+    "test_oracle": "Non-behavioral crosswalk check: verify source INPUT3-0020 with canonical requirement ID PKI-027 is represented as a historical input-3 witness under spec §47 precedence; do not run or infer an implementation behavior test.",
+    "disposition": "historical",
+    "reason": "HISTORICAL: This row records canonical_requirement_id PKI-027 as an input-3 proposal witness reconciled by authoritative v0.3 spec §47; the old source witness itself is not an implementation task."
+  },
+  {
+    "source_id": "INPUT3-0021",
+    "canonical_requirement_id": "PKI-033",
+    "proposal_id": "",
+    "design_section": "sources/fleet_architecture_spec_v0_3.md §47 historical input-3 crosswalk",
+    "test_oracle": "Non-behavioral crosswalk check: verify source INPUT3-0021 with canonical requirement ID PKI-033 is represented as a historical input-3 witness under spec §47 precedence; do not run or infer an implementation behavior test.",
+    "disposition": "historical",
+    "reason": "HISTORICAL: This row records canonical_requirement_id PKI-033 as an input-3 proposal witness reconciled by authoritative v0.3 spec §47; the old source witness itself is not an implementation task."
+  },
+  {
+    "source_id": "INPUT3-0022",
+    "canonical_requirement_id": "PKI-034",
+    "proposal_id": "",
+    "design_section": "sources/fleet_architecture_spec_v0_3.md §47 historical input-3 crosswalk",
+    "test_oracle": "Non-behavioral crosswalk check: verify source INPUT3-0022 with canonical requirement ID PKI-034 is represented as a historical input-3 witness under spec §47 precedence; do not run or infer an implementation behavior test.",
+    "disposition": "historical",
+    "reason": "HISTORICAL: This row records canonical_requirement_id PKI-034 as an input-3 proposal witness reconciled by authoritative v0.3 spec §47; the old source witness itself is not an implementation task."
+  },
+  {
+    "source_id": "INPUT3-0023",
+    "canonical_requirement_id": "PKI-033",
+    "proposal_id": "",
+    "design_section": "sources/fleet_architecture_spec_v0_3.md §47 historical input-3 crosswalk",
+    "test_oracle": "Non-behavioral crosswalk check: verify source INPUT3-0023 with canonical requirement ID PKI-033 is represented as a historical input-3 witness under spec §47 precedence; do not run or infer an implementation behavior test.",
+    "disposition": "historical",
+    "reason": "HISTORICAL: This row records canonical_requirement_id PKI-033 as an input-3 proposal witness reconciled by authoritative v0.3 spec §47; the old source witness itself is not an implementation task."
+  },
+  {
+    "source_id": "INPUT3-0024",
+    "canonical_requirement_id": "PKI-037",
+    "proposal_id": "",
+    "design_section": "sources/fleet_architecture_spec_v0_3.md §47 historical input-3 crosswalk",
+    "test_oracle": "Non-behavioral crosswalk check: verify source INPUT3-0024 with canonical requirement ID PKI-037 is represented as a historical input-3 witness under spec §47 precedence; do not run or infer an implementation behavior test.",
+    "disposition": "historical",
+    "reason": "HISTORICAL: This row records canonical_requirement_id PKI-037 as an input-3 proposal witness reconciled by authoritative v0.3 spec §47; the old source witness itself is not an implementation task."
+  },
+  {
+    "source_id": "INPUT3-0025",
+    "canonical_requirement_id": "PKI-048",
+    "proposal_id": "",
+    "design_section": "sources/fleet_architecture_spec_v0_3.md §47 historical input-3 crosswalk",
+    "test_oracle": "Non-behavioral crosswalk check: verify source INPUT3-0025 with canonical requirement ID PKI-048 is represented as a historical input-3 witness under spec §47 precedence; do not run or infer an implementation behavior test.",
+    "disposition": "historical",
+    "reason": "HISTORICAL: This row records canonical_requirement_id PKI-048 as an input-3 proposal witness reconciled by authoritative v0.3 spec §47; the old source witness itself is not an implementation task."
+  },
+  {
+    "source_id": "INPUT3-0026",
+    "canonical_requirement_id": "PKI-045",
+    "proposal_id": "",
+    "design_section": "sources/fleet_architecture_spec_v0_3.md §47 historical input-3 crosswalk",
+    "test_oracle": "Non-behavioral crosswalk check: verify source INPUT3-0026 with canonical requirement ID PKI-045 is represented as a historical input-3 witness under spec §47 precedence; do not run or infer an implementation behavior test.",
+    "disposition": "historical",
+    "reason": "HISTORICAL: This row records canonical_requirement_id PKI-045 as an input-3 proposal witness reconciled by authoritative v0.3 spec §47; the old source witness itself is not an implementation task."
+  },
+  {
+    "source_id": "INPUT3-0027",
+    "canonical_requirement_id": "PKI-008",
+    "proposal_id": "",
+    "design_section": "sources/fleet_architecture_spec_v0_3.md §47 historical input-3 crosswalk",
+    "test_oracle": "Non-behavioral crosswalk check: verify source INPUT3-0027 with canonical requirement ID PKI-008 is represented as a historical input-3 witness under spec §47 precedence; do not run or infer an implementation behavior test.",
+    "disposition": "historical",
+    "reason": "HISTORICAL: This row records canonical_requirement_id PKI-008 as an input-3 proposal witness reconciled by authoritative v0.3 spec §47; the old source witness itself is not an implementation task."
+  },
+  {
+    "source_id": "INPUT3-0028",
+    "canonical_requirement_id": "PKI-014",
+    "proposal_id": "",
+    "design_section": "sources/fleet_architecture_spec_v0_3.md §47 historical input-3 crosswalk",
+    "test_oracle": "Non-behavioral crosswalk check: verify source INPUT3-0028 with canonical requirement ID PKI-014 is represented as a historical input-3 witness under spec §47 precedence; do not run or infer an implementation behavior test.",
+    "disposition": "historical",
+    "reason": "HISTORICAL: This row records canonical_requirement_id PKI-014 as an input-3 proposal witness reconciled by authoritative v0.3 spec §47; the old source witness itself is not an implementation task."
+  },
+  {
+    "source_id": "INPUT3-0029",
+    "canonical_requirement_id": "PKI-056",
+    "proposal_id": "",
+    "design_section": "sources/fleet_architecture_spec_v0_3.md §47 historical input-3 crosswalk",
+    "test_oracle": "Non-behavioral crosswalk check: verify source INPUT3-0029 with canonical requirement ID PKI-056 is represented as a historical input-3 witness under spec §47 precedence; do not run or infer an implementation behavior test.",
+    "disposition": "historical",
+    "reason": "HISTORICAL: This row records canonical_requirement_id PKI-056 as an input-3 proposal witness reconciled by authoritative v0.3 spec §47; the old source witness itself is not an implementation task."
+  },
+  {
+    "source_id": "INPUT3-0030",
+    "canonical_requirement_id": "PKI-058",
+    "proposal_id": "",
+    "design_section": "sources/fleet_architecture_spec_v0_3.md §47 historical input-3 crosswalk",
+    "test_oracle": "Non-behavioral crosswalk check: verify source INPUT3-0030 with canonical requirement ID PKI-058 is represented as a historical input-3 witness under spec §47 precedence; do not run or infer an implementation behavior test.",
+    "disposition": "historical",
+    "reason": "HISTORICAL: This row records canonical_requirement_id PKI-058 as an input-3 proposal witness reconciled by authoritative v0.3 spec §47; the old source witness itself is not an implementation task."
+  },
+  {
+    "source_id": "INPUT3-0031",
+    "canonical_requirement_id": "PKI-049",
+    "proposal_id": "",
+    "design_section": "sources/fleet_architecture_spec_v0_3.md §47 historical input-3 crosswalk",
+    "test_oracle": "Non-behavioral crosswalk check: verify source INPUT3-0031 with canonical requirement ID PKI-049 is represented as a historical input-3 witness under spec §47 precedence; do not run or infer an implementation behavior test.",
+    "disposition": "historical",
+    "reason": "HISTORICAL: This row records canonical_requirement_id PKI-049 as an input-3 proposal witness reconciled by authoritative v0.3 spec §47; the old source witness itself is not an implementation task."
+  },
+  {
+    "source_id": "INPUT3-C-0010",
+    "canonical_requirement_id": "R-SEC-17",
+    "proposal_id": "",
+    "design_section": "Not applicable — source_input_3_architectural_perspective.txt, Part IX heading: explicit historical disposition; this record does not assert a separately testable implementation outcome.",
+    "test_oracle": "Not applicable: verify the source retains its historical classification and is not used as evidence that an implementation or production action occurred.",
+    "disposition": "historical",
+    "reason": "COVERED: Historical/evidence record only; it preserves source precedence or verified-evidence limits and does not establish a new implementation outcome or deployment receipt."
+  },
+  {
+    "source_id": "INPUT3-0032",
+    "canonical_requirement_id": "PKI-052",
+    "proposal_id": "",
+    "design_section": "sources/fleet_architecture_spec_v0_3.md §47 historical input-3 crosswalk",
+    "test_oracle": "Non-behavioral crosswalk check: verify source INPUT3-0032 with canonical requirement ID PKI-052 is represented as a historical input-3 witness under spec §47 precedence; do not run or infer an implementation behavior test.",
+    "disposition": "historical",
+    "reason": "HISTORICAL: This row records canonical_requirement_id PKI-052 as an input-3 proposal witness reconciled by authoritative v0.3 spec §47; the old source witness itself is not an implementation task."
+  },
+  {
+    "source_id": "INPUT3-0033",
+    "canonical_requirement_id": "PKI-051",
+    "proposal_id": "",
+    "design_section": "sources/fleet_architecture_spec_v0_3.md §47 historical input-3 crosswalk",
+    "test_oracle": "Non-behavioral crosswalk check: verify source INPUT3-0033 with canonical requirement ID PKI-051 is represented as a historical input-3 witness under spec §47 precedence; do not run or infer an implementation behavior test.",
+    "disposition": "historical",
+    "reason": "HISTORICAL: This row records canonical_requirement_id PKI-051 as an input-3 proposal witness reconciled by authoritative v0.3 spec §47; the old source witness itself is not an implementation task."
+  },
+  {
+    "source_id": "INPUT3-0034",
+    "canonical_requirement_id": "PKI-032",
+    "proposal_id": "",
+    "design_section": "sources/fleet_architecture_spec_v0_3.md §47 historical input-3 crosswalk",
+    "test_oracle": "Non-behavioral crosswalk check: verify source INPUT3-0034 with canonical requirement ID PKI-032 is represented as a historical input-3 witness under spec §47 precedence; do not run or infer an implementation behavior test.",
+    "disposition": "historical",
+    "reason": "HISTORICAL: This row records canonical_requirement_id PKI-032 as an input-3 proposal witness reconciled by authoritative v0.3 spec §47; the old source witness itself is not an implementation task."
+  },
+  {
+    "source_id": "INPUT3-0035",
+    "canonical_requirement_id": "PKI-058",
+    "proposal_id": "",
+    "design_section": "sources/fleet_architecture_spec_v0_3.md §47 historical input-3 crosswalk",
+    "test_oracle": "Non-behavioral crosswalk check: verify source INPUT3-0035 with canonical requirement ID PKI-058 is represented as a historical input-3 witness under spec §47 precedence; do not run or infer an implementation behavior test.",
+    "disposition": "historical",
+    "reason": "HISTORICAL: This row records canonical_requirement_id PKI-058 as an input-3 proposal witness reconciled by authoritative v0.3 spec §47; the old source witness itself is not an implementation task."
+  },
+  {
+    "source_id": "INPUT3-0036",
+    "canonical_requirement_id": "PKI-061",
+    "proposal_id": "",
+    "design_section": "sources/fleet_architecture_spec_v0_3.md §47 historical input-3 crosswalk",
+    "test_oracle": "Non-behavioral crosswalk check: verify source INPUT3-0036 with canonical requirement ID PKI-061 is represented as a historical input-3 witness under spec §47 precedence; do not run or infer an implementation behavior test.",
+    "disposition": "historical",
+    "reason": "HISTORICAL: This row records canonical_requirement_id PKI-061 as an input-3 proposal witness reconciled by authoritative v0.3 spec §47; the old source witness itself is not an implementation task."
+  },
+  {
+    "source_id": "INPUT3-0037",
+    "canonical_requirement_id": "PKI-002",
+    "proposal_id": "",
+    "design_section": "sources/fleet_architecture_spec_v0_3.md §47 historical input-3 crosswalk",
+    "test_oracle": "Non-behavioral crosswalk check: verify source INPUT3-0037 with canonical requirement ID PKI-002 is represented as a historical input-3 witness under spec §47 precedence; do not run or infer an implementation behavior test.",
+    "disposition": "historical",
+    "reason": "HISTORICAL: This row records canonical_requirement_id PKI-002 as an input-3 proposal witness reconciled by authoritative v0.3 spec §47; the old source witness itself is not an implementation task."
+  },
+  {
+    "source_id": "INPUT3-0038",
+    "canonical_requirement_id": "PKI-061",
+    "proposal_id": "",
+    "design_section": "sources/fleet_architecture_spec_v0_3.md §47 historical input-3 crosswalk",
+    "test_oracle": "Non-behavioral crosswalk check: verify source INPUT3-0038 with canonical requirement ID PKI-061 is represented as a historical input-3 witness under spec §47 precedence; do not run or infer an implementation behavior test.",
+    "disposition": "historical",
+    "reason": "HISTORICAL: This row records canonical_requirement_id PKI-061 as an input-3 proposal witness reconciled by authoritative v0.3 spec §47; the old source witness itself is not an implementation task."
+  },
+  {
+    "source_id": "INPUT3-0039",
+    "canonical_requirement_id": "PKI-060",
+    "proposal_id": "",
+    "design_section": "sources/fleet_architecture_spec_v0_3.md §47 historical input-3 crosswalk",
+    "test_oracle": "Non-behavioral crosswalk check: verify source INPUT3-0039 with canonical requirement ID PKI-060 is represented as a historical input-3 witness under spec §47 precedence; do not run or infer an implementation behavior test.",
+    "disposition": "historical",
+    "reason": "HISTORICAL: This row records canonical_requirement_id PKI-060 as an input-3 proposal witness reconciled by authoritative v0.3 spec §47; the old source witness itself is not an implementation task."
+  },
+  {
+    "source_id": "INPUT3-0040",
+    "canonical_requirement_id": "PKI-001",
+    "proposal_id": "",
+    "design_section": "sources/fleet_architecture_spec_v0_3.md §47 historical input-3 crosswalk",
+    "test_oracle": "Non-behavioral crosswalk check: verify source INPUT3-0040 with canonical requirement ID PKI-001 is represented as a historical input-3 witness under spec §47 precedence; do not run or infer an implementation behavior test.",
+    "disposition": "historical",
+    "reason": "HISTORICAL: This row records canonical_requirement_id PKI-001 as an input-3 proposal witness reconciled by authoritative v0.3 spec §47; the old source witness itself is not an implementation task."
+  },
+  {
+    "source_id": "INPUT3-0041",
+    "canonical_requirement_id": "PKI-042",
+    "proposal_id": "",
+    "design_section": "sources/fleet_architecture_spec_v0_3.md §47 historical input-3 crosswalk",
+    "test_oracle": "Non-behavioral crosswalk check: verify source INPUT3-0041 with canonical requirement ID PKI-042 is represented as a historical input-3 witness under spec §47 precedence; do not run or infer an implementation behavior test.",
+    "disposition": "historical",
+    "reason": "HISTORICAL: This row records canonical_requirement_id PKI-042 as an input-3 proposal witness reconciled by authoritative v0.3 spec §47; the old source witness itself is not an implementation task."
+  },
+  {
+    "source_id": "INPUT3-0042",
+    "canonical_requirement_id": "PKI-044",
+    "proposal_id": "",
+    "design_section": "sources/fleet_architecture_spec_v0_3.md §47 historical input-3 crosswalk",
+    "test_oracle": "Non-behavioral crosswalk check: verify source INPUT3-0042 with canonical requirement ID PKI-044 is represented as a historical input-3 witness under spec §47 precedence; do not run or infer an implementation behavior test.",
+    "disposition": "historical",
+    "reason": "HISTORICAL: This row records canonical_requirement_id PKI-044 as an input-3 proposal witness reconciled by authoritative v0.3 spec §47; the old source witness itself is not an implementation task."
+  },
+  {
+    "source_id": "INPUT3-0043",
+    "canonical_requirement_id": "PKI-008",
+    "proposal_id": "",
+    "design_section": "sources/fleet_architecture_spec_v0_3.md §47 historical input-3 crosswalk",
+    "test_oracle": "Non-behavioral crosswalk check: verify source INPUT3-0043 with canonical requirement ID PKI-008 is represented as a historical input-3 witness under spec §47 precedence; do not run or infer an implementation behavior test.",
+    "disposition": "historical",
+    "reason": "HISTORICAL: This row records canonical_requirement_id PKI-008 as an input-3 proposal witness reconciled by authoritative v0.3 spec §47; the old source witness itself is not an implementation task."
+  },
+  {
+    "source_id": "INPUT3-0044",
+    "canonical_requirement_id": "PKI-001",
+    "proposal_id": "",
+    "design_section": "sources/fleet_architecture_spec_v0_3.md §47 historical input-3 crosswalk",
+    "test_oracle": "Non-behavioral crosswalk check: verify source INPUT3-0044 with canonical requirement ID PKI-001 is represented as a historical input-3 witness under spec §47 precedence; do not run or infer an implementation behavior test.",
+    "disposition": "historical",
+    "reason": "HISTORICAL: This row records canonical_requirement_id PKI-001 as an input-3 proposal witness reconciled by authoritative v0.3 spec §47; the old source witness itself is not an implementation task."
+  },
+  {
+    "source_id": "INPUT3-0046",
+    "canonical_requirement_id": "PKI-064",
+    "proposal_id": "",
+    "design_section": "sources/fleet_architecture_spec_v0_3.md §47 historical input-3 crosswalk",
+    "test_oracle": "Non-behavioral crosswalk check: verify source INPUT3-0046 with canonical requirement ID PKI-064 is represented as a historical input-3 witness under spec §47 precedence; do not run or infer an implementation behavior test.",
+    "disposition": "historical",
+    "reason": "HISTORICAL: This row records canonical_requirement_id PKI-064 as an input-3 proposal witness reconciled by authoritative v0.3 spec §47; the old source witness itself is not an implementation task."
+  },
+  {
+    "source_id": "INPUT3-0047",
+    "canonical_requirement_id": "PKI-006",
+    "proposal_id": "",
+    "design_section": "sources/fleet_architecture_spec_v0_3.md §47 historical input-3 crosswalk",
+    "test_oracle": "Non-behavioral crosswalk check: verify source INPUT3-0047 with canonical requirement ID PKI-006 is represented as a historical input-3 witness under spec §47 precedence; do not run or infer an implementation behavior test.",
+    "disposition": "historical",
+    "reason": "HISTORICAL: This row records canonical_requirement_id PKI-006 as an input-3 proposal witness reconciled by authoritative v0.3 spec §47; the old source witness itself is not an implementation task."
+  },
+  {
+    "source_id": "INPUT3-0048",
+    "canonical_requirement_id": "PKI-022",
+    "proposal_id": "",
+    "design_section": "Not applicable — source_input_3_architectural_perspective.txt, concluding architectural decisions: explicit historical disposition; this record does not assert a separately testable implementation outcome.",
+    "test_oracle": "Not applicable: verify the source retains its historical classification and is not used as evidence that an implementation or production action occurred.",
+    "disposition": "historical",
+    "reason": "COVERED: Historical/evidence record only; it preserves source precedence or verified-evidence limits and does not establish a new implementation outcome or deployment receipt."
+  }
+]

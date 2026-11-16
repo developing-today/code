@@ -1,0 +1,1037 @@
+{
+  "version": 1,
+  "rows": [
+    {
+      "member_id": "SPEC-0084-refined01",
+      "parent_source_id": "SPEC-0084",
+      "canonical_requirement_id": [
+        "artifacts.manifest-identity"
+      ],
+      "proposal_id": "",
+      "design_section": "Unmapped; member-specific proposal/design evidence not established.",
+      "test_oracle": "Decider: manifest schema fixture validation Input/evidence: Generate root/issuer/leaf manifests with schema, identity, subject, purpose, lineage, generation/partition and provenance fields. Expected invariant: Every logical root set, issuer set and leaf delivery has a schema-versioned `manifest.json` (machine canonical) plus optional YAML rendering (human). Reference oracle: Proposed: §7.1 and §28.3 bundle acceptance; evaluate this member independently. Not executed.",
+      "disposition": "unresolved",
+      "reason": "UNRESOLVED: SPEC-0084-refined01 has an individual clause and oracle in inventory/statements.jsonl, but no independently supported proposal issue with its exact outcome was established; parent mapping is not inherited. Member clause: Every logical root set, issuer set and leaf delivery has a schema-versioned `manifest.json` (machine canonical) plus optional YAML rendering (human)."
+    },
+    {
+      "member_id": "SPEC-0084-refined02",
+      "parent_source_id": "SPEC-0084",
+      "canonical_requirement_id": [
+        "artifacts.manifest-identity"
+      ],
+      "proposal_id": "",
+      "design_section": "Unmapped; member-specific proposal/design evidence not established.",
+      "test_oracle": "Decider: manifest schema fixture validation Input/evidence: Generate root/issuer/leaf manifests with schema, identity, subject, purpose, lineage, generation/partition and provenance fields. Expected invariant: It must describe: Reference oracle: Proposed: §7.1 and §28.3 bundle acceptance; evaluate this member independently. Not executed.",
+      "disposition": "unresolved",
+      "reason": "UNRESOLVED: SPEC-0084-refined02 has an individual clause and oracle in inventory/statements.jsonl, but no independently supported proposal issue with its exact outcome was established; parent mapping is not inherited. Member clause: It must describe:"
+    },
+    {
+      "member_id": "SPEC-0084-refined03",
+      "parent_source_id": "SPEC-0084",
+      "canonical_requirement_id": [
+        "artifacts.manifest-identity"
+      ],
+      "proposal_id": "",
+      "design_section": "Unmapped; member-specific proposal/design evidence not established.",
+      "test_oracle": "Decider: manifest schema fixture validation Input/evidence: Generate root/issuer/leaf manifests with schema, identity, subject, purpose, lineage, generation/partition and provenance fields. Expected invariant: - `schema`, `bundle_id`, `bundle_type`, `bundle_version`, `created_at`, `organization`, display names, subject DN/OU, `purpose`, `parent_refs`, generation/partition, renewal/revision, organization ID/namespace, source/build revision and policy/algorithm provider versions; Reference oracle: Proposed: §7.1 and §28.3 bundle acceptance; evaluate this member independently. Not executed.",
+      "disposition": "unresolved",
+      "reason": "UNRESOLVED: SPEC-0084-refined03 has an individual clause and oracle in inventory/statements.jsonl, but no independently supported proposal issue with its exact outcome was established; parent mapping is not inherited. Member clause: - `schema`, `bundle_id`, `bundle_type`, `bundle_version`, `created_at`, `organization`, display names, subject DN/OU, `purpose`, `parent_refs`, generation/partition, renewal/revision, organization ID/namespace, source/build revision and policy/algorithm provider versions;"
+    },
+    {
+      "member_id": "SPEC-0085-refined01",
+      "parent_source_id": "SPEC-0085",
+      "canonical_requirement_id": [
+        "artifacts.manifest-crypto-provenance"
+      ],
+      "proposal_id": "",
+      "design_section": "Unmapped; member-specific proposal/design evidence not established.",
+      "test_oracle": "Decider: manifest crypto-graph consistency validator Input/evidence: Use signed certificate fixtures covering algorithm/key handle/exportability, hashes, validity, cross-cert graph, paths, roots, CRL and publication. Expected invariant: - cross-cert relationships, trust paths/chain variants, root fingerprints, public distribution references, CRL signatures/freshness, signed publication records; Reference oracle: Proposed: §7.1 and §28.3 PKI acceptance; evaluate this member independently. Not executed.",
+      "disposition": "unresolved",
+      "reason": "UNRESOLVED: SPEC-0085-refined01 has an individual clause and oracle in inventory/statements.jsonl, but no independently supported proposal issue with its exact outcome was established; parent mapping is not inherited. Member clause: - algorithm set, per-algo `key_id`, storage handle, key exportability, X.509 certificate fingerprint/serial/issuer/SKI/AKI, DER/public artifact hashes, validity times, key usage/EKU/policies/name constraints, AIA/CDP URLs, OCSP status;"
+    },
+    {
+      "member_id": "SPEC-0085-refined02",
+      "parent_source_id": "SPEC-0085",
+      "canonical_requirement_id": [
+        "artifacts.manifest-crypto-provenance"
+      ],
+      "proposal_id": "",
+      "design_section": "Unmapped; member-specific proposal/design evidence not established.",
+      "test_oracle": "Decider: manifest crypto-graph consistency validator Input/evidence: Use signed certificate fixtures covering algorithm/key handle/exportability, hashes, validity, cross-cert graph, paths, roots, CRL and publication. Expected invariant: - cross-cert relationships, trust paths/chain variants, root fingerprints, public distribution references, CRL signatures/freshness, signed publication records; Reference oracle: Proposed: §7.1 and §28.3 PKI acceptance; evaluate this member independently. Not executed.",
+      "disposition": "unresolved",
+      "reason": "UNRESOLVED: SPEC-0085-refined02 has an individual clause and oracle in inventory/statements.jsonl, but no independently supported proposal issue with its exact outcome was established; parent mapping is not inherited. Member clause: - cross-cert relationships, trust paths/chain variants, root fingerprints, public distribution references, CRL signatures/freshness, signed publication records;"
+    },
+    {
+      "member_id": "SPEC-0086-refined01",
+      "parent_source_id": "SPEC-0086",
+      "canonical_requirement_id": [
+        "artifacts.manifest-files-sync"
+      ],
+      "proposal_id": "",
+      "design_section": "Unmapped; member-specific proposal/design evidence not established.",
+      "test_oracle": "Decider: artifact-index and provider-receipt schema tests Input/evidence: Create public/private artifacts and fake provider receipt; inspect index fields and scan serialized manifest for payload. Expected invariant: - creation engine version, config snapshot excluding secrets, cryptographic provider version, feature/algorithm registry revision and warnings; trace to renewal/rotation predecessor bundle; Reference oracle: Proposed: §7.1 and §28.3 bundle/secrets acceptance; evaluate this member independently. Not executed.",
+      "disposition": "unresolved",
+      "reason": "UNRESOLVED: SPEC-0086-refined01 has an individual clause and oracle in inventory/statements.jsonl, but no independently supported proposal issue with its exact outcome was established; parent mapping is not inherited. Member clause: - file index with `relative_path`, artifact type, encoding/MIME, visibility (public/private), encryption, checksum and semantic role;"
+    },
+    {
+      "member_id": "SPEC-0086-refined02",
+      "parent_source_id": "SPEC-0086",
+      "canonical_requirement_id": [
+        "artifacts.manifest-files-sync"
+      ],
+      "proposal_id": "",
+      "design_section": "Unmapped; member-specific proposal/design evidence not established.",
+      "test_oracle": "Decider: artifact-index and provider-receipt schema tests Input/evidence: Create public/private artifacts and fake provider receipt; inspect index fields and scan serialized manifest for payload. Expected invariant: - creation engine version, config snapshot excluding secrets, cryptographic provider version, feature/algorithm registry revision and warnings; trace to renewal/rotation predecessor bundle; Reference oracle: Proposed: §7.1 and §28.3 bundle/secrets acceptance; evaluate this member independently. Not executed.",
+      "disposition": "unresolved",
+      "reason": "UNRESOLVED: SPEC-0086-refined02 has an individual clause and oracle in inventory/statements.jsonl, but no independently supported proposal issue with its exact outcome was established; parent mapping is not inherited. Member clause: - provider sync receipts and logical secret IDs **without plaintext**, canonical secret key path, configured privilege policy, validation results and status;"
+    },
+    {
+      "member_id": "SPEC-0086-refined03",
+      "parent_source_id": "SPEC-0086",
+      "canonical_requirement_id": [
+        "artifacts.manifest-files-sync"
+      ],
+      "proposal_id": "",
+      "design_section": "Unmapped; member-specific proposal/design evidence not established.",
+      "test_oracle": "Decider: artifact-index and provider-receipt schema tests Input/evidence: Create public/private artifacts and fake provider receipt; inspect index fields and scan serialized manifest for payload. Expected invariant: - creation engine version, config snapshot excluding secrets, cryptographic provider version, feature/algorithm registry revision and warnings; trace to renewal/rotation predecessor bundle; Reference oracle: Proposed: §7.1 and §28.3 bundle/secrets acceptance; evaluate this member independently. Not executed.",
+      "disposition": "unresolved",
+      "reason": "UNRESOLVED: SPEC-0086-refined03 has an individual clause and oracle in inventory/statements.jsonl, but no independently supported proposal issue with its exact outcome was established; parent mapping is not inherited. Member clause: - creation engine version, config snapshot excluding secrets, cryptographic provider version, feature/algorithm registry revision and warnings; trace to renewal/rotation predecessor bundle;"
+    },
+    {
+      "member_id": "SPEC-0087-refined01",
+      "parent_source_id": "SPEC-0087",
+      "canonical_requirement_id": [
+        "artifacts.manifest-integrity-migration"
+      ],
+      "proposal_id": "",
+      "design_section": "Unmapped; member-specific proposal/design evidence not established.",
+      "test_oracle": "Decider: manifest trust-mode and migration fixture matrix Input/evidence: Validate attestations, public/private split, strict/legacy modes and forward/backward migrations; rename directory without changing manifest. Expected invariant: - audit-signature/attestation where available; preserve forward/backward schema migrations. Reference oracle: Proposed: §7.1 and §28.3 migration acceptance; evaluate this member independently. Not executed.",
+      "disposition": "unresolved",
+      "reason": "UNRESOLVED: SPEC-0087-refined01 has an individual clause and oracle in inventory/statements.jsonl, but no independently supported proposal issue with its exact outcome was established; parent mapping is not inherited. Member clause: - audit-signature/attestation where available; preserve forward/backward schema migrations."
+    },
+    {
+      "member_id": "SPEC-0087-refined02",
+      "parent_source_id": "SPEC-0087",
+      "canonical_requirement_id": [
+        "artifacts.manifest-integrity-migration"
+      ],
+      "proposal_id": "",
+      "design_section": "Unmapped; member-specific proposal/design evidence not established.",
+      "test_oracle": "Decider: manifest trust-mode and migration fixture matrix Input/evidence: Validate attestations, public/private split, strict/legacy modes and forward/backward migrations; rename directory without changing manifest. Expected invariant: Never derive authoritative state solely from directory names; bundle ID and signed/verified metadata are needed. Reference oracle: Proposed: §7.1 and §28.3 migration acceptance; evaluate this member independently. Not executed.",
+      "disposition": "unresolved",
+      "reason": "UNRESOLVED: SPEC-0087-refined02 has an individual clause and oracle in inventory/statements.jsonl, but no independently supported proposal issue with its exact outcome was established; parent mapping is not inherited. Member clause: Never derive authoritative state solely from directory names; bundle ID and signed/verified metadata are needed."
+    },
+    {
+      "member_id": "SPEC-0087-refined03",
+      "parent_source_id": "SPEC-0087",
+      "canonical_requirement_id": [
+        "artifacts.manifest-integrity-migration"
+      ],
+      "proposal_id": "",
+      "design_section": "Unmapped; member-specific proposal/design evidence not established.",
+      "test_oracle": "Decider: manifest trust-mode and migration fixture matrix Input/evidence: Validate attestations, public/private split, strict/legacy modes and forward/backward migrations; rename directory without changing manifest. Expected invariant: Consider public/private manifest separation, with a public distributable manifest scrubbed of private store paths or sensitive infrastructure if necessary. Reference oracle: Proposed: §7.1 and §28.3 migration acceptance; evaluate this member independently. Not executed.",
+      "disposition": "unresolved",
+      "reason": "UNRESOLVED: SPEC-0087-refined03 has an individual clause and oracle in inventory/statements.jsonl, but no independently supported proposal issue with its exact outcome was established; parent mapping is not inherited. Member clause: Consider public/private manifest separation, with a public distributable manifest scrubbed of private store paths or sensitive infrastructure if necessary."
+    },
+    {
+      "member_id": "SPEC-0087-refined04",
+      "parent_source_id": "SPEC-0087",
+      "canonical_requirement_id": [
+        "artifacts.manifest-integrity-migration"
+      ],
+      "proposal_id": "",
+      "design_section": "Unmapped; member-specific proposal/design evidence not established.",
+      "test_oracle": "Decider: manifest trust-mode and migration fixture matrix Input/evidence: Validate attestations, public/private split, strict/legacy modes and forward/backward migrations; rename directory without changing manifest. Expected invariant: Bundle read modes: strict schema verification, legacy inference with warnings, and migration to new schema. Reference oracle: Proposed: §7.1 and §28.3 migration acceptance; evaluate this member independently. Not executed.",
+      "disposition": "unresolved",
+      "reason": "UNRESOLVED: SPEC-0087-refined04 has an individual clause and oracle in inventory/statements.jsonl, but no independently supported proposal issue with its exact outcome was established; parent mapping is not inherited. Member clause: Bundle read modes: strict schema verification, legacy inference with warnings, and migration to new schema."
+    },
+    {
+      "member_id": "SPEC-0088-refined01",
+      "parent_source_id": "SPEC-0088",
+      "canonical_requirement_id": [
+        "artifacts.root-public-package"
+      ],
+      "proposal_id": "",
+      "design_section": "Unmapped; member-specific proposal/design evidence not established.",
+      "test_oracle": "Decider: root public package golden-tree test Input/evidence: Generate root fixture with roots/cross-certs/trust bundles/CRLs/formats and compare paths and manifest. Expected invariant: ```\nroot-set-g1a/\n  README.md\n  MANIFEST.json\n  manifest.yaml\n  policy.yaml\n  CHANGELOG.md\n  NEXT-STEPS.md\n  PUBLISH.md\n  publish-plan.yaml\n  dns.zone\n  public/\n    roots/{rsa-4096,p256,ed25519,ml-dsa-44}/g1a/{root.crt,root.pem}\n    cross/<certified-algo>/g1a/{signed-by-<signer>.crt,issuers.p7c,...}\n    bundles/{roots-all.pem,roots-classical.pem,roots-pq.pem,cross-certs.pem}\n    crl/roots/<algo>/g1a.crl\n    formats/... Reference oracle: Proposed: §7.2 and §28.3 root bundle acceptance; evaluate this member independently. Not executed.",
+      "disposition": "unresolved",
+      "reason": "UNRESOLVED: SPEC-0088-refined01 has an individual clause and oracle in inventory/statements.jsonl, but no independently supported proposal issue with its exact outcome was established; parent mapping is not inherited. Member clause: ```\nroot-set-g1a/\n  README.md\n  MANIFEST.json\n  manifest.yaml\n  policy.yaml\n  CHANGELOG.md\n  NEXT-STEPS.md\n  PUBLISH.md\n  publish-plan.yaml\n  dns.zone\n  public/\n    roots/{rsa-4096,p256,ed25519,ml-dsa-44}/g1a/{root.crt,root.pem}\n    cross/<certified-algo>/g1a/{signed-by-<signer>.crt,issuers.p7c,...}\n    bundles/{roots-all.pem,roots-classical.pem,roots-pq.pem,cross-certs.pem}\n    crl/roots/<algo>/g1a.crl\n    formats/..."
+    },
+    {
+      "member_id": "SPEC-0089-refined01",
+      "parent_source_id": "SPEC-0089",
+      "canonical_requirement_id": [
+        "artifacts.root-private-custody"
+      ],
+      "proposal_id": "",
+      "design_section": "Unmapped; member-specific proposal/design evidence not established.",
+      "test_oracle": "Decider: root private-custody archive policy matrix Input/evidence: Package root with export forbidden, allowed and encrypted-authorized modes; inspect modes, archive and filenames. Expected invariant: private/           # present ONLY when allowed; otherwise handles/refs only\n    keys/<algo>/...  # encrypted, permission-guarded Reference oracle: Proposed: §7.2 and §28.3 custody/archive acceptance; evaluate this member independently. Not executed.",
+      "disposition": "unresolved",
+      "reason": "UNRESOLVED: SPEC-0089-refined01 has an individual clause and oracle in inventory/statements.jsonl, but no independently supported proposal issue with its exact outcome was established; parent mapping is not inherited. Member clause: private/           # present ONLY when allowed; otherwise handles/refs only\n    keys/<algo>/...  # encrypted, permission-guarded"
+    },
+    {
+      "member_id": "SPEC-0089-refined02",
+      "parent_source_id": "SPEC-0089",
+      "canonical_requirement_id": [
+        "artifacts.root-private-custody"
+      ],
+      "proposal_id": "",
+      "design_section": "Unmapped; member-specific proposal/design evidence not established.",
+      "test_oracle": "Decider: root private-custody archive policy matrix Input/evidence: Package root with export forbidden, allowed and encrypted-authorized modes; inspect modes, archive and filenames. Expected invariant: NEVER public upload\n  refs/key-handles.json\n  chains/...\n  tests/{verification-matrix.json,publication-checks.json}\n  checksums.sha256 Reference oracle: Proposed: §7.2 and §28.3 custody/archive acceptance; evaluate this member independently. Not executed.",
+      "disposition": "unresolved",
+      "reason": "UNRESOLVED: SPEC-0089-refined02 has an individual clause and oracle in inventory/statements.jsonl, but no independently supported proposal issue with its exact outcome was established; parent mapping is not inherited. Member clause: NEVER public upload\n  refs/key-handles.json\n  chains/...\n  tests/{verification-matrix.json,publication-checks.json}\n  checksums.sha256"
+    },
+    {
+      "member_id": "SPEC-0089-refined03",
+      "parent_source_id": "SPEC-0089",
+      "canonical_requirement_id": [
+        "artifacts.root-private-custody"
+      ],
+      "proposal_id": "",
+      "design_section": "Unmapped; member-specific proposal/design evidence not established.",
+      "test_oracle": "Decider: root private-custody archive policy matrix Input/evidence: Package root with export forbidden, allowed and encrypted-authorized modes; inspect modes, archive and filenames. Expected invariant: ```\n\nActual on-disk names must be deterministic, readable and collision-resistant. Only root-appropriate secret keys/handles belong in `private/`; never include raw root secrets in a default distributable zip. Reference oracle: Proposed: §7.2 and §28.3 custody/archive acceptance; evaluate this member independently. Not executed.",
+      "disposition": "unresolved",
+      "reason": "UNRESOLVED: SPEC-0089-refined03 has an individual clause and oracle in inventory/statements.jsonl, but no independently supported proposal issue with its exact outcome was established; parent mapping is not inherited. Member clause: ```\n\nActual on-disk names must be deterministic, readable and collision-resistant. Only root-appropriate secret keys/handles belong in `private/`; never include raw root secrets in a default distributable zip."
+    },
+    {
+      "member_id": "SPEC-0089-refined04",
+      "parent_source_id": "SPEC-0089",
+      "canonical_requirement_id": [
+        "artifacts.root-private-custody"
+      ],
+      "proposal_id": "",
+      "design_section": "Unmapped; member-specific proposal/design evidence not established.",
+      "test_oracle": "Decider: archive scan and filesystem permission check Input/evidence: root archive under forbidden and authorized custody policies Expected invariant: Actual on-disk names must be deterministic, readable and collision-resistant. Only root-appropriate secret keys/handles belong in `private/`; never include raw root secrets in a default distributable zip. Reference oracle: Proposed: this exact source line and the parent-row acceptance reference; not executed.",
+      "disposition": "unresolved",
+      "reason": "UNRESOLVED: SPEC-0089-refined04 has an individual clause and oracle in inventory/statements.jsonl, but no independently supported proposal issue with its exact outcome was established; parent mapping is not inherited. Member clause: Actual on-disk names must be deterministic, readable and collision-resistant. Only root-appropriate secret keys/handles belong in `private/`; never include raw root secrets in a default distributable zip."
+    },
+    {
+      "member_id": "SPEC-0090-refined01",
+      "parent_source_id": "SPEC-0090",
+      "canonical_requirement_id": [
+        "artifacts.issuer-package"
+      ],
+      "proposal_id": "",
+      "design_section": "Unmapped; member-specific proposal/design evidence not established.",
+      "test_oracle": "Decider: issuer package golden-tree/README test Input/evidence: Generate issuer fixture; inspect manifest/policy, cert/CRL/P7C/chains/handles and README. Expected invariant: ```\nissuer-set-internal-web-g1a/\n  README.md, MANIFEST.json, policy.yaml, NEXT-STEPS.md\n  PUBLISH.md, publish-plan.yaml, dns.zone, checksums.sha256\n  public/certs/<algo>/ca.crt + ca.pem\n  public/crl/<algo>.crl\n  public/ca-issuers/<algo>.p7c   # where useful\n  public/chains/<algo>/<root-anchor>.pem\n  private/key-handles.json      # opaque references by default\n  private/keys/...              # encrypted only when permitted\n  tests/issuer-matrix.json\n``` Reference oracle: Proposed: §7.3 and §28.3 issuer acceptance; evaluate this member independently. Not executed.",
+      "disposition": "unresolved",
+      "reason": "UNRESOLVED: SPEC-0090-refined01 has an individual clause and oracle in inventory/statements.jsonl, but no independently supported proposal issue with its exact outcome was established; parent mapping is not inherited. Member clause: ```\nissuer-set-internal-web-g1a/\n  README.md, MANIFEST.json, policy.yaml, NEXT-STEPS.md\n  PUBLISH.md, publish-plan.yaml, dns.zone, checksums.sha256\n  public/certs/<algo>/ca.crt + ca.pem\n  public/crl/<algo>.crl\n  public/ca-issuers/<algo>.p7c   # where useful\n  public/chains/<algo>/<root-anchor>.pem\n  private/key-handles.json      # opaque references by default\n  private/keys/...              # encrypted only when permitted\n  tests/issuer-matrix.json\n```"
+    },
+    {
+      "member_id": "SPEC-0090-refined02",
+      "parent_source_id": "SPEC-0090",
+      "canonical_requirement_id": [
+        "artifacts.issuer-package"
+      ],
+      "proposal_id": "",
+      "design_section": "Unmapped; member-specific proposal/design evidence not established.",
+      "test_oracle": "Decider: issuer package golden-tree/README test Input/evidence: Generate issuer fixture; inspect manifest/policy, cert/CRL/P7C/chains/handles and README. Expected invariant: Provide `README.md` with commands for each expected publish step (`cp <generated relative file> <served absolute path>` or API upload), DNS verification, CRL maintenance, parent root/issuer inventory, EKU/name-constraint caveats and exact expected leaf usage. Reference oracle: Proposed: §7.3 and §28.3 issuer acceptance; evaluate this member independently. Not executed.",
+      "disposition": "unresolved",
+      "reason": "UNRESOLVED: SPEC-0090-refined02 has an individual clause and oracle in inventory/statements.jsonl, but no independently supported proposal issue with its exact outcome was established; parent mapping is not inherited. Member clause: Provide `README.md` with commands for each expected publish step (`cp <generated relative file> <served absolute path>` or API upload), DNS verification, CRL maintenance, parent root/issuer inventory, EKU/name-constraint caveats and exact expected leaf usage."
+    },
+    {
+      "member_id": "SPEC-0090-refined03",
+      "parent_source_id": "SPEC-0090",
+      "canonical_requirement_id": [
+        "artifacts.issuer-package"
+      ],
+      "proposal_id": "",
+      "design_section": "Unmapped; member-specific proposal/design evidence not established.",
+      "test_oracle": "Decider: issuer package golden-tree/README test Input/evidence: Generate issuer fixture; inspect manifest/policy, cert/CRL/P7C/chains/handles and README. Expected invariant: The same format can be created for a wholly unrelated organization/reason; avoid hard-coded Developing Today identifiers in the engine. Reference oracle: Proposed: §7.3 and §28.3 issuer acceptance; evaluate this member independently. Not executed.",
+      "disposition": "unresolved",
+      "reason": "UNRESOLVED: SPEC-0090-refined03 has an individual clause and oracle in inventory/statements.jsonl, but no independently supported proposal issue with its exact outcome was established; parent mapping is not inherited. Member clause: The same format can be created for a wholly unrelated organization/reason; avoid hard-coded Developing Today identifiers in the engine."
+    },
+    {
+      "member_id": "SPEC-0091-refined01",
+      "parent_source_id": "SPEC-0091",
+      "canonical_requirement_id": [
+        "artifacts.leaf-handoff-identity"
+      ],
+      "proposal_id": "",
+      "design_section": "Unmapped; member-specific proposal/design evidence not established.",
+      "test_oracle": "Decider: handoff content and private-key policy matrix Input/evidence: Generate handoff with SAN/expiry/public formats/compatible paths; repeat with encrypted authorized key output. Expected invariant: `--delivery handoff` produces an install-ready directory or authenticated/encrypted archive including: Reference oracle: Proposed: §7.4 and §28.3 leaf delivery acceptance; evaluate this member independently. Not executed.",
+      "disposition": "unresolved",
+      "reason": "UNRESOLVED: SPEC-0091-refined01 has an individual clause and oracle in inventory/statements.jsonl, but no independently supported proposal issue with its exact outcome was established; parent mapping is not inherited. Member clause: `--delivery handoff` produces an install-ready directory or authenticated/encrypted archive including:"
+    },
+    {
+      "member_id": "SPEC-0091-refined02",
+      "parent_source_id": "SPEC-0091",
+      "canonical_requirement_id": [
+        "artifacts.leaf-handoff-identity"
+      ],
+      "proposal_id": "",
+      "design_section": "Unmapped; member-specific proposal/design evidence not established.",
+      "test_oracle": "Decider: handoff content and private-key policy matrix Input/evidence: Generate handoff with SAN/expiry/public formats/compatible paths; repeat with encrypted authorized key output. Expected invariant: - public leaf `.crt` DER and `.pem`, public key SPKI, selected JWK/JWKS, chain PEMs per appropriate trust anchor, server/fullchain PEMs, PKCS#7/P7C (certificates only), PKCS#12/PFX if requested and safely encrypted, fingerprints and manifest Reference oracle: Proposed: §7.4 and §28.3 leaf delivery acceptance; evaluate this member independently. Not executed.",
+      "disposition": "unresolved",
+      "reason": "UNRESOLVED: SPEC-0091-refined02 has an individual clause and oracle in inventory/statements.jsonl, but no independently supported proposal issue with its exact outcome was established; parent mapping is not inherited. Member clause: - `README.md` showing purpose, identities/SANs, expiry, password/secret-handle retrieval instructions, capability limitations and exactly which certificate to install in which application;"
+    },
+    {
+      "member_id": "SPEC-0091-refined03",
+      "parent_source_id": "SPEC-0091",
+      "canonical_requirement_id": [
+        "artifacts.leaf-handoff-identity"
+      ],
+      "proposal_id": "",
+      "design_section": "Unmapped; member-specific proposal/design evidence not established.",
+      "test_oracle": "Decider: handoff content and private-key policy matrix Input/evidence: Generate handoff with SAN/expiry/public formats/compatible paths; repeat with encrypted authorized key output. Expected invariant: - public leaf `.crt` DER and `.pem`, public key SPKI, selected JWK/JWKS, chain PEMs per appropriate trust anchor, server/fullchain PEMs, PKCS#7/P7C (certificates only), PKCS#12/PFX if requested and safely encrypted, fingerprints and manifest Reference oracle: Proposed: §7.4 and §28.3 leaf delivery acceptance; evaluate this member independently. Not executed.",
+      "disposition": "unresolved",
+      "reason": "UNRESOLVED: SPEC-0091-refined03 has an individual clause and oracle in inventory/statements.jsonl, but no independently supported proposal issue with its exact outcome was established; parent mapping is not inherited. Member clause: - public leaf `.crt` DER and `.pem`, public key SPKI, selected JWK/JWKS, chain PEMs per appropriate trust anchor, server/fullchain PEMs, PKCS#7/P7C (certificates only), PKCS#12/PFX if requested and safely encrypted, fingerprints and manifest"
+    },
+    {
+      "member_id": "SPEC-0091-refined04",
+      "parent_source_id": "SPEC-0091",
+      "canonical_requirement_id": [
+        "artifacts.leaf-handoff-identity"
+      ],
+      "proposal_id": "",
+      "design_section": "Unmapped; member-specific proposal/design evidence not established.",
+      "test_oracle": "Decider: handoff content and private-key policy matrix Input/evidence: Generate handoff with SAN/expiry/public formats/compatible paths; repeat with encrypted authorized key output. Expected invariant: - `chains/default.pem`, `chains/for-rsa-root.pem`, `chains/for-p256-root.pem`, `chains/for-ed25519-root.pem`, `chains/for-ml-dsa-root.pem` **when a valid compatible path exists**; do not fabricate universal paths or duplicate chains for all roots when unnecessary; Reference oracle: Proposed: §7.4 and §28.3 leaf delivery acceptance; evaluate this member independently. Not executed.",
+      "disposition": "unresolved",
+      "reason": "UNRESOLVED: SPEC-0091-refined04 has an individual clause and oracle in inventory/statements.jsonl, but no independently supported proposal issue with its exact outcome was established; parent mapping is not inherited. Member clause: `.cer` aliases only where needed;"
+    },
+    {
+      "member_id": "SPEC-0091-refined05",
+      "parent_source_id": "SPEC-0091",
+      "canonical_requirement_id": [
+        "artifacts.leaf-handoff-identity"
+      ],
+      "proposal_id": "",
+      "design_section": "Unmapped; member-specific proposal/design evidence not established.",
+      "test_oracle": "Decider: handoff content and private-key policy matrix Input/evidence: Generate handoff with SAN/expiry/public formats/compatible paths; repeat with encrypted authorized key output. Expected invariant: - `chains/default.pem`, `chains/for-rsa-root.pem`, `chains/for-p256-root.pem`, `chains/for-ed25519-root.pem`, `chains/for-ml-dsa-root.pem` **when a valid compatible path exists**; do not fabricate universal paths or duplicate chains for all roots when unnecessary; Reference oracle: Proposed: §7.4 and §28.3 leaf delivery acceptance; evaluate this member independently. Not executed.",
+      "disposition": "unresolved",
+      "reason": "UNRESOLVED: SPEC-0091-refined05 has an individual clause and oracle in inventory/statements.jsonl, but no independently supported proposal issue with its exact outcome was established; parent mapping is not inherited. Member clause: - private keys **only in protected/encrypted output when explicitly authorized**; default handoff may instead contain private-key store references and a secure import guide;"
+    },
+    {
+      "member_id": "SPEC-0091-refined06",
+      "parent_source_id": "SPEC-0091",
+      "canonical_requirement_id": [
+        "artifacts.leaf-handoff-identity"
+      ],
+      "proposal_id": "",
+      "design_section": "Unmapped; member-specific proposal/design evidence not established.",
+      "test_oracle": "Decider: handoff content and private-key policy matrix Input/evidence: Generate handoff with SAN/expiry/public formats/compatible paths; repeat with encrypted authorized key output. Expected invariant: - `chains/default.pem`, `chains/for-rsa-root.pem`, `chains/for-p256-root.pem`, `chains/for-ed25519-root.pem`, `chains/for-ml-dsa-root.pem` **when a valid compatible path exists**; do not fabricate universal paths or duplicate chains for all roots when unnecessary; Reference oracle: Proposed: §7.4 and §28.3 leaf delivery acceptance; evaluate this member independently. Not executed.",
+      "disposition": "unresolved",
+      "reason": "UNRESOLVED: SPEC-0091-refined06 has an individual clause and oracle in inventory/statements.jsonl, but no independently supported proposal issue with its exact outcome was established; parent mapping is not inherited. Member clause: - `chains/default.pem`, `chains/for-rsa-root.pem`, `chains/for-p256-root.pem`, `chains/for-ed25519-root.pem`, `chains/for-ml-dsa-root.pem` **when a valid compatible path exists**; do not fabricate universal paths or duplicate chains for all roots when unnecessary;"
+    },
+    {
+      "member_id": "SPEC-0091-refined07",
+      "parent_source_id": "SPEC-0091",
+      "canonical_requirement_id": [
+        "artifacts.leaf-handoff-identity"
+      ],
+      "proposal_id": "",
+      "design_section": "Unmapped; member-specific proposal/design evidence not established.",
+      "test_oracle": "Decider: artifact index checks plus private-byte scan Input/evidence: default, denied-export and authorized encrypted-export handoffs Expected invariant: - private keys **only in protected/encrypted output when explicitly authorized**; default handoff may instead contain private-key store references and a secure import guide; Reference oracle: Proposed: this exact source line and the parent-row acceptance reference; not executed.",
+      "disposition": "unresolved",
+      "reason": "UNRESOLVED: SPEC-0091-refined07 has an individual clause and oracle in inventory/statements.jsonl, but no independently supported proposal issue with its exact outcome was established; parent mapping is not inherited. Member clause: - private keys **only in protected/encrypted output when explicitly authorized**; default handoff may instead contain private-key store references and a secure import guide;"
+    },
+    {
+      "member_id": "SPEC-0091-refined08",
+      "parent_source_id": "SPEC-0091",
+      "canonical_requirement_id": [
+        "artifacts.leaf-handoff-identity"
+      ],
+      "proposal_id": "",
+      "design_section": "Unmapped; member-specific proposal/design evidence not established.",
+      "test_oracle": "Decider: independent chain verifier and path-set equality Input/evidence: fixture with valid and invalid algorithm paths Expected invariant: - `chains/default.pem`, `chains/for-rsa-root.pem`, `chains/for-p256-root.pem`, `chains/for-ed25519-root.pem`, `chains/for-ml-dsa-root.pem` **when a valid compatible path exists**; do not fabricate universal paths or duplicate chains for all roots when unnecessary; Reference oracle: Proposed: this exact source line and the parent-row acceptance reference; not executed.",
+      "disposition": "unresolved",
+      "reason": "UNRESOLVED: SPEC-0091-refined08 has an individual clause and oracle in inventory/statements.jsonl, but no independently supported proposal issue with its exact outcome was established; parent mapping is not inherited. Member clause: - `chains/default.pem`, `chains/for-rsa-root.pem`, `chains/for-p256-root.pem`, `chains/for-ed25519-root.pem`, `chains/for-ml-dsa-root.pem` **when a valid compatible path exists**; do not fabricate universal paths or duplicate chains for all roots when unnecessary;"
+    },
+    {
+      "member_id": "SPEC-0092-refined01",
+      "parent_source_id": "SPEC-0092",
+      "canonical_requirement_id": [
+        "artifacts.handoff-guides-scripts"
+      ],
+      "proposal_id": "",
+      "design_section": "Unmapped; member-specific proposal/design evidence not established.",
+      "test_oracle": "Decider: handoff guide/script selection and safety tests Input/evidence: Create TLS and SSH handoffs; inspect selected platform guides, scripts, publication/DNS, renewal/revocation and archive variants. Expected invariant: - a public-only distribution variant and an explicitly encrypted credential package; avoid a default unencrypted archive that is safe to email only by accident. Reference oracle: Proposed: §7.4 and §28.3 delivery acceptance; evaluate this member independently. Not executed.",
+      "disposition": "unresolved",
+      "reason": "UNRESOLVED: SPEC-0092-refined01 has an individual clause and oracle in inventory/statements.jsonl, but no independently supported proposal issue with its exact outcome was established; parent mapping is not inherited. Member clause: - `install/linux.md`, `install/windows.md`, `install/macos.md`, `install/java.md`, `install/firefox.md`, `install/chrome.md`, `install/nginx.md`, `install/apache.md`, `install/caddy.md`, `install/ssh.md`, `install/email.md`, `install/kubernetes.md`, and other relevant guides selected by credential family; examples must distinguish *trust-store CA import* from *server identity/key deployment*;"
+    },
+    {
+      "member_id": "SPEC-0092-refined02",
+      "parent_source_id": "SPEC-0092",
+      "canonical_requirement_id": [
+        "artifacts.handoff-guides-scripts"
+      ],
+      "proposal_id": "",
+      "design_section": "Unmapped; member-specific proposal/design evidence not established.",
+      "test_oracle": "Decider: handoff guide/script selection and safety tests Input/evidence: Create TLS and SSH handoffs; inspect selected platform guides, scripts, publication/DNS, renewal/revocation and archive variants. Expected invariant: - a public-only distribution variant and an explicitly encrypted credential package; avoid a default unencrypted archive that is safe to email only by accident. Reference oracle: Proposed: §7.4 and §28.3 delivery acceptance; evaluate this member independently. Not executed.",
+      "disposition": "unresolved",
+      "reason": "UNRESOLVED: SPEC-0092-refined02 has an individual clause and oracle in inventory/statements.jsonl, but no independently supported proposal issue with its exact outcome was established; parent mapping is not inherited. Member clause: - `PUBLISH.md` and `dns.zone` if public artifacts or DNS changes are required, `verify.sh` and `verify.ps1` containing safe reproducible checks, and `NEXT-STEPS.md` for revocation/renewal;"
+    },
+    {
+      "member_id": "SPEC-0092-refined03",
+      "parent_source_id": "SPEC-0092",
+      "canonical_requirement_id": [
+        "artifacts.handoff-guides-scripts"
+      ],
+      "proposal_id": "",
+      "design_section": "Unmapped; member-specific proposal/design evidence not established.",
+      "test_oracle": "Decider: handoff guide/script selection and safety tests Input/evidence: Create TLS and SSH handoffs; inspect selected platform guides, scripts, publication/DNS, renewal/revocation and archive variants. Expected invariant: - a public-only distribution variant and an explicitly encrypted credential package; avoid a default unencrypted archive that is safe to email only by accident. Reference oracle: Proposed: §7.4 and §28.3 delivery acceptance; evaluate this member independently. Not executed.",
+      "disposition": "unresolved",
+      "reason": "UNRESOLVED: SPEC-0092-refined03 has an individual clause and oracle in inventory/statements.jsonl, but no independently supported proposal issue with its exact outcome was established; parent mapping is not inherited. Member clause: - a public-only distribution variant and an explicitly encrypted credential package; avoid a default unencrypted archive that is safe to email only by accident."
+    },
+    {
+      "member_id": "SPEC-0093-refined01",
+      "parent_source_id": "SPEC-0093",
+      "canonical_requirement_id": [
+        "artifacts.delivery-modes-guides"
+      ],
+      "proposal_id": "",
+      "design_section": "Unmapped; member-specific proposal/design evidence not established.",
+      "test_oracle": "Decider: delivery subset and platform-claim tests Input/evidence: Run subset modes and flags; inspect version-qualified browser/OS docs and SSH fixture. Expected invariant: `--delivery minimal` produces the essential requested file objects and a compact manifest Reference oracle: Proposed: §7.4 and §28.3 documentation acceptance; evaluate this member independently. Not executed.",
+      "disposition": "unresolved",
+      "reason": "UNRESOLVED: SPEC-0093-refined01 has an individual clause and oracle in inventory/statements.jsonl, but no independently supported proposal issue with its exact outcome was established; parent mapping is not inherited. Member clause: `--delivery minimal` produces the essential requested file objects and a compact manifest"
+    },
+    {
+      "member_id": "SPEC-0093-refined02",
+      "parent_source_id": "SPEC-0093",
+      "canonical_requirement_id": [
+        "artifacts.delivery-modes-guides"
+      ],
+      "proposal_id": "",
+      "design_section": "Unmapped; member-specific proposal/design evidence not established.",
+      "test_oracle": "Decider: delivery subset and platform-claim tests Input/evidence: Run subset modes and flags; inspect version-qualified browser/OS docs and SSH fixture. Expected invariant: `--delivery public-only` excludes all private material Reference oracle: Proposed: §7.4 and §28.3 documentation acceptance; evaluate this member independently. Not executed.",
+      "disposition": "unresolved",
+      "reason": "UNRESOLVED: SPEC-0093-refined02 has an individual clause and oracle in inventory/statements.jsonl, but no independently supported proposal issue with its exact outcome was established; parent mapping is not inherited. Member clause: `--delivery public-only` excludes all private material"
+    },
+    {
+      "member_id": "SPEC-0093-refined03",
+      "parent_source_id": "SPEC-0093",
+      "canonical_requirement_id": [
+        "artifacts.delivery-modes-guides"
+      ],
+      "proposal_id": "",
+      "design_section": "Unmapped; member-specific proposal/design evidence not established.",
+      "test_oracle": "Decider: delivery subset and platform-claim tests Input/evidence: Run subset modes and flags; inspect version-qualified browser/OS docs and SSH fixture. Expected invariant: `--delivery key-only` outputs specified key representations to authorized destinations only. Reference oracle: Proposed: §7.4 and §28.3 documentation acceptance; evaluate this member independently. Not executed.",
+      "disposition": "unresolved",
+      "reason": "UNRESOLVED: SPEC-0093-refined03 has an individual clause and oracle in inventory/statements.jsonl, but no independently supported proposal issue with its exact outcome was established; parent mapping is not inherited. Member clause: `--delivery key-only` outputs specified key representations to authorized destinations only."
+    },
+    {
+      "member_id": "SPEC-0093-refined04",
+      "parent_source_id": "SPEC-0093",
+      "canonical_requirement_id": [
+        "artifacts.delivery-modes-guides"
+      ],
+      "proposal_id": "",
+      "design_section": "Unmapped; member-specific proposal/design evidence not established.",
+      "test_oracle": "Decider: delivery subset and platform-claim tests Input/evidence: Run subset modes and flags; inspect version-qualified browser/OS docs and SSH fixture. Expected invariant: `--no-chains`, `--no-docs`, `--formats`, `--artifact` and `--only` select subsets without disabling security guards. Reference oracle: Proposed: §7.4 and §28.3 documentation acceptance; evaluate this member independently. Not executed.",
+      "disposition": "unresolved",
+      "reason": "UNRESOLVED: SPEC-0093-refined04 has an individual clause and oracle in inventory/statements.jsonl, but no independently supported proposal issue with its exact outcome was established; parent mapping is not inherited. Member clause: `--no-chains`, `--no-docs`, `--formats`, `--artifact` and `--only` select subsets without disabling security guards."
+    },
+    {
+      "member_id": "SPEC-0093-refined05",
+      "parent_source_id": "SPEC-0093",
+      "canonical_requirement_id": [
+        "artifacts.delivery-modes-guides"
+      ],
+      "proposal_id": "",
+      "design_section": "Unmapped; member-specific proposal/design evidence not established.",
+      "test_oracle": "Decider: delivery subset and platform-claim tests Input/evidence: Run subset modes and flags; inspect version-qualified browser/OS docs and SSH fixture. Expected invariant: **Platform-specific accuracy:** Chrome/Firefox may use system and/or application-specific trust stores depending on OS/policy Reference oracle: Proposed: §7.4 and §28.3 documentation acceptance; evaluate this member independently. Not executed.",
+      "disposition": "unresolved",
+      "reason": "UNRESOLVED: SPEC-0093-refined05 has an individual clause and oracle in inventory/statements.jsonl, but no independently supported proposal issue with its exact outcome was established; parent mapping is not inherited. Member clause: **Platform-specific accuracy:** Chrome/Firefox may use system and/or application-specific trust stores depending on OS/policy"
+    },
+    {
+      "member_id": "SPEC-0093-refined06",
+      "parent_source_id": "SPEC-0093",
+      "canonical_requirement_id": [
+        "artifacts.delivery-modes-guides"
+      ],
+      "proposal_id": "",
+      "design_section": "Unmapped; member-specific proposal/design evidence not established.",
+      "test_oracle": "Decider: delivery subset and platform-claim tests Input/evidence: Run subset modes and flags; inspect version-qualified browser/OS docs and SSH fixture. Expected invariant: Java uses configured JKS/PKCS#12 trust stores Reference oracle: Proposed: §7.4 and §28.3 documentation acceptance; evaluate this member independently. Not executed.",
+      "disposition": "unresolved",
+      "reason": "UNRESOLVED: SPEC-0093-refined06 has an individual clause and oracle in inventory/statements.jsonl, but no independently supported proposal issue with its exact outcome was established; parent mapping is not inherited. Member clause: Java uses configured JKS/PKCS#12 trust stores"
+    },
+    {
+      "member_id": "SPEC-0093-refined07",
+      "parent_source_id": "SPEC-0093",
+      "canonical_requirement_id": [
+        "artifacts.delivery-modes-guides"
+      ],
+      "proposal_id": "",
+      "design_section": "Unmapped; member-specific proposal/design evidence not established.",
+      "test_oracle": "Decider: delivery subset and platform-claim tests Input/evidence: Run subset modes and flags; inspect version-qualified browser/OS docs and SSH fixture. Expected invariant: Windows/macOS/Linux have platform-specific admin/enterprise root installation. Reference oracle: Proposed: §7.4 and §28.3 documentation acceptance; evaluate this member independently. Not executed.",
+      "disposition": "unresolved",
+      "reason": "UNRESOLVED: SPEC-0093-refined07 has an individual clause and oracle in inventory/statements.jsonl, but no independently supported proposal issue with its exact outcome was established; parent mapping is not inherited. Member clause: Windows/macOS/Linux have platform-specific admin/enterprise root installation."
+    },
+    {
+      "member_id": "SPEC-0093-refined08",
+      "parent_source_id": "SPEC-0093",
+      "canonical_requirement_id": [
+        "artifacts.delivery-modes-guides"
+      ],
+      "proposal_id": "",
+      "design_section": "Unmapped; member-specific proposal/design evidence not established.",
+      "test_oracle": "Decider: delivery subset and platform-claim tests Input/evidence: Run subset modes and flags; inspect version-qualified browser/OS docs and SSH fixture. Expected invariant: Do not claim one exact command works on every distribution, Java version or browser. Reference oracle: Proposed: §7.4 and §28.3 documentation acceptance; evaluate this member independently. Not executed.",
+      "disposition": "unresolved",
+      "reason": "UNRESOLVED: SPEC-0093-refined08 has an individual clause and oracle in inventory/statements.jsonl, but no independently supported proposal issue with its exact outcome was established; parent mapping is not inherited. Member clause: Do not claim one exact command works on every distribution, Java version or browser."
+    },
+    {
+      "member_id": "SPEC-0093-refined09",
+      "parent_source_id": "SPEC-0093",
+      "canonical_requirement_id": [
+        "artifacts.delivery-modes-guides"
+      ],
+      "proposal_id": "",
+      "design_section": "Unmapped; member-specific proposal/design evidence not established.",
+      "test_oracle": "Decider: delivery subset and platform-claim tests Input/evidence: Run subset modes and flags; inspect version-qualified browser/OS docs and SSH fixture. Expected invariant: Version and test documented commands. Reference oracle: Proposed: §7.4 and §28.3 documentation acceptance; evaluate this member independently. Not executed.",
+      "disposition": "unresolved",
+      "reason": "UNRESOLVED: SPEC-0093-refined09 has an individual clause and oracle in inventory/statements.jsonl, but no independently supported proposal issue with its exact outcome was established; parent mapping is not inherited. Member clause: Version and test documented commands."
+    },
+    {
+      "member_id": "SPEC-0093-refined10",
+      "parent_source_id": "SPEC-0093",
+      "canonical_requirement_id": [
+        "artifacts.delivery-modes-guides"
+      ],
+      "proposal_id": "",
+      "design_section": "Unmapped; member-specific proposal/design evidence not established.",
+      "test_oracle": "Decider: delivery subset and platform-claim tests Input/evidence: Run subset modes and flags; inspect version-qualified browser/OS docs and SSH fixture. Expected invariant: For SSH, `known_hosts` and `ssh_config` snippets are relevant only to actual SSH host keys/certificates and trust anchors, not X.509 TLS certificates. Reference oracle: Proposed: §7.4 and §28.3 documentation acceptance; evaluate this member independently. Not executed.",
+      "disposition": "unresolved",
+      "reason": "UNRESOLVED: SPEC-0093-refined10 has an individual clause and oracle in inventory/statements.jsonl, but no independently supported proposal issue with its exact outcome was established; parent mapping is not inherited. Member clause: For SSH, `known_hosts` and `ssh_config` snippets are relevant only to actual SSH host keys/certificates and trust anchors, not X.509 TLS certificates."
+    },
+    {
+      "member_id": "SPEC-0093-refined11",
+      "parent_source_id": "SPEC-0093",
+      "canonical_requirement_id": [
+        "artifacts.delivery-modes-guides"
+      ],
+      "proposal_id": "",
+      "design_section": "Unmapped; member-specific proposal/design evidence not established.",
+      "test_oracle": "Decider: delivery subset and platform-claim tests Input/evidence: Run subset modes and flags; inspect version-qualified browser/OS docs and SSH fixture. Expected invariant: SSH certificates cannot simply be derived from X.509 leaf certificates by changing extension. Reference oracle: Proposed: §7.4 and §28.3 documentation acceptance; evaluate this member independently. Not executed.",
+      "disposition": "unresolved",
+      "reason": "UNRESOLVED: SPEC-0093-refined11 has an individual clause and oracle in inventory/statements.jsonl, but no independently supported proposal issue with its exact outcome was established; parent mapping is not inherited. Member clause: SSH certificates cannot simply be derived from X.509 leaf certificates by changing extension."
+    },
+    {
+      "member_id": "SPEC-0093-refined12",
+      "parent_source_id": "SPEC-0093",
+      "canonical_requirement_id": [
+        "artifacts.delivery-modes-guides"
+      ],
+      "proposal_id": "",
+      "design_section": "Unmapped; member-specific proposal/design evidence not established.",
+      "test_oracle": "Decider: authorization matrix and zero writes Input/evidence: each subset selector combined with unauthorized private export Expected invariant: `--delivery minimal` produces the essential requested file objects and a compact manifest; `--delivery public-only` excludes all private material; `--delivery key-only` outputs specified key representations to authorized destinations only. `--no-chains`, `--no-docs`, `--formats`, `--artifact` and `--only` select subsets without disabling security guards. Reference oracle: Proposed: this exact source line and the parent-row acceptance reference; not executed.",
+      "disposition": "unresolved",
+      "reason": "UNRESOLVED: SPEC-0093-refined12 has an individual clause and oracle in inventory/statements.jsonl, but no independently supported proposal issue with its exact outcome was established; parent mapping is not inherited. Member clause: `--delivery minimal` produces the essential requested file objects and a compact manifest; `--delivery public-only` excludes all private material; `--delivery key-only` outputs specified key representations to authorized destinations only. `--no-chains`, `--no-docs`, `--formats`, `--artifact` and `--only` select subsets without disabling security guards."
+    },
+    {
+      "member_id": "SPEC-0093-refined13",
+      "parent_source_id": "SPEC-0093",
+      "canonical_requirement_id": [
+        "artifacts.delivery-modes-guides"
+      ],
+      "proposal_id": "",
+      "design_section": "Unmapped; member-specific proposal/design evidence not established.",
+      "test_oracle": "Decider: credential-family consistency and version-claim assertions Input/evidence: SSH and X.509 docs fixtures across tested/untested platform versions Expected invariant: **Platform-specific accuracy:** Chrome/Firefox may use system and/or application-specific trust stores depending on OS/policy; Java uses configured JKS/PKCS#12 trust stores; Windows/macOS/Linux have platform-specific admin/enterprise root installation. Do not claim one exact command works on every distribution, Java version or browser. Version and test documented commands. For SSH, `known_hosts` and `ssh_config` snippets are relevant only to actual SSH host keys/certificates and trust anchors, not X.509 TLS certificates. SSH certificates cannot simply be derived from X.509 leaf certificates by changing extension. Reference oracle: Proposed: this exact source line and the parent-row acceptance reference; not executed.",
+      "disposition": "unresolved",
+      "reason": "UNRESOLVED: SPEC-0093-refined13 has an individual clause and oracle in inventory/statements.jsonl, but no independently supported proposal issue with its exact outcome was established; parent mapping is not inherited. Member clause: **Platform-specific accuracy:** Chrome/Firefox may use system and/or application-specific trust stores depending on OS/policy; Java uses configured JKS/PKCS#12 trust stores; Windows/macOS/Linux have platform-specific admin/enterprise root installation. Do not claim one exact command works on every distribution, Java version or browser. Version and test documented commands. For SSH, `known_hosts` and `ssh_config` snippets are relevant only to actual SSH host keys/certificates and trust anchors, not X.509 TLS certificates. SSH certificates cannot simply be derived from X.509 leaf certificates by changing extension."
+    },
+    {
+      "member_id": "SPEC-0094-refined01",
+      "parent_source_id": "SPEC-0094",
+      "canonical_requirement_id": [
+        "artifacts.format-registry"
+      ],
+      "proposal_id": "",
+      "design_section": "Unmapped; member-specific proposal/design evidence not established.",
+      "test_oracle": "Decider: format registry capability matrix test Input/evidence: Register fixture adapters for X.509, PKCS12, SPKI/JWK, TLS, SSH, OpenPGP, JWT, DID and archives; query capabilities. Expected invariant: | Class | Examples | Intended capability |\n|---|---|---|\n| X.509 objects | DER `.crt`/`.cer`, PEM, CMS certs-only `.p7c`/`.p7b` | Baseline, tested |\n| Bundled identity | PKCS#12 `.p12`/`.pfx` | Opt-in encrypted import/export with private key |\n| Public key | SPKI DER/PEM, JWK/JWKS, SSH public key when algorithm supported | Encoding/representation; public only |\n| Private key | PKCS#8 encrypted PEM/DER, supported native SEC1, OpenSSH private key | Explicit policy/protected destination; no default plaintext |\n| TLS deployment | Fullchain PEM, Nginx/Apache/Caddy configs, kube secret templates | Profiles; actual private secret deployment guarded |\n| SSH | OpenSSH host/user CA certs, public-key formats, known_hosts/ssh config | **Separate** native SSH CA/signing workflow |\n| OpenPGP | OpenPGP certificate/key/subkeys and public export | **Separate** PGP semantics and expiration/trust |\n| JWT/JWS/JWK/x5c | Claims/signing, JWK metadata, certificate chain embedding | JWT is a signed assertion, not a cert format |\n| DID/W3C/JSON-LD/Multikey/IPFS | Exportable descriptors or publication resolvers | Optional adapters requiring concrete trust/resolver profile |\n| Archives/objects | zip, tar, tar.gz, tar.zst, zstd, JSON, YAML, JSONC output | Artifact packaging and structured exchange |\n| Future | KDL, CBOR, JOSE/COSE, CSV metadata, OCI artifact, S3/NATS | Registry-driven extension | Reference oracle: Proposed: §7.5 and §28.3 format acceptance; evaluate this member independently. Not executed.",
+      "disposition": "unresolved",
+      "reason": "UNRESOLVED: SPEC-0094-refined01 has an individual clause and oracle in inventory/statements.jsonl, but no independently supported proposal issue with its exact outcome was established; parent mapping is not inherited. Member clause: | Class | Examples | Intended capability |\n|---|---|---|\n| X.509 objects | DER `.crt`/`.cer`, PEM, CMS certs-only `.p7c`/`.p7b` | Baseline, tested |\n| Bundled identity | PKCS#12 `.p12`/`.pfx` | Opt-in encrypted import/export with private key |\n| Public key | SPKI DER/PEM, JWK/JWKS, SSH public key when algorithm supported | Encoding/representation; public only |\n| Private key | PKCS#8 encrypted PEM/DER, supported native SEC1, OpenSSH private key | Explicit policy/protected destination; no default plaintext |\n| TLS deployment | Fullchain PEM, Nginx/Apache/Caddy configs, kube secret templates | Profiles; actual private secret deployment guarded |\n| SSH | OpenSSH host/user CA certs, public-key formats, known_hosts/ssh config | **Separate** native SSH CA/signing workflow |\n| OpenPGP | OpenPGP certificate/key/subkeys and public export | **Separate** PGP semantics and expiration/trust |\n| JWT/JWS/JWK/x5c | Claims/signing, JWK metadata, certificate chain embedding | JWT is a signed assertion, not a cert format |\n| DID/W3C/JSON-LD/Multikey/IPFS | Exportable descriptors or publication resolvers | Optional adapters requiring concrete trust/resolver profile |\n| Archives/objects | zip, tar, tar.gz, tar.zst, zstd, JSON, YAML, JSONC output | Artifact packaging and structured exchange |\n| Future | KDL, CBOR, JOSE/COSE, CSV metadata, OCI artifact, S3/NATS | Registry-driven extension |"
+    },
+    {
+      "member_id": "SPEC-0094-refined02",
+      "parent_source_id": "SPEC-0094",
+      "canonical_requirement_id": [
+        "artifacts.format-registry"
+      ],
+      "proposal_id": "",
+      "design_section": "Unmapped; member-specific proposal/design evidence not established.",
+      "test_oracle": "Decider: format registry capability matrix test Input/evidence: Register fixture adapters for X.509, PKCS12, SPKI/JWK, TLS, SSH, OpenPGP, JWT, DID and archives; query capabilities. Expected invariant: A new algorithm or format should require **one adapter + registration metadata + profile compatibility declarations + fixture tests**; no global enum explosion or duplicated implementations for each CLI command. Reference oracle: Proposed: §7.5 and §28.3 format acceptance; evaluate this member independently. Not executed.",
+      "disposition": "unresolved",
+      "reason": "UNRESOLVED: SPEC-0094-refined02 has an individual clause and oracle in inventory/statements.jsonl, but no independently supported proposal issue with its exact outcome was established; parent mapping is not inherited. Member clause: A new algorithm or format should require **one adapter + registration metadata + profile compatibility declarations + fixture tests**; no global enum explosion or duplicated implementations for each CLI command."
+    },
+    {
+      "member_id": "SPEC-0094-refined03",
+      "parent_source_id": "SPEC-0094",
+      "canonical_requirement_id": [
+        "artifacts.format-registry"
+      ],
+      "proposal_id": "",
+      "design_section": "Unmapped; member-specific proposal/design evidence not established.",
+      "test_oracle": "Decider: format registry capability matrix test Input/evidence: Register fixture adapters for X.509, PKCS12, SPKI/JWK, TLS, SSH, OpenPGP, JWT, DID and archives; query capabilities. Expected invariant: Format registry must distinguish `can_export_public`, `can_export_private`, `supports_chain`, `supports_algorithm`, `credential_family`, `mime`, file extension, security/policy requirements and streaming support. Reference oracle: Proposed: §7.5 and §28.3 format acceptance; evaluate this member independently. Not executed.",
+      "disposition": "unresolved",
+      "reason": "UNRESOLVED: SPEC-0094-refined03 has an individual clause and oracle in inventory/statements.jsonl, but no independently supported proposal issue with its exact outcome was established; parent mapping is not inherited. Member clause: Format registry must distinguish `can_export_public`, `can_export_private`, `supports_chain`, `supports_algorithm`, `credential_family`, `mime`, file extension, security/policy requirements and streaming support."
+    },
+    {
+      "member_id": "SPEC-0095-a01",
+      "parent_source_id": "SPEC-0095",
+      "canonical_requirement_id": [
+        "test.reference-run"
+      ],
+      "proposal_id": "",
+      "design_section": "Unmapped; member-specific proposal/design evidence not established.",
+      "test_oracle": "Decider: Compare the observed outcome for this separately testable condition: Use Fleet CLI/library to generate isolated test root. Input/evidence: Construct one isolated conforming case for “Use Fleet CLI/library to generate isolated test root” and one counterexample changing only this condition; capture the command/API result and resulting state. Expected invariant: The conforming case satisfies “Use Fleet CLI/library to generate isolated test root”; the counterexample is rejected or reported unsupported where the source requires. Check the specific observable state/result, not mere command completion. Reference oracle: Verbatim source evidence at fleet_architecture_spec_v0_3.md:701: “generate an isolated deterministic-profile **test** root set, `Base` issuer, `Internal Web` issuer, one general one-year leaf, and one web SAN/wildcard leaf with the implemented CLI, then test all outputs via CLI and library. Use”. Assert this child condition only; no test execution is claimed.",
+      "disposition": "unresolved",
+      "reason": "UNRESOLVED: SPEC-0095-a01 has an individual clause and oracle in inventory/statements.jsonl, but no independently supported proposal issue with its exact outcome was established; parent mapping is not inherited. Member clause: Use Fleet CLI/library to generate isolated test root."
+    },
+    {
+      "member_id": "SPEC-0095-a01-r02",
+      "parent_source_id": "SPEC-0095",
+      "canonical_requirement_id": [
+        "test.reference-run"
+      ],
+      "proposal_id": "",
+      "design_section": "Unmapped; member-specific proposal/design evidence not established.",
+      "test_oracle": "Decider: Compare the observed outcome for this separately testable condition: Base. Input/evidence: Construct one isolated conforming case for “Base” and one counterexample changing only this condition; capture the command/API result and resulting state. Expected invariant: The conforming case satisfies “Base”; the counterexample is rejected or reported unsupported where the source requires. Check the specific observable state/result, not mere command completion. Reference oracle: Verbatim source evidence at fleet_architecture_spec_v0_3.md:701: “The implementer must generate an isolated deterministic-profile **test** root set, `Base` issuer, `Internal Web` issuer, one general one-year leaf, and one web SAN/wildcard leaf with the implemented CLI, then test all outputs via CLI and library. Use ephemeral test store providers and local HTTP fixtures for CRL/AIA; do not use production roots or secret-store credentials in CI.”. Assert this child condition only; no test execution is claimed.",
+      "disposition": "unresolved",
+      "reason": "UNRESOLVED: SPEC-0095-a01-r02 has an individual clause and oracle in inventory/statements.jsonl, but no independently supported proposal issue with its exact outcome was established; parent mapping is not inherited. Member clause: Base."
+    },
+    {
+      "member_id": "SPEC-0095-a01-r03",
+      "parent_source_id": "SPEC-0095",
+      "canonical_requirement_id": [
+        "test.reference-run"
+      ],
+      "proposal_id": "",
+      "design_section": "Unmapped; member-specific proposal/design evidence not established.",
+      "test_oracle": "Decider: Compare the observed outcome for this separately testable condition: Internal Web. Input/evidence: Construct one isolated conforming case for “Internal Web” and one counterexample changing only this condition; capture the command/API result and resulting state. Expected invariant: The conforming case satisfies “Internal Web”; the counterexample is rejected or reported unsupported where the source requires. Check the specific observable state/result, not mere command completion. Reference oracle: Verbatim source evidence at fleet_architecture_spec_v0_3.md:701: “web”. Assert this child condition only; no test execution is claimed.",
+      "disposition": "unresolved",
+      "reason": "UNRESOLVED: SPEC-0095-a01-r03 has an individual clause and oracle in inventory/statements.jsonl, but no independently supported proposal issue with its exact outcome was established; parent mapping is not inherited. Member clause: Internal Web."
+    },
+    {
+      "member_id": "SPEC-0095-a01-r04",
+      "parent_source_id": "SPEC-0095",
+      "canonical_requirement_id": [
+        "test.reference-run"
+      ],
+      "proposal_id": "",
+      "design_section": "Unmapped; member-specific proposal/design evidence not established.",
+      "test_oracle": "Decider: Compare the observed outcome for this separately testable condition: reference leaves using ephemeral stores/local HTTP fixtures. Input/evidence: Construct one isolated conforming case for “reference leaves using ephemeral stores/local HTTP fixtures” and one counterexample changing only this condition; capture the command/API result and resulting state. Expected invariant: The conforming case satisfies “reference leaves using ephemeral stores/local HTTP fixtures”; the counterexample is rejected or reported unsupported where the source requires. Check the specific observable state/result, not mere command completion. Reference oracle: Verbatim source evidence at fleet_architecture_spec_v0_3.md:701: “ephemeral test store providers and local HTTP fixtures”. Assert this child condition only; no test execution is claimed.",
+      "disposition": "unresolved",
+      "reason": "UNRESOLVED: SPEC-0095-a01-r04 has an individual clause and oracle in inventory/statements.jsonl, but no independently supported proposal issue with its exact outcome was established; parent mapping is not inherited. Member clause: reference leaves using ephemeral stores/local HTTP fixtures."
+    },
+    {
+      "member_id": "SPEC-0095-a01-r05",
+      "parent_source_id": "SPEC-0095",
+      "canonical_requirement_id": [
+        "test.reference-run"
+      ],
+      "proposal_id": "",
+      "design_section": "Unmapped; member-specific proposal/design evidence not established.",
+      "test_oracle": "Decider: Compare the observed outcome for this separately testable condition: never production credentials. Input/evidence: Construct one isolated conforming case for “never production credentials” and one counterexample changing only this condition; capture the command/API result and resulting state. Expected invariant: The conforming case satisfies “never production credentials”; the counterexample is rejected or reported unsupported where the source requires. Check the specific observable state/result, not mere command completion. Reference oracle: Verbatim source evidence at fleet_architecture_spec_v0_3.md:701: “production roots or secret-store credentials”. Assert this child condition only; no test execution is claimed.",
+      "disposition": "unresolved",
+      "reason": "UNRESOLVED: SPEC-0095-a01-r05 has an individual clause and oracle in inventory/statements.jsonl, but no independently supported proposal issue with its exact outcome was established; parent mapping is not inherited. Member clause: never production credentials."
+    },
+    {
+      "member_id": "SPEC-0096-a02",
+      "parent_source_id": "SPEC-0096",
+      "canonical_requirement_id": [
+        "test.pki.path-matrix"
+      ],
+      "proposal_id": "",
+      "design_section": "Unmapped; member-specific proposal/design evidence not established.",
+      "test_oracle": "Decider: Compare the observed outcome for this separately testable condition: conditional PASS requires verifier support. Input/evidence: Construct one isolated conforming case for “conditional PASS requires verifier support” and one counterexample changing only this condition; capture the command/API result and resulting state. Expected invariant: The conforming case satisfies “conditional PASS requires verifier support”; the counterexample is rejected or reported unsupported where the source requires. Check the specific observable state/result, not mere command completion. Reference oracle: Verbatim source evidence at fleet_architecture_spec_v0_3.md:714: “PASS is **conditional on the verifier's actual signature support”. Assert this child condition only; no test execution is claimed.",
+      "disposition": "unresolved",
+      "reason": "UNRESOLVED: SPEC-0096-a02 has an individual clause and oracle in inventory/statements.jsonl, but no independently supported proposal issue with its exact outcome was established; parent mapping is not inherited. Member clause: conditional PASS requires verifier support."
+    },
+    {
+      "member_id": "SPEC-0096-a02-r02",
+      "parent_source_id": "SPEC-0096",
+      "canonical_requirement_id": [
+        "test.pki.path-matrix"
+      ],
+      "proposal_id": "",
+      "design_section": "Unmapped; member-specific proposal/design evidence not established.",
+      "test_oracle": "Decider: Compare the observed outcome for this separately testable condition: PQ-only must reject all classical paths. Input/evidence: Construct one isolated conforming case for “PQ-only must reject all classical paths” and one counterexample changing only this condition; capture the command/API result and resulting state. Expected invariant: The conforming case satisfies “PQ-only must reject all classical paths”; the counterexample is rejected or reported unsupported where the source requires. Check the specific observable state/result, not mere command completion. Reference oracle: Verbatim source evidence at fleet_architecture_spec_v0_3.md:714: “PQ-only trust profile must **reject** all three classical issuer paths”. Assert this child condition only; no test execution is claimed.",
+      "disposition": "unresolved",
+      "reason": "UNRESOLVED: SPEC-0096-a02-r02 has an individual clause and oracle in inventory/statements.jsonl, but no independently supported proposal issue with its exact outcome was established; parent mapping is not inherited. Member clause: PQ-only must reject all classical paths."
+    },
+    {
+      "member_id": "SPEC-0096-a01",
+      "parent_source_id": "SPEC-0096",
+      "canonical_requirement_id": [
+        "test.pki.path-matrix"
+      ],
+      "proposal_id": "",
+      "design_section": "Unmapped; member-specific proposal/design evidence not established.",
+      "test_oracle": "Decider: Compare the matrix/test result for this exact condition: RSA issuer path to RSA trust root: PASS with suitable root bridge. Input/evidence: Construct the RSA issuer chain and the RSA trust root; explicitly provide that path candidate and run the configured verifier. For conditional PASS cells, run with supported and unsupported verifier capability; for the PQ-only cell, include classical issuer and assert rejection. Expected invariant: Accept the path only for the exact stated matching signature condition. Reference oracle: Exact source cell at fleet_architecture_spec_v0_3.md:709: “| RSA issuer | PASS with suitable root bridge | PASS if RSA+P-256 supported | PASS if RSA+Ed supported | **FAIL** (PQ-only) |” No test execution is claimed.",
+      "disposition": "unresolved",
+      "reason": "UNRESOLVED: SPEC-0096-a01 has an individual clause and oracle in inventory/statements.jsonl, but no independently supported proposal issue with its exact outcome was established; parent mapping is not inherited. Member clause: RSA issuer path to RSA trust root: PASS with suitable root bridge."
+    },
+    {
+      "member_id": "SPEC-0096-a01-rsa-p-256",
+      "parent_source_id": "SPEC-0096",
+      "canonical_requirement_id": [
+        "test.pki.path-matrix"
+      ],
+      "proposal_id": "",
+      "design_section": "Unmapped; member-specific proposal/design evidence not established.",
+      "test_oracle": "Decider: Compare the matrix/test result for this exact condition: RSA issuer path to P-256 trust root: PASS if RSA+P-256 supported. Input/evidence: Construct the RSA issuer chain and the P-256 trust root; explicitly provide that path candidate and run the configured verifier. For conditional PASS cells, run with supported and unsupported verifier capability; for the PQ-only cell, include classical issuer and assert rejection. Expected invariant: PASS only when the stated verifier support/chain preconditions hold; otherwise record unsupported. Reference oracle: Exact source cell at fleet_architecture_spec_v0_3.md:709: “| RSA issuer | PASS with suitable root bridge | PASS if RSA+P-256 supported | PASS if RSA+Ed supported | **FAIL** (PQ-only) |” No test execution is claimed.",
+      "disposition": "unresolved",
+      "reason": "UNRESOLVED: SPEC-0096-a01-rsa-p-256 has an individual clause and oracle in inventory/statements.jsonl, but no independently supported proposal issue with its exact outcome was established; parent mapping is not inherited. Member clause: RSA issuer path to P-256 trust root: PASS if RSA+P-256 supported."
+    },
+    {
+      "member_id": "SPEC-0096-a01-rsa-ed25519",
+      "parent_source_id": "SPEC-0096",
+      "canonical_requirement_id": [
+        "test.pki.path-matrix"
+      ],
+      "proposal_id": "",
+      "design_section": "Unmapped; member-specific proposal/design evidence not established.",
+      "test_oracle": "Decider: Compare the matrix/test result for this exact condition: RSA issuer path to Ed25519 trust root: PASS if RSA+Ed supported. Input/evidence: Construct the RSA issuer chain and the Ed25519 trust root; explicitly provide that path candidate and run the configured verifier. For conditional PASS cells, run with supported and unsupported verifier capability; for the PQ-only cell, include classical issuer and assert rejection. Expected invariant: PASS only when the stated verifier support/chain preconditions hold; otherwise record unsupported. Reference oracle: Exact source cell at fleet_architecture_spec_v0_3.md:709: “| RSA issuer | PASS with suitable root bridge | PASS if RSA+P-256 supported | PASS if RSA+Ed supported | **FAIL** (PQ-only) |” No test execution is claimed.",
+      "disposition": "unresolved",
+      "reason": "UNRESOLVED: SPEC-0096-a01-rsa-ed25519 has an individual clause and oracle in inventory/statements.jsonl, but no independently supported proposal issue with its exact outcome was established; parent mapping is not inherited. Member clause: RSA issuer path to Ed25519 trust root: PASS if RSA+Ed supported."
+    },
+    {
+      "member_id": "SPEC-0096-a01-rsa-ml-dsa",
+      "parent_source_id": "SPEC-0096",
+      "canonical_requirement_id": [
+        "test.pki.path-matrix"
+      ],
+      "proposal_id": "",
+      "design_section": "Unmapped; member-specific proposal/design evidence not established.",
+      "test_oracle": "Decider: Compare the matrix/test result for this exact condition: RSA issuer path to ML-DSA trust root: FAIL (PQ-only). Input/evidence: Construct the RSA issuer chain and the ML-DSA trust root; explicitly provide that path candidate and run the configured verifier. For conditional PASS cells, run with supported and unsupported verifier capability; for the PQ-only cell, include classical issuer and assert rejection. Expected invariant: Reject the classical path under PQ-only trust. Reference oracle: Exact source cell at fleet_architecture_spec_v0_3.md:709: “| RSA issuer | PASS with suitable root bridge | PASS if RSA+P-256 supported | PASS if RSA+Ed supported | **FAIL** (PQ-only) |” No test execution is claimed.",
+      "disposition": "unresolved",
+      "reason": "UNRESOLVED: SPEC-0096-a01-rsa-ml-dsa has an individual clause and oracle in inventory/statements.jsonl, but no independently supported proposal issue with its exact outcome was established; parent mapping is not inherited. Member clause: RSA issuer path to ML-DSA trust root: FAIL (PQ-only)."
+    },
+    {
+      "member_id": "SPEC-0096-a01-p-256-rsa",
+      "parent_source_id": "SPEC-0096",
+      "canonical_requirement_id": [
+        "test.pki.path-matrix"
+      ],
+      "proposal_id": "",
+      "design_section": "Unmapped; member-specific proposal/design evidence not established.",
+      "test_oracle": "Decider: Compare the matrix/test result for this exact condition: P-256 issuer path to RSA trust root: PASS if ECDSA+RSA supported. Input/evidence: Construct the P-256 issuer chain and the RSA trust root; explicitly provide that path candidate and run the configured verifier. For conditional PASS cells, run with supported and unsupported verifier capability; for the PQ-only cell, include classical issuer and assert rejection. Expected invariant: PASS only when the stated verifier support/chain preconditions hold; otherwise record unsupported. Reference oracle: Exact source cell at fleet_architecture_spec_v0_3.md:710: “| P-256 issuer | PASS if ECDSA+RSA supported | PASS | PASS if ECDSA+Ed supported | **FAIL** (PQ-only) |” No test execution is claimed.",
+      "disposition": "unresolved",
+      "reason": "UNRESOLVED: SPEC-0096-a01-p-256-rsa has an individual clause and oracle in inventory/statements.jsonl, but no independently supported proposal issue with its exact outcome was established; parent mapping is not inherited. Member clause: P-256 issuer path to RSA trust root: PASS if ECDSA+RSA supported."
+    },
+    {
+      "member_id": "SPEC-0096-a01-p-256-p-256",
+      "parent_source_id": "SPEC-0096",
+      "canonical_requirement_id": [
+        "test.pki.path-matrix"
+      ],
+      "proposal_id": "",
+      "design_section": "Unmapped; member-specific proposal/design evidence not established.",
+      "test_oracle": "Decider: Compare the matrix/test result for this exact condition: P-256 issuer path to P-256 trust root: PASS. Input/evidence: Construct the P-256 issuer chain and the P-256 trust root; explicitly provide that path candidate and run the configured verifier. For conditional PASS cells, run with supported and unsupported verifier capability; for the PQ-only cell, include classical issuer and assert rejection. Expected invariant: Accept the path only for the exact stated matching signature condition. Reference oracle: Exact source cell at fleet_architecture_spec_v0_3.md:710: “| P-256 issuer | PASS if ECDSA+RSA supported | PASS | PASS if ECDSA+Ed supported | **FAIL** (PQ-only) |” No test execution is claimed.",
+      "disposition": "unresolved",
+      "reason": "UNRESOLVED: SPEC-0096-a01-p-256-p-256 has an individual clause and oracle in inventory/statements.jsonl, but no independently supported proposal issue with its exact outcome was established; parent mapping is not inherited. Member clause: P-256 issuer path to P-256 trust root: PASS."
+    },
+    {
+      "member_id": "SPEC-0096-a01-p-256-ed25519",
+      "parent_source_id": "SPEC-0096",
+      "canonical_requirement_id": [
+        "test.pki.path-matrix"
+      ],
+      "proposal_id": "",
+      "design_section": "Unmapped; member-specific proposal/design evidence not established.",
+      "test_oracle": "Decider: Compare the matrix/test result for this exact condition: P-256 issuer path to Ed25519 trust root: PASS if ECDSA+Ed supported. Input/evidence: Construct the P-256 issuer chain and the Ed25519 trust root; explicitly provide that path candidate and run the configured verifier. For conditional PASS cells, run with supported and unsupported verifier capability; for the PQ-only cell, include classical issuer and assert rejection. Expected invariant: PASS only when the stated verifier support/chain preconditions hold; otherwise record unsupported. Reference oracle: Exact source cell at fleet_architecture_spec_v0_3.md:710: “| P-256 issuer | PASS if ECDSA+RSA supported | PASS | PASS if ECDSA+Ed supported | **FAIL** (PQ-only) |” No test execution is claimed.",
+      "disposition": "unresolved",
+      "reason": "UNRESOLVED: SPEC-0096-a01-p-256-ed25519 has an individual clause and oracle in inventory/statements.jsonl, but no independently supported proposal issue with its exact outcome was established; parent mapping is not inherited. Member clause: P-256 issuer path to Ed25519 trust root: PASS if ECDSA+Ed supported."
+    },
+    {
+      "member_id": "SPEC-0096-a01-p-256-ml-dsa",
+      "parent_source_id": "SPEC-0096",
+      "canonical_requirement_id": [
+        "test.pki.path-matrix"
+      ],
+      "proposal_id": "",
+      "design_section": "Unmapped; member-specific proposal/design evidence not established.",
+      "test_oracle": "Decider: Compare the matrix/test result for this exact condition: P-256 issuer path to ML-DSA trust root: FAIL (PQ-only). Input/evidence: Construct the P-256 issuer chain and the ML-DSA trust root; explicitly provide that path candidate and run the configured verifier. For conditional PASS cells, run with supported and unsupported verifier capability; for the PQ-only cell, include classical issuer and assert rejection. Expected invariant: Reject the classical path under PQ-only trust. Reference oracle: Exact source cell at fleet_architecture_spec_v0_3.md:710: “| P-256 issuer | PASS if ECDSA+RSA supported | PASS | PASS if ECDSA+Ed supported | **FAIL** (PQ-only) |” No test execution is claimed.",
+      "disposition": "unresolved",
+      "reason": "UNRESOLVED: SPEC-0096-a01-p-256-ml-dsa has an individual clause and oracle in inventory/statements.jsonl, but no independently supported proposal issue with its exact outcome was established; parent mapping is not inherited. Member clause: P-256 issuer path to ML-DSA trust root: FAIL (PQ-only)."
+    },
+    {
+      "member_id": "SPEC-0096-a01-ed25519-rsa",
+      "parent_source_id": "SPEC-0096",
+      "canonical_requirement_id": [
+        "test.pki.path-matrix"
+      ],
+      "proposal_id": "",
+      "design_section": "Unmapped; member-specific proposal/design evidence not established.",
+      "test_oracle": "Decider: Compare the matrix/test result for this exact condition: Ed25519 issuer path to RSA trust root: PASS if Ed+RSA supported. Input/evidence: Construct the Ed25519 issuer chain and the RSA trust root; explicitly provide that path candidate and run the configured verifier. For conditional PASS cells, run with supported and unsupported verifier capability; for the PQ-only cell, include classical issuer and assert rejection. Expected invariant: PASS only when the stated verifier support/chain preconditions hold; otherwise record unsupported. Reference oracle: Exact source cell at fleet_architecture_spec_v0_3.md:711: “| Ed25519 issuer | PASS if Ed+RSA supported | PASS if Ed+P256 supported | PASS | **FAIL** (PQ-only) |” No test execution is claimed.",
+      "disposition": "unresolved",
+      "reason": "UNRESOLVED: SPEC-0096-a01-ed25519-rsa has an individual clause and oracle in inventory/statements.jsonl, but no independently supported proposal issue with its exact outcome was established; parent mapping is not inherited. Member clause: Ed25519 issuer path to RSA trust root: PASS if Ed+RSA supported."
+    },
+    {
+      "member_id": "SPEC-0096-a01-ed25519-p-256",
+      "parent_source_id": "SPEC-0096",
+      "canonical_requirement_id": [
+        "test.pki.path-matrix"
+      ],
+      "proposal_id": "",
+      "design_section": "Unmapped; member-specific proposal/design evidence not established.",
+      "test_oracle": "Decider: Compare the matrix/test result for this exact condition: Ed25519 issuer path to P-256 trust root: PASS if Ed+P256 supported. Input/evidence: Construct the Ed25519 issuer chain and the P-256 trust root; explicitly provide that path candidate and run the configured verifier. For conditional PASS cells, run with supported and unsupported verifier capability; for the PQ-only cell, include classical issuer and assert rejection. Expected invariant: PASS only when the stated verifier support/chain preconditions hold; otherwise record unsupported. Reference oracle: Exact source cell at fleet_architecture_spec_v0_3.md:711: “| Ed25519 issuer | PASS if Ed+RSA supported | PASS if Ed+P256 supported | PASS | **FAIL** (PQ-only) |” No test execution is claimed.",
+      "disposition": "unresolved",
+      "reason": "UNRESOLVED: SPEC-0096-a01-ed25519-p-256 has an individual clause and oracle in inventory/statements.jsonl, but no independently supported proposal issue with its exact outcome was established; parent mapping is not inherited. Member clause: Ed25519 issuer path to P-256 trust root: PASS if Ed+P256 supported."
+    },
+    {
+      "member_id": "SPEC-0096-a01-ed25519-ed25519",
+      "parent_source_id": "SPEC-0096",
+      "canonical_requirement_id": [
+        "test.pki.path-matrix"
+      ],
+      "proposal_id": "",
+      "design_section": "Unmapped; member-specific proposal/design evidence not established.",
+      "test_oracle": "Decider: Compare the matrix/test result for this exact condition: Ed25519 issuer path to Ed25519 trust root: PASS. Input/evidence: Construct the Ed25519 issuer chain and the Ed25519 trust root; explicitly provide that path candidate and run the configured verifier. For conditional PASS cells, run with supported and unsupported verifier capability; for the PQ-only cell, include classical issuer and assert rejection. Expected invariant: Accept the path only for the exact stated matching signature condition. Reference oracle: Exact source cell at fleet_architecture_spec_v0_3.md:711: “| Ed25519 issuer | PASS if Ed+RSA supported | PASS if Ed+P256 supported | PASS | **FAIL** (PQ-only) |” No test execution is claimed.",
+      "disposition": "unresolved",
+      "reason": "UNRESOLVED: SPEC-0096-a01-ed25519-ed25519 has an individual clause and oracle in inventory/statements.jsonl, but no independently supported proposal issue with its exact outcome was established; parent mapping is not inherited. Member clause: Ed25519 issuer path to Ed25519 trust root: PASS."
+    },
+    {
+      "member_id": "SPEC-0096-a01-ed25519-ml-dsa",
+      "parent_source_id": "SPEC-0096",
+      "canonical_requirement_id": [
+        "test.pki.path-matrix"
+      ],
+      "proposal_id": "",
+      "design_section": "Unmapped; member-specific proposal/design evidence not established.",
+      "test_oracle": "Decider: Compare the matrix/test result for this exact condition: Ed25519 issuer path to ML-DSA trust root: FAIL (PQ-only). Input/evidence: Construct the Ed25519 issuer chain and the ML-DSA trust root; explicitly provide that path candidate and run the configured verifier. For conditional PASS cells, run with supported and unsupported verifier capability; for the PQ-only cell, include classical issuer and assert rejection. Expected invariant: Reject the classical path under PQ-only trust. Reference oracle: Exact source cell at fleet_architecture_spec_v0_3.md:711: “| Ed25519 issuer | PASS if Ed+RSA supported | PASS if Ed+P256 supported | PASS | **FAIL** (PQ-only) |” No test execution is claimed.",
+      "disposition": "unresolved",
+      "reason": "UNRESOLVED: SPEC-0096-a01-ed25519-ml-dsa has an individual clause and oracle in inventory/statements.jsonl, but no independently supported proposal issue with its exact outcome was established; parent mapping is not inherited. Member clause: Ed25519 issuer path to ML-DSA trust root: FAIL (PQ-only)."
+    },
+    {
+      "member_id": "SPEC-0096-a01-ml-dsa-rsa",
+      "parent_source_id": "SPEC-0096",
+      "canonical_requirement_id": [
+        "test.pki.path-matrix"
+      ],
+      "proposal_id": "",
+      "design_section": "Unmapped; member-specific proposal/design evidence not established.",
+      "test_oracle": "Decider: Compare the matrix/test result for this exact condition: ML-DSA issuer path to RSA trust root: PASS if ML-DSA+RSA supported. Input/evidence: Construct the ML-DSA issuer chain and the RSA trust root; explicitly provide that path candidate and run the configured verifier. For conditional PASS cells, run with supported and unsupported verifier capability; for the PQ-only cell, include classical issuer and assert rejection. Expected invariant: PASS only when the stated verifier support/chain preconditions hold; otherwise record unsupported. Reference oracle: Exact source cell at fleet_architecture_spec_v0_3.md:712: “| ML-DSA issuer | PASS if ML-DSA+RSA supported | PASS if ML-DSA+P256 supported | PASS if ML-DSA+Ed supported | PASS with **all ML-DSA** signatures |” No test execution is claimed.",
+      "disposition": "unresolved",
+      "reason": "UNRESOLVED: SPEC-0096-a01-ml-dsa-rsa has an individual clause and oracle in inventory/statements.jsonl, but no independently supported proposal issue with its exact outcome was established; parent mapping is not inherited. Member clause: ML-DSA issuer path to RSA trust root: PASS if ML-DSA+RSA supported."
+    },
+    {
+      "member_id": "SPEC-0096-a01-ml-dsa-p-256",
+      "parent_source_id": "SPEC-0096",
+      "canonical_requirement_id": [
+        "test.pki.path-matrix"
+      ],
+      "proposal_id": "",
+      "design_section": "Unmapped; member-specific proposal/design evidence not established.",
+      "test_oracle": "Decider: Compare the matrix/test result for this exact condition: ML-DSA issuer path to P-256 trust root: PASS if ML-DSA+P256 supported. Input/evidence: Construct the ML-DSA issuer chain and the P-256 trust root; explicitly provide that path candidate and run the configured verifier. For conditional PASS cells, run with supported and unsupported verifier capability; for the PQ-only cell, include classical issuer and assert rejection. Expected invariant: PASS only when the stated verifier support/chain preconditions hold; otherwise record unsupported. Reference oracle: Exact source cell at fleet_architecture_spec_v0_3.md:712: “| ML-DSA issuer | PASS if ML-DSA+RSA supported | PASS if ML-DSA+P256 supported | PASS if ML-DSA+Ed supported | PASS with **all ML-DSA** signatures |” No test execution is claimed.",
+      "disposition": "unresolved",
+      "reason": "UNRESOLVED: SPEC-0096-a01-ml-dsa-p-256 has an individual clause and oracle in inventory/statements.jsonl, but no independently supported proposal issue with its exact outcome was established; parent mapping is not inherited. Member clause: ML-DSA issuer path to P-256 trust root: PASS if ML-DSA+P256 supported."
+    },
+    {
+      "member_id": "SPEC-0096-a01-ml-dsa-ed25519",
+      "parent_source_id": "SPEC-0096",
+      "canonical_requirement_id": [
+        "test.pki.path-matrix"
+      ],
+      "proposal_id": "",
+      "design_section": "Unmapped; member-specific proposal/design evidence not established.",
+      "test_oracle": "Decider: Compare the matrix/test result for this exact condition: ML-DSA issuer path to Ed25519 trust root: PASS if ML-DSA+Ed supported. Input/evidence: Construct the ML-DSA issuer chain and the Ed25519 trust root; explicitly provide that path candidate and run the configured verifier. For conditional PASS cells, run with supported and unsupported verifier capability; for the PQ-only cell, include classical issuer and assert rejection. Expected invariant: PASS only when the stated verifier support/chain preconditions hold; otherwise record unsupported. Reference oracle: Exact source cell at fleet_architecture_spec_v0_3.md:712: “| ML-DSA issuer | PASS if ML-DSA+RSA supported | PASS if ML-DSA+P256 supported | PASS if ML-DSA+Ed supported | PASS with **all ML-DSA** signatures |” No test execution is claimed.",
+      "disposition": "unresolved",
+      "reason": "UNRESOLVED: SPEC-0096-a01-ml-dsa-ed25519 has an individual clause and oracle in inventory/statements.jsonl, but no independently supported proposal issue with its exact outcome was established; parent mapping is not inherited. Member clause: ML-DSA issuer path to Ed25519 trust root: PASS if ML-DSA+Ed supported."
+    },
+    {
+      "member_id": "SPEC-0096-a01-ml-dsa-ml-dsa",
+      "parent_source_id": "SPEC-0096",
+      "canonical_requirement_id": [
+        "test.pki.path-matrix"
+      ],
+      "proposal_id": "",
+      "design_section": "Unmapped; member-specific proposal/design evidence not established.",
+      "test_oracle": "Decider: Compare the matrix/test result for this exact condition: ML-DSA issuer path to ML-DSA trust root: PASS with all ML-DSA signatures. Input/evidence: Construct the ML-DSA issuer chain and the ML-DSA trust root; explicitly provide that path candidate and run the configured verifier. For conditional PASS cells, run with supported and unsupported verifier capability; for the PQ-only cell, include classical issuer and assert rejection. Expected invariant: Accept the path only for the exact stated matching signature condition. Reference oracle: Exact source cell at fleet_architecture_spec_v0_3.md:712: “| ML-DSA issuer | PASS if ML-DSA+RSA supported | PASS if ML-DSA+P256 supported | PASS if ML-DSA+Ed supported | PASS with **all ML-DSA** signatures |” No test execution is claimed.",
+      "disposition": "unresolved",
+      "reason": "UNRESOLVED: SPEC-0096-a01-ml-dsa-ml-dsa has an individual clause and oracle in inventory/statements.jsonl, but no independently supported proposal issue with its exact outcome was established; parent mapping is not inherited. Member clause: ML-DSA issuer path to ML-DSA trust root: PASS with all ML-DSA signatures."
+    },
+    {
+      "member_id": "SPEC-0097-a01",
+      "parent_source_id": "SPEC-0097",
+      "canonical_requirement_id": [
+        "test.pki.negative-paths"
+      ],
+      "proposal_id": "",
+      "design_section": "Unmapped; member-specific proposal/design evidence not established.",
+      "test_oracle": "Decider: Run a single-condition acceptance assertion for SPEC-0097-a01; pass only when the observed result equals this condition’s expected result. Input/evidence: Use an isolated fixture containing the object, policy, or operation named by this condition: reject forbidden reverse trust edges. Include one conforming case and a paired case violating only this condition; capture the CLI/library result and state change. Expected invariant: Accept the conforming case and reject, preserve, or report unsupported for the violating case as required by: reject forbidden reverse trust edges. Assert this observable result, not merely successful execution. Reference oracle: Verbatim requirement at fleet_architecture_spec_v0_3.md:714: “Each PASS is **conditional on the verifier's actual signature support and receipt of the required chain**; a test harness must prove it by explicitly constructing path candidates, not rely on AIA heuristics. A PQ-only trust profile must **reject** all three classical issuer paths, even if a client is capable of those algorithms. With all four roots installed, each matching issuer should validate directly. Add negative tests for injected classical→PQ forbidden reverse trust, expired cross-cert, wrong AKI, mismatched subject public key, revoked CA, invalid/pathLen, unsupported OID and unacceptable EKU.” Apply only the portion tested by this child: “reject forbidden reverse trust edges”. Compare fixture output to that source-defined condition; no test execution is claimed.",
+      "disposition": "unresolved",
+      "reason": "UNRESOLVED: SPEC-0097-a01 has an individual clause and oracle in inventory/statements.jsonl, but no independently supported proposal issue with its exact outcome was established; parent mapping is not inherited. Member clause: reject forbidden reverse trust edges."
+    },
+    {
+      "member_id": "SPEC-0097-a01-m02",
+      "parent_source_id": "SPEC-0097",
+      "canonical_requirement_id": [
+        "test.pki.negative-paths"
+      ],
+      "proposal_id": "",
+      "design_section": "Unmapped; member-specific proposal/design evidence not established.",
+      "test_oracle": "Decider: Run a single-condition acceptance assertion for SPEC-0097-a01-m02; pass only when the observed result equals this condition’s expected result. Input/evidence: Use an isolated fixture containing the object, policy, or operation named by this condition: reject expired cross-certificates. Include one conforming case and a paired case violating only this condition; capture the CLI/library result and state change. Expected invariant: Accept the conforming case and reject, preserve, or report unsupported for the violating case as required by: reject expired cross-certificates. Assert this observable result, not merely successful execution. Reference oracle: Verbatim requirement at fleet_architecture_spec_v0_3.md:714: “Each PASS is **conditional on the verifier's actual signature support and receipt of the required chain**; a test harness must prove it by explicitly constructing path candidates, not rely on AIA heuristics. A PQ-only trust profile must **reject** all three classical issuer paths, even if a client is capable of those algorithms. With all four roots installed, each matching issuer should validate directly. Add negative tests for injected classical→PQ forbidden reverse trust, expired cross-cert, wrong AKI, mismatched subject public key, revoked CA, invalid/pathLen, unsupported OID and unacceptable EKU.” Apply only the portion tested by this child: “reject expired cross-certificates”. Compare fixture output to that source-defined condition; no test execution is claimed.",
+      "disposition": "unresolved",
+      "reason": "UNRESOLVED: SPEC-0097-a01-m02 has an individual clause and oracle in inventory/statements.jsonl, but no independently supported proposal issue with its exact outcome was established; parent mapping is not inherited. Member clause: reject expired cross-certificates."
+    },
+    {
+      "member_id": "SPEC-0097-a01-m03",
+      "parent_source_id": "SPEC-0097",
+      "canonical_requirement_id": [
+        "test.pki.negative-paths"
+      ],
+      "proposal_id": "",
+      "design_section": "Unmapped; member-specific proposal/design evidence not established.",
+      "test_oracle": "Decider: Run a single-condition acceptance assertion for SPEC-0097-a01-m03; pass only when the observed result equals this condition’s expected result. Input/evidence: Use an isolated fixture containing the object, policy, or operation named by this condition: reject wrong AKI. Include one conforming case and a paired case violating only this condition; capture the CLI/library result and state change. Expected invariant: Accept the conforming case and reject, preserve, or report unsupported for the violating case as required by: reject wrong AKI. Assert this observable result, not merely successful execution. Reference oracle: Verbatim requirement at fleet_architecture_spec_v0_3.md:714: “Each PASS is **conditional on the verifier's actual signature support and receipt of the required chain**; a test harness must prove it by explicitly constructing path candidates, not rely on AIA heuristics. A PQ-only trust profile must **reject** all three classical issuer paths, even if a client is capable of those algorithms. With all four roots installed, each matching issuer should validate directly. Add negative tests for injected classical→PQ forbidden reverse trust, expired cross-cert, wrong AKI, mismatched subject public key, revoked CA, invalid/pathLen, unsupported OID and unacceptable EKU.” Apply only the portion tested by this child: “reject wrong AKI”. Compare fixture output to that source-defined condition; no test execution is claimed.",
+      "disposition": "unresolved",
+      "reason": "UNRESOLVED: SPEC-0097-a01-m03 has an individual clause and oracle in inventory/statements.jsonl, but no independently supported proposal issue with its exact outcome was established; parent mapping is not inherited. Member clause: reject wrong AKI."
+    },
+    {
+      "member_id": "SPEC-0097-a01-m04",
+      "parent_source_id": "SPEC-0097",
+      "canonical_requirement_id": [
+        "test.pki.negative-paths"
+      ],
+      "proposal_id": "",
+      "design_section": "Unmapped; member-specific proposal/design evidence not established.",
+      "test_oracle": "Decider: Run a single-condition acceptance assertion for SPEC-0097-a01-m04; pass only when the observed result equals this condition’s expected result. Input/evidence: Use an isolated fixture containing the object, policy, or operation named by this condition: reject mismatched subject public keys. Include one conforming case and a paired case violating only this condition; capture the CLI/library result and state change. Expected invariant: Accept the conforming case and reject, preserve, or report unsupported for the violating case as required by: reject mismatched subject public keys. Assert this observable result, not merely successful execution. Reference oracle: Verbatim requirement at fleet_architecture_spec_v0_3.md:714: “Each PASS is **conditional on the verifier's actual signature support and receipt of the required chain**; a test harness must prove it by explicitly constructing path candidates, not rely on AIA heuristics. A PQ-only trust profile must **reject** all three classical issuer paths, even if a client is capable of those algorithms. With all four roots installed, each matching issuer should validate directly. Add negative tests for injected classical→PQ forbidden reverse trust, expired cross-cert, wrong AKI, mismatched subject public key, revoked CA, invalid/pathLen, unsupported OID and unacceptable EKU.” Apply only the portion tested by this child: “reject mismatched subject public keys”. Compare fixture output to that source-defined condition; no test execution is claimed.",
+      "disposition": "unresolved",
+      "reason": "UNRESOLVED: SPEC-0097-a01-m04 has an individual clause and oracle in inventory/statements.jsonl, but no independently supported proposal issue with its exact outcome was established; parent mapping is not inherited. Member clause: reject mismatched subject public keys."
+    },
+    {
+      "member_id": "SPEC-0097-a01-m05",
+      "parent_source_id": "SPEC-0097",
+      "canonical_requirement_id": [
+        "test.pki.negative-paths"
+      ],
+      "proposal_id": "",
+      "design_section": "Unmapped; member-specific proposal/design evidence not established.",
+      "test_oracle": "Decider: Run a single-condition acceptance assertion for SPEC-0097-a01-m05; pass only when the observed result equals this condition’s expected result. Input/evidence: Use an isolated fixture containing the object, policy, or operation named by this condition: reject revoked CAs. Include one conforming case and a paired case violating only this condition; capture the CLI/library result and state change. Expected invariant: Accept the conforming case and reject, preserve, or report unsupported for the violating case as required by: reject revoked CAs. Assert this observable result, not merely successful execution. Reference oracle: Verbatim requirement at fleet_architecture_spec_v0_3.md:714: “Each PASS is **conditional on the verifier's actual signature support and receipt of the required chain**; a test harness must prove it by explicitly constructing path candidates, not rely on AIA heuristics. A PQ-only trust profile must **reject** all three classical issuer paths, even if a client is capable of those algorithms. With all four roots installed, each matching issuer should validate directly. Add negative tests for injected classical→PQ forbidden reverse trust, expired cross-cert, wrong AKI, mismatched subject public key, revoked CA, invalid/pathLen, unsupported OID and unacceptable EKU.” Apply only the portion tested by this child: “reject revoked CAs”. Compare fixture output to that source-defined condition; no test execution is claimed.",
+      "disposition": "unresolved",
+      "reason": "UNRESOLVED: SPEC-0097-a01-m05 has an individual clause and oracle in inventory/statements.jsonl, but no independently supported proposal issue with its exact outcome was established; parent mapping is not inherited. Member clause: reject revoked CAs."
+    },
+    {
+      "member_id": "SPEC-0097-a01-m06",
+      "parent_source_id": "SPEC-0097",
+      "canonical_requirement_id": [
+        "test.pki.negative-paths"
+      ],
+      "proposal_id": "",
+      "design_section": "Unmapped; member-specific proposal/design evidence not established.",
+      "test_oracle": "Decider: Run a single-condition acceptance assertion for SPEC-0097-a01-m06; pass only when the observed result equals this condition’s expected result. Input/evidence: Use an isolated fixture containing the object, policy, or operation named by this condition: reject invalid pathLen. Include one conforming case and a paired case violating only this condition; capture the CLI/library result and state change. Expected invariant: Accept the conforming case and reject, preserve, or report unsupported for the violating case as required by: reject invalid pathLen. Assert this observable result, not merely successful execution. Reference oracle: Verbatim requirement at fleet_architecture_spec_v0_3.md:714: “Each PASS is **conditional on the verifier's actual signature support and receipt of the required chain**; a test harness must prove it by explicitly constructing path candidates, not rely on AIA heuristics. A PQ-only trust profile must **reject** all three classical issuer paths, even if a client is capable of those algorithms. With all four roots installed, each matching issuer should validate directly. Add negative tests for injected classical→PQ forbidden reverse trust, expired cross-cert, wrong AKI, mismatched subject public key, revoked CA, invalid/pathLen, unsupported OID and unacceptable EKU.” Apply only the portion tested by this child: “reject invalid pathLen”. Compare fixture output to that source-defined condition; no test execution is claimed.",
+      "disposition": "unresolved",
+      "reason": "UNRESOLVED: SPEC-0097-a01-m06 has an individual clause and oracle in inventory/statements.jsonl, but no independently supported proposal issue with its exact outcome was established; parent mapping is not inherited. Member clause: reject invalid pathLen."
+    },
+    {
+      "member_id": "SPEC-0097-a01-m07",
+      "parent_source_id": "SPEC-0097",
+      "canonical_requirement_id": [
+        "test.pki.negative-paths"
+      ],
+      "proposal_id": "",
+      "design_section": "Unmapped; member-specific proposal/design evidence not established.",
+      "test_oracle": "Decider: Run a single-condition acceptance assertion for SPEC-0097-a01-m07; pass only when the observed result equals this condition’s expected result. Input/evidence: Use an isolated fixture containing the object, policy, or operation named by this condition: reject unsupported OIDs. Include one conforming case and a paired case violating only this condition; capture the CLI/library result and state change. Expected invariant: Accept the conforming case and reject, preserve, or report unsupported for the violating case as required by: reject unsupported OIDs. Assert this observable result, not merely successful execution. Reference oracle: Verbatim requirement at fleet_architecture_spec_v0_3.md:714: “Each PASS is **conditional on the verifier's actual signature support and receipt of the required chain**; a test harness must prove it by explicitly constructing path candidates, not rely on AIA heuristics. A PQ-only trust profile must **reject** all three classical issuer paths, even if a client is capable of those algorithms. With all four roots installed, each matching issuer should validate directly. Add negative tests for injected classical→PQ forbidden reverse trust, expired cross-cert, wrong AKI, mismatched subject public key, revoked CA, invalid/pathLen, unsupported OID and unacceptable EKU.” Apply only the portion tested by this child: “reject unsupported OIDs”. Compare fixture output to that source-defined condition; no test execution is claimed.",
+      "disposition": "unresolved",
+      "reason": "UNRESOLVED: SPEC-0097-a01-m07 has an individual clause and oracle in inventory/statements.jsonl, but no independently supported proposal issue with its exact outcome was established; parent mapping is not inherited. Member clause: reject unsupported OIDs."
+    },
+    {
+      "member_id": "SPEC-0097-a01-m08",
+      "parent_source_id": "SPEC-0097",
+      "canonical_requirement_id": [
+        "test.pki.negative-paths"
+      ],
+      "proposal_id": "",
+      "design_section": "Unmapped; member-specific proposal/design evidence not established.",
+      "test_oracle": "Decider: Run a single-condition acceptance assertion for SPEC-0097-a01-m08; pass only when the observed result equals this condition’s expected result. Input/evidence: Use an isolated fixture containing the object, policy, or operation named by this condition: reject unacceptable EKUs. Include one conforming case and a paired case violating only this condition; capture the CLI/library result and state change. Expected invariant: Accept the conforming case and reject, preserve, or report unsupported for the violating case as required by: reject unacceptable EKUs. Assert this observable result, not merely successful execution. Reference oracle: Verbatim requirement at fleet_architecture_spec_v0_3.md:714: “Each PASS is **conditional on the verifier's actual signature support and receipt of the required chain**; a test harness must prove it by explicitly constructing path candidates, not rely on AIA heuristics. A PQ-only trust profile must **reject** all three classical issuer paths, even if a client is capable of those algorithms. With all four roots installed, each matching issuer should validate directly. Add negative tests for injected classical→PQ forbidden reverse trust, expired cross-cert, wrong AKI, mismatched subject public key, revoked CA, invalid/pathLen, unsupported OID and unacceptable EKU.” Apply only the portion tested by this child: “reject unacceptable EKUs”. Compare fixture output to that source-defined condition; no test execution is claimed.",
+      "disposition": "unresolved",
+      "reason": "UNRESOLVED: SPEC-0097-a01-m08 has an individual clause and oracle in inventory/statements.jsonl, but no independently supported proposal issue with its exact outcome was established; parent mapping is not inherited. Member clause: reject unacceptable EKUs."
+    },
+    {
+      "member_id": "SPEC-0098-a01",
+      "parent_source_id": "SPEC-0098",
+      "canonical_requirement_id": [
+        "test.pki.independent-validation"
+      ],
+      "proposal_id": "",
+      "design_section": "Unmapped; member-specific proposal/design evidence not established.",
+      "test_oracle": "Decider: Compare the observed outcome for this separately testable condition: Validate emitted paths with pinned OpenSSL. Input/evidence: Construct one isolated conforming case for “Validate emitted paths with pinned OpenSSL” and one counterexample changing only this condition; capture the command/API result and resulting state. Expected invariant: The conforming case satisfies “Validate emitted paths with pinned OpenSSL”; the counterexample is rejected or reported unsupported where the source requires. Check the specific observable state/result, not mere command completion. Reference oracle: Verbatim source evidence at fleet_architecture_spec_v0_3.md:718: “OpenSSL”. Assert this child condition only; no test execution is claimed.",
+      "disposition": "unresolved",
+      "reason": "UNRESOLVED: SPEC-0098-a01 has an individual clause and oracle in inventory/statements.jsonl, but no independently supported proposal issue with its exact outcome was established; parent mapping is not inherited. Member clause: Validate emitted paths with pinned OpenSSL."
+    },
+    {
+      "member_id": "SPEC-0098-a02",
+      "parent_source_id": "SPEC-0098",
+      "canonical_requirement_id": [
+        "test.pki.independent-validation"
+      ],
+      "proposal_id": "",
+      "design_section": "Unmapped; member-specific proposal/design evidence not established.",
+      "test_oracle": "Decider: Compare the observed outcome for this separately testable condition: attempt third implementation where viable. Input/evidence: Construct one isolated conforming case for “attempt third implementation where viable” and one counterexample changing only this condition; capture the command/API result and resulting state. Expected invariant: The conforming case satisfies “attempt third implementation where viable”; the counterexample is rejected or reported unsupported where the source requires. Check the specific observable state/result, not mere command completion. Reference oracle: Verbatim source evidence at fleet_architecture_spec_v0_3.md:720: “Attempt a third independent implementation (Java PKIX/Windows system validator or similar) where viable”. Assert this child condition only; no test execution is claimed.",
+      "disposition": "unresolved",
+      "reason": "UNRESOLVED: SPEC-0098-a02 has an individual clause and oracle in inventory/statements.jsonl, but no independently supported proposal issue with its exact outcome was established; parent mapping is not inherited. Member clause: attempt third implementation where viable."
+    },
+    {
+      "member_id": "SPEC-0098-a01-r02",
+      "parent_source_id": "SPEC-0098",
+      "canonical_requirement_id": [
+        "test.pki.independent-validation"
+      ],
+      "proposal_id": "",
+      "design_section": "Unmapped; member-specific proposal/design evidence not established.",
+      "test_oracle": "Decider: Compare the observed outcome for this separately testable condition: at least one real Rust path verifier. Input/evidence: Construct one isolated conforming case for “at least one real Rust path verifier” and one counterexample changing only this condition; capture the command/API result and resulting state. Expected invariant: The conforming case satisfies “at least one real Rust path verifier”; the counterexample is rejected or reported unsupported where the source requires. Check the specific observable state/result, not mere command completion. Reference oracle: Verbatim source evidence at fleet_architecture_spec_v0_3.md:719: “least **one independent Rust X.509 path verifier”. Assert this child condition only; no test execution is claimed.",
+      "disposition": "unresolved",
+      "reason": "UNRESOLVED: SPEC-0098-a01-r02 has an individual clause and oracle in inventory/statements.jsonl, but no independently supported proposal issue with its exact outcome was established; parent mapping is not inherited. Member clause: at least one real Rust path verifier."
+    },
+    {
+      "member_id": "SPEC-0098-a02-r02",
+      "parent_source_id": "SPEC-0098",
+      "canonical_requirement_id": [
+        "test.pki.independent-validation"
+      ],
+      "proposal_id": "",
+      "design_section": "Unmapped; member-specific proposal/design evidence not established.",
+      "test_oracle": "Decider: Compare the observed outcome for this separately testable condition: mark unsupported honestly. Input/evidence: Construct one isolated conforming case for “mark unsupported honestly” and one counterexample changing only this condition; capture the command/API result and resulting state. Expected invariant: The conforming case satisfies “mark unsupported honestly”; the counterexample is rejected or reported unsupported where the source requires. Check the specific observable state/result, not mere command completion. Reference oracle: Verbatim source evidence at fleet_architecture_spec_v0_3.md:720: “unsupported”. Assert this child condition only; no test execution is claimed.",
+      "disposition": "unresolved",
+      "reason": "UNRESOLVED: SPEC-0098-a02-r02 has an individual clause and oracle in inventory/statements.jsonl, but no independently supported proposal issue with its exact outcome was established; parent mapping is not inherited. Member clause: mark unsupported honestly."
+    },
+    {
+      "member_id": "SPEC-0099-a01",
+      "parent_source_id": "SPEC-0099",
+      "canonical_requirement_id": [
+        "test.credential-family-interoperability"
+      ],
+      "proposal_id": "",
+      "design_section": "Unmapped; member-specific proposal/design evidence not established.",
+      "test_oracle": "Decider: Run a single-condition acceptance assertion for SPEC-0099-a01; pass only when the observed result equals this condition’s expected result. Input/evidence: Use an isolated fixture containing the object, policy, or operation named by this condition: Test RSA/P-256/Ed25519 TLS negotiation. Include one conforming case and a paired case violating only this condition; capture the CLI/library result and state change. Expected invariant: Accept the conforming case and reject, preserve, or report unsupported for the violating case as required by: Test RSA/P-256/Ed25519 TLS negotiation. Assert this observable result, not merely successful execution. Reference oracle: Verbatim requirement at fleet_architecture_spec_v0_3.md:721: “- TLS handshake tests with RSA/P-256/Ed25519 leaves and certificate selection; test ML-DSA TLS **only when both client and server have verified implementation support**. SSH/OpenPGP/JWT tests have their own native verification suites, not the X.509 matrix.” Apply only the portion tested by this child: “Test RSA/P-256/Ed25519 TLS negotiation”. Compare fixture output to that source-defined condition; no test execution is claimed.",
+      "disposition": "unresolved",
+      "reason": "UNRESOLVED: SPEC-0099-a01 has an individual clause and oracle in inventory/statements.jsonl, but no independently supported proposal issue with its exact outcome was established; parent mapping is not inherited. Member clause: Test RSA/P-256/Ed25519 TLS negotiation."
+    },
+    {
+      "member_id": "SPEC-0099-a02",
+      "parent_source_id": "SPEC-0099",
+      "canonical_requirement_id": [
+        "test.credential-family-interoperability"
+      ],
+      "proposal_id": "",
+      "design_section": "Unmapped; member-specific proposal/design evidence not established.",
+      "test_oracle": "Decider: Inspect the recorded capability gate and whether the test was skipped or run. Input/evidence: Provide two explicit capability reports: (1) both client and server confirm tested ML-DSA TLS support; (2) either side lacks verified support. Expected invariant: Run ML-DSA TLS handshake test only in case (1); in case (2), report unsupported and do not count as failure or claim a pass. Reference oracle: Exact source requirement at fleet_architecture_spec_v0_3.md:721: “- TLS handshake tests with RSA/P-256/Ed25519 leaves and certificate selection; test ML-DSA TLS **only when both client and server have verified implementation support**. SSH/OpenPGP/JWT tests have their own native verification suites, not the X.509 matrix.” No test execution is claimed.",
+      "disposition": "unresolved",
+      "reason": "UNRESOLVED: SPEC-0099-a02 has an individual clause and oracle in inventory/statements.jsonl, but no independently supported proposal issue with its exact outcome was established; parent mapping is not inherited. Member clause: Require verified ML-DSA TLS implementation support on both client and server before attempting an ML-DSA TLS test."
+    },
+    {
+      "member_id": "SPEC-0099-a03",
+      "parent_source_id": "SPEC-0099",
+      "canonical_requirement_id": [
+        "test.credential-family-interoperability"
+      ],
+      "proposal_id": "",
+      "design_section": "Unmapped; member-specific proposal/design evidence not established.",
+      "test_oracle": "Decider: Run a single-condition acceptance assertion for SPEC-0099-a03; pass only when the observed result equals this condition’s expected result. Input/evidence: Use an isolated fixture containing the object, policy, or operation named by this condition: run SSH/OpenPGP/JWT through native verification suites. Include one conforming case and a paired case violating only this condition; capture the CLI/library result and state change. Expected invariant: Accept the conforming case and reject, preserve, or report unsupported for the violating case as required by: run SSH/OpenPGP/JWT through native verification suites. Assert this observable result, not merely successful execution. Reference oracle: Verbatim requirement at fleet_architecture_spec_v0_3.md:721: “- TLS handshake tests with RSA/P-256/Ed25519 leaves and certificate selection; test ML-DSA TLS **only when both client and server have verified implementation support**. SSH/OpenPGP/JWT tests have their own native verification suites, not the X.509 matrix.” Apply only the portion tested by this child: “run SSH/OpenPGP/JWT through native verification suites”. Compare fixture output to that source-defined condition; no test execution is claimed.",
+      "disposition": "unresolved",
+      "reason": "UNRESOLVED: SPEC-0099-a03 has an individual clause and oracle in inventory/statements.jsonl, but no independently supported proposal issue with its exact outcome was established; parent mapping is not inherited. Member clause: run SSH/OpenPGP/JWT through native verification suites."
+    },
+    {
+      "member_id": "SPEC-0099-a02-both-sides",
+      "parent_source_id": "SPEC-0099",
+      "canonical_requirement_id": [
+        "test.credential-family-interoperability"
+      ],
+      "proposal_id": "",
+      "design_section": "Unmapped; member-specific proposal/design evidence not established.",
+      "test_oracle": "Decider: Compare the matrix/test result for this exact condition: Require both client and server to have verified ML-DSA TLS support. Input/evidence: Use separate client and server capability fixtures, with one fixture where both are supported and one where exactly one is unsupported. Expected invariant: The test gate opens only when both implementations have verified support; otherwise report unsupported and do not run the handshake test. Reference oracle: Exact source cell at fleet_architecture_spec_v0_3.md:721: “- TLS handshake tests with RSA/P-256/Ed25519 leaves and certificate selection; test ML-DSA TLS **only when both client and server have verified implementation support**. SSH/OpenPGP/JWT tests have their own native verification suites, not the X.509 matrix.” No test execution is claimed.",
+      "disposition": "unresolved",
+      "reason": "UNRESOLVED: SPEC-0099-a02-both-sides has an individual clause and oracle in inventory/statements.jsonl, but no independently supported proposal issue with its exact outcome was established; parent mapping is not inherited. Member clause: Require both client and server to have verified ML-DSA TLS support."
+    }
+  ]
+}

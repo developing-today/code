@@ -266,3 +266,38 @@ are closed at the architecture level. I do not soften the operational
 condition: default unguarded updates must stop, weaker mode must disclose its
 race, and implementation must still deliver the required history-preserving,
 native-ID in-place rotation workflow under an explicitly defined policy.
+
+## Re-review — finite signer plan and durable consumption (2026-11-12)
+
+I re-read the complete current parent `architecture-review.md` and the current
+`README.md` and `risks-and-gates.md`, then checked the affected domain drafts as
+provisional inputs to the integration audit.
+
+- **A-1 — Closed.** ADR-S02 now distinguishes default guarded apply from the
+  explicitly approved weaker mode, states the latter may lose an unseen
+  external edit, and says that a permanently `needs-review` plan does not meet
+  routine reconciliation acceptance (parent lines 79–120). The current
+  reconciliation draft preserves the required history-first, native-ID
+  in-place §20.5 saga while making the weaker mode explicit. This is
+  conservative, not a contradiction of specs §§20.3, 20.5 or 35.1.
+- **A-2 — Closed at the architecture/design-contract level.** The parent binds
+  bounded use to a finite per-signature tuple set with per-tuple durable
+  consumption and reconciles uncertain submissions before retry (lines 30–49).
+  The current PKI drafts sharpen this to consume each tuple before signing,
+  burn an uncertain tuple until signer receipt/audit reconciliation, and never
+  blind-retry. A single-use default does not conflict with the 65-variant
+  reference graph: a pre-enumerated finite set can bind all required
+  multi-signer signatures, or work can use one tuple per authorization. This
+  is not blanket authority for future/unspecified signatures. The issue
+  packets still need a concurrency/crash oracle before implementation is
+  ready; I record that as a proposal acceptance gap in the integration draft,
+  not as an open architecture decision.
+- **A-3 — Closed.** The parent and current root-custody design specify the
+  exact laptop/BWS/1Password set and fail incomplete if any destination or
+  independent restore is missing. This matches addendum §5; R2 remains
+  research-only.
+
+The current cross-domain drafts have integration/packet drift recorded in
+`review/integration-draft.md`. Those findings are provisional against the
+file digests listed there. They do not reverse the A-1/A-2/A-3 architecture
+closures or claim that still-active drafts are final.
