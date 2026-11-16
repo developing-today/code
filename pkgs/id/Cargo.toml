@@ -27,6 +27,7 @@ members = [
   "crates/id-directory",
   "crates/id-currency-registry",
   "crates/id-web",
+  "crates/id-render",
   "crates/id-native-shell",
   "crates/id-cli",
 ]
@@ -48,6 +49,7 @@ default-members = [
   "crates/id-directory",
   "crates/id-currency-registry",
   "crates/id-web",
+  "crates/id-render",
   "crates/id-cli",
 ]
 
