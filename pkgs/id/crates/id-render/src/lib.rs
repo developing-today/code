@@ -33,9 +33,19 @@
 //!   tags per #5851 §2, utilities per §3 — and emitted with the
 //!   machine-readable coverage report: assertions mapped,
 //!   assertions defaulted (never silent, #5855 §3.3), element
-//!   defaults, and reported raw-CSS overrides. Native (#5852) and
-//!   custom-GUI (#5853) lowering consume their own tables through
-//!   the same shape when they land.
+//!   defaults, and reported raw-CSS overrides.
+//!
+//! * **Stages 4–5 — lower + emit, native targets**
+//!   ([`lower_native`]): the resolved IR is lowered through the
+//!   #5852 mapping tables ([`native_table`], consumed as data) to
+//!   the native artefact for one platform (mac/windows/gnome) —
+//!   the OS-standard control per element kind (#5852 §2), the
+//!   control-kind sequence and accessibility tree of #5855 §3.2 —
+//!   and emitted with the machine-readable coverage report:
+//!   assertions mapped, assertions platform-defaulted (never
+//!   silent, #5852 §3.1), element defaults, and presentation
+//!   overrides excluded per #5853. Custom-GUI (#5853) lowering
+//!   consumes its own table through the same shape when it lands.
 //!
 //! The assertion half of stage 2 is deliberately not implemented yet:
 //! the `assert` attribute's grammar and role vocabulary are #5850's,
@@ -46,6 +56,8 @@
 
 pub mod compose;
 pub mod lower;
+pub mod lower_native;
+pub mod native_table;
 mod parse;
 mod validate;
 pub mod vocabulary;
@@ -227,6 +239,23 @@ pub fn lower_document(
     composed: &compose::ComposedDocument,
 ) -> Result<(lower::WebArtefact, lower::LowerReport), Vec<BuildError>> {
     lower::lower_web(doc, composed)
+}
+
+/// Stages 4 + 5 (native targets): lower a composed document
+/// through the #5852 mapping tables for the platform the
+/// composed document names (mac/windows/gnome) and emit the
+/// artefact plus coverage report. See
+/// [`lower_native::lower_native`] for the stated boundaries.
+///
+/// # Errors
+///
+/// Returns a build error for a non-native composed document or a
+/// path mismatch between the two inputs.
+pub fn lower_document_native(
+    doc: &Document,
+    composed: &compose::ComposedDocument,
+) -> Result<(lower_native::NativeArtefact, lower_native::NativeReport), Vec<BuildError>> {
+    lower_native::lower_native(doc, composed)
 }
 
 /// Stages 1 + 2: parse a source document and validate it against the
