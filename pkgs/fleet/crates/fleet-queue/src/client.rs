@@ -3707,6 +3707,27 @@ fn cmd_dep_recheck(rest: &[String]) -> i32 {
     0
 }
 
+/// quarantine-recheck (#10648): run the broker's quarantine
+/// recheck pass now, or force one blocked task's recheck with
+/// --task. The pass re-validates blocked, dep-free rows whose
+/// recorded error is a claim-path quarantine and requeues the
+/// ones whose error no longer reproduces. Production cadence
+/// is the sweep's; this is the manual trigger.
+fn cmd_quarantine_recheck(rest: &[String]) -> i32 {
+    let args = parse_args(rest, &["task", "limit"], &[]);
+    reject_extra_pos("quarantine-recheck", &args, 0);
+    let mut body = json!({});
+    if let Some(t) = args.get_i64("task") {
+        body["task_id"] = json!(t);
+    }
+    if let Some(l) = args.get_i64("limit") {
+        body["limit"] = json!(l);
+    }
+    let resp = unwrap_ok(call("/quarantine-recheck", &body));
+    print_json(&require_row(&resp, "quarantine_recheck"));
+    0
+}
+
 fn cmd_cancel(rest: &[String]) -> i32 {
     let args = parse_args(rest, &["worker", "reason"], &[]);
     reject_extra_pos("cancel", &args, 1);
@@ -5725,7 +5746,7 @@ fn cmd_outbox(rest: &[String]) -> i32 {
 pub fn run(args: &[String]) -> i32 {
     if args.is_empty() {
         eprint(
-            "usage: repo-queue <validate|list|enqueue|claim|release|lane|bind|heartbeat|checkpoint|park|wake|block|unblock|dep-recheck|cancel|fail|complete|timeline|revive|health|signal|fallback|outbox|dispatch|session|surfaces|stack> ...",
+            "usage: repo-queue <validate|list|enqueue|claim|release|lane|bind|heartbeat|checkpoint|park|wake|block|unblock|dep-recheck|quarantine-recheck|cancel|fail|complete|timeline|revive|health|signal|fallback|outbox|dispatch|session|surfaces|stack> ...",
         );
         return 2;
     }
@@ -5749,6 +5770,7 @@ pub fn run(args: &[String]) -> i32 {
         "block" => cmd_block(rest),
         "unblock" => cmd_unblock(rest),
         "dep-recheck" => cmd_dep_recheck(rest),
+        "quarantine-recheck" => cmd_quarantine_recheck(rest),
         "cancel" => cmd_cancel(rest),
         "revive" => cmd_revive(rest),
         "fail" => cmd_fail(rest),

@@ -1520,7 +1520,29 @@ fn verb_sweep(t: &TursoBackend, req: &Value) -> Value {
         if let Some(s) = dep_summary {
             out["dep_recheck"] = s;
         }
-        if expired > 0 || do_revalidate || do_prune || dep_checked > 0 {
+        // #10648: the quarantine rechecker rides the sweep beside
+        // the dep rechecker, on the same expire timer — a blocked
+        // row whose recorded claim-path quarantine no longer
+        // reproduces is requeued automatically, so a repaired
+        // packet can never fossilize in blocked again. Opt out
+        // per call: quarantine_recheck=false.
+        let quarantine_summary = if req_bool(req, "quarantine_recheck").unwrap_or(true) {
+            Some(run_quarantine_rechecks(
+                t,
+                req_i64(req, "quarantine_limit").unwrap_or(200),
+            )?)
+        } else {
+            None
+        };
+        let quarantine_checked = quarantine_summary
+            .as_ref()
+            .and_then(|s| s.get("checked"))
+            .and_then(|v| v.as_i64())
+            .unwrap_or(0);
+        if let Some(s) = quarantine_summary {
+            out["quarantine_recheck"] = s;
+        }
+        if expired > 0 || do_revalidate || do_prune || dep_checked > 0 || quarantine_checked > 0 {
             event(t, Some("fleet-sweeper"), None, "sweep", &out)?;
         }
         Ok(out)
@@ -5870,6 +5892,172 @@ pub fn run_dep_rechecks(t: &TursoBackend, limit: i64) -> Result<Value, TErr> {
     }))
 }
 
+/// The #10648 quarantine recheck verdict for one row — the pure
+/// decision the sweep driver and the /quarantine-recheck verb
+/// share. A row is this pass's business only when it is blocked,
+/// carries no dep record (dep-blocked rows belong to the dep
+/// rechecker), and its recorded error is a claim-path quarantine:
+/// exactly the fossil shape the 2026-11-16 blocked-pile audit
+/// found — rows whose recorded validation error had stopped
+/// reproducing (in 99 cases both max_attempts copies already
+/// agreed again) yet sat blocked forever, because nothing ever
+/// re-validated a blocked row.
+#[derive(Debug, PartialEq)]
+enum QuarantineRecheck {
+    NotApplicable,
+    /// The recorded quarantine error no longer reproduces: the row
+    /// passes the claim guard today and must be requeued.
+    Release,
+    /// The row still fails the claim guard; carries the CURRENT
+    /// reason, which may differ from the recorded one.
+    StillQuarantined(String),
+}
+
+fn quarantine_recheck_verdict(row: &Value) -> QuarantineRecheck {
+    if row.get("status").and_then(|v| v.as_str()) != Some("blocked") {
+        return QuarantineRecheck::NotApplicable;
+    }
+    if dep_block_active(row) {
+        return QuarantineRecheck::NotApplicable;
+    }
+    let recorded = row.get("last_error").and_then(|v| v.as_str()).unwrap_or("");
+    if !recorded.starts_with("quarantined by claim path") {
+        return QuarantineRecheck::NotApplicable;
+    }
+    match claim_guard_reason(row) {
+        None => QuarantineRecheck::Release,
+        Some(reason) => QuarantineRecheck::StillQuarantined(reason),
+    }
+}
+
+/// Apply one row's quarantine recheck verdict. Returns the outcome
+/// name ("released" / "still_quarantined" / "not_applicable" /
+/// "release_raced"). Release mirrors verb_unblock's shape (queued,
+/// claim and lease cleared) plus clearing the recorded error —
+/// the rechecker's whole point is that the recorded error is
+/// stale — and the event names the discarded error, like the dep
+/// override names discarded deps. A still-quarantined row whose
+/// CURRENT reason differs from the recorded one gets its
+/// last_error refreshed (with an event); an unchanged reason
+/// writes nothing, so the minutely sweep cannot spam the log.
+fn quarantine_recheck_one(t: &TursoBackend, row: &Value) -> Result<&'static str, TErr> {
+    let id = row.get("id").and_then(|v| v.as_i64()).unwrap_or(0);
+    let recorded = row
+        .get("last_error")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
+    match quarantine_recheck_verdict(row) {
+        QuarantineRecheck::NotApplicable => Ok("not_applicable"),
+        QuarantineRecheck::Release => {
+            let upd = t.exec(
+                "UPDATE tasks SET status = 'queued', worker_id = NULL, \
+                   lease_until = NULL, last_error = NULL, updated_at = ? \
+                 WHERE id = ? AND status = 'blocked'",
+                &[Arg::Text(now_iso()), Arg::Int(id)],
+            )?;
+            if upd.affected == 0 {
+                return Ok("release_raced");
+            }
+            t.exec("DELETE FROM leases WHERE task_id = ?", &[Arg::Int(id)])?;
+            event(
+                t,
+                Some("quarantine-rechecker"),
+                Some(id),
+                "unblocked",
+                &json!({
+                    "reason": "recorded claim-path quarantine no longer reproduces; packet passes the claim guard (#10648 recheck)",
+                    "via": "quarantine_recheck",
+                    "discarded_error": recorded,
+                }),
+            )?;
+            Ok("released")
+        }
+        QuarantineRecheck::StillQuarantined(reason) => {
+            if reason != recorded {
+                t.exec(
+                    "UPDATE tasks SET last_error = ?, updated_at = ? \
+                     WHERE id = ? AND status = 'blocked'",
+                    &[Arg::Text(reason.clone()), Arg::Text(now_iso()), Arg::Int(id)],
+                )?;
+                event(
+                    t,
+                    Some("quarantine-rechecker"),
+                    Some(id),
+                    "blocked",
+                    &json!({"reason": reason, "via": "quarantine_recheck"}),
+                )?;
+            }
+            Ok("still_quarantined")
+        }
+    }
+}
+
+/// The #10648 quarantine recheck pass: every blocked, dep-free
+/// row whose recorded error is a claim-path quarantine is re-run
+/// through the claim guard; a row whose error no longer
+/// reproduces is requeued automatically. Rides the sweep beside
+/// the dep rechecker (same timer, same opt-out shape), and
+/// /quarantine-recheck runs it directly. This is the blocked-row
+/// re-validation the dep rechecker never provided: it watches
+/// dep-blocked rows only, and a quarantine block carries no deps.
+pub fn run_quarantine_rechecks(t: &TursoBackend, limit: i64) -> Result<Value, TErr> {
+    let rows = t.query_objs(
+        &format!(
+            "SELECT {TASK_COLS} FROM tasks WHERE status = 'blocked' \
+             AND last_error LIKE 'quarantined by claim path%' \
+             ORDER BY updated_at ASC LIMIT {limit}"
+        ),
+        &[],
+        &TASK_JSON_COLS,
+    )?;
+    let (mut checked, mut released, mut still_quarantined) = (0i64, 0i64, 0i64);
+    for row in &rows {
+        match quarantine_recheck_one(t, row)? {
+            "released" => {
+                checked += 1;
+                released += 1;
+            }
+            "still_quarantined" => {
+                checked += 1;
+                still_quarantined += 1;
+            }
+            _ => {}
+        }
+    }
+    Ok(json!({
+        "checked": checked, "released": released,
+        "still_quarantined": still_quarantined,
+    }))
+}
+
+/// /quarantine-recheck (#10648): run the recheck pass, or — with
+/// a task_id — force one blocked task's recheck right now. The
+/// manual trigger lanes and the monitor use to prove the
+/// machinery; production cadence is the sweep's.
+fn verb_quarantine_recheck(t: &TursoBackend, req: &Value) -> Value {
+    let work = (|| -> Result<Value, TErr> {
+        if let Some(task_id) = req_i64(req, "task_id") {
+            let Some(row) = get_task(t, task_id)? else {
+                return Ok(json!({"task_id": task_id, "outcome": "no_such_task"}));
+            };
+            if row.get("status").and_then(|v| v.as_str()) != Some("blocked") {
+                return Ok(json!({"task_id": task_id, "outcome": "not_blocked"}));
+            }
+            let outcome = quarantine_recheck_one(t, &row)?;
+            let after = get_task(t, task_id)?.unwrap_or(Value::Null);
+            return Ok(json!({
+                "task_id": task_id, "outcome": outcome, "row": after,
+            }));
+        }
+        run_quarantine_rechecks(t, req_i64(req, "limit").unwrap_or(200))
+    })();
+    match work {
+        Ok(v) => ok(json!({"row": v})),
+        Err(e) => terr(e),
+    }
+}
+
 /// /dep-recheck (#8276): run the due pass, or — with a task_id —
 /// force one dep-blocked task's recheck right now, schedule or
 /// no schedule. The manual trigger lanes and the monitor use to
@@ -7714,6 +7902,7 @@ pub fn dispatch(t: &TursoBackend, path: &str, req: &Value) -> Value {
         "/block" => verb_block(t, req),
         "/unblock" => verb_unblock(t, req),
         "/dep-recheck" => verb_dep_recheck(t, req),
+        "/quarantine-recheck" => verb_quarantine_recheck(t, req),
         "/cancel" => verb_cancel(t, req),
         "/fail" => verb_fail(t, req),
         "/complete" => verb_complete(t, req),
@@ -9212,6 +9401,92 @@ mod tests {
         assert!(broker_src.contains("GhDepProbe"));
         assert!(broker_src.contains("set_gh_probe"));
         assert!(broker_src.contains("github.developing-today-code-automation"));
+    }
+
+    #[test]
+    fn quarantine_recheck_verdicts_10648() {
+        // Oracle: the 2026-11-16 blocked-pile audit. A blocked row
+        // whose recorded claim-path quarantine no longer reproduces
+        // must RELEASE; a row still failing the guard stays, with
+        // the current reason; rows that are not quarantine fossils
+        // are never this pass's business.
+        let recorded = "quarantined by claim path: packet failed validation \
+                        (#5444): packet.max_attempts: must match payload.max_attempts";
+        // The incident fossil itself: row copy 1000, payload copy
+        // 3, recorded error the split-copy mismatch. Under the old
+        // agreement rule the guard still fired; under the
+        // single-source-of-truth rule (#10648) the packet is valid
+        // and the fossil must release.
+        let mut fossil = claimable_row(valid_payload());
+        fossil["payload"]["max_attempts"] = json!(3);
+        fossil["max_attempts"] = json!(1000);
+        fossil["status"] = json!("blocked");
+        fossil["last_error"] = json!(recorded);
+        assert_eq!(
+            quarantine_recheck_verdict(&fossil),
+            QuarantineRecheck::Release
+        );
+        // Still invalid (schema broken): stays quarantined, and the
+        // verdict carries today's reason, not the recorded one.
+        let mut still_bad = fossil.clone();
+        still_bad["payload"]["schema"] = json!("repo-task/v0");
+        match quarantine_recheck_verdict(&still_bad) {
+            QuarantineRecheck::StillQuarantined(reason) => {
+                assert!(reason.contains("packet failed validation"), "{reason}");
+            }
+            other => panic!("expected StillQuarantined, got {other:?}"),
+        }
+        // Payload-less fossil: the missing-payload quarantine also
+        // still reproduces.
+        let mut no_payload = fossil.clone();
+        no_payload["payload"] = json!({});
+        no_payload["last_error"] =
+            json!("quarantined by claim path: payload missing/empty (#5444)");
+        match quarantine_recheck_verdict(&no_payload) {
+            QuarantineRecheck::StillQuarantined(reason) => {
+                assert!(reason.contains("payload missing/empty"), "{reason}");
+            }
+            other => panic!("expected StillQuarantined, got {other:?}"),
+        }
+        // Not this pass's business: a dep-blocked row (the dep
+        // rechecker owns it, even under a stale quarantine error),
+        // a classically blocked row, and a non-blocked row.
+        let mut dep_row = fossil.clone();
+        dep_row["blocked_deps"] = json!([{"kind": "issue", "repo": "developing-today/code", "number": 5444}]);
+        assert_eq!(
+            quarantine_recheck_verdict(&dep_row),
+            QuarantineRecheck::NotApplicable
+        );
+        let mut classic = fossil.clone();
+        classic["last_error"] = json!("Drew decision pending on the linked issue");
+        assert_eq!(
+            quarantine_recheck_verdict(&classic),
+            QuarantineRecheck::NotApplicable
+        );
+        let mut queued = fossil.clone();
+        queued["status"] = json!("queued");
+        assert_eq!(
+            quarantine_recheck_verdict(&queued),
+            QuarantineRecheck::NotApplicable
+        );
+    }
+
+    #[test]
+    fn quarantine_wiring_oracles_10648() {
+        // Routes, sweep ride, client surface — the same wiring
+        // shape the dep rechecker established in #8276.
+        let src = include_str!("turso_queue.rs");
+        let impl_src = src.split("#[cfg(test)]").next().unwrap_or("");
+        assert!(impl_src.contains("\"/quarantine-recheck\" => verb_quarantine_recheck"));
+        let impl_flat = impl_src.split_whitespace().collect::<Vec<_>>().join(" ");
+        assert!(
+            impl_flat.contains("run_quarantine_rechecks( t, req_i64(req, \"quarantine_limit\")")
+        );
+        assert!(impl_src.contains("run_quarantine_rechecks(t, req_i64(req, \"limit\")"));
+        assert!(impl_src.contains("\"via\": \"quarantine_recheck\""));
+        let client_src = include_str!("client.rs");
+        assert!(client_src.contains("\"quarantine-recheck\" => cmd_quarantine_recheck"));
+        assert!(client_src.contains("call(\"/quarantine-recheck\""));
     }
 
     #[test]
