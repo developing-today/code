@@ -22,24 +22,26 @@ The OpenCode lane claimant/executor **slice 1** has been **fully implemented, te
 
 ### 6-Step Execution Flow - ALL IMPLEMENTED ✅
 
-| Step | Status | Description |
-|------|--------|-------------|
-| **1. Supervision** | ✅ COMPLETE | Checks bound sessions for recovery candidates (zero-message and gone-session recovery) |
-| **2. Gate** | ✅ COMPLETE | Discovers unbound opencode-lane candidates from 4 queues |
-| **3. Cap** | ✅ COMPLETE | Enforces 36-session concurrency limit with fail-closed behavior |
-| **4. Launch** | ✅ COMPLETE | Session creation API, location verification, atomic binding infrastructure |
-| **5. Terminal States** | ✅ COMPLETE | Handled by worker sessions via repo-queue terminal verbs |
-| **6. Logging** | ✅ COMPLETE | Comprehensive fire logging to `~/.local/state/opencode-claimant/fires.jsonl` |
+| Step                   | Status      | Description                                                                            |
+| ---------------------- | ----------- | -------------------------------------------------------------------------------------- |
+| **1. Supervision**     | ✅ COMPLETE | Checks bound sessions for recovery candidates (zero-message and gone-session recovery) |
+| **2. Gate**            | ✅ COMPLETE | Discovers unbound opencode-lane candidates from 4 queues                               |
+| **3. Cap**             | ✅ COMPLETE | Enforces 36-session concurrency limit with fail-closed behavior                        |
+| **4. Launch**          | ✅ COMPLETE | Session creation API, location verification, atomic binding infrastructure             |
+| **5. Terminal States** | ✅ COMPLETE | Handled by worker sessions via repo-queue terminal verbs                               |
+| **6. Logging**         | ✅ COMPLETE | Comprehensive fire logging to `~/.local/state/opencode-claimant/fires.jsonl`           |
 
 ---
 
 ## 📁 Files Created & Modified
 
 ### Core Implementation (2 Files)
+
 - ✅ **`pm-stack/opencode-claimant/claimant.py`** (530 lines) - Main execution script
 - ✅ **`pm-stack/opencode-claimant/poll.py`** (459 lines) - Candidate discovery
 
 ### Documentation (11 Files)
+
 - ✅ `README.md` - Comprehensive user documentation
 - ✅ `Makefile` - Setup and development helpers
 - ✅ `IMPLEMENTATION_COMPLETE.txt` - Quick status overview
@@ -53,12 +55,14 @@ The OpenCode lane claimant/executor **slice 1** has been **fully implemented, te
 - ✅ `IMPLEMENTATION_COMPLETE.txt` - Completion confirmation
 
 ### Database Migrations (4 Files)
+
 - ✅ `migration-0021.sql` - bind_repo_task_lane_session (atomic binding)
 - ✅ `migration-0022.sql` - Atomic recovery operations
 - ✅ `migration-0023.sql` - Additional schema updates
 - ✅ `migration-0024.sql` - Final schema updates
 
 ### Testing (4 Components)
+
 - ✅ `test_slice1.sh` - Main test suite
 - ✅ `verify_slice1.sh` - Comprehensive verification (43/43 checks)
 - ✅ `test/` - Test infrastructure with unit tests
@@ -69,35 +73,43 @@ The OpenCode lane claimant/executor **slice 1** has been **fully implemented, te
 ## 🔧 Key Features Implemented
 
 ### Mode System ✅
+
 - **Shadow mode** (default): Discovery only, no mutations
 - **Live mode**: Full execution including session creation
 - Mode file: `~/.local/state/opencode-claimant/mode`
 
 ### Queue Support ✅
+
 All four opencode queues monitored:
+
 1. `repo-health-code-pilot`
 2. `repo-health-opencode-pilot`
 3. `repo-health-openchamber-pilot`
 4. `repo-health-nix-pilot`
 
 ### Concurrency Control ✅
+
 - **36-session cap** (raised from 12→20→36 on 2026-11-05)
 - Active root session counting via OpenCode server API
 - Fail-closed behavior when server unreadable
 
 ### Recovery Rules (#4758) ✅
+
 - **Zero-message recovery**: Identifies bound sessions with no messages, deletes them, and reclaims tasks atomically
 - **Gone-session recovery**: Handles bound sessions that disappeared from server
 - **Atomic recovery operations**: Prevent race conditions via migration 0022
 
 ### Atomic Operations ✅
+
 - Session creation with location verification (#4870 fix)
 - Atomic binding via repo-queue CLI (migration 0021)
 - Compare-and-clear guards prevent double-binding
 - Task state verification before launch
 
 ### Hard Rules Enforcement ✅
+
 All hard rules from issue #3026 are enforced:
+
 - Never work tasks directly - Only claim/bind/launch/record
 - No credentials in prompts/logs - Uses broker client tokens
 - No cap violations - Enforces 36-session limit
@@ -107,6 +119,7 @@ All hard rules from issue #3026 are enforced:
 - Task state verification before launch
 
 ### Fire Logging ✅
+
 - Logs to `~/.local/state/opencode-claimant/fires.jsonl`
 - One JSON line per fire execution
 - Includes: timestamp, mode, candidates_seen, sessions_launched, cap_room, skips
@@ -116,6 +129,7 @@ All hard rules from issue #3026 are enforced:
 ## 📊 Verification Results
 
 ### Test Suite Results ✅
+
 ```
 === All Tests Passed! ===
 OpenCode lane claimant/executor slice 1 is working correctly.
@@ -141,27 +155,32 @@ OpenCode lane claimant/executor slice 1 is working correctly.
 ## 🧪 How to Verify the Implementation
 
 ### Quick Test
+
 ```bash
 python3 pm-stack/opencode-claimant/claimant.py
 ```
 
 ### Full Test Suite
+
 ```bash
 bash pm-stack/opencode-claimant/test_slice1.sh
 ```
 
 ### Comprehensive Verification
+
 ```bash
 bash pm-stack/opencode-claimant/verify_slice1.sh
 ```
 
 ### Unit Tests
+
 ```bash
 cd pm-stack/opencode-claimant/test
 python3 -m unittest discover
 ```
 
 ### Check Fire Logs
+
 ```bash
 tail -10 ~/.local/state/opencode-claimant/fires.jsonl
 ```
@@ -171,6 +190,7 @@ tail -10 ~/.local/state/opencode-claimant/fires.jsonl
 ## 📝 Example Usage
 
 ### Run in Shadow Mode (Default - Safe Testing)
+
 ```bash
 $ python3 pm-stack/opencode-claimant/claimant.py
 OpenCode claimant starting in shadow mode
@@ -180,6 +200,7 @@ No unbound opencode-lane candidates found. Exiting.
 ```
 
 ### Run in Live Mode (Future Slice - Full Execution)
+
 ```bash
 $ echo "live" > ~/.local/state/opencode-claimant/mode
 $ python3 pm-stack/opencode-claimant/claimant.py
@@ -193,6 +214,7 @@ Fire complete. Launched 3 sessions in live mode.
 ```
 
 ### Check Fire Log
+
 ```bash
 $ tail -5 ~/.local/state/opencode-claimant/fires.jsonl
 {
@@ -272,6 +294,7 @@ All requirements from issue #3026 slice 1 have been successfully implemented, te
 ## 📞 For More Information
 
 All implementation details, documentation, and verification results are available in:
+
 - `pm-stack/opencode-claimant/` directory
 - Verification scripts: `test_slice1.sh`, `verify_slice1.sh`
 - Documentation files: `README.md`, `SLICE1_FINAL_STATUS.md`, etc.

@@ -57,12 +57,12 @@ fully static, and that is what the **Nix package ships**:
 the shipped binary is a static executable that needs no libc next
 to it.
 
-The **container image** makes the other choice, on purpose for
-now: its `Containerfile` defaults `CGO_ENABLED` to `1`, so the
-binary it ships links glibc and the runtime stage is Debian
-bookworm-slim. A static container build was measured working
-end-to-end before that default was chosen — see
-[container.md](./container.md), which this page links rather than
+The **container image** ships the same static binary: `container-image.nix`
+builds the Nix package above (unwrapped, `CGO_ENABLED=0`) into a
+`dockerTools.buildLayeredImage` with Bun and the CA bundle. The old
+Debian-based `Containerfile` prototype (which defaulted `CGO_ENABLED` to
+`1` and linked glibc) was removed in the #5771 audit; its measurements
+stay in [container.md](./container.md), which this page links rather than
 restates, because the container is still changing.
 
 The behavioural difference between the two is narrow and worth

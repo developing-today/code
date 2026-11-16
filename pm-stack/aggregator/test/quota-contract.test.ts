@@ -31,7 +31,7 @@ const USAGE_UNITS = [
 const SAAS_GROUPS = ["database", "object-storage", "compute", "dev-platform", "domains", "account-tooling"];
 const SAAS_STATUSES = ["active", "candidate", "no-account", "unknown"];
 const SOURCE_CLASSES = ["api", "console", "manual", "estimate", "invoice"];
-const ATTENTION_KINDS = ["credential-lifecycle", "over-limit", "payg-unbilled", "unmatched-charge"];
+const ATTENTION_KINDS = ["credential-lifecycle", "over-limit", "payg-unbilled", "unmatched-charge", "quota-action"];
 
 const isNumOrNull = (v: unknown) => v === null || (typeof v === "number" && Number.isFinite(v));
 const isStrOrNull = (v: unknown) => v === null || typeof v === "string";
@@ -74,9 +74,38 @@ describe("/api/quota.json hub contract (#1119)", () => {
       expect(Array.isArray(doc[key])).toBe(true);
     }
     expect("domains" in doc).toBe(true); // object or null, never absent
+    expect(typeof doc.extractorHealth).toBe("object");
+    for (const rows of [doc.extractorHealth?.pools, doc.extractorHealth?.services]) {
+      expect(Array.isArray(rows)).toBe(true);
+      if (!Array.isArray(rows)) continue;
+      for (const row of rows) {
+        expect(typeof row.id).toBe("string");
+        expect(["matched", "gap", "intentional", "unavailable"]).toContain(row.status);
+        expect([true, false, null]).toContain(row.matched);
+        expect(typeof row.count).toBe("number");
+      }
+    }
+    expect(doc.extractorHealth.pools.map((row: { id: string }) => row.id)).toEqual(
+      doc.pools.map((pool: { id: string }) => pool.id),
+    );
+    expect(doc.extractorHealth.services.map((row: { id: string }) => row.id)).toEqual(
+      doc.saas.map((service: { id: string }) => service.id),
+    );
     for (const pool of doc.pools) {
       expect(typeof pool.id).toBe("string");
       expect(Array.isArray(pool.windows)).toBe(true);
+    }
+  });
+
+  test("uninstrumentedServices: tracker registry rides the JSON twin (#1172)", () => {
+    expect(Array.isArray(doc.uninstrumentedServices)).toBe(true);
+    for (const svc of doc.uninstrumentedServices) {
+      expect(typeof svc.name).toBe("string");
+      expect(typeof svc.whatFor).toBe("string");
+      expect(typeof svc.status).toBe("string");
+      expect(isStrOrNull(svc.checkedAt)).toBe(true);
+      expect(typeof svc.overageBehavior).toBe("string");
+      expect(typeof svc.guardrailNotes).toBe("string");
     }
   });
 

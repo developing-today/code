@@ -1,4 +1,13 @@
-import type { BoardItem, DnsSection, GhItem, RefKey, RoadmapRow, SaasService, SessionRecord, TierItem } from "./model.ts";
+import type {
+  BoardItem,
+  DnsSection,
+  GhItem,
+  RefKey,
+  RoadmapRow,
+  SaasService,
+  SessionRecord,
+  TierItem,
+} from "./model.ts";
 import { isValidRef } from "./model.ts";
 
 export interface SearchResult {
@@ -138,7 +147,15 @@ export function searchWork(
 
   for (const entry of extras.dns?.entries ?? []) {
     if (
-      includesQuery(query, [entry.domain, entry.registrar, entry.dnsHost, entry.plan, entry.used, entry.review, entry.status])
+      includesQuery(query, [
+        entry.domain,
+        entry.registrar,
+        entry.dnsHost,
+        entry.plan,
+        entry.used,
+        entry.review,
+        entry.status,
+      ])
     ) {
       results.push({
         kind: "dns",
@@ -166,7 +183,16 @@ export function searchWork(
 
   for (const item of extras.tierItems ?? []) {
     if (
-      includesQuery(query, [item.id, item.title, item.kind, item.source, item.state, item.reason, item.ref, item.sessionId])
+      includesQuery(query, [
+        item.id,
+        item.title,
+        item.kind,
+        item.source,
+        item.state,
+        item.reason,
+        item.ref,
+        item.sessionId,
+      ])
     ) {
       results.push({
         kind: "tier",

@@ -40,7 +40,11 @@ describe("check-contract-corpus corpus shape handling (#7048)", () => {
       { name: "quota-null", mutate: (d) => writeJson(d, "quota.json", null), failNeedle: "corpus quota" },
       { name: "quota-object", mutate: (d) => writeJson(d, "quota.json", {}), failNeedle: "corpus quota" },
       { name: "feed-null", mutate: (d) => writeJson(d, "feed.json", null), failNeedle: "corpus feed.json" },
-      { name: "orchestration-null", mutate: (d) => writeJson(d, "orchestration.json", null), failNeedle: "corpus orchestration" },
+      {
+        name: "orchestration-null",
+        mutate: (d) => writeJson(d, "orchestration.json", null),
+        failNeedle: "corpus orchestration",
+      },
       {
         name: "dns-not-json",
         mutate: async (d) => writeFile(join(d, "dns.json"), "not json{"),

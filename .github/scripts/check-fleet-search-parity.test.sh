@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # Contract tests for check-fleet-search-parity.sh (#5920): the guard
 # passes the current tree, and fails on body drift in either copy, on
-# a changed parity header, and on a removed parity header.
+# a changed parity header, and on a removed parity header. The sole
+# service-specific HOME diagnostic difference from #5640 is narrowly pinned.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -10,19 +11,21 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
 
-# Copy the six guarded files into a scratch tree shaped like the repo.
+# Copy the guarded files into a scratch tree shaped like the repo.
 make_tree() {
   local dest="$1"
-  mkdir -p "$dest/pkgs/atlas-search/crates/atlas-search/src" \
-    "$dest/pkgs/fleet/crates/fleet-search/src"
+  mkdir -p "$dest/pkgs/atlas-search/crates/atlas-search/src/server" \
+    "$dest/pkgs/fleet/crates/fleet-search/src/server"
   local pair
   for pair in \
     "pkgs/atlas-search/crates/atlas-search/src/pyjson.rs" \
     "pkgs/atlas-search/crates/atlas-search/src/render.rs" \
     "pkgs/atlas-search/crates/atlas-search/src/server.rs" \
+    "pkgs/atlas-search/crates/atlas-search/src/server/server_feedback.rs" \
     "pkgs/fleet/crates/fleet-search/src/pyjson.rs" \
     "pkgs/fleet/crates/fleet-search/src/render.rs" \
-    "pkgs/fleet/crates/fleet-search/src/server.rs"; do
+    "pkgs/fleet/crates/fleet-search/src/server.rs" \
+    "pkgs/fleet/crates/fleet-search/src/server/server_feedback.rs"; do
     cp "$REPO_ROOT/$pair" "$dest/$pair"
   done
 }
@@ -58,7 +61,7 @@ FLEET_RENDER="$TMP/tree/pkgs/fleet/crates/fleet-search/src/render.rs"
 # 1. The current tree, copied verbatim, passes.
 make_tree "$TMP/tree"
 run_guard "$TMP/tree"
-expect_pass "verbatim copies"
+expect_pass "current copies and pinned #5640 HOME diagnostic"
 
 # 2. A body change in the fleet copy only -> fail.
 echo "// drift" >>"$FLEET_PY"
@@ -116,5 +119,22 @@ echo "// mirrored" >>"$ATLAS_SRV"
 echo "// mirrored" >>"$FLEET_SRV"
 run_guard "$TMP/tree"
 expect_pass "mirrored server.rs change in both copies"
+
+# 8. Only the exact service-specific HOME diagnostic names are normalized.
+make_tree "$TMP/tree"
+sed -i 's/HOME is not set or is empty: fleet-search requires/HOME is not set or is empty: another-service requires/' "$FLEET_SRV"
+run_guard "$TMP/tree"
+expect_fail "unapproved server HOME wording"
+
+make_tree "$TMP/tree"
+sed -i '/HOME is not set or is empty: fleet-search requires/s|$| HOME is not set or is empty: fleet-search requires a non-empty HOME to resolve its state/config paths (issue #5640)|' "$FLEET_SRV"
+run_guard "$TMP/tree"
+expect_fail "duplicate pinned HOME diagnostic"
+if ! grep -Fq 'expected exactly one #5640 HOME diagnostic' "$TMP/out"; then
+  echo "FAIL: the exact-count guard did not reject a duplicate HOME diagnostic" >&2
+  cat "$TMP/out" >&2
+  exit 1
+fi
+echo "pass: duplicate HOME diagnostic rejected by exact-count guard"
 
 echo "check-fleet-search-parity: all contract tests pass (#5920)"

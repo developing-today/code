@@ -27,12 +27,12 @@ func TestThePluginSuiteRunsAgainstARealDaemon(t *testing.T) {
 		t.Fatalf("could not find the daemon's socket: %v", err)
 	}
 
-	cmd := exec.Command(bun, "test", "plugin/opencode/mcpx/")
+	cmd := exec.Command(bun, "test", "plugin/opencode/mcpx/", "plugin/core/")
 	cmd.Dir = repoRoot(t)
 	cmd.Env = append(e.envVars, "OPS_LIVE_SOCKET="+where.Socket, "OPS_LIVE_DIR="+e.dir)
 	out, err := cmd.CombinedOutput()
 	if err != nil {
-		t.Fatalf("bun test plugin/opencode/mcpx/: %v\n%s", err, out)
+		t.Fatalf("bun test plugin/opencode/mcpx/ plugin/core/: %v\n%s", err, out)
 	}
 	// The live tests skip themselves without a socket; a run that skipped
 	// them is a run that did not check what this test exists to check.

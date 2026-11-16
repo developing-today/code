@@ -77,8 +77,13 @@ impl AtlasEmbedder {
     }
 }
 
-impl QueryEmbedder for AtlasEmbedder {
-    fn embed_query(&self, text: &str, trunc: usize) -> Result<Vec<f32>> {
+impl AtlasEmbedder {
+    /// The raw full-dimension query vector for `text` (prompt
+    /// applied, no truncation or renormalization). This is the pure
+    /// function the section-3.1 query-embedding cache
+    /// ([`crate::embed_cache`]) keys and stores; `embed_query` is
+    /// this plus the shared finishing tail.
+    pub fn embed_raw(&self, text: &str) -> Result<Vec<f32>> {
         let prompted = format!("{QUERY_PROMPT}{text}");
         let mut guard = self
             .inner
@@ -87,10 +92,15 @@ impl QueryEmbedder for AtlasEmbedder {
         let out = guard
             .embed(&[prompted.as_str()])
             .map_err(|e| Error::Embed(e.to_string()))?;
-        let v = out.into_iter().next().map(|a| a.to_vec()).ok_or_else(|| {
+        out.into_iter().next().map(|a| a.to_vec()).ok_or_else(|| {
             Error::Embed("embedder returned no vector for a single input".to_string())
-        })?;
-        finish_query_vector(v, trunc)
+        })
+    }
+}
+
+impl QueryEmbedder for AtlasEmbedder {
+    fn embed_query(&self, text: &str, trunc: usize) -> Result<Vec<f32>> {
+        finish_query_vector(self.embed_raw(text)?, trunc)
     }
 }
 

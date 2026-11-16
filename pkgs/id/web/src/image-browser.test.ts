@@ -14,7 +14,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { richSchema } from "./editor";
 import { closeImageBrowser, openImageBrowser } from "./image-browser";
 
-const IMAGES = [{ hash: "abc123", name: "cat.png", url: "/api/images/abc123", size: 42 }];
+const IMAGES = [{ hash: "abc123", name: "cat.png", url: "/blob/abc123?filename=cat.png", size: 42 }];
 
 function stubFetchImages(): void {
   vi.stubGlobal(
@@ -22,9 +22,33 @@ function stubFetchImages(): void {
     vi.fn(async () => ({
       ok: true,
       status: 200,
-      json: async () => IMAGES,
+      json: async () => ({ images: IMAGES, next_cursor: null }),
     })),
   );
+}
+
+/** Stub /api/images to return an arbitrary (possibly malformed) payload. */
+function stubFetchPayload(payload: unknown): void {
+  vi.stubGlobal(
+    "fetch",
+    vi.fn(async () => ({
+      ok: true,
+      status: 200,
+      json: async () => payload,
+    })),
+  );
+}
+
+function gridText(): string {
+  return document.querySelector(".pm-image-browser-grid")?.textContent ?? "";
+}
+
+/** Open the browser and wait for the load-failure message in the grid. */
+async function openAndFail(view: EditorView): Promise<void> {
+  openImageBrowser(view, richSchema);
+  await vi.waitFor(() => {
+    expect(gridText()).toContain("Failed to load images");
+  });
 }
 
 /** Create an EditorView with a one-paragraph doc in a container div. */
@@ -67,6 +91,40 @@ function trackedView(): { view: EditorView; container: HTMLElement } {
 
 beforeEach(() => {
   stubFetchImages();
+});
+
+describe("image browser pagination", () => {
+  it("loads another bounded page when requested", async () => {
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      if (String(input) === "/api/images") {
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({ images: IMAGES, next_cursor: "Y2F0LnBuZw" }),
+        };
+      }
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({
+          images: [{ hash: "def456", name: "dog.png", url: "/blob/def456?filename=dog.png", size: 7 }],
+          next_cursor: null,
+        }),
+      };
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const { view } = trackedView();
+    await openAndLoad(view);
+
+    const loadMore = document.querySelector<HTMLButtonElement>(".pm-image-browser-load-more");
+    expect(loadMore?.hidden).toBe(false);
+    loadMore?.click();
+    await vi.waitFor(() => {
+      expect(document.querySelectorAll(".pm-image-browser-card")).toHaveLength(2);
+    });
+    expect(String(fetchMock.mock.calls[1]?.[0])).toBe("/api/images?after=Y2F0LnBuZw");
+    expect(loadMore?.hidden).toBe(true);
+  });
 });
 
 afterEach(() => {
@@ -163,7 +221,7 @@ describe("Insert dismissal", () => {
     expect(overlay()).toBeNull();
     let found = false;
     view.state.doc.descendants((node) => {
-      if (node.type.name === "image" && node.attrs.src === "/api/images/abc123") found = true;
+      if (node.type.name === "image" && node.attrs.src === "/blob/abc123?filename=cat.png") found = true;
     });
     expect(found).toBe(true);
   });
@@ -214,20 +272,23 @@ describe("openImageBrowser", () => {
           return {
             ok: true,
             status: 200,
-            json: async () => [
-              {
-                hash: "hash1",
-                name: "test1.png",
-                url: "/blob/hash1",
-                size: 1024,
-              },
-              {
-                hash: "hash2",
-                name: "test2.jpg",
-                url: "/blob/hash2",
-                size: 2048,
-              },
-            ],
+            json: async () => ({
+              images: [
+                {
+                  hash: "hash1",
+                  name: "test1.png",
+                  url: "/blob/hash1?filename=test1.png",
+                  size: 1024,
+                },
+                {
+                  hash: "hash2",
+                  name: "test2.jpg",
+                  url: "/blob/hash2?filename=test2.jpg",
+                  size: 2048,
+                },
+              ],
+              next_cursor: null,
+            }),
           };
         }
         return { ok: false, status: 404 };
@@ -308,4 +369,46 @@ describe("openImageBrowser", () => {
 
     expect(document.querySelector(".pm-image-browser-overlay")).toBeNull();
   });
+});
+
+// ── Malformed /api/images payloads (#7812) ─────────────────────────
+//
+// The /api/images contract is a page with an `images` array and nullable
+// `next_cursor`. A wrong-shape 200 must
+// fail closed: no cards, Insert stays disabled, and a clean failure
+// message — never a raw TypeError, and never bogus cards built from
+// unvalidated elements. Validation is all-or-nothing: one bad element
+// rejects the whole payload instead of half-rendering the grid.
+
+describe("malformed /api/images payloads", () => {
+  const VALID = { hash: "abc123", name: "cat.png", url: "/blob/abc123?filename=cat.png", size: 42 };
+
+  const cases: Array<[string, unknown]> = [
+    ["null body", null],
+    ["missing page cursor", { images: [VALID] }],
+    ["non-array images", { images: VALID, next_cursor: null }],
+    ["string body", "abc"],
+    ["null element", { images: [null], next_cursor: null }],
+    ["wrong-typed field", { images: [{ ...VALID, hash: 123 }], next_cursor: null }],
+    [
+      "missing field",
+      { images: [{ hash: "abc123", name: "cat.png", url: "/blob/abc123?filename=cat.png" }], next_cursor: null },
+    ],
+    ["wrong-typed cursor", { images: [VALID], next_cursor: 123 }],
+    ["one bad element among valid ones", { images: [VALID, null], next_cursor: null }],
+  ];
+
+  for (const [name, payload] of cases) {
+    it(`fails closed on ${name}`, async () => {
+      stubFetchPayload(payload);
+      const { view } = trackedView();
+      await openAndFail(view);
+
+      expect(document.querySelectorAll(".pm-image-browser-card")).toHaveLength(0);
+      expect(gridText()).not.toContain("TypeError");
+      expect(gridText()).not.toContain("undefined");
+      const insertBtn = document.querySelector<HTMLButtonElement>(".pm-image-browser-insert");
+      expect(insertBtn?.disabled).toBe(true);
+    });
+  }
 });

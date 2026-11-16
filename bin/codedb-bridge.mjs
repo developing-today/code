@@ -30,9 +30,20 @@
 // is served from the daemon's per-result `detail` (the definition line);
 // it is not a separate fetch.
 //
-// Config: CODEDB_DAEMON_URL (default http://127.0.0.1:7719).
+// Config: CODEDB_DAEMON_URL (default http://127.0.0.1:7719),
+// CODEDB_DAEMON_TIMEOUT_MS (default 10000).
 
 export const DEFAULT_DAEMON_URL = 'http://127.0.0.1:7719';
+export const DEFAULT_DAEMON_FETCH_TIMEOUT_MS = 10_000;
+
+export const parseDaemonFetchTimeoutMs = (raw) => {
+  if (raw === undefined || raw === '') return DEFAULT_DAEMON_FETCH_TIMEOUT_MS;
+  const value = Number(raw);
+  if (!Number.isSafeInteger(value) || value <= 0) {
+    throw new Error(`CODEDB_DAEMON_TIMEOUT_MS="${raw}" must be a positive integer`);
+  }
+  return value;
+};
 
 export const parseDaemonUrl = (raw) => {
   const value = raw === undefined || raw === '' ? DEFAULT_DAEMON_URL : raw;
@@ -40,26 +51,31 @@ export const parseDaemonUrl = (raw) => {
   try {
     url = new URL(value);
   } catch {
-    throw new Error(`CODEDB_DAEMON_URL="${value}" is not a valid URL`);
+    // No branch of this function interpolates the raw value or any part
+    // of the parsed URL into an error (#9829): the caller prints the
+    // message to stderr, and the value can carry userinfo credentials,
+    // a ?token= query, or a fragment -- all secrets in host logs. Errors
+    // name the rejected component only.
+    throw new Error('CODEDB_DAEMON_URL is not a valid URL (value withheld)');
   }
   if (url.protocol !== 'http:' || (url.pathname !== '/' && url.pathname !== '')) {
     throw new Error(
-      `CODEDB_DAEMON_URL="${value}" must be an http:// origin with no path (the bridge appends /explore/* routes itself)`
+      'CODEDB_DAEMON_URL must be an http:// origin with no path (the bridge appends /explore/* routes itself; value withheld)'
     );
   }
   if (url.search) {
     throw new Error(
-      `CODEDB_DAEMON_URL="${value}" must not carry a query string (query "${url.search}") - a query has no meaning for a daemon origin and would be silently dropped`
+      'CODEDB_DAEMON_URL must not carry a query string - a query has no meaning for a daemon origin and would be silently dropped (query value withheld)'
     );
   }
   if (url.hash) {
     throw new Error(
-      `CODEDB_DAEMON_URL="${value}" must not carry a fragment (fragment "${url.hash}") - a fragment has no meaning for a daemon origin and would be silently dropped`
+      'CODEDB_DAEMON_URL must not carry a fragment - a fragment has no meaning for a daemon origin and would be silently dropped (fragment value withheld)'
     );
   }
   if (url.username || url.password) {
     throw new Error(
-      `CODEDB_DAEMON_URL="${value}" must not carry userinfo (embedded credentials) - the daemon has no authentication, so credentials would be silently dropped`
+      'CODEDB_DAEMON_URL must not carry userinfo (embedded credentials) - the daemon has no authentication, so credentials would be silently dropped (userinfo withheld)'
     );
   }
   return url.origin;
@@ -127,10 +143,45 @@ export const CODEDB_TOOLS = [
   ),
 ];
 
+// Keys the bridge rejects with a dedicated message when set (handled
+// rejection keys, #3352): `project` on every tool, plus the daemon-less
+// modes per tool. These stay accepted by the allowlist below so their
+// existing by-name rejection messages are unchanged; anything else
+// outside the tool's schema is refused before it can be silently dropped
+// (#4216).
+const HANDLED_REJECTION_KEYS = {
+  codedb_tree: ['project'],
+  codedb_outline: ['project', 'compact'],
+  codedb_symbol: ['project'],
+  codedb_search: ['project', 'regex', 'scope', 'compact'],
+  codedb_word: ['project'],
+  codedb_hot: ['project'],
+  codedb_deps: ['project'],
+};
+
+// The accepted argument names for a tool: its advertised schema
+// properties plus its handled rejection keys. Returns null for unknown
+// tools (the switch in routeForTool still owns that error).
+const acceptedArgsFor = (name) => {
+  const declared = CODEDB_TOOLS.find((t) => t.name === name);
+  if (!declared) return null;
+  return new Set([...Object.keys(declared.inputSchema.properties), ...(HANDLED_REJECTION_KEYS[name] ?? [])]);
+};
+
 // Map a tool call to the daemon route. Throws an Error naming the exact
 // problem for unknown tools, missing required arguments, and arguments
 // the daemon cannot honour — nothing is silently dropped (#3352).
 export const routeForTool = (name, args = {}) => {
+  const accepted = acceptedArgsFor(name);
+  if (accepted !== null) {
+    for (const key of Object.keys(args)) {
+      if (!accepted.has(key)) {
+        throw new Error(
+          `argument "${key}": not a valid argument for ${name} (valid: ${[...accepted].sort().join(', ') || '(none)'}); it would be silently ignored by the codedb daemon route`
+        );
+      }
+    }
+  }
   const rejectProject = () => {
     if (args.project !== undefined) throw new Error(`argument "project": ${PROJECT_ARG_NOTE}`);
   };
@@ -205,7 +256,10 @@ const textResult = (text, isError = false) => ({
   ...(isError ? { isError: true } : {}),
 });
 
-export const createHandler = ({ fetchFn, daemonUrl }) => {
+export const createHandler = ({ fetchFn, daemonUrl, timeoutMs = DEFAULT_DAEMON_FETCH_TIMEOUT_MS }) => {
+  if (!Number.isSafeInteger(timeoutMs) || timeoutMs <= 0) {
+    throw new Error(`timeoutMs must be a positive integer, got ${timeoutMs}`);
+  }
   const callTool = async (params) => {
     const name = params?.name;
     const args = params?.arguments ?? {};
@@ -216,19 +270,38 @@ export const createHandler = ({ fetchFn, daemonUrl }) => {
       return textResult(err.message, true);
     }
     let res;
+    let data;
+    let timeoutId;
+    const controller = new AbortController();
+    const requestUrl = `${daemonUrl}${mapped.route}`;
+    let rejectTimeout;
+    const timeout = new Promise((_, reject) => {
+      rejectTimeout = reject;
+    });
+    timeoutId = setTimeout(() => {
+      const err = new Error(`timed out after ${timeoutMs}ms`);
+      err.name = 'TimeoutError';
+      controller.abort(err);
+      rejectTimeout(err);
+    }, timeoutMs);
     try {
-      res = await fetchFn(`${daemonUrl}${mapped.route}`);
+      res = await Promise.race([fetchFn(requestUrl, { signal: controller.signal }), timeout]);
+      try {
+        data = await Promise.race([res.json(), timeout]);
+      } catch (err) {
+        if (err.name === 'TimeoutError') throw err;
+        return textResult(`codedb daemon at ${daemonUrl} returned a non-JSON response (HTTP ${res.status}) for ${mapped.route}`, true);
+      }
     } catch (err) {
+      if (err.name === 'TimeoutError') {
+        return textResult(`codedb daemon request timed out after ${timeoutMs}ms at ${daemonUrl}${mapped.route}`, true);
+      }
       return textResult(
         `codedb daemon unreachable at ${daemonUrl} (${err.message}). Is the codedb serve unit running for this project root? Start it with: systemctl --user start codedb-<root>.service`,
         true
       );
-    }
-    let data;
-    try {
-      data = await res.json();
-    } catch {
-      return textResult(`codedb daemon at ${daemonUrl} returned a non-JSON response (HTTP ${res.status}) for ${mapped.route}`, true);
+    } finally {
+      clearTimeout(timeoutId);
     }
     if (!res.ok || data?.error) {
       return textResult(`codedb daemon error for ${name}: ${data?.error ?? `HTTP ${res.status}`}`, true);
@@ -286,7 +359,14 @@ const main = async () => {
     console.error(err.message);
     process.exit(1);
   }
-  const handle = createHandler({ fetchFn: (url) => fetch(url), daemonUrl });
+  let timeoutMs;
+  try {
+    timeoutMs = parseDaemonFetchTimeoutMs(process.env.CODEDB_DAEMON_TIMEOUT_MS);
+  } catch (err) {
+    console.error(err.message);
+    process.exit(1);
+  }
+  const handle = createHandler({ fetchFn: (url, options) => fetch(url, options), daemonUrl, timeoutMs });
   const readline = await import('node:readline');
   const rl = readline.createInterface({ input: process.stdin, terminal: false });
   // Requests are dispatched independently, never awaited inside the read

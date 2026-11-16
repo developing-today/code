@@ -102,6 +102,7 @@ func execOps() []Op {
 // and a generated schema would carry field names and no reasons.
 const execOptionsSchema = `{"type":"object","properties":{
 "runtime":{"type":"string","enum":["auto","deno","bun","node"]},
+"language":{"type":"string","enum":["auto","typescript","javascript","python"],"description":"script language; auto detects from shebang then extension (#1917)"},
 "timeout":{"type":"string","description":"a duration such as 30s; default from settings"},
 "permissions":{"type":"string","description":"sandbox profile: all, net, read, read-net, strict, or raw runtime flags"},
 "placeholders":{"type":"object","additionalProperties":true,"description":"values for @names a launcher template refers to"},
@@ -136,6 +137,8 @@ const execOptionsSchema = `{"type":"object","properties":{
 "args":{"type":"array","items":{"type":"string"},"description":"arguments handed to the script"},
 "export":{"type":"string","description":"call this exported function instead of the default one"},
 "typecheck":{"type":"string","enum":["off","types","strict","on"],"description":"check the program before running it; on is a legacy alias for types; default from settings"},
+"checkOnError":{"type":"string","enum":["fail","warn","run"],"description":"what to do when script checking finds an error; default from settings"},
+"checkOnUnsupported":{"type":"string","enum":["skip","warn","switch"],"description":"what to do when the selected runtime cannot check; switch uses Deno only as the checker; default from settings"},
 "launcher":{"type":"string","description":"launcher template text replacing the generated one, or none for no launcher"},
 "launcherName":{"type":"string","description":"what to call the launcher in messages"},
 "allowRepeat":{"type":"array","items":{"type":"string"},"description":"launcher placeholders permitted to resolve more than once"},

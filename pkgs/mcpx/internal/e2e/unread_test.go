@@ -132,6 +132,29 @@ func TestScriptEnvIsReachableFromTheEnvironment(t *testing.T) {
 	}
 }
 
+// The with/without difference for script.devshell: an unknown value
+// refuses the run, naming the setting, where the host default runs the
+// same script fine. (A flake: value needs a real nix + flake, which the
+// harness does not stage; the wrap argv itself is pinned by the runner
+// unit tests.)
+func TestScriptDevshellIsReachableFromTheEnvironment(t *testing.T) {
+	e := newEnv(t, oneServer)
+	if out := e.run("exec", `console.log("ran")`); !strings.Contains(out, "ran") {
+		t.Fatalf("the host default should run the script:\n%s", out)
+	}
+	saved := e.envVars
+	e.envVars = append(append([]string{}, saved...), "MCPX_SCRIPT_DEVSHELL=bogus")
+	defer func() { e.envVars = saved }()
+
+	out, err := e.try("exec", `console.log("ran")`)
+	if err == nil {
+		t.Fatalf("MCPX_SCRIPT_DEVSHELL=bogus should refuse the run:\n%s", out)
+	}
+	if !strings.Contains(out, "script.devshell") {
+		t.Fatalf("the refusal should name script.devshell:\n%s", out)
+	}
+}
+
 func TestLoggingFileOffWritesNoDurableLog(t *testing.T) {
 	e := newEnv(t, oneServer)
 	saved := e.envVars

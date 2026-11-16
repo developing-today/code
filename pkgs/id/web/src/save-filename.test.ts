@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { resolveSaveFilename } from "./save-filename";
 
 // The dataset literals below mirror exactly what the server emits on
-// #editor-container (pkgs/id/src/web/templates.rs): data-doc-id is the RAW
+// #editor-container (pkgs/id/crates/id-web/src/templates.rs): data-doc-id is the RAW
 // filename (html-escaped only); data-filename is urlencoding::encode(name),
 // which percent-encodes "%" itself as %25 and " " as %20.
 describe("resolveSaveFilename", () => {

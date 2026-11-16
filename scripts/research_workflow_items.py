@@ -977,10 +977,7 @@ def manifest_segments(manifest):
         fail("package.json: segments must be a list of objects each with a string id")
     for segment in segments:
         if not isinstance(segment, dict) or not isinstance(segment.get("id"), str):
-            fail(
-                "package.json: segments entries must be objects "
-                "each with a string id"
-            )
+            fail("package.json: segments entries must be objects each with a string id")
     return segments
 
 

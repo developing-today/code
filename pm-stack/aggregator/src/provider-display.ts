@@ -2,7 +2,8 @@
 //
 // Rule 0 (#1823, Drew 2026-11-07): a leading underscore is a
 // config/source-level ownership marker (fleet-built providers carry
-// it: _claude, _antigravity, ...). Display surfaces strip it — the
+// it: _claude, _antigravity, ...). Display surfaces strip it unless
+// that would collide with another provider in the rendered set — the
 // canonical id keeps it everywhere else.
 //
 // Rule (dashboard only, markup only): a provider whose name ends in
@@ -35,13 +36,16 @@ function providerHead(name: string): string {
  * same set.
  */
 export function providerDisplayNames(names: Iterable<string>): Map<string, string> {
-  const list = [...names].map((name) => {
+  const originals = [...names];
+  const originalSet = new Set(originals);
+  const list = originals.map((name) => {
     const head = providerHead(name);
-    return head.startsWith("_") ? head.slice(1) + name.slice(head.length) : name;
+    if (!head.startsWith("_")) return name;
+    const stripped = head.slice(1) + name.slice(head.length);
+    return originalSet.has(stripped) ? name : stripped;
   });
   const heads = new Set(list.map(providerHead));
   const out = new Map<string, string>();
-  const originals = [...names];
   for (let i = 0; i < list.length; i++) {
     const name = list[i];
     const original = originals[i];

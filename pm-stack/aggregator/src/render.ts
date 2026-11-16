@@ -1,11 +1,14 @@
 // Pure HTML rendering. Every view function takes already-assembled data and
 // returns a full HTML string — nothing here does I/O, which keeps the smoke
 // tests cheap (render from fixtures and assert on output).
+import { analyticsSectionHtml } from "./quota-analytics-view.ts";
 import {
   type AttentionView,
   type RoadmapGrain,
+  type TodayObjective,
   type TodayView,
   allRefs,
+  buildQuotaActions,
   commentStream,
   executionStrip,
   freshness,
@@ -22,11 +25,15 @@ import {
 } from "./derive.ts";
 import type { RoadmapReconciliation } from "./roadmap-reconcile.ts";
 import type { RoadmapAnnotation } from "./roadmap-annotations.ts";
-import { diffCoverage, type CoverageSnapshotFile } from "./coverage.ts";
+import { diffCoverage, staleIssueState, type CoverageSnapshotFile } from "./coverage.ts";
 import { DIGEST_SECTION_LIMIT, type Digest, type DigestKind } from "./digest.ts";
 import { registryQueryString, type RegistryView } from "./registry-view.ts";
+import { formatForecastSummary, type ForecastContract } from "./forecast-contract.ts";
+import type { FlowAnalytics } from "./flow-analytics.ts";
+import { flowChartsHtml } from "./flow-charts.ts";
 import { latestInFamily, newClientToken, type DashAction } from "./actions.ts";
-import { applyBoardDonePolicy, DONE_STRIP_RENDER_LIMIT } from "./board-policy.ts";
+import { applyBoardDonePolicy, DONE_STRIP_RENDER_LIMIT, selectVisibleDoneCards } from "./board-policy.ts";
+import { summarizeWipLanes } from "./wip-limits.ts";
 import { cardState, pendingVerb, type CardState } from "./card-state.ts";
 import {
   DELEGATION_DEFAULT_OBJECT_REF,
@@ -41,7 +48,7 @@ import { commentKindCounts, githubCommentUrl, queuedComments, type CommentKindCo
 import { serviceHomeLinks, type ItemServiceLink } from "./service-links.ts";
 import { activityCoverageHtml, gapsHtml, type ActivityCoverage, type GapRecord } from "./activity.ts";
 import type { AuditEvent } from "./events.ts";
-import { aaCaiPoints, aaPoints, summarizeAa } from "./aa.ts";
+import { AA_PLAN_FACTS, aaCaiPoints, aaPoints, summarizeAa } from "./aa.ts";
 import {
   applyInequalityFilters,
   bandIndex,
@@ -57,9 +64,16 @@ import { summarizeDns } from "./dns.ts";
 import type { NeedsDrewCensus } from "./needs-drew.ts";
 import type { Incident, IncidentEvent, PushSubscriptionRow } from "./alerts.ts";
 import type { NotificationRollup } from "./notifications.ts";
-import { ageMsText, feedAgeText } from "./feed.ts";
+import { NOTIFICATION_CLASS_DEFAULTS, NOTIFICATION_CLASSES } from "./notifications.ts";
+import { FEED_STALE_MS, ageMsText, feedAgeText } from "./feed.ts";
 import { providerDisplayNames } from "./provider-display.ts";
-import type { QueueView, QueueRow } from "./queue-view.ts";
+import {
+  reconciledInProgress,
+  type InProgressSignal,
+  type QueueView,
+  type QueueRow,
+  type ReconciledInProgressItem,
+} from "./queue-view.ts";
 import type { HealthView, PageHealth } from "./health.ts";
 import {
   type AaCaiRow,
@@ -79,6 +93,7 @@ import {
   type GhItem,
   type OrchestrationSection,
   type PaygLine,
+  type ProjectAudit,
   type ProjectPoolItem,
   type Provenance,
   type ProvenanceDetail,
@@ -108,14 +123,53 @@ import { KEY_HINT, KEYBOARD_SCRIPT, paletteHtml } from "./keyboard.ts";
 import type { ProgramData, ProgramEntry, ProgramLive, TrackedIssue } from "./program.ts";
 import type { ProjectDetail, ProjectSummary } from "./project-config.ts";
 import { derivedProjectState, projectDisagreement, PROJECT_URL } from "./projects.ts";
+import {
+  PHASE12_ISSUE_URL,
+  joinPhase12Steps,
+  parsePhase12Steps,
+  phase12IsStale,
+  type Phase12Snapshot,
+  type Phase12StepState,
+} from "./phase12.ts";
+import {
+  PHASE_TRACKER_REPO,
+  PHASE_TRACKER_UMBRELLA,
+  derivePhase12Progress,
+  derivePhaseValidation,
+} from "./phase-tracker.ts";
+import { deriveMappedProgress, type PhaseMappingSnapshot } from "./phase-mapping.ts";
+import {
+  BUILD_HEALTH_REPO,
+  buildHealthIsStale,
+  projectLane,
+  projectNightlyTrend,
+  type BuildHealthSnapshot,
+} from "./build-health.ts";
+import type { QueueSnapshot } from "./queue.ts";
+import {
+  F12_DESIGN_ISSUE_URL,
+  parseF12Designs,
+  parseF12Items,
+  projectF12Readiness,
+  type F12PrRef,
+} from "./f12-readiness.ts";
+import {
+  CANONICAL_STATUSES,
+  STATUS_SOURCE_LABELS,
+  STATUS_TAXONOMY,
+  canonicalStatusFor,
+  ghItemDerivedStatus,
+} from "./status-taxonomy.ts";
 import type { ConflictEntry, ConflictInbox } from "./conflicts.ts";
 import { buildItemBrief, type ItemBrief } from "./brief.ts";
 import { buildEpicRollups, isEpicChildDone, type EpicRollup } from "./epics.ts";
+import { spendCardHtml, unattributedSpendHtml, type SpendCardsView } from "./spend-cards.ts";
 import { effortWeight, handsLine, summarizeWeights, weightedLine } from "./weights.ts";
 import { blockedSummary, depthLayout, hasGraphEdges } from "./graph.ts";
 import { EPIC_GRAPH_DEFAULT_CAP, epicGraph, epicSelector } from "./epic-graph.ts";
 import { type AuthorIdentity } from "./registry.ts";
 import type { SearchResult } from "./search-view.ts";
+import type { DecisionSetSummary } from "./decisions.ts";
 import { dnsAnchor } from "./search-view.ts";
 
 export function esc(s: unknown): string {
@@ -135,6 +189,27 @@ export function fmtDate(iso: string | null | undefined): string {
     .toISOString()
     .replace("T", " ")
     .replace(/\.\d+Z$/, "Z");
+}
+
+/** Central-time stamp for Drew-facing quota/reset surfaces (#9553):
+ * "Sat, Nov 14, 8:00 AM CST". fmtDate above renders raw UTC ISO; the
+ * /quota page (pool resets, wall lifts, freshness, burn windows) must
+ * never show UTC to Drew, so renderQuota uses this formatter. */
+const centralFmt = new Intl.DateTimeFormat("en-US", {
+  timeZone: "America/Chicago",
+  weekday: "short",
+  month: "short",
+  day: "numeric",
+  hour: "numeric",
+  minute: "2-digit",
+  timeZoneName: "short",
+});
+
+export function fmtCentral(iso: string | null | undefined): string {
+  if (!iso) return "—";
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return iso;
+  return centralFmt.format(d);
 }
 
 /* The stylesheet lives in src/ui.css (Tailwind v4 + DaisyUI v5 plus the
@@ -217,12 +292,22 @@ if (!window.__dashAuthorPickerHook) {
  * posts to the issue (the aggregator holds no GitHub credentials).
  */
 const COMMENT_SCRIPT = `<script>${DASH_AFTER_JS}
+const commentOperatorTokenKey = "pm-aggregator.operator-token";
+const savedCommentOperatorToken = () => {
+  try { return localStorage.getItem(commentOperatorTokenKey) || ""; } catch { return ""; }
+};
 document.addEventListener("submit", async (ev) => {
   const form = ev.target;
   if (!(form instanceof HTMLFormElement) || !form.classList.contains("cform")) return;
   ev.preventDefault();
   const err = form.querySelector(".err");
   const data = new FormData(form);
+  let operatorToken = String(data.get("operatorToken") || "").trim();
+  if (operatorToken) {
+    try { localStorage.setItem(commentOperatorTokenKey, operatorToken); } catch { /* send this request even if storage is unavailable */ }
+  } else {
+    operatorToken = savedCommentOperatorToken();
+  }
   const kind = String(data.get("kind") || "note");
   const [akind, aid, asession] = String(data.get("author") || "drew|drew|").split("|");
   const labelEl = form.querySelector('option[value="' + CSS.escape(String(data.get("author"))) + '"]');
@@ -235,7 +320,8 @@ document.addEventListener("submit", async (ev) => {
     ...(kind === "github" ? { githubRef: String(data.get("githubRef") || "") } : {}),
   };
   const post = async (p) => {
-    const res = await fetch("/api/comments", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(p) });
+    const headers = { "content-type": "application/json", ...(operatorToken ? { authorization: "Bearer " + operatorToken } : {}) };
+    const res = await fetch("/api/comments", { method: "POST", headers, body: JSON.stringify(p) });
     if (!res.ok) { const b = await res.json().catch(() => ({})); throw new Error(b.error || ("HTTP " + res.status)); }
   };
   try {
@@ -246,6 +332,13 @@ document.addEventListener("submit", async (ev) => {
     }
     window.__dashAfter(form, "✓ sent · pending — the orchestrator picks it up on its next pass");
   } catch (e) { if (err) err.textContent = "Not posted: " + e.message; }
+});
+document.addEventListener("click", (ev) => {
+  const button = ev.target;
+  if (!(button instanceof HTMLButtonElement) || !button.matches("[data-forget-operator-token]")) return;
+  try { localStorage.removeItem(commentOperatorTokenKey); } catch { /* storage may be disabled */ }
+  const input = button.closest(".cform")?.querySelector('input[name="operatorToken"]');
+  if (input instanceof HTMLInputElement) input.value = "";
 });
 document.addEventListener("change", (ev) => {
   const t = ev.target;
@@ -294,6 +387,28 @@ document.addEventListener("submit", async (ev) => {
  * inputs carry the payload. A stop form must have its confirm box
  * ticked before the script will send it (two-step confirm).
  */
+/** Shell fragment watchdog (#1503): the shell pages stream their real
+ * content in as Datastar fragments; if a fragment request fails or stalls
+ * there is no error path in the markup, so the page would sit on its
+ * skeleton forever. Ten seconds after the shell renders, any [data-frag]
+ * container still holding its .skel skeleton gets the skeleton swapped for
+ * an inline notice linking the ?full=1 server render (the no-JS path).
+ * A fragment that lands in time removes the skeleton itself, so the
+ * watchdog no-ops; a fragment that lands late replaces the notice. */
+export const FRAG_WATCHDOG_MS = 10_000;
+export const FRAG_WATCHDOG_SCRIPT = `<script>
+setTimeout(function () {
+  document.querySelectorAll("[data-frag]").forEach(function (c) {
+    var skel = c.querySelector(".skel");
+    if (!skel) return;
+    var p = document.createElement("p");
+    p.className = "frag-failed";
+    p.innerHTML = "the live view did not arrive &mdash; <a href="" + location.pathname + "?full=1">load the full page</a>";
+    skel.replaceWith(p);
+  });
+}, ${FRAG_WATCHDOG_MS});
+</script>`;
+
 const ACTION_SCRIPT = `<script>${DASH_AFTER_JS}
 document.addEventListener("submit", async (ev) => {
   const form = ev.target;
@@ -490,7 +605,7 @@ function layout(
 <title>${esc(title)} · aggregator</title><link rel="manifest" href="/manifest.webmanifest"><meta name="theme-color" content="#161b22"><meta name="mobile-web-app-capable" content="yes"><meta name="apple-mobile-web-app-capable" content="yes"><meta name="apple-mobile-web-app-status-bar-style" content="black-translucent"><meta name="apple-mobile-web-app-title" content="PM Stack"><link rel="apple-touch-icon" href="/icons/apple-touch-icon.png"><script>try{var __pmTheme=localStorage.getItem('pm-theme');if(__pmTheme==='light'||__pmTheme==='dark')document.documentElement.setAttribute('data-theme',__pmTheme);}catch(e){}</script><link rel="stylesheet" href="/assets/app.css"><script type="module" src="/assets/datastar.js"></script></head>
 <body><nav class="navbar bg-base-200 shadow-md flex-wrap items-center gap-x-3 px-4">${links}${dropdown}${globalSearch()}${themeToggle()}</nav><main class="w-full">${chipsHtml}${body}
 <div class="foot"><details class="srcdetail"><summary>source detail</summary>board: ${esc(provenance.board)} · roadmap: ${esc(provenance.roadmap)} · items: ${esc(provenance.items)} · comments: ${esc(provenance.comments)} · quota: ${esc(provenance.quota)} · usage: ${esc(provenance.usage)} · attention: ${esc(provenance.attention)} · orchestration: ${esc(provenance.orchestration)} · dns: ${esc(provenance.dns)} · registry: ${esc(provenance.registry)} · aa: ${esc(provenance.aa)}</details><span class="kbd-hint">${KEY_HINT}</span> · tailnet: <a href="${TAILNET_URL}">${TAILNET_URL.replace("http://", "")}</a></div>
-</main><script src="/assets/push-client.js?v=push-ux-2026-11-01" defer></script>${extra}${paletteHtml()}${KEYBOARD_SCRIPT}</body></html>`;
+</main><script src="/assets/push-client.js?v=push-ux-2026-11-01" defer></script><script src="/assets/freshness-client.js?v=freshness-3976" defer></script>${extra}${paletteHtml()}${KEYBOARD_SCRIPT}</body></html>`;
 }
 
 /** Global search over board/roadmap subjects, linked refs, and the slice-2 sources (#1212): registry sessions, the DNS register, services, and tier items. */
@@ -528,17 +643,17 @@ export function renderSearch(
   for (const result of results) {
     if (result.kind === "registry") chipKeys.add("registry");
     if (result.kind === "dns") chipKeys.add("dns");
-    if (result.kind === "service") { chipKeys.add("quota"); chipKeys.add("usage"); }
-    if (result.kind === "tier") { chipKeys.add("orchestration"); chipKeys.add("attention"); chipKeys.add("registry"); }
+    if (result.kind === "service") {
+      chipKeys.add("quota");
+      chipKeys.add("usage");
+    }
+    if (result.kind === "tier") {
+      chipKeys.add("orchestration");
+      chipKeys.add("attention");
+      chipKeys.add("registry");
+    }
   }
-  return layout(
-    "Search",
-    body,
-    provenance,
-    "/search",
-    "",
-    detail ? freshnessChips(detail, [...chipKeys]) : "",
-  );
+  return layout("Search", body, provenance, "/search", "", detail ? freshnessChips(detail, [...chipKeys]) : "");
 }
 
 // --- Dashboard comments (#906 §2) ------------------------------------------
@@ -583,6 +698,8 @@ export function authorBadge(a: DashAuthor): string {
 }
 
 export function dashCommentHtml(c: DashComment, showObject = false): string {
+  const verificationChip =
+    c.authorVerified === true ? `<span class="badge">verified</span>` : `<span class="badge">unverified</span>`;
   const kindChip =
     c.kind === "message"
       ? `<span class="badge msg">✉ message to Muse</span> <span class="muted">${c.triageState === "triaged" ? "triaged by the orchestrator" : "awaiting triage"}</span>`
@@ -591,12 +708,12 @@ export function dashCommentHtml(c: DashComment, showObject = false): string {
             c.githubState === "posted"
               ? `posted${c.githubUrl ? ` — <a href="${esc(c.githubUrl)}">view</a>` : ""}`
               : c.githubState === "failed"
-                ? `posting failed ${relTime(c.createdAt)} — no automatic retry exists; a fleet poster must post it by hand${c.githubError ? ` — last error: ${esc(c.githubError)}` : ""}`
+                ? `posting failed ${relTime(c.githubFailedAt ?? c.createdAt)} — no automatic retry exists; a fleet poster must post it by hand${c.githubError ? ` — last error: ${esc(c.githubError)}` : ""}`
                 : `pending — will post to ${esc(c.githubRef ?? "")}`
           }</span>`
         : `<span class="badge">note</span>`;
   const obj = showObject ? ` <span class="muted">on <code>${esc(c.objectRef)}</code></span>` : "";
-  return `<div class="cmt ${esc(c.kind)}">${authorBadge(c.author)} ${kindChip}${obj}<br>${esc(c.body)}<br><span class="muted">${fmtDate(c.createdAt)}</span></div>`;
+  return `<div class="cmt ${esc(c.kind)}">${authorBadge(c.author)} ${verificationChip} ${kindChip}${obj}<br>${esc(c.body)}<br><span class="muted">${fmtDate(c.createdAt)}</span></div>`;
 }
 
 export interface CommentFormOpts {
@@ -638,6 +755,8 @@ export function commentFormHtml(objectRef: string, opts: CommentFormOpts): strin
     : "";
   return `<form class="cform" data-object="${esc(objectRef)}">
 <label>Comment as</label><select name="author" data-author-picker>${authorOptions}</select>
+<label>Operator token <span class="muted">(needed for verified Drew/Muse posts after setup; saved only in this browser)</span></label><input type="password" name="operatorToken" autocomplete="off" placeholder="Paste operator token when issued">
+<button type="button" data-forget-operator-token>Forget saved token</button>
 <label>Kind</label><div class="kinds">
 <label><input type="radio" name="kind" value="note" checked> Note — read when this is next picked up</label>
 <label><input type="radio" name="kind" value="message"> ✉ Message to Muse — the orchestrator triages it on its next pass</label>
@@ -1300,8 +1419,10 @@ export function delegationDefaultHtml(records: DashAction[] | undefined, opts: A
   return `<div class="card"><strong>Standing delegation default</strong> — ${state}.${pending}${actboxHtml(opts, form)}</div>`;
 }
 
-/** The Project Status values a status request may target (#910 field). */
-export const PROJECT_STATUS_VALUES = ["Todo", "In Progress", "In Review", "Done"] as const;
+/** The Project Status values a status request may target (#910 field).
+ * #1198: this set IS the canonical status taxonomy's set — one
+ * definition (status-taxonomy.ts), adopted here, never a second copy. */
+export const PROJECT_STATUS_VALUES = CANONICAL_STATUSES;
 
 /** The #1154 control: request a Project Status change (never a direct write). */
 export function statusRequestHtml(
@@ -1473,11 +1594,17 @@ export function renderBoardBody(
   // source assembled it (the Kaneo source filters too; see
   // board-policy.ts). Surviving done renders collapsed, below.
   board = applyBoardDonePolicy(board);
+  const wipByLane = new Map(
+    summarizeWipLanes(board, [...(act?.poolByRef?.values() ?? [])]).map((summary) => [summary.lane, summary]),
+  );
   const cols = new Map<string, BoardItem[]>();
   for (const item of board) {
     const key = item.status === "done" ? "done" : item.status;
     const k = key === "to-do" ? "to-do" : key;
     cols.set(k, [...(cols.get(k) ?? []), item]);
+  }
+  for (const lane of wipByLane.keys()) {
+    if (!cols.has(lane)) cols.set(lane, []);
   }
   const order = ["in-flight", "to-do", "in-progress", "in-review", "done"];
   const extra = [...cols.keys()].filter((k) => !order.includes(k));
@@ -1491,14 +1618,10 @@ export function renderBoardBody(
       let visibleItems = colItems;
       let doneNote = "";
       if (k === "done" && colItems.length > DONE_STRIP_RENDER_LIMIT) {
-        const sorted = [...colItems].sort(
-          (a, b) => (Date.parse(b.updatedAt ?? "") || 0) - (Date.parse(a.updatedAt ?? "") || 0),
-        );
+        visibleItems = selectVisibleDoneCards(colItems, { showAll: renderOpts?.showAllDone ?? false });
         if (renderOpts?.showAllDone) {
-          visibleItems = sorted;
           doneNote = ` — showing all, newest first; <a href="/board">show fewer</a>`;
         } else {
-          visibleItems = sorted.slice(0, DONE_STRIP_RENDER_LIMIT);
           doneNote = ` — showing the ${DONE_STRIP_RENDER_LIMIT} most recent; <a href="/board?done=all">show all ${colItems.length}</a>`;
         }
       }
@@ -1536,7 +1659,21 @@ export function renderBoardBody(
             }
           }
           const kaneo = item.kaneoUrl ? ` <a class="badge" href="${esc(item.kaneoUrl)}">Kaneo ↗</a>` : "";
-          return `<div class="card"><a href="/item/${encodeURIComponent(item.id)}">${src}${esc(item.title)}</a>${cmt}<br>${repo}${kaneo}${stripHtml(items, item.links)}${statusCtl}${briefs}</div>`;
+          // #1198: the board column is Kaneo's status; when the linked
+          // Project pool item's Status disagrees canonically, show BOTH
+          // instead of silently picking the column.
+          let statusClash = "";
+          if (act?.poolByRef) {
+            const pooled = item.links.map((l) => act.poolByRef!.get(l.ref)).find((p) => p !== undefined);
+            if (pooled?.status) {
+              const boardCanonical = canonicalStatusFor("kaneo", item.status);
+              const projectCanonical = canonicalStatusFor("project", pooled.status);
+              if (boardCanonical && projectCanonical && boardCanonical !== projectCanonical) {
+                statusClash = ` <span class="badge stale" title="The Kaneo board column and the Project Status disagree in the canonical taxonomy (#1198) — both are shown, neither is preferred">⚠ board: ${esc(item.status)} · project: ${esc(pooled.status)}</span>`;
+              }
+            }
+          }
+          return `<div class="card"><a href="/item/${encodeURIComponent(item.id)}">${src}${esc(item.title)}</a>${cmt}<br>${repo}${kaneo}${statusClash}${stripHtml(items, item.links)}${statusCtl}${briefs}</div>`;
         })
         .join("");
       // The in-flight lane is dated by the orchestration section that
@@ -1548,9 +1685,22 @@ export function renderBoardBody(
       }
       const heading =
         k === "in-flight"
-          ? `in flight — orchestrator · in flight · section ${fmtDate(colItems[0]?.updatedAt)} (${colItems.length})`
-          : `${esc(k)} (${colItems.length})`;
-      return `<div class="col"><h2>${heading}</h2>${cards}</div>`;
+          ? `in flight — orchestrator · in flight · section ${fmtDate(colItems[0]?.updatedAt)} (${colItems.length}/${wipByLane.get(k)?.cap ?? 0})`
+          : `${esc(k)} (${colItems.length}/${wipByLane.get(k)?.cap ?? 0})`;
+      const summary = wipByLane.get(k);
+      const scopeFlags = [
+        ...(summary?.projects ?? [])
+          .filter((scope) => scope.overCap)
+          .map((scope) => `project ${scope.key} ${scope.count}/${scope.cap}`),
+        ...(summary?.epics ?? [])
+          .filter((scope) => scope.overCap)
+          .map((scope) => `epic ${scope.key} ${scope.count}/${scope.cap}`),
+      ];
+      if (summary?.overCap) scopeFlags.unshift(`lane over cap by ${summary.count - summary.cap}`);
+      const overCapBadges = scopeFlags
+        .map((flag) => `<span class="badge blocked" role="status">${esc(flag)}</span>`)
+        .join(" ");
+      return `<div class="col"><h2>${heading} ${overCapBadges}</h2>${cards}</div>`;
     })
     .join("");
   return `<div class="board">${bodies}</div>`;
@@ -1583,13 +1733,14 @@ export function renderBoard(
 
 /** The Datastar shell for / (#1444): heading + intro paint at once;
  *  the board itself streams in from /frag/board. */
-export function renderBoardShell(provenance: Provenance, detail?: ProvenanceDetail): string {
+export function renderBoardShell(provenance: Provenance, detail?: ProvenanceDetail, viewQuery = ""): string {
+  const fragBoard = viewQuery ? `/frag/board?${viewQuery}` : "/frag/board";
   return layout(
     "Cross-repo WIP board",
-    `<h1>Cross-repo WIP board</h1><p class="muted">What is being worked on now is the <strong>in-flight</strong> lane: synthetic entries from the orchestrator's lined-up tasks (the fleet feed's orchestration section), not Kaneo cards.</p><noscript><meta http-equiv="refresh" content="0; url=/board"></noscript><div id="board-main" data-frag data-on-load="@get('/frag/board')" data-on-dashrefresh__window="@get('/frag/board')"><div class="skel">Loading the board…</div></div>`,
+    `<h1>Cross-repo WIP board</h1><p class="muted">What is being worked on now is the <strong>in-flight</strong> lane: synthetic entries from the orchestrator's lined-up tasks (the fleet feed's orchestration section), not Kaneo cards.</p><noscript><meta http-equiv="refresh" content="0; url=/board"></noscript><div id="board-main" data-frag data-init="@get('${fragBoard}')" data-on:dashrefresh__window="@get('${fragBoard}')"><div class="skel">Loading the board…</div></div>`,
     provenance,
     "/board",
-    ACTION_SCRIPT,
+    ACTION_SCRIPT + FRAG_WATCHDOG_SCRIPT,
     detail ? freshnessChips(detail, ["board", "items", "orchestration"]) : "",
   );
 }
@@ -1639,7 +1790,20 @@ export function buildRoadmapDrill(
   );
 }
 
-function roadmapDrilldown(drill: RoadmapDrill, row: RoadmapRow): string {
+/** The shared forecast contract (§4, #3984) as page lines: the same
+ * one-line summaries the API serves, never a bare date. */
+export function forecastSummaryHtml(contracts: ForecastContract[] | undefined): string {
+  if (!contracts?.length) return "";
+  const lines = contracts.map((c) => `<div class="forecast-line">${esc(formatForecastSummary(c))}</div>`).join("");
+  return `<div class="forecast">${lines}</div>`;
+}
+
+function roadmapDrilldown(
+  drill: RoadmapDrill,
+  row: RoadmapRow,
+  forecasts?: Map<RefKey, ForecastContract[]>,
+  spend?: SpendCardsView | null,
+): string {
   const parts: string[] = [];
   if (!drill.epic) {
     parts.push(`<p class="muted">No epic yet — no Project epic matches this roadmap row.</p>`);
@@ -1667,6 +1831,14 @@ function roadmapDrilldown(drill: RoadmapDrill, row: RoadmapRow): string {
       );
     }
   }
+  if (drill.epic) {
+    const fc = forecastSummaryHtml(forecasts?.get(drill.epic.ref));
+    if (fc) parts.push(fc);
+  }
+  if (drill.epic) {
+    const card = spend?.byScope.get(drill.epic.ref);
+    if (card) parts.push(spendCardHtml(card));
+  }
   if (row.notes.trim()) parts.push(`<p class="notes">${esc(row.notes)}</p>`);
   return `<details class="roadmap-drill"><summary>Epic &amp; issues</summary>${parts.join("")}</details>`;
 }
@@ -1678,6 +1850,8 @@ function roadmapCard(
   drill?: RoadmapDrill,
   annotations?: Map<string, RoadmapAnnotation[]>,
   briefs?: Map<RefKey, ItemBrief>,
+  forecasts?: Map<RefKey, ForecastContract[]>,
+  spend?: SpendCardsView | null,
 ): string {
   const refs = allRefs([row]);
   const refBadges = refs
@@ -1687,13 +1861,34 @@ function roadmapCard(
     .join(" ");
   const cmt = counts ? commentBadge(row.subject, counts) : "";
   const grist = row.gristUrl ? ` <a class="badge" href="${esc(row.gristUrl)}">Grist ↗</a>` : "";
-  const expansion = drill ? roadmapDrilldown(drill, row) : "";
+  const repoFile = row.fileUrl ? ` <a class="badge" href="${esc(row.fileUrl)}">Repo file ↗</a>` : "";
+  const expansion = drill ? roadmapDrilldown(drill, row, forecasts, spend) : "";
   const notes = annotations?.get(row.subject) ?? [];
   const annotationHtml = notes.length
     ? `<div class="roadmap-annotations">${notes.map(roadmapAnnotationHtml).join("")}</div>`
     : "";
   const briefPanels = briefPanelsForRefs(refs, briefs);
-  return `<div class="card"><a href="/item/${encodeURIComponent(row.subject)}">${esc(row.title)}</a>${cmt}<br><span class="badge ${esc(row.status.toLowerCase().replace(/[^a-z]/g, "-"))}">${esc(row.status)}</span> <span class="muted">${esc(row.area)} · ${esc(row.horizon)}</span>${refBadges}${grist}${annotationHtml}${expansion}${briefPanels}</div>`;
+  const horizonWarning = row.horizonError
+    ? ` <span class="badge horizon-invalid" title="${esc(row.horizonError)}">Invalid Horizon</span>`
+    : "";
+  // #1198: the row's status is Grist's; when the linked GitHub item's
+  // derived lifecycle status (or its Project Status) disagrees
+  // canonically, show BOTH instead of silently picking Grist's.
+  let statusClash = "";
+  const ghLinked = refs.map((r) => items.get(r)).find((x) => x !== undefined);
+  if (ghLinked) {
+    const gristCanonical = canonicalStatusFor("grist", row.status);
+    const derived = ghItemDerivedStatus(ghLinked);
+    if (gristCanonical && derived && derived !== gristCanonical) {
+      statusClash = ` <span class="badge stale" title="The Grist Roadmap Status and the status derived from the linked GitHub item disagree in the canonical taxonomy (#1198) — both are shown, neither is preferred">⚠ grist: ${esc(row.status)} · derived: ${esc(derived)}</span>`;
+    } else if (gristCanonical && ghLinked.projectStatus) {
+      const projectCanonical = canonicalStatusFor("project", ghLinked.projectStatus);
+      if (projectCanonical && projectCanonical !== gristCanonical) {
+        statusClash = ` <span class="badge stale" title="The Grist Roadmap Status and the Project Status disagree in the canonical taxonomy (#1198) — both are shown, neither is preferred">⚠ grist: ${esc(row.status)} · project: ${esc(ghLinked.projectStatus)}</span>`;
+      }
+    }
+  }
+  return `<div class="card"><a href="/item/${encodeURIComponent(row.subject)}">${esc(row.title)}</a>${cmt}<br><span class="badge ${esc(row.status.toLowerCase().replace(/[^a-z]/g, "-"))}">${esc(row.status)}</span> <span class="muted">${esc(row.area)} · ${esc(row.horizon)}</span>${horizonWarning}${statusClash}${refBadges}${grist}${repoFile}${annotationHtml}${expansion}${briefPanels}</div>`;
 }
 
 function roadmapAnnotationHtml(annotation: RoadmapAnnotation): string {
@@ -1707,17 +1902,21 @@ function timelineTable(
   drill?: Map<string, RoadmapDrill>,
   annotations?: Map<string, RoadmapAnnotation[]>,
   briefs?: Map<RefKey, ItemBrief>,
+  forecasts?: Map<RefKey, ForecastContract[]>,
+  spend?: SpendCardsView | null,
 ): string {
   const head = `<tr><th scope="col">Theme</th>${tl.lanes.map((l) => `<th scope="col">${esc(l.label)}</th>`).join("")}</tr>`;
   const body = tl.themes
     .map((theme) => {
+      const themeRows = [...(tl.cells.get(theme)?.values() ?? [])].flat();
+      const done = themeRows.filter((row) => row.status.trim().toLowerCase() === "done").length;
       const cells = tl.lanes
         .map((lane) => {
           const rs = tl.cells.get(theme)?.get(lane.key) ?? [];
-          return `<td class="tl-cell">${rs.map((r) => roadmapCard(r, items, counts, drill?.get(r.subject), annotations, briefs)).join("")}</td>`;
+          return `<td class="tl-cell">${rs.map((r) => roadmapCard(r, items, counts, drill?.get(r.subject), annotations, briefs, forecasts, spend)).join("")}</td>`;
         })
         .join("");
-      return `<tr><th scope="row">${esc(theme)}</th>${cells}</tr>`;
+      return `<tr><th scope="row">${esc(theme)} <span class="muted theme-rollup">(${done}/${themeRows.length} done)</span></th>${cells}</tr>`;
     })
     .join("");
   return `<div class="tblwrap"><table class="table table-zebra"><caption>Roadmap timeline by theme</caption>${head}${body}</table></div>`;
@@ -1735,6 +1934,9 @@ export function renderRoadmap(
   annotations?: Map<string, RoadmapAnnotation[]>,
   viewQuery = "",
   briefs?: Map<RefKey, ItemBrief>,
+  forecasts?: Map<RefKey, ForecastContract[]>,
+  flowAnalytics?: FlowAnalytics,
+  spend?: SpendCardsView | null,
 ): string {
   // #1144: when the Grist rows and the Project's Kind=Epic pool items
   // disagree, say so on the page itself — drift the reader can see,
@@ -1749,31 +1951,54 @@ export function renderRoadmap(
     ([g, label]) =>
       `<a href="/roadmap?h=${g}${viewQuery ? `&${viewQuery}` : ""}"${g === grain ? ' class="active"' : ""}>${label}</a>`,
   ).join("");
+  const invalidHorizons = rows.filter((row) => row.horizonError);
+  const horizonFlag = invalidHorizons.length
+    ? `<div class="flag">${invalidHorizons.length} roadmap row${invalidHorizons.length === 1 ? " has" : "s have"} an invalid Horizon value. Original values are preserved and marked on their cards; correct them in Grist using the documented Horizon grammar.</div>`
+    : "";
   let body: string;
   if (grain === "quarter") {
-    body = timelineTable(buildTimeline(rows), items, counts, drill, annotations, briefs);
+    body = timelineTable(buildTimeline(rows), items, counts, drill, annotations, briefs, forecasts, spend);
   } else if (grain === "month") {
-    body = timelineTable(monthTimeline(rows), items, counts, drill, annotations, briefs);
+    body = timelineTable(monthTimeline(rows), items, counts, drill, annotations, briefs, forecasts, spend);
   } else {
     const dg = roadmapDayGrain(rows, grain);
-    const sections = dg.lanes
-      .map(
-        (lane) =>
-          `<h2>${esc(lane.label)}</h2>${lane.rows.length ? lane.rows.map((r) => roadmapCard(r, items, counts, drill?.get(r.subject), annotations, briefs)).join("") : '<p class="muted">Nothing dated this day.</p>'}`,
-      )
-      .join("");
-    const notes: string[] = [];
-    if (dg.outside > 0) notes.push(`${dg.outside} dated row${dg.outside === 1 ? "" : "s"} fall outside this window`);
-    if (dg.coarse.length > 0) {
-      notes.push(
-        `${dg.coarse.length} row${dg.coarse.length === 1 ? "" : "s"} have no calendar date (quarter grain, ongoing, or unscheduled) — see the Quarter view`,
-      );
+    const byTheme = new Map<string, RoadmapRow[]>();
+    for (const row of rows) {
+      const theme = row.area || "Unthemed";
+      byTheme.set(theme, [...(byTheme.get(theme) ?? []), row]);
     }
-    body = `${sections}${notes.length ? `<p class="muted">${notes.join(" · ")}</p>` : ""}`;
+    body = byTheme.size
+      ? [...byTheme.entries()]
+          .map(([theme, themeRows]) => {
+            const done = themeRows.filter((row) => row.status.trim().toLowerCase() === "done").length;
+            const cards = (laneRows: RoadmapRow[]) =>
+              laneRows
+                .map((row) =>
+                  roadmapCard(row, items, counts, drill?.get(row.subject), annotations, briefs, forecasts, spend),
+                )
+                .join("");
+            const lanes = dg.lanes
+              .map((lane) => {
+                const laneRows = lane.rows.filter((row) => (row.area || "Unthemed") === theme);
+                return laneRows.length ? `<h3>${esc(lane.label)}</h3>${cards(laneRows)}` : "";
+              })
+              .join("");
+            const outsideRows = dg.outsideRows.filter((row) => (row.area || "Unthemed") === theme);
+            const coarseRows = dg.coarse.filter((row) => (row.area || "Unthemed") === theme);
+            const outside = outsideRows.length
+              ? `<h3>Outside this window (${outsideRows.length})</h3>${cards(outsideRows)}`
+              : "";
+            const coarse = coarseRows.length
+              ? `<h3>Undated or coarse horizons (${coarseRows.length})</h3>${cards(coarseRows)}`
+              : "";
+            return `<section class="roadmap-theme"><h2>${esc(theme)} <span class="muted theme-rollup">(${done}/${themeRows.length} done)</span></h2>${lanes}${outside}${coarse}</section>`;
+          })
+          .join("")
+      : '<p class="muted">No roadmap rows.</p>';
   }
   return layout(
     "Roadmap",
-    `<h1>Roadmap</h1><p class="muted">Grist's <em>Program roadmap</em> table at every grain — one data model, switchable horizon. Rows with a calendar date land on their day; quarter-labelled rows stay at quarter grain.</p><div class="chips">${chips}</div>${driftFlag}${body}`,
+    `<h1>Roadmap</h1><p class="muted">Grist's <em>Program roadmap</em> table at every grain — one data model, switchable horizon. Rows with a calendar date land on their day; quarter-labelled rows stay at quarter grain. Every row remains visible at every grain.</p><div class="chips">${chips}</div>${driftFlag}${horizonFlag}${body}${spend?.unattributed ? unattributedSpendHtml(spend.unattributed) : ""}${flowAnalytics ? flowChartsHtml(flowAnalytics) : ""}`,
     provenance,
     "/roadmap",
     "",
@@ -1843,6 +2068,23 @@ export function eventTableHtml(events: readonly AuditEvent[]): string {
   return `<div class="tblwrap"><table class="activity-events"><caption>Shared activity events</caption><thead><tr><th scope="col">When</th><th scope="col">Actor</th><th scope="col">Kind</th><th scope="col">Ref</th><th scope="col">Summary</th><th scope="col">Source</th></tr></thead><tbody>${rows || '<tr><td colspan="6" class="muted">No matching events; this does not establish complete coverage.</td></tr>'}</tbody></table></div>`;
 }
 
+/** #1500: the honest empty-section wording, keyed off the provenance
+ * strings the renderers already receive — no new data plumbing. The
+ * comment stream is fixture-sourced while the projector is off (#1199),
+ * so a bare "no comments" would claim a fact about the work when it is
+ * really a fact about the dashboard's resolution path. */
+export const FIXTURE_COMMENTS_CAUSE = "the comment stream is fixture-sourced while the projector is off (#1199)";
+
+export function commentsFixtureSourced(provenance: Provenance): boolean {
+  return provenance.comments.startsWith("fixtures");
+}
+
+export function fixtureCommentsBannerHtml(provenance: Provenance): string {
+  return commentsFixtureSourced(provenance)
+    ? `<div class="banner">The comment stream is fixture-sourced while the projector is off (#1199) — GitHub comments may be missing or stale, and an empty stream does not mean the work has no discussion.</div>`
+    : "";
+}
+
 export function renderItem(
   title: string,
   subject: string,
@@ -1867,6 +2109,24 @@ export function renderItem(
         `<tr><td class="muted">${fmtDate(c.createdAt)}</td><td><span class="badge ${esc(c.kind)}">${esc(c.kind)}</span></td><td>${esc(c.author)}</td><td>${esc(c.body)}${c.path ? ` <span class="muted">(${esc(c.path)}${c.line ? `:${c.line}` : ""})</span>` : ""}</td></tr>`,
     )
     .join("");
+  // #1500: when some linked refs did not resolve, the Linked header
+  // carries the tally and the cause; when every ref resolves it stays
+  // plain. The fixture cause is keyed off the items provenance string
+  // only (the partial-fixtures shape from sources/live.ts, or a fully
+  // fixture-sourced items facet).
+  const linkedResolved = all.length;
+  const linkedHeader =
+    links.length > 0 && linkedResolved < links.length
+      ? `Linked issues / PRs — ${links.length} linked · ${linkedResolved} resolved — ${
+          /\+ fixtures for \d+ ref\(s\) outside the pool/.test(provenance.items) || provenance.items.startsWith("fixtures")
+            ? "resolution fell back to fixtures (projector off, #1199)"
+            : "some linked refs could not be resolved from the current sources"
+        }`
+      : "Linked issues / PRs";
+  const commentsBanner = fixtureCommentsBannerHtml(provenance);
+  const emptyCommentRow = commentsFixtureSourced(provenance)
+    ? `<tr><td colspan="4" class="muted">no comments loaded — ${FIXTURE_COMMENTS_CAUSE}</td></tr>`
+    : '<tr><td colspan="4" class="muted">no comments</td></tr>';
   const dashSection = extras
     ? `<h2>Dashboard comments</h2>${
         extras.dashComments.length
@@ -1912,8 +2172,8 @@ ${
       )
     : ""
 }
-<h2>Linked issues / PRs</h2><div class="tblwrap"><table class="table table-zebra"><caption>Linked issues and pull requests</caption><tr><th scope="col">Ref</th><th scope="col">Title</th><th scope="col">Labels</th><th scope="col">Updated</th></tr>${refRows || '<tr><td colspan="4" class="muted">none resolved</td></tr>'}</table></div>
- <h2>Activity stream comments</h2><div class="tblwrap"><table class="table table-zebra"><caption>Comments</caption><tr><th scope="col">When</th><th scope="col">Kind</th><th scope="col">Author</th><th scope="col">Body</th></tr>${commentRows || '<tr><td colspan="4" class="muted">no comments</td></tr>'}</table></div>
+<h2>${linkedHeader}</h2><div class="tblwrap"><table class="table table-zebra"><caption>Linked issues and pull requests</caption><tr><th scope="col">Ref</th><th scope="col">Title</th><th scope="col">Labels</th><th scope="col">Updated</th></tr>${refRows || '<tr><td colspan="4" class="muted">none resolved</td></tr>'}</table></div>
+ <h2>Activity stream comments</h2>${commentsBanner}<div class="tblwrap"><table class="table table-zebra"><caption>Comments</caption><tr><th scope="col">When</th><th scope="col">Kind</th><th scope="col">Author</th><th scope="col">Body</th></tr>${commentRows || emptyCommentRow}</table></div>
  ${activitySection}${sessionSection}${statusSection}${roadmapAnnotationSection}${dashSection}`,
     provenance,
     "/board",
@@ -1934,14 +2194,13 @@ export function sessionRecordLine(
   const parent = r.parentId
     ? ` · sub of <a href="/sessions?id=${encodeURIComponent(r.parentId)}#${encodeURIComponent(r.parentId)}">${esc(r.parentId)}</a>`
     : "";
-  const renderedRefs = r.taskRefs.flatMap((ref) => {
-    try {
-      return [`<a href="${esc(refUrl(ref))}">${esc(ref)}</a>`];
-    } catch {
-      // A malformed ref may still exist in an older or ungated in-memory
-      // record. Keep the session visible and omit only the invalid link.
-      return [];
-    }
+  const renderedRefs = r.taskRefs.map((ref) => {
+    // #6243 (ref contract rule 4, #6242): a malformed ref may still
+    // exist in an older or ungated in-memory record. Keep the session
+    // visible and render the invalid ref as plain text — the same
+    // treatment tierItemCard (#6149) and poolRefLink give it — never
+    // a throw, and never silently omitted.
+    return isValidRef(ref) ? `<a href="${esc(refUrl(ref))}">${esc(ref)}</a>` : esc(ref);
   });
   const refs = renderedRefs.length ? ` · ${renderedRefs.join(" ")}` : "";
   // #1156: live records carry the session action set on the merged
@@ -2026,12 +2285,23 @@ function paygCardHtml(usage: UsageView): string {
   const lines = usage.payg
     .map((l: PaygLine) => {
       const figures =
-        l.accruedUsd != null
-          ? `$${l.accruedUsd.toFixed(2)} accrued${l.collectedUsd != null ? ` · $${l.collectedUsd.toFixed(2)} collected` : ""} · $${(l.unbilledUsd ?? 0).toFixed(2)} unbilled`
-          : l.estimate
-            ? `counted $${countedEstimate(l.estimate).toFixed(2)} as used (1.2 × high) · estimate $${l.estimate.low.toFixed(2)}–$${l.estimate.high.toFixed(2)} ${esc(l.estimate.period)}`
-            : "not estimable from local records";
-      return `<div><strong>${esc(l.label)}</strong>: ${figures}<br><span class="muted">${esc(l.note)}</span><br>${freshnessStamp(l.measuredAt, l.sourceClass, 7)}</div>`;
+        l.settledUsd != null
+          ? `$${l.settledUsd.toFixed(2)} ${l.settledSource === "invoice" ? "invoiced" : "settled"}${
+              l.estimate
+                ? ` · estimates $${l.estimate.low.toFixed(2)}–$${l.estimate.high.toFixed(2)}`
+                : l.accruedUsd != null
+                  ? ` · $${l.accruedUsd.toFixed(2)} accrued`
+                  : ""
+            }${l.settledVarianceUsd != null ? ` · variance ${l.settledVarianceUsd < 0 ? "-$" : "+$"}${Math.abs(l.settledVarianceUsd).toFixed(2)}` : ""} · $${(l.unbilledUsd ?? 0).toFixed(2)} unbilled`
+          : l.accruedUsd != null
+            ? `$${l.accruedUsd.toFixed(2)} accrued${l.collectedUsd != null ? ` · $${l.collectedUsd.toFixed(2)} collected` : ""} · $${(l.unbilledUsd ?? 0).toFixed(2)} unbilled`
+            : l.estimate
+              ? `counted $${countedEstimate(l.estimate).toFixed(2)} as used (1.2 × high) · estimate $${l.estimate.low.toFixed(2)}–$${l.estimate.high.toFixed(2)} ${esc(l.estimate.period)}`
+              : "not estimable from local records";
+      const stale = l.staleEstimate
+        ? ` <span class="badge near">stale estimate — unreconciled &gt;1 invoice cycle</span>`
+        : "";
+      return `<div><strong>${esc(l.label)}</strong>${stale}: ${figures}<br><span class="muted">${esc(l.note)}</span><br>${freshnessStamp(l.measuredAt, l.sourceClass, 7)}</div>`;
     })
     .join("");
   const total = usage.payg.reduce((sum, l) => sum + (l.unbilledUsd ?? 0), 0);
@@ -2054,7 +2324,22 @@ function serviceCardHtml(svc: SaasService, history: SnapshotRecord[]): string {
     ? ` <a class="badge conflict" href="/quota/service/${esc(svc.id)}" title="Sources disagree — the dated history is on the detail page">conflict</a>`
     : "";
   const pace = paceLineHtml(svc.id, history);
-  return `<div class="card${f.stale ? " stale" : ""}"><div><strong><a href="/quota/service/${esc(svc.id)}">${esc(svc.name)}</a></strong>${svc.status !== "active" ? ` <span class="badge src">${esc(svc.status)}</span>` : ""}${conflict}<br><span class="muted">${esc(svc.plan)}</span><br>${freshnessStamp(svc.measuredAt, svc.sourceClass, svc.cadenceDays)}${svc.nextDate ? `<br><span class="muted">next: ${esc(svc.nextDate)}</span>` : ""}</div><div>${metrics}${billed}${payg}${pace}<div><a href="/quota/service/${esc(svc.id)}">show all →</a></div></div></div>`;
+  const extractionGap =
+    svc.extractionHealth?.status === "gap"
+      ? ` <span class="badge blocked" title="${esc(svc.extractionHealth.reason ?? "extractor miss")}">extraction gap</span>`
+      : "";
+  return `<div class="card${f.stale ? " stale" : ""}"><div><strong><a href="/quota/service/${esc(svc.id)}">${esc(svc.name)}</a></strong>${svc.status !== "active" ? ` <span class="badge src">${esc(svc.status)}</span>` : ""}${conflict}${extractionGap}<br><span class="muted">${esc(svc.plan)}</span><br>${freshnessStamp(svc.measuredAt, svc.sourceClass, svc.cadenceDays)}${svc.nextDate ? `<br><span class="muted">next: ${esc(svc.nextDate)}</span>` : ""}</div><div>${metrics}${billed}${payg}${pace}<div><a href="/quota/service/${esc(svc.id)}">show all →</a></div></div></div>`;
+}
+
+function uninstrumentedServicesHtml(services: UsageView["uninstrumentedServices"]): string {
+  if (!services.length) return "";
+  const rows = services
+    .map(
+      (svc) =>
+        `<tr><th scope="row">${esc(svc.name)}</th><td>${esc(svc.whatFor)}</td><td>${esc(svc.status)}</td><td>${esc(svc.checkedAt ?? "no check date recorded")}</td><td>${esc(svc.overageBehavior)}</td><td>${esc(svc.guardrailNotes)}</td></tr>`,
+    )
+    .join("");
+  return `<h2>Tracker services without instrumented quotas</h2><details><summary>${services.length} evaluated services — expand for tracker states and guardrails</summary><div class="tblwrap"><table><caption>Services in free-services-to-check.md</caption><tr><th scope="col">Service</th><th scope="col">What for</th><th scope="col">Tracker state</th><th scope="col">Checked</th><th scope="col">Overage behavior</th><th scope="col">Guardrail notes</th></tr>${rows}</table></div></details>`;
 }
 
 /** A one-line pace projection on a card, when the history supports one (§1.5). */
@@ -2086,10 +2371,7 @@ function chargesStripHtml(usage: UsageView): string {
 /** Lazy-refresh strip (#1171): a visible "refreshing" marker while a
  *  gatherer run is in flight, plus the manual refresh-now control. Both
  *  use the same trigger path; neither blocks the page on provider calls. */
-function quotaRefreshHtml(
-  refresh?: import("./quota-refresh.ts").RefreshStatus,
-  generatedAt?: string | null,
-): string {
+function quotaRefreshHtml(refresh?: import("./quota-refresh.ts").RefreshStatus, generatedAt?: string | null): string {
   if (!refresh) return "";
   const marker = refresh.refreshing
     ? `<span class="badge refreshing" data-quota-refreshing="true">refreshing — the quota gatherer is running; reload for updated data</span>`
@@ -2175,6 +2457,10 @@ export function renderQuota(
   /** Lazy-refresh state (#1171): renders the "refreshing" marker and the
    *  manual refresh-now control. Absent means no request was made. */
   refresh?: import("./quota-refresh.ts").RefreshStatus,
+  /** Analytics & projection model (2026-11-13): built by the server
+   *  from the route ledger + snapshot store; absent/null renders no
+   *  section (older callers and tests are unaffected). */
+  analytics?: import("./analytics-store.ts").QuotaAnalytics | null,
 ): string {
   // "-direct" display rule (#6125): judged over every provider name/id
   // this surface renders — pool providers, pool ids, burn rows, the
@@ -2186,16 +2472,14 @@ export function renderQuota(
     ...view.pools.map((p) => p.id),
     ...(view.burn ?? []).map((b) => b.provider),
     ...(view.burn ?? []).map((b) => b.pool),
-    ...(view.choices
-      ? [...view.choices.hasHeadroom, ...view.choices.burnBeforeReset, ...view.choices.doNotStart]
-      : []),
+    ...(view.choices ? [...view.choices.hasHeadroom, ...view.choices.burnBeforeReset, ...view.choices.doNotStart] : []),
     ...(view.credentialLifecycle ?? []).map((c) => c.providerName),
   ]);
   const display = (name: string) => displayNames.get(name) ?? name;
   const credentialLifecycle = view.credentialLifecycle?.length
     ? `<h2>Credential lifecycle</h2><div class="card">${view.credentialLifecycle
         .map((credential) => {
-          const expiry = credential.expiresAt ? ` · expires ${fmtDate(credential.expiresAt)}` : " · expiry unknown";
+          const expiry = credential.expiresAt ? ` · expires ${fmtCentral(credential.expiresAt)}` : " · expiry unknown";
           const reason = credential.reason ? ` · ${esc(credential.reason)}` : "";
           const action = credential.userAction
             ? ` · <strong>user action:</strong> ${esc(credential.userAction.title)}`
@@ -2214,9 +2498,9 @@ export function renderQuota(
         .map((a) => {
           const detail =
             a.reporting === "attention"
-              ? `${esc(a.alert ?? a.status ?? "attention")}${a.alertSince ? ` · since ${fmtDate(a.alertSince)}` : ""}${a.sessionExpiresAt ? ` · session expires ${fmtDate(a.sessionExpiresAt)}` : ""}${a.lastGoodAt ? ` · last good ${fmtDate(a.lastGoodAt)}` : ""}`
+              ? `${esc(a.alert ?? a.status ?? "attention")}${a.alertSince ? ` · since ${fmtCentral(a.alertSince)}` : ""}${a.sessionExpiresAt ? ` · session expires ${fmtCentral(a.sessionExpiresAt)}` : ""}${a.lastGoodAt ? ` · last good ${fmtCentral(a.lastGoodAt)}` : ""}`
               : a.reporting === "stale"
-                ? `keeper not reporting · last check ${fmtDate(a.checkedAt)}`
+                ? `keeper not reporting · last check ${fmtCentral(a.checkedAt)}`
                 : a.reporting === "invalid"
                   ? "keeper not reporting · state file invalid"
                   : "keeper not reporting · no state file";
@@ -2231,7 +2515,7 @@ export function renderQuota(
           const pct = windowPercent(w);
           const used = w.unit === "usd" ? `$${w.used.toFixed(2)}` : w.used.toLocaleString();
           const limit = w.limit == null ? "∞" : w.unit === "usd" ? `$${w.limit.toFixed(2)}` : w.limit.toLocaleString();
-          return `<div>${esc(w.name)}: <meter min="0" max="100" value="${pct.toFixed(0)}"></meter> ${pct.toFixed(0)}% · ${used}/${limit} ${esc(w.unit)} · resets ${fmtDate(w.resetsAt)}</div>`;
+          return `<div>${esc(w.name)}: <meter min="0" max="100" value="${pct.toFixed(0)}"></meter> ${pct.toFixed(0)}% · ${used}/${limit} ${esc(w.unit)} · resets ${fmtCentral(w.resetsAt)}</div>`;
         })
         .join("");
       const sessions = (p.activeSessions ?? [])
@@ -2251,31 +2535,37 @@ export function renderQuota(
         })
         .join("");
       const fresh = p.freshness
-        ? `<div class="muted">gatherer · ${esc(p.freshness.state)} · measured ${fmtDate(p.freshness.measuredAt)} · ${esc(p.freshness.source)}${p.freshness.error ? ` · ${esc(p.freshness.error)}` : ""}</div>`
+        ? `<div class="muted">gatherer · ${esc(p.freshness.state)} · measured ${fmtCentral(p.freshness.measuredAt)} · ${esc(p.freshness.source)}${p.freshness.error ? ` · ${esc(p.freshness.error)}` : ""}</div>`
         : "";
-      return `<div class="card pool"><div><strong>${esc(display(p.provider))}</strong><br><span class="muted">${esc(p.plan)}</span><br><span class="badge ${esc(p.state)}">${esc(p.state)}${p.wallLiftsAt ? ` · lifts ${fmtDate(p.wallLiftsAt)}` : ""}</span>${p.burnTokensPerMin ? ` <span class="muted">${p.burnTokensPerMin} tok/min</span>` : ""}</div><div>${windows}${credRows}${sessions}${fresh}${p.note ? `<div class="muted">${esc(p.note)}</div>` : ""}</div></div>`;
+      const extractionGap =
+        p.extractionHealth?.status === "gap"
+          ? ` <span class="badge blocked" title="${esc(p.extractionHealth.reason ?? "extractor miss")}">extraction gap</span>`
+          : "";
+
+      return `<div class="card pool"><div><strong>${esc(display(p.provider))}</strong><br><span class="muted">${esc(p.plan)}</span><br><span class="badge ${esc(p.state)}">${esc(p.state)}${p.wallLiftsAt ? ` · lifts ${fmtCentral(p.wallLiftsAt)}` : ""}</span>${extractionGap}${p.burnTokensPerMin ? ` <span class="muted">${p.burnTokensPerMin} tok/min</span>` : ""}</div><div>${windows}${credRows}${sessions}${fresh}${p.note ? `<div class="muted">${esc(p.note)}</div>` : ""}</div></div>`;
     })
     .join("");
   const burn = view.burn
     .map(
       (b) =>
-        `<tr><td>${esc(display(b.provider))}</td><td>${esc(display(b.pool))}</td><td>${fmtDate(b.from)}</td><td>${fmtDate(b.to)}</td><td>${b.tokens.toLocaleString()}</td></tr>`,
+        `<tr><td>${esc(display(b.provider))}</td><td>${esc(display(b.pool))}</td><td>${fmtCentral(b.from)}</td><td>${fmtCentral(b.to)}</td><td>${b.tokens.toLocaleString()}</td></tr>`,
     )
     .join("");
   const choices = (list: string[]) => (list.length ? list.map((id) => esc(display(id))).join(", ") : "—");
   const burnAndChoices = `<h2>Burn between resets</h2><div class="tblwrap"><table class="table table-zebra"><caption>Burn between resets</caption><tr><th scope="col">Provider</th><th scope="col">Pool</th><th scope="col">From</th><th scope="col">To</th><th scope="col">Tokens</th></tr>${burn || '<tr><td colspan="5" class="muted">none</td></tr>'}</table></div>
-<h2>Model choice</h2><div class="tblwrap"><table class="table table-zebra"><caption>Model choice rules</caption><tr><th scope="col">Rule</th><th scope="col">Pools</th></tr>
+<h2 id="model-choice">Model choice</h2><div class="tblwrap"><table class="table table-zebra"><caption>Model choice rules</caption><tr><th scope="col">Rule</th><th scope="col">Pools</th></tr>
 <tr><td>Headroom for a new session</td><td>${choices(view.choices.hasHeadroom)}</td></tr>
 <tr><td>Burn-it-before-reset (unused headroom)</td><td>${choices(view.choices.burnBeforeReset)}</td></tr>
 <tr><td>Do not start a second session</td><td>${choices(view.choices.doNotStart)}</td></tr></table></div>`;
   if (!usage) {
     return layout(
       "Quota + throughput",
-      `<h1>Quota + throughput</h1><p class="muted">All pooled quotas, resets, and burn rates. Machine-first: the same data is at <a href="/api/quota.json">/api/quota.json</a>.</p>
+      `<h1>Quota + throughput</h1><p class="muted">All pooled quotas, resets, and burn rates — all times Central (America/Chicago). Machine-first: the same data is at <a href="/api/quota.json">/api/quota.json</a>.</p>
 ${credentialLifecycle}
 ${providerAuthSection}
 ${quotaRefreshHtml(refresh, view.gatherer?.generatedAt ?? null)}
 <h2>Pools</h2>${pools}
+${analytics ? analyticsSectionHtml(analytics, display) : ""}
 ${burnAndChoices}`,
       provenance,
       "/quota",
@@ -2314,14 +2604,15 @@ ${burnAndChoices}`,
     .join("");
   return layout(
     "Usage & billing",
-    `<h1>Usage &amp; billing</h1><p class="muted">Token quotas, PAYG dollars, and SaaS usage vs limits — from dated local records; every card carries its measured-at stamp, and stale cards dim. Machine-first: <a href="/api/quota.json">/api/quota.json</a>.</p>
+    `<h1>Usage &amp; billing</h1><p class="muted">Token quotas, PAYG dollars, and SaaS usage vs limits — from dated local records; every card carries its measured-at stamp, and stale cards dim — all times Central (America/Chicago). Machine-first: <a href="/api/quota.json">/api/quota.json</a>.</p>
 ${attentionStripHtml(usage)}
 ${credentialLifecycle}
 ${providerAuthSection}
 ${quotaRefreshHtml(refresh, view.gatherer?.generatedAt ?? null)}
 <h2>Token quotas</h2>${pools}
+${analytics ? analyticsSectionHtml(analytics, display) : ""}
 ${paygCardHtml(usage)}
-<h2>SaaS &amp; services</h2>${groups || '<p class="muted">No services extracted yet.</p>'}
+<h2>SaaS &amp; services</h2>${groups || '<p class="muted">No services extracted yet.</p>'}${uninstrumentedServicesHtml(usage.uninstrumentedServices ?? [])}
 ${chargesStripHtml(usage)}
 <h2>Sources</h2><div class="card"><div>Research records behind the cards on this page that carry provenance — all in <code>~/workspace/ai-subscriptions/</code>:</div><div>· evidence baseline: <code>evidence-and-interpretation-baseline-2026-10-20.md</code> (dated official pricing wording + interpretation notes)</div><div>· master tracker: the tracker behind <code>quota-view.md</code> Part (b) — each card with a tracker row cites its Summary (b) row and service section</div><div>· candidate evaluations: <code>free-services-to-check.md</code></div><div class="muted">Per-service provenance (tracker row or its absence, baseline, quota-view section) is on each service's detail page.</div></div>
 ${burnAndChoices}`,
@@ -2570,7 +2861,8 @@ function tierItemCard(
   // carries a gh: ref, and every card expands inline to its full
   // detail — source, state, since/lastSeenAt, horizon, blockedBy,
   // the question payload, and the recorded action history.
-  const titleHtml = item.ref && isValidRef(item.ref) ? `<a href="${esc(refUrl(item.ref))}">${esc(item.title)}</a>` : esc(item.title);
+  const titleHtml =
+    item.ref && isValidRef(item.ref) ? `<a href="${esc(refUrl(item.ref))}">${esc(item.title)}</a>` : esc(item.title);
   const questionPayload = item.questions?.length
     ? `<dt>Questions</dt><dd>${item.questions
         .map(
@@ -2984,6 +3276,54 @@ const BULK_SCRIPT = `<script>${DASH_AFTER_JS}
 })();
 </script>`;
 
+/**
+ * The live "Questions" section (#9354): the open decision sets from
+ * the decision-set store, newest first, each linking to its own
+ * token page via `pageUrlFor`. Pure HTML from already-computed
+ * summaries — no I/O here, so tests render it directly.
+ * summaries === null means the store could not be read: the section
+ * says "unavailable" rather than rendering a confident zero (the
+ * needsDrewCensusHtml pattern). summaries === undefined means the
+ * caller predates the section and it is omitted entirely.
+ * Fully-resolved sets are excluded here as well as by callers, so
+ * the counts can never include a settled set.
+ */
+const QUESTIONS_STAMP = new Intl.DateTimeFormat("en-US", {
+  timeZone: "America/Chicago",
+  year: "numeric",
+  month: "short",
+  day: "numeric",
+  hour: "numeric",
+  minute: "2-digit",
+  timeZoneName: "short",
+});
+
+export function questionsSectionHtml(
+  summaries: DecisionSetSummary[] | null | undefined,
+  pageUrlFor: (summary: DecisionSetSummary) => string,
+): string {
+  if (summaries === undefined) return "";
+  const allSetsLink = `<p><a href="/decisions">All decision sets</a></p>`;
+  const footer = `<p class="muted">Live from the decision-set store at page load.</p>`;
+  if (summaries === null) {
+    return `<section class="questions-section"><h2 id="questions">Questions</h2><p class="muted">Unavailable — the decision-set store could not be read, so open questions cannot be reported here.</p>${allSetsLink}${footer}</section>`;
+  }
+  const open = summaries.filter((s) => s.openQuestions > 0).sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+  if (!open.length) {
+    return `<section class="questions-section"><h2 id="questions">Questions</h2><p class="muted">No open questions right now — the stack is clear.</p>${allSetsLink}${footer}</section>`;
+  }
+  const totalOpen = open.reduce((n, s) => n + s.openQuestions, 0);
+  const rows = open
+    .map((s) => {
+      const stamp = Number.isFinite(Date.parse(s.createdAt))
+        ? QUESTIONS_STAMP.format(new Date(s.createdAt))
+        : s.createdAt;
+      return `<div class="card"><a href="${esc(pageUrlFor(s))}"><strong>${esc(s.title)}</strong></a><br><span class="muted">${s.openQuestions} open question${s.openQuestions === 1 ? "" : "s"} · ${s.items} item${s.items === 1 ? "" : "s"} · ${s.questions} question${s.questions === 1 ? "" : "s"} · Raised ${esc(stamp)}</span></div>`;
+    })
+    .join("");
+  return `<section class="questions-section"><h2 id="questions">Questions</h2><p class="muted">${open.length} open set${open.length === 1 ? "" : "s"} · ${totalOpen} open question${totalOpen === 1 ? "" : "s"}</p>${rows}${allSetsLink}${footer}</section>`;
+}
+
 export function renderAttention(
   view: AttentionView,
   coverage: SourceCoverage[],
@@ -2993,12 +3333,13 @@ export function renderAttention(
   act?: AttentionAct,
   briefs?: Map<RefKey, ItemBrief>,
   census?: NeedsDrewCensus | null,
+  questionsHtml = "",
 ): string {
   const sections = attentionSections(view, coverage, counts, act, briefs, census);
   return layout(
     "Needs you",
     `<h1>Needs you</h1><p class="muted">The NEEDS USER queue is an intake the orchestrator works first — it resolves what it can and escalates only what genuinely requires the user, each escalated item with its reason. Everything else the fleet can work is the orchestrator's own queue. Finished runs and stale items expire out (2 h after a run finishes, 24 h at the latest). Machine-first: <a href="/api/attention.json">/api/attention.json</a> · <a href="/api/coverage.json">/api/coverage.json</a>. Incident alerts (watchdog push + ack) live on <a href="/alerts">Alerts</a>.</p>
-${sections.header}${sections.queues}${sections.sessions}`,
+${sections.header}${sections.queues}${sections.sessions}${questionsHtml}`,
     provenance,
     "/attention",
     act?.identities ? ACTION_SCRIPT + COMMENT_SCRIPT + BULK_SCRIPT : "",
@@ -3260,9 +3601,23 @@ ${view.expiredCount ? `<p class="muted">${view.expiredCount} finished or stale $
 
 /** Wrap one attention section as a Datastar fragment container: the
  *  shell's placeholder and the fragment payload share this shape, so
- *  a refresh re-patches the container with itself (attrs included). */
-export function attentionFragment(section: "header" | "queues" | "sessions", innerHtml: string): string {
-  return `<div id="attn-${section}" data-frag data-on-load="@get('/frag/attention/${section}')" data-on-dashrefresh__window="@get('/frag/attention/${section}')">${innerHtml}</div>`;
+ *  a refresh re-patches the container with itself (attrs included).
+ *
+ *  `initial` marks the shell placeholder (#10605): it carries
+ *  `data-init` so the first paint fetches the section with no
+ *  freshness event. The `/frag/*` payload that replaces it (outer
+ *  mode) must leave `initial` off — a re-initialising element would
+ *  fetch itself again on every patch, i.e. loop.
+ */
+export function attentionFragment(
+  section: "header" | "queues" | "sessions",
+  innerHtml: string,
+  query = "",
+  options: { initial?: boolean } = {},
+): string {
+  const q = query ? `?${query}` : "";
+  const init = options.initial ? ` data-init="@get('/frag/attention/${section}${q}')"` : "";
+  return `<div id="attn-${section}" data-frag${init} data-on:dashrefresh__window="@get('/frag/attention/${section}${q}')">${innerHtml}</div>`;
 }
 
 /**
@@ -3270,18 +3625,24 @@ export function attentionFragment(section: "header" | "queues" | "sessions", inn
  * immediately; the three heavy sections stream in as fragments.
  * Without JS, a meta refresh lands on the full server render.
  */
-export function renderAttentionShell(provenance: Provenance, detail?: ProvenanceDetail): string {
+export function renderAttentionShell(
+  provenance: Provenance,
+  detail?: ProvenanceDetail,
+  refs?: string,
+  questionsHtml = "",
+): string {
+  const refsQuery = refs ? `refs=${encodeURIComponent(refs)}` : "";
   const skel = (label: string) => `<div class="skel">Loading ${label}…</div>`;
   const body = `<h1>Needs you</h1><p class="muted">Loading the Needs User and Needs Orchestrator queues…</p><noscript><meta http-equiv="refresh" content="0; url=/attention?full=1"></noscript>
-${attentionFragment("header", skel("queue status"))}
-${attentionFragment("queues", skel("the queues"))}
-${attentionFragment("sessions", skel("sessions"))}`;
+${attentionFragment("header", skel("queue status"), refsQuery, { initial: true })}
+${attentionFragment("queues", skel("the queues"), refsQuery, { initial: true })}
+${attentionFragment("sessions", skel("sessions"), refsQuery, { initial: true })}${questionsHtml}`;
   return layout(
     "Needs you",
     body,
     provenance,
     "/attention",
-    ACTION_SCRIPT + COMMENT_SCRIPT + BULK_SCRIPT,
+    ACTION_SCRIPT + COMMENT_SCRIPT + BULK_SCRIPT + FRAG_WATCHDOG_SCRIPT,
     detail ? freshnessChips(detail, ["orchestration", "attention", "registry"]) : "",
   );
 }
@@ -3375,8 +3736,10 @@ export function renderTodayBody(
   quotaUnavailable = false,
   queue?: QueueView,
   queueStale = false,
+  questionsHtml = "",
 ): string {
   const walled = quota.pools.filter((p) => p.state === "walled");
+  const quotaActions = buildQuotaActions(quota, AA_PLAN_FACTS);
   // "-direct" display rule (#6125), judged over this view's pool set.
   const poolDisplayNames = providerDisplayNames(quota.pools.map((p) => p.provider));
   const displayPoolProvider = (name: string) => poolDisplayNames.get(name) ?? name;
@@ -3387,9 +3750,31 @@ export function renderTodayBody(
       `<div class="banner drew"><strong>${drewTotal} item${drewTotal === 1 ? "" : "s"} in the user queue</strong> — <a href="/attention#drew">review them</a></div>`,
     );
   }
-  if (walled.length) {
+  // #1174: the same eligible quota actions as /quota's strip and
+  // /attention's orchestrator tier, derived once above — never a
+  // second list. Walled pools without a typed action still banner.
+  for (const a of quotaActions) {
     alerts.push(
-      `<div class="banner"><strong>Walled pools:</strong> ${walled.map((p) => esc(`${displayPoolProvider(p.provider)} (${p.plan})`)).join(", ")} — <a href="/quota">quota</a></div>`,
+      `<div class="banner"><strong>Quota action:</strong> ${esc(a.title)} — ${esc(a.detail)} <a href="${esc(a.href)}">quota</a></div>`,
+    );
+  }
+  for (const p of walled.filter((p) => !quotaActions.some((a) => a.poolId === p.id))) {
+    alerts.push(
+      `<div class="banner"><strong>Walled pools:</strong> ${esc(`${displayPoolProvider(p.provider)} (${p.plan})`)} — <a href="/quota">quota</a></div>`,
+    );
+  }
+  const wipViolations = (today.wipLanes ?? []).flatMap((lane) => [
+    ...(lane.overCap ? [`${lane.lane} ${lane.count}/${lane.cap}`] : []),
+    ...lane.projects
+      .filter((scope) => scope.overCap)
+      .map((scope) => `project ${scope.key} · ${lane.lane} ${scope.count}/${scope.cap}`),
+    ...lane.epics
+      .filter((scope) => scope.overCap)
+      .map((scope) => `epic ${scope.key} · ${lane.lane} ${scope.count}/${scope.cap}`),
+  ]);
+  if (wipViolations.length) {
+    alerts.push(
+      `<div class="banner"><strong>WIP cap violations:</strong> ${wipViolations.map(esc).join("; ")} — <a href="/board">board</a>. Informational only; work is not blocked.</div>`,
     );
   }
   // #1139: the derived view's banner names the section's TRUE state —
@@ -3410,16 +3795,22 @@ export function renderTodayBody(
   const actions = today.actions?.length
     ? `<h2>Pushed back into motion</h2>${today.actions.map((a) => `<div class="card"><span class="badge">${esc(a.kind)}</span> <strong>${esc(a.target)}</strong><br>${esc(a.summary)}<br><span class="muted">${esc(fmtDate(a.at))}</span></div>`).join("")}`
     : "";
+  const quotaObjectives: TodayObjective[] = quotaActions.map((a) => ({
+    title: a.title,
+    detail: a.detail,
+    chip: "quota · action",
+  }));
+  const allObjectives = [...today.objectives, ...quotaObjectives];
   // #6174: an objective ref comes from publisher lined-up data and is
   // only sometimes a GitHub ref — tracked-goal items carry their goal id,
   // and refUrl throws on those, which 500ed the whole /today render (the
   // Today-page sibling of the #6149 Needs-you fix). Mirror tierItemCard:
   // GitHub refs link, everything else renders as plain code.
-  const objectives = today.objectives.length
-    ? today.objectives
+  const objectives = allObjectives.length
+    ? allObjectives
         .map(
           (o, i) =>
-            `<div class="card obj"><div class="n">${i + 1}</div><div><strong>${esc(o.title)}</strong> <span class="badge src">${esc(o.chip)}</span>${o.detail ? `<br><span class="muted">${esc(o.detail)}</span>` : ""}${o.ref ? `<br>${isValidRef(o.ref) ? `<a href="${esc(refUrl(o.ref))}">${esc(o.ref)}</a>` : `<code>${esc(o.ref)}</code>`}` : ""}</div></div>`,
+            `<div class="card obj"><div class="n">${i + 1}</div><div><strong>${esc(o.title)}</strong> <span class="badge src">${esc(o.chip)}</span>${o.detail ? `<br><span class="muted">${esc(o.detail)}</span>` : ""}${o.statusNote ? `<br><span class="badge stale" title="Source status vs derived status disagree in the canonical taxonomy (#1198) — both are shown, neither is preferred">${esc(o.statusNote)}</span>` : ""}${o.ref ? `<br>${isValidRef(o.ref) ? `<a href="${esc(refUrl(o.ref))}">${esc(o.ref)}</a>` : `<code>${esc(o.ref)}</code>`}` : ""}</div></div>`,
         )
         .join("")
     : `<p class="muted">No objectives lined up for today.</p>`;
@@ -3448,7 +3839,7 @@ export function renderTodayBody(
   return `${todayHealthStrip(health, quota, quotaUnavailable)}${provenanceLine}${alerts.join("")}
 <h2>Top objectives</h2>${objectives}
 <h2>Project momentum</h2>${momentum}
-${nextUp}${actions}${coverageHtml(coverage)}`;
+${nextUp}${questionsHtml}${actions}${coverageHtml(coverage)}`;
 }
 
 /** The today page (#1444): full server render. */
@@ -3463,10 +3854,11 @@ export function renderToday(
   quotaUnavailable = false,
   queue?: QueueView,
   queueStale = false,
+  questionsHtml = "",
 ): string {
   return layout(
     "Today",
-    `<h1>Today</h1>${renderTodayBody(today, attention, quota, coverage, health, quotaUnavailable, queue, queueStale)}`,
+    `<h1>Today</h1>${renderTodayBody(today, attention, quota, coverage, health, quotaUnavailable, queue, queueStale, questionsHtml)}`,
     provenance,
     "/today",
     "",
@@ -3481,13 +3873,14 @@ export function renderTodayShell(
   health: HealthView | null,
   quota: QuotaView,
   quotaUnavailable = false,
+  questionsHtml = "",
 ): string {
   return layout(
     "Today",
-    `<h1>Today</h1><noscript><meta http-equiv="refresh" content="0; url=/today?full=1"></noscript><div id="today-main" data-frag data-on-load="@get('/frag/today')" data-on-dashrefresh__window="@get('/frag/today')">${todayHealthStrip(health, quota, quotaUnavailable)}<div class="skel">Loading today…</div></div>`,
+    `<h1>Today</h1><noscript><meta http-equiv="refresh" content="0; url=/today?full=1"></noscript><div id="today-main" data-frag data-init="@get('/frag/today')" data-on:dashrefresh__window="@get('/frag/today')">${todayHealthStrip(health, quota, quotaUnavailable)}<div class="skel">Loading today…</div></div>${questionsHtml}`,
     provenance,
     "/today",
-    "",
+    FRAG_WATCHDOG_SCRIPT,
     detail ? freshnessChips(detail, ["orchestration", "quota", "attention"]) : "",
   );
 }
@@ -3520,9 +3913,20 @@ function queueRows(rows: QueueRow[], empty: string): string {
           : `<br><span class="muted">Epic: ${esc(item.epic.title)}</span>`
         : "";
       const why = item.why ? `<br><span class="muted">${esc(item.why)}</span>` : "";
+      const signals = item.signals?.length
+        ? `<br>${item.signals
+            .map(
+              (signal) =>
+                `<span class="badge ${signal === "open-pr" ? "open" : signal === "active-session" ? "orch" : "src"}">${signal === "project-status" ? "Project Status" : signal === "active-session" ? "Active session" : "Open PR"}</span>`,
+            )
+            .join(" ")}`
+        : "";
+      const clash = item.disagreement
+        ? ` <span class="badge stale" title="The Project Status and the state the rest of the dashboard derives disagree — both are shown, neither is preferred">⚠ project: ${esc(item.disagreement.project)} · derived: ${esc(item.disagreement.derived)}</span>`
+        : "";
       const horizon = item.horizon ? ` · ${esc(item.horizon)}` : "";
       const title = item.url ? `<a href="${esc(item.url)}">${esc(item.title)}</a>` : esc(item.title);
-      return `<article class="card"><span class="badge">${esc(area)}</span> <span class="badge">${esc(item.status)}${horizon}</span><br><strong>${title}</strong>${item.ref ? `<br><span class="muted">${esc(item.ref)}</span>` : ""}<br><span class="muted">${esc(age)} · ${esc(item.source)}</span>${epic}${why}${blockers}${worker}</article>`;
+      return `<article class="card"><span class="badge">${esc(area)}</span> <span class="badge">${esc(item.status)}${horizon}</span><br><strong>${title}</strong>${item.ref ? `<br><span class="muted">${esc(item.ref)}</span>` : ""}<br><span class="muted">${esc(age)} · ${esc(item.source)}</span>${signals}${clash}${epic}${why}${blockers}${worker}</article>`;
     })
     .join("")}</div>`;
 }
@@ -3550,10 +3954,10 @@ export function renderQueue(view: QueueView, provenance: Provenance, detail?: Pr
 export function renderQueueShell(provenance: Provenance, detail?: ProvenanceDetail): string {
   return layout(
     "Queue",
-    `<h1>Queue visibility</h1><noscript><meta http-equiv="refresh" content="0; url=/queue?full=1"></noscript><div id="queue-main" data-frag data-on-load="@get('/frag/queue')" data-on-dashrefresh__window="@get('/frag/queue')"><div class="skel">Loading queue…</div></div>`,
+    `<h1>Queue visibility</h1><noscript><meta http-equiv="refresh" content="0; url=/queue?full=1"></noscript><div id="queue-main" data-frag data-init="@get('/frag/queue')" data-on:dashrefresh__window="@get('/frag/queue')"><div class="skel">Loading queue…</div></div>`,
     provenance,
     "/queue",
-    "",
+    FRAG_WATCHDOG_SCRIPT,
     detail ? freshnessChips(detail, ["board", "orchestration", "items"]) : "",
   );
 }
@@ -3583,16 +3987,9 @@ export interface OverviewData {
   actionsByObject?: Map<string, DashAction[]>;
 }
 
-export type OverviewInProgressSignal = "project-status" | "active-session" | "open-pr";
+export type OverviewInProgressSignal = InProgressSignal;
 
-export interface OverviewInProgressItem {
-  ref: RefKey;
-  title: string;
-  repo: string;
-  url: string;
-  signals: OverviewInProgressSignal[];
-  disagreement: { project: string; derived: string } | null;
-}
+export type OverviewInProgressItem = ReconciledInProgressItem;
 
 export interface OverviewSummary {
   /** count is null when the tier source is not present: the queue is
@@ -3603,101 +4000,6 @@ export interface OverviewSummary {
   health: { degraded: boolean; up: number; down: number; total: number; feedAgeMs: number | null };
   recentDone: { title: string; repo: string }[];
   inProgress: OverviewInProgressItem[];
-}
-
-function reconciledInProgress(data: OverviewData): OverviewInProgressItem[] {
-  const poolByRef = new Map(data.pool.map((item) => [item.ref, item]));
-  const rows = new Map<
-    RefKey,
-    {
-      ref: RefKey;
-      title: string;
-      repo: string;
-      url: string;
-      signals: Set<OverviewInProgressSignal>;
-    }
-  >();
-  const ensure = (ref: RefKey, title?: string, repo?: string, url?: string) => {
-    const project = poolByRef.get(ref);
-    const item = data.items?.get(ref);
-    const existing = rows.get(ref);
-    if (existing) return existing;
-    const hashAt = ref.lastIndexOf("#");
-    const row = {
-      ref,
-      title: project?.title ?? item?.title ?? title ?? ref,
-      repo: project?.repo ?? (hashAt >= 0 ? ref.slice(0, hashAt) : (repo ?? "")),
-      url: project?.issueUrl ?? item?.url ?? url ?? refUrl(ref),
-      signals: new Set<OverviewInProgressSignal>(),
-    };
-    rows.set(ref, row);
-    return row;
-  };
-  const signal = (ref: RefKey, kind: OverviewInProgressSignal, title?: string, repo?: string, url?: string) => {
-    ensure(ref, title, repo, url).signals.add(kind);
-  };
-
-  for (const item of data.pool) {
-    if (item.status === "In Progress") signal(item.ref, "project-status", item.title, item.repo, item.issueUrl);
-    if (item.contentKind === "pr" && item.state === "open")
-      signal(item.ref, "open-pr", item.title, item.repo, item.issueUrl);
-  }
-  for (const goal of data.orchestration?.goals ?? []) {
-    for (const task of goal.linedUp) {
-      if (task.status !== "in-progress") continue;
-      if (task.ref) {
-        // #6205: a lined-up ref is feed data, not necessarily a GitHub
-        // ref (goal ids, bare numbers). Signaling an invalid ref makes
-        // ensure() fall back to refUrl(), whose parseRef throws and
-        // kills the whole overview — skip refs the shared rule rejects.
-        if (isValidRef(task.ref)) signal(task.ref, "active-session", task.title);
-        continue;
-      }
-      for (const ref of refsInText(task.title)) signal(ref, "active-session", task.title);
-      for (const match of task.title.matchAll(/([\w.-]+\/[\w.-]+)#(\d+)/g)) {
-        const ref = `${match[1]}#${match[2]}`;
-        // #6205: same guard for title-scraped refs — \d+ admits
-        // numbers parseRef rejects as unsafe integers.
-        if (isValidRef(ref)) signal(ref, "active-session", task.title);
-      }
-    }
-  }
-  for (const boardItem of data.board) {
-    const openPr = boardItem.links.some((link) => {
-      const item = data.items?.get(link.ref);
-      return item?.kind === "pr" && item.state === "open";
-    });
-    for (const link of boardItem.links) {
-      const item = data.items?.get(link.ref);
-      const title = item?.title ?? boardItem.title;
-      const repo = item?.ref.slice(0, link.ref.lastIndexOf("#")) ?? boardItem.repo;
-      if (boardItem.source === "orchestrator" && boardItem.orchStatus === "in-progress") {
-        signal(link.ref, "active-session", title, repo, item?.url);
-      }
-      // A board card ties its linked issue and PR to the same work item.
-      if (openPr) signal(link.ref, "open-pr", title, repo, item?.url);
-    }
-  }
-
-  const additionalInProgressRefs = new Set<RefKey>();
-  for (const row of rows.values()) {
-    if (row.signals.has("active-session") || row.signals.has("open-pr")) additionalInProgressRefs.add(row.ref);
-  }
-  const signalOrder: OverviewInProgressSignal[] = ["project-status", "active-session", "open-pr"];
-  return [...rows.values()]
-    .map((row) => {
-      const project = poolByRef.get(row.ref);
-      const disagreement = project ? projectDisagreement(project, data.orchestration, additionalInProgressRefs) : null;
-      return {
-        ref: row.ref,
-        title: row.title,
-        repo: row.repo,
-        url: row.url,
-        signals: signalOrder.filter((item) => row.signals.has(item)),
-        disagreement,
-      };
-    })
-    .sort((a, b) => a.repo.localeCompare(b.repo) || a.title.localeCompare(b.title) || a.ref.localeCompare(b.ref));
 }
 
 export function deriveOverview(data: OverviewData): OverviewSummary {
@@ -3797,6 +4099,15 @@ export function renderOverviewBody(summary: OverviewSummary): string {
         .join("")
     : `<p class="muted">No quota pools measured yet.</p>`;
   const healthStrip = `<div class="card"><span class="dot ${summary.health.down || summary.health.degraded ? "down" : "up"}"></span><strong>${summary.health.up} of ${summary.health.total} services up</strong>${summary.health.down ? ` · ${summary.health.down} down` : ""}${summary.health.degraded ? ` · <span class="badge stale">degraded</span>` : ""}${summary.health.feedAgeMs !== null ? ` · feed ${esc(ageMsText(summary.health.feedAgeMs))} old` : ""} — <a href="/health">health</a></div>`;
+  // #1116 item (5): when the feed itself has crossed the staleness
+  // threshold the dashboard must say so visibly — a "feed X old" suffix
+  // is not an actionable warning. The data-signal hook is what the
+  // age-feed drill greps for as its rendered-page evidence.
+  const feedAgeMs = summary.health.feedAgeMs;
+  const feedStaleBanner =
+    feedAgeMs !== null && feedAgeMs >= FEED_STALE_MS
+      ? `<div class="banner feed-stale" data-signal="feed-stale">Feed stale — last collection ${esc(ageMsText(feedAgeMs))} ago (threshold ${esc(ageMsText(FEED_STALE_MS))}); the collector may be down. <a href="/health">Check health</a></div>`
+      : "";
   const itemList = (items: { title: string; repo: string }[], empty: string) =>
     items.length
       ? `<ul>${items.map((i) => `<li>${esc(i.title)}${i.repo ? ` <span class="muted">${esc(i.repo)}</span>` : ""}</li>`).join("")}</ul>`
@@ -3821,7 +4132,7 @@ export function renderOverviewBody(summary: OverviewSummary): string {
 <h2>Needs you (${summary.needsYou.count ?? "unknown"})</h2>${needs}${topItems}
 <h2>Projects</h2>${projectCards}
 <h2>Quota</h2>${quotaStrip}
-<h2>Health</h2>${healthStrip}
+<h2>Health</h2>${feedStaleBanner}${healthStrip}
 <h2>In progress</h2>${inProgressItems}
 <h2>Recently done</h2>${itemList(summary.recentDone, "Nothing done on the board yet.")}
 <p class="muted">In progress reconciles Project Status, active sessions lined up, and open PRs; recently done is the board's lane — the full curated cross-repo board is a drill-down from here: <a href="/board">Board →</a></p>`;
@@ -3843,10 +4154,10 @@ export function renderOverview(data: OverviewData, provenance: Provenance, detai
 export function renderOverviewShell(provenance: Provenance, detail?: ProvenanceDetail): string {
   return layout(
     "Overview",
-    `<h1>Overview</h1><noscript><meta http-equiv="refresh" content="0; url=/?full=1"></noscript><div id="overview-main" data-frag data-on-load="@get('/frag/overview')" data-on-dashrefresh__window="@get('/frag/overview')"><div class="skel">Loading the overview…</div></div>`,
+    `<h1>Overview</h1><noscript><meta http-equiv="refresh" content="0; url=/?full=1"></noscript><div id="overview-main" data-frag data-init="@get('/frag/overview')" data-on:dashrefresh__window="@get('/frag/overview')"><div class="skel">Loading the overview…</div></div>`,
     provenance,
     "/",
-    "",
+    FRAG_WATCHDOG_SCRIPT,
     detail ? freshnessChips(detail, ["board", "quota", "attention"]) : "",
   );
 }
@@ -3954,7 +4265,7 @@ ${dnsTable(section.entries, renewingSoon, next)}`;
  * Written without template literals on purpose — it lives inside one.
  */
 const AA_EXPLORER_SCRIPT = `<script type="module">
-import { applyInequalityFilters, bandIndex, computeRecommendations, logEdges, normName, paretoSet, pctRank, projectTask, scoreEdges } from "/assets/aa-explorer-computations.js";
+import { applyDominanceFilters, applyInequalityFilters, bandIndex, baselineRatios, chartClickSuppressed, computeRecommendations, effectiveChartView, logEdges, normName, panChartView, paretoSet, parseChartViewBox, pctRank, projectTask, resetChartView, scoreEdges, sortRows, unpricedScoredPoints, zoomChartView } from "/assets/aa-explorer-computations.js";
 (function () {
   var dataEl = document.getElementById("xpl-data");
   if (!dataEl) return;
@@ -4051,6 +4362,8 @@ import { applyInequalityFilters, bandIndex, computeRecommendations, logEdges, no
     bench: latestBench(AA_POINTS),
     efforts: {},
     effortAny: false,
+    providers: {},
+    providerAny: false,
     off: {},
     elig: false,
     pooledOnly: false,
@@ -4067,6 +4380,7 @@ import { applyInequalityFilters, bandIndex, computeRecommendations, logEdges, no
     rec: { allow: 5, speedPriority: 85, priceAllow: 500, slowAllow: 2, altWindow: 2, diversity: "lab", dominance: "lab", perBand: 3, maxCost: "", maxSec: "" },
     pj: { turns: 3, inputTokens: 20000, answerTokens: 2000, thinkingTokens: 4000, cacheReadPct: 50, writesPct: 0, overheadSec: 10, window: "peak" },
     ineq: { mode: "off", combine: "and", conds: [{ metric: "score", op: ">=", value: "" }, { metric: "cost", op: "<=", value: "" }, { metric: "time", op: "<=", value: "" }] },
+    sortKey: "", sortDir: "desc", dom: { dominated: false, slower: false, dumber: false, pricier: false },
   };
   var XP_NOTES = {
     plan: "Plan perspective — plan quotas are sunk cost, so dollars are ignored: ranked on intelligence per second (speed + intelligence). Cost columns hidden.",
@@ -4093,13 +4407,14 @@ import { applyInequalityFilters, bandIndex, computeRecommendations, logEdges, no
   // cost at or above this score; speed gap = score gap against time.
   function visPoints() {
     var base = basePoints();
-    return applyInequalityFilters(base, S.ineq.mode, S.ineq.combine, S.ineq.conds);
+    var filtered = applyInequalityFilters(base, S.ineq.mode, S.ineq.combine, S.ineq.conds);
+    return applyDominanceFilters(filtered, S.dom);
   }
   function visCatalog() {
     if (!CATALOG) return [];
     return CATALOG.filter(function (e) {
       if (S.q && (e.id + " " + e.name + " " + e.providerName + " " + (e.plan || "")).toLowerCase().indexOf(S.q) < 0) return false;
-      if (S.fam && e.provider !== S.fam) return false;
+      if (S.providerAny && !S.providers[e.provider]) return false;
       if (S.pooledOnly && !e.routes.length) return false;
       if (S.measuredOnly && e.aaScore == null) return false;
       if (S.hideDisabled && e.disabled) return false;
@@ -4291,11 +4606,7 @@ import { applyInequalityFilters, bandIndex, computeRecommendations, logEdges, no
     if (!svg.getAttribute("data-zkey")) svg.setAttribute("data-zkey", "zx" + Math.random().toString(36).slice(2, 9));
     return svg.getAttribute("data-zkey");
   }
-  function parseViewBox(s) {
-    var p = (s || "").split(/\\s+/).map(Number);
-    if (p.length !== 4 || p.some(function (n) { return !isFinite(n); })) return null;
-    return p;
-  }
+  function parseViewBox(s) { return parseChartViewBox(s); }
   function chartState(svg) {
     var key = chartKeyFor(svg);
     var attr = svg.getAttribute("viewBox") || "";
@@ -4308,45 +4619,32 @@ import { applyInequalityFilters, bandIndex, computeRecommendations, logEdges, no
     return st;
   }
   function applyChartView(svg, st) {
-    var v = st.cur || st.base;
+    var v = effectiveChartView(st);
     var s = v.join(" ");
     svg.setAttribute("viewBox", s);
     st.applied = s;
   }
-  function clampChartView(st) {
-    var b = st.base, c = st.cur;
-    c[0] = Math.min(Math.max(c[0], b[0]), b[0] + b[2] - c[2]);
-    c[1] = Math.min(Math.max(c[1], b[1]), b[1] + b[3] - c[3]);
-  }
+  // The viewBox math itself lives in aa-explorer-computations.js
+  // (#9581, same pattern as #7562): these wrappers only adapt the
+  // module functions to an svg's chart state — no inline copies, so
+  // the Bun tests exercise exactly the code the browser runs.
   function zoomChart(svg, factor, fx, fy) {
     var st = chartState(svg);
     if (!st) return;
-    var cur = st.cur ? st.cur.slice() : st.base.slice();
-    var nw = Math.min(Math.max(cur[2] * factor, st.base[2] / 16), st.base[2]);
-    var nh = nw * st.base[3] / st.base[2];
-    var cx = cur[0] + (fx == null ? 0.5 : fx) * cur[2];
-    var cy = cur[1] + (fy == null ? 0.5 : fy) * cur[3];
-    cur[0] = cx - (fx == null ? 0.5 : fx) * nw;
-    cur[1] = cy - (fy == null ? 0.5 : fy) * nh;
-    cur[2] = nw; cur[3] = nh;
-    st.cur = nw >= st.base[2] ? null : cur;
-    if (st.cur) clampChartView(st);
+    zoomChartView(st, factor, fx, fy);
     applyChartView(svg, st);
   }
   function panChart(svg, dx, dy) {
     var st = chartState(svg);
     if (!st || !st.cur) return;
     var r = svg.getBoundingClientRect();
-    if (!r.width || !r.height) return;
-    st.cur[0] -= dx * st.cur[2] / r.width;
-    st.cur[1] -= dy * st.cur[3] / r.height;
-    clampChartView(st);
+    if (!panChartView(st, dx, dy, r.width, r.height)) return;
     applyChartView(svg, st);
   }
   function resetChart(svg) {
     var st = chartState(svg);
     if (!st) return;
-    st.cur = null;
+    resetChartView(st);
     applyChartView(svg, st);
   }
   function chartHost(svg) { return svg.closest(".chart") || svg.parentElement; }
@@ -4425,8 +4723,7 @@ import { applyInequalityFilters, bandIndex, computeRecommendations, logEdges, no
       drag = null;
     });
     svg.addEventListener("click", function (e) {
-      var t = Number(svg.getAttribute("data-zsuppress") || 0);
-      if (t && Date.now() - t < 400) { e.stopPropagation(); e.preventDefault(); svg.removeAttribute("data-zsuppress"); }
+      if (chartClickSuppressed(svg.getAttribute("data-zsuppress"), Date.now())) { e.stopPropagation(); e.preventDefault(); svg.removeAttribute("data-zsuppress"); }
     }, true);
     svg.addEventListener("wheel", function (e) {
       e.preventDefault();
@@ -4694,6 +4991,33 @@ import { applyInequalityFilters, bandIndex, computeRecommendations, logEdges, no
     });
   }
   // --- hidden tray (reference design's hide-a-configuration flow) ---
+  function renderUnpriced() {
+    // #1400 remainder: visible scored configurations with no published
+    // cost cannot appear on the cost charts; list them under the charts
+    // as real buttons that open the existing detail card via
+    // selectPoint — the same flow as clicking a dot or a table row.
+    // visPoints() already applies every filter and the hidden set.
+    var box = document.getElementById("xpl-unpriced");
+    if (!box) return;
+    var rows = unpricedScoredPoints(visPoints());
+    box.innerHTML = "";
+    if (!rows.length) {
+      var none = document.createElement("p");
+      none.className = "muted";
+      none.textContent = "No visible scored configurations are missing a published cost.";
+      box.appendChild(none);
+      return;
+    }
+    rows.forEach(function (p) {
+      var b = document.createElement("button");
+      b.type = "button";
+      b.className = "xpl-ctl-btn";
+      b.setAttribute("data-unpriced", p.key);
+      b.textContent = (p.family || p.key) + (p.effort ? " \u2014 " + p.effort : "") + " \u00b7 " + scoreWord() + " " + fmtN(p.score, 1) + " \u00b7 no published cost";
+      b.addEventListener("click", function () { selectPoint(p.key); });
+      box.appendChild(b);
+    });
+  }
   function renderTray() {
     var tray = document.getElementById("xpl-tray");
     if (!tray) return;
@@ -4974,29 +5298,7 @@ import { applyInequalityFilters, bandIndex, computeRecommendations, logEdges, no
   // price within 25% of the band leader; the scale select multiplies all
   // three. Lane charts visualize the same near-leader choices as the
   // comparison tables; they do not recalculate band membership.
-  function logEdges(vals, n) {
-    var xs = vals.filter(function (v) { return v != null && v > 0; });
-    if (!xs.length) return [];
-    var mn = Math.min.apply(null, xs), mx = Math.max.apply(null, xs);
-    if (mn === mx) return [mn, mx];
-    var edges = [];
-    for (var i = 0; i <= n; i++) edges.push(mn * Math.pow(mx / mn, i / n));
-    return edges;
-  }
-  function scoreEdges(rows, n) {
-    var xs = rows.map(function (p) { return p.score; }).filter(function (v) { return v != null; });
-    if (!xs.length) return [];
-    var mn = Math.min.apply(null, xs), mx = Math.max.apply(null, xs);
-    var edges = [];
-    for (var i = 0; i <= n; i++) edges.push(mn + ((mx - mn) * i) / n);
-    return edges;
-  }
-  function bandIndex(v, edges) {
-    for (var i = 0; i < edges.length - 1; i++) {
-      if (v >= edges[i] && (i === edges.length - 2 ? v <= edges[i + 1] : v < edges[i + 1])) return i;
-    }
-    return -1;
-  }
+  // logEdges/scoreEdges/bandIndex come from the aa-explorer-computations.js import above (#7562): no inline copies here - an inline definition would shadow the tested module implementation.
   function chipFor(p, leader) {
     var notes = [];
     if (leader && leader.key !== p.key) {
@@ -5203,17 +5505,31 @@ import { applyInequalityFilters, bandIndex, computeRecommendations, logEdges, no
   function renderAaTable() {
     var tb = document.getElementById("xpl-rows");
     if (!tb) return;
-    var rows = sortPoints(visPoints());
+    var SORT_GETTERS = { perDollar: function (p) { return p.pointsPerDollar != null ? p.pointsPerDollar : p.scorePerDollar; }, perSecond: function (p) { return p.pointsPerSecond != null ? p.pointsPerSecond : p.scorePerSecond; } };
+    var rows = S.sortKey ? sortRows(visPoints(), SORT_GETTERS[S.sortKey] || S.sortKey, S.sortDir) : sortPoints(visPoints());
+    var ratios = S.baseline ? baselineRatios(rows, [S.baseline]) : null;
+    function baseCells(p) {
+      if (!ratios) return "";
+      var r = ratios[p.key] && ratios[p.key].vs[S.baseline];
+      return '<td class="num xpl-costcol">' + fmtN(r ? r.scorePerCost : null, 2) + "x</td>" + '<td class="num">' + fmtN(r ? r.scorePerSpeed : null, 2) + "x</td>";
+    }
     var scoreHead = document.getElementById("xpl-scorehead");
     if (scoreHead) scoreHead.textContent = S.persp === "cai" ? "CAI score" : "Intelligence";
     document.getElementById("xpl-count").textContent =
       rows.length + " of " + POINTS.length + " ranked configurations · sorted by the " + S.xp + " perspective · dots are colored by model family; white-ringed dots sit on that chart's frontier, dimmed dots are beaten on its axes";
     tb.innerHTML = rows.map(function (p) {
-      return '<tr data-sel="' + esc(p.key) + '" data-key="' + esc(p.key) + '"><td><strong>' + esc(p.family) + '</strong><br><span class="muted">' + esc(p.creator) + (p.qualStatus ? " · " + esc(p.qualStatus) : "") + '</span></td><td>' + esc(p.effort || "—") + '</td><td class="num">' + fmtN(p.score, 1) + '</td><td class="num xpl-costcol">' + fmt$(p.cost) + '</td><td class="num">' + fmtT(p.time) + '</td><td class="num">' + fmtT(p.ttft) + '</td><td class="num">' + fmtN(p.tps, 0) + '</td><td class="num xpl-costcol">' + fmtN(p.pointsPerDollar != null ? p.pointsPerDollar : p.scorePerDollar, 1) + '</td><td class="num">' + fmtN(p.pointsPerSecond != null ? p.pointsPerSecond : p.scorePerSecond, 3) + "</td></tr>";
+      return '<tr data-sel="' + esc(p.key) + '" data-key="' + esc(p.key) + '"><td><strong>' + esc(p.family) + '</strong><br><span class="muted">' + esc(p.creator) + (p.qualStatus ? " · " + esc(p.qualStatus) : "") + '</span></td><td>' + esc(p.effort || "—") + '</td><td class="num">' + fmtN(p.score, 1) + '</td><td class="num xpl-costcol">' + fmt$(p.cost) + '</td><td class="num">' + fmtT(p.time) + '</td><td class="num">' + fmtT(p.ttft) + '</td><td class="num">' + fmtN(p.tps, 0) + '</td><td class="num xpl-costcol">' + fmtN(p.pointsPerDollar != null ? p.pointsPerDollar : p.scorePerDollar, 1) + '</td><td class="num">' + fmtN(p.pointsPerSecond != null ? p.pointsPerSecond : p.scorePerSecond, 3) + "</td>" + baseCells(p) + "</tr>";
     }).join("");
     tb.querySelectorAll("tr").forEach(function (tr) {
       tr.addEventListener("click", function () { selectPoint(tr.getAttribute("data-key")); });
     });
+    document.querySelectorAll("[data-sortkey]").forEach(function (th) {
+      var k = th.getAttribute("data-sortkey");
+      th.textContent = th.textContent.replace(/ [↑↓]$/, "") + (S.sortKey === k ? (S.sortDir === "asc" ? " ↑" : " ↓") : "");
+    });
+    var bc = document.getElementById("xpl-bcosthead"), bs = document.getElementById("xpl-bspeedhead");
+    if (bc) bc.style.display = S.baseline ? "" : "none";
+    if (bs) bs.style.display = S.baseline ? "" : "none";
     markSelectedRow();
   }
   // --- task-assumptions projection (Site 2, in the Model Explorer) -------
@@ -5284,21 +5600,46 @@ import { applyInequalityFilters, bandIndex, computeRecommendations, logEdges, no
       effWrap.appendChild(b);
     });
     buildFamOptions();
+    buildProviderOptions();
   }
   function buildFamOptions() {
     var sel = document.getElementById("xf-fam");
     var label = document.getElementById("xf-fam-label");
-    var opts = [];
-    if (S.tab === "models" && CATALOG) {
-      label.textContent = "Provider";
-      var seen = {};
-      CATALOG.forEach(function (e) { if (!seen[e.provider]) { seen[e.provider] = true; opts.push([e.provider, e.providerName]); } });
-      opts.sort(function (a, b) { return a[1] < b[1] ? -1 : 1; });
-      sel.innerHTML = '<option value="">All providers</option>' + opts.map(function (o) { return '<option value="' + esc(o[0]) + '"' + (S.fam === o[0] ? " selected" : "") + ">" + esc(o[1]) + "</option>"; }).join("");
-    } else {
-      label.textContent = "Family";
-      sel.innerHTML = '<option value="">All families</option>' + famList.slice().sort().map(function (f) { return '<option value="' + esc(f) + '"' + (S.fam === f ? " selected" : "") + ">" + esc(f) + "</option>"; }).join("");
+    var wrap = document.getElementById("xf-fam-wrap");
+    if (S.tab === "models") {
+      // Providers are the chip multi-select in the models filter row
+      // (buildProviderOptions); the family select has no models-tab
+      // role, so its wrap hides instead of doubling as a second,
+      // single-select provider filter.
+      if (wrap) wrap.hidden = true;
+      return;
     }
+    if (wrap) wrap.hidden = false;
+    label.textContent = "Family";
+    sel.innerHTML = '<option value="">All families</option>' + famList.slice().sort().map(function (f) { return '<option value="' + esc(f) + '"' + (S.fam === f ? " selected" : "") + ">" + esc(f) + "</option>"; }).join("");
+  }
+  function buildProviderOptions() {
+    var wrap = document.getElementById("xf-providers");
+    if (!wrap) return;
+    wrap.innerHTML = "";
+    if (!CATALOG) return;
+    var seen = {};
+    var providers = [];
+    CATALOG.forEach(function (e) { if (!seen[e.provider]) { seen[e.provider] = true; providers.push([e.provider, e.providerName]); } });
+    providers.sort(function (a, b) { return a[1] < b[1] ? -1 : 1; });
+    providers.forEach(function (o) {
+      var b = document.createElement("button");
+      b.type = "button";
+      b.className = "xchip" + (S.providerAny && !S.providers[o[0]] ? " off" : "");
+      b.textContent = o[1];
+      b.addEventListener("click", function () {
+        if (!S.providerAny) { S.providerAny = true; S.providers = {}; S.providers[o[0]] = true; }
+        else if (S.providers[o[0]]) { delete S.providers[o[0]]; if (!Object.keys(S.providers).length) S.providerAny = false; }
+        else S.providers[o[0]] = true;
+        render();
+      });
+      wrap.appendChild(b);
+    });
   }
   function applyTab() {
     document.querySelectorAll("[data-xtab]").forEach(function (b) {
@@ -5326,7 +5667,7 @@ import { applyInequalityFilters, bandIndex, computeRecommendations, logEdges, no
         : "Intelligence & decode perspective — the AA Intelligence Index rankings: score is the Intelligence Index, cost and time the import's per-task figures (time excludes TTFT).";
     }
     applyTab();
-    if (S.tab === "aa") { renderLegend(); renderTray(); drawCharts(); renderAaTable(); renderPareto(); renderRecs(); renderBandComparisons(); }
+    if (S.tab === "aa") { renderLegend(); renderTray(); drawCharts(); renderUnpriced(); renderAaTable(); renderPareto(); renderRecs(); renderBandComparisons(); }
     else renderModels();
     enhanceCharts();
   }
@@ -5345,7 +5686,7 @@ import { applyInequalityFilters, bandIndex, computeRecommendations, logEdges, no
     if (S.persp === persp) return;
     S.persp = persp;
     POINTS = persp === "cai" ? CAI_POINTS : AA_POINTS;
-    S.creator = ""; S.fam = ""; S.bench = ""; S.effortAny = false; S.efforts = {};
+    S.creator = ""; S.fam = ""; S.bench = ""; S.effortAny = false; S.efforts = {}; S.providerAny = false; S.providers = {};
     S.off = {}; S.hidden = []; S.sel = null; S.baseline = "";
     showDetail(null);
     buildFilterOptions();
@@ -5455,7 +5796,20 @@ import { applyInequalityFilters, bandIndex, computeRecommendations, logEdges, no
     b.addEventListener("click", function () { S.tasksMode = b.getAttribute("data-tmode"); drawCharts(); });
   });
   var baselineSel = document.getElementById("xf-baseline");
-  if (baselineSel) baselineSel.addEventListener("change", function (ev) { S.baseline = ev.target.value; drawCharts(); });
+  if (baselineSel) baselineSel.addEventListener("change", function (ev) { S.baseline = ev.target.value; drawCharts(); renderAaTable(); });
+  document.querySelectorAll("[data-sortkey]").forEach(function (th) {
+    th.style.cursor = "pointer";
+    th.title = "Sort by this column";
+    th.addEventListener("click", function () {
+      var k = th.getAttribute("data-sortkey");
+      if (S.sortKey === k) S.sortDir = S.sortDir === "asc" ? "desc" : "asc";
+      else { S.sortKey = k; S.sortDir = th.getAttribute("data-dir") || "desc"; }
+      renderAaTable();
+    });
+  });
+  document.querySelectorAll("[data-dom]").forEach(function (el) {
+    el.addEventListener("change", function () { S.dom[el.getAttribute("data-dom")] = el.checked; render(); });
+  });
   // --- inequality filter rows ---------------------------------------------
   var INEQ_METRICS = [["score", "Score"], ["cost", "Task cost"], ["time", "Selected speed (time / task)"], ["tps", "Output speed (tok/s)"], ["gapScore", "Pareto gap: score gap (vs cost frontier)"], ["gapCost", "Pareto gap: price premium (vs score)"], ["gapSpeed", "Pareto gap: speed gap (vs time frontier)"]];
   function renderIneqConds() {
@@ -5481,9 +5835,9 @@ import { applyInequalityFilters, bandIndex, computeRecommendations, logEdges, no
   function captureSetup() {
     return JSON.parse(JSON.stringify({
       tab: S.tab, persp: S.persp, xp: S.xp, q: S.q, creator: S.creator, fam: S.fam, bench: S.bench,
-      effortAny: S.effortAny, efforts: S.efforts, off: S.off, elig: S.elig, pooledOnly: S.pooledOnly,
+      effortAny: S.effortAny, efforts: S.efforts, providerAny: S.providerAny, providers: S.providers, off: S.off, elig: S.elig, pooledOnly: S.pooledOnly,
       measuredOnly: S.measuredOnly, hideDisabled: S.hideDisabled, hidden: S.hidden, sizeBy: S.sizeBy,
-      tasksMode: S.tasksMode, baseline: S.baseline, pfCut: S.pfCut, bandCount: S.bandCount,
+      tasksMode: S.tasksMode, baseline: S.baseline, sortKey: S.sortKey, sortDir: S.sortDir, dom: S.dom, pfCut: S.pfCut, bandCount: S.bandCount,
       bandScale: S.bandScale, rec: S.rec, pj: S.pj, ineq: S.ineq,
     }));
   }
@@ -5497,14 +5851,15 @@ import { applyInequalityFilters, bandIndex, computeRecommendations, logEdges, no
     var bd = document.getElementById("xf-bands"); if (bd) bd.value = String(S.bandCount);
     var bs = document.getElementById("xf-bandscale"); if (bs) bs.value = String(S.bandScale);
     if (ineqModeEl) ineqModeEl.value = S.ineq.mode;
+    document.querySelectorAll("[data-dom]").forEach(function (el) { el.checked = !!S.dom[el.getAttribute("data-dom")]; });
     if (ineqCombineEl) ineqCombineEl.value = S.ineq.combine;
     document.querySelectorAll("[data-tmode]").forEach(function (b) { b.classList.toggle("active", b.getAttribute("data-tmode") === S.tasksMode); });
     document.querySelectorAll("[data-sizeby]").forEach(function (cb) { cb.checked = !!S.sizeBy[cb.getAttribute("data-sizeby")]; });
   }
   function applySetup(st) {
     if (!st || typeof st !== "object") return;
-    ["tab", "persp", "xp", "q", "creator", "fam", "bench", "effortAny", "elig", "pooledOnly", "measuredOnly", "hideDisabled", "tasksMode", "baseline", "pfCut", "bandCount", "bandScale"].forEach(function (k) { if (st[k] !== undefined) S[k] = st[k]; });
-    ["efforts", "off", "hidden", "sizeBy", "rec", "pj", "ineq"].forEach(function (k) { if (st[k] !== undefined) S[k] = st[k]; });
+    ["tab", "persp", "xp", "q", "creator", "fam", "bench", "effortAny", "providerAny", "elig", "pooledOnly", "measuredOnly", "hideDisabled", "tasksMode", "baseline", "pfCut", "bandCount", "bandScale", "sortKey", "sortDir"].forEach(function (k) { if (st[k] !== undefined) S[k] = st[k]; });
+    ["efforts", "providers", "off", "hidden", "sizeBy", "rec", "pj", "ineq", "dom"].forEach(function (k) { if (st[k] !== undefined) S[k] = st[k]; });
     POINTS = S.persp === "cai" ? CAI_POINTS : AA_POINTS;
     S.sel = null;
     showDetail(null);
@@ -5581,11 +5936,12 @@ import { applyInequalityFilters, bandIndex, computeRecommendations, logEdges, no
       rec: { allow: 5, speedPriority: 85, priceAllow: 500, slowAllow: 2, altWindow: 2, diversity: "lab", dominance: "lab", perBand: 3, maxCost: "", maxSec: "" },
       pj: { turns: 3, inputTokens: 20000, answerTokens: 2000, thinkingTokens: 4000, cacheReadPct: 50, writesPct: 0, overheadSec: 10, window: "peak" },
       ineq: { mode: "off", combine: "and", conds: [{ metric: "score", op: ">=", value: "" }, { metric: "cost", op: "<=", value: "" }, { metric: "time", op: "<=", value: "" }] },
+      sortKey: "", sortDir: "desc", dom: { dominated: false, slower: false, dumber: false, pricier: false },
     });
   });
   function csvCell(v) { return '"' + String(v == null ? "" : v).replace(/"/g, '""') + '"'; }
   var dlJsonEl = document.getElementById("xf-dl-json");
-  if (dlJsonEl) dlJsonEl.addEventListener("click", function () { downloadFile("cost-explorer-data.json", JSON.stringify(DATA, null, 2), "application/json"); });
+  if (dlJsonEl) dlJsonEl.addEventListener("click", function () { downloadFile("cost-explorer-data-" + String(DATA.batch || "latest").slice(0, 8) + ".json", JSON.stringify(DATA, null, 2), "application/json"); });
   var dlCsvEl = document.getElementById("xf-dl-csv");
   if (dlCsvEl) dlCsvEl.addEventListener("click", function () {
     var lines = [];
@@ -5745,31 +6101,56 @@ export function renderAa(section: AaFeedSection | null, provenance: Provenance, 
 </div>`
     : `<div class="banner">The collector has not carried the fleet catalog yet — it is built from the same <code>.opencode/opencode.jsonc</code> read as the coverage section and appears once a collector build that knows it has run. No catalog is shown rather than a stale one.</div>`;
   const explorerJson = jsonForScript(
-    JSON.stringify({ points: aaPoints(s), caiPoints: s.cai ? aaCaiPoints(s.cai) : [], catalog: catalog ?? null }),
+    JSON.stringify({
+      batch: s.batch,
+      points: aaPoints(s),
+      caiPoints: s.cai ? aaCaiPoints(s.cai) : [],
+      catalog: catalog ?? null,
+    }),
   );
+  // #3302: dataset-version selector. The selected batch scopes the whole
+  // explorer (charts, tables, recommendations) because the server hands
+  // renderAa that batch's section; downloads read the same embedded DATA.
+  const batches = s.batches ?? [];
+  const latestBatch = batches.find((b) => b.latest)?.importBatch ?? batches[0]?.importBatch ?? s.batch;
+  const selectedIsLatest = s.batch === latestBatch;
+  const batchOptions = batches
+    .map(
+      (b) =>
+        `<option value="${esc(b.importBatch)}"${b.importBatch === s.batch ? " selected" : ""}>${esc(b.label)}${b.importBatch === latestBatch ? " (latest)" : ""}${b.cached ? "" : " — not cached yet"}</option>`,
+    )
+    .join("");
+  const batchSelector =
+    batches.length > 1
+      ? `<div class="card" id="aa-batch-picker"><label><strong>Dataset version</strong>
+<select id="xf-batch" onchange="location.href = this.value ? '/aa?batch=' + encodeURIComponent(this.value) : '/aa'">${batchOptions}</select></label>
+<span class="muted">Older versions show that import's rankings, thresholds, timings and coding-agent rows. The latest is the default. Token prices remain the current <code>v_current_prices</code> overlay, not a historical price snapshot.</span></div>`
+      : "";
   const body = `<h1>Cost Explorer</h1>
 ${s.stale ? `<div class="banner">The latest collection failed (${esc(s.staleReason ?? "unknown error")}) — showing the last good data, collected ${fmtDate(s.generatedAt)}. It refreshes automatically on the next successful collection.</div>` : ""}
-<p class="muted">${s.rankings.length} ranked configurations · ${s.configs.length} AA Intelligence Index configurations · ${s.testRuns.length} timing rows${s.cai ? ` · ${s.cai.length} Coding Agent Index observations` : ""}${catalog ? ` · ${catalog.length} catalog models` : ""} · collected ${fmtDate(s.generatedAt)} from ainventory batch <code>${esc(s.batch.slice(0, 8))}…</code>. Machine-first: <a href="/api/aa.json">/api/aa.json</a>.</p>
+${batchSelector}
+<p class="muted">${s.rankings.length} ranked configurations · ${s.configs.length} AA Intelligence Index configurations · ${s.testRuns.length} timing rows${s.cai ? ` · ${s.cai.length} Coding Agent Index observations` : ""}${catalog ? ` · ${catalog.length} catalog models` : ""} · collected ${fmtDate(s.generatedAt)} from ainventory batch <code>${esc(s.batch.slice(0, 8))}…</code>${selectedIsLatest ? " (latest)" : " (historical version)"}. Machine-first: <a href="/api/aa.json${selectedIsLatest ? "" : `?batch=${encodeURIComponent(s.batch)}`}">/api/aa.json${selectedIsLatest ? "" : `?batch=${encodeURIComponent(s.batch)}`}</a>.</p>
 <div class="card"><strong>Provenance</strong><br>
-<span class="muted">These are the import snapshot's figures, not a live Artificial Analysis pull.${summary.snapshotVintage ? ` Test_Runs snapshots in this batch: ${esc(summary.snapshotVintage.min)} – ${esc(summary.snapshotVintage.max)}.` : ""} A new import (coding-plan-watch) flips the batch; the feed collector picks it up within minutes. The explorer renders from the feed alone — when the data pipeline lands new models (Terra, Beam), they appear here with no page change.</span>
+<span class="muted">These are the import snapshot's figures, not a live Artificial Analysis pull.${summary.snapshotVintage ? ` Test_Runs snapshots in this batch: ${esc(summary.snapshotVintage.min)} – ${esc(summary.snapshotVintage.max)}.` : ""} A new import (coding-plan-watch) flips the batch; the feed collector picks it up within minutes. The explorer renders from the feed alone — when the data pipeline lands new models (Terra, Beam), they appear here with no page change. Token prices come from <code>v_current_prices</code>, a current-price overlay that is not scoped to the selected dataset version.</span>
 <ul>${sourcesHtml || '<li class="muted">source files not recorded for this batch</li>'}</ul></div>
 <div class="xtabs" role="tablist"><button type="button" class="xtab" data-xtab="aa">AA Explorer</button><button type="button" class="xtab" data-xtab="models">Model Explorer</button></div>
 <div class="card xpl-filters" id="xpl-filters">
 <input type="search" id="xf-q" placeholder="Search models, families, providers…" aria-label="Search">
 <label data-tabaa>Creator <select id="xf-creator"></select></label>
-<label><span id="xf-fam-label">Family</span> <select id="xf-fam"></select></label>
+<label id="xf-fam-wrap"><span id="xf-fam-label">Family</span> <select id="xf-fam"></select></label>
 <label data-tabaa>Benchmark <select id="xf-bench"></select></label>
 <span class="xp-seg" role="group" aria-label="Efficiency perspective"><button type="button" data-xp="plan">Plan</button><button type="button" data-xp="api">API</button><button type="button" data-xp="pertask">Per-task</button></span>
 <span class="xp-seg" role="group" aria-label="Benchmark perspective" data-tabaa><button type="button" data-persp="aa">Intelligence &amp; decode</button><button type="button" data-persp="cai">Coding agents</button></span>
 <p class="muted" id="xpl-persp-note" data-tabaa style="flex-basis:100%;margin:2px 0 0"></p>
 <div data-tabaa style="flex-basis:100%"><span class="muted">Efforts:</span> <span id="xf-efforts"></span> <label style="margin-left:10px"><input type="checkbox" id="xf-elig"> Eligible only</label></div>
-<div data-tabmodels hidden style="flex-basis:100%"><label><input type="checkbox" id="xf-pooled"> Pooled only</label> <label><input type="checkbox" id="xf-measured"> AA-measured only</label> <label><input type="checkbox" id="xf-nodis"> Hide disabled providers</label></div>
+<div data-tabmodels hidden style="flex-basis:100%"><span class="muted">Providers:</span> <span id="xf-providers"></span> <label style="margin-left:10px"><input type="checkbox" id="xf-pooled"> Pooled only</label> <label><input type="checkbox" id="xf-measured"> AA-measured only</label> <label><input type="checkbox" id="xf-nodis"> Hide disabled providers</label></div>
 <div data-tabaa style="flex-basis:100%"><details><summary>Model selection and advanced filters — inequality conditions</summary>
 <label>Filter mode <select id="xf-ineq-mode"><option value="off" selected>Off</option><option value="keep">Keep matching models</option><option value="reject">Keep only rejected models</option></select></label>
 <label>Combine conditions <select id="xf-ineq-combine"><option value="and" selected>Match all (AND)</option><option value="or">Match any (OR)</option></select></label>
 <span class="muted">Pareto-gap metrics compare against the observed frontier of the current scope: score gap (score vs cost), price premium (cost vs score), speed gap (score vs time).</span>
 <div id="xf-ineq-conds"></div>
 <button type="button" class="xpl-ctl-btn" id="xf-ineq-add">+ Add condition</button>
+<div><span class="muted">Dominance hides (#9852):</span> <label><input type="checkbox" data-dom="dominated"> Hide dominated</label> <label><input type="checkbox" data-dom="slower"> Hide slower (beaten)</label> <label><input type="checkbox" data-dom="dumber"> Hide lower-score (beaten)</label> <label><input type="checkbox" data-dom="pricier"> Hide pricier (beaten)</label></div>
 </details></div>
 <div style="flex-basis:100%">
 <label>Settings name <input type="text" id="xf-setup-name" placeholder="Name this setup"></label>
@@ -5797,13 +6178,14 @@ ${aaTabAge}
 <div class="chart" data-chart="xpl-c5"><h3>Multiples of the baseline</h3><span class="xpl-ctl"><label>Baseline <select id="xf-baseline"></select></label><button type="button" data-dl="xpl-c5">Download PNG</button></span><span class="chart-tools" data-tools="xpl-c5"><button type="button" data-zact="expand" data-zfor="xpl-c5">⤢ Expand</button><button type="button" data-zact="in" data-zfor="xpl-c5" aria-label="Zoom in">+</button><button type="button" data-zact="out" data-zfor="xpl-c5" aria-label="Zoom out">−</button><button type="button" data-zact="reset" data-zfor="xpl-c5" aria-label="Reset view">⟲</button></span><svg id="xpl-c5" viewBox="0 0 680 400" role="img" aria-label="Cost and duration multiples scatter chart"></svg><p class="muted" data-note></p></div>
 <div class="chart" data-chart="xpl-c6"><h3>Scores — every measured configuration</h3><span class="xpl-ctl"><button type="button" data-dl="xpl-c6">Download PNG</button></span><span class="chart-tools" data-tools="xpl-c6"><button type="button" data-zact="expand" data-zfor="xpl-c6">⤢ Expand</button><button type="button" data-zact="in" data-zfor="xpl-c6" aria-label="Zoom in">+</button><button type="button" data-zact="out" data-zfor="xpl-c6" aria-label="Zoom out">−</button><button type="button" data-zact="reset" data-zfor="xpl-c6" aria-label="Reset view">⟲</button></span><svg id="xpl-c6" viewBox="0 0 680 400" role="img" aria-label="Scores bar chart"></svg><p class="muted" data-note></p></div>
 </div>
+<div class="card" id="xpl-unpriced-wrap"><h3>Scored configurations without a published cost</h3><p class="muted">These visible configurations have a score but no published cost, so they cannot appear on the cost charts. Select one to open its detail card.</p><div id="xpl-unpriced" class="strip"></div></div>
 <p class="muted">Time is seconds to finish one task (log scale), not tokens/sec — a model can stream fast and still finish slowly if it burns many tokens, and per-task time here excludes time to first token (shown separately where timed). Thin lines join each model's effort rungs (DeepSeek ladders dotted); the white dashed line is that chart's Pareto frontier; white-ringed dots sit on it, dimmed dots are beaten on its axes. Bracket splits: cost $0.15 / $0.75 / $2.50, time 1m / 5m / 15m. Only measured configurations are plotted — nothing is estimated, so configurations AA never timed appear in the tables, not the time charts. DeepSeek prices split peak / off-peak: peak is 01:00–04:00 and 06:00–10:00 UTC Monday–Friday at double the off-peak token rates, so the same runs appear at two costs. Click a dot or a row for details.</p>
 <h2>Multiples table</h2>
 <p class="muted">Every visible configuration with all three measures, as multiples of the baseline chosen above, sorted by cost multiple.</p>
 <div class="tblwrap"><table class="xpl-table"><caption>Multiples table — every visible configuration as multiples of the baseline</caption><thead><tr><th scope="col">Model</th><th scope="col">Effort</th><th scope="col" class="num">Score</th><th scope="col" class="num">Score ×</th><th scope="col" class="num xpl-costcol">Cost/task</th><th scope="col" class="num xpl-costcol">Cost ×</th><th scope="col" class="num">Time/task</th><th scope="col" class="num">Time ×</th><th scope="col">Benchmark</th></tr></thead><tbody id="xpl-mtrows"></tbody></table></div>
 <h2>Configurations</h2>
 <p class="muted" id="xpl-count"></p>
-<div class="tblwrap"><table class="xpl-table"><caption>Configurations — intelligence, cost, and speed per model</caption><thead><tr><th scope="col">Model</th><th scope="col">Effort</th><th scope="col" class="num" id="xpl-scorehead">Intelligence</th><th scope="col" class="num xpl-costcol">$/task</th><th scope="col" class="num">Time/task</th><th scope="col" class="num">TTFT</th><th scope="col" class="num">Speed (t/s)</th><th scope="col" class="num xpl-costcol">Score / $</th><th scope="col" class="num">Score / s</th></tr></thead><tbody id="xpl-rows"></tbody></table></div>
+<div class="tblwrap"><table class="xpl-table"><caption>Configurations — intelligence, cost, and speed per model</caption><thead><tr><th scope="col" data-sortkey="family" data-dir="asc">Model</th><th scope="col" data-sortkey="effort" data-dir="asc">Effort</th><th scope="col" class="num" id="xpl-scorehead" data-sortkey="score" data-dir="desc">Intelligence</th><th scope="col" class="num xpl-costcol" data-sortkey="cost" data-dir="asc">$/task</th><th scope="col" class="num" data-sortkey="time" data-dir="asc">Time/task</th><th scope="col" class="num" data-sortkey="ttft" data-dir="asc">TTFT</th><th scope="col" class="num" data-sortkey="tps" data-dir="desc">Speed (t/s)</th><th scope="col" class="num xpl-costcol" data-sortkey="perDollar" data-dir="desc">Score / $</th><th scope="col" class="num" data-sortkey="perSecond" data-dir="desc">Score / s</th><th scope="col" class="num xpl-costcol" id="xpl-bcosthead" style="display:none">Score/$ x base</th><th scope="col" class="num" id="xpl-bspeedhead" style="display:none">Score/s x base</th></tr></thead><tbody id="xpl-rows"></tbody></table></div>
 <h2>Pareto frontiers</h2>
 <p class="muted">Each list keeps variants that are not dominated on its named dimensions: another variant cannot be at least as good on every dimension and strictly better on one. The first two lists are the same score–speed frontier in different priority orders. Percentile ranks use the current filtered models; 100% is best. Missing measures are excluded only from a frontier that needs them.</p>
 <label>Minimum score and speed percentile in the price shortlist <select id="xf-pfcut"><option value="50" selected>At least median · 50th percentile</option><option value="60">At least 60th percentile</option><option value="75">Top quarter · 75th percentile</option><option value="0">No cutoff · full Pareto frontier</option></select></label>
@@ -6048,10 +6430,18 @@ export function renderHealth(view: HealthView, provenance: Provenance): string {
           else if (s.status === "error") status = '<span class="badge stale">error</span>';
           else if (s.status === "skipped") status = '<span class="muted">skipped</span>';
           else status = s.present ? "present · ok" : "empty · ok";
-          return `<tr><td><code>${esc(s.key)}</code></td><td>${status}</td><td>${s.ageMs !== undefined ? esc(ageMsText(s.ageMs)) : "—"}</td><td>${s.note ? esc(s.note) : ""}</td></tr>`;
+          return `<tr><td><code>${esc(s.key)}</code></td><td>${status}</td><td>${s.ageMs !== undefined ? esc(ageMsText(s.ageMs)) : "—"}</td><td>${s.behindBy === null ? "unknown" : s.behindBy}</td><td>${s.lastSyncAt ? esc(s.lastSyncAt) : "—"}</td><td>${s.lagNote ? esc(s.lagNote) : ""}</td><td>${s.note ? esc(s.note) : ""}</td></tr>`;
         })
         .join("")
-    : `<tr><td colspan="4" class="muted">No readable fleet feed — sections cannot be reported.</td></tr>`;
+    : `<tr><td colspan="7" class="muted">No readable fleet feed — sections cannot be reported.</td></tr>`;
+  const gathererRows = view.quotaGatherer?.providers.length
+    ? view.quotaGatherer.providers
+        .map(
+          (p) =>
+            `<tr><td><code>${esc(p.providerId)}</code>${p.credentialLabel ? ` · ${esc(p.credentialLabel)}` : ""}</td><td>${esc(p.serviceId)}</td><td>${esc(p.state)}</td><td>unknown</td><td>${p.lastSyncAt ? esc(p.lastSyncAt) : "—"}</td><td>${esc(p.lagNote)}</td></tr>`,
+        )
+        .join("")
+    : `<tr><td colspan="6" class="muted">No quota-gatherer provider rows are available.</td></tr>`;
   const orch = view.jobs.orchestration;
   const orchLine = orch.generatedAt
     ? `last run <code>${esc(orch.runId ?? "unknown")}</code> · ${esc(ageMsText(orch.ageMs ?? 0))} · state <strong>${esc(orch.state)}</strong>${orch.failedChecks ? ` · failed checks: ${esc(orch.failedChecks.join(", "))}` : ""} · next expected ~${esc(orch.nextExpectedAt ?? "")} (hourly cadence — an expectation, not a promise)`
@@ -6102,6 +6492,17 @@ export function renderHealth(view: HealthView, provenance: Provenance): string {
   const rfaSection = `<h2 id="ready-for-agent">ready-for-agent harness</h2>
 <div class="card">${rfaState} — ${esc(rfa.detail)}<br>${rfaBackendLine}</div>
 <div class="tblwrap"><table class="table table-zebra"><caption>ready-for-agent repositories — settings and dispatch work items</caption><tr><th scope="col">Repository</th><th scope="col">Paused</th><th scope="col">Merge policy</th><th scope="col">Work items</th></tr>${rfaRepoRows}</table></div>`;
+  // #3976: push health — the freshness journal + reconciler state,
+  // rendered beside (never merged into) the per-source freshness
+  // story: the push state describes the delivery machinery, each
+  // source row describes that source's own data age and lag.
+  const push = view.push;
+  const pushSection = push
+    ? `<h2 id="push-health">Push health \u2014 event-driven freshness (#3976)</h2>
+<div class="chips fresh" aria-label="Push freshness"><span class="chip">push: ${esc(push.state)}</span></div>
+<div class="card"><span class="dot ${push.state === "up" ? "up" : push.state === "down" ? "down" : "stale"}"></span><strong>${esc(push.state)}</strong> \u2014 ${esc(push.detail)}<br>last event ${push.lastEventAt ? esc(ageMsText(Math.max(0, nowMs - Date.parse(push.lastEventAt)))) : "none recorded"} \u00b7 last successful reconcile ${push.lastSuccessfulReconcileAt ? esc(ageMsText(Math.max(0, nowMs - Date.parse(push.lastSuccessfulReconcileAt)))) : "never in this process"} \u00b7 journal cursor <code>${push.cursor ?? "unknown"}</code> \u00b7 gaps: <strong>${push.gaps.open} open</strong> \u00b7 ${push.gaps.repairedTotal} repaired by reconciliation \u00b7 ${push.gaps.resetsTotal} journal reset(s)${push.gaps.lastResetAt ? ` (last ${esc(push.gaps.lastResetAt)})` : ""}</div>
+<div class="tblwrap"><table class="table table-zebra"><caption>Push sources \u2014 freshness is per source; a quiet source is silent, not an outage</caption><tr><th scope="col">Source</th><th scope="col">State</th><th scope="col">Last event</th><th scope="col">Age</th><th scope="col">Lag</th><th scope="col">Notices</th></tr>${push.sources.map((s) => `<tr><td><code>${esc(s.source)}</code></td><td>${esc(s.state)}${s.missingNotice ? ' \u00b7 <span class="badge stale">notice missing \u2014 gap open</span>' : ""}</td><td>${s.lastEventAt ? esc(s.lastEventAt) : "\u2014"}</td><td>${s.ageMs !== null ? esc(ageMsText(s.ageMs)) : "\u2014"}</td><td>${s.lagMs !== null ? esc(ageMsText(s.lagMs)) : "\u2014"}</td><td>${s.notices}</td></tr>`).join("")}</table></div>`
+    : `<h2 id="push-health">Push health \u2014 event-driven freshness (#3976)</h2>\n<p class="muted">Push health is not assembled in this mode \u2014 no state is invented for it.</p>`;
   const cov = view.itemsCoverage;
   const coverageLine =
     cov && cov.total > 0
@@ -6136,8 +6537,11 @@ ${degraded}${modeNote}
 <p class="muted">What runs where: the component, its port and bind as actually deployed, what consumes it, and what breaks without it. State is probed, never assumed.</p>
 <div class="tblwrap"><table class="table table-zebra"><caption>Services, ports, and topology</caption><tr><th scope="col">Service</th><th scope="col">Port</th><th scope="col">Bind</th><th scope="col">Runs as</th><th scope="col">State</th><th scope="col">Consumed by</th><th scope="col">If it is down</th></tr>${serviceRows}</table></div>
 ${rfaSection}
+${pushSection}
 <h2>Feed sections</h2>
-<div class="tblwrap"><table class="table table-zebra"><caption>Feed sections — presence and age</caption><tr><th scope="col">Section</th><th scope="col">Present</th><th scope="col">Age</th><th scope="col">Note</th></tr>${sectionRows}</table></div>
+<div class="tblwrap"><table><caption>Feed sections — presence, age, lag, and last sync</caption><tr><th scope="col">Section</th><th scope="col">Present</th><th scope="col">Age</th><th scope="col">Behind by</th><th scope="col">Last sync</th><th scope="col">Lag note</th><th scope="col">Note</th></tr>${sectionRows}</table></div>
+<h2>Quota gatherer sources</h2>
+<div class="tblwrap"><table><caption>Quota-gatherer provider freshness and lag</caption><tr><th scope="col">Provider</th><th scope="col">Service</th><th scope="col">State</th><th scope="col">Behind by</th><th scope="col">Last sync</th><th scope="col">Lag note</th></tr>${gathererRows}</table></div>
 <h2>Jobs</h2>
 <div class="card"><strong>Orchestration pass</strong><br>${orchLine}</div>
 <div class="card"><strong>Fleet-feed collector</strong><br>${collLine}</div>
@@ -6179,7 +6583,14 @@ export function renderDiscuss(
       : objectRef.startsWith("session:")
         ? `<p class="muted"><a href="/sessions">← the session registry</a> · <a href="/attention">Needs you</a></p>`
         : `<p class="muted"><a href="/attention">← Needs you</a></p>`;
-  const body = `<h1>${esc(title)}</h1><p class="muted">object: <code>${esc(objectRef)}</code></p>${back}
+  // #1500: the same fixture banner + honest empty wording as the item
+  // page, keyed off the comments provenance this page already receives.
+  const discussFixtureBanner = fixtureCommentsBannerHtml(provenance);
+  const discussEmptyWording =
+    commentsFixtureSourced(provenance) && comments.length === 0
+      ? `<p class="muted">no comments loaded — ${FIXTURE_COMMENTS_CAUSE}</p>`
+      : "";
+  const body = `<h1>${esc(title)}</h1><p class="muted">object: <code>${esc(objectRef)}</code></p>${back}${discussFixtureBanner}${discussEmptyWording}
 <p class="muted">Two kinds, visibly distinct: a <strong>note</strong> is read when this is next picked up and triggers nothing; a <strong>message to Muse</strong> is triaged by the orchestrator on its next pass and may create work.${
     opts.githubRefs?.length
       ? ` This item is GitHub-backed, so a comment can also be posted as a <strong>GitHub comment</strong> on an explicit target.`
@@ -6240,17 +6651,28 @@ function coverageSectionHtml(coverage: CoverageSnapshotFile | null | undefined):
       : `${v} <span class="muted">(${d > 0 ? "+" : ""}${d})</span>`;
   };
   const rows = current.repos
-    .map(
-      (r) =>
-        `<tr><td>${esc(r.repo)}</td><td>${cell(r.repo, r.openIssues, "openIssues")}</td><td>${cell(r.repo, r.gateNow, "gateNow")}</td><td>${cell(r.repo, r.gateNext, "gateNext")}</td><td>${cell(r.repo, r.poolItems, "poolItems")}</td><td>${cell(r.repo, r.poolUnsetStatus, "poolUnsetStatus")}</td><td>${cell(r.repo, r.poolUnsetArea, "poolUnsetArea")}</td></tr>`,
-    )
+    .map((r) => {
+      const state = staleIssueState(r);
+      const status =
+        state === "error"
+          ? `Collection error${r.staleIssuesError ? `: ${esc(r.staleIssuesError)}` : ""}`
+          : state === "stale"
+            ? "STALE — collection is over 7 days old"
+            : state === "unavailable"
+              ? "Unavailable — collection failed or not collected"
+              : "Current";
+      const collectedAt = r.staleIssuesCollectedAt
+        ? `<time datetime="${esc(r.staleIssuesCollectedAt)}">${esc(r.staleIssuesCollectedAt)}</time>`
+        : "—";
+      return `<tr><td>${esc(r.repo)}</td><td>${cell(r.repo, r.openIssues, "openIssues")}</td><td>${cell(r.repo, r.gateNow, "gateNow")}</td><td>${cell(r.repo, r.gateNext, "gateNext")}</td><td>${cell(r.repo, r.poolItems, "poolItems")}</td><td>${cell(r.repo, r.poolUnsetStatus, "poolUnsetStatus")}</td><td>${cell(r.repo, r.poolUnsetArea, "poolUnsetArea")}</td><td>${r.staleOpenIssues === null ? "—" : r.staleOpenIssues}</td><td>${collectedAt}</td><td>${status}</td></tr>`;
+    })
     .join("");
   const note = baseline
     ? `Week-over-week delta vs the ${esc(fmtDate(baseline.generatedAt))} snapshot in parentheses. Snapshot stored ${esc(fmtDate(current.generatedAt))}; it rotates into the baseline after a week.`
     : `First snapshot stored ${esc(fmtDate(current.generatedAt))} — the week-over-week delta appears after the next weekly rotation.`;
   return `<h2>Coverage — pool vs backlog (#1220)</h2>
- <div class="tblwrap"><table><caption>Coverage — pool vs backlog by repository</caption><thead><tr><th scope="col">Repo</th><th scope="col">Open issues</th><th scope="col">now gate</th><th scope="col">next gate</th><th scope="col">Pool items</th><th scope="col">Unset Status</th><th scope="col">Unset Area</th></tr></thead><tbody>${rows}</tbody></table></div>
-<p class="muted">${note} Open issues and gate labels come from the collector's Search API census in the fleet feed; pool counts from Project #4 (— = that source was unavailable for the repo, never a real zero). The same report is in <a href="/api/projects.json">/api/projects.json</a> as \`coverage\`.</p>`;
+ <div class="tblwrap"><table><caption>Coverage — pool vs backlog by repository</caption><thead><tr><th scope="col">Repo</th><th scope="col">Open issues</th><th scope="col">now gate</th><th scope="col">next gate</th><th scope="col">Pool items</th><th scope="col">Unset Status</th><th scope="col">Unset Area</th><th scope="col">Open issues untouched &gt;90 days</th><th scope="col">Stale count collected at (UTC)</th><th scope="col">Stale count status</th></tr></thead><tbody>${rows}</tbody></table></div>
+<p class="muted">${note} Open issues and gate labels come from the collector's Search API census in the fleet feed; pool counts from Project #4 (— = that source was unavailable for the repo, never a real zero). The stale count includes open issues only, is captured at the per-repository timestamp, and is marked stale after seven days; missing/error data is not presented as zero. The same report is in <a href="/api/projects.json">/api/projects.json</a> as \`coverage\`.</p>`;
 }
 
 /** The Projects pool body (cards, chips, coverage) without the page
@@ -6270,10 +6692,28 @@ export function briefPanelHtml(brief: ItemBrief): string {
   return `<div class="brief" style="border-left:3px solid #888;padding-left:0.6em;margin-top:0.4em"><strong>Derived brief</strong> <span class="muted">(derived from the projection — not authored)</span><br><span>State: ${esc(brief.state.text)} Evidence: ${ev(brief.state.evidence)}.</span><br><span>Blocker: ${esc(brief.blocker.text)} Evidence: ${ev(brief.blocker.evidence)}.</span><br><span>${activity}</span><br><span>Next: ${esc(brief.nextAction.text)} Evidence: ${ev(brief.nextAction.evidence)}.</span>${clash}</div>`;
 }
 
+/** The canonical status taxonomy (#1198 acceptance 1): the mapping
+ * table from status-taxonomy.ts, rendered where the pool renders —
+ * /projects standalone and the pool section of /program. */
+export function statusTaxonomyHtml(): string {
+  const rows = STATUS_TAXONOMY.map(
+    (row) =>
+      `<tr><td>${esc(STATUS_SOURCE_LABELS[row.source])}</td><td>${esc(row.raw)}</td><td>${esc(row.canonical)}</td></tr>`,
+  ).join("");
+  return `<h2>Canonical status taxonomy (#1198)</h2>
+<p class="muted">One canonical status set — ${CANONICAL_STATUSES.map(esc).join(" · ")} — and every source's vocabulary mapped into it. An item's canonical status is the same on every page for the same inputs; a source value with no row here is unmapped and surfaces as a ⚠ disagreement rather than being guessed. The ⚠ badges on Board, Roadmap, Today, and this pool all compare through this table.</p>
+<div class="tblwrap"><table><caption>Per-source status mapping to the canonical set</caption><thead><tr><th scope="col">Source</th><th scope="col">Source status</th><th scope="col">Canonical status</th></tr></thead><tbody>${rows}</tbody></table></div>`;
+}
+
 export function projectsBodyHtml(
   pool: ProjectPoolItem[],
   opts: {
     area?: string | null;
+    /** Pool facet filters (#1208): Project Status / Kind single-select values, or the "(no status)" / "(no kind)" unset buckets. */
+    status?: string | null;
+    kind?: string | null;
+    /** Project #4 audit snapshot (#1208): reconciles the rendered pool count against the board total (draft/unlinked caveat). */
+    audit?: ProjectAudit | null;
     orchestration?: OrchestrationSection | null;
     detail?: ProvenanceDetail;
     actionsByObject?: Map<string, DashAction[]>;
@@ -6284,6 +6724,12 @@ export function projectsBodyHtml(
     /** Prebuilt briefs (#1279), e.g. with comment activity folded in.
      * Absent: briefs are built here from the pool + orchestration only. */
     briefs?: Map<RefKey, ItemBrief>;
+    /** Shared forecast contracts by item ref (#3984): the same objects
+     * /api/forecasts.json serves, rendered as one-line summaries. */
+    forecasts?: Map<RefKey, ForecastContract[]>;
+    /** Spend beside progress (#4824): the #4823 rollup store's
+     * reader view. Absent/null: cards render exactly as before. */
+    spend?: SpendCardsView | null;
   } = {},
 ): string {
   const base = opts.basePath ?? "/projects";
@@ -6295,21 +6741,48 @@ export function projectsBodyHtml(
   const unsetCount = pool.filter((p) => !p.area).length;
   const area =
     opts.area === UNSET_AREA && unsetCount > 0 ? UNSET_AREA : opts.area && areas.includes(opts.area) ? opts.area : null;
-  const shown = area === UNSET_AREA ? pool.filter((p) => !p.area) : area ? pool.filter((p) => p.area === area) : pool;
+  const shownByArea =
+    area === UNSET_AREA ? pool.filter((p) => !p.area) : area ? pool.filter((p) => p.area === area) : pool;
+  // #1208: Status and Kind are pool fields too — facet-filter them like
+  // Area (the saved-view dimensions in views.ts carry the same pair, so
+  // a view and the chips agree). "(no status)" / "(no kind)" are the
+  // explicit unset buckets, mirroring the Area "(unset)" bucket (#1143).
+  const UNSET_STATUS = "(no status)";
+  const UNSET_KIND = "(no kind)";
+  const statuses = [...new Set(pool.map((p) => p.status).filter((s): s is string => Boolean(s)))].sort();
+  const kinds = [...new Set(pool.map((p) => p.kind).filter((s): s is string => Boolean(s)))].sort();
+  const statusSel =
+    opts.status === UNSET_STATUS ? UNSET_STATUS : opts.status && statuses.includes(opts.status) ? opts.status : null;
+  const kindSel = opts.kind === UNSET_KIND ? UNSET_KIND : opts.kind && kinds.includes(opts.kind) ? opts.kind : null;
+  const shown = shownByArea
+    .filter((p) => (statusSel === UNSET_STATUS ? !p.status : statusSel ? p.status === statusSel : true))
+    .filter((p) => (kindSel === UNSET_KIND ? !p.kind : kindSel ? p.kind === kindSel : true));
+  /** Facet link builder: change one facet, keep the others. */
+  const facetHref = (patch: { area?: string | null; status?: string | null; kind?: string | null }): string => {
+    const q = new URLSearchParams();
+    const a = patch.area !== undefined ? patch.area : area;
+    const s = patch.status !== undefined ? patch.status : statusSel;
+    const k = patch.kind !== undefined ? patch.kind : kindSel;
+    if (a) q.set("area", a);
+    if (s) q.set("status", s);
+    if (k) q.set("kind", k);
+    const qs = q.toString();
+    return qs ? `${base}?${qs}` : base;
+  };
   const chips = [
-    `<a href="${base}"${!area ? ' class="active"' : ""}>all (${pool.length})</a>`,
+    `<a href="${facetHref({ area: null })}"${!area ? ' class="active"' : ""}>all (${pool.length})</a>`,
     ...areas.map(
       (a) =>
-        `<a href="${base}?area=${encodeURIComponent(a)}"${a === area ? ' class="active"' : ""}>${esc(a)} (${pool.filter((p) => p.area === a).length})</a>`,
+        `<a href="${facetHref({ area: a })}"${a === area ? ' class="active"' : ""}>${esc(a)} (${pool.filter((p) => p.area === a).length})</a>`,
     ),
     ...(unsetCount > 0
       ? [
-          `<a href="${base}?area=${encodeURIComponent(UNSET_AREA)}"${area === UNSET_AREA ? ' class="active"' : ""}>${UNSET_AREA} (${unsetCount})</a>`,
+          `<a href="${facetHref({ area: UNSET_AREA })}"${area === UNSET_AREA ? ' class="active"' : ""}>${UNSET_AREA} (${unsetCount})</a>`,
         ]
       : []),
   ].join("");
   if (!pool.length) {
-    return `<div class="banner">No Project pool in the current fleet feed — the collector embeds it from the org Project <a href="${PROJECT_URL}">Developing Today (#4)</a> when a Projects token is available on the sandbox. Items on the board/roadmap fall back to the projector/fixtures chain until the pool lands.</div>${coverageSectionHtml(opts.coverage)}<p class="muted">Live services: ${serviceHomeLinks()
+    return `<div class="banner">No Project pool in the current fleet feed — the collector embeds it from the org Project <a href="${PROJECT_URL}">Developing Today (#4)</a> when a Projects token is available on the sandbox. Items on the board/roadmap fall back to the projector/fixtures chain until the pool lands.</div>${coverageSectionHtml(opts.coverage)}${opts.spend?.unattributed ? unattributedSpendHtml(opts.spend.unattributed) : ""}<p class="muted">Live services: ${serviceHomeLinks()
       .map((s) => `<a href="${esc(s.url)}">${esc(s.label)} ↗</a>`)
       .join(" · ")}</p>`;
   }
@@ -6332,6 +6805,42 @@ export function projectsBodyHtml(
       const statusBadge = p.status
         ? `<span class="badge ${p.status === "Done" ? "merged" : p.status === "Todo" ? "closed" : "implementing"}">${esc(p.status)}</span>`
         : `<span class="badge">no status</span>`;
+      const linksLine = `<span class="muted"><a href="${esc(p.issueUrl)}">${esc(p.repo)}#${p.number}</a> · <a href="${esc(p.url)}">Project item</a> · <a href="${esc(p.projectUrl)}">Project #4</a>${p.updatedAt ? ` · updated ${fmtDate(p.updatedAt)}` : ""}</span>`;
+      // #5082: only active work (canonical Project status
+      // In Progress / In Review) and epics
+      // render as a full card — status-request control, derived
+      // brief, rollups. An epic's rollup / forecast / spend ARE its
+      // substance at any status (#3984, #4824) and epics are few
+      // (40 of 1,422). Every other item renders compact: title,
+      // badges, links — the shape the per-project pages already
+      // use. The pool only ever
+      // grows — 725 of 1,422 items were Done at the 2026-11-13
+      // measurement — and at ~2.8 KB per full card (actbox ~1.2 KB +
+      // brief ~0.9 KB of it) the page reached 4.08 MB and grew with
+      // every filed item. A compact row keeps the item's identity,
+      // status, badges and links; the dropped blocks are the ones
+      // whose content is formulaic for a queued/finished item (the
+      // brief's "Next: No action" for Done items) or an action that
+      // belongs to active work. When the derived state disagrees the
+      // ⚠ clash badge still shows on the compact row, so no signal
+      // is lost. Counts, chips and weights use the whole pool either
+      // way; the area filter and saved views filter rows the same.
+      // Action-result badges (a pending / applied status request)
+      // also stay on compact rows — only the form and brief drop.
+      const canonical = canonicalStatusFor("project", p.status);
+      const active = canonical === "In Progress" || canonical === "In Review" || p.kind === "Epic";
+      const objectRef = ghObjectRef(p.ref);
+      const actionBadges = actionBadgesHtml(opts.actionsByObject?.get(objectRef));
+      if (!active) {
+        const metaCompact = [
+          p.area ? `<span class="badge src">${esc(p.area)}</span>` : "",
+          p.horizon ? `<span class="badge src">${esc(p.horizon)}</span>` : "",
+          p.kind ? `<span class="badge src">${esc(p.kind)}</span>` : "",
+          `<span class="badge ${p.state === "open" ? "open" : "closed"}">issue ${esc(p.state)}</span>`,
+        ].join(" ");
+        const compactLinks = `<span class="muted"><a href="${esc(p.issueUrl)}">${esc(p.repo)}#${p.number}</a> · <a href="${esc(p.url)}">Project item</a>${p.updatedAt ? ` · updated ${fmtDate(p.updatedAt)}` : ""}</span>`;
+        return `<div class="card"><strong>${esc(p.title)}</strong>${clashBadge}<br>${statusBadge} ${metaCompact}<br>${compactLinks}${actionBadges}</div>`;
+      }
       const meta = [
         p.area ? `<span class="badge src">${esc(p.area)}</span>` : "",
         p.horizon ? `<span class="badge src">${esc(p.horizon)}</span>` : "",
@@ -6340,26 +6849,55 @@ export function projectsBodyHtml(
         `<span class="badge src">derived: ${esc(derived)}</span>`,
       ].join(" ");
       // #1154: the status-request control + the store's visible state.
-      const objectRef = ghObjectRef(p.ref);
       const statusCtl = opts.identities
-        ? `${actionBadgesHtml(opts.actionsByObject?.get(objectRef))}${statusRequestHtml(objectRef, p.ref, p.status ?? null, { identities: opts.identities })}`
+        ? `${actionBadges}${statusRequestHtml(objectRef, p.ref, p.status ?? null, { identities: opts.identities })}`
         : "";
       const rollup = p.kind === "Epic" ? epicRollups.get(p.ref) : undefined;
       const epicRollup = rollup ? epicRollupHtml(rollup) : "";
+      const spendCard = opts.spend?.byScope.get(p.ref);
+      const spendHtml = spendCard ? spendCardHtml(spendCard) : "";
       const brief = opts.briefs?.get(p.ref) ?? buildItemBrief(p, { pool, orchestration: opts.orchestration });
-      return `<div class="card"><strong>${esc(p.title)}</strong>${clashBadge}<br>${statusBadge} ${meta}<br><span class="muted"><a href="${esc(p.issueUrl)}">${esc(p.repo)}#${p.number}</a> · <a href="${esc(p.url)}">Project item</a> · <a href="${esc(p.projectUrl)}">Project #4</a>${p.updatedAt ? ` · updated ${fmtDate(p.updatedAt)}` : ""}</span>${epicRollup}${statusCtl}${briefPanelHtml(brief)}</div>`;
+      const forecastHtml = forecastSummaryHtml(opts.forecasts?.get(p.ref));
+      return `<div class="card"><strong>${esc(p.title)}</strong>${clashBadge}<br>${statusBadge} ${meta}<br>${linksLine}${epicRollup}${spendHtml}${forecastHtml}${statusCtl}${briefPanelHtml(brief)}</div>`;
     })
     .join("");
   const body = `<p class="muted">${pool.length} items from the org Project <a href="${PROJECT_URL}">Developing Today (#4)</a>, read live by the fleet-feed collector (GraphQL, read-only) and carried in the feed. This pool is the resolution source for board/roadmap GitHub items. Where the Project Status and the derived state disagree, the card shows ⚠ with both values. Machine-first: <a href="/api/projects.json">/api/projects.json</a>.</p>
 <div class="chips">${chips}</div>
+<div class="chips"><span class="muted">Status:</span> ${[
+    `<a href="${facetHref({ status: null })}"${!statusSel ? ' class="active"' : ""}>any</a>`,
+    ...statuses.map(
+      (s) =>
+        `<a href="${facetHref({ status: s })}"${s === statusSel ? ' class="active"' : ""}>${esc(s)} (${pool.filter((p) => p.status === s).length})</a>`,
+    ),
+    ...(pool.some((p) => !p.status)
+      ? [
+          `<a href="${facetHref({ status: UNSET_STATUS })}"${statusSel === UNSET_STATUS ? ' class="active"' : ""}>${UNSET_STATUS} (${pool.filter((p) => !p.status).length})</a>`,
+        ]
+      : []),
+  ].join("")}</div>
+<div class="chips"><span class="muted">Kind:</span> ${[
+    `<a href="${facetHref({ kind: null })}"${!kindSel ? ' class="active"' : ""}>any</a>`,
+    ...kinds.map(
+      (k) =>
+        `<a href="${facetHref({ kind: k })}"${k === kindSel ? ' class="active"' : ""}>${esc(k)} (${pool.filter((p) => p.kind === k).length})</a>`,
+    ),
+    ...(pool.some((p) => !p.kind)
+      ? [
+          `<a href="${facetHref({ kind: UNSET_KIND })}"${kindSel === UNSET_KIND ? ' class="active"' : ""}>${UNSET_KIND} (${pool.filter((p) => !p.kind).length})</a>`,
+        ]
+      : []),
+  ].join("")}</div>
+${opts.audit && opts.audit.totalItems > pool.length ? `<div class="banner">Board total ${opts.audit.totalItems} items; this pool renders ${pool.length} linked issue/PR items. ${opts.audit.totalItems - pool.length} board item${opts.audit.totalItems - pool.length === 1 ? " is" : "s are"} draft or unlinked (no issue/PR to link to) and not rendered as cards \u2014 counted in the audit in <a href="/api/projects.json">/api/projects.json</a>, never silently dropped.</div>` : ""}
+${shown.length !== pool.length ? `<p class="muted">Filters show ${shown.length} of ${pool.length} pool items.</p>` : ""}
 ${unsetCount > 0 ? `<div class="banner">${unsetCount} pool item${unsetCount === 1 ? "" : "s"} carry no Area — they belong to no project page until Area is set on the Project. Setting Area is the orchestrator's reconciliation job; this count keeps the gap visible. <a href="${base}?area=${encodeURIComponent(UNSET_AREA)}">View the (unset) bucket →</a></div>` : ""}
 ${coverageSectionHtml(opts.coverage)}
+${statusTaxonomyHtml()}
 <p class="muted">Weighted progress (effort xs=1 · s=4 · m=12 · l=40, #1108): <strong>${esc(weightedLine(shownWeights))}</strong><br>${esc(handsLine(shownWeights))}</p>
 ${area ? "" : `<h2>Per-Area weighted progress</h2>${areaWeights}`}
 <p class="muted">Live services: ${serviceHomeLinks()
     .map((s) => `<a href="${esc(s.url)}">${esc(s.label)} ↗</a>`)
     .join(" · ")}</p>
-${cards || '<p class="muted">No items in this area.</p>'}`;
+${cards || '<p class="muted">No items in this area.</p>'}${opts.spend?.unattributed ? unattributedSpendHtml(opts.spend.unattributed) : ""}`;
   return body;
 }
 
@@ -6368,12 +6906,20 @@ export function renderProjects(
   provenance: Provenance,
   opts: {
     area?: string | null;
+    /** Pool facet filters (#1208): Project Status / Kind single-select values, or the "(no status)" / "(no kind)" unset buckets. */
+    status?: string | null;
+    kind?: string | null;
+    /** Project #4 audit snapshot (#1208): reconciles the rendered pool count against the board total (draft/unlinked caveat). */
+    audit?: ProjectAudit | null;
     orchestration?: OrchestrationSection | null;
     detail?: ProvenanceDetail;
     actionsByObject?: Map<string, DashAction[]>;
     identities?: AuthorIdentity[];
     coverage?: CoverageSnapshotFile | null;
     basePath?: string;
+    briefs?: Map<RefKey, ItemBrief>;
+    forecasts?: Map<RefKey, ForecastContract[]>;
+    spend?: SpendCardsView | null;
   } = {},
 ): string {
   return layout(
@@ -6467,18 +7013,26 @@ export function renderProgram(
   poolSection?: {
     pool: ProjectPoolItem[];
     area?: string | null;
+    status?: string | null;
+    kind?: string | null;
+    audit?: ProjectAudit | null;
     coverage?: CoverageSnapshotFile | null;
     orchestration?: OrchestrationSection | null;
     actionsByObject?: Map<string, DashAction[]>;
     identities?: AuthorIdentity[];
     /** Prebuilt briefs (#1279), e.g. with comment activity folded in. */
     briefs?: Map<RefKey, ItemBrief>;
+    forecasts?: Map<RefKey, ForecastContract[]>;
+    /** The #4829 flow twin the #4830 charts render on this page. */
+    flowAnalytics?: FlowAnalytics;
+    /** Spend beside progress (#4824) for the pool section. */
+    spend?: SpendCardsView | null;
   } | null,
 ): string {
   const poolSectionHtml = poolSection
     ? `<h2 id="projects-pool">Projects pool</h2>
 <p class="muted">The Projects page, merged into Program status by the #1497 curation — the raw org Project pool with its Project-vs-derived disagreements. <code>/projects</code> redirects to this section; the machine twin <a href="/api/projects.json">/api/projects.json</a> is unchanged.</p>
-${projectsBodyHtml(poolSection.pool, { area: poolSection.area, orchestration: poolSection.orchestration, actionsByObject: poolSection.actionsByObject, identities: poolSection.identities, coverage: poolSection.coverage, basePath: "/program", briefs: poolSection.briefs })}`
+${projectsBodyHtml(poolSection.pool, { area: poolSection.area, status: poolSection.status, kind: poolSection.kind, audit: poolSection.audit, orchestration: poolSection.orchestration, actionsByObject: poolSection.actionsByObject, identities: poolSection.identities, coverage: poolSection.coverage, basePath: "/program", briefs: poolSection.briefs, forecasts: poolSection.forecasts, spend: poolSection.spend })}`
     : "";
   const { program, live } = data;
   const projects = data.projects ?? [];
@@ -6501,7 +7055,7 @@ ${poolSummaryHtml(live)}
 ${orchestrationHtml(live)}
 <h2>The PM dashboard's own record</h2>
 <p class="muted">This dashboard's architecture, what's built, what's next, and its long-term roadmap live on its project page: <a href="/program/pm-dashboard">PM dashboard →</a>. Its tracked issues, resolved live:</p>
-${trackedTable(live.tracked)}${poolSectionHtml}`;
+${trackedTable(live.tracked)}${poolSectionHtml}${poolSection?.flowAnalytics ? flowChartsHtml(poolSection.flowAnalytics) : ""}`;
   return layout(
     "Program status",
     body,
@@ -6646,17 +7200,35 @@ function epicGraphOneHtml(items: ProjectPoolItem[], entry: ReturnType<typeof epi
   const ranked = g.rankedBlocked;
   const rankedHtml = ranked.length
     ? `<ul class="epic-graph-list">${ranked
-        .map(
-          (r) => {
-            const blockerItems = r.blockers.map((b) => poolRefLink(b));
-            const contributingItems = r.contributingItems.length > 0
+        .map((r) => {
+          const blockerItems = r.blockers.map((b) => poolRefLink(b));
+          const contributingItems =
+            r.contributingItems.length > 0
               ? `<br><span class="muted">Contributing downstream epics: ${r.contributingItems.map((ci) => poolRefLink(ci)).join(", ")}</span>`
               : "";
-            return `<li><a href="${esc(r.issueUrl)}">${esc(r.ref)}</a> — waiting on ${r.downstreamCount} distinct downstream open epic item${r.downstreamCount === 1 ? "" : "s"} via ${r.blockers.length} unresolved blocker${r.blockers.length === 1 ? "" : "s"}: ${blockerItems.join(", ")}${contributingItems}</li>`;
-          },
-        )
+          return `<li><a href="${esc(r.issueUrl)}">${esc(r.ref)}</a> — waiting on ${r.downstreamCount} distinct downstream open epic item${r.downstreamCount === 1 ? "" : "s"} via ${r.blockers.length} unresolved blocker${r.blockers.length === 1 ? "" : "s"}: ${blockerItems.join(", ")}${contributingItems}</li>`;
+        })
         .join("")}</ul>`
     : `<p class="muted">No open item in this epic is waiting on an unresolved blocker.</p>`;
+
+  const rankedBlockersHtml = g.rankedBlockers.length
+    ? `<ol class="epic-graph-list">${g.rankedBlockers
+        .map((blocker) => {
+          const stateText =
+            blocker.state === null ? "outside this pool; status unknown — unresolved" : "open unresolved blocker";
+          const downstream = blocker.downstreamItems
+            .map((item) => {
+              const weightText = item.effortWeight === null ? "unsized" : `effort weight ${item.effortWeight}`;
+              const additionalBlockers = item.additionalBlockers.length
+                ? `additional unresolved blockers: ${item.additionalBlockers.map((ref) => `<a href="${esc(refUrl(ref))}">${esc(ref)}</a>`).join(", ")}`
+                : "no additional unresolved blockers";
+              return `<li><a href="${esc(item.issueUrl)}">${esc(item.ref)}</a> (${weightText}) — ${additionalBlockers}</li>`;
+            })
+            .join("");
+          return `<li><a href="${esc(blocker.issueUrl)}">${esc(blocker.ref)}</a> (${stateText}) — ${blocker.downstreamCount} distinct open downstream item${blocker.downstreamCount === 1 ? "" : "s"}; known effort weight ${blocker.knownEffortWeight}; ${blocker.unsizedCount} unsized contributor${blocker.unsizedCount === 1 ? "" : "s"}: <ul>${downstream}</ul></li>`;
+        })
+        .join("")}</ol>`
+    : `<p class="muted">No unresolved blocker has open downstream work in this epic.</p>`;
 
   // SVG: hierarchy edges solid grey, dependency edges dashed amber —
   // distinct by dash and color, and named in the legend text.
@@ -6720,7 +7292,285 @@ function epicGraphOneHtml(items: ProjectPoolItem[], entry: ReturnType<typeof epi
     })
     .join("")}</ul>`;
 
-  return `<section>${heading}${summary}${truncatedHtml}<div class="epic-graph-flex">${svg}<div class="epic-graph-side"><h5>Blocked in this epic</h5>${rankedHtml}<h5>All items — dependency list</h5>${listHtml}</div></div></section>`;
+  return `<section>${heading}${summary}${truncatedHtml}<div class="epic-graph-flex">${svg}<div class="epic-graph-side"><h5>Primary ranking — blockers by downstream open work</h5><p class="muted">Each open epic item is counted once per blocker across its transitive blockedBy ancestry. This measures downstream reach, not a promise that every item is immediately unblocked. Current additional unresolved blockers are listed per item; unsized contributors count separately from known effort weight. The longest dependency chain remains a separate diagnostic.</p>${rankedBlockersHtml}<h5>Open items by their worst blocker's downstream reach</h5>${rankedHtml}<h5>All items — dependency list</h5>${listHtml}</div></div></section>`;
+}
+
+/** The Path to Phase 12 panel (#9922): #1235's ordered steps, parsed
+ * from its body snapshot and joined to live GitHub item state and to
+ * queue state from the fleet-queue collector (#9920). A stale or
+ * missing body snapshot renders the warning INSTEAD of the steps — a
+ * silently old step list is the defect #1239's rules name. A stale
+ * queue snapshot still renders, but behind its own warning: the step
+ * list is the panel's spine, the task states are the perishable part. */
+export function phase12PanelHtml(
+  snapshot: Phase12Snapshot | null,
+  items: Map<RefKey, GhItem>,
+  queue: QueueSnapshot | null = null,
+): string {
+  const head = `<h2>Path to Phase 12 — live from <a href="${PHASE12_ISSUE_URL}">#1235</a></h2>`;
+  if (!snapshot) {
+    return `${head}<div class="banner">The #1235 body feed is unavailable in the current source, so no step state is shown — a hand-maintained copy would drift, and this panel never renders one.</div>`;
+  }
+  const queueSegment =
+    queue === null
+      ? "queue state unavailable in the current source"
+      : !queue.available
+        ? "queue read failed — per-step task state withheld"
+        : `queue state from the fleet-queue collector, fetched ${esc(new Date(queue.fetchedAt).toISOString())}`;
+  const sourceLine = `<p class="muted">Source: <a href="${PHASE12_ISSUE_URL}">developing-today/code#1235</a> body, fetched ${esc(snapshot.fetchedAt)} · issue updated ${esc(snapshot.issueUpdatedAt)} · per-step state is live GitHub state; ${queueSegment}.</p>`;
+  if (phase12IsStale(snapshot)) {
+    return `${head}${sourceLine}<div class="banner">Stale source: this snapshot was fetched at ${esc(snapshot.fetchedAt)}, outside the freshness window — the step list is withheld rather than shown silently old. It refreshes on the next successful body read.</div>`;
+  }
+  const steps = joinPhase12Steps(parsePhase12Steps(snapshot.body), items, queue);
+  if (!steps.length) {
+    return `${head}${sourceLine}<div class="banner">No ordered steps could be parsed from the current #1235 body, so no step state is shown.</div>`;
+  }
+  const queueStale =
+    queue !== null && queue.available && queue.stale
+      ? `<div class="banner">Stale queue source: task states were fetched at ${esc(new Date(queue.fetchedAt).toISOString())}, outside the freshness window — they are shown behind this warning rather than silently old, and refresh on the next successful broker read.</div>`
+      : "";
+  const queueBadge = (s: Phase12StepState): string => {
+    if (queue === null || !queue.available) return "";
+    const [task, ...earlier] = s.queueTasks;
+    if (!task) return ` <span class="badge">no queue task</span>`;
+    const cls =
+      task.status === "claimed"
+        ? "implementing"
+        : task.status === "done" || task.status === "completed"
+          ? "merged"
+          : task.status === "blocked" || task.status === "dep_blocked"
+            ? "closed"
+            : "";
+    const bits = [`task ${task.id}`];
+    if (task.lane) bits.push(`lane ${task.lane}`);
+    if (task.progressStage) bits.push(task.progressStage);
+    const more = earlier.length
+      ? ` <span class="muted">(+${earlier.length} earlier task${earlier.length === 1 ? "" : "s"})</span>`
+      : "";
+    return ` <span class="badge ${cls}">queue: ${esc(task.status)}</span> <span class="muted">${esc(bits.join(" · "))}</span>${more}`;
+  };
+  const rows = steps
+    .map((s) => {
+      const stateBadge =
+        s.liveState === null
+          ? `<span class="badge">not resolved in the current source</span>`
+          : `<span class="badge ${s.liveState === "open" ? "open" : "closed"}">issue ${esc(s.liveState)}</span>`;
+      const box = s.checked ? "☑" : "☐";
+      const done = s.doneNote ? `<br><span class="muted">${esc(s.doneNote)}</span>` : "";
+      return `<div class="card"><strong>${box} ${esc(s.label)} — <a href="${esc(s.url)}">#${s.issueNumber}</a> ${esc(s.liveTitle ?? s.title)}</strong><br>${stateBadge}${queueBadge(s)}${done}</div>`;
+    })
+    .join("");
+  return `${head}${sourceLine}${queueStale}${rows}`;
+}
+
+/** The Phase tracker panel (#9923): per-phase validation state for
+ * Phases 0-13, derived live from the items source (the four #796
+ * validation audits, #1075-#1078, already in the id project's tracked
+ * refs). No hand-maintained values: a reopened audit or a new open
+ * follow-up changes the panel without an edit. Phase 12 also shows
+ * F-item progress counted from #1235's ordered step list, and Phases
+ * 11 and 13 count the F-item mapping table in planning/roadmaps/id.md
+ * (the source of record, #9923 step 3) when the source carries it;
+ * Phases 0-10 have no F-item numbering in their plans, so they state
+ * that gap instead of showing a fabricated percentage. */
+export function phaseTrackerPanelHtml(
+  items: Map<RefKey, GhItem>,
+  phase12: Phase12Snapshot | null = null,
+  phaseMapping: PhaseMappingSnapshot | null = null,
+): string {
+  const umbrellaUrl = `https://github.com/${PHASE_TRACKER_REPO}/issues/${PHASE_TRACKER_UMBRELLA}`;
+  const head = `<h2>Phase tracker — validation by phase, live from <a href="${umbrellaUrl}">#${PHASE_TRACKER_UMBRELLA}</a></h2>`;
+  const progress = derivePhase12Progress(phase12, items);
+  const mappedProgress = phaseMapping ? deriveMappedProgress(phaseMapping.entries, items) : null;
+  const sourceLine = `<p class="muted">Source: the validation audits <a href="https://github.com/${PHASE_TRACKER_REPO}/issues/1075">#1075</a>–<a href="https://github.com/${PHASE_TRACKER_REPO}/issues/1078">#1078</a> under umbrella <a href="${umbrellaUrl}">#${PHASE_TRACKER_UMBRELLA}</a>, resolved from the same live GitHub items as the tracked-issues table above (the page provenance stamp applies). Phase 12 progress counts the ordered steps in <a href="${PHASE12_ISSUE_URL}">#1235</a> against live issue state${phase12 ? ` (body fetched ${esc(phase12.fetchedAt)})` : ""}; ${phaseMapping ? `Phases 11 and 13 progress counts the F-item mapping table in <a href="https://github.com/${PHASE_TRACKER_REPO}/blob/main/planning/roadmaps/id.md">planning/roadmaps/id.md</a> (read ${esc(phaseMapping.fetchedAt)}) against live item state; ` : ""}Phases 0–10 have no F-item numbering in their plans, so no percentage is shown for them — the gap is stated rather than a number invented.</p>`;
+  const rows = derivePhaseValidation(items)
+    .map((r) => {
+      const badge =
+        r.state === "validated"
+          ? `<span class="badge closed">validated — audit closed</span>`
+          : r.state === "validation-open"
+            ? `<span class="badge open">validation open — audit open</span>`
+            : r.state === "unresolved"
+              ? `<span class="badge">audit not resolved in the current source</span>`
+              : `<span class="badge">no validation audit</span>`;
+      const audit =
+        r.auditIssue === null
+          ? `<span class="muted">—</span>`
+          : `<a href="${esc(r.auditUrl ?? "")}">#${r.auditIssue}</a>${r.auditTitle ? ` ${esc(r.auditTitle)}` : ""}`;
+      const followUps = r.openFollowUps.length
+        ? r.openFollowUps.map((f) => `<a href="${esc(f.url)}">#${f.issueNumber}</a>`).join(" ")
+        : `<span class="muted">—</span>`;
+      const mapped = mappedProgress?.get(r.phase);
+      const progressCell =
+        r.phase === 12
+          ? progress
+            ? `<strong>${progress.done}/${progress.total} steps done (${progress.percent}%)</strong><br><span class="muted">${progress.open} open${progress.unresolved ? ` · ${progress.unresolved} not resolved in the current source` : ""} — from <a href="${PHASE12_ISSUE_URL}">#1235</a></span>`
+            : `<span class="muted">withheld — #1235 feed unavailable or stale</span>`
+          : mapped
+            ? `<strong>${mapped.done}/${mapped.total} items done (${mapped.percent}%)</strong><br><span class="muted">${mapped.open} open${mapped.unresolved ? ` · ${mapped.unresolved} not resolved in the current source` : ""} — from the F-item mapping in planning/roadmaps/id.md</span>`
+            : r.phase <= 10
+              ? `<span class="muted">not derived — this phase's plan has no F-item numbering</span>`
+              : `<span class="muted">not derived — F-item mapping unavailable in the current source</span>`;
+      return `<tr><th scope="row">Phase ${r.phase}</th><td>${badge}</td><td>${audit}</td><td>${followUps}</td><td>${progressCell}</td></tr>`;
+    })
+    .join("");
+  return `${head}${sourceLine}<div class="tblwrap"><table class="table table-zebra"><caption>Validation state per id-program phase, derived from live audit issue state</caption><thead><tr><th scope="col">Phase</th><th scope="col">Validation</th><th scope="col">Audit</th><th scope="col">Open follow-ups</th><th scope="col">Progress</th></tr></thead><tbody>${rows}</tbody></table></div>`;
+}
+
+/** The Build health panel (#9924): current CI lane states + the id
+ * E2E nightly trend, projected from the Actions-API snapshot. A stale
+ * or missing snapshot renders the warning INSTEAD of lane states —
+ * silently old CI state is the defect #1239's rules name. A lane whose
+ * read failed renders unavailable; a failing nightly run keeps its
+ * link, which is the point of the trend. */
+export function buildHealthPanelHtml(snapshot: BuildHealthSnapshot | null): string {
+  const head = `<h2>Build health — live from the GitHub Actions API</h2>`;
+  if (!snapshot) {
+    return `${head}<div class="banner">The Actions API snapshot is unavailable in the current source, so no lane state is shown — this panel never renders hand-kept CI values.</div>`;
+  }
+  const sourceLine = `<p class="muted">Source: GitHub Actions API for ${esc(BUILD_HEALTH_REPO)}, fetched ${esc(snapshot.fetchedAt)}.</p>`;
+  if (buildHealthIsStale(snapshot)) {
+    return `${head}${sourceLine}<div class="banner">Stale source: this snapshot was fetched at ${esc(snapshot.fetchedAt)}, outside the freshness window — lane states are withheld rather than shown silently old. They refresh on the next successful Actions read.</div>`;
+  }
+  const runBadge = (status: string, conclusion: string | null): string => {
+    if (status !== "completed") return `<span class="badge implementing">${esc(status)}</span>`;
+    if (conclusion === "success") return `<span class="badge merged">success</span>`;
+    if (conclusion === "failure") return `<span class="badge closed">failure</span>`;
+    return `<span class="badge">${esc(conclusion ?? "completed")}</span>`;
+  };
+  const laneCards = snapshot.lanes
+    .map((laneRuns) => {
+      if (laneRuns.error) {
+        return `<div class="card"><strong>${esc(laneRuns.lane.label)}</strong><br><span class="badge">unavailable</span><br><span class="muted">Actions read failed: ${esc(laneRuns.error)}</span></div>`;
+      }
+      const proj = projectLane(laneRuns);
+      if (!proj.latest) {
+        return `<div class="card"><strong>${esc(laneRuns.lane.label)}</strong><br><span class="badge">no runs reported</span></div>`;
+      }
+      const history = proj.history
+        .map(
+          (r) =>
+            `<a href="${esc(r.url)}">${r.conclusion === "success" ? "✓" : r.conclusion === "failure" ? "✗" : "·"}</a>`,
+        )
+        .join(" ");
+      return `<div class="card"><strong>${esc(laneRuns.lane.label)}</strong><br>${runBadge(proj.latest.status, proj.latest.conclusion)} <span class="muted">latest: <a href="${esc(proj.latest.url)}">${esc(proj.latest.createdAt)}</a> (${esc(proj.latest.event)})</span>${history ? `<br><span class="muted">recent completed: ${history}</span>` : ""}</div>`;
+    })
+    .join("");
+  let nightlyHtml: string;
+  if (snapshot.nightly.error) {
+    nightlyHtml = `<div class="card"><strong>${esc(snapshot.nightly.lane.label)} — nightly trend</strong><br><span class="badge">unavailable</span><br><span class="muted">Actions read failed: ${esc(snapshot.nightly.error)}</span></div>`;
+  } else {
+    const trend = projectNightlyTrend(snapshot.nightly);
+    nightlyHtml = trend.length
+      ? `<div class="card"><strong>${esc(snapshot.nightly.lane.label)} — nightly trend (oldest → newest)</strong><br>${trend
+          .map(
+            (r) =>
+              `<a href="${esc(r.url)}">${r.conclusion === "success" ? "✓" : r.conclusion === "failure" ? "✗" : "·"} ${esc(r.createdAt.slice(0, 10))}</a>`,
+          )
+          .join(" · ")}</div>`
+      : `<div class="card"><strong>${esc(snapshot.nightly.lane.label)} — nightly trend</strong><br><span class="badge">no completed runs reported</span></div>`;
+  }
+  return `${head}${sourceLine}${laneCards}${nightlyHtml}`;
+}
+
+/** The Phase 12 readiness panel (#9926): F12.1–F12.18 with design
+ * state (from #534's checklist), live issue state, and PR state
+ * (timeline cross-references). The F-item list is parsed from
+ * #1235's body — never hand-typed here. A stale snapshot withholds
+ * the rows behind the warning; missing sub-feeds render their
+ * column as unavailable instead of inventing a state. */
+export function f12ReadinessPanelHtml(
+  phase12: Phase12Snapshot | null,
+  design: Phase12Snapshot | null,
+  prRefs: Map<number, F12PrRef[]> | null,
+  items: Map<RefKey, GhItem>,
+): string {
+  const head = `<h2>Phase 12 readiness — F12.1–F12.18, live</h2>`;
+  if (!phase12) {
+    return `${head}<div class="banner">The #1235 body feed is unavailable in the current source, so no F-item state is shown — the F-item list itself comes from that body, and this panel never renders a hand-typed copy.</div>`;
+  }
+  const sourceLine = `<p class="muted">Sources: F-item list + order from <a href="${PHASE12_ISSUE_URL}">developing-today/code#1235</a> (fetched ${esc(phase12.fetchedAt)}); design state from <a href="${F12_DESIGN_ISSUE_URL}">#534</a>${design ? ` (fetched ${esc(design.fetchedAt)})` : " (feed unavailable — design column withheld)"}; issue state is live GitHub state; PR state from issue-timeline cross-references${prRefs ? "" : " (timeline read unavailable — PR column withheld)"}.</p>`;
+  if (phase12IsStale(phase12) || (design !== null && phase12IsStale(design))) {
+    return `${head}${sourceLine}<div class="banner">Stale source: a body snapshot feeding this panel is outside the freshness window — the F-item rows are withheld rather than shown silently old. They refresh on the next successful body read.</div>`;
+  }
+  const fItems = parseF12Items(phase12.body);
+  if (!fItems.length) {
+    return `${head}${sourceLine}<div class="banner">No F-items could be parsed from the current #1235 body, so no readiness state is shown.</div>`;
+  }
+  const designs = design ? parseF12Designs(design.body) : new Map();
+  const rows = projectF12Readiness(fItems, designs, items, prRefs ?? new Map())
+    .map((r) => {
+      const issueBadge =
+        r.issueState === null
+          ? `<span class="badge">issue not resolved in the current source</span>`
+          : `<span class="badge ${r.issueState === "open" ? "open" : "closed"}">issue ${esc(r.issueState)}</span>`;
+      const designBadge = !design
+        ? `<span class="badge">design feed unavailable</span>`
+        : r.design === null
+          ? `<span class="badge">no design entry in #534</span>`
+          : r.design.done
+            ? `<span class="badge merged">design ${esc(r.design.designId)} done</span>`
+            : `<span class="badge implementing">design ${esc(r.design.designId)} pending</span>`;
+      const prBadge = !prRefs
+        ? `<span class="badge">PR read unavailable</span>`
+        : r.prs.length
+          ? r.prs
+              .map(
+                (p) =>
+                  `<span class="badge ${p.state === "merged" ? "merged" : p.state === "open" ? "open" : "closed"}"><a href="${esc(p.url)}">PR #${p.number} ${esc(p.state)}</a></span>`,
+              )
+              .join(" ")
+          : `<span class="badge">no cross-referenced PR</span>`;
+      return `<div class="card"><strong>${esc(r.f)} — <a href="${esc(r.url)}">#${r.issueNumber}</a> ${esc(r.title ?? "")}</strong><br>${designBadge} ${issueBadge} ${prBadge}</div>`;
+    })
+    .join("");
+  return `${head}${sourceLine}${rows}`;
+}
+
+export function queuePanelHtml(snapshot: QueueSnapshot | null): string {
+  const head = `<h2>Queue &amp; fleet \u2014 live from the fleet queue broker</h2>`;
+  if (!snapshot) {
+    return `${head}<div class="banner">The queue-broker snapshot is unavailable in the current source, so no queue state is shown \u2014 this panel never renders hand-kept queue values.</div>`;
+  }
+  const fetchedIso = new Date(snapshot.fetchedAt).toISOString();
+  const sourceLine = `<p class="muted">Source: queue-broker /health + /list (read-only), fetched ${esc(fetchedIso)}.</p>`;
+  if (!snapshot.available || snapshot.stale) {
+    const why = snapshot.errors.length ? ` Last read error: ${esc(snapshot.errors[0])}.` : "";
+    return `${head}${sourceLine}<div class="banner">Stale source: this queue snapshot was fetched at ${esc(fetchedIso)}, outside the freshness window \u2014 queue numbers are withheld rather than shown silently old.${why} They refresh on the next successful broker read.</div>`;
+  }
+  const age = (ms: number | null): string => {
+    if (ms === null) return "\u2014";
+    const mins = Math.floor(ms / 60_000);
+    if (mins < 60) return `${mins}m`;
+    const hours = Math.floor(mins / 60);
+    if (hours < 48) return `${hours}h ${mins % 60}m`;
+    return `${Math.floor(hours / 24)}d ${hours % 24}h`;
+  };
+  const streamRows = snapshot.queues
+    .map(
+      (q) =>
+        `<tr><td>${esc(q.queue)}</td><td>${q.queued}</td><td>${q.claimed}</td><td>${q.parked}</td><td>${q.blocked}</td><td>${q.done}</td><td>${esc(age(q.oldestQueuedAgeMs))}</td><td>${q.terminalEvents24h} / ${q.terminalEvents7d}</td></tr>`,
+    )
+    .join("");
+  const streams = `<table><caption>Queue streams</caption><thead><tr><th scope="col">Queue stream</th><th scope="col">Queued</th><th scope="col">Claimed</th><th scope="col">Parked</th><th scope="col">Blocked</th><th scope="col">Done</th><th scope="col">Oldest queued</th><th scope="col">Terminal 24h / 7d</th></tr></thead><tbody>${streamRows}</tbody></table>`;
+  const idItems = snapshot.tasks.filter(
+    (task) =>
+      task.repo === "developing-today/code" &&
+      task.issue !== null &&
+      (task.status === "claimed" || task.status === "parked"),
+  );
+  const itemRows = idItems
+    .slice(0, 50)
+    .map((task) => {
+      const who = [task.worker, task.lane].filter(Boolean).join(" / ") || "\u2014";
+      const stage = task.progressStage ? esc(task.progressStage) : "\u2014";
+      return `<tr><td>${task.id}</td><td><a href="https://github.com/developing-today/code/issues/${task.issue}">#${task.issue}</a> ${esc(task.title)}</td><td>${esc(task.status)}</td><td>${esc(who)}</td><td>${stage}</td></tr>`;
+    })
+    .join("");
+  const items = idItems.length
+    ? `<h3>Claimed &amp; parked id items (${idItems.length})</h3><table><caption>Claimed &amp; parked id items</caption><thead><tr><th scope="col">Task</th><th scope="col">Issue</th><th scope="col">Status</th><th scope="col">Worker / lane</th><th scope="col">Stage</th></tr></thead><tbody>${itemRows}</tbody></table>`
+    : `<h3>Claimed &amp; parked id items</h3><p class="muted">None in the current snapshot.</p>`;
+  return `${head}${sourceLine}${streams}${items}`;
 }
 
 export function renderProgramProject(
@@ -6729,6 +7579,11 @@ export function renderProgramProject(
   provenance: Provenance,
   provDetail?: ProvenanceDetail,
   epicPool: ProjectPoolItem[] = detail.poolItems,
+  phase12?: Phase12Snapshot | null,
+  buildHealth?: BuildHealthSnapshot | null,
+  f12?: { design: Phase12Snapshot | null; prRefs: Map<number, F12PrRef[]> | null } | null,
+  queueSnap?: QueueSnapshot | null,
+  phaseMapping?: PhaseMappingSnapshot | null,
 ): string {
   const { config } = detail;
   const linkBits: string[] = [];
@@ -6834,6 +7689,17 @@ export function renderProgramProject(
 <p class="muted">Built only from already-published fleet data — the orchestration section this aggregator serves and the fleet's tracked issues. No new data pipeline feeds this section.</p>${programEntries(config.sweepHealth, items)}`
     : "";
 
+  const phaseTrackerHtml =
+    config.id === "id" ? phaseTrackerPanelHtml(items, phase12 ?? null, phaseMapping ?? null) : "";
+  const phase12Html =
+    config.id === "id" && phase12 !== undefined ? phase12PanelHtml(phase12, items, queueSnap ?? null) : "";
+  const buildHealthHtml = config.id === "id" && buildHealth !== undefined ? buildHealthPanelHtml(buildHealth) : "";
+  const f12Html =
+    config.id === "id" && f12 !== undefined
+      ? f12ReadinessPanelHtml(phase12 ?? null, f12?.design ?? null, f12?.prRefs ?? null, items)
+      : "";
+  const queueHtml = config.id === "id" && queueSnap !== undefined ? queuePanelHtml(queueSnap) : "";
+
   const ed = config.editorial;
   const editorialHtml = ed
     ? `${ed.done.length ? `<h2>What's built</h2>${programEntries(ed.done, items)}` : ""}${ed.next.length ? `<h2>What's next</h2>${programEntries(ed.next, items)}` : ""}${ed.longTerm.length ? `<h2>Long-term roadmap</h2>${programEntries(ed.longTerm, items)}` : ""}${ed.gaps.length ? `<h2>Known gaps</h2>${programEntries(ed.gaps, items)}` : ""}`
@@ -6853,7 +7719,7 @@ ${poolHtml}
 ${roadmapHtml}
 ${repoCardsHtml}
 ${sweepHealthHtml}
-${editorialHtml}`;
+${phaseTrackerHtml}${phase12Html}${buildHealthHtml}${f12Html}${queueHtml}${editorialHtml}`;
   return layout(
     config.title,
     body,
@@ -6949,7 +7815,7 @@ export function renderAlerts(view: AlertsPageView, provenance: Provenance, vapid
   const formQuietStart = formSub?.quiet?.start ?? "23:00";
   const formQuietEnd = formSub?.quiet?.end ?? "07:00";
   const body = `<h1>Alerts</h1>
-<p class="muted">The alert throat (#3676): every sentinel posts to one intake; this page is the ack surface. Critical incidents push immediately to subscribed browsers; an unacknowledged critical escalates once after ${view.ackWindowMin} minutes. Warnings are recorded here and in the ledger — no push in v1. Machine-first: <a href="/api/alerts.json">/api/alerts.json</a>.</p>
+<p class="muted">The alert throat (#3676): every sentinel posts to one intake; this page is the ack surface. Critical incidents push immediately to subscribed browsers; an unacknowledged critical escalates once after ${view.ackWindowMin} minutes. Warnings are recorded here and in the ledger — no push in v1. Machine-first: <a href="/api/alerts.json">/api/alerts.json</a>. Per-class toggles, quiet hours, and per-class test sends live on the <a href="/alerts/preferences">notification preferences page</a>.</p>
 <style>.incident:target { outline: 2px solid #1f6feb; }</style>
 <h2>Push delivery on this browser</h2>
 <div class="card" id="push-panel">
@@ -7124,6 +7990,187 @@ document.getElementById("push-test").addEventListener("click", async () => {
   return layout("Alerts", body, provenance, "/alerts", script);
 }
 
+// --- Notification preferences page (#3318, slice (d) of #1254) ------------
+
+export interface NotificationPreferencesView {
+  available: boolean;
+  subscriptions: PushSubscriptionRow[];
+}
+
+/** The /alerts/preferences page: per-class subscription toggles,
+ * quiet-hours editing, this browser's subscription state, and a
+ * send-test button per class. Preferences are subscription state —
+ * saving writes through the same /api/push/subscriptions upsert the
+ * Alerts form uses (provided-classes merge: only the keys sent
+ * change), and the engine reads the stored map via classEnabled /
+ * inQuietHours on its next tick, so a toggle here IS the next
+ * engine decision. The route is /alerts/preferences, not
+ * /notifications: that route is the #3319 measurement page and
+ * stays read-only. */
+export function renderNotificationPreferences(
+  view: NotificationPreferencesView,
+  provenance: Provenance,
+  vapidPublicKey: string,
+): string {
+  if (!view.available) {
+    return layout(
+      "Notification preferences",
+      `<h1>Notification preferences</h1><p class="muted">The alerts ledger (Supabase <code>alerts</code> schema) is unreachable from this process right now — subscription preferences cannot be read or saved until it is back. The rest of the dashboard is unaffected.</p>`,
+      provenance,
+      "/alerts/preferences",
+    );
+  }
+  // Same initial-state rule as the Alerts form: render the newest
+  // stored subscription's saved truth server-side; the client
+  // script refines it to this browser's own subscription.
+  const formSub = [...view.subscriptions].sort((a, b) => (a.last_seen_at < b.last_seen_at ? 1 : -1))[0];
+  const quietOn = !formSub || formSub.quiet?.enabled !== false;
+  const quietStart = formSub?.quiet?.start ?? "23:00";
+  const quietEnd = formSub?.quiet?.end ?? "07:00";
+  const classRows = NOTIFICATION_CLASSES.map((c) => {
+    const checked = !formSub || (formSub.classes?.[c.id] ?? NOTIFICATION_CLASS_DEFAULTS[c.id]) !== false;
+    return `<div class="card"><p><label><input type="checkbox" id="pref-class-${c.id}"${checked ? " checked" : ""}> <strong>${esc(c.label)}</strong> <span class="muted">(<code>${esc(c.id)}</code>)</span></label><br>
+<span class="muted">${esc(c.blurb)}</span></p>
+<button data-test-class="${esc(c.id)}">Send a test ${esc(c.id)} notification</button></div>`;
+  }).join("\n");
+  const body = `<h1>Notification preferences</h1>
+<p class="muted">Per-class push preferences for this browser's subscription (#3318, slice (d) of the #1254 design). Toggling a class or editing quiet hours and saving changes the stored subscription; the notification engine reads the stored values on its next tick, so the change is the next engine decision. This browser's subscription state is shown below. Machine-first: <a href="/api/alerts/preferences.json">/api/alerts/preferences.json</a>. The <a href="/notifications">/notifications</a> page stays the read-only measurement roll-up (#3319).</p>
+<h2>This browser</h2>
+<div class="card" id="pref-panel">
+<span id="pref-status" class="muted">checking…</span>
+<p><button id="pref-enable">Enable push on this browser</button>
+<button id="pref-disable">Disable push on this browser</button></p>
+</div>
+<h2>Classes</h2>
+${classRows}
+<div class="card"><p><label><input type="checkbox" id="pref-quiet-enabled"${quietOn ? " checked" : ""}> <strong>Quiet hours</strong></label><br>
+<span class="muted">Pause non-urgent notifications between <input type="time" id="pref-quiet-start" value="${quietStart}"${quietOn ? "" : " disabled"}> and <input type="time" id="pref-quiet-end" value="${quietEnd}"${quietOn ? "" : " disabled"}> (Chicago time). Untick for no time-of-day limit at all. Incident alerts always come through immediately, quiet hours or not; digest-only notifications wait for the quiet window to end.</span></p>
+<button data-test-class="digest">Send a test digest notification</button>
+<span class="muted">The digest is the one list-shaped landing allowed: the attention view filtered to the digest's refs.</span></div>
+<p><button id="pref-save">Save preferences</button><br><span id="pref-test-result" class="muted"></span></p>
+<h2>Subscriptions (${view.subscriptions.length})</h2>
+${view.subscriptions.length ? view.subscriptions.map(subscriptionRow).join("") : `<p class="muted">No push subscriptions yet — enable push above.</p>`}`;
+  const script = `<script>
+const VAPID = ${JSON.stringify(vapidPublicKey)};
+const SUBS = ${JSON.stringify(view.subscriptions.map((s) => ({ endpoint: s.endpoint, classes: s.classes, quiet: s.quiet })))};
+const CLASS_IDS = ${JSON.stringify(NOTIFICATION_CLASSES.map((c) => c.id))};
+const status = document.getElementById("pref-status");
+const DENIED_TEXT = "Notifications are blocked for this site on this device. On iPhone: Settings → Notifications → this app — allow notifications; or delete the home-screen app, re-add it, and tap Allow when asked. On a computer: the lock icon in the address bar → site settings → Notifications → Allow.";
+const PLAIN_ERRORS = {
+  denied: DENIED_TEXT,
+  dismissed: "The notification prompt was closed without a choice — nothing was turned on. Tap Enable push again and choose Allow.",
+  unsupported: "Push isn't available in this browser — open this page in your regular browser (Chrome, Safari, or Firefox), or install the dashboard to the home screen on iPhone first.",
+  "subscribe-failed": "The browser couldn't register for push — check the connection and try again.",
+  "save-failed": "Your choice couldn't be saved on the server — try again.",
+  "not-subscribed": "This browser isn't subscribed yet — enable push first.",
+};
+function showError(e) {
+  status.textContent = PLAIN_ERRORS[e && e.code] || "Something went wrong — try again.";
+}
+function syncQuietInputs() {
+  const on = document.getElementById("pref-quiet-enabled").checked;
+  document.getElementById("pref-quiet-start").disabled = !on;
+  document.getElementById("pref-quiet-end").disabled = !on;
+}
+document.getElementById("pref-quiet-enabled").addEventListener("change", syncQuietInputs);
+function applyPrefs(mine) {
+  if (mine.classes) {
+    for (const id of CLASS_IDS) {
+      if (typeof mine.classes[id] === "boolean") document.getElementById("pref-class-" + id).checked = mine.classes[id];
+    }
+  }
+  if (mine.quiet) {
+    document.getElementById("pref-quiet-enabled").checked = mine.quiet.enabled !== false;
+    if (mine.quiet.start) document.getElementById("pref-quiet-start").value = mine.quiet.start;
+    if (mine.quiet.end) document.getElementById("pref-quiet-end").value = mine.quiet.end;
+    syncQuietInputs();
+  }
+}
+function pushSupportedHere() {
+  return "PushManager" in window && "Notification" in window && "serviceWorker" in navigator;
+}
+function waitForPmPush() {
+  if (window.pmPush) return Promise.resolve(window.pmPush);
+  return new Promise((resolve) => {
+    let n = 0;
+    const t = setInterval(() => {
+      n++;
+      if (window.pmPush || n > 60) { clearInterval(t); resolve(window.pmPush || null); }
+    }, 50);
+  });
+}
+async function refreshStatus() {
+  if (!pushSupportedHere()) {
+    status.textContent = "Push isn't available in this browser yet — open this page in your regular browser, or install the dashboard to the home screen on iPhone first.";
+    return;
+  }
+  const pm = await waitForPmPush();
+  if (!pm) { status.textContent = "The push controls are still loading — reload the page if this sticks."; return; }
+  const sub = await pm.current().catch(() => null);
+  if (sub) {
+    status.textContent = "This browser is subscribed — pushes will land here, shaped by the preferences below.";
+    const mine = SUBS.find((s) => s.endpoint === sub.endpoint) || (SUBS.length === 1 ? SUBS[0] : null);
+    if (mine) applyPrefs(mine);
+  } else if (pm.permission() === "denied") {
+    status.textContent = DENIED_TEXT;
+  } else {
+    status.textContent = "This browser is not subscribed yet — tap Enable push to subscribe it with the preferences below.";
+  }
+}
+refreshStatus();
+syncQuietInputs();
+function prefs() {
+  const classes = {};
+  for (const id of CLASS_IDS) classes[id] = document.getElementById("pref-class-" + id).checked;
+  return {
+    classes,
+    quiet: {
+      enabled: document.getElementById("pref-quiet-enabled").checked,
+      start: document.getElementById("pref-quiet-start").value || "23:00",
+      end: document.getElementById("pref-quiet-end").value || "07:00",
+      tz: "America/Chicago",
+    },
+  };
+}
+document.getElementById("pref-enable").addEventListener("click", async () => {
+  try { await window.pmPush.subscribe(VAPID, prefs()); location.reload(); } catch (e) { showError(e); }
+});
+document.getElementById("pref-save").addEventListener("click", async () => {
+  try {
+    const p = prefs();
+    await window.pmPush.updatePrefs(p);
+    const on = CLASS_IDS.filter((id) => p.classes[id]);
+    status.textContent = "Saved — classes on: " + (on.length ? on.join(", ") : "none") + "; " + (p.quiet.enabled ? "quiet hours on, " + p.quiet.start + "–" + p.quiet.end + "." : "quiet hours off, no time-of-day limit.");
+  } catch (e) { showError(e); }
+});
+document.getElementById("pref-disable").addEventListener("click", async () => {
+  try { await window.pmPush.unsubscribe(); location.reload(); } catch (e) { showError(e); }
+});
+document.querySelectorAll("[data-test-class]").forEach((b) => b.addEventListener("click", async () => {
+  const out = document.getElementById("pref-test-result");
+  const cls = b.dataset.testClass;
+  out.textContent = "sending test " + cls + "…";
+  try {
+    const r = await fetch("/api/push/test-class", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ class: cls }) });
+    if (!r.ok) { out.textContent = "The test couldn't be sent — the server answered HTTP " + r.status + "."; return; }
+    const s = await r.json();
+    if (!s.subscriptions) {
+      out.textContent = "No subscriptions yet — enable push first, then try the test.";
+    } else if (s.eligible === 0) {
+      out.textContent = "No subscription has the " + cls + " class on — turn it on above, save, then test again.";
+    } else if (s.sent > 0) {
+      out.textContent = "Test " + cls + " sent to " + s.sent + " subscription" + (s.sent === 1 ? "" : "s") + " — tapping it lands on " + s.url + ".";
+    } else {
+      out.textContent = "The test reached no device (" + s.errors + " failed, " + s.gone + " no longer there) — the subscriptions may be stale; disable push and enable it again.";
+    }
+  } catch (e) {
+    out.textContent = "The test couldn't be sent — network or server error.";
+  }
+}));
+</script>`;
+  return layout("Notification preferences", body, provenance, "/alerts/preferences", script);
+}
+
 // --- Notifications page (#3319, notification measurement) -------------------
 
 export interface NotificationsPageView {
@@ -7159,7 +8206,7 @@ export function renderNotifications(view: NotificationsPageView, provenance: Pro
     ? `<h2>Default-off proposals</h2>${proposals
         .map(
           (c) =>
-            `<div class="card"><strong>Proposal: default class <code>${esc(c.class)}</code> off</strong> — acted-on ratio ${pct(c.ratio)} over the rolling window (${c.acted} of ${c.sent} sends acted on within 24h), under the 10% threshold.<br><span class="muted">Proposal only — this page never changes a preference or a default. Turning a class off by default is Drew's call, made on the Alerts page's subscription preferences.</span></div>`,
+            `<div class="card"><strong>Proposal: default class <code>${esc(c.class)}</code> off</strong> — acted-on ratio ${pct(c.ratio)} over the rolling window (${c.acted} of ${c.sent} sends acted on within 24h), under the 10% threshold.<br><span class="muted">Proposal only — this page never changes a preference or a default. Turning a class off by default is Drew's call, made on the <a href="/alerts/preferences">notification preferences page</a>.</span></div>`,
         )
         .join("")}`
     : `<h2>Default-off proposals</h2><p class="muted">No class is under the 10% acted-on threshold over the rolling window.</p>`;
