@@ -2670,6 +2670,7 @@ fn cmd_claim(rest: &[String]) -> i32 {
             "filter",
             "pool",
             "launched-by",
+            "remaining-budget-minutes",
         ],
         &["handoff", "bind"],
     );
@@ -2704,6 +2705,13 @@ fn cmd_claim(rest: &[String]) -> i32 {
     // satisfy a task's own requires.pool.
     if let Some(p) = args.get("pool") {
         body["pool"] = json!(p);
+    }
+    // --remaining-budget-minutes <n>: the claimer's remaining
+    // shift budget (#3418). The broker only matches
+    // requirement-bearing tasks whose required budget fits it;
+    // omitting it leaves requirement-bearing tasks unclaimed.
+    if let Some(v) = args.get_i64("remaining-budget-minutes") {
+        body["remaining_budget_minutes"] = json!(v);
     }
     if let Some(lane) = args.get("lane") {
         body["lane"] = json!(lane);
@@ -3347,6 +3355,7 @@ fn cmd_park(rest: &[String]) -> i32 {
             "progress-file",
             "ready-condition",
             "execution",
+            "required-budget-minutes",
         ],
         &[],
     );
@@ -3388,6 +3397,13 @@ fn cmd_park(rest: &[String]) -> i32 {
             die(2, "--ready-condition must be a JSON object");
         }
         body["ready_condition"] = rc;
+    }
+    // --required-budget-minutes <n>: the minimum remaining shift
+    // budget a future claimer must declare to take this park
+    // (#3418). For a capacity wait the broker defaults it from
+    // the packet's timebox when the flag is absent.
+    if let Some(v) = args.get_i64("required-budget-minutes") {
+        body["required_budget_minutes"] = json!(v);
     }
     if let Some(ex) = execution_arg(&args) {
         body["execution"] = ex;
