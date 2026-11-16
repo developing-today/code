@@ -104,6 +104,56 @@ impl QueryEmbedder for AtlasEmbedder {
     }
 }
 
+/// A document embedder: raw text in, production-shaped document
+/// vector out. The document side of the corpus contract is the
+/// mirror of [`QueryEmbedder`]: documents are embedded prompt-free
+/// (no `"query: "` prefix) and stored as the model produced them —
+/// the scan's cosine distance is scale-invariant, and the query
+/// side owns prompt + truncation + renormalization. The staging
+/// aggregator (`crate::aggregate`) embeds staged chunks through
+/// this trait at promotion time.
+pub trait DocEmbedder {
+    fn embed_doc(&self, text: &str) -> Result<Vec<f32>>;
+}
+
+/// A fixed-vector document embedder for tests and fixture work:
+/// every document gets the same recorded vector, exactly where a
+/// test monkeypatches the embedder (the document-side twin of
+/// [`FixedEmbedder`]).
+pub struct FixedDocEmbedder {
+    pub raw: Vec<f32>,
+}
+
+impl DocEmbedder for FixedDocEmbedder {
+    fn embed_doc(&self, _text: &str) -> Result<Vec<f32>> {
+        Ok(self.raw.clone())
+    }
+}
+
+impl AtlasEmbedder {
+    /// The raw full-dimension document vector for `text`: no query
+    /// prompt, no truncation, no renormalization — the shape the
+    /// production corpus was embedded in on the document side.
+    pub fn embed_doc_raw(&self, text: &str) -> Result<Vec<f32>> {
+        let mut guard = self
+            .inner
+            .lock()
+            .map_err(|_| Error::Embed("embedder mutex poisoned".to_string()))?;
+        let out = guard
+            .embed(&[text])
+            .map_err(|e| Error::Embed(e.to_string()))?;
+        out.into_iter().next().map(|a| a.to_vec()).ok_or_else(|| {
+            Error::Embed("embedder returned no vector for a single input".to_string())
+        })
+    }
+}
+
+impl DocEmbedder for AtlasEmbedder {
+    fn embed_doc(&self, text: &str) -> Result<Vec<f32>> {
+        self.embed_doc_raw(text)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
