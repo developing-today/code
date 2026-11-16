@@ -28,10 +28,13 @@
 //!   [`HeldRanges`]) and optimistic (ranges unknown — every holder is a
 //!   candidate and missing-range reports teach the scheduler).
 //!
-//! PoC status: this is the review-gated proof of concept for #2261. The
-//! fetch-loop wiring in the `get` path and the live multi-holder
-//! benchmarks are the remaining steps recorded on the issue; nothing here
-//! is the permanent retrieval path until that review round decides.
+//! PoC status: this is the review-gated proof of concept for #2261.
+//! Fixture benchmarks for the required matrix (1 vs 2 vs 4 holders,
+//! partial mix, holder leaving, optimistic mode) live in
+//! `tests/swarm_bench.rs` and are reported on the issue. The fetch-loop
+//! wiring in the `get` path and live multi-holder benchmarks are the
+//! remaining steps recorded on the issue; nothing here is the permanent
+//! retrieval path until that review round decides.
 
 use std::collections::BTreeMap;
 
