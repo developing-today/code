@@ -69,6 +69,7 @@ use super::markdown::{
     markdown_to_prosemirror, plain_text_to_prosemirror, raw_text_to_prosemirror,
 };
 use id_core::frames::MAX_FRAME_BYTES;
+use p2panda_core::Hash;
 
 /// Message type tags for the wire protocol.
 mod msg {
@@ -335,6 +336,15 @@ impl Default for Document {
     }
 }
 
+/// The session key for a note: its stable ID under a `note:`
+/// prefix, so a note session can never alias a filename session
+/// (#3819). The ID is the note's `note.create` event ID
+/// (`id_store::notes`), independent of any filename or alias.
+#[must_use]
+pub fn note_session_key(note_id: &Hash) -> String {
+    format!("note:{note_id}")
+}
+
 /// State for all collaborative editing sessions.
 #[derive(Debug, Default)]
 pub struct CollabState {
@@ -358,20 +368,60 @@ impl CollabState {
         hash: &str,
         initial_content: Option<&[u8]>,
     ) -> Arc<Document> {
+        self.get_or_create_keyed(filename, hash, initial_content, Some(filename))
+            .await
+    }
+
+    /// Get or create the editing session for a note, keyed by the
+    /// note's stable ID (#3819): the ID of its `note.create` event in
+    /// the durable note graph (`id_store::notes`), never by filename.
+    /// A note that is renamed, or reached through a different alias,
+    /// keeps the one session its editors are actually sharing; the
+    /// filename survives only as a content-mode hint for a session
+    /// created from file bytes. The durable side of the session is
+    /// its checkpoints (`id_store::note_checkpoints`); this keying is
+    /// what lets a session find its note again after a restart.
+    pub async fn get_or_create_for_note(
+        &self,
+        note_id: &Hash,
+        hash: &str,
+        initial_content: Option<&[u8]>,
+        filename_hint: Option<&str>,
+    ) -> Arc<Document> {
+        self.get_or_create_keyed(
+            &note_session_key(note_id),
+            hash,
+            initial_content,
+            filename_hint,
+        )
+        .await
+    }
+
+    /// The keyed core of [`Self::get_or_create`]: sessions live under
+    /// exactly one key, a filename for file editing or a
+    /// [`note_session_key`] for a note, and the two namespaces never
+    /// alias (the note key carries its `note:` prefix).
+    async fn get_or_create_keyed(
+        &self,
+        key: &str,
+        hash: &str,
+        initial_content: Option<&[u8]>,
+        mode_filename: Option<&str>,
+    ) -> Arc<Document> {
         let read = self.documents.read().await;
-        if let Some(doc) = read.get(filename) {
+        if let Some(doc) = read.get(key) {
             return Arc::clone(doc);
         }
         drop(read);
 
         let mut write = self.documents.write().await;
         // Double-check after acquiring write lock
-        if let Some(doc) = write.get(filename) {
+        if let Some(doc) = write.get(key) {
             return Arc::clone(doc);
         }
 
-        let doc = Arc::new(Document::with_content(initial_content, Some(filename)));
-        write.insert(filename.to_owned(), Arc::clone(&doc));
+        let doc = Arc::new(Document::with_content(initial_content, mode_filename));
+        write.insert(key.to_owned(), Arc::clone(&doc));
         hash.clone_into(&mut *doc.hash.write().await);
         doc
     }
@@ -2195,5 +2245,42 @@ mod tests {
             "After removal, get_or_create must return a new Document"
         );
         assert_eq!(*doc2.hash.read().await, "hash_2");
+    }
+    // -----------------------------------------------------------------------
+    // CollabState tests -- note-ID session keying (#3819, Phase 3 slice 1)
+    // -----------------------------------------------------------------------
+
+    #[allow(clippy::unwrap_used)]
+    #[tokio::test]
+    async fn test_collab_state_keys_note_sessions_by_stable_note_id() {
+        let collab = CollabState::default();
+        let note_a = Hash::from_bytes([7u8; 32]);
+        let note_b = Hash::from_bytes([9u8; 32]);
+
+        // One note, reached under two different filename hints (a
+        // rename, an alias): the same session, because the key is
+        // the note's stable ID, not either name.
+        let doc1 = collab
+            .get_or_create_for_note(&note_a, "hash_a", Some(b"# Note"), Some("first.md"))
+            .await;
+        let doc2 = collab
+            .get_or_create_for_note(&note_a, "hash_a2", Some(b"# Other"), Some("renamed.md"))
+            .await;
+        assert!(
+            Arc::ptr_eq(&doc1, &doc2),
+            "the same note ID must return the same session whatever the filename"
+        );
+
+        // A different note is a different session, and a filename
+        // session never aliases a note session.
+        let doc3 = collab
+            .get_or_create_for_note(&note_b, "hash_b", Some(b"# B"), Some("first.md"))
+            .await;
+        assert!(!Arc::ptr_eq(&doc1, &doc3));
+        let doc4 = collab
+            .get_or_create("first.md", "hash_f", Some(b"# F"))
+            .await;
+        assert!(!Arc::ptr_eq(&doc1, &doc4));
+        assert!(!Arc::ptr_eq(&doc3, &doc4));
     }
 }
