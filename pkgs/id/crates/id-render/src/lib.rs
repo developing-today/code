@@ -44,8 +44,18 @@
 //!   and emitted with the machine-readable coverage report:
 //!   assertions mapped, assertions platform-defaulted (never
 //!   silent, #5852 §3.1), element defaults, and presentation
-//!   overrides excluded per #5853. Custom-GUI (#5853) lowering
-//!   consumes its own table through the same shape when it lands.
+//!   overrides excluded per #5853.
+//!
+//! * **Stages 4–5 — lower + emit, custom-GUI target**
+//!   ([`lower_gui`]): the resolved IR is lowered through the
+//!   #5853 presentation-override contract — override definitions
+//!   consumed as target-side data ([`lower_gui::GuiData`]) — to
+//!   the GUI artefact: the presentation choice per node (standard,
+//!   asset, drawn, or the exercised standard fallback of §2.4)
+//!   plus the accessibility tree, which is identical in every
+//!   mode (#5853 §3 invariant 1). State completeness (§2.3) and
+//!   renderer registration (§2.2) are build-time errors, never
+//!   runtime gaps.
 //!
 //! The assertion half of stage 2 is deliberately not implemented yet:
 //! the `assert` attribute's grammar and role vocabulary are #5850's,
@@ -55,7 +65,9 @@
 //! both vocabularies as versioned data).
 
 pub mod compose;
+pub mod gui_table;
 pub mod lower;
+pub mod lower_gui;
 pub mod lower_native;
 pub mod native_table;
 mod parse;
@@ -256,6 +268,24 @@ pub fn lower_document_native(
     composed: &compose::ComposedDocument,
 ) -> Result<(lower_native::NativeArtefact, lower_native::NativeReport), Vec<BuildError>> {
     lower_native::lower_native(doc, composed)
+}
+
+/// Stages 4 + 5 (custom-GUI target): lower a composed document
+/// through the #5853 presentation-override contract, consuming
+/// the override pack as data, and emit the artefact plus report.
+/// See [`lower_gui::lower_gui`] for the stated boundaries.
+///
+/// # Errors
+///
+/// Returns every build error found: a non-GUI composed document,
+/// an undefined or unregistered override, or incomplete state
+/// coverage.
+pub fn lower_document_gui(
+    doc: &Document,
+    composed: &compose::ComposedDocument,
+    data: &lower_gui::GuiData,
+) -> Result<(lower_gui::GuiArtefact, lower_gui::GuiReport), Vec<BuildError>> {
+    lower_gui::lower_gui(doc, composed, data)
 }
 
 /// Stages 1 + 2: parse a source document and validate it against the
