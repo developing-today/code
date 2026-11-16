@@ -4378,7 +4378,7 @@
         "health": { "firstTokenTimeoutMs": 60000 }
       },
       "workhorse-last-resort": {
-        "name": "Workhorse last resort - Haiku #high from Claude first, then Sonnet #low from Antigravity, then Fable #low, only if all else is down",
+        "name": "Workhorse last resort - Haiku #high from Claude first, then Sonnet #low from Antigravity, only if all else is down (Fable #low tail commented out 2026-11-16)",
         // NEW 2026-11-10 (Drew, direct order): the fourth and final
         // stage of the workhorse chain, reached only when
         // workhorse-ordered, workhorse-primary, and
@@ -4413,8 +4413,9 @@
         // primary-checkout reconcile (Drew's order) landed it.
         "targets": [
           "_claude/claude-haiku-5-5#high",
-          "_antigravity/claude-sonnet-5-5#low",
-          "opencode-route/fable-plan#low"
+          "_antigravity/claude-sonnet-5-5#low"
+          // 2026-11-16 (Drew, direct order): Fable tail commented out for now:
+          // "opencode-route/fable-plan#low"
         ],
         "selection": "ordered",
         "autonomy": "rules",
@@ -4477,7 +4478,7 @@
         "autonomy": "rules"
       },
       "summit": {
-        "name": "Summit - very complex design only, deliberate use: Fable #low head, then Opus, Argon, Hydrogen, Wonder, Sol",
+        "name": "Summit - very complex design only, deliberate use: Opus, Argon, Hydrogen, Wonder, Sol (Fable #low head commented out 2026-11-16)",
         // Class fallback (Drew 2026-11-13): on exhaustion this class
         // escalates to the route(s) appended at the END of its targets.
         // Per-call visited-set semantics: the route expander prunes
@@ -4522,7 +4523,8 @@
           // 2026-11-16 (Drew, direct order): Fable #medium -> #low --
           // Fable is low in every seat; this reverses the 2026-11-11
           // summit raise (also Drew's order).
-          "opencode-route/fable-plan#low",
+          // 2026-11-16 (Drew, direct order): Fable head commented out for now.
+          // "opencode-route/fable-plan#low",
           "opencode-route/opus-plan#medium",
           "opencode-route/argon-plan#high",
           "_antigravity/gemini-4-hydrogen#high",
