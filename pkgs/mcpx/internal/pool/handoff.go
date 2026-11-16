@@ -171,6 +171,13 @@ func (p *Pool) restore(handed []*Instance) {
 	p.instances = p.parked
 	p.parked = nil
 	p.closed = false
+	// A takeover rollback returns parked children to service. The exec
+	// watch exits while the pool is closed (see watchExec), so restart
+	// it here — otherwise this pool never notices executable changes
+	// again. watchExecLocked no-ops when the watcher survived (a short
+	// closed window with no tick inside it) or when the pool has no
+	// exec check configured.
+	p.watchExecLocked()
 	p.cond.Broadcast()
 	p.mu.Unlock()
 }
@@ -451,4 +458,50 @@ func (p *Pool) ExecIdentity() string {
 	p.execMu.Lock()
 	defer p.execMu.Unlock()
 	return p.exec
+}
+
+// AdoptRunningSupervised is the state-dir scan of #9962 (Phase 2 of
+// #1384): when a supervisor for this pool's server is already running —
+// left behind by a previous daemon — adopt its child as this pool's
+// instance by attaching, instead of handing the instance off or
+// spawning a duplicate. It reports whether an instance was adopted.
+// No live supervisor, a supervisor another daemon is attached to, and
+// a pool that already serves the default lane are all quiet no-ops:
+// the ordinary spawn path (attach-or-spawn) covers them on first use.
+func (p *Pool) AdoptRunningSupervised(ctx context.Context) bool {
+	if p.cfg == nil || !p.cfg.Stdio() || p.cfg.Mcpx == nil || !p.cfg.Mcpx.Supervised {
+		return false
+	}
+	rs := p.cfg.Scope.Resolve(config.CallContext{})
+	p.mu.Lock()
+	if p.closed || p.starting > 0 || p.findLaneLocked(rs.Key, false) != nil {
+		p.mu.Unlock()
+		return false
+	}
+	p.starting++
+	p.mu.Unlock()
+
+	in, err := p.startLaneMode(ctx, false, rs, true)
+
+	p.mu.Lock()
+	p.starting--
+	if err != nil {
+		p.cond.Broadcast()
+		p.mu.Unlock()
+		return false
+	}
+	if p.closed || p.findLaneLocked(rs.Key, false) != nil {
+		// The pool moved on while the attach was in flight; retire
+		// the duplicate the same way Acquire does.
+		p.cond.Broadcast()
+		p.mu.Unlock()
+		go func() { _ = in.Client.Close() }()
+		return false
+	}
+	in.key = rs.Key
+	in.lastUsed = time.Now()
+	p.instances = append(p.instances, in)
+	p.cond.Broadcast()
+	p.mu.Unlock()
+	return true
 }

@@ -68,7 +68,9 @@ async function driveBoard(externalLinks: unknown[]) {
   const projectsFile = join(dir, "kaneo-projects.json");
   await writeFile(
     projectsFile,
-    JSON.stringify({ projects: [{ slug: "code", projectId: "p1", repository: "example-org/example-repo", installationId: 1 }] }),
+    JSON.stringify({
+      projects: [{ slug: "code", projectId: "p1", repository: "example-org/example-repo", installationId: 1 }],
+    }),
   );
   const realFetch = globalThis.fetch;
   globalThis.fetch = (async (input: unknown) => {
@@ -115,7 +117,11 @@ describe("Kaneo board link minting (#6243)", () => {
   test("only valid refs are minted: unsafe-integer and non-numeric externalIds drop, the card survives", async () => {
     const board = await driveBoard([
       { resourceType: "issue", externalId: "42", url: "https://github.com/example-org/example-repo/issues/42" },
-      { resourceType: "issue", externalId: "99999999999999999999", url: "https://github.com/example-org/example-repo/issues/99999999999999999999" },
+      {
+        resourceType: "issue",
+        externalId: "99999999999999999999",
+        url: "https://github.com/example-org/example-repo/issues/99999999999999999999",
+      },
       { resourceType: "issue", externalId: "abc", url: "https://github.com/example-org/example-repo/issues/abc" },
     ]);
     const card = board.find((b) => b.title === "Work in p1");
@@ -154,7 +160,7 @@ describe("sessionRecordLine renders invalid stored refs as plain text (#6243)", 
   test("non-GitHub ref: no throw, ref visible as plain text", () => {
     const html = sessionRecordLine(rec([BAD_SHAPE]));
     expect(html).toContain(BAD_SHAPE);
-    expect(html).not.toContain("<a href=\"https://github.com/goal");
+    expect(html).not.toContain('<a href="https://github.com/goal');
   });
   test("valid ref control: anchor unchanged", () => {
     const html = sessionRecordLine(rec([GOOD]));

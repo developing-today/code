@@ -11,11 +11,25 @@ import { AutoSaveManager, type SaveResult } from "./auto-save";
 import { buildCollabWsUrl, type CollabConnection, initCollab } from "./collab";
 import { type EditorInstance, getEditorState } from "./editor";
 import { updateHeaderSubtitle } from "./header-subtitle";
-import { identityNeedsRefresh } from "./identity-refresh";
+import {
+  identityNeedsRefresh,
+  meResponseCarriesName,
+  parseIdentityMeResponse,
+  parseIdentityNameResponse,
+  parseIdentityRegisterResponse,
+} from "./identity-refresh";
 import { clientIdForDisplay } from "./settings-identity";
 import { closeImageBrowser } from "./image-browser";
 import { createNavigation } from "./navigation";
 import { resolveSaveFilename } from "./save-filename";
+import { parseTagsResponse } from "./tags-response";
+import {
+  isCopyFileResponse,
+  isNewFileResponse,
+  isRenameFileResponse,
+  isSaveFileResponse,
+  isSendFileResponse,
+} from "./file-op-responses";
 import { isSaveShortcut } from "./save-shortcut";
 import { cycleTheme, initTheme, setTheme, type Theme } from "./theme";
 
@@ -42,9 +56,11 @@ interface IdApp {
   disconnectTagsWs: () => void;
   loadFileTags: (filename: string) => Promise<void>;
   renderEditorTags: (tags: Array<{ key: string; value: string | null }>) => void;
+  renderEditorTagsLoadError: () => void;
   addTagInline: () => Promise<void>;
   removeTag: (subject: string, key: string, value: string | null) => Promise<void>;
   bulkAddTag: () => Promise<void>;
+  bulkSendToServer: () => Promise<void>;
   bulkClearSelection: () => void;
   initBulkSelect: () => void;
   navHistory: string[];
@@ -145,17 +161,22 @@ async function ensureIdentity(): Promise<IdentityState | null> {
     try {
       const resp = await fetch(`/api/identity/me?token=${encodeURIComponent(stored.token)}`);
       if (resp.ok) {
-        const data = await resp.json();
+        const rawBody: unknown = await resp.json();
+        const data = parseIdentityMeResponse(rawBody);
+        // A wrong-shape me body carrying no name field at all must not
+        // wipe the stored display name (#7838): the parser maps an
+        // absent name to null, so presence is checked on the raw body.
+        const nameCarried = meResponseCarriesName(rawBody);
         // Server returns a refreshed token on each validation, resetting the
         // 30-day expiry clock. Save it so the client stays authenticated as
         // long as they visit within every 30 days.
         if (data.token) {
           stored.token = data.token;
-          saveIdentity(stored.token, stored.clientId, data.name || null);
+          saveIdentity(stored.token, stored.clientId, nameCarried ? data.name : stored.name);
         }
         // Update name from server (may have changed via another tab/session)
-        const serverName = data.name || null;
-        if (serverName !== stored.name) {
+        const serverName = data.name;
+        if (nameCarried && serverName !== stored.name) {
           updateStoredName(serverName);
           stored.name = serverName;
         }
@@ -182,11 +203,11 @@ async function ensureIdentity(): Promise<IdentityState | null> {
       console.error("[id] Identity registration failed:", resp.status);
       return null;
     }
-    const data = await resp.json();
+    const data = parseIdentityRegisterResponse(await resp.json());
     const identity: IdentityState = {
       token: data.token,
-      clientId: data.client_id,
-      name: data.name || null,
+      clientId: data.clientId,
+      name: data.name,
     };
     saveIdentity(identity.token, identity.clientId, identity.name);
     console.log("[id] New identity registered:", identity.clientId);
@@ -212,8 +233,8 @@ async function updateDisplayName(token: string, name: string | null): Promise<st
       console.error("[id] Name update failed:", resp.status);
       return null;
     }
-    const data = await resp.json();
-    const updatedName = data.name || null;
+    const data = parseIdentityNameResponse(await resp.json());
+    const updatedName = data.name;
     updateStoredName(updatedName);
     console.log("[id] Display name updated:", updatedName);
     return updatedName;
@@ -605,10 +626,7 @@ function initPeersAutoRefresh(): void {
 function refreshSettingsClientId(): void {
   const clientIdEl = document.getElementById("client-id-value");
   if (clientIdEl) {
-    clientIdEl.textContent = clientIdForDisplay(
-      currentIdentity?.clientId,
-      getStoredIdentity()?.clientId,
-    );
+    clientIdEl.textContent = clientIdForDisplay(currentIdentity?.clientId, getStoredIdentity()?.clientId);
   }
 }
 
@@ -692,6 +710,22 @@ async function init(): Promise<void> {
       ws.onopen = () => {
         console.log("[id] Tags WS connected");
         this.tagsWsReconnectAttempts = 0;
+
+        // Reconnection cannot replay missed broadcast events. Refresh the
+        // visible views after every connection so a server close after lag
+        // restores the current state rather than only resuming future events.
+        const fileListContent = document.getElementById("file-list-content");
+        if (fileListContent) {
+          const qs = currentFileListParams().toString();
+          const url = qs ? `/api/files?${qs}` : "/api/files";
+          fetchPartial(url, "#file-list-content");
+        }
+        const editorContainer = document.getElementById("editor-container");
+        if (editorContainer) {
+          const filenameEncoded = editorContainer.dataset.filename;
+          const filename = filenameEncoded ? decodeURIComponent(filenameEncoded) : null;
+          if (filename) this.loadFileTags(filename);
+        }
       };
 
       ws.onmessage = (event: MessageEvent) => {
@@ -759,10 +793,23 @@ async function init(): Promise<void> {
     async loadFileTags(filename: string): Promise<void> {
       try {
         const response = await fetch(`/api/tags?subject=${encodeURIComponent(filename)}`);
-        if (!response.ok) return;
-        const raw = await response.json();
-        // API may return { tags: [...] } or a flat array
-        const tags: Array<{ key: string; value: string | null }> = Array.isArray(raw) ? raw : raw.tags || [];
+        if (!response.ok) {
+          console.error(`[id] Failed to load file tags for ${filename}: HTTP ${response.status}`);
+          this.renderEditorTagsLoadError();
+          return;
+        }
+        const raw: unknown = await response.json();
+        // API may return { tags: [...] } or a flat array. Validate the
+        // shape at the fetch boundary (#7841): a wrong-shape 200 fails
+        // closed into the explicit load-failure state — never a false
+        // "none", never the previous file's pills left in place, never
+        // a coerced "[object Object]" pill.
+        const tags = parseTagsResponse(raw);
+        if (tags === null) {
+          console.error(`[id] Failed to load file tags for ${filename}: unexpected /api/tags response shape`);
+          this.renderEditorTagsLoadError();
+          return;
+        }
         // Filter out system tags (created, modified, deleted, archive.*)
         const userTags = tags.filter(
           (t: { key: string }) =>
@@ -770,8 +817,26 @@ async function init(): Promise<void> {
         );
         this.renderEditorTags(userTags);
       } catch (err) {
-        console.warn("[id] Failed to load file tags:", err);
+        console.error("[id] Failed to load file tags:", err);
+        this.renderEditorTagsLoadError();
       }
+    },
+
+    /**
+     * Render the explicit tag load-failure state (#7841): the panel
+     * says the tags could not be loaded, replacing whatever the
+     * previous file's render left behind.
+     */
+    renderEditorTagsLoadError(): void {
+      const list = document.getElementById("editor-tag-list");
+      if (!list) return;
+
+      list.innerHTML = "";
+      const error = document.createElement("span");
+      error.className = "tag-load-error text-muted";
+      error.textContent = "failed to load tags";
+      error.style.fontSize = "9px";
+      list.appendChild(error);
     },
 
     /**
@@ -920,6 +985,61 @@ async function init(): Promise<void> {
       keyInput.value = "";
       if (valueInput) valueInput.value = "";
       // Tags WS will refresh the file list
+    },
+
+    /**
+     * Send each selected file to another server (#5346).
+     *
+     * One POST /api/files/send per selected file: the browser carries
+     * only the file name and the destination node ID — this server
+     * performs each transfer itself, server-to-server. A file counts
+     * as sent only when the response is OK *and* carries a well-shaped
+     * receipt (the server answers 200 only after the destination
+     * confirmed the send); every other outcome is reported as failed
+     * for that file, never as success.
+     */
+    async bulkSendToServer(): Promise<void> {
+      const destInput = document.getElementById("bulk-send-dest") as HTMLInputElement | null;
+      if (!destInput) return;
+
+      const dest = destInput.value.trim();
+      if (!dest) return;
+
+      const checkboxes = document.querySelectorAll(".file-select:checked") as NodeListOf<HTMLInputElement>;
+      const subjects: string[] = [];
+      checkboxes.forEach((cb) => {
+        const name = cb.dataset.name;
+        if (name) subjects.push(name);
+      });
+
+      if (subjects.length === 0) return;
+
+      let successCount = 0;
+      const failures: string[] = [];
+      for (const name of subjects) {
+        try {
+          const response = await fetch("/api/files/send", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ name, dest }),
+          });
+          const result: unknown = await response.json().catch(() => null);
+          if (response.ok && isSendFileResponse(result)) {
+            successCount++;
+          } else {
+            failures.push(name);
+            console.error("[id] Send failed for", name, result);
+          }
+        } catch (err) {
+          failures.push(name);
+          console.error("[id] Send error for", name, err);
+        }
+      }
+
+      console.log(
+        `[id] Bulk send: sent ${successCount}/${subjects.length} files to ${dest}` +
+          (failures.length > 0 ? `; failed: ${failures.join(", ")}` : ""),
+      );
     },
 
     /**
@@ -1132,7 +1252,11 @@ async function init(): Promise<void> {
           return { ok: false };
         }
 
-        const result = (await response.json()) as { hash: string; name: string; archive_name: string | null };
+        const result: unknown = await response.json();
+        if (!isSaveFileResponse(result)) {
+          console.error("[id] Save failed: unexpected /api/save response shape", result);
+          return { ok: false };
+        }
         console.log("[id] File saved:", result);
 
         // Update the hash in the container (doc_id stays as filename)
@@ -1169,7 +1293,11 @@ async function init(): Promise<void> {
           return;
         }
 
-        const result = (await response.json()) as { hash: string; name: string };
+        const result: unknown = await response.json();
+        if (!isNewFileResponse(result)) {
+          console.error("[id] Create file failed: unexpected /api/new response shape", result);
+          return;
+        }
         console.log("[id] File created:", result);
 
         // Clear input
@@ -1282,12 +1410,15 @@ async function init(): Promise<void> {
           return;
         }
 
-        const result = (await response.json()) as {
-          name: string;
-          hash: string;
-          archived_original: string | null;
-          archived_replaced: string | null;
-        };
+        const result: unknown = await response.json();
+        if (!isRenameFileResponse(result)) {
+          console.error("[id] Rename failed: unexpected /api/rename response shape", result);
+          if (renameBtn) renameBtn.textContent = "error!";
+          setTimeout(() => {
+            if (renameBtn) renameBtn.textContent = "rename";
+          }, 2000);
+          return;
+        }
         console.log("[id] File renamed:", result);
 
         if (renameBtn) {
@@ -1350,10 +1481,15 @@ async function init(): Promise<void> {
           return;
         }
 
-        const result = (await response.json()) as {
-          name: string;
-          hash: string;
-        };
+        const result: unknown = await response.json();
+        if (!isCopyFileResponse(result)) {
+          console.error("[id] Copy failed: unexpected /api/copy response shape", result);
+          if (copyBtn) copyBtn.textContent = "error!";
+          setTimeout(() => {
+            if (copyBtn) copyBtn.textContent = "copy";
+          }, 2000);
+          return;
+        }
         console.log("[id] File copied:", result);
 
         if (copyBtn) {

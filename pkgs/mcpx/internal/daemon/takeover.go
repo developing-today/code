@@ -772,6 +772,10 @@ func (s *Server) commitTakeover(uc *net.UnixConn, in *takeoverIn, endFd *os.File
 		s.started = t
 	}
 	ad.Attach()
+	// Supervised instances were not handed off; adopt them now that
+	// the predecessor's commit has detached it from their supervisors
+	// (#9962).
+	s.reg.AdoptSupervised(context.Background())
 	// Keep the adoption so an orderly exit can wait for the background
 	// orphan terminations Attach just started (#298). Only the committed
 	// path reaches here; the abort path above sends no DELETEs.

@@ -32,7 +32,9 @@ printf 'SEED:%s\\n' "${MCPX_TEST_SEED:-<unset>}"
 def spec_shuffle(seed: str) -> int:
     """The #1949 section 2 formula, restated from the issue text."""
     root = hashlib.sha256(b"mcpx-test-seed/v1\x00" + seed.encode()).digest()
-    return int.from_bytes(hashlib.sha256(root + b"shuffle").digest()[:8], "big") & (2**63 - 1)
+    return int.from_bytes(hashlib.sha256(root + b"shuffle").digest()[:8], "big") & (
+        2**63 - 1
+    )
 
 
 class WrapperTest(unittest.TestCase):
@@ -50,22 +52,31 @@ class WrapperTest(unittest.TestCase):
         with open(fake, "w") as fh:
             fh.write(FAKE_GO)
         os.chmod(fake, 0o755)
-        self.env = {k: v for k, v in os.environ.items()
-                    if k not in ("MCPX_TEST_SEED", "CI", "GITHUB_ACTIONS")}
+        self.env = {
+            k: v
+            for k, v in os.environ.items()
+            if k not in ("MCPX_TEST_SEED", "CI", "GITHUB_ACTIONS")
+        }
         self.env["PATH"] = bindir + os.pathsep + self.env["PATH"]
 
     def run_wrapper(self, args=(), **env):
         e = dict(self.env, **env)
         return subprocess.run(
             ["bash", os.path.join(self.work, "scripts", "test.sh"), *args],
-            capture_output=True, text=True, env=e, timeout=60)
+            capture_output=True,
+            text=True,
+            env=e,
+            timeout=60,
+        )
 
     def test_set_seed_is_exported_and_derives_shuffle(self):
         seed = "01a0f101-2378-7c1c-9dc1-5a1ae1571eca"
         r = self.run_wrapper(["./internal/codegen"], MCPX_TEST_SEED=seed)
         self.assertEqual(r.returncode, 0, r.stderr)
         self.assertIn(f"SEED:{seed}", r.stdout)
-        self.assertIn(f"ARGS:test -shuffle={spec_shuffle(seed)} ./internal/codegen", r.stdout)
+        self.assertIn(
+            f"ARGS:test -shuffle={spec_shuffle(seed)} ./internal/codegen", r.stdout
+        )
 
     def test_unset_locally_mints_v7_and_records_it(self):
         r = self.run_wrapper()
@@ -73,8 +84,8 @@ class WrapperTest(unittest.TestCase):
         m = re.search(r"SEED:([0-9a-f-]{36})", r.stdout)
         self.assertIsNotNone(m, r.stdout + r.stderr)
         seed = m.group(1)
-        self.assertEqual(seed[14], "7", seed)          # version nibble
-        self.assertIn(seed[19], "89ab", seed)          # variant bits
+        self.assertEqual(seed[14], "7", seed)  # version nibble
+        self.assertIn(seed[19], "89ab", seed)  # variant bits
         self.assertIn(f"ARGS:test -shuffle={spec_shuffle(seed)} ./...", r.stdout)
         with open(os.path.join(self.work, ".cache", "test-seed", "last")) as fh:
             self.assertEqual(fh.read().strip(), seed)

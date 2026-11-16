@@ -31,7 +31,8 @@
 #      payload reports degraded, saving that payload as the fired-signal
 #      evidence; it also records (best effort) whether the #1148
 #      watchdog's `watchdog:feed` tier item appeared on
-#      /api/attention.json.
+#      /api/attention.json, and whether the rendered overview page
+#      carries the stale-feed warning (#1116 item 5).
 #   5. Restores ALWAYS once the aging has happened: the saved bytes are
 #      written back atomically and the drill waits (up to
 #      PM_DRILL_RESTORE_WAIT_MIN) for the collector's next scheduled run
@@ -61,6 +62,7 @@
 #   PM_DRILL_FEED_FILE        feed file (default ~/.local/state/pm-aggregator/fleet-feed.json)
 #   PM_DRILL_HEALTH_CMD       command printing the /api/health JSON (default local curl)
 #   PM_DRILL_ATTENTION_CMD    command printing /api/attention.json (default local curl)
+#   PM_DRILL_PAGE_CMD         command printing the rendered overview page (default local curl); the drill greps it for the stale-feed banner
 #   PM_DRILL_AGE_MS           how far into the past to stamp the feed (default 1200000)
 #   PM_DRILL_MAX_WAIT_MIN     max minutes to wait for the stale signal (default 25)
 #   PM_DRILL_RESTORE_WAIT_MIN max minutes to wait for the collector to refresh (default 12)
@@ -73,6 +75,13 @@ INCIDENT_FLAG="${PM_DRILL_INCIDENT_FLAG:-$STATE_DIR/incident.flag}"
 FEED_FILE="${PM_DRILL_FEED_FILE:-$HOME/.local/state/pm-aggregator/fleet-feed.json}"
 HEALTH_CMD="${PM_DRILL_HEALTH_CMD:-curl -s --max-time 25 http://127.0.0.1:4870/api/health}"
 ATTENTION_CMD="${PM_DRILL_ATTENTION_CMD:-curl -s --max-time 25 http://127.0.0.1:4870/api/attention.json}"
+# #1116 item (5): the rendered half of the honesty signal. After the
+# health signal fires, the drill fetches the overview page and greps for
+# the stale-feed banner's data-signal hook (render.ts
+# renderOverviewBody). Best effort and recorded either way — a failed
+# page fetch is "unknown", never a drill failure; the deterministic
+# assertion lives in test/overview-stale-feed-1116.test.ts.
+PAGE_CMD="${PM_DRILL_PAGE_CMD:-curl -s --max-time 25 http://127.0.0.1:4870/}"
 AGE_MS="${PM_DRILL_AGE_MS:-1200000}"
 MAX_WAIT_MIN="${PM_DRILL_MAX_WAIT_MIN:-25}"
 RESTORE_WAIT_MIN="${PM_DRILL_RESTORE_WAIT_MIN:-12}"
@@ -91,38 +100,38 @@ STARTED_AT="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 
 log() { printf '[drill] %s %s\n' "$(date -u +%H:%M:%SZ)" "$*"; }
 die() {
-	log "REFUSED/FAILED: $*"
-	exit 1
+  log "REFUSED/FAILED: $*"
+  exit 1
 }
 
 # --- interlock: one drill at a time ---------------------------------------
 exec 9>"$STATE_DIR/age-feed.lock"
 if ! flock -n 9; then
-	die "another age-feed drill holds the lock; not starting"
+  die "another age-feed drill holds the lock; not starting"
 fi
 # --- interlock: no drills during a real incident ---------------------------
 if [ -e "$INCIDENT_FLAG" ]; then
-	die "incident flag present ($INCIDENT_FLAG); the stack is not a drill canvas during a real incident"
+  die "incident flag present ($INCIDENT_FLAG); the stack is not a drill canvas during a real incident"
 fi
 
 # --- health/feed reads (aggregator loopback on this host) ------------------
 health_json() {
-	# The aggregator's first health assembly after a quiet period can be
-	# slow to prime (health-priming is a known behaviour), so retry: a
-	# drill must never act on — or refuse on — one timed-out read.
-	local attempt out
-	for attempt in 1 2 3; do
-		out="$(bash -c "$HEALTH_CMD" 2>/dev/null)" && [ -n "$out" ] && {
-			printf '%s' "$out"
-			return 0
-		}
-		sleep 5
-	done
-	return 1
+  # The aggregator's first health assembly after a quiet period can be
+  # slow to prime (health-priming is a known behaviour), so retry: a
+  # drill must never act on — or refuse on — one timed-out read.
+  local attempt out
+  for attempt in 1 2 3; do
+    out="$(bash -c "$HEALTH_CMD" 2>/dev/null)" && [ -n "$out" ] && {
+      printf '%s' "$out"
+      return 0
+    }
+    sleep 5
+  done
+  return 1
 }
 # Prints "<age_ms> <degraded>" for the feed in a health payload on stdin.
 feed_facts() {
-	python3 -c '
+  python3 -c '
 import json, sys, datetime
 try:
     d = json.load(sys.stdin)
@@ -138,7 +147,7 @@ except Exception:
 # leaving every other field as the collector wrote it. Prints the written
 # path on success.
 age_feed_to() {
-	python3 - "$FEED_FILE" "$1" <<'PY'
+  python3 - "$FEED_FILE" "$1" <<'PY'
 import json, os, sys, tempfile
 path, stamp = sys.argv[1], sys.argv[2]
 try:
@@ -157,7 +166,7 @@ PY
 }
 # Current generatedAt of the feed file, or empty when unreadable.
 feed_stamp() {
-	python3 -c '
+  python3 -c '
 import json, sys
 try:
     print(json.load(open(sys.argv[1])).get("generatedAt") or "")
@@ -177,25 +186,25 @@ except Exception:
 AGED=0
 RESTORED=0
 restore() {
-	[ "$AGED" = 1 ] || return 0
-	[ "$RESTORED" = 1 ] && return 0
-	RESTORED=1
-	log "restoring the feed's original bytes (collector stays running)"
-	# Never clobber a FRESH feed the collector wrote after our last
-	# re-age: the aged pin is ours to undo, a new collection is not.
-	if [ "$(feed_stamp)" != "$PIN_STAMP" ]; then
-		log "collector already rewrote the feed with a fresh stamp; nothing to restore"
-		return 0
-	fi
-	if ! cp -p "$BACKUP_FILE" "$FEED_FILE.tmp.$$" 2>/dev/null || ! mv -f "$FEED_FILE.tmp.$$" "$FEED_FILE" 2>/dev/null; then
-		log "WARN: could not restore $FEED_FILE from $BACKUP_FILE"
-	fi
+  [ "$AGED" = 1 ] || return 0
+  [ "$RESTORED" = 1 ] && return 0
+  RESTORED=1
+  log "restoring the feed's original bytes (collector stays running)"
+  # Never clobber a FRESH feed the collector wrote after our last
+  # re-age: the aged pin is ours to undo, a new collection is not.
+  if [ "$(feed_stamp)" != "$PIN_STAMP" ]; then
+    log "collector already rewrote the feed with a fresh stamp; nothing to restore"
+    return 0
+  fi
+  if ! cp -p "$BACKUP_FILE" "$FEED_FILE.tmp.$$" 2>/dev/null || ! mv -f "$FEED_FILE.tmp.$$" "$FEED_FILE" 2>/dev/null; then
+    log "WARN: could not restore $FEED_FILE from $BACKUP_FILE"
+  fi
 }
 trap restore EXIT INT TERM
 
 # --- preconditions ----------------------------------------------------------
 systemctl --user is-active --quiet "$COLLECTOR_TIMER" ||
-	die "$COLLECTOR_TIMER is not active; this drill's premise is a running collector, and a stopped collector outside a drill is itself a finding"
+  die "$COLLECTOR_TIMER is not active; this drill's premise is a running collector, and a stopped collector outside a drill is itself a finding"
 [ -r "$FEED_FILE" ] || die "cannot read the feed file $FEED_FILE"
 [ -n "$(feed_stamp)" ] || die "feed file $FEED_FILE has no readable generatedAt; refusing to drill blind"
 BASELINE="$(health_json | feed_facts)" || die "cannot read aggregator /api/health; refusing to drill blind"
@@ -224,43 +233,64 @@ WATCHDOG=0
 WAITED=0
 MAX_WAIT_SEC=$((MAX_WAIT_MIN * 60))
 while [ "$WAITED" -le "$MAX_WAIT_SEC" ]; do
-	# Re-age if the collector rewrote the feed with a fresh stamp: this
-	# is the drill's scenario, not a failure of the drill.
-	CUR_STAMP="$(feed_stamp)"
-	[ "$CUR_STAMP" = "$PIN_STAMP" ] || age_feed_to "$PIN_STAMP" || log "WARN: re-age failed (stamp now ${CUR_STAMP:-unreadable})"
-	HEALTH="$(health_json)"
-	FACTS="$(printf '%s' "$HEALTH" | feed_facts)"
-	AGE="${FACTS%% *}"
-	DEG="${FACTS##* }"
-	if [ "$AGE" -gt "$STALE_MS" ] 2>/dev/null; then
-		SIGNAL=1
-		[ "$DEG" = "true" ] && DEGRADED=1
-		printf '%s' "$HEALTH" >"$EVIDENCE_FILE" 2>/dev/null || true
-		log "SIGNAL FIRED: feed age ${AGE}ms crossed the ${STALE_MS}ms staleness threshold after ~${WAITED}s (health payload saved)"
-		break
-	fi
-	log "waiting: feed age ${AGE}ms (threshold ${STALE_MS}ms)"
-	sleep 60
-	WAITED=$((WAITED + 60))
+  # Re-age if the collector rewrote the feed with a fresh stamp: this
+  # is the drill's scenario, not a failure of the drill.
+  CUR_STAMP="$(feed_stamp)"
+  [ "$CUR_STAMP" = "$PIN_STAMP" ] || age_feed_to "$PIN_STAMP" || log "WARN: re-age failed (stamp now ${CUR_STAMP:-unreadable})"
+  HEALTH="$(health_json)"
+  FACTS="$(printf '%s' "$HEALTH" | feed_facts)"
+  AGE="${FACTS%% *}"
+  DEG="${FACTS##* }"
+  if [ "$AGE" -gt "$STALE_MS" ] 2>/dev/null; then
+    SIGNAL=1
+    [ "$DEG" = "true" ] && DEGRADED=1
+    printf '%s' "$HEALTH" >"$EVIDENCE_FILE" 2>/dev/null || true
+    log "SIGNAL FIRED: feed age ${AGE}ms crossed the ${STALE_MS}ms staleness threshold after ~${WAITED}s (health payload saved)"
+    break
+  fi
+  log "waiting: feed age ${AGE}ms (threshold ${STALE_MS}ms)"
+  sleep 60
+  WAITED=$((WAITED + 60))
 done
 [ "$SIGNAL" = 1 ] || log "SIGNAL DID NOT FIRE within ${MAX_WAIT_MIN}min"
 
 # --- watchdog check (best effort, recorded either way) -----------------------
 if [ "$SIGNAL" = 1 ]; then
-	if ATT="$(bash -c "$ATTENTION_CMD" 2>/dev/null)" && [ -n "$ATT" ]; then
-		printf '%s' "$ATT" >"$ATTENTION_EVIDENCE" 2>/dev/null || true
-		if printf '%s' "$ATT" | python3 -c '
+  if ATT="$(bash -c "$ATTENTION_CMD" 2>/dev/null)" && [ -n "$ATT" ]; then
+    printf '%s' "$ATT" >"$ATTENTION_EVIDENCE" 2>/dev/null || true
+    if printf '%s' "$ATT" | python3 -c '
 import json, sys
 d = json.load(sys.stdin)
 items = d.get("attention") if isinstance(d, dict) else d
 print("yes" if any(isinstance(i, dict) and i.get("id") == "watchdog:feed" for i in (items or [])) else "no")
 ' 2>/dev/null | grep -qx yes; then
-			WATCHDOG=1
-			log "watchdog:feed tier item present on /api/attention.json"
-		else
-			log "watchdog:feed tier item not present on /api/attention.json (health signal alone was recorded)"
-		fi
-	fi
+      WATCHDOG=1
+      log "watchdog:feed tier item present on /api/attention.json"
+    else
+      log "watchdog:feed tier item not present on /api/attention.json (health signal alone was recorded)"
+    fi
+  fi
+fi
+
+# --- rendered-page check (#1116 item 5; best effort, recorded either way) --
+# The health signal proves the aggregator *knows* the feed is stale; this
+# proves the dashboard *says* so where a human looks. PAGE_WARN ends 1
+# when the overview carries the stale-feed banner, 0 when the page was
+# read but the banner is absent, and empty (recorded as null/unknown)
+# when the page could not be fetched at all.
+PAGE_WARN=""
+if [ "$SIGNAL" = 1 ]; then
+  if PAGE="$(bash -c "$PAGE_CMD" 2>/dev/null)" && [ -n "$PAGE" ]; then
+    if printf '%s' "$PAGE" | grep -q 'data-signal="feed-stale"'; then
+      PAGE_WARN=1
+      log "rendered page carries the stale-feed warning (data-signal=feed-stale)"
+    else
+      PAGE_WARN=0
+      log "WARN: rendered page has no stale-feed warning though the health signal fired"
+    fi
+  else
+    log "rendered page unreadable; page warning unknown (health signal alone was recorded)"
+  fi
 fi
 
 # --- restore + confirm --------------------------------------------------------
@@ -270,25 +300,25 @@ CONFIRMED=0
 WAITED=0
 MAX_RESTORE_SEC=$((RESTORE_WAIT_MIN * 60))
 while [ "$WAITED" -le "$MAX_RESTORE_SEC" ]; do
-	FACTS="$(health_json | feed_facts)"
-	AGE="${FACTS%% *}"
-	if [ "$AGE" -ge 0 ] 2>/dev/null && [ "$AGE" -le "$STALE_MS" ] 2>/dev/null; then
-		CONFIRMED=1
-		log "restoration confirmed: feed fresh again (age ${AGE}ms)"
-		break
-	fi
-	log "waiting for the collector's next run: feed age ${AGE}ms"
-	sleep 30
-	WAITED=$((WAITED + 30))
+  FACTS="$(health_json | feed_facts)"
+  AGE="${FACTS%% *}"
+  if [ "$AGE" -ge 0 ] 2>/dev/null && [ "$AGE" -le "$STALE_MS" ] 2>/dev/null; then
+    CONFIRMED=1
+    log "restoration confirmed: feed fresh again (age ${AGE}ms)"
+    break
+  fi
+  log "waiting for the collector's next run: feed age ${AGE}ms"
+  sleep 30
+  WAITED=$((WAITED + 30))
 done
 [ "$CONFIRMED" = 1 ] || log "WARN: restoration not confirmed within ${RESTORE_WAIT_MIN}min (feed age ${AGE:-unknown}ms)"
 
 # --- report -------------------------------------------------------------------
 OUTCOME="failed"
 [ "$SIGNAL" = 1 ] && [ "$CONFIRMED" = 1 ] && OUTCOME="passed"
-python3 - "$RESULT_FILE" "$STARTED_AT" "$OUTCOME" "$SIGNAL" "$DEGRADED" "$WATCHDOG" "$CONFIRMED" "$AGE_MS" <<'PY'
+python3 - "$RESULT_FILE" "$STARTED_AT" "$OUTCOME" "$SIGNAL" "$DEGRADED" "$WATCHDOG" "$CONFIRMED" "$AGE_MS" "$PAGE_WARN" <<'PY'
 import json, sys, datetime
-path, started, outcome, signal, degraded, watchdog, confirmed, aged = sys.argv[1:9]
+path, started, outcome, signal, degraded, watchdog, confirmed, aged, page = sys.argv[1:10]
 json.dump({
     "drill": "age-feed", "issue": 1283, "epic": 1184,
     "started_at": started,
@@ -297,26 +327,27 @@ json.dump({
     "signal_fired": signal == "1",
     "health_degraded": degraded == "1",
     "watchdog_item_seen": watchdog == "1",
+    "page_warn_seen": True if page == "1" else (False if page == "0" else None),
     "restoration_confirmed": confirmed == "1",
     "aged_ms": int(aged),
     "stale_threshold_ms": 900000,
 }, open(path, "w"), indent=2)
 PY
-log "result: $OUTCOME (signal=$SIGNAL degraded=$DEGRADED watchdog=$WATCHDOG restored=$CONFIRMED) -> $RESULT_FILE"
+log "result: $OUTCOME (signal=$SIGNAL degraded=$DEGRADED watchdog=$WATCHDOG page_warn=${PAGE_WARN:-unknown} restored=$CONFIRMED) -> $RESULT_FILE"
 
 if [ "${PM_DRILL_NO_POST:-0}" != "1" ] && command -v gh >/dev/null 2>&1; then
-	if [ "$OUTCOME" = "passed" ]; then
-		gh issue comment "$ISSUE" --repo "$ISSUE_REPO" --body "✅ **Chaos drill passed — age the feed** (queue task 7919, second slice of this issue, epic #$EPIC)
+  if [ "$OUTCOME" = "passed" ]; then
+    gh issue comment "$ISSUE" --repo "$ISSUE_REPO" --body "✅ **Chaos drill passed — age the feed** (queue task 7919, second slice of this issue, epic #$EPIC)
 
 - Aged \`fleet-feed.json\`'s \`generatedAt\` by ${AGE_MS}ms at $STARTED_AT **while \`$COLLECTOR_TIMER\` stayed active** — the stale-but-alive feed the kill-collector drill cannot produce. Health payload at the signal moment: degraded=$DEGRADED, watchdog \`watchdog:feed\` item seen=$WATCHDOG.
 - The aggregator's feed-age signal crossed the 15-minute \`FEED_STALE_MS\` (#1148) threshold instead of presenting old data as fine.
 - Restoration confirmed via \`/api/health\`: the original bytes were written back and the collector's next run made the feed fresh again.
 - Script: \`pm-stack/aggregator/scripts/age-feed-drill.sh\` (interlocked: flock, incident-flag refusal, refuses to start on an already-stale feed or an inactive collector; always restores via trap). Result JSON is written to \`~/.local/state/pm-drills/age-feed-result.json\` per run." >/dev/null 2>&1 &&
-			log "posted result comment on #$ISSUE" || log "WARN: gh comment on #$ISSUE failed"
-	else
-		gh issue create --repo "$ISSUE_REPO" --title "chaos drill FINDING: age-feed drill did not observe the expected staleness signal" --body "The age-feed drill (second slice of #$ISSUE, epic #$EPIC) ran at $STARTED_AT and the expected signal did not complete cleanly: signal_fired=$SIGNAL, health_degraded=$DEGRADED, restoration_confirmed=$CONFIRMED (see \`~/.local/state/pm-drills/age-feed-result.json\` and \`age-feed-health-at-signal.json\` for the captured evidence). A feed that is alive but old presenting as fresh is exactly what #$ISSUE exists to catch — investigate the aggregator's feed-age/health path (FEED_STALE_MS, src/health.ts, src/sources/live.ts) and the \`$COLLECTOR_TIMER\` cadence before the next drill." >/dev/null 2>&1 &&
-			log "filed finding issue under epic #$EPIC" || log "WARN: gh issue create for the finding failed"
-	fi
+      log "posted result comment on #$ISSUE" || log "WARN: gh comment on #$ISSUE failed"
+  else
+    gh issue create --repo "$ISSUE_REPO" --title "chaos drill FINDING: age-feed drill did not observe the expected staleness signal" --body "The age-feed drill (second slice of #$ISSUE, epic #$EPIC) ran at $STARTED_AT and the expected signal did not complete cleanly: signal_fired=$SIGNAL, health_degraded=$DEGRADED, restoration_confirmed=$CONFIRMED (see \`~/.local/state/pm-drills/age-feed-result.json\` and \`age-feed-health-at-signal.json\` for the captured evidence). A feed that is alive but old presenting as fresh is exactly what #$ISSUE exists to catch — investigate the aggregator's feed-age/health path (FEED_STALE_MS, src/health.ts, src/sources/live.ts) and the \`$COLLECTOR_TIMER\` cadence before the next drill." >/dev/null 2>&1 &&
+      log "filed finding issue under epic #$EPIC" || log "WARN: gh issue create for the finding failed"
+  fi
 fi
 
 [ "$OUTCOME" = "passed" ]

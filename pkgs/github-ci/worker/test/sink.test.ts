@@ -43,7 +43,12 @@ describe("appendAgentEvent broker route (#6925)", () => {
       calls.push({ init });
       return new Response(JSON.stringify({ ok: true }), { status: 200 });
     });
-    const env: SinkEnv = { ...brokerEnv, EVENTS_BROKER_TOKEN: undefined, EVENTS_BROKER_ACCESS_CLIENT_ID: undefined, EVENTS_BROKER_ACCESS_CLIENT_SECRET: undefined };
+    const env: SinkEnv = {
+      ...brokerEnv,
+      EVENTS_BROKER_TOKEN: undefined,
+      EVENTS_BROKER_ACCESS_CLIENT_ID: undefined,
+      EVENTS_BROKER_ACCESS_CLIENT_SECRET: undefined,
+    };
     await appendAgentEvent(env, "issues", {});
     const headers = calls[0].init.headers as Record<string, string>;
     expect(headers["X-Agent-Token"]).toBeUndefined();
@@ -72,26 +77,29 @@ const NOW = "2026-11-08T02:30:00Z";
 const SHA = "bbb222bbb222bbb222bbb222bbb222bbb222bbbb";
 const ZERO = "0000000000000000000000000000000000000000";
 
-interface CapturedInsert { sql: string; args: { type: string; value?: string }[] }
+interface CapturedInsert {
+  sql: string;
+  args: { type: string; value?: string }[];
+}
 
 function fakeTurso(state: { exists: boolean; defBranch: string | null }, captured: CapturedInsert[]) {
   return async (_url: string, init: RequestInit) => {
-    const body = JSON.parse(String(init.body)) as { requests: { stmt: { sql: string; args: CapturedInsert["args"] } }[] };
+    const body = JSON.parse(String(init.body)) as {
+      requests: { stmt: { sql: string; args: CapturedInsert["args"] } }[];
+    };
     const stmt = body.requests[0].stmt;
     let rows: unknown[] = [];
     if (stmt.sql.includes("SELECT repo FROM")) {
       rows = state.exists ? [[{ type: "text", value: "developing-today/code" }]] : [];
     } else if (stmt.sql.includes("SELECT default_branch")) {
-      rows = state.exists
-        ? [[state.defBranch ? { type: "text", value: state.defBranch } : { type: "null" }]]
-        : [];
+      rows = state.exists ? [[state.defBranch ? { type: "text", value: state.defBranch } : { type: "null" }]] : [];
     } else if (stmt.sql.startsWith("INSERT")) {
       captured.push({ sql: stmt.sql, args: stmt.args });
     }
-    return new Response(
-      JSON.stringify({ results: [{ type: "ok", response: { result: { rows } } }, { type: "ok" }] }),
-      { status: 200, headers: { "Content-Type": "application/json" } },
-    );
+    return new Response(JSON.stringify({ results: [{ type: "ok", response: { result: { rows } } }, { type: "ok" }] }), {
+      status: 200,
+      headers: { "Content-Type": "application/json" },
+    });
   };
 }
 
@@ -108,18 +116,16 @@ describe("advanceSnapshot default_branch guard (#6945)", () => {
   it("existing NULL default_branch + no payload default: even a main push does not advance", async () => {
     const captured: CapturedInsert[] = [];
     vi.stubGlobal("fetch", fakeTurso({ exists: true, defBranch: null }, captured));
-    await expect(
-      advanceSnapshot(queueEnv, "developing-today/code", SHA, "refs/heads/main", NOW),
-    ).resolves.toBe(false);
+    await expect(advanceSnapshot(queueEnv, "developing-today/code", SHA, "refs/heads/main", NOW)).resolves.toBe(false);
     expect(captured).toHaveLength(0);
   });
 
   it("existing NULL default_branch + payload default main + main push advances head", async () => {
     const captured: CapturedInsert[] = [];
     vi.stubGlobal("fetch", fakeTurso({ exists: true, defBranch: null }, captured));
-    await expect(
-      advanceSnapshot(queueEnv, "developing-today/code", SHA, "refs/heads/main", NOW, "main"),
-    ).resolves.toBe(true);
+    await expect(advanceSnapshot(queueEnv, "developing-today/code", SHA, "refs/heads/main", NOW, "main")).resolves.toBe(
+      true,
+    );
     expect(captured).toHaveLength(1);
     expect(captured[0].sql).toContain("head_sha");
     expect(captured[0].args.map((a) => a.value)).toContain(SHA);
@@ -139,9 +145,9 @@ describe("advanceSnapshot default_branch guard (#6945)", () => {
   it("missing row + default-branch push (payload default) seeds head_sha", async () => {
     const captured: CapturedInsert[] = [];
     vi.stubGlobal("fetch", fakeTurso({ exists: false, defBranch: null }, captured));
-    await expect(
-      advanceSnapshot(queueEnv, "developing-today/code", SHA, "refs/heads/main", NOW, "main"),
-    ).resolves.toBe(true);
+    await expect(advanceSnapshot(queueEnv, "developing-today/code", SHA, "refs/heads/main", NOW, "main")).resolves.toBe(
+      true,
+    );
     expect(captured).toHaveLength(1);
     expect(captured[0].sql).toContain("head_sha");
     expect(captured[0].args.map((a) => a.value)).toContain(SHA);
@@ -157,9 +163,9 @@ describe("advanceSnapshot default_branch guard (#6945)", () => {
 
     const def: CapturedInsert[] = [];
     vi.stubGlobal("fetch", fakeTurso({ exists: true, defBranch: "main" }, def));
-    await expect(
-      advanceSnapshot(queueEnv, "developing-today/code", SHA, "refs/heads/main", NOW, "main"),
-    ).resolves.toBe(true);
+    await expect(advanceSnapshot(queueEnv, "developing-today/code", SHA, "refs/heads/main", NOW, "main")).resolves.toBe(
+      true,
+    );
     expect(def).toHaveLength(1);
     expect(def[0].args.map((a) => a.value)).toContain(SHA);
 
@@ -189,35 +195,39 @@ describe("advanceSnapshot property: head_sha invariant (#6945, testing doctrine)
     const afterOpts = [SHA, ZERO] as const;
     let cells = 0;
     for (const exists of existsOpts)
-    for (const storedDef of defOpts)
-    for (const payloadDef of payloadOpts)
-    for (const ref of refOpts)
-    for (const after of afterOpts) {
-      cells++;
-      const resolved = (exists ? storedDef : null) || payloadDef || null;
-      const expectHead = after !== ZERO && !!resolved && ref === `refs/heads/${resolved}`;
-      const captured: CapturedInsert[] = [];
-      vi.stubGlobal("fetch", fakeTurso({ exists, defBranch: storedDef }, captured));
-      const wrote = await advanceSnapshot(queueEnv, "developing-today/code", after, ref, NOW, payloadDef);
-      const ctx = JSON.stringify({ exists, storedDef, payloadDef, ref, after });
-      if (exists && !expectHead) {
-        expect(wrote, ctx).toBe(false);
-        expect(captured, ctx).toHaveLength(0);
-      } else {
-        expect(wrote, ctx).toBe(true);
-        expect(captured, ctx).toHaveLength(1);
-        if (expectHead) {
-          expect(captured[0].sql, ctx).toContain("head_sha");
-          expect(captured[0].args.map((a) => a.value), ctx).toContain(after);
-        } else {
-          expect(captured[0].sql, ctx).not.toContain("head_sha");
-          expect(captured[0].args.map((a) => a.value), ctx).not.toContain(after);
-        }
-      }
-      vi.unstubAllGlobals();
-    }
-    expect(cells).toBe(
-      existsOpts.length * defOpts.length * payloadOpts.length * refOpts.length * afterOpts.length,
-    );
+      for (const storedDef of defOpts)
+        for (const payloadDef of payloadOpts)
+          for (const ref of refOpts)
+            for (const after of afterOpts) {
+              cells++;
+              const resolved = (exists ? storedDef : null) || payloadDef || null;
+              const expectHead = after !== ZERO && !!resolved && ref === `refs/heads/${resolved}`;
+              const captured: CapturedInsert[] = [];
+              vi.stubGlobal("fetch", fakeTurso({ exists, defBranch: storedDef }, captured));
+              const wrote = await advanceSnapshot(queueEnv, "developing-today/code", after, ref, NOW, payloadDef);
+              const ctx = JSON.stringify({ exists, storedDef, payloadDef, ref, after });
+              if (exists && !expectHead) {
+                expect(wrote, ctx).toBe(false);
+                expect(captured, ctx).toHaveLength(0);
+              } else {
+                expect(wrote, ctx).toBe(true);
+                expect(captured, ctx).toHaveLength(1);
+                if (expectHead) {
+                  expect(captured[0].sql, ctx).toContain("head_sha");
+                  expect(
+                    captured[0].args.map((a) => a.value),
+                    ctx,
+                  ).toContain(after);
+                } else {
+                  expect(captured[0].sql, ctx).not.toContain("head_sha");
+                  expect(
+                    captured[0].args.map((a) => a.value),
+                    ctx,
+                  ).not.toContain(after);
+                }
+              }
+              vi.unstubAllGlobals();
+            }
+    expect(cells).toBe(existsOpts.length * defOpts.length * payloadOpts.length * refOpts.length * afterOpts.length);
   });
 });

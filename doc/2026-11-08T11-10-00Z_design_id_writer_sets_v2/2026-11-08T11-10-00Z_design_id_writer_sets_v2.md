@@ -35,7 +35,7 @@ exactly as the issue's convention expects.
 
 V1's founding rule stands unchanged: **ingest is a validity gate, never an
 authority gate; a view counts only its writer set.** Composition adds
-exactly one new idea — a view may count *through* another view — and every
+exactly one new idea — a view may count _through_ another view — and every
 decision below is checked against the v1 corollaries: stored ≠ counted;
 counting is per view, decided by the view owner, and reversible; every
 computed view names its inputs; set changes are signed, versioned,
@@ -77,7 +77,7 @@ enum RefMode { Pinned, Tracking }
   published, citable view is therefore stable: anyone holding the
   reference can reproduce the count.
 - **Tracking.** The referencing view counts through the source view's
-  *current* version at evaluation time. What propagates is only what
+  _current_ version at evaluation time. What propagates is only what
   passes the source's own set at its new version: if the source removes an
   author, that author stops counting through this reference at the next
   evaluation (counting is reversible, §0). Tracking never widens the
@@ -97,7 +97,7 @@ where `op ∈ {Union, Intersection, Difference}` and every operand is a
 pinned reference (`(set_id, seq, head_hash)` for a set; the §1 descriptor
 reference for a view). Evaluation is set algebra over the operands'
 **expanded author sets at their pinned versions**, using the v1 expander
-unchanged: group expansion stays one level deep *inside* each operand —
+unchanged: group expansion stays one level deep _inside_ each operand —
 algebra composes expansions, it does not deepen them.
 
 - **Provenance.** Every author in a derived set's expansion carries a
@@ -110,7 +110,7 @@ algebra composes expansions, it does not deepen them.
   `excludes`, and the excludes of any view that references the derived
   set, are applied after the algebra, on top of its result. An outer
   exclusion cannot be undone by an inner union, and a source's exclusion
-  is part of what the source *is*: difference and intersection never
+  is part of what the source _is_: difference and intersection never
   resurrect an author a source operand excluded at its pinned version.
 - **Difference is over expansions, not over spellings.** `A − B` removes
   authors in B's expansion however B admitted them (key, group, or view
@@ -140,7 +140,7 @@ evaluation rules hold for robustness against hand-crafted corpora:
 ### D5 — A set may name an author it has never seen; naming is a claim about membership, nothing more
 
 The v1 `Key` entry already names a 32-byte verifying key, and keys are
-global — no new entry shape is needed to *name* a remote author. What v1
+global — no new entry shape is needed to _name_ a remote author. What v1
 lacks is resolution and a claim discipline:
 
 - **Resolution** goes through
@@ -156,13 +156,13 @@ lacks is resolution and a claim discipline:
   "this key is a member of my set", the set owner's signed claim,
   verifiable locally from the set object alone. It may not claim the
   author's history, display identity, consent, or liveness. The author's
-  *events* count only when actually fetched and verified through the
+  _events_ count only when actually fetched and verified through the
   ordinary validity gate; until then the author appears on the uncounted
   side with reason `named, not yet resolved` (§4) — counted neither
   silently in nor silently out.
 - Fork proofs, chain validity, and the store's `applied` predicate work
-  identically for fetched remote events: federation changes *where events
-  come from*, never *what makes them stand*.
+  identically for fetched remote events: federation changes _where events
+  come from_, never _what makes them stand_.
 
 ## 4. Discovery v2
 
@@ -220,7 +220,7 @@ remote data costs storage and retention, never a new authority gate.
 **Q1 — Is a derived view's projection still a pure function of a tuple,
 and what extends the tuple?**
 Yes. Purity is preserved by extending the v1 tuple
-*(view config, writer-set version, frontier, resolution)* with a
+_(view config, writer-set version, frontier, resolution)_ with a
 **per-source frontier vector**: for each view/set operand, the
 `(operand id, operand set version, operand frontier)` actually used.
 Tracking mode does not break purity — evaluation materialises the
@@ -230,9 +230,9 @@ derived view still names all of its inputs and replays deterministically.
 **Q2 — Retro-import (`include_history`) through a derivation chain: whose
 flag governs?**
 The most restrictive flag on the path governs (logical AND). An author's
-history is imported through a derivation only if *every* link that
+history is imported through a derivation only if _every_ link that
 admitted them — the source entry, each intermediate derivation/reference
-— carries `include_history`, *and* the referencing view's own reference
+— carries `include_history`, _and_ the referencing view's own reference
 carries it. No intermediary can grant history the source set did not
 flag (the source owner set the cost/consent terms), and no source can
 force history on a deriving owner (their storage bill, their choice).
@@ -249,7 +249,7 @@ is claiming "this op over these pinned operands is my derivation".
 reproducible — anyone can recompute the expansion from the signed
 operands and verify the claim, so the signature buys referenceability
 and accountability, not authority over the result. Unsigned derivations
-remain legal as *local* computation (a private view config already is
+remain legal as _local_ computation (a private view config already is
 one); they simply cannot be published, referenced, or discovered until
 someone signs them.
 

@@ -1,3 +1,4 @@
+# Automatic tag-push releases disabled by owner, 2026-11-13; manual snapshot remains.
 name: mcpx release
 
 # Cuts an mcpx release from the monorepo (decision 0005 §2.1-§2.3, §3, §5;
@@ -27,6 +28,7 @@ on:
         type: string
 
 permissions:
+  actions: read
   contents: write
   packages: write
 
@@ -36,8 +38,31 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  release-gate:
+    name: "release: main-gate check"
+    # Manual runs are non-publishing snapshots; tag pushes must pass the gate.
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      actions: read
+      contents: read
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - name: Require a green main-gate for this SHA
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: .github/scripts/release-gate.sh
+
   artifacts:
     name: "release: build artifacts"
+    needs: release-gate
+    # Keep dispatch snapshots runnable while requiring the gate for every
+    # tag-push path (including the GHCR container push below).
+    if: always() && (github.event_name == 'workflow_dispatch' || needs.release-gate.result == 'success')
     runs-on: ubuntu-latest
     timeout-minutes: 30
     outputs:
@@ -120,6 +145,9 @@ jobs:
     # `publish` waits for it, so a release cannot ship an installer that no
     # longer works against the tarballs it just built.
     needs: artifacts
+    # A skipped release-gate (push-only) skips the whole downstream chain
+    # unless each job opts back in: preserve dispatch snapshots here too.
+    if: always() && needs.artifacts.result == 'success'
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
@@ -236,16 +264,27 @@ jobs:
 
   container:
     name: "release: container image"
-    # Channel 3 (decision 0005 §2.3, §6.6): the Containerfile already builds a
-    # working image; this wires it to the release version so the image cannot
-    # carry a fifth hand-synced copy of the string. A tag pushes it to GHCR;
-    # a snapshot builds it and reads `mcpx --version` back, proving the
-    # build-arg path without publishing anything.
+    # Channel 3 (decision 0005 §2.3, §6.6; Nix cutover #5771): the shipped
+    # image is the Nix-built packages.x86_64-linux.mcpx-container artifact,
+    # whose tag comes from pkgs/mcpx/VERSION — the same single source the
+    # release version is read from. A tag pushes it to GHCR; a snapshot
+    # builds it and reads `mcpx --version` back without publishing.
     needs: artifacts
+    # Same always() opt-in as installer above: a skipped release-gate must
+    # not silently drop the snapshot container build on manual runs.
+    if: always() && needs.artifacts.result == 'success'
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@v7
+
+      - uses: DeterminateSystems/nix-installer-action@3138316df39ed29be04236d7ffc686fa525866aa # v23
+
+      - uses: DeterminateSystems/magic-nix-cache-action@84c0677f58dcedf3b91f8223ce36a9ea5b3c84b7 # v15
+        continue-on-error: true
+        with:
+          use-flakehub: false
+          use-gha-cache: true
 
       - name: Log in to GHCR
         if: github.event_name == 'push'
@@ -265,15 +304,18 @@ jobs:
         run: |
           set -euo pipefail
           image=$(printf '%s' "$IMAGE" | tr '[:upper:]' '[:lower:]')
-          tags=(--tag "$image:$VERSION")
+          nix build .#packages.x86_64-linux.mcpx-container --print-build-logs --out-link mcpx-image
+          loaded=$(docker load -i mcpx-image | sed -n 's/^Loaded image: //p')
+          test -n "$loaded"
+          echo "loaded $loaded"
+          case "$loaded" in
+          *":$VERSION") ;;
+          *) echo "::error::Nix image tag '$loaded' does not match release version '$VERSION' (pkgs/mcpx/VERSION is the single source)"; exit 1 ;;
+          esac
+          docker tag "$loaded" "$image:$VERSION"
           if [ "$GITHUB_EVENT_NAME" = "push" ]; then
-            tags+=(--tag "$image:latest")
+            docker tag "$loaded" "$image:latest"
           fi
-          docker build \
-            --file pkgs/mcpx/Containerfile \
-            --build-arg "VERSION=$VERSION" \
-            "${tags[@]}" \
-            pkgs/mcpx
           got=$(docker run --rm "$image:$VERSION" --version)
           echo "image mcpx --version: $got"
           case "$got" in

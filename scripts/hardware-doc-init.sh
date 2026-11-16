@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
+# Usage: hardware-doc-init.sh
 # Ensure the hardware-doc knowledge base is present beside this repository and
-# symlinked into place at doc/hardware.
+# symlinked into place at doc/hardware. Accepts no positional arguments;
+# configuration is via HARDWARE_DOC_URL and HARDWARE_DOC_DIR_NAME.
 #
 #   hardware-doc is a SEPARATE repository: https://github.com/developing-today/hardware-doc
 #   It is deliberately not a submodule and not committed here — it is ~440 MB, which
@@ -21,25 +23,46 @@
 #   * Re-runnable. Doing nothing is a success.
 set -uo pipefail
 
+if [ "$#" -ne 0 ]; then
+  printf 'hardware-doc-init: usage error: unexpected argument(s): %s\n' "$*" >&2
+  printf 'usage: hardware-doc-init.sh\n' >&2
+  exit 2
+fi
+
 REPO_URL="${HARDWARE_DOC_URL:-https://github.com/developing-today/hardware-doc.git}"
 DIR_NAME="${HARDWARE_DOC_DIR_NAME:-hardware-doc}"
 LINK_REL="doc/hardware"
 
-c_red=$'\033[31m'; c_yel=$'\033[33m'; c_grn=$'\033[32m'; c_dim=$'\033[2m'; c_off=$'\033[0m'
-[ -t 1 ] || { c_red=; c_yel=; c_grn=; c_dim=; c_off=; }
+c_red=$'\033[31m'
+c_yel=$'\033[33m'
+c_grn=$'\033[32m'
+c_dim=$'\033[2m'
+c_off=$'\033[0m'
+[ -t 1 ] || {
+  c_red=
+  c_yel=
+  c_grn=
+  c_dim=
+  c_off=
+}
 info() { printf '%s\n' "$*"; }
-ok()   { printf '%s✓%s %s\n' "$c_grn" "$c_off" "$*"; }
+ok() { printf '%s✓%s %s\n' "$c_grn" "$c_off" "$*"; }
 warn() { printf '%s!%s %s\n' "$c_yel" "$c_off" "$*" >&2; }
-err()  { printf '%sx%s %s\n' "$c_red" "$c_off" "$*" >&2; }
+err() { printf '%sx%s %s\n' "$c_red" "$c_off" "$*" >&2; }
 
-command -v git >/dev/null 2>&1 || { err "git not found in PATH"; exit 1; }
+command -v git >/dev/null 2>&1 || {
+  err "git not found in PATH"
+  exit 1
+}
 
 # --- resolve the REAL repository root -----------------------------------------
 # --git-common-dir, not --show-toplevel: inside a linked worktree the toplevel is the
 # worktree, whose parent is the wrong directory. The common dir always points at the
 # main repository's .git, so its parent is the true repo root.
 COMMON_DIR="$(git rev-parse --path-format=absolute --git-common-dir 2>/dev/null)" || {
-  err "not inside a git repository"; exit 1; }
+  err "not inside a git repository"
+  exit 1
+}
 REPO_ROOT="$(dirname "$COMMON_DIR")"
 PARENT="$(dirname "$REPO_ROOT")"
 TARGET="$PARENT/$DIR_NAME"
@@ -104,7 +127,8 @@ elif [ ! -e "$TARGET" ]; then
   if git clone "$REPO_URL" "$TARGET"; then
     ok "cloned to $TARGET"
   else
-    err "clone failed"; exit 1
+    err "clone failed"
+    exit 1
   fi
 else
   err "$TARGET exists but is not a git repository — refusing to touch it"
@@ -145,8 +169,8 @@ ensure_link() {
   fi
   mkdir -p "$(dirname "$link")"
 
-  _resolves() { [ -L "$link" ] && [ -e "$link" ] && \
-                [ "$(cd "$link" && pwd -P)" = "$(cd "$abstgt" && pwd -P)" ]; }
+  _resolves() { [ -L "$link" ] && [ -e "$link" ] &&
+    [ "$(cd "$link" && pwd -P)" = "$(cd "$abstgt" && pwd -P)" ]; }
 
   local used_absolute=0
   if _resolves; then
@@ -179,8 +203,8 @@ ensure_link() {
     # Compare WORKTREE against INDEX only. Using `status` here would also fire for a
     # merely-staged-but-uncommitted path, which is not a local deviation at all.
     if ! git -C "$wd" diff --quiet -- "$rel" 2>/dev/null; then
-      git -C "$wd" update-index --skip-worktree "$rel" 2>/dev/null \
-        && info "${c_dim}  marked --skip-worktree; undo: git -C $wd update-index --no-skip-worktree $rel${c_off}"
+      git -C "$wd" update-index --skip-worktree "$rel" 2>/dev/null &&
+        info "${c_dim}  marked --skip-worktree; undo: git -C $wd update-index --no-skip-worktree $rel${c_off}"
     fi
   elif git -C "$wd" ls-files --error-unmatch "$rel" >/dev/null 2>&1; then
     if ! git -C "$wd" diff --quiet -- "$rel" 2>/dev/null; then
@@ -228,11 +252,11 @@ fi
 #   doc/archive -> hardware/archive     -> (same)
 # Purely ergonomic: they let you write ./archive/... from this repo's root.
 if [ -d "$ARCHIVE_DIR" ]; then
-  ensure_link "$WORKTREE_ROOT" "archive"     "doc/hardware/archive" "$ARCHIVE_DIR"
-  ensure_link "$WORKTREE_ROOT" "doc/archive" "hardware/archive"     "$ARCHIVE_DIR"
+  ensure_link "$WORKTREE_ROOT" "archive" "doc/hardware/archive" "$ARCHIVE_DIR"
+  ensure_link "$WORKTREE_ROOT" "doc/archive" "hardware/archive" "$ARCHIVE_DIR"
   if [ -d "$SCRATCH_DIR" ]; then
-    ensure_link "$WORKTREE_ROOT" "scratch"     "doc/hardware/scratch" "$SCRATCH_DIR"
-    ensure_link "$WORKTREE_ROOT" "doc/scratch" "hardware/scratch"     "$SCRATCH_DIR"
+    ensure_link "$WORKTREE_ROOT" "scratch" "doc/hardware/scratch" "$SCRATCH_DIR"
+    ensure_link "$WORKTREE_ROOT" "doc/scratch" "hardware/scratch" "$SCRATCH_DIR"
   fi
 fi
 
@@ -246,9 +270,10 @@ if [ -d "$ARCHIVE_DIR" ]; then
   if [ -x "$TARGET/tools/link_archived.py" ] && command -v python3 >/dev/null 2>&1; then
     missing="$(cd "$TARGET" && python3 tools/link_archived.py 2>/dev/null | head -1)"
     case "$missing" in
-      "would link 0 "*) : ;;
-      "would link "*)
-        info "${c_dim}  $missing - run: (cd $TARGET && python3 tools/link_archived.py --apply)${c_off}" ;;
+    "would link 0 "*) : ;;
+    "would link "*)
+      info "${c_dim}  $missing - run: (cd $TARGET && python3 tools/link_archived.py --apply)${c_off}"
+      ;;
     esac
   fi
 else

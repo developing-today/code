@@ -72,7 +72,9 @@ describe("dashboard notification candidate derivation", () => {
     const preEntry = buildNotificationCandidates(
       snapshot({
         attention: { drew: [], drewExtra: [item] } as unknown as NotificationSnapshot["attention"],
-        drewActivity: [{ objectRef: "gh:developing-today/code#3317", at: new Date(TASK_NOW - 4 * 24 * 60 * 60_000).toISOString() }],
+        drewActivity: [
+          { objectRef: "gh:developing-today/code#3317", at: new Date(TASK_NOW - 4 * 24 * 60 * 60_000).toISOString() },
+        ],
       }),
       TASK_NOW,
     );
@@ -113,14 +115,18 @@ describe("dashboard notification candidate derivation", () => {
           provider: "Example",
           plan: "Pro",
           state: "near",
-          windows: [{ name: "weekly", unit: "requests", limit: 100, used: 90, percent: 90, resetsAt: "2026-11-10T00:00:00Z" }],
+          windows: [
+            { name: "weekly", unit: "requests", limit: 100, used: 90, percent: 90, resetsAt: "2026-11-10T00:00:00Z" },
+          ],
         },
         {
           id: "multi",
           provider: "Other",
           plan: "Plus",
           state: "walled",
-          windows: [{ name: "weekly", unit: "tokens", limit: 100, used: 100, percent: 100, resetsAt: "2026-11-05T00:00:00Z" }],
+          windows: [
+            { name: "weekly", unit: "tokens", limit: 100, used: 100, percent: 100, resetsAt: "2026-11-05T00:00:00Z" },
+          ],
         },
       ],
     };
@@ -189,23 +195,43 @@ describe("notification transition policy", () => {
         outcome: "sent" as const,
       },
     ];
-    expect(decideNotification({ ...base, stateFingerprint: "changed" }, recent, TASK_NOW, false)).toBe("suppress-cooldown");
+    expect(decideNotification({ ...base, stateFingerprint: "changed" }, recent, TASK_NOW, false)).toBe(
+      "suppress-cooldown",
+    );
     expect(decideNotification({ ...base, objectRef: "other" }, [], TASK_NOW, true)).toBe("digest");
     expect(decideNotification({ ...base, class: "quota-wall", breakthrough: true }, [], TASK_NOW, true)).toBe("send");
   });
 
   test("the 24-hour blocked-age reminder is digest-only; 48-hour escalation breaks through", () => {
-    const age24: NotificationCandidate = { ...base, class: "blocked-age", stateFingerprint: '{"step":24}', digestOnly: true, escalationStep: 24 as const };
-    const age48: NotificationCandidate = { ...age24, stateFingerprint: '{"step":48}', digestOnly: false, escalationStep: 48 as const, breakthrough: true };
+    const age24: NotificationCandidate = {
+      ...base,
+      class: "blocked-age",
+      stateFingerprint: '{"step":24}',
+      digestOnly: true,
+      escalationStep: 24 as const,
+    };
+    const age48: NotificationCandidate = {
+      ...age24,
+      stateFingerprint: '{"step":48}',
+      digestOnly: false,
+      escalationStep: 48 as const,
+      breakthrough: true,
+    };
     expect(decideNotification(age24, [], TASK_NOW, false)).toBe("digest");
     expect(decideNotification(age48, [], TASK_NOW, true)).toBe("send");
   });
 
   test("digest scheduling uses each subscription timezone and the next noon/window-end boundary", () => {
     const quiet = { start: "23:00", end: "07:00", tz: "America/Chicago" };
-    expect(new Date(nextNotificationDigestAt(Date.parse("2026-11-04T12:00:00Z"), quiet)).toISOString()).toBe("2026-11-04T13:00:00.000Z");
-    expect(new Date(nextNotificationDigestAt(Date.parse("2026-11-04T14:00:00Z"), quiet)).toISOString()).toBe("2026-11-04T18:00:00.000Z");
-    expect(new Date(nextNotificationDigestAt(Date.parse("2026-11-04T20:00:00Z"), quiet)).toISOString()).toBe("2026-11-05T13:00:00.000Z");
+    expect(new Date(nextNotificationDigestAt(Date.parse("2026-11-04T12:00:00Z"), quiet)).toISOString()).toBe(
+      "2026-11-04T13:00:00.000Z",
+    );
+    expect(new Date(nextNotificationDigestAt(Date.parse("2026-11-04T14:00:00Z"), quiet)).toISOString()).toBe(
+      "2026-11-04T18:00:00.000Z",
+    );
+    expect(new Date(nextNotificationDigestAt(Date.parse("2026-11-04T20:00:00Z"), quiet)).toISOString()).toBe(
+      "2026-11-05T13:00:00.000Z",
+    );
   });
 
   test("sole-door near-wall class is enabled for new subscriptions by the recommended defaults", () => {
@@ -348,10 +374,22 @@ describe("rollupNotificationSends", () => {
   test("proposal: under 10% over the window proposes; exactly 10% and zero sends do not", () => {
     const rows: NotificationSendRow[] = [];
     for (let i = 0; i < 20; i++) {
-      rows.push(send({ class: "digest", created_at: "2026-11-01T00:00:00Z", acted_on_at: i === 0 ? "2026-11-01T01:00:00Z" : null }));
+      rows.push(
+        send({
+          class: "digest",
+          created_at: "2026-11-01T00:00:00Z",
+          acted_on_at: i === 0 ? "2026-11-01T01:00:00Z" : null,
+        }),
+      );
     }
     for (let i = 0; i < 10; i++) {
-      rows.push(send({ class: "edge", created_at: "2026-11-01T00:00:00Z", acted_on_at: i === 0 ? "2026-11-01T01:00:00Z" : null }));
+      rows.push(
+        send({
+          class: "edge",
+          created_at: "2026-11-01T00:00:00Z",
+          acted_on_at: i === 0 ? "2026-11-01T01:00:00Z" : null,
+        }),
+      );
     }
     const rollup = rollupNotificationSends(rows, NOW);
     const digest = rollup.classes.find((c) => c.class === "digest")!;
@@ -389,7 +427,13 @@ describe("renderNotifications", () => {
   test("renders the roll-up, the attribution note, and a display-only proposal", () => {
     const rows: NotificationSendRow[] = [];
     for (let i = 0; i < 20; i++) {
-      rows.push(send({ class: "digest", created_at: "2026-11-01T00:00:00Z", acted_on_at: i === 0 ? "2026-11-01T01:00:00Z" : null }));
+      rows.push(
+        send({
+          class: "digest",
+          created_at: "2026-11-01T00:00:00Z",
+          acted_on_at: i === 0 ? "2026-11-01T01:00:00Z" : null,
+        }),
+      );
     }
     const html = renderNotifications({ available: true, rollup: rollupNotificationSends(rows, NOW) }, PROV);
     expect(html).toContain("digest");
@@ -421,7 +465,9 @@ describe("#7193 Codex regression fixes", () => {
         pools: [
           pool({
             state,
-            windows: [{ name: "weekly", unit: "tokens", limit: 100, used: 100, percent: 100, resetsAt: "2026-11-20T00:00:00Z" }],
+            windows: [
+              { name: "weekly", unit: "tokens", limit: 100, used: 100, percent: 100, resetsAt: "2026-11-20T00:00:00Z" },
+            ],
           }),
         ],
       };
@@ -444,7 +490,10 @@ describe("#7193 Codex regression fixes", () => {
         }),
       ],
     };
-    const candidates = buildNotificationCandidates(snapshot({ quota: quota as unknown as NotificationSnapshot["quota"] }), TASK_NOW);
+    const candidates = buildNotificationCandidates(
+      snapshot({ quota: quota as unknown as NotificationSnapshot["quota"] }),
+      TASK_NOW,
+    );
     expect(candidates.map((c) => c.class)).toEqual(["quota-wall"]);
   });
 
@@ -467,24 +516,50 @@ describe("#7193 Codex regression fixes", () => {
       outcome: "sent" as const,
     };
     expect(decideNotification(candidate, [sent], TASK_NOW, false)).toBe("suppress-dedupe");
-    const recovered = { ...sent, at: new Date(TASK_NOW - 6 * 24 * 60 * 60_000).toISOString(), outcome: "recovered" as const };
+    const recovered = {
+      ...sent,
+      at: new Date(TASK_NOW - 6 * 24 * 60 * 60_000).toISOString(),
+      outcome: "recovered" as const,
+    };
     expect(decideNotification(candidate, [sent, recovered], TASK_NOW, false)).toBe("send");
   });
 
   test("deriveSoleDoorPoolIds marks only single-pool providers", () => {
     const quota = {
-      pools: [pool({ id: "a", provider: "Solo" }), pool({ id: "b", provider: "Duo" }), pool({ id: "c", provider: "Duo" })],
+      pools: [
+        pool({ id: "a", provider: "Solo" }),
+        pool({ id: "b", provider: "Duo" }),
+        pool({ id: "c", provider: "Duo" }),
+      ],
     } as unknown as NotificationSnapshot["quota"];
     expect([...deriveSoleDoorPoolIds(quota)]).toEqual(["a"]);
   });
 
   test("filterAttentionViewByRefs keeps only the named entries", async () => {
     const { filterAttentionViewByRefs } = await import("../src/derive.ts");
-    const entry = (sessionId: string) => ({ sessionId, state: "errored", order: 1, evidence: "", tier: "needs-drew", lastActivityAt: null });
+    const entry = (sessionId: string) => ({
+      sessionId,
+      state: "errored",
+      order: 1,
+      evidence: "",
+      tier: "needs-drew",
+      lastActivityAt: null,
+    });
     const view = {
       drew: [entry("s1"), entry("s2")],
       orchestrator: [],
-      drewExtra: [{ id: "i1", kind: "task", title: "t", source: "github", reason: "r", since: "2026-11-03T00:00:00Z", lastSeenAt: "2026-11-03T00:00:00Z", ref: "developing-today/code#1" }],
+      drewExtra: [
+        {
+          id: "i1",
+          kind: "task",
+          title: "t",
+          source: "github",
+          reason: "r",
+          since: "2026-11-03T00:00:00Z",
+          lastSeenAt: "2026-11-03T00:00:00Z",
+          ref: "developing-today/code#1",
+        },
+      ],
       orchestratorExtra: [],
       watchdog: [],
       all: [entry("s1"), entry("s2")],

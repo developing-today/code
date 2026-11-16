@@ -102,23 +102,35 @@
     # searches; the operator declares them read-only here.
     "fff" = {
       "args" = [ ];
-      "command" = "/home/user/.local/bin/fff-mcp";
+      "command" = "fff-mcp";
       "mcpx" = {
-        "readOnlyTools" = [ "find_files" "grep" "multi_grep" ];
+        "readOnlyTools" = [
+          "find_files"
+          "grep"
+          "multi_grep"
+        ];
       };
     };
     "fff-nix" = {
       "args" = [ "/home/user/code" ];
-      "command" = "/home/user/.local/bin/fff-mcp";
+      "command" = "fff-mcp";
       "mcpx" = {
-        "readOnlyTools" = [ "find_files" "grep" "multi_grep" ];
+        "readOnlyTools" = [
+          "find_files"
+          "grep"
+          "multi_grep"
+        ];
       };
     };
     "fff-worktree" = {
       "args" = [ "/home/user/.local/share/opencode/worktree" ];
-      "command" = "/home/user/.local/bin/fff-mcp";
+      "command" = "fff-mcp";
       "mcpx" = {
-        "readOnlyTools" = [ "find_files" "grep" "multi_grep" ];
+        "readOnlyTools" = [
+          "find_files"
+          "grep"
+          "multi_grep"
+        ];
       };
     };
     "gopls-mcp-server" = {

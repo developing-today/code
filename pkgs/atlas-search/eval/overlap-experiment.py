@@ -38,6 +38,7 @@ Chunking: fixed 200-word windows per document, stride =
 round(200 * (1 - overlap)). Overlap therefore duplicates boundary
 content exactly as a production fixed-window chunker would.
 """
+
 import json, math, re, subprocess, sys
 from collections import Counter, defaultdict
 from pathlib import Path
@@ -48,10 +49,14 @@ WINDOW = 200
 OVERLAPS = [0.0, 0.10, 0.20]
 SEED_QUERIES_PER_TYPE = 16
 WORD = re.compile(r"[a-z0-9][a-z0-9\-']+")
-STOP = set("the a an and or of to in is are was were for on with as by at from that this it its be has have had not but we you they he she them then than so such can could should would may might do does did done".split())
+STOP = set(
+    "the a an and or of to in is are was were for on with as by at from that this it its be has have had not but we you they he she them then than so such can could should would may might do does did done".split()
+)
+
 
 def words(text):
     return [w for w in WORD.findall(text.lower())]
+
 
 def load_prose(root):
     docs, total = [], 0
@@ -74,16 +79,26 @@ def load_prose(root):
             break
     return docs
 
+
 def load_logs(root):
     out = subprocess.run(
         ["git", "-C", str(root), "log", "-n", "1500", "--format=%H%x1f%s%x1f%b%x1e"],
-        capture_output=True, text=True, check=True).stdout
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout
     entries = [e.strip() for e in out.split("\x1e") if e.strip()]
     docs = []
     for i in range(0, len(entries), 60):
-        docs.append({"id": f"logs:gitlog:{i//60}", "type": "logs",
-                     "text": "\n\x1e\n".join(entries[i:i+60])})
+        docs.append(
+            {
+                "id": f"logs:gitlog:{i // 60}",
+                "type": "logs",
+                "text": "\n\x1e\n".join(entries[i : i + 60]),
+            }
+        )
     return docs
+
 
 def chunk_doc(doc, overlap):
     ws = words(doc["text"])
@@ -93,11 +108,19 @@ def chunk_doc(doc, overlap):
         end = min(len(ws), start + WINDOW)
         if end - start < 20 and chunks:
             break
-        chunks.append({"id": f"{doc['id']}@{start}", "doc": doc["id"],
-                       "start": start, "end": end, "tokens": ws[start:end]})
+        chunks.append(
+            {
+                "id": f"{doc['id']}@{start}",
+                "doc": doc["id"],
+                "start": start,
+                "end": end,
+                "tokens": ws[start:end],
+            }
+        )
         if end >= len(ws):
             break
     return chunks
+
 
 def bm25_rank(query_terms, chunks, df, n_docs, avgdl):
     k1, b = 1.5, 0.75
@@ -115,6 +138,7 @@ def bm25_rank(query_terms, chunks, df, n_docs, avgdl):
             scores.append((s, ch["id"]))
     scores.sort(key=lambda x: (-x[0], x[1]))
     return [cid for _, cid in scores]
+
 
 def passages(doc):
     """Candidate gold passages: prose paragraphs / log entries, as word spans."""
@@ -136,7 +160,7 @@ def passages(doc):
         found = -1
         head = pw[:6]
         for i in range(pos, max(pos, len(full) - len(head) + 1)):
-            if full[i:i+len(head)] == head:
+            if full[i : i + len(head)] == head:
                 found = i
                 break
         if found < 0:
@@ -145,6 +169,7 @@ def passages(doc):
         pos = found + len(pw)
     return spans
 
+
 def build_golden(docs):
     # corpus IDF over documents
     df = Counter()
@@ -152,15 +177,17 @@ def build_golden(docs):
         for w in set(words(d["text"])):
             df[w] += 1
     n = len(docs)
+
     def query_for(pw):
         cand = [w for w in set(pw) if w not in STOP and len(w) >= 5]
         cand.sort(key=lambda w: (-(math.log(1 + (n - df[w] + 0.5) / (df[w] + 0.5))), w))
         return cand[:5]
+
     golden = []
     # interior class: sampled whole passages (paragraphs / log entries)
     all_spans = []
     for d in docs:
-        for (s, e, pw) in passages(d):
+        for s, e, pw in passages(d):
             all_spans.append((d, s, e, pw))
     all_spans.sort(key=lambda x: (x[0]["type"], x[0]["id"], x[1]))
     per_type = defaultdict(list)
@@ -173,9 +200,17 @@ def build_golden(docs):
         for j, (d, s, e, pw) in enumerate(items[::step][:SEED_QUERIES_PER_TYPE]):
             q = query_for(pw)
             if len(q) >= 3:
-                golden.append({"id": f"{typ}-interior-q{j}", "type": typ,
-                               "class": "interior", "doc": d["id"],
-                               "start": s, "end": e, "query_terms": q})
+                golden.append(
+                    {
+                        "id": f"{typ}-interior-q{j}",
+                        "type": typ,
+                        "class": "interior",
+                        "doc": d["id"],
+                        "start": s,
+                        "end": e,
+                        "query_terms": q,
+                    }
+                )
     # boundary class: 50-word spans centred on 0%-overlap window boundaries
     # (multiples of WINDOW within each document). At 0% overlap no chunk
     # contains the whole span; higher overlap shifts windows so some
@@ -186,28 +221,44 @@ def build_golden(docs):
         for d in tdocs:
             ws = words(d["text"])
             for b in range(WINDOW, len(ws) - 25, WINDOW):
-                spans.append((d, b - 25, b + 25, ws[b - 25:b + 25]))
+                spans.append((d, b - 25, b + 25, ws[b - 25 : b + 25]))
         if not spans:
             continue
         step = max(1, len(spans) // SEED_QUERIES_PER_TYPE)
         for j, (d, s, e, pw) in enumerate(spans[::step][:SEED_QUERIES_PER_TYPE]):
             q = query_for(pw)
             if len(q) >= 3:
-                golden.append({"id": f"{typ}-boundary-q{j}", "type": typ,
-                               "class": "boundary", "doc": d["id"],
-                               "start": s, "end": e, "query_terms": q})
+                golden.append(
+                    {
+                        "id": f"{typ}-boundary-q{j}",
+                        "type": typ,
+                        "class": "boundary",
+                        "doc": d["id"],
+                        "start": s,
+                        "end": e,
+                        "query_terms": q,
+                    }
+                )
     return golden
+
 
 def main():
     docs = load_prose(ROOT) + load_logs(ROOT)
     golden = build_golden(docs)
-    results = {"window_words": WINDOW, "overlaps": OVERLAPS,
-               "corpus": {}, "golden_queries": len(golden), "configs": []}
+    results = {
+        "window_words": WINDOW,
+        "overlaps": OVERLAPS,
+        "corpus": {},
+        "golden_queries": len(golden),
+        "configs": [],
+    }
     for typ in ["prose", "logs"]:
         tdocs = [d for d in docs if d["type"] == typ]
-        results["corpus"][typ] = {"documents": len(tdocs),
-                                  "words": sum(len(words(d["text"])) for d in tdocs),
-                                  "bytes": sum(len(d["text"]) for d in tdocs)}
+        results["corpus"][typ] = {
+            "documents": len(tdocs),
+            "words": sum(len(words(d["text"])) for d in tdocs),
+            "bytes": sum(len(d["text"]) for d in tdocs),
+        }
     for overlap in OVERLAPS:
         cfg = {"overlap": overlap, "per_type": {}}
         for typ in ["prose", "logs"]:
@@ -230,14 +281,18 @@ def main():
                 covs = []
                 misses = 0
                 for g in cqs:
-                    ranking = bm25_rank(g["query_terms"], chunks, df, len(chunks), avgdl)
+                    ranking = bm25_rank(
+                        g["query_terms"], chunks, df, len(chunks), avgdl
+                    )
                     span_len = g["end"] - g["start"]
                     best_cov, best_rank, strict_rank = 0.0, None, None
                     for i, cid in enumerate(ranking[:10]):
                         ch = by_id[cid]
                         if ch["doc"] != g["doc"]:
                             continue
-                        inter = max(0, min(ch["end"], g["end"]) - max(ch["start"], g["start"]))
+                        inter = max(
+                            0, min(ch["end"], g["end"]) - max(ch["start"], g["start"])
+                        )
                         cov = inter / span_len if span_len else 0.0
                         if cov > 0 and best_rank is None:
                             best_rank = i + 1
@@ -255,10 +310,16 @@ def main():
                         strict10 += 1
                 per_class[cls] = {
                     "queries": len(cqs),
-                    "recall_at_10_any_overlap": round(hit10 / len(cqs), 4) if cqs else None,
-                    "recall_at_10_coverage80": round(strict10 / len(cqs), 4) if cqs else None,
+                    "recall_at_10_any_overlap": round(hit10 / len(cqs), 4)
+                    if cqs
+                    else None,
+                    "recall_at_10_coverage80": round(strict10 / len(cqs), 4)
+                    if cqs
+                    else None,
                     "mrr_at_10": round(mrr / len(cqs), 4) if cqs else None,
-                    "mean_best_coverage_top10": round(sum(covs) / len(covs), 4) if covs else None,
+                    "mean_best_coverage_top10": round(sum(covs) / len(covs), 4)
+                    if covs
+                    else None,
                     "misses": misses,
                 }
             total_words = sum(len(c["tokens"]) for c in chunks)
@@ -274,6 +335,7 @@ def main():
     results["golden"] = golden
     OUT.write_text(json.dumps(results, indent=1, sort_keys=True))
     print(json.dumps({k: v for k, v in results.items() if k != "golden"}, indent=1))
+
 
 if __name__ == "__main__":
     main()

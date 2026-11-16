@@ -7,11 +7,11 @@
 # 2026-11-03). Ignore ONLY that message, only on the files that use the
 # key -- do not widen this to other syntax-check findings.
 paths:
-  .github/workflows/jules.yml:
+  .github/workflows/pm-dispatch.yml:
     ignore:
       - message: 'unexpected key "queue" for "concurrency" section'
         kind: syntax-check
-  .github/workflows/jules-daily-codebase-ideation.yml:
+  .github/workflows/daily-codebase-ideation.yml:
     ignore:
       - message: 'unexpected key "queue" for "concurrency" section'
         kind: syntax-check

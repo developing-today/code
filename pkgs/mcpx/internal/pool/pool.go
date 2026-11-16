@@ -23,6 +23,7 @@ import (
 	"errors"
 	"fmt"
 	"github.com/developing-today/code/pkgs/mcpx/internal/defaults"
+	"net/http"
 	"net/url"
 	"os"
 	"sort"
@@ -138,8 +139,14 @@ func (i *Instance) Trace() string { return i.trace }
 func (i *Instance) Root() string { return i.root }
 
 // PID returns the child process id for stdio instances, 0 otherwise.
+// A supervised instance's child belongs to its supervisor, not to this
+// daemon, but the PID is still the child's: the attach handshake reports
+// it, and status/takeover observers use it to tell attach from respawn.
 func (i *Instance) PID() int {
-	if st, ok := i.transport.(*mcpclient.StdioTransport); ok {
+	switch st := i.transport.(type) {
+	case *mcpclient.StdioTransport:
+		return st.PID()
+	case *mcpclient.SupervisedTransport:
 		return st.PID()
 	}
 	return 0
@@ -622,6 +629,13 @@ func (p *Pool) subscribeServerEvents(cl *mcpclient.Client) {
 // serves: its root is stored on the instance at creation and read back
 // for every restart, never re-resolved (decision 0004 §2).
 func (p *Pool) startLane(ctx context.Context, legacy bool, rs config.ResolvedScope) (*Instance, error) {
+	return p.startLaneMode(ctx, legacy, rs, false)
+}
+
+// startLaneMode is startLane with the dial mode threaded through: with
+// attachOnly set, a supervised server is adopted from its running
+// supervisor or not started at all (#9962).
+func (p *Pool) startLaneMode(ctx context.Context, legacy bool, rs config.ResolvedScope, attachOnly bool) (*Instance, error) {
 	sctx, cancel := context.WithTimeout(ctx, p.cfg.StartTimeout)
 	defer cancel()
 	launched := time.Now()
@@ -643,7 +657,7 @@ func (p *Pool) startLane(ctx context.Context, legacy bool, rs config.ResolvedSco
 	}
 	execStamp, execIdentity, _ := eff.ExecStateAt(spawnCwd)
 
-	tr, err := p.dial(sctx, eff, rs.Root)
+	tr, err := p.dialMode(sctx, eff, rs.Root, attachOnly)
 	if err != nil {
 		return nil, fmt.Errorf("server %q: %w", p.cfg.Name, err)
 	}
@@ -687,7 +701,7 @@ func (p *Pool) startLane(ctx context.Context, legacy bool, rs config.ResolvedSco
 		// transport; going straight there saves the two refused POSTs.
 		if cl, tr, err = p.connectSSE(sctx, tr, opts); err == nil {
 			source = mcpclient.SourceCache
-		} else if tr, err = p.dial(sctx, eff, rs.Root); err != nil {
+		} else if tr, err = p.dialMode(sctx, eff, rs.Root, attachOnly); err != nil {
 			return nil, fmt.Errorf("server %q: %w", p.cfg.Name, err)
 		}
 	}
@@ -732,7 +746,7 @@ func (p *Pool) startLane(ctx context.Context, legacy bool, rs config.ResolvedSco
 		// that hears initialize first -- and the cache is what keeps this
 		// from happening on every start.
 		_ = tr.Close()
-		if tr, err = p.dial(sctx, eff, rs.Root); err != nil {
+		if tr, err = p.dialMode(sctx, eff, rs.Root, attachOnly); err != nil {
 			return nil, fmt.Errorf("server %q: %w", p.cfg.Name, err)
 		}
 		opts.Preference, opts.Cached = mcpclient.ForceLegacy, ""
@@ -996,13 +1010,21 @@ func SpawnCwd(configCwd, root string) (cwd, source string) {
 // callers with no instance being spawned (HTTP session adoption) it is
 // simply the pool's stored config.
 func (p *Pool) dial(ctx context.Context, eff *config.Resolved, root string) (mcpclient.Transport, error) {
+	return p.dialMode(ctx, eff, root, false)
+}
+
+// dialMode is dial with one variation: with attachOnly set, a supervised
+// server attaches to its already-running supervisor or fails — it never
+// spawns a supervisor (#9962 adoption scan). Unsupervised paths ignore
+// the flag.
+func (p *Pool) dialMode(ctx context.Context, eff *config.Resolved, root string, attachOnly bool) (mcpclient.Transport, error) {
 	spawnCwd, _ := SpawnCwd(eff.Cwd, root)
 	auth, err := p.resolveAuth()
 	if err != nil {
 		return nil, err
 	}
 	if eff.Stdio() && eff.Mcpx != nil && eff.Mcpx.Supervised {
-		return mcpclient.NewSupervised(mcpclient.SupervisedOptions{
+		opts := mcpclient.SupervisedOptions{
 			Name:       eff.Name,
 			Command:    eff.Command,
 			Args:       eff.Args,
@@ -1010,7 +1032,11 @@ func (p *Pool) dial(ctx context.Context, eff *config.Resolved, root string) (mcp
 			Cwd:        spawnCwd,
 			InheritEnv: true,
 			Context:    ctx,
-		})
+		}
+		if attachOnly {
+			return mcpclient.AttachSupervised(opts)
+		}
+		return mcpclient.NewSupervised(opts)
 	}
 	if eff.Stdio() {
 		return mcpclient.NewStdio(mcpclient.StdioOptions{
@@ -1067,6 +1093,31 @@ func (p *Pool) runtimeEnv() map[string]string {
 // parameters and environment a connection carries. A credential that names an
 // unset variable fails here, before a request, rather than as a 401 later.
 func (p *Pool) resolveAuth() (*mcpauth.Resolved, error) {
+	// Identity failover (#7948): a server whose auth block carries a
+	// failover list resolves the CURRENT identity's credential instead
+	// of a single stored one. Rotation state persists at the list's
+	// StatePath, so a (re)start after a rotation resumes on the rotated
+	// identity. Servers without a failover block are untouched.
+	if p.cfg.Auth != nil && p.cfg.Auth.Failover != nil && len(p.cfg.Auth.Failover.Identities) > 0 {
+		fo := p.cfg.Auth.Failover
+		rot := mcpauth.NewRotator(fo, nil)
+		secrets := func(name string) (string, error) {
+			if v := p.variable(name); v != "" {
+				return v, nil
+			}
+			return "", fmt.Errorf("secret %s not set in the daemon's environment", name)
+		}
+		envNames := make([]string, 0, len(p.cfg.Auth.Env))
+		for name := range p.cfg.Auth.Env {
+			envNames = append(envNames, name)
+		}
+		minter := &mcpauth.Minter{HTTP: &http.Client{Timeout: 15 * time.Second}}
+		_, r, err := rot.ResolveCurrent(context.Background(), envNames, secrets, minter)
+		if err != nil {
+			return nil, fmt.Errorf("%s: auth: failover: %w", p.cfg.Name, err)
+		}
+		return r, nil
+	}
 	r, err := p.cfg.Auth.ResolveWith(p.variable)
 	if err != nil {
 		return nil, fmt.Errorf("%s: auth: %w", p.cfg.Name, err)

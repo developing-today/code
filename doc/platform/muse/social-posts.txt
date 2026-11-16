@@ -1,0 +1,1059 @@
+【3843】
+URL https://www.instagram.com/reel/DdCYlleiW5S/
+Type video
+Created 2026-09-08 18:59:42 UTC
+74K Likes
+9.1K Comments
+Summary: This is a promotional video for 'Muse,' introduced as Meta's personal AI agent. Opening with the app icon and a grid of lifestyle icons, text states 'Introducing Muse' and 'Muse is your personal AI agent.' The demo shows a chat interface where a user says their week is hectic and asks for help with school emails. Muse reads an email from Joan Fernandez about a 1st Grade Supply List, creates a shopping list with items like Explorer Backpack ($39.95) and Crayons, and places a $47.80 order after user approval, confirming 'Done!' Subsequent scenes highlight capabilities: 'AI that goes shopping for you,' 'books meetings for you,' tracking fitness goals ('Easy 2-Mile Recovery Run'), finding and signing up for the 'Autumn Trail 10K' by auto-filling a form for Rachel Smith, and managing travel when a SFO to DEN flight is delayed 2 hours due to Denver storms — Muse checks alternate routes and rebooks after user confirmation. Taglines emphasize 'Your Muse gets it done,' 'AI that books trips for you,' 'looks out for you,' and connecting apps 'all in one place.' The video ends with 'It's your Muse,' 'AI that keeps you in the loop,' and download prompts for Google Play and App Store with the Meta logo. The tone is upbeat, modern, and instructional.
+Culture moment=AI agent era; significance=Reflects 2026 industry shift from chatbots to autonomous agents that execute tasks across apps.; origin=Meta product launch
+CommentSummary: The comment section is dominated by backlash against Meta for appropriating the @muse handle long used by the British rock band Muse, with hundreds of users demanding 'give it back' and calling the move disrespectful. A secondary wave complains about geographic unavailability, repeatedly asking when the app will launch in the UK, Brazil, India, Turkey, Nigeria, Italy, Australia, and other regions. Many comments are low-effort referral-code spam offering '1 billion tokens,' which clutters discussion. Sentiment is largely hostile toward Meta and Mark Zuckerberg, with accusations of corporate bullying, data harvesting, and forcing unwanted AI features, while a small minority expresses curiosity or praise for the concept. The conversation reflects frustration that a major brand would override an established cultural identity for a product launch. 1. **Username theft from band Muse:** "Give the username back to @museband" 2. **Availability complaints by country:** "When will Muse be released in Brazil" 3. **Spam referral codes:** "Redeem my code in Settings within 48 hours" 4. **Anti-AI sentiment:** "We hate AI"
+Overwhelmingly Negative Sentiment
+Focus Community reaction centers on Meta taking the @museband username from the band Muse.
+Entities products=Muse AI agent app
+Author 【entity-Muse¦handle=@muse¦author_id=user-259433603231768959064】
+AuthorURL https://www.instagram.com/muse
+Verified
+300K Followers
+Language en
+
+
+【0ff2】
+URL https://www.instagram.com/p/DdCZbz5ltf7/
+Type carousel
+Created 2026-09-08 19:05:51 UTC
+6.9K Likes
+220 Comments
+Summary: Posted by Meta Newsroom on September 8, 2026, this carousel introduces 'Muse,' Meta's personal AI agent that acts across apps rather than just answering questions. The sequence builds a progressive showcase of capabilities: first, Muse proactively offers to order Halloween costumes and adjusts a budget; next, it books movie tickets and selects seats in a theater; then it finds a school field trip permission slip in email, fills it out for a Grade 7 trip to Monterey Bay Aquarium, and prepares to send it; following that, it presents goal-tracking and idea-generation features like travel packing lists, scheduling tennis lessons, and monitoring price drops for refunds; finally, it emphasizes user control by showing a permission prompt to approve placing an order for a Glide Pro Stroller. The unified story moves from simple task initiation to complex multi-app automation, culminating in a reassurance of oversight, all framed with clean minimalist graphics, chat bubbles, and the Muse avatar.
+Entities people=Amara Osei (Vision Model Only), Jordan Osei (Vision Model Only); products=Muse AI agent, Glide Pro Stroller; places=City Park
+2633 OnScreenTextLen
+Author 【entity-Meta Newsroom¦handle=@metanewsroom¦author_id=user-113038596971757698781】
+AuthorURL https://www.instagram.com/metanewsroom
+Verified
+310K Followers
+Language en
+
+
+【2bd2】
+URL https://www.facebook.com/reel/2281597032594351/
+Type video
+Created 2026-09-08 18:56:27 UTC
+370K Likes
+53K Comments
+Summary: Mark Zuckerberg, standing outdoors in front of greenery wearing a light-colored t-shirt, announces the launch of 'Muse,' a personal AI agent designed to understand user goals and work 24/7 to achieve them. He demonstrates its capabilities through on-screen UI mockups: organizing projects like a college reunion, managing health and home, building a business, and saving money. Personal examples include ordering baking ingredients for his kids, getting climbing permits for mountains with his oldest daughter, monitoring MMA training metrics, and finding talented researchers. He emphasizes privacy and security, stating Muse was built from the ground up with a private Secure VM and Secure Credential Store so Muse cannot read passwords or credit cards, and that it checks with users before sensitive actions like payments. He notes Meta cannot access Muse information, modeling encryption after WhatsApp. Additional features shown include catching duplicate charges, adjusting race training based on poor sleep, and coordinating camping trips. The app is free for up to 100 million tokens per week, with paid Power ($20/month) and Maximum ($100/month) plans. He frames Muse as the start of personal superintelligence. Data of event in content: 2026-09-08, Details: Post dated September 8, 2026 announces future availability of Muse.
+CommentSummary: The comment section is dominated by a mix of genuine interest in Muse and overwhelming volume of unrelated pleas. Many users praise the concept, calling it a game changer for productivity and expressing eagerness to try it in their countries. Simultaneously, a large portion consists of repetitive requests for Facebook support—account restoration, demonetization appeals, verification loops—often copy-pasted multiple times. Spam accounts promote gambling sites like ALEXISTOGEL. Some users raise ethical concerns about AI autonomy and potential misuse. Others make political statements about government bans. Overall sentiment is mixed: positive curiosity about the product is diluted by frustration with platform moderation and high noise from spam. 1. **Excitement about Muse utility:** "Muse sounds like an exciting step toward making AI genuinely useful" 2. **Requests for account recovery and monetization:** "Please help me restore the recommendation on my page" 3. **Spam and scam promotions:** "MAIN DIMANA SAJA TANPA POLA BISA LANGSUNG WEDE 2JT CUMA DI ALEXISTOGEL" 4. **Concerns about AI control and ethics:** "the evolution of AI to help people is really disturbing yet very dangerous" 5. **Political and regional appeals:** "Don't let the Philippines total ban Facebook in Philippines"
+Mixed Sentiment
+Focus Viewers react to Muse announcement while many request account help, monetization, or express skepticism.
+Entities people=Mark Zuckerberg (Vision Model Only)
+Author 【entity-Mark Zuckerberg¦author_id=user-939242529759894060404】
+Verified
+920 Followers
+Language en
+
+
+【cb87】
+URL https://www.instagram.com/reel/DdCYu6muM53/
+Type video
+Created 2026-09-08 19:01:11 UTC
+2.3K Likes
+140 Comments
+Summary: This is a promotional video for 'Muse,' introduced as a new personal AI agent from Meta, posted by Alexandr Wang (@alexanddeer), Chief AI Officer at Meta, on September 8, 2026. The video opens with the Muse app icon and text 'Introducing Muse.' It positions Muse as 'your personal AI agent' that is 'always working for you.' Through a series of UI mockups, it demonstrates key functions: reading emails to create a school supply shopping list and placing an order ($47.80), tracking training data to sign the user up for an 'Autumn Trail 10K' race, and monitoring a delayed SFO-DEN flight to offer rebooking. Text overlays emphasize capabilities: 'AI that goes shopping for you,' 'books meetings,' 'tracks your goals,' 'fills out forms,' 'analyzes sleep,' 'books trips,' 'saves money,' and 'looks out for you.' The video highlights integration with apps like Instagram, Facebook, Messenger, and email, stating 'All in one place.' It concludes with 'It's your Muse' and 'AI that keeps you in the loop,' ending on the Muse logo with App Store and Google Play badges and the Meta logo. The tone is upbeat, tech-forward, and instructional, set to energetic electronic dance music.
+Entities people=Alexandr Wang (Post Caption); products=Muse personal AI assistant
+Author 【entity-Alexandr Wang¦handle=@alexanddeer¦author_id=user-666850571713732309256】
+AuthorURL https://www.instagram.com/alexanddeer
+Verified
+1M Followers
+Language en
+
+
+【8c68】
+URL https://www.facebook.com/reel/923758310489811/
+Type video
+Created 2026-09-26 17:08:48 UTC
+17K Likes
+4.7K Comments
+Summary: At a Meta Connect event dated September 26, 2026, Mark Zuckerberg presents 'Muse,' Meta's personal AI agent, described as the centerpiece of the company's vision. He explains that Muse was shipped a few weeks prior and is already helping millions of people with tasks like setting goals, sharing ideas, researching, and generating a custom feed. The presentation highlights customizable, jolly characters such as 'Agrippa,' who introduces himself to brainstorm and get things done. Zuckerberg announces upcoming upgrades to Meta Glasses, enabling users to address their muse by name and converse using full voice capabilities instead of single responses. A second presenter details real-world benefits, stating Muse has saved people money on car and home insurance and found unclaimed refunds. He announces the Muse Mac app launched last week, which accesses files, Messages, calendar, notes, and more, and now includes state-of-the-art dictation and computer use, allowing Muse to drive any app on a Mac with permission. He credits the progress to frontier AI models trained at Meta's Superintelligence Labs (MSL), built from the ground up for personal superintelligence, and teases the imminent release of Meta's most capable model yet, intended to improve the entire model family including those powering Muse. Data of event in content: 2026-09-26, Details: Post announces features shipping in coming weeks and a future model release.
+CommentSummary: The comment section is dominated by overwhelmingly positive, short affirmations such as 'Amazing', 'Very nice', and congratulations, reflecting typical fan engagement with Meta announcements. A smaller but vocal subset discusses practical benefits, especially busy parents hoping Muse saves time, and tech enthusiasts praising privacy. Several users share personal anecdotes of using Muse named Meadow for creator work. Counter-discourse includes concerns about privacy intrusion, claims that Muse accesses devices without permission, and outright hostility toward Meta and Zuckerberg. Spam and unrelated promotional comments in multiple languages dilute signal, alongside repetitive greetings and religious blessings common in global social media threads. 1. **Excitement about Muse utility:** "So basically, Muse is the friend who knows my goals" 2. **Privacy appreciation:** "Love that privacy is built in from day one" 3. **Skepticism about data access:** "it breaks into EVERYTHING you have on your devices"
+Positive Sentiment
+Focus Community reacts mostly with praise for Muse and excitement about AI assistance
+Entities people=Mark Zuckerberg (Vision Model Only); products=Muse personal AI agent, Meta Glasses
+Author 【entity-Meta¦author_id=user-352539020795914266404】
+Verified
+9.8M Followers
+Language en
+
+
+【e353】
+URL https://www.threads.com/@zuck/post/DdZ7sQvkTFn
+Type text
+Created 2026-09-17 22:27:44 UTC
+1.8K Likes
+260 Comments
+Summary: Mark Zuckerberg announces the launch of Muse for Mac, a Meta AI agent that works across apps, files, calendar, notes, and messages on a user's computer with user-controlled access permissions. The post includes a download link to ai.meta.com/muse/download. Community response is sharply divided: many users express excitement and praise speed and utility, while a large contingent raises strong privacy concerns about granting Meta access to personal data, criticizes Meta's trustworthiness post-Cambridge Analytica, and repeatedly requests a worldwide rollout beyond the US, specifically mentioning Canada, Europe, UK, Italy, Brazil, Philippines, Indonesia, India, and Pakistan. Hostile comments and spam are also present.
+CommentSummary: The comment section reflects a polarized reception typical of Meta product launches. Supporters praise speed, utility, and user control, calling it helpful for daily tasks and professional workflows. Critics dominate volume with privacy skepticism, referencing historical data scandals and refusing installation, often using profanity and personal insults toward Zuckerberg. A recurring functional request is immediate expansion beyond the US to Canada, Europe, Asia, and Latin America. Spam and off-topic pleas for money, account help, and feature requests clutter the thread, reducing signal quality. Overall sentiment is mixed to negative due to trust deficit outweighing product enthusiasm. 1. **Privacy and trust concerns about Meta accessing personal data:** "There is no chance I am giving you permissions to my computer. You invade my privacy" 2. **Requests for global rollout outside US:** "Make it available worldwide and add more connections and I think this will actually win" 3. **Positive reception and excitement:** "Congrats on the launch! Excited to try Muse for Mac"
+Mixed Sentiment
+Focus Privacy concerns versus excitement about functionality, and demand for international availability.
+Entities people=Mark Zuckerberg (Author Name); products=Muse for Mac AI agent
+Author 【entity-Mark Zuckerberg¦handle=@zuck¦author_id=user-869009311119615046007】
+AuthorURL https://www.threads.com/@zuck
+Verified
+6.1M Followers
+Language en
+
+
+【e7d2】
+URL https://www.instagram.com/reel/DdCYVC5Bjca/
+Type video
+Created 2026-09-08 18:56:53 UTC
+820K Likes
+43K Comments
+Summary: In an outdoor setting with green foliage behind him, Mark Zuckerberg announces the launch of 'Muse,' described as a personal agent that understands your goals and works 24/7 to help achieve them. He demonstrates use cases through on-screen UI mockups: organizing projects with his kids, ordering baking ingredients for recipes with his youngest daughter, obtaining permits to climb mountains with his oldest daughter, monitoring his MMA training and health metrics, and helping find talented researchers and people to meet. A significant portion focuses on privacy and security — stating Muse was designed from the ground up with privacy, using a private secure VM ('Muse Secure VM'), a Secure Credential Store so Muse cannot read passwords/credit cards, user confirmation before sensitive actions like payments, and an optional higher security standard where even Meta cannot access the information, modeled on WhatsApp encryption. Additional features shown include catching duplicate charges to save money, adjusting training plans based on poor sleep, and coordinating camping trips with friends. He states the app is free for up to 100 million tokens per week, with paid tiers ($20/month for 500M tokens, $100/month for 3B tokens), and frames Muse as the start of the journey toward personal superintelligence.
+CommentSummary: The comment section is dominated by a mix of genuine curiosity and heavy spam. Many users ask when Muse will be available in their countries such as Nigeria, India, Pakistan, and Brazil, expressing frustration at regional restrictions. A large volume of replies consists of repetitive referral-code promotions promising billions of free tokens, often posted as replies to other comments, creating noise. Privacy concerns recur frequently, with users questioning Meta's data practices despite Zuckerberg's assurances, using sarcastic emojis and distrustful language. Personal attacks about Zuckerberg's appearance, particularly his nose, appear alongside conspiracy-style reptilian comments. Positive feedback praises the concept and expresses excitement, while others request account support or criticize Meta's moderation. Overall sentiment is divided between enthusiasm for the AI tool and skepticism toward Meta's motives. 1. **Availability complaints:** "It isn't available in my country, Nigeria" 2. **Privacy skepticism:** "How much u make from selling our info?" 3. **Spam referral codes:** "Redeem my code 30000000000000 tokens 3 billion Muse tokens"
+Mixed Sentiment
+Focus Community reacts to Muse launch with privacy doubts, availability complaints, and spam referral codes.
+Entities people=Mark Zuckerberg (Vision Model Only)
+Author 【entity-Mark Zuckerberg¦handle=@zuck¦author_id=user-579333057218848043460】
+AuthorURL https://www.instagram.com/zuck
+Verified
+19M Followers
+Language en
+
+
+【91f6】
+URL https://www.instagram.com/reel/Dd3_mfWoLtm/
+Type video
+Created 2026-09-29 14:39:29 UTC
+8.7K Likes
+170 Comments
+Summary: This is a short promotional video posted by @metanewsroom on September 29, 2026, announcing 'Muse for Small Business.' Against a light gray/white background, text animates to introduce 'Muse' as Meta's personal AI agent, described as 'one of the most important products we've built for the era of personal superintelligence.' The video states it is expanding with new skills and connectors to help people run businesses. Key messages include: 'Your personal AI agent,' 'A new kind of AI for your business,' and 'AI that does the grunt work for you,' 'handles social for you,' 'manages bookings for you,' and 'keeps working for you.' Visuals show app icons including Instagram, Facebook, Threads, Notion, QuickBooks, Canva, and Box with the prompt 'Connect your apps' and 'All in one place.' The video concludes on a black screen with the Muse app icon (blue 'M'), download buttons for Google Play and App Store, and the Meta logo. The audio is an upbeat electronic dance track with no spoken narration.
+CommentSummary: With only one supplied comment, community activity is minimal and dominated by a single user urging the creator to pin their comment and labeling the video as viral. The language mixes English with Hindi/Urdu ('karo'), suggesting a South Asian audience member engaging in typical social-media self-promotion behavior. There is no substantive discussion about the product features, pricing, or utility of Muse; instead the interaction is meta-commentary about visibility. This indicates low informational exchange and high noise, where the commenter seeks attention rather than contributing to product feedback. Overall sentiment appears positive toward the post's potential reach, but the lack of diverse voices prevents broader inference about reception. 1. **request to pin comment:** "First comment pin 📌📌 karo viral video hai"
+Positive Sentiment
+Focus Community reacts to perceived virality and requests pinning the comment.
+Entities products=Muse AI agent mobile app
+Author 【entity-Meta Newsroom¦handle=@metanewsroom¦author_id=user-113038596971757698781】
+AuthorURL https://www.instagram.com/metanewsroom
+Verified
+310K Followers
+Language en
+
+
+【eac0】
+URL https://www.instagram.com/reel/DdwiAefuKvo/
+Type video
+Created 2026-09-26 17:08:08 UTC
+14K Likes
+670 Comments
+Summary: At Meta Connect, Mark Zuckerberg presents 'Muse,' described as the centerpiece of Meta's vision — a personal AI agent shipped a few weeks prior that is already helping millions. He demonstrates its capabilities: setting and tracking goals (like dinner reservations and marathon prep), sharing ideas, researching and generating a custom feed, and interacting with a jolly, fully customizable character named Agrippa who introduces himself to brainstorm and get things done. Zuckerberg emphasizes that talking to your Muse is fast, fun, and cute, and announces upcoming upgrades to Meta Glasses so users can say 'Hey Agrippa' and have full voice conversations instead of single responses. A second presenter then details practical benefits, stating Muse has saved people real money on car and home insurance and found refunds. He announces the Muse Mac app launched last week, which accesses files, Messages, calendar, notes, and more, with state-of-the-art dictation built in natively. With permission, Muse can now drive any app on the Mac via computer use. He credits Meta's frontier AI models trained at MSL — including Muse Spark, Rebuilt Meta AI, Muse Image, Muse Video, Muse Code, and Glimmer — built from the ground up for personal superintelligence, and teases the imminent release of their most capable model yet to improve the entire family, including the models powering Muse.
+CommentSummary: The comment section is dominated by noise rather than focused product discussion. A large volume consists of repetitive political slogans about Palestine, pleas for account reinstatement, and unrelated personal appeals including a lengthy Arabic request for financial aid from Yemen. Amid the spam, genuine reactions appear: some users express enthusiasm for Muse's memory and cross-app functionality, others voice distrust about data collection and AI creepiness, and several criticize Meta's moderation or business practices. The sentiment is polarized between tech optimism and cynicism, with frequent off-topic activism drowning out substantive conversation about the product itself. 1. **Privacy and data concerns:** "Zuccy is still hungry for our data" 2. **Political and geopolitical spam:** "israel terr.ist #freepalestine" 3. **Account support requests:** "Please help me get the verification checkmark." 4. **Positive product interest:** "Finally an AI that actually knows me"
+Mixed Sentiment
+Focus Reactions to Muse announcement ranging from excitement to skepticism and off-topic pleas
+Entities people=Mark Zuckerberg (Vision Model Only); products=Muse personal AI agent, Meta Glasses
+Author 【entity-Meta¦handle=@meta¦author_id=user-968158336597690220411】
+AuthorURL https://www.instagram.com/meta
+Verified
+6.9M Followers
+Language en
+
+
+【7bd4】
+URL https://www.threads.com/@muse/post/DdCYkFvlDvi
+Type video
+Created 2026-09-08 18:58:15 UTC
+1.7K Likes
+280 Comments
+Summary: This is a promotional video for 'Muse,' Meta's personal AI agent, introduced in September 2026. Set to upbeat electronic music, the video opens with the Muse app icon and tagline 'Introducing Muse.' It demonstrates the AI as a proactive helper across daily life. First, after a user says their week is hectic, Muse reads school emails, extracts a supply list from Joan Fernandez's email, creates a shopping cart with items like a composition notebook and backpack totaling $47.80, and requests permission to place the order. Next, it tracks fitness data, finds a local 'Autumn Trail 10K' on November 27, fills out the entry form for Rachel Smith, and confirms sign-up with confetti. Then, when a flight from SFO to DEN is delayed due to Denver storms, Muse checks alternate routes and offers to change the flight, updating the calendar to September 18. Throughout, text overlays emphasize 'AI that goes shopping for you,' 'books meetings for you,' 'tracks your goals,' 'fills out forms,' 'books trips,' and 'looks out for you,' while showing connections to apps like Facebook, Instagram, and email. The video concludes with 'It's your Muse' and 'AI that keeps you in control,' directing viewers to download at Muse.ai.
+Culture moment=AI agent proliferation; significance=Reflects 2026 industry shift from chatbots to autonomous agents that perform real-world tasks.; origin=Meta's Super Intelligence Lab launch of Muse family
+CommentSummary: Community reception is polarized. A large volume of comments express frustration that Muse is US-only despite global marketing, with users from India, Mexico, Belgium, France, Japan, Korea, Australia, Canada, UK, Germany, Netherlands, Philippines, Brazil, Indonesia, Singapore, Vietnam, Italy, Portugal, Czech Republic, New Zealand repeatedly asking when it will launch locally. Many request invite codes or workarounds using VPNs. Simultaneously, some users praise the concept of an agent that actually completes tasks, compare it to Manus or Claude, and appreciate the demo. Negative sentiment includes distrust of Meta data collection, accusations of advertising something unavailable, and profanity-laden rejection of more AI. Official replies from @meta.ai and @muse clarify US-only rollout for adults 18+, explain regional restrictions, and describe capabilities, which fuels further debate about privacy and necessity. 1. **Regional availability complaints:** "Not available in Mexico 🙄" 2. **Requests for invite codes:** "Yes 🙌🏻 But in need an invite code 🥺😢" 3. **Privacy skepticism:** "Meta knows enough about me." 4. **Comparison to other AI agents:** "Manus but make it muse lol" 5. **Positive anticipation:** "Finally, an intern who never sleeps"
+Mixed Sentiment
+Focus Availability outside US and privacy concerns dominate discussion
+Entities products=Muse personal AI agent app
+Author 【entity-Muse¦handle=@muse¦author_id=user-400627847317875208476】
+AuthorURL https://www.threads.com/@muse
+Verified
+15K Followers
+Language en
+
+
+【f714】
+URL https://www.facebook.com/MetaSingapore/posts/pfbid02uEfbZKD44hrQ7MXGtUTusw5kKEn4jE3QiMRpqUgVay1ihy2xQGQocKmtSfk95YTbl
+Type image
+Created 2026-09-09 10:09:11 UTC
+1.2K Likes
+300 Comments
+Summary: The carousel is a coordinated product-announcement showcase for Meta's new personal AI agent, Muse, posted by Meta Singapore on September 9, 2026. It opens with a minimalist chat graphic illustrating Muse proactively suggesting Halloween costume orders and budget adjustments, establishing the agent as helpful and conversational. Subsequent slides demonstrate core capabilities through clean UI mockups: an app-grid view implying broad service integration, autonomous shopping for a discounted baby stroller with Stripe Link checkout, movie-ticket booking with seat selection, and form-filling for a school field trip permission slip. The final slide presents a Goals and Ideas interface, summarizing how Muse stages travel packing lists, schedules tennis lessons, and tracks price drops for refunds. Together, the visuals progress from introduction to concrete demonstrations of task automation, shopping, entertainment, and organization, reinforcing the caption's claims of personalized assistance, secure payments, and private-cloud operation. The tone remains consistently upbeat, informative, and family-friendly throughout.
+CommentSummary: The comment section is dominated by overwhelmingly positive reactions praising Muse as innovative and useful, with many users expressing gratitude to Meta and enthusiasm to try the agent. Several comments are multilingual expressions of thanks and encouragement. Alongside this, there is noticeable noise: repeated copy-paste praise, unrelated personal appeals for financial help, religious greetings, and spammy tags. A minority of comments contain aggressive profanity and hate directed at Meta and its CEO, introducing negativity. Overall, the conversation centers on the product launch, with sentiment skewed positive but diluted by off-topic and hostile contributions. 1. **Excitement about Muse features:** "Wow! This is next level Muse looks amazing." 2. **Personal appeals for help:** "please help me I am hungry all time help me please" 3. **Hate speech toward Meta:** "Fuck meta products, and especially fuck your little pedophile faggot CEO"
+Mixed Sentiment
+Focus Reactions to Muse launch ranging from praise to personal requests and hostility
+Entities products=foldable travel stroller, Muse personal AI agent
+153 OnScreenTextLen
+Style production_effort_type=Medium; production_effort=Deliberate layout with custom logo, icons, and...
+Author 【entity-Meta¦author_id=user-987295844972342900079】
+Verified
+430K Followers
+Language en
+
+
+【bdb4】
+URL https://www.facebook.com/reel/1052855834258383/
+Type video
+Created 2026-09-08 19:12:15 UTC
+1.2K Likes
+210 Comments
+Summary: In this promotional video from September 2026, Alex Cornell from Muse Product Design introduces 'Muse,' Meta's new personal AI agent powered by Muse Spark 1.3. Speaking from a modern interior setting, he explains that Muse functions like a capable personal assistant within a familiar chat interface. The video demonstrates the app's capabilities through screen recordings: it tracks flight prices for family travel, provides golf course reminders and performance analysis, books movie tickets, organizes complex logistics like a college move-in weekend, monitors chess game statistics, and grants permission-based actions. Additional features shown include a personalized Feed that curates content based on user interests (finance news, golf updates, book recommendations), an Ideas tab that proactively suggests tasks across life areas like Family, Travel, Health, and Golf, a Goals dashboard tracking both personal and work objectives, and a Library storing generated documents, PDFs, and interactive artifacts such as chess analysis boards. The tone is informative and enthusiastic, positioning Muse as an always-working background assistant designed to help users accomplish their goals.
+CommentSummary: Comments show overwhelmingly positive reception with many users expressing excitement and gratitude toward Meta. A significant portion asks about geographic availability, noting the app is not yet accessible in Australia, Canada, or Pakistan. Several users compare Muse favorably to competitors like Grok. Spam-like referral code promotions appear repeatedly, offering billions of tokens. Some comments are generic praise in multiple languages, while a few express frustration with profanity. The official Meta account replies thanking a user for trying Muse, indicating active brand engagement. 1. **Availability requests:** "Maybe release it to Canada…. Currently not available" 2. **Positive feedback:** "I've been using this all day, and it's outstanding" 3. **Referral code sharing:** "Check out Muse, your personal AI agent. Redeem my code"
+Positive Sentiment
+Focus Community reacts to availability, praises functionality, and shares referral codes.
+Entities people=Alex Cornell (Post Caption); products=Muse AI assistant app
+Author 【entity-AI at Meta¦author_id=user-008644937499641062397】
+Verified
+1M Followers
+Language en
+
+
+【d095】
+URL https://www.instagram.com/reel/DdCmOIIhtlx/
+Type video
+Created 2026-09-08 21:04:11 UTC
+66K Likes
+1.7K Comments
+Summary: Creator Casey Neistat sits on a New York City sidewalk against a graffiti-covered wall, wearing sunglasses, a dark Lacoste polo, and white pants, speaking energetically to the camera. He states that email is the 'bane of my professional existence' and shows his Gmail inbox with 9,209 unread messages. He explains he partnered with Meta to test their new AI agent, Muse, which he named 'Hal.' The video cuts to close-ups of his phone where he opens the Aura/Muse app, connects his email account, and types prompts asking Hal to identify the important emails he needs to respond to each day. He describes how Muse creates a folder of priority emails and reads replies aloud for him to approve. After decades of email being a burden, he presents Muse as the solution and encourages viewers to download it now. The tone is upbeat, personal, and promotional, framed as a genuine productivity testimonial.
+Culture moment=AI agents for email management; significance=Reflects growing mainstream adoption of generative AI assistants for productivity tasks in 2026.; origin=Meta's launch of Muse AI agent
+CommentSummary: The comment section is overwhelmingly critical and dominated by accusations that Casey has sold out by partnering with Meta. Many users express distrust of Meta handling private emails, citing past privacy scandals and data harvesting fears. A recurring theme is disappointment from long-time fans who remember his early independent creator ethos, contrasting it with current corporate promotions. Others debate the utility of AI email sorting versus manual filters or hiring assistants, while some defend the practical value. Humor appears around inflated unread counts and the choice of naming the AI Hal after the 2001 antagonist. Overall sentiment is negative, with frequent calls to unfollow and skepticism about compensation. 1. **Accusations of selling out:** "Terrible plug Casey. Shame on you." 2. **Privacy concerns about Meta accessing emails:** "So you give Meta access to your all your emails so it can learn your personal info" 3. **Comparison to other email tools:** "Google spark can do the same." 4. **Nostalgia for old Casey content:** "Remember when Casey was punk? Felt like he was standing up for little creators?" 5. **Jokes about unread email counts:** "Rookie numbers. I have 30k"
+Negative Sentiment
+Focus Community reacts to perceived sellout and privacy concerns over giving Meta email access.
+Entities people=Casey Neistat (Vision Model Only); products=Muse AI agent, sunglasses, polo shirt
+Author 【entity-Casey Neistat¦handle=@caseyneistat¦author_id=user-232444660914115180863】
+AuthorURL https://www.instagram.com/caseyneistat
+Verified
+3M Followers
+Language en
+
+
+【7df5】
+URL https://www.threads.com/@metanewsroom/post/DdCZbxQmce4
+Type carousel
+Created 2026-09-08 19:05:51 UTC
+570 Likes
+53 Comments
+Summary: Posted on September 8, 2026 by @metanewsroom, this five-slide Threads carousel introduces "Muse," Meta's personal AI agent. The opening slide brands Muse with its blue "M" logo and tagline "Your personal AI agent," showing chat bubbles about ordering Halloween costumes and adjusting a budget. Subsequent slides demonstrate functionality: Slide 2 shows Muse booking two 7:30 PM movie tickets via a browser seat-selection interface. Slide 3 shows Muse finding and pre-filling a Lincoln Middle School Grade 7 Science field trip permission slip for Monterey Bay Aquarium due that day. Slide 4 highlights proactive help with ideas like staging travel packing lists, scheduling tennis lessons, and tracking price drops for refunds, alongside user goals. Slide 5 emphasizes user control, displaying a permission prompt for Muse to place an $80 order for a Glide Pro Stroller at ncvss.com using a saved Visa card, with Allow/Deny options. The tone is professional, instructional, and promotional, positioning Muse as an autonomous assistant that works across existing apps while requiring user approval for actions.
+Culture moment=AI agents; significance=Reflects 2026 industry shift toward agentic AI that executes tasks, not just provides information.; origin=Meta product announcement
+CommentSummary: Comments reflect a divided reception typical of a major AI launch. Supporters praise the shift from answering to doing, sharing personal productivity improvements and excitement about task automation. A significant thread focuses on geography, with users from India, Europe, and Nigeria asking when Muse will launch outside the US, noting Meta's confirmation of US-only availability. Critics raise practical concerns: the agent's effectiveness depends on paid tiers of connected apps, questioning the true cost, and some express distrust about data permissions and Meta's history. Others mention the @muse handle dispute with the band Muse, and a few share invite codes for free tokens, indicating early-access hype. Overall sentiment is cautiously optimistic but tempered by accessibility and transparency worries. 1. **Utility and productivity gains:** "Since using agents like this, my productivity and learning speed have improved so much." 2. **Regional availability frustration:** "When it will be available in India?? @meta.ai @meta" 3. **Skepticism about subscriptions:** "'works across your apps' always hides the real cost — most of those apps need their own paid tier" 4. **Handle controversy:** "I was a bit interested until I've heard you stole @museband's original handle."
+Mixed Sentiment
+Focus Users debate usefulness versus privacy, regional availability, and cost of required app subscriptions.
+Entities products=Muse personal AI agent, Glide Pro Stroller
+2243 OnScreenTextLen
+Author 【entity-Meta Newsroom¦handle=@metanewsroom¦author_id=user-066393553551635649511】
+AuthorURL https://www.threads.com/@metanewsroom
+Verified
+130K Followers
+Language en
+
+
+【2fde】
+URL https://www.instagram.com/reel/DdCfr7Wp7EM/
+Type video
+Created 2026-09-08 20:01:52 UTC
+5.8K Likes
+440 Comments
+Summary: A female creator (Lana Ato) sits indoors then outdoors demonstrating her personal AI agent 'Leo,' a cute orange cartoon character she built on Meta's new Muse app. Speaking directly to camera, she explains she has a 'mental list of a thousand little things' and uses Leo to offload tasks. Screen recordings show Leo helping over several days: updating health insurance information and booking annual family physicals at ARC Quarry Lake in Austin, organizing her inbox and adding events like 'Tween Hangout - Fall Cookie Decorating' to her September 2026 calendar, removing her number from data broker sites to stop spam calls, creating Facebook Marketplace listings for items like an Outdoor Wicker Egg Chair and Dyson Purifier, and analyzing bank statements via Plaid connection. She emphasizes user control over what Leo can access per task. The video ends with her walking and sitting at an outdoor cafe, encouraging viewers to use the link in her bio to try Muse and create their own personal AI agent. The tone is upbeat, practical, and promotional (#MetaPartner). Data of event in content: 2026-09-08, Details: Post date aligns with demonstration of current app usage.
+CommentSummary: Comments are predominantly positive and curious, with many users praising the concept and asking how to get access, especially regarding regional availability in India, Europe, UAE, and Kazakhstan. Several replies from the creator encourage trying the link in bio. A significant portion of noise consists of repetitive spam comments containing sexual solicitation phrases and unrelated promotions for account recovery services. Genuine discussion centers on practical benefits like calendar organization and marketplace listings, with users sharing their own experiences using Muse. The overall tone is enthusiastic despite the spam clutter. 1. **Excitement about spam call reduction:** "That’s so amazing about no more spam calls!" 2. **Requests for access and availability:** "When will it be launched in India?" 3. **Spam and solicitation comments:** "You tryina link up and fvck"
+Positive Sentiment
+Focus Viewers react to usefulness of AI agent for spam calls and scheduling
+Entities people=Lana Ato (Author Name); products=smartphone, Muse AI agent app
+Author 【entity-LANA ATO | AUSTIN, TX Travel & Family Blogger¦handle=@lanaato¦author_id=user-718601893620356859786】
+AuthorURL https://www.instagram.com/lanaato
+120K Followers
+Language en
+
+
+【bb6b】
+URL https://www.facebook.com/reel/1088653944096174/
+Type video
+Created 2026-09-24 12:06:19 UTC
+36K Likes
+6.5K Comments
+Summary: In this clip from Meta Connect, Mark Zuckerberg stands on stage against a bright blue background wearing a black T-shirt that reads 'BUILDING IS MY LOVE LANGUAGE,' brown pants, and glasses. He announces that 'the centerpiece of our vision is Muse,' Meta's personal AI agent. A split-screen shows a small, cute, beige, furry animated character named Muse waving and then holding a glowing blue orb. Zuckerberg explains that Muse was shipped a few weeks prior and is already helping millions of people with different things, and that in coming years he expects it to grow into 'personal superintelligence' that billions around the world will use to accomplish goals and improve their lives. The tone is promotional and optimistic, typical of a tech product keynote, with on-screen captions reinforcing his speech. The creator caption frames Muse as a personal AI agent that gets to know you over time. Data of event in content: 2026-09-24, Details: Post announces a recent launch and projects future growth of Muse.
+CommentSummary: The comment section is dominated by overwhelmingly positive, often repetitive praise for Meta and Muse, with many users expressing admiration, gratitude, and eagerness to try the agent. A significant portion consists of formulaic engagement phrases like 'Hadir bos meta' and requests for follows or monetization help. Interspersed are several lengthy, profanity-laden hateful comments in Hungarian targeting Zuckerberg with insults and wishes for harm, creating a divisive undercurrent. Some users ask practical questions about availability and functionality, while others share personal stories linking Meta to their livelihoods. The overall volume is high but signal is diluted by spam-like repetition and off-topic pleas. 1. **Praise and excitement for Muse:** "So cute! Can't wait to meet @muse Personal AI for everyone" 2. **Hateful attacks on Zuckerberg:** "psihopata agyatlan idiota degeneralt retardalt selejtes hibas hulladek agyu dög Mark Zcukeberger" 3. **Requests for monetization and support:** "My page is not getting enough views please review my page and enable monetization" 4. **Skepticism about utility:** "Let's see how useful it really is. Good move, Meta!"
+Mixed Sentiment
+Focus Reactions to the Muse AI announcement and to Mark Zuckerberg personally.
+Entities people=Mark Zuckerberg (Vision Model Only)
+Author 【entity-Meta¦author_id=user-969825753976177784529】
+Verified
+27M Followers
+Language en
+
+
+【c973】
+URL https://www.instagram.com/reel/DdCY_TrotgY/
+Type video
+Created 2026-09-08 19:03:45 UTC
+140 Likes
+5 Comments
+Summary: This is a promotional video posted September 8, 2026 by Vishal Shah, VP of AI Products at Meta, introducing 'Muse,' a personal AI agent. The video opens with the Muse app icon and text stating 'Introducing Muse' and 'Muse is your personal AI agent.' Set to an upbeat electronic track with a repetitive vocal sample, it demonstrates the agent's capabilities through animated UI sequences. Muse reads school emails to build a $47.80 shopping list for 1st grade supplies and places the order after user approval. It monitors training data, suggests signing up for the 'Autumn Trail 10K' on November 27, and automatically fills out the online entry form. When a flight from SFO to DEN is delayed due to Denver storms, Muse checks alternate routes and offers to rebook. The video emphasizes taglines like 'AI that goes shopping for you,' 'books meetings for you,' 'tracks your goals,' 'fills out forms,' 'analyzes sleep,' 'books trips,' and 'looks out for you,' noting it connects to apps like Facebook, Instagram, and email. It concludes with 'Your Muse gets it done,' 'It's your Muse,' and 'AI that keeps you in control,' ending on the Muse logo with App Store and Google Play download buttons and the Meta logo.
+Entities products=Muse AI agent app
+Author 【entity-Vishal Shah¦handle=@vishalshahis¦author_id=user-451028054772079567836】
+AuthorURL https://www.instagram.com/vishalshahis
+Verified
+910K Followers
+Language en
+
+
+【faac】
+URL https://www.facebook.com/reel/3420967771398373/
+Type video
+Created 2026-09-14 17:03:07 UTC
+2K Likes
+500 Comments
+Summary: A man in a white t-shirt introduces "Muse," Meta's personal AI agent, explaining it helps complete tasks across life areas rather than just providing answers. He demonstrates use cases: for fitness, Muse detects his Newport Marathon registration and proactively offers a 10-week training plan, asking follow-up questions about run times and routes, then generates a 16-week plan with mileage charts. For personal finance, he grants read-only bank access and Muse builds a car-savings dashboard showing income, expenses, budget, and a 7-month path to $10K, while also hunting down and canceling an unused subscription. For productivity, Muse reviews inbox and calendar daily, surfaces unanswered emails, drafts replies, and resolves scheduling conflicts. For shopping, he asks for a standing desk under $200 within 10 miles, and Muse monitors Facebook Marketplace and sends secure purchase links. The presenter emphasizes Muse only connects to apps users already use, asks permission before spending, sending, or sharing, and learns user preferences over time. The video ends with the tagline "Talk to my agent" as a future norm.
+CommentSummary: Comments are predominantly positive, with users expressing love for Meta and anticipation for Muse. Many non-English comments praise the video. A significant portion is noise: self-promotion, requests for support, unrelated pleas for help, and repetitive greetings. Some users raise concerns about Meta's AI reliability and availability by region. Overall sentiment is favorable toward the product announcement despite high noise. 1. **Enthusiasm for Muse:** "Muse আসলেই গেম চেঞ্জার হবে" 2. **Requests for access:** "Muse aiavable pakistan region" 3. **Spam and self-promotion:** "Support me alll guys My old account bend hogaya"
+Positive Sentiment
+Focus Viewers praise Muse concept and express excitement, with many spam/support comments
+Author 【entity-Meta¦author_id=user-352539020795914266404】
+Verified
+9.8M Followers
+Language en
+
+
+【e562】
+URL https://www.facebook.com/FacebookforCreators/posts/pfbid0YyaMd1ESiBTuDGPz4Gx1viWPT7kvGmUZgHg4r7p3mAFRNxdB1CtDjXzAQBj2e6Ncl
+Type image
+Created 2026-09-26 14:10:52 UTC
+15K Likes
+3.9K Comments
+Summary: Posted on September 26, 2026 by Facebook for Creators, this four-slide Carousel summarizes announcements from Meta's Connect event, Creator Edition. Slide 0 introduces the recap with images of a model wearing sunglasses and the Muse character. Slide 1 details "Muse, your personal AI agent," highlighting live chat with video, availability on Mac desktop for files and messages, more app connectors for real context, and upcoming personal emails with its own address. Slide 2 showcases "New styles, same creative flow" for Meta Glasses, displaying four models: Meta Capri, Meta Nova, Adventurer LISA, and Starfire Kylie. Slide 3 promotes keeping the creative flow going with Ray-Ban Meta Audio, describing hands-free open-ear audio for creators on the go, featuring the Clubmaster and Burbank frame styles. The overall tone is promotional and informational, aimed at creators interested in AI tools and wearable tech.
+Culture moment=AI personal agents for creators; significance=Reflects 2026 trend of integrating AI assistants directly into creator workflows.; origin=Meta Connect announcements
+CommentSummary: Comments are overwhelmingly supportive and enthusiastic about the announced tools, with many users expressing excitement about Muse and Meta Glasses integration. A large portion of the conversation consists of low-effort engagement bait such as 'count me in,' 'let's grow together,' and follow-back requests, indicating a community focused on mutual growth rather than deep product discussion. Several users ask Meta directly for monetization access, account restoration, or technical help, showing reliance on the platform. Replies from the official account are minimal but positive, reinforcing the promotional tone. Overall sentiment is positive despite high noise from spam-like interactions. 1. **Engagement exchange requests:** "Count me owner" 2. **Praise for Meta innovation:** "Meta is improving day by day" 3. **Requests for monetization help:** "Please give me content monetization"
+Positive Sentiment
+Focus Excitement about Muse AI and new Meta Glasses, mixed with requests for support and monetization.
+Entities people=Muse (Post Caption); products=Meta Glasses Capri, Meta Glasses Nova, Adventurer LISA, Starfire Kylie, Ray-Ban Meta Audio Clubmaster, Ray-Ban Meta Audio Burbank, Muse AI agent
+1110 OnScreenTextLen
+Author 【entity-Facebook for Creators¦author_id=user-231752665947341235372】
+Verified
+13M Followers
+Language en
+
+
+【bdfe】
+URL https://www.instagram.com/reel/DdCfleKpBW3/
+Type video
+Created 2026-09-08 20:07:08 UTC
+32K Likes
+320 Comments
+Summary: This is a promotional video for the Muse app by Meta, featuring a woman in New York City demonstrating her personal AI agent called Mochi. Opening with the Manhattan skyline and the Muse logo, the video follows the creator as she lies on a couch on a busy street, receives a location notification, and introduces Mochi as an AI she built with Muse that handles tasks she forgets. Throughout the day she interacts with Mochi via text and voice: requesting breakfast nearby without a long wait (she is directed to a cafe), asking for a clothing store recommendation based on her style (she changes into a white tank top), booking a flight to London for the next week with a window seat and avoiding early morning departures, creating a map with a shot list around NYC to capture before sunset (leading her to Pebble Beach in Brooklyn Bridge Park for photos), and finally finding a place to stay overnight in Brooklyn. The video ends at night in a bedroom with the Muse logo on screen and the tagline, 'So I can spend way more time living it. Try the new Muse App by Meta.' The tone is upbeat, modern, and tech-forward, presenting the AI as a seamless daily assistant.
+CommentSummary: Comments are overwhelmingly enthusiastic, with many users praising the cinematography and expressing desire to use Mochi. A dominant thread is frustration about app availability, with numerous users from India, Nigeria, Uruguay, and elsewhere reporting they cannot find Muse in their App Store or Play Store. The creator actively replies with gratitude and humor, reinforcing community engagement. Other discussions compare Mochi to Jarvis, joke about needing organization, and request download links. Overall sentiment is positive and curious, with the community treating the video as both inspiration and a product announcement. 1. **App availability questions:** "Cannot find in the AppStore" 2. **Praise for video quality:** "this is so well made" 3. **Desire for Mochi assistant:** "I think we all need Mochi"
+Overwhelmingly Positive Sentiment
+Focus Excitement about Mochi and difficulty finding the Muse app in app stores.
+Entities people=Isabelle Victoria (Author Name); products=smartphone, Muse AI app; places=New York City, Brooklyn Bridge Park, Metropolitan Av & Graham Av
+Author 【entity-isabelle¦handle=@isabelledvictoria¦author_id=user-199646581839852898366】
+AuthorURL https://www.instagram.com/isabelledvictoria
+200K Followers
+Language en
+
+
+【e565】
+URL https://www.threads.com/@meta/post/DdwicHnkhGR
+Type video
+Created 2026-09-26 17:17:59 UTC
+780 Likes
+88 Comments
+Summary: In a 2026 Meta keynote, Mark Zuckerberg introduces 'Muse,' described as the centerpiece of Meta's vision — a personal AI agent shipped weeks earlier that already helps millions. He demonstrates its ability to set goals (e.g., marathon prep, dinner reservations), share ideas, research and generate a custom feed, and adopt a jolly, customizable character and personality. An animated avatar named Agrippa introduces itself as a brainstorming partner. Zuckerberg notes talking to your muse is fast, fun, and cute, and announces upgrades to Meta Glasses so users can address their muse by name for full voice interaction. A second presenter explains Muse has saved users real money on insurance and refunds, launched a Mac app with access to files, Messages, calendar, and notes, and now supports state-of-the-art dictation and computer use to drive any Mac app. He credits Meta's frontier AI models trained at MSL (Muse Spark, Image, Video, Code, Glimmer) built for 'personal superintelligence,' and teases the imminent release of Meta's most capable model ever to improve all products, including Muse.
+CommentSummary: Comments show a polarized reception. Many users express enthusiasm, gratitude, and curiosity about Muse's capabilities, asking when it will arrive in their country and praising the cute avatar design. A significant thread raises alarm about children's exposure, calling the character marketing manipulative and urging school bans. Others complain about fake celebrity scam accounts and request support funds, indicating trust issues. Technical-minded commenters debate on-device processing versus cloud memory, reflecting broader AI privacy debates. Spam dominates with repeated Hare Krishna temple promotions and token giveaway codes, creating high noise that drowns substantive discussion. Overall sentiment tilts mixed to negative due to skepticism about Meta's motives despite genuine interest in the product utility. 1. **Excitement and praise for Muse:** "Thank you, Mark, and everyone at Meta." 2. **Requests for availability outside US:** "I’m so ready for it in Sweden , please" 3. **Privacy and child safety concerns:** "All I see is targeting children yet again." 4. **Spam and scam complaints:** "Again, you need to be more focused on stopping all these fake Celebrity accounts" 5. **Technical questions about data on-device:** "Most of my own apps run on-device, so the part that would sell me is how much stays on the phone."
+Mixed Sentiment
+Focus Reactions to Muse launch and concerns about children and scams
+Entities people=Mark Zuckerberg (Vision Model Only)
+Author 【entity-Meta¦handle=@meta¦author_id=user-366282291932329103914】
+AuthorURL https://www.threads.com/@meta
+Verified
+2M Followers
+Language en
+
+
+【453f】
+URL https://www.instagram.com/reel/DdC3vr1Tzqd/
+Type video
+Created 2026-09-08 23:32:41 UTC
+12K Likes
+620 Comments
+Summary: Creator Parker Pannell demonstrates Meta's new personal AI agent 'Muse,' which he has named 'Fluffy' and customized with a cute animal avatar. In a fast-paced, promotional video posted September 8, 2026, he shows how he sets a daily goal for a productive, stress-free day, then delegates tasks to Fluffy via his phone. Fluffy cleans his emails, plans a hike at Runyon Canyon, finds $295 in unused subscriptions to cancel, books a surprise Thai dinner reservation, drafts email replies he forgot to send, and purchases a $150 slim double-breasted suit for a red carpet event next Monday using his stored credit card information. The video moves through multiple locations—his kitchen, bedroom, car, a hiking trail, bathroom mirror, closet, and finally a restaurant where he dines with a woman—emphasizing Muse's ability to connect to calendar, Instagram, and payment info to multitask for him. The tone is enthusiastic and instructional, positioning Muse as an indispensable personal assistant.
+Culture moment=AI personal agents; significance=Reflects 2026 trend of tech companies integrating autonomous AI assistants into daily life, sparking debates about automation bias and brand identity.; origin=Meta's announcement of Muse
+CommentSummary: Comments are dominated by frustration that Muse is not downloadable in many countries including India, Nigeria, Brazil, and Canada, with repeated requests for invite codes. A significant portion of discourse is hostile toward Meta for appropriating the @muse username from the British rock band Muse, with users demanding justice for @museband. Spam and bot-like replies offering 'Meetups' and repeated suicidal ideation statements clutter the thread, reducing signal. Despite negativity, some users express excitement about the AI capabilities, praising Fluffy and sharing personal success stories with subscription savings. Overall sentiment is polarized between tech curiosity and brand resentment. 1. **App availability complaints:** "Not available in India ??" 2. **Name theft backlash:** "Give Muse back their handle and stop shoving this bs down our throats." 3. **Suicidal comments spam:** "I feel like commiting suicide am useless 😭😭😭 Can I have someone to talk to" 4. **Positive product interest:** "This is amazing"
+Mixed Sentiment
+Focus Availability of Muse app and controversy over the @muse handle belonging to the band Muse
+Entities people=Parker Pannell (Post Caption); products=smartphone, laptop computer, Muse AI agent, slim double-breasted suit, perfume bottle; places=Runyon Canyon
+Author 【entity-Parker Pannell¦handle=@parkerpannell¦author_id=user-317254519777697596004】
+AuthorURL https://www.instagram.com/parkerpannell
+Verified
+650K Followers
+Language en
+
+
+【6239】
+URL https://www.instagram.com/reel/DdCcUuTqOfp/
+Type video
+Created 2026-09-08 19:33:23 UTC
+17K Likes
+540 Comments
+Summary: In a 2026 promotional video posted September 8, 2026, real estate personality Ryan Serhant demonstrates the Muse AI app in New York City. Standing in a bright kitchen wearing a fitted gray t-shirt, he explains he is working on work-life balance and introduces his personal AI agent, which he has named 'Pumpkin.' The video shows screen recordings of the chat interface where Pumpkin confirms the name and offers to help. Serhant then uses Pumpkin to manage tasks: ordering 'Tremendous Tulips' ($59.99) for his partner Emilia returning from Greece, building a HIIT workout Lift Tracker that logs sets and recommends next-session weights, adjusting week four of the program for a hotel gym during a Denver trip for Sellit '26, and booking a dinner reservation for five at Altesi Downtown via OpenTable after checking his calendar. Later in a luxury vehicle and then at a white office desk, he approves permissions and emphasizes that unlike other tools, Muse 'actually does the task instead of telling me how to do it.' The tone is professional, enthusiastic, and instructional, positioning the app as a proactive executive assistant.
+CommentSummary: Comments are dominated by users asking when Muse will launch in their country, with repeated mentions of India, Turkey, UAE, UK, Canada, and others noting it is US-only for adults 18+. A significant portion of the thread is hijacked by a lengthy Arabic-language plea from a woman in Yemen describing displacement, hunger, and eviction, which receives no direct reply from the author. Other comments express enthusiasm for the concept, skepticism about privacy and Meta's trustworthiness, jokes about the name Pumpkin, and requests for invite codes. The overall sentiment is mixed: excitement about the technology coexists with frustration over limited rollout and concerns about data sharing. 1. **App availability complaints:** "It’s not available in India… what’s for Indian???" 2. **Humanitarian plea:** "My brother, whoever is reading my message, this is me, your sister from Yemen." 3. **Excitement about AI:** "This looks awesome!!"
+Mixed Sentiment
+Focus Availability of Muse outside US and reactions to AI replacing human assistance
+Entities people=Ryan Serhant (Author Name); products=Muse AI agent app
+Author 【entity-Ryan Serhant¦handle=@ryanserhant¦author_id=user-719679423572965179794】
+AuthorURL https://www.instagram.com/ryanserhant
+Verified
+3.5M Followers
+Language en
+
+
+【fd92】
+URL https://www.facebook.com/reel/1406276157695982/
+Type video
+Created 2026-09-25 00:31:22 UTC
+2.4K Likes
+400 Comments
+Summary: In this September 24, 2026 video, Mark Zuckerberg presents on stage at a Meta event to announce an upgrade to the Meta Glasses AI experience. Wearing a black t-shirt reading 'BUILDING IS MY LOVE LANGUAGE' and brown pants, he tells the audience that every pair of existing Meta Glasses will get smarter without needing new hardware. He explains that in coming weeks, users will be able to activate a personal AI agent called 'Muse' by saying 'Hey Agrippa' or whatever name they choose, instead of getting a single response to a question. A screen demonstration shows the interface responding 'Hey Mark, what's up?' The agent will have full context from prior conversations and be able to work in the background. The tone is promotional and technical, aimed at showcasing conversational AI capabilities integrated into wearable glasses. Data of event in content: 2026-09-24, Details: Post date aligns with the live announcement timing.
+CommentSummary: Comments show a mix of genuine enthusiasm for the Meta Glasses update alongside widespread spam promoting Muse token referral codes, indicating coordinated self-promotion. Many users express admiration for Zuckerberg and excitement about the agent lifestyle, while a smaller but vocal thread posts lengthy conspiracy theories accusing Meta and other tech leaders of using satellite weapons to harm brains. Other replies are multilingual greetings, requests for availability, and unrelated product mentions, creating a noisy environment where promotional spam drowns out substantive discussion about the actual AI features. 1. **Referral code spam for Muse tokens:** "Want 2 BILLION FREE tokens on Muse AI? Join Muse, go to Settings" 2. **Praise for Mark Zuckerberg:** "Wow Amazing you mister Zuckerberg" 3. **Conspiracy accusations about brain waves:** "using AI supercomputer programs to secretly beam waves via satellite that violate human brains"
+Mixed Sentiment
+Focus Community reacts to Meta Glasses AI announcement amid heavy referral-code spam and conspiracy claims.
+Entities people=Mark Zuckerberg (Vision Model Only); products=Meta Glasses, Muse AI agent
+Author 【entity-Muse¦author_id=user-552949735306911939271】
+Verified
+74K Followers
+Language en
+
+
+【5290】
+URL https://www.instagram.com/reel/Db2vvaRxMmi/
+Type video
+Created 2026-08-10 09:59:26 UTC
+370K Likes
+33K Comments
+Summary: In a selfie-style video posted August 10, 2026, Mark Zuckerberg speaks directly to camera from an indoor setting, wearing a white t-shirt and silver chain. He outlines Meta's philosophy of building a positive future by ensuring everyone has access to personal superintelligence. He announces the open-sourcing of 'Muse Glimmer,' a 30-billion-parameter dense on-device model that runs on laptops and is claimed to be the highest-performing of its size. He states that in coming weeks Meta will also open-source weights for 'Muse Spark 1.2,' its latest foundation model and one of the world's leading models, with even larger models coming soon. He connects this to community benefit, citing $50,000 teacher bonuses in Richland Parish funded by tax revenue from Meta infrastructure, the launch of America's Workforce Academy for free training and guaranteed jobs at Meta sites, and a new 'Future is for Everyone Fund' to invest in local communities including teachers, first responders, energy/water infrastructure. Finally, he describes work on a personal superintelligence agent that operates 24/7 to improve users' health, relationships, career, and finances, available via the latest Meta AI models in the Meta AI app.
+CommentSummary: The comment section is dominated by low-quality noise rather than substantive discussion of the AI announcement. Hundreds of users post repetitive pleas to restore disabled Instagram and Facebook accounts, often copying identical text blocks, indicating coordinated spam or bot activity. A smaller stream asks Zuckerberg for personal financial aid, marriage proposals, or business promotions, reflecting parasocial expectations of direct CEO intervention. Criticism appears around data center environmental impact, AI ethics, and platform moderation failures, with some users accusing Meta of ignoring child safety reports. Positive or neutral reactions are rare and brief, such as 'Thanks man, can't wait to test them.' Overall sentiment is fragmented, with frustration toward Meta support outweighing engagement with the actual content about Muse Glimmer and community funds. 1. **Account suspension appeals:** "My account was disabled without warning please help me recover it" 2. **Requests for money or favors:** "I am willing to get a permanent tattoo across my entire face to promote your company" 3. **AI skepticism and criticism:** "Bro is cheating himself then why bother when I do at interview" 4. **Spam promotion:** "Still looking for a professional hairdresser in Ahvaz"
+Mixed Sentiment
+Focus Reactions to Zuckerberg's AI announcement mixed with mass account-recovery requests and spam
+Entities people=Mark Zuckerberg (Vision Model Only)
+Author 【entity-Mark Zuckerberg¦handle=@zuck¦author_id=user-579333057218848043460】
+AuthorURL https://www.instagram.com/zuck
+Verified
+19M Followers
+Language en
+
+
+【6817】
+URL https://www.instagram.com/reel/Dd1kq5oOFKU/
+Type video
+Created 2026-09-28 16:07:21 UTC
+5K Likes
+210 Comments
+Summary: In this sponsored video posted September 28, 2026, tech creator Austin Evans (@austinnotduncan) promotes Meta's new 'Muse' AI app, stating he has been using it for several weeks. He describes Muse as a simple agent that can actually do tasks for you. He demonstrates how Muse built a full database of his collectibles collection by pulling more than 300 receipts from his email over six years, creating a spreadsheet in about 30 minutes that was ready to hand to his accountant. He also shows Muse tracking when tickets go live for events like the United States Grand Prix, staying on top of his calendar, and flagging new tech stories each morning. Evans notes that Muse asks for permission before doing anything big, has gotten better over time, remembers everything to learn his routine, and tries to be proactive without needing to be poked. While acknowledging it is not perfect, he calls it legitimately impressive and encourages viewers to download the new Muse app.
+CommentSummary: The comment section is dominated by noise rather than substantive discussion about Muse. Many users post repetitive referral codes promising free tokens, indicating coordinated spam. A significant portion expresses skepticism or disappointment about the sponsorship, accusing Evans of selling out and raising privacy worries about granting an AI access to email and calendars. Several comments are unrelated pleas for help, including a detailed distress message from Yemen and a suicidal ideation reply, which are not addressed by the creator. Positive feedback is minimal, mostly praising the concept, while negative sentiment centers on perceived laziness, sellout behavior, and regional availability limits. Overall, the community response reflects distrust of branded AI tools and fatigue with influencer promotions. 1. **Privacy concerns about AI access:** "You know damn well this is a privacy nightmare" 2. **Spam referral code sharing:** "Use code W7J3V0 for 1B free token!" 3. **Suicidal distress comment:** "I feel like committing sucaid😭😭am useless 😭😭😭Can I have someone"
+Mixed Sentiment
+Focus Reactions to sponsored promotion, privacy concerns, and spam referral codes
+Entities people=Austin Evans (Author Name); products=Muse AI assistant app
+Author 【entity-Austin Evans¦handle=@austinnotduncan¦author_id=user-992298568609262576494】
+AuthorURL https://www.instagram.com/austinnotduncan
+Verified
+510K Followers
+Language en
+
+
+【fdb4】
+URL https://www.instagram.com/reel/DdCeBaOv3p0/
+Type video
+Created 2026-09-08 19:49:04 UTC
+8.5K Likes
+260 Comments
+Summary: A man identified as entrepreneur Marshall Haas demonstrates Meta's new personal AI agent, Muse, in a promotional video posted September 8, 2026. He explains that for ten years he avoided paying bills himself by texting photos to an assistant, then switched to Muse, which he names "Nova" and gives a job description to be proactive. The video shows him using Nova to pay a $35 overdue parking bill by snapping a photo, and to approve payment of a $682 lawyer invoice. He highlights that Muse asks permission before spending money. Additional examples include Muse finding a recipient's address in email to order flowers from a previously used florist, booking dinner reservations on OpenTable, and purchasing movie tickets for a new release that fits his schedule. The footage intercuts scenes of him in a modern kitchen, wood-paneled office, garage with luxury cars (Porsche, McLaren), and playing pickleball. The tone is enthusiastic and entrepreneurial, positioning Muse as an agent that does tasks rather than just answers questions, useful for running a business or household. The video is labeled as a Meta Partner post.
+Culture moment=AI agent proliferation; significance=Reflects 2026 trend of shifting from chatbots to agentic AI that performs tasks, highlighted by Meta's entry.; origin=Industry move toward personal AI assistants
+CommentSummary: Comments reflect a divided community. Many users express enthusiasm for the concept of an autonomous agent, asking about availability in countries like Morocco, India, Brazil, and requesting invite codes. A significant portion raises privacy concerns about granting Meta access to email, banking, and personal data. Criticism is directed at Meta for allegedly taking the @muse Instagram handle from the band Muse, generating backlash. Others debate the necessity of such automation, calling it lazy or dystopian, while some defend the utility for busy professionals. The conversation is noisy with repeated availability questions, but substantive discussion centers on trust, ethics, and global rollout. 1. **Requests for access and invite codes:** "Can I have someone to talk to before taking off my life" 2. **Privacy and trust issues with Meta:** "Who in their right mind would allow META'S AI to connect to their bank" 3. **Criticism over handle appropriation:** "Give @museband their original insta handle back" 4. **Excitement about AI agent capabilities:** "The future is here"
+Mixed Sentiment
+Focus Availability, privacy concerns, and criticism of Meta taking the @muse handle from the band.
+Entities people=Marshall Haas (Author Name); products=smartphone, luxury sports car, luxury SUV
+Author 【entity-Marshall Haas¦handle=@marshallhaas¦author_id=user-201507242372214246151】
+AuthorURL https://www.instagram.com/marshallhaas
+140K Followers
+Language en
+
+
+【f0a0】
+URL https://www.instagram.com/reel/DdrXcROtmXR/
+Type video
+Created 2026-09-24 17:02:35 UTC
+2.6K Likes
+230 Comments
+Summary: Influencer Aggie Lal presents a promotional video for Meta's new AI agent called Muse, posted September 24, 2026. Speaking to camera while holding white earphones, she explains that as an influencer, Virgo, and mom, she had accumulated about 14,000 saved Instagram posts she never revisited. She demonstrates opening the Muse app on her phone, where it acts as a personal assistant named 'Munchkin.' She asks Muse to analyze her saved posts, and the AI returns a summary identifying themes like high-protein recipes and parenting topics including postpartum recovery, mom fitness, and breastfeeding. Muse then generates two organized PDFs from those saves: one titled 'Saved Recipes' with detailed recipes such as Creamy Satay Protein Power Bowl and Cottage Cheese Everything, crediting original creators; and another titled 'Parenting Tips' covering postpartum recovery, relationship tips, and travel ideas. The video cuts to her in the kitchen retrieving ingredients, chopping vegetables, cooking ground meat with sweet potatoes, and assembling bowls with cheese, onion, lettuce, and lime alongside her toddler. She concludes by encouraging viewers to comment 'Muse' to receive the recipe PDF and app link, expressing excitement that she can finally cook the recipes she saved.
+Culture moment=AI personal assistant trend; significance=Reflects growing consumer interest in AI agents that automate digital clutter management, cited in post as fixing 'saved graveyard'.; origin=Post directly names Meta's launch of Muse.
+CommentSummary: Comments show a polarized reception. Supporters praise the organization hack and request the recipe PDF, with many users posting their own referral codes for free tokens and the official @muse account replying with encouragement. Critics express disappointment about AI use, calling it inauthentic or cringe, and questioning data privacy and Meta's handling of the Muse handle. Defenders argue using AI as a tool does not diminish authenticity or parenting quality. The thread becomes a mix of genuine interest, spammy referral sharing, and ideological pushback against AI adoption. 1. **AI authenticity criticism:** "You seem such a great person and so inspiring, I am shocked your are supporting using AI" 2. **Referral code promotion:** "Use my referral code with Muse, and get 1 billion tokens for free" 3. **App usefulness praise:** "I asked it to organize my saved recipes and gift ideas too"
+Mixed Sentiment
+Focus Community debates AI authenticity versus practical utility and shares referral codes.
+Entities people=Aggie Lal (Author Name); products=Muse AI agent, wired earphones, smartphone, Greek yogurt
+Author 【entity-AGGIE LAL ✨ your biohacking bestie¦handle=@aggie¦author_id=user-935629001483887074132】
+AuthorURL https://www.instagram.com/aggie
+Verified
+1.6M Followers
+Language en
+
+
+【bf92】
+URL https://www.facebook.com/reel/1764168638233725/
+Type video
+Created 2026-08-10 15:11:14 UTC
+91K Likes
+14K Comments
+Summary: The video is a direct-to-camera announcement by Mark Zuckerberg, branded with Meta and Yahoo Finance watermarks, presenting Meta's new AI developments in 2026. Zuckerberg states he is proud to share that Meta is open-sourcing Muse Glimmer, described as a 30-billion-parameter dense model designed to run on laptops and positioned as the highest-performing model of its size. He says that in the coming weeks Meta will also open-source Muse Spark 1.2, its latest foundation model and one of the leading models in the world. He adds that even bigger models are coming soon. Zuckerberg frames the work as enabling everyone to have a personal superintelligence agent operating 24/7 to improve health, relationships, career, finances, and more, accessible via the latest Meta AI models in the Meta AI app. The video ends with shots of a phone home screen showing Meta apps and the Meta AI app interface, with Zuckerberg stating he looks forward to sharing more soon.
+CommentSummary: The comment section is dominated by supportive viewers from multiple countries, many greeting Zuckerberg as 'boss meta' and thanking him for the news. Sentiment is overwhelmingly positive with repeated emojis and phrases like 'wow nice' and 'good morning boss meta'. A significant portion of comments are unrelated engagement bait or personal appeals for help, follower growth, monetization assistance, or financial support, indicating high noise. Several users note Zuckerberg's appearance and ask technical questions about Muse Glimmer versus other models. Overall reception treats the announcement as credible and exciting news about AI accessibility. 1. **Gratitude and praise for Meta:** "Thank you so much boss meta Thank you for sharing" 2. **Requests for personal assistance or money:** "Pls help me Pls help me" 3. **Curiosity about model performance:** "Is muse glimmer better than muse"
+Positive Sentiment
+Focus Viewers express excitement, gratitude, and request personal help or monetization support related to Meta AI.
+Entities people=Mark Zuckerberg (Vision Model Only)
+Author 【entity-Yahoo Finance¦author_id=user-820723475626987418746】
+Verified
+1.6M Followers
+Language en
+
+
+【77c4】
+URL https://www.facebook.com/MetaNewsroom/posts/pfbid09Mdn9ZmJmeLAeny4YMxkFshDGBQkNnEZY6ohP7gEpuw7Woit24DHdp4VUtaYqhmBl
+Type text
+Created 2026-09-08 19:02:05 UTC
+1.8K Likes
+320 Comments
+Summary: The post from Meta Newsroom introduces 'Muse,' described as a personal AI agent that goes beyond answering questions to actually performing tasks across apps users already use, helping with organization, taking tasks off the user's plate, and turning long-term goals into action plans. The caption emphasizes a shift from chatbots to agents that take action. Community comments are predominantly positive and curious, with many users asking where to download the app (iOS, Android, browser at muse.ai), whether it is available outside the US, and expressing excitement. Several comments raise privacy concerns about data collection. The thread also contains unrelated spam comments promoting gambling sites and unrelated complaints about Facebook account suspensions.
+CommentSummary: The community response is largely enthusiastic, with many commenters welcoming Muse and praising Meta's work. A recurring theme is practical inquiry: users repeatedly ask where to download the app, whether it is on the App Store or Play Store, and if it is limited to the US, indicating strong demand but confusion about rollout. Privacy skepticism appears, with one user asking about data collection and receiving a hyperbolic reply claiming 'all of it.' Alongside legitimate discussion, the thread is polluted by spam comments promoting gambling platforms in Indonesian and Urdu, which are unrelated to the product. There are also tangential complaints about Facebook account suspensions, showing mixed noise in an otherwise product-focused conversation. 1. **Download and availability questions:** "App Store for download?" 2. **Privacy concerns about data collection:** "And which of my data is it gonna collect??" 3. **Regional availability frustration:** "Why is it only available in the US" 4. **Positive reception and congratulations:** "Great job Boss Meta. Thank you"
+Positive Sentiment
+Focus Users react to Muse's capabilities and ask about download availability and regional restrictions.
+Entities people=Meta Newsroom (Author Name)
+Author 【entity-Meta Newsroom¦author_id=user-084719184578193510083】
+Verified
+360K Followers
+Language en
+
+
+【ac7b】
+URL https://www.instagram.com/reel/DdkZLTIBccl/
+Type video
+Created 2026-09-22 00:04:39 UTC
+18K Likes
+130 Comments
+Summary: In a bright modern apartment, creator Sofya Prado surprises her husband David by leading him blindfolded to a white couch where she serves him a plated meal. She explains she used Meta's new AI agent 'Muse' — which she personifies as 'Mila' — to handle tasks for her. Demonstrations show Mila scanning her saved Instagram videos to find three recipes, creating a grocery list without being asked, and later, while Sofya is washing dishes in the kitchen, proactively booking a two-night hotel stay for September 26-28 plus dinner for their weekend getaway after Sofya mentions David has a day off. David reacts positively, eats the food, and asks how to get Muse himself. The video is presented as a #MetaPartner promotion, with on-screen text and graphics displaying the Muse logo, and emphasizes the AI's ability to autonomously manage cooking planning and travel booking.
+CommentSummary: The comment section is dominated by positive reactions to the couple, with many users calling them cute and expressing love for Sofya. A significant portion of discussion centers on the Muse app itself, with users asking how to get it, noting it's available in US and Canada, and sharing referral codes for free tokens. Several comments are in Spanish and Portuguese expressing affection. However, the discourse is disrupted by a long, repeated comment describing suicidal ideation, mental distress, and hopelessness, which stands out starkly against the otherwise lighthearted promotional tone. This creates a mixed sentiment overall, where genuine enthusiasm for the product coexists with spammy referral posts and concerning user-generated content unrelated to the video. 1. **Praise for couple:** "My greatest joy is seeing you happy" 2. **Interest in app:** "Oh my God, I'm going to install it" 3. **Promo code sharing:** "Redeem my invite code WGPN00 in settings" 4. **Disturbing suicide comment:** "SUICIDE IS THE ONLY OPTION DEATH IS MY PORTION"
+Mixed Sentiment
+Focus Viewers react to couple's cuteness and ask about Muse app availability and features.
+Entities people=Sofya Prado (Author Name), David (Post Caption); products=Muse AI assistant, smartphone
+Author 【entity-Sofya (Plotnikova) Prado¦handle=@sofyaprado¦author_id=user-933095213035548230136】
+AuthorURL https://www.instagram.com/sofyaprado
+Verified
+4.3M Followers
+Language en
+
+
+【ccf1】
+URL https://www.facebook.com/reel/1064285405973635/
+Type video
+Created 2026-09-10 10:13:49 UTC
+23K Likes
+7.7K Comments
+Summary: The video is a split-screen presentation announcing Meta's new personal AI agent called 'Muse.' On the left, Mark Zuckerberg speaks directly to camera outdoors, while on the right, a clip of him on stage is shown. On-screen text and his speech explain that Muse is a 24/7 agent that understands user goals and works autonomously to achieve them—such as strengthening relationships, managing health, building a business, saving money, organizing projects, ordering ingredients, getting permits for climbing mountains, monitoring MMA training, and finding researchers. The video demonstrates the interface showing goals, task lists, shopping carts, calendar integration, and health tracking. Zuckerberg emphasizes privacy and security, describing the 'Muse Secure VM,' a private computer for the agent, a secure credential store so Muse cannot read passwords, and user approval prompts before actions. He notes Meta cannot access Muse data, comparing encryption to WhatsApp. Pricing is mentioned: free for up to 100 million tokens per week, with paid Power ($20/month) and Maximum ($100/month) plans. The video concludes with Zuckerberg calling Muse the start of personal superintelligence and encouraging viewers to try it.
+CommentSummary: The comment section is dominated by repetitive greetings in multiple languages, expressions of thanks, and religious blessings directed at 'Boss Meta.' Many users do not engage with the content of the Muse announcement, instead using the post as a place to seek attention, request money, or show loyalty. There is minimal technical discussion about the AI agent itself. Sentiment is overwhelmingly positive but superficial, with a high volume of low-information comments, indicating the post functions more as a social touchpoint than a product discussion forum. 1. **Greetings and respect to Meta:** "Good day Boss Meta Glory to God Good congratulations" 2. **Requests for financial assistance:** "Boss Meta, you are only the can solve my problem for my kidney transplant please help me" 3. **General appreciation:** "Wow, bright idea"
+Overwhelmingly Positive Sentiment
+Focus Viewers express gratitude, greetings, and requests for help, with little discussion of product features.
+Entities people=Mark Zuckerberg (Vision Model Only); products=Muse personal AI agent
+Author 【entity-Startup.Pedia¦author_id=user-384086958144101142068】
+140K Followers
+Language en
+
+
+【1ebf】
+URL https://www.instagram.com/reel/Ddl_HIrK8z-/
+Type video
+Created 2026-09-22 14:51:29 UTC
+16K Likes
+310 Comments
+Summary: In this 2026 Meta Partner video, creator Jeenie (@jeenie.weenie) promotes the new Muse App from Meta by introducing her personal AI agent, 'Dexter,' named after her loyal dachshund. Speaking directly to camera in a home kitchen, she explains she needed help organizing her life across many locations because her husband refused to assist with her ADHD. She demonstrates Dexter's capabilities through on-screen phone chats: planning multi-city trips to Toronto, New York, Dubai, Korea, and Singapore; finding flight options based on preferences and booking after approval; locating a 4-star hotel near the conference center under $400/night while flagging a date mismatch; searching for nearby healthy restaurants within walking distance and booking one; emailing the full itinerary to herself and her husband Johnny before each trip; and creating a tailored packing checklist. The tone is upbeat, humorous, and exaggerated, ending with her leaving with luggage and encouraging viewers to download their own Dexter from the Muse app.
+Culture moment=GenAI backlash; significance=Reflects growing creator-audience tension over AI endorsements amid environmental concerns.; origin=Referenced in comments criticizing data centers and water usage
+CommentSummary: Comments show polarized reception. Many viewers praise the comedy and relatability of the 'birthed me' joke and the dog loyalty premise, expressing love and excitement for Muse. A large contingent expresses strong disappointment, calling the AI promotion tone-deaf, environmentally harmful, and a sellout, leading to mass unfollow declarations. Spam accounts flood replies with fake Muse token redemption codes. A concerning self-harm plea appears in replies. Political hashtags about Israel-Palestine appear unrelated to content. Overall sentiment is mixed to negative despite initial positive reactions. 1. **Humor appreciation:** "You birthed me!! vs I birthed you!!" 2. **AI criticism and unfollows:** "This is EXTREMELY disappointing. Unfollowing." 3. **Spam token codes:** "Use this code for 3 Billion Tokens : Y6YR2C" 4. **Self-harm comment:** "I feel like commiting suicide am useless"
+Divisive Sentiment
+Focus Community split between enjoying humor and rejecting AI endorsement
+Entities people=Jeenie (Author Name), Johnny (Post Caption); products=smartphone, Muse app
+Humor type=Situational; explanation=The humor arises from the relatable exaggeration of a chaotic, globally-connected life that no human helper wants to manage, contrasted with an obedient AI. The 'you birthed me / I birthed you' role reversal with her child, the husband's deadpan refusal despite marriage vows, and naming the AI after the family's only loyal dog create situational irony. It plays on common parental exhaustion tropes and the cultural moment of outsourcing mental load to AI, making the absurd premise feel familiar rather than futuristic.
+Author 【entity-JEENIE¦handle=@jeenie.weenie¦author_id=user-223098686047458949670】
+AuthorURL https://www.instagram.com/jeenie.weenie
+Verified
+2.6M Followers
+Language en
+
+
+【db90】
+URL https://www.facebook.com/yourstorycom/posts/pfbid02DaUxviyrkFQ3yY3QcJ8NnQsUbmHMqE2eMa9JfVoCeKDHfeDYEmu91pZhpjTV1Jvnl
+Type image
+Created 2026-09-09 14:02:22 UTC
+4.8K Likes
+2.3K Comments
+Summary: The image is a news-style graphic from YourStory reporting on Meta's launch of Muse, a personal AI agent. On the right, Mark Zuckerberg stands outdoors wearing a dark blue henley shirt with a lapel microphone, appearing to speak. On the left, a smartphone interface illustrates Muse in action: it notifies a user that tickets opened for a tracked movie (4:30 PM or 7:30 PM), the user replies "Yeah, book for 2" and "Lets do 7:30pm," and a browser window shows seat selection with popcorn graphics floating between the chat and browser. Large white text at the bottom reads "Meta launches Muse, a personal AI agent that gets things done" above a red "NEWS" label. The accompanying caption explains that Muse, powered by Muse Spark, can perform multi-step tasks like filling forms, sending emails, and booking travel, continue working after the app is closed, retain information, and personalize assistance, rolling out initially in the US on iOS, Android, web, and WhatsApp. The overall tone is informational and promotional, presenting a product announcement without controversy.
+CommentSummary: The comment section is dominated by repetitive, formulaic greetings in Indonesian and English such as 'Hadir bos meta,' 'Selamat pagi,' and 'Good morning sir,' indicating a community ritual of checking in rather than substantive discussion. Many users express thanks, congratulations, and prayers for success, with frequent mentions of God bless and salam interaksi. A minority raise skepticism about AI reliance, privacy concerns, or ask practical questions about availability and functionality. Overall sentiment is overwhelmingly positive and deferential toward Meta, with little critical debate about the product itself, suggesting the post functions more as a social touchpoint for followers than a forum for tech analysis. 1. **Greetings to Meta boss:** "Hadir bos meta" 2. **Gratitude for information:** "Thank you for information YourStory" 3. **Religious blessings:** "God bless you boss"
+Overwhelmingly Positive Sentiment
+Focus Users greeting 'bos meta' and expressing support rather than discussing AI features.
+Entities people=Mark Zuckerberg (Vision Model Only)
+281 OnScreenTextLen
+Style production_effort_type=Medium; production_effort=Deliberate staging of photo with designed UI...
+Author 【entity-YourStory¦author_id=user-328889544367785246427】
+Verified
+1.7M Followers
+Language en
+
+
+【b253】
+URL https://www.instagram.com/p/DdC-eVBEdD4/
+Type carousel
+Created 2026-09-09 00:29:31 UTC
+6.6K Likes
+160 Comments
+Summary: The carousel presents a multi-slide promotional campaign for Meta's new AI assistant Muse, launched in September 2026. It opens with a graphic featuring Mark Zuckerberg and a mascot announcing that Muse keeps working after the app closes, then progresses through demonstrations of its WhatsApp integration: booking movie tickets, filling out a school field trip permission slip from email, and protecting privacy with secure credentials. Subsequent slides highlight features like using passwords without seeing them, managing goals and ideas such as travel packing and tennis lessons, and the US rollout on iPhone, Android, and web. The final video shows Zuckerberg outdoors explaining Muse as a personal agent that works 24/7 to achieve goals, handles tasks autonomously, checks for approval before sensitive actions, and offers free and subscription tiers. The narrative moves from announcement to feature showcase to founder endorsement, emphasizing convenience, privacy controls, and continuous operation.
+CommentSummary: The comment section is dominated by low-quality noise, including repeated spam phrases about 'CRIBE MEET' with peach emojis, which drown out substantive discussion. Among genuine replies, sentiment is mixed to negative: several users express distrust of Meta handling emails, comparing it to Facebook and Instagram privacy issues, while others question Android availability and criticize AI assistants generally. A few comments are neutral or curious about functionality and monetization. The overall tone reflects fatigue with AI hype and concern over data access, with little constructive engagement with the post's actual demonstration. Users mock privacy claims, suggest running Ollama locally, ask about US-only availability, and express frustration with AI assistants, while spam accounts repeatedly post identical meetup phrases. 1. **Privacy distrust:** ""Muse protect your privacy" 🤌😂🤡" 2. **Spam meetup comments:** "DOWN FOR CRIBE MEET🍑😩🍑" 3. **AI fatigue:** "I'm fucking fed up with AI assistants" 4. **Local AI alternative:** "better i download own server on phone and run Ollama local AI"
+Mixed Sentiment
+Focus Community debates privacy, utility, and skepticism toward Meta AI.
+Entities people=Mark Zuckerberg (Vision Model Only); products=smartphone, Muse AI assistant, WhatsApp, smartphone device, Meta Muse AI assistant; places=United States, City Park
+1656 OnScreenTextLen
+Author 【entity-Wealth¦handle=@wealth¦author_id=user-604598459857533732580】
+AuthorURL https://www.instagram.com/wealth
+Verified
+17M Followers
+Language en
+
+
+【e699】
+URL https://www.instagram.com/reel/DdsTDY3q--L/
+Type video
+Created 2026-09-25 01:39:34 UTC
+2K Likes
+1.9K Comments
+Summary: A female creator in a purple hoodie presents a promotional review of 'Meta's new AI Agent - Muse,' dated September 24, 2026. She describes it as 'mind-blowing' and 'more powerful than Claude and ChatGPT.' Through screen recordings, she demonstrates using the Muse app (with its 'M' logo), where she names her agent 'Luna' after asking for astrological/numerological suggestions. She then connects Muse to LinkedIn and shows how the agent autonomously creates, edits, and schedules LinkedIn posts without her touching the platform — including color-correcting two personal photos from 2015 vs 2024, drafting a career-journey story post, adding emojis, and scheduling it for 5 PM EST. She expresses amazement at the automation. Finally, she highlights the pricing, showing a screenshot claiming the free plan includes 1 billion additional tokens that never expire and refresh weekly, urging viewers to comment 'Muse' for the link and try the agent themselves. The tone is enthusiastic, instructional, and sales-driven.
+CommentSummary: The comment section is dominated by spam-like referral code exchanges rather than substantive discussion of the product. Dozens of users post codes such as H2DBNO, HSYBZ3, MO7K8U claiming they grant 1 to 30 billion free tokens, often with instructions to use a US VPN. The creator replies uniformly with 'Sent you a message! Check it out!' or 'Nice! Check your DMs!', reinforcing the engagement loop. Many Indian users report the app is not available in their country, asking for workarounds. Sentiment is mixed: some express excitement ('Mind-blowing is right'), others mock the hype ('peak unemployment'), and a few warn about giving AI control over personal accounts. Overall, the conversation functions as a marketplace for unverified promo codes rather than genuine product feedback. 1. **Referral code sharing:** "Redeem Code: 1BRR2P for 1 billion free tokens on muse" 2. **India availability issues:** "It giving message like this app isn't not available in india" 3. **Skepticism about claims:** "Well 👏 peak unemployment 💔" 4. **Warning about AI control:** "There will be a day, you will not have any control of your social, personal things"
+Mixed Sentiment
+Focus Community reacts primarily to referral codes promising free tokens and reports of app unavailability in India.
+Entities people=Aishwarya (Post Caption); products=Muse AI agent, LinkedIn
+Author 【entity-Aishwarya AI, Tech & Lifestyle¦handle=@aishwarya.talks¦author_id=user-510595576023146427197】
+AuthorURL https://www.instagram.com/aishwarya.talks
+66K Followers
+Language en
+
+
+【7f52】
+URL https://www.instagram.com/reel/DdCZOUjpZbR/
+Type video
+Created 2026-09-08 19:06:05 UTC
+5.5K Likes
+150 Comments
+Summary: A male creator sits in a warmly lit room and reviews Meta's newly launched personal AI agent called Muse. He explains that unlike other assistants, Muse integrates directly with Instagram and other Meta apps, giving it access to a user's social graph and saved content to proactively complete tasks. He walks through examples: telling Muse a goal (financial, relationship, health), having it monitor emails and messages, and then taking action—such as building a weekend food itinerary in Naples, Florida based on his wife's hundreds of saved Instagram posts and reels, making reservations, adding items to a shopping cart for school supplies, and signing him up for a local 10K race after tracking his training and sleep data. The tone is informative and enthusiastic, positioning Muse as Meta's biggest launch of the year due to its context-aware capabilities, while noting privacy safeguards. The video ends with a call to try it for simple tasks like saving money.
+Culture moment=AI agents; significance=Reflects 2026 trend toward personalized AI assistants integrated with social data.; origin=Meta product launch
+Entities people=Roberto P. Nickson (Author Name); products=Muse personal AI agent; places=Naples
+Author 【entity-Roberto P. Nickson¦handle=@rpn¦author_id=user-161982152569472044233】
+AuthorURL https://www.instagram.com/rpn
+Verified
+970K Followers
+Language en
+
+
+【4e6b】
+URL https://www.instagram.com/reel/DdCe2C2MSiX/
+Type video
+Created 2026-09-08 20:00:43 UTC
+6.1K Likes
+150 Comments
+Summary: In this promotional video posted September 8, 2026, creator Gannon Meyer demonstrates Meta's new personal AI agent, Muse. Standing outdoors then at his desk, he explains he set up an agent named 'Oscar' (a wiener dog avatar, a play on his last name Meyer) to manage life ahead of his wedding in a few weeks while he has booked 40 sales calls. He shows how Oscar connects to his calendar, email, and health app, and can take actions—not just answer questions—such as drafting and sending emails after his approval. Examples include Oscar reminding him to email his photographer about arrival time at Perona Farms, and automatically updating his schedule after he mentioned an ankle injury from pickleball. He also uses Oscar to log meals, track macros, and monitor his weight-loss progress for the wedding. Meyer emphasizes that he remains in control, approving everything Oscar does, and positions the tool as helpful for busy parents, business owners, or anyone feeling overwhelmed. The tone is enthusiastic and instructional, ending with a call to download the Muse app.
+Entities people=Gannon Meyer (Author Name); products=Muse AI personal agent, desktop microphone
+Author 【entity-Gannon Meyer¦handle=@gannon.meyer¦author_id=user-304638317108649870237】
+AuthorURL https://www.instagram.com/gannon.meyer
+200K Followers
+Language en
+
+
+【5241】
+URL https://www.instagram.com/reel/DdMQaSXxmkY/
+Type video
+Created 2026-09-12 15:00:38 UTC
+19K Likes
+300 Comments
+Summary: In this 2026 social media video, wellness entrepreneur and Peloton instructor Ally Love (@allymisslove) promotes Meta's new AI app, Muse, and its personal agent named 'Mango.' Opening relaxed in a white bathrobe with cucumber slices on her eyes, she explains that Mango helps her balance being 'boss of my business' with protecting family and 'me-time.' Through direct-to-camera segments and screen recordings, she demonstrates Mango managing her calendar ('Your day in motion'), checking availability, finding toddler activities in NYC, drafting emails to her mom squad, planning a date night with husband Andrew by searching Instagram for Italian restaurants and booking via OpenTable, recommending the book 'Balance & Bloom,' adding it to cart, and booking a Peloton upper-body strength session. Visuals show her working at a laptop, doing push-ups on a mat, placing sticky notes for 'DAY WITH BABY,' 'DAY WITH ANDREW,' and 'SOLO DAY ALLY TIME,' and interacting with the cute animated Mango character on her phone. The tone is aspirational, organized, and warm, positioning the AI as a helpful, 'savage' but cute assistant that enables productivity and personal well-being.
+Culture moment=AI personal assistants; significance=Reflects growing consumer interest in delegating daily logistics to AI agents for work-life balance.; origin=Meta's launch of Muse app
+CommentSummary: The comment section is dominated by noise rather than substantive discussion of the video. A large volume consists of repetitive political slogans, copy-pasted appeals to Meta for account reinstatement, and unrelated self-promotion for real estate and services. Amid the spam, genuine fans express admiration for Ally Love and excitement about trying Muse, with replies from the official Muse account encouraging users. Some comments raise ethical concerns about AI and data centers, while others are personal pleas for help from Yemen and other regions. Overall sentiment is mixed because authentic engagement is drowned out by high-volume spam and polarized political messaging, making it difficult to gauge true community reception to the product demonstration. 1. **Political spam about Israel-Palestine:** "israel terr.ist #freepalestine" 2. **Account recovery requests:** "Dear Instagram & Meta, please hear me once." 3. **Praise for Ally and Muse:** "I love @allymisslove" 4. **Spam promotions:** "JAIPUR REAL ESTATE KI HAR IMPORTANT UPDATE"
+Mixed Sentiment
+Focus Reactions range from praise for Ally and Muse to political spam and account recovery pleas.
+Entities people=Ally Love (Post Caption); products=smartphone, Muse AI agent, book, Peloton app
+Author 【entity-Ally Love¦handle=@allymisslove¦author_id=user-710449510734919470190】
+AuthorURL https://www.instagram.com/allymisslove
+Verified
+1M Followers
+Language en
+
+
+【01e1】
+URL https://www.instagram.com/reel/DdcVqyHAWWf/
+Type video
+Created 2026-09-18 20:54:13 UTC
+4.2K Likes
+90 Comments
+Summary: A woman with long wavy hair wearing a blue-and-white striped shirt sits in a home office with a large fiddle-leaf fig plant behind her, promoting Meta's new personal AI agent called 'Muse' which she nicknames 'Bestie.' Speaking energetically to the camera, she explains she has tested many AIs and considers Muse a top contender because it acts as a partner for administrative tasks rather than taking over creative work. She demonstrates on her laptop how Muse triages her inbox, drafts replies, helps outline creative projects, and keeps her weeks organized. The laptop screen shows a chat where she asks Muse to create an outline for her creative flow, and Muse responds with a detailed morning routine, task prioritization, and a blocked filming week. She emphasizes that Muse handles the admin side so she can focus on creativity, calling it 'the perfect duo' and encouraging viewers to try Muse AI to make life more streamlined.
+Entities people=Jennifer Youngberg (Author Name); products=Meta Muse AI agent, laptop computer
+Author 【entity-Jennifer Youngberg¦handle=@our.blog.life¦author_id=user-056224516379047581291】
+AuthorURL https://www.instagram.com/our.blog.life
+40K Followers
+Language en
+
+
+【36d4】
+URL https://www.instagram.com/reel/DdVB4DQM86E/
+Type video
+Created 2026-09-16 00:48:44 UTC
+1K Likes
+38 Comments
+Summary: A blonde woman wearing glasses, a beige NY baseball cap, and a sleeveless top lies on a couch speaking directly to camera about Instagram growth. On-screen text asks, 'The ONLY AI you need to grow on Instagram?' She explains that Meta has released an AI agent called Muse that scans the entire platform for trending data, pulls insights from real creators, and provides actionable breakdowns for building a content strategy. She outlines three main uses: first, ask Muse what is gaining traction in your niche and what audience pain points are unaddressed for top-of-funnel content; second, have it pull creator data from your niche to identify landing topics that become core content pillars and give competitive angles; third, point it at your own account to break down what is working, what is flopping, and what to post next, while also generating fresh content ideas and mapping a 30-60-90 day plan. She notes it helps keep tabs on competitors and that Meta typically rewards users of its programs and new features, concluding that viewers should try Muse.
+Author 【entity-Adley Kinsman¦handle=@adley¦author_id=user-386051396987983038341】
+AuthorURL https://www.instagram.com/adley
+Verified
+1.5M Followers
+Language en
+
+
+【be36】
+URL https://www.facebook.com/unboxfactory/posts/pfbid02ZHGAP2ZfSVYTEiXaFfAskeGafKEFt74kZpQeJMgyZb4yPgCirCS3jKDTtLKKFFTHl
+Type image
+Created 2026-09-16 09:30:12 UTC
+4.5K Likes
+2.1K Comments
+Summary: The image is a promotional graphic from Unbox Factory dated September 16, 2026, announcing Meta's launch of 'Muse,' a personal AI agent. Centered is Mark Zuckerberg smiling and reaching toward a glowing white square icon with a blue 'M'. Radiating lines connect the icon to six floating interface panels illustrating Muse's functions: booking flights over a coastal scene, managing a checklist, sending messages, shopping with a cart, controlling a smart home, and viewing a calendar. The bottom text reads 'Meta Just Launched Muse, An AI Agent That Can Handle Everyday Tasks For You.' The accompanying caption explains Muse can autonomously perform tasks like emailing, travel booking, shopping, and planning via a secure virtual machine, requiring user approval for sensitive actions, and is rolling out in the US across mobile and web with future WhatsApp and AI-glasses support. The overall tone is optimistic and futuristic, presenting the AI as a helpful everyday assistant. The visual style is clean, corporate, and digitally rendered, with no risky or inappropriate content.
+CommentSummary: The comment section is dominated by repetitive multilingual greetings addressing 'boss meta,' creating high noise with little substantive discussion. Alongside these, a significant minority expresses skepticism and criticism: users question the necessity of the AI, accuse Meta of surveillance and data collection, and criticize the company for forcing unwanted features. Some comments raise privacy fears about digital IDs and tracking, while others dismiss the launch as late or uninspired. Positive sentiment appears mainly in formulaic supportive messages praising Mark Zuckerberg, often with emojis and blessings. A longer Spanish-language comment critiques AI hype as financial speculation rather than real engineering. Overall, the conversation reflects polarized reception—enthusiastic fan greetings mixed with distrust, fatigue, and anti-corporate sentiment toward Meta. 1. **Supportive greetings to Meta boss:** "Good morning boss meta" 2. **Privacy and surveillance concerns:** "ALL MARK Z WANT TO DO IS TRACK YOU, & TO SEE WERE U GO!!" 3. **Skepticism about AI utility:** "no one wants this fucking slop" 4. **Financial speculation critique:** "LA BURBUJA DE PAPEL: CUANDO LA TIMBA FINANCIERA REEMPLAZA A LA INGENIERÍA REAL"
+Mixed Sentiment
+Focus Reactions to Meta's Muse AI launch and Mark Zuckerberg
+Entities people=Mark Zuckerberg (Vision Model Only)
+91 OnScreenTextLen
+Style production_effort_type=High; production_effort=Deliberate staging with custom holographic graphics,...
+Author 【entity-Unbox Factory¦author_id=user-170736644370128122107】
+2.7M Followers
+Language en
+
+
+【0130】
+URL https://www.instagram.com/reel/DduKKWDP5UA/
+Type video
+Created 2026-09-25 19:03:12 UTC
+4.3K Likes
+220 Comments
+Summary: On a busy New York City sidewalk, a creator conducting street interviews asks a young man what he does for a living. The man responds that he watches the creator's videos and reveals he uses the new 'Muse app from Meta.' He explains that while people see his public videos, they don't see the behind-the-scenes work — flights, calendar, operations — which is handled by his personal AI agent named 'Quinn.' The video then demonstrates Quinn via phone screen recordings: the user texts Quinn to clear his messy calendar for an upcoming shoot week, and Quinn replies confirming four calls were canceled, giving him hours back. Next, the user asks Quinn to book a one-way flight to LA for a video shoot, specifying no early morning flights, window seat, no red-eye; Quinn searches and presents options, and the user approves booking with his credit card, noting Quinn will not act without explicit approval. Finally, the user asks Quinn to clear his inbox of old emails and pitches, and with permission, Quinn deletes them. The creator concludes by summarizing that Quinn clears his calendar, books flights, and clears his inbox so he can focus on shooting content, and encourages viewers to try the Muse app from Meta. The tone is upbeat, promotional, and instructional, showcasing AI automation for productivity.
+Culture moment=AI personal agent trend; significance=Reflects growing consumer interest in delegating administrative tasks to generative AI assistants in 2026.; origin=Meta's launch of Muse app
+CommentSummary: Comments are largely enthusiastic about the Muse demonstration, with many users expressing immediate interest in acquiring their own AI agent and requesting invite codes. A recurring thread involves users tagging each other for meetups, alongside repetitive spam messages offering meetups with sexual emojis. Several comments share referral codes promising free tokens, indicating active affiliate behavior. There are also unrelated pleas for help, including a detailed Arabic-language request for financial aid from Yemen and an English comment expressing suicidal ideation, which stand out amid the promotional chatter. Overall sentiment skews positive toward the technology, though noise from spam and off-topic personal appeals dilutes signal. 1. **Interest in obtaining Quinn:** "A Quinn is definitely need on my end" 2. **Referral code sharing:** "Use WGPN00 in settings on Muse.ai to get 1 billion tokens free" 3. **Spam meetup solicitations:** "You down for meetups?💦🍆💕😁❤️" 4. **Mental health distress:** "I feel like commiting suicide am useless 😭😭😭 Can I have someone to talk to"
+Positive Sentiment
+Focus Community discusses desire for their own Quinn and shares referral codes.
+Entities people=Tyler Walsh (Post Caption); products=smartphone, Muse app
+Author 【entity-tyler walsh / twalsh ⚡️¦handle=@trwlsh¦author_id=user-024755137775471919419】
+AuthorURL https://www.instagram.com/trwlsh
+350K Followers
+Language en
+
+
+【2cdf】
+URL https://www.facebook.com/reel/1064074623048467/
+Type video
+Created 2026-09-09 08:26:01 UTC
+4.3K Likes
+2K Comments
+Summary: In this promotional video posted by OPEN magazine sourcing Instagram @zuck, Mark Zuckerberg introduces 'Muse,' described as a new personal AI agent designed to understand user goals and work 24/7 to help achieve them. Speaking directly to camera against a green foliage background, he explains Muse handles tasks like organizing projects with kids, ordering baking ingredients, securing national park permits, tracking MMA training and health metrics, and finding candidates for hiring. He emphasizes privacy and security, stating Muse runs on a private computer (Muse Secure VM) built from the ground up, with a secure credential store so it cannot read sensitive information, and that even Meta cannot access messages sent to Muse. The video shows UI mockups demonstrating goal tracking ('Save an extra $1,000 a month'), project management with cartoon avatars (Piggy, 47spin, Brown Muse), shopping carts for almond flour and coconut oil, fitness dashboards showing sleep score 78 and recovery low, calendar integration for a September 2026 camping trip, and payment approval screens. Zuckerberg notes the app is free for up to 100 million tokens per week, with paid tiers ($20/month Power, $100/month Maximum) available, and encourages viewers to download it. The video ends with branding for OPEN. Data of event in content: 2026-09-09, Details: Post date matches product launch announcement timing.
+CommentSummary: The comment section is dominated by repetitive, low-effort affirmations directed at 'boss meta'. Hundreds of users post variations of 'thank you', 'good evening', 'god bless', and 'hadir' across Indonesian, Thai, Tagalog, and English, indicating a fan-engagement culture rather than substantive discussion. A few comments mention practical concerns like reviewing earnings or account hacking, but these are not addressed by the post. Overall sentiment is overwhelmingly positive and deferential, with little critical feedback, suggesting the audience treats the post as an authority announcement to be acknowledged rather than debated. 1. **Gratitude and blessings:** "Thank you boss meta god bless" 2. **Greetings in multiple languages:** "Selamat malam bos meta hadir" 3. **Praise for idea:** "Wow good idea boss"
+Positive Sentiment
+Focus Viewers express gratitude and greetings to Boss Meta rather than discussing features.
+Entities people=Mark Zuckerberg (Vision Model Only); products=Muse personal AI agent
+Author 【entity-OPEN magazine, India¦author_id=user-155900340935267025837】
+Verified
+140K Followers
+Language en
+
+
+【520b】
+URL https://www.instagram.com/reel/DdRnescOkR5/
+Type video
+Created 2026-09-14 17:07:41 UTC
+11K Likes
+690 Comments
+Summary: The video opens with a man in a light-colored T-shirt seated against a plain gray wall, speaking directly to camera while animated graphics appear. He announces 'Muse,' described as Meta's personal AI agent built for your goals, emphasizing that it does outcomes rather than just answers. The presentation walks through four use-case demonstrations shown via stylized phone UI mockups on a blue background. First, health and fitness: the system detects a marathon registration email for Newport, RI on October 11, 2026, asks if he wants a 16-week training plan, then displays a detailed weekly schedule with mileage build and effort guide. Second, personal finance: he grants read-only bank access, and Muse generates a Car Savings Dashboard showing income, expenses, current savings pace toward a $10,000 goal, and a 'where to cut' section, plus an example of canceling a Beacon Bundle subscription saving $421/year. Third, calendar and productivity: Muse reviews his inbox each morning, surfaces important messages, drafts replies, and flags a double-booking between a school project meeting and coffee catchup. Fourth, shopping: he asks Muse to monitor Facebook Marketplace for a standing desk under $200 within 10 miles, and the agent reports options and sends links when found. The presenter explains Muse connects to existing apps—booking, finance, shopping, entertainment, wellness—and always asks permission before spending, sending, or sharing. He stresses user control: you hand off tasks, set rules, review work, and sign off on sensitive actions. The video ends with him noting the shift from talking to agents being rare to now accessible. Throughout, lower-third captions reinforce key phrases, and the comment section shows mixed reception ranging from excitement to criticism about AI saturation and account issues.
+CommentSummary: Comments reflect a highly polarized reception. Many users express distrust of AI, calling it theft, slop, or unnecessary, and criticize Meta for repurposing the @museband username. A large volume of repetitive posts request account reinstatement, report bans, and ask for invite codes, indicating widespread frustration with platform moderation. Others ask practical questions about regional availability in Nigeria, UAE, Chile, India, and Brazil. A smaller segment engages positively, praising the concept of outcome-based agents, asking for demos, or sharing enthusiasm. Political and off-topic spam, including repeated pleas to stop banning accounts and geopolitical slogans, further dilutes signal. Overall sentiment is divided between curiosity about utility and strong resistance to forced AI integration. 1. **Skepticism and criticism of AI:** "ai is theft. premeditated theft. ai has no ethical component" 2. **Handle ownership dispute:** "Mark is a di**head for taking away the handle from @museband" 3. **Requests for access and availability:** "When will it be available in Nigeria?" 4. **Account support complaints:** "My Instagram account was disabled on 10 September 2026" 5. **Positive interest:** "That sounds really interesting! I like the idea"
+Mixed Sentiment
+Focus Community debates AI usefulness, privacy concerns, and backlash over Meta using the @muse handle.
+Entities products=Muse AI agent
+Author 【entity-Meta¦handle=@meta¦author_id=user-968158336597690220411】
+AuthorURL https://www.instagram.com/meta
+Verified
+6.9M Followers
+Language en
+
+
+【0213】
+URL https://www.instagram.com/reel/DduRLE1hFd8/
+Type video
+Created 2026-09-25 20:04:02 UTC
+15K Likes
+270 Comments
+Summary: The video follows creator Crawford Collins as a new dad navigating the overwhelm of parenthood. Speaking directly to camera while holding and interacting with his baby, he explains that being a new dad feels like having a million things to do with no time. He introduces his 'secret weapon' — the new Muse app from Meta — which he has personalized as 'Atlas,' depicted as a small AI-generated fox avatar. Through voice commands, Atlas helps him plan efficient four-day-a-week workouts that fit into his calendar, schedules them after approval, and checks in on progress. Atlas also handles household needs, such as searching for fragrance-free size-three diapers and placing the order once approved. Most importantly, Collins uses Atlas to protect time for his relationship: when grandma watches the baby on Friday, he asks Atlas to find a nice sushi restaurant for date night, and Atlas provides several local options based on their favorite food. The video intercuts scenes of him packing a gym bag, opening a drawer full of diapers, selecting clothes in his closet, working out at the gym, and finally enjoying dinner with his partner while the baby sleeps nearby. The tone is warm, relatable, and promotional, concluding that Muse helps take tasks off his plate so he can spend more time with the people he loves.
+Culture moment=AI personal assistant adoption; significance=Reflects growing trend of consumers delegating daily logistics to generative AI agents.; origin=Meta's launch of Muse platform
+CommentSummary: Comments are overwhelmingly supportive of the creator's dad persona, with repeated 'dad of the year' remarks and enthusiasm for the Muse app ('so helpful', 'life saver'). Many replies come from the creator and the official @muse account reinforcing positivity. However, the thread is heavily polluted by repetitive spam offering meetups with sexual emojis, unrelated fundraising pleas from Yemen, self-promotion for branding services, and generic engagement bait. This creates a high-noise environment where genuine conversation about parenting logistics is interspersed with unsolicited commercial and emotional appeals, diluting signal despite the positive sentiment toward the video's message. 1. **Praise for fatherhood:** "Dad of the year ⭐️" 2. **App endorsement:** "W @muse 🔥🔥" 3. **Spam solicitation:** "HMU for meetups 💦💦👅" 4. **Personal hardship appeals:** "I am your sister from Yemen. I beg you, please help"
+Positive Sentiment
+Focus Community praises dad role and finds Muse app useful, mixed with spam comments.
+Entities people=Crawford Collins (Post Caption); products=smartphone with orange case, gym duffel bag, disposable diapers
+Author 【entity-Crawford Collins¦handle=@crawfordcollins¦author_id=user-629106338805823659262】
+AuthorURL https://www.instagram.com/crawfordcollins
+Verified
+1.1M Followers
+Language en
+
+
+【b611】
+URL https://www.facebook.com/reel/1051107864599316/
+Type video
+Created 2026-09-26 16:59:06 UTC
+3.4K Likes
+580 Comments
+Summary: In this clip from a Meta event dated September 26, 2026, Mark Zuckerberg stands on stage wearing a black 'BUILDING IS MY LOVE LANGUAGE' t-shirt and glasses, addressing a live audience. He introduces updates to Meta's AI assistant 'Muse,' stating it has been exciting to see how people are using it in the first few weeks. He then hands off to Alexander Wang before showing a montage of user testimonials displayed on a large screen. Various users introduce their personalized Muse avatars by name—Lizzie, Joey, Jiffy, Boba, Iki, Grumpy, Penelope, Frank—and describe tasks Muse performed: analyzing an entire website for load time optimization, planning a girls' trip to Ojai including flight tracking, creating a baby sleeping plan that worked by day ten, turning hours of work into a two-minute conversation, helping an independent music artist build a team and create a brand kit, and providing creative backup. The screen shows the cute, blob-like Muse characters performing actions like shopping, booking spas, and working out. The segment concludes with the text 'And we are just getting started.' The tone is upbeat, promotional, and focused on AI productivity. Data of event in content: 2026-09-26, Details: Post date matches the event timing, presenting current Muse updates.
+CommentSummary: Comments are largely supportive, with many users praising Meta and Muse, calling it useful and creative. Several commenters share personal experiences using Muse positively. However, the thread also contains significant noise: a detailed consumer complaint about Ray-Ban Meta glasses failing after 15 months, a lengthy fundraising plea related to Gaza tent rent, promotional spam for online income, and unrelated religious text in Arabic. This mix creates a balanced signal-to-noise ratio where genuine product feedback coexists with off-topic appeals and spam, typical for a high-profile Meta post. 1. **Appreciation for Muse:** "The amazing work you're doing with Muse is truly beautiful. Keep going" 2. **Hardware complaint:** "₹41,900 gone in 15 months. Ray-Ban Meta Smart Glasses battery died" 3. **Religious and philosophical commentary:** "CHILDOO PHILOSOPHY Technology may transform the world. Humanity must decide its direction." 4. **Personal hardship appeal:** "Every month we relive the same pain Where will we get the rent money?"
+Positive Sentiment
+Focus Community reacts to Muse launch with praise, personal anecdotes, and some unrelated requests.
+Entities people=Mark Zuckerberg (Vision Model Only); products=Muse AI assistant
+Author 【entity-Meta¦author_id=user-352539020795914266404】
+Verified
+9.8M Followers
+Language en
+
+
+【a576】
+URL https://www.threads.com/@goshfather/post/DdcJnWlj2AM
+Type text
+Created 2026-09-18 19:07:53 UTC
+130 Likes
+29 Comments
+Summary: Author @goshfather posts a testimonial praising Meta's AI agent @muse, claiming it completed two months of administrative tasks in one day and led him to unsubscribe from Claude. In comments, he elaborates that Muse is free, deeply integrated with Meta products like Instagram, Threads, and Meta Ads Suite, and autonomously created, optimized, and posted ad campaigns using his existing Instagram videos to drive traffic to Spotify and YouTube, rotating creatives automatically. Community discussion is largely positive, with users asking about task types, confirming free usage tiers, and sharing referral code IH600W. Other commenters raise privacy concerns about Meta accessing personal devices and data, debate AI ethics in music, compare Muse to Claude and ChatGPT, and note proactive features like bill reminders and lead follow-ups.
+Culture moment=AI agent adoption wave; significance=Reflects growing trend of consumers replacing traditional SaaS and assistants with integrated AI agents for real-world task execution.; origin=Referenced in comments comparing to Claude and ChatGPT
+CommentSummary: Comments show strong enthusiasm for Muse's practical results, especially autonomous Meta ad creation and rotation, with multiple users confirming free tier usage and heavy task completion. Simultaneously, a significant thread debates data privacy, with warnings about installing Meta agents on personal devices and distrust of Zuckerberg. Users compare Muse to Claude and ChatGPT, noting larger free quotas, native messaging integration, and proactivity. Ethical discussions about AI in music emerge, distinguishing admin automation from generative music creation. Overall sentiment is positive toward functionality but mixed on trust. 1. **Meta ads automation success:** "Single handedly put an entire ad campaign to push ppl to my Spotify" 2. **Privacy and trust concerns about Meta:** "Zuckerberg has proven time and again he CANNOT be trusted with your data" 3. **Referral code sharing:** "use my code when you get it and we will both get tons of usage credits"
+Positive Sentiment
+Focus Effectiveness of Muse for automating Meta ads and admin tasks versus privacy concerns
+Entities people=goshfather (Author Name), Muse (Tagged User), djspider (Comment Mention); products=Muse AI agent, Claude AI
+Author 【entity-goshfather¦handle=@goshfather¦author_id=user-656913315668220430791】
+AuthorURL https://www.threads.com/@goshfather
+Verified
+29K Followers
+Language en
+
+
+【95f5】
+URL https://www.instagram.com/reel/DdkI-WhvA6R/
+Type video
+Created 2026-09-21 21:39:45 UTC
+230 Likes
+130 Comments
+Summary: In an outdoor urban setting (with the Flatiron Building visible), creator Colin Rocker (@careercolin) speaks directly to camera about his experience using Meta's new AI agent, Muse, released recently. He states it is 'genuinely changing my life' because it is deeply connected to Meta platforms — Instagram, Facebook, etc. — and has access to the Instagram API. He demonstrates three uses: 1) automatic monthly website updates, where Muse scans the internet for new press features, speaking engagements, LinkedIn posts, and other content to update his site (shown via screenshots of requests to 'Marlowe'); 2) a custom analytics dashboard built from his existing Instagram data, providing content strategy tailored to his niche ('Workwashing'); and 3) tracking earned reach, where he asks Muse weekly/monthly for all posts where he is tagged or mentioned, including views, likes, comments, and engagement metrics (shown in an Instagram DM screenshot). He concludes by inviting viewers to comment 'MUSE' to receive the exact prompts he uses.
+Culture moment=AI agent adoption; significance=Reflects growing creator interest in AI tools deeply integrated with social platforms for workflow automation.; origin=Referenced in post as Meta's new release
+CommentSummary: Commenters express strong enthusiasm for Muse, calling it a game changer and 'cracked,' and actively request the promised prompts via DMs. Multiple users compare it favorably to Claude, highlighting its integrations. One user raises a thoughtful privacy question about connecting email and other apps, which the creator answers by noting current Google Drive connection and Meta's existing data knowledge. The creator responds promptly to nearly every comment with 'sent! Check your DMs,' reinforcing the engagement loop. The overall tone is collaborative and curious, with users sharing their own adoption across business, family, health, and parenting, indicating broad perceived utility rather than skepticism. 1. **Comparison to Claude and ease of connections:** "As soon as I started using it I got obsessed! It's way easier than Claude" 2. **Request for prompts and DMs:** "Prompt please!! I just used some new features by Claude" 3. **Privacy concerns about data connections:** "do you connect it to your email and other apps? If yes, how do you handle the privacy concerns"
+Overwhelmingly Positive Sentiment
+Focus Community reacts to Muse's capabilities compared to Claude and asks for prompts.
+Entities people=Colin Rocker (Post Caption); products=Muse AI agent, wired earbuds; places=Flatiron Building
+Author 【entity-Colin Rocker¦handle=@careercolin¦author_id=user-984625943204025054571】
+AuthorURL https://www.instagram.com/careercolin
+240K Followers
+Language en
+
+
+【14f7】
+URL https://www.instagram.com/p/DdCjG9wlm1k/
+Type carousel
+Created 2026-09-08 20:30:23 UTC
+4.3K Likes
+110 Comments
+Summary: The carousel is a two-slide promotional graphic posted by Meta Newsroom on September 8, 2026, introducing 'Word of the week: Muse.' Slide 1 presents a dictionary-style definition card identifying Muse as Meta's personal AI agent that works across the apps and services users already use to get things done, with key phrases highlighted in yellow. Slide 2 expands on this by explaining that users give Muse a goal and it does the work to achieve it—examples include chasing down a refund, selling an old couch, or pulling kids' school events from emails onto a calendar. It emphasizes user control over which apps to connect and access levels, and notes that Muse checks with the user before taking significant actions like sending messages or spending money. Both slides share a consistent minimalist design with a light-to-blue gradient background featuring repeating blue outline icons representing communication, ideas, tasks, and connectivity. The overall tone is informational and corporate, positioning Muse as a proactive assistant that operates in the background unlike typical AI that waits for prompts.
+536 OnScreenTextLen
+Author 【entity-Meta Newsroom¦handle=@metanewsroom¦author_id=user-113038596971757698781】
+AuthorURL https://www.instagram.com/metanewsroom
+Verified
+310K Followers
+Language en
+
+
+【eca4】
+URL https://www.facebook.com/reel/1053431550657352/
+Type video
+Created 2026-09-10 20:27:05 UTC
+110 Likes
+36 Comments
+Summary: In this promotional video posted September 10, 2026, Felix Zhang, Tech Lead for WebXR at Meta, introduces Muse Code, Meta's newly launched terminal coding agent powered by Muse Spark. He demonstrates building a VR rhythm game called HYPERFORM using the Immersive Web SDK v0.5. The video alternates between Zhang speaking to camera and screen captures showing the agent generating code in a terminal alongside the game running in a browser. He states the project cost $1.75 in model usage over about four hours of agent runtime, during which Muse Code built the arena, direct-hand interactions, scoring, effects, and gameplay flow. Zhang emphasizes he remained involved to steer architecture and supervise, inspecting and fixing problems as the agent worked. He notes contributor access is rate-limited and prompts may help improve Meta's models. The video concludes with instructions to run 'npm create @iwsdk' and open Muse Code to start building, ending with the Meta logo. Data of event in content: 2026-09-10, Details: Post announces a recent Meta launch and demonstrates current workflow.
+CommentSummary: The comment section is dominated by supportive, enthusiastic reactions with little debate. Most viewers express admiration for the video quality and the concept of Muse Code, using phrases like 'very nice,' 'beautiful,' and heart emojis. Several comments are in Bengali offering blessings and support, indicating an international audience. One detailed comment expands on the video's thesis about AI handling implementation while humans retain architecture control, framing it as an important model for future development. The only substantive question is a practical 'How to create bro,' seeking instructions. Overall sentiment is overwhelmingly positive with no criticism or controversy, reflecting a receptive developer and enthusiast community. 1. **Positive appreciation:** "wow very nice love it" 2. **Request for tutorial:** "How to create bro" 3. **Support and encouragement:** "Congratulations on this wonderful post!"
+Overwhelmingly Positive Sentiment
+Focus Viewers praise the video and ask how to get started with Muse Code.
+Entities people=Felix Zhang (On-screen text); products=Muse Code terminal coding agent, HYPERFORM VR rhythm game, Meta Quest VR headset, Immersive Web SDK
+Author 【entity-Meta Horizon Developers¦author_id=user-623904602971810124806】
+Verified
+220K Followers
+Language en
+
+
+【06f3】
+URL https://www.threads.com/@metanewsroom/post/Dd3_SLkjGcN
+Type video
+Created 2026-09-29 14:39:07 UTC
+210 Likes
+5 Comments
+Summary: This 18-second video posted September 29, 2026 by @metanewsroom announces 'Muse for Small Business,' Meta's personal AI agent. Opening with 'Introducing Muse,' it positions Muse as 'Your personal AI agent' and 'A new kind of AI for your business.' The narration and on-screen text describe its function: 'AI that does the grunt work for you,' specifically 'handles social,' 'manages bookings,' and 'keeps working for you.' Visuals show icons for Instagram, Facebook, Threads, Notion, QuickBooks, Canva, and Box circling a 'Connect your apps' prompt, followed by checkmarks around 'All in one place.' The video closes on a black screen with the Muse app icon (blue 'M'), download buttons for Google Play and App Store, and the Meta logo. The tone is upbeat, professional, and promotional, with energetic electronic background music. No people appear; the content is entirely graphic text and UI elements.
+CommentSummary: The three supplied comments illustrate a divided reception. One user offers constructive product feedback, requesting siloed personal and business Muse accounts, indicating practical adoption concerns. A second comment expresses outright rejection of Meta's AI efforts, reflecting broader distrust of Zuckerberg-led products. The third provides expert validation, arguing that access and integrations—not model quality—determine agent value, citing rate-limiting issues on Threads. Together they show the conversation centers less on the announcement's visuals and more on strategic viability, privacy separation, and platform openness, with sentiment ranging from hostile to cautiously optimistic. 1. **Desire for separate personal and business accounts:** "switch between a personal and business muse accounts" 2. **Skepticism toward Meta AI:** "Zuckerberg, we don't want your AI trash" 3. **Praise for connectors over model capability:** "agent's ceiling isn't its model, it's what it can touch"
+Mixed Sentiment
+Focus Community reacts to utility of connectors versus skepticism of Meta AI
+Entities products=Muse AI agent
+Author 【entity-Meta Newsroom¦handle=@metanewsroom¦author_id=user-066393553551635649511】
+AuthorURL https://www.threads.com/@metanewsroom
+Verified
+140K Followers
+Language en
+
+
+【bf63】
+URL https://www.instagram.com/p/DbrAXIbgTZR/
+Type carousel
+Created 2026-08-05 20:32:50 UTC
+7.1K Likes
+36 Comments
+Summary: The carousel is a technology news announcement posted by @metav3rse on 2026-08-05. Slide 1 is a short looping video with an isometric 3D game-like arena, a small robot character, and bold on-screen text: 'META RELEASES MUSE CODE: A TERMINAL CODING AGENT THAT TAKES ON COMPLETE SOFTWARE ENGINEERING TASKS.' Slide 2 is a screenshot of a post by Mark Zuckerberg (@finkd) announcing Muse Code in beta, powered by Muse Spark 1.2, and includes a Terminal-Bench 2.1 bar chart comparing scores: Opus 5 Claude Code 86.7%, Muse Spark 1.2 Muse Code 82.9%, GPT 5.6 Terra Codex 81.8%, Grok 4.5 Grok Build 81.6%, Gemini 3.6 Flash Antigravity CLI 78.9%, Muse Spark 1.1 mini-swe-agent 76.2%. Slide 3 is a video of a photorealistic black hole photon sphere animation with overlaid text from Zuckerberg explaining Muse Code's persistent background agents and parallel isolated worktrees, noting it built six game features simultaneously with no collisions. Slide 4 is a static infographic with two bar charts: DeepSWE 1.1 and Meta Internal Coding Bench, again highlighting Muse Spark 1.2 Muse Code at 59.3% and 70.6% respectively against competitors. The caption, repeated across the post, states Meta released Muse Code in beta, describes it as the first coding agent from MSL built on Muse Spark 1.2 that plans changes, writes code, and validates results across large repositories, provides the install command 'curl -fsS https://dev.meta.ai/install.sh | bash', and quotes Meta saying this marks the next step toward the frontier with larger models coming. The post tags technology and AI accounts and is framed as informative and promotional for developers.
+Entities people=Mark Zuckerberg (Author Name)
+957 OnScreenTextLen
+Author 【entity-Metav3rse is for the Culture¦handle=@metav3rse¦author_id=user-424134086280207775849】
+AuthorURL https://www.instagram.com/metav3rse
+1.6M Followers
+Language en
+
+
+【3c2f】
+URL https://www.instagram.com/p/DdpKBCEiEPC/
+Type carousel
+Created 2026-09-23 20:21:31 UTC
+1.1K Likes
+71 Comments
+Summary: Posted September 23, 2026 by @FutureTech, this 12-slide Instagram carousel promotes Meta's AI agent 'Muse' as a tool that completes real-world financial chores with measurable savings. The opening slide introduces the claim that Muse is quietly saving people serious money, then the bulk of the carousel compiles user posts from X/Twitter showing specific outcomes: Jason Luongo saved $1,920 over 24 months negotiating AT&T fiber for two homes; Frank Chien saved over $700 canceling business insurance; Eli Weiss and AZ Jedi reported $1,005-$1,800 annual auto insurance reductions; Raunaq described Muse navigating Xfinity's phone tree and patching him in live for $85/month savings; Armand had Muse handle a full IKEA return and pickup; Chris Abraham got a year-long forgotten book subscription canceled and refunded; No Saber Ni Papa reduced AT&T from $80 to $30 monthly for a faster plan; Vignesh Balaji used Muse to call JetBlue and wait through the phone tree; Eric Allen claimed $954 and $897 in unclaimed California funds plus found gift card balances; and bittermelon showed Muse recovering a forgotten $200 Verizon gift card via chat with a live agent. The final slide is a branded graphic urging follows for more Meta updates. The tone is enthusiastic and testimonial-driven, positioning AI agents as moving beyond Q&A to completing tangible money-saving tasks.
+Culture moment=AI agent hype cycle; significance=Reflects 2026 trend of AI moving from chat to autonomous task completion, sparking debate over convenience versus privacy.; origin=Referenced in caption and user posts about Muse capabilities.
+CommentSummary: Comments reveal a polarized reception. Many users express distrust of Meta handling financial data, calling the post propaganda and warning about surveillance capitalism. Others defend Muse's utility compared to Claude or GPT, noting ease of use. A significant portion is spam promoting referral codes for Muse tokens. Some sarcastic remarks mock the claims, while a few affirm personal success. Overall sentiment is negative toward Meta's motives despite acknowledgment of potential convenience, reflecting broader 2026 anxieties about AI agents accessing sensitive accounts. 1. **Data privacy concerns:** "They are selling so much of your data do not use this shit." 2. **Propaganda accusations:** "Feels like this is just meta ad propaganda" 3. **Comparison to other AI:** "Can GPT / Claude / Grok not do this?" 4. **Referral code spam:** "Get 1 Billion extra tokens on Muse with code"
+Divisive Sentiment
+Focus Skepticism about Meta data privacy and accusations of propaganda versus praise for utility.
+Entities people=Mark Zuckerberg (Vision Model Only), Jason Luongo (Post Caption), Frank Chien (Post Caption), Eli Weiss (Post Caption), Chris Abraham (Post Caption), Eric Allen (Post Caption); products=Muse AI agent, AI agent software, gift card
+4916 OnScreenTextLen
+Author 【entity-Future Tech¦handle=@futuretech¦author_id=user-397924695732112594472】
+AuthorURL https://www.instagram.com/futuretech
+1.4M Followers
+Language en
+
+
+【0a8b】
+URL https://www.facebook.com/reel/1068376212837280/
+Type video
+Created 2026-09-08 19:33:25 UTC
+660 Likes
+24 Comments
+Summary: Ryan Serhant, in a bright kitchen and later in a car and office, promotes his new AI app 'Muse' featuring a personal agent he named 'Pumpkin.' He explains that while many think he lacks work-life balance, he is working on it because his executive team keeps him on track at work, and now Muse handles his personal life. The video shows screen recordings of the chat: he names the agent Pumpkin, asks it to have flowers waiting when Emilia returns from Greece tomorrow at 4:15pm, and approves tulips. He then tells Pumpkin he wants to be more consistent with HIIT workouts; the app builds a Lift Tracker where he logs bench press, deadlift, and barbell row sets, which then auto-recommends next session weights. When notified he's in Denver next week for SellIt '26, Pumpkin offers to rework week four for a hotel gym, which he accepts. Finally, seeing a hold Thursday for friends, Pumpkin finds downtown dinner options for five around 7pm, books Altesi through OpenTable after he approves access, and adds it to his calendar. He concludes by encouraging viewers to try Muse, calling it the first thing he's used that actually does the task instead of just telling how to do it.
+CommentSummary: Commenters largely engage positively, complimenting Ryan's looks and appreciating his honesty about work-life balance. Several users share their own experiences naming their agents ('Buddy', 'Dumpling') and express enthusiasm for the concept. A notable thread debates whether AI should replace human assistants, with one comment advocating for real people. Some criticism appears, including a political-sounding remark about transhumanism and profanity-laden dismissal. Practical questions arise about regional availability and timing of Sellit '26. Overall sentiment leans favorable toward the product demo, though underlying tension exists between tech optimism and preference for human interaction. 1. **Praise for appearance and humility:** "Why are you so handsome?" 2. **Skepticism about AI reliance:** "You should just get a real person to be your assistant." 3. **Availability complaints:** "Not available in Panama!"
+Mixed Sentiment
+Focus Reactions to AI assistant replacing human help and admiration for Ryan.
+Entities people=Ryan Serhant (Author Name), Emilia (Post Caption); products=smartphone, Muse app; places=New York City
+Author 【entity-Ryan Serhant¦author_id=user-132394147518047906066】
+Verified
+1.1M Followers
+Language en
+
+
+【5769】
+URL https://www.instagram.com/reel/DdEw5tiP2lk/
+Type video
+Created 2026-09-09 17:11:24 UTC
+5.9K Likes
+93 Comments
+Summary: A female creator explains Meta's September 2026 launch of "Muse," a personal AI agent now integrated into Instagram and WhatsApp. She describes Muse as more than a chatbot—it executes tasks after being given a goal, connecting to email, calendar, health apps, shopping, and Instagram to save recipes, create grocery lists, negotiate car sales, manage subscriptions, and book tickets via links with purchase protection. She notes it runs inside WhatsApp with no separate setup, is currently US-only, and operates on a dedicated cloud computer with Sentinel safeguards so it doesn't access the open internet unless approved. She highlights user adoption among tech/startup workers, compares it favorably to other tools for completing bookings instantly, and frames it as making complex AI feel easy and approachable while acknowledging ongoing safety concerns. The tone is enthusiastic, informative, and conversational, aimed at keeping viewers updated on fast-moving AI developments.
+Author 【entity-AevyTV¦handle=@aevytvdaily¦author_id=user-899109314880260380247】
+AuthorURL https://www.instagram.com/aevytvdaily
+560K Followers
+Language en
+
+
+【33b6】
+URL https://www.facebook.com/reel/2056187055263511/
+Type video
+Created 2026-09-09 01:06:35 UTC
+1.9K Likes
+450 Comments
+Summary: A young man introduces 'Muse,' a personal AI agent from Meta, which he has named 'Fluffy' and given a cute wolf avatar. In a kitchen, bedroom, closet, car, and outdoors, he demonstrates how Fluffy helps him achieve a 'productive, stress-free day.' He sets a goal, then instructs Fluffy to clean his emails, plan a hike at Runyon Canyon, save money on subscriptions (the app shows $295 saved), buy a red-carpet outfit, and book a dinner reservation. Because Fluffy is connected to his calendar and Instagram, it knows his schedule and hobbies. Later, Fluffy proactively reminds him about unanswered emails and drafts replies for him to approve with one tap. While getting dressed, he asks Fluffy to buy clothes for a red-carpet event next Monday, and the app presents a $150 suit order. He notes he has given Fluffy his credit card and address, and can choose to require approval or allow autonomous purchases. The video ends at a restaurant where he dines with a woman, checks off his completed goal on the app, and says he can't wait to do it again tomorrow.
+Culture moment=Band name conflict with Muse; significance=Users associate the app name with the established rock band, causing brand confusion.; origin=Comments referencing the band Muse and its members.
+CommentSummary: The comment section is dominated by users asking when Muse will launch in their country, with repeated mentions of Zimbabwe, UK, Nigeria, Bangladesh, South Africa, and others. Many express frustration that the app is US-only for adults 18+. A significant portion of discussion is not about the product itself but about the name conflict with the British rock band Muse, with users accusing Meta of stealing the handle and demanding the band's page back. Positive comments praise the concept and ask for invite codes, while negative comments call the app garbage or spam. The official Muse account replies uniformly stating availability in the US, which fuels further complaints. Overall sentiment is mixed between genuine curiosity and annoyance over access and branding. 1. **Availability complaints outside US:** "Not available here Y brob" 2. **Confusion with band Muse:** "MUSE is a band from the UK" 3. **Positive interest in trying app:** "Ok let's try"
+Mixed Sentiment
+Focus Viewers react to app availability and confusion with the band Muse.
+Entities products=smartphone, laptop computer, slim double-breasted suit
+Author 【entity-Muse¦author_id=user-552949735306911939271】
+Verified
+71K Followers
+Language en
+
+
+【e9c0】
+URL https://www.instagram.com/reel/DdxcYlHPF1y/
+Type video
+Created 2026-09-27 01:37:25 UTC
+410 Likes
+350 Comments
+Summary: In this September 2026 video, creator Rui Fu (@raycfu), identified as an ex-Meta software engineer and agency owner/content creator with 253K Instagram followers, demonstrates how to use Meta's new personal AI assistant 'Muse' to automate Instagram direct messages. Filmed at his desk, he walks through three main prompts: (1) having Muse scan his Instagram following to list accounts that don't follow back or have unfollowed in the past year, avoiding risky third-party tools; (2) getting a daily 8am summary of the last 24 hours of DMs categorized into brand partnerships, collaboration requests, fan messages, and spam so he doesn't miss important ones amid a 99+ inbox; and (3) setting up an auto-reply for anyone asking about his services/guides, directing them to raycfu.com while adding non-guide DMs to his morning summary. He credits DM automation for helping grow his following to 250,000 and offers a free step-by-step guide with the exact prompts if viewers like the video and comment 'MUSE'. The tone is instructional and promotional, aimed at creators and business owners.
+Culture moment=AI agent automation for social media; significance=Reflects 2026 trend of creators using personal AI assistants to scale outreach and monetization.; origin=Post evidence shows creator leveraging Meta's newly launched personal AI assistant.
+CommentSummary: The comment section is dominated by low-value spam promoting fake Muse token codes, creating high noise. Genuine discussion includes users confirming they built similar systems, questioning regional access limits, and suggesting competing tools like BuzzWire. The creator actively replies with 'sent it over! check your messages,' reinforcing the engagement loop. Sentiment is mixed: some praise the hack, others express skepticism about Meta drama, while many ignore the tutorial entirely to drop referral codes. Overall, the community reception reflects typical growth-hack content where utility is overshadowed by opportunistic spam. 1. **Spam token code sharing:** "10 billion exclusive token USA Code : RQB524" 2. **Geographic limitation questions:** "I tried to use Muse in Thailand but I think it s still limited" 3. **Alternative tools promotion:** "try BuzzWire - IG-only, official Graph API, free unlimited"
+Mixed Sentiment
+Focus Viewers discuss Muse availability, share token redemption codes, and debate alternatives.
+Entities people=Rui Fu (Author Name)
+Author 【entity-Rui Fu¦handle=@raycfu¦author_id=user-182786393705534132033】
+AuthorURL https://www.instagram.com/raycfu
+260K Followers
+Language en
+
+
+【6be0】
+URL https://www.instagram.com/reel/Dd6t-NBxk7I/
+Type video
+Created 2026-09-30 16:04:26 UTC
+850 Likes
+260 Comments
+Summary: A young male creator, identified as Angus, speaks directly to camera in an informal, profanity-laced style about Meta's new AI assistant 'Muse from Meta,' which he notes has surpassed ChatGPT in the App Store's Productivity charts. He critiques Muse's 'Goals' feature and argues viewers don't need it, instead demonstrating his own DIY workflow using Claude connected to Notion (for Q4 Goals), Todoist (tasks), and Gmail (emails). He explains needing an API key for TypeSafe's smaller model 'Jev,' then shows a multi-step prompt and resulting Python script that pulls all items, feeds each task/email individually to Jev with the user's goals attached, and scores them 0-100 based on how much they move the needle toward real-life goals. Visuals include screen recordings of the App Store ranking, Notion pages, connector settings, and code. The video ends with a call-to-action to follow him for free prompts, framed as ongoing 'shitposting.' The overall tone is casual tech-tutorial meets hustle-culture promotion, dated September 30, 2026.
+Culture moment=vibe coding / build with AI; significance=Reflects 2026 trend of creators packaging AI automation as accessible 'vibe coding' for non-engineers.; origin=Caption hashtags #ai #buildwithai #vibecoding
+CommentSummary: The comment section is overwhelmingly supportive and action-oriented. Multiple users simply write 'Focus' to claim the offered prompts, with the creator replying 'Check ur dms!' indicating fulfillment. Others praise the content ('Thank you, per usual') and suggest competing tools like TickTick with Claude MCP, showing an engaged audience of AI productivity enthusiasts. A few comments debate the necessity of Jev versus using Claude alone, reflecting technical curiosity. The tone is collaborative rather than critical, with no trolling or negative sentiment observed, suggesting the creator's niche community values free, actionable AI hacks. 1. **Requesting prompts:** "Focus - thanks dude!" 2. **Alternative tool suggestions:** "Get @ticktickapp and add Claudes mcp for it." 3. **Encouragement:** "Follow this dude"
+Positive Sentiment
+Focus Viewers request the promised prompts and discuss alternative AI setups.
+Entities people=Angus Sewell (Post Caption); products=Muse from Meta app, Claude AI assistant, Jev small model, Notion workspace, Todoist task manager, Gmail
+Author 【entity-Angus the Nontechnical¦handle=@angus.sewell¦author_id=user-645370020669637618015】
+AuthorURL https://www.instagram.com/angus.sewell
+170K Followers
+Language en
+
+
+【16c6】
+URL https://www.instagram.com/reel/Ddrti_RSQeE/
+Type video
+Created 2026-09-24 20:12:15 UTC
+810 Likes
+110 Comments
+Summary: A segment from the Spanish-language morning show 'HoyDia' features tech expert Andreina Espino alongside a male co-host discussing Meta's newly launched AI personal assistant called 'Muse,' introduced in early September 2026. The presentation explains that unlike general chatbots like ChatGPT, Gemini, or Claude that require user prompts, Muse is designed specifically to act on the user's behalf by performing tasks automatically. Demonstrations shown include Muse creating a school supplies shopping list from an email, drafting email replies, signing a user up for the 'Autumn Trail 10K' race by filling out a form, and making restaurant reservations. The hosts note Muse has its own built-in browser and search function, can work across connected apps on phone or computer, and operates after receiving initial instructions. The segment also covers a recent development where Amazon blocked Muse due to security and privacy concerns related to potential fraud and identity theft, prompting Meta to restrict access while evaluating safeguards. Privacy implications are discussed, with acknowledgment that while companies state data is private, there is inherent risk when granting an AI agent permission to act on one's accounts. The tone is informative and promotional, aimed at a general audience interested in technology.
+Culture moment=AI personal agents; significance=Reflects growing mainstream coverage of autonomous AI agents moving beyond chat to action.; origin=Meta product launch
+CommentSummary: The small comment sample shows a skeptical viewer expressing distrust ('No me fío'), to which the author responds positively directing them to their inbox. Another viewer makes a lighthearted comparison to ChatGPT but notes the cute mascot, indicating recognition of the branding. The author's replies encourage direct messaging, reinforcing the call-to-action from the caption. Overall sentiment is mixed—one comment is wary, another is amused—but both engage with the core topic of AI assistants rather than unrelated chatter, suggesting the community is focused on evaluating the new tool's credibility. 1. **distrust of AI:** "No me fío" 2. **comparison to ChatGPT:** "Es como chatgpt ! Pero con un osito"
+Mixed Sentiment
+Focus Viewers react to trustworthiness of Muse compared to ChatGPT.
+Entities people=Andreina Espino (Author Name); products=Meta Muse AI agent, smartphone
+Author 【entity-ANDREINA ESPINO | Tecnología | Marketing | Redes Sociales¦handle=@andreinaespino¦author_id=user-100155797428552606130】
+AuthorURL https://www.instagram.com/andreinaespino
+Verified
+540K Followers
+Language en
+
+<RESPONSE_INSTRUCTIONS>
+Use the information above from all the posts from the `meta_1p.content_search` tool to help ground the response. This information can be relevant to the user's prompt especially when it comes to information about current public discourse and knowledge after your learning cutoff such as: trends, memes, news, events, social context & discourse, and general info. 
+When presenting these results to the user:
+- Draw from multiple distinct sources. Do not over-represent a single account when the search results include content from several.
+
+CRITICAL — Agentic multi-loop search:
+This tool is built for agentic search. A single call is almost never enough to give the user a thorough answer. You MUST evaluate these results right now and decide whether to search again. If the results are thin, one-sided, off-topic, or missing an angle the user cares about, you MUST call `meta_1p.content_search` again — immediately, in the same turn — with adjusted parameters. Go through as many agentic loops as needed until you have comprehensive coverage:
+- Go broader: widen `semantic_queries`, remove filters, try a different `ranking_intent`.
+- Go deeper: narrow `semantic_queries` to a specific facet, add `key_celebrities` or `authors`, tighten `since`/`until`.
+- Mix tools: use `browser.search` to learn factual context, then feed what you learn into a more targeted `meta_1p.content_search` call.
+Do NOT present a weak or shallow answer when another loop would improve it. The `<iterative_refinement>` section in the system prompt has detailed examples of how to run these loops.
+Do not mention a post's visibility tag unless the user explicitly asks about it.
+</RESPONSE_INSTRUCTIONS>

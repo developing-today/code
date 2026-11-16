@@ -331,21 +331,23 @@ fn interval_verdicts(
                 }
             }
             if state != VerdictState::Violated {
-                let last = *anchors.last().expect("anchors is not empty");
-                if end <= now {
-                    let gap = end - last;
-                    if gap > max_seconds {
-                        state = VerdictState::Violated;
-                        detail = format!("{gap}s from the last record to the span's end");
-                    }
-                } else {
-                    let gap = now - last;
-                    if gap > max_seconds {
-                        state = VerdictState::Overdue;
-                        detail = format!("{gap}s since the last record, the max is {max_seconds}s");
-                    } else if gap >= min_seconds {
-                        state = VerdictState::Due;
-                        detail = format!("{gap}s since the last record");
+                if let Some(&last) = anchors.last() {
+                    if end <= now {
+                        let gap = end - last;
+                        if gap > max_seconds {
+                            state = VerdictState::Violated;
+                            detail = format!("{gap}s from the last record to the span's end");
+                        }
+                    } else {
+                        let gap = now - last;
+                        if gap > max_seconds {
+                            state = VerdictState::Overdue;
+                            detail =
+                                format!("{gap}s since the last record, the max is {max_seconds}s");
+                        } else if gap >= min_seconds {
+                            state = VerdictState::Due;
+                            detail = format!("{gap}s since the last record");
+                        }
                     }
                 }
             }

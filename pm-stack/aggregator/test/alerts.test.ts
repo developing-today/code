@@ -10,10 +10,13 @@ import {
   buildTestPayload,
   classEnabled,
   createAlertsStoreGetter,
+  DEFAULT_CLASSES,
   duplicateWouldRepeatDelivery,
   incidentObjectRef,
   incidentUrl,
   inQuietHours,
+  MAX_CLASS_KEY_LENGTH,
+  MAX_CLASS_KEYS,
   mergeClasses,
   mergeQuiet,
   runAlertTick,
@@ -98,12 +101,44 @@ describe("class + quiet merges (design §1/§2)", () => {
       "needs-drew": true,
       "quota-wall": true,
       "quota-near-wall": true,
+      "section-risk": true,
       "stack-health": true,
       "blocked-age": true,
     });
     expect(mergeClasses({ incident: false }).incident).toBe(false);
     expect(mergeClasses({ incident: true, "quota-wall": false })["quota-wall"]).toBe(false);
     expect(mergeClasses({ incident: "yes" }).incident).toBe(true); // non-boolean ignored
+  });
+  // #4981: bound class-key growth until the class registry lands (#3317).
+  test("class keys are capped in count beyond the default class set", () => {
+    const many: Record<string, boolean> = {};
+    for (let i = 0; i < MAX_CLASS_KEYS + 5; i++) many[`class-${i}`] = true;
+    const out = mergeClasses(many);
+    expect(Object.keys(out).filter((k) => !Object.hasOwn(DEFAULT_CLASSES, k))).toHaveLength(MAX_CLASS_KEYS);
+    expect(out["class-0"]).toBe(true);
+    expect(out[`class-${MAX_CLASS_KEYS}`]).toBeUndefined(); // over-limit dropped
+    // The defaults still merge even when the cap is reached.
+    expect(out.incident).toBe(true);
+  });
+  test("class keys longer than the maximum are dropped", () => {
+    const longest = "k".repeat(MAX_CLASS_KEY_LENGTH);
+    const tooLong = "k".repeat(MAX_CLASS_KEY_LENGTH + 1);
+    expect(mergeClasses({ [longest]: false })).toEqual({ ...DEFAULT_CLASSES, [longest]: false });
+    expect(mergeClasses({ [tooLong]: true })).toEqual({ ...DEFAULT_CLASSES });
+  });
+  test("accepted class keys keep their explicit true/false", () => {
+    expect(mergeClasses({ incident: false, "quota-wall": true })).toEqual({
+      ...DEFAULT_CLASSES,
+      incident: false,
+      "quota-wall": true,
+    });
+  });
+  test("prototype-named keys count against the cap", () => {
+    const input: Record<string, unknown> = { toString: true, constructor: false };
+    expect(mergeClasses(input)).toEqual({ ...DEFAULT_CLASSES, toString: true, constructor: false });
+  });
+  test("non-boolean class values are ignored", () => {
+    expect(mergeClasses({ "quota-wall": "yes", a: 1, b: null })).toEqual({ ...DEFAULT_CLASSES });
   });
   test("classEnabled preserves old rows while new rows get defaults", () => {
     expect(classEnabled({ classes: {} }, "incident")).toBe(true);
@@ -310,6 +345,7 @@ describe("validation", () => {
         "needs-drew": true,
         "quota-wall": true,
         "quota-near-wall": true,
+        "section-risk": true,
         "stack-health": true,
         "blocked-age": true,
       });
@@ -582,7 +618,11 @@ describe("alert tick delivery state", () => {
     expect(historyRows.map((row) => row.outcome)).toEqual(["suppressed-quiet", "queued"]);
 
     // Recreate the tick over the same durable history at quiet-window end.
-    await runAlertTick(tickConfig, store, push, { dashboardSnapshot, notificationHistory, now: Date.parse("2026-11-04T07:00:00Z") });
+    await runAlertTick(tickConfig, store, push, {
+      dashboardSnapshot,
+      notificationHistory,
+      now: Date.parse("2026-11-04T07:00:00Z"),
+    });
     expect(pushed).toHaveLength(1);
     expect(pushed[0]).toMatchObject({ class: "digest", items: [{ title: "Quiet-hour task" }] });
     expect(historyRows.map((row) => row.outcome)).toEqual(["suppressed-quiet", "queued", "sent"]);

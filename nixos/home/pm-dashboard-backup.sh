@@ -428,8 +428,8 @@ pmp_trim_value() {
   v="${v%"${v##*[![:space:]]}"}"
   if ((${#v} >= 2)); then
     case "$v" in
-      \"*\") v="${v:1:${#v}-2}" ;;
-      \'*\') v="${v:1:${#v}-2}" ;;
+    \"*\") v="${v:1:${#v}-2}" ;;
+    \'*\') v="${v:1:${#v}-2}" ;;
     esac
   fi
   printf '%s' "$v"
@@ -438,10 +438,10 @@ pmp_trim_value() {
 # escapes are kept literally rather than dropped.
 pmp_url_decode() {
   local in="$1" out="" byte
-  while [[ "$in" == *%* ]]; do
+  while [[ $in == *%* ]]; do
     out+="${in%%\%*}"
     in="${in#*\%}"
-    if [[ "${in:0:2}" =~ ^[0-9A-Fa-f]{2}$ ]]; then
+    if [[ ${in:0:2} =~ ^[0-9A-Fa-f]{2}$ ]]; then
       printf -v byte "\\x${in:0:2}"
       out+="$byte"
       in="${in:2}"
@@ -464,28 +464,28 @@ if [ -z "$PMP_DB" ]; then
   PMP_DIR="${PM_PROJECTOR_DIR:-}"
   if [ -n "$PMP_URL" ]; then
     case "$PMP_URL" in
-      file:*)
-        PMP_DB="${PMP_URL#file:}"
-        PMP_DB="${PMP_DB%%\?*}"
-        PMP_DB="${PMP_DB%%#*}"
-        # file://host/path -> /path: drop an empty or localhost
-        # authority, then decode the path before any existence check.
-        case "$PMP_DB" in
-          //localhost/*) PMP_DB="/${PMP_DB#//localhost/}" ;;
-          ///*) PMP_DB="/${PMP_DB#///}" ;;
-        esac
-        PMP_DB="$(pmp_url_decode "$PMP_DB")"
-        ;;
-      *://*)
-        # Remote DSN (postgres://, libsql://, ...): this export cannot
-        # read it, and silently archiving a local file instead would make
-        # the archive claim a source it never read. Name the scheme only
-        # — a DSN may embed credentials.
-        fail "pmp_links export failed: DATABASE_URL in $PMP_ENV uses '${PMP_URL%%://*}://', which is not supported (only file: URLs or local paths); remote export is not implemented"
-        ;;
-      *)
-        PMP_DB="$PMP_URL" # local path, absolute or relative
-        ;;
+    file:*)
+      PMP_DB="${PMP_URL#file:}"
+      PMP_DB="${PMP_DB%%\?*}"
+      PMP_DB="${PMP_DB%%#*}"
+      # file://host/path -> /path: drop an empty or localhost
+      # authority, then decode the path before any existence check.
+      case "$PMP_DB" in
+      //localhost/*) PMP_DB="/${PMP_DB#//localhost/}" ;;
+      ///*) PMP_DB="/${PMP_DB#///}" ;;
+      esac
+      PMP_DB="$(pmp_url_decode "$PMP_DB")"
+      ;;
+    *://*)
+      # Remote DSN (postgres://, libsql://, ...): this export cannot
+      # read it, and silently archiving a local file instead would make
+      # the archive claim a source it never read. Name the scheme only
+      # — a DSN may embed credentials.
+      fail "pmp_links export failed: DATABASE_URL in $PMP_ENV uses '${PMP_URL%%://*}://', which is not supported (only file: URLs or local paths); remote export is not implemented"
+      ;;
+    *)
+      PMP_DB="$PMP_URL" # local path, absolute or relative
+      ;;
     esac
   fi
   if [ -z "$PMP_DB" ]; then
@@ -502,8 +502,8 @@ if [ -z "$PMP_DB" ]; then
     fi
   else
     case "$PMP_DB" in
-      /*) ;;
-      *) PMP_DB="${PMP_DIR:-$HOME/git/code/pm-stack/projector}/$PMP_DB" ;;
+    /*) ;;
+    *) PMP_DB="${PMP_DIR:-$HOME/git/code/pm-stack/projector}/$PMP_DB" ;;
     esac
   fi
 fi

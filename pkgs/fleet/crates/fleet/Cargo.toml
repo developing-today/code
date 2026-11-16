@@ -27,6 +27,14 @@ fleet-proxy = { workspace = true, default-features = false }
 # the connect variant must not carry it (§2: "nothing else").
 fleet-secrets = { workspace = true, optional = true }
 serde_json = { workspace = true }
+# The gh domain (code#8887) mints App installation tokens over the
+# GitHub API; same ureq pin as fleet-queue/fleet-search (rustls, no
+# native-tls). Only the JSON-free surface is needed: bodies are read
+# as strings and parsed with serde_json.
+ureq = { version = "3", default-features = false, features = [
+  "rustls",
+  "platform-verifier",
+], optional = true }
 # Direct dep for the SIGPIPE disposition reset in main (#5569);
 # already in the workspace lockfile as a transitive dependency.
 [target.'cfg(unix)'.dependencies]
@@ -50,6 +58,7 @@ full = [
   "dispatch-test",
   "laptop-agent",
   "secrets",
+  "gh",
 ]
 # The serve variant's set, as one feature for the nix build.
 serve = [
@@ -83,4 +92,8 @@ dispatch-test = ["dep:fleet-dispatch-test"]
 # The secrets verb (step 6, #5554): in full and serve (§2 puts the
 # secrets platform in both), never in connect ("nothing else").
 secrets = ["dep:fleet-secrets"]
+# The gh passthrough (code#8887): a working-seat client tool, so
+# full only — the serve build's daemons shell out to it externally
+# if ever needed, it is not a daemon role.
+gh = ["dep:fleet-secrets", "dep:ureq"]
 laptop-agent = ["dep:fleet-secrets"]

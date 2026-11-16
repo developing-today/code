@@ -38,6 +38,39 @@ func dial32042(t *testing.T, rev string, handler mcpclient.URLElicitationHandler
 	return dialWire(t, w, mcpclient.ForceLegacy, mcpclient.Options{OnURLElicitationRequired: handler})
 }
 
+// #2897: the retry carries the requestState the -32042 handed out, so the
+// server resumes the suspended call instead of starting a second one.
+func TestURLElicitationRetryCarriesRequestState(t *testing.T) {
+	var seen []string
+	var n atomic.Int32
+	w := newWire(t, "2025-11-25", func(m string, p map[string]any) (any, map[string]any) {
+		switch m {
+		case "initialize":
+			return initResult("2025-11-25", nil), nil
+		case "tools/call":
+			meta, _ := p["_meta"].(map[string]any)
+			st, _ := meta[mcpclient.MetaRequestState].(string)
+			seen = append(seen, st)
+			if n.Add(1) == 1 {
+				d := urlElicitationData()
+				d["requestState"] = "tok-1"
+				return nil, rpcErr(-32042, "url elicitation required", d)
+			}
+			return map[string]any{"content": []any{}}, nil
+		}
+		return nil, nil
+	})
+	c := dialWire(t, w, mcpclient.ForceLegacy, mcpclient.Options{OnURLElicitationRequired: func(context.Context, []mcpclient.URLElicitation) (bool, error) {
+		return true, nil
+	}})
+	if _, err := c.CallTool(ctx5(), "x", nil); err != nil {
+		t.Fatal(err)
+	}
+	if len(seen) != 2 || seen[0] != "" || seen[1] != "tok-1" {
+		t.Fatalf("requestState per tools/call = %q, want [\"\" \"tok-1\"]", seen)
+	}
+}
+
 func TestURLElicitationRequiredRetry(t *testing.T) {
 	t.Run("accepted-then-retry-succeeds-exactly-once", func(t *testing.T) {
 		var got []mcpclient.URLElicitation

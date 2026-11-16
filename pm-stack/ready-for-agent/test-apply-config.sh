@@ -100,6 +100,8 @@ sleep 1
 export RFA_CONFIG="$WORK/config.json"
 export RFA_REPOS_DIR="$WORK/repos"
 export RFA_GRAPHQL_URL="http://127.0.0.1:16056/graphql"
+# Do not let the test runner's environment affect the normal-apply cases.
+unset DRY_RUN
 
 : >"$WORK/mutations.log"
 DRY_RUN=1 ./apply-config.sh >"$WORK/dry-run.out"
@@ -118,14 +120,14 @@ grep -q "would register" "$WORK/true-dry-run.out"
 }
 echo "ok: DRY_RUN=true is accepted case-insensitively"
 
-./apply-config.sh >"$WORK/first.out"
+DRY_RUN=0 ./apply-config.sh >"$WORK/first.out"
 grep -q "addLocalRepository" "$WORK/mutations.log"
 grep -q "updateRepositorySettings" "$WORK/mutations.log"
 grep -q "unpauseRepository" "$WORK/mutations.log"
-echo "ok: first apply registers, configures, unpauses"
+echo "ok: DRY_RUN=0 first apply registers, configures, unpauses"
 
 : >"$WORK/mutations.log"
-./apply-config.sh >"$WORK/second.out"
+env -u DRY_RUN ./apply-config.sh >"$WORK/second.out"
 grep -q "already match config" "$WORK/second.out"
 [[ ! -s "$WORK/mutations.log" ]] || {
   echo "FAIL: second apply was not a no-op:"

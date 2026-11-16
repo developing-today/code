@@ -30,9 +30,31 @@ check_fail() { if bash "$script" >"$tmp/output" 2>&1; then
   echo "unexpected success: $1" >&2
   exit 1
 fi; }
+check_usage_fail() {
+  local label="$1"
+  shift
+  local status=0
+  if bash "$script" "$@" >"$tmp/output" 2>&1; then
+    echo "unexpected success: $label" >&2
+    exit 1
+  else
+    status=$?
+  fi
+  if [[ $status -ne 2 ]]; then
+    cat "$tmp/output"
+    echo "unexpected exit status $status (expected 2): $label" >&2
+    exit 1
+  fi
+  if ! grep -q "unexpected argument" "$tmp/output"; then
+    cat "$tmp/output"
+    echo "missing unexpected-argument message: $label" >&2
+    exit 1
+  fi
+}
 change() { jq "$1" just-recipes.json >"$FRESH"; }
 
 check_pass
+check_usage_fail 'extra positional argument' extra-arg-test
 change '.source = "new" | .recipes.run.body = [["new"]]'
 check_pass
 change '.recipes.run.parameters[0].export = true'

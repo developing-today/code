@@ -4,7 +4,7 @@
   "capturedAt": "2026-11-03",
   "notes": [
     "The section captures were read from a real collector-published fleet-feed.json on 2026-11-03, then scrubbed before check-in; no raw feed is stored.",
-    "- orchestration.json mirrors the orchestration-pass run orch-2026-10-27T03:14:56Z, captured in PR #1244 (#1110: provenance as an OBJECT { sources, runId }); text and refs have been scrubbed.",
+    "- orchestration.json mirrors the orchestration-pass run orch-2026-10-27T03:14:56Z, captured in PR #1244 (#1110: provenance as an OBJECT { sources, runId }); text and refs have been scrubbed; synthetic blocked dependency examples added for #10508.",
     "- quota.json is a scrubbed QuotaView captured from the real fleet feed; provider/pool names and usage measurements are replaced with deterministic examples.",
     "- dns.json is a scrubbed DnsSection captured from the real fleet feed; domains and editorial values are replaced, while the real status variants and null semantics remain.",
     "- registry.json holds scrubbed SessionRecords captured from the real fleet feed; ids, labels, timestamps, model names, and task refs are synthetic.",

@@ -3,16 +3,16 @@
 - **Date:** 2026-11-08
 - **Status:** design note (rule + UI copy); docs-only, no implementation.
 - **Issue:** [#6009](https://github.com/developing-today/code/issues/6009), part of the worlds design program [#5955](https://github.com/developing-today/code/issues/5955); parent taxonomy design [#5977](https://github.com/developing-today/code/issues/5977).
-- **Why a note and not a section of #5977's spec:** the #5977 taxonomy spec does not exist yet. At `origin/main` `561f413226` the only landed licensing design record is [the combination checker](2026-11-06_design_id5985.md) (#5985), which *consumes* #5977's facts rather than defining them, and no `CC0-1.0` / `0BSD` / public-domain normalization exists in `pkgs/id/src`, `pkgs/id/contract`, or `doc/`. This note is the rule #5977's spec must adopt on day one so it cannot be finalised without it.
+- **Why a note and not a section of #5977's spec:** the #5977 taxonomy spec does not exist yet. At `origin/main` `561f413226` the only landed licensing design record is [the combination checker](2026-11-06_design_id5985.md) (#5985), which _consumes_ #5977's facts rather than defining them, and no `CC0-1.0` / `0BSD` / public-domain normalization exists in `pkgs/id/src`, `pkgs/id/contract`, or `doc/`. This note is the rule #5977's spec must adopt on day one so it cannot be finalised without it.
 
 ## 1. The rule
 
 **A user selecting "public domain" is never stored as the string "public domain".** It is stored as a real, machine-readable dedication, chosen by the artifact's kind:
 
-| Artifact kind | Stored SPDX identifier | Why |
-| --- | --- | --- |
-| Content — images, audio, video, documents, world data/assets | `CC0-1.0` | CC0 is the only widely recognised dedication engineered for jurisdictions where a bare dedication fails: waiver first, permissive fallback licence if the waiver is unenforceable, then a covenant not to assert. |
-| Code — libraries, DLLs, worlds, source | `0BSD` (preferred) or `Unlicense` | CC0 is expressly not recommended for software (FSF) and Fedora reclassified it as not-allowed for *code* in 2022 because CC0 does not grant patent rights. `0BSD` is an OSI-approved permissive licence with no attribution requirement — the closest legal equivalent to a dedication — and `Unlicense` is the accepted alternative where an author prefers it. |
+| Artifact kind                                                | Stored SPDX identifier            | Why                                                                                                                                                                                                                                                                                                                                                              |
+| ------------------------------------------------------------ | --------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Content — images, audio, video, documents, world data/assets | `CC0-1.0`                         | CC0 is the only widely recognised dedication engineered for jurisdictions where a bare dedication fails: waiver first, permissive fallback licence if the waiver is unenforceable, then a covenant not to assert.                                                                                                                                                |
+| Code — libraries, DLLs, worlds, source                       | `0BSD` (preferred) or `Unlicense` | CC0 is expressly not recommended for software (FSF) and Fedora reclassified it as not-allowed for _code_ in 2022 because CC0 does not grant patent rights. `0BSD` is an OSI-approved permissive licence with no attribution requirement — the closest legal equivalent to a dedication — and `Unlicense` is the accepted alternative where an author prefers it. |
 
 Two consequences, both normative:
 

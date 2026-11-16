@@ -46,7 +46,7 @@
  * apply in, a discriminated outcome out — so the stub-host tests are
  * the contract, exactly as with the rest of the v2 tree.
  */
-import { ago, label, targetKey, type Candidate, type Target } from "../mcpx/daemon.ts";
+import { ago, label, targetKey, type Candidate, type Target } from "../../core/daemon.ts";
 import { DAEMON_SELECT_ACTION, type PermissionAssertInput } from "./permission.ts";
 
 export type PickerScope = "session" | "until-gone" | "indefinite" | "permanent";

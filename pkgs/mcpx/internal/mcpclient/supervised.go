@@ -21,6 +21,7 @@ import (
 	"time"
 
 	"github.com/developing-today/code/pkgs/mcpx/internal/defaults"
+	"github.com/developing-today/code/pkgs/mcpx/internal/homeutil"
 	"github.com/developing-today/code/pkgs/mcpx/internal/progspec"
 )
 
@@ -154,8 +155,11 @@ func StateDir() string {
 	if v := os.Getenv("XDG_STATE_HOME"); v != "" {
 		return filepath.Join(v, "mcpx")
 	}
-	home, _ := os.UserHomeDir()
-	return filepath.Join(home, ".local", "state", "mcpx")
+	// Home-resolution contract (issues #5762 / #5763): reached only
+	// when neither MCPX_STATE_DIR nor XDG_STATE_HOME names a
+	// directory, so a non-empty HOME must - MustHome panics with the
+	// named error rather than returning a CWD-relative substitute.
+	return filepath.Join(homeutil.MustHome(), ".local", "state", "mcpx")
 }
 
 // tailBuffer is the bounded unattached-output buffer: it keeps the tail
@@ -692,6 +696,18 @@ type SupervisedTransport struct {
 // to a direct spawn: a supervised failure is an error.
 func NewSupervised(opts SupervisedOptions) (*SupervisedTransport, error) {
 	return newSupervised(opts, nil)
+}
+
+// AttachSupervised attaches to the server's already-running supervisor
+// and never spawns one (#9962). It is the probe a daemon's state-dir
+// scan adopts supervised instances through: no socket, a dead socket,
+// or a live supervisor's refusal (another daemon attached, version
+// mismatch) are all errors, and nothing is started in their place.
+func AttachSupervised(opts SupervisedOptions) (*SupervisedTransport, error) {
+	if opts.StateDir == "" {
+		opts.StateDir = StateDir()
+	}
+	return attachSupervisor(SupervisorSocketPath(opts.StateDir, opts.Name), opts)
 }
 
 // spawnFunc starts a supervisor for the socket; nil means re-exec.

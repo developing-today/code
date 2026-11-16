@@ -54,6 +54,12 @@ The script sees `MCPX_RUNTIME` set to the **kind**, not the declared name.
 object, so the nearest file that sets one replaces the whole object from
 files further away, as with any other setting.
 
+## Script environment (`script.devshell`)
+
+The `script.devshell` setting selects the environment a script runs inside. `host` (the default) runs the runtime with the caller's environment, as before. `flake:<ref>` runs it inside the named Nix flake's devshell: the spawn becomes `nix develop <ref> -c <runtime> <args>`, the caller's environment (including `MCPX_*` values and `script.env` pairs) is inherited into the devshell, and the devshell's `PATH` takes precedence for lookups inside. An absent `nix` or an unresolvable ref fails the run loudly, naming the setting — there is no silent fallback to `host`.
+
+A devshell is a reproducible environment, not a security sandbox: it pins tools and libraries, and grants no isolation beyond what the runtime's permission profile already enforces.
+
 ## Capability matrix
 
 What each runtime can actually do for a script, measured rather than

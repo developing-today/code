@@ -1,0 +1,124 @@
+{
+  "research_date": "2026-11-13",
+  "timezone": "UTC",
+  "retrieval_window_approx": "2026-11-13T03:27Z/2026-11-13T03:34Z; exact per-source request timestamps were not retained",
+  "sources": [
+    {
+      "id": "S01",
+      "title": "Pod Priority and Preemption",
+      "publisher": "Kubernetes Documentation",
+      "url": "https://kubernetes.io/docs/concepts/scheduling-eviction/pod-priority-preemption/",
+      "retrieved_at": "2026-11-13",
+      "access": "Fetched successfully with webfetch",
+      "supports": "Kubernetes documents numeric pod priority and scheduler preemption of lower-priority pods. Used only to distinguish ordering priority from eligibility and to identify preemption as a poor fit for leased agent work."
+    },
+    {
+      "id": "S02",
+      "title": "API Priority and Fairness",
+      "publisher": "Kubernetes Documentation",
+      "url": "https://kubernetes.io/docs/concepts/cluster-administration/flow-control/",
+      "retrieved_at": "2026-11-13",
+      "access": "Fetched successfully with webfetch",
+      "supports": "Kubernetes API server request classification, priority levels, queues and fair dispatch as concurrency sharing. Supports separating priority from fairness; not a backlog-selection algorithm."
+    },
+    {
+      "id": "S03",
+      "title": "Workflow message passing",
+      "publisher": "Temporal Documentation",
+      "url": "https://docs.temporal.io/develop/typescript/message-passing",
+      "retrieved_at": "2026-11-13",
+      "access": "Fetched successfully with webfetch",
+      "supports": "Temporal documents Query/Signal/Update distinction, validation, accepted/completed status, update IDs and asynchronous message processing. Used as a workflow-control-plane precedent, not a Fleet dependency recommendation."
+    },
+    {
+      "id": "S04",
+      "title": "Events and Event History",
+      "publisher": "Temporal Documentation",
+      "url": "https://docs.temporal.io/workflow-execution/event",
+      "retrieved_at": "2026-11-13",
+      "access": "Fetched successfully with webfetch",
+      "supports": "Temporal describes an append-only durable event history used for recovery/replay, plus explicit history limits and principal attribution. Supports replay and provenance tradeoff discussion."
+    },
+    {
+      "id": "S05",
+      "title": "CloudEvents Specification v1.0.2",
+      "publisher": "CloudEvents / CNCF",
+      "url": "https://github.com/cloudevents/spec/blob/v1.0.2/cloudevents/spec.md",
+      "retrieved_at": "2026-11-13",
+      "access": "Fetched successfully with webfetch",
+      "supports": "CloudEvents defines an interoperable event envelope with required source/id/specversion/type, duplicate identity semantics for source+id, optional time/subject/dataschema, and compact payload guidance. It does not define queue ordering or Fleet field authority."
+    },
+    {
+      "id": "S06",
+      "title": "Introduction — Apache Kafka 4.4",
+      "publisher": "Apache Kafka Documentation",
+      "url": "https://kafka.apache.org/44/getting-started/introduction/",
+      "retrieved_at": "2026-11-13",
+      "access": "Located using official Apache Kafka search result; official page states same-key events use one partition and consumers read partition events in write order",
+      "supports": "Kafka documents per-partition order for same-key events. Used to bound the claim: this does not provide global total order across keys or external projections."
+    },
+    {
+      "id": "S07",
+      "title": "Isolation In SQLite",
+      "publisher": "SQLite Documentation",
+      "url": "https://www.sqlite.org/isolation.html",
+      "retrieved_at": "2026-11-13",
+      "access": "Fetched successfully with webfetch",
+      "supports": "SQLite documents serializable transactions implemented by serialized writes, one writer at a time, and WAL snapshot behavior. Used as storage-family concurrency context only."
+    },
+    {
+      "id": "S08",
+      "title": "Embedded Replicas",
+      "publisher": "Turso Documentation",
+      "url": "https://docs.turso.tech/features/embedded-replicas/introduction",
+      "retrieved_at": "2026-11-13",
+      "access": "Fetched successfully with webfetch after obsolete /sync/embedded-replicas path returned 404",
+      "supports": "The page says Embedded Replica reads are served locally; writes by default go to the remote primary, then the initiating replica is updated (read-your-writes); other replicas see changes on sync/periodic sync. It distinguishes Turso Sync as local-first with explicit push/pull. Does not establish which mode this repository runs."
+    },
+    {
+      "id": "S09",
+      "title": "Best practices for using webhooks",
+      "publisher": "GitHub Docs",
+      "url": "https://docs.github.com/en/webhooks/using-webhooks/best-practices-for-using-webhooks",
+      "retrieved_at": "2026-11-13",
+      "access": "Fetched successfully with webfetch",
+      "supports": "GitHub recommends webhook secrets/HTTPS, responding 2xx within 10 seconds, async processing for longer work, redelivery, and X-GitHub-Delivery deduplication; redelivery reuses delivery ID."
+    },
+    {
+      "id": "S10",
+      "title": "Using the API to manage Projects / GitHub GraphQL Projects reference",
+      "publisher": "GitHub Docs",
+      "url": "https://docs.github.com/en/issues/planning-and-tracking-with-projects/automating-your-project/using-the-api-to-manage-projects",
+      "retrieved_at": "2026-11-13",
+      "access": "Found by official GitHub Docs web search",
+      "supports": "GitHub documents Project item field reads/updates; GraphQL Projects reference documents POSITION ordering for project items. Used to establish API/projection surface, not portable canonical queue order or transaction semantics."
+    },
+    {
+      "id": "S11",
+      "title": "Project priority",
+      "publisher": "Linear Docs",
+      "url": "https://linear.app/docs/project-priority",
+      "retrieved_at": "2026-11-13",
+      "access": "Fetched successfully with webfetch",
+      "supports": "Linear documents optional project priority categories and manual/micro-adjusted position within a shared priority group. Used as UX prior art for separate category and local within-group order."
+    },
+    {
+      "id": "S12",
+      "title": "Rank an issue / Enable ranking; LexoRank system troubleshooting",
+      "publisher": "Atlassian Support",
+      "url": "https://support.atlassian.com/jira-software-cloud/docs/rank-an-issue/",
+      "retrieved_at": "2026-11-13",
+      "access": "Official Jira page fetched; navigation-heavy response, and official search result confirms manual ranking and ranking configuration",
+      "supports": "Jira supports manual work-item ranking; official Atlassian LexoRank support material discusses rebalance and rank-system maintenance. Used to make rebalance an explicit design cost, not to claim a DIY rank implementation is safe."
+    },
+    {
+      "id": "S12a",
+      "title": "Troubleshooting LexoRank System Issues",
+      "publisher": "Atlassian Support",
+      "url": "https://support.atlassian.com/jira/kb/troubleshooting-lexorank-system-issues/",
+      "retrieved_at": "2026-11-13",
+      "access": "Found by official Atlassian search result",
+      "supports": "Atlassian support notes cluster-safe rank operations and rank-length thresholds/rebalance behavior for named Jira versions. Illustrates rank maintenance costs; exact thresholds are product-specific and not generalized."
+    }
+  ]
+}

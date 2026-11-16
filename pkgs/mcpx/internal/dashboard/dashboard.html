@@ -579,10 +579,28 @@
         >
           Browse
         </button>
-        <button class="view-tab" id="tab-log" role="tab" aria-selected="false" tabindex="-1" aria-controls="view-body" data-view="log" onclick="showView('log')">
+        <button
+          class="view-tab"
+          id="tab-log"
+          role="tab"
+          aria-selected="false"
+          tabindex="-1"
+          aria-controls="view-body"
+          data-view="log"
+          onclick="showView('log')"
+        >
           Log
         </button>
-        <button class="view-tab" id="tab-stats" role="tab" aria-selected="false" tabindex="-1" aria-controls="view-body" data-view="stats" onclick="showView('stats')">
+        <button
+          class="view-tab"
+          id="tab-stats"
+          role="tab"
+          aria-selected="false"
+          tabindex="-1"
+          aria-controls="view-body"
+          data-view="stats"
+          onclick="showView('stats')"
+        >
           Stats
         </button>
         <button
@@ -1011,13 +1029,11 @@
 
       function showView(name) {
         currentView = name;
-        document
-          .querySelectorAll(".view-tab")
-          .forEach((b) => {
-            b.classList.toggle("active", b.dataset.view === name);
-            b.setAttribute("aria-selected", String(b.dataset.view === name));
-            b.setAttribute("tabindex", b.dataset.view === name ? "0" : "-1");
-          });
+        document.querySelectorAll(".view-tab").forEach((b) => {
+          b.classList.toggle("active", b.dataset.view === name);
+          b.setAttribute("aria-selected", String(b.dataset.view === name));
+          b.setAttribute("tabindex", b.dataset.view === name ? "0" : "-1");
+        });
         document
           .getElementById("view-body")
           .setAttribute("aria-labelledby", "tab-" + name);
@@ -1028,25 +1044,22 @@
         loadView(name);
       }
 
-      document
-        .querySelector(".view-tabs")
-        ?.addEventListener("keydown", (e) => {
-          if (!["ArrowLeft", "ArrowRight", "Home", "End"].includes(e.key))
-            return;
-          const tabs = [...document.querySelectorAll(".view-tab")];
-          const i = tabs.indexOf(document.activeElement);
-          if (i < 0) return;
-          e.preventDefault();
-          const n =
-            e.key === "Home"
-              ? 0
-              : e.key === "End"
-                ? tabs.length - 1
-                : (i + (e.key === "ArrowRight" ? 1 : -1) + tabs.length) %
-                  tabs.length;
-          tabs[n].focus();
-          showView(tabs[n].dataset.view);
-        });
+      document.querySelector(".view-tabs")?.addEventListener("keydown", (e) => {
+        if (!["ArrowLeft", "ArrowRight", "Home", "End"].includes(e.key)) return;
+        const tabs = [...document.querySelectorAll(".view-tab")];
+        const i = tabs.indexOf(document.activeElement);
+        if (i < 0) return;
+        e.preventDefault();
+        const n =
+          e.key === "Home"
+            ? 0
+            : e.key === "End"
+              ? tabs.length - 1
+              : (i + (e.key === "ArrowRight" ? 1 : -1) + tabs.length) %
+                tabs.length;
+        tabs[n].focus();
+        showView(tabs[n].dataset.view);
+      });
 
       async function loadView(name) {
         const body = document.getElementById("view-body");

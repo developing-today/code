@@ -3,10 +3,12 @@ package runner
 import (
 	"encoding/json"
 	"fmt"
+	"os"
 	"os/exec"
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync"
 
 	"github.com/developing-today/code/pkgs/mcpx/internal/defaults"
 )
@@ -41,6 +43,11 @@ type Runtime struct {
 	// Kind decides how argv is built.
 	Kind string
 	Bin  string
+	// Invoke is the command as named before PATH resolution absolutized
+	// Bin: a declared runtime's configured command, or the requested
+	// name itself. A devshell spawn resolves Invoke inside the shell
+	// instead of running the host's Bin (Codex review, PR #8381).
+	Invoke string
 	// Perms are the rendered permission flags.
 	Perms []string
 	// ConfigArgs are the runtime's declared extra arguments (script.
@@ -323,7 +330,9 @@ func firstOr(l []string, d string) string {
 // candidate is a runtime to try: its name, kind, binary and extra args.
 type candidate struct {
 	name, kind, bin string
-	args            []string
+	// invoke is bin as named before LookPath absolutized it.
+	invoke string
+	args   []string
 }
 
 // lookup turns a requested name into a candidate.
@@ -338,6 +347,7 @@ func (s Setup) lookup(name string) (candidate, error) {
 		if c.bin == "" {
 			c.bin = name
 		}
+		c.invoke = c.bin
 		bin, err := exec.LookPath(c.bin)
 		if err != nil {
 			return c, fmt.Errorf("runtime %s: %s not found: %w", name, c.bin, err)
@@ -350,7 +360,7 @@ func (s Setup) lookup(name string) (candidate, error) {
 		return candidate{name: name}, fmt.Errorf("%s not found", name)
 	}
 	if knownKind(name) {
-		return candidate{name: name, kind: name, bin: bin}, nil
+		return candidate{name: name, kind: name, bin: bin, invoke: name}, nil
 	}
 	base := filepath.Base(bin)
 	stem := strings.TrimSuffix(base, filepath.Ext(base))
@@ -383,6 +393,9 @@ func Resolve(prefer, permSpec string, s Setup) (*Runtime, error) {
 	var tried []string
 	for _, name := range names {
 		c, lerr := s.lookup(name)
+		if lerr == nil && c.kind == KindNode {
+			lerr = checkNodeTransformTypes(c.bin)
+		}
 		if lerr != nil {
 			if explicit {
 				return nil, lerr
@@ -405,6 +418,44 @@ func Resolve(prefer, permSpec string, s Setup) (*Runtime, error) {
 	}
 	return nil, fmt.Errorf("no usable JavaScript runtime (tried %s):\n  %s",
 		strings.Join(names, ", "), strings.Join(tried, "\n  "))
+}
+
+type nodeTransformProbe struct {
+	err error
+}
+
+var nodeTransformProbes sync.Map // resolved binary path -> nodeTransformProbe
+
+// checkNodeTransformTypes verifies the exact Node mode mcpx needs before it
+// returns a runtime. Some minimal distributions ship Node without the
+// TypeScript transform support behind this flag; passing the flag later then
+// produces a raw ERR_NO_TYPESCRIPT stack. Cache by resolved binary path since
+// runtimes are resolved repeatedly during one process.
+func checkNodeTransformTypes(bin string) error {
+	if cached, ok := nodeTransformProbes.Load(bin); ok {
+		return cached.(nodeTransformProbe).err
+	}
+	probe, err := os.CreateTemp("", "mcpx-node-transform-probe-*.ts")
+	if err != nil {
+		return fmt.Errorf("probe node runtime %s for --experimental-transform-types: create temporary TypeScript script: %w", bin, err)
+	}
+	probePath := probe.Name()
+	defer func() { _ = os.Remove(probePath) }()
+	if _, err := probe.WriteString("enum McpxTransformTypesProbe { Supported }; void McpxTransformTypesProbe.Supported;\n"); err != nil {
+		_ = probe.Close()
+		return fmt.Errorf("probe node runtime %s for --experimental-transform-types: write temporary TypeScript script: %w", bin, err)
+	}
+	if err := probe.Close(); err != nil {
+		return fmt.Errorf("probe node runtime %s for --experimental-transform-types: close temporary TypeScript script: %w", bin, err)
+	}
+	output, err := exec.Command(bin, "--no-warnings", "--experimental-transform-types", probePath).CombinedOutput()
+	var probeErr error
+	if err != nil {
+		detail := strings.TrimSpace(string(output))
+		probeErr = fmt.Errorf("node runtime %s does not support --experimental-transform-types required by mcpx for TypeScript scripts; use a Node build with transform-types support, or choose bun (musl) or deno: %s", bin, detail)
+	}
+	actual, _ := nodeTransformProbes.LoadOrStore(bin, nodeTransformProbe{err: probeErr})
+	return actual.(nodeTransformProbe).err
 }
 
 // ResolveDeferred is Resolve for a runtime the caller will look up
@@ -445,11 +496,15 @@ func ResolveDeferred(prefer, permSpec string, s Setup) (*Runtime, error) {
 	if ref != nil {
 		return nil, fmt.Errorf("%s", ref.msg(prefer))
 	}
-	return build(candidate{name: prefer, kind: prefer, bin: prefer}, perms), nil
+	return build(candidate{name: prefer, kind: prefer, bin: prefer, invoke: prefer}, perms), nil
 }
 
 func build(c candidate, perms []string) *Runtime {
-	rt := &Runtime{Name: c.name, Kind: c.kind, Bin: c.bin, Perms: perms,
+	invoke := c.invoke
+	if invoke == "" {
+		invoke = c.name
+	}
+	rt := &Runtime{Name: c.name, Kind: c.kind, Bin: c.bin, Invoke: invoke, Perms: perms,
 		ConfigArgs: append([]string(nil), c.args...)}
 	switch c.kind {
 	case KindDeno:

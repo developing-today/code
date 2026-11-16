@@ -2,18 +2,21 @@
 // No network, no Bitwarden: the Supabase API is an injected fake fetch.
 import { describe, expect, test } from "bun:test";
 import {
+  DEFAULT_PROJECT_REF_SECRET_NAME,
   ExportError,
   FREE_LIMITS,
   PAID_TRIGGER_RATIO,
   billedFromAddons,
   buildMetrics,
   failureDocument,
+  parseArgs,
   parseDbSize,
   parseRequestCount,
+  resolveProjectRef,
   run,
 } from "./supabase-quota-export.mjs";
 
-const REF = "keihfchslgjetkmnmzra";
+const REF = "fixture-project-ref";
 
 function response(status, body) {
   return {
@@ -22,7 +25,7 @@ function response(status, body) {
   };
 }
 
-/** Fake Management API: the project answers like the live probe of 2026-10-29. */
+/** Fake Management API response for an isolated fixture project. */
 function fakeFetch({ dbBytes = 1_153_939_123, bucketCount = 0, addonsStatus = 200, addons = [] } = {}) {
   const calls = [];
   const impl = async (url, init) => {
@@ -34,7 +37,7 @@ function fakeFetch({ dbBytes = 1_153_939_123, bucketCount = 0, addonsStatus = 20
     if (path === `/projects/${REF}`) {
       return response(200, {
         ref: REF,
-        name: "muse-dev2",
+        name: "fixture-project",
         organization_slug: "crwkmndylaagtbprrljn",
         status: "ACTIVE_HEALTHY",
       });
@@ -116,6 +119,19 @@ describe("supabase-quota-export", () => {
     expect(err.status).toBe("no-token");
   });
 
+  test("project ref uses the canonical Bitwarden key and honors the environment override", async () => {
+    expect(DEFAULT_PROJECT_REF_SECRET_NAME).toBe("supabase.project-ref");
+    expect(await resolveProjectRef({ env: { SUPABASE_PROJECT_REF: "from-env" } })).toBe("from-env");
+    expect(await resolveProjectRef({ secretName: "fixture.project-ref", bwsBin: "missing-bws" })).toBeNull();
+  });
+
+  test("a missing project ref fails explicitly", async () => {
+    const err = await run({ token: "sbp_fake", fetchImpl: async () => response(200, {}) }).catch((e) => e);
+    expect(err).toBeInstanceOf(ExportError);
+    expect(err.status).toBe("no-project-ref");
+    expect(err.exitCode).toBe(3);
+  });
+
   test("failure documents carry no metric or billing values", () => {
     const doc = failureDocument({ attemptedAt: "2026-10-29T10:00:00Z", status: "fetch-failed", detail: "HTTP 502" });
     expect(doc.metrics).toBeUndefined();
@@ -162,5 +178,127 @@ describe("supabase-quota-export", () => {
   test("buildMetrics never emits a paid trigger for an unmeasured metric", () => {
     const metrics = buildMetrics({ dbBytes: null, bucketCount: null, requestTotal: null });
     expect(metrics.every((m) => m.flag === undefined)).toBe(true);
+  });
+});
+
+describe("parseArgs strict argv (#3469)", () => {
+  // Strict argv validation (#3469): a value flag followed by another
+  // flag (or by nothing) is a usage error naming the flag, raised before
+  // any directory creation, token resolution, or API call; no token is
+  // consumed twice.
+  function expectUsage(argv, flag) {
+    let error = null;
+    try {
+      parseArgs(argv);
+    } catch (e) {
+      error = e;
+    }
+    expect(error).toBeInstanceOf(ExportError);
+    expect(error.status).toBe("usage");
+    expect(error.exitCode).toBe(2);
+    expect(error.message).toContain(flag);
+  }
+
+  test("parseArgs: the control invocation parses, project-ref override (#3469)", () => {
+    expect(parseArgs(["--out-dir", "out", "--project-ref", "proberef"])).toEqual({
+      outDir: "out",
+      refOverride: "proberef",
+    });
+    const def = parseArgs([]);
+    expect(def.outDir).toMatch(/supabase-export$/);
+    expect(def.refOverride).toBeUndefined();
+  });
+
+  test("parseArgs: flag-as-value is a usage error naming the flag (#3469)", () => {
+    // The exact probe from the issue: --project-ref must not double as
+    // the out-dir value and the ref flag.
+    expectUsage(["--out-dir", "--project-ref", "proberef"], "--out-dir");
+    expectUsage(["--project-ref", "--out-dir", "out"], "--project-ref");
+  });
+
+  test("parseArgs: a trailing flag with no value is a usage error, not a silent fallback (#3469)", () => {
+    expectUsage(["--out-dir"], "--out-dir");
+    expectUsage(["--out-dir", "out", "--project-ref"], "--project-ref");
+  });
+
+  test("parseArgs: no token is consumed twice (#3469)", () => {
+    // Old opt() returned "--project-ref" as the out-dir while the API
+    // call still used proberef. Now the single-pass parse refuses
+    // outright instead of splitting the token stream two ways.
+    expectUsage(["--out-dir", "--project-ref", "proberef"], "--out-dir");
+  });
+
+  test("parseArgs: unknown flags and bare positionals are usage errors (#3469)", () => {
+    expectUsage(["--bogus", "x"], "--bogus");
+    expectUsage(["--out-dir=out"], "--out-dir=out");
+    expectUsage(["out"], "out");
+  });
+});
+
+describe("parseArgs property-based (#3469, Codex P1 on PR #9009)", () => {
+  // Oracle: the declared argv grammar — a stream is zero or more
+  // (value-flag, value) pairs; a value is a non-empty token not
+  // starting with "--"; a repeated flag's last occurrence wins.
+  // Streams are generated from that grammar (valid) or by injecting
+  // exactly one grammar violation (malformed), so the expected
+  // outcome is known by construction, independent of the parser
+  // under test. Deterministic seeded RNG: failures reproduce exactly.
+  function mulberry32(seed) {
+    let a = seed >>> 0;
+    return () => {
+      a = (a + 0x6d2b79f5) | 0;
+      let t = Math.imul(a ^ (a >>> 15), 1 | a);
+      t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+      return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+    };
+  }
+  function expectUsage(argv, flag) {
+    let error = null;
+    try {
+      parseArgs(argv);
+    } catch (e) {
+      error = e;
+    }
+    expect(error).toBeInstanceOf(ExportError);
+    expect(error.status).toBe("usage");
+    expect(error.exitCode).toBe(2);
+    expect(error.message).toContain(flag);
+  }
+  const FLAGS = ["--out-dir", "--project-ref"];
+  const VALUES = ["out", "a/b", "x", "-single", "proberef", "19222"];
+
+  test("generated valid streams parse, last value wins, no token consumed twice", () => {
+    const rand = mulberry32(0x3469e);
+    const defaults = parseArgs([]);
+    for (let iter = 0; iter < 250; iter++) {
+      const pairs = [];
+      const n = Math.floor(rand() * 5);
+      for (let k = 0; k < n; k++) {
+        pairs.push([FLAGS[Math.floor(rand() * FLAGS.length)], VALUES[Math.floor(rand() * VALUES.length)]]);
+      }
+      const argv = pairs.flat();
+      const parsed = parseArgs(argv);
+      const last = (flag) => pairs.filter(([f]) => f === flag).at(-1)?.[1];
+      expect(parsed.outDir).toBe(last("--out-dir") ?? defaults.outDir);
+      expect(parsed.refOverride).toBe(last("--project-ref"));
+      for (const v of [parsed.outDir, parsed.refOverride]) if (v !== undefined) expect(String(v).startsWith("--")).toBe(false);
+    }
+  });
+
+  test("generated malformed streams are usage errors naming the offending flag", () => {
+    const rand = mulberry32(0x3469f);
+    for (let iter = 0; iter < 250; iter++) {
+      const kind = Math.floor(rand() * 3);
+      const flag = FLAGS[Math.floor(rand() * FLAGS.length)];
+      if (kind === 0) {
+        const other = FLAGS[Math.floor(rand() * FLAGS.length)];
+        expectUsage([flag, other, "x"], flag);
+      } else if (kind === 1) {
+        expectUsage(["--out-dir", "out", flag], flag);
+      } else {
+        const bogus = "--bogus-" + Math.floor(rand() * 1000);
+        expectUsage(["--out-dir", "out", bogus, "x"], bogus);
+      }
+    }
   });
 });

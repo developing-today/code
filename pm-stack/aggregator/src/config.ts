@@ -42,6 +42,12 @@ export interface Config {
   commentsFile: string;
   /** Append-only roadmap annotation store (#1284), separate from comments. */
   roadmapAnnotationsFile: string;
+  /** Checkout of developing-today/code on the aggregator host; the
+   * repo-file roadmap source (#1738) reads planning/roadmaps/*.md here. */
+  codeCheckout: string;
+  /** Checkout of dezren39/darwin-nix on the aggregator host; the
+   * repo-file roadmap source (#1738) reads ROADMAP.md here. */
+  nixCheckout: string;
   /** Dashboard actions store (#1152/#1154/#1156) — triage write path. */
   actionsFile: string;
   /** Saved-views store (#1276) — named per-person filter sets. */
@@ -52,6 +58,13 @@ export interface Config {
   freshnessFile: string;
   /** Loopback-only publisher listener; never included in PM_AGG_HOSTS. */
   freshnessPort: number;
+  /** Queue-broker base URL for the read-only fleet-queue collector
+   * (#9920). The broker is laptop-local (loopback + tailnet only). */
+  queueBrokerUrl: string;
+  /** File holding the queue-broker agent token the collector sends
+   * as X-Agent-Token on read verbs only (#9920). Never a write or
+   * dispatch credential. */
+  queueBrokerTokenFile: string;
   activityFile: string;
   /** Durable identity-registry store (#906 §3), merged on every read. */
   registryFile: string;
@@ -61,6 +74,26 @@ export interface Config {
   digestsDir: string;
   /** Append-only notification state/send/suppression log (#3317). */
   notificationsFile: string;
+  /** Needs-Drew question store (#8568): fleet workers blocked on Drew. */
+  needsDrewFile: string;
+  /** Decision-set store (#8766): batched decisions-page sets. */
+  decisionsFile: string;
+  /** Decision-set event log (#9335 v2): append-only JSONL of every
+   * decision-set interaction (submit/defer/request-info/draft/edit). */
+  decisionsEventsFile: string;
+  /** Decision-set event outbox (#9335 v2): the same events wrapped as
+   * pending sync records for the Turso/Cloudflare leg. */
+  decisionsOutboxFile: string;
+  /** Stack-health state written by the sentinel intake extension (#8568). */
+  stackHealthFile: string;
+  /** Host-health snapshot written by pm-stack/host-health-collector.py
+   * (#10141): claimant mode + PM unit states the watchdog derives
+   * silent-failure tier items from. Read-only for the aggregator. */
+  hostHealthFile: string;
+  /** Versioned item-history JSONL (#3981) the forecast contract
+   * (#3984) derives from: one cutoff per line, read via
+   * ItemHistoryStore. */
+  itemHistoryFile: string;
   /** The stewardship quota view; the hub's live fallback source when the
    * fleet feed carries no saas/payg sections yet (hub §2.3). */
   quotaViewFile: string;
@@ -76,9 +109,20 @@ export interface Config {
   /** The quota gatherer's latest-state file (#1151), written into the
    * aggregator's own data dir by scripts/gather-quota.ts. */
   quotaCurrentFile: string;
+  /** The deployed OpenCode config (.opencode/opencode.jsonc of the
+   * code repo): the section-risk join (#8882) reads its model_routes
+   * leaf sets from here. */
+  opencodeConfigFile: string;
   coverageSnapshotFile: string;
   /** OpenChamber managed-opencode state file (laptop attention source). */
   openchamberStateFile: string;
+  /** The standing OpenCode server's own state file (service-prod.json):
+   * url + password for the server the fleet actually runs on. The
+   * aggregator reads it as the second laptop attention leg (#1116) —
+   * the OpenChamber-managed server it used to read has been gone since
+   * 2026-10-29, which left attention single-legged on the collector
+   * feed until the 2026-11-10 fixture incident. */
+  opencodeServerStateFile: string;
   kaneo: {
     baseUrl: string;
     /** Kaneo's client URL — the Origin its auth accepts (better-auth). */
@@ -96,6 +140,8 @@ export interface Config {
   };
   projector: {
     baseUrl: string | null;
+    /** Shared projector bearer token used only to ack the GitHub hot-list cursor. */
+    apiToken: string | null;
   };
   /** Probe targets for the /health page (#1147): the stack services the
    * aggregator does not otherwise read. Kaneo/Grist/projector targets
@@ -142,14 +188,15 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
     feedFile: s(env.PM_AGG_FEED_FILE, join(process.cwd(), "fleet-feed.json")),
     commentsFile: s(env.PM_AGG_COMMENTS_FILE, join(process.cwd(), "comments.json")),
     roadmapAnnotationsFile: s(env.PM_AGG_ROADMAP_ANNOTATIONS_FILE, join(process.cwd(), "roadmap-annotations.json")),
+    codeCheckout: s(env.PM_AGG_CODE_CHECKOUT, join(homedir(), "git", "code")),
+    nixCheckout: s(env.PM_AGG_NIX_CHECKOUT, join(homedir(), "code", "dezren39-nix")),
     actionsFile: s(env.PM_AGG_ACTIONS_FILE, join(process.cwd(), "actions.json")),
     viewsFile: s(env.PM_AGG_VIEWS_FILE, join(process.cwd(), "views.json")),
     eventsFile: s(env.PM_AGG_EVENTS_FILE, join(process.cwd(), "events.json")),
-    freshnessFile: s(
-      env.PM_AGG_FRESHNESS_FILE,
-      join(homedir(), ".local", "state", "pm-aggregator", "freshness.json"),
-    ),
+    freshnessFile: s(env.PM_AGG_FRESHNESS_FILE, join(homedir(), ".local", "state", "pm-aggregator", "freshness.json")),
     freshnessPort: parseAggregatorPort(env.PM_AGG_FRESHNESS_PORT, "PM_AGG_FRESHNESS_PORT", "4871"),
+    queueBrokerUrl: s(env.PM_AGG_QUEUE_BROKER_URL, "http://100.99.113.103:4801"),
+    queueBrokerTokenFile: s(env.PM_AGG_QUEUE_BROKER_TOKEN_FILE, join(homedir(), ".config", "queue-broker", "token")),
     // Default is the state dir, NOT cwd (#5389): aggregator runtime state
     // lives in ~/.local/state/pm-aggregator (2026-10-27 precedent), and the
     // cwd default let an env-less run write this store into whatever
@@ -166,6 +213,27 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
     notificationsFile: s(
       env.PM_AGG_NOTIFICATIONS_FILE,
       join(homedir(), ".local", "state", "pm-aggregator", "notifications.jsonl"),
+    ),
+    needsDrewFile: s(
+      env.PM_AGG_NEEDS_DREW_FILE,
+      join(homedir(), ".local", "state", "pm-aggregator", "needs-drew.json"),
+    ),
+    decisionsFile: s(env.PM_AGG_DECISIONS_FILE, join(homedir(), ".local", "state", "pm-aggregator", "decisions.json")),
+    decisionsEventsFile: s(
+      env.PM_AGG_DECISION_EVENTS_FILE,
+      join(homedir(), ".local", "state", "pm-aggregator", "decision-events.jsonl"),
+    ),
+    decisionsOutboxFile: s(
+      env.PM_AGG_DECISION_OUTBOX_FILE,
+      join(homedir(), ".local", "state", "pm-aggregator", "decision-events-outbox.jsonl"),
+    ),
+    stackHealthFile: s(
+      env.PM_AGG_STACK_HEALTH_FILE,
+      join(homedir(), ".local", "state", "pm-aggregator", "stack-health.json"),
+    ),
+    hostHealthFile: s(
+      env.PM_AGG_HOST_HEALTH_FILE,
+      join(homedir(), ".local", "state", "pm-aggregator", "host-health.json"),
     ),
     quotaViewFile: s(
       env.PM_AGG_QUOTA_VIEW,
@@ -185,10 +253,22 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
       join(homedir(), "workspace/goals/keep-the-four-repos-healthy/hidden_files/provider-quota-registry.md"),
     ),
     quotaCurrentFile: s(env.PM_AGG_QUOTA_CURRENT_FILE, join(process.cwd(), "quota-current.json")),
+    opencodeConfigFile: s(
+      env.PM_AGG_OPENCODE_CONFIG_FILE,
+      join(homedir(), "git", "code", ".opencode", "opencode.jsonc"),
+    ),
+    itemHistoryFile: s(
+      env.PM_AGG_ITEM_HISTORY_FILE,
+      join(homedir(), ".local", "state", "pm-aggregator", "item-history.jsonl"),
+    ),
     coverageSnapshotFile: s(env.PM_AGG_COVERAGE_SNAPSHOT_FILE, join(process.cwd(), "coverage-snapshot.json")),
     openchamberStateFile: s(
       env.PM_AGG_OPENCHAMBER_STATE,
       join(homedir(), ".config", "openchamber", "managed-opencode", "state.json"),
+    ),
+    opencodeServerStateFile: s(
+      env.PM_AGG_OPENCODE_SERVER_STATE,
+      join(homedir(), ".local", "state", "opencode", "service-prod.json"),
     ),
     kaneo: {
       baseUrl: s(env.KANEO_URL, "http://127.0.0.1:5173"),
@@ -213,6 +293,7 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
         env.PM_PROJECTOR_URL === "off" || env.PM_PROJECTOR_URL === "none"
           ? null
           : s(env.PM_PROJECTOR_URL, "http://127.0.0.1:7801"),
+      apiToken: env.PM_PROJECTOR_API_TOKEN?.trim() || null,
     },
     pad: {
       baseUrl: s(env.PM_AGG_PAD_URL, "http://127.0.0.1:7777"),

@@ -12,6 +12,7 @@ import type { CheckoutDrift } from "./checkout-drift.ts";
 import { isProjectAudit, isProjectPoolItem } from "./projects.ts";
 import { isRepoCensus, type RepoCensus } from "./coverage.ts";
 import { isSessionRecord } from "./registry.ts";
+import { isDependencyStatus } from "./orchestration-dependency.ts";
 import {
   arrayOf,
   isFiniteNumber,
@@ -128,10 +129,10 @@ export interface FleetFeed {
   projects?: ProjectPoolItem[];
   /** Scheduled Project #4 audit snapshot (fields, views, totals, and distributions). */
   projectAudit?: ProjectAudit;
-  /** Project #4 coverage census (#1220): per-repo open-issue and
-   * gate-label counts from the collector's Search API reads, embedded
-   * beside the projects section. Absent when the collector had no
-   * GitHub token or the census failed. */
+  /** Project #4 coverage census (#1220/#1224): per-repo open-issue,
+   * gate-label, and timestamped >90-day untouched-issue counts from the
+   * collector's Search API reads, embedded beside the projects section.
+   * Absent when the collector had no GitHub token or the census failed. */
   coverage?: RepoCensus[];
   /** AA cost explorer section: the ainventory (AA import) data read
    * by the collector from Supabase, plus pool/catalog coverage computed
@@ -142,6 +143,43 @@ export interface FleetFeed {
   /** Optional collector outcomes. Older feeds have no metadata and keep
    *  their historical presence-only health/provenance behavior. */
   meta?: FeedMetadata;
+  /** #8568: Drew's answers to needs-Drew questions, read by the
+   * collector from the aggregator's needs-drew store; the fleet lane
+   * consumes this to resume blocked workers. Absent in older feeds. */
+  answers?: FleetFeedAnswer[];
+  /** #8766: Drew's per-question resolutions from the decisions page
+   * (answers AND defer-to-orchestrator records), read by the collector
+   * from the aggregator's decision-set store; the dropped-thread
+   * catcher applies them to the decisions ledger. Absent in older feeds. */
+  decisionResolutions?: FleetFeedDecisionResolution[];
+}
+
+export interface FleetFeedAnswer {
+  ledgerId: string;
+  optionId?: string;
+  freeText?: string;
+  answeredAt: string;
+  via: string;
+}
+
+export interface FleetFeedDecisionResolution {
+  setId: string;
+  ledgerId: string;
+  qid: string;
+  /** 1-based index of the question within its ledger item. */
+  questionIndex: number;
+  kind: "answered" | "deferred" | "request-info";
+  optionId?: string;
+  optionLabel?: string;
+  freeText?: string;
+  /** Deferred only: the lean recorded with the defer. */
+  lean?: "none" | "skeptical" | "approve";
+  /** Request-info only: what Drew said is missing (optional). */
+  note?: string;
+  /** Any kind: Drew's remark attached to the resolution. */
+  comment?: string;
+  at: string;
+  via: string;
 }
 
 export type FeedSectionStatus = "ok" | "error" | "skipped";
@@ -152,6 +190,10 @@ export interface FeedSectionCollectionStatus {
   at: string;
   /** Sanitized diagnostic for an error outcome only. */
   error?: string;
+  /** Provider-reported expected entry count, when comparable to emittedEntries. */
+  reportedTotal?: number;
+  /** Number of entries actually emitted for this section. */
+  emittedEntries?: number;
 }
 
 export interface FeedMetadata {
@@ -217,7 +259,15 @@ export function sanitizeFeedMetadata(value: unknown): FeedMetadata | undefined {
     ) {
       continue;
     }
-    sections[key] = feedSectionStatus(raw.status, at, raw.error);
+    sections[key] = {
+      ...feedSectionStatus(raw.status, at, raw.error),
+      ...(Number.isSafeInteger(raw.reportedTotal) && (raw.reportedTotal as number) >= 0
+        ? { reportedTotal: raw.reportedTotal as number }
+        : {}),
+      ...(Number.isSafeInteger(raw.emittedEntries) && (raw.emittedEntries as number) >= 0
+        ? { emittedEntries: raw.emittedEntries as number }
+        : {}),
+    };
   }
   return Object.keys(sections).length ? { sections } : undefined;
 }
@@ -267,8 +317,7 @@ function isLinedUpElement(v: unknown): boolean {
     // its blockers were silently dropped by the canonical layer
     // (asBlockers), rendering a blocked task as unblocked. Absence is
     // fine; a present value must be an array of dependency elements.
-    (v.blockedBy === undefined ||
-      (Array.isArray(v.blockedBy) && v.blockedBy.every(isDependencyElement)))
+    (v.blockedBy === undefined || (Array.isArray(v.blockedBy) && v.blockedBy.every(isDependencyElement)))
   );
 }
 
@@ -333,14 +382,11 @@ function isTierElement(v: unknown): boolean {
   return isRecord(v) && typeof v.id === "string";
 }
 
-const DEPENDENCY_STATUSES: readonly string[] = ["in-progress", "queued", "stalled", "done", "unknown"];
-
 function isDependencyElement(v: unknown): boolean {
   if (!isRecord(v)) return false;
   return (
     typeof v.task === "string" &&
-    typeof v.status === "string" &&
-    DEPENDENCY_STATUSES.includes(v.status) &&
+    isDependencyStatus(v.status) &&
     (v.ref === undefined || typeof v.ref === "string") &&
     (v.taskRef === undefined || typeof v.taskRef === "string") &&
     (v.workerSessionId === undefined || typeof v.workerSessionId === "string") &&
@@ -565,7 +611,7 @@ export function isQuotaWindow(v: unknown): v is QuotaWindow {
   );
 }
 
-const QUOTA_STATES = ["healthy", "near", "walled", "error", "stale"];
+const QUOTA_STATES = ["healthy", "near", "walled", "error", "stale", "lapsed"];
 
 /** One quota pool whose own shape is safe to hand to the renderers
  * (#2429): an object with a `windows` ARRAY — a non-array windows value
@@ -583,7 +629,7 @@ export function isQuotaPool(v: unknown): v is QuotaPool {
   return true;
 }
 
-const QUOTA_FRESHNESS_STATES = ["ok", "stale", "error"];
+const QUOTA_FRESHNESS_STATES = ["ok", "stale", "error", "lapsed"];
 
 function isQuotaFreshness(v: unknown): v is PoolFreshness {
   return (
@@ -1036,6 +1082,19 @@ export function isPaygLine(v: unknown): v is PaygLine {
     nullableNonNegative(v.accruedUsd) &&
     (v.collectedUsd === undefined || nullableNonNegative(v.collectedUsd)) &&
     (v.estimate === undefined || isEstimate(v.estimate)) &&
+    (v.settledUsd === undefined || nullableNonNegative(v.settledUsd)) &&
+    (v.settledAt === undefined || v.settledAt === null || isIsoDate(v.settledAt)) &&
+    (v.settledTs === undefined || v.settledTs === null || typeof v.settledTs === "string") &&
+    (v.settledSource === undefined ||
+      v.settledSource === null ||
+      v.settledSource === "api" ||
+      v.settledSource === "console" ||
+      v.settledSource === "manual" ||
+      v.settledSource === "estimate" ||
+      v.settledSource === "invoice") &&
+    (v.settledVarianceUsd === undefined || v.settledVarianceUsd === null || isFiniteNumber(v.settledVarianceUsd)) &&
+    (v.estimatePeriodEnd === undefined || v.estimatePeriodEnd === null || isIsoDate(v.estimatePeriodEnd)) &&
+    (v.staleEstimate === undefined || typeof v.staleEstimate === "boolean") &&
     nullableNonNegative(v.unbilledUsd) &&
     typeof v.note === "string" &&
     (v.measuredAt === null || isIsoDate(v.measuredAt)) &&
