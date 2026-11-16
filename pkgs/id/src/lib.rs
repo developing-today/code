@@ -235,6 +235,7 @@ pub use id_directory::directory_mail;
 pub use id_directory::directory_view;
 pub mod didit;
 pub use id_store::documents;
+pub use id_store::media;
 #[cfg(feature = "world")]
 pub mod encryption;
 #[cfg(feature = "world")]
