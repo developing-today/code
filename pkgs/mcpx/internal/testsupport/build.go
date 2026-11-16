@@ -20,6 +20,11 @@ var (
 	mcpxOnce sync.Once
 	mcpxBin  string
 	mcpxErr  error
+
+	// mcpxCoverDir is the GOCOVERDIR the suite's mcpx children write
+	// coverage into, established by MCPXBinary (#1980 stage 3). Empty
+	// until the binary is resolved.
+	mcpxCoverDir string
 )
 
 // buildEnv returns the environment for a test-support build. The build
@@ -172,6 +177,14 @@ func resolveMCPXOverride(value string) (string, error) {
 // enough to push start timeouts over the edge -- producing a different
 // spurious failure on each run, which is the signature that sends someone
 // hunting a logic bug that is not there.
+//
+// The fresh build is a coverage build (`go build -cover`, #1980 stage 3):
+// children launched through ChildEnv carry GOCOVERDIR (see MCPXCoverDir),
+// so the e2e suite's executions of the real binary produce coverage that
+// `go tool covdata` merges with the unit-test coverage. An override binary
+// is used exactly as shipped; the cover dir is still established, so an
+// override that was itself built with -cover also emits coverage, and one
+// that was not simply ignores GOCOVERDIR.
 func MCPXBinary(t *testing.T) string {
 	t.Helper()
 	mcpxOnce.Do(func() {
@@ -180,18 +193,23 @@ func MCPXBinary(t *testing.T) string {
 			mcpxErr = err
 			return
 		}
-		if override != "" {
-			mcpxBin = override
-			return
-		}
 		dir, err := os.MkdirTemp("", "mcpx-bin-")
 		if err != nil {
 			mcpxErr = err
 			return
 		}
 		registerBuildTempDir(dir)
+		mcpxCoverDir = filepath.Join(dir, "cover")
+		if err := os.MkdirAll(mcpxCoverDir, 0o755); err != nil {
+			mcpxErr = err
+			return
+		}
+		if override != "" {
+			mcpxBin = override
+			return
+		}
 		mcpxBin = filepath.Join(dir, "mcpx")
-		cmd := exec.Command("go", "build", "-o", mcpxBin, "./cmd/mcpx")
+		cmd := exec.Command("go", "build", "-cover", "-o", mcpxBin, "./cmd/mcpx")
 		cmd.Dir = repoRoot()
 		cmd.Env = buildEnv(dir)
 		out, err := cmd.CombinedOutput()
@@ -203,6 +221,15 @@ func MCPXBinary(t *testing.T) string {
 		t.Fatalf("build mcpx: %v", mcpxErr)
 	}
 	return mcpxBin
+}
+
+// MCPXCoverDir returns the directory the suite's mcpx children write
+// coverage data into (GOCOVERDIR), or "" before MCPXBinary has resolved
+// the binary. ChildEnv puts it into every test child's environment once
+// it exists; the daemon a child starts inherits it in turn, so daemon
+// executions of the cover-built binary land in the same dir.
+func MCPXCoverDir() string {
+	return mcpxCoverDir
 }
 
 type buildFailure struct {
