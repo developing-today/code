@@ -511,6 +511,9 @@ pub(crate) struct WorldActor {
     /// Retained audit log (F12.6), shared with the handle and the
     /// session layer; see [`WorldAuditLog`].
     pub(crate) audit: WorldAuditLog,
+    /// Client-provider broker (F13.7 step 3), shared with the handle
+    /// and the session layer; see [`ProviderBroker`].
+    pub(crate) provider_broker: ProviderBroker,
     pub(crate) storage_failed: bool,
     /// F12.13 replica mode: the world serves spectators from a verified
     /// journal and refuses every local mutation and side effect. Set only
@@ -679,6 +682,10 @@ impl WorldActor {
                     Some(command) => command,
                     None => break,
                 },
+                _ = self.provider_broker.wait_changed() => {
+                    self.drain_provider_completions().await;
+                    continue;
+                },
                 () = Self::sleep_until(deadline) => {
                     self.fire_ticks().await;
                     self.fire_loc_watches().await;
@@ -703,6 +710,7 @@ impl WorldActor {
             .await;
             self.metrics.record_command(started.elapsed());
             self.after_change().await;
+            self.drain_provider_completions().await;
             self.acting = None;
             self.acting_session = None;
         }
@@ -739,6 +747,7 @@ impl WorldActor {
                 deliverable,
             ))
             .chain(self.loc_watches.values().min().copied())
+            .chain(self.provider_broker.next_deadline())
             .min()
     }
 
@@ -1480,6 +1489,26 @@ impl WorldActor {
                     self.deliver(refusal).await;
                     continue;
                 }
+                if crate::world_caps::PROVIDER_REGISTRY
+                    .get(&request.cap)
+                    .is_some_and(|manifest| {
+                        manifest.side == crate::world_caps::ProviderSide::Client
+                    })
+                {
+                    // F13.7 step 3: a client provider is brokered to
+                    // the originating session, never executed on the
+                    // host. A refusal is delivered now; an allowed
+                    // request stays pending and its completion is
+                    // delivered by drain_provider_completions.
+                    match self.begin_client_provider(&request) {
+                        Ok(()) => {}
+                        Err(error) => {
+                            let refusal = crate::world_caps::result_event(&request.id, Err(error));
+                            self.deliver(refusal).await;
+                        }
+                    }
+                    continue;
+                }
                 let outcome = self.execute(&request);
                 self.deliver(crate::world_caps::result_event(&request.id, outcome))
                     .await;
@@ -1490,6 +1519,64 @@ impl WorldActor {
 
     /// Subscribe new subscriptions, drop removed ones, refuse ungranted ones
     /// (once per spec), and keep ticks armed only while someone is present.
+    /// Route one client-side provider request (F13.7 step 3) to the
+    /// broker. `Ok(())` means the request is pending: its result is
+    /// delivered when the bound session replies, by
+    /// [`drain_provider_completions`](Self::drain_provider_completions).
+    /// An `Err` is a policy refusal the caller delivers immediately.
+    fn begin_client_provider(&mut self, request: &Request) -> Result<(), CapError> {
+        let Some(manifest) = crate::world_caps::PROVIDER_REGISTRY.get(&request.cap) else {
+            return Err(CapError::unknown());
+        };
+        let actor_permits = match self.acting {
+            None => true,
+            Some(participant) => self
+                .core
+                .effective_scopes(participant)
+                .is_some_and(|scopes| scopes.allows_effect(&request.cap)),
+        };
+        let actor = self
+            .acting
+            .map_or_else(|| "program".to_owned(), |id| format!("participant:{id}"));
+        self.provider_broker.begin(BeginRequest {
+            manifest,
+            ceiling_allows: self.core.ledger.allowed().contains(&request.cap),
+            actor_permits,
+            granted: self.core.ledger.is_granted(&request.cap),
+            actor,
+            participant: self.acting,
+            session: self.acting_session,
+            guest_request_id: request.id.clone(),
+            args: &request.args,
+        })?;
+        Ok(())
+    }
+
+    /// Deliver every broker completion (F13.7 step 3) to the guest as
+    /// the ordinary capability result event, then let the program
+    /// react. Expired requests are completed first, so a reply that
+    /// raced its deadline cannot win after it.
+    async fn drain_provider_completions(&mut self) {
+        if self.read_only {
+            return;
+        }
+        for _ in 0..8 {
+            self.provider_broker.collect_expired();
+            let completions = self.provider_broker.drain_completions();
+            if completions.is_empty() {
+                break;
+            }
+            for completion in completions {
+                let event = crate::world_caps::result_event(
+                    &completion.guest_request_id,
+                    completion.outcome,
+                );
+                self.deliver(event).await;
+            }
+            self.after_change().await;
+        }
+    }
+
     async fn apply_subscriptions(&mut self, wants: &crate::world_caps::Wants) {
         for sub in &wants.subscribe {
             if !self.active_subs.insert(sub.clone()) {
@@ -1739,6 +1826,17 @@ impl WorldActor {
     fn execute(&mut self, request: &Request) -> Result<serde_json::Value, CapError> {
         if request.cap == "form.result" {
             return Err(CapError::bad_args_with("event_only"));
+        }
+        if crate::world_caps::PROVIDER_REGISTRY
+            .get(&request.cap)
+            .is_some_and(|manifest| manifest.side == crate::world_caps::ProviderSide::Client)
+        {
+            // Client providers are brokered asynchronously (F13.7
+            // step 3); after_change routes them to the broker before
+            // execute is ever called. Reaching here means a caller
+            // bypassed that route — fail closed, never execute a
+            // client resource on the host.
+            return Err(CapError::failed_with("client_provider_async"));
         }
         let actor_permits = match self.acting {
             None => true,
@@ -5598,10 +5696,12 @@ impl WorldActor {
             .filter(|(_, schedule)| schedule.at_ms <= core.clock().now_ms())
             .map(|(id, _)| id.clone())
             .collect();
+        let provider_broker = ProviderBroker::new(core.world_id.clone(), WorldAuditLog::new());
         Self {
             core,
             program,
             journal,
+            provider_broker,
             storage_failed: false,
             read_only: false,
             admission_gate: None,

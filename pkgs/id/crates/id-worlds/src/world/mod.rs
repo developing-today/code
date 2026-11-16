@@ -41,6 +41,7 @@ pub mod hotness;
 mod journal;
 pub(crate) mod audit;
 mod metrics;
+mod provider_broker;
 mod replica;
 mod replication;
 mod replication_receiver;
@@ -56,6 +57,7 @@ pub(crate) use actor::{
     AUDIT_TRACE_TARGET, AuditRecord, WorldActor, WorldCommand, emit_audit_record,
     next_audit_correlation_id,
 };
+pub(crate) use provider_broker::{BeginRequest, ProviderBroker};
 pub use admission_lease::{
     ADMISSION_LEASE_DOMAIN, ADMISSION_LEASE_VERSION, AdmissionLease, AdmissionLeaseError,
     MAX_ADMISSION_LEASE_DURATION_MS, ReplicaAdmissionGate, SignedAdmissionLease,
@@ -116,7 +118,7 @@ pub(crate) use util::{
 
 /// Identity of one live connection. It stays in memory only and is never part
 /// of a world event or journal entry.
-#[derive(Clone, Copy, Eq, Hash, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub(crate) struct SessionId(u64);
 
 impl SessionId {
