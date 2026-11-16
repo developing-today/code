@@ -183,6 +183,11 @@ pub struct WorldCore {
     /// Schedule-delivery consent by peer world (#1355 part 2): this
     /// world's half of the reciprocal F12.14 grant pair.
     pub(crate) schedule_grants: BTreeMap<String, ScheduleGrant>,
+    /// This world's F12.14 portal grant book (code#1068 wiring
+    /// slice): the admin-written registry of portal peers, restored
+    /// from `PortalGrantSet` journal entries. One half of the mutual
+    /// check — a send also reads the peer world's book.
+    pub(crate) portal_grants: id_caps::portal::PortalGrants,
     /// Cross-world schedule fires this world has durably accepted, keyed
     /// by (source world, schedule id, planned due time): the receipts a
     /// source retry is answered from (#1355 part 2).
@@ -463,6 +468,7 @@ impl WorldCore {
             caps_ceiling: crate::world_caps::default_ceiling_names(),
             schedules: BTreeMap::new(),
             schedule_grants: BTreeMap::new(),
+            portal_grants: id_caps::portal::PortalGrants::new(),
             schedule_receipts: BTreeSet::new(),
             isolation: Isolation::default(),
             cross_world_write: false,
@@ -1053,6 +1059,18 @@ impl WorldCore {
                     } else {
                         core.schedule_grants.remove(&peer);
                     }
+                }
+                JournalEntry::PortalGrantSet { peer, granted } => {
+                    crate::world_hub::validate_world_name(&peer)
+                        .context("invalid portal grant peer in journal")?;
+                    core.portal_grants.restore_state(
+                        &peer,
+                        Some(if granted {
+                            id_caps::portal::PortalGrantState::Granted
+                        } else {
+                            id_caps::portal::PortalGrantState::Revoked
+                        }),
+                    );
                 }
                 JournalEntry::ScheduleReceived { source, id, at_ms } => {
                     crate::world_caps::validate_schedule_id(&id)
@@ -1769,6 +1787,15 @@ impl WorldCore {
                 peer: peer.clone(),
                 send: grant.send,
                 receive: grant.receive,
+            });
+        }
+        // Portal grants ride along like the schedule grants: without
+        // them compaction could forget a grant (and re-refuse a live
+        // portal) or a revocation (and resurrect one).
+        for (peer, state) in self.portal_grants.peers() {
+            entries.push(JournalEntry::PortalGrantSet {
+                peer: peer.to_owned(),
+                granted: state == id_caps::portal::PortalGrantState::Granted,
             });
         }
         for (source, id, at_ms) in &self.schedule_receipts {
