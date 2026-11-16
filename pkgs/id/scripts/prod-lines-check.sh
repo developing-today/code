@@ -88,7 +88,7 @@ test_only_reason() {
 # stay valid across the crate split (#10603).
 normalize_rel() {
   local rel="$1"
-  if [[ "$rel" == crates/*/* ]]; then
+  if [[ $rel == crates/*/* ]]; then
     rel="${rel#crates/}"
     printf '%s' "${rel#*/}"
   else
