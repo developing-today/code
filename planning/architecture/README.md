@@ -67,6 +67,7 @@ records.
 - [OneNote import into the ID knowledge layer (#6438)](../../doc/2026-11-08T08-53-12Z_design_onenote_importer/2026-11-08T08-53-12Z_design_onenote_importer.md)
 - [ID shader asset format — v1 design](../../doc/2026-11-08T00-57-08Z_design_shader_asset_format/2026-11-08T00-57-08Z_design_shader_asset_format.md)
 - [Knowledge-layer sharing and permissions](../../doc/2026-11-08T08-19-40Z_design_id_knowledge_sharing_permissions/2026-11-08T08-19-40Z_design_id_knowledge_sharing_permissions.md)
+- [The standard server baseline: reference environment, workload suite, scales, versioning](../../doc/2026-11-08T09-55-28Z_design_standard_server_baseline/2026-11-08T09-55-28Z_design_standard_server_baseline.md)
 - [Permission UX for worlds: pre-connect disclosure, grant modes, and memory](../../doc/2026-11-08T09-06-08Z_design_id_permission_ux/2026-11-08T09-06-08Z_design_id_permission_ux.md)
 - [Pure-package imports and package classes across capability tiers](../../doc/2026-11-08T17-12-39Z_design_id_package_import_policy/2026-11-08T17-12-39Z_design_id_package_import_policy.md)
 - [Explicit platform contexts for pure libraries](../../doc/2026-11-08T17-23-00Z_design_id5963_programming_model/2026-11-08T17-23-00Z_design_id5963_programming_model.md)
@@ -84,6 +85,7 @@ records.
 - [Atlas chunk-boundary policy v2 — structural first](../../doc/2026-11-09T01-31-29Z_design_atlas_chunk_boundary_policy_v2/2026-11-09T01-31-29Z_design_atlas_chunk_boundary_policy_v2.md)
 - [Benchmark regression gates, waivers, and result retention](../../doc/2026-11-08T23-45-30Z_design_id5897_regression_gates/2026-11-08T23-45-30Z_design_id5897_regression_gates.md)
 - [Where agent notes live — scratch, memory, repo, Zettelkasten, or ID graph](../../doc/2026-11-08T13-55-51Z_design_agent_note_placement/2026-11-08T13-55-51Z_design_agent_note_placement.md)
+- [Capability-change diff semantics — user-meaningful classes and re-approval triggers](../../doc/2026-11-08T10-12-00Z_design_id_capability_diff_semantics/2026-11-08T10-12-00Z_design_id_capability_diff_semantics.md)
 
 ## Package architecture docs (living, with the code)
 

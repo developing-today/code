@@ -1,4 +1,5 @@
-import { fetchMock, SELF } from "cloudflare:test";
+import { SELF } from "cloudflare:test";
+import { fetchMock } from "./fetch-mock";
 import { afterEach, beforeAll, describe, expect, it } from "vitest";
 import { EMBED_DIMS, EMBED_MODEL } from "../src/space";
 
