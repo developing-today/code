@@ -535,6 +535,25 @@ fn journal_size_is_bounded_by_the_file_journal_byte_cap() {
         file_len <= cap,
         "the file never exceeds the cap: {file_len}"
     );
+    // #10730: the transaction path enforces the same cap, refused whole
+    // BEFORE the rewrite — the file is byte-identical afterwards.
+    let before = std::fs::read(&path).unwrap();
+    let transaction = vec![
+        entry.clone(),
+        JournalEntry::CapsGranted {
+            granted: vec!["x".repeat(cap as usize)],
+        },
+    ];
+    let refusal = journal.append_transaction(&transaction).unwrap_err();
+    assert!(
+        refusal.to_string().contains("byte cap"),
+        "the transaction refusal names the cap: {refusal}"
+    );
+    assert_eq!(
+        std::fs::read(&path).unwrap(),
+        before,
+        "a refused transaction writes nothing, not even its fitting prefix"
+    );
     let (_reopened, replayed) =
         FileJournal::open_with_max_bytes(&path, "dos-journal", cap).unwrap();
     assert_eq!(replayed.len(), 1 + appended, "the accepted prefix replays");
