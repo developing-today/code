@@ -16,11 +16,14 @@
 //! Inline content (design §9.3, `json` and `bytes`) is not built. A body does not travel with
 //! sync, and a header holds byte strings of at most 512 bytes, so content is always a blob here.
 //!
-//! Removal (P5.6, design decision 4) is a `document.remove` event that names the document's event
-//! ID in its header. Content is kept: the removal is an event like any other, and it changes
-//! neither the document's bytes nor its tags. Only the document's author's removal marks the
-//! document, in [`DocumentRecord::removal`]. A removal from anyone else is stored and has no
-//! effect.
+//! Removal (P5.6, design decision 4; stops-new-content decision on #195, 2026-11-16) is a
+//! `document.remove` event that names the document's event ID in its header. Content is kept:
+//! the removal is an event like any other, and it changes neither the document's bytes nor
+//! its already-folded tags. The document author's removal marks the document, in
+//! [`DocumentRecord::removal`], and so does a removal by a device key the author authorized
+//! in the document's group at Write scope or above — an agent acting for the owner. A
+//! removal from anyone else is stored and has no effect. An effective removal stops new
+//! content: a later `tag.set` whose causal past contains the removal does not fold.
 
 use p2panda_core::Hash;
 use serde::{Deserialize, Serialize};
@@ -160,8 +163,10 @@ pub struct DocumentRecord {
     pub author: AuthorKey,
     /// The content the event names. Removal keeps it (decision 4).
     pub document: DocumentRef,
-    /// The ID of the `document.remove` event the author signed for this document, if the author
-    /// has removed it. When the author has signed more than one, this is the lowest ID.
+    /// The ID of an effective `document.remove` event for this document, if one has been
+    /// signed: by the author, or by a device key the author authorized in the document's
+    /// group at Write scope or above. When more than one effective removal exists, this is
+    /// the lowest ID.
     pub removal: Option<Hash>,
 }
 

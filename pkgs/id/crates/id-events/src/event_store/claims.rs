@@ -6,6 +6,13 @@
 //! markers authorized by claim authorship or the subject's owning group's settled Admin role.
 //! Every marker, including unauthorized ones, remains on the append-only event log.
 //!
+//! Removal stops new content (P5.6, decision on #195, 2026-11-16): the fold drops a
+//! `tag.set` on a document when an effective removal of that document (see
+//! [`super::documents::removal_marks`]) is in the set's causal past — its author had seen
+//! the removal when signing. Sets concurrent with the removal are kept, and `tag.clear`
+//! markers still fold: a clear adds no content. The dropped set stays on the append-only
+//! log and in the raw/applied views; only the default view loses it.
+//!
 //! The fold is persisted (#183): [`EventStore::tag_claims`] stores its result in the `tag_fold`
 //! table next to a fingerprint of everything the fold reads, and serves the persisted claims
 //! while that fingerprint still matches. The fingerprint is per-author change tracking — each
@@ -114,6 +121,23 @@ impl EventStore {
                 .entry(header.id)
                 .or_insert_with(|| parents_of(header));
         }
+        // P5.6 (#195): an effective removal stops new content on its document. Drop a
+        // tag set whose causal past contains an effective removal of its subject;
+        // concurrent sets and clears are kept (a clear adds no content).
+        let marks = super::documents::removal_marks(
+            &stored,
+            &resolved.applied,
+            resolved.projection.as_ref(),
+        )?;
+        let applied: Vec<Applied> = applied
+            .into_iter()
+            .filter(|event| match &event.op {
+                TagOp::Set { subject, .. } => !marks
+                    .get(subject)
+                    .is_some_and(|removals| causal_past_contains(event.id, removals, &parents)),
+                TagOp::Clear { .. } => true,
+            })
+            .collect();
         let default_view =
             default_view_events(&applied, &subject_groups, resolved.projection.as_ref());
         Ok(compacted_claims(&default_view, &parents))
@@ -382,6 +406,27 @@ impl<'a> FoldReader<'a> {
     }
 }
 
+/// Whether `event`'s causal past — its `after` hashes and its backlink, transitively —
+/// contains any of `targets`. The graph is hash-committed, so a cycle would need a hash
+/// preimage; the visited set keeps the walk finite regardless.
+fn causal_past_contains(event: Hash, targets: &[Hash], parents: &HashMap<Hash, Vec<Hash>>) -> bool {
+    let targets: std::collections::HashSet<&Hash> = targets.iter().collect();
+    let mut seen: std::collections::HashSet<Hash> = std::collections::HashSet::new();
+    let mut stack = vec![event];
+    while let Some(id) = stack.pop() {
+        if !seen.insert(id) {
+            continue;
+        }
+        if targets.contains(&id) {
+            return true;
+        }
+        if let Some(parents_of_id) = parents.get(&id) {
+            stack.extend(parents_of_id.iter().copied());
+        }
+    }
+    false
+}
+
 /// Keep only the claims each marker is authorized to hide in the default view. The group's
 /// settled projection is intentional: role is resolved from the store's current group state, not
 /// replayed at the marker's causal position. A subject without a stored, applied event with a
@@ -439,7 +484,7 @@ fn default_view_events(
 mod tests {
     use super::*;
     use id_core::waiting::WaitingLimits;
-    use id_store::chain::{ChainExt, Event, sign};
+    use id_store::chain::{sign, ChainExt, Event};
     use id_store::tag_claims::{CLEAR_KIND, SET_KIND};
     use p2panda_core::SigningKey;
 

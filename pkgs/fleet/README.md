@@ -222,6 +222,13 @@ registry, marking each unavailable domain with the reason
 build name, the source rev and the exact enabled-capability list;
 `fleet capabilities` prints the same surface as JSON.
 
+## Operator reference
+
+- [`docs/fleet-gh-credentials.md`](docs/fleet-gh-credentials.md) —
+  the `fleet gh` credential lifecycle: secret names per leg,
+  in-process minting, rotation order and overrides, retry-safety,
+  unknown-org behavior, exit codes and raw mode (code#10744).
+
 ## Build and smoke
 
 ```sh
