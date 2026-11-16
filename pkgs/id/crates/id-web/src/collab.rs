@@ -61,7 +61,7 @@ use std::{
     },
     time::Instant,
 };
-use tokio::sync::{RwLock, broadcast};
+use tokio::sync::{Mutex, RwLock, broadcast};
 
 use super::content_mode::{ContentMode, detect_mode_with_content};
 use super::identity::{sanitize_name, short_id};
@@ -69,6 +69,10 @@ use super::markdown::{
     markdown_to_prosemirror, plain_text_to_prosemirror, raw_text_to_prosemirror,
 };
 use id_core::frames::MAX_FRAME_BYTES;
+use id_core::waiting::AuthorKey;
+use id_store::documents::{DocumentError, DocumentRef};
+use id_store::note_checkpoints::{CheckpointError, NoteCheckpoints};
+use id_store::notes::{AppliedNote, NoteRecord};
 use p2panda_core::Hash;
 
 /// Message type tags for the wire protocol.
@@ -336,6 +340,77 @@ impl Default for Document {
     }
 }
 
+/// Why publishing a note checkpoint from a live session was refused
+/// (#3819 slice 2).
+#[derive(Debug)]
+pub enum PublishCheckpointError {
+    /// The session key does not name a note session (a filename session,
+    /// or a note session this state never opened): checkpoints belong to
+    /// notes, and a filename is not one.
+    NotNoteSession(String),
+    /// The checkpoint core refused the publication — notably
+    /// [`CheckpointError::ExplicitMergeRequired`] when the note has
+    /// concurrent heads: a save must never join them silently.
+    Checkpoint(CheckpointError),
+    /// The session's current content breaks the document rules.
+    Document(DocumentError),
+}
+
+impl std::fmt::Display for PublishCheckpointError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::NotNoteSession(key) => write!(f, "session {key} is not a note session"),
+            Self::Checkpoint(err) => write!(f, "{err}"),
+            Self::Document(err) => write!(f, "{err}"),
+        }
+    }
+}
+
+impl std::error::Error for PublishCheckpointError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::NotNoteSession(_) => None,
+            Self::Checkpoint(err) => Some(err),
+            Self::Document(err) => Some(err),
+        }
+    }
+}
+
+impl From<CheckpointError> for PublishCheckpointError {
+    fn from(err: CheckpointError) -> Self {
+        Self::Checkpoint(err)
+    }
+}
+
+impl From<DocumentError> for PublishCheckpointError {
+    fn from(err: DocumentError) -> Self {
+        Self::Document(err)
+    }
+}
+
+/// Mints the event ID for a checkpoint published from a live session:
+/// a digest of everything the revision is — its note, its author, the
+/// heads it builds on, its content, and the session version that
+/// produced it — so two saves of identical bytes at different versions
+/// are still distinct events, and the same save replayed is the same
+/// event.
+fn mint_checkpoint_event_id(
+    note: &Hash,
+    author: &AuthorKey,
+    heads: &[Hash],
+    content: &DocumentRef,
+    version: u64,
+) -> Hash {
+    Hash::digest(format!("{note}:{author:?}:{heads:?}:{}:{version}", content.content).as_bytes())
+}
+
+/// A `doc_id` naming a note session over the wire: the
+/// [`note_session_key`] form, `note:<note id hex>` (#3819 slice 2).
+/// Anything else is a filename, exactly as before.
+fn parse_note_doc_id(doc_id: &str) -> Option<Hash> {
+    doc_id.strip_prefix("note:")?.parse().ok()
+}
+
 /// The session key for a note: its stable ID under a `note:`
 /// prefix, so a note session can never alias a filename session
 /// (#3819). The ID is the note's `note.create` event ID
@@ -350,6 +425,18 @@ pub fn note_session_key(note_id: &Hash) -> String {
 pub struct CollabState {
     /// Active documents by ID.
     documents: RwLock<HashMap<String, Arc<Document>>>,
+    /// The durable checkpoint log for note sessions (#3819): the
+    /// applied note events sessions publish into, behind a mutex
+    /// because every publication fold-proves the whole log. Seeded
+    /// from persisted events on restart
+    /// ([`CollabState::seed_note_events`]); read back with
+    /// [`CollabState::note_events`] for persistence and sync.
+    note_log: Arc<Mutex<NoteCheckpoints>>,
+    /// Which note each note session serves, by session key: recorded
+    /// when a session is opened through
+    /// [`CollabState::get_or_create_for_note`], so publishing a
+    /// checkpoint needs only the session's key.
+    note_bindings: RwLock<HashMap<String, Hash>>,
 }
 
 impl CollabState {
@@ -388,13 +475,12 @@ impl CollabState {
         initial_content: Option<&[u8]>,
         filename_hint: Option<&str>,
     ) -> Arc<Document> {
-        self.get_or_create_keyed(
-            &note_session_key(note_id),
-            hash,
-            initial_content,
-            filename_hint,
-        )
-        .await
+        let key = note_session_key(note_id);
+        let doc = self
+            .get_or_create_keyed(&key, hash, initial_content, filename_hint)
+            .await;
+        self.note_bindings.write().await.insert(key, *note_id);
+        doc
     }
 
     /// The keyed core of [`Self::get_or_create`]: sessions live under
@@ -424,6 +510,92 @@ impl CollabState {
         write.insert(key.to_owned(), Arc::clone(&doc));
         hash.clone_into(&mut *doc.hash.write().await);
         doc
+    }
+
+
+    /// The note a session serves, when the session was opened as a
+    /// note session ([`Self::get_or_create_for_note`]).
+    pub async fn note_id_for_key(&self, key: &str) -> Option<Hash> {
+        self.note_bindings.read().await.get(key).copied()
+    }
+
+    /// Replaces the checkpoint log with one rebuilt from applied note
+    /// events — the restart/sync entry (#3819): the events are the
+    /// durable state, and the rebuilt log folds to the heads the live
+    /// log had. The events are validated as a whole; a set that does
+    /// not fold leaves the current log untouched.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CheckpointError::Fold`] when the events do not fold.
+    pub async fn seed_note_events(&self, events: Vec<AppliedNote>) -> Result<(), CheckpointError> {
+        let rebuilt = NoteCheckpoints::from_events(events)?;
+        *self.note_log.lock().await = rebuilt;
+        Ok(())
+    }
+
+    /// The applied note events in the checkpoint log, in the order
+    /// they were recorded: persist or sync these and
+    /// [`Self::seed_note_events`] rebuilds the rest.
+    pub async fn note_events(&self) -> Vec<AppliedNote> {
+        self.note_log.lock().await.events().to_vec()
+    }
+
+    /// The current heads of a note in the checkpoint log.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CheckpointError`] when the recorded events do not
+    /// fold (a log built through this type's methods does not).
+    pub async fn note_heads(&self, note: Hash) -> Result<Vec<Hash>, CheckpointError> {
+        self.note_log.lock().await.heads(note)
+    }
+
+    /// Publishes a checkpoint of the note a session serves, from the
+    /// session's live content (#3819 slice 2): the document's current
+    /// plain text, referenced through the document path
+    /// ([`DocumentRef::for_bytes`]) and recorded as one signed
+    /// revision. The first publication of a note establishes it (the
+    /// create event's ID is the note's own ID); later publications
+    /// build on the note's single current head. Editor steps stay
+    /// ephemeral — only this explicit publication crosses into the
+    /// durable graph, never a keystroke.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PublishCheckpointError::NotNoteSession`] when `key`
+    /// names no note session this state opened,
+    /// [`CheckpointError::ExplicitMergeRequired`] (as
+    /// [`PublishCheckpointError::Checkpoint`]) when the note has
+    /// concurrent heads — joining them is the explicit
+    /// [`NoteCheckpoints::merge`], never a side effect of saving —
+    /// and the checkpoint core's other refusals unchanged. On any
+    /// error the log is exactly as it was.
+    pub async fn publish_note_checkpoint(
+        &self,
+        key: &str,
+        author: AuthorKey,
+    ) -> Result<NoteRecord, PublishCheckpointError> {
+        let Some(note) = self.note_id_for_key(key).await else {
+            return Err(PublishCheckpointError::NotNoteSession(key.to_owned()));
+        };
+        let doc = {
+            let documents = self.documents.read().await;
+            documents.get(key).map(Arc::clone)
+        };
+        let Some(doc) = doc else {
+            return Err(PublishCheckpointError::NotNoteSession(key.to_owned()));
+        };
+        let doc_json = doc.doc.read().await;
+        let text = super::routes::file_handlers::extract_plain_text(&*doc_json);
+        let content = DocumentRef::for_bytes("text/markdown", text.as_bytes())?;
+        let mut log = self.note_log.lock().await;
+        if log.record(note)?.is_none() {
+            return Ok(log.create(note, author, content)?);
+        }
+        let heads = log.heads(note)?;
+        let event_id = mint_checkpoint_event_id(&note, &author, &heads, &content, doc.version());
+        Ok(log.checkpoint_on_heads(note, event_id, author, content)?)
     }
 
     /// Remove a document from the state.
@@ -855,8 +1027,16 @@ async fn handle_collab_socket(
 
     tracing::info!("[collab] New connection for doc '{}' (page load)", doc_id,);
 
-    // doc_id is now a filename — resolve to hash, then load content
-    let hash_str = super::routes::get_hash_for_name(&store, &doc_id).await;
+    // A doc_id of the form note:<hex> names a note session (#3819
+    // slice 2): it resolves by the note's stable ID, never by
+    // filename. Anything else is a filename — resolve to hash, then
+    // load content, exactly as before.
+    let note_session = parse_note_doc_id(&doc_id);
+    let hash_str = if note_session.is_some() {
+        None
+    } else {
+        super::routes::get_hash_for_name(&store, &doc_id).await
+    };
     let initial_content = if let Some(h) = &hash_str {
         let content = load_file_content(&store, h).await;
         if content.is_some() {
@@ -872,13 +1052,25 @@ async fn handle_collab_socket(
         None
     };
 
-    let doc = collab
-        .get_or_create(
-            &doc_id,
-            hash_str.as_deref().unwrap_or(""),
-            initial_content.as_deref(),
-        )
-        .await;
+    let doc = if let Some(note) = &note_session {
+        collab
+            .get_or_create_for_note(
+                note,
+                hash_str.as_deref().unwrap_or(""),
+                initial_content.as_deref(),
+                _filename.as_deref(),
+            )
+            .await
+    } else {
+        collab
+            .get_or_create(
+                &doc_id,
+                hash_str.as_deref().unwrap_or(""),
+                initial_content.as_deref(),
+            )
+            .await
+    };
+    let version_at_connect = doc.version();
     let client_count = doc.client_connected();
     tracing::info!(
         "[collab] Client connected to doc '{}', {} total clients, mode={}",
@@ -1301,6 +1493,35 @@ async fn handle_collab_socket(
 
     // Handle client disconnect
     let remaining_clients = doc.client_disconnected().await;
+
+    // Session end is a checkpoint point for a note session (#3819):
+    // when its last editor leaves and the session moved since this
+    // connection opened it, publish the checkpoint, signed with this
+    // server's key. A refusal (notably a multi-head note, which needs
+    // an explicit merge) is logged, never fatal to the disconnect.
+    if remaining_clients == 0 && doc.version() > version_at_connect {
+        if let Some(note) = &note_session {
+            let key = note_session_key(note);
+            match collab
+                .publish_note_checkpoint(&key, identity_store.author_key())
+                .await
+            {
+                Ok(record) => {
+                    tracing::info!(
+                        "[collab] Published checkpoint for note session '{}': {} head(s)",
+                        doc_id,
+                        record.heads.len()
+                    );
+                }
+                Err(err) => {
+                    tracing::warn!(
+                        "[collab] Checkpoint for note session '{}' refused: {err}",
+                        doc_id
+                    );
+                }
+            }
+        }
+    }
     tracing::info!(
         "[collab] Client disconnected from doc '{}', {} clients remaining",
         doc_id,
@@ -2282,5 +2503,124 @@ mod tests {
             .await;
         assert!(!Arc::ptr_eq(&doc1, &doc4));
         assert!(!Arc::ptr_eq(&doc3, &doc4));
+    }
+
+    #[tokio::test]
+    async fn test_parse_note_doc_id() {
+        let note = Hash::from_bytes([9u8; 32]);
+        assert_eq!(parse_note_doc_id(&note_session_key(&note)), Some(note));
+        assert_eq!(parse_note_doc_id("notes.md"), None);
+        assert_eq!(parse_note_doc_id("note:not-a-hash"), None);
+        assert_eq!(parse_note_doc_id("note:"), None);
+    }
+
+    #[tokio::test]
+    async fn test_publish_note_checkpoint_creates_then_chains_on_the_head() {
+        let state = CollabState::new();
+        let note = Hash::from_bytes([11u8; 32]);
+        let key = note_session_key(&note);
+        let author: AuthorKey = [7u8; 32];
+        let doc = state
+            .get_or_create_for_note(&note, "", Some(b"# First"), Some("n.md"))
+            .await;
+
+        // The first publication establishes the note: the create event
+        // is the note's own ID and its only head.
+        let created = state.publish_note_checkpoint(&key, author).await.unwrap();
+        assert_eq!(created.id, note);
+        assert_eq!(created.heads.len(), 1);
+        assert_eq!(created.revisions.len(), 1);
+
+        // Edit the live document, then publish again: the new revision
+        // builds on the first head and replaces it as the only head.
+        *doc.doc.write().await = plain_text_to_prosemirror("# Second");
+        let chained = state.publish_note_checkpoint(&key, author).await.unwrap();
+        assert_eq!(chained.revisions.len(), 2);
+        assert_eq!(chained.heads.len(), 1);
+        assert_eq!(chained.revisions[1].parents, created.heads);
+        assert_ne!(chained.heads, created.heads);
+    }
+
+    #[tokio::test]
+    async fn test_publish_note_checkpoint_refuses_a_filename_session() {
+        let state = CollabState::new();
+        state.get_or_create("plain.md", "", Some(b"# File")).await;
+        let err = state
+            .publish_note_checkpoint("plain.md", [7u8; 32])
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(err, PublishCheckpointError::NotNoteSession(_)),
+            "a filename session has no note to checkpoint: {err}"
+        );
+        assert!(state.note_events().await.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_note_checkpoint_log_rebuilds_from_seeded_events() {
+        // Restart/sync at the wiring level: a fresh state seeded with
+        // the live log's events folds to the same heads, and the next
+        // publication chains onto them.
+        let note = Hash::from_bytes([13u8; 32]);
+        let key = note_session_key(&note);
+        let author: AuthorKey = [3u8; 32];
+        let live = CollabState::new();
+        live.get_or_create_for_note(&note, "", Some(b"# One"), Some("n.md"))
+            .await;
+        live.publish_note_checkpoint(&key, author).await.unwrap();
+        let heads_before = live.note_heads(note).await.unwrap();
+
+        let restarted = CollabState::new();
+        restarted
+            .seed_note_events(live.note_events().await)
+            .await
+            .unwrap();
+        assert_eq!(restarted.note_heads(note).await.unwrap(), heads_before);
+
+        let doc = restarted
+            .get_or_create_for_note(&note, "", Some(b"# Two"), Some("n.md"))
+            .await;
+        drop(doc);
+        let chained = restarted.publish_note_checkpoint(&key, author).await.unwrap();
+        assert_eq!(chained.revisions.len(), 2);
+        assert_eq!(chained.revisions[1].parents, heads_before);
+    }
+
+    #[tokio::test]
+    async fn test_publish_note_checkpoint_refuses_to_join_concurrent_heads() {
+        // Two sessions checkpoint from the same head: two heads, and a
+        // later save-publication must refuse rather than join them.
+        let note = Hash::from_bytes([17u8; 32]);
+        let key = note_session_key(&note);
+        let author: AuthorKey = [5u8; 32];
+        let mut log = NoteCheckpoints::new();
+        let content = DocumentRef::for_bytes("text/markdown", b"# Base").unwrap();
+        log.create(note, author, content).unwrap();
+        let fork = DocumentRef::for_bytes("text/markdown", b"# Fork").unwrap();
+        log.checkpoint(note, Hash::from_bytes([21u8; 32]), author, fork, vec![note])
+            .unwrap();
+        let other = DocumentRef::for_bytes("text/markdown", b"# Other").unwrap();
+        log.checkpoint(note, Hash::from_bytes([22u8; 32]), author, other, vec![note])
+            .unwrap();
+        assert_eq!(log.heads(note).unwrap().len(), 2);
+
+        let state = CollabState::new();
+        state
+            .seed_note_events(log.events().to_vec())
+            .await
+            .unwrap();
+        state
+            .get_or_create_for_note(&note, "", Some(b"# Merged?"), Some("n.md"))
+            .await;
+        let err = state.publish_note_checkpoint(&key, author).await.unwrap_err();
+        assert!(
+            matches!(
+                err,
+                PublishCheckpointError::Checkpoint(CheckpointError::ExplicitMergeRequired { .. })
+            ),
+            "a save must never join concurrent heads silently: {err}"
+        );
+        // The refused publication recorded nothing.
+        assert_eq!(state.note_events().await.len(), 3);
     }
 }
