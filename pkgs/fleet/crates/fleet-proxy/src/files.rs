@@ -344,6 +344,9 @@ impl FilesTransport for BrokerFilesTransport {
             body: Some(body),
             port: Some(self.port),
             token_file: Some(self.token_file.to_string_lossy().into_owned()),
+            trip: None,
+            transport: None,
+            cf_ok: None,
         };
         let mut stream = UnixStream::connect(&self.socket).map_err(|e| {
             ClientError::Transport(format!("broker socket {}: {e}", self.socket.display()))
@@ -1517,6 +1520,7 @@ mod tests {
                         let response = Response {
                             status,
                             body: reply,
+                            transport: None,
                         };
                         if fleet_proxy_proto::write_frame(&mut stream, &response).is_err() {
                             return;

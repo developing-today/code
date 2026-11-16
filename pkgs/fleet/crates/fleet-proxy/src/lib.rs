@@ -10,7 +10,12 @@
 //!   tunnels to the laptop's services, so a client call skips the
 //!   ~1.8 s tunnel handshake. Auto-started by clients when the
 //!   socket is missing; exits after an idle hour (client requests
-//!   only — keepalive never resets the timer).
+//!   only — keepalive never resets the timer). Its tunnels ride
+//!   two reaches (code#10356): TLS to the named Cloudflare
+//!   tunnel's edge as primary for the laptop-agent daemon, the
+//!   tailnet CONNECT as automatic fallback — the sandbox↔laptop
+//!   transport lives in this binary, per Drew's 2026-11-15
+//!   ruling.
 //! * **connect / init** — the client: ensure the broker, speak the
 //!   hello (fleet-proxy-proto), regenerate the PATH shim dir from
 //!   the negotiated services map, and the stdio relay that SSH's

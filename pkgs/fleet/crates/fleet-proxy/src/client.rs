@@ -460,6 +460,9 @@ pub fn run_connect(
             body: req.body.clone(),
             port: req.service_port,
             token_file: req.token_file.clone(),
+            trip: None,
+            transport: None,
+            cf_ok: None,
         };
         // A legacy broker already spent its first reply eating the
         // hello; the round-trip proceeds identically from here.
