@@ -30,6 +30,7 @@ pub mod documents;
 pub mod event_types;
 pub mod issuer_rotation;
 pub mod media;
+pub mod note_checkpoints;
 pub mod note_links;
 pub mod notes;
 pub mod policy;

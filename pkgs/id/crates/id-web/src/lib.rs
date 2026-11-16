@@ -78,7 +78,7 @@ use id_store::tags::TagStore;
 
 pub use app_interface::{WebInterface, WebInterfaceError, WebMode, web_interface_from_app_toml};
 pub use assets::static_handler;
-pub use collab::CollabState;
+pub use collab::{CollabState, note_session_key};
 pub use identity::IdentityStore;
 #[doc(hidden)]
 pub use identity::crash_gate;

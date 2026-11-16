@@ -508,6 +508,9 @@ pub(crate) struct WorldActor {
     /// Host metrics registry (F11.7), shared with the handle and the
     /// session layer; see [`WorldMetrics`].
     pub(crate) metrics: WorldMetrics,
+    /// Retained audit log (F12.6), shared with the handle and the
+    /// session layer; see [`WorldAuditLog`].
+    pub(crate) audit: WorldAuditLog,
     pub(crate) storage_failed: bool,
     /// F12.13 replica mode: the world serves spectators from a verified
     /// journal and refuses every local mutation and side effect. Set only
@@ -611,7 +614,7 @@ impl WorldActor {
         outcome: &str,
     ) {
         let target = self.core.world_id().to_owned();
-        emit_audit_record(&AuditRecord {
+        let record = AuditRecord {
             schema_version: 2,
             timestamp_ms: self.core.clock().now_ms(),
             world_id: self.core.world_id().to_owned(),
@@ -621,7 +624,9 @@ impl WorldActor {
             outcome: outcome.to_owned(),
             target,
             correlation_id: next_audit_correlation_id(),
-        });
+        };
+        self.audit.record(record.clone());
+        emit_audit_record(&record);
     }
 
     fn audit_admin_result(
@@ -645,7 +650,7 @@ impl WorldActor {
             Decision::AllowAndGrant => "first_use_grant",
             Decision::Deny(_) => "denied",
         };
-        emit_audit_record(&AuditRecord {
+        let record = AuditRecord {
             schema_version: 2,
             timestamp_ms: self.core.clock().now_ms(),
             world_id: self.core.world_id().to_owned(),
@@ -655,7 +660,9 @@ impl WorldActor {
             outcome: outcome.to_owned(),
             target: capability.to_owned(),
             correlation_id: next_audit_correlation_id(),
-        });
+        };
+        self.audit.record(record.clone());
+        emit_audit_record(&record);
     }
 
     pub(crate) async fn run(mut self, mut receiver: mpsc::Receiver<WorldCommand>, restored: bool) {
@@ -5625,6 +5632,7 @@ impl WorldActor {
             schedule_delivery: None,
             auth: crate::directory_auth::DirectoryAuth::default(),
             metrics: WorldMetrics::default(),
+            audit: WorldAuditLog::new(),
         }
     }
 }

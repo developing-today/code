@@ -365,6 +365,32 @@ describe("session blank title/directory parsing (issue #2664)", () => {
   });
 });
 
+describe("task blank dedupe_key parsing (issue #10739)", () => {
+  const base = {
+    repo: "developing-today/code",
+    title: "triage the queue",
+    prompt: "look at the backlog",
+  };
+  test("empty and whitespace-only dedupe_key parse as omitted", () => {
+    expect(parseTaskRequest({ ...base, dedupe_key: "" }).dedupeKey).toBeUndefined();
+    expect(parseTaskRequest({ ...base, dedupe_key: " \t " }).dedupeKey).toBeUndefined();
+    // Omitted and null already meant omitted; blanks now join them so a
+    // blank key falls through to the canonical key instead of defeating
+    // it with "" (which deduped unrelated tasks together).
+    expect(parseTaskRequest(base).dedupeKey).toBeUndefined();
+    expect(parseTaskRequest({ ...base, dedupe_key: null }).dedupeKey).toBeUndefined();
+  });
+
+  test("a nonblank dedupe_key is preserved verbatim", () => {
+    const key = "repo-health:v1:fix:developing-today/code:issue:6430";
+    expect(parseTaskRequest({ ...base, dedupe_key: key }).dedupeKey).toBe(key);
+  });
+
+  test("a non-string dedupe_key is still rejected", () => {
+    expect(() => parseTaskRequest({ ...base, dedupe_key: 42 })).toThrow(/dedupe_key/);
+  });
+});
+
 describe("session directory symlink confinement (issue #3999)", () => {
   // Fixture layout under a fresh temp dir:
   //   base/clone/            the repo clone (configured root)

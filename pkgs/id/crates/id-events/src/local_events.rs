@@ -1613,6 +1613,56 @@ mod tests {
     }
 
     #[test]
+    fn test_local_claim_never_reaches_a_peer_but_shared_claim_does() {
+        // Oracle: the peer node's own claim view (its `tags_on` after sync) —
+        // the acceptance #4974 names. Sync here moves exactly what a range-sync
+        // session moves: the bytes of every event in the sender's sync set,
+        // decided by the peer store's own ingest. A local claim is never
+        // signed and never enters the sync set, so there is nothing to leak;
+        // this test proves that at the level the issue states, not only at
+        // the store boundary.
+        let (_dir, mut events) = open_events();
+        let subject = publish_subject(&mut events);
+        events
+            .set_tag_scoped(subject, "city", Some("Oslo"), TagScope::Local)
+            .unwrap();
+        events
+            .set_tag_scoped(subject, "country", Some("Norway"), TagScope::Shared)
+            .unwrap();
+
+        let (_peer_dir, mut peer) = {
+            let dir = tempfile::tempdir().unwrap();
+            let events = LocalEvents::open(dir.path(), SigningKey::from_bytes(&[8; 32])).unwrap();
+            (dir, events)
+        };
+        // Two passes: an event whose predecessor has not landed yet waits,
+        // and the second pass delivers it, as a later sync session would.
+        for _ in 0..2 {
+            for (_key, id) in events.store.sync_entries().unwrap() {
+                let bytes = events
+                    .store
+                    .sync_bytes(&id)
+                    .unwrap()
+                    .expect("a sync entry's bytes are stored");
+                peer.store.ingest(&bytes, 0).unwrap();
+            }
+        }
+
+        let peer_claims = peer.tags_on(subject).unwrap();
+        assert!(
+            peer_claims.iter().all(|claim| claim.name != "city"),
+            "a local claim reached the peer: {peer_claims:?}"
+        );
+        let shared: Vec<_> = peer_claims
+            .iter()
+            .filter(|claim| claim.name == "country")
+            .collect();
+        assert_eq!(shared.len(), 1, "the shared claim must reach the peer");
+        assert_eq!(shared[0].scope, TagScope::Shared);
+        assert_eq!(shared[0].value.as_deref(), Some("Norway"));
+    }
+
+    #[test]
     fn test_scope_edit_moves_a_local_claim_to_shared_and_back() {
         let (_dir, mut events) = open_events();
         let subject = publish_subject(&mut events);

@@ -966,6 +966,62 @@ mod tests {
         );
     }
 
+    /// An EHLO reply with `count` continuation lines, sent promptly, built
+    /// dynamically so the continuation count can reach the cap (the static
+    /// replies used elsewhere in this module cannot). Leaked because
+    /// `fake_relay_with_ehlo_reply` takes a `&'static [u8]`; the leak is
+    /// one small reply per test process.
+    fn ehlo_reply_with_continuation_lines(count: usize) -> &'static [u8] {
+        let mut reply = Vec::new();
+        for _ in 0..count {
+            reply.extend_from_slice(b"250-continuation\r\n");
+        }
+        reply.extend_from_slice(b"250 OK\r\n");
+        Box::leak(reply.into_boxed_slice())
+    }
+
+    #[test]
+    fn a_reply_with_too_many_continuation_lines_is_refused_at_the_cap() {
+        // Oracle: the `continuations <= MAX_REPLY_CONTINUATION_LINES` ensure
+        // in `expect` — removing it makes this test fail (the send would
+        // succeed), which the mutation check for this test verifies.
+        let (relay, _server) = fake_relay_with_ehlo_reply(
+            ehlo_reply_with_continuation_lines(MAX_REPLY_CONTINUATION_LINES + 1),
+            false,
+        );
+        let sink = SmtpSink::new(relay, "id@example.test".to_owned()).unwrap();
+        let started = Instant::now();
+        let error = sink
+            .send_with_timeout(&sample(), Duration::from_secs(5))
+            .unwrap_err();
+        assert!(
+            error.to_string().contains(&format!(
+                "more than {MAX_REPLY_CONTINUATION_LINES} continuation lines"
+            )),
+            "{error:#}"
+        );
+        assert!(
+            started.elapsed() < Duration::from_secs(5),
+            "over-cap reply took {:?} to fail — it must fail at the cap, not the deadline",
+            started.elapsed()
+        );
+    }
+
+    #[test]
+    fn a_reply_at_the_continuation_line_cap_succeeds() {
+        // Control for the over-cap test: exactly MAX_REPLY_CONTINUATION_LINES
+        // continuation lines is within the bound, so the send completes.
+        let (relay, server) = fake_relay_with_ehlo_reply(
+            ehlo_reply_with_continuation_lines(MAX_REPLY_CONTINUATION_LINES),
+            false,
+        );
+        let sink = SmtpSink::new(relay, "id@example.test".to_owned()).unwrap();
+        sink.send_with_timeout(&sample(), Duration::from_secs(5))
+            .unwrap();
+        let seen = server.join().unwrap();
+        assert!(seen.iter().any(|line| line == "DATA"), "{seen:?}");
+    }
+
     #[test]
     fn an_over_long_reply_line_is_refused_instead_of_buffered() {
         let sink = SmtpSink::new(giant_line_relay(), "id@example.test".to_owned()).unwrap();

@@ -1829,7 +1829,7 @@ fn expire_leases(t: &TursoBackend) -> Result<i64, TErr> {
         let max_attempts = row
             .get("max_attempts")
             .and_then(|v| v.as_i64())
-            .unwrap_or(4);
+            .unwrap_or(crate::validate::TASK_DEFAULT_MAX_ATTEMPTS as i64);
         let at_cap =
             !to_sink && expiry_disposition(attempts, max_attempts) == ExpiryDisposition::FailAtCap;
         let upd = if at_cap {
@@ -2223,7 +2223,7 @@ fn verb_revive(t: &TursoBackend, req: &Value) -> Value {
         let max_attempts = row
             .get("max_attempts")
             .and_then(|v| v.as_i64())
-            .unwrap_or(4);
+            .unwrap_or(crate::validate::TASK_DEFAULT_MAX_ATTEMPTS as i64);
         revive_eligible(&status, attempts, max_attempts)
             .map_err(|e| format!("revive_task: task {task_id}: {e}"))?;
         t.exec(
@@ -6419,7 +6419,7 @@ fn verb_fail(t: &TursoBackend, req: &Value) -> Value {
     let max_attempts = row
         .get("max_attempts")
         .and_then(|v| v.as_i64())
-        .unwrap_or(4);
+        .unwrap_or(crate::validate::TASK_DEFAULT_MAX_ATTEMPTS as i64);
     let requeue = reason_class == "transient" && attempts < max_attempts;
     let new_status = if requeue {
         "queued"
@@ -6744,7 +6744,9 @@ fn verb_complete(t: &TursoBackend, req: &Value) -> Value {
                                     fpayload
                                         .get("max_attempts")
                                         .and_then(|v| v.as_i64())
-                                        .unwrap_or(4),
+                                        .unwrap_or(
+                                            crate::validate::TASK_DEFAULT_MAX_ATTEMPTS as i64,
+                                        ),
                                 ),
                                 Arg::Text(fprogress.to_string()),
                                 Arg::Text(now_iso()),
@@ -8175,7 +8177,13 @@ mod tests {
         // and the enqueue insert fallback (which reads the one
         // TASK_DEFAULT_MAX_ATTEMPTS constant in validate.rs; the
         // task_from_packet default is covered in validate tests).
-        // The creation_outbox retry cap is a different domain and
+        // #10799: the four former hard-coded-4 copies of the task
+        // default (the expire-leases, revive, and fail-disposition
+        // read fallbacks, and the triage follow-on insert fallback)
+        // are unified on the same constant, so no stale copy can
+        // drift back. The creation_outbox retry cap is a different
+        // domain (GitHub-filing delivery attempts, #3706 bounded
+        // pilot - it never becomes a task row value) and
         // intentionally stays at its own DEFAULT_MAX_ATTEMPTS.
         let src = include_str!("turso_queue.rs");
         assert!(
@@ -8190,6 +8198,20 @@ mod tests {
         // test file does not itself contain the literal it bans.
         let stale = format!("max_attempts INTEGER NOT NULL DEFAULT {}", 4);
         assert!(!src.contains(&stale), "no stale tasks schema default");
+        // #10799: the stale fallback needle, same construction.
+        let stale_fallback = format!("unwrap_or({})", 4);
+        assert!(
+            !src.contains(&stale_fallback),
+            "no stale max_attempts fallback copies"
+        );
+        // The shared constant backs every site: the enqueue insert
+        // fallback plus the four unified #10799 sites.
+        assert!(
+            src.matches("crate::validate::TASK_DEFAULT_MAX_ATTEMPTS as i64")
+                .count()
+                >= 5,
+            "every max_attempts fallback reads the shared task default"
+        );
     }
 
     #[test]
