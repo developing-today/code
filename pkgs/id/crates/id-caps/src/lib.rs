@@ -13,6 +13,7 @@
 pub mod library_gate;
 pub mod library_manifest;
 pub mod library_resolution;
+pub mod portal;
 pub mod world_caps;
 pub mod world_limits;
 pub mod world_manifest;
