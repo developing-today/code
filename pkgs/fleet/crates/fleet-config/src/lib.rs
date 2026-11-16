@@ -847,7 +847,10 @@ impl Config {
     /// its own `[host]` section instead of growing this table.
     pub fn builtin_host(location: &str) -> Option<(InitMode, Vec<String>)> {
         match location {
-            "sandbox" => Some((InitMode::Spawn, vec!["proxy".to_string()])),
+            "sandbox" => Some((
+                InitMode::Spawn,
+                vec!["proxy".to_string(), "secrets-broker".to_string()],
+            )),
             "laptop" => Some((
                 InitMode::Systemd,
                 vec![
@@ -2326,7 +2329,10 @@ socket = "rel/s.sock"
     fn host_env_location_sandbox_builtin_map_is_proxy_spawn() {
         // The hermetic-provisioning shape: FLEET_LOCATION alone on
         // a machine with no [host] section resolves to exactly
-        // today's sandbox behaviour (design #5687 §5/§6).
+        // today's sandbox behaviour (design #5687 §5/§6): the
+        // session proxy plus the standing sandbox secrets broker
+        // (stage-2 broker resilience: secrets resolve locally, no
+        // laptop round trip).
         let cfg = Config::default();
         let path = PathBuf::from("/nonexistent/fleet.toml");
         let resolved = cfg
@@ -2334,7 +2340,10 @@ socket = "rel/s.sock"
             .unwrap()
             .unwrap();
         assert_eq!(resolved.init_mode, InitMode::Spawn);
-        assert_eq!(resolved.roles, vec!["proxy".to_string()]);
+        assert_eq!(
+            resolved.roles,
+            vec!["proxy".to_string(), "secrets-broker".to_string()]
+        );
     }
 
     #[test]

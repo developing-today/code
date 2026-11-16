@@ -631,8 +631,20 @@ pub fn parse_ttl_s(raw: Option<&str>) -> Result<TtlParse, String> {
 
 pub fn run() -> i32 {
     use std::io::Read as _;
-    let bind =
-        std::env::var("SECRETS_BROKER_BIND").unwrap_or_else(|_| "100.99.113.103:4800".to_string());
+    // Stage-2 broker resilience: on the sandbox the broker is a
+    // local capability, never a LAN surface — force loopback
+    // regardless of the environment, so a stale or widened
+    // SECRETS_BROKER_BIND can never expose the vault off-host.
+    // The spawn in `fleet init` sets the loopback bind explicitly;
+    // this is the second enforcement, at the bind itself.
+    let sandbox = std::env::var("FLEET_LOCATION")
+        .ok()
+        .is_some_and(|v| v.trim() == "sandbox");
+    let bind = if sandbox {
+        "127.0.0.1:4800".to_string()
+    } else {
+        std::env::var("SECRETS_BROKER_BIND").unwrap_or_else(|_| "100.99.113.103:4800".to_string())
+    };
     let home = match crate::home::from_env() {
         Ok(home) => home,
         Err(error) => {
