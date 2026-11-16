@@ -1310,8 +1310,11 @@ pub(super) async fn restore_handler(
 /// The blob data itself may be garbage-collected later by iroh-blobs.
 pub(super) async fn hard_delete_handler(
     State(state): State<AppState>,
-    Json(req): Json<DeleteRequest>,
+    Json(mut req): Json<DeleteRequest>,
 ) -> Response {
+    if let Err(response) = canonical_web_name(&mut req.name) {
+        return response;
+    }
     tracing::info!("[routes] hard_delete_handler: name={}", req.name);
     let ops = FileOps::new(&state.store, &state.tag_store);
     match ops.delete(&req.name).await {
@@ -1330,6 +1333,9 @@ pub(super) async fn hard_delete_handler(
         }
         Err(FileOpError::EmptyName) => {
             (StatusCode::BAD_REQUEST, "File name cannot be empty").into_response()
+        }
+        Err(err @ (FileOpError::InvalidName(_) | FileOpError::ReservedArchiveName(_))) => {
+            name_rejection_response(&err)
         }
         Err(err) => {
             tracing::error!("[routes] hard delete failed: {err}");

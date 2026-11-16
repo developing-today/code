@@ -3533,7 +3533,7 @@ mod upload_router_tests {
         assert_eq!(status, StatusCode::OK, "{body}");
 
         for name in NON_CANONICAL_NAMES {
-            for uri in ["/api/delete", "/api/restore"] {
+            for uri in ["/api/delete", "/api/restore", "/api/hard-delete"] {
                 let (status, body) = post_name(router.clone(), uri, name).await;
                 assert_eq!(status, StatusCode::BAD_REQUEST, "{uri} {name}: {body}");
                 let tags = state
@@ -3563,6 +3563,18 @@ mod upload_router_tests {
             .await
             .unwrap();
         assert!(tags.is_empty(), "padded restore clears the trimmed name");
+
+        // #10623: hard-delete holds the same canonical rule; padding is
+        // normalized to the trimmed name, non-canonical shapes are refused.
+        let (status, body) = post_name(router.clone(), "/api/hard-delete", " notes.md ").await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        assert!(
+            upload_name_owner(&state.store, "notes.md")
+                .await
+                .unwrap()
+                .is_none(),
+            "padded hard-delete removes the trimmed name"
+        );
     }
 
     // #10585: a multipart filename carrying a path or padding is stored as
