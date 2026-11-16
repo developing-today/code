@@ -4350,8 +4350,8 @@
           // as is); that replacement is reverted by the
           // reconciliation PR, so the net change from pre-#10711
           // main is this effort drop alone.
-                    // 2026-11-16 (Drew, direct order; AA v5.0.1 score/price review): the Antigravity Sonnet #low seat that sat here MOVED to workhorse-last-resort (a different door as the middle resort leg); this seat is now haiku-plan#high at the same weight 10 - Haiku #high (II 29.9, $0.16/AA task) dominates Sonnet #low (II 25.6, $0.51).
-"opencode-route/haiku-plan#high"
+          // 2026-11-16 (Drew, direct order; AA v5.0.1 score/price review): the Antigravity Sonnet #low seat that sat here MOVED to workhorse-last-resort (a different door as the middle resort leg); this seat is now haiku-plan#high at the same weight 10 - Haiku #high (II 29.9, $0.16/AA task) dominates Sonnet #low (II 25.6, $0.51).
+          "opencode-route/haiku-plan#high"
         ],
         "selection": "weighted",
         // Weights keys are BARE provider/model ids on purpose
