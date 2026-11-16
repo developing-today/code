@@ -1647,6 +1647,16 @@
           // are skipped while its snapshot reads walled and revive at
           // the stated reset — the seat no longer needs removal to stop
           // a burn.
+          // 2026-11-16 (Drew, direct order — pool-composition run 42,
+          // R34): UNSEATED — every seat is removed from the plan pools
+          // again (deepseek-flash-plan, deepseek-pro-plan, spark-plan,
+          // sol-plan, beam-plan; the mimo-flash-plan leg was already
+          // paste-ready only). The restored seats drew ~653 attempts
+          // at 0% — dead auth/entitlement, which the gathered quota
+          // wall does not skip (evidence on code#10128). The definition
+          // stays for the catalog, ready to re-seat per pool on a live
+          // completion proving auth restored. NOT added to
+          // disabled_providers.
           "npm": "@opencode/ai/providers/commandcode",
           "name": "Command Code (native wire emulation)",
           "models": {
@@ -2635,6 +2645,12 @@
         // "insufficient credits"; last success on the provider 2026-11-10).
         // Re-seat only after credits are verified back with a live completion.
         // 2026-11-15 (Drew, direct order): the _commandcode door is RESTORED below, exactly as seated before the 2026-11-13 removal — the fork's gathered provider-wide quota wall (opencode#2479, merged today) now skips a walled provider's legs before any attempt, so a spent door idles instead of burning.
+        // 2026-11-16 (Drew, direct order — pool-composition run 42, R34):
+        // the _commandcode door is UNSEATED from this pool — the seats
+        // restored 2026-11-15 drew ~653 attempts at 0% across the five
+        // pools, dead auth/entitlement rather than the quota wall
+        // (evidence on code#10128). Re-seat only on a live completion
+        // proving auth restored.
         // 2026-11-14 (performance cut, code#9950 follow-up): the mistral-plan
         // leg is REMOVED from this pool — the mistral Flash-1017 cell recorded
         // 0 successes in 699 attempts in the 2026-11-14 per-model cut, the
@@ -2763,8 +2779,7 @@
           {
             "model": "opendesign/deepseek-v4.1-flash",
             "variants": { "xhigh": "high", "max": "high" }
-          },
-          "_commandcode/deepseek/deepseek-v4.1-flash"
+          }
         ],
         "selection": "round-robin",
         "autonomy": "rules",
@@ -2774,8 +2789,7 @@
         "weights": {
           "opencode-go-plans/deepseek-v4.1-flash": 2,
           "cline-pass/deepseek-v4.1-flash": 1,
-          "opendesign/deepseek-v4.1-flash": 1,
-          "_commandcode/deepseek/deepseek-v4.1-flash": 1
+          "opendesign/deepseek-v4.1-flash": 1
         },
         // #7927 (task 14574): the 10s default first-output deadline mass-killed
         // scheduled lane waves (81 sessions in 8h) when doors queued past 10s.
@@ -2814,6 +2828,12 @@
         // "insufficient credits"; last success on the provider 2026-11-10).
         // Re-seat only after credits are verified back with a live completion.
         // 2026-11-15 (Drew, direct order): the _commandcode door is RESTORED below, exactly as seated before the 2026-11-13 removal — the fork's gathered provider-wide quota wall (opencode#2479, merged today) now skips a walled provider's legs before any attempt, so a spent door idles instead of burning.
+        // 2026-11-16 (Drew, direct order — pool-composition run 42, R34):
+        // the _commandcode door is UNSEATED from this pool — the seats
+        // restored 2026-11-15 drew ~653 attempts at 0% across the five
+        // pools, dead auth/entitlement rather than the quota wall
+        // (evidence on code#10128). Re-seat only on a live completion
+        // proving auth restored.
         
         // 2026-10-27 pool redesign: Go x3 + Command Code (minor) join, per
         // the same all-workspaces rule as deepseek-flash-plan. This pool
@@ -2832,8 +2852,7 @@
           {
             "model": "opendesign/deepseek-v4-pro",
             "variants": { "xhigh": "high", "max": "high" }
-          },
-          "_commandcode/deepseek/deepseek-v4-pro"
+          }
         ],
         "selection": "round-robin",
         "autonomy": "rules",
@@ -2842,7 +2861,6 @@
         // leg's tier placement is undefined. Weighted as minor legs.
         "weights": {
           "opencode-go-plans/deepseek-v4-pro": 3,
-          "_commandcode/deepseek/deepseek-v4-pro": 0.5,
           "cline-pass/deepseek-v4-pro": 1,
           "opendesign/deepseek-v4-pro": 1
         }
@@ -3107,6 +3125,12 @@
         // "insufficient credits"; last success on the provider 2026-11-10).
         // Re-seat only after credits are verified back with a live completion.
         // 2026-11-15 (Drew, direct order): the _commandcode door is RESTORED below, exactly as seated before the 2026-11-13 removal — the fork's gathered provider-wide quota wall (opencode#2479, merged today) now skips a walled provider's legs before any attempt, so a spent door idles instead of burning.
+        // 2026-11-16 (Drew, direct order — pool-composition run 42, R34):
+        // the _commandcode door is UNSEATED from this pool — the seats
+        // restored 2026-11-15 drew ~653 attempts at 0% across the five
+        // pools, dead auth/entitlement rather than the quota wall
+        // (evidence on code#10128). Re-seat only on a live completion
+        // proving auth restored.
         
         // 2026-10-30: the reserve leaf reached the Meta plan through
         // muse-proxy (provider "muse") — the direct meta door is dead
@@ -3139,7 +3163,6 @@
         // leaf in this pool.
         "targets": [
           "opencode-go-plans/muse-spark-1.3-contributor",
-          "_commandcode/meta/muse-spark-1.3-contributor",
           "cline-pass/muse-spark-1.3-contributor",
           "_muse/muse-spark-1.3-contributor"
         ],
@@ -3157,6 +3180,12 @@
         // resets. Re-seat the door only if plan coverage returns, proven
         // by a live completion.
         // 2026-11-15 (Drew, direct order): the _commandcode door is RESTORED below, exactly as seated before the 2026-11-13 removal — the fork's gathered provider-wide quota wall (opencode#2479, merged today) now skips a walled provider's legs before any attempt, so a spent door idles instead of burning.
+        // 2026-11-16 (Drew, direct order — pool-composition run 42, R34):
+        // the _commandcode door is UNSEATED from this pool — the seats
+        // restored 2026-11-15 drew ~653 attempts at 0% across the five
+        // pools, dead auth/entitlement rather than the quota wall
+        // (evidence on code#10128). Re-seat only on a live completion
+        // proving auth restored.
         // 2026-10-27 pool-coverage audit: the two opencode-go leaves are
         // REMOVED. They pointed at gpt-5.6-sol, which OpenCode Go does not
         // list — verified in the #1249 recheck (models.dev's opencode-go
@@ -3184,8 +3213,7 @@
           {
             "model": "opendesign/gpt-6.1-sol",
             "variants": { "xhigh": "high", "max": "high" }
-          },
-          "_commandcode/gpt-6.1-sol"
+          }
         ],
         "selection": "round-robin",
         "autonomy": "rules",
@@ -3198,8 +3226,7 @@
         // is its standing minor-leg weight in the sibling pools.
         "weights": {
           "openai-plan/gpt-6.1-sol": 3,
-          "opendesign/gpt-6.1-sol": 1,
-          "_commandcode/gpt-6.1-sol": 0.5
+          "opendesign/gpt-6.1-sol": 1
         }
       },
       "terra-plan": {
@@ -3299,6 +3326,12 @@
         // quota-walled until the Sun 2026-11-15 Go reset, and its own
         // status gets verified from route_attempt after that reset.
         // 2026-11-15 (Drew, direct order): the _commandcode door is RESTORED below, exactly as seated before the 2026-11-13 removal — the fork's gathered provider-wide quota wall (opencode#2479, merged today) now skips a walled provider's legs before any attempt, so a spent door idles instead of burning.
+        // 2026-11-16 (Drew, direct order — pool-composition run 42, R34):
+        // the _commandcode door is UNSEATED from this pool — the seats
+        // restored 2026-11-15 drew ~653 attempts at 0% across the five
+        // pools, dead auth/entitlement rather than the quota wall
+        // (evidence on code#10128). Re-seat only on a live completion
+        // proving auth restored.
         // NEW 2026-10-27 (pool redesign): Beam 1.0 gets its own plan pool
         // (was a raw Command Code leaf inside scout). AA v5: II 18,
         // TTFT 0.59s, ~385 t/s decode — the fleet's fastest starter.
@@ -3318,7 +3351,6 @@
         // Free, MiMo Flash Free, GLM Flash Free, Big Pickle) stay
         // last-resort in their own pools.
         "targets": [
-          "_commandcode/reflection/beam:free",
           "opencode-go-plans/beam-free",
           "zen-plans/beam-free"
         ],
@@ -3332,8 +3364,7 @@
         // per Drew's restore order.
         "weights": {
           "opencode-go-plans/beam-free": 3,
-          "zen-plans/beam-free": 3,
-          "_commandcode/reflection/beam:free": 1
+          "zen-plans/beam-free": 3
         }
       },
       "longcat-plan": {
@@ -3601,14 +3632,16 @@
         // Zen. AA v5 II 29 at ~137 tok/s. Caution from the fleet's AA
         // pull: it rarely abstains — careless for facts — so it serves
         // patient bulk work (background), not fact-facing tiers.
-        "targets": [
-          "zen-plans/minimax-m3.1-flash-free"
-        ],
+        // 2026-11-16 (Drew, direct order — pool-composition run 42, R35,
+        // code#10872): the Zen leaf (zen-plans/minimax-m3.1-flash-free)
+        // is REMOVED — 0 successes in 360 attempts across two
+        // consecutive windows, all QuotaExceeded, while the same model
+        // served 54.1% via the nvidia door (n=98, in nvidia-free-plan,
+        // untouched). The plan definition stays, emptied, ready to
+        // re-seat on a live completion through the Zen leaf.
+        "targets": [],
         "selection": "round-robin",
-        "autonomy": "rules",
-        "weights": {
-          "zen-plans/minimax-m3.1-flash-free": 3
-        }
+        "autonomy": "rules"
       },
       "flint-plan": {
         "name": "Flint 40B Free (Zen) - plan providers",
