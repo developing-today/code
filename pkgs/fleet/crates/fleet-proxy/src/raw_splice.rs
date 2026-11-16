@@ -119,6 +119,7 @@ mod tests {
             Response {
                 status: 502,
                 body: serde_json::json!({"error":"legacy"}),
+                transport: None,
             }
         ))));
         assert!(!supports_raw_splice(&fleet_response(

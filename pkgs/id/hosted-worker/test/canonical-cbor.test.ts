@@ -1,13 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 
-import {
-  CborError,
-  decodeCanonical,
-  encodeCanonical,
-  validateRecord,
-  type CborValue,
-} from "../src/canonical-cbor.ts";
+import { CborError, MAX_NESTING_DEPTH, decodeCanonical, encodeCanonical, validateRecord, type CborValue } from "../src/canonical-cbor.ts";
 
 // The golden table is shared with the Rust suite
 // (crates/id-core/tests/canonical_cbor_vectors.rs): same logical
@@ -107,6 +101,20 @@ test("ambiguous encodings reject with typed errors", () => {
       `reject ${input} as ${code}`,
     );
   }
+});
+
+test("nesting deeper than the limit rejects", () => {
+  const allowed = new Uint8Array(MAX_NESTING_DEPTH + 1);
+  allowed.fill(0x81, 0, MAX_NESTING_DEPTH);
+  const decoded = decodeCanonical(allowed);
+  assert.equal(toHex(encodeCanonical(decoded)), toHex(allowed));
+
+  const deeper = new Uint8Array(MAX_NESTING_DEPTH + 2);
+  deeper.fill(0x81, 0, MAX_NESTING_DEPTH + 1);
+  assert.throws(
+    () => decodeCanonical(deeper),
+    (err: unknown) => err instanceof CborError && err.code === "TooDeeplyNested",
+  );
 });
 
 test("unknown critical fields reject and others tolerate", () => {

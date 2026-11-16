@@ -199,6 +199,12 @@ describe("projector: PR + review + review comment (PR-interior)", () => {
     expect(review?.kind).toBe("review");
     expect(review?.review_state).toBe("approved");
     expect(review?.commit_id).toBe("abc123");
+    // Decision 4 (#4302/#3087): the webhook review object carries no
+    // created_at/updated_at — created_at and the guard key come from
+    // submitted_at, never from a fabricated delivery-time "now".
+    expect(review?.created_at).toBe("2026-10-25T01:00:00Z");
+    expect(review?.source_updated_at).toBe("2026-10-25T01:00:00Z");
+    expect(review?.submitted_at).toBe("2026-10-25T01:00:00Z");
 
     await applyEvent(store, "pull_request_review_comment", {
       action: "created",

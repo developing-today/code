@@ -442,6 +442,13 @@ function isActivitySourceStatus(v: unknown): v is ActivitySourceStatus {
   );
 }
 
+export interface ActivityRemote {
+  /** The whole ingestion document, or null when the remote store is empty. */
+  load(): Promise<IngestionFile | null>;
+  /** Upsert the current checkpoints, seen sets, statuses and gaps. */
+  save(data: IngestionFile): Promise<void>;
+}
+
 export class IngestionStore {
   private data: IngestionFile = { version: 1, checkpoints: {}, seen: {}, gaps: [], sourceStatus: {} };
   private loadPromise: Promise<void> | null = null;
@@ -449,7 +456,12 @@ export class IngestionStore {
   private writeChain: Promise<void> = Promise.resolve();
   private writeSeq = 0;
 
-  constructor(private readonly file: string) {}
+  constructor(
+    private readonly file: string,
+    /** #6815: when set, the store uses this backend instead of the file.
+     *  The file is then never read or written (no dual write). */
+    private readonly remote?: ActivityRemote,
+  ) {}
 
   async load(): Promise<void> {
     if (!this.loadPromise) this.loadPromise = this.doLoad();
@@ -457,6 +469,11 @@ export class IngestionStore {
   }
 
   private async doLoad(): Promise<void> {
+    if (this.remote) {
+      const stored = await this.remote.load();
+      if (stored) this.data = stored;
+      return;
+    }
     let raw: string;
     try {
       raw = await readFile(this.file, "utf8");
@@ -526,6 +543,10 @@ export class IngestionStore {
 
   private persist(): Promise<void> {
     const run = this.writeChain.then(async () => {
+      if (this.remote) {
+        await this.remote.save(this.data);
+        return;
+      }
       await mkdir(dirname(this.file), { recursive: true });
       const tmp = `${this.file}.tmp-${process.pid}-${++this.writeSeq}`;
       await writeFile(tmp, JSON.stringify(this.data, null, 2));
@@ -569,6 +590,13 @@ export class IngestionStore {
     if (!this.data.sourceStatus) this.data.sourceStatus = {};
     this.data.sourceStatus[status.source] = status;
     await this.persist();
+  }
+
+  /** Whole current document, for backfills and store migration
+   *  (#6815). Returns a copy so callers cannot mutate store state. */
+  async documentForExport(): Promise<IngestionFile> {
+    await this.load();
+    return structuredClone(this.data);
   }
 
   /**

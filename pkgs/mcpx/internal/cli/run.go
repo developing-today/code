@@ -166,7 +166,7 @@ func Run(ctx context.Context, args []string, env Env, stdio Stdio) int {
 			// to be reached for mid-command ("...actually, show me") as
 			// chosen up front.
 			if err := app.CmdTUI(ctx, nil); err != nil {
-				fmt.Fprintln(stdio.err(), "mcpx:", err)
+				_, _ = fmt.Fprintln(stdio.err(), "mcpx:", err)
 				return 1
 			}
 			return 0
@@ -198,7 +198,7 @@ func Run(ctx context.Context, args []string, env Env, stdio Stdio) int {
 			config.SetPathsConfigSeed(splitList(strings.TrimPrefix(args[0], "--paths-config=")))
 			args = args[1:]
 		case args[0] == "--version" || args[0] == "-v":
-			fmt.Fprintln(stdio.out(), "mcpx", Version)
+			_, _ = fmt.Fprintln(stdio.out(), "mcpx", Version)
 			return 0
 		case args[0] == "--help" || args[0] == "-h":
 			_ = app.CmdHelp(ctx, nil)
@@ -209,14 +209,14 @@ func Run(ctx context.Context, args []string, env Env, stdio Stdio) int {
 			// `mcpx ls --plumbing-strict-unknown-keys` does.
 			rest, err := app.ApplyGlobalSettingFlags(args)
 			if err != nil {
-				fmt.Fprintln(stdio.err(), "mcpx:", err)
+				_, _ = fmt.Fprintln(stdio.err(), "mcpx:", err)
 				return 2
 			}
 			if len(rest) < len(args) {
 				args = rest
 				continue
 			}
-			fmt.Fprintf(stdio.err(), "unknown global flag %q\n", args[0])
+			_, _ = fmt.Fprintf(stdio.err(), "unknown global flag %q\n", args[0])
 			return 2
 		}
 	}
@@ -233,7 +233,7 @@ func Run(ctx context.Context, args []string, env Env, stdio Stdio) int {
 			// terminal the TUI cannot have been meant, and help with
 			// success stays the answer for a pipe.
 			if isTerminal(os.Stdin) && isTerminal(os.Stdout) {
-				fmt.Fprintln(stdio.err(), "mcpx:", err)
+				_, _ = fmt.Fprintln(stdio.err(), "mcpx:", err)
 				return 1
 			}
 			_ = app.CmdHelp(ctx, nil)
@@ -260,7 +260,7 @@ func Run(ctx context.Context, args []string, env Env, stdio Stdio) int {
 				h, rest = app.CmdExec, args
 			}
 		} else {
-			fmt.Fprintf(stdio.err(), "unknown command %q\n\n", cmd)
+			_, _ = fmt.Fprintf(stdio.err(), "unknown command %q\n\n", cmd)
 			_ = app.CmdHelp(ctx, nil)
 			return 2
 		}
@@ -270,7 +270,7 @@ func Run(ctx context.Context, args []string, env Env, stdio Stdio) int {
 	// file is reported once, up front, rather than by whichever command
 	// happens to read the offending value first.
 	if err := app.SettingsErr(); err != nil {
-		fmt.Fprintln(stdio.err(), "mcpx:", err)
+		_, _ = fmt.Fprintln(stdio.err(), "mcpx:", err)
 		return 2
 	}
 
@@ -288,14 +288,14 @@ func Run(ctx context.Context, args []string, env Env, stdio Stdio) int {
 			// prefix with "mcpx:" -- only the status carries over.
 			var se *exitStatusError
 			if !errors.As(err, &se) {
-				fmt.Fprintln(stdio.err(), "mcpx:", err)
+				_, _ = fmt.Fprintln(stdio.err(), "mcpx:", err)
 			}
 			return ec.ExitCode()
 		}
 		if errors.Is(err, ErrNoDaemon) {
-			fmt.Fprintln(stdio.err(), "mcpx: daemon is not running and could not be started")
+			_, _ = fmt.Fprintln(stdio.err(), "mcpx: daemon is not running and could not be started")
 		} else {
-			fmt.Fprintln(stdio.err(), "mcpx:", err)
+			_, _ = fmt.Fprintln(stdio.err(), "mcpx:", err)
 		}
 		return 1
 	}

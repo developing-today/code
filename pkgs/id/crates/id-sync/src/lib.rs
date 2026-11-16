@@ -22,6 +22,7 @@
 //! there, over this crate's [`meta_client`] plumbing.
 
 pub mod artifact;
+pub mod chained_message;
 pub mod dht;
 pub mod envelope;
 pub mod envelope_net;
@@ -33,4 +34,5 @@ pub mod host;
 pub mod log_sync;
 pub mod meta_client;
 pub mod protocol;
+pub mod relay_gate;
 pub mod transfer;

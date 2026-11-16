@@ -11,6 +11,8 @@
 //! (slice 9110-02), so this test includes the slice file by path;
 //! #9110-09 wires versioned public exports later.
 
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+
 #[path = "../src/federation/slices/b01_key_lifecycle.rs"]
 mod b01_key_lifecycle;
 

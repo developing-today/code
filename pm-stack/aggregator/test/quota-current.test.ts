@@ -6,6 +6,11 @@ import {
   QUOTA_CURRENT_FRESH_MS,
   QUOTA_CURRENT_FUTURE_SKEW_MS,
 } from "../src/quota-current.ts";
+import {
+  GO_DREWRYPOPE_SERVICE_ID,
+  GO_POPESDREW_SERVICE_ID,
+  GO_DEVELOPING_TODAY_0_SERVICE_ID,
+} from "../src/quota-gather-map.ts";
 import type { QuotaCurrentEntry, QuotaCurrentFile, QuotaPool, QuotaView, SaasService } from "../src/model.ts";
 
 // The final visibility hop (#1151): the gatherer's quota-current.json
@@ -865,6 +870,100 @@ describe("overlay: split gatherer rows land on the four split hub pools (#1331)"
   });
 });
 
+describe("overlay: aliased OpenCode Zen rows (#10443, #10591)", () => {
+  // The Zen door reads the same plan meters as the Go door, so its
+  // rows file under the Go pool ids (serviceIdFor). The overlay must
+  // never turn one meter into two pools, must keep the provider-level
+  // census, and must surface a genuinely divergent Zen reading instead
+  // of silently dropping it. #10591: the steward's step-6 check must
+  // compare rendered pool coverage against distinct pool service IDs,
+  // not raw provider rows, so this aliasing is not a regression.
+
+  const goEntry = (pct: number, measuredAt: string) =>
+    entry({
+      serviceId: GO_DEVELOPING_TODAY_0_SERVICE_ID,
+      providerId: "opencode-go.developing-today-0",
+      credentialLabel: "OpenCode Go (developing-today-0)",
+      measuredAt,
+      windows: [win("monthly", pct, measuredAt)],
+    });
+
+  const zenEntry = (pct: number, measuredAt: string) =>
+    entry({
+      serviceId: GO_DEVELOPING_TODAY_0_SERVICE_ID,
+      providerId: "opencode.developing-today-0",
+      credentialLabel: "OpenCode Zen (developing-today-0)",
+      measuredAt,
+      windows: [win("monthly", pct, measuredAt)],
+    });
+
+  const viewWithGoPools = () => {
+    const view = baseView();
+    view.pools.push(
+      pool("opencode-go.drewrypope", []),
+      pool("opencode-go.popesdrew", []),
+      pool(GO_DEVELOPING_TODAY_0_SERVICE_ID, []),
+    );
+    return view;
+  };
+
+  test("identical Zen and Go readings render one pool, not a duplicate", () => {
+    const view = viewWithGoPools();
+    const out = overlayQuotaCurrent(
+      view,
+      file([
+        goEntry(54, iso(5 * 60_000)),
+        zenEntry(54, iso(4 * 60_000)), // identical percent, slightly older
+      ]),
+      NOW,
+    );
+    // Only one pool for this service id
+    const ids = out.pools.map((p) => p.id);
+    expect(ids).not.toContain("opencode.developing-today-0");
+    expect(out.pools).toHaveLength(view.pools.length);
+    // Headline uses the newest fresh read (Go, 54)
+    const goPool = out.pools.find((p) => p.id === GO_DEVELOPING_TODAY_0_SERVICE_ID)!;
+    expect(goPool.windows.map((w) => w.percent)).toEqual([54]);
+    // No credential rows because the two reads are identical
+    expect(goPool.credentials).toBeUndefined();
+  });
+
+  test("the provider-level census keeps both Zen and Go rows", () => {
+    const view = viewWithGoPools();
+    const out = overlayQuotaCurrent(view, file([goEntry(54, iso(5 * 60_000)), zenEntry(54, iso(4 * 60_000))]), NOW);
+    const g = out.gatherer?.providers ?? [];
+    expect(g.some((p) => p.providerId === "opencode-go.developing-today-0")).toBe(true);
+    expect(g.some((p) => p.providerId === "opencode.developing-today-0")).toBe(true);
+    // Both rows should have state ok
+    const goRow = g.find((p) => p.providerId === "opencode-go.developing-today-0")!;
+    const zenRow = g.find((p) => p.providerId === "opencode.developing-today-0")!;
+    expect(goRow.state).toBe("ok");
+    expect(zenRow.state).toBe("ok");
+  });
+
+  test("a divergent Zen reading surfaces as a credential row instead of being hidden", () => {
+    const view = viewWithGoPools();
+    // Go entry is newer (4 min ago) than Zen (5 min ago) — headline from Go
+    const out = overlayQuotaCurrent(
+      view,
+      file([
+        goEntry(54, iso(4 * 60_000)),
+        zenEntry(10, iso(5 * 60_000)), // genuinely different meter
+      ]),
+      NOW,
+    );
+    const goPool = out.pools.find((p) => p.id === GO_DEVELOPING_TODAY_0_SERVICE_ID)!;
+    // Headline from the newest fresh read (Go, 54)
+    expect(goPool.windows.map((w) => w.percent)).toEqual([54]);
+    // But credential rows surface the divergence
+    expect(goPool.credentials).toBeDefined();
+    expect(goPool.credentials!.length).toBe(2);
+    const byLabel = new Map(goPool.credentials!.map((c) => [c.label, c]));
+    expect(byLabel.get("OpenCode Go (developing-today-0)")!.windows[0].percent).toBe(54);
+    expect(byLabel.get("OpenCode Zen (developing-today-0)")!.windows[0].percent).toBe(10);
+  });
+});
+
 describe("overlay: pass-through of the read itself (Drew, 2026-11-03)", () => {
   test("a fresh ok read clears the base pool's dated-prose note", () => {
     const view = baseView();
@@ -1286,5 +1385,142 @@ describe("spec-pool retained path with dead base windows (#7033)", () => {
     expect(claude.freshness).toEqual({ measuredAt: iso(45 * 60_000), source: "opencode-quota", state: "stale" });
     expect(claude.windows.map((w) => [w.name, w.percent])).toEqual([["weekly", 68]]);
     expect(claude.note).toBe(VIEW_NOTE);
+  });
+});
+
+describe("non-pool registration (#10575)", () => {
+  // Oracle: overlayQuotaCurrent's documented contract — every
+  // serviceId the read reports renders as a pool EXCEPT the
+  // NON_POOL_SERVICE_IDS. groq joined that set in #10575: Groq has
+  // no quota surface, so its permanently error-state, windowless row
+  // must not synthesize an identity-only pool. The control entry
+  // (an unregistered id) proves the exemption is groq-specific, not
+  // a blanket drop of error rows.
+  test("a groq error row synthesizes no pool, while an unregistered id still does", () => {
+    const out = overlayQuotaCurrent(
+      baseView(),
+      file([
+        entry({
+          serviceId: "groq",
+          state: "error",
+          error: "Groq exposes no first-party usage/quota endpoint for an API key",
+        }),
+        entry({ serviceId: "some-new-provider", windows: [win("monthly", 3, iso(5 * 60_000))] }),
+      ]),
+      NOW,
+    );
+    expect(out.pools.map((pool) => pool.id)).not.toContain("groq");
+    expect(out.pools.map((pool) => pool.id)).toContain("some-new-provider");
+    // The groq read is still reported in the gatherer summary; only
+    // pool synthesis is exempted.
+    expect(out.gatherer?.providers.map((provider) => provider.serviceId)).toContain("groq");
+  });
+});
+
+describe("intentionally uninstrumented pools keep their window state (#10684)", () => {
+  // Oracle: a pool whose extraction is intentional/uninstrumented
+  // (no dated-read extractor by design — opendesign, deepseek,
+  // mistral, openrouter) carries its quota.json pool state, derived
+  // from its windows, instead of the gatherer's error/stale label;
+  // the gatherer failure still rides honestly on freshness. The
+  // control proves the exemption is scoped: an instrumented pool
+  // whose reading fails still surfaces "error".
+  const uninstrumented = { status: "intentional", matched: null, reason: "uninstrumented", count: 0 } as const;
+
+  function walledUninstrumentedView(): QuotaView {
+    const view = baseView();
+    view.pools.push({
+      id: "opendesign",
+      provider: "Open Design",
+      plan: "Go",
+      state: "walled",
+      windows: [{ name: "7d", unit: "other", limit: 100, used: 100, percent: 100, resetsAt: "2026-11-17T11:44:41.000Z" }],
+      extractionHealth: { ...uninstrumented },
+    });
+    return view;
+  }
+
+  test("an error entry leaves a walled uninstrumented pool walled, freshness keeping the error", () => {
+    const out = overlayQuotaCurrent(
+      walledUninstrumentedView(),
+      file([entry({ serviceId: "opendesign", state: "error", measuredAt: iso(2 * 60_000), error: "HTTP 503" })]),
+      NOW,
+    );
+    const od = out.pools.find((p) => p.id === "opendesign")!;
+    expect(od.state).toBe("walled");
+    expect(od.freshness).toEqual({
+      measuredAt: iso(2 * 60_000),
+      source: "openchamber-quota",
+      state: "error",
+      error: "HTTP 503",
+    });
+    expect(od.windows[0].percent).toBe(100);
+  });
+
+  test("a retained entry with a leg error keeps the adopted window state instead of converting to error", () => {
+    // Same shape as the #6942 shell-pool conversion, except the
+    // pool is marked intentionally uninstrumented: the read's dated
+    // fallback windows (7d at 100%) stand and the pool recomputes
+    // to walled instead of flipping to error.
+    const at = iso(45 * 60_000);
+    const view = baseView();
+    view.pools.push({
+      id: "opendesign",
+      provider: "Open Design",
+      plan: "Go",
+      state: "healthy",
+      windows: [],
+      extractionHealth: { ...uninstrumented },
+    });
+    const f = file([
+      entry({
+        serviceId: "opendesign",
+        source: "opencode-quota",
+        measuredAt: at,
+        retainedFromFailedTick: iso(4 * 60_000),
+        windows: [win("5h", 12, at), win("7d", 100, at)],
+      }),
+    ]);
+    f.heartbeat = {
+      tickAt: iso(4 * 60_000),
+      ok: true,
+      durationMs: 900,
+      perProvider: { opendesign: { state: "error", ms: 12, rows: 1, error: "Open Design usage API returned HTTP 503" } },
+    };
+    const out = overlayQuotaCurrent(view, f, NOW);
+    const od = out.pools.find((p) => p.id === "opendesign")!;
+    expect(od.state).toBe("walled");
+    expect(od.freshness?.state).toBe("stale");
+    expect(od.windows.map((w) => [w.name, w.percent])).toEqual([
+      ["5-hour", 12],
+      ["7d", 100],
+    ]);
+  });
+
+  test("an aged (stale) entry leaves a walled uninstrumented pool walled", () => {
+    const at = iso(QUOTA_CURRENT_FRESH_MS + 10 * 60_000);
+    const out = overlayQuotaCurrent(
+      walledUninstrumentedView(),
+      file([entry({ serviceId: "opendesign", source: "opencode-quota", measuredAt: at, windows: [win("7d", 12, at)] })]),
+      NOW,
+    );
+    const od = out.pools.find((p) => p.id === "opendesign")!;
+    expect(od.state).toBe("walled");
+    expect(od.freshness).toEqual({ measuredAt: at, source: "opencode-quota", state: "stale" });
+    expect(od.windows[0].percent).toBe(100);
+  });
+
+  test("control: an instrumented pool with a failed reading still surfaces error", () => {
+    const view = baseView();
+    const claude = view.pools.find((p) => p.id === "anthropic:claude-pro")!;
+    claude.extractionHealth = { status: "matched", matched: true, count: 1 };
+    const out = overlayQuotaCurrent(
+      view,
+      file([entry({ serviceId: "anthropic:claude-pro", state: "error", measuredAt: iso(2 * 60_000), error: "boom" })]),
+      NOW,
+    );
+    const poolOut = out.pools.find((p) => p.id === "anthropic:claude-pro")!;
+    expect(poolOut.state).toBe("error");
+    expect(poolOut.freshness?.state).toBe("error");
   });
 });

@@ -2,6 +2,39 @@
 
 use super::*;
 
+/// Response for a file name refused by the canonical-name rule.
+fn name_rejection_response(err: &FileOpError) -> Response {
+    match err {
+        FileOpError::EmptyName => {
+            (StatusCode::BAD_REQUEST, "File name cannot be empty").into_response()
+        }
+        FileOpError::InvalidName(name) => (
+            StatusCode::BAD_REQUEST,
+            format!("Invalid file name: {name}"),
+        )
+            .into_response(),
+        FileOpError::ReservedArchiveName(name) => (
+            StatusCode::BAD_REQUEST,
+            format!("File name is reserved for archives: {name}"),
+        )
+            .into_response(),
+        _ => (StatusCode::BAD_REQUEST, "Invalid file name").into_response(),
+    }
+}
+
+/// Apply the canonical-name rule to a web request's file name.
+///
+/// The web is a forgiving surface, so the caller's name is trimmed first;
+/// the stored name is that trimmed result. What remains is then held to
+/// the same rule every `FileOps` entry point enforces (#10549, #10573):
+/// rooted or drive-prefixed names, empty/`.`/`..` components, padded
+/// names, and the reserved archive namespace are refused with a 4xx
+/// instead of entering the tag/metadata namespace.
+fn canonical_web_name(name: &mut String) -> Result<(), Response> {
+    *name = name.trim().to_owned();
+    FileOps::validate_name(name).map_err(|err| name_rejection_response(&err))
+}
+
 /// Save the current editor document to the blob store.
 ///
 /// Converts the `ProseMirror` JSON to the appropriate format based on filename,
@@ -11,8 +44,11 @@ use super::*;
 /// Rate-limited: rejects saves within the cooldown period (default 5s) per file.
 pub(super) async fn save_handler(
     State(state): State<AppState>,
-    Json(req): Json<SaveRequest>,
+    Json(mut req): Json<SaveRequest>,
 ) -> Response {
+    if let Err(response) = canonical_web_name(&mut req.name) {
+        return response;
+    }
     tracing::info!(
         "[routes] save_handler: doc_id={}, name={}",
         req.doc_id,
@@ -211,13 +247,12 @@ pub(super) async fn save_handler(
 /// adds it as a blob, and creates a tag for it.
 pub(super) async fn new_file_handler(
     State(state): State<AppState>,
-    Json(req): Json<NewFileRequest>,
+    Json(mut req): Json<NewFileRequest>,
 ) -> Response {
-    tracing::info!("[routes] new_file_handler: name={}", req.name);
-
-    if req.name.trim().is_empty() {
-        return (StatusCode::BAD_REQUEST, "File name cannot be empty").into_response();
+    if let Err(response) = canonical_web_name(&mut req.name) {
+        return response;
     }
+    tracing::info!("[routes] new_file_handler: name={}", req.name);
 
     // #8407: creating a name that is already in use must conflict, not
     // silently replace the existing file's content with an empty blob.
@@ -447,11 +482,21 @@ pub(super) async fn upload_handler(
     }
 
     // Get filename from the field, or generate one. A supplied name is
-    // reconciled with the validated content type (#908) so it cannot
-    // masquerade as a different type than the bytes were checked as.
+    // reduced to its plain file-name form (#10585: clients can send
+    // `../../x.png` or `C:\fakepath\x.png`), reconciled with the validated
+    // content type (#908) so it cannot masquerade as a different type than
+    // the bytes were checked as, and then held to the canonical-name rule
+    // every `FileOps` entry point enforces.
     let ext = mime_to_extension(&content_type);
-    let filename = match field.file_name().map(ToOwned::to_owned) {
-        Some(name) if !name.trim().is_empty() => reconcile_upload_filename(&name, ext),
+    let filename = match field.file_name().map(normalize_upload_filename) {
+        Some(name) if !name.is_empty() => {
+            let filename = reconcile_upload_filename(name, ext);
+            if let Err(err) = FileOps::validate_name(&filename) {
+                tracing::info!("[routes] Rejected upload filename: {err}");
+                return name_rejection_response(&err);
+            }
+            filename
+        }
         _ => {
             let ts = SystemTime::now()
                 .duration_since(UNIX_EPOCH)
@@ -1166,13 +1211,12 @@ pub(super) async fn download_handler(Json(req): Json<DownloadRequest>) -> Respon
 /// Request body for soft-deleting or hard-deleting a file.
 pub(super) async fn delete_handler(
     State(state): State<AppState>,
-    Json(req): Json<DeleteRequest>,
+    Json(mut req): Json<DeleteRequest>,
 ) -> Response {
-    tracing::info!("[routes] delete_handler: name={}", req.name);
-
-    if req.name.trim().is_empty() {
-        return (StatusCode::BAD_REQUEST, "File name cannot be empty").into_response();
+    if let Err(response) = canonical_web_name(&mut req.name) {
+        return response;
     }
+    tracing::info!("[routes] delete_handler: name={}", req.name);
 
     // Verify the file exists
     match state.store.tags().get(&req.name).await {
@@ -1217,13 +1261,12 @@ pub(super) async fn delete_handler(
 /// Restore a soft-deleted file by removing the "deleted" tag.
 pub(super) async fn restore_handler(
     State(state): State<AppState>,
-    Json(req): Json<DeleteRequest>,
+    Json(mut req): Json<DeleteRequest>,
 ) -> Response {
-    tracing::info!("[routes] restore_handler: name={}", req.name);
-
-    if req.name.trim().is_empty() {
-        return (StatusCode::BAD_REQUEST, "File name cannot be empty").into_response();
+    if let Err(response) = canonical_web_name(&mut req.name) {
+        return response;
     }
+    tracing::info!("[routes] restore_handler: name={}", req.name);
 
     // Verify the file exists, distinguishing an absent file from a lookup error.
     match state.store.tags().get(&req.name).await {
@@ -1267,8 +1310,11 @@ pub(super) async fn restore_handler(
 /// The blob data itself may be garbage-collected later by iroh-blobs.
 pub(super) async fn hard_delete_handler(
     State(state): State<AppState>,
-    Json(req): Json<DeleteRequest>,
+    Json(mut req): Json<DeleteRequest>,
 ) -> Response {
+    if let Err(response) = canonical_web_name(&mut req.name) {
+        return response;
+    }
     tracing::info!("[routes] hard_delete_handler: name={}", req.name);
     let ops = FileOps::new(&state.store, &state.tag_store);
     match ops.delete(&req.name).await {
@@ -1287,6 +1333,9 @@ pub(super) async fn hard_delete_handler(
         }
         Err(FileOpError::EmptyName) => {
             (StatusCode::BAD_REQUEST, "File name cannot be empty").into_response()
+        }
+        Err(err @ (FileOpError::InvalidName(_) | FileOpError::ReservedArchiveName(_))) => {
+            name_rejection_response(&err)
         }
         Err(err) => {
             tracing::error!("[routes] hard delete failed: {err}");

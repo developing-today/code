@@ -39,18 +39,23 @@ mod handle;
 mod handoff_operations;
 pub mod hotness;
 mod journal;
+pub(crate) mod audit;
 mod metrics;
 mod replica;
 mod replication;
 mod replication_receiver;
 pub mod signed;
+pub mod spill_gate;
 mod upgrade;
 mod util;
 
 #[cfg(test)]
 mod tests;
 
-pub(crate) use actor::{WorldActor, WorldCommand};
+pub(crate) use actor::{
+    AUDIT_TRACE_TARGET, AuditRecord, WorldActor, WorldCommand, emit_audit_record,
+    next_audit_correlation_id,
+};
 pub use admission_lease::{
     ADMISSION_LEASE_DOMAIN, ADMISSION_LEASE_VERSION, AdmissionLease, AdmissionLeaseError,
     MAX_ADMISSION_LEASE_DURATION_MS, ReplicaAdmissionGate, SignedAdmissionLease,
@@ -78,6 +83,7 @@ pub use journal::{
     JournalEntry, JournalSignedMove, JournalSnapshot, JournalSnapshotSource, MAX_JOURNAL_VERSION,
     TrustBasis, TrustDecision, WorldJournal, journal_version_required_by,
 };
+pub use audit::{GrantsState, WorldAuditLog, export_otlp_json, replay_grants};
 pub use metrics::{
     HistogramSnapshot, MetricsSnapshot, RegionWrites, WorldMetrics, WriteLocalitySnapshot,
 };
@@ -572,14 +578,17 @@ pub const WRITE_LEASE_RENEWAL_INTERVAL_MS: u64 = 10_000;
 /// Why the append gate refused a writer (design #2819, phase 2 of
 /// issue #3804). A refusal is retryable in every case: the writer catches
 /// up, waits for a grant, or retries under the new holder.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, thiserror::Error)]
 #[serde(rename_all = "snake_case")]
 pub enum LeaseRejectionReason {
     /// The writer is not the current lease holder (or there is none).
+    #[error("world write rejected: not_holder (retryable)")]
     NotHolder,
     /// The writer presented an epoch other than the current one.
+    #[error("world write rejected: stale_epoch (retryable)")]
     StaleEpoch,
     /// The current lease term had expired on the authority's clock.
+    #[error("world write rejected: expired (retryable)")]
     Expired,
 }
 

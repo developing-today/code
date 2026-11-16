@@ -84,7 +84,7 @@ between, in the pool's selection order.
 | big-pickle-plan | OpenCode Zen (big-pickle) (round-robin) | Zen stealth free model behind background (2026-11-14). Rotating backend — no benchmark attaches. |
 | nemotron-vl-plan | OpenCode Zen (nemotron-3.5-super-vl-free) (round-robin) | Free Nemotron VL (AA v5 II 13.6) behind background (2026-11-14). |
 | nemotron-lightning-plan | OpenCode Zen (nemotron-3.5-lightning-free) (round-robin) | Free Nemotron Lightning (AA v5 II 5.5) — last free leg in background (2026-11-14). |
-| system1 | OpenCode Zen (jev-1.13-free) | **Decision models — NOT a chat pool.** System-1 typed-question endpoint; never seated in a chat tier (2026-11-14). |
+| systemone | OpenCode Zen (jev-1.13-free) | **Decision models — NOT a chat pool.** System-1 typed-question endpoint; never seated in a chat tier (2026-11-14). |
 
 ## Provider routes (door sets, expanded per model)
 
@@ -93,7 +93,7 @@ between, in the pool's selection order.
 | openai-plan | _openai.alt, _openai.main (server-side round-robin) |
 | mistral-plan | _vibe, mistral |
 | opencode-go-plans | opencode-go.drewrypope, opencode-go.popesdrew, opencode-go.developing-today-0 |
-| opencode-zen-plans | opencode.drewrypope, opencode.popesdrew, opencode.developing-today-0 |
+| zen-plans | opencode.drewrypope, opencode.popesdrew, opencode.developing-today-0 |
 
 ## Guard
 

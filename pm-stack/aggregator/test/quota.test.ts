@@ -456,6 +456,7 @@ describe("pass-through pool assembly (Drew, 2026-11-03)", () => {
       "opendesign",
       "deepseek",
       "mistral",
+      "openrouter",
     ]);
   });
 
@@ -470,14 +471,19 @@ describe("pass-through pool assembly (Drew, 2026-11-03)", () => {
     }
   });
 
-  test("the issue's fixture disabled set (openrouter/copilot) still emits no pool for them", () => {
-    // No pool ever answered to those providers; with the filter gone
+  test("the issue's fixture disabled set (copilot) still emits no pool for it; openrouter is registered since #10575", () => {
+    // No pool ever answered to github-copilot; with the filter gone
     // the guarantee is structural (POOL_SPECS has no such pool), not
-    // a runtime check.
+    // a runtime check. openrouter was in the same position when this
+    // test was written, but the free-tier door was enabled on
+    // 2026-11-15 and its measured read carries a real monthly
+    // window, so #10575 registered it as a shell pool — this
+    // assertion was updated deliberately in that change, not relaxed
+    // silently.
     const pools = extractQuotaPools(VIEW, NOW);
     for (const p of pools) {
-      expect(p.id).not.toBe("openrouter");
       expect(p.id).not.toBe("github-copilot");
     }
+    expect(pools.map((p) => p.id)).toContain("openrouter");
   });
 });

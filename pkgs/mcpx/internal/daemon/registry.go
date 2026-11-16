@@ -3226,6 +3226,18 @@ func (r *Registry) Close() { r.CloseWithin(pool.ExecDrainTimeout) }
 // schema cache first; doing it here would write after the daemon has already
 // told its client that it stopped.
 func (r *Registry) CloseWithin(drain time.Duration) {
+	r.closeWithin(drain, false)
+}
+
+// CloseWithinForRestart is CloseWithin for a daemon that is restarting rather
+// than stopping for good (#1414). Pools keep upstream HTTP sessions alive and
+// their persisted records resumable, so the successor process can resume them
+// instead of finding sessions a DELETE already ended.
+func (r *Registry) CloseWithinForRestart(drain time.Duration) {
+	r.closeWithin(drain, true)
+}
+
+func (r *Registry) closeWithin(drain time.Duration, restartIntent bool) {
 	r.mu.RLock()
 	pools := make([]*pool.Pool, 0, len(r.pools))
 	for _, p := range r.pools {
@@ -3235,7 +3247,11 @@ func (r *Registry) CloseWithin(drain time.Duration) {
 	fb := r.feedbackStore
 	r.mu.RUnlock()
 	for _, p := range pools {
-		p.CloseDrainedWithin(drain)
+		if restartIntent {
+			p.CloseDrainedWithinForRestart(drain)
+		} else {
+			p.CloseDrainedWithin(drain)
+		}
 	}
 	for _, p := range pools {
 		p.WaitDrained()

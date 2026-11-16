@@ -69,7 +69,7 @@ import { createNeedsDrewSweeper, type NeedsDrewCensus } from "../needs-drew.ts";
 import { INITIAL_STANDING_AUTO, sanitizeTierItemExtensions, withUserFallbacks } from "../tier-items.ts";
 import { assembleWorkItems } from "../work-items.ts";
 import { overlayQuotaCurrent, overlayTursoUsage, parseQuotaCurrent } from "../quota-current.ts";
-import { SnapshotStore } from "../snapshots.ts";
+import { SnapshotStore, type SnapshotsRemote } from "../snapshots.ts";
 import { gristDocUrl, kaneoTaskUrl } from "../service-links.ts";
 import { fixtureSource } from "./fixtures.ts";
 
@@ -905,6 +905,10 @@ export function liveSource(
     // ingestion store has already persisted, so a restart cannot
     // reissue an undated delivery id that dedupe would discard.
     seenActivityIds?: (source: string) => Promise<readonly string[]> | readonly string[];
+    /** #6815: usage-snapshot backend. Set only when
+     *  PM_AGG_STORE_BACKEND=supabase; otherwise the local snapshot
+     *  directory is the store (the dev/test and rollback path). */
+    snapshotRemote?: SnapshotsRemote;
   },
 ): Source {
   const fix = fixtureSource();
@@ -1862,7 +1866,7 @@ export function liveSource(
       // usage(): GETs must remain safe with a read-only snapshot store.
       const feed = await getFeed();
       if (!feed?.snapshots?.length) return 0;
-      return new SnapshotStore(cfg.snapshotsDir).append(feed.snapshots).catch(() => 0);
+      return new SnapshotStore(cfg.snapshotsDir, opts?.snapshotRemote).append(feed.snapshots).catch(() => 0);
     },
     async usage(): Promise<UsageView> {
       // Usage & billing hub (design §3): feed sections first (the
@@ -1879,7 +1883,7 @@ export function liveSource(
         (await readFile(cfg.freeServicesTrackerFile, "utf8")
           .then(extractUninstrumentedServices)
           .catch(() => []));
-      const store = new SnapshotStore(cfg.snapshotsDir);
+      const store = new SnapshotStore(cfg.snapshotsDir, opts?.snapshotRemote);
       const history = await store.byService().catch(() => ({}));
       const domains =
         feed?.dns && isDnsSection(feed.dns)
@@ -2398,6 +2402,13 @@ export function liveSource(
           state = "absent";
         else if (text.startsWith("store only")) state = "live";
         else state = "fixtures";
+        // #1500: a mixed items pass — pool-served refs plus a fixture
+        // fallback for refs outside the pool — is its own facet state,
+        // not plain "live": the fallback is exactly what a reader of
+        // the item pages needs the facet to say.
+        if (key === "items" && state === "live" && /\+ fixtures for \d+ ref\(s\) outside the pool/.test(text)) {
+          state = "partial-fixtures";
+        }
         const feedBacked = text.includes("fleet feed");
         if (state === "live" && feedBacked && feedAgeMs !== undefined && feedAgeMs >= FEED_STALE_MS) {
           state = "stale";

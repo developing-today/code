@@ -225,6 +225,50 @@ func TestTakeoverKeepsTheChildAndTheListener(t *testing.T) {
 	}
 }
 
+const oneSupervisedServer = `{
+  "mcpServers": {
+    "demo": { "command": "FAKE", "mcpx": { "sharing": "shared", "scope": "global", "supervised": true, "description": "a fake supervised server" } }
+  }
+}`
+
+// Phase 2 of #1384 (#9962): a supervised instance is adopted by attach,
+// never handed off. The successor daemon attaches to the still-running
+// supervisor, so the stdio child keeps its PID across the restart and no
+// pipe/pool handoff frames are exchanged for it.
+func TestTakeoverAttachesToSupervisedChild(t *testing.T) {
+	e := newEnv(t, oneSupervisedServer)
+	e.envVars = append(e.envVars, "MCPX_DAEMON_WATCH_CONFIG=false")
+	e.run("call", "demo.echo", `{"message":"before"}`)
+	before := e.daemonState(t)
+	child := before.childOf("demo")
+	if child == 0 {
+		t.Fatalf("no live supervised child before the takeover: %+v", before)
+	}
+	// The supervised child outlives every daemon by design; the test
+	// owns it, so the test retires it (its supervisor exits with it).
+	t.Cleanup(func() {
+		if processExists(child) {
+			if proc, err := os.FindProcess(child); err == nil {
+				_ = proc.Kill()
+			}
+		}
+	})
+
+	s := startSuccessor(t, e)
+	after := e.awaitSuccessor(t, s)
+	if got := after.childOf("demo"); got != child {
+		t.Fatalf("the supervised child was replaced by the takeover: pid %d -> %d", child, got)
+	}
+	if out := e.run("call", "demo.echo", `{"message":"after"}`); !strings.Contains(out, "after") {
+		t.Fatalf("the taken-over daemon did not answer through the supervised child:\n%s", out)
+	}
+	s.mainPIDReported(t)
+	awaitExit(t, before.PID, "the previous daemon")
+	if !processExists(child) {
+		t.Fatalf("the supervised child %d died with the previous daemon", child)
+	}
+}
+
 func TestTakeoverRestartsAChangedServerAndKeepsTheRest(t *testing.T) {
 	e := newEnv(t, twoServers)
 	e.envVars = append(e.envVars, "MCPX_DAEMON_WATCH_CONFIG=false")

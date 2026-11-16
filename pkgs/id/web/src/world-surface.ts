@@ -537,7 +537,8 @@ const EMOJI_PRESENTATION_SEQ_RANGES: ReadonlyArray<readonly [number, number]> = 
   [0x1f6f3, 0x1f6f3],
 ];
 
-function isEmojiPresentationSeqBase(codePoint: number): boolean {
+// Exported for the boundary/parity test against the unicode-width 0.2.2 fixture (#10819).
+export function isEmojiPresentationSeqBase(codePoint: number): boolean {
   return EMOJI_PRESENTATION_SEQ_RANGES.some(([low, high]) => codePoint >= low && codePoint <= high);
 }
 

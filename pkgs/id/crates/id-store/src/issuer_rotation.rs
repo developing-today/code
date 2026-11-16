@@ -774,6 +774,7 @@ pub fn sign_rotation(
             rotation: Some(rotation.clone()),
 
             chat: None,
+            anchor: None,
         },
     )?)
 }

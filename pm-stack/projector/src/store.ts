@@ -244,12 +244,12 @@ export async function upsertItem(db: Client, i: Omit<ItemRow, "fetched_at">): Pr
   await db.batch(upsertItemStatements(i), "write");
 }
 
-export async function getItems(db: Client, refs: string[]): Promise<ItemRow[]> {
+export async function getItems(db: Client, refs: string[], opts: { limit?: number } = {}): Promise<ItemRow[]> {
   if (refs.length === 0) return [];
   const placeholders = refs.map(() => "?").join(",");
   const r = await db.execute({
-    sql: `SELECT * FROM pmp_items WHERE ref IN (${placeholders}) ORDER BY updated_at DESC`,
-    args: refs,
+    sql: `SELECT * FROM pmp_items WHERE ref IN (${placeholders}) ORDER BY updated_at DESC LIMIT ?`,
+    args: [...refs, opts.limit ?? 200],
   });
   return r.rows as unknown as ItemRow[];
 }
@@ -532,9 +532,12 @@ export async function deleteItem(db: Client, ref: string, sourceUpdatedAt?: stri
     "write",
   );
 }
-export async function getLinks(db: Client, opts: { subject?: string; ref?: string } = {}): Promise<LinkRow[]> {
+export async function getLinks(
+  db: Client,
+  opts: { subject?: string; ref?: string; limit?: number; offset?: number } = {},
+): Promise<LinkRow[]> {
   const clauses: string[] = [];
-  const args: string[] = [];
+  const args: (string | number)[] = [];
   if (opts.subject) {
     clauses.push("subject = ?");
     args.push(opts.subject);
@@ -545,8 +548,10 @@ export async function getLinks(db: Client, opts: { subject?: string; ref?: strin
   }
   const where = clauses.length ? `WHERE ${clauses.join(" AND ")}` : "";
   const r = await db.execute({
-    sql: `SELECT * FROM pmp_links ${where} ORDER BY created_at DESC`,
-    args,
+    sql: `SELECT * FROM pmp_links ${where}
+          ORDER BY created_at DESC, subject ASC, ref ASC, relation ASC
+          LIMIT ? OFFSET ?`,
+    args: [...args, opts.limit ?? 500, opts.offset ?? 0],
   });
   return r.rows as unknown as LinkRow[];
 }

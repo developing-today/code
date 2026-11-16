@@ -40,9 +40,24 @@ interface PipelineResult {
     type: string;
     response?: {
       type: string;
-      result?: { cols: unknown[]; rows: Array<{ values: TursoValue[] }> };
+      // Turso HTTP pipeline v2: each row is a bare array of values,
+      // NOT an object with a `values` field (verified live 2026-11-16,
+      // task 16482 — reading `.values` off the row array returns
+      // Array.prototype.values and destructuring it throws
+      // "function is not iterable").
+      result?: { cols: unknown[]; rows: TursoValue[][] };
     };
   }>;
+}
+
+/** Parse the newest queue_state snapshot out of a pipeline SELECT result. */
+export function parseQueueSnapshotResult(out: PipelineResult): QueueSnapshot | null {
+  const rows = out.results[0]?.response?.result?.rows ?? [];
+  if (rows.length === 0) return null;
+  const [payload, at] = rows[0];
+  if (!payload || !at || payload.type !== "text" || at.type !== "text") return null;
+  const parsed = JSON.parse(payload.value) as Omit<QueueSnapshot, "at">;
+  return { ...parsed, at: at.value };
 }
 
 export class TursoClient {
@@ -124,11 +139,6 @@ export class TursoClient {
         args: [],
       },
     ]);
-    const rows = out.results[0]?.response?.result?.rows ?? [];
-    if (rows.length === 0) return null;
-    const [payload, at] = rows[0].values;
-    if (payload.type !== "text" || at.type !== "text") return null;
-    const parsed = JSON.parse(payload.value) as Omit<QueueSnapshot, "at">;
-    return { ...parsed, at: at.value };
+    return parseQueueSnapshotResult(out);
   }
 }

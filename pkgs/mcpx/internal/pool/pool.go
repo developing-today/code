@@ -139,8 +139,14 @@ func (i *Instance) Trace() string { return i.trace }
 func (i *Instance) Root() string { return i.root }
 
 // PID returns the child process id for stdio instances, 0 otherwise.
+// A supervised instance's child belongs to its supervisor, not to this
+// daemon, but the PID is still the child's: the attach handshake reports
+// it, and status/takeover observers use it to tell attach from respawn.
 func (i *Instance) PID() int {
-	if st, ok := i.transport.(*mcpclient.StdioTransport); ok {
+	switch st := i.transport.(type) {
+	case *mcpclient.StdioTransport:
+		return st.PID()
+	case *mcpclient.SupervisedTransport:
 		return st.PID()
 	}
 	return 0
@@ -623,6 +629,14 @@ func (p *Pool) subscribeServerEvents(cl *mcpclient.Client) {
 // serves: its root is stored on the instance at creation and read back
 // for every restart, never re-resolved (decision 0004 §2).
 func (p *Pool) startLane(ctx context.Context, legacy bool, rs config.ResolvedScope) (*Instance, error) {
+	return p.startLaneMode(ctx, legacy, rs, dialSpawn)
+}
+
+// startLaneMode is startLane with the dial kind threaded through:
+// dialAttachOnly adopts a supervised server from its running
+// supervisor or does not start it at all (#9962); dialRestart
+// restarts its child through the supervisor (#9963).
+func (p *Pool) startLaneMode(ctx context.Context, legacy bool, rs config.ResolvedScope, kind dialKind) (*Instance, error) {
 	sctx, cancel := context.WithTimeout(ctx, p.cfg.StartTimeout)
 	defer cancel()
 	launched := time.Now()
@@ -644,7 +658,7 @@ func (p *Pool) startLane(ctx context.Context, legacy bool, rs config.ResolvedSco
 	}
 	execStamp, execIdentity, _ := eff.ExecStateAt(spawnCwd)
 
-	tr, err := p.dial(sctx, eff, rs.Root)
+	tr, err := p.dialMode(sctx, eff, rs.Root, kind)
 	if err != nil {
 		return nil, fmt.Errorf("server %q: %w", p.cfg.Name, err)
 	}
@@ -688,7 +702,7 @@ func (p *Pool) startLane(ctx context.Context, legacy bool, rs config.ResolvedSco
 		// transport; going straight there saves the two refused POSTs.
 		if cl, tr, err = p.connectSSE(sctx, tr, opts); err == nil {
 			source = mcpclient.SourceCache
-		} else if tr, err = p.dial(sctx, eff, rs.Root); err != nil {
+		} else if tr, err = p.dialMode(sctx, eff, rs.Root, kind); err != nil {
 			return nil, fmt.Errorf("server %q: %w", p.cfg.Name, err)
 		}
 	}
@@ -733,7 +747,7 @@ func (p *Pool) startLane(ctx context.Context, legacy bool, rs config.ResolvedSco
 		// that hears initialize first -- and the cache is what keeps this
 		// from happening on every start.
 		_ = tr.Close()
-		if tr, err = p.dial(sctx, eff, rs.Root); err != nil {
+		if tr, err = p.dialMode(sctx, eff, rs.Root, kind); err != nil {
 			return nil, fmt.Errorf("server %q: %w", p.cfg.Name, err)
 		}
 		opts.Preference, opts.Cached = mcpclient.ForceLegacy, ""
@@ -988,6 +1002,21 @@ func SpawnCwd(configCwd, root string) (cwd, source string) {
 	}
 }
 
+// dialKind selects how a supervised server's transport is obtained.
+type dialKind int
+
+const (
+	// dialSpawn attaches to the server's supervisor, spawning it when
+	// it is not live (the ordinary start).
+	dialSpawn dialKind = iota
+	// dialAttachOnly attaches to an already-running supervisor or
+	// fails — it never spawns one (#9962 adoption scan).
+	dialAttachOnly
+	// dialRestart has the supervisor restart its child and attaches
+	// to the new child (#9963 restart-through-supervisor).
+	dialRestart
+)
+
 // dial creates the transport for one instance. ctx is the caller's
 // startup context: it bounds any nix: program-spec resolution at spawn,
 // so a slow build cannot outlive the startup budget that owns it. root
@@ -997,13 +1026,20 @@ func SpawnCwd(configCwd, root string) (cwd, source string) {
 // callers with no instance being spawned (HTTP session adoption) it is
 // simply the pool's stored config.
 func (p *Pool) dial(ctx context.Context, eff *config.Resolved, root string) (mcpclient.Transport, error) {
+	return p.dialMode(ctx, eff, root, dialSpawn)
+}
+
+// dialMode is dial with the supervised variation selected by kind:
+// dialAttachOnly never spawns a supervisor, dialRestart restarts the
+// child through its supervisor. Unsupervised paths ignore the kind.
+func (p *Pool) dialMode(ctx context.Context, eff *config.Resolved, root string, kind dialKind) (mcpclient.Transport, error) {
 	spawnCwd, _ := SpawnCwd(eff.Cwd, root)
 	auth, err := p.resolveAuth()
 	if err != nil {
 		return nil, err
 	}
-	if eff.Stdio() && eff.Mcpx != nil && eff.Mcpx.Supervised {
-		return mcpclient.NewSupervised(mcpclient.SupervisedOptions{
+	if eff.Stdio() && eff.Mcpx.SupervisedEnabled() {
+		opts := mcpclient.SupervisedOptions{
 			Name:       eff.Name,
 			Command:    eff.Command,
 			Args:       eff.Args,
@@ -1011,7 +1047,15 @@ func (p *Pool) dial(ctx context.Context, eff *config.Resolved, root string) (mcp
 			Cwd:        spawnCwd,
 			InheritEnv: true,
 			Context:    ctx,
-		})
+		}
+		switch kind {
+		case dialAttachOnly:
+			return mcpclient.AttachSupervised(opts)
+		case dialRestart:
+			return mcpclient.RestartSupervised(opts)
+		default:
+			return mcpclient.NewSupervised(opts)
+		}
 	}
 	if eff.Stdio() {
 		return mcpclient.NewStdio(mcpclient.StdioOptions{
@@ -1870,6 +1914,51 @@ func (p *Pool) Restart(ctx context.Context, lazy bool) RestartResult {
 		}
 		keys = []string{"global"}
 	}
+	// Supervised servers restart THROUGH their supervisor (#9963):
+	// the instances above were retired (a supervised close is a
+	// detach), and each lane now restarts with a restart dial, so
+	// the supervisor kills and respawns the child instead of the
+	// pool reattaching to the very child it was asked to restart.
+	// Busy instances keep the generic path below: their calls drain
+	// on the old child first, as for any restart.
+	if p.cfg.Stdio() && p.cfg.Mcpx.SupervisedEnabled() && busy == 0 {
+		for _, key := range keys {
+			switch {
+			case strings.HasPrefix(key, "call:"):
+				res.Skipped = append(res.Skipped, RestartFailure{Key: key, Error: "per-call instance; its call is over"})
+				continue
+			case p.cfg.Scope.WatchesPID() && !keyPIDAlive(key):
+				res.Skipped = append(res.Skipped, RestartFailure{Key: key, Error: "owning process has exited"})
+				continue
+			}
+			rs := config.ResolvedScope{Key: key, Root: roots[key], Cwd: cwds[key]}
+			p.mu.Lock()
+			p.starting++
+			p.mu.Unlock()
+			in, err := p.startLaneMode(ctx, false, rs, dialRestart)
+			p.mu.Lock()
+			p.starting--
+			if err != nil {
+				p.cond.Broadcast()
+				p.mu.Unlock()
+				res.Failed = append(res.Failed, RestartFailure{Key: key, Error: err.Error()})
+				continue
+			}
+			if p.closed || p.findLaneLocked(key, false) != nil {
+				p.cond.Broadcast()
+				p.mu.Unlock()
+				go func() { _ = in.Client.Close() }()
+				continue
+			}
+			in.key = key
+			in.lastUsed = time.Now()
+			p.instances = append(p.instances, in)
+			p.cond.Broadcast()
+			p.mu.Unlock()
+			res.Started = append(res.Started, in.ID)
+		}
+		return res
+	}
 	for _, key := range keys {
 		switch {
 		case strings.HasPrefix(key, "call:"):
@@ -1959,7 +2048,7 @@ func (p *Pool) CloseGraceful(timeout time.Duration) {
 // tuning change or a removed server cut a call that ran past that grace.
 // WaitDrained covers this as well as a lazy restart.
 func (p *Pool) CloseDrained() {
-	p.closeDrained(ExecDrainTimeout, "reconfigured", "replaced by a configuration change", true)
+	p.closeDrained(ExecDrainTimeout, "reconfigured", "replaced by a configuration change", true, false)
 }
 
 // CloseDrainedWithin is CloseDrained for a daemon that is shutting down. drain
@@ -1967,10 +2056,19 @@ func (p *Pool) CloseDrained() {
 // its drain window once the HTTP server has stopped taking calls. The window
 // is ExecDrainTimeout, the same as a reload's, so a stop is bounded by it.
 func (p *Pool) CloseDrainedWithin(drain time.Duration) {
-	p.closeDrained(drain, "shutdown", "stopped because the daemon is shutting down", false)
+	p.closeDrained(drain, "shutdown", "stopped because the daemon is shutting down", false, false)
 }
 
-func (p *Pool) closeDrained(drain time.Duration, stopReason, callErr string, forgetSessions bool) {
+// CloseDrainedWithinForRestart is CloseDrainedWithin for a daemon that is
+// restarting rather than stopping for good (#1414). Each instance's transport
+// is told the close is a restart, so an upstream HTTP session is kept alive
+// and the record persisted for it stays resumable by the next daemon process
+// instead of being ended by a DELETE the successor could never use.
+func (p *Pool) CloseDrainedWithinForRestart(drain time.Duration) {
+	p.closeDrained(drain, "restart", "stopped because the daemon is restarting", false, true)
+}
+
+func (p *Pool) closeDrained(drain time.Duration, stopReason, callErr string, forgetSessions, restartIntent bool) {
 	p.mu.Lock()
 	if !p.closed {
 		p.closed = true
@@ -1989,6 +2087,13 @@ func (p *Pool) closeDrained(drain time.Duration, stopReason, callErr string, for
 	if forgetSessions {
 		for _, in := range stop {
 			p.forgetUpstreamSession(in)
+		}
+	}
+	if restartIntent {
+		// Before any child closes: Close skips the upstream DELETE and
+		// keeps the persisted record resumable (#1414).
+		for _, in := range stop {
+			in.Client.MarkRestartIntent()
 		}
 	}
 	for _, in := range stop {

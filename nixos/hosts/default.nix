@@ -25,6 +25,7 @@ in
       "services/id-mail"
       "services/pm-stack"
       "services/lab-tunnel"
+      "services/sandbox-link-tunnel"
       "services/pm-apps"
       "services/power-guard"
       "services/openai-cred-watchdog"
@@ -70,6 +71,13 @@ in
         # Lab cluster Cloudflare Tunnel (code#6455): connector +
         # edge status service for lab.security.cab.
         services.lab-tunnel.enable = true;
+      }
+      {
+        # Sandbox link Cloudflare Tunnel (code#10356): connector for
+        # sandbox-link.security.cab — the sandbox -> laptop-agent
+        # control path rides it as primary transport; Tailscale is
+        # the client's fallback.
+        services.sandbox-link-tunnel.enable = true;
       }
       {
         # PM app servers (code#1752): Kaneo + PostgreSQL, Grist, and

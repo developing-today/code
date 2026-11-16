@@ -1886,7 +1886,7 @@ pub async fn cmd_serve(opts: ServeOptions) -> Result<()> {
     // operator control with the already-registered handler.
     #[cfg(feature = "web")]
     let meta_handle = Arc::clone(&meta);
-    let router_builder = Router::builder(endpoint)
+    let router_builder = Router::builder(endpoint.clone())
         .accept(META_ALPN, meta)
         .accept(BLOBS_ALPN, blobs)
         .accept(iroh_gossip::net::GOSSIP_ALPN, gossip.clone())
@@ -2310,7 +2310,12 @@ pub async fn cmd_serve(opts: ServeOptions) -> Result<()> {
                     );
                 }
                 handles.push(tokio::spawn(async move {
-                    if let Err(e) = axum::serve(listener, web_router).await {
+                    if let Err(e) = axum::serve(
+                        listener,
+                        web_router.into_make_service_with_connect_info::<SocketAddr>(),
+                    )
+                    .await
+                    {
                         tracing::error!("web server error: {}", e);
                     }
                 }));

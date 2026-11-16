@@ -89,7 +89,6 @@ use crate::{
     parse_stdin_items, read_input,
 };
 
-
 /// Trim a name typed at the forgiving CLI surface before FileOps sees it.
 ///
 /// FileOps stores names verbatim and refuses padding (#4102 / design #4766

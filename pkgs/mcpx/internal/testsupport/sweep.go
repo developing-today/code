@@ -8,6 +8,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"testing"
 	"time"
 )
 
@@ -134,4 +135,27 @@ func SweepBuildTempDirs() (removed []string, leftover []LeftoverProcess) {
 		}
 	}
 	return removed, leftover
+}
+
+// MainWithSweep is the TestMain body for suites that use the fixture
+// builders but have no other suite-wide setup of their own: it runs the
+// tests, then applies the suite-wide sweep (#1971 remainder item 2) —
+// this binary's registered build temp dirs are removed, and a process
+// still executing from one of them fails the run, exactly as the e2e
+// suite's guarded main does by hand. Packages with their own TestMain
+// duties (e2e) keep calling SweepBuildTempDirs themselves. Before this
+// helper existed, the daemon, pool and examples suites never swept at
+// all, so every run leaked its builders' temp dirs (#10554).
+func MainWithSweep(m *testing.M) int {
+	code := m.Run()
+	removed, leftover := SweepBuildTempDirs()
+	fmt.Printf("testsupport sweep: removed %d build temp dirs\n", len(removed))
+	if len(leftover) > 0 {
+		fmt.Fprintf(os.Stderr,
+			"testsupport: %d process(es) still executing from the suite's build temp dirs after the suite ran (#1971): %v. "+
+				"Each test owns the children it spawns; a survivor is a leaked daemon or fake server.\n",
+			len(leftover), leftover)
+		return 1
+	}
+	return code
 }

@@ -113,18 +113,13 @@ describe("home feed validation (#7811)", () => {
           </section>`;
         const lists = Array.from(document.querySelectorAll("[data-home-app] ol"));
         const previousMarkup = lists.map((list) => list.innerHTML);
-        vi.stubGlobal(
-          "fetch",
-          vi.fn().mockResolvedValue({ ok: true, json: async () => malformedFeed }),
-        );
+        vi.stubGlobal("fetch", vi.fn().mockResolvedValue({ ok: true, json: async () => malformedFeed }));
 
         initHome();
         await new Promise((resolve) => setTimeout(resolve, 0));
 
         expect(lists.map((list) => list.innerHTML)).toEqual(previousMarkup);
-        expect(document.querySelector("[data-home-updated]")?.textContent).toBe(
-          "Feed is temporarily unavailable.",
-        );
+        expect(document.querySelector("[data-home-updated]")?.textContent).toBe("Feed is temporarily unavailable.");
       }
     } finally {
       if (visibility) Object.defineProperty(document, "visibilityState", visibility);

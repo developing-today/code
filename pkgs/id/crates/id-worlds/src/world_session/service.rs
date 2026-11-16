@@ -188,6 +188,20 @@ impl WorldService {
         self
     }
 
+    /// A snapshot of the world's retained audit records (F12.6),
+    /// oldest first.
+    #[must_use]
+    pub fn audit_records(&self) -> Vec<crate::world::AuditRecord> {
+        self.world.audit_records()
+    }
+
+    /// The world's retained audit records as an OpenTelemetry
+    /// OTLP/JSON logs payload (F12.6).
+    #[must_use]
+    pub fn audit_otlp_json(&self) -> serde_json::Value {
+        crate::world::export_otlp_json(&self.world.audit_records())
+    }
+
     /// Replace the world's capability ceiling, admin only. Unlike a profile,
     /// the ceiling applies at once: the next use or subscription sees it.
     ///

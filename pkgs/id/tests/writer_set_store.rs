@@ -36,6 +36,7 @@ fn ext(kind: &str) -> ChainExt {
         checkpoint: None,
         rotation: None,
         chat: None,
+        anchor: None,
     }
 }
 

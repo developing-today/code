@@ -199,7 +199,10 @@ impl KeyLineage {
         if self.find_key(&new_key).is_some() {
             return Err(LifecycleError::DuplicateKey);
         }
-        let outgoing = self.generations.last_mut().expect("checked non-empty");
+        let outgoing = self
+            .generations
+            .last_mut()
+            .ok_or(LifecycleError::NotEnrolled)?;
         outgoing.valid_until = Some(at.saturating_add(overlap));
         outgoing.superseded_by = Some(outgoing.generation + 1);
         let generation = outgoing.generation + 1;

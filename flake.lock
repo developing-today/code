@@ -21,6 +21,29 @@
         "type": "github"
       }
     },
+    "antigravity-cli-nix": {
+      "inputs": {
+        "flake-utils": [
+          "flake-utils"
+        ],
+        "nixpkgs": [
+          "nixpkgs-unstable"
+        ]
+      },
+      "locked": {
+        "lastModified": 1794654022,
+        "narHash": "sha256-0w9dkDfIq5VK6RMset1Jw7D2lcnvZWW78c2epNYxbCc=",
+        "owner": "selfhost-it",
+        "repo": "antigravity-cli-nix",
+        "rev": "c081b0688d176cf315418b49afbcc600e2461ade",
+        "type": "github"
+      },
+      "original": {
+        "owner": "selfhost-it",
+        "repo": "antigravity-cli-nix",
+        "type": "github"
+      }
+    },
     "aquamarine": {
       "inputs": {
         "hyprutils": [
@@ -1737,11 +1760,11 @@
     },
     "nixpkgs-25": {
       "locked": {
-        "lastModified": 1793726008,
-        "narHash": "sha256-jQp1wKvbwWdLBASTXkSi/VYmDJ5AbBi1WvcMt9HWJC8=",
+        "lastModified": 1794386569,
+        "narHash": "sha256-x9sADJvoVG0L6RejZB+/BB4YiGZFBZrfTlhF4uBq1tQ=",
         "owner": "NixOS",
         "repo": "nixpkgs",
-        "rev": "1d060086d60cb76a40cf37109f979d88a5bd6396",
+        "rev": "d4f25a3e562008648d45bcf2d70bcc7422cad84e",
         "type": "github"
       },
       "original": {
@@ -2264,11 +2287,11 @@
         ]
       },
       "locked": {
-        "lastModified": 1794732288,
-        "narHash": "sha256-7wIgJQyEgL2ANUSQfGFoxX8rx0F4auTUqKJG1I+74YI=",
+        "lastModified": 1794783126,
+        "narHash": "sha256-qKoBg2CFcpBqqnXl0liu5PSxuz0YP4PF42b8+ShmfWk=",
         "owner": "developing-today-forks",
         "repo": "opencode",
-        "rev": "d35c4341598043b1320e5d450049062cba341705",
+        "rev": "5b65c2a21d2fadbdcdf58ed96f85563bc5d25966",
         "type": "github"
       },
       "original": {
@@ -2372,6 +2395,7 @@
     "root": {
       "inputs": {
         "affinity-nix": "affinity-nix",
+        "antigravity-cli-nix": "antigravity-cli-nix",
         "chatgpt-desktop": "chatgpt-desktop",
         "clan-core": "clan-core",
         "claude-desktop": "claude-desktop",

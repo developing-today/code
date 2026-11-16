@@ -1,8 +1,9 @@
 # Shared schema v1: aggregator actions and outcomes
 
-Status: schema contract and local migration only. This migration has **not**
-been applied to Supabase `muse-dev2`; no rows have been copied, and the
-aggregator's JSON files remain authoritative.
+Status: the action/event contract and its #6815 add-on stores have been
+applied to Supabase `muse-dev2` and are the canonical backing store when the
+aggregator runs with `PM_AGG_STORE_BACKEND=supabase`; with the default
+`file` backend the JSON files remain authoritative.
 
 The target uses the `public` schema and the table-group names from
 [#1744](https://github.com/developing-today/code/issues/1744):
@@ -84,30 +85,36 @@ this change.
 
 ## Migration, fallback, and rollback
 
-There is no shared Postgres migration runner yet.
-`migrations/20261105_0001_action_event_store.up.sql` creates only these two
-tables, constraints, indexes, and grants. Its paired `.down.sql` refuses to
-drop either table while it contains rows, then drops `shared_events` before
-`agg_actions`. The refusal is deliberate protection against an accidental
-data-loss rollback.
+There is no shared Postgres migration runner yet; migrations are applied by
+hand in version order. `migrations/20261105_0001_action_event_store.up.sql`
+creates `agg_actions` and `shared_events` with their constraints, indexes, and
+grants. `migrations/20261116_0001_aggregator_remote_stores.up.sql` (#6815)
+adds, in dependency order after it:
 
-For a future store move, retain `actions.json` and `events.json` as the
-authoritative write and read path while DB writes are only a mirror. Enable DB
-reads only after parity checks pass; on a DB outage or read-parity failure,
-fall back to those files. A later writer cutover must preserve a replayable
-JSON copy. If rollback happens after any DB-only writes, stop DB writes, export
-and replay missing rows to JSON in action/event order, verify IDs, client
-tokens, outcomes, and event hashes, then route reads and writes back to the
-files. Empty the target tables only after that verification; the down
-migration refuses to drop non-empty tables. No reader, writer, migration
-runner, or live row is changed by this slice.
+| Table | Holds |
+| --- | --- |
+| `public.agg_activity_ingestion` | per-source checkpoints, dedupe seen ids, source status |
+| `public.agg_activity_gaps` | the activity gap ledger (gaps resolve in place) |
+| `public.agg_usage_snapshots` | append-only usage observations, dedupe key `service\|metric\|ts\|value` |
+| `public.agg_store_documents` | aggregator-owned JSON documents without a typed contract (`aa-last-good`) |
 
-This supplies the first column contract and reversible DDL artifact for P1 /
-Move 1 (`actions.json` → `agg_actions` + action outcomes in `shared_events`).
-It does **not** apply the DDL to `muse-dev2`, migrate or cut over the action
-store, finish the remaining `agg_*` / `shared_*` contracts, decide the
-projector's P1 location, or complete P1 / Move 1. #1744 acceptance criterion
-3 remains unchecked.
+Each paired `.down.sql` refuses to drop a non-empty table; the #6815 down
+migration drops its tables in reverse dependency order. The refusal is
+deliberate protection against an accidental data-loss rollback.
+
+Cutover and rollback are the aggregator's `PM_AGG_STORE_BACKEND` switch
+(`file` default → `supabase`), documented in
+[the aggregator README](../aggregator/README.md#store-backend-supabase-muse-dev2-6815).
+Switching to `supabase` makes the tables the write path; the local JSON
+stores are preserved as a rebuildable cache and remain the rollback target.
+The import script (`aggregator/scripts/migrate-stores-to-supabase.ts`) is
+idempotent, and re-running it after the deploy closes writes made between the
+import and the cutover. The migration test proves the paired DDL and rollback
+on a disposable PostgreSQL 16 instance; it does not connect to Supabase.
+
+This supplies reversible DDL for the #6815 slice. It does **not** finish the
+remaining `agg_*` / `shared_*` contracts, decide the projector's P1 location,
+or complete P1 / Move 1; #1744 acceptance criterion 3 remains unchecked.
 
 ## Disposable test
 
@@ -117,8 +124,10 @@ Run from the repository root:
 bash pm-stack/shared-schema/test-migration.sh
 ```
 
-The script starts its own temporary PostgreSQL 16 container, applies the up
-migration, proves key/foreign-key/check/idempotency behavior (including
-legacy-null compatibility), proves the down migration refuses non-empty
-tables, clears only its disposable fixtures, applies down, and verifies the
-tables are gone. It does not connect to Supabase or the PM Compose database.
+The script starts its own temporary PostgreSQL 16 container, applies both up
+migrations in order, proves key/foreign-key/check/idempotency behavior
+(including legacy-null compatibility and the #6815 store-table constraints),
+proves each down migration refuses non-empty tables, clears only its
+disposable fixtures, applies both down migrations in reverse, and verifies
+the tables are gone. It does not connect to Supabase or the PM Compose
+database.

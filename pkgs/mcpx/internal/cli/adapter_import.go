@@ -9,7 +9,6 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
-	"sort"
 	"strings"
 	"time"
 	"unicode"
@@ -732,14 +731,4 @@ func versionDrift(s adapter.Spec) (declared, found string, drift bool) {
 		return s.Provenance.BinaryVersion, "", false
 	}
 	return s.Provenance.BinaryVersion, found, found != s.Provenance.BinaryVersion
-}
-
-// sortedFlagNames is a small deterministic-order helper for notes.
-func sortedFlagNames(flags []importFlag) []string {
-	var names []string
-	for _, f := range flags {
-		names = append(names, f.flag())
-	}
-	sort.Strings(names)
-	return names
 }

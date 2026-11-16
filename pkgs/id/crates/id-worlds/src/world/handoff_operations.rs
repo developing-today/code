@@ -380,6 +380,7 @@ fn ops_entry(active: &ActiveHandoff, now_ms: u64) -> HandoffOpsEntry {
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
     use super::*;
     use crate::world::{ExportReceipt, ImportReceipt, ObserveOutcome, TransitStage};

@@ -60,6 +60,12 @@ struct CachedSecret {
 struct State {
     secrets: RwLock<HashMap<String, CachedSecret>>,
     last_refresh: RwLock<Option<u64>>,
+    /// The most recent vault-refresh failure, cleared by the next
+    /// successful refresh. Served on the not-loaded 503 so a client
+    /// can see WHY the broker has no secrets (#10743) instead of
+    /// retry-looping a bare "not loaded yet". Status-only text by
+    /// construction (BwsRunner discipline): never vault material.
+    last_refresh_error: RwLock<Option<String>>,
     refreshing: RwLock<bool>,
     /// In-flight read-through fetches, one gate per name (#6275):
     /// the first misser fetches from Bitwarden; concurrent missers
@@ -111,6 +117,16 @@ struct BwsRunner {
 
 impl fleet_secrets::CommandRunner for BwsRunner {
     fn run(&self, program: &str, args: &[&str]) -> Result<String, String> {
+        // A bare `bws` spawn dies with NotFound when the broker was
+        // launched under a stripped PATH (#10743); resolve through
+        // the well-known install locations instead.
+        let resolved;
+        let program: &std::path::Path = if program == "bws" {
+            resolved = fleet_secrets::resolve_bws_program();
+            &resolved
+        } else {
+            std::path::Path::new(program)
+        };
         let out = Command::new(program)
             .args(args)
             .env("BWS_ACCESS_TOKEN", &self.token)
@@ -141,6 +157,16 @@ fn refresh(state: &Arc<State>) -> Result<usize, String> {
         *r = true;
     }
     let result = do_refresh(state);
+    // The refresh-error bookkeeping lives here, in the one shared
+    // operation, so every caller records it — the background loop
+    // AND the manual POST /refresh path, whose caller discards the
+    // result (CodeRabbit review, #10757). The guard rejection
+    // above returns before this point and never overwrites the
+    // recorded error: a rejected overlap is not an attempt.
+    match &result {
+        Ok(_) => *state.last_refresh_error.write().unwrap() = None,
+        Err(e) => *state.last_refresh_error.write().unwrap() = Some(e.clone()),
+    }
     *state.refreshing.write().unwrap() = false;
     result
 }
@@ -547,7 +573,11 @@ fn handle_request(
             ),
             None => {
                 if state.last_refresh.read().unwrap().is_none() {
-                    (503, json!({"error": "secrets not loaded yet"}))
+                    let mut body = json!({"error": "secrets not loaded yet"});
+                    if let Some(e) = state.last_refresh_error.read().unwrap().clone() {
+                        body["refresh_error"] = json!(e);
+                    }
+                    (503, body)
                 } else {
                     // A miss on a loaded cache reads through to
                     // Bitwarden for this one name (#6275) before the
@@ -631,8 +661,20 @@ pub fn parse_ttl_s(raw: Option<&str>) -> Result<TtlParse, String> {
 
 pub fn run() -> i32 {
     use std::io::Read as _;
-    let bind =
-        std::env::var("SECRETS_BROKER_BIND").unwrap_or_else(|_| "100.99.113.103:4800".to_string());
+    // Stage-2 broker resilience: on the sandbox the broker is a
+    // local capability, never a LAN surface — force loopback
+    // regardless of the environment, so a stale or widened
+    // SECRETS_BROKER_BIND can never expose the vault off-host.
+    // The spawn in `fleet init` sets the loopback bind explicitly;
+    // this is the second enforcement, at the bind itself.
+    let sandbox = std::env::var("FLEET_LOCATION")
+        .ok()
+        .is_some_and(|v| v.trim() == "sandbox");
+    let bind = if sandbox {
+        "127.0.0.1:4800".to_string()
+    } else {
+        std::env::var("SECRETS_BROKER_BIND").unwrap_or_else(|_| "100.99.113.103:4800".to_string())
+    };
     let home = match crate::home::from_env() {
         Ok(home) => home,
         Err(error) => {
@@ -666,6 +708,7 @@ pub fn run() -> i32 {
     let state = Arc::new(State {
         secrets: RwLock::new(HashMap::new()),
         last_refresh: RwLock::new(None),
+        last_refresh_error: RwLock::new(None),
         refreshing: RwLock::new(false),
         inflight: Mutex::new(HashMap::new()),
     });
@@ -878,9 +921,28 @@ mod tests {
         Arc::new(State {
             secrets: RwLock::new(HashMap::new()),
             last_refresh: RwLock::new(Some(1)),
+            last_refresh_error: RwLock::new(None),
             refreshing: RwLock::new(false),
             inflight: Mutex::new(HashMap::new()),
         })
+    }
+
+    #[test]
+    fn not_loaded_503_names_the_refresh_failure() {
+        // oracle (#10743): a broker that has never loaded because
+        // its refresh is failing says why on the 503, so a client
+        // surfaces the cause instead of a bare "not loaded yet".
+        let state = empty_state();
+        *state.last_refresh.write().unwrap() = None;
+        *state.last_refresh_error.write().unwrap() =
+            Some("bws secret list -o json failed: spawn failed: entity not found".to_string());
+        let (status, body) = handle_request(&state, "tok", "GET", "/secret/alpha", Some("tok"));
+        assert_eq!(status, 503);
+        assert_eq!(body["error"], "secrets not loaded yet");
+        assert_eq!(
+            body["refresh_error"],
+            "bws secret list -o json failed: spawn failed: entity not found"
+        );
     }
 
     #[test]

@@ -3,9 +3,23 @@
 # Use a temporary fixture tree and stub cargo so the oracle is the logged
 # invocation set: valid shards partition every target exactly once; invalid
 # or empty shards never invoke cargo.
+# Usage: test-shard-sandbox-test.sh
+#   Accepts no positional arguments (operator-script argument contract,
+#   #3352 / #10569): extra arguments are rejected before any fixture work.
 set -euo pipefail
 
+usage() {
+  echo "Usage: test-shard-sandbox-test.sh" >&2
+}
+
+if [[ $# -ne 0 ]]; then
+  usage
+  echo "Error: unaccounted argument(s): $*" >&2
+  exit 1
+fi
+
 script="$(cd "$(dirname "$0")" && pwd)/test-shard-sandbox.sh"
+self="$(cd "$(dirname "$0")" && pwd)/test-shard-sandbox-test.sh"
 tmp="$(mktemp -d)"
 trap 'rm -rf "${tmp}"' EXIT
 
@@ -107,6 +121,24 @@ expect_invalid 'SHARD' 5 4
 expect_invalid 'SHARD must be less than COUNT' 9223372036854775807 9223372036854775807
 expect_invalid 'SHARD exceeds the supported integer range' 0009223372036854775808 9223372036854775807
 expect_invalid 'COUNT exceeds the supported integer range' 0 0009223372036854775808
+
+# Own argument contract (#10569): this script takes no arguments either.
+# A copy invoked with an extra argument must be rejected (exit 1, usage
+# + unaccounted-argument on stderr) before any fixture work. TMPDIR is
+# pointed at a fresh dir so a broken preflight would leave its mktemp
+# tree behind as evidence.
+mkdir -p "${tmp}/selfcheck-empty"
+cp "$self" "${tmp}/selfcheck.sh"
+rc=0
+TMPDIR="${tmp}/selfcheck-empty" bash "${tmp}/selfcheck.sh" extra >"${tmp}/selfcheck.out" 2>"${tmp}/selfcheck.err" || rc=$?
+[ "$rc" -eq 1 ] || fail "own extra argument exited $rc instead of 1"
+grep -Fq 'Usage: test-shard-sandbox-test.sh' "${tmp}/selfcheck.err" ||
+  fail 'own extra argument did not print usage'
+grep -Fq 'unaccounted argument' "${tmp}/selfcheck.err" ||
+  fail 'own extra argument did not report unaccounted argument'
+if [ -n "$(ls -A "${tmp}/selfcheck-empty")" ]; then
+  fail 'own extra argument did fixture work before rejection'
+fi
 
 # A valid range can still select no targets (for example a shard count
 # larger than the target set); that must fail safely, never run unfiltered.
