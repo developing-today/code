@@ -569,6 +569,24 @@ class BuildTraceabilityTests(unittest.TestCase):
             with self.assertRaisesRegex(TraceabilityError, "duplicate-key"):
                 build_traceability._read_jsonl(path)
 
+    def test_final_body_verification_requires_enrichment_clause_and_role(self):
+        clause = "Reject an alias collision without replacing the persisted identity"
+        body = ("S-1 root-key\n- Ownership role in this issue: primary\nstmt\n"
+                "design-x\noracle-y\nreason-z\n" + clause)
+        proposal = {"requirement_ids": ["S-1", "root-key"], "body": body}
+        build_traceability._verify_issue_body_binding(
+            proposal, "S-1", "root-key", "stmt", "design-x", "oracle-y",
+            "reason-z", role="primary", acceptance_enrichment=[clause])
+        stale = {"requirement_ids": ["S-1", "root-key"], "body": body.replace(clause, "")}
+        with self.assertRaisesRegex(TraceabilityError, "lacks shared binding token"):
+            build_traceability._verify_issue_body_binding(
+                stale, "S-1", "root-key", "stmt", "design-x", "oracle-y",
+                "reason-z", role="primary", acceptance_enrichment=[clause])
+        with self.assertRaisesRegex(TraceabilityError, "Ownership role in this issue: supporting"):
+            build_traceability._verify_issue_body_binding(
+                proposal, "S-1", "root-key", "stmt", "design-x", "oracle-y",
+                "reason-z", role="supporting", acceptance_enrichment=[clause])
+
     def test_proposal_dependency_cycles_rejected(self):
         with tempfile.TemporaryDirectory() as temp:
             p1, p2 = proposal("Proposal-1", ["Proposal-2"]), proposal("Proposal-2", ["Proposal-1"])
