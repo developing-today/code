@@ -3,13 +3,14 @@ name = "id-currency-registry"
 version = "0.1.0"
 edition = "2024"
 rust-version = "1.96"
-description = "Currency control-plane registry (F1 of #2062, issue #2317): Postgres schema + migrations for ledger_allocation/currency/currency_issuer/account and the monotonic, never-recycled ledger-u32 allocator"
+description = "Currency control-plane registry (F1 of #2062, issue #2317; account factory F2, issue #2318): Postgres schema + migrations for ledger_allocation/currency/currency_issuer/account and the monotonic, never-recycled ledger-u32 allocator"
 license = "MIT OR Apache-2.0"
 
 [features]
 default = []
 
 [dependencies]
+blake3 = "1"
 
 [lints.rust]
 unsafe_code = "warn"

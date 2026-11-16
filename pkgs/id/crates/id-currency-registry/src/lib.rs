@@ -27,10 +27,15 @@
 //! is invalid in `TigerBeetle` and never allocated.
 
 pub mod allocator;
+pub mod factory;
 pub mod registry;
 pub mod store;
 
 pub use allocator::{AllocError, Allocator};
+pub use factory::{
+    ACCOUNT_DOMAIN_SEP, AccountCluster, AccountFlags, AccountSpec, ClusterError, CreateOutcome,
+    CurrencyAccounts, Factory, FactoryError, PLATFORM_OWNER_ID, account_spec, derive_account_id,
+};
 pub use registry::{
     AccountKind, AccountRecord, CurrencyRecord, CurrencyStatus, IssuerGrant, IssuerRole,
     RegisterAccount, RegisterCurrency, Registry, RegistryError, SupplyPolicy,
