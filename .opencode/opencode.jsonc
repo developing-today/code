@@ -992,6 +992,74 @@
         }
       }
     },
+    // Cohere (2026-11-16, Drew): trial-key door, DEFINED BUT
+    // SEATED NOWHERE -- direct use only; no route or pool
+    // references it and it is not in disabled_providers (same
+    // posture as google-payg). The trial key is evaluation-only
+    // under Cohere's terms: 1,000 API calls/month across all
+    // endpoints, no production use, no payment method on file.
+    // Key in Bitwarden as `cohere.api-key`, bound via a
+    // credential-store row (integrationID cohere). Speaks
+    // Cohere's OpenAI-compatible endpoint; wire-proven
+    // 2026-11-16 on the trial key (native /v2/chat, /v2/embed,
+    // /v2/rerank, and compatibility-endpoint chat all HTTP
+    // 200). Embed and Rerank have no OpenCode seat concept --
+    // they are for scripts, not routes. Explicit model list:
+    // the current Command chat shelf only (the C4AI Aya models
+    // and the translate/arabic specialists are excluded).
+    // Context limits are Cohere's own published context_length
+    // values, read from GET /v1/models 2026-11-16.
+    "cohere": {
+      "npm": "@ai-sdk/openai-compatible",
+      "name": "Cohere (Trial Key, Evaluation Only)",
+      "options": {
+        "baseURL": "https://api.cohere.ai/compatibility/v1"
+      },
+      "models": {
+        "command-a-plus-05-2026": {
+          "name": "Command A+ (Cohere Trial)",
+          "limit": {
+            "context": 436000
+          }
+        },
+        "command-a-03-2025": {
+          "name": "Command A (Cohere Trial)",
+          "limit": {
+            "context": 288000
+          }
+        },
+        "command-a-reasoning-08-2025": {
+          "name": "Command A Reasoning (Cohere Trial)",
+          "limit": {
+            "context": 288768
+          }
+        },
+        "command-a-vision-07-2025": {
+          "name": "Command A Vision (Cohere Trial)",
+          "limit": {
+            "context": 128000
+          }
+        },
+        "command-r-plus-08-2024": {
+          "name": "Command R+ (Cohere Trial)",
+          "limit": {
+            "context": 128000
+          }
+        },
+        "command-r-08-2024": {
+          "name": "Command R (Cohere Trial)",
+          "limit": {
+            "context": 128000
+          }
+        },
+        "command-r7b-12-2024": {
+          "name": "Command R7B (Cohere Trial)",
+          "limit": {
+            "context": 132000
+          }
+        }
+      }
+    },
     // Google AI Studio (Gemini) doors -- per-project alias
     // providers (2026-11-16, Drew): one alias per Google project,
     // following the _openai.main/_openai.alt and opencode-go.*
