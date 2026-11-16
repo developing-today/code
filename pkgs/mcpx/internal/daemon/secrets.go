@@ -88,6 +88,24 @@ func (r *Registry) blockedBy(view *config.Resolved, seen map[*config.Resolved]bo
 			}
 		}
 	}
+	// A virtual namespace (#1933 slice 3) depends on every server
+	// it mounts from, exactly as if it required them: a script
+	// that references only the namespace would otherwise start
+	// and act before the mounted call met the source's missing
+	// secret, and preflight would never raise the source's
+	// secret request.
+	if view.Virtual() {
+		for _, tv := range view.ToolViews {
+			if tv.MountServer == "" {
+				continue
+			}
+			if depView, ok := r.View(tv.MountServer); ok {
+				if blocker, missing := r.blockedBy(depView, seen); blocker != nil {
+					return blocker, missing
+				}
+			}
+		}
+	}
 	return nil, nil
 }
 

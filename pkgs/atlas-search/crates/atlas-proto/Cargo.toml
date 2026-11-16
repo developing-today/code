@@ -9,3 +9,8 @@ description = "Shared HTTP job-protocol types for the Atlas search service and i
 [dependencies]
 serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["preserve_order"] }
+sha2 = "0.10"
+
+[dev-dependencies]
+# Same proptest version atlas-embed and the fleet-queue / pkgs-id crates use.
+proptest = "1.12"

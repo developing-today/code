@@ -5,7 +5,6 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
-	"flag"
 	"fmt"
 	"net/http"
 	"os"
@@ -133,6 +132,10 @@ func (a *App) CmdAdapter(ctx context.Context, args []string) error {
 		for _, s := range specs {
 			if err := s.Probe(); err != nil {
 				problems = append(problems, err.Error())
+				continue
+			}
+			if declared, found, drift := versionDrift(s); drift {
+				problems = append(problems, fmt.Sprintf("%s: this declaration was written against %s %s, found %s", s.Name, s.Name, declared, found))
 			}
 		}
 		if len(problems) > 0 {
@@ -225,51 +228,6 @@ func (a *App) CmdAdapter(ctx context.Context, args []string) error {
 	return fmt.Errorf("no adapter subcommand %q; list, check, call, tools, serve, import, add or remove", sub)
 }
 
-const importUsage = "usage: mcpx adapter import --bare <binary> --description \"what it is for\" [--out FILE]"
-
-// adapterImport is parsed apart from the adapter command's flags: --bare
-// and friends are import's own, not registry settings, and the registry
-// flag set would refuse them before the switch ever ran.
-func adapterImport(args []string) error {
-	// Only the bare passthrough exists so far. Declaration generation
-	// from --help, completions and man pages is #1962 steps 2-5, held
-	// for the #2118 reconciliation, so anything else is refused loudly
-	// rather than emitted silently.
-	bare, description, outPath, rest, err := splitImportArgs(args)
-	if err == flag.ErrHelp {
-		fmt.Fprintln(os.Stderr, importUsage)
-		return err
-	}
-	if err != nil {
-		return err
-	}
-	if !bare {
-		return fmt.Errorf("mcpx adapter import only implements --bare so far: declaration generation from --help, completions and man pages is #1962 steps 2-5, pending reconciliation with #2118")
-	}
-	if len(rest) != 1 {
-		fmt.Fprintln(os.Stderr, importUsage)
-		return fmt.Errorf("mcpx adapter import --bare takes exactly one binary")
-	}
-	spec, err := buildBareImport(rest[0], description)
-	if err != nil {
-		return err
-	}
-	doc, err := json.MarshalIndent(AdapterFile{Adapters: []adapter.Spec{spec}}, "", "  ")
-	if err != nil {
-		return err
-	}
-	doc = append(doc, '\n')
-	if outPath != "" {
-		if err := writeFileAtomic(outPath, doc, 0o644); err != nil {
-			return fmt.Errorf("writing %s: %w", outPath, err)
-		}
-	} else {
-		fmt.Print(string(doc))
-	}
-	fmt.Fprint(os.Stderr, bareImportWarning(spec))
-	return nil
-}
-
 // writeFileAtomic writes path via a temporary file in the same
 // directory and a rename, so an interrupted write never leaves an
 // existing adapter file truncated and unparseable — loadAdapterFiles
@@ -293,45 +251,6 @@ func writeFileAtomic(path string, doc []byte, perm os.FileMode) error {
 		return err
 	}
 	return os.Rename(tmpName, path)
-}
-
-// splitImportArgs partitions import's command line by hand: the standard
-// flag parser stops at the first positional, so `import --bare echo
-// --description ...` would leave --description unparsed. Import takes
-// exactly three flags, so they are lifted wherever they appear and the
-// rest must be the single binary.
-func splitImportArgs(args []string) (bare bool, description, out string, rest []string, err error) {
-	for i := 0; i < len(args); i++ {
-		a := args[i]
-		switch {
-		case a == "--":
-			rest = append(rest, args[i+1:]...)
-			i = len(args)
-		case a == "--bare":
-			bare = true
-		case a == "--description" || a == "--out":
-			if i+1 >= len(args) {
-				return false, "", "", nil, fmt.Errorf("%s needs a value: %s", a, importUsage)
-			}
-			i++
-			if a == "--description" {
-				description = args[i]
-			} else {
-				out = args[i]
-			}
-		case strings.HasPrefix(a, "--description="):
-			description = strings.TrimPrefix(a, "--description=")
-		case strings.HasPrefix(a, "--out="):
-			out = strings.TrimPrefix(a, "--out=")
-		case a == "--help" || a == "-h":
-			return false, "", "", nil, flag.ErrHelp
-		case strings.HasPrefix(a, "-") && a != "-":
-			return false, "", "", nil, fmt.Errorf("unknown flag %q: %s", a, importUsage)
-		default:
-			rest = append(rest, a)
-		}
-	}
-	return bare, description, out, rest, nil
 }
 
 // buildBareImport returns the passthrough declaration `import --bare`

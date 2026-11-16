@@ -35,17 +35,46 @@ describe("providerDisplayNames (#6125)", () => {
     expect([...names.keys()].sort()).toEqual(["_antigravity.claude-gpt", "_antigravity.gemini", "_claude", "meta"]);
   });
 
+  test("reads one-shot iterables exactly once and preserves their input keys", () => {
+    const inputs = ["_claude", "meta", "_antigravity.gemini"];
+    function* providers() {
+      yield* inputs;
+    }
+
+    const expected: [string, string][] = [
+      ["_claude", "claude"],
+      ["meta", "meta"],
+      ["_antigravity.gemini", "antigravity.gemini"],
+    ];
+    expect([...providerDisplayNames(providers())]).toEqual(expected);
+
+    const keys = new Map(inputs.map((name) => [name, true] as const)).keys();
+    expect([...providerDisplayNames(keys)]).toEqual(expected);
+  });
+
+  test("keeps the ownership marker when stripping it would collide with a plain provider", () => {
+    const names = providerDisplayNames(["_claude", "claude"]);
+    expect(names.get("_claude")).toBe("_claude");
+    expect(names.get("claude")).toBe("claude");
+  });
+
+  test("keeps dotted renamed providers distinguishable from their plain sibling", () => {
+    const names = providerDisplayNames(["_antigravity.gemini", "antigravity.gemini"]);
+    expect(names.get("_antigravity.gemini")).toBe("_antigravity.gemini");
+    expect(names.get("antigravity.gemini")).toBe("antigravity.gemini");
+  });
+
   test("non-direct names are untouched", () => {
-    const names = providerDisplayNames(["mistral", "openai.main", "cline-pass", "direct"]);
+    const names = providerDisplayNames(["mistral", "_openai.main", "cline-pass", "direct"]);
     expect(names.get("mistral")).toBe("mistral");
-    expect(names.get("openai.main")).toBe("openai.main");
+    expect(names.get("_openai.main")).toBe("openai.main"); // Rule 0 (#1823): display strips the leading underscore
     expect(names.get("cline-pass")).toBe("cline-pass");
     expect(names.get("direct")).toBe("direct");
   });
 
   test("a base provider present only as a dotted sibling still blocks stripping", () => {
-    // "openai.main" is a non-direct openai provider in the set.
-    const names = providerDisplayNames(["openai.main", "openai-direct"]);
+    // "_openai.main" is a non-direct openai provider in the set.
+    const names = providerDisplayNames(["_openai.main", "openai-direct"]);
     expect(names.get("openai-direct")).toBe("openai-direct");
   });
 
@@ -124,7 +153,7 @@ describe("renderQuota display rule + refresh control (#6125)", () => {
       lastTriggerAt: null,
     });
     expect(html).toContain("Refresh quota");
-    expect(html).toContain('data-quota-refresh-btn');
+    expect(html).toContain("data-quota-refresh-btn");
     expect(html).toContain('data-quota-generated-at="2026-11-05T07:32:27.650Z"');
     expect(html).toContain('action="/quota/refresh"');
     expect(html).toContain("/api/quota/refresh");

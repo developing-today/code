@@ -15,6 +15,19 @@ pub trait SearchBackend {
 
     fn vec_table(&self) -> &str;
 
+    /// The corpus snapshot this backend currently serves, when it
+    /// knows one: `ShardSet::snapshot_id()` for a sharded backend
+    /// (#5668 slice 3, issue #9943). The service's snapshot-bound
+    /// result cache keys entries by it, so a snapshot bump (a
+    /// re-shard, a promotion batch) invalidates every cached
+    /// result at once. Backends with no shard set (the Turso
+    /// monolith) return `None`: their corpus state has no snapshot
+    /// id to bind, and the cache treats them as one stable
+    /// snapshot.
+    fn snapshot_id(&self) -> Option<String> {
+        None
+    }
+
     /// Notes the backend has accumulated (setup notes, load-time
     /// coverage notes), in the order the Python appends them to
     /// `be.notes`. The orchestration snapshots this before and after
@@ -58,6 +71,9 @@ impl<T: SearchBackend + ?Sized> SearchBackend for Box<T> {
     }
     fn vec_table(&self) -> &str {
         (**self).vec_table()
+    }
+    fn snapshot_id(&self) -> Option<String> {
+        (**self).snapshot_id()
     }
     fn notes(&self) -> Vec<String> {
         (**self).notes()

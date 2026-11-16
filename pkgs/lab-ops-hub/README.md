@@ -89,7 +89,7 @@ wrangler r2 bucket create labops-files
 wrangler kv namespace create CACHE
 wrangler queues create labops-jobs
 npm run db:init        # remote D1 schema
-npm run deploy         # builds + pushes the container image, deploys the Worker
+npm run deploy         # deploys the Worker; build/push the Nix image below first
 npm run dev            # local dev (containers run via workerd locally too)
 ```
 
@@ -100,8 +100,8 @@ the deployed API itself.
 
 ## Container image without a Docker daemon (what this sandbox does)
 
-`wrangler deploy` wants a Docker daemon to build the Dockerfile. This
-sandbox has none, so the image here is built and pushed daemon-less:
+The Wrangler target references the pre-pushed registry image, so deployment
+does not build a Dockerfile. Build and push the image daemon-less:
 
 ```bash
 # 1. Build the OCI image with Nix (dockerTools) — pinned nixpkgs in container-image.nix
@@ -113,20 +113,22 @@ wrangler containers registries credentials --push   # prints a JWT
 # 3. Push with crane, username = account id, password = that JWT
 #    (docker config auth entry for registry.cloudflare.com)
 nix run nixpkgs#crane -- push <image.tar> \
-  registry.cloudflare.com/<account-id>/lab-ops-hub-crawlercontainer:v3
+  registry.cloudflare.com/<account-id>/lab-ops-hub-crawlercontainer:v5
 # 4. wrangler.jsonc references the registry image (not ./Dockerfile),
 #    so `wrangler deploy` needs no Docker at all.
 ```
 
-On any machine with Docker (e.g. Drew's NixOS boxes, which now ship
-wrangler), plain `npm run deploy` with the Dockerfile form works too;
-`container/Dockerfile` and `container-image.nix` build the same app.
+The Nix-built `container-image.nix` artifact is the only image build path.
+`wrangler.jsonc` points `CrawlerContainerV2` at the matching `:v5` registry
+image; `npm run deploy` deploys the Worker configuration but does not build or
+push that image.
 
 ### Known behaviour (observed 2026-10-20, D1-verified)
 
 - **Root cause #1 (fixed): `:latest` tags are rejected.** Cloudflare
   Containers refuses application creation with "Latest tags are not
-  allowed on images" (VALIDATE_INPUT). The config now pins `:v3`.
+  allowed on images" (VALIDATE_INPUT). The config uses the versioned `:v5`
+  image.
   Container deploys and `wrangler containers registries credentials`
   both require the account-wide token (day-to-day gets Forbidden).
 - **The container DID run** (image v1): it served real 502s from the
@@ -143,7 +145,7 @@ wrangler), plain `npm run deploy` with the Dockerfile form works too;
   `crawler-2`). Starts succeeded before that time on the identical v1
   image. DO instances are sticky: a DO reuses its existing instance
   across rollouts, which is why image bumps appeared to "not take".
-  If starts recover, the current config (image `:v3`, instance name
+  If starts recover, the current config (image `:v5`, instance name
   `crawler-4`) should serve crawls with `source='container'` in D1 —
   that row is the only accepted proof.
 - The Worker falls back to its in-Worker crawler on any container error

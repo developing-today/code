@@ -246,7 +246,6 @@ first_pid=
 export BLOCK_SWITCH=0
 ok 'refusal names the running switch evaluated commit'
 
-
 if [[ ${failures} -ne 0 ]]; then
   printf '%s test(s) failed\n' "${failures}" >&2
   exit 1

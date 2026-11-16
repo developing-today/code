@@ -13,3 +13,10 @@ class_name = "UserDO"
 [[migrations]]
 tag = "v1"
 new_sqlite_classes = ["UserDO"]
+
+# Slice A of #3811 (#9954): content-addressed blob bytes. Local
+# emulation only — no production bucket is provisioned by this
+# config (account gates #2285 / #3403 stay untouched).
+[[r2_buckets]]
+binding = "BLOBS"
+bucket_name = "id-hosted-blobs"

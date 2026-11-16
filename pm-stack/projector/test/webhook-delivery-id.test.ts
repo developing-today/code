@@ -37,7 +37,12 @@ async function hmacSha256Hex(body: Uint8Array): Promise<string> {
   return Array.from(signature, (byte) => byte.toString(16).padStart(2, "0")).join("");
 }
 
-async function sendFixture(file: string, event: string, deliveryId?: string, requestEnv: ServerEnv = env): Promise<Response> {
+async function sendFixture(
+  file: string,
+  event: string,
+  deliveryId?: string,
+  requestEnv: ServerEnv = env,
+): Promise<Response> {
   const body = readFileSync(join(FIXTURES, file), "utf8");
   const bytes = new TextEncoder().encode(body);
   const signature = await hmacSha256Hex(bytes);
@@ -48,7 +53,11 @@ async function sendFixture(file: string, event: string, deliveryId?: string, req
   });
   if (deliveryId !== undefined) headers.set("x-github-delivery", deliveryId);
 
-  return handleRequest(new Request("http://127.0.0.1/github/webhook", { method: "POST", headers, body }), db, requestEnv);
+  return handleRequest(
+    new Request("http://127.0.0.1/github/webhook", { method: "POST", headers, body }),
+    db,
+    requestEnv,
+  );
 }
 
 async function rowCount(table: "pmp_deliveries" | "pmp_items" | "pmp_push_events" | "pmp_comments") {

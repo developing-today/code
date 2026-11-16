@@ -25,6 +25,11 @@ name: cold-store-reaper
 # job provisions Python and zstd as well.
 
 on:
+  push:
+    branches: [main]
+    paths:
+      - "pkgs/cold-store-reaper/**"
+      - ".github/workflows/cold-store-reaper.yml"
   workflow_dispatch:
 
 permissions:

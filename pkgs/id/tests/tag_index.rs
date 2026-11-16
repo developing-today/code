@@ -37,6 +37,7 @@ fn claim(n: usize, subject: Hash, name: &str, value: Option<&str>) -> Claim {
         subject,
         name: name.to_owned(),
         value: value.map(str::to_owned),
+        scope: id::tag_claims::TagScope::Shared,
     }
 }
 

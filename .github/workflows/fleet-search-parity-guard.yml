@@ -10,7 +10,6 @@ name: fleet-search-parity-guard
 # toolchain -- so this stays a seconds-long basic check.
 
 on:
-  pull_request:
   workflow_dispatch:
 
 permissions:
