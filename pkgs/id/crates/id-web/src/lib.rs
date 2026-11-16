@@ -1139,7 +1139,17 @@ mod tests {
 
     #[test]
     fn test_load_asset_urls_from_manifest() {
+        use assets::Assets;
+
         let urls = load_asset_urls();
+        if Assets::get("manifest.json").is_none() {
+            // Clean checkout: no built frontend, so the documented
+            // fallback is the unhashed defaults (see load_asset_urls
+            // and pkgs/id/build.rs). The test must not require a build.
+            assert_eq!(urls.main_js, "/assets/main.js");
+            assert_eq!(urls.styles_css, "/assets/styles.css");
+            return;
+        }
         // Should load hashed URLs from manifest (name.hash.ext format)
         // Check that main_js has at least two dots (name.hash.js)
         let js_dots = urls.main_js.matches('.').count();
