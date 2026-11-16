@@ -171,6 +171,13 @@ func (p *Pool) restore(handed []*Instance) {
 	p.instances = p.parked
 	p.parked = nil
 	p.closed = false
+	// A takeover rollback returns parked children to service. The exec
+	// watch exits while the pool is closed (see watchExec), so restart
+	// it here — otherwise this pool never notices executable changes
+	// again. watchExecLocked no-ops when the watcher survived (a short
+	// closed window with no tick inside it) or when the pool has no
+	// exec check configured.
+	p.watchExecLocked()
 	p.cond.Broadcast()
 	p.mu.Unlock()
 }

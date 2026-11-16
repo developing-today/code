@@ -3,6 +3,7 @@ package pool_test
 import (
 	"context"
 	"encoding/json"
+	"os"
 	"path/filepath"
 	"testing"
 	"time"
@@ -98,4 +99,79 @@ func TestHandoffCarriesExecIdentityForRelativeCommand(t *testing.T) {
 	if st.PID != pids[0] {
 		t.Fatalf("adopted child pid %d was replaced by pid %d with its executable unchanged", pids[0], st.PID)
 	}
+}
+
+// A Detach→Restore rollback held across an exec-watch tick must not
+// permanently lose the stdio exec watch: the watcher exits while the pool
+// is closed, so Restore has to start a fresh one, and an executable change
+// after the rollback must still replace the child.
+func TestExecWatchSurvivesDetachRestoreRollback(t *testing.T) {
+	setExecWatch(t, execTick, 10*time.Second)
+	fake := testsupport.FakeMCPBinary(t)
+	dir := t.TempDir()
+	first := filepath.Join(dir, "first")
+	other := filepath.Join(dir, "other")
+	link := filepath.Join(dir, "mcp-server")
+	writeExecWrapper(t, fake, first, "before rollback")
+	writeExecWrapper(t, fake, other, "after rollback")
+	if err := os.Symlink(first, link); err != nil {
+		t.Fatal(err)
+	}
+
+	p := pool.New(resolved(t, link, &config.Extras{Sharing: config.SharingShared, Scope: config.ScopeGlobal}))
+	defer p.Close()
+	pid := servedPID(t, p)
+
+	if _, err := p.Detach(); err != nil {
+		t.Fatalf("detach: %v", err)
+	}
+	// Hold the pool closed across several watch ticks so the watcher
+	// exits on the closed pool (the pre-fix shape left `watching` set,
+	// and Restore never restarted it).
+	time.Sleep(5 * execTick)
+	p.Restore()
+
+	if err := os.Remove(link); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(other, link); err != nil {
+		t.Fatal(err)
+	}
+	awaitReplacement(t, p, pid)
+}
+
+// A Detach→Restore rollback that fits between exec-watch ticks leaves the
+// original watcher running; Restore must not start a second one, and an
+// executable change after the rollback must still replace the child.
+func TestExecWatchSurvivesShortDetachRestoreRollback(t *testing.T) {
+	setExecWatch(t, execTick, 10*time.Second)
+	fake := testsupport.FakeMCPBinary(t)
+	dir := t.TempDir()
+	first := filepath.Join(dir, "first")
+	other := filepath.Join(dir, "other")
+	link := filepath.Join(dir, "mcp-server")
+	writeExecWrapper(t, fake, first, "before rollback")
+	writeExecWrapper(t, fake, other, "after rollback")
+	if err := os.Symlink(first, link); err != nil {
+		t.Fatal(err)
+	}
+
+	p := pool.New(resolved(t, link, &config.Extras{Sharing: config.SharingShared, Scope: config.ScopeGlobal}))
+	defer p.Close()
+	pid := servedPID(t, p)
+
+	if _, err := p.Detach(); err != nil {
+		t.Fatalf("detach: %v", err)
+	}
+	// No watch tick fires inside this window, so the watcher survives.
+	time.Sleep(execTick / 4)
+	p.Restore()
+
+	if err := os.Remove(link); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(other, link); err != nil {
+		t.Fatal(err)
+	}
+	awaitReplacement(t, p, pid)
 }
