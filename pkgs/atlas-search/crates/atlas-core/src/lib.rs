@@ -36,6 +36,7 @@ pub mod feedback;
 pub mod feedback_normalise;
 pub mod filters;
 pub mod fusion;
+pub mod join;
 pub mod local;
 pub mod manifest;
 pub mod search;
@@ -75,6 +76,10 @@ pub use feedback_normalise::{
 };
 pub use filters::{Filters, Sensitivity};
 pub use fusion::FusedEntry;
+pub use join::{
+    Assembled, Hit, Paragraph, RenderRequest, RenderResult, Span, SpanOccurrence, SpanTable,
+    Successor, VersionCatalog, VersionRecord, VersionState, assemble, assemble_version, render,
+};
 pub use local::LocalBackend;
 pub use manifest::{
     LoadedManifest, Manifest, ManifestRow, ManifestSource, builtin_manifest, load_manifest,
