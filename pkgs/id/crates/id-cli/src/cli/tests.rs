@@ -2867,3 +2867,37 @@ fn test_cli_parse_world_dev_watch() {
         other => panic!("unexpected: {other:?}"),
     }
 }
+
+/// F11.12: `id world journal check|backup` parse through the CLI
+/// surface — the format-management commands the packet adds.
+#[test]
+fn world_journal_subcommands_parse() {
+    let cli = Cli::parse_from(["id", "world", "journal", "check", "/tmp/w", "--json"]);
+    match cli.command {
+        Some(Command::World(cmd)) => match *cmd {
+            WorldCommand::Journal(args) => match args.action {
+                JournalCommand::Check { dir, json } => {
+                    assert_eq!(dir, std::path::PathBuf::from("/tmp/w"));
+                    assert!(json);
+                }
+                other => panic!("unexpected: {other:?}"),
+            },
+            other => panic!("unexpected: {other:?}"),
+        },
+        other => panic!("unexpected: {other:?}"),
+    }
+    let cli = Cli::parse_from(["id", "world", "journal", "backup", "/tmp/w", "/tmp/b.jsonl"]);
+    match cli.command {
+        Some(Command::World(cmd)) => match *cmd {
+            WorldCommand::Journal(args) => match args.action {
+                JournalCommand::Backup { dir, out } => {
+                    assert_eq!(dir, std::path::PathBuf::from("/tmp/w"));
+                    assert_eq!(out, std::path::PathBuf::from("/tmp/b.jsonl"));
+                }
+                other => panic!("unexpected: {other:?}"),
+            },
+            other => panic!("unexpected: {other:?}"),
+        },
+        other => panic!("unexpected: {other:?}"),
+    }
+}

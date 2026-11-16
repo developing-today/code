@@ -19,6 +19,16 @@
 //! * `atlas-stage items --db <path> [--unit <id>]` — list the
 //!   items staged in a unit's DB, with chunk counts.
 //!
+//! * `atlas-stage promote --registry <path> --unit <id>
+//!   --shard-dir <dir> [--topic codeconfig]` — the aggregator's
+//!   embed-at-promotion step (#5669 aggregator slice, #1518): embed
+//!   the unit's staged chunks with the mandated model, write a new
+//!   core scan shard in the shard dir, stamp the unit DB's
+//!   embedding-model provenance, and promote the unit to `merged`
+//!   through the registry's M6 gate. Needs the embedding model +
+//!   ONNX runtime (ATLAS_MODEL_DIR / ATLAS_ORT_LIB, the same
+//!   resolution the atlas-search binary uses).
+//!
 //! All three are offline: a staging DB is a local libSQL/SQLite file
 //! today; hosted Turso creation is the aggregator slice's deployment
 //! surface, not this foundation.
@@ -105,6 +115,23 @@ enum Command {
         /// Only this unit's items (default: all units in the DB).
         #[arg(long)]
         unit: Option<String>,
+    },
+    /// Embed a unit's staged chunks into a new core scan shard and
+    /// promote the unit to merged (aggregator embed-at-promotion).
+    Promote {
+        /// The registry store file.
+        #[arg(long)]
+        registry: PathBuf,
+        /// The staging-unit id to promote.
+        #[arg(long)]
+        unit: String,
+        /// Directory the new core scan shard is written into
+        /// (created if missing).
+        #[arg(long)]
+        shard_dir: PathBuf,
+        /// Shard topic for the promoted entries.
+        #[arg(long, default_value = "codeconfig")]
+        topic: String,
     },
     /// List units in a lifecycle state (open|closing|merged).
     Units {
@@ -238,6 +265,34 @@ fn run(cli: Cli) -> Result<(), String> {
             }
             Ok(())
         }
+        Command::Promote {
+            registry,
+            unit,
+            shard_dir,
+            topic,
+        } => {
+            let registry = Registry::open(&registry).map_err(|e| e.to_string())?;
+            let embedder = load_doc_embedder()?;
+            let report = atlas_core::aggregate::embed_unit_into_shard(
+                &registry,
+                &unit,
+                &shard_dir,
+                &topic,
+                &embedder,
+                &now_utc(),
+            )
+            .map_err(|e| e.to_string())?;
+            println!(
+                "{{\"unit\":{},\"shard\":{},\"shard_path\":{},\"items\":{},\"chunks\":{},\"dims\":{}}}",
+                json_str(&report.unit_id),
+                json_str(&report.shard_name),
+                json_str(&report.shard_path.display().to_string()),
+                report.items,
+                report.chunks,
+                report.dims,
+            );
+            Ok(())
+        }
         Command::Units { state, registry } => {
             let state = parse_state(&state)?;
             let registry = Registry::open(&registry).map_err(|e| e.to_string())?;
@@ -248,6 +303,53 @@ fn run(cli: Cli) -> Result<(), String> {
             Ok(())
         }
     }
+}
+
+/// Build the production document embedder for `promote`: the
+/// pinned Snowflake model via atlas-embed, resolved exactly as the
+/// atlas-search binary resolves it (ATLAS_MODEL_DIR, then the
+/// state-dir / HF-cache snapshots; ATLAS_ORT_LIB, then the state-dir
+/// runtime). A missing model or runtime is a loud error, never a
+/// silent downgrade.
+fn load_doc_embedder() -> Result<atlas_core::AtlasEmbedder, String> {
+    let home = std::env::var_os("HOME")
+        .map(PathBuf::from)
+        .ok_or_else(|| "HOME is not set".to_string())?;
+    let model_dir = std::env::var("ATLAS_MODEL_DIR")
+        .ok()
+        .filter(|d| !d.is_empty())
+        .map(PathBuf::from)
+        .filter(|p| p.is_dir())
+        .or_else(|| {
+            let state = home.join(".local/state/atlas-search/model/95c2741480856aa9666782eb4afe11959938017f");
+            if state.is_dir() {
+                return Some(state);
+            }
+            let hf = home.join(".cache/huggingface/hub/models--Snowflake--snowflake-arctic-embed-m-v2.0/snapshots/95c2741480856aa9666782eb4afe11959938017f");
+            if hf.is_dir() { Some(hf) } else { None }
+        })
+        .ok_or_else(|| {
+            "Snowflake model not found (looked in ATLAS_MODEL_DIR, ~/.local/state/atlas-search/model/<rev>, and the HF cache snapshot)".to_string()
+        })?;
+    let ort_lib = std::env::var("ATLAS_ORT_LIB")
+        .ok()
+        .filter(|d| !d.is_empty())
+        .map(PathBuf::from)
+        .filter(|p| p.is_file())
+        .or_else(|| {
+            let cand = home.join(".local/state/atlas-search/ort/libonnxruntime.so");
+            if cand.is_file() {
+                return Some(cand);
+            }
+            let venv = home.join("atlas/v3-venv/lib/python3.14/site-packages/onnxruntime/capi/libonnxruntime.so.1.31.1");
+            if venv.is_file() { Some(venv) } else { None }
+        })
+        .ok_or_else(|| {
+            "ONNX Runtime library not found: set ATLAS_ORT_LIB".to_string()
+        })?;
+    let emb = atlas_embed::Embedder::load(&model_dir, &ort_lib)
+        .map_err(|e| format!("embedder load failed: {e}"))?;
+    Ok(atlas_core::AtlasEmbedder::new(emb))
 }
 
 fn unit_json(unit: &atlas_core::stage::StagingUnit) -> String {

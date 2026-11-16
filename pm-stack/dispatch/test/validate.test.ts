@@ -363,6 +363,17 @@ describe("session blank title/directory parsing (issue #2664)", () => {
     expect(r.title).toBe("My session");
     expect(r.directory).toBe("/home/user/git/code/pkgs");
   });
+
+  test("padded title and directory are trimmed (issue #10835)", () => {
+    const r = parseSessionRequest({
+      repo: "developing-today/code",
+      prompt: "do the thing",
+      title: "  My session  ",
+      directory: "  /home/user/git/code/pkgs  ",
+    });
+    expect(r.title).toBe("My session");
+    expect(r.directory).toBe("/home/user/git/code/pkgs");
+  });
 });
 
 describe("task blank dedupe_key parsing (issue #10739)", () => {
@@ -384,6 +395,10 @@ describe("task blank dedupe_key parsing (issue #10739)", () => {
   test("a nonblank dedupe_key is preserved verbatim", () => {
     const key = "repo-health:v1:fix:developing-today/code:issue:6430";
     expect(parseTaskRequest({ ...base, dedupe_key: key }).dedupeKey).toBe(key);
+  });
+
+  test("padded dedupe_key is trimmed so mirror padding cannot defeat dedupe (issue #10835)", () => {
+    expect(parseTaskRequest({ ...base, dedupe_key: "  abc  " }).dedupeKey).toBe("abc");
   });
 
   test("a non-string dedupe_key is still rejected", () => {

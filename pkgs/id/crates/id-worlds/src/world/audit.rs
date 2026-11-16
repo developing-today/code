@@ -15,9 +15,9 @@
 //!   OTLP/JSON logs payload, so audit and provider-use events leave
 //!   through the standard telemetry shape.
 //! - [`replay_grants`]: fold the log's accepted `UpdateCaps` /
-//!   `SetCapsCeiling` records back into the final grants state, the
-//!   same fold the tracing-capture replay tests prove, here over the
-//!   retained log itself.
+//!   `SetCapsCeiling` records plus `provider_use` first-use grants back
+//!   into the final grants state, the same fold the tracing-capture
+//!   replay tests prove, here over the retained log itself.
 //!
 //! The log is bounded ([`MAX_AUDIT_RECORDS`]); when it fills, the
 //! oldest records drop. It is an operational log, not the journal:
@@ -116,15 +116,30 @@ fn string_list(value: Option<&serde_json::Value>) -> Vec<String> {
 }
 
 /// Replay audit records to the final grants state. Only `accepted`
-/// records move state — a refused or denied admin action changed
+/// admin records move state — a refused or denied admin action changed
 /// nothing, so it replays as nothing. `UpdateCaps` folds exactly as
 /// the actor applies it: revokes are removed first, then grants are
-/// added. `SetCapsCeiling` replaces the ceiling. Every other action
-/// leaves grants untouched.
+/// added. `SetCapsCeiling` replaces the ceiling. A `provider_use`
+/// record with outcome `first_use_grant` (or a later `allowed` use of
+/// the same capability) folds the used capability into `granted`,
+/// mirroring `CapLedger::decide_for` under `grant_on_use`. Every other
+/// action leaves grants untouched.
 #[must_use]
 pub fn replay_grants(records: &[AuditRecord]) -> GrantsState {
     let mut state = GrantsState::default();
     for record in records {
+        if record.action == "provider_use" {
+            if matches!(record.outcome.as_str(), "first_use_grant" | "allowed") {
+                if let Some(capability) = record
+                    .parameters
+                    .get("capability")
+                    .and_then(serde_json::Value::as_str)
+                {
+                    state.granted.insert(capability.to_owned());
+                }
+            }
+            continue;
+        }
         if record.outcome != "accepted" {
             continue;
         }
@@ -302,6 +317,55 @@ mod tests {
             state.ceiling,
             Some(BTreeSet::from(["blob".to_owned(), "kv".to_owned()]))
         );
+    }
+
+    #[test]
+    fn replay_folds_first_use_grants() {
+        // Oracle: CapLedger::decide_for under grant_on_use inserts the
+        // cap and returns AllowAndGrant, audited as provider_use /
+        // first_use_grant (actor.rs audit_provider_decision). Replay
+        // must land on the same granted set the ledger holds.
+        let records = vec![
+            record(
+                "UpdateCaps",
+                "accepted",
+                serde_json::json!({"grant": ["chat.say"], "revoke": []}),
+            ),
+            record(
+                "provider_use",
+                "first_use_grant",
+                serde_json::json!({"capability": "time.now"}),
+            ),
+            record(
+                "provider_use",
+                "allowed",
+                serde_json::json!({"capability": "time.now"}),
+            ),
+            record(
+                "provider_use",
+                "denied",
+                serde_json::json!({"capability": "camera.snapshot"}),
+            ),
+        ];
+        let state = replay_grants(&records);
+        assert_eq!(
+            state.granted,
+            BTreeSet::from(["chat.say".to_owned(), "time.now".to_owned()])
+        );
+    }
+
+    #[test]
+    fn replay_ignores_malformed_provider_use_capability() {
+        let records = vec![
+            record(
+                "provider_use",
+                "first_use_grant",
+                serde_json::json!({"capability": 123}),
+            ),
+            record("provider_use", "first_use_grant", serde_json::json!({})),
+        ];
+        let state = replay_grants(&records);
+        assert!(state.granted.is_empty());
     }
 
     #[test]

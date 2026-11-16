@@ -445,6 +445,14 @@ impl IdentityStore {
         Some(payload.client_id)
     }
 
+    /// The author key this server's signed note events carry (#3819):
+    /// checkpoints published from live sessions are attributed to the
+    /// verifying half of the store's signing key, the session key the
+    /// events are signed under.
+    pub fn author_key(&self) -> [u8; 32] {
+        self.verifying_key.to_bytes()
+    }
+
     /// Update a client's display name.
     ///
     /// Returns the updated identity on success, or `None` if the client

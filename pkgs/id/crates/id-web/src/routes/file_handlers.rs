@@ -1422,7 +1422,7 @@ pub(super) fn convert_doc_to_bytes(name: &str, doc: &serde_json::Value) -> Resul
 /// non-empty, otherwise nothing; a `footnote_reference` contributes
 /// `[^<label>]` when its label is non-empty. A `front_matter` block
 /// contributes its `text` attr verbatim (#5639).
-pub(super) fn extract_plain_text(doc: &serde_json::Value) -> String {
+pub(crate) fn extract_plain_text(doc: &serde_json::Value) -> String {
     let mut lines = Vec::new();
     if let Some(content) = doc.get("content").and_then(|c| c.as_array()) {
         collect_plain_text_lines(content, &mut lines);

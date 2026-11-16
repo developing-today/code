@@ -347,10 +347,16 @@ pub fn serve<B: Backend + 'static>(backend: B, bind: &str) -> i32 {
             return 3;
         }
     };
-    serve_on(backend, listener);
-    // serve_on returns only when the listener breaks, which a
-    // bound listener does not do on its own; reaching here means
-    // the accept loop's socket failed.
+    let (_cache, accept) = serve_on(backend, listener);
+    // serve_on's accept loop runs on its own thread and serve_on
+    // returns at once; the daemon must not return while that loop
+    // is healthy. An earlier serve() fell through to the failure
+    // exit below the moment serve_on returned — the process bound,
+    // printed the failure line, and died before answering a single
+    // request (found live 2026-11-16, task 17509). Join the accept
+    // thread instead: serve() returns only when the loop actually
+    // breaks, which is the only way to reach the failure exit.
+    let _ = accept.join();
     eprintln!("fleet gh cache-serve: listener on '{bind}' failed; exiting");
     1
 }
@@ -358,13 +364,14 @@ pub fn serve<B: Backend + 'static>(backend: B, bind: &str) -> i32 {
 /// The accept loop over an already-bound listener, sharing one
 /// cache across connections. Exposed for the loopback test; the
 /// daemon entry point is [`serve`].
-pub fn serve_on<B: Backend + 'static>(backend: B, listener: TcpListener) -> Arc<Cache<B>> {
+pub fn serve_on<B: Backend + 'static>(
+    backend: B,
+    listener: TcpListener,
+) -> (Arc<Cache<B>>, std::thread::JoinHandle<()>) {
     let cache = Arc::new(Cache::new(backend));
-    let accept = Arc::new(listener);
-    let worker = Arc::clone(&accept);
     let cache_worker = Arc::clone(&cache);
-    std::thread::spawn(move || {
-        for conn in worker.incoming() {
+    let accept = std::thread::spawn(move || {
+        for conn in listener.incoming() {
             match conn {
                 Ok(stream) => {
                     let cache = Arc::clone(&cache_worker);
@@ -374,7 +381,7 @@ pub fn serve_on<B: Backend + 'static>(backend: B, listener: TcpListener) -> Arc<
             }
         }
     });
-    cache
+    (cache, accept)
 }
 
 fn handle_conn<B: Backend>(cache: &Cache<B>, stream: TcpStream) {
@@ -692,5 +699,60 @@ mod tests {
         let bad = serde_json::json!({"v": 999u32, "op": "personal"});
         let resp = fetch_one(&addr, &bad, Duration::from_secs(2)).unwrap();
         assert!(response_token(&resp).is_err());
+    }
+
+    // Oracle: the daemon ENTRY POINT (serve, what `fleet gh
+    // cache-serve` actually runs) stays up and serves: it binds,
+    // answers real TCP clients, and caches across connections.
+    // serve_on alone passing is not proof — serve() once delegated
+    // to serve_on's spawned thread and exited immediately (task
+    // 17509, 2026-11-16), leaving no daemon listening at all.
+    #[test]
+    fn serve_entry_point_stays_up_and_caches() {
+        // Pick a free port the same way the loopback test picks its
+        // listener, then hand the address to serve() as a string.
+        let probe = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = probe.local_addr().unwrap().port();
+        drop(probe);
+        struct ServeCounting {
+            mints: std::sync::Arc<AtomicUsize>,
+        }
+        impl Backend for ServeCounting {
+            fn resolve_secret(&self, _n: &str) -> Result<String, String> {
+                self.mints.fetch_add(1, Ordering::SeqCst);
+                Ok("tok-secret".to_string())
+            }
+            fn sign_jwt(&self, _a: &str) -> Result<(String, u64), String> {
+                unreachable!()
+            }
+            fn list_installations(&self, _a: &str) -> Result<Vec<(String, i64)>, String> {
+                unreachable!()
+            }
+            fn mint_token(&self, _a: &str, _i: i64) -> Result<(String, u64), String> {
+                unreachable!()
+            }
+        }
+        let counter = std::sync::Arc::new(AtomicUsize::new(0));
+        let backend = ServeCounting {
+            mints: std::sync::Arc::clone(&counter),
+        };
+        let server = std::thread::spawn(move || serve(backend, &format!("127.0.0.1:{port}")));
+        let addr = format!("127.0.0.1:{port}");
+        let req = request("personal", None, None, Some("s"));
+        // Bounded retry until the daemon thread binds and answers.
+        let mut resp = None;
+        for _ in 0..50 {
+            if let Ok(r) = fetch_one(&addr, &req, Duration::from_millis(200)) {
+                resp = Some(r);
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(100));
+        }
+        let resp = resp.expect("serve() daemon never answered a client");
+        assert_eq!(response_token(&resp).unwrap(), "tok-secret");
+        let resp = fetch_one(&addr, &req, Duration::from_secs(2)).unwrap();
+        assert_eq!(response_token(&resp).unwrap(), "tok-secret");
+        assert_eq!(counter.load(Ordering::SeqCst), 1, "daemon cached across connections");
+        assert!(!server.is_finished(), "serve() returned while its listener was healthy");
     }
 }

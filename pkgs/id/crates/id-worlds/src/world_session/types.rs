@@ -337,6 +337,34 @@ pub(crate) enum ClientFrame {
     Revoke {
         participant_id: u64,
     },
+    /// F13.7 step 2: the shell advertises the client-side providers
+    /// it can serve for this session — only ones the local user has
+    /// opted into. An offer enables nothing by itself: the host
+    /// broker (step 3) may only request an offered provider, and
+    /// only when world policy also allows it. A shell that never
+    /// offers is a v1 shell for provider purposes and receives no
+    /// `provider_request` frames.
+    ProviderOffer {
+        /// Provider names, each under the `client.` namespace.
+        providers: Vec<String>,
+    },
+    /// F13.7 step 2: the shell's answer to one `provider_request`,
+    /// correlated by the host-minted `nonce`. Exactly one of
+    /// `result_hex` / `error` is meaningful, per `ok`. The reply is
+    /// ephemeral: only the broker's accepted result event is
+    /// journaled, never the reply itself.
+    ProviderReply {
+        /// The nonce from the request being answered, hex-encoded.
+        nonce: String,
+        /// Whether the local adapter executed the request.
+        ok: bool,
+        /// The bounded result bytes, hex-encoded, when `ok`.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        result_hex: Option<String>,
+        /// A stable refusal code when not `ok`.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        error: Option<String>,
+    },
 }
 
 /// Signer metadata supplied with an uploaded module. Public keys and
@@ -359,6 +387,23 @@ pub(crate) enum ServerFrame<'a> {
     },
     Event {
         event: &'a WorldEvent,
+    },
+    /// F13.7 step 2: the host broker asks the originating session's
+    /// shell to execute one client-side provider. Sent only to a
+    /// session that advertised the provider in `provider_offer`;
+    /// shells that do not know this frame ignore it (the contract's
+    /// additive-revision rule), and a reply is accepted only for the
+    /// bound session and nonce (broker rules, step 3). Ephemeral:
+    /// the pending request is never journaled.
+    ProviderRequest {
+        /// Host-minted correlation nonce, hex-encoded.
+        nonce: &'a str,
+        /// The provider name, under the `client.` namespace.
+        provider: &'a str,
+        /// The request arguments, per the provider's manifest schema.
+        args: serde_json::Value,
+        /// The broker's deadline for the reply, in milliseconds.
+        deadline_ms: u64,
     },
     /// Acknowledges a deferred form answer; on field validation failure the
     /// fresh token lets the trusted presenter show the pending form again.
