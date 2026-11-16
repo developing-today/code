@@ -489,14 +489,20 @@ fn match_dedupe(key: &str) -> Option<DedupeMatch> {
                         // Shape YYYY-Www plus a real ISO week (01..=53):
                         // W00/W99 name no week, so a key spelled with one can
                         // never dedupe against a real week's key (#5482).
-                        let week_ok = week.len() == 8
-                            && all_digits(&week[..4])
-                            && week.as_bytes()[4] == b'-'
+                        //
+                        // Every positional check reads raw bytes rather than
+                        // string slices: a length of 8 can be reached with a
+                        // multibyte character straddling offset 4, and slicing
+                        // a `str` there panics the calling thread (#10760).
+                        let week_ok = wb.len() == 8
+                            && wb[..4].iter().all(u8::is_ascii_digit)
+                            && wb[4] == b'-'
                             && wb[5] == b'W'
-                            && all_digits(&week[6..])
-                            && week[6..]
-                                .parse::<u32>()
-                                .is_ok_and(|w| (1..=53).contains(&w));
+                            && wb[6..].iter().all(u8::is_ascii_digit)
+                            && std::str::from_utf8(&wb[6..])
+                                .ok()
+                                .and_then(|digits| digits.parse::<u32>().ok())
+                                .is_some_and(|w| (1..=53).contains(&w));
                         if slug_ok && week_ok {
                             return Some(DedupeMatch {
                                 family: fam.into(),
@@ -1393,6 +1399,26 @@ mod tests {
                 .is_none()
         );
     }
+    // A week field whose multibyte character straddles a fixed offset used
+    // to reach `&week[4..]` on a non-char boundary and panic (#10760). It must
+    // simply fail the shape check.
+    #[test]
+    fn maintenance_week_with_multibyte_bytes_does_not_panic() {
+        assert!(
+            match_dedupe("repo-health:v1:maintenance:developing-today/code:weekly:202\u{e9}W01")
+                .is_none()
+        );
+        assert!(
+            match_dedupe("repo-health:v1:maintenance:developing-today/code:weekly:202\u{e9}W0")
+                .is_none()
+        );
+        // Controls: the ASCII neighbours still classify as before.
+        assert!(
+            match_dedupe("repo-health:v1:maintenance:developing-today/code:weekly:2026-W01")
+                .is_some()
+        );
+    }
+
     fn valid_packet() -> Value {
         json!({
             "title": "t",
