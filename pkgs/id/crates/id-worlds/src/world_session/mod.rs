@@ -24,8 +24,9 @@ use tokio::sync::broadcast;
 
 use crate::directory_auth::Signed;
 use crate::world::{
-    Authority, CapabilityBounds, FileScope, Isolation, JoinCapability, Participant, SessionId,
-    WorldHandle, WorldMetrics, WorldPolicy, WorldScopes,
+    AuditRecord, Authority, CapabilityBounds, FileScope, Isolation, JoinCapability, Participant,
+    SessionId, WorldHandle, WorldMetrics, WorldPolicy, WorldScopes, emit_audit_record,
+    next_audit_correlation_id,
 };
 #[cfg(feature = "sandbox")]
 use crate::world_compile::CompileSpec;
@@ -128,6 +129,52 @@ pub(crate) fn frame_admin_token(frame: &ClientFrame) -> Option<&str> {
     }
 }
 
+/// Wall-clock milliseconds for session-layer audit records (the actor
+/// stamps records with its world clock; hub and session frames are
+/// processed before any world clock is involved).
+fn audit_now_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|duration| duration.as_millis() as u64)
+        .unwrap_or(0)
+}
+
+/// The bare audit action name of an admin frame, for dispatch sites
+/// that refuse several admin frame kinds at one point.
+fn admin_frame_name(frame: &ClientFrame) -> &'static str {
+    match frame {
+        ClientFrame::Invite { .. } => "Invite",
+        ClientFrame::Compile { .. } => "Compile",
+        ClientFrame::CreateWorld { .. } => "CreateWorld",
+        ClientFrame::ListWorlds { .. } => "ListWorlds",
+        ClientFrame::InstallBegin { .. } => "InstallBegin",
+        ClientFrame::EventHistoryAdmin { .. } => "EventHistoryAdmin",
+        ClientFrame::SetExecutionProfile { .. } => "SetExecutionProfile",
+        _ => "Unknown",
+    }
+}
+
+/// Emit the one audit line an admin frame produces (#1063): the
+/// session-layer half of the audit stream, in the actor's record shape
+/// on the same reserved target (`id::audit`). The actor is the literal
+/// `admin` — the token itself is a secret and is never recorded. Every
+/// dispatch path through this module calls this exactly once per admin
+/// frame (the [`frame_admin_token`] set), so every admin frame
+/// produces exactly one line, denials included.
+fn audit_admin_frame(world_id: &str, action: &str, outcome: &str, parameters: serde_json::Value) {
+    emit_audit_record(&AuditRecord {
+        schema_version: 2,
+        timestamp_ms: audit_now_ms(),
+        world_id: world_id.to_owned(),
+        actor: "admin".to_owned(),
+        action: format!("frame:{action}"),
+        parameters,
+        outcome: outcome.to_owned(),
+        target: world_id.to_owned(),
+        correlation_id: next_audit_correlation_id(),
+    });
+}
+
 /// Run one session to completion.
 ///
 /// The first frame names the world (`"world": "<name>"`, default world if
@@ -203,6 +250,7 @@ pub async fn run_session_with<I: SessionIo>(hub: &WorldHub, io: &mut I, config: 
         }
         ClientFrame::ListWorlds { admin_token } => {
             if admin_token.len() > MAX_ADMIN_TOKEN_BYTES || !hub.admin_ok(admin_token) {
+                audit_admin_frame("hub", "ListWorlds", "refused", serde_json::json!({}));
                 let _ = send_error(&unattributed, io, "admin denied").await;
                 return;
             }
@@ -217,10 +265,17 @@ pub async fn run_session_with<I: SessionIo>(hub: &WorldHub, io: &mut I, config: 
                 },
             )
             .await;
+            audit_admin_frame("hub", "ListWorlds", "accepted", serde_json::json!({}));
             return;
         }
         ClientFrame::CreateWorld { admin_token } => {
             if admin_token.len() > MAX_ADMIN_TOKEN_BYTES || !hub.admin_ok(admin_token) {
+                audit_admin_frame(
+                    world.as_deref().unwrap_or("hub"),
+                    "CreateWorld",
+                    "refused",
+                    serde_json::json!({}),
+                );
                 let _ = send_error(&unattributed, io, "admin denied").await;
                 return;
             }
@@ -237,8 +292,20 @@ pub async fn run_session_with<I: SessionIo>(hub: &WorldHub, io: &mut I, config: 
                         },
                     )
                     .await;
+                    audit_admin_frame(
+                        name,
+                        "CreateWorld",
+                        "accepted",
+                        serde_json::json!({"created": created}),
+                    );
                 }
                 Err(error) => {
+                    audit_admin_frame(
+                        name,
+                        "CreateWorld",
+                        "refused",
+                        serde_json::json!({"error": error.message()}),
+                    );
                     let _ = send_error(&unattributed, io, error.message()).await;
                 }
             }
@@ -249,6 +316,12 @@ pub async fn run_session_with<I: SessionIo>(hub: &WorldHub, io: &mut I, config: 
     if let ClientFrame::EventHistoryAdmin { admin_token } = &frame
         && (admin_token.len() > MAX_ADMIN_TOKEN_BYTES || !hub.admin_ok(admin_token))
     {
+        audit_admin_frame(
+            world.as_deref().unwrap_or("hub"),
+            "EventHistoryAdmin",
+            "refused",
+            serde_json::json!({}),
+        );
         let _ = send_error(&unattributed, io, "admin denied").await;
         return;
     }
@@ -321,7 +394,7 @@ pub async fn run_session_with<I: SessionIo>(hub: &WorldHub, io: &mut I, config: 
         }
         return;
     }
-    run_world_session(lease.service(), io, frame).await;
+    run_world_session(lease.service(), io, frame, lease.name()).await;
 }
 
 /// Apply an isolation change for the admin token, or for a signed request
@@ -464,7 +537,12 @@ pub(crate) fn moderation_authority(
 }
 
 /// Serve one session against its resolved world, starting from its first frame.
-async fn run_world_session<I: SessionIo>(service: &WorldService, io: &mut I, frame: ClientFrame) {
+async fn run_world_session<I: SessionIo>(
+    service: &WorldService,
+    io: &mut I,
+    frame: ClientFrame,
+    world_name: &str,
+) {
     match frame {
         ClientFrame::Join {
             capability,
@@ -479,6 +557,7 @@ async fn run_world_session<I: SessionIo>(service: &WorldService, io: &mut I, fra
             joined(
                 service,
                 io,
+                world_name,
                 JoinCapability::from_wire(capability),
                 after,
                 screen_patches,
@@ -507,6 +586,7 @@ async fn run_world_session<I: SessionIo>(service: &WorldService, io: &mut I, fra
                     "unknown invite role; use spectator, observer, player, guest, delegator, builder, or moderator",
                 )
                 .await;
+                audit_admin_frame(world_name, "Invite", "refused", serde_json::json!({}));
             }
             role_scopes => match service
                 .invite_scoped(
@@ -521,15 +601,19 @@ async fn run_world_session<I: SessionIo>(service: &WorldService, io: &mut I, fra
                 Ok(invite) => {
                     let _ =
                         send_json(service.frame_meter(), io, &ServerFrame::Invite(&invite)).await;
+                    audit_admin_frame(world_name, "Invite", "accepted", serde_json::json!({}));
                 }
                 Err(InviteError::InvalidBounds(message)) => {
                     let _ = send_error(service.frame_meter(), io, message).await;
+                    audit_admin_frame(world_name, "Invite", "refused", serde_json::json!({}));
                 }
                 Err(InviteError::Disabled) => {
                     let _ = send_error(service.frame_meter(), io, "invites are not enabled").await;
+                    audit_admin_frame(world_name, "Invite", "refused", serde_json::json!({}));
                 }
                 Err(InviteError::Unauthorized) => {
                     let _ = send_error(service.frame_meter(), io, "invite denied").await;
+                    audit_admin_frame(world_name, "Invite", "refused", serde_json::json!({}));
                 }
                 Err(InviteError::Unavailable) => {
                     let _ = send_error(
@@ -538,6 +622,7 @@ async fn run_world_session<I: SessionIo>(service: &WorldService, io: &mut I, fra
                         "world cannot issue another invite",
                     )
                     .await;
+                    audit_admin_frame(world_name, "Invite", "refused", serde_json::json!({}));
                 }
             },
         },
@@ -548,7 +633,7 @@ async fn run_world_session<I: SessionIo>(service: &WorldService, io: &mut I, fra
         | ClientFrame::Records { .. }
         | ClientFrame::RecordsTicket { .. }
         | ClientFrame::DownloadModule { .. } => {
-            query_session(service, io, frame).await;
+            query_session(service, io, frame, world_name).await;
         }
         ClientFrame::InstallBegin {
             admin_token,
@@ -566,9 +651,16 @@ async fn run_world_session<I: SessionIo>(service: &WorldService, io: &mut I, fra
             };
             if service.source_only() {
                 if service.authorize_admin(Some(&admin_token)).is_err() {
+                    audit_admin_frame(world_name, "InstallBegin", "refused", serde_json::json!({}));
                     let _ = send_error(service.frame_meter(), io, "module install denied").await;
                     return;
                 }
+                audit_admin_frame(
+                    world_name,
+                    "InstallBegin",
+                    "refused",
+                    serde_json::json!({"reason": "source_only"}),
+                );
                 let _ = send_error(
                     service.frame_meter(),
                     io,
@@ -577,7 +669,7 @@ async fn run_world_session<I: SessionIo>(service: &WorldService, io: &mut I, fra
                 .await;
                 return;
             }
-            if let Err(message) = install_module_session(
+            let install_result = install_module_session(
                 service,
                 io,
                 &admin_token,
@@ -586,8 +678,18 @@ async fn run_world_session<I: SessionIo>(service: &WorldService, io: &mut I, fra
                 signature.as_ref(),
                 seed,
             )
-            .await
-            {
+            .await;
+            audit_admin_frame(
+                world_name,
+                "InstallBegin",
+                if install_result.is_ok() {
+                    "accepted"
+                } else {
+                    "refused"
+                },
+                serde_json::json!({"total_bytes": total_bytes}),
+            );
+            if let Err(message) = install_result {
                 let _ = send_error(service.frame_meter(), io, message).await;
             }
         }
@@ -663,8 +765,20 @@ async fn run_world_session<I: SessionIo>(service: &WorldService, io: &mut I, fra
                     },
                 )
                 .await;
+                audit_admin_frame(
+                    world_name,
+                    "SetExecutionProfile",
+                    "accepted",
+                    serde_json::json!({}),
+                );
             }
             Err(error) => {
+                audit_admin_frame(
+                    world_name,
+                    "SetExecutionProfile",
+                    "refused",
+                    serde_json::json!({}),
+                );
                 let _ = send_error(service.frame_meter(), io, &format!("{error:#}")).await;
             }
         },
@@ -711,7 +825,18 @@ async fn run_world_session<I: SessionIo>(service: &WorldService, io: &mut I, fra
             }
         }
         ClientFrame::EventHistoryAdmin { admin_token } => {
-            if let Err(message) = event_history_admin_session(service, io, &admin_token).await {
+            let result = event_history_admin_session(service, io, &admin_token).await;
+            audit_admin_frame(
+                world_name,
+                "EventHistoryAdmin",
+                if result.is_ok() {
+                    "accepted"
+                } else {
+                    "refused"
+                },
+                serde_json::json!({}),
+            );
+            if let Err(message) = result {
                 let _ = send_error(service.frame_meter(), io, message).await;
             }
         }
@@ -815,14 +940,17 @@ async fn run_world_session<I: SessionIo>(service: &WorldService, io: &mut I, fra
                         },
                     )
                     .await;
+                    audit_admin_frame(world_name, "Compile", "accepted", serde_json::json!({}));
                 }
                 Err(message) => {
+                    audit_admin_frame(world_name, "Compile", "refused", serde_json::json!({}));
                     let _ = send_error(service.frame_meter(), io, &message).await;
                 }
             }
         }
         #[cfg(not(feature = "sandbox"))]
         ClientFrame::Compile { .. } => {
+            audit_admin_frame(world_name, "Compile", "refused", serde_json::json!({}));
             let _ = send_error(
                 service.frame_meter(),
                 io,
@@ -860,7 +988,12 @@ async fn run_world_session<I: SessionIo>(service: &WorldService, io: &mut I, fra
 /// `records`, `records_ticket`, `download_module`) until the peer closes,
 /// denies, or sends a frame that
 /// ends the session. A `join` frame switches to the joined session.
-async fn query_session<I: SessionIo>(service: &WorldService, io: &mut I, first: ClientFrame) {
+async fn query_session<I: SessionIo>(
+    service: &WorldService,
+    io: &mut I,
+    first: ClientFrame,
+    world_name: &str,
+) {
     let mut next = Some(first);
     loop {
         let frame = match next.take() {
@@ -902,6 +1035,7 @@ async fn query_session<I: SessionIo>(service: &WorldService, io: &mut I, first: 
                 joined(
                     service,
                     io,
+                    world_name,
                     JoinCapability::from_wire(capability),
                     after,
                     screen_patches,
@@ -1637,6 +1771,7 @@ async fn install_module_session<I: SessionIo>(
 async fn joined<I: SessionIo>(
     service: &WorldService,
     io: &mut I,
+    world_name: &str,
     token: JoinCapability,
     after: Option<u64>,
     screen_patches: bool,
@@ -1786,6 +1921,7 @@ async fn joined<I: SessionIo>(
                         &mut view_state,
                         screen_patches,
                         &mut pending_view_deadline,
+                        world_name,
                     ).await {
                         break;
                     }
@@ -2131,6 +2267,7 @@ async fn handle_client_frame<I: SessionIo>(
     view_state: &mut ViewRevisionState,
     screen_patches: bool,
     pending_view_deadline: &mut Option<tokio::time::Instant>,
+    world_name: &str,
 ) -> bool {
     let world = service.world();
     let Ok(value) = parse_json_without_duplicate_keys(text) else {
@@ -2334,8 +2471,20 @@ async fn handle_client_frame<I: SessionIo>(
                         },
                     )
                     .await;
+                    audit_admin_frame(
+                        world_name,
+                        "SetExecutionProfile",
+                        "accepted",
+                        serde_json::json!({}),
+                    );
                 }
                 Err(error) => {
+                    audit_admin_frame(
+                        world_name,
+                        "SetExecutionProfile",
+                        "refused",
+                        serde_json::json!({}),
+                    );
                     return send_error(service.frame_meter(), io, &format!("{error:#}")).await;
                 }
             }
@@ -2539,6 +2688,7 @@ async fn handle_client_frame<I: SessionIo>(
             // is refused before any scope check, so the refusal cannot
             // be read as a statement about either credential.
             if admin_token.is_some() {
+                audit_admin_frame(world_name, "InstallBegin", "refused", serde_json::json!({}));
                 return send_error(
                     service.frame_meter(),
                     io,
@@ -2629,6 +2779,14 @@ async fn handle_client_frame<I: SessionIo>(
         | ClientFrame::DownloadModule { .. }
         | ClientFrame::DownloadModuleAdmin { .. }
         | ClientFrame::EventHistoryAdmin { .. } => {
+            if frame_admin_token(&frame).is_some() {
+                audit_admin_frame(
+                    world_name,
+                    admin_frame_name(&frame),
+                    "refused",
+                    serde_json::json!({"reason": "already_joined"}),
+                );
+            }
             return send_error(service.frame_meter(), io, "already joined").await;
         }
     };

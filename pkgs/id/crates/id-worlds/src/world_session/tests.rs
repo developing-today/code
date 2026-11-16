@@ -1948,6 +1948,142 @@ mod tests {
         assert_eq!(listed["worlds"][0]["name"], "arena");
     }
 
+    // ---- #1063: session admin-frame audit capture ----
+
+    #[derive(Clone, Default)]
+    struct FrameAuditCapture(Arc<std::sync::Mutex<Vec<serde_json::Value>>>);
+
+    impl<S: tracing::Subscriber> tracing_subscriber::Layer<S> for FrameAuditCapture {
+        fn on_event(
+            &self,
+            event: &tracing::Event<'_>,
+            _context: tracing_subscriber::layer::Context<'_, S>,
+        ) {
+            if event.metadata().target() != "id::audit" {
+                return;
+            }
+            let mut visitor = FrameAuditVisitor::default();
+            event.record(&mut visitor);
+            if let Some(json) = visitor.record
+                && let Ok(record) = serde_json::from_str(&json)
+            {
+                self.0.lock().unwrap().push(record);
+            }
+        }
+    }
+
+    #[derive(Default)]
+    struct FrameAuditVisitor {
+        record: Option<String>,
+    }
+
+    impl tracing::field::Visit for FrameAuditVisitor {
+        fn record_str(&mut self, field: &tracing::field::Field, value: &str) {
+            if field.name() == "audit_record" {
+                self.record = Some(value.to_owned());
+            }
+        }
+
+        fn record_debug(&mut self, field: &tracing::field::Field, value: &dyn std::fmt::Debug) {
+            if field.name() == "audit_record" {
+                let formatted = format!("{value:?}");
+                self.record = Some(serde_json::from_str::<String>(&formatted).unwrap_or(formatted));
+            }
+        }
+    }
+
+    /// #1063: every admin frame produces exactly one audit line —
+    /// hub-gate denials included — with the v2 fields, and the token
+    /// itself never appears in a record.
+    #[tokio::test]
+    async fn admin_frames_emit_exactly_one_audit_line_each() {
+        use tracing_subscriber::prelude::*;
+        let records = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let subscriber = tracing_subscriber::registry().with(FrameAuditCapture(records.clone()));
+        let _guard = tracing::subscriber::set_default(subscriber);
+
+        let (hub, _) = memory_hub(crate::world_hub::HubLimits::default());
+
+        let mut denied = Peer::connect_hub(hub.clone(), SessionConfig::default());
+        denied
+            .say(serde_json::json!({"type":"list_worlds","admin_token":"nope"}))
+            .await;
+        assert_eq!(denied.next().await.unwrap()["message"], "admin denied");
+
+        let mut denied = Peer::connect_hub(hub.clone(), SessionConfig::default());
+        denied
+            .say(serde_json::json!({"type":"create_world","admin_token":"nope","world":"audit-arena"}))
+            .await;
+        assert_eq!(denied.next().await.unwrap()["message"], "admin denied");
+
+        let mut admin = Peer::connect_hub(hub.clone(), SessionConfig::default());
+        admin
+            .say(serde_json::json!({"type":"create_world","admin_token":"admin","world":"audit-arena"}))
+            .await;
+        assert_eq!(admin.next().await.unwrap()["type"], "world_created");
+
+        let mut admin = Peer::connect_hub(hub, SessionConfig::default());
+        admin
+            .say(serde_json::json!({"type":"list_worlds","admin_token":"admin"}))
+            .await;
+        assert_eq!(admin.next().await.unwrap()["type"], "worlds");
+
+        let captured = records.lock().unwrap().clone();
+        let frames: Vec<_> = captured
+            .iter()
+            .filter(|record| {
+                record["action"]
+                    .as_str()
+                    .is_some_and(|action| action.starts_with("frame:"))
+            })
+            .collect();
+        assert_eq!(frames.len(), 4, "one line per admin frame: {frames:?}");
+        let mut by_action_outcome: Vec<(&str, &str)> = frames
+            .iter()
+            .map(|record| {
+                (
+                    record["action"].as_str().unwrap(),
+                    record["outcome"].as_str().unwrap(),
+                )
+            })
+            .collect();
+        by_action_outcome.sort();
+        assert_eq!(
+            by_action_outcome,
+            [
+                ("frame:CreateWorld", "accepted"),
+                ("frame:CreateWorld", "refused"),
+                ("frame:ListWorlds", "accepted"),
+                ("frame:ListWorlds", "refused"),
+            ]
+        );
+        let mut correlation_ids = BTreeSet::new();
+        for record in &frames {
+            assert_eq!(record["schema_version"], 2);
+            assert_eq!(record["actor"], "admin");
+            assert!(
+                record["correlation_id"]
+                    .as_str()
+                    .is_some_and(|id| id.starts_with("audit:")),
+                "correlation id present: {record:?}"
+            );
+            assert!(correlation_ids.insert(record["correlation_id"].as_str().unwrap()));
+            let serialized = record.to_string();
+            assert!(
+                !serialized.contains("nope"),
+                "the supplied token is never recorded: {serialized}"
+            );
+        }
+        let create_accepted = frames
+            .iter()
+            .find(|record| {
+                record["action"] == "frame:CreateWorld" && record["outcome"] == "accepted"
+            })
+            .unwrap();
+        assert_eq!(create_accepted["target"], "audit-arena");
+        assert_eq!(create_accepted["parameters"]["created"], true);
+    }
+
     #[tokio::test]
     async fn directory_frame_lists_worlds_without_an_admin_token() {
         let (hub, _) = memory_hub(crate::world_hub::HubLimits::default());
