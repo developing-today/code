@@ -35,6 +35,7 @@ func samplingRegistry(t *testing.T) *Registry {
 	}
 	t.Cleanup(func() { _ = broker.Close() })
 	r.InstallHooks(events.New(0), broker, nil)
+	noteAnswerer(t, broker)
 	return r
 }
 

@@ -25,6 +25,7 @@ func TestBrokerKeyingServerQualified(t *testing.T) {
 	defer func() { _ = broker.Close() }()
 	r := &Registry{asks: newAskTable()}
 	r.InstallHooks(events.New(0), broker, nil)
+	noteAnswerer(t, broker)
 
 	params := json.RawMessage(`{"mode":"url","message":"sign in","url":"https://example.invalid/auth","elicitationId":"e1"}`)
 	type outcome struct {
@@ -106,6 +107,7 @@ func TestBrokerKeyingColonAmbiguity(t *testing.T) {
 	defer func() { _ = broker.Close() }()
 	r := &Registry{asks: newAskTable()}
 	r.InstallHooks(events.New(0), broker, nil)
+	noteAnswerer(t, broker)
 
 	type outcome struct {
 		out any
@@ -172,6 +174,7 @@ func TestURLElicitationsViaBroker(t *testing.T) {
 	defer func() { _ = broker.Close() }()
 	r := &Registry{asks: newAskTable()}
 	r.InstallHooks(events.New(0), broker, nil)
+	noteAnswerer(t, broker)
 
 	els := []mcpclient.URLElicitation{
 		{Mode: "url", URL: "https://example.invalid/a", ElicitationID: "e1", Message: "first"},
