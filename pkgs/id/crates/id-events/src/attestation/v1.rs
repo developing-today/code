@@ -7,7 +7,7 @@ use p2panda_core::{Hash, SeqNum, SigningKey};
 use serde::{Deserialize, Serialize};
 
 use super::{GenesisAgreement, PlayerId, SignError, player_id};
-use crate::chain::{self, ChainExt, Event};
+use id_store::chain::{self, ChainExt, Event};
 
 pub const VERSION: u8 = 1;
 pub const WITNESS_DECISION_KIND: &str = "attestation.witness_decision";
@@ -155,6 +155,7 @@ fn sign_body(
             link: None,
             checkpoint: None,
             rotation: None,
+            chat: None,
         },
     )?)
 }

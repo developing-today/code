@@ -499,6 +499,7 @@ fn same_player_claims_with_different_position_fields_are_disputed() {
 }
 
 #[test]
+#[allow(clippy::unwrap_used)]
 fn v1_witness_decision_is_versioned_signed_and_bound_to_named_witness() {
     use id::attestation::v1::{
         V1SignError, VERSION, WitnessDecision, WitnessEvidence, sign_witness_decision,
@@ -550,6 +551,7 @@ fn v1_witness_decision_is_versioned_signed_and_bound_to_named_witness() {
 }
 
 #[test]
+#[allow(clippy::unwrap_used)]
 fn v1_objection_is_append_only_and_only_seated_players_may_sign() {
     use id::attestation::v1::{OBJECTION_KIND, Objection, V1SignError, VERSION, sign_objection};
 
@@ -582,6 +584,7 @@ fn v1_objection_is_append_only_and_only_seated_players_may_sign() {
 }
 
 #[test]
+#[allow(clippy::unwrap_used)]
 fn counting_policy_is_registry_local_and_names_accepted_witnesses_and_logic() {
     use id::attestation::v1::{CountingPolicy, V1MatchState};
 
