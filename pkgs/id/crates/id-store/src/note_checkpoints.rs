@@ -24,6 +24,9 @@
 //! event store's business, as for every other kind; this core owns the
 //! checkpoint rules and nothing else.
 
+use std::collections::HashMap;
+use std::sync::Arc;
+
 use p2panda_core::Hash;
 
 use id_core::waiting::AuthorKey;
@@ -56,6 +59,16 @@ pub enum CheckpointError {
         /// The current heads, in ID order.
         heads: Vec<Hash>,
     },
+    /// The author holds no grant that lets them do this with the
+    /// note (#2048 Q2: appends are by write grant, attributed; policy
+    /// changes are by admin grant or the note's owner).
+    #[error("author {author:?} holds no grant permitting this on note {note}")]
+    NotAuthorized {
+        /// The note the author was refused on.
+        note: Hash,
+        /// The key that signed (or tried to sign) the refused event.
+        author: AuthorKey,
+    },
     /// A merge was asked for on a note with fewer than two heads:
     /// there is nothing concurrent to join.
     #[error("note {note} has heads {heads:?}; a merge joins at least two")]
@@ -67,6 +80,118 @@ pub enum CheckpointError {
     },
 }
 
+/// What a principal may do with a note, least to most (#2048 Q3's
+/// own ladder for notes: read, write, admin). This is the note
+/// layer's vocabulary, deliberately separate from the group layer's
+/// wider `Role`: a group resolver maps its roles onto these three
+/// (Read -> Read, Write/Manage -> Write, Admin -> Admin) when it
+/// answers for a group grant.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub enum NoteRole {
+    /// May read the note's content.
+    Read,
+    /// May append revisions to the note.
+    Write,
+    /// May append, and may change the note's access policy.
+    Admin,
+}
+
+/// Who a grant names: one account key, or a group (whose members'
+/// roles a [`GroupRoles`] resolver answers for).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum NotePrincipal {
+    /// A single account, by its key.
+    User(AuthorKey),
+    /// A group, by its ID.
+    Group(Hash),
+}
+
+/// One access grant on a note: a principal and what it may do.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct NoteGrant {
+    /// Who the grant names.
+    pub principal: NotePrincipal,
+    /// What the named principal may do.
+    pub role: NoteRole,
+}
+
+/// A note's access policy (#2048 Q3, ledger shared-notes-read-3819:
+/// notes are public by default, or read/write/admin to one or more
+/// groups and users).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub enum NoteAccess {
+    /// Public by default: anyone may read the note, and anyone may
+    /// append a revision — appends are signed, so a public append
+    /// is still an attributed revision, never a silent overwrite
+    /// (#2048 Q2).
+    #[default]
+    Public,
+    /// Scoped: only the listed grants (and the note's owner, who is
+    /// always Admin) hold any access. An author with no grant at or
+    /// above the needed role is refused.
+    Scoped(Vec<NoteGrant>),
+}
+
+/// Resolves group membership roles for access checks: given a group
+/// and a member key, the member's note role in that group, or
+/// `None` when the member holds none. The host builds this over its
+/// folded group state (in `id-web`, the groups projection); the
+/// checkpoint core never folds groups itself. [`GroupRoles::none`]
+/// is the resolver that knows no groups — user grants and public
+/// notes still work in full.
+#[derive(Clone)]
+pub struct GroupRoles {
+    inner: Arc<dyn Fn(Hash, AuthorKey) -> Option<NoteRole> + Send + Sync>,
+}
+
+impl GroupRoles {
+    /// A resolver over a closure answering group roles.
+    pub fn new(
+        resolver: impl Fn(Hash, AuthorKey) -> Option<NoteRole> + Send + Sync + 'static,
+    ) -> Self {
+        Self {
+            inner: Arc::new(resolver),
+        }
+    }
+
+    /// The resolver that knows no groups.
+    #[must_use]
+    pub fn none() -> Self {
+        Self::new(|_, _| None)
+    }
+
+    /// The member's note role in the group, if any.
+    #[must_use]
+    pub fn role(&self, group: Hash, member: AuthorKey) -> Option<NoteRole> {
+        (self.inner)(group, member)
+    }
+}
+
+impl std::fmt::Debug for GroupRoles {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("GroupRoles(..)")
+    }
+}
+
+impl Default for GroupRoles {
+    fn default() -> Self {
+        Self::none()
+    }
+}
+
+/// One note's recorded access state: who created it (the owner, who
+/// always holds Admin and retains grant/revoke, #2048 Q2) and its
+/// policy. Policies are application state layered over the event
+/// log: the log's events carry no policy, so a log rebuilt with
+/// [`NoteCheckpoints::from_events`] treats every note as
+/// owner-created and [`NoteAccess::Public`] until the host re-states
+/// its policies with [`NoteCheckpoints::set_access`].
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct NotePolicy {
+    owner: AuthorKey,
+    access: NoteAccess,
+}
+
 /// The checkpoint log for collaborative notes: the applied note events
 /// checkpoints are made of, folded on demand into per-note records and
 /// heads. Events are appended only after the whole log still folds, so
@@ -74,6 +199,10 @@ pub enum CheckpointError {
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct NoteCheckpoints {
     events: Vec<AppliedNote>,
+    /// Per-note access policies, keyed by note ID. A note with no
+    /// entry is owner-created (by its create event's author) and
+    /// [`NoteAccess::Public`]: the Q3 default.
+    policies: HashMap<Hash, NotePolicy>,
 }
 
 impl NoteCheckpoints {
@@ -94,7 +223,10 @@ impl NoteCheckpoints {
     /// cycle).
     pub fn from_events(events: Vec<AppliedNote>) -> Result<Self, CheckpointError> {
         fold_notes(&events)?;
-        Ok(Self { events })
+        Ok(Self {
+            events,
+            policies: HashMap::new(),
+        })
     }
 
     /// The applied note events, in the order they were recorded. This
@@ -162,6 +294,13 @@ impl NoteCheckpoints {
             author,
             op,
         })?;
+        self.policies.insert(
+            event_id,
+            NotePolicy {
+                owner: author,
+                access: NoteAccess::Public,
+            },
+        );
         self.record(event_id)
             .map(|record| record.expect("a just-created note folds"))
     }
@@ -180,6 +319,217 @@ impl NoteCheckpoints {
     /// [`CheckpointError::Fold`] when a parent is not a revision of
     /// this note or the event ID is already in the log. On any error
     /// the log is unchanged.
+    /// Establishes a note with an access policy (see
+    /// [`Self::create`], which is this with the Q3 default,
+    /// [`NoteAccess::Public`]). The creator is recorded as the
+    /// note's owner.
+    ///
+    /// # Errors
+    ///
+    /// The errors of [`Self::create`].
+    pub fn create_with_access(
+        &mut self,
+        event_id: Hash,
+        author: AuthorKey,
+        content: DocumentRef,
+        access: NoteAccess,
+    ) -> Result<NoteRecord, CheckpointError> {
+        let record = self.create(event_id, author, content)?;
+        self.policies.insert(
+            event_id,
+            NotePolicy {
+                owner: author,
+                access,
+            },
+        );
+        Ok(record)
+    }
+
+    /// A note's access policy, and its owner's key. `None` for a
+    /// note the log does not have. A note with no recorded policy is
+    /// reported with its create event's author as owner and
+    /// [`NoteAccess::Public`].
+    #[must_use]
+    pub fn access(&self, note: Hash) -> Option<(AuthorKey, NoteAccess)> {
+        if let Some(policy) = self.policies.get(&note) {
+            return Some((policy.owner, policy.access.clone()));
+        }
+        let record = self.record(note).ok()??;
+        let owner = record.revisions.first()?.author;
+        Some((owner, NoteAccess::Public))
+    }
+
+    /// The role `author` effectively holds on `note`: the owner is
+    /// always [`NoteRole::Admin`]; on a public note every author
+    /// holds [`NoteRole::Write`] (read included); on a scoped note
+    /// the best matching grant wins — a direct user grant, or a
+    /// group grant the `groups` resolver answers for. `None` when
+    /// the author holds nothing on a scoped note, or the note is
+    /// unknown.
+    #[must_use]
+    pub fn effective_role(
+        &self,
+        note: Hash,
+        author: AuthorKey,
+        groups: &GroupRoles,
+    ) -> Option<NoteRole> {
+        let (owner, access) = self.access(note)?;
+        if author == owner {
+            return Some(NoteRole::Admin);
+        }
+        match access {
+            NoteAccess::Public => Some(NoteRole::Write),
+            NoteAccess::Scoped(grants) => {
+                let mut best: Option<NoteRole> = None;
+                for grant in &grants {
+                    let role = match grant.principal {
+                        NotePrincipal::User(user) if user == author => Some(grant.role),
+                        NotePrincipal::Group(group) => groups
+                            .role(group, author)
+                            .map(|resolved| resolved.min(grant.role)),
+                        _ => None,
+                    };
+                    if let Some(role) = role {
+                        best = Some(best.map_or(role, |b: NoteRole| b.max(role)));
+                    }
+                }
+                best
+            }
+        }
+    }
+
+    /// Whether `author` may read `note` (any role at all on a
+    /// scoped note; everyone on a public one).
+    #[must_use]
+    pub fn may_read(&self, note: Hash, author: AuthorKey, groups: &GroupRoles) -> bool {
+        self.effective_role(note, author, groups).is_some()
+    }
+
+    /// Whether `author` may append a revision to `note` (#2048 Q2:
+    /// a write grant or better; the owner always may).
+    #[must_use]
+    pub fn may_append(&self, note: Hash, author: AuthorKey, groups: &GroupRoles) -> bool {
+        self.effective_role(note, author, groups)
+            .is_some_and(|role| role >= NoteRole::Write)
+    }
+
+    /// Replaces a note's access policy. Only an author holding
+    /// [`NoteRole::Admin`] on the note — the owner, or an admin
+    /// grant — may do this: grant/revoke stays with the owner and
+    /// their admins (#2048 Q2).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CheckpointError::UnknownNote`] for a note the log
+    /// does not have, and [`CheckpointError::NotAuthorized`] when
+    /// `by` holds less than Admin.
+    pub fn set_access(
+        &mut self,
+        note: Hash,
+        by: AuthorKey,
+        access: NoteAccess,
+        groups: &GroupRoles,
+    ) -> Result<(), CheckpointError> {
+        let (owner, _) = self
+            .access(note)
+            .ok_or(CheckpointError::UnknownNote(note))?;
+        if self.effective_role(note, by, groups) != Some(NoteRole::Admin) {
+            return Err(CheckpointError::NotAuthorized { note, author: by });
+        }
+        self.policies.insert(note, NotePolicy { owner, access });
+        Ok(())
+    }
+
+    /// The append half of the access boundary, shared by the
+    /// checked publish paths.
+    fn authorize_append(
+        &self,
+        note: Hash,
+        author: AuthorKey,
+        groups: &GroupRoles,
+    ) -> Result<(), CheckpointError> {
+        if self.may_append(note, author, groups) {
+            Ok(())
+        } else {
+            Err(CheckpointError::NotAuthorized { note, author })
+        }
+    }
+
+    /// [`Self::checkpoint`], gated on the access boundary: the
+    /// author must hold a write grant on the note (#2048 Q2).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CheckpointError::NotAuthorized`] when the author
+    /// holds less than [`NoteRole::Write`], and the errors of
+    /// [`Self::checkpoint`] otherwise. On any error the log is
+    /// unchanged.
+    pub fn checkpoint_checked(
+        &mut self,
+        note: Hash,
+        event_id: Hash,
+        author: AuthorKey,
+        content: DocumentRef,
+        parents: Vec<Hash>,
+        groups: &GroupRoles,
+    ) -> Result<NoteRecord, CheckpointError> {
+        if self.record(note)?.is_none() {
+            return Err(CheckpointError::UnknownNote(note));
+        }
+        self.authorize_append(note, author, groups)?;
+        self.checkpoint(note, event_id, author, content, parents)
+    }
+
+    /// [`Self::checkpoint_on_heads`], gated on the access boundary.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CheckpointError::NotAuthorized`] when the author
+    /// holds less than [`NoteRole::Write`], and the errors of
+    /// [`Self::checkpoint_on_heads`] otherwise.
+    pub fn checkpoint_on_heads_checked(
+        &mut self,
+        note: Hash,
+        event_id: Hash,
+        author: AuthorKey,
+        content: DocumentRef,
+        groups: &GroupRoles,
+    ) -> Result<NoteRecord, CheckpointError> {
+        let heads = self.heads(note)?;
+        match heads.len() {
+            0 => Err(CheckpointError::UnknownNote(note)),
+            1 => {
+                self.authorize_append(note, author, groups)?;
+                self.checkpoint(note, event_id, author, content, heads)
+            }
+            _ => Err(CheckpointError::ExplicitMergeRequired { note, heads }),
+        }
+    }
+
+    /// [`Self::merge`], gated on the access boundary: merging is an
+    /// append, so it takes the same write grant.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CheckpointError::NotAuthorized`] when the author
+    /// holds less than [`NoteRole::Write`], and the errors of
+    /// [`Self::merge`] otherwise.
+    pub fn merge_checked(
+        &mut self,
+        note: Hash,
+        event_id: Hash,
+        author: AuthorKey,
+        content: DocumentRef,
+        groups: &GroupRoles,
+    ) -> Result<NoteRecord, CheckpointError> {
+        let heads = self.heads(note)?;
+        if heads.len() < 2 {
+            return Err(CheckpointError::NotConcurrent { note, heads });
+        }
+        self.authorize_append(note, author, groups)?;
+        self.checkpoint(note, event_id, author, content, heads)
+    }
+
     pub fn checkpoint(
         &mut self,
         note: Hash,
@@ -441,5 +791,168 @@ mod tests {
         let rebuilt = NoteCheckpoints::from_events(reversed).unwrap();
         assert_eq!(rebuilt.notes().unwrap(), log.notes().unwrap());
         assert_eq!(rebuilt.heads(hash(10)).unwrap(), vec![hash(11), hash(12)]);
+    }
+
+    // ------------------------------------------------ access boundary --
+
+    fn scoped_log() -> (NoteCheckpoints, Hash) {
+        // Owner 1 creates a note scoped to: user 2 Read, user 3
+        // Write, group 9 Write (membership answered by the resolver
+        // each test supplies).
+        let mut log = NoteCheckpoints::new();
+        let access = NoteAccess::Scoped(vec![
+            NoteGrant {
+                principal: NotePrincipal::User(author(2)),
+                role: NoteRole::Read,
+            },
+            NoteGrant {
+                principal: NotePrincipal::User(author(3)),
+                role: NoteRole::Write,
+            },
+            NoteGrant {
+                principal: NotePrincipal::Group(hash(9)),
+                role: NoteRole::Write,
+            },
+        ]);
+        let created = log
+            .create_with_access(hash(10), author(1), content(b"first"), access)
+            .unwrap();
+        (log, created.id)
+    }
+
+    #[test]
+    fn test_public_notes_accept_any_attributed_append() {
+        let mut log = NoteCheckpoints::new();
+        let created = log.create(hash(10), author(1), content(b"first")).unwrap();
+        let groups = GroupRoles::none();
+        // Q3 default: public. A stranger's append is a signed,
+        // attributed revision — allowed, and recorded under their key.
+        let saved = log
+            .checkpoint_on_heads_checked(
+                created.id,
+                hash(11),
+                author(7),
+                content(b"second"),
+                &groups,
+            )
+            .unwrap();
+        assert_eq!(saved.revisions.last().unwrap().author, author(7));
+        assert!(log.may_read(created.id, author(8), &groups));
+    }
+
+    #[test]
+    fn test_scoped_note_refuses_appends_without_a_write_grant() {
+        let (mut log, note) = scoped_log();
+        let groups = GroupRoles::none();
+        let before = log.events().to_vec();
+
+        // A read grant is not a write grant.
+        let refused =
+            log.checkpoint_on_heads_checked(note, hash(11), author(2), content(b"x"), &groups);
+        assert_eq!(
+            refused.unwrap_err(),
+            CheckpointError::NotAuthorized {
+                note,
+                author: author(2)
+            }
+        );
+        // No grant at all.
+        assert!(matches!(
+            log.checkpoint_checked(
+                note,
+                hash(11),
+                author(8),
+                content(b"x"),
+                vec![note],
+                &groups
+            ),
+            Err(CheckpointError::NotAuthorized { .. })
+        ));
+        assert_eq!(log.events(), before.as_slice(), "a refusal records nothing");
+        assert!(!log.may_read(note, author(8), &groups));
+        assert!(log.may_read(note, author(2), &groups));
+
+        // The write-grant user appends; the owner always may.
+        log.checkpoint_on_heads_checked(note, hash(11), author(3), content(b"second"), &groups)
+            .unwrap();
+        log.checkpoint_on_heads_checked(note, hash(12), author(1), content(b"third"), &groups)
+            .unwrap();
+    }
+
+    #[test]
+    fn test_group_grants_resolve_through_the_group_resolver() {
+        let (mut log, note) = scoped_log();
+        // Author 5 is in group 9 (the resolver says Write); author 6
+        // is not in any group.
+        let groups = GroupRoles::new(|group, member| {
+            if group == hash(9) && member == author(5) {
+                Some(NoteRole::Write)
+            } else {
+                None
+            }
+        });
+        log.checkpoint_on_heads_checked(note, hash(11), author(5), content(b"via group"), &groups)
+            .unwrap();
+        assert!(matches!(
+            log.checkpoint_on_heads_checked(note, hash(12), author(6), content(b"nope"), &groups),
+            Err(CheckpointError::NotAuthorized { .. })
+        ));
+        // A resolver reporting a lesser role than the grant caps at
+        // the lesser role: Read in the group does not satisfy a
+        // Write grant.
+        let lesser = GroupRoles::new(|_, _| Some(NoteRole::Read));
+        assert!(!log.may_append(note, author(5), &lesser));
+    }
+
+    #[test]
+    fn test_policy_changes_take_admin_and_the_owner_retains_it() {
+        let (mut log, note) = scoped_log();
+        let groups = GroupRoles::none();
+        // A write-grant holder cannot re-scope the note.
+        assert!(matches!(
+            log.set_access(note, author(3), NoteAccess::Public, &groups),
+            Err(CheckpointError::NotAuthorized { .. })
+        ));
+        // The owner can: opening the note up makes a stranger's
+        // append lawful.
+        log.set_access(note, author(1), NoteAccess::Public, &groups)
+            .unwrap();
+        log.checkpoint_on_heads_checked(note, hash(11), author(8), content(b"now public"), &groups)
+            .unwrap();
+        // An admin grant holder can re-scope too.
+        log.set_access(
+            note,
+            author(1),
+            NoteAccess::Scoped(vec![NoteGrant {
+                principal: NotePrincipal::User(author(4)),
+                role: NoteRole::Admin,
+            }]),
+            &groups,
+        )
+        .unwrap();
+        log.set_access(note, author(4), NoteAccess::Public, &groups)
+            .unwrap();
+    }
+
+    #[test]
+    fn test_merge_checked_enforces_the_boundary() {
+        let (mut log, note) = scoped_log();
+        let groups = GroupRoles::none();
+        // Fork the note into two heads with the raw graph appends
+        // (two granted writers working from the same head).
+        log.checkpoint(note, hash(11), author(3), content(b"a"), vec![note])
+            .unwrap();
+        log.checkpoint(note, hash(12), author(1), content(b"b"), vec![note])
+            .unwrap();
+        assert_eq!(log.heads(note).unwrap().len(), 2);
+        // A read-grant holder cannot merge; a write-grant holder can.
+        assert!(matches!(
+            log.merge_checked(note, hash(13), author(2), content(b"merged"), &groups),
+            Err(CheckpointError::NotAuthorized { .. })
+        ));
+        let merged = log
+            .merge_checked(note, hash(13), author(3), content(b"merged"), &groups)
+            .unwrap();
+        assert_eq!(merged.heads, vec![hash(13)]);
     }
 }

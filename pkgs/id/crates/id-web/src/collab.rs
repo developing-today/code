@@ -71,7 +71,7 @@ use super::markdown::{
 use id_core::frames::MAX_FRAME_BYTES;
 use id_core::waiting::AuthorKey;
 use id_store::documents::{DocumentError, DocumentRef};
-use id_store::note_checkpoints::{CheckpointError, NoteCheckpoints};
+use id_store::note_checkpoints::{CheckpointError, GroupRoles, NoteAccess, NoteCheckpoints};
 use id_store::notes::{AppliedNote, NoteRecord};
 use p2panda_core::Hash;
 
@@ -437,12 +437,50 @@ pub struct CollabState {
     /// [`CollabState::get_or_create_for_note`], so publishing a
     /// checkpoint needs only the session's key.
     note_bindings: RwLock<HashMap<String, Hash>>,
+    /// Resolves group roles for the note access boundary (#3819
+    /// slice 3): the host installs its folded-groups resolver with
+    /// [`CollabState::with_note_group_roles`]; the default knows no
+    /// groups, so scoped notes honor user grants and the owner, and
+    /// public notes behave exactly as before the boundary existed.
+    note_group_roles: GroupRoles,
 }
 
 impl CollabState {
     /// Create a new collaborative state manager.
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// Installs the group-role resolver the note access boundary
+    /// consults for group grants (#3819 slice 3, #2048 Q2/Q3). The
+    /// host builds it over its folded group state, mapping group
+    /// roles onto note roles (Read -> Read, Write/Manage -> Write,
+    /// Admin -> Admin).
+    #[must_use]
+    pub fn with_note_group_roles(mut self, roles: GroupRoles) -> Self {
+        self.note_group_roles = roles;
+        self
+    }
+
+    /// Replaces a note's access policy in the checkpoint log
+    /// (#3819 slice 3): only an author holding Admin on the note —
+    /// its owner, or an admin grant — may re-scope it.
+    ///
+    /// # Errors
+    ///
+    /// Returns the checkpoint core's refusal (unknown note, or
+    /// [`CheckpointError::NotAuthorized`] when `by` holds less than
+    /// Admin).
+    pub async fn set_note_access(
+        &self,
+        note: Hash,
+        by: AuthorKey,
+        access: NoteAccess,
+    ) -> Result<(), CheckpointError> {
+        self.note_log
+            .lock()
+            .await
+            .set_access(note, by, access, &self.note_group_roles)
     }
 
     /// Get or create a document for editing.
@@ -511,7 +549,6 @@ impl CollabState {
         hash.clone_into(&mut *doc.hash.write().await);
         doc
     }
-
 
     /// The note a session serves, when the session was opened as a
     /// note session ([`Self::get_or_create_for_note`]).
@@ -595,7 +632,13 @@ impl CollabState {
         }
         let heads = log.heads(note)?;
         let event_id = mint_checkpoint_event_id(&note, &author, &heads, &content, doc.version());
-        Ok(log.checkpoint_on_heads(note, event_id, author, content)?)
+        Ok(log.checkpoint_on_heads_checked(
+            note,
+            event_id,
+            author,
+            content,
+            &self.note_group_roles,
+        )?)
     }
 
     /// Remove a document from the state.
@@ -2542,6 +2585,68 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_publish_note_checkpoint_enforces_the_access_boundary() {
+        use id_store::note_checkpoints::{NoteGrant, NotePrincipal, NoteRole};
+
+        // The owner publishes the create (public by default), then
+        // scopes the note to a single write-grant user. From then
+        // on, publication is the boundary: the granted author
+        // chains a checkpoint; another author is refused and the
+        // log does not move.
+        let state = CollabState::new();
+        let note = Hash::from_bytes([17u8; 32]);
+        let key = note_session_key(&note);
+        let owner: AuthorKey = [7u8; 32];
+        let granted: AuthorKey = [8u8; 32];
+        let stranger: AuthorKey = [9u8; 32];
+        let doc = state
+            .get_or_create_for_note(&note, "", Some(b"# First"), Some("n.md"))
+            .await;
+        state.publish_note_checkpoint(&key, owner).await.unwrap();
+        state
+            .set_note_access(
+                note,
+                owner,
+                NoteAccess::Scoped(vec![NoteGrant {
+                    principal: NotePrincipal::User(granted),
+                    role: NoteRole::Write,
+                }]),
+            )
+            .await
+            .unwrap();
+
+        *doc.doc.write().await = plain_text_to_prosemirror("# Second");
+        let chained = state.publish_note_checkpoint(&key, granted).await.unwrap();
+        assert_eq!(chained.revisions.len(), 2);
+
+        *doc.doc.write().await = plain_text_to_prosemirror("# Third");
+        let err = state
+            .publish_note_checkpoint(&key, stranger)
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(
+                err,
+                PublishCheckpointError::Checkpoint(CheckpointError::NotAuthorized { .. })
+            ),
+            "a stranger's publication is refused at the boundary: {err}"
+        );
+        assert_eq!(
+            state.note_events().await.len(),
+            2,
+            "the refusal recorded nothing"
+        );
+
+        // And a non-admin cannot re-open the note.
+        assert!(
+            state
+                .set_note_access(note, granted, NoteAccess::Public)
+                .await
+                .is_err()
+        );
+    }
+
+    #[tokio::test]
     async fn test_publish_note_checkpoint_refuses_a_filename_session() {
         let state = CollabState::new();
         state.get_or_create("plain.md", "", Some(b"# File")).await;
@@ -2581,7 +2686,10 @@ mod tests {
             .get_or_create_for_note(&note, "", Some(b"# Two"), Some("n.md"))
             .await;
         drop(doc);
-        let chained = restarted.publish_note_checkpoint(&key, author).await.unwrap();
+        let chained = restarted
+            .publish_note_checkpoint(&key, author)
+            .await
+            .unwrap();
         assert_eq!(chained.revisions.len(), 2);
         assert_eq!(chained.revisions[1].parents, heads_before);
     }
@@ -2600,19 +2708,25 @@ mod tests {
         log.checkpoint(note, Hash::from_bytes([21u8; 32]), author, fork, vec![note])
             .unwrap();
         let other = DocumentRef::for_bytes("text/markdown", b"# Other").unwrap();
-        log.checkpoint(note, Hash::from_bytes([22u8; 32]), author, other, vec![note])
-            .unwrap();
+        log.checkpoint(
+            note,
+            Hash::from_bytes([22u8; 32]),
+            author,
+            other,
+            vec![note],
+        )
+        .unwrap();
         assert_eq!(log.heads(note).unwrap().len(), 2);
 
         let state = CollabState::new();
-        state
-            .seed_note_events(log.events().to_vec())
-            .await
-            .unwrap();
+        state.seed_note_events(log.events().to_vec()).await.unwrap();
         state
             .get_or_create_for_note(&note, "", Some(b"# Merged?"), Some("n.md"))
             .await;
-        let err = state.publish_note_checkpoint(&key, author).await.unwrap_err();
+        let err = state
+            .publish_note_checkpoint(&key, author)
+            .await
+            .unwrap_err();
         assert!(
             matches!(
                 err,
