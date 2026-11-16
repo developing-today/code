@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import {
   feedSectionStatus,
+  coverageFromFeed,
   isBurnSegment,
   isChargeRow,
   isFleetFeed,
@@ -16,6 +17,7 @@ import {
   sanitizeFeedMetadata,
   sanitizeRegistry,
   sanitizeSubscriptions,
+  sanitizeUninstrumentedServices,
 } from "../src/feed.ts";
 import { buildAttentionFlags } from "../src/derive.ts";
 import { renderQuota } from "../src/render.ts";
@@ -25,6 +27,26 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { isProjectPoolItem, parseProjectItems } from "../src/projects.ts";
 import type { PaygLine, QuotaCredentialRow, QuotaPool, QuotaView, QuotaWindow, SessionRecord } from "../src/model.ts";
+
+describe("feed stale-issue census", () => {
+  test("preserves timestamped counts, accepts older census rows, and rejects malformed optional fields", () => {
+    const current = {
+      repo: "developing-today/code",
+      openIssues: 10,
+      gateNow: 1,
+      gateNext: 2,
+      staleOpenIssues: 3,
+      staleIssuesCollectedAt: "2026-11-01T11:59:00.000Z",
+      staleIssuesError: null,
+    };
+    expect(coverageFromFeed({ coverage: [current] })).toEqual([current]);
+    expect(coverageFromFeed({ coverage: [{ repo: "old/repo", openIssues: 1, gateNow: 0, gateNext: 0 }] })).toEqual([
+      { repo: "old/repo", openIssues: 1, gateNow: 0, gateNext: 0 },
+    ]);
+    expect(coverageFromFeed({ coverage: [{ ...current, staleIssuesCollectedAt: "not-a-timestamp" }] })).toBeNull();
+    expect(coverageFromFeed({})).toBeNull();
+  });
+});
 
 // Minimal valid pool item: edges entirely absent (the missing-edge
 // shape must validate cleanly — absence is data, not an error).
@@ -99,9 +121,9 @@ describe("feed project-pool section gate (#2399)", () => {
     expect(isProjectPoolItem(GRAPHED)).toBe(true);
     for (const bad of malformed) expect(isProjectPoolItem(bad)).toBe(false);
     expect(projectPoolSectionProblem([GRAPHED, malformed[0]])).toBe("item 1");
-    expect(
-      poolFromFeed({ projects: [EDGElESS, ...malformed, GRAPHED] as unknown as never }).map((p) => p.ref),
-    ).toEqual([EDGElESS.ref, GRAPHED.ref]);
+    expect(poolFromFeed({ projects: [EDGElESS, ...malformed, GRAPHED] as unknown as never }).map((p) => p.ref)).toEqual(
+      [EDGElESS.ref, GRAPHED.ref],
+    );
   });
 
   test("structural fields + optional-field types are gated (#2418)", () => {
@@ -729,6 +751,52 @@ describe("feed subscriptions sanitization (#2446)", () => {
   });
 });
 
+describe("uninstrumented tracker feed sanitization (#1172)", () => {
+  const SERVICE = {
+    name: "Render",
+    whatFor: "PaaS",
+    status: "checked",
+    checkedAt: "2026-10-29",
+    overageBehavior: "wall",
+    guardrailNotes: "Keep no payment method on free workspaces",
+  };
+  const UNDATED_SERVICE = { ...SERVICE, status: "unchecked", checkedAt: null };
+  const feedWithServices = (uninstrumentedServices: unknown) => ({
+    version: 1,
+    generatedAt: "2026-10-01T00:00:00Z",
+    quota: { pools: [], burn: [], choices: { hasHeadroom: [], burnBeforeReset: [], doNotStart: [] } },
+    attention: [],
+    uninstrumentedServices,
+  });
+  const loadWithServices = async (uninstrumentedServices: unknown) => {
+    const dir = mkdtempSync(join(tmpdir(), "agg-feed-tracker-"));
+    const file = join(dir, "feed.json");
+    writeFileSync(file, JSON.stringify(feedWithServices(uninstrumentedServices)));
+    return loadFeed(file);
+  };
+
+  test("valid tracker rows survive; malformed rows drop and are counted", async () => {
+    const out = sanitizeUninstrumentedServices([
+      SERVICE,
+      UNDATED_SERVICE,
+      null,
+      { ...SERVICE, checkedAt: "yesterday" },
+    ]);
+    expect(out.rows).toEqual([SERVICE, UNDATED_SERVICE]);
+    expect(out.dropped).toBe(2);
+    const loaded = await loadWithServices([SERVICE, UNDATED_SERVICE, null]);
+    expect(loaded?.uninstrumentedServices).toEqual([SERVICE, UNDATED_SERVICE]);
+    expect(loaded?.uninstrumentedServicesDropped).toBe(1);
+  });
+
+  test("an absent tracker section remains absent for older feeds", async () => {
+    expect(sanitizeUninstrumentedServices(undefined)).toEqual({ dropped: 0 });
+    const loaded = await loadWithServices(undefined);
+    expect(loaded?.uninstrumentedServices).toBeUndefined();
+    expect(loaded?.uninstrumentedServicesDropped).toBeUndefined();
+  });
+});
+
 describe("feed registry sanitization (#2539)", () => {
   const RECORD: SessionRecord = {
     id: "ses-1",
@@ -1209,8 +1277,18 @@ describe("collector section metadata (#1178)", () => {
     writeFileSync(file, JSON.stringify(feed));
     expect(isFleetFeed(baseFeed())).toBe(true);
     expect(isFleetFeed(feed)).toBe(true);
-    expect(sanitizeFeedMetadata({ sections: { legacy: { status: "ok", at: "2026-10-01T00:00:00Z" } } })).toEqual({
-      sections: { legacy: { status: "ok", at: "2026-10-01T00:00:00Z" } },
+    expect(
+      sanitizeFeedMetadata({
+        sections: {
+          legacy: { status: "ok", at: "2026-10-01T00:00:00Z", reportedTotal: 10, emittedEntries: 7 },
+          invalidCounts: { status: "ok", at: "2026-10-01T00:00:00Z", reportedTotal: -1, emittedEntries: 1.5 },
+        },
+      }),
+    ).toEqual({
+      sections: {
+        legacy: { status: "ok", at: "2026-10-01T00:00:00Z", reportedTotal: 10, emittedEntries: 7 },
+        invalidCounts: { status: "ok", at: "2026-10-01T00:00:00Z" },
+      },
     });
     const loaded = await loadFeed(file);
     expect(loaded?.meta?.sections.dns?.status).toBe("error");
@@ -1234,9 +1312,7 @@ describe("sanitizeCollectionError quoted-key + URL redaction (#3966)", () => {
 
   test("single-quoted and nested keys redact the value", () => {
     expect(sanitizeCollectionError("{'token': 'tok-abc12345'}")).toBe("{'token': [redacted]}");
-    expect(sanitizeCollectionError('{"data": {"secret": "s3cr3t-value-9"}}')).toBe(
-      '{"data": {"secret": [redacted]}}',
-    );
+    expect(sanitizeCollectionError('{"data": {"secret": "s3cr3t-value-9"}}')).toBe('{"data": {"secret": [redacted]}}');
     expect(sanitizeCollectionError('{"secret": "contains \\" quote and remains private"}')).toBe(
       '{"secret": [redacted]}',
     );

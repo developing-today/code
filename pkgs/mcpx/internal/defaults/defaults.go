@@ -1,3 +1,4 @@
+// Package defaults defines every default value the program ships, parsed from the embedded defaults.json.
 package defaults
 
 import (
@@ -81,12 +82,20 @@ type Defaults struct {
 		StatsTop             int    `json:"statsTop"`
 		RegistryLimit        int    `json:"registryLimit"`
 		HandoffRetryInterval string `json:"handoffRetryInterval"`
+		ScriptWait           string `json:"scriptWait"`
+		FailoverCooldown     string `json:"failoverCooldown"`
 	} `json:"plumbing"`
 	// Resolve governs GET /v1/resolve, which answers "which daemon serves
 	// this directory" for a caller that has no mcpx binary.
 	Resolve struct {
 		DialTimeout string `json:"dialTimeout"`
 	} `json:"resolve"`
+	// Preflight governs the resolver's own outbound lookups while it
+	// walks an import graph.
+	Preflight struct {
+		NPMTimeout   string `json:"npmTimeout"`
+		ProbeTimeout string `json:"probeTimeout"`
+	} `json:"preflight"`
 	// Elicit governs questions a server asks back.
 	Elicit struct {
 		TTL            string `json:"ttl"`
@@ -353,12 +362,12 @@ type Defaults struct {
 	// protocol era it tries first, how long it waits to find out, and where
 	// it remembers the answer.
 	Upstream struct {
-		Protocol       string `json:"protocol"`
-		ProbeTimeout   string `json:"probeTimeout"`
-		EraCache       bool   `json:"eraCache"`
-		EraFile        string `json:"eraFile"`
-		EraFileVersion int    `json:"eraFileVersion"`
-		ErrorBodyLimit string `json:"errorBodyLimit"`
+		Protocol          string `json:"protocol"`
+		ProbeTimeout      string `json:"probeTimeout"`
+		EraCache          bool   `json:"eraCache"`
+		EraFile           string `json:"eraFile"`
+		EraFileVersion    int    `json:"eraFileVersion"`
+		ErrorBodyLimit    string `json:"errorBodyLimit"`
 		ResponseBodyLimit string `json:"responseBodyLimit"`
 		// SSEReconnectDelay is the wait before resuming a Streamable HTTP
 		// stream the server closed without saying how long to wait (no
@@ -415,6 +424,38 @@ var (
 	UpstreamEraFileVersion = builtin.Upstream.EraFileVersion
 	// HTTPErrorBodyLimit bounds how much of a non-2xx body is read: enough
 	// for a JSON-RPC error, not enough for an HTML error page to matter.
+	//
+	// The response-read contract (design #4375, closing audit #4376)
+	// governs every outbound call mcpx makes; the next outbound call
+	// site is expected to follow it:
+	//
+	//  1. Error bodies are excerpts: a non-2xx body is read through
+	//     io.LimitReader at HTTPErrorBodyLimit, never whole.
+	//  2. A buffered success body is refused past its named cap,
+	//     never silently truncated: read cap+1 and fail the call when
+	//     the extra byte exists (see ProviderResponseBodyLimit).
+	//  3. A retained copy is truncated while the delivered stream is
+	//     not: when a response is both relayed and kept (feedback
+	//     capture, diagnostics), the kept copy goes through a capped
+	//     buffer and the stream itself flows whole.
+	//  4. Every outbound call carries a deadline as well as a byte
+	//     bound: an http.Client timeout or a context deadline, set at
+	//     the call site or by the shared client it uses.
+	//
+	// Audit summary (#4376, 2026-11-10; full inventory recorded on
+	// #4375): the provider paths (internal/model, internal/scripting),
+	// the mcpclient transports, and the daemon proxy's retained copy
+	// conform. The one unbounded peer error read the audit found —
+	// internal/catalog/embeddings.go — was fixed to decision 1 in the
+	// audit itself. Reads in internal/cli target mcpx's own daemon
+	// endpoint and are deliberately local, except where an endpoint
+	// is operator-configured, which joins this contract.
+	// Decoder-streamed success paths conform as streaming; the bound
+	// on the decoded value itself is an open question recorded on
+	// #4375, not settled here. Stdin and file reads are not peer
+	// bytes and are out of scope. Inbound request bodies are a
+	// separate surface, capped at their handlers (MaxBytesReader /
+	// LimitReader), and are not governed by this contract.
 	HTTPErrorBodyLimit = mustBytes(builtin.Upstream.ErrorBodyLimit, "upstream.errorBodyLimit")
 	// ProviderResponseBodyLimit bounds how much of a model provider's
 	// response body is read on the success path: a chat-completion
@@ -569,12 +610,31 @@ var (
 	// HandoffRetryInterval is how often a takeover re-checks pools that were
 	// busy with in-flight calls.
 	HandoffRetryInterval = mustDur(builtin.Plumbing.HandoffRetryInterval, "plumbing.handoffRetryInterval")
+	// ScriptWait bounds how long a script view's call waits on its output
+	// pipes after the program exits, so a grandchild that inherited them
+	// cannot hold the call open (exec.Cmd.WaitDelay).
+	ScriptWait = mustDur(builtin.Plumbing.ScriptWait, "plumbing.scriptWait")
+	// FailoverCooldown is the fallback skip for a soft-blocked auth
+	// identity whose config names no cooldownSeconds: the Failover
+	// config's own "zero means 60" rule, homed here like every default.
+	FailoverCooldown = mustDur(builtin.Plumbing.FailoverCooldown, "plumbing.failoverCooldown")
 
 	// ResolveDialTimeout bounds the liveness check /v1/resolve makes against
 	// the socket it is about to name. It is a local connect on a unix
 	// socket, so it either succeeds immediately or the daemon is gone;
 	// waiting longer only makes a dead daemon slower to report.
 	ResolveDialTimeout = mustDur(builtin.Resolve.DialTimeout, "resolve.dialTimeout")
+
+	// PreflightNPMTimeout bounds the npm registry lookup preflight makes
+	// for a package's latest version. Like ResolveDialTimeout it is an
+	// internal bound, so it lives in defaults.json only and is
+	// deliberately absent from the settings registry.
+	PreflightNPMTimeout = mustDur(builtin.Preflight.NPMTimeout, "preflight.npmTimeout")
+	// PreflightProbeTimeout bounds one import probe (a completion dump,
+	// `man`, --help): import probes binaries, and a probe that hangs
+	// would hang the import. Like PreflightNPMTimeout it is an internal
+	// bound, in defaults.json only and absent from the settings registry.
+	PreflightProbeTimeout = mustDur(builtin.Preflight.ProbeTimeout, "preflight.probeTimeout")
 
 	ElicitTTL = mustDur(builtin.Elicit.TTL, "elicit.ttl")
 	// ElicitMaxAge is the absolute ceiling on a question's life under the

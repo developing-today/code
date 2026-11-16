@@ -230,7 +230,7 @@ func LoadDefinitions(paths []string) ([]Definition, error) {
 			return nil, fmt.Errorf("reading placeholder from %s: %w", path, err)
 		}
 		body, name, params, defaults := readDeclaration(f)
-		f.Close()
+		_ = f.Close()
 
 		if name == "" {
 			// Filename fallback: report.ts declares @report. Least ceremony
@@ -287,7 +287,7 @@ func readDeclaration(f *os.File) (body, name string, params []string, defaults m
 }
 
 func validName(s string) bool {
-	if s == "" || !(isLetter(s[0]) || s[0] == '_') {
+	if s == "" || (!isLetter(s[0]) && s[0] != '_') {
 		return false
 	}
 	for i := 0; i < len(s); i++ {

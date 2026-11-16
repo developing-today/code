@@ -53,18 +53,15 @@ const (
 	rev20251125 = "2025-11-25"
 	rev20260728 = "2026-07-28"
 
-	specURL = "https://modelcontextprotocol.io/specification/"
-
 	// wait bounds every blocking read in the harness. A test that needs a
 	// frame and gets none fails instead of hanging the suite.
 	wait = 5 * time.Second
 )
 
-// allRevs, legacyRevs and httpRevs are the revisions a table-driven test
+// allRevs and httpRevs are the revisions a table-driven test
 // loops over.
 var (
-	allRevs    = []string{rev20241105, rev20250326, rev20250618, rev20251125, rev20260728}
-	legacyRevs = []string{rev20241105, rev20250326, rev20250618, rev20251125}
+	allRevs = []string{rev20241105, rev20250326, rev20250618, rev20251125, rev20260728}
 )
 
 func isModern(rev string) bool { return rev >= rev20260728 }
@@ -211,8 +208,6 @@ func newBackend() *backend {
 }
 
 func (b *backend) hit(n string) { b.mu.Lock(); b.calls[n]++; b.mu.Unlock() }
-
-func (b *backend) count(n string) int { b.mu.Lock(); defer b.mu.Unlock(); return b.calls[n] }
 
 func (b *backend) Namespaces(context.Context) (string, error) {
 	b.hit("namespaces")
@@ -377,7 +372,7 @@ func stdioServer(t *testing.T, s *mcpserver.Server) *stdioSrv {
 	ctx, cancel := context.WithCancel(context.Background())
 	go func() {
 		err := s.ServeStdio(ctx, inR, outW)
-		outW.Close()
+		_ = outW.Close()
 		ss.done <- err
 	}()
 	go func() {
@@ -389,10 +384,11 @@ func stdioServer(t *testing.T, s *mcpserver.Server) *stdioSrv {
 		}
 	}()
 	t.Cleanup(func() {
-		inW.Close()
+		_ = inW.Close()
 		cancel()
 		select {
-		case <-ss.done:
+		case recvErr := <-ss.done:
+			_ = recvErr
 		case <-time.After(wait):
 			t.Error("ServeStdio did not return after stdin closed")
 		}
@@ -590,7 +586,7 @@ func (h *httpSrv) do(t *testing.T, req *http.Request) httpResult {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	b, _ := io.ReadAll(resp.Body)
 	r := httpResult{Status: resp.StatusCode, Header: resp.Header, Body: b}
 	if strings.HasPrefix(resp.Header.Get("Content-Type"), "text/event-stream") {
@@ -901,7 +897,7 @@ func dialClientErr(t *testing.T, p *peer, o mcpclient.Options) (*mcpclient.Clien
 	defer cancel()
 	c, err := mcpclient.NewWithOptions(ctx, p, o)
 	if c != nil {
-		t.Cleanup(func() { c.Close() })
+		t.Cleanup(func() { _ = c.Close() })
 	}
 	return c, err
 }
@@ -1008,7 +1004,7 @@ func dialHTTPClient(t *testing.T, hp *httpPeerSrv, o mcpclient.Options) (*mcpcli
 	defer cancel()
 	c, err := mcpclient.NewWithOptions(ctx, tr, o)
 	if c != nil {
-		t.Cleanup(func() { c.Close() })
+		t.Cleanup(func() { _ = c.Close() })
 	}
 	return c, err
 }
@@ -1183,7 +1179,7 @@ func openStream(t *testing.T, client *http.Client, req *http.Request) *stream {
 	st := &stream{Status: resp.StatusCode, Header: resp.Header, lines: make(chan string, 256), cancel: cancel}
 	go func() {
 		defer close(st.lines)
-		defer resp.Body.Close()
+		defer func() { _ = resp.Body.Close() }()
 		sc := bufio.NewScanner(resp.Body)
 		sc.Buffer(make([]byte, 0, 1<<16), 1<<22)
 		for sc.Scan() {

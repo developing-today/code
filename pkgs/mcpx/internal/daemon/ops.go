@@ -25,6 +25,7 @@ import (
 	"github.com/developing-today/code/pkgs/mcpx/internal/registry"
 	"github.com/developing-today/code/pkgs/mcpx/internal/settings"
 	"github.com/developing-today/code/pkgs/mcpx/internal/tasks"
+	"github.com/developing-today/code/pkgs/mcpx/internal/wantlog"
 )
 
 // routesV1Ops registers the operations that are not part of the original
@@ -78,7 +79,7 @@ func (s *Server) openStore() (*logstore.Store, error) {
 	}
 	if s.set.Bool("plumbing.indexOnQuery") {
 		if _, err := st.Ingest(); err != nil {
-			st.Close()
+			_ = st.Close()
 			return nil, err
 		}
 	}
@@ -157,7 +158,7 @@ func (s *Server) handleLogQuery(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusServiceUnavailable, err)
 		return
 	}
-	defer st.Close()
+	defer func() { _ = st.Close() }()
 
 	if chain := q.Get("chain"); chain != "" {
 		// Chain walks a trace tree by id and takes no filters. Accepting
@@ -231,7 +232,7 @@ func (s *Server) handleStats(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusServiceUnavailable, err)
 		return
 	}
-	defer st.Close()
+	defer func() { _ = st.Close() }()
 
 	var rows any
 	switch dim {
@@ -305,6 +306,11 @@ func (s *Server) handleRegistrySearch(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadGateway, err)
 		return
 	}
+	// The daemon is the other surface that can answer an empty registry
+	// search, and it used to return [] with no record. Same local-only
+	// append as the CLI; best-effort, because the search already
+	// succeeded and the caller asked for its result.
+	s.recordRegistrySearch(q.Get("q"), res)
 	type entry struct {
 		registry.Server
 		Namespace string `json:"namespace"`
@@ -321,6 +327,16 @@ func (s *Server) handleRegistrySearch(w http.ResponseWriter, r *http.Request) {
 		out = append(out, e)
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"servers": out, "truncated": res.Truncated})
+}
+
+// recordRegistrySearch adds an empty search result to the local-only wants
+// log. Best-effort so an unwritable feedback file cannot fail the search.
+func (s *Server) recordRegistrySearch(query string, res registry.Results) {
+	stateDir := s.paths.State
+	if stateDir == "" {
+		stateDir = DefaultStateDir()
+	}
+	_ = wantlog.RecordSearchMiss(stateDir, query, len(res.Servers))
 }
 
 // ---- completion ----
@@ -375,20 +391,32 @@ func (s *Server) handleComplete(w http.ResponseWriter, r *http.Request) {
 	// review, PR #3730). CanonicalName is a registry map read -- it
 	// acquires no lease and wakes no upstream.
 	serverName := s.reg.CanonicalName(req.Server)
-	if refused := s.completeLimiter.admit([]limitCheck{
-		{
-			Name:  "completion.perMinute",
-			What:  "this caller and server",
-			Key:   "caller\x00" + completionCaller(cc) + "\x00" + serverName,
-			Limit: cs.Int("completion.perMinute"),
-		},
-		{
-			Name:  "completion.serverPerMinute",
-			What:  "this server",
-			Key:   "server\x00" + serverName,
-			Limit: cs.Int("completion.serverPerMinute"),
-		},
-	}); refused != nil {
+	// Unknown names skip the limiter entirely (#6978): CanonicalName
+	// returns a name the registry does not know unchanged, so admitting
+	// first would mint a fresh pair of limiter buckets per distinct
+	// bogus name -- bucket growth at request rate, and a per-server
+	// window that never binds anything. KnownServer is a registry map
+	// read (no lease, no upstream), so refusal-before-pool is unchanged
+	// for configured servers, and an unknown name falls through to the
+	// pool lookup's own 400 below without having counted anything.
+	var refused *limitCheck
+	if s.reg.KnownServer(req.Server) {
+		refused = s.completeLimiter.admit([]limitCheck{
+			{
+				Name:  "completion.perMinute",
+				What:  "this caller and server",
+				Key:   "caller\x00" + completionCaller(cc) + "\x00" + serverName,
+				Limit: cs.Int("completion.perMinute"),
+			},
+			{
+				Name:  "completion.serverPerMinute",
+				What:  "this server",
+				Key:   "server\x00" + serverName,
+				Limit: cs.Int("completion.serverPerMinute"),
+			},
+		})
+	}
+	if refused != nil {
 		writeErr(w, http.StatusTooManyRequests, fmt.Errorf(
 			"completion rate limit: %s allows %d per minute for %s",
 			refused.Name, refused.Limit, refused.What))
@@ -549,7 +577,7 @@ func rankCompletions(candidates []string, value string) []string {
 			hits = append(hits, scored{c, fc, 1, 0})
 		case strings.HasPrefix(fc, q):
 			hits = append(hits, scored{c, fc, 2, 0})
-		case q != "" && strings.Index(fc, q) >= 0:
+		case q != "" && strings.Contains(fc, q):
 			hits = append(hits, scored{c, fc, 3, strings.Index(fc, q)})
 		}
 	}
@@ -582,13 +610,13 @@ func rankCompletions(candidates []string, value string) []string {
 
 // ---- tasks ----
 
-// taskStore is the daemon's own, created on first use so a daemon that never
-// runs one carries nothing.
 // TaskStore returns the daemon's one task store, creating it on first
 // use exactly as the /v1 handlers do. internal/cli uses it to share
 // the same instance with the daemon's MCP surface (issue #1555): a
 // task started over MCP is then visible via /v1, and a /v1 task lives
 // in the same store the MCP surface reads.
+// taskStore is the daemon's own, created on first use so a daemon that never
+// runs one carries nothing.
 func (s *Server) TaskStore() *tasks.Store { return s.taskStore() }
 
 func (s *Server) taskStore() *tasks.Store {
@@ -741,7 +769,17 @@ func (s *Server) handleTaskCancel(w http.ResponseWriter, r *http.Request) {
 	if reason == "" {
 		reason = "cancelled by client"
 	}
-	t, ok := s.taskStore().CancelWithReason(r.PathValue("id"), reason)
+	// The /v1 tasks surface is the legacy (2025-11-25) one: its
+	// cancel semantics are immediate and sticky — the transition
+	// happens before this response and stands whatever the work
+	// does afterwards (conformance: tasks-cancel-transition-
+	// before-response, tasks-cancelled-sticky; same ruling as
+	// the MCP tasks/cancel path in mcpserver). The cooperative
+	// grace window of CancelWithReason belongs to the modern
+	// extension path only; using it here returned "working" to
+	// the canceller and let a finishing call overwrite the
+	// cancellation (#8457).
+	t, ok := s.taskStore().CancelImmediate(r.PathValue("id"), reason)
 	if !ok {
 		writeErr(w, http.StatusNotFound, tasks.ErrNoTask{ID: r.PathValue("id")})
 		return
@@ -842,9 +880,4 @@ func firstSentence(s string) string {
 		return strings.TrimSpace(s[:i])
 	}
 	return strings.TrimSpace(s)
-}
-
-// hasPrefixFold matches the way a person types: case is not a filter.
-func hasPrefixFold(s, prefix string) bool {
-	return strings.HasPrefix(strings.ToLower(s), strings.ToLower(prefix))
 }

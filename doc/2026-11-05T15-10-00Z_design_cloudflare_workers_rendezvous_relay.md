@@ -30,7 +30,7 @@
 Adopt a Workers component with **two separate, narrow roles**, and no third:
 
 1. **Rendezvous (directory) role — the primary role.** A Worker over plain
-   HTTPS serves and accepts *signed* rendezvous records: an ID server's
+   HTTPS serves and accepts _signed_ rendezvous records: an ID server's
    available transports, broker endpoints, and priority, in exactly the
    record semantics #5671 §3 defines. Records are keyed by endpoint
    identity, verified against the endpoint's key before storage, carry a
@@ -39,9 +39,9 @@ Adopt a Workers component with **two separate, narrow roles**, and no third:
 2. **Application-layer WebSocket relay role — the secondary, bounded role.**
    One Durable Object per relay session (or per endpoint pair) pairs two
    outbound WebSocket connections — client-side and server-side both
-   connect *out* to the Worker over 443 — and forwards opaque,
+   connect _out_ to the Worker over 443 — and forwards opaque,
    end-to-end-encrypted frames between them. This is a rendezvous-then-pair
-   broker for the case where *both* ends are behind UDP-denied / NAT-only
+   broker for the case where _both_ ends are behind UDP-denied / NAT-only
    egress, which is exactly #5671 §2's second broker shape.
 
 The component is **not** a transport peer: it speaks no QUIC, no UDP, and
@@ -49,17 +49,17 @@ no native ID wire protocol, and it never terminates ID payload encryption.
 
 ### Why this shape
 
-- The platform wall is real and dispositive — for *endpoints*.
+- The platform wall is real and dispositive — for _endpoints_.
   **[verified 2026-11-05]** and repo prior art agree: Workers have no UDP
   socket API and no general inbound TCP listener (inbound TCP reaches a
   Worker only forwarded from another Worker over a service binding);
   outbound TCP exists via `connect()` from `cloudflare:sockets`. A
-  Worker therefore cannot be a QUIC/iroh *endpoint*: it cannot join the
+  Worker therefore cannot be a QUIC/iroh _endpoint_: it cannot join the
   swarm, accept QUIC connections, or hole-punch. **A relay forwarder is
   a different claim, and this record does not conflate the two:** iroh's
   relay protocol is HTTPS/WebSocket-shaped — endpoints connect out to
   the relay and it forwards encapsulated, encrypted packets without
-  terminating QUIC — so the absence of UDP does *not* by itself rule
+  terminating QUIC — so the absence of UDP does _not_ by itself rule
   out a Workers implementation of relay forwarding (repo prior art §6
   rates exactly this fits-with-changes). Whether the pairing in
   Decision ¶2 can be made wire-compatible with the iroh relay protocol
@@ -83,7 +83,7 @@ no native ID wire protocol, and it never terminates ID payload encryption.
 
 Right shape when **all** of these hold:
 
-- The traffic being helped is the *fallback* tiers of #5671 (TCP /
+- The traffic being helped is the _fallback_ tiers of #5671 (TCP /
   HTTP-HTTPS), never the native UDP tiers — Workers is not in the path
   when a direct or relay-assisted UDP path exists.
 - Both endpoints can connect outbound over 443 (directly or through their
@@ -91,7 +91,7 @@ Right shape when **all** of these hold:
 - **The egress path permits WebSocket upgrades, not merely HTTPS
   requests.** These are not the same capability: some proxies and
   middleboxes pass ordinary HTTPS but block or break the WebSocket
-  upgrade. A network that allows HTTPS yet blocks WebSocket is *outside*
+  upgrade. A network that allows HTTPS yet blocks WebSocket is _outside_
   this component's supported environment — a real coverage gap in
   exactly the restricted-network population #5671 targets, stated here
   rather than papered over: such networks fall to #5671's remaining
@@ -108,7 +108,7 @@ Right shape when **all** of these hold:
 A self-hosted `id` broker (#5671 §2's native role) is **required** instead
 when any of these hold:
 
-- UDP/QUIC *endpoint* semantics or hole punching are needed, or the
+- UDP/QUIC _endpoint_ semantics or hole punching are needed, or the
   iroh-relay wire-compatibility evaluation (above) has been run and
   failed, so relaying must run somewhere that can speak the native
   protocol stack.
@@ -117,10 +117,10 @@ when any of these hold:
   decision (suspension, quota, pricing change) — Workers availability is
   someone else's switch.
 - Sustained bulk throughput is the point: per-message size and per-DO
-  serialization (limits below) make the Workers relay a *usability*
+  serialization (limits below) make the Workers relay a _usability_
   fallback for interactive and ordinary sync traffic, not a bulk pipe.
 - Inbound TCP surfaces (e.g. SSH listeners) are needed; the relay pairs
-  WebSockets only, and SSH-class traffic rides *inside* the E2E tunnel the
+  WebSockets only, and SSH-class traffic rides _inside_ the E2E tunnel the
   pair carries, terminated at the true endpoints — never at the Worker.
 
 Both shapes are first-class and interoperable: they consume and produce
@@ -149,12 +149,12 @@ Ship order, if implementation is ever scheduled: rendezvous role first
 - **WebSocket message size in Durable Objects: 32 MiB, received messages
   only** (Durable Objects limits doc, both storage backends)
   **[verified 2026-11-05]**. Consequence: the platform does not force
-  small frames. This record nevertheless recommends an *application*
+  small frames. This record nevertheless recommends an _application_
   frame cap well below 32 MiB (1 MiB is a reasonable starting point) as
   a deliberate judgment — smaller frames bound per-message CPU, memory,
   and head-of-line blocking on a shared pair — and that cap is ours to
   revisit, not a Cloudflare restriction. Above whichever cap is chosen,
-  chunking is the *endpoints'* framing layer's job; the relay forwards
+  chunking is the _endpoints'_ framing layer's job; the relay forwards
   frames, it does not reassemble streams.
 - **Memory 128 MB per Worker/DO; CPU is metered per request/event**
   **[verified 2026-11-05]**. Consequence: forwarding must be
@@ -178,7 +178,7 @@ Ship order, if implementation is ever scheduled: rendezvous role first
 - **Workers as a QUIC/iroh endpoint (peer).** Impossible on the
   platform (no UDP), not merely hard. Rejected by physics, recorded so
   it is not re-proposed. This rejection covers endpoint-hood only: a
-  Workers *relay forwarder* speaking the iroh relay protocol over
+  Workers _relay forwarder_ speaking the iroh relay protocol over
   HTTPS/WebSocket is not rejected here — see the platform-wall bullet
   above; its wire compatibility is an open implementation-time
   evaluation, and the generic pairing in Decision ¶2 is the fallback
@@ -189,14 +189,14 @@ Ship order, if implementation is ever scheduled: rendezvous role first
   The two-outbound-WebSocket pairing is strictly more general for the
   fallback case. Rejected.
 - **HTTP request/response polling relay instead of WebSockets.**
-  Rejected *as this component's primary shape*, on latency and
+  Rejected _as this component's primary shape_, on latency and
   request-metering cost for interactive traffic where WebSocket is
   available — not on reachability: the earlier premise that a WebSocket
   upgrade passes the same egress as ordinary HTTPS is false in general
   (see the supported-environment criteria above), and polling is in
-  fact the *more* reachable shape on HTTPS-only, WebSocket-blocking
+  fact the _more_ reachable shape on HTTPS-only, WebSocket-blocking
   networks. Polling therefore stays a live candidate for a last-ditch
-  tier *inside* #5671's ordering covering that gap — a parent-level
+  tier _inside_ #5671's ordering covering that gap — a parent-level
   addition, not this component's choice, and not foreclosed by
   anything in this record.
 - **Folding this into the P7.2 Worker.** See [Not P7.2](#not-p72):
@@ -205,7 +205,7 @@ Ship order, if implementation is ever scheduled: rendezvous role first
 - **No Workers component at all (self-hosted broker only).** Viable, and
   remains the required shape for the sovereignty cases above — but it
   gives up the one thing this component exists for: a rendezvous/relay
-  that is reachable from a UDP-denied network with *zero* infrastructure
+  that is reachable from a UDP-denied network with _zero_ infrastructure
   stood up in advance. Rejected as the whole answer; retained as the
   parity requirement below.
 
@@ -220,7 +220,7 @@ Parity is a contract, not a port:
   used except by endpoint address and observed latency.
 - **Same trust properties.** The self-hosted broker is equally blind:
   E2E payloads, authenticated use, metadata minimization (below). Running
-  your own broker buys metadata *custody* and availability control, not
+  your own broker buys metadata _custody_ and availability control, not
   extra payload access.
 - **Same configuration surface.** One client configuration names an
   ordered set of rendezvous/relay endpoints of either shape; switching
@@ -235,7 +235,7 @@ Parity is a contract, not a port:
 Implementation of either role must hold all of these; they are the
 acceptance tests of any future implementation issue:
 
-1. **Authenticated by default (#5671 §4).** Rendezvous *writes* require
+1. **Authenticated by default (#5671 §4).** Rendezvous _writes_ require
    proof of possession of the endpoint key (the record's own signature,
    verified before storage). Relay pairing requires a capability or
    allowlist credential naming both endpoints; there is no open relay
@@ -243,8 +243,8 @@ acceptance tests of any future implementation issue:
 2. **Blind pipe.** The relay forwards opaque frames only. It holds no
    session or content keys, performs no TLS termination of ID payloads
    (its own HTTPS/WebSocket TLS is transport, terminated at Cloudflare's
-   edge — stated honestly: Cloudflare is trusted for *availability and
-   metadata handling*, never for payload confidentiality, which the E2E
+   edge — stated honestly: Cloudflare is trusted for _availability and
+   metadata handling_, never for payload confidentiality, which the E2E
    layer provides), and cannot be configured into a mode where it can.
 3. **Metadata minimization.** Cloudflare necessarily sees client IPs,
    timing, and volume for connections it carries — that exposure is the
@@ -271,9 +271,9 @@ acceptance tests of any future implementation issue:
 ## Not P7.2
 
 The P7.2 design (`doc/2026-10-14T10-18-19Z_design_p7_2_cloudflare_workers.md`)
-is a pkarr/DoH *lookup* service: it stores signed pkarr packets and
+is a pkarr/DoH _lookup_ service: it stores signed pkarr packets and
 answers DoH queries, and it explicitly excludes iroh relay/WebSocket
-traffic, QAD, and NAT traversal. This component is a *transport*
+traffic, QAD, and NAT traversal. This component is a _transport_
 rendezvous/relay: signed transport advertisements plus live WebSocket
 pairing. They share a platform, a deployment standard, and a
 "records are signed, the platform is metadata-trusted only" posture —
@@ -289,7 +289,7 @@ the fallback order (direct UDP → relay-assisted UDP → TCP →
 HTTP/HTTPS proxy), the broker-as-dumb-pipe role, the rendezvous record
 semantics and substrate-neutrality, the trust model and E2E list, and the
 non-goal of defeating policy-enforced egress the user is not authorized
-to use. Two #5671 open questions are *informed* but remain the parent's
+to use. Two #5671 open questions are _informed_ but remain the parent's
 to close in its own text: broker shape (this record argues "both", above)
 and the cost/ownership model for a hosted relay (this record bounds it
 via the abuse invariants; who pays for a shared hosted endpoint is still

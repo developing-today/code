@@ -25,15 +25,15 @@ Successfully implemented **slice 1** of the OpenCode execution lane claimant/exe
 
 ### Core Components Delivered
 
-| Component | Status | Location |
-|-----------|--------|----------|
-| Main Executor | ✅ Complete | `pm-stack/opencode-claimant/claimant.py` |
-| Candidate Discovery | ✅ Complete | `pm-stack/opencode-claimant/poll.py` |
-| Test Suite | ✅ Complete | `pm-stack/opencode-claimant/test_implementation.py` |
-| Documentation | ✅ Complete | `pm-stack/opencode-claimant/README.md` |
-| Verification Script | ✅ Complete | `pm-stack/opencode-claimant/verify_slice1.sh` |
-| Setup Helper | ✅ Complete | `pm-stack/opencode-claimant/Makefile` |
-| Completion Reports | ✅ Complete | Multiple files |
+| Component           | Status      | Location                                            |
+| ------------------- | ----------- | --------------------------------------------------- |
+| Main Executor       | ✅ Complete | `pm-stack/opencode-claimant/claimant.py`            |
+| Candidate Discovery | ✅ Complete | `pm-stack/opencode-claimant/poll.py`                |
+| Test Suite          | ✅ Complete | `pm-stack/opencode-claimant/test_implementation.py` |
+| Documentation       | ✅ Complete | `pm-stack/opencode-claimant/README.md`              |
+| Verification Script | ✅ Complete | `pm-stack/opencode-claimant/verify_slice1.sh`       |
+| Setup Helper        | ✅ Complete | `pm-stack/opencode-claimant/Makefile`               |
+| Completion Reports  | ✅ Complete | Multiple files                                      |
 
 ---
 
@@ -83,6 +83,7 @@ Successfully implemented **slice 1** of the OpenCode execution lane claimant/exe
 ## 📊 Verification Results
 
 ### Test Suite Execution
+
 ```
 ✅ 12/12 tests passed
 - Mode file reading: ✅
@@ -100,6 +101,7 @@ Successfully implemented **slice 1** of the OpenCode execution lane claimant/exe
 ```
 
 ### Verification Script Execution
+
 ```
 ✅ 43/43 verification checks passed
 - File structure: ✅ (4 checks)
@@ -115,6 +117,7 @@ Successfully implemented **slice 1** of the OpenCode execution lane claimant/exe
 ```
 
 ### System Status
+
 ```
 Mode: shadow (default)
 Active root sessions: 1
@@ -130,17 +133,20 @@ Fire log: Active and recording
 ### Running the Claimant
 
 **Shadow mode (safe testing):**
+
 ```bash
 python3 pm-stack/opencode-claimant/claimant.py
 ```
 
 **Live mode (production):**
+
 ```bash
 echo "live" > ~/.local/state/opencode-claimant/mode
 python3 pm-stack/opencode-claimant/claimant.py
 ```
 
 **Using Makefile:**
+
 ```bash
 make all      # Make scripts executable
 make install  # Create state directory
@@ -171,11 +177,13 @@ cat ~/.local/state/opencode-claimant/fires.jsonl
 ### In `/home/user/git/code/pm-stack/opencode-claimant/`
 
 **Core Implementation:**
+
 - `claimant.py` (556 lines) - Main executor
 - `poll.py` (459 lines) - Candidate discovery
 - `test_implementation.py` (302 lines) - Test suite
 
 **Documentation:**
+
 - `README.md` (205 lines) - User guide
 - `SLICE1_FINAL_CONFIRMATION.md` (11K) - Completion confirmation
 - `SLICE1_COMPLETION_REPORT.md` (13K) - Detailed report
@@ -183,10 +191,12 @@ cat ~/.local/state/opencode-claimant/fires.jsonl
 - Multiple other documentation files
 
 **Configuration:**
+
 - `Makefile` (43 lines) - Setup helper
 - `verify_slice1.sh` - Verification script
 
 **Migrations:**
+
 - `migration-0021.sql` - Atomic bind operation
 - `migration-0022.sql` - Atomic recovery operations
 
@@ -231,15 +241,18 @@ cat ~/.local/state/opencode-claimant/fires.jsonl
 ## 📚 Documentation Overview
 
 ### Quick Start
+
 - **README.md**: Complete user guide and technical reference
 - **Makefile**: Easy setup and execution helpers
 
 ### Technical Details
+
 - **IMPLEMENTATION_STATUS.md**: Detailed status tracking (429 lines)
 - **SLICE1_FINAL_CONFIRMATION.md**: Completion confirmation
 - **SLICE1_COMPLETION_REPORT.md**: This summary report
 
 ### Development Resources
+
 - **test_implementation.py**: Comprehensive test suite
 - **verify_slice1.sh**: Automated verification script
 - **SLICE1_IMPLEMENTATION_SUMMARY.md**: Implementation walkthrough
@@ -249,6 +262,7 @@ cat ~/.local/state/opencode-claimant/fires.jsonl
 ## 🔮 Next Steps
 
 ### Immediate (Slice 1)
+
 - ✅ Implementation complete
 - ✅ All tests passing
 - ✅ All verification checks passed
@@ -256,6 +270,7 @@ cat ~/.local/state/opencode-claimant/fires.jsonl
 - ✅ Ready for production deployment
 
 ### Future (Slice 2+)
+
 - **Slice 2**: Parallel-run gate implementation
 - Performance optimization based on usage patterns
 - Additional queue monitoring
@@ -265,14 +280,14 @@ cat ~/.local/state/opencode-claimant/fires.jsonl
 
 ## 🏆 Success Metrics
 
-| Metric | Target | Actual | Status |
-|--------|--------|--------|--------|
-| Implementation completeness | 100% | 100% | ✅ |
-| Test suite pass rate | 100% | 100% | ✅ |
-| Verification check pass rate | 100% | 100% | ✅ |
-| Documentation completeness | 100% | 100% | ✅ |
-| Production readiness | Ready | Ready | ✅ |
-| Critical defects addressed | All | All | ✅ |
+| Metric                       | Target | Actual | Status |
+| ---------------------------- | ------ | ------ | ------ |
+| Implementation completeness  | 100%   | 100%   | ✅     |
+| Test suite pass rate         | 100%   | 100%   | ✅     |
+| Verification check pass rate | 100%   | 100%   | ✅     |
+| Documentation completeness   | 100%   | 100%   | ✅     |
+| Production readiness         | Ready  | Ready  | ✅     |
+| Critical defects addressed   | All    | All    | ✅     |
 
 ---
 
@@ -303,18 +318,21 @@ The OpenCode lane claimant/executor implementation successfully delivers **all r
 ## 📞 Contact & References
 
 ### Issue Tracking
+
 - **Main Issue**: [#3026 - OpenCode lane claimant/executor](https://github.com/developing-today/opencode/issues/3026)
 - **Recovery Rules**: [#4758 - Zero-message session recovery](https://github.com/developing-today/opencode/issues/4758)
 - **Session Location**: [#4870 - Session location verification](https://github.com/developing-today/opencode/issues/4870)
 - **Request Shape**: [#5857 - Session creation request shape](https://github.com/developing-today/opencode/issues/5857)
 
 ### Documentation Files
+
 - `pm-stack/opencode-claimant/README.md` - User guide
 - `pm-stack/opencode-claimant/SLICE1_FINAL_CONFIRMATION.md` - Completion confirmation
 - `pm-stack/opencode-claimant/SLICE1_COMPLETION_REPORT.md` - Detailed report
 - `pm-stack/opencode-claimant/IMPLEMENTATION_STATUS.md` - Status tracking
 
 ### Verification
+
 - **Test Suite**: `pm-stack/opencode-claimant/test_implementation.py`
 - **Verification Script**: `pm-stack/opencode-claimant/verify_slice1.sh`
 - **Last Verification**: November 7, 2026
@@ -337,4 +355,4 @@ The OpenCode lane claimant/executor implementation successfully delivers **all r
 
 ---
 
-*This summary confirms the successful completion of slice 1 for issue #3026.*
+_This summary confirms the successful completion of slice 1 for issue #3026._

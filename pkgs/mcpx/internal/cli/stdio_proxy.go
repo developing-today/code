@@ -57,7 +57,7 @@ func (a *App) CmdStdioProxy(ctx context.Context, args []string) error {
 	if err != nil {
 		return fmt.Errorf("stdio-proxy: no mcpx daemon at %s on this host: %w (start one with `mcpx daemon`, or point ?sock= at its socket)", path, err)
 	}
-	defer conn.Close()
+	defer func() { _ = conn.Close() }()
 
 	return proxyPipe(ctx, conn, os.Stdin, os.Stdout)
 }

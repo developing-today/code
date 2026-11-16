@@ -56,11 +56,20 @@ const WINDOW_KINDS = new Map<string, { key: string; windowSeconds: number | null
 
 const clampPercent = (value: number): number => Math.min(100, Math.max(0, value));
 
+// Plain decimal spellings only (#3005 field form, closing audit
+// task 4350 / issue #3006). Number() also accepts "", whitespace-
+// padded, hex ("0x10" -> 16), and scientific ("1e2" -> 100) strings,
+// which would turn a drifted provider field into a real measurement;
+// reject every non-decimal spelling so drift reads as not-a-reading.
+// The sign stays: this gate's domain admits negatives (clamped by
+// clampPercent), like aa.ts's PLAIN_DECIMAL.
+const PLAIN_DECIMAL = /^[+-]?(?:\d+(?:\.\d*)?|\.\d+)$/;
+
 /** percentUsed as the provider reads it: a finite number, or a
- *  non-empty numeric string; anything else is not a reading. */
+ * plain-decimal string; anything else is not a reading. */
 function percentUsedOf(value: unknown): number | null {
   if (typeof value === "number") return Number.isFinite(value) ? value : null;
-  if (typeof value === "string" && value.trim() !== "") {
+  if (typeof value === "string" && PLAIN_DECIMAL.test(value)) {
     const n = Number(value);
     return Number.isFinite(n) ? n : null;
   }
@@ -239,7 +248,8 @@ export async function collectClinePassAdapter(opts: {
 export function credentialRefFromConfig(value: string | undefined): CredentialRef | null {
   if (!value || value.trim() === "") return null;
   const v = value.trim();
-  if (v.startsWith("bitwarden:")) return validateCredentialRef({ kind: "bitwarden", name: v.slice("bitwarden:".length) });
+  if (v.startsWith("bitwarden:"))
+    return validateCredentialRef({ kind: "bitwarden", name: v.slice("bitwarden:".length) });
   if (v.startsWith("file:")) return validateCredentialRef({ kind: "file", path: v.slice("file:".length), mode: 0o600 });
   throw new AdapterError(
     "fetch-failed",
@@ -292,6 +302,7 @@ export async function gatherClinePass(opts: {
   return collectClinePassAdapter({
     now: opts.now,
     previous: opts.previous,
-    fetchPayload: () => fetchClinePassPayload({ token: token as string, fetchImpl: opts.fetchImpl, timeoutMs: opts.timeoutMs }),
+    fetchPayload: () =>
+      fetchClinePassPayload({ token: token as string, fetchImpl: opts.fetchImpl, timeoutMs: opts.timeoutMs }),
   });
 }

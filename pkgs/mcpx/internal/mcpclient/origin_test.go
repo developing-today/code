@@ -38,16 +38,16 @@ func TestServerRequestCarriesTheOriginatingCallsContext(t *testing.T) {
 		switch {
 		case m.Method == "initialize":
 			w.Header().Set("Content-Type", "application/json")
-			fmt.Fprintf(w, `{"jsonrpc":"2.0","id":%s,"result":{"protocolVersion":"2025-11-25","capabilities":{"tools":{}},"serverInfo":{"name":"t","version":"1"}}}`, m.ID)
+			_, _ = fmt.Fprintf(w, `{"jsonrpc":"2.0","id":%s,"result":{"protocolVersion":"2025-11-25","capabilities":{"tools":{}},"serverInfo":{"name":"t","version":"1"}}}`, m.ID)
 		case m.Method == "tools/call":
 			w.Header().Set("Content-Type", "text/event-stream")
-			fmt.Fprint(w, "data: {\"jsonrpc\":\"2.0\",\"id\":\"q1\",\"method\":\"elicitation/create\",\"params\":{\"message\":\"?\",\"requestedSchema\":{\"type\":\"object\"}}}\n\n")
+			_, _ = fmt.Fprint(w, "data: {\"jsonrpc\":\"2.0\",\"id\":\"q1\",\"method\":\"elicitation/create\",\"params\":{\"message\":\"?\",\"requestedSchema\":{\"type\":\"object\"}}}\n\n")
 			w.(http.Flusher).Flush()
 			select {
 			case <-answered:
 			case <-time.After(10 * time.Second):
 			}
-			fmt.Fprintf(w, "data: {\"jsonrpc\":\"2.0\",\"id\":%s,\"result\":{\"content\":[]}}\n\n", m.ID)
+			_, _ = fmt.Fprintf(w, "data: {\"jsonrpc\":\"2.0\",\"id\":%s,\"result\":{\"content\":[]}}\n\n", m.ID)
 		case m.Method == "" && string(m.ID) == `"q1"`:
 			w.WriteHeader(http.StatusAccepted)
 			close(answered)
@@ -74,7 +74,7 @@ func TestServerRequestCarriesTheOriginatingCallsContext(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer cl.Close()
+	defer func() { _ = cl.Close() }()
 
 	if _, err := cl.CallTool(context.WithValue(ctx, originKey{}, "the call"), "ask", map[string]any{}); err != nil {
 		t.Fatal(err)

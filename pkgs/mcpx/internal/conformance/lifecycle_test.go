@@ -140,9 +140,10 @@ func TestLifecycleServer(t *testing.T) {
 		srv, _ := newServer(t)
 		ss := stdioServer(t, srv)
 		ss.initialize(t, rev)
-		ss.in.Close()
+		_ = ss.in.Close()
 		select {
-		case <-ss.done:
+		case recvErr := <-ss.done:
+			_ = recvErr
 			ss.done <- nil // for the cleanup
 		case <-time.After(wait):
 			t.Fatal("ServeStdio did not return at EOF")
@@ -805,7 +806,7 @@ func TestLifecycleClient(t *testing.T) {
 		o.Preference = mcpclient.ForceLegacy
 		c, _ := mcpclient.NewWithOptions(ctx, p, o)
 		if c != nil {
-			c.Close()
+			_ = c.Close()
 		}
 		for _, f := range p.sentMethod("notifications/cancelled") {
 			t.Errorf("cancelled initialize: %v", f)

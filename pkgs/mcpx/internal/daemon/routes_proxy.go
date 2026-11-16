@@ -76,7 +76,7 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, err)
 		return
 	}
-	defer r.Body.Close()
+	defer func() { _ = r.Body.Close() }()
 
 	var req chatCompletionReq
 	if err := json.Unmarshal(bodyBytes, &req); err != nil {
@@ -286,7 +286,7 @@ func (s *Server) proxyToUpstream(w http.ResponseWriter, r *http.Request, upstrea
 		writeErr(w, http.StatusBadGateway, fmt.Errorf("upstream error: %w", err))
 		return
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	buf := &cappedFeedbackBuffer{limit: proxyFeedbackCaptureLimit}
 	rdr := io.TeeReader(resp.Body, buf)

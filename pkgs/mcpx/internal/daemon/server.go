@@ -31,6 +31,7 @@ import (
 	"github.com/developing-today/code/pkgs/mcpx/internal/logstore"
 	"github.com/developing-today/code/pkgs/mcpx/internal/mcpclient"
 	"github.com/developing-today/code/pkgs/mcpx/internal/mcpserver"
+	"github.com/developing-today/code/pkgs/mcpx/internal/pluginsession"
 	"github.com/developing-today/code/pkgs/mcpx/internal/pool"
 	"github.com/developing-today/code/pkgs/mcpx/internal/settings"
 	"github.com/developing-today/code/pkgs/mcpx/internal/tasks"
@@ -46,6 +47,17 @@ type Server struct {
 	// completeLimiter holds the completion/complete admission windows
 	// (#2387). The zero value is ready; every Server gets its own.
 	completeLimiter rateLimiter
+	// pluginSessions is the plugin-session registry (#1873): the
+	// sessions the daemon has issued to connecting plugins, and
+	// everything those sessions own. The zero value is ready;
+	// every Server gets its own.
+	pluginSessions pluginsession.Registry
+	// pluginHooks resolves plugin-session manifest hooks into live
+	// bus subscribers (#1873 slice 2, #10046). Built lazily by
+	// hookResolver, because tests construct Servers directly and a
+	// Server's bus exists only where New (or the test) put one.
+	pluginHooks     *pluginsession.Resolver
+	pluginHooksOnce sync.Once
 	// augment is Options.Augment, kept for reloads.
 	augment func(*config.Config) error
 	paths   Paths
@@ -264,6 +276,10 @@ func NewServer(opts Options) (*Server, error) {
 			opts.Settings.Duration("elicit.maxAge"))
 	}
 	reg.UseSettings(opts.Settings)
+	// File-backed tool views (#1933 slice 2) run through the daemon's exec
+	// service, which exists only on the Server: the registry owns the
+	// catalogue and the call funnel, the Server owns execution.
+	reg.SetScriptToolRunner(srv.runDeclaredScript)
 	roots, err := rootsFromPaths(opts.Settings.List("daemon.roots"))
 	if err != nil {
 		return nil, err
@@ -361,7 +377,7 @@ func (s *Server) Listen(tcpPort int) error {
 	}
 	tcpLn, err := tcpTransport{address: net.JoinHostPort(host, strconv.Itoa(tcpPort))}.Listen()
 	if err != nil {
-		unixLn.Close()
+		_ = unixLn.Close()
 		return err
 	}
 	s.unixLn = newConnListener(unixLn, &s.conns, nil)
@@ -372,8 +388,8 @@ func (s *Server) Listen(tcpPort int) error {
 	// tsnet route and silently does not have one would be found out by
 	// the first remote caller, not by its operator.
 	if err := s.listenTSNet(); err != nil {
-		unixLn.Close()
-		tcpLn.Close()
+		_ = unixLn.Close()
+		_ = tcpLn.Close()
 		return err
 	}
 	s.endpoint = "http://" + tcpLn.Addr().String()
@@ -492,14 +508,13 @@ func (s *Server) clearStaleSocket() error {
 	}
 	c, err := net.DialTimeout("unix", s.paths.Socket, s.set.Duration("daemon.socketProbeTimeout"))
 	if err == nil {
-		c.Close()
+		_ = c.Close()
 		return fmt.Errorf("a daemon is already listening on %s", s.paths.Socket)
 	}
 	s.logger.Printf("removing stale socket %s", s.paths.Socket)
 	return os.Remove(s.paths.Socket)
 }
 
-// Serve runs until the context is cancelled or a signal arrives.
 // ServeInline runs the daemon's API inside the calling process, on a private
 // socket, until the context ends.
 //
@@ -512,6 +527,7 @@ func (s *Server) clearStaleSocket() error {
 // calling process exits, so nothing is pooled across invocations and a
 // stateful server -- a browser -- cannot outlive one command. That is the
 // price of not having a daemon, and it is paid on every run.
+// Serve runs until the context is cancelled or a signal arrives.
 func (s *Server) ServeInline(ctx context.Context, socket string) error {
 	_ = os.Remove(socket)
 	ln, err := net.Listen("unix", socket)
@@ -647,7 +663,7 @@ func (s *Server) Serve(ctx context.Context) error {
 			}
 			s.watchConfig()
 			s.reg.Reap()
-			if s.shouldIdleExit() {
+			if s.shouldIdleExit(time.Now()) {
 				s.logger.Printf("no activity for %s and no live instances; exiting", s.idleExit)
 				return s.shutdown()
 			}
@@ -675,11 +691,11 @@ func (s *Server) trackActivity(next http.Handler) http.Handler {
 	})
 }
 
-func (s *Server) shouldIdleExit() bool {
+func (s *Server) shouldIdleExit(now time.Time) bool {
 	if s.idleExit <= 0 || s.committed.Load() {
 		return false
 	}
-	if time.Since(time.Unix(0, s.lastReq.Load())) < s.idleExit {
+	if now.Sub(time.Unix(0, s.lastReq.Load())) < s.idleExit {
 		return false
 	}
 	for _, st := range s.reg.Status() {
@@ -789,6 +805,7 @@ func (s *Server) routes(mux *http.ServeMux) {
 	s.route(mux, "POST "+upgradeRoute, s.handleUpgrade)
 	s.route(mux, "GET /v1/status", s.handleStatus)
 	s.routesSessions(mux)
+	s.routesPluginSessions(mux)
 	// The permissive authorisation funnel's decision report (#1972
 	// step 2): counts by operation and principal, and the clear.
 	s.route(mux, "GET /v1/authz/decisions", s.handleAuthzDecisions)
@@ -932,13 +949,14 @@ func (s *Server) handleStatus(w http.ResponseWriter, _ *http.Request) {
 		// #1877: this daemon's instance identity, so an `mcpx serve`
 		// shim backed by this daemon can report the DAEMON's identity
 		// (not the shim process's) to its host.
-		"instance": pool.OwnInstanceID,
-		"pid":      os.Getpid(),
-		"uptime":   time.Since(s.started).Truncate(time.Second).String(),
-		"endpoint": s.endpoint,
-		"socket":   s.paths.Socket,
-		"config":   cfgPath,
-		"servers":  s.reg.Status(),
+		"instance":       pool.OwnInstanceID,
+		"pid":            os.Getpid(),
+		"uptime":         time.Since(s.started).Truncate(time.Second).String(),
+		"endpoint":       s.endpoint,
+		"socket":         s.paths.Socket,
+		"config":         cfgPath,
+		"servers":        s.reg.Status(),
+		"pluginSessions": s.pluginSessionStatus(),
 	})
 }
 
@@ -1045,7 +1063,14 @@ func (s *Server) handleClient(w http.ResponseWriter, r *http.Request) {
 	}
 	session := r.URL.Query().Get("session")
 	w.Header().Set("Content-Type", language.ContentType)
-	_, _ = w.Write([]byte(language.EmitModule(nss, s.endpoint, session)))
+	module := language.EmitModule(nss, s.endpoint, session)
+	if language.Name == codegen.TypeScript.Name {
+		// Local mcpx exec/run fetch their client here, so this is
+		// where in-script search gets its saved scripts for ordinary
+		// runs (CODE-36; Codex review, PR #9299).
+		module = codegen.ModuleWithRecipes(nss, s.endpoint, session, s.recipeMetas())
+	}
+	_, _ = w.Write([]byte(module))
 }
 
 func (s *Server) handleGlobals(w http.ResponseWriter, r *http.Request) {
@@ -1664,11 +1689,11 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("X-Accel-Buffering", "no")
 	w.WriteHeader(http.StatusOK)
 
-	fmt.Fprintf(w, "retry: %d\n", s.set.Duration("http.sseRetry").Milliseconds())
+	_, _ = fmt.Fprintf(w, "retry: %d\n", s.set.Duration("http.sseRetry").Milliseconds())
 	if gap {
 		// Said in-band, so a subscriber can resynchronise instead of
 		// trusting a stream with a hole in it.
-		fmt.Fprintf(w, "event: gap\ndata: {\"since\":%d,\"latest\":%d}\n\n", since, s.Events.Latest())
+		_, _ = fmt.Fprintf(w, "event: gap\ndata: {\"since\":%d,\"latest\":%d}\n\n", since, s.Events.Latest())
 	}
 	if len(f.URIs) > 0 {
 		watch.announce(w)
@@ -1695,7 +1720,7 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		toldDrops = dropped
-		fmt.Fprintf(w, "event: gap\ndata: {\"since\":%d,\"latest\":%d,\"dropped\":%d}\n\n",
+		_, _ = fmt.Fprintf(w, "event: gap\ndata: {\"since\":%d,\"latest\":%d,\"dropped\":%d}\n\n",
 			lastSeq, s.Events.Latest(), dropped)
 		flusher.Flush()
 	}
@@ -1710,7 +1735,7 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 			// waiting for the next event to report the loss could wait
 			// forever.
 			tellGap()
-			fmt.Fprintf(w, ": ping\n\n")
+			_, _ = fmt.Fprintf(w, ": ping\n\n")
 			flusher.Flush()
 		case e, open := <-sub.C:
 			if !open {
@@ -1721,7 +1746,7 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 			if err != nil {
 				continue
 			}
-			fmt.Fprintf(w, "id: %d\nevent: %s\ndata: %s\n\n", e.Seq, e.Kind, b)
+			_, _ = fmt.Fprintf(w, "id: %d\nevent: %s\ndata: %s\n\n", e.Seq, e.Kind, b)
 			lastSeq = e.Seq
 			flusher.Flush()
 		}

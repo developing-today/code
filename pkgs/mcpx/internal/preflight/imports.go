@@ -1,3 +1,4 @@
+// Package preflight statically checks a script before it runs: the import graph, resolution and related stages.
 // Import-graph stage of preflight: stage 1 (Graph) of #1915, report mode.
 //
 // mcpx used to learn about a broken import only when the runtime loaded the
@@ -317,12 +318,6 @@ func (r *Report) mergeDynamics(dynamics []DynamicImport, mode DynamicImportMode)
 	}
 }
 
-// CheckImports computes the import graph of entry with deno and reports
-// every unresolved specifier plus every computed dynamic import in the
-// graph's local files. denoBin is the deno binary to use; the graph is a
-// property of the source, not of the runtime that will execute it, so any
-// deno serves. An empty denoBin is reported, not silently skipped: a check
-// that did not run must not look like a check that passed.
 // ResolutionArgs selects the arguments of a configured runtime that
 // decide how specifiers resolve -- an import map can redirect a specifier
 // to a different module, and a config file can carry the map, workspace
@@ -331,6 +326,12 @@ func (r *Report) mergeDynamics(dynamics []DynamicImport, mode DynamicImportMode)
 // run-only switches) does not change the graph and is not forwarded: deno
 // info rejects several of them, and a check that errors on its own flags
 // would report scripts as broken that run fine.
+// CheckImports computes the import graph of entry with deno and reports
+// every unresolved specifier plus every computed dynamic import in the
+// graph's local files. denoBin is the deno binary to use; the graph is a
+// property of the source, not of the runtime that will execute it, so any
+// deno serves. An empty denoBin is reported, not silently skipped: a check
+// that did not run must not look like a check that passed.
 func ResolutionArgs(args []string) []string {
 	valueFlags := map[string]bool{
 		"--import-map": true, "--config": true,
@@ -358,6 +359,80 @@ func ResolutionArgs(args []string) []string {
 		}
 		if switchFlags[a] {
 			out = append(out, a)
+		}
+	}
+	return out
+}
+
+// infoArgs adapts the runtime's resolution arguments for
+// `deno info`, reporting whether the runtime asked for cache-only
+// resolution. --cached-only is a run/check flag: `deno check`
+// accepts it, but `deno info` rejects it outright ("unexpected
+// argument", verified on deno 2.9.8) -- forwarding it verbatim
+// made every import-graph computation fail whenever the executing
+// runtime carried it, which is every deno run under
+// deps.autoInstall=off, its default (#8457).
+//
+// The flag cannot simply be translated to --no-remote: on the
+// info surface that refuses even CACHED remote modules at graph
+// level ("A remote specifier was requested ... but --no-remote
+// is specified"), so a script importing an already-cached HTTPS
+// module would be reported unresolved, and it does not restrain
+// npm resolution at all (CodeRabbit review, PR #10289; both
+// verified against deno 2.9.8). Nor can it be dropped: without
+// restraint `deno info` fetches, defeating the no-fetch rule the
+// flag exists to state. So the flag is stripped from the info
+// argv and the restraint is applied to the subprocess
+// environment instead (cacheOnlyEnv): the cache stays
+// authoritative, and any fetch the graph would need fails
+// immediately and surfaces as the graph error it is. Verified
+// permutations on deno 2.9.8: cached HTTPS and npm imports
+// resolve; uncached ones error without downloading.
+func infoArgs(args []string) ([]string, bool) {
+	out := ResolutionArgs(args)
+	cacheOnly := false
+	kept := out[:0]
+	for _, a := range out {
+		if a == "--cached-only" || strings.HasPrefix(a, "--cached-only=") {
+			cacheOnly = true
+			continue
+		}
+		kept = append(kept, a)
+	}
+	return kept, cacheOnly
+}
+
+// cacheOnlyProxy is the dead endpoint cacheOnlyEnv points every
+// proxy variable at: a loopback discard port, so a connection is
+// refused (or answered by a service that speaks no HTTP) at once
+// rather than hanging until the check's timeout.
+const cacheOnlyProxy = "http://127.0.0.1:9"
+
+// cacheOnlyEnv returns env with every proxy variable forced to
+// cacheOnlyProxy and the bypass lists emptied: a NO_PROXY entry
+// naming a registry would silently restore fetching for exactly
+// the hosts the restraint exists for. Deno's fetcher honours
+// these variables for HTTPS modules and the npm registry alike.
+func cacheOnlyEnv(env []string) []string {
+	forced := map[string]string{
+		"HTTP_PROXY": cacheOnlyProxy, "http_proxy": cacheOnlyProxy,
+		"HTTPS_PROXY": cacheOnlyProxy, "https_proxy": cacheOnlyProxy,
+		"NO_PROXY": "", "no_proxy": "",
+	}
+	out := make([]string, 0, len(env)+len(forced))
+	seen := make(map[string]bool, len(forced))
+	for _, kv := range env {
+		key, _, _ := strings.Cut(kv, "=")
+		if v, ok := forced[key]; ok {
+			out = append(out, key+"="+v)
+			seen[key] = true
+			continue
+		}
+		out = append(out, kv)
+	}
+	for key, v := range forced {
+		if !seen[key] {
+			out = append(out, key+"="+v)
 		}
 	}
 	return out
@@ -410,10 +485,14 @@ func CheckImportsResolved(ctx context.Context, denoBin, entry string, mode Impor
 		defer cancel()
 	}
 	argv := []string{"info", "--json"}
-	argv = append(argv, ResolutionArgs(runtimeArgs)...)
+	resolution, cacheOnly := infoArgs(runtimeArgs)
+	argv = append(argv, resolution...)
 	argv = append(argv, isolationArgs...)
 	argv = append(argv, entry)
 	cmd := exec.CommandContext(cctx, denoBin, argv...)
+	if cacheOnly {
+		cmd.Env = cacheOnlyEnv(os.Environ())
+	}
 	// Execute in the directory the script will execute in, not beside
 	// the entry file: relative --config paths and configuration discovery
 	// resolve from the working directory (Codex review, PR #2575).
@@ -957,13 +1036,6 @@ func isIdentPartIn(c byte) bool {
 }
 
 func isSpaceIn(c byte) bool { return c == ' ' || c == '\t' || c == '\r' || c == '\n' }
-
-func skipSpaceIn(src string, i int) int {
-	for i < len(src) && isSpaceIn(src[i]) {
-		i++
-	}
-	return i
-}
 
 func readIdentIn(src string, i int) (string, int) {
 	j := i

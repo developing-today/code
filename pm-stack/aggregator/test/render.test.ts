@@ -474,7 +474,9 @@ describe("freshness chips (#1138)", () => {
     expect(html).toContain("Ship the dashboard");
     expect(html).toContain("today horizon pick");
     expect(html).toContain("developing-today/code#42");
-    expect(html).toContain('class="badge stale" title="Queue inputs are stale or unavailable; see /health">stale inputs</span>');
+    expect(html).toContain(
+      'class="badge stale" title="Queue inputs are stale or unavailable; see /health">stale inputs</span>',
+    );
 
     const fresh = renderTodayBody(today, attention, quota, coverage, null, false, queue, false);
     expect(fresh).not.toContain("stale inputs");

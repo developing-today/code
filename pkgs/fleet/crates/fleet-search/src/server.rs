@@ -29,9 +29,10 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use atlas_core::types::BranchPools;
 use atlas_core::{
-    BranchPoolExecutor, BranchQuery, Error as CoreError, Filters, QueryEmbedder, SearchBackend,
-    SearchMode as CoreSearchMode, SearchOptions, Sensitivity as CoreSensitivity,
-    VectorBackend as CoreVectorBackend, run_get_chunk, run_search_with_executor,
+    BranchPoolExecutor, BranchQuery, Error as CoreError, Filters, JsonlFeedbackSink, QueryEmbedder,
+    SearchBackend, SearchMode as CoreSearchMode, SearchOptions, Sensitivity as CoreSensitivity,
+    VectorBackend as CoreVectorBackend, feedback_for, load_feedback_dir, record_feedback,
+    run_get_chunk, run_search_with_executor,
 };
 use atlas_proto::{
     BranchState, BranchStates, EmbedRequest, EmbedResponse, ErrorResponse, HealthResponse,
@@ -105,6 +106,13 @@ fn secure_eq(a: &str, b: &str) -> bool {
 pub struct RuntimeLimits {
     /// TTL for a completed/failed job's stored result: 10 minutes.
     pub job_ttl: Duration,
+    /// GC bound for the snapshot-bound result cache (#9943): a
+    /// cached ranking may be served for up to this long while its
+    /// snapshot is current. Correctness never comes from this
+    /// clock — a snapshot bump invalidates entries immediately —
+    /// the TTL only bounds how long stale-snapshot / superseded
+    /// entries occupy memory. Default 24h (design #5667 s3.2).
+    pub result_cache_ttl: Duration,
     /// Hard cap from submit: 60 minutes.
     pub hard_ttl: Duration,
     /// Maximum jobs waiting in the global FIFO execution queue.
@@ -120,6 +128,7 @@ impl Default for RuntimeLimits {
     fn default() -> Self {
         RuntimeLimits {
             job_ttl: Duration::from_secs(600),
+            result_cache_ttl: Duration::from_secs(24 * 3600),
             hard_ttl: Duration::from_secs(3600),
             max_queued_jobs: 8,
             max_concurrent_branch_executions: 4,
@@ -134,6 +143,7 @@ impl Default for RuntimeLimits {
 #[serde(default, deny_unknown_fields)]
 struct RuntimeLimitsFile {
     job_ttl_ms: Option<u64>,
+    result_cache_ttl_ms: Option<u64>,
     hard_ttl_ms: Option<u64>,
     max_queued_jobs: Option<usize>,
     max_concurrent_branch_executions: Option<usize>,
@@ -150,6 +160,10 @@ impl RuntimeLimitsFile {
                 .job_ttl_ms
                 .map(Duration::from_millis)
                 .unwrap_or(d.job_ttl),
+            result_cache_ttl: self
+                .result_cache_ttl_ms
+                .map(Duration::from_millis)
+                .unwrap_or(d.result_cache_ttl),
             hard_ttl: self
                 .hard_ttl_ms
                 .map(Duration::from_millis)
@@ -203,11 +217,21 @@ pub struct ServeSettings {
     pub limits: RuntimeLimits,
 }
 
+fn home_dir() -> PathBuf {
+    // Home-resolution contract (issues #5640 / #5762): a missing or
+    // empty HOME is an error naming HOME, never a substitute
+    // directory - the old fallback to a literal "~" silently
+    // resolved state/config/token paths relative to the CWD.
+    match std::env::var_os("HOME") {
+        Some(home) if !home.is_empty() => PathBuf::from(home),
+        _ => panic!(
+            "HOME is not set or is empty: fleet-search requires a non-empty HOME to resolve its state/config paths (issue #5640)"
+        ),
+    }
+}
+
 pub fn default_service_config_path() -> PathBuf {
-    let home = std::env::var_os("HOME")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from("~"));
-    home.join(".local/state/atlas-search/service.json")
+    home_dir().join(".local/state/atlas-search/service.json")
 }
 
 pub fn resolve_service_config_path(flag: Option<&Path>) -> PathBuf {
@@ -335,6 +359,9 @@ fn validate_limits(limits: &RuntimeLimits) -> Result<(), String> {
     }
     if limits.job_ttl.is_zero() || limits.hard_ttl.is_zero() {
         return Err("job TTLs must be positive".to_string());
+    }
+    if limits.result_cache_ttl.is_zero() {
+        return Err("result_cache_ttl must be positive".to_string());
     }
     if limits.hard_ttl < limits.job_ttl {
         return Err("hard_ttl must be at least job_ttl".to_string());
@@ -526,6 +553,9 @@ fn validate_request(req: &SearchRequest) -> Result<(), ServerError> {
     if req.k == 0 {
         return Err(ServerError::bad_request("k must be at least 1"));
     }
+    req.parameters
+        .validate(req.expand)
+        .map_err(ServerError::bad_request)?;
     if let Some(limit) = req.page_limit
         && limit == 0
     {
@@ -539,7 +569,21 @@ fn validate_request(req: &SearchRequest) -> Result<(), ServerError> {
 /// What the job manager needs from a search implementation. The
 /// production implementation is [`CoreSearchEngine`] over the
 /// Turso backend; tests substitute a stub.
+/// The snapshot id for an engine with no corpus snapshot: a
+/// constant, so its result-cache entries form one stable
+/// snapshot partition (the Turso monolith today).
+pub const NO_SNAPSHOT_ID: &str = "no-snapshot";
+
 pub trait SearchEngine: Send + Sync {
+    /// The corpus snapshot the next search would serve from
+    /// (#9943): the job manager binds every result-cache entry
+    /// to the snapshot current at submit time, and a changed
+    /// snapshot invalidates all entries at once. Engines whose
+    /// backend carries no shard set report [`NO_SNAPSHOT_ID`].
+    fn snapshot_id(&self) -> String {
+        NO_SNAPSHOT_ID.to_string()
+    }
+
     fn search(
         &self,
         request: &SearchRequest,
@@ -619,6 +663,7 @@ where
             embedder_label: request.embedder.clone(),
             trunc: request.trunc,
             vector_backend: core_vector_backend(request.vector_backend),
+            parameters: request.parameters.clone(),
         };
         let executor = ConcurrentBranchExecutor {
             backend: self.backend.as_ref(),
@@ -671,6 +716,12 @@ where
         self.embedder
             .embed_query(text, trunc)
             .map_err(|e| ServerError::from_core(&e))
+    }
+
+    fn snapshot_id(&self) -> String {
+        self.backend
+            .snapshot_id()
+            .unwrap_or_else(|| NO_SNAPSHOT_ID.to_string())
     }
 
     fn embedder_state(&self) -> String {
@@ -801,12 +852,16 @@ where
             match_expr: query.match_expr.clone(),
             query_vector: None,
             pool: query.pool,
+            shard_top_k: query.shard_top_k,
+            global_top_k: query.global_top_k,
             vector_backend: query.vector_backend,
         };
         let vector_query = BranchQuery {
             match_expr: None,
             query_vector: query.query_vector.clone(),
             pool: query.pool,
+            shard_top_k: query.shard_top_k,
+            global_top_k: query.global_top_k,
             vector_backend: query.vector_backend,
         };
         // Fast path (Drew's usage profile, 2026-11-04): the
@@ -874,12 +929,22 @@ where
 /// The dedupe cache key: the effective request, verbatim.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 struct CacheKey {
+    /// Corpus snapshot at submit time (#9943): entries computed
+    /// under a different snapshot never coalesce or serve.
+    snapshot: String,
+    /// The design's sha256 result-cache key (atlas-proto
+    /// `result_cache_key`): sha256(query || snapshot || ceiling
+    /// || flags). Stored alongside the verbatim fields so the
+    /// snapshot-bound result cache and the dedupe cache agree on
+    /// exactly which searches share an outcome.
+    result_key: String,
     query: String,
     mode: ProtoSearchMode,
     k: usize,
     pool: usize,
     group_by_session: bool,
     expand: usize,
+    parameters: String,
     with_message: bool,
     model: String,
     embedder: String,
@@ -895,14 +960,36 @@ struct CacheKey {
 }
 
 impl CacheKey {
-    fn from_request(req: &SearchRequest, effective_ceiling: ProtoSensitivity) -> CacheKey {
+    fn from_request(
+        req: &SearchRequest,
+        effective_ceiling: ProtoSensitivity,
+        snapshot: &str,
+    ) -> CacheKey {
         CacheKey {
+            snapshot: snapshot.to_string(),
+            result_key: req.parameters.result_cache_key(
+                &req.query,
+                snapshot,
+                effective_ceiling.name(),
+                req.expand,
+                req.group_by_session,
+                req.with_message,
+            ),
             query: req.query.clone(),
             mode: req.mode,
             k: req.k,
             pool: req.pool,
             group_by_session: req.group_by_session,
             expand: req.expand,
+            // The shared canonical constructor (atlas-proto):
+            // the same material the result-cache key hashes, so
+            // the dedupe key and every outcome cache agree on
+            // exactly which flags distinguish two searches.
+            parameters: req.parameters.canonical_key_material(
+                req.expand,
+                req.group_by_session,
+                req.with_message,
+            ),
             with_message: req.with_message,
             model: req.model.clone(),
             embedder: req.embedder.clone(),
@@ -1063,9 +1150,32 @@ struct ManagerInner {
     computations: HashMap<String, Arc<Computation>>,
     /// The dedupe cache: effective-request key -> computation.
     cache: HashMap<CacheKey, Arc<Computation>>,
+    /// The snapshot-bound result cache (#9943, design #5667
+    /// s3.2): completed rankings keyed by the same snapshot-bound
+    /// key as the dedupe cache, held for `result_cache_ttl`
+    /// (24h by default) — far beyond a job handle's own TTL, so a
+    /// repeat submit on an unchanged snapshot is served with no
+    /// branch execution at all. In-service memory only (#5354
+    /// privacy rule): nothing is written to disk or shared
+    /// across processes.
+    result_cache: HashMap<CacheKey, ResultCacheEntry>,
+    /// The snapshot the result cache's entries belong to. When a
+    /// submit observes a different snapshot, every entry is
+    /// dropped at once (key change makes them unreachable; this
+    /// is the eager GC of that invalidation).
+    result_cache_snapshot: Option<String>,
     /// FIFO queue of computation ids awaiting branch budget.
     queue: VecDeque<String>,
     active_branch_executions: usize,
+}
+
+/// One completed ranking in the snapshot-bound result cache.
+struct ResultCacheEntry {
+    /// The immutable result envelope, exactly as computed.
+    envelope: Json,
+    /// When the producing computation completed. The entry is a
+    /// GC candidate once this is older than `result_cache_ttl`.
+    stored_at: Instant,
 }
 
 /// The job scheduler + in-memory temp store + dedupe cache. All
@@ -1196,6 +1306,13 @@ impl JobManager {
     fn sweep(self: &Arc<Self>) {
         let spawned = {
             let mut inner = self.inner.lock().unwrap();
+            // Result-cache GC (#9943): the 24h TTL is a memory
+            // bound only — entries past it are dropped here and
+            // on submit; correctness comes from the snapshot key.
+            let gc_now = Instant::now();
+            inner
+                .result_cache
+                .retain(|_, e| gc_now.duration_since(e.stored_at) < self.limits.result_cache_ttl);
             let comps: Vec<Arc<Computation>> = inner.computations.values().cloned().collect();
             for comp in &comps {
                 self.refresh_computation(&mut inner, comp);
@@ -1266,11 +1383,13 @@ impl JobManager {
             self.engine
                 .search(&comp.request, &comp.filters, &comp.branch_states)
         }));
+        let mut completed_envelope: Option<Json> = None;
         {
             let mut state = comp.state.lock().unwrap();
             if state.status == JobStatus::Running {
                 match outcome {
                     Ok(Ok(envelope)) => {
+                        completed_envelope = Some(envelope.clone());
                         state.notes = envelope
                             .get("notes")
                             .and_then(Json::as_array)
@@ -1294,6 +1413,26 @@ impl JobManager {
                     }
                 }
                 state.completed = Some((Instant::now(), now_ms()));
+            }
+        }
+        if let Some(envelope) = completed_envelope {
+            // Snapshot-bound result cache write (#9943): every
+            // completed ranking lands here, including a --no-cache
+            // computation's — the flag bypasses reads and REFRESHES
+            // writes. The entry is stored only while its snapshot
+            // is still the cache's partition; a ranking computed
+            // under a snapshot that has since rotated is dropped
+            // instead of polluting the new partition (its key
+            // would be unreachable either way).
+            let mut inner = self.inner.lock().unwrap();
+            if inner.result_cache_snapshot.as_deref() == Some(comp.key.snapshot.as_str()) {
+                inner.result_cache.insert(
+                    comp.key.clone(),
+                    ResultCacheEntry {
+                        envelope,
+                        stored_at: Instant::now(),
+                    },
+                );
             }
         }
         if matches!(comp.state.lock().map(|s| s.status), Ok(JobStatus::Failed)) {
@@ -1328,7 +1467,12 @@ impl JobManager {
     ) -> Result<JobCreated, ServerError> {
         validate_request(&request)?;
         let effective = request.ceiling.clamped_to(client.ceiling_cap);
-        let key = CacheKey::from_request(&request, effective);
+        // Bind this submit to the corpus snapshot it would serve
+        // from (#9943): the key — dedupe and result cache alike —
+        // carries the snapshot, so nothing computed under another
+        // snapshot can coalesce onto or answer this request.
+        let snapshot = self.engine.snapshot_id();
+        let key = CacheKey::from_request(&request, effective, &snapshot);
         let job_id = new_job_id().map_err(|m| ServerError::new(500, "internal", m))?;
         let job_token = new_job_token().map_err(|m| ServerError::new(500, "internal", m))?;
         let now = Instant::now();
@@ -1346,19 +1490,39 @@ impl JobManager {
 
         let (handle, spawned, queue_depth, queue_position) = {
             let mut inner = self.inner.lock().unwrap();
+            // Snapshot rotation (#9943): the result cache is
+            // partitioned by snapshot. A submit that observes a
+            // new snapshot drops every entry at once — they name
+            // a corpus state that no longer exists — and starts
+            // the new partition. (Dedupe entries from the old
+            // snapshot are unreachable by key and expire on their
+            // own TTL.)
+            if inner.result_cache_snapshot.as_deref() != Some(key.snapshot.as_str()) {
+                if inner.result_cache_snapshot.is_some() {
+                    inner.result_cache.clear();
+                }
+                inner.result_cache_snapshot = Some(key.snapshot.clone());
+            }
             // Cache resolution. An entry is attachable while it
             // is queued/running, or done within its TTL. Failed
             // entries were already evicted at completion; expired
             // ones are evicted here and recomputed.
-            let cached = inner.cache.get(&key).cloned();
+            // --no-cache (#9942): skip the read entirely; the
+            // fresh computation still lands in the cache via
+            // new_computation, so the flag REFRESHES the entry.
+            let cached = if request.parameters.no_cache {
+                None
+            } else {
+                inner.cache.get(&key).cloned()
+            };
             let comp = match cached {
                 Some(comp) if comp.status(&self.limits) != JobStatus::Expired => comp,
                 Some(comp) => {
                     inner.cache.remove(&key);
                     inner.computations.remove(&comp.id);
-                    self.new_computation(&mut inner, client, &request, effective, &key)?
+                    self.result_cache_or_new(&mut inner, client, &request, effective, &key)?
                 }
-                None => self.new_computation(&mut inner, client, &request, effective, &key)?,
+                None => self.result_cache_or_new(&mut inner, client, &request, effective, &key)?,
             };
             let handle = Arc::new(JobRecord {
                 job_id: job_id.clone(),
@@ -1385,6 +1549,68 @@ impl JobManager {
             submitted_at_ms,
             expires_at_ms: handle.computation.expires_at_ms(&self.limits),
         })
+    }
+
+    /// Resolve a submit that missed the dedupe cache: serve the
+    /// snapshot-bound result cache when it holds a fresh entry
+    /// for this exact key, else create a fresh computation.
+    /// A result-cache hit becomes a NEW computation that is
+    /// already Done over the cached envelope — its own job
+    /// handle, its own job TTL — with no queue slot and no
+    /// branch execution. --no-cache bypasses this read (its
+    /// fresh computation refreshes the entry on completion).
+    fn result_cache_or_new(
+        &self,
+        inner: &mut ManagerInner,
+        client: &ClientConfig,
+        request: &SearchRequest,
+        effective: ProtoSensitivity,
+        key: &CacheKey,
+    ) -> Result<Arc<Computation>, ServerError> {
+        if !request.parameters.no_cache
+            && let Some(entry) = inner.result_cache.get(key)
+        {
+            if Instant::now().duration_since(entry.stored_at) < self.limits.result_cache_ttl {
+                let envelope = entry.envelope.clone();
+                let notes = envelope
+                    .get("notes")
+                    .and_then(Json::as_array)
+                    .map(|notes| {
+                        notes
+                            .iter()
+                            .filter_map(|n| n.as_str().map(str::to_string))
+                            .collect()
+                    })
+                    .unwrap_or_default();
+                let now = Instant::now();
+                let now_ms_val = now_ms();
+                let comp = Arc::new(Computation {
+                    id: new_job_id().map_err(|m| ServerError::new(500, "internal", m))?,
+                    key: key.clone(),
+                    owner_name: client.name.clone(),
+                    request: request.clone(),
+                    filters: build_filters(request, effective)?,
+                    effective_ceiling: effective,
+                    demand: request.mode.branch_demand(),
+                    submitted: now,
+                    submitted_at_ms: now_ms_val,
+                    branch_states: Arc::new(Mutex::new(BranchStates::default())),
+                    state: Mutex::new(ComputationState {
+                        status: JobStatus::Done,
+                        started: Some((now, now_ms_val)),
+                        completed: Some((now, now_ms_val)),
+                        result: Some(envelope),
+                        notes,
+                        error: None,
+                    }),
+                });
+                inner.cache.insert(key.clone(), comp.clone());
+                inner.computations.insert(comp.id.clone(), comp.clone());
+                return Ok(comp);
+            }
+            inner.result_cache.remove(key);
+        }
+        self.new_computation(inner, client, request, effective, key)
     }
 
     /// Create + enqueue a fresh computation (admission-checked).
@@ -1721,6 +1947,18 @@ fn format_cursor(offset: usize) -> String {
 }
 
 fn parse_cursor(cursor: &str) -> Result<usize, ServerError> {
+    // Every byte must be an ASCII hex digit and the length even (#7761,
+    // the #2517 gate the sibling hex parsers already carry): slicing the
+    // string at byte offsets without this gate panics on an odd-length
+    // cursor (final pair out of range) or on a multi-byte character at a
+    // misaligned offset, killing the per-connection thread instead of
+    // returning the malformed-cursor 400 below. u8::from_str_radix also
+    // accepts a leading plus sign, so the gate is what makes a pair two
+    // hex digits and nothing else.
+    let raw = cursor.as_bytes();
+    if raw.len() % 2 != 0 || !raw.iter().all(u8::is_ascii_hexdigit) {
+        return Err(ServerError::bad_request("malformed cursor"));
+    }
     let bytes: Result<Vec<u8>, _> = (0..cursor.len())
         .step_by(2)
         .map(|i| u8::from_str_radix(&cursor[i..i + 2], 16))
@@ -1940,6 +2178,12 @@ fn write_response(stream: &mut TcpStream, resp: &HttpResponse) {
     let _ = stream.flush();
 }
 
+// ---------------------------------------------------------- feedback ----
+
+mod server_feedback;
+
+use server_feedback::FeedbackRequest;
+
 // ------------------------------------------------------------ routing ----
 
 pub struct ServerHandle {
@@ -1953,11 +2197,23 @@ pub struct ServerHandle {
 struct ServerInner {
     settings: ServeSettings,
     manager: Arc<JobManager>,
+    /// Raw feedback store directory (design section 6, #9976):
+    /// the JsonlFeedbackSink default in production; tests point
+    /// it at a temp store via `start_server_with_feedback_dir`.
+    feedback_dir: PathBuf,
 }
 
 pub fn start_server(
     settings: ServeSettings,
     engine: Arc<dyn SearchEngine>,
+) -> Result<ServerHandle, String> {
+    start_server_with_feedback_dir(settings, engine, JsonlFeedbackSink::default_dir())
+}
+
+pub fn start_server_with_feedback_dir(
+    settings: ServeSettings,
+    engine: Arc<dyn SearchEngine>,
+    feedback_dir: PathBuf,
 ) -> Result<ServerHandle, String> {
     require_loopback(settings.listen)?;
     validate_limits(&settings.limits)?;
@@ -1971,6 +2227,7 @@ pub fn start_server(
     let inner = Arc::new(ServerInner {
         settings,
         manager: manager.clone(),
+        feedback_dir,
     });
     std::thread::spawn(move || {
         loop {
@@ -2073,6 +2330,51 @@ impl ServerInner {
                         vector,
                     })
                     .unwrap(),
+                ))
+            }
+            ("POST", ["v1", "feedback"]) | ("POST", ["feedback"]) => {
+                // Feedback capture (design section 6.1, #9976):
+                // authenticated like every /v1 route — the client
+                // token is the surface's credential, while the
+                // REQUESTER in the body may be anonymous (section
+                // 6.3). The vote lands in the raw feedback store;
+                // the response echoes the stored record.
+                self.require_client(req)?;
+                let request: FeedbackRequest = req.json()?;
+                let input = request.into_input().map_err(ServerError::bad_request)?;
+                let sink = JsonlFeedbackSink::new(self.feedback_dir.clone());
+                let record = record_feedback(&sink, &input)
+                    .map_err(|e| ServerError::new(500, "feedback_store", e.to_string()))?;
+                Ok(HttpResponse::json(201, record.to_json()))
+            }
+            ("GET", ["v1", "feedback"]) | ("GET", ["feedback"]) => {
+                // Retrieval by (query_id, result_id): every raw
+                // record for the query — narrowed to one chunk
+                // when `chunk_id` is given — with its derived
+                // supersede state (section 6.4).
+                self.require_client(req)?;
+                let Some(query_id) = req.query.get("query_id") else {
+                    return Err(ServerError::bad_request(
+                        "query_id query parameter is required",
+                    ));
+                };
+                let chunk_id = match req.query.get("chunk_id") {
+                    Some(raw) => Some(
+                        raw.parse::<i64>()
+                            .map_err(|_| ServerError::bad_request("chunk_id must be an integer"))?,
+                    ),
+                    None => None,
+                };
+                let records = load_feedback_dir(&self.feedback_dir)
+                    .map_err(|e| ServerError::new(500, "feedback_store", e.to_string()))?;
+                let views = feedback_for(&records, query_id, chunk_id);
+                Ok(HttpResponse::json(
+                    200,
+                    json!({
+                        "query_id": query_id,
+                        "chunk_id": chunk_id,
+                        "feedback": views.iter().map(|v| v.to_json()).collect::<Vec<_>>(),
+                    }),
                 ))
             }
             ("POST", ["v1", "search"]) => {
@@ -2194,6 +2496,10 @@ mod tests {
     struct StubBackend {
         calls: Arc<Mutex<Vec<BranchQuery>>>,
         gate: Option<Arc<Gate>>,
+        /// Mutable corpus snapshot for the result-cache tests
+        /// (#9943): rotating it mid-test models a re-shard /
+        /// promotion bump.
+        snapshot: Option<Arc<Mutex<String>>>,
     }
 
     fn detail(id: i64, text: &str, sensitivity: &str) -> ChunkDetail {
@@ -2236,6 +2542,12 @@ mod tests {
     impl SearchBackend for StubBackend {
         fn name(&self) -> &'static str {
             "turso"
+        }
+
+        fn snapshot_id(&self) -> Option<String> {
+            self.snapshot
+                .as_ref()
+                .map(|snap| snap.lock().unwrap().clone())
         }
 
         fn vec_table(&self) -> &str {
@@ -2415,6 +2727,31 @@ mod tests {
         let backend = Arc::new(StubBackend {
             calls: calls.clone(),
             gate,
+            snapshot: None,
+        });
+        let engine = Arc::new(CoreSearchEngine::new(
+            backend,
+            Arc::new(FixedEmbedder {
+                raw: vec![1.0, 0.0],
+            }),
+            Arc::new(|| "ready".to_string()),
+        ));
+        let handle = start_server(settings(limits), engine).unwrap();
+        (handle, calls)
+    }
+
+    /// Start a server whose backend reports a mutable corpus
+    /// snapshot (#9943): the test rotates the string to model a
+    /// snapshot bump between submits.
+    fn start_with_snapshot(
+        limits: RuntimeLimits,
+        snapshot: Arc<Mutex<String>>,
+    ) -> (ServerHandle, Arc<Mutex<Vec<BranchQuery>>>) {
+        let calls = Arc::new(Mutex::new(Vec::new()));
+        let backend = Arc::new(StubBackend {
+            calls: calls.clone(),
+            gate: None,
+            snapshot: Some(snapshot),
         });
         let engine = Arc::new(CoreSearchEngine::new(
             backend,
@@ -2515,6 +2852,126 @@ mod tests {
             Some(json!({"query": "  "})),
         );
         assert_eq!(resp.status, 400);
+    }
+
+    fn start_with_feedback(limits: RuntimeLimits) -> (ServerHandle, PathBuf) {
+        let dir = std::env::temp_dir().join(format!(
+            "atlas-feedback-server-test-{}-{}",
+            std::process::id(),
+            now_ms()
+        ));
+        let backend = Arc::new(StubBackend {
+            calls: Arc::new(Mutex::new(Vec::new())),
+            gate: None,
+            snapshot: None,
+        });
+        let engine = Arc::new(CoreSearchEngine::new(
+            backend,
+            Arc::new(FixedEmbedder {
+                raw: vec![1.0, 0.0],
+            }),
+            Arc::new(|| "ready".to_string()),
+        ));
+        let handle = start_server_with_feedback_dir(settings(limits), engine, dir.clone()).unwrap();
+        (handle, dir)
+    }
+
+    #[test]
+    fn feedback_routes_cast_and_retrieve_by_ids() {
+        // Oracle: design section 6.1/6.4 (#9976) — a vote cast via
+        // the service API against a real (query_id, result_id) is
+        // retrievable by those IDs; an unopened down-vote stores
+        // opened=false; a re-vote supersedes with the raw record
+        // preserved.
+        let (handle, dir) = start_with_feedback(RuntimeLimits::default());
+        let addr = handle.addr;
+
+        // Unauthenticated feedback is refused like every /v1 route.
+        let resp = http(
+            addr,
+            "POST",
+            "/v1/feedback",
+            None,
+            Some(json!({"query_id": "q-9", "chunk_id": 42, "vote": "up"})),
+        );
+        assert_eq!(resp.status, 401, "body: {}", resp.body);
+
+        // Cast: thumbs down + comment on an unopened result.
+        let cast = http(
+            addr,
+            "POST",
+            "/v1/feedback",
+            Some(PERSONAL_TOKEN),
+            Some(json!({
+                "query_id": "q-9",
+                "chunk_id": 42,
+                "vote": "down",
+                "comment": "snippet looked right, chunk was stale",
+                "opened": false,
+                "requester": {"kind": "user", "id": "tester"}
+            })),
+        );
+        assert_eq!(cast.status, 201, "body: {}", cast.body);
+        assert_eq!(cast.body["vote"], json!("down"));
+        assert_eq!(cast.body["opened"], json!(false));
+        let first_id = cast.body["feedback_id"].as_str().unwrap().to_string();
+
+        // Retrieve by (query_id, result_id).
+        let got = http(
+            addr,
+            "GET",
+            "/v1/feedback?query_id=q-9&chunk_id=42",
+            Some(PERSONAL_TOKEN),
+            None,
+        );
+        assert_eq!(got.status, 200, "body: {}", got.body);
+        assert_eq!(got.body["feedback"].as_array().unwrap().len(), 1);
+        assert_eq!(got.body["feedback"][0]["active"], json!(true));
+
+        // Re-vote supersedes; both raw records stay retrievable.
+        let revote = http(
+            addr,
+            "POST",
+            "/feedback",
+            Some(PERSONAL_TOKEN),
+            Some(json!({
+                "query_id": "q-9",
+                "chunk_id": 42,
+                "vote": "up",
+                "opened": true,
+                "requester": {"kind": "user", "id": "tester"}
+            })),
+        );
+        assert_eq!(revote.status, 201, "body: {}", revote.body);
+        let got = http(
+            addr,
+            "GET",
+            "/v1/feedback?query_id=q-9&chunk_id=42",
+            Some(PERSONAL_TOKEN),
+            None,
+        );
+        let rows = got.body["feedback"].as_array().unwrap();
+        assert_eq!(rows.len(), 2, "raw records preserved: {}", got.body);
+        let first = rows
+            .iter()
+            .find(|r| r["feedback_id"] == json!(first_id))
+            .unwrap();
+        assert_eq!(first["active"], json!(false));
+        assert_eq!(
+            rows.iter().filter(|r| r["active"] == json!(true)).count(),
+            1
+        );
+
+        // A bad vote is a client error, never a stored record.
+        let bad = http(
+            addr,
+            "POST",
+            "/v1/feedback",
+            Some(PERSONAL_TOKEN),
+            Some(json!({"query_id": "q-9", "chunk_id": 42, "vote": "sideways"})),
+        );
+        assert_eq!(bad.status, 400, "body: {}", bad.body);
+        std::fs::remove_dir_all(&dir).ok();
     }
 
     fn submit(addr: SocketAddr, token: &str, body: Json) -> TestResponse {
@@ -3231,6 +3688,259 @@ mod tests {
     }
 
     #[test]
+    fn search_rejects_unsupported_parameters_before_backend_work() {
+        // Oracle: SearchParametersV1::validate rejects an unimplemented
+        // planner stage, and the HTTP handler validates before scheduling.
+        let (handle, calls) = start(RuntimeLimits::default(), None);
+        let response = submit(
+            handle.addr,
+            PERSONAL_TOKEN,
+            json!({"query": "alpha", "planner_enabled": true}),
+        );
+        assert_eq!(response.status, 400, "{}", response.body);
+        assert!(calls.lock().unwrap().is_empty(), "refused search did work");
+    }
+
+    #[test]
+    fn search_honors_and_dedupes_by_parameters() {
+        // Oracle: the API contract flattens SearchParametersV1 onto the
+        // request; effective controls reach branch execution and distinguish
+        // cached searches when their values differ.
+        let (handle, calls) = start(RuntimeLimits::default(), None);
+        let addr = handle.addr;
+        let request = json!({
+            "query": "alpha",
+            "shard_top_k": 17,
+            "global_top_k": 23,
+            "rrf_k": 61
+        });
+        let first = submit(addr, PERSONAL_TOKEN, request.clone());
+        assert_eq!(first.status, 202, "{}", first.body);
+        let first_id = first.body["job_id"].as_str().unwrap().to_string();
+        let first_token = first.body["job_token"].as_str().unwrap().to_string();
+        wait_done(addr, &first_id, &first_token);
+        let first_calls = calls.lock().unwrap().clone();
+        assert!(
+            first_calls
+                .iter()
+                .any(|query| query.shard_top_k == 17 && query.global_top_k == 23),
+            "effective branch controls must reach the backend: {first_calls:?}"
+        );
+
+        let exact_repeat = submit(addr, PERSONAL_TOKEN, request);
+        assert_eq!(exact_repeat.body["status"], "done");
+        assert_eq!(calls.lock().unwrap().len(), first_calls.len());
+
+        let different_parameters = submit(
+            addr,
+            PERSONAL_TOKEN,
+            json!({
+                "query": "alpha",
+                "shard_top_k": 17,
+                "global_top_k": 23,
+                "rrf_k": 62
+            }),
+        );
+        assert_eq!(
+            different_parameters.status, 202,
+            "{}",
+            different_parameters.body
+        );
+        let different_id = different_parameters.body["job_id"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        let different_token = different_parameters.body["job_token"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        wait_done(addr, &different_id, &different_token);
+        assert!(
+            calls.lock().unwrap().len() > first_calls.len(),
+            "different effective parameters must not reuse the first ranking"
+        );
+    }
+
+    // ----- snapshot-bound result cache (#9943, slice 3 of #5668) --------
+
+    fn submit_and_page(addr: SocketAddr, body: Json) -> (String, String, Vec<i64>) {
+        let created = submit(addr, PERSONAL_TOKEN, body);
+        assert_eq!(created.status, 202, "{}", created.body);
+        let job_id = created.body["job_id"].as_str().unwrap().to_string();
+        let job_token = created.body["job_token"].as_str().unwrap().to_string();
+        wait_done(addr, &job_id, &job_token);
+        let page = http(
+            addr,
+            "GET",
+            &format!("/v1/search/jobs/{job_id}/results?limit=100"),
+            Some(&job_token),
+            None,
+        );
+        assert_eq!(page.status, 200, "{}", page.body);
+        (job_id, job_token, result_ids(&page.body))
+    }
+
+    #[test]
+    fn result_cache_serves_repeat_after_job_ttl_with_no_backend_calls() {
+        // Oracle: the StubBackend branch-call count. The job TTL
+        // is 250ms; the result-cache TTL is the 24h default. A
+        // repeat submit after the first job's TTL has run must be
+        // served from the snapshot-bound result cache — a fresh,
+        // already-done job with identical results and ZERO new
+        // backend (Turso round-trip) calls.
+        let limits = RuntimeLimits {
+            job_ttl: Duration::from_millis(250),
+            hard_ttl: Duration::from_secs(60),
+            ..RuntimeLimits::default()
+        };
+        let snapshot = Arc::new(Mutex::new("snap-1".to_string()));
+        let (handle, calls) = start_with_snapshot(limits, snapshot);
+        let addr = handle.addr;
+
+        let (id1, _tok1, ids1) = submit_and_page(addr, json!({"query": "alpha", "mode": "fts"}));
+        assert_eq!(ids1, vec![1, 2]);
+        let calls_after_first = calls.lock().unwrap().len();
+        assert_eq!(calls_after_first, 1, "one fts computation = 1 branch call");
+
+        std::thread::sleep(Duration::from_millis(400));
+        let (id2, _tok2, ids2) = submit_and_page(addr, json!({"query": "alpha", "mode": "fts"}));
+        assert_ne!(id1, id2, "cache serve still mints its own job handle");
+        assert_eq!(ids2, ids1, "cached results are the computed results");
+        assert_eq!(
+            calls.lock().unwrap().len(),
+            calls_after_first,
+            "repeat on an unchanged snapshot must not re-execute"
+        );
+    }
+
+    #[test]
+    fn result_cache_gc_ttl_bounds_serving() {
+        // The 24h TTL is a GC bound only: with a tiny bound, an
+        // entry past it is dropped and the repeat re-executes.
+        let limits = RuntimeLimits {
+            job_ttl: Duration::from_millis(250),
+            hard_ttl: Duration::from_secs(60),
+            result_cache_ttl: Duration::from_millis(250),
+            ..RuntimeLimits::default()
+        };
+        let snapshot = Arc::new(Mutex::new("snap-1".to_string()));
+        let (handle, calls) = start_with_snapshot(limits, snapshot);
+        let addr = handle.addr;
+
+        submit_and_page(addr, json!({"query": "alpha", "mode": "fts"}));
+        assert_eq!(calls.lock().unwrap().len(), 1);
+        std::thread::sleep(Duration::from_millis(400));
+        submit_and_page(addr, json!({"query": "alpha", "mode": "fts"}));
+        assert_eq!(
+            calls.lock().unwrap().len(),
+            2,
+            "entry past the GC bound must be recomputed"
+        );
+    }
+
+    #[test]
+    fn result_cache_no_cache_bypasses_reads_and_refreshes_writes() {
+        // Acceptance (#9943): --no-cache bypasses result-cache
+        // reads (re-executes even within every TTL) and refreshes
+        // writes (the next ordinary repeat serves the refreshed
+        // entry with no execution).
+        let snapshot = Arc::new(Mutex::new("snap-1".to_string()));
+        let (handle, calls) = start_with_snapshot(RuntimeLimits::default(), snapshot);
+        let addr = handle.addr;
+
+        submit_and_page(addr, json!({"query": "alpha", "mode": "fts"}));
+        assert_eq!(calls.lock().unwrap().len(), 1);
+        submit_and_page(
+            addr,
+            json!({"query": "alpha", "mode": "fts", "no_cache": true}),
+        );
+        assert_eq!(
+            calls.lock().unwrap().len(),
+            2,
+            "no_cache must bypass the cache read and re-execute"
+        );
+        submit_and_page(addr, json!({"query": "alpha", "mode": "fts"}));
+        assert_eq!(
+            calls.lock().unwrap().len(),
+            2,
+            "the refreshed entry serves the next repeat"
+        );
+    }
+
+    #[test]
+    fn result_cache_mbt_snapshot_rotation_never_serves_pre_rotation_entries() {
+        // MBT (testing doctrine; oracle = backend call count):
+        // a deterministic model drives submits, snapshot
+        // rotations, and --no-cache submits. The model says an
+        // execution happens exactly when (query, snapshot,
+        // no-cache variant) has no live entry, or the submit is
+        // --no-cache (which then refreshes ITS variant's entry:
+        // the flag is part of the canonical key material, pinned
+        // by atlas-proto's flag-sensitivity tests). After every
+        // step the real backend call count must equal the
+        // model's execution count — so a pre-rotation entry
+        // served post-rotation (a missing execution) fails the
+        // test at that step.
+        let snapshot = Arc::new(Mutex::new("snap-0".to_string()));
+        let (handle, calls) = start_with_snapshot(RuntimeLimits::default(), snapshot.clone());
+        let addr = handle.addr;
+
+        let mut live: std::collections::HashSet<(String, String, bool)> =
+            std::collections::HashSet::new();
+        let mut model_executions = 0usize;
+        let mut rotation = 0usize;
+        // Small deterministic LCG: the sequence is fixed, so a
+        // failure reproduces exactly.
+        let mut rng: u64 = 0x5668_9943;
+        let mut next = move || {
+            rng = rng
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
+            (rng >> 33) as usize
+        };
+        for step in 0..48 {
+            match next() % 4 {
+                0 => {
+                    rotation += 1;
+                    *snapshot.lock().unwrap() = format!("snap-{rotation}");
+                }
+                op => {
+                    let query = if op == 2 { "beta" } else { "alpha" };
+                    let no_cache = op == 3;
+                    let snap_now = snapshot.lock().unwrap().clone();
+                    let key = (query.to_string(), snap_now, no_cache);
+                    if no_cache || !live.contains(&key) {
+                        model_executions += 1;
+                        live.insert(key);
+                    }
+                    let mut body = json!({"query": query, "mode": "fts"});
+                    if no_cache {
+                        body["no_cache"] = json!(true);
+                    }
+                    let (_, _, ids) = submit_and_page(addr, body);
+                    // StubBackend hits: alpha -> [1, 2], beta -> [2].
+                    let expected = if query == "alpha" {
+                        vec![1, 2]
+                    } else {
+                        vec![2]
+                    };
+                    assert_eq!(ids, expected, "step {step}");
+                    assert_eq!(
+                        calls.lock().unwrap().len(),
+                        model_executions,
+                        "step {step}: backend executions diverge from the model                          (a stale-snapshot entry was served, or a live entry missed)"
+                    );
+                }
+            }
+        }
+        assert!(
+            rotation >= 3,
+            "the model must rotate repeatedly, got {rotation}"
+        );
+        assert!(model_executions >= 4, "the model must execute repeatedly");
+    }
+
+    #[test]
     fn dedupe_coalesces_in_flight_and_queued() {
         let gate = Arc::new(Gate::default());
         let limits = RuntimeLimits {
@@ -3327,5 +4037,19 @@ mod tests {
             None,
         );
         assert_eq!(result_ids(&pq.body), vec![2]);
+    }
+    #[test]
+    fn parse_cursor_refuses_malformed_input_without_panicking() {
+        // #7761: odd-length, single-char, and multibyte cursors used to
+        // panic on byte-offset slicing; every malformed shape must be
+        // the malformed-cursor error instead.
+        let valid = format_cursor(42);
+        assert_eq!(parse_cursor(&valid).ok(), Some(42));
+        assert!(parse_cursor("").is_err());
+        assert!(parse_cursor("zzzz").is_err());
+        assert!(parse_cursor("a").is_err());
+        assert!(parse_cursor(&valid[..valid.len() - 1]).is_err());
+        assert!(parse_cursor("6162aé").is_err());
+        assert!(parse_cursor("+a").is_err());
     }
 }

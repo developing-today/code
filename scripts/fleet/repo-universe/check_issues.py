@@ -151,16 +151,18 @@ def fetch_issues_gh(repo: str) -> list[dict]:
     """Fetch all issues for a repo via `gh api --paginate` (read-only)."""
     try:
         out = subprocess.run(
-            ["gh", "api", "--paginate",
-             f"repos/{repo}/issues?state=all&per_page=100"],
-            capture_output=True, text=True, timeout=300,
+            ["gh", "api", "--paginate", f"repos/{repo}/issues?state=all&per_page=100"],
+            capture_output=True,
+            text=True,
+            timeout=300,
         )
     except (OSError, subprocess.SubprocessError) as exc:
         raise FetchError(f"gh invocation failed: {exc}") from exc
     if out.returncode != 0:
         detail = (out.stderr or out.stdout).strip().splitlines()
-        raise FetchError(f"gh api failed for {repo}: "
-                         f"{detail[0] if detail else 'unknown error'}")
+        raise FetchError(
+            f"gh api failed for {repo}: {detail[0] if detail else 'unknown error'}"
+        )
     try:
         pages = json.loads(out.stdout)
     except ValueError as exc:
@@ -170,8 +172,9 @@ def fetch_issues_gh(repo: str) -> list[dict]:
     if isinstance(pages, dict):
         pages = [pages]
     if not isinstance(pages, list):
-        raise FetchError(f"unexpected gh api output for {repo}: "
-                         "not a JSON array of issues")
+        raise FetchError(
+            f"unexpected gh api output for {repo}: not a JSON array of issues"
+        )
     issues = []
     for item in pages:
         normalized = normalize_issue(item)
@@ -186,8 +189,7 @@ def load_fixture(path: Path) -> dict:
 
 def fetch_issues_fixture(repo: str, fixture: dict) -> list[dict]:
     if not isinstance(fixture, dict):
-        raise FetchError("fixture is not a JSON object mapping "
-                         "repos to issue lists")
+        raise FetchError("fixture is not a JSON object mapping repos to issue lists")
     entry = fixture.get(repo)
     if entry is None:
         raise FetchError(f"repo {repo} absent from fixture")
@@ -211,11 +213,19 @@ def diff_repo(prior: dict | None, current: list[dict]) -> dict:
     """
     current_by_number = {str(i["number"]): i for i in current}
     if prior is None:
-        return {"baseline": True, "state": current_by_number,
-                "counts": {"open": sum(1 for i in current if i["state"] == "open"),
-                           "closed": sum(1 for i in current if i["state"] == "closed"),
-                           "total": len(current)},
-                "new": [], "closed": [], "reopened": [], "changed": []}
+        return {
+            "baseline": True,
+            "state": current_by_number,
+            "counts": {
+                "open": sum(1 for i in current if i["state"] == "open"),
+                "closed": sum(1 for i in current if i["state"] == "closed"),
+                "total": len(current),
+            },
+            "new": [],
+            "closed": [],
+            "reopened": [],
+            "changed": [],
+        }
     new, closed, reopened, changed = [], [], [], []
     for number, issue in current_by_number.items():
         old = prior.get(number)
@@ -225,13 +235,21 @@ def diff_repo(prior: dict | None, current: list[dict]) -> dict:
             closed.append(issue)
         elif old["state"] == "closed" and issue["state"] == "open":
             reopened.append(issue)
-        elif (old["title"] != issue["title"]
-              or old["updated_at"] != issue["updated_at"]
-              or old["state"] != issue["state"]):
+        elif (
+            old["title"] != issue["title"]
+            or old["updated_at"] != issue["updated_at"]
+            or old["state"] != issue["state"]
+        ):
             changed.append(issue)
-    return {"baseline": False, "state": current_by_number,
-            "counts": None, "new": new, "closed": closed,
-            "reopened": reopened, "changed": changed}
+    return {
+        "baseline": False,
+        "state": current_by_number,
+        "counts": None,
+        "new": new,
+        "closed": closed,
+        "reopened": reopened,
+        "changed": changed,
+    }
 
 
 def _valid_prior_entry(entry) -> bool:
@@ -247,11 +265,14 @@ def _valid_prior_entry(entry) -> bool:
         return False
     issues = entry.get("issues")
     return isinstance(issues, dict) and all(
-        isinstance(v, dict) and _issue_field_error(v) is None
-        and k == str(v["number"])
-        for k, v in issues.items())
+        isinstance(v, dict) and _issue_field_error(v) is None and k == str(v["number"])
+        for k, v in issues.items()
+    )
 
-def run_check(inventory_text: str, state: dict, fetch, now: str) -> tuple[dict, list[str], bool]:
+
+def run_check(
+    inventory_text: str, state: dict, fetch, now: str
+) -> tuple[dict, list[str], bool]:
     """Run one check over all watched repos.
 
     Returns (new_state, report_lines, had_error). Pure apart from the
@@ -272,8 +293,10 @@ def run_check(inventory_text: str, state: dict, fetch, now: str) -> tuple[dict, 
         if prior_entry is not None and not _valid_prior_entry(prior_entry):
             had_error = True
             lines.append(f"## {repo}")
-            lines.append("- ERROR: persisted state entry is malformed; "
-                         "repo skipped, state left untouched")
+            lines.append(
+                "- ERROR: persisted state entry is malformed; "
+                "repo skipped, state left untouched"
+            )
             lines.append("")
             continue
         try:
@@ -285,32 +308,48 @@ def run_check(inventory_text: str, state: dict, fetch, now: str) -> tuple[dict, 
             lines.append("")
             continue
         result = diff_repo(prior_entry["issues"] if prior_entry else None, issues)
-        entry = {"watermark": max((i["updated_at"] or "" for i in issues), default=None),
-                 "issues": result["state"]}
+        entry = {
+            "watermark": max((i["updated_at"] or "" for i in issues), default=None),
+            "issues": result["state"],
+        }
         if prior_entry and prior_entry.get("issues") == result["state"]:
             entry["watermark"] = prior_entry.get("watermark")
         new_repos[repo] = entry
         lines.append(f"## {repo}")
         if result["baseline"]:
             c = result["counts"]
-            lines.append(f"- baseline: {c['total']} issues recorded "
-                         f"({c['open']} open, {c['closed']} closed); "
-                         f"history not listed as new")
+            lines.append(
+                f"- baseline: {c['total']} issues recorded "
+                f"({c['open']} open, {c['closed']} closed); "
+                f"history not listed as new"
+            )
         else:
-            delta = (result["new"] + result["closed"]
-                     + result["reopened"] + result["changed"])
+            delta = (
+                result["new"]
+                + result["closed"]
+                + result["reopened"]
+                + result["changed"]
+            )
             total_delta += len(delta)
             if not delta:
                 lines.append("- no changes")
-            for label, group in (("new", result["new"]), ("closed", result["closed"]),
-                                 ("reopened", result["reopened"]),
-                                 ("changed", result["changed"])):
+            for label, group in (
+                ("new", result["new"]),
+                ("closed", result["closed"]),
+                ("reopened", result["reopened"]),
+                ("changed", result["changed"]),
+            ):
                 for issue in sorted(group, key=lambda i: i["number"]):
-                    lines.append(f"- {label}: #{issue['number']} {issue['title']} "
-                                 f"({issue['html_url']})")
+                    lines.append(
+                        f"- {label}: #{issue['number']} {issue['title']} "
+                        f"({issue['html_url']})"
+                    )
         lines.append("")
-    lines.insert(2, f"Repos checked: {len(repos)}; issues changed: {total_delta}; "
-                    f"errors: {'yes' if had_error else 'no'}")
+    lines.insert(
+        2,
+        f"Repos checked: {len(repos)}; issues changed: {total_delta}; "
+        f"errors: {'yes' if had_error else 'no'}",
+    )
     new_state = {"version": 1, "last_run": now, "repos": new_repos}
     return new_state, lines, had_error
 
@@ -318,8 +357,9 @@ def run_check(inventory_text: str, state: dict, fetch, now: str) -> tuple[dict, 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--inventory", default="doc/fleet/repo-universe.yaml")
-    parser.add_argument("--state-dir",
-                        default="~/.local/state/repo-universe-issue-checker")
+    parser.add_argument(
+        "--state-dir", default="~/.local/state/repo-universe-issue-checker"
+    )
     parser.add_argument("--fixture", help="JSON fixture replacing GitHub fetches")
     parser.add_argument("--now", help="ISO-8601 run timestamp (default: now, UTC)")
     args = parser.parse_args(argv)
@@ -328,8 +368,11 @@ def main(argv: list[str] | None = None) -> int:
     state_dir = Path(args.state_dir).expanduser()
     state_dir.mkdir(parents=True, exist_ok=True)
     state_path = state_dir / "state.json"
-    state = (json.loads(state_path.read_text())
-             if state_path.exists() else {"version": 1, "repos": {}})
+    state = (
+        json.loads(state_path.read_text())
+        if state_path.exists()
+        else {"version": 1, "repos": {}}
+    )
     inventory_text = Path(args.inventory).read_text()
 
     if args.fixture:

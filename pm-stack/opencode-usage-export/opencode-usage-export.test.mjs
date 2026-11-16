@@ -4,15 +4,70 @@
 // live managed-instance store carries (probed 2026-11-02, task 6610).
 // Run: node --test pm-stack/opencode-usage-export/
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
+import fs from "node:fs";
 import { mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import os, { tmpdir } from "node:os";
+import path, { dirname, join } from "node:path";
 import { test } from "node:test";
 import { DatabaseSync } from "node:sqlite";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { run } from "./opencode-usage-export.mjs";
 
 const NOW = Date.parse("2026-11-02T18:00:00Z");
 const HOUR = 3600000;
+const EXPORTER_PATH = fileURLToPath(new URL("./opencode-usage-export.mjs", import.meta.url));
+
+test("CLI: runs main via direct, file and directory symlinks", () => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), "opencode-usage-export-entrypoint-"));
+  const links = path.join(home, "links");
+  fs.mkdirSync(links);
+  const fileLink = path.join(links, "export.mjs");
+  const dirLink = path.join(links, "export-dir");
+  fs.symlinkSync(EXPORTER_PATH, fileLink);
+  fs.symlinkSync(path.dirname(EXPORTER_PATH), dirLink, "dir");
+  const env = { ...process.env, HOME: path.join(home, "empty-home") };
+
+  try {
+    for (const [name, entry] of [
+      ["direct", EXPORTER_PATH],
+      ["file-symlink", fileLink],
+      ["directory-symlink", path.join(dirLink, path.basename(EXPORTER_PATH))],
+    ]) {
+      const outDir = path.join(home, name);
+      const result = spawnSync(process.execPath, [entry, "--out-dir", outDir], {
+        env,
+        encoding: "utf8",
+        timeout: 10000,
+      });
+      assert.equal(result.status, 3, `${name}: ${result.stderr || result.stdout}`);
+      assert.deepEqual(JSON.parse(result.stdout), { status: "store-missing", exitCode: 3 });
+      const doc = JSON.parse(fs.readFileSync(path.join(outDir, "latest.json"), "utf8"));
+      assert.equal(doc.status, "store-missing");
+    }
+  } finally {
+    fs.rmSync(home, { recursive: true, force: true });
+  }
+});
+
+test("importing opencode-usage-export.mjs as a library does not run main", () => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), "opencode-usage-export-import-"));
+  try {
+    const result = spawnSync(process.execPath, [
+      "--input-type=module", "-e", `await import(${JSON.stringify(pathToFileURL(EXPORTER_PATH).href)});`,
+    ], {
+      env: { ...process.env, HOME: home },
+      encoding: "utf8",
+      timeout: 5000,
+    });
+    assert.equal(result.status, 0, result.stderr);
+    assert.equal(result.stdout, "");
+    assert.equal(result.stderr, "");
+    assert.equal(fs.existsSync(path.join(home, "atlas", "opencode-usage-export")), false);
+  } finally {
+    fs.rmSync(home, { recursive: true, force: true });
+  }
+});
 
 function makeStore(path, { sessions = [], messages = [] } = {}) {
   return (async () => {
@@ -196,6 +251,87 @@ test("junk --fresh-hours: invalid-argument (not store-stale) failure document, e
   assert.equal(doc.status, "invalid-argument");
   assert.match(doc.detail, /--fresh-hours/);
   assert.equal(doc.sessions, undefined);
+});
+
+test("trailing --db: invalid-argument failure document, exit 2, default store not exported (#6934)", async () => {
+  const { home, outDir } = await fakeHome();
+  await makeStore(defaultDb(home), { sessions: [{ id: "ses_live" }] });
+  const { exitCode, doc } = await run({ home, now: NOW, argv: ["--out-dir", outDir, "--db"] });
+  assert.equal(exitCode, 2);
+  assert.equal(doc.status, "invalid-argument");
+  assert.match(doc.detail, /--db/);
+  assert.equal(doc.sessions, undefined);
+  const latest = JSON.parse(await readFile(join(outDir, "latest.json"), "utf8"));
+  assert.equal(latest.status, "invalid-argument");
+});
+
+test("empty --db: invalid-argument failure document, exit 2, no env fallback (#6934)", async () => {
+  const { home, outDir } = await fakeHome();
+  await makeStore(defaultDb(home), { sessions: [{ id: "ses_live" }] });
+  const { exitCode, doc } = await run({
+    home, now: NOW,
+    env: { OPENCODE_USAGE_DB: defaultDb(home) },
+    argv: ["--out-dir", outDir, "--db", ""],
+  });
+  assert.equal(exitCode, 2);
+  assert.equal(doc.status, "invalid-argument");
+  assert.match(doc.detail, /--db/);
+  assert.equal(doc.sessions, undefined);
+});
+
+test("flag-like --db value: invalid-argument naming --db, exit 2, run() does not throw (#6934)", async () => {
+  const { home, outDir } = await fakeHome();
+  await makeStore(defaultDb(home), { sessions: [{ id: "ses_live" }] });
+  const { exitCode, doc } = await run({ home, now: NOW, argv: ["--db", "--out-dir", outDir] });
+  assert.equal(exitCode, 2);
+  assert.equal(doc.status, "invalid-argument");
+  assert.match(doc.detail, /--db/);
+  assert.equal(doc.sessions, undefined);
+});
+
+test("trailing --out-dir: invalid-argument failure document, exit 2 (#6934)", async () => {
+  const { home, outDir } = await fakeHome();
+  await makeStore(defaultDb(home), { sessions: [{ id: "ses_live" }] });
+  const { exitCode, doc } = await run({ home, now: NOW, argv: ["--out-dir"] });
+  assert.equal(exitCode, 2);
+  assert.equal(doc.status, "invalid-argument");
+  assert.match(doc.detail, /--out-dir/);
+  assert.equal(doc.sessions, undefined);
+  const latest = JSON.parse(await readFile(join(home, "atlas/opencode-usage-export", "latest.json"), "utf8"));
+  assert.equal(latest.status, "invalid-argument");
+});
+
+test("duplicate scalar value options fail before probing or writing", async () => {
+  const { home } = await fakeHome();
+  const first = join(home, "first-output");
+  const second = join(home, "second-output");
+  const cases = [
+    ["--db", "first.db", "--db", "second.db"],
+    ["--out-dir", first, "--out-dir", second],
+    ["--window-hours", "6", "--window-hours", "12"],
+    ["--fresh-hours", "6", "--fresh-hours", "12"],
+  ];
+  for (const argv of cases) {
+    const { exitCode, doc } = await run({ home, now: NOW, argv });
+    assert.equal(exitCode, 2);
+    assert.equal(doc.status, "invalid-argument");
+    assert.match(doc.detail, new RegExp(`duplicate option ${argv[0]}`));
+  }
+  assert.equal(fs.existsSync(first), false);
+  assert.equal(fs.existsSync(second), false);
+  assert.equal(fs.existsSync(join(home, "atlas/opencode-usage-export")), false);
+});
+
+test("valid --db / --out-dir behave as before (#6934 control)", async () => {
+  const { home, outDir } = await fakeHome();
+  const dbPath = join(home, "explicit.db");
+  await makeStore(dbPath, { sessions: [{ id: "ses_explicit", updated: NOW - HOUR }] });
+  const { exitCode, doc } = await run({ home, now: NOW, argv: ["--db", dbPath, "--out-dir", outDir] });
+  assert.equal(exitCode, 0);
+  assert.equal(doc.status, "ok");
+  assert.equal(doc.storePath, dbPath);
+  assert.equal(doc.sessions.length, 1);
+  assert.equal(doc.sessions[0].id, "ses_explicit");
 });
 
 test("valid positive --window-hours / --fresh-hours behave as before", async () => {

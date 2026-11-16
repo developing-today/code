@@ -79,7 +79,7 @@ func TestAPromptAutonomySetOverTheAPIIsHonoured(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	resp.Body.Close()
+	_ = resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("PUT prompt.autonomy answered %d", resp.StatusCode)
 	}

@@ -25,6 +25,20 @@ FIELDS = (
 )
 
 
+def parse_requires(value):
+    """Step references are the leading number list of a Requires: field.
+
+    Documented forms are bare numbers / number lists with an optional
+    parenthetical note (already stripped by the caller): ``1``,
+    ``1, 2``, ``1 and 2``, ``1 (the lock layout)``. Any other digits
+    later in the sentence are prose -- a runtime version (Node 20,
+    Python 3.12), an RFC number (RFC 8446), a port, a year -- and
+    must not become phantom requirements (#6888).
+    """
+    match = re.match(r"\s*(\d+(?:\s*(?:,|&|\band\b)\s*\d+)*)", value or "")
+    return [int(n) for n in re.findall(r"\d+", match[1])] if match else []
+
+
 def parse(text):
     wave, step, steps = None, None, []
     for line in text.splitlines():
@@ -48,9 +62,7 @@ def parse(text):
         fields["files"] = re.findall(r"`([^`]+)`", files[1]) if files else []
         bare = re.sub(r"\([^)]*\)", "", text)
         requires = re.search(r"Requires: ([^.\n]*)", bare)
-        fields["requires"] = (
-            [int(n) for n in re.findall(r"\d+", requires[1])] if requires else []
-        )
+        fields["requires"] = parse_requires(requires[1]) if requires else []
     return steps
 
 

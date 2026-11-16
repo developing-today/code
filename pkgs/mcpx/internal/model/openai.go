@@ -119,7 +119,7 @@ func (p *OpenAIProvider) Generate(ctx context.Context, req Request) (Response, e
 	if err != nil {
 		return Response{}, fmt.Errorf("model: provider %s request failed: %w", p.name, err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		errBody, _ := io.ReadAll(io.LimitReader(resp.Body, defaults.HTTPErrorBodyLimit))
 		return Response{}, fmt.Errorf("model: provider %s returned HTTP %d: %s",

@@ -267,7 +267,7 @@ func TestModernHeaderNamesAreCaseInsensitive(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		defer resp.Body.Close()
+		defer func() { _ = resp.Body.Close() }()
 		if resp.StatusCode != http.StatusOK {
 			b, _ := io.ReadAll(resp.Body)
 			t.Fatalf("status %d:\n%s", resp.StatusCode, b)
@@ -308,7 +308,8 @@ func (b *blockingBackend) waitStarted(t *testing.T) {
 func (b *blockingBackend) waitEnded(t *testing.T) {
 	t.Helper()
 	select {
-	case <-b.ended:
+	case recvErr := <-b.ended:
+		_ = recvErr
 	case <-time.After(5 * time.Second):
 		t.Fatal("the cancellation never reached the upstream call")
 	}
@@ -339,14 +340,15 @@ func TestModernClosingTheStreamCancels(t *testing.T) {
 		go func() {
 			resp, err := http.DefaultClient.Do(req)
 			if err == nil {
-				resp.Body.Close()
+				_ = resp.Body.Close()
 			}
 			errc <- err
 		}()
 		b.waitStarted(t)
 		cancel()
 		b.waitEnded(t)
-		<-errc
+		recvErr := <-errc
+		_ = recvErr
 	})
 }
 
@@ -614,7 +616,7 @@ func TestLegacyGETStream(t *testing.T) {
 		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
 		resp, r := openGET(t, ts.URL, id, ctx)
-		defer resp.Body.Close()
+		defer func() { _ = resp.Body.Close() }()
 		if ct := resp.Header.Get("Content-Type"); resp.StatusCode != http.StatusOK || !strings.HasPrefix(ct, "text/event-stream") {
 			t.Fatalf("status %d type %q", resp.StatusCode, ct)
 		}
@@ -646,7 +648,7 @@ func TestLegacyGETStream(t *testing.T) {
 		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
 		resp, r := openGET(t, ts.URL, id, ctx)
-		defer resp.Body.Close()
+		defer func() { _ = resp.Body.Close() }()
 		listened(t, n)
 		r.waitFor(t, func(l string) bool { return strings.HasPrefix(l, ":") })
 	})
@@ -656,10 +658,10 @@ func TestLegacyGETStream(t *testing.T) {
 		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
 		first, _ := openGET(t, ts.URL, id, ctx)
-		defer first.Body.Close()
+		defer func() { _ = first.Body.Close() }()
 		listened(t, n)
 		second, _ := openGET(t, ts.URL, id, ctx)
-		defer second.Body.Close()
+		defer func() { _ = second.Body.Close() }()
 		if second.StatusCode != http.StatusConflict {
 			t.Fatalf("status %d, want 409", second.StatusCode)
 		}
@@ -671,7 +673,7 @@ func TestLegacyGETStream(t *testing.T) {
 		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
 		resp, r := openGET(t, ts.URL, id, ctx)
-		defer resp.Body.Close()
+		defer func() { _ = resp.Body.Close() }()
 		listened(t, n)
 		req, _ := http.NewRequest(http.MethodDelete, ts.URL, nil)
 		req.Header.Set("Mcp-Session-Id", id)
@@ -679,7 +681,7 @@ func TestLegacyGETStream(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		dr.Body.Close()
+		_ = dr.Body.Close()
 		r.waitClosed(t)
 	})
 	t.Run("2025-11-25/streamable-http/resource-subscription-delivered-on-get-stream", func(t *testing.T) {
@@ -694,7 +696,7 @@ func TestLegacyGETStream(t *testing.T) {
 		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
 		resp, r := openGET(t, ts.URL, id, ctx)
-		defer resp.Body.Close()
+		defer func() { _ = resp.Body.Close() }()
 		listened(t, n) // the list_changed forwarding
 		n.fire <- [2]any{"notifications/resources/updated", map[string]any{"uri": "demo://a"}}
 		r.waitFor(t, func(l string) bool { return strings.Contains(l, "notifications/resources/updated") })
@@ -731,13 +733,14 @@ func TestLegacyHTTPCancellation(t *testing.T) {
 		req.Header.Set("Mcp-Session-Id", id)
 		go func() {
 			if resp, err := http.DefaultClient.Do(req); err == nil {
-				resp.Body.Close()
+				_ = resp.Body.Close()
 			}
 		}()
 		b.waitStarted(t)
 		cancel()
 		select {
-		case <-b.ended:
+		case recvErr := <-b.ended:
+			_ = recvErr
 			t.Fatal("a dropped connection cancelled the call")
 		case <-time.After(300 * time.Millisecond):
 		}
@@ -763,7 +766,7 @@ func TestLegacyHTTPCancellation(t *testing.T) {
 		req.Header.Set("Mcp-Session-Id", id)
 		go func() {
 			if resp, err := http.DefaultClient.Do(req); err == nil {
-				resp.Body.Close()
+				_ = resp.Body.Close()
 			}
 		}()
 		b.waitStarted(t)
@@ -773,7 +776,8 @@ func TestLegacyHTTPCancellation(t *testing.T) {
 		h["Mcp-Session-Id"] = id
 		post(s, frame(nil, "notifications/cancelled", modernParams(map[string]any{"requestId": 9})), h)
 		select {
-		case <-b.ended:
+		case recvErr := <-b.ended:
+			_ = recvErr
 			t.Fatal("a modern request was bound to a legacy session's connection")
 		case <-time.After(300 * time.Millisecond):
 		}
@@ -864,7 +868,7 @@ func startStdio(t *testing.T, s *mcpserver.Server) *stdioSession {
 	ss := &stdioSession{in: inW, frames: make(chan map[string]any, 64), done: make(chan error, 1)}
 	go func() {
 		err := s.ServeStdio(context.Background(), inR, outW)
-		outW.Close()
+		_ = outW.Close()
 		ss.done <- err
 	}()
 	go func() {
@@ -887,7 +891,7 @@ func startStdio(t *testing.T, s *mcpserver.Server) *stdioSession {
 			}
 		}
 	}()
-	t.Cleanup(func() { inW.Close() })
+	t.Cleanup(func() { _ = inW.Close() })
 	return ss
 }
 
@@ -927,7 +931,7 @@ func (ss *stdioSession) next(t *testing.T) map[string]any {
 // closeAndWait closes stdin and returns every frame still to come.
 func (ss *stdioSession) closeAndWait(t *testing.T, within time.Duration) []map[string]any {
 	t.Helper()
-	ss.in.Close()
+	_ = ss.in.Close()
 	var rest []map[string]any
 	deadline := time.After(within)
 	for {
@@ -935,7 +939,8 @@ func (ss *stdioSession) closeAndWait(t *testing.T, within time.Duration) []map[s
 		case f, ok := <-ss.frames:
 			if !ok {
 				select {
-				case <-ss.done:
+				case recvErr := <-ss.done:
+					_ = recvErr
 				case <-deadline:
 					t.Fatal("ServeStdio did not return")
 				}
@@ -1203,7 +1208,7 @@ func TestCloseSessionsEndsStreamsAndForgetsSessions(t *testing.T) {
 			streamDone <- err
 			return
 		}
-		defer resp.Body.Close()
+		defer func() { _ = resp.Body.Close() }()
 		_, err = io.Copy(io.Discard, resp.Body)
 		streamDone <- err
 	}()
@@ -1213,7 +1218,8 @@ func TestCloseSessionsEndsStreamsAndForgetsSessions(t *testing.T) {
 	s.CloseSessions()
 
 	select {
-	case <-streamDone:
+	case recvErr := <-streamDone:
+		_ = recvErr
 	case <-time.After(5 * time.Second):
 		t.Fatal("GET stream still open 5s after CloseSessions")
 	}

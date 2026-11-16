@@ -1,0 +1,1301 @@
+//! `world.toml`: a world described as data.
+//!
+//! A manifest names the module (by hash or source), the seed, the granted
+//! capability set, the capability ceiling, the requested execution profile and
+//! the pending schedules. `id world apply` reconciles a live world to the
+//! manifest through the existing admin operations, `--dry-run` prints the plan
+//! without applying it, and `id world diff` shows drift between the two.
+//!
+//! Everything here is pure: [`plan`] turns a [`WorldManifest`] and a current
+//! [`WorldState`] into a list of [`ApplyStep`]s, [`apply`] folds the steps into
+//! the state, and [`diff`] renders the steps as human-readable drift. The
+//! server-side command wiring executes the steps one by one, journaling each.
+
+use std::collections::BTreeMap;
+use std::path::PathBuf;
+
+use anyhow::{Result, ensure};
+use serde::{Deserialize, Serialize};
+
+use crate::world_caps::{
+    MAX_NAME_BYTES, MAX_PENDING_SCHEDULES, MAX_SCHEDULE_HORIZON_DAYS, MAX_SCHEDULE_HORIZON_MS,
+    default_ceiling_names, validate_ceiling_names, validate_grant_names,
+};
+use crate::world_limits::WorldExecutionProfile;
+
+/// A declarative description of a world. Fields the manifest omits are left
+/// alone by [`plan`], so a minimal manifest drifts nothing; a field that is
+/// present — even empty, like `grants = []` — is authoritative.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default, rename_all = "snake_case", deny_unknown_fields)]
+pub struct WorldManifest {
+    /// A content hash of an already-installed module, encoded as 1 to 64 plain
+    /// hexadecimal digits (no `blake3:` prefix). Mutually exclusive with
+    /// `module_source`.
+    pub module_hash: Option<String>,
+    /// A source file or directory to compile on the host before install.
+    /// Mutually exclusive with `module_hash`.
+    pub module_source: Option<PathBuf>,
+    /// The deterministic seed for the program's initializer.
+    pub seed: Option<u64>,
+    /// Capabilities to grant. `*` grants every capability the ceiling allows.
+    /// `None` (the field is omitted) leaves the live grants alone; `Some([])`
+    /// revokes every grant.
+    pub grants: Option<Vec<String>>,
+    /// The capability ceiling: the names in the list are the only capabilities
+    /// allowed, so an empty list allows none. `None` (the field is omitted)
+    /// leaves the live ceiling alone — a manifest that never mentions the
+    /// ceiling can never widen it. (In a [`WorldState`] and in
+    /// [`ApplyStep::SetCeiling`], `None` means the default ceiling — the
+    /// one meaning of `None` for a live ceiling everywhere, #6817. The
+    /// whole catalog stays expressible as the explicit full list.)
+    pub ceiling: Option<Vec<String>>,
+    /// Requested execution profile bounds. Omitted fields inherit the server,
+    /// so the all-default profile leaves the live profile alone.
+    pub profile: WorldExecutionProfile,
+    /// Pending schedules: id to fire time, in unix milliseconds. `None` (the
+    /// field is omitted) leaves the live schedules alone; a present map is
+    /// reconciled exactly — missing ids are scheduled, undeclared ones
+    /// cancelled.
+    pub schedules: Option<BTreeMap<String, u64>>,
+}
+
+/// The relevant current state of a live world, as `id world stats` would see
+/// it. This is the projection a manifest is compared against.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct WorldState {
+    /// The active module's content hash, if a program is installed.
+    pub module_hash: Option<String>,
+    /// The seed the active program was installed with.
+    pub seed: u64,
+    /// The granted capability set (raw, `*` allowed).
+    pub grants: Vec<String>,
+    /// The capability ceiling (`None` = the default ceiling, empty = none).
+    pub ceiling: Option<Vec<String>>,
+    /// The requested execution profile.
+    pub profile: WorldExecutionProfile,
+    /// Pending schedules: id to fire time, in unix milliseconds.
+    pub schedules: BTreeMap<String, u64>,
+}
+
+impl Default for WorldState {
+    fn default() -> Self {
+        Self {
+            module_hash: None,
+            seed: 0,
+            grants: Vec::new(),
+            ceiling: None,
+            profile: WorldExecutionProfile::default(),
+            schedules: BTreeMap::new(),
+        }
+    }
+}
+
+/// Fold a host-reported ceiling list into a [`WorldState`] ceiling.
+///
+/// The host always reports a world's ceiling as a concrete list. A report
+/// equal (as a set) to the default ceiling folds to `None`, because `None`
+/// IS the default ceiling — the one meaning of `None` for a live ceiling
+/// (#6817): [`plan`] compares a `None` live ceiling against the default
+/// set, the model [`apply`] stores a `None` step as `None`, and the wire
+/// executor restores the default names for a `None` step. Folding here is
+/// what makes a default-ceiling manifest converge: without it, a manifest
+/// pinning the default list would plan a `SetCeiling` step against the
+/// folded state forever.
+#[must_use]
+pub fn fold_reported_ceiling(reported: Vec<String>) -> Option<Vec<String>> {
+    let reported_set: std::collections::BTreeSet<String> = reported.iter().cloned().collect();
+    if reported_set == default_ceiling_names() {
+        None
+    } else {
+        Some(reported)
+    }
+}
+
+/// One reconciliation step, in the order a server applies it. Module install
+/// comes first because a changed seed or profile rides on the next install.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ApplyStep {
+    /// Install a different module: a known hash to activate, or a source path
+    /// to compile and install.
+    InstallModule {
+        /// Desired content hash, if the module is already on the host.
+        hash: Option<String>,
+        /// Source path to compile, if the module is not yet installed.
+        source: Option<PathBuf>,
+        /// The seed to initialize the program with.
+        seed: u64,
+    },
+    /// Replace the granted capability set.
+    SetGrants {
+        /// Desired grants.
+        grants: Vec<String>,
+    },
+    /// Replace the capability ceiling.
+    SetCeiling {
+        /// Desired ceiling (`None` = the default ceiling, empty = none).
+        ceiling: Option<Vec<String>>,
+    },
+    /// Replace the requested execution profile.
+    SetProfile {
+        /// The requested bounds.
+        profile: WorldExecutionProfile,
+    },
+    /// Schedule a fire.
+    ScheduleAt {
+        /// The schedule's id.
+        id: String,
+        /// When it fires, in unix milliseconds.
+        at_ms: u64,
+    },
+    /// Cancel a schedule the manifest does not declare.
+    CancelSchedule {
+        /// The schedule's id.
+        id: String,
+    },
+}
+
+impl ApplyStep {
+    /// A stable, human-readable name for the step.
+    #[must_use]
+    pub fn kind(&self) -> &'static str {
+        match self {
+            Self::InstallModule { .. } => "install_module",
+            Self::SetGrants { .. } => "set_grants",
+            Self::SetCeiling { .. } => "set_ceiling",
+            Self::SetProfile { .. } => "set_profile",
+            Self::ScheduleAt { .. } => "schedule_at",
+            Self::CancelSchedule { .. } => "cancel_schedule",
+        }
+    }
+}
+
+/// Parse a `world.toml` document.
+///
+/// # Errors
+///
+/// Invalid TOML, an unknown key (top-level, or inside `[profile]`), or
+/// fields that name an unknown capability.
+pub fn parse(text: &str) -> Result<WorldManifest> {
+    reject_unknown_profile_keys(text)?;
+    let manifest: WorldManifest = toml::from_str(text).map_err(anyhow::Error::new)?;
+    manifest.validate()?;
+    Ok(manifest)
+}
+
+/// Reject unknown keys in a manifest's `[profile]` table, naming the key.
+///
+/// `WorldManifest` denies unknown top-level keys via serde, but the
+/// nested profile cannot use `deny_unknown_fields` on
+/// [`WorldExecutionProfile`] itself: that struct must stay lenient
+/// because it is also deserialized from host-returned JSON (see
+/// `current_world_state` in `commands::world`), where a newer host may
+/// send fields this build does not know. So [`parse`] runs this probe
+/// instead: a typo'd limit key (`wasm_fuell = 1`) must fail loudly
+/// instead of silently leaving the live profile alone (#2876).
+///
+/// This probe is a hand-maintained mirror of `WorldExecutionProfile`'s
+/// fields and MUST gain a line for every field that struct gains:
+/// #5268 was exactly the drift where `total_memory_bytes` (#557) never
+/// got its line and every manifest naming it failed as "unknown field".
+/// The `test_profile_probe_covers_every_profile_field` test below pins the
+/// mirror to the struct so the drift cannot recur silently.
+///
+/// The probe deserializes through the typed TOML deserializer, never
+/// `toml::Value` — whose integers are `i64`-capped — so full-width
+/// `u64` values the real types accept (a `seed` or `wasm_fuel` above
+/// `i64::MAX`) pass through untouched. The known fields' values are
+/// irrelevant here (the real parse validates them), so they are read
+/// as [`serde::de::IgnoredAny`].
+fn reject_unknown_profile_keys(text: &str) -> Result<()> {
+    #[derive(Deserialize)]
+    struct ProfileProbe {
+        #[serde(default)]
+        profile: Option<ProfileKeysProbe>,
+    }
+
+    #[derive(Deserialize)]
+    #[serde(deny_unknown_fields)]
+    struct ProfileKeysProbe {
+        #[serde(default)]
+        wasm_fuel: Option<serde::de::IgnoredAny>,
+        #[serde(default)]
+        wasm_memory_bytes: Option<serde::de::IgnoredAny>,
+        #[serde(default)]
+        wasm_message_bytes: Option<serde::de::IgnoredAny>,
+        #[serde(default)]
+        native_memory_bytes: Option<serde::de::IgnoredAny>,
+        #[serde(default)]
+        native_cpu_seconds: Option<serde::de::IgnoredAny>,
+        #[serde(default)]
+        native_call_deadline_ms: Option<serde::de::IgnoredAny>,
+        #[serde(default)]
+        total_memory_bytes: Option<serde::de::IgnoredAny>,
+    }
+
+    let _: ProfileProbe = toml::from_str(text).map_err(anyhow::Error::new)?;
+    Ok(())
+}
+
+impl WorldManifest {
+    /// Validate the manifest: grants and ceiling name only known capabilities,
+    /// the requested profile bounds satisfy the execution-profile floors, the
+    /// schedule count is within the pending-schedule cap, schedule ids are
+    /// bounded printable ASCII, and fire times are positive.
+    ///
+    /// # Errors
+    ///
+    /// Names the first offending field.
+    pub fn validate(&self) -> Result<()> {
+        if let Some(grants) = &self.grants {
+            validate_grant_names(grants)?;
+        }
+        if let Some(ceiling) = &self.ceiling {
+            validate_ceiling_names(ceiling)?;
+        }
+        // The requested profile bounds are refused here, at parse time,
+        // with the same checks resolve() runs at apply time — an invalid
+        // manifest must never parse and plan clean, then fail partway
+        // through a live apply (#3015).
+        self.profile.validate()?;
+        if let Some(schedules) = &self.schedules {
+            ensure!(
+                schedules.len() <= MAX_PENDING_SCHEDULES,
+                "too many schedules: {} exceeds the maximum of {MAX_PENDING_SCHEDULES} pending schedules",
+                schedules.len()
+            );
+            for (id, at_ms) in schedules {
+                crate::world_caps::validate_schedule_id(id)?;
+                ensure!(*at_ms > 0, "schedule {id:?} must fire in the future");
+            }
+        }
+        ensure!(
+            self.module_hash.is_none() || self.module_source.is_none(),
+            "module_hash and module_source are mutually exclusive"
+        );
+        if let Some(hash) = &self.module_hash {
+            let valid = !hash.is_empty()
+                && hash.len() <= MAX_NAME_BYTES
+                && hash.bytes().all(|b| b.is_ascii_hexdigit());
+            ensure!(
+                valid,
+                "module hash must be 1 to {MAX_NAME_BYTES} hex digits"
+            );
+        }
+        Ok(())
+    }
+
+    /// Serialize the manifest back to TOML.
+    ///
+    /// # Errors
+    ///
+    /// Only if the manifest cannot be represented (it always can).
+    pub fn to_toml(&self) -> Result<String> {
+        toml::to_string_pretty(self).map_err(anyhow::Error::new)
+    }
+}
+
+/// Compute the steps that reconcile `current` to `desired`. When `current`
+/// already matches, the plan is empty, so applying twice is a no-op.
+#[must_use]
+pub fn plan(desired: &WorldManifest, current: &WorldState) -> Vec<ApplyStep> {
+    let mut steps = Vec::new();
+
+    // Module and seed: a manifest hash equal to the live hash means no install.
+    let module_changed = match (&desired.module_hash, &desired.module_source) {
+        (Some(hash), _) => current.module_hash.as_deref() != Some(hash),
+        (None, Some(_)) => true, // a source always recompiles
+        (None, None) => false,
+    };
+    if module_changed {
+        steps.push(ApplyStep::InstallModule {
+            hash: desired.module_hash.clone(),
+            source: desired.module_source.clone(),
+            seed: desired.seed.unwrap_or(current.seed),
+        });
+    } else if let Some(seed) = desired.seed {
+        // Seed is part of install identity (#1519): a seed-only difference
+        // still needs a reinstall carrying the new seed, or diff would
+        // report "no drift" for a change that is then never applied. With
+        // no module installed and none desired there is no installed
+        // program whose seed could change, so a seed difference alone
+        // emits nothing there.
+        if seed != current.seed && (desired.module_hash.is_some() || current.module_hash.is_some())
+        {
+            steps.push(ApplyStep::InstallModule {
+                hash: desired
+                    .module_hash
+                    .clone()
+                    .or_else(|| current.module_hash.clone()),
+                source: desired.module_source.clone(),
+                seed,
+            });
+        }
+    }
+
+    // Grants: an omitted field leaves the live set alone; a present one
+    // replaces it when the set differs (an empty list revokes everything).
+    if let Some(desired_grants) = &desired.grants {
+        let desired_set: std::collections::BTreeSet<String> =
+            desired_grants.iter().cloned().collect();
+        let current_set: std::collections::BTreeSet<String> =
+            current.grants.iter().cloned().collect();
+        if desired_set != current_set {
+            steps.push(ApplyStep::SetGrants {
+                grants: desired_grants.clone(),
+            });
+        }
+    }
+
+    // Ceiling: an omitted field leaves the live ceiling alone, so a manifest
+    // that never mentions the ceiling can never widen it; a present list
+    // replaces it when the SET differs (compared as sets, like grants --
+    // #1519: a reorder of the same names is not drift). The step carries
+    // the desired list in its declared order. A live ceiling of None is
+    // the default ceiling (#6817), so it compares as the default set: a
+    // manifest pinning exactly the default names converges (no step),
+    // while the full catalog — a strict superset — still plans one
+    // widening step.
+    if let Some(ceiling) = &desired.ceiling {
+        let desired_set: std::collections::BTreeSet<String> = ceiling.iter().cloned().collect();
+        let current_set: std::collections::BTreeSet<String> = match &current.ceiling {
+            Some(names) => names.iter().cloned().collect(),
+            None => default_ceiling_names(),
+        };
+        if current_set != desired_set {
+            steps.push(ApplyStep::SetCeiling {
+                ceiling: Some(ceiling.clone()),
+            });
+        }
+    }
+
+    // Profile: the all-default profile inherits the server on every field,
+    // so it is how a manifest says nothing about the profile — leave the
+    // live profile alone. A present profile replaces when it differs.
+    if desired.profile != WorldExecutionProfile::default() && desired.profile != current.profile {
+        steps.push(ApplyStep::SetProfile {
+            profile: desired.profile,
+        });
+    }
+
+    // Schedules: an omitted field leaves the live schedules alone; a present
+    // map is reconciled exactly — add missing, cancel extra.
+    if let Some(desired_schedules) = &desired.schedules {
+        for (id, at_ms) in desired_schedules {
+            if current.schedules.get(id) != Some(at_ms) {
+                steps.push(ApplyStep::ScheduleAt {
+                    id: id.clone(),
+                    at_ms: *at_ms,
+                });
+            }
+        }
+        for id in current.schedules.keys() {
+            if !desired_schedules.contains_key(id) {
+                steps.push(ApplyStep::CancelSchedule { id: id.clone() });
+            }
+        }
+    }
+
+    steps
+}
+
+/// Apply `steps` to `state`, returning the number of steps that changed it.
+///
+/// # Errors
+///
+/// A step that names an unknown capability, or that would fold a value
+/// `WorldManifest::validate` refuses — a schedule firing at time zero or
+/// past the pending-schedule cap, a profile outside its bounds, or a
+/// module hash that is not 1 to `MAX_NAME_BYTES` hex digits (a manifest
+/// should be validated first; this is a defensive re-check, #4769).
+pub fn apply(steps: &[ApplyStep], state: &mut WorldState) -> Result<usize> {
+    let mut changed = 0;
+    for step in steps {
+        match step {
+            ApplyStep::InstallModule { hash, source, seed } => {
+                if let Some(hash) = hash {
+                    // Same hash form validate() enforces (lines above):
+                    // a non-hex, empty, or over-long hash must not fold
+                    // into state as the live module hash.
+                    let valid = !hash.is_empty()
+                        && hash.len() <= MAX_NAME_BYTES
+                        && hash.bytes().all(|b| b.is_ascii_hexdigit());
+                    ensure!(
+                        valid,
+                        "module hash must be 1 to {MAX_NAME_BYTES} hex digits"
+                    );
+                    state.module_hash = Some(hash.clone());
+                }
+                state.seed = *seed;
+                let _ = source;
+                changed += 1;
+            }
+            ApplyStep::SetGrants { grants } => {
+                validate_grant_names(grants)?;
+                if state.grants != *grants {
+                    state.grants = grants.clone();
+                    changed += 1;
+                }
+            }
+            ApplyStep::SetCeiling { ceiling } => {
+                // Stored verbatim: a `None` step leaves `state.ceiling`
+                // as `None`, which means the default ceiling (#6817) —
+                // exactly what the wire executor restores for `None`.
+                if let Some(names) = ceiling {
+                    validate_ceiling_names(names)?;
+                }
+                if state.ceiling != *ceiling {
+                    state.ceiling = ceiling.clone();
+                    changed += 1;
+                }
+            }
+            ApplyStep::SetProfile { profile } => {
+                profile.validate()?;
+                if state.profile != *profile {
+                    state.profile = *profile;
+                    changed += 1;
+                }
+            }
+            ApplyStep::ScheduleAt { id, at_ms } => {
+                crate::world_caps::validate_schedule_id(id)?;
+                ensure!(*at_ms > 0, "schedule {id:?} must fire in the future");
+                // Replacing an existing schedule never grows the map; a
+                // new id must not push it past the pending-schedule cap
+                // validate() enforces.
+                if !state.schedules.contains_key(id) {
+                    ensure!(
+                        state.schedules.len() < MAX_PENDING_SCHEDULES,
+                        "too many schedules: {} exceeds the maximum of {MAX_PENDING_SCHEDULES} pending schedules",
+                        state.schedules.len() + 1
+                    );
+                }
+                if state.schedules.get(id) != Some(at_ms) {
+                    state.schedules.insert(id.clone(), *at_ms);
+                    changed += 1;
+                }
+            }
+            ApplyStep::CancelSchedule { id } => {
+                if state.schedules.remove(id).is_some() {
+                    changed += 1;
+                }
+            }
+        }
+    }
+    Ok(changed)
+}
+
+/// Refuse a plan whose `ScheduleAt` steps fire past the host's schedule
+/// horizon (`now_ms` plus [`MAX_SCHEDULE_HORIZON_DAYS`] days) — the rule
+/// the host's `check_schedule` enforces. `validate()` and [`apply`] are pure
+/// and clockless, and schedule steps run last in a live apply, so without
+/// this pre-flight the host's refusal would abort the apply after earlier
+/// steps had already mutated the world (#6486). Past fire times are legal
+/// (they fire on the next wakeup). `now_ms` is the caller's clock; the host
+/// re-checks against its own.
+///
+/// # Errors
+///
+/// Names the first schedule id and fire time beyond the horizon.
+pub fn check_schedule_horizon(steps: &[ApplyStep], now_ms: u64) -> Result<()> {
+    let horizon = now_ms.saturating_add(MAX_SCHEDULE_HORIZON_MS);
+    for step in steps {
+        if let ApplyStep::ScheduleAt { id, at_ms } = step {
+            ensure!(
+                *at_ms <= horizon,
+                "schedule {id:?} fires at {at_ms} ms, more than {MAX_SCHEDULE_HORIZON_DAYS} days past the host clock ({now_ms} ms; limit {horizon} ms)"
+            );
+        }
+    }
+    Ok(())
+}
+
+/// Render the steps as `id world diff` drift lines.
+#[must_use]
+pub fn diff(desired: &WorldManifest, current: &WorldState) -> String {
+    let steps = plan(desired, current);
+    if steps.is_empty() {
+        return "no drift".to_owned();
+    }
+    render_steps(&steps)
+}
+
+/// Render plan steps as drift lines. A `SetCeiling` to `None` (the whole
+/// catalog) and to `Some([])` (no capability allowed) are opposite operations
+/// and render distinctly: `[*] (whole catalog)` vs `[]`.
+fn render_steps(steps: &[ApplyStep]) -> String {
+    let mut out = String::new();
+    for step in steps {
+        match step {
+            ApplyStep::InstallModule { hash, source, seed } => {
+                if let Some(hash) = hash {
+                    out.push_str(&format!("- module {hash} (seed {seed})\n"));
+                }
+                if let Some(source) = source {
+                    out.push_str(&format!(
+                        "+ module source {} (seed {seed})\n",
+                        source.display()
+                    ));
+                }
+            }
+            ApplyStep::SetGrants { grants } => {
+                out.push_str(&format!("~ grants [{}]\n", grants.join(", ")))
+            }
+            ApplyStep::SetCeiling { ceiling } => match ceiling {
+                Some(names) => {
+                    out.push_str(&format!("~ ceiling [{}]\n", names.join(", ")));
+                }
+                None => out.push_str("~ ceiling (default ceiling)\n"),
+            },
+            ApplyStep::SetProfile { profile } => {
+                out.push_str(&format!("~ profile {profile:?}\n"));
+            }
+            ApplyStep::ScheduleAt { id, at_ms } => {
+                out.push_str(&format!("+ schedule {id} at {at_ms}\n"));
+            }
+            ApplyStep::CancelSchedule { id } => {
+                out.push_str(&format!("- schedule {id}\n"));
+            }
+        }
+    }
+    out
+}
+
+/// Round-trip a manifest through TOML and back.
+///
+/// # Errors
+///
+/// Serialization or parsing failures.
+pub fn round_trip(manifest: &WorldManifest) -> Result<WorldManifest> {
+    parse(&manifest.to_toml()?)
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
+mod tests {
+    use super::*;
+
+    fn manifest_toml() -> &'static str {
+        r#"
+module_hash = "abc123"
+seed = 42
+grants = ["chat.say", "time.now"]
+ceiling = ["chat.say", "time.now", "records.read"]
+schedules = { "round" = 1800000000000 }
+
+[profile]
+wasm_fuel = 5_000_000
+"#
+    }
+
+    #[test]
+    fn parses_and_round_trips() {
+        let manifest = parse(manifest_toml()).unwrap();
+        assert_eq!(manifest.module_hash, Some("abc123".to_owned()));
+        assert_eq!(manifest.seed, Some(42));
+        assert_eq!(
+            manifest.grants,
+            Some(vec!["chat.say".to_owned(), "time.now".to_owned()])
+        );
+        assert_eq!(
+            manifest.ceiling,
+            Some(vec![
+                "chat.say".to_owned(),
+                "time.now".to_owned(),
+                "records.read".to_owned()
+            ])
+        );
+        assert_eq!(manifest.profile.wasm_fuel, Some(5_000_000));
+        assert_eq!(
+            manifest.schedules,
+            Some(BTreeMap::from([("round".to_owned(), 1_800_000_000_000)]))
+        );
+        assert_eq!(round_trip(&manifest).unwrap(), manifest);
+    }
+
+    #[test]
+    fn unknown_top_level_keys_are_rejected() {
+        // #2876: a typo'd or bogus top-level key must fail parse, naming
+        // the key — never silently drop a revocation the admin wrote.
+        let err = parse("grant = []").unwrap_err();
+        assert!(format!("{err}").contains("grant"), "{err}");
+        let err = parse("bogus_key = 1").unwrap_err();
+        assert!(format!("{err}").contains("bogus_key"), "{err}");
+    }
+
+    #[test]
+    fn typoed_field_keys_are_rejected() {
+        // The probe matrix from #2876: each of these used to parse clean
+        // and plan zero steps.
+        for text in ["ceilin = []", "schedule = {}", "seeds = 99"] {
+            assert!(parse(text).is_err(), "parsed clean: {text}");
+        }
+    }
+
+    #[test]
+    fn unknown_profile_keys_are_rejected() {
+        // #2876: same strictness inside [profile], enforced by parse
+        // itself because the profile struct stays lenient for host JSON.
+        let err = parse("[profile]\nwasm_fuell = 1").unwrap_err();
+        assert!(format!("{err}").contains("wasm_fuell"), "{err}");
+    }
+
+    #[test]
+    fn test_total_memory_bytes_profile_key_parses_and_round_trips() {
+        // #5268: total_memory_bytes is a real WorldExecutionProfile
+        // field (#557) that the #2876 probe never learned, so any
+        // manifest naming it failed parse as an unknown field.
+        let manifest = parse("[profile]\ntotal_memory_bytes = 268435456").unwrap();
+        assert_eq!(manifest.profile.total_memory_bytes, Some(268_435_456));
+        assert_eq!(round_trip(&manifest).unwrap(), manifest);
+    }
+
+    #[test]
+    fn test_total_memory_bytes_zero_is_rejected() {
+        // The value the probe now admits still goes through
+        // WorldExecutionProfile::validate: a zero budget is refused.
+        assert!(parse("[profile]\ntotal_memory_bytes = 0").is_err());
+    }
+
+    #[test]
+    fn test_profile_probe_covers_every_profile_field() {
+        // #5268 drift guard: this literal names EVERY field of
+        // WorldExecutionProfile with no `..` rest pattern, so adding a
+        // field to that struct breaks this test's compilation until
+        // the author also adds the field to ProfileKeysProbe above —
+        // the probe is a hand mirror, and this is what keeps it
+        // honest. Values sit exactly on the validate() floors.
+        let profile = WorldExecutionProfile {
+            wasm_fuel: Some(1),
+            wasm_memory_bytes: Some(65_536),
+            wasm_message_bytes: Some(1),
+            native_memory_bytes: Some(16_777_216),
+            native_cpu_seconds: Some(1),
+            native_call_deadline_ms: Some(1),
+            total_memory_bytes: Some(1),
+        };
+        let table = toml::to_string(&profile).unwrap();
+        let manifest = parse(&format!("[profile]\n{table}")).unwrap();
+        assert_eq!(manifest.profile, profile);
+    }
+
+    #[test]
+    fn test_invalid_profile_bounds_are_rejected() {
+        // #3015: each bound resolve() refuses at apply time must already
+        // fail parse(), with the same checks.
+        for text in [
+            "[profile]
+wasm_fuel = 0",
+            "[profile]
+wasm_memory_bytes = 1024",
+            "[profile]
+wasm_message_bytes = 0",
+            "[profile]
+native_memory_bytes = 1024",
+            "[profile]
+native_cpu_seconds = 0",
+            "[profile]
+native_call_deadline_ms = 0",
+        ] {
+            assert!(parse(text).is_err(), "parsed clean: {text}");
+        }
+    }
+
+    #[test]
+    fn test_minimum_profile_bounds_are_accepted() {
+        // #3015: the boundary-valid values (one Wasm page, 16 MiB native)
+        // sit exactly on the floors and must parse.
+        let manifest = parse(
+            "[profile]
+wasm_memory_bytes = 65536
+native_memory_bytes = 16777216",
+        )
+        .unwrap();
+        assert_eq!(manifest.profile.wasm_memory_bytes, Some(65_536));
+        assert_eq!(manifest.profile.native_memory_bytes, Some(16_777_216));
+    }
+
+    #[test]
+    fn test_schedule_count_is_capped_at_parse() {
+        // #3015: a manifest may declare at most MAX_PENDING_SCHEDULES
+        // pending schedules; one more must fail parse, not a live apply.
+        let build = |count: usize| {
+            let entries: Vec<String> = (0..count)
+                .map(|i| format!("\"s{i}\" = 1800000000000"))
+                .collect();
+            format!("schedules = {{ {} }}", entries.join(", "))
+        };
+        assert!(parse(&build(MAX_PENDING_SCHEDULES)).is_ok());
+        let err = parse(&build(MAX_PENDING_SCHEDULES + 1)).unwrap_err();
+        assert!(format!("{err}").contains("too many schedules"), "{err}");
+    }
+
+    #[test]
+    fn full_width_u64_values_still_parse() {
+        // Regression (Codex review of the fix for this issue): the
+        // [profile] key check must not route the document through
+        // toml::Value, whose i64 integers would reject u64 values the
+        // typed manifest accepts.
+        let manifest = parse("seed = 18446744073709551615").unwrap();
+        assert_eq!(manifest.seed, Some(u64::MAX));
+        let manifest = parse("[profile]\nwasm_fuel = 18446744073709551615").unwrap();
+        assert_eq!(manifest.profile.wasm_fuel, Some(u64::MAX));
+    }
+
+    #[test]
+    fn an_empty_manifest_drifts_nothing() {
+        let manifest = WorldManifest::default();
+        // A default (empty) manifest leaves a default (empty) world alone.
+        assert!(plan(&manifest, &WorldState::default()).is_empty());
+        // And it leaves a fully populated world alone too (#817): every field
+        // is unspecified, so nothing is revoked, widened, or cancelled.
+        let state = WorldState {
+            module_hash: Some("abc".to_owned()),
+            seed: 7,
+            grants: vec!["chat.say".to_owned()],
+            ceiling: Some(vec!["chat.say".to_owned()]),
+            schedules: BTreeMap::from([("round".to_owned(), 5)]),
+            ..WorldState::default()
+        };
+        assert!(plan(&manifest, &state).is_empty());
+    }
+
+    #[test]
+    fn a_minimal_manifest_only_installs_the_module() {
+        // #817 regression: a manifest that only names a module must not drift
+        // grants, ceiling, profile, or schedules on a populated world.
+        let manifest = parse("module_hash = \"def456\"").unwrap();
+        let state = WorldState {
+            module_hash: Some("abc".to_owned()),
+            seed: 7,
+            grants: vec!["chat.say".to_owned()],
+            ceiling: Some(vec!["chat.say".to_owned()]),
+            schedules: BTreeMap::from([("round".to_owned(), 5)]),
+            ..WorldState::default()
+        };
+        let steps = plan(&manifest, &state);
+        assert_eq!(steps.len(), 1, "{steps:?}");
+        assert!(matches!(steps[0], ApplyStep::InstallModule { .. }));
+    }
+
+    #[test]
+    fn an_explicitly_empty_field_is_authoritative() {
+        // #817: `grants = []` / `ceiling = []` / `schedules = {}` in the TOML
+        // are present-but-empty, which clears — unlike omitting them.
+        let manifest = parse("grants = []\nceiling = []\nschedules = {}").unwrap();
+        assert_eq!(manifest.grants, Some(Vec::new()));
+        assert_eq!(manifest.ceiling, Some(Vec::new()));
+        assert_eq!(manifest.schedules, Some(BTreeMap::new()));
+        let state = WorldState {
+            grants: vec!["chat.say".to_owned()],
+            ceiling: Some(vec!["chat.say".to_owned()]),
+            schedules: BTreeMap::from([("round".to_owned(), 5)]),
+            ..WorldState::default()
+        };
+        let steps = plan(&manifest, &state);
+        assert!(
+            steps
+                .iter()
+                .any(|s| matches!(s, ApplyStep::SetGrants { grants } if grants.is_empty())),
+            "{steps:?}"
+        );
+        assert!(
+            steps.iter().any(
+                |s| matches!(s, ApplyStep::SetCeiling { ceiling } if ceiling.as_deref() == Some(&[][..]))
+            ),
+            "{steps:?}"
+        );
+        assert!(
+            steps
+                .iter()
+                .any(|s| matches!(s, ApplyStep::CancelSchedule { id } if id == "round")),
+            "{steps:?}"
+        );
+    }
+
+    #[test]
+    fn default_ceiling_manifest_converges_against_none_ceiling() {
+        // #6817 (acceptance 1): a manifest pinning exactly the default
+        // ceiling against a world whose live ceiling is None (never set,
+        // or folded from a default report) must plan NO SetCeiling step.
+        // Pre-fix, plan() read None as the whole catalog, so it planned a
+        // step forever (non-convergence).
+        let manifest = WorldManifest {
+            ceiling: Some(
+                crate::world_caps::default_ceiling_names()
+                    .into_iter()
+                    .collect(),
+            ),
+            ..WorldManifest::default()
+        };
+        let current = WorldState::default(); // ceiling: None
+        let steps = plan(&manifest, &current);
+        assert!(
+            !steps
+                .iter()
+                .any(|s| matches!(s, ApplyStep::SetCeiling { .. })),
+            "default-ceiling manifest must converge against a None ceiling, got {steps:?}"
+        );
+    }
+
+    #[test]
+    fn default_ceiling_round_trip_converges() {
+        // #6817 (acceptance 4): plan -> apply -> re-read (fold) -> plan for
+        // a default-ceiling manifest; the second plan is empty.
+        let default_names: Vec<String> = crate::world_caps::default_ceiling_names()
+            .into_iter()
+            .collect();
+        let manifest = WorldManifest {
+            ceiling: Some(default_names.clone()),
+            ..WorldManifest::default()
+        };
+        // Start from a narrowed world: the first plan widens to the default.
+        let mut state = WorldState {
+            ceiling: Some(vec!["chat.say".to_owned()]),
+            ..WorldState::default()
+        };
+        let steps = plan(&manifest, &state);
+        assert_eq!(
+            steps,
+            vec![ApplyStep::SetCeiling {
+                ceiling: Some(default_names.clone())
+            }]
+        );
+        apply(&steps, &mut state).unwrap();
+        // Re-read: the host now reports the default list, which folds to
+        // None — and None means the default ceiling, so nothing drifts.
+        state.ceiling = fold_reported_ceiling(state.ceiling.clone().unwrap());
+        assert_eq!(state.ceiling, None);
+        assert!(plan(&manifest, &state).is_empty());
+        // A host report of exactly the default list (never folded by hand)
+        // also converges from the start.
+        let reported = WorldState {
+            ceiling: Some(default_names.clone()),
+            ..WorldState::default()
+        };
+        let folded = WorldState {
+            ceiling: fold_reported_ceiling(reported.ceiling.clone().unwrap()),
+            ..reported
+        };
+        assert!(plan(&manifest, &folded).is_empty());
+    }
+
+    #[test]
+    fn ceiling_controls_hold_under_default_meaning() {
+        // #6817 controls: the full catalog against a default-ceiling world
+        // plans exactly one widening step; any other list plans a step iff
+        // the sets differ; an omitted ceiling plans none.
+        let current = WorldState::default(); // ceiling: None = default
+        let catalog: Vec<String> = crate::world_caps::PROVIDER_REGISTRY
+            .catalog_names()
+            .into_iter()
+            .collect();
+        assert!(catalog.len() > crate::world_caps::default_ceiling_names().len());
+        let widening = WorldManifest {
+            ceiling: Some(catalog.clone()),
+            ..WorldManifest::default()
+        };
+        assert_eq!(
+            plan(&widening, &current),
+            vec![ApplyStep::SetCeiling {
+                ceiling: Some(catalog)
+            }]
+        );
+        let narrowed = WorldManifest {
+            ceiling: Some(vec!["chat.say".to_owned()]),
+            ..WorldManifest::default()
+        };
+        assert_eq!(
+            plan(&narrowed, &current),
+            vec![ApplyStep::SetCeiling {
+                ceiling: Some(vec!["chat.say".to_owned()])
+            }]
+        );
+        let omitted = WorldManifest::default();
+        assert!(plan(&omitted, &current).is_empty());
+    }
+
+    #[test]
+    fn fold_reported_ceiling_only_folds_the_default_set() {
+        // #6817: order does not matter (set comparison); any other list —
+        // including a strict subset and the empty list — stays concrete.
+        let mut shuffled: Vec<String> = crate::world_caps::default_ceiling_names()
+            .into_iter()
+            .collect();
+        shuffled.reverse();
+        assert_eq!(fold_reported_ceiling(shuffled), None);
+        assert_eq!(
+            fold_reported_ceiling(vec!["chat.say".to_owned()]),
+            Some(vec!["chat.say".to_owned()])
+        );
+        assert_eq!(fold_reported_ceiling(Vec::new()), Some(Vec::new()));
+    }
+
+    #[test]
+    fn ceiling_none_and_empty_render_distinctly() {
+        // #817: restoring the default ceiling and narrowing to nothing are
+        // opposite operations and must not render the same in `world diff`.
+        // (#6817: None renders as the default ceiling, not the whole
+        // catalog — that was the split meaning this test used to pin.)
+        let widened = render_steps(&[ApplyStep::SetCeiling { ceiling: None }]);
+        let emptied = render_steps(&[ApplyStep::SetCeiling {
+            ceiling: Some(Vec::new()),
+        }]);
+        assert_ne!(widened, emptied);
+        assert!(widened.contains("default ceiling"), "{widened}");
+        assert!(emptied.contains("ceiling []"), "{emptied}");
+    }
+
+    #[test]
+    fn apply_is_idempotent() {
+        let manifest = parse(manifest_toml()).unwrap();
+        let mut state = WorldState::default();
+        let steps = plan(&manifest, &state);
+        assert!(!steps.is_empty());
+        let changed = apply(&steps, &mut state).unwrap();
+        assert_eq!(changed, steps.len());
+        // A second plan against the reconciled state is empty.
+        assert!(plan(&manifest, &state).is_empty());
+    }
+
+    #[test]
+    fn schedule_horizon_boundary_is_accepted_and_one_past_is_refused() {
+        let now = 1_000_000_u64;
+        let at = |at_ms| {
+            [ApplyStep::ScheduleAt {
+                id: "round".to_owned(),
+                at_ms,
+            }]
+        };
+        let horizon = now + crate::world_caps::MAX_SCHEDULE_HORIZON_MS;
+        check_schedule_horizon(&at(horizon), now).unwrap();
+        let err = check_schedule_horizon(&at(horizon + 1), now).unwrap_err();
+        let text = format!("{err}");
+        assert!(text.contains("round"), "{text}");
+        assert!(text.contains(&(horizon + 1).to_string()), "{text}");
+        assert!(text.contains("30 days"), "{text}");
+        assert!(check_schedule_horizon(&at(u64::MAX), now).is_err());
+        // Past and near-future fire times stay legal.
+        check_schedule_horizon(&at(1), now).unwrap();
+        check_schedule_horizon(&at(now + 86_400_000), now).unwrap();
+        // A clock near u64::MAX saturates instead of overflowing.
+        check_schedule_horizon(&at(u64::MAX), u64::MAX).unwrap();
+    }
+
+    #[test]
+    fn schedule_horizon_check_ignores_non_schedule_steps_and_plans_manifests() {
+        let now = 1_000_000_u64;
+        let manifest = parse("schedules = { far = 99999999999999 }").unwrap();
+        let steps = plan(&manifest, &WorldState::default());
+        assert!(check_schedule_horizon(&steps, now).is_err());
+        let ok = parse("seed = 1\nschedules = { soon = 2000000 }").unwrap();
+        check_schedule_horizon(&plan(&ok, &WorldState::default()), now).unwrap();
+    }
+
+    #[test]
+    fn apply_refuses_schedule_at_time_zero() {
+        // #4769: validate() refuses at_ms == 0; apply()'s re-check must too,
+        // naming the schedule id, and must not store the schedule.
+        let mut state = WorldState::default();
+        let steps = [ApplyStep::ScheduleAt {
+            id: "wake".to_owned(),
+            at_ms: 0,
+        }];
+        let err = apply(&steps, &mut state).unwrap_err();
+        assert!(format!("{err}").contains("wake"), "{err}");
+        assert!(state.schedules.is_empty());
+    }
+
+    #[test]
+    fn apply_refuses_schedules_past_the_cap() {
+        // #4769: a step list that would leave more than
+        // MAX_PENDING_SCHEDULES schedules in state is refused.
+        let steps: Vec<ApplyStep> = (0..=MAX_PENDING_SCHEDULES)
+            .map(|i| ApplyStep::ScheduleAt {
+                id: format!("s{i}"),
+                at_ms: 1,
+            })
+            .collect();
+        let mut state = WorldState::default();
+        let err = apply(&steps, &mut state).unwrap_err();
+        assert!(format!("{err}").contains("too many schedules"), "{err}");
+        assert_eq!(state.schedules.len(), MAX_PENDING_SCHEDULES);
+        // Replacing an existing schedule at the cap is not growth and
+        // still folds.
+        let replace = [ApplyStep::ScheduleAt {
+            id: "s0".to_owned(),
+            at_ms: 2,
+        }];
+        assert_eq!(apply(&replace, &mut state).unwrap(), 1);
+        assert_eq!(state.schedules.len(), MAX_PENDING_SCHEDULES);
+    }
+
+    #[test]
+    fn apply_refuses_a_profile_that_fails_validation() {
+        // #4769: SetProfile must run WorldExecutionProfile::validate(),
+        // which refuses a zero wasm_fuel bound.
+        let mut state = WorldState::default();
+        let steps = [ApplyStep::SetProfile {
+            profile: WorldExecutionProfile {
+                wasm_fuel: Some(0),
+                ..WorldExecutionProfile::default()
+            },
+        }];
+        assert!(apply(&steps, &mut state).is_err());
+        assert_eq!(state.profile, WorldExecutionProfile::default());
+    }
+
+    #[test]
+    fn apply_refuses_a_malformed_module_hash() {
+        // #4769: InstallModule must enforce the same 1..=64 hex form
+        // validate() enforces — non-hex, empty, and over-long hashes are
+        // refused and never stored; a valid hash folds as before.
+        for hash in ["", "zz!", &"a".repeat(MAX_NAME_BYTES + 1)] {
+            let mut state = WorldState::default();
+            let steps = [ApplyStep::InstallModule {
+                hash: Some(hash.to_owned()),
+                source: None,
+                seed: 1,
+            }];
+            let err = apply(&steps, &mut state).unwrap_err();
+            assert!(format!("{err}").contains("module hash"), "{err}");
+            assert_eq!(state.module_hash, None, "hash {hash:?} was stored");
+        }
+        let mut state = WorldState::default();
+        let steps = [ApplyStep::InstallModule {
+            hash: Some("abc123".to_owned()),
+            source: None,
+            seed: 1,
+        }];
+        assert_eq!(apply(&steps, &mut state).unwrap(), 1);
+        assert_eq!(state.module_hash.as_deref(), Some("abc123"));
+    }
+
+    #[test]
+    fn drift_is_detected_after_a_manual_change() {
+        let manifest = parse(manifest_toml()).unwrap();
+        let mut state = WorldState::default();
+        apply(&plan(&manifest, &state), &mut state).unwrap();
+        // Simulate an admin narrowing the ceiling by hand.
+        state.ceiling = Some(vec!["chat.say".to_owned()]);
+        let steps = plan(&manifest, &state);
+        assert!(
+            steps
+                .iter()
+                .any(|step| matches!(step, ApplyStep::SetCeiling { ceiling } if ceiling == &manifest.ceiling)),
+            "drift was not detected: {steps:?}"
+        );
+    }
+
+    #[test]
+    fn schedules_are_added_and_removed() {
+        let manifest = WorldManifest {
+            schedules: Some(BTreeMap::from([
+                ("keep".to_owned(), 5),
+                ("new".to_owned(), 6),
+            ])),
+            ..WorldManifest::default()
+        };
+        let state = WorldState {
+            schedules: BTreeMap::from([("keep".to_owned(), 5), ("stale".to_owned(), 4)]),
+            ..WorldState::default()
+        };
+        let steps = plan(&manifest, &state);
+        assert!(steps.iter().any(
+            |s| matches!(s, ApplyStep::ScheduleAt { id, at_ms } if id == "new" && *at_ms == 6)
+        ));
+        assert!(
+            steps
+                .iter()
+                .any(|s| matches!(s, ApplyStep::CancelSchedule { id } if id == "stale"))
+        );
+        assert!(
+            !steps
+                .iter()
+                .any(|s| matches!(s, ApplyStep::ScheduleAt { id, .. } | ApplyStep::CancelSchedule { id } if id == "keep"))
+        );
+    }
+
+    #[test]
+    fn module_hash_uses_plain_hex_without_a_blake3_prefix() {
+        let full_hash = "a".repeat(64);
+        let manifest = parse(&format!("module_hash = \"{full_hash}\"")).unwrap();
+        assert_eq!(manifest.module_hash.as_deref(), Some(full_hash.as_str()));
+
+        assert!(parse("module_hash = \"blake3:abc123\"").is_err());
+        assert!(parse(&format!("module_hash = \"blake3:{full_hash}\"")).is_err());
+    }
+
+    #[test]
+    fn validation_rejects_unknown_names_and_bad_hashes() {
+        assert!(parse("grants = [\"time.nwo\"]").is_err());
+        assert!(parse("ceiling = [\"*\"]").is_err());
+        assert!(parse("ceiling = [\"time.nwo\"]").is_err());
+        assert!(parse("module_hash = \"not-hex!\"").is_err());
+        assert!(parse("module_hash = \"\"").is_err());
+        assert!(parse("module_hash = \"abc\"\nmodule_source = \"main.roc\"").is_err());
+        assert!(parse("schedules = { \"bad\nid\" = 1 }").is_err());
+        assert!(parse("schedules = { \"a\" = 0 }").is_err());
+    }
+
+    #[test]
+    fn a_source_module_always_recompiles() {
+        let manifest = WorldManifest {
+            module_source: Some(PathBuf::from("main.roc")),
+            ..WorldManifest::default()
+        };
+        let state = WorldState {
+            module_hash: Some("abc".to_owned()),
+            ..WorldState::default()
+        };
+        let steps = plan(&manifest, &state);
+        assert!(steps.iter().any(|s| matches!(
+            s,
+            ApplyStep::InstallModule {
+                source: Some(_),
+                ..
+            }
+        )));
+    }
+
+    #[test]
+    fn a_seed_only_change_reinstalls_with_the_new_seed() {
+        // #1519: seed is part of install identity -- a seed-only difference
+        // must plan exactly one install carrying the new seed, and diff
+        // must render it instead of reporting "no drift".
+        let manifest = parse("module_hash = \"abc\"\nseed = 99").unwrap();
+        let state = WorldState {
+            module_hash: Some("abc".to_owned()),
+            seed: 7,
+            ..WorldState::default()
+        };
+        let steps = plan(&manifest, &state);
+        assert_eq!(steps.len(), 1, "{steps:?}");
+        assert!(
+            matches!(
+                steps[0],
+                ApplyStep::InstallModule {
+                    ref hash,
+                    source: None,
+                    seed: 99
+                } if hash.as_deref() == Some("abc")
+            ),
+            "{steps:?}"
+        );
+        let d = diff(&manifest, &state);
+        assert!(d.contains("seed 99"), "{d}");
+        // Applying the step reconciles: a second plan is empty.
+        let mut applied = state.clone();
+        apply(&steps, &mut applied).unwrap();
+        assert!(plan(&manifest, &applied).is_empty());
+    }
+
+    #[test]
+    fn a_seed_change_with_a_module_change_is_one_step() {
+        // #1519: the module-change install already carries the desired
+        // seed -- no second install step for the seed.
+        let manifest = parse("module_hash = \"def456\"\nseed = 99").unwrap();
+        let state = WorldState {
+            module_hash: Some("abc".to_owned()),
+            seed: 7,
+            ..WorldState::default()
+        };
+        let steps = plan(&manifest, &state);
+        assert_eq!(steps.len(), 1, "{steps:?}");
+        assert!(
+            matches!(steps[0], ApplyStep::InstallModule { seed: 99, .. }),
+            "{steps:?}"
+        );
+    }
+
+    #[test]
+    fn a_seed_only_change_on_an_installed_module_keeps_its_hash() {
+        // #1519: the manifest need not repeat the hash -- the reinstall
+        // targets the live module.
+        let manifest = parse("seed = 99").unwrap();
+        let state = WorldState {
+            module_hash: Some("abc".to_owned()),
+            seed: 7,
+            ..WorldState::default()
+        };
+        let steps = plan(&manifest, &state);
+        assert_eq!(steps.len(), 1, "{steps:?}");
+        assert!(
+            matches!(
+                steps[0],
+                ApplyStep::InstallModule {
+                    ref hash,
+                    source: None,
+                    seed: 99
+                } if hash.as_deref() == Some("abc")
+            ),
+            "{steps:?}"
+        );
+    }
+
+    #[test]
+    fn a_seed_difference_with_no_module_anywhere_installs_nothing() {
+        // #1519 ruling: no installed program and none desired -- there is
+        // nothing whose seed could change.
+        let manifest = parse("seed = 99").unwrap();
+        assert!(plan(&manifest, &WorldState::default()).is_empty());
+        let state = WorldState {
+            seed: 7,
+            ..WorldState::default()
+        };
+        assert!(plan(&manifest, &state).is_empty());
+    }
+
+    #[test]
+    fn a_ceiling_reorder_is_not_drift() {
+        // #1519: ceiling compares as a set, like grants -- reordering the
+        // same names plans nothing.
+        let manifest = parse("ceiling = [\"chat.say\", \"time.now\"]").unwrap();
+        let state = WorldState {
+            ceiling: Some(vec!["time.now".to_owned(), "chat.say".to_owned()]),
+            ..WorldState::default()
+        };
+        assert!(plan(&manifest, &state).is_empty());
+    }
+
+    #[test]
+    fn a_ceiling_set_change_still_drifts_in_declared_order() {
+        // #1519: a genuinely different set still plans SetCeiling carrying
+        // the desired list in declared order.
+        let manifest = parse("ceiling = [\"chat.say\", \"records.read\"]").unwrap();
+        let state = WorldState {
+            ceiling: Some(vec!["time.now".to_owned(), "chat.say".to_owned()]),
+            ..WorldState::default()
+        };
+        let steps = plan(&manifest, &state);
+        assert_eq!(steps.len(), 1, "{steps:?}");
+        assert!(
+            matches!(
+                steps[0],
+                ApplyStep::SetCeiling { ref ceiling }
+                    if ceiling.as_deref()
+                        == Some(&["chat.say".to_owned(), "records.read".to_owned()][..])
+            ),
+            "{steps:?}"
+        );
+    }
+
+    #[test]
+    fn diff_renders_steps_and_empty_for_no_drift() {
+        let manifest = parse(manifest_toml()).unwrap();
+        let state = WorldState::default();
+        let d = diff(&manifest, &state);
+        assert!(d.contains("grants"), "{d}");
+        assert!(d.contains("ceiling"), "{d}");
+        assert!(d.contains("schedule"), "{d}");
+
+        // After applying, the world matches the manifest, so diff is empty.
+        let mut reconciled = WorldState::default();
+        apply(&plan(&manifest, &reconciled), &mut reconciled).unwrap();
+        assert_eq!(diff(&manifest, &reconciled), "no drift");
+        // And diffing an empty manifest against the default state is empty too.
+        assert_eq!(
+            diff(&WorldManifest::default(), &WorldState::default()),
+            "no drift"
+        );
+    }
+}

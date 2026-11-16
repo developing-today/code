@@ -112,7 +112,7 @@ func sweepRev(t *testing.T, rev string) []sweepFinding {
 	outR, outW := io.Pipe()
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan struct{})
-	go func() { _ = srv.ServeStdio(ctx, inR, outW); outW.Close(); close(done) }()
+	go func() { _ = srv.ServeStdio(ctx, inR, outW); _ = outW.Close(); close(done) }()
 
 	var mu sync.Mutex
 	methodOf := map[string]string{}

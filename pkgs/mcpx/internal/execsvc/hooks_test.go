@@ -131,7 +131,7 @@ console.log(JSON.stringify({ total: 2 }));
 	for _, f := range frames {
 		kinds = append(kinds, f.Type)
 	}
-	if !(idx(kinds, execsvc.FrameResult) < idx(kinds, execsvc.FrameHook) && idx(kinds, execsvc.FrameHook) < len(kinds)-1) {
+	if idx(kinds, execsvc.FrameResult) >= idx(kinds, execsvc.FrameHook) || idx(kinds, execsvc.FrameHook) >= len(kinds)-1 {
 		t.Errorf("suffix frame placement wrong: %s", strings.Join(kinds, ","))
 	}
 
@@ -256,5 +256,32 @@ const broken = ;
 	hs := hookFrames(frames)
 	if len(hs) != 1 || hs[0].Hook.Phase != execsvc.HookSuffix || hs[0].Hook.Advice != "cleaned up" {
 		t.Errorf("the suffix hook should have run on the startup-failure path: %v", frames)
+	}
+}
+
+// Codex P2 (PR #9021): validation reads a whitespace-only prompt as
+// no prompt action (it trims), so a script hook carrying one is a
+// valid script hook -- but dispatch used to select the action on the
+// raw field, so the script never ran and the hook degraded to a
+// prompt advice request. Dispatch must use the same predicate.
+func TestWhitespacePromptDoesNotHijackScriptHook(t *testing.T) {
+	svc := service(t, store(t))
+	res, frames := run(t, svc, `
+console.log(JSON.stringify({ total: 2 }));
+`, execsvc.Options{Hooks: []execsvc.Hook{
+		{Phase: execsvc.HookOnSuccess, Prompt: "   ", Script: readCtx + `
+console.log(JSON.stringify({ apply: { total: (ctx.result?.total ?? 0) + 1 } }));`},
+	}})
+
+	m, ok := res.Result.(map[string]any)
+	if !ok || m["total"] != float64(3) {
+		t.Fatalf("the script hook should have replaced the result: %#v", res.Result)
+	}
+	hooks := hookFrames(frames)
+	if len(hooks) != 1 {
+		t.Fatalf("expected 1 hook frame, got %d", len(hooks))
+	}
+	if hooks[0].Hook.Action != "module" {
+		t.Fatalf("hook frame action = %q, want the script (module) action", hooks[0].Hook.Action)
 	}
 }

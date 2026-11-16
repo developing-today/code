@@ -185,7 +185,7 @@ describe("file-export adapter (the framework's first adapter)", () => {
       },
     });
     expect(out.status).toBe("ok");
-    expect(out.value?.providerId).toBe("meta");
+    expect(out.value?.providerId).toBe("_muse");
     expect(out.value?.serviceId).toBe("meta");
     expect(out.value?.source).toBe("file-export/meta-laptop");
     expect(out.value?.windows.some((w) => w.name === "5h" && w.pctOfLimit === 12.5)).toBe(true);

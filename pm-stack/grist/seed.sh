@@ -10,6 +10,11 @@
 set -euo pipefail
 
 cd "$(dirname "$0")"
+if ! command -v bun >/dev/null 2>&1; then
+  echo "bun is required to validate roadmap Horizon values before seeding" >&2
+  exit 1
+fi
+bun run validate-roadmap-seed.ts
 SECRETS_FILE="${PM_STACK_SECRETS:-$PWD/../../secrets/pm-stack.sops.yaml}"
 export SOPS_AGE_KEY_FILE="${SOPS_AGE_KEY_FILE:-$HOME/.config/sops/age/keys.txt}"
 BASE="http://127.0.0.1:8484"

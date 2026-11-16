@@ -40,7 +40,8 @@ fail() {
   failures=$((failures + 1))
 }
 check() { # check <description> <command...>
-  local desc="$1"; shift
+  local desc="$1"
+  shift
   if "$@" >/dev/null 2>&1; then
     echo "ok: $desc"
   else
@@ -55,15 +56,15 @@ mkdir -p "$HOME_DIR/.local/state/pm-aggregator" "$HOME_DIR/atlas/meta-quota-expo
 
 # --- fixture data set -------------------------------------------------------
 for f in actions.json comments.json fleet-feed.json quota-current.json \
-         registry.json quota-gatherer-state.json quota-gatherer-heartbeat.json \
-         events.json coverage-snapshot.json aa-last-good.json; do
-  echo "{\"fixture\": \"$f\"}" > "$HOME_DIR/.local/state/pm-aggregator/$f"
+  registry.json quota-gatherer-state.json quota-gatherer-heartbeat.json \
+  events.json coverage-snapshot.json aa-last-good.json; do
+  echo "{\"fixture\": \"$f\"}" >"$HOME_DIR/.local/state/pm-aggregator/$f"
 done
-echo '{"fixture": "latest"}' > "$HOME_DIR/atlas/meta-quota-export/latest.json"
-echo '{"fixture": "history"}' > "$HOME_DIR/atlas/meta-quota-export/history.jsonl"
+echo '{"fixture": "latest"}' >"$HOME_DIR/atlas/meta-quota-export/latest.json"
+echo '{"fixture": "history"}' >"$HOME_DIR/atlas/meta-quota-export/history.jsonl"
 
 # --- stubs ------------------------------------------------------------------
-cat > "$BIN/bws" <<'EOF'
+cat >"$BIN/bws" <<'EOF'
 #!/bin/sh
 # bws stub: only `secret list`, with fake credential values (names only matter)
 if [ "$1" = "secret" ] && [ "$2" = "list" ]; then
@@ -78,13 +79,13 @@ echo "bws stub: unexpected args: $*" >&2
 exit 1
 EOF
 
-cat > "$BIN/journalctl" <<'EOF'
+cat >"$BIN/journalctl" <<'EOF'
 #!/bin/sh
 echo "fixture journal line"
 exit 0
 EOF
 
-cat > "$BIN/rclone" <<'EOF'
+cat >"$BIN/rclone" <<'EOF'
 #!/bin/sh
 # rclone stub backed by $FAKE_REMOTE/<remote-name>/<path>
 set -u
@@ -126,23 +127,23 @@ EOF
 chmod +x "$BIN/bws" "$BIN/journalctl" "$BIN/rclone"
 
 ROOT="$HOME_DIR/backups/dashboard"
-OLD="2020-01-01"      # the backfill date (older than the 30-day cutoff)
+OLD="2020-01-01"       # the backfill date (older than the 30-day cutoff)
 OTHER_OLD="2020-01-02" # a genuinely old day that is never a run date here
 TODAY="$(date +%F)"
 
 # A genuinely old day dir, present locally and on both remotes before any run.
 mkdir -p "$ROOT/$OTHER_OLD"
-echo old > "$ROOT/$OTHER_OLD/dashboard-$OTHER_OLD.tar.zst"
+echo old >"$ROOT/$OTHER_OLD/dashboard-$OTHER_OLD.tar.zst"
 mkdir -p "$REMOTE/r2bak/supabase-backups/dashboard/$OTHER_OLD" \
-         "$REMOTE/drive/Cloud/cold-store/db-backups/pm-aggregator/$OTHER_OLD"
-echo old > "$REMOTE/r2bak/supabase-backups/dashboard/$OTHER_OLD/dashboard-$OTHER_OLD.tar.zst"
-echo old > "$REMOTE/drive/Cloud/cold-store/db-backups/pm-aggregator/$OTHER_OLD/dashboard-$OTHER_OLD.tar.zst"
+  "$REMOTE/drive/Cloud/cold-store/db-backups/pm-aggregator/$OTHER_OLD"
+echo old >"$REMOTE/r2bak/supabase-backups/dashboard/$OTHER_OLD/dashboard-$OTHER_OLD.tar.zst"
+echo old >"$REMOTE/drive/Cloud/cold-store/db-backups/pm-aggregator/$OTHER_OLD/dashboard-$OTHER_OLD.tar.zst"
 
 run_backup() { # run_backup <date> — sets RC; log in $TMP_ROOT/run-<date>.log
   HOME="$HOME_DIR" PATH="$BIN:$PATH" FAKE_REMOTE="$REMOTE" \
     RCLONE_LSF_FAIL="${LSF_FAIL:-}" RCLONE_LSF_EMPTY="${LSF_EMPTY:-}" \
     BWS_ACCESS_TOKEN="test-token" PM_DB_DUMP_SCRIPT="$TMP_ROOT/no-dump-script" \
-    bash "$SCRIPT" "$1" > "$TMP_ROOT/run-$1.log" 2>&1
+    bash "$SCRIPT" "$1" >"$TMP_ROOT/run-$1.log" 2>&1
   RC=$?
 }
 
@@ -184,7 +185,7 @@ check "backfill date is pruned by a later run once it is not the run date" \
 
 # --- scenario 3: a failed prune listing fails the run (#1021) ---------------
 PRESET=1000000000
-echo "$PRESET" > "$ROOT/.last-run-epoch"
+echo "$PRESET" >"$ROOT/.last-run-epoch"
 LSF_FAIL=1
 run_backup "$TODAY"
 LSF_FAIL=""

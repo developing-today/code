@@ -28,10 +28,12 @@
 //!   refused while the world keeps serving
 //!   (`a_hostile_program_is_refused_without_taking_the_node_down`).
 //!
-//! One bound is deliberately not driven: **journal size**. `FileJournal`
-//! (`pkgs/id/src/world_store.rs`) appends with no byte cap, so there is no
-//! refusal to assert; whether a cap should exist is a separate decision
-//! tracked on #560. Each driven bound also keeps its dedicated in-crate
+//! - **journal size**: `FileJournal` appends refuse at the production
+//!   byte cap (`MAX_JOURNAL_BYTES`, #560 option B, decided 2026-11-16);
+//!   the file never exceeds the cap and a healthy journal is unaffected
+//!   (`journal_size_is_bounded_by_the_file_journal_byte_cap`).
+//!
+//! Each driven bound also keeps its dedicated in-crate
 //! tests (in `sandbox.rs`, `frames.rs`, `world_hub.rs`, and
 //! `world/tests.rs`); this suite is the consolidated map, not the only test.
 #![allow(clippy::unwrap_used, clippy::expect_used)]
@@ -42,13 +44,16 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use id::frames::{MAX_FRAME_BYTES, encode_frame};
 use id::sandbox::{Sandbox, SandboxLimits};
-use id::world::{WorldCore, WorldHandle, WorldLimits, WorldProgram, WorldScopes};
+use id::world::{
+    JournalEntry, WorldCore, WorldHandle, WorldJournal, WorldLimits, WorldProgram, WorldScopes,
+};
 use id::world_caps::{
     CapError, CapLedger, Decision, MAX_ARGS_BYTES, MAX_PENDING_SCHEDULES, MAX_SCHEDULE_HORIZON_MS,
     MAX_WANTS_BYTES, UNKNOWN_CAP_USAGE_KEY, parse_wants, validate_schedule_id,
 };
 use id::world_hub::{HubLimits, OpenFuture, ResolveError, WorldHub, WorldOpener};
 use id::world_session::WorldService;
+use id::world_store::{FileJournal, MAX_JOURNAL_BYTES};
 
 /// A program that asks for far more than the world grants: unknown names,
 /// ungranted names, and a subscription. Every request must be refused without
@@ -137,6 +142,66 @@ fn schedule_ids_are_refused_when_out_of_bounds() {
     assert!(validate_schedule_id("has\nnewline").is_err());
     assert!(validate_schedule_id("caf\u{e9}").is_err());
     assert!(validate_schedule_id(&"x".repeat(65)).is_err());
+}
+
+/// A program whose records.read request carries a non-object args (#7929).
+struct NonObjectArgsProgram;
+
+impl WorldProgram for NonObjectArgsProgram {
+    fn wants(&mut self) -> anyhow::Result<Option<String>> {
+        Ok(Some(
+            r#"{"v":1,"requests":[{"id":"r0","cap":"records.read","args":42}]}"#.to_owned(),
+        ))
+    }
+}
+
+/// The same request with a valid object args: the control.
+struct ObjectArgsProgram;
+
+impl WorldProgram for ObjectArgsProgram {
+    fn wants(&mut self) -> anyhow::Result<Option<String>> {
+        Ok(Some(
+            r#"{"v":1,"requests":[{"id":"r0","cap":"records.read","args":{"prefix":"co"}}]}"#
+                .to_owned(),
+        ))
+    }
+}
+
+#[tokio::test]
+async fn non_object_args_never_reach_the_world() {
+    // #7929: before the parse_wants rejection, a non-object args was
+    // dispatched and collapsed to no arguments in the handler. Now the
+    // wants document fails to parse, so the request is never dispatched:
+    // no records.read usage is recorded, and the world stays responsive.
+    let core = WorldCore::new("dos-bad-args", WorldLimits::default()).unwrap();
+    let handle = WorldHandle::spawn_with_program(core, Box::new(NonObjectArgsProgram));
+    let (_participant, token) = handle.issue("probe", WorldScopes::GUEST).await.unwrap();
+    handle.chat(token.clone(), "still here").await.unwrap();
+    let report = handle.caps_report().await.unwrap();
+    assert!(
+        report
+            .usage
+            .get("records.read")
+            .is_none_or(|usage| usage.allowed == 0 && usage.denied == 0),
+        "the non-object-args request must never be dispatched: {:?}",
+        report.usage.get("records.read")
+    );
+    handle.chat(token, "and again").await.unwrap();
+    handle.shutdown().await.unwrap();
+
+    // Control: the identical request with an object args IS dispatched
+    // (and refused here only because nothing is granted: cap_denied).
+    let core = WorldCore::new("dos-good-args", WorldLimits::default()).unwrap();
+    let handle = WorldHandle::spawn_with_program(core, Box::new(ObjectArgsProgram));
+    let (_participant, token) = handle.issue("probe", WorldScopes::GUEST).await.unwrap();
+    handle.chat(token, "still here").await.unwrap();
+    let report = handle.caps_report().await.unwrap();
+    assert_eq!(
+        report.usage.get("records.read").map(|usage| usage.denied),
+        Some(1),
+        "the object-args control request must be dispatched exactly once"
+    );
+    handle.shutdown().await.unwrap();
 }
 
 #[tokio::test]
@@ -426,4 +491,58 @@ async fn schedule_bounds_refuse_with_their_reasons() {
     // took the world down.
     handle.chat(probe_token, "still here").await.unwrap();
     handle.shutdown().await.unwrap();
+}
+
+/// F12.18 journal size (#560, option B): a `FileJournal` opened with a
+/// small explicit cap refuses appends at the cap — the production cap is
+/// `MAX_JOURNAL_BYTES` — the file never grows past it, the accepted
+/// prefix replays exactly, and a healthy neighbouring journal (the
+/// probe) keeps appending.
+#[test]
+fn journal_size_is_bounded_by_the_file_journal_byte_cap() {
+    assert!(MAX_JOURNAL_BYTES > 0, "the production cap exists");
+    let unique = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let dir = std::env::temp_dir().join(format!(
+        "world-dos-journal-cap-{}-{unique}",
+        std::process::id()
+    ));
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("journal.jsonl");
+    let cap = 1024;
+    let (mut journal, entries) =
+        FileJournal::open_with_max_bytes(&path, "dos-journal", cap).unwrap();
+    assert_eq!(entries.len(), 1, "a fresh journal holds only its header");
+    let entry = JournalEntry::CapsGranted {
+        granted: vec!["chat".to_owned()],
+    };
+    let mut appended = 0usize;
+    let refusal = loop {
+        match journal.append(&entry) {
+            Ok(()) => appended += 1,
+            Err(error) => break error,
+        }
+    };
+    assert!(appended > 0, "some entries fit under the cap");
+    assert!(
+        refusal.to_string().contains("byte cap"),
+        "the refusal names the cap: {refusal}"
+    );
+    let file_len = std::fs::metadata(&path).unwrap().len();
+    assert!(
+        file_len <= cap,
+        "the file never exceeds the cap: {file_len}"
+    );
+    let (_reopened, replayed) =
+        FileJournal::open_with_max_bytes(&path, "dos-journal", cap).unwrap();
+    assert_eq!(replayed.len(), 1 + appended, "the accepted prefix replays");
+
+    // Probe: a healthy journal under the production cap is unaffected.
+    let probe_path = dir.join("probe.jsonl");
+    let (mut probe, _entries) = FileJournal::open(&probe_path, "probe").unwrap();
+    probe.append(&entry).unwrap();
+
+    std::fs::remove_dir_all(&dir).ok();
 }

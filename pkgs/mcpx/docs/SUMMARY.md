@@ -2,6 +2,8 @@
 
 <!-- id: book-summary since: pre-release -->
 
+- [mcpx](index.md)
+
 - [Archive](archive.md)
 - [The binary](binary.md)
 - [The CLI](cli.md)

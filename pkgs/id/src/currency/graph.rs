@@ -467,6 +467,8 @@ fn sign_body(
             link: None,
             checkpoint: None,
             rotation: None,
+
+            chat: None,
         },
     )?)
 }

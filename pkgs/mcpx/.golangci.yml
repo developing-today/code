@@ -14,3 +14,16 @@ linters:
     staticcheck:
       checks:
         - all
+
+  exclusions:
+    rules:
+      # connListener.stop (internal/daemon/conns.go) ends with an empty
+      # acceptMu critical section on purpose: Accept holds acceptMu across
+      # an inner Accept and the tracking of what it accepted, so acquiring
+      # it in stop is a barrier guaranteeing no Accept is in flight when
+      # stop returns. There is no state to mutate inside the section; the
+      # lock acquisition itself is the operation (SA2001).
+      - path: internal/daemon/conns.go
+        linters:
+          - staticcheck
+        text: SA2001

@@ -73,9 +73,11 @@ function buildItemBriefWithIndexes(
       ? `Unknown — orchestration source is ${inputs.orchestrationStatus}; derived state is not asserted.`
       : derived === "Done"
         ? "Done — the linked issue/PR is closed or merged."
-        : derived === "In Progress"
-          ? "In Progress — open, and referenced by the orchestration plan (a tier item, a lined-up goal task, or a dependency)."
-          : "Todo — open, with no orchestration reference placing it in flight.";
+        : derived === "In Review"
+          ? "In Review — the linked item is an open, ready (non-draft) PR: under review by GitHub's draft/ready distinction (#1198)."
+          : derived === "In Progress"
+            ? "In Progress — open, and referenced by the orchestration plan (a tier item, a lined-up goal task, or a dependency)."
+            : "Todo — open, with no orchestration reference placing it in flight.";
   const stateEvidence: BriefEvidence =
     derived === "In Progress" || derived === "Unknown"
       ? {
@@ -108,7 +110,9 @@ function buildItemBriefWithIndexes(
     : blocked
       ? `Blocked by ${activeBlockers
           .map((b) => `${b.ref}${b.state === "unknown" ? " (state unknown — not in the current pool)" : ""}`)
-          .join(", ")}.${invalidBlockerCount ? ` ${invalidBlockerCount} malformed edge${invalidBlockerCount === 1 ? " was" : "s were"} omitted.` : ""}`
+          .join(
+            ", ",
+          )}.${invalidBlockerCount ? ` ${invalidBlockerCount} malformed edge${invalidBlockerCount === 1 ? " was" : "s were"} omitted.` : ""}`
       : invalidBlockerCount
         ? `Unknown — valid blockers (${blockers.map((b) => b.ref).join(", ")}) are closed or merged, but ${invalidBlockerCount} malformed edge${invalidBlockerCount === 1 ? " was" : "s were"} omitted.`
         : `Not blocked — every recorded blocker (${blockers.map((b) => b.ref).join(", ")}) is closed or merged.`;

@@ -8,17 +8,14 @@ name: workflow-lint
 # merge with no validator at all. This workflow runs
 # .github/scripts/check-workflows.sh — actionlint over the whole
 # workflow set plus shape validation of .github/actions/*/action.yml
-# — whenever a change touches those paths. Pure bash + one pinned
-# static binary, so this stays a seconds-long basic check.
+# Dispatch-only under the current trigger policy (see
+# .github/ci-policy.md): it runs when a person dispatches it, not
+# automatically on changes — the header previously claimed it ran
+# whenever a change touches those paths, which the dispatch-only
+# regime made untrue (trued up 2026-11-14, #6188). Pure bash + one
+# pinned static binary, so this stays a seconds-long basic check.
 
 on:
-  pull_request:
-    paths:
-      - ".github/workflows/**"
-      - ".github/actions/**"
-      - ".github/scripts/check-workflows.sh"
-      - ".github/scripts/check-workflows.test.sh"
-  merge_group:
   workflow_dispatch:
 
 permissions:
@@ -55,5 +52,15 @@ jobs:
             || echo "PyYAML unavailable; check-workflows.sh uses its structural fallback"
       - name: Contract tests for the workflow validator (#5743)
         run: bash .github/scripts/check-workflows.test.sh
+      - name: Contract tests for pm-dispatch retry safety (#8950)
+        run: bash .github/scripts/pm-dispatch-queue-post.test.sh
       - name: Validate workflows and composite actions
         run: bash .github/scripts/check-workflows.sh
+      - name: Contract tests for the ci-policy agreement checker (#7089)
+        run: bash .github/scripts/check-ci-policy-agreement.test.sh
+      - name: CI-policy agreement check (#7089)
+        run: bash .github/scripts/check-ci-policy-agreement.sh
+      - name: Contract tests for the suite-registry ratchet (#6188)
+        run: bash .github/scripts/check-suite-registry.test.sh
+      - name: Coverage ratchet — registry vs tree and venues (#6188)
+        run: bash .github/scripts/check-suite-registry.sh

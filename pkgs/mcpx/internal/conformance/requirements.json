@@ -5624,7 +5624,7 @@
     "quote": "\"Implementations using an STDIO transport **SHOULD NOT** follow this specification, and instead retrieve credentials from the environment.\"",
     "applicability": {
       "client": "not-implemented:#1950",
-      "server": "not-implemented:#1975"
+      "server": "applies"
     },
     "notes": {
       "client": "yes — `env` auth type for stdio children",
@@ -5972,7 +5972,7 @@
     "quote": "\"MCP servers **MUST** only accept tokens that are valid for use with their own resources. MCP servers **MUST NOT** accept or transit any other tokens.\"",
     "applicability": {
       "client": "n/a:addresses the other side",
-      "server": "n/a:optional feature mcpx does not implement"
+      "server": "applies"
     },
     "notes": {
       "client": "n/a",
@@ -5993,7 +5993,7 @@
     "quote": "\"The MCP server **MUST NOT** pass through the token it received from the MCP client.\"",
     "applicability": {
       "client": "n/a:addresses the other side",
-      "server": "not-implemented:#1975"
+      "server": "applies"
     },
     "notes": {
       "client": "n/a",

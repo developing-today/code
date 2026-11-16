@@ -192,7 +192,7 @@ func TestExecOverV1ReturnsAStructuredResultWithArtifacts(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if ct := resp.Header.Get("Content-Type"); ct != "image/png" {
 		t.Errorf("content type = %q", ct)
 	}
@@ -211,7 +211,7 @@ func TestExecOverV1ReturnsAStructuredResultWithArtifacts(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer rr.Body.Close()
+	defer func() { _ = rr.Body.Close() }()
 	if rr.StatusCode != http.StatusPartialContent {
 		t.Errorf("a range request should be answered with 206, got %d", rr.StatusCode)
 	}
@@ -227,7 +227,7 @@ func TestExecOverV1ReturnsAStructuredResultWithArtifacts(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	del.Body.Close()
+	_ = del.Body.Close()
 	if del.StatusCode != http.StatusOK {
 		t.Errorf("delete = %d", del.StatusCode)
 	}
@@ -235,7 +235,7 @@ func TestExecOverV1ReturnsAStructuredResultWithArtifacts(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	after.Body.Close()
+	_ = after.Body.Close()
 	if after.StatusCode != http.StatusNotFound {
 		t.Errorf("a deleted artifact should be gone, got %d", after.StatusCode)
 	}
@@ -258,7 +258,7 @@ func TestExecStreamPutsBodiesAfterTheEndFrame(t *testing.T) {
 			"artifacts":    map[string]any{"delivery": "stream"},
 		},
 	})
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	var kinds []string
 	var reassembled strings.Builder
@@ -345,7 +345,7 @@ func TestAStreamConsumerCanCancelAfterTheResult(t *testing.T) {
 	}
 	scanErr := sc.Err()
 	// Closed mid-stream, with bodies still to come.
-	resp.Body.Close()
+	_ = resp.Body.Close()
 	if saw != "end" {
 		t.Fatalf("the run should have reached its end frame; status %d, frames %v, scan error %v",
 			resp.StatusCode, kinds, scanErr)
@@ -484,7 +484,7 @@ func mustReq(t *testing.T, method, url string) *http.Request {
 func postExec(t *testing.T, client *http.Client, body any) []byte {
 	t.Helper()
 	resp := postStream(t, client, "http://mcpx/v1/exec", body)
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	b, err := io.ReadAll(resp.Body)
 	if err != nil {
 		t.Fatal(err)

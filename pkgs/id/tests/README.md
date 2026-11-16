@@ -28,7 +28,7 @@ in the
 - `common/chain.rs`: the event decoder's contract, shared the same way.
 - `regressions/`: checked-in failing cases. See its [README](regressions/README.md).
 
-## Planted-bug check (#1395)
+## Planted-bug check (#1395, #1421)
 
 The plan of record (P2.3/P2.8) requires more than property tests: a planted
 bug in the voiding/frontier logic must actually fail the suites, so the
@@ -49,13 +49,28 @@ suites cannot silently pass a broken implementation.
     they exercise authority voiding through the event store (membership
     adds and content) and have no delegation-grant coverage, so they
     never reach `Engine::void`; the plant moved to the exercised path.
-    Delegation-grant voiding scenarios remain an open gap, separate
-    from this check.
+    The delegation-grant gap was closed by #7071: see the
+    `delegation-voiding` plant below.
+  - `delegation-voiding.patch`: the strong-removal gate at
+    `Engine::void` (`src/groups/delegation.rs`) is inverted, so a grant
+    concurrent with its grantor's removal stands under strong remove and
+    is voided under weak remove. Caught by `delegation_voiding_scenarios`
+    (#7071), which judge a grant, its grantor's concurrent removal, and
+    the grantee's onward operation through the groups fold — the
+    delegation-grant coverage the voiding suites never had.
   - `frontier-mapping.patch`: a group operation no longer contributes
     itself to the auth frontier (the mapping test in
     `CausalIndex::combine`, `crates/id-core/src/membership/frontier.rs`).
     Caught by the `membership::frontier` unit tests and
     `membership_properties` / `membership_scenarios`.
+  - `tag-fold-clear.patch`: the causal-past filter in `live_claims`
+    (`src/tag_claims.rs`) is inverted, so a clear removes exactly the
+    claims its author had NOT seen and keeps the ones it had — both
+    halves of the tag observed-remove rule (plan P5.1, §13 layer 11,
+    #1421). Caught by the `tag_claims` unit tests in `src/tag_claims.rs`
+    (the compacted-fold pair) and by the `tag_claims` / `tag_index`
+    integration suites (the live-set oracle property under any delivery
+    order and the compacted-fold agreement property).
 - Exit 0 means baseline green and every planted bug caught; exit 1 names a
   mutation that survived (a real test gap); exit 2 means the baseline is
   red, a patch no longer applies, or a mutated file was dirty.
