@@ -27,6 +27,9 @@
     # Linger does NOT unlock the GNOME keyring: keyring-held credentials still
     # need a graphical login, so boot-independent services must use file-based
     # secrets (sops / Bitwarden), never the keyring or the interactive gh token.
+    # Post-login daemon restarts now self-heal via
+    # services.keyring-auto-unlock (code#10724); the pre-login window above
+    # is unchanged by design.
     linger = true;
     hashedPasswordFile = config.sops.secrets."users/user/passwordHash".path;
     description = "user";
