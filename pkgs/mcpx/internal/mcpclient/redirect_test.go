@@ -99,7 +99,7 @@ func TestHTTPStreamClientRefusesCrossOriginRedirect(t *testing.T) {
 
 	body, err := tr.get(context.Background(), "")
 	if body != nil {
-		body.Close()
+		_ = body.Close()
 	}
 	assertCrossOriginRedirectReturned(t, err, http.StatusFound)
 	assertRedirectTargetNotReached(t, seen)
@@ -114,7 +114,7 @@ func TestLegacySSEInitialGETRefusesCrossOriginRedirect(t *testing.T) {
 
 	tr, err := NewLegacySSE(context.Background(), HTTPOptions{URL: source.URL, Headers: map[string]string{"X-API-Key": redirectTestAPIKey}})
 	if tr != nil {
-		tr.Close()
+		_ = tr.Close()
 	}
 	assertCrossOriginRedirectReturned(t, err, http.StatusFound)
 	assertRedirectTargetNotReached(t, seen)
@@ -126,7 +126,7 @@ func TestLegacySSEPOSTRefusesCrossOriginRedirect(t *testing.T) {
 		switch r.URL.Path {
 		case "/sse":
 			w.Header().Set("Content-Type", "text/event-stream")
-			fmt.Fprint(w, "event: endpoint\ndata: /post\n\n")
+			_, _ = fmt.Fprint(w, "event: endpoint\ndata: /post\n\n")
 			w.(http.Flusher).Flush()
 			<-r.Context().Done()
 		case "/post":
@@ -141,7 +141,7 @@ func TestLegacySSEPOSTRefusesCrossOriginRedirect(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer tr.Close()
+	defer func() { _ = tr.Close() }()
 
 	err = tr.Send(context.Background(), []byte(`{"jsonrpc":"2.0","id":1,"method":"tools/list"}`))
 	assertCrossOriginRedirectReturned(t, err, http.StatusTemporaryRedirect)

@@ -440,7 +440,7 @@ func checkNodeTransformTypes(bin string) error {
 		return fmt.Errorf("probe node runtime %s for --experimental-transform-types: create temporary TypeScript script: %w", bin, err)
 	}
 	probePath := probe.Name()
-	defer os.Remove(probePath)
+	defer func() { _ = os.Remove(probePath) }()
 	if _, err := probe.WriteString("enum McpxTransformTypesProbe { Supported }; void McpxTransformTypesProbe.Supported;\n"); err != nil {
 		_ = probe.Close()
 		return fmt.Errorf("probe node runtime %s for --experimental-transform-types: write temporary TypeScript script: %w", bin, err)

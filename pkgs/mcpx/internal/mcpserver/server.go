@@ -934,7 +934,7 @@ func (s *Server) handle(ctx context.Context, c *Conn, req request) *response {
 		if version == "" && c != nil {
 			version = c.Version()
 		}
-		if version != "" && !(capName == "completions" && !Defines(version, FeatCompletions)) {
+		if version != "" && (capName != "completions" || Defines(version, FeatCompletions)) {
 			// The completions exemption: 2024-11-05 has no completions
 			// capability to advertise with, but completion/complete
 			// itself is older than the capability (see FeatCompletions),

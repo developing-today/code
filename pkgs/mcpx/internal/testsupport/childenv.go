@@ -1,4 +1,4 @@
-// The test child environment: an allowlist, not an inheritance.
+// Package testsupport provides the test child environment: an allowlist, not an inheritance.
 //
 // Every end-to-end test starts a real mcpx binary as a child process. That
 // child used to inherit the developer's whole environment minus MCPX_*

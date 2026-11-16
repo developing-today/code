@@ -1066,7 +1066,7 @@ func (s *Server) handleAPIsAdd(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, err)
 		return
 	}
-	if err := req.apiDeclaration.Validate(); err != nil {
+	if err := req.Validate(); err != nil {
 		writeErr(w, http.StatusBadRequest, err)
 		return
 	}
