@@ -14,6 +14,7 @@
 // `gh` CLI. Either way failures surface as GitHubError with both routes'
 // errors summarized — issue creation is never silently skipped.
 import { createSign } from "node:crypto";
+import { outboundTimeout } from "./fetchTimeout.ts";
 
 const GH_API = "https://api.github.com";
 
@@ -153,6 +154,7 @@ export class GitHubClient {
         "User-Agent": "pm-dispatch",
       },
       body: body === undefined ? undefined : JSON.stringify(body),
+      signal: outboundTimeout(),
     });
   }
 
