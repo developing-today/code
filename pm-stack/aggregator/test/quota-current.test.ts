@@ -3,6 +3,7 @@ import {
   overlayQuotaCurrent,
   overlayTursoUsage,
   parseQuotaCurrent,
+  readQuotaCurrentFile,
   QUOTA_CURRENT_FRESH_MS,
   QUOTA_CURRENT_FUTURE_SKEW_MS,
 } from "../src/quota-current.ts";
@@ -1522,5 +1523,133 @@ describe("intentionally uninstrumented pools keep their window state (#10684)", 
     const poolOut = out.pools.find((p) => p.id === "anthropic:claude-pro")!;
     expect(poolOut.state).toBe("error");
     expect(poolOut.freshness?.state).toBe("error");
+  });
+});
+
+describe("readQuotaCurrentFile retry + verdicts (#10816)", () => {
+  const doc = JSON.stringify({
+    version: 1,
+    generatedAt: iso(4 * 60_000),
+    source: "openchamber-quota",
+    heartbeat: { tickAt: iso(4 * 60_000), ok: true, durationMs: 900, perProvider: {} },
+    providers: [
+      {
+        providerId: "openai",
+        providerName: "openai",
+        serviceId: "openai",
+        state: "ok",
+        measuredAt: iso(5 * 60_000),
+        source: "openchamber-quota",
+        windows: [],
+      },
+    ],
+  });
+  const noSleep = () => Promise.resolve();
+  const enoent = () => {
+    const e = new Error("no such file") as Error & { code: string };
+    e.code = "ENOENT";
+    return e;
+  };
+  const econn = () => {
+    const e = new Error("connection reset") as Error & { code: string };
+    e.code = "ECONNRESET";
+    return e;
+  };
+
+  test("ok on first read: no retry, file attached", async () => {
+    let calls = 0;
+    const res = await readQuotaCurrentFile("/x", {
+      readFile: async () => {
+        calls++;
+        return doc;
+      },
+      sleep: noSleep,
+    });
+    expect(res.verdict).toBe("ok");
+    expect(res.file?.providers).toHaveLength(1);
+    expect(calls).toBe(1);
+  });
+
+  test("transient transport failure recovers on retry", async () => {
+    let calls = 0;
+    let sleeps = 0;
+    const res = await readQuotaCurrentFile("/x", {
+      readFile: async () => {
+        calls++;
+        if (calls === 1) throw econn();
+        return doc;
+      },
+      sleep: async () => {
+        sleeps++;
+      },
+    });
+    expect(res.verdict).toBe("ok");
+    expect(calls).toBe(2);
+    expect(sleeps).toBe(1);
+  });
+
+  test("ENOENT on both attempts is missing", async () => {
+    const res = await readQuotaCurrentFile("/x", {
+      readFile: async () => {
+        throw enoent();
+      },
+      sleep: noSleep,
+    });
+    expect(res.verdict).toBe("missing");
+    expect(res.file).toBeNull();
+  });
+
+  test("transport failure on both attempts is transport, not missing", async () => {
+    const res = await readQuotaCurrentFile("/x", {
+      readFile: async () => {
+        throw econn();
+      },
+      sleep: noSleep,
+    });
+    expect(res.verdict).toBe("transport");
+    expect(res.error).toContain("connection reset");
+  });
+
+  test("mixed ENOENT then transport is transport (missing needs ENOENT twice)", async () => {
+    let calls = 0;
+    const res = await readQuotaCurrentFile("/x", {
+      readFile: async () => {
+        calls++;
+        throw calls === 1 ? enoent() : econn();
+      },
+      sleep: noSleep,
+    });
+    expect(res.verdict).toBe("transport");
+  });
+
+  test("first success followed by nothing: unparseable on bad JSON", async () => {
+    const res = await readQuotaCurrentFile("/x", {
+      readFile: async () => "{not json",
+      sleep: noSleep,
+    });
+    expect(res.verdict).toBe("unparseable");
+  });
+
+  test("structurally rejected document is unparseable", async () => {
+    const res = await readQuotaCurrentFile("/x", {
+      readFile: async () => JSON.stringify({ version: 1 }),
+      sleep: noSleep,
+    });
+    expect(res.verdict).toBe("unparseable");
+  });
+
+  test("transport then success still parses", async () => {
+    const res = await readQuotaCurrentFile("/x", {
+      readFile: (() => {
+        let n = 0;
+        return async () => {
+          n++;
+          if (n === 1) throw econn();
+          return doc;
+        };
+      })(),
+      sleep: noSleep,
+    });
+    expect(res.verdict).toBe("ok");
   });
 });

@@ -643,3 +643,83 @@ export function overlayTursoUsage(services: SaasService[], file: QuotaCurrentFil
   out[idx] = { ...svc, conflicts: [...svc.conflicts, flag] };
   return out;
 }
+
+/**
+ * Pause between the two quota-current reads (#10816).
+ */
+export const QUOTA_CURRENT_RETRY_PAUSE_MS = 250;
+
+/** How a quota-current.json read resolved (#10816). */
+export type QuotaCurrentReadVerdict = "ok" | "missing" | "unparseable" | "transport";
+
+export interface QuotaCurrentReadResult {
+  verdict: QuotaCurrentReadVerdict;
+  file: QuotaCurrentFile | null;
+  /** Human-readable detail for the transport/unparseable warnings. */
+  error?: string;
+}
+
+const isEnoent = (err: unknown): boolean =>
+  typeof err === "object" && err !== null && (err as { code?: unknown }).code === "ENOENT";
+
+/**
+ * Read + parse quota-current.json with one retry (#10816): a single
+ * failed read is retried once after QUOTA_CURRENT_RETRY_PAUSE_MS, so a
+ * transient sandbox→laptop transport stall does not collapse into a
+ * "file missing" verdict. Verdicts:
+ * - ok: parsed file attached.
+ * - missing: ENOENT on BOTH attempts (the path never goes absent on
+ *   the writer side — gather-quota.ts writes tmp + rename — so this
+ *   means the gatherer genuinely never wrote).
+ * - transport: the read failed non-ENOENT at least once and never
+ *   succeeded (wait/retry, not a gatherer investigation).
+ * - unparseable: the bytes landed but JSON.parse or parseQuotaCurrent
+ *   rejected them (gatherer investigation).
+ */
+export async function readQuotaCurrentFile(
+  path: string,
+  deps?: {
+    readFile?: (path: string, encoding: "utf8") => Promise<string>;
+    sleep?: (ms: number) => Promise<void>;
+  },
+): Promise<QuotaCurrentReadResult> {
+  const read = deps?.readFile ?? ((await import("node:fs/promises")).readFile as typeof import("node:fs/promises").readFile);
+  const sleep = deps?.sleep ?? ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)));
+  let raw: string | null = null;
+  let firstErr: unknown = null;
+  let lastErr: unknown = null;
+  try {
+    raw = await read(path, "utf8");
+  } catch (err) {
+    firstErr = err;
+    await sleep(QUOTA_CURRENT_RETRY_PAUSE_MS);
+    try {
+      raw = await read(path, "utf8");
+    } catch (err2) {
+      lastErr = err2;
+    }
+  }
+  if (raw === null) {
+    const first = firstErr ?? lastErr;
+    if (first !== null && lastErr !== null && isEnoent(first) && isEnoent(lastErr)) {
+      return { verdict: "missing", file: null };
+    }
+    const detail = lastErr ?? firstErr;
+    return {
+      verdict: "transport",
+      file: null,
+      error: detail instanceof Error ? detail.message : String(detail),
+    };
+  }
+  try {
+    const file = parseQuotaCurrent(JSON.parse(raw));
+    if (file) return { verdict: "ok", file };
+    return { verdict: "unparseable", file: null, error: "parseQuotaCurrent rejected the document" };
+  } catch (err) {
+    return {
+      verdict: "unparseable",
+      file: null,
+      error: err instanceof Error ? err.message : String(err),
+    };
+  }
+}
