@@ -186,3 +186,82 @@ fn tier_sensitivity_names_match_the_scan_ladder() {
     assert_eq!(tier_sensitivity_name(Tier::Internal), "personal");
     assert_eq!(tier_sensitivity_name(Tier::Secret), "secret-bearing");
 }
+
+/// A document embedder whose token is a word, with a tiny context:
+/// forces the aggregator's embed-time split at a readable scale.
+struct WordEmbedder;
+
+impl DocEmbedder for WordEmbedder {
+    fn embed_doc(&self, text: &str) -> Result<Vec<f32>> {
+        if text.contains("dns") {
+            Ok(vec![1.0, 0.0])
+        } else {
+            Ok(vec![0.0, 1.0])
+        }
+    }
+
+    fn token_count(&self, text: &str) -> Option<usize> {
+        Some(text.split_whitespace().count())
+    }
+
+    fn max_input_tokens(&self) -> usize {
+        3
+    }
+}
+
+#[test]
+fn promotion_splits_a_chunk_that_exceeds_the_model_context() {
+    let dir = temp_dir("split");
+    let registry = Registry::open(&dir.join("registry.db")).unwrap();
+    let db = dir.join("unit.db");
+    registry
+        .provision(&db, "task-split", "repo-worker-code", Tier::Internal, NOW)
+        .unwrap();
+    // One staged whole-file chunk of 8 word-tokens; the embedder's
+    // context is 3, so promotion must split it into pieces of at
+    // most 3 words that partition the text exactly.
+    let text = "dns alpha beta\ndns gamma delta\ndns epsilon zeta\n";
+    let entry = ArtifactEntry {
+        kind: "config".into(),
+        repo: "developing-today/code".into(),
+        path: "infra/dns/dns_config.yaml".into(),
+        commit_sha: "abc".into(),
+        language: "yaml".into(),
+        sensitivity: Tier::Internal,
+        text: text.into(),
+    };
+    stage_artifact_in_db(&db, "task-split", &entry, NOW).unwrap();
+
+    let shard_dir = dir.join("shards");
+    let report = embed_unit_into_shard(
+        &registry,
+        "task-split",
+        &shard_dir,
+        "codeconfig",
+        &WordEmbedder,
+        NOW,
+    )
+    .unwrap();
+    assert!(
+        report.chunks >= 3,
+        "split into pieces, got {}",
+        report.chunks
+    );
+
+    // The pieces, read back from the shard in chunk order,
+    // partition the staged text exactly.
+    let conn = rusqlite::Connection::open(&report.shard_path).unwrap();
+    let mut stmt = conn.prepare("SELECT text FROM chunks ORDER BY id").unwrap();
+    let rows = stmt
+        .query_map([], |r| r.get::<_, String>(0))
+        .unwrap()
+        .collect::<std::result::Result<Vec<_>, _>>()
+        .unwrap();
+    assert_eq!(rows.concat(), text);
+    for piece in &rows {
+        assert!(
+            piece.split_whitespace().count() <= 3,
+            "piece fits: {piece:?}"
+        );
+    }
+}

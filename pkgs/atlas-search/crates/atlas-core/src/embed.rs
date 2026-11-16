@@ -114,6 +114,24 @@ impl QueryEmbedder for AtlasEmbedder {
 /// this trait at promotion time.
 pub trait DocEmbedder {
     fn embed_doc(&self, text: &str) -> Result<Vec<f32>>;
+
+    /// The embedder's token count for `text`, when it can count
+    /// (the production embedder tokenizes with the model's own
+    /// tokenizer). The staging aggregator splits staged chunks
+    /// against this count before embedding; embedders that cannot
+    /// count return `None` and their inputs are embedded as-is.
+    fn token_count(&self, _text: &str) -> Option<usize> {
+        None
+    }
+
+    /// The maximum tokens one `embed_doc` input may carry. The
+    /// production bound is the model's real context
+    /// (`atlas_embed::MODEL_CONTEXT`): atlas-embed refuses longer
+    /// inputs loudly, matching the corpus pipeline's contract, so
+    /// the aggregator splits before it ever asks.
+    fn max_input_tokens(&self) -> usize {
+        atlas_embed::MODEL_CONTEXT
+    }
 }
 
 /// A fixed-vector document embedder for tests and fixture work:
@@ -151,6 +169,11 @@ impl AtlasEmbedder {
 impl DocEmbedder for AtlasEmbedder {
     fn embed_doc(&self, text: &str) -> Result<Vec<f32>> {
         self.embed_doc_raw(text)
+    }
+
+    fn token_count(&self, text: &str) -> Option<usize> {
+        let guard = self.inner.lock().ok()?;
+        guard.tokenize(text).ok().map(|ids| ids.len())
     }
 }
 
