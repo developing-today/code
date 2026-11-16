@@ -13,6 +13,21 @@ PREFLIGHT = ROOT / "scripts" / "worker-preflight.sh"
 
 
 class TestWorkerPreflight(unittest.TestCase):
+    def test_rejects_unexpected_arguments_before_checks(self):
+        with tempfile.TemporaryDirectory(prefix="worker-preflight-") as tmp:
+            repo = Path(tmp)
+            result = subprocess.run(
+                ["bash", str(PREFLIGHT), "extra-arg"],
+                cwd=repo,
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+            self.assertEqual(result.returncode, 2, result)
+            self.assertIn("usage error", result.stderr)
+            self.assertIn("unexpected argument", result.stderr)
+            self.assertNotIn("worker-preflight: clean", result.stdout)
+
     def test_clean_repo_passes_and_local_origin_main_branch_fails(self):
         with tempfile.TemporaryDirectory(prefix="worker-preflight-") as tmp:
             repo = Path(tmp)

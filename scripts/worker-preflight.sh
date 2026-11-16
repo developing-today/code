@@ -1,5 +1,15 @@
 #!/usr/bin/env bash
+# Usage: worker-preflight.sh
+# Operator preflight: verifies this Git worktree is safe for worker Git operations.
+# Accepts no positional arguments.
+
 set -euo pipefail
+
+if [[ $# -ne 0 ]]; then
+  printf 'worker-preflight: usage error: unexpected argument(s): %s\n' "$*" >&2
+  printf 'usage: worker-preflight.sh\n' >&2
+  exit 2
+fi
 
 repo_root="$(git rev-parse --show-toplevel 2>/dev/null)" || {
   printf 'worker-preflight: must run inside a Git worktree\n' >&2
