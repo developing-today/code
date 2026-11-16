@@ -63,11 +63,47 @@ function json(status: number, body: unknown): Response {
 }
 
 async function readJsonBody(req: Request): Promise<unknown> {
-  const text = await req.text();
-  // The cap is in bytes (MAX_BODY_BYTES): measure the UTF-8 byte length,
-  // not String.length (UTF-16 code units) — a multibyte body can be far
-  // larger in bytes than in code units (#3010).
-  if (new TextEncoder().encode(text).length > MAX_BODY_BYTES) throw new ValidationError("body: too large");
+  // Never buffer an unbounded stream: check the announced length first,
+  // then read with an early `cancel()` once the cap is passed (#10646).
+  // The cap is in bytes (MAX_BODY_BYTES): count UTF-8 bytes as they
+  // arrive, not String.length (UTF-16 code units) — a multibyte body can
+  // be far larger in bytes than in code units (#3010).
+  const declaredLength = req.headers.get("content-length");
+  if (declaredLength !== null) {
+    const parsed = Number(declaredLength);
+    if (Number.isFinite(parsed) && parsed > MAX_BODY_BYTES) {
+      // Announced too large: never pull a chunk, but still release the
+      // connection where the runtime supports it.
+      await req.body?.cancel().catch(() => {});
+      throw new ValidationError("body: too large");
+    }
+  }
+  const reader = req.body?.getReader();
+  const chunks: Uint8Array[] = [];
+  let byteLength = 0;
+  if (reader) {
+    try {
+      for (;;) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        byteLength += value.byteLength;
+        if (byteLength > MAX_BODY_BYTES) {
+          await reader.cancel().catch(() => {});
+          throw new ValidationError("body: too large");
+        }
+        chunks.push(value);
+      }
+    } finally {
+      reader.releaseLock();
+    }
+  }
+  const bytes = new Uint8Array(byteLength);
+  let offset = 0;
+  for (const chunk of chunks) {
+    bytes.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  const text = new TextDecoder().decode(bytes);
   if (!text.trim()) throw new ValidationError("body: required JSON object");
   try {
     return JSON.parse(text);
