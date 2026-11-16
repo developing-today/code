@@ -11,7 +11,15 @@
 //!    the v1 schema invariant still holds at read time).
 //! 2. Embed every chunk document-side (prompt-free, the production
 //!    corpus convention; see [`crate::embed::DocEmbedder`]) with the
-//!    mandated model identity ([`EMBEDDING_MODEL_ID`]).
+//!    mandated model identity ([`EMBEDDING_MODEL_ID`]). A staged
+//!    chunk that tokenizes past the model context (a whole-file
+//!    config unit can: infra/dns/dns_config.yaml is 10,413 tokens
+//!    against the 8,192 context) is split at embed time into
+//!    context-fitting pieces at line boundaries — the corpus
+//!    pipeline's own contract is that the embedder only ever sees
+//!    in-context inputs, and atlas-embed refuses longer ones. The
+//!    pieces partition the chunk text exactly and become separate
+//!    shard chunks under the same source pointer, in order.
 //! 3. Write one new local core scan shard in `shard_dir` —
 //!    `atlas-core-<tier>-<topic>-<nn>.db` carrying exactly the shard
 //!    schema shard discovery and the fan-out scan read (`chunks`, the
@@ -84,7 +92,6 @@ struct StagedChunk {
     item_id: i64,
     item_source: Option<String>,
     item_sensitivity: String,
-    idx: i64,
     text: String,
     content_hash: String,
 }
@@ -100,7 +107,7 @@ fn read_staged_chunks(db_path: &Path, unit_id: &str) -> Result<Vec<StagedChunk>>
     })?;
     let mut stmt = conn
         .prepare(
-            "SELECT i.id, i.source, i.sensitivity, c.idx, c.text, c.content_hash \
+            "SELECT i.id, i.source, i.sensitivity, c.text, c.content_hash \
              FROM chunks_raw c JOIN items i ON i.id = c.item_id \
              WHERE i.unit_id = ?1 ORDER BY i.id, c.idx",
         )
@@ -111,9 +118,8 @@ fn read_staged_chunks(db_path: &Path, unit_id: &str) -> Result<Vec<StagedChunk>>
                 item_id: r.get(0)?,
                 item_source: r.get(1)?,
                 item_sensitivity: r.get(2)?,
-                idx: r.get(3)?,
-                text: r.get(4)?,
-                content_hash: r.get(5)?,
+                text: r.get(3)?,
+                content_hash: r.get(4)?,
             })
         })
         .map_err(|e| Error::backend(format!("aggregator: reading staged chunks: {e}")))?;
@@ -155,6 +161,101 @@ fn next_shard_part(shard_dir: &Path, tier: Tier, topic: &str) -> Result<u32> {
         }
     }
     Ok(next)
+}
+
+/// One shard-bound chunk: a staged chunk, or one piece of it after
+/// the embed-time context split.
+struct ShardChunk {
+    item_source: Option<String>,
+    item_sensitivity: String,
+    chunk_idx: i64,
+    text: String,
+    content_hash: String,
+}
+
+fn sha256_hex(text: &str) -> String {
+    use sha2::{Digest, Sha256};
+    let digest = Sha256::digest(text.as_bytes());
+    digest.iter().map(|b| format!("{b:02x}")).collect()
+}
+
+/// Split `text` into pieces the embedder accepts: each piece
+/// tokenizes to at most `embedder.max_input_tokens()`. Pieces break
+/// at line boundaries (lines keep their terminators, so the pieces
+/// partition `text` exactly); a single line still over the limit is
+/// split mid-line at the largest fitting char prefix. An embedder
+/// that cannot count tokens gets the text whole — its own
+/// `embed_doc` is then the only bound, as for fixture embedders.
+fn split_for_embed(text: &str, embedder: &dyn DocEmbedder) -> Result<Vec<String>> {
+    let Some(total) = embedder.token_count(text) else {
+        return Ok(vec![text.to_string()]);
+    };
+    let budget = embedder.max_input_tokens();
+    if total <= budget {
+        return Ok(vec![text.to_string()]);
+    }
+    let count = |s: &str| -> Result<usize> {
+        embedder.token_count(s).ok_or_else(|| {
+            Error::fatal("aggregator: embedder stopped returning token counts mid-split".to_string())
+        })
+    };
+    let mut pieces: Vec<String> = Vec::new();
+    let mut cur = String::new();
+    let mut cur_tokens = 0usize;
+    for line in text.split_inclusive('\n') {
+        let line_tokens = count(line)?;
+        if line_tokens > budget {
+            if !cur.is_empty() {
+                pieces.push(std::mem::take(&mut cur));
+                cur_tokens = 0;
+            }
+            // Mid-line split: binary search the largest char-boundary
+            // prefix that fits (token count is monotone in prefix
+            // length for the model's BPE tokenizer).
+            let mut rest = line;
+            while !rest.is_empty() {
+                if count(rest)? <= budget {
+                    cur_tokens = count(rest)?;
+                    cur = rest.to_string();
+                    break;
+                }
+                let mut lo = 0usize; // chars known to fit
+                let mut hi = rest.chars().count(); // chars known not to fit
+                while lo + 1 < hi {
+                    let mid = (lo + hi) / 2;
+                    let prefix: String = rest.chars().take(mid).collect();
+                    if count(&prefix)? <= budget {
+                        lo = mid;
+                    } else {
+                        hi = mid;
+                    }
+                }
+                if lo == 0 {
+                    return Err(Error::fatal(
+                        "aggregator: a single character exceeds the embedder token budget".to_string(),
+                    ));
+                }
+                let split_at = rest
+                    .char_indices()
+                    .nth(lo)
+                    .map(|(b, _)| b)
+                    .unwrap_or(rest.len());
+                pieces.push(rest[..split_at].to_string());
+                rest = &rest[split_at..];
+            }
+            continue;
+        }
+        if cur_tokens + line_tokens > budget && !cur.is_empty() {
+            pieces.push(std::mem::take(&mut cur));
+            cur_tokens = 0;
+        }
+        cur.push_str(line);
+        cur_tokens += line_tokens;
+    }
+    if !cur.is_empty() {
+        pieces.push(cur);
+    }
+    Ok(pieces)
 }
 
 fn vec_blob(v: &[f32]) -> Vec<u8> {
@@ -209,11 +310,34 @@ pub fn embed_unit_into_shard(
         ids.len()
     };
 
-    // Embed everything before writing anything: a model failure
-    // leaves no partial shard and an unstamped, still-open unit.
-    let mut vecs: Vec<Vec<f32>> = Vec::with_capacity(chunks.len());
+    // Split over-context chunks into embeddable pieces (module
+    // docs, step 2), then embed everything before writing anything:
+    // a model failure leaves no partial shard and an unstamped,
+    // still-open unit.
+    let mut pieces: Vec<ShardChunk> = Vec::new();
+    let mut item_piece_ordinals: std::collections::HashMap<i64, i64> =
+        std::collections::HashMap::new();
     for c in &chunks {
-        vecs.push(embedder.embed_doc(&c.text)?);
+        for piece in split_for_embed(&c.text, embedder)? {
+            let ordinal = item_piece_ordinals.entry(c.item_id).or_insert(0);
+            let chunk_idx = *ordinal;
+            *ordinal += 1;
+            pieces.push(ShardChunk {
+                item_source: c.item_source.clone(),
+                item_sensitivity: c.item_sensitivity.clone(),
+                chunk_idx,
+                content_hash: if piece == c.text {
+                    c.content_hash.clone()
+                } else {
+                    sha256_hex(&piece)
+                },
+                text: piece,
+            });
+        }
+    }
+    let mut vecs: Vec<Vec<f32>> = Vec::with_capacity(pieces.len());
+    for piece in &pieces {
+        vecs.push(embedder.embed_doc(&piece.text)?);
     }
     let dims = vecs[0].len();
     if dims == 0 || vecs.iter().any(|v| v.len() != dims) {
@@ -260,7 +384,7 @@ pub fn embed_unit_into_shard(
         .map_err(|e| Error::backend(format!("aggregator: shard schema: {e}")))?;
         conn.execute_batch("BEGIN")
             .map_err(|e| Error::backend(format!("aggregator: shard begin: {e}")))?;
-        for (i, (c, v)) in chunks.iter().zip(vecs.iter()).enumerate() {
+        for (i, (c, v)) in pieces.iter().zip(vecs.iter()).enumerate() {
             let id = (i + 1) as i64;
             // The chunk's sensitivity is its item's recorded tier,
             // in scan vocabulary; an unparseable record falls back
@@ -274,7 +398,7 @@ pub fn embed_unit_into_shard(
                 .unwrap_or_else(|| format!("unit:{unit_id}"));
             conn.execute(
                 "INSERT INTO chunks VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-                params![id, message_id, c.idx, c.text, c.content_hash, sens],
+                params![id, message_id, c.chunk_idx, c.text, c.content_hash, sens],
             )
             .map_err(|e| Error::backend(format!("aggregator: shard chunk {id}: {e}")))?;
             conn.execute(
@@ -288,7 +412,7 @@ pub fn embed_unit_into_shard(
             ("tier", unit.sensitivity.name().to_string()),
             ("topic", topic.to_string()),
             ("part", part.to_string()),
-            ("expected_chunks", chunks.len().to_string()),
+            ("expected_chunks", pieces.len().to_string()),
             ("metric", "cosine".to_string()),
             ("embedding_model", EMBEDDING_MODEL_ID.to_string()),
             ("engine", "tursodb".to_string()),
@@ -344,7 +468,7 @@ pub fn embed_unit_into_shard(
         shard_name,
         shard_path,
         items,
-        chunks: chunks.len(),
+        chunks: pieces.len(),
         dims,
     })
 }
