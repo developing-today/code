@@ -139,6 +139,25 @@ fn default_pool() -> usize {
     100
 }
 
+fn default_wait() -> bool {
+    // This reduced port is the one-shot CLI surface: its
+    // historical behavior is to block for the full result, so
+    // its wire default for `wait` is true. The protocol default
+    // (false, atlas-proto) governs raw service consumers; the
+    // CLI's --no-wait is the explicit opt-out (#9942).
+    true
+}
+
+/// Ungrouped-output mode (#9942; mirrors atlas-proto's RawMode).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum RawMode {
+    #[default]
+    Off,
+    Ungrouped,
+    Branches,
+}
+
 fn default_model() -> String {
     "Snowflake/snowflake-arctic-embed-m-v2.0".to_string()
 }
@@ -173,6 +192,17 @@ pub struct SearchRequest {
     pub expand: usize,
     #[serde(default)]
     pub with_message: bool,
+    /// Slice-2 flags (#9942), flattened exactly as the protocol
+    /// carries them (atlas-proto SearchParametersV1 fields the
+    /// server flattens into the request).
+    #[serde(default)]
+    pub no_cache: bool,
+    #[serde(default = "default_wait")]
+    pub wait: bool,
+    #[serde(default)]
+    pub hydrate: usize,
+    #[serde(default)]
+    pub raw_mode: RawMode,
     #[serde(default = "default_model")]
     pub model: String,
     #[serde(default = "default_embedder")]
@@ -198,6 +228,10 @@ impl Default for SearchRequest {
             group_by_session: false,
             expand: 0,
             with_message: false,
+            no_cache: false,
+            wait: true,
+            hydrate: 0,
+            raw_mode: RawMode::Off,
             model: default_model(),
             embedder: default_embedder(),
             trunc: 0,

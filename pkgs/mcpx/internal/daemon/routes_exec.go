@@ -19,6 +19,7 @@ import (
 	"github.com/developing-today/code/pkgs/mcpx/internal/config"
 	"github.com/developing-today/code/pkgs/mcpx/internal/defaults"
 	"github.com/developing-today/code/pkgs/mcpx/internal/execsvc"
+	"github.com/developing-today/code/pkgs/mcpx/internal/scriptresolve"
 	"github.com/developing-today/code/pkgs/mcpx/internal/settings"
 	"github.com/developing-today/code/pkgs/mcpx/internal/tasks"
 )
@@ -138,6 +139,16 @@ func (s *Server) collectArtifacts(every time.Duration) {
 type registrySource struct {
 	reg      *Registry
 	endpoint string
+	// recipes supplies the saved scripts search() surfaces inside a
+	// script (CODE-36); nil means none are offered.
+	recipes func() []codegen.RecipeMeta
+}
+
+func (r registrySource) recipeMetas() []codegen.RecipeMeta {
+	if r.recipes == nil {
+		return nil
+	}
+	return r.recipes()
 }
 
 func (r registrySource) ClientModule(_ context.Context, ns []string) (string, error) {
@@ -148,7 +159,7 @@ func (r registrySource) ClientModule(_ context.Context, ns []string) (string, er
 	// No session baked in: several concurrent runs share one generated file
 	// and each must keep its own, which is what gives them separate pooled
 	// instances. The runner passes it through the environment instead.
-	return codegen.Module(nss, r.endpoint, ""), nil
+	return codegen.ModuleWithRecipes(nss, r.endpoint, "", r.recipeMetas()), nil
 }
 
 func (r registrySource) Globals(_ context.Context, ns []string) (string, error) {
@@ -172,6 +183,9 @@ func (r registrySource) ClientModuleFor(_ context.Context, language string, ns [
 	if err != nil {
 		return "", "", err
 	}
+	if lang.Name == codegen.TypeScript.Name {
+		return codegen.ModuleWithRecipes(nss, r.endpoint, "", r.recipeMetas()), lang.EmitGlobals(nss), nil
+	}
 	return lang.EmitModule(nss, r.endpoint, ""), lang.EmitGlobals(nss), nil
 }
 
@@ -194,9 +208,11 @@ func (s *Server) ExecService() *execsvc.Service {
 	lim := execsvc.DefaultLimits()
 	lim.Timeout = set.Duration("exec.timeout")
 	lim.Runtime = set.String("script.runtime")
+	lim.Language = set.String("script.language")
 	lim.Permissions = set.String("script.permissions")
 	lim.Interpreter = set.String("script.interpreter")
 	lim.CwdPolicy = set.String("script.cwd")
+	lim.Devshell = set.String("script.devshell")
 	// A malformed definition is reported by the run that needs it, rather
 	// than failing every other route that builds a service.
 	lim.Setup, lim.SetupErr = runner.ParseSetup(set.String("script.runtimes"),
@@ -230,13 +246,18 @@ func (s *Server) ExecService() *execsvc.Service {
 	}
 
 	svc := &execsvc.Service{
-		Src:       registrySource{reg: s.reg, endpoint: s.endpoint},
+		Src: registrySource{reg: s.reg, endpoint: s.endpoint, recipes: s.recipeMetas},
+		// Daemon-side script resolution (#2168) reads the same
+		// paths.scripts setting the CLI reads, resolved from this
+		// daemon's configuration file and environment — there is no
+		// daemon-specific list (the #1919 scope question, answered on
+		// #2168).
+		Scripts:   s.execFileResolver(""),
 		Store:     store,
 		Endpoint:  s.endpoint,
 		Socket:    s.paths.Socket,
 		ConfigDir: configDir,
-		Calls:     s.callRegistry(),
-		// The script the daemon runs is on the daemon's machine by
+		Calls:     s.callRegistry(), // The script the daemon runs is on the daemon's machine by
 		// definition, so a path it hands to artifact() is a path the store
 		// can link rather than read.
 		Local: true,
@@ -264,10 +285,37 @@ func (s *Server) ExecService() *execsvc.Service {
 	// and are not governed by the gate.
 	if s.cfg != nil && settings.AutonomyAtLeast(set.String("hooks.autonomy"), "run") {
 		for _, h := range s.cfg.ScriptHooks() {
-			svc.Hooks = append(svc.Hooks, execsvc.Hook{Phase: h.Phase, Script: h.Script, Name: h.Name})
+			svc.Hooks = append(svc.Hooks, execsvc.Hook{Phase: h.Phase, Script: h.Script, Prompt: h.Prompt, Effect: h.Effect, Model: h.Model, Name: h.Name})
 		}
 	}
 	return svc
+}
+
+// modelLayerForExec resolves this request's model layer onto an
+// exec service: the provider a prompt hook asks, the build error
+// when one was configured but could not be built, and the token cap
+// prompt generation runs under (the request policy's
+// prompt.maxTokens bounded by model.budget).
+//
+// Every entry point that can run config-declared prompt hooks goes
+// through it. /v1/exec did from the start; /v1/ask with kind: exec
+// (routes_proto.go runAsk) and script-backed tools (scriptview.go)
+// built their service bare, so a prompt hook on those routes always
+// reported no provider configured even with valid model.* settings
+// (Codex review, PR #9021).
+func (s *Server) modelLayerForExec(ctx context.Context, svc *execsvc.Service, session string) {
+	pol := s.policyFor(ctx)
+	svc.ModelMaxTokens = modelMaxTokens(pol.PromptMaxTokens, pol.ModelBudget)
+	svc.ModelDefault = pol.ModelDefault
+	// (nil, nil) — no layer configured — leaves ModelProvider nil,
+	// and a prompt hook reports its advice unavailable in its frame;
+	// a build error is kept on the service so the frame can name it
+	// instead of looking like no provider was configured.
+	if prov, merr := s.modelLayer(ctx, session); merr != nil {
+		svc.ModelProviderErr = merr
+	} else {
+		svc.ModelProvider = prov
+	}
 }
 
 // ---- POST /v1/exec ----
@@ -301,6 +349,8 @@ func (s *Server) handleExec(w http.ResponseWriter, r *http.Request) {
 	// from the daemon's cached startup settings and cannot see it; apply
 	// the request-resolved value to the service this request runs through.
 	svc.Limits.StdoutLimit = s.callSettings(r).Bytes("exec.maxOutputBytes")
+	// Prompt hooks (#5276) resolve through this request's model layer.
+	s.modelLayerForExec(r.Context(), svc, req.Options.Session)
 
 	// A task is a handle now and the result later, which is the right shape
 	// for a script that takes minutes: holding a request open that long
@@ -357,6 +407,18 @@ func (s *Server) handleExec(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+// execFileResolver is the script resolver for /v1/exec requests, built from
+// this daemon's resolved settings. cwd, when the request names one, roots
+// the search there; otherwise the daemon's own working directory does.
+func (s *Server) execFileResolver(cwd string) scriptresolve.Resolver {
+	set := s.execSettings()
+	return scriptresolve.Resolver{
+		Configured:   scriptresolve.SplitPathList(set.String("paths.scripts")),
+		AllowOverlap: set.Bool("plumbing.allowTsJsOverlap"),
+		Dir:          cwd,
+	}
+}
+
 // refuseUnreadyScript runs the preflight on the script a request names, and
 // returns the refusal when a server it reaches cannot run. A file is read the
 // way the runner will read it, from where the daemon runs, so the check and
@@ -365,7 +427,15 @@ func (s *Server) handleExec(w http.ResponseWriter, r *http.Request) {
 func (s *Server) refuseUnreadyScript(req execReq) *SecretRequired {
 	src := req.Source
 	if src == "" && req.File != "" {
-		b, err := os.ReadFile(req.File)
+		// A bare name is resolved the way the run will resolve it (#2168),
+		// so the preflight reads the same text the runner will. An
+		// unresolvable name is left to the run, which reports the
+		// resolution error itself.
+		file := req.File
+		if resolved, rerr := s.execFileResolver(req.Options.Cwd).Resolve(req.File); rerr == nil {
+			file = resolved
+		}
+		b, err := os.ReadFile(file)
 		if err != nil {
 			return nil
 		}

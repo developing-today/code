@@ -44,14 +44,25 @@ def bare_mirror(root, repo):
         "GIT_COMMITTER_EMAIL": "ghb-test@example.invalid",
     }
     tree = subprocess.run(
-        ["git", "-C", path, "mktree"], input="", capture_output=True, text=True, check=True
+        ["git", "-C", path, "mktree"],
+        input="",
+        capture_output=True,
+        text=True,
+        check=True,
     ).stdout.strip()
     commit = subprocess.run(
         ["git", "-C", path, "commit-tree", tree, "-m", "seed"],
-        capture_output=True, text=True, check=True, env=env,
+        capture_output=True,
+        text=True,
+        check=True,
+        env=env,
     ).stdout.strip()
-    subprocess.run(["git", "-C", path, "update-ref", "refs/heads/main", commit], check=True)
-    subprocess.run(["git", "-C", path, "symbolic-ref", "HEAD", "refs/heads/main"], check=True)
+    subprocess.run(
+        ["git", "-C", path, "update-ref", "refs/heads/main", commit], check=True
+    )
+    subprocess.run(
+        ["git", "-C", path, "symbolic-ref", "HEAD", "refs/heads/main"], check=True
+    )
 
 
 def plan_item(repo, parent=None):
@@ -104,7 +115,9 @@ def check(name, cond):
 REAL_RUN = subprocess.run
 
 
-def run_scenario(clone_rc, inventory_result, with_mirror, fail_repos=(), extra_lines=()):
+def run_scenario(
+    clone_rc, inventory_result, with_mirror, fail_repos=(), extra_lines=()
+):
     """Run reconcile.main() in a fresh temp root with stubs installed.
 
     clone_rc=None means the clone pass must not be invoked at all.
@@ -233,7 +246,10 @@ with open(os.path.join(root, "clone-status.jsonl"), "w") as f:
     f.write(json.dumps({"status": "fail"}) + "\n")
     f.write(json.dumps({"repo": ["owner/bad2"], "status": "fail"}) + "\n")
 entries = reconcile._clone_status_entries(root, 0)
-check("reader keeps only dict records", all(isinstance(e, dict) for e in entries) and len(entries) == 4)
+check(
+    "reader keeps only dict records",
+    all(isinstance(e, dict) for e in entries) and len(entries) == 4,
+)
 consumer = sorted(
     {
         e["repo"]

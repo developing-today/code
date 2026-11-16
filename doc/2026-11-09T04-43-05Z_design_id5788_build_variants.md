@@ -33,13 +33,13 @@ open; #4407 is open/blocked; #4404 is closed and #4410 merged
 ## 1. Problem
 
 The crate split exists to make variants possible, but nothing
-decides what the variants *are*. Without a settled level set, each
+decides what the variants _are_. Without a settled level set, each
 consumer invents its own feature combination on the root package,
 and "client-only" becomes whatever the Android build happened to
 link this month. Feature selection on one monolith package also
 cannot express the two properties variants actually need: a
-*negative* guarantee (a client-only build must not contain the
-server stack, not merely not call it) and a *conformance* guarantee
+_negative_ guarantee (a client-only build must not contain the
+server stack, not merely not call it) and a _conformance_ guarantee
 (the same journal produces the same state in every variant that
 carries the world).
 
@@ -50,7 +50,7 @@ There are exactly four levels — **L0 embedded/provider**,
 with the capability matrix that defines them). A variant is a
 **composition crate**: a thin final crate that depends on seam
 crates with an explicit feature set and contains no capability code
-of its own (§4). Cargo features remain the mechanism *inside* a
+of its own (§4). Cargo features remain the mechanism _inside_ a
 seam crate for optional dependencies; they are never the variant
 definition, and no variant is expressed as `cfg` inside the root
 package's remains. Conformance is per variant (§6): the shell and
@@ -63,18 +63,18 @@ per variant follows #1066 with an explicit degrade contract (§7).
 Levels are cumulative in capability but not in linkage: each level
 is its own composition, not a superset binary with flags.
 
-| Capability | L0 embedded/provider | L1 client-only | L2 headless service | L3 full node |
-|---|---|---|---|---|
-| Journal + event store (core) | ✓ | ✓ | ✓ | ✓ |
-| World state / replay | ✓ | ✓ | ✓ | ✓ |
-| Sync (peer) | provider link only | ✓ | ✓ | ✓ |
-| Sandbox / program execution (wasmtime) | — | optional module | ✓ | ✓ |
-| Providers (host services) | ✓ (its purpose) | — | ✓ | ✓ |
-| Serve (accept peers/clients) | — | — | ✓ | ✓ |
-| Presenters: terminal/SSH | — | ✓ | — | ✓ |
-| Presenters: web | — | optional module | — | ✓ |
-| DHT address lookup | — | ✓ | ✓ | ✓ |
-| Currency-PoC harness binding | — | — | — | — |
+| Capability                             | L0 embedded/provider | L1 client-only  | L2 headless service | L3 full node |
+| -------------------------------------- | -------------------- | --------------- | ------------------- | ------------ |
+| Journal + event store (core)           | ✓                    | ✓               | ✓                   | ✓            |
+| World state / replay                   | ✓                    | ✓               | ✓                   | ✓            |
+| Sync (peer)                            | provider link only   | ✓               | ✓                   | ✓            |
+| Sandbox / program execution (wasmtime) | —                    | optional module | ✓                   | ✓            |
+| Providers (host services)              | ✓ (its purpose)      | —               | ✓                   | ✓            |
+| Serve (accept peers/clients)           | —                    | —               | ✓                   | ✓            |
+| Presenters: terminal/SSH               | —                    | ✓               | —                   | ✓            |
+| Presenters: web                        | —                    | optional module | —                   | ✓            |
+| DHT address lookup                     | —                    | ✓               | ✓                   | ✓            |
+| Currency-PoC harness binding           | —                    | —               | —                   | —            |
 
 Rules the matrix is read under:
 
@@ -105,10 +105,10 @@ Rules the matrix is read under:
   `default-features = false` plus the level's feature set), its
   binary or library entry point, and its conformance test target.
   Nothing else.
-- Features inside a seam crate are for optional *dependencies*
+- Features inside a seam crate are for optional _dependencies_
   (the existing pattern: `sandbox` pulls wasmtime, `web` pulls the
   HTTP stack, `dht` pulls the lookup client). A seam feature must
-  never gate a *product* decision; if a capability appears in the
+  never gate a _product_ decision; if a capability appears in the
   §3 matrix, its in/out status is decided by composition, not by a
   feature flag a consumer can flip.
 - The root `id` package's feature set is frozen as the legacy L3
@@ -212,7 +212,7 @@ performance first, build time second.
 
 ## 9. Ordering and next actions
 
-This record settles the design against the *planned* seams; where
+This record settles the design against the _planned_ seams; where
 a seam crate has not landed yet, the matrix names the capability,
 and the composition crates are created as their seams land, in
 #3447's priority order. Implementation slices, each its own issue

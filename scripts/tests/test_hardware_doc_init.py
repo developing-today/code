@@ -30,7 +30,10 @@ def git(cwd, *args, check=True):
     env.update(ENV_EXTRA)
     return subprocess.run(
         ["git", "-C", str(cwd), *args],
-        check=check, text=True, capture_output=True, env=env,
+        check=check,
+        text=True,
+        capture_output=True,
+        env=env,
     )
 
 
@@ -42,6 +45,25 @@ def commit_file(repo, name, content, message):
 
 
 class TestHardwareDocInit(unittest.TestCase):
+    def test_unexpected_argument_is_rejected_without_side_effects(self):
+        # Absent target: valid invocation would clone and create symlink.
+        env = os.environ.copy()
+        env.update(ENV_EXTRA)
+        env["HARDWARE_DOC_URL"] = str(self.origin)
+        result = subprocess.run(
+            ["bash", str(SCRIPT), "unexpected-arg"],
+            cwd=self.main_repo,
+            text=True,
+            capture_output=True,
+            check=False,
+            env=env,
+        )
+        self.assertEqual(result.returncode, 2, result)
+        self.assertIn("usage error", result.stderr)
+        self.assertNotIn("cloned", (result.stdout + result.stderr).lower())
+        self.assertFalse((self.target / ".git").is_dir())
+        self.assertFalse((self.main_repo / "doc" / "hardware").exists())
+
     def setUp(self):
         self._tmp = tempfile.TemporaryDirectory(prefix="hardware-doc-init-")
         self.addCleanup(self._tmp.cleanup)
@@ -49,22 +71,32 @@ class TestHardwareDocInit(unittest.TestCase):
         # The repo the script is run from ("this repo").
         self.main_repo = base / "code"
         self.main_repo.mkdir()
-        subprocess.run(["git", "init", "--quiet", "-b", "main", str(self.main_repo)],
-                       check=True, env={**os.environ, **ENV_EXTRA})
+        subprocess.run(
+            ["git", "init", "--quiet", "-b", "main", str(self.main_repo)],
+            check=True,
+            env={**os.environ, **ENV_EXTRA},
+        )
         commit_file(self.main_repo, "README.md", "fixture\n", "main fixture")
         # Upstream hardware-doc repo.
         self.origin = base / "hw-origin"
         self.origin.mkdir()
-        subprocess.run(["git", "init", "--quiet", "-b", "main", str(self.origin)],
-                       check=True, env={**os.environ, **ENV_EXTRA})
+        subprocess.run(
+            ["git", "init", "--quiet", "-b", "main", str(self.origin)],
+            check=True,
+            env={**os.environ, **ENV_EXTRA},
+        )
         self.head_a = commit_file(self.origin, "doc.md", "a\n", "A")
         self.target = base / "hardware-doc"
 
     def clone_target(self):
         env = os.environ.copy()
         env.update(ENV_EXTRA)
-        subprocess.run(["git", "clone", "--quiet", str(self.origin), str(self.target)],
-                       check=True, capture_output=True, env=env)
+        subprocess.run(
+            ["git", "clone", "--quiet", str(self.origin), str(self.target)],
+            check=True,
+            capture_output=True,
+            env=env,
+        )
 
     def advance_origin(self):
         return commit_file(self.origin, "doc.md", "b\n", "B")
@@ -74,8 +106,12 @@ class TestHardwareDocInit(unittest.TestCase):
         env.update(ENV_EXTRA)
         env["HARDWARE_DOC_URL"] = str(self.origin)
         return subprocess.run(
-            ["bash", str(SCRIPT)], cwd=self.main_repo,
-            text=True, capture_output=True, check=False, env=env,
+            ["bash", str(SCRIPT)],
+            cwd=self.main_repo,
+            text=True,
+            capture_output=True,
+            check=False,
+            env=env,
         )
 
     def target_head(self):

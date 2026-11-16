@@ -13,11 +13,6 @@ name: deploy flake checks
 # No merge_group trigger: main has no merge queue (Drew ruling,
 # 2026-11-08; see .github/ci-policy.md).
 on:
-  pull_request:
-    paths:
-      - "pkgs/deploy/**"
-      - "lib/default.nix"
-      - ".github/workflows/deploy-flake-checks.yml"
   workflow_dispatch:
 
 permissions:

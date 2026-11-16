@@ -106,6 +106,8 @@ describe("watchdog registry derivation needs no registry priming (#1148, Codex P
     expect(ids.filter((id) => id === "watchdog:registry")).toHaveLength(1);
     // The 2h-old feed breaches the 15m feed threshold too.
     expect(ids.filter((id) => id === "watchdog:fleet-feed")).toHaveLength(1);
-    expect(firstAttention?.some((entry) => entry.id === "task:attention-json-extra" && entry.tier === "needs-drew")).toBe(true);
+    expect(
+      firstAttention?.some((entry) => entry.id === "task:attention-json-extra" && entry.tier === "needs-drew"),
+    ).toBe(true);
   });
 });

@@ -8,8 +8,8 @@
  * was seen, and a caller that health-checks the target drops the record when
  * the check fails (see recallDaemon).
  */
-import type { Target } from "../mcpx/daemon.ts";
-import { targetKey } from "../mcpx/daemon.ts";
+import type { Target } from "../../core/daemon.ts";
+import { targetKey } from "../../core/daemon.ts";
 
 /** The slice of ctx.storage this module needs (structural, host-provided). */
 export type StorageLike = {

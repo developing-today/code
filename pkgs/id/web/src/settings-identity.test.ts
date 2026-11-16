@@ -15,8 +15,6 @@ describe("clientIdForDisplay", () => {
     expect(clientIdForDisplay(null, null)).toBe("Not registered yet");
     expect(clientIdForDisplay("", "")).toBe("Not registered yet");
     expect(clientIdForDisplay("0", null)).toBe("Not registered yet");
-    expect(clientIdForDisplay("0000000000000000", null)).toBe(
-      "Not registered yet",
-    );
+    expect(clientIdForDisplay("0000000000000000", null)).toBe("Not registered yet");
   });
 });

@@ -4,6 +4,9 @@
 # fails — with a diagnostic — on a broken ${{ }} expression, on an
 # unknown input to a well-known action, on action metadata with no
 # runs section, and on action metadata with an unsupported runtime.
+# It also pins the explicit-file contract (#6872): relative FILE args
+# resolve against the caller's cwd, and a missing action file reports
+# a cannot-read diagnostic instead of a shape misdiagnosis.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -133,32 +136,32 @@ expect_fail "action metadata with runs.using: banana"
 # tolerates PyYAML being unavailable — so these cases run only
 # when PyYAML is importable, and are skipped (not failed) otherwise.
 if python3 -c 'import yaml' >/dev/null 2>&1; then
-# 7. A node action with no runs.main fails.
-mkdir -p "$TMP/node-no-main-action"
-cat >"$TMP/node-no-main-action/action.yml" <<'EOF'
+  # 7. A node action with no runs.main fails.
+  mkdir -p "$TMP/node-no-main-action"
+  cat >"$TMP/node-no-main-action/action.yml" <<'EOF'
 name: demo-action
 description: A node action missing its entry point.
 runs:
   using: node20
 EOF
-run_check "$TMP/node-no-main-action/action.yml"
-expect_fail "node action with no runs.main"
+  run_check "$TMP/node-no-main-action/action.yml"
+  expect_fail "node action with no runs.main"
 
-# 8. A node action with runs.main passes.
-mkdir -p "$TMP/node-main-action"
-cat >"$TMP/node-main-action/action.yml" <<'EOF'
+  # 8. A node action with runs.main passes.
+  mkdir -p "$TMP/node-main-action"
+  cat >"$TMP/node-main-action/action.yml" <<'EOF'
 name: demo-action
 description: A node action with its entry point.
 runs:
   using: node20
   main: dist/index.js
 EOF
-run_check "$TMP/node-main-action/action.yml"
-expect_pass "node action with runs.main"
+  run_check "$TMP/node-main-action/action.yml"
+  expect_pass "node action with runs.main"
 
-# 9. A composite step declaring neither run nor uses fails.
-mkdir -p "$TMP/composite-empty-step-action"
-cat >"$TMP/composite-empty-step-action/action.yml" <<'EOF'
+  # 9. A composite step declaring neither run nor uses fails.
+  mkdir -p "$TMP/composite-empty-step-action"
+  cat >"$TMP/composite-empty-step-action/action.yml" <<'EOF'
 name: demo-action
 description: A composite action whose step does nothing.
 runs:
@@ -166,12 +169,12 @@ runs:
   steps:
     - name: not a real step
 EOF
-run_check "$TMP/composite-empty-step-action/action.yml"
-expect_fail "composite step with neither run nor uses"
+  run_check "$TMP/composite-empty-step-action/action.yml"
+  expect_fail "composite step with neither run nor uses"
 
-# 10. Composite steps written as bare strings fail.
-mkdir -p "$TMP/composite-string-steps-action"
-cat >"$TMP/composite-string-steps-action/action.yml" <<'EOF'
+  # 10. Composite steps written as bare strings fail.
+  mkdir -p "$TMP/composite-string-steps-action"
+  cat >"$TMP/composite-string-steps-action/action.yml" <<'EOF'
 name: demo-action
 description: A composite action whose steps are strings.
 runs:
@@ -179,12 +182,12 @@ runs:
   steps:
     - echo "hello"
 EOF
-run_check "$TMP/composite-string-steps-action/action.yml"
-expect_fail "composite steps as bare strings"
+  run_check "$TMP/composite-string-steps-action/action.yml"
+  expect_fail "composite steps as bare strings"
 
-# 11. A composite run step without shell fails.
-mkdir -p "$TMP/composite-no-shell-action"
-cat >"$TMP/composite-no-shell-action/action.yml" <<'EOF'
+  # 11. A composite run step without shell fails.
+  mkdir -p "$TMP/composite-no-shell-action"
+  cat >"$TMP/composite-no-shell-action/action.yml" <<'EOF'
 name: demo-action
 description: A composite action whose run step has no shell.
 runs:
@@ -192,10 +195,35 @@ runs:
   steps:
     - run: echo "hello"
 EOF
-run_check "$TMP/composite-no-shell-action/action.yml"
-expect_fail "composite run step without shell"
+  run_check "$TMP/composite-no-shell-action/action.yml"
+  expect_fail "composite run step without shell"
 else
   echo "skip: PyYAML-branch contract cases (PyYAML unavailable; reduced fallback contract)"
 fi
+
+# 12. A valid action file passed by RELATIVE path from its own
+# directory behaves identically to the absolute-path invocation:
+# explicit FILE args resolve against the caller's cwd, not the repo
+# root the checker cd'ed to (#6872).
+RC=0
+(cd "$TMP/good-action" && bash "$CHECK" action.yml >"$TMP/out" 2>&1) || RC=$?
+expect_pass "valid composite action by relative path from its own directory"
+
+# 13. A missing action file fails with a cannot-read diagnostic naming
+# the file and the OS error — never "invalid YAML" (PyYAML branch) and
+# never "unexpected top-level key ''" (fallback branch) (#6872).
+run_check "$TMP/no-such-action/action.yml"
+expect_fail "missing action file"
+if ! grep -q "cannot read action file: No such file or directory" "$TMP/out"; then
+  echo "FAIL: missing action file should report a cannot-read diagnostic" >&2
+  cat "$TMP/out" >&2
+  exit 1
+fi
+if grep -qE "invalid YAML|unexpected top-level key ''" "$TMP/out"; then
+  echo "FAIL: missing action file was misdiagnosed as a shape failure" >&2
+  cat "$TMP/out" >&2
+  exit 1
+fi
+echo "pass: missing action file reports a cannot-read diagnostic"
 
 echo "check-workflows.test: all contract tests passed"

@@ -282,6 +282,7 @@ fn check_hop(
 }
 
 #[cfg(test)]
+#[allow(clippy::panic)]
 mod tests {
     use super::*;
 
@@ -517,5 +518,340 @@ mod tests {
         let e = evs();
         assert!(run(&e, 10, &OK).is_allow());
         assert!(!run(&e, 200, &OK).is_allow());
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Evidence assurance layer (#5683 step 1, issue #7783).
+//
+// Design: `doc/2026-11-08_design_id5683.md` §3/§9 (PR #7781). Additive only:
+// [`evaluate`] keeps its signature and semantics, [`Evidence`] keeps its
+// public shape, and no second evaluator exists — the pre-step below maps a
+// declaration plus subject evidence to the [`Hop`]s `evaluate()` consumes
+// and checks the declaration's minimum assurance bar before delegating.
+// Assurance is an operator-side judgement about how a claim was established,
+// not a cryptographic property: a signature proves authorship, not truth
+// (design §3.2; #5876 evidence model: levels are stored, never inferred,
+// and nothing auto-promotes).
+
+/// How strongly a subject claim was established (design §3.2, #5876 §2).
+/// Ordered: a higher level satisfies a lower minimum bar; a lower level
+/// never satisfies a higher one.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum AssuranceLevel {
+    /// `Self` in the design: the subject says so; no independent check (L0).
+    SelfDeclared,
+    /// An organisation the operator trusts vouches for the subject (L1).
+    OrgAttested,
+    /// A trusted third party verified a document or fact (L2).
+    ProviderVerified,
+}
+
+/// What of a claim may be revealed downstream (design §3.3).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum PrivacyClass {
+    /// The value is stored and readable only by explicitly named readers.
+    Exact,
+    /// Only a derived form (e.g. country, not address) is stored.
+    Derived,
+    /// Nothing is stored beyond "satisfies boundary X at time T".
+    VerdictOnly,
+}
+
+/// A subject-oriented claim envelope (design §3.1). It wraps — never
+/// changes — the placement [`Evidence`] for the resource/plane the claim
+/// is about, and carries the assurance metadata the placement record
+/// deliberately does not.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SubjectEvidence {
+    /// The user, org, server or world the claim is about.
+    pub subject: String,
+    /// How strongly this claim was established; stored, never inferred.
+    pub assurance: AssuranceLevel,
+    /// Structured provenance: what basis the claim rests on — a reference
+    /// (e.g. a document-check type or attestation reference), never the
+    /// raw document or value.
+    pub basis: String,
+    /// What of this claim may be revealed downstream.
+    pub privacy_class: PrivacyClass,
+    /// The unchanged placement evidence, when the claim is about a
+    /// resource's placement on a plane.
+    pub placement_evidence: Evidence,
+}
+
+impl SubjectEvidence {
+    /// The hop this claim offers to [`evaluate`]: its placement evidence
+    /// bound to that evidence's own plane and resource.
+    pub fn hop(&self) -> Hop<'_> {
+        Hop {
+            plane: self.placement_evidence.plane,
+            resource: self.placement_evidence.resource.clone(),
+            evidence: Some(&self.placement_evidence),
+        }
+    }
+}
+
+/// The minimum a scope declares it accepts for a subject (design §2.3's
+/// `evidence_req`, reduced to step 1's assurance bar).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Declaration {
+    /// The residency scope this declaration enforces.
+    pub scope: Scope,
+    /// The subject this declaration judges.
+    pub subject: String,
+    /// Minimum assurance a claim must carry to satisfy this declaration.
+    pub min_assurance: AssuranceLevel,
+}
+
+/// Why the assurance pre-step rejected a path. A typed reason deliberately
+/// distinct from [`DenyReason`]: an assurance-bar failure is not a
+/// placement failure, and callers must be able to tell them apart (the
+/// remedy differs — supply stronger evidence, not different placement).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AssuranceDenyReason {
+    /// A claim for the declared subject was below the declaration's bar.
+    BelowAssuranceBar {
+        /// Plane the below-bar claim was offered for.
+        plane: Plane,
+        /// The declaration's minimum assurance.
+        required: AssuranceLevel,
+        /// The assurance the claim actually carried.
+        offered: AssuranceLevel,
+    },
+    /// No claim for the declared subject covered this required plane.
+    NoSubjectEvidence(Plane),
+}
+
+/// Outcome of the assurance pre-step: either the assurance layer rejected
+/// the path itself, or [`evaluate`]'s placement decision stands as-is.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum AssuredDecision {
+    /// Bar met and every placement check allowed.
+    Allow,
+    /// Bar met; placement denied for these reasons.
+    Deny(Vec<DenyReason>),
+    /// The assurance bar itself rejected the path; placement was not
+    /// reached as an allowing decision and can never override this.
+    AssuranceDenied(Vec<AssuranceDenyReason>),
+}
+
+impl AssuredDecision {
+    /// Whether the path is allowed.
+    pub fn is_allow(&self) -> bool {
+        matches!(self, AssuredDecision::Allow)
+    }
+}
+
+/// Thin pre-step before [`evaluate`] (design §9): check the declaration's
+/// assurance bar over the subject evidence offered for its subject, map
+/// the surviving claims to hops, and delegate placement to `evaluate()`
+/// unchanged.
+///
+/// Fail-closed on assurance: any claim for the subject below the bar, or
+/// a required plane with no claim for the subject, yields
+/// [`AssuredDecision::AssuranceDenied`] — never `Allow` — regardless of
+/// how good the placement evidence is. Claims about other subjects are
+/// ignored: one subject's evidence never satisfies another's declaration.
+pub fn evaluate_declared(
+    declaration: &Declaration,
+    evidence: &[SubjectEvidence],
+    now: u64,
+    verifier: &dyn EvidenceVerifier,
+) -> AssuredDecision {
+    let claims: Vec<&SubjectEvidence> = evidence
+        .iter()
+        .filter(|e| e.subject == declaration.subject)
+        .collect();
+    let mut reasons = Vec::new();
+    for claim in &claims {
+        if claim.assurance < declaration.min_assurance {
+            reasons.push(AssuranceDenyReason::BelowAssuranceBar {
+                plane: claim.placement_evidence.plane,
+                required: declaration.min_assurance,
+                offered: claim.assurance,
+            });
+        }
+    }
+    if let Scope::Scoped(policy) = &declaration.scope {
+        for plane in &policy.required {
+            if !claims.iter().any(|c| c.placement_evidence.plane == *plane) {
+                reasons.push(AssuranceDenyReason::NoSubjectEvidence(*plane));
+            }
+        }
+    }
+    if !reasons.is_empty() {
+        return AssuredDecision::AssuranceDenied(reasons);
+    }
+    let hops: Vec<Hop<'_>> = claims.iter().map(|c| c.hop()).collect();
+    match evaluate(&declaration.scope, &hops, now, verifier) {
+        Decision::Allow => AssuredDecision::Allow,
+        Decision::Deny(r) => AssuredDecision::Deny(r),
+    }
+}
+
+#[cfg(test)]
+mod assurance_tests {
+    use super::*;
+
+    struct OkVerifier;
+    impl EvidenceVerifier for OkVerifier {
+        fn signature_valid(&self, _: &Evidence) -> bool {
+            true
+        }
+        fn revoked(&self, _: &Evidence) -> bool {
+            false
+        }
+    }
+    const OKV: OkVerifier = OkVerifier;
+
+    fn policy() -> Policy {
+        let mut p = Policy::new(["root".to_string()]);
+        for pl in Plane::ALL {
+            p = p
+                .allow(pl, &["eu"], &["r"])
+                .trust_evidence_source(pl, "control-plane");
+        }
+        p
+    }
+
+    fn claim(subject: &str, plane: Plane, assurance: AssuranceLevel) -> SubjectEvidence {
+        SubjectEvidence {
+            subject: subject.into(),
+            assurance,
+            basis: "attestation-ref".into(),
+            privacy_class: PrivacyClass::VerdictOnly,
+            placement_evidence: Evidence {
+                issuer: "root".into(),
+                resource: ResourceId("r".into()),
+                plane,
+                jurisdiction: Jurisdiction("eu".into()),
+                source: "control-plane".into(),
+                expires_at: 100,
+                serial: "1".into(),
+                signature: vec![],
+            },
+        }
+    }
+
+    fn claims(subject: &str, assurance: AssuranceLevel) -> Vec<SubjectEvidence> {
+        Plane::ALL
+            .iter()
+            .map(|p| claim(subject, *p, assurance))
+            .collect()
+    }
+
+    fn declaration(min: AssuranceLevel) -> Declaration {
+        Declaration {
+            scope: Scope::Scoped(policy()),
+            subject: "alice".into(),
+            min_assurance: min,
+        }
+    }
+
+    const LEVELS: [AssuranceLevel; 3] = [
+        AssuranceLevel::SelfDeclared,
+        AssuranceLevel::OrgAttested,
+        AssuranceLevel::ProviderVerified,
+    ];
+
+    /// Oracle (acceptance, issue #7783): for any evidence below the
+    /// declared bar, the decision is never Allow — checked exhaustively
+    /// over every (offered, required) level pair and every plane subset
+    /// carrying the below-bar claim.
+    #[test]
+    fn property_below_bar_never_allows() {
+        for offered in LEVELS {
+            for required in LEVELS {
+                let ev = claims("alice", offered);
+                let d = evaluate_declared(&declaration(required), &ev, 50, &OKV);
+                if offered < required {
+                    assert!(
+                        !d.is_allow(),
+                        "offered {offered:?} below bar {required:?} must not allow"
+                    );
+                    assert!(
+                        matches!(d, AssuredDecision::AssuranceDenied(_)),
+                        "below-bar rejection must be the typed assurance reason, got {d:?}"
+                    );
+                } else {
+                    assert!(d.is_allow(), "offered {offered:?} meets bar {required:?}");
+                }
+            }
+        }
+        // A single below-bar plane among at-bar claims still never allows.
+        for plane in Plane::ALL {
+            let mut ev = claims("alice", AssuranceLevel::ProviderVerified);
+            for c in &mut ev {
+                if c.placement_evidence.plane == plane {
+                    c.assurance = AssuranceLevel::SelfDeclared;
+                }
+            }
+            let d = evaluate_declared(&declaration(AssuranceLevel::OrgAttested), &ev, 50, &OKV);
+            assert!(!d.is_allow(), "below-bar claim on {plane:?} must not allow");
+        }
+    }
+
+    #[test]
+    fn assurance_rejection_is_typed_and_names_the_bar() {
+        let ev = claims("alice", AssuranceLevel::SelfDeclared);
+        let d = evaluate_declared(
+            &declaration(AssuranceLevel::ProviderVerified),
+            &ev,
+            50,
+            &OKV,
+        );
+        let AssuredDecision::AssuranceDenied(reasons) = d else {
+            assert!(false, "expected assurance denial, got {d:?}");
+            return;
+        };
+        assert_eq!(reasons.len(), Plane::ALL.len());
+        assert!(reasons.iter().all(|r| matches!(
+            r,
+            AssuranceDenyReason::BelowAssuranceBar {
+                required: AssuranceLevel::ProviderVerified,
+                offered: AssuranceLevel::SelfDeclared,
+                ..
+            }
+        )));
+    }
+
+    #[test]
+    fn at_bar_claims_delegate_to_placement_evaluate() {
+        // At the bar with good placement: Allow (existing evaluator).
+        let ev = claims("alice", AssuranceLevel::OrgAttested);
+        assert!(
+            evaluate_declared(&declaration(AssuranceLevel::OrgAttested), &ev, 50, &OKV).is_allow()
+        );
+        // At the bar but expired placement evidence: the placement
+        // evaluator's own DenyReason surfaces, not an assurance denial.
+        let d = evaluate_declared(&declaration(AssuranceLevel::OrgAttested), &ev, 100, &OKV);
+        assert!(matches!(d, AssuredDecision::Deny(_)), "got {d:?}");
+    }
+
+    #[test]
+    fn other_subjects_evidence_never_satisfies_a_declaration() {
+        let ev = claims("bob", AssuranceLevel::ProviderVerified);
+        let d = evaluate_declared(&declaration(AssuranceLevel::SelfDeclared), &ev, 50, &OKV);
+        assert!(!d.is_allow());
+        assert!(
+            matches!(d, AssuredDecision::AssuranceDenied(_)),
+            "got {d:?}"
+        );
+    }
+
+    #[test]
+    fn unscoped_declaration_still_requires_the_bar() {
+        let mut decl = declaration(AssuranceLevel::OrgAttested);
+        decl.scope = Scope::Unscoped;
+        let ev = claims("alice", AssuranceLevel::SelfDeclared);
+        assert!(!evaluate_declared(&decl, &ev, 50, &OKV).is_allow());
+        let ev = claims("alice", AssuranceLevel::OrgAttested);
+        assert!(evaluate_declared(&decl, &ev, 50, &OKV).is_allow());
+    }
+
+    #[test]
+    fn assurance_levels_are_ordered_as_designed() {
+        assert!(AssuranceLevel::SelfDeclared < AssuranceLevel::OrgAttested);
+        assert!(AssuranceLevel::OrgAttested < AssuranceLevel::ProviderVerified);
     }
 }

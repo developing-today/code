@@ -71,14 +71,14 @@ decides the scope (§3); the round always ends with an audit sample
 (§5). Triggers are checked in priority order; a higher-priority
 trigger subsumes lower ones opening in the same window.
 
-| # | Trigger | Fires when | Priority | Window / SLA |
-|---|---|---|---|---|
-| T1 | Recognizer / rule-pack change | #6048 recognizer set, #6049 pattern pack, deterministic rule set, or stopword/threshold tuning merges (any `config_hash` change, cf. #6048 §4.4) | 1 (highest) | Rescan starts within 7 days of the config merge; the config merge itself is blocked on a rescan plan (scope + compute window) being recorded |
-| T2 | New source class or tier-rule change | A new source class first feeds a tier, or a #5410 manifest per-source tier rule changes | 1 | Targeted rescan of the affected source class within 7 days; full-cadence scope only if the class straddles tiers without a rule (#6021's open question) |
-| T3 | Corpus-growth threshold | Internal tier grows by ≥5% chunks (estimate threshold; ≈5,350 chunks at current 107,001) since the last full round, or any single ingestion run adds ≥1,000 chunks (estimate) | 2 | Targeted rescan of the new content at ingest + inclusion in the next calendar round; threshold re-tuned after the first two rounds from measured growth |
-| T4 | Calendar round | Quarterly (estimate cadence; first two rounds may run monthly to calibrate, then relax) | 3 | Full deterministic layer + audit sample every round; full NER census at most annually unless T1 fires for Tier B — see §3 |
-| T5 | Allowlist expiry sweep | Any allowlist entry reaches its `expires_at` (§5) | 2 | The entry's scope is rescanned un-suppressed before the entry may be renewed; entries expiring inside a T1–T4 round's window ride that round |
-| T6 | Incident / ad-hoc signal | Staging-path check (#5669) flags a tier-assignment mistake; a review-queue confirm (§5 of #6048) indicates a systematic miss; an external incident suggests a new leak class | 1 | Scoped rescan defined in the incident record; may promote to a full round if the miss looks systematic |
+| #   | Trigger                              | Fires when                                                                                                                                                                    | Priority    | Window / SLA                                                                                                                                            |
+| --- | ------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------- | ------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| T1  | Recognizer / rule-pack change        | #6048 recognizer set, #6049 pattern pack, deterministic rule set, or stopword/threshold tuning merges (any `config_hash` change, cf. #6048 §4.4)                              | 1 (highest) | Rescan starts within 7 days of the config merge; the config merge itself is blocked on a rescan plan (scope + compute window) being recorded            |
+| T2  | New source class or tier-rule change | A new source class first feeds a tier, or a #5410 manifest per-source tier rule changes                                                                                       | 1           | Targeted rescan of the affected source class within 7 days; full-cadence scope only if the class straddles tiers without a rule (#6021's open question) |
+| T3  | Corpus-growth threshold              | Internal tier grows by ≥5% chunks (estimate threshold; ≈5,350 chunks at current 107,001) since the last full round, or any single ingestion run adds ≥1,000 chunks (estimate) | 2           | Targeted rescan of the new content at ingest + inclusion in the next calendar round; threshold re-tuned after the first two rounds from measured growth |
+| T4  | Calendar round                       | Quarterly (estimate cadence; first two rounds may run monthly to calibrate, then relax)                                                                                       | 3           | Full deterministic layer + audit sample every round; full NER census at most annually unless T1 fires for Tier B — see §3                               |
+| T5  | Allowlist expiry sweep               | Any allowlist entry reaches its `expires_at` (§5)                                                                                                                             | 2           | The entry's scope is rescanned un-suppressed before the entry may be renewed; entries expiring inside a T1–T4 round's window ride that round            |
+| T6  | Incident / ad-hoc signal             | Staging-path check (#5669) flags a tier-assignment mistake; a review-queue confirm (§5 of #6048) indicates a systematic miss; an external incident suggests a new leak class  | 1           | Scoped rescan defined in the incident record; may promote to a full round if the miss looks systematic                                                  |
 
 What does **not** trigger a round: a new Atlas shard being added
 with no new source class (covered by staging-time scanning at
@@ -98,14 +98,14 @@ table below is normative.
 Corpus symbols: `N` = internal chunks (107,001 cited); `S` = secret
 chunks (638 cited); `Δ` = chunks added since last round.
 
-| Layer | T1 (rule change) | T2 (source/tier-rule) | T3 (growth) | T4 (calendar) | T5 (expiry) | T6 (incident) |
-|---|---|---|---|---|---|---|
-| L1 deterministic secret scan (gitleaks-class, both tiers) | **Full**: N+S | Affected source class + both tiers if class straddles | Δ + affected shards | **Full**: N+S every round | Entry scope, un-suppressed | Incident scope, minimum affected class |
-| L2 Tier A (checksum/structure, #6048 §2.1) | **Full**: N+S | Affected class, both tiers | Δ | **Full**: N+S every round | Entry scope, un-suppressed | Incident scope |
-| L3 Tier B NER (#6048 §2.2) | **Full internal** N + 160-chunk secret calibration sample **iff** the change touches Tier B (recognizers, context words, thresholds); if the change is Tier-A-only or deterministic-only, Tier B runs **sampled** (1,000-chunk stratified pilot shape, #6048 §4.3) as a regression check | Affected class at #6048 scoping (internal portion in full; secret portion sampled) | Δ at #6048 scoping | **Sampled** (1,000-chunk stratified + 160-chunk secret sample) per round; **full internal census at most annually** (estimate; re-tune after first census cost is measured) | Entry scope at #6048 scoping | Incident scope at #6048 scoping; escalate to full internal if the miss is Tier B systematic |
-| L4 pattern pack (#6049) | **Full**: N+S (pack changes are cheap to re-run; pack is regex-class) | Affected class | Δ | **Full**: N+S every round | Entry scope, un-suppressed | Incident scope |
-| L5 vector-neighborhood + sample classifier (#6021 scope) | Re-run iff Tier B or embedding-adjacent logic changed; else sampled | Affected class (neighborhood of the class centroid) | Δ neighborhood check (new chunks vs secret profile) | Sampled every round | Not run (expiry is a suppression question, not a neighborhood question) | Incident scope |
-| Staging-path check (#5669) | No round scope (staging scans at ingest with the *new* config from merge) | New class onboarding includes staging-rule review | Δ scanned at ingest | Audited via §4 sample (are staged chunks landing in the right tier?) | No scope | Scoped to the flagged path |
+| Layer                                                     | T1 (rule change)                                                                                                                                                                                                                                                                         | T2 (source/tier-rule)                                                              | T3 (growth)                                         | T4 (calendar)                                                                                                                                                               | T5 (expiry)                                                             | T6 (incident)                                                                               |
+| --------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------- | --------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------- | ------------------------------------------------------------------------------------------- |
+| L1 deterministic secret scan (gitleaks-class, both tiers) | **Full**: N+S                                                                                                                                                                                                                                                                            | Affected source class + both tiers if class straddles                              | Δ + affected shards                                 | **Full**: N+S every round                                                                                                                                                   | Entry scope, un-suppressed                                              | Incident scope, minimum affected class                                                      |
+| L2 Tier A (checksum/structure, #6048 §2.1)                | **Full**: N+S                                                                                                                                                                                                                                                                            | Affected class, both tiers                                                         | Δ                                                   | **Full**: N+S every round                                                                                                                                                   | Entry scope, un-suppressed                                              | Incident scope                                                                              |
+| L3 Tier B NER (#6048 §2.2)                                | **Full internal** N + 160-chunk secret calibration sample **iff** the change touches Tier B (recognizers, context words, thresholds); if the change is Tier-A-only or deterministic-only, Tier B runs **sampled** (1,000-chunk stratified pilot shape, #6048 §4.3) as a regression check | Affected class at #6048 scoping (internal portion in full; secret portion sampled) | Δ at #6048 scoping                                  | **Sampled** (1,000-chunk stratified + 160-chunk secret sample) per round; **full internal census at most annually** (estimate; re-tune after first census cost is measured) | Entry scope at #6048 scoping                                            | Incident scope at #6048 scoping; escalate to full internal if the miss is Tier B systematic |
+| L4 pattern pack (#6049)                                   | **Full**: N+S (pack changes are cheap to re-run; pack is regex-class)                                                                                                                                                                                                                    | Affected class                                                                     | Δ                                                   | **Full**: N+S every round                                                                                                                                                   | Entry scope, un-suppressed                                              | Incident scope                                                                              |
+| L5 vector-neighborhood + sample classifier (#6021 scope)  | Re-run iff Tier B or embedding-adjacent logic changed; else sampled                                                                                                                                                                                                                      | Affected class (neighborhood of the class centroid)                                | Δ neighborhood check (new chunks vs secret profile) | Sampled every round                                                                                                                                                         | Not run (expiry is a suppression question, not a neighborhood question) | Incident scope                                                                              |
+| Staging-path check (#5669)                                | No round scope (staging scans at ingest with the _new_ config from merge)                                                                                                                                                                                                                | New class onboarding includes staging-rule review                                  | Δ scanned at ingest                                 | Audited via §4 sample (are staged chunks landing in the right tier?)                                                                                                        | No scope                                                                | Scoped to the flagged path                                                                  |
 
 Run mechanics are inherited, not re-invented: every round mints a
 `run_id`; the recognizer/pack/rule configuration is content-hashed
@@ -120,8 +120,8 @@ their checkpoints; the new hash starts a new `run_id`.
 
 Every round, regardless of trigger, ends with a hand-checked sample
 drawn from **each tier**. The sample's job is the one the body
-states: to *estimate the scanners' miss rate instead of assuming
-it*. "No detector catches everything" is every tool's disclaimer;
+states: to _estimate the scanners' miss rate instead of assuming
+it_. "No detector catches everything" is every tool's disclaimer;
 the audit turns it into a number with a confidence interval, tracked
 round over round.
 
@@ -145,16 +145,16 @@ the round's queue is re-opened.
 ### 4.2 Sample sizes (planning values, estimates)
 
 Rare-event math governs: leaks are (we hope) rare, so the sample
-must be large enough that *zero misses observed* still means
+must be large enough that _zero misses observed_ still means
 something. For a tier with true miss rate `p`, `n` clean samples
 bounds `p` above at roughly `3/n` (95% rule-of-three). The table
 gives planning sizes; the first two rounds calibrate them.
 
-| Tier | Sample `n` (negatives) | Zero-miss reading (95%) | Why this size |
-|---|---|---|---|
-| Internal (N≈107k) | **300** (estimate) | true miss rate < ~1% | 300 hand-reads is a bounded review load (≈1–2 reviewer-days at 150–300 chunks/day, estimate); <1% on the broadly-queried tier is the headline guarantee |
-| Secret (S=638) | **160** (estimate; reuses the #6048 25% calibration sample where the round already drew it) | true *over-inclusion* rate < ~2% (secret tier's audit question is the converse: is mundane content inflating the most-protected tier, #6021) | Same seeded stratified sample as #6048 §3, so the two passes share review load; the converse question needs no separate draw |
-| Dismissal re-review | 10% of the round's dismissals, minimum 20 (estimates) | reviewer-agreement signal | Catches drift, not leaks |
+| Tier                | Sample `n` (negatives)                                                                      | Zero-miss reading (95%)                                                                                                                      | Why this size                                                                                                                                           |
+| ------------------- | ------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Internal (N≈107k)   | **300** (estimate)                                                                          | true miss rate < ~1%                                                                                                                         | 300 hand-reads is a bounded review load (≈1–2 reviewer-days at 150–300 chunks/day, estimate); <1% on the broadly-queried tier is the headline guarantee |
+| Secret (S=638)      | **160** (estimate; reuses the #6048 25% calibration sample where the round already drew it) | true _over-inclusion_ rate < ~2% (secret tier's audit question is the converse: is mundane content inflating the most-protected tier, #6021) | Same seeded stratified sample as #6048 §3, so the two passes share review load; the converse question needs no separate draw                            |
+| Dismissal re-review | 10% of the round's dismissals, minimum 20 (estimates)                                       | reviewer-agreement signal                                                                                                                    | Catches drift, not leaks                                                                                                                                |
 
 Worked reading: if the internal 300-sample finds 2 misses, the
 point estimate is 2/300 ≈ 0.7% with a 95% Wilson interval of roughly
@@ -191,7 +191,7 @@ ceiling this design defends: if a round's queue plus audit load
 projects above what the review cadence can drain before the next
 round opens (planning ceiling 500 queue candidates + 500 audit
 reads per round, estimates carried from #6048 §4.2), thresholds are
-raised and the round re-scoped *explicitly in the run report* —
+raised and the round re-scoped _explicitly in the run report_ —
 never by quietly shrinking the sample.
 
 ## 5. Allowlist lifecycle — reason, expiry, no grandfathering
@@ -222,7 +222,7 @@ Lifecycle rules:
 
 1. **Expiry forces re-examination, not auto-renewal.** At
    `expires_at` (T5), the entry's scope is rescanned
-   *un-suppressed* under the current config. Renewal requires a
+   _un-suppressed_ under the current config. Renewal requires a
    fresh disposition citing the new run; the renewal records the
    new `run_id`. An entry that fails re-examination becomes a
    review-queue candidate; the tier-lock-upward rule (#6048 §5)
@@ -252,7 +252,7 @@ adopt, not decided here):
 1. **Staging merge gate.** A source class's staging batch (#5669)
    merges into a tier only with a clean staging scan under the
    current `config_hash` (L1+L2 full on the batch, L3 at §3
-   scoping) *and* no live non-expired allowlist entry covering the
+   scoping) _and_ no live non-expired allowlist entry covering the
    batch's findings. The merge record cites the scan `run_id`.
 2. **New-source-class onboarding.** #6019's "which steps stay
    human-approved" list gains: first-ingest of a new source class
@@ -321,7 +321,7 @@ adopt, not decided here):
   gate alone. This fallback is recorded here so the decision, if
   taken, requires no redesign — only a scope note on this record.
 - **#6019 (ingestion operations): touched at the seams only.** §6
-  lists plug-in points *for the #6019 design to adopt*; this record
+  lists plug-in points _for the #6019 design to adopt_; this record
   decides nothing about #6019's trigger model, usefulness test, or
   guardrails beyond where the cadence connects. **#6049 (pattern
   pack) and #6050 (trufflehog ruling) are untouched siblings**: L4

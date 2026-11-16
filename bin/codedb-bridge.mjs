@@ -51,26 +51,31 @@ export const parseDaemonUrl = (raw) => {
   try {
     url = new URL(value);
   } catch {
-    throw new Error(`CODEDB_DAEMON_URL="${value}" is not a valid URL`);
+    // No branch of this function interpolates the raw value or any part
+    // of the parsed URL into an error (#9829): the caller prints the
+    // message to stderr, and the value can carry userinfo credentials,
+    // a ?token= query, or a fragment -- all secrets in host logs. Errors
+    // name the rejected component only.
+    throw new Error('CODEDB_DAEMON_URL is not a valid URL (value withheld)');
   }
   if (url.protocol !== 'http:' || (url.pathname !== '/' && url.pathname !== '')) {
     throw new Error(
-      `CODEDB_DAEMON_URL="${value}" must be an http:// origin with no path (the bridge appends /explore/* routes itself)`
+      'CODEDB_DAEMON_URL must be an http:// origin with no path (the bridge appends /explore/* routes itself; value withheld)'
     );
   }
   if (url.search) {
     throw new Error(
-      `CODEDB_DAEMON_URL="${value}" must not carry a query string (query "${url.search}") - a query has no meaning for a daemon origin and would be silently dropped`
+      'CODEDB_DAEMON_URL must not carry a query string - a query has no meaning for a daemon origin and would be silently dropped (query value withheld)'
     );
   }
   if (url.hash) {
     throw new Error(
-      `CODEDB_DAEMON_URL="${value}" must not carry a fragment (fragment "${url.hash}") - a fragment has no meaning for a daemon origin and would be silently dropped`
+      'CODEDB_DAEMON_URL must not carry a fragment - a fragment has no meaning for a daemon origin and would be silently dropped (fragment value withheld)'
     );
   }
   if (url.username || url.password) {
     throw new Error(
-      `CODEDB_DAEMON_URL="${value}" must not carry userinfo (embedded credentials) - the daemon has no authentication, so credentials would be silently dropped`
+      'CODEDB_DAEMON_URL must not carry userinfo (embedded credentials) - the daemon has no authentication, so credentials would be silently dropped (userinfo withheld)'
     );
   }
   return url.origin;
@@ -138,10 +143,45 @@ export const CODEDB_TOOLS = [
   ),
 ];
 
+// Keys the bridge rejects with a dedicated message when set (handled
+// rejection keys, #3352): `project` on every tool, plus the daemon-less
+// modes per tool. These stay accepted by the allowlist below so their
+// existing by-name rejection messages are unchanged; anything else
+// outside the tool's schema is refused before it can be silently dropped
+// (#4216).
+const HANDLED_REJECTION_KEYS = {
+  codedb_tree: ['project'],
+  codedb_outline: ['project', 'compact'],
+  codedb_symbol: ['project'],
+  codedb_search: ['project', 'regex', 'scope', 'compact'],
+  codedb_word: ['project'],
+  codedb_hot: ['project'],
+  codedb_deps: ['project'],
+};
+
+// The accepted argument names for a tool: its advertised schema
+// properties plus its handled rejection keys. Returns null for unknown
+// tools (the switch in routeForTool still owns that error).
+const acceptedArgsFor = (name) => {
+  const declared = CODEDB_TOOLS.find((t) => t.name === name);
+  if (!declared) return null;
+  return new Set([...Object.keys(declared.inputSchema.properties), ...(HANDLED_REJECTION_KEYS[name] ?? [])]);
+};
+
 // Map a tool call to the daemon route. Throws an Error naming the exact
 // problem for unknown tools, missing required arguments, and arguments
 // the daemon cannot honour — nothing is silently dropped (#3352).
 export const routeForTool = (name, args = {}) => {
+  const accepted = acceptedArgsFor(name);
+  if (accepted !== null) {
+    for (const key of Object.keys(args)) {
+      if (!accepted.has(key)) {
+        throw new Error(
+          `argument "${key}": not a valid argument for ${name} (valid: ${[...accepted].sort().join(', ') || '(none)'}); it would be silently ignored by the codedb daemon route`
+        );
+      }
+    }
+  }
   const rejectProject = () => {
     if (args.project !== undefined) throw new Error(`argument "project": ${PROJECT_ARG_NOTE}`);
   };

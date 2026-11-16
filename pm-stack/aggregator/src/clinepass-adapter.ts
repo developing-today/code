@@ -248,7 +248,8 @@ export async function collectClinePassAdapter(opts: {
 export function credentialRefFromConfig(value: string | undefined): CredentialRef | null {
   if (!value || value.trim() === "") return null;
   const v = value.trim();
-  if (v.startsWith("bitwarden:")) return validateCredentialRef({ kind: "bitwarden", name: v.slice("bitwarden:".length) });
+  if (v.startsWith("bitwarden:"))
+    return validateCredentialRef({ kind: "bitwarden", name: v.slice("bitwarden:".length) });
   if (v.startsWith("file:")) return validateCredentialRef({ kind: "file", path: v.slice("file:".length), mode: 0o600 });
   throw new AdapterError(
     "fetch-failed",
@@ -301,6 +302,7 @@ export async function gatherClinePass(opts: {
   return collectClinePassAdapter({
     now: opts.now,
     previous: opts.previous,
-    fetchPayload: () => fetchClinePassPayload({ token: token as string, fetchImpl: opts.fetchImpl, timeoutMs: opts.timeoutMs }),
+    fetchPayload: () =>
+      fetchClinePassPayload({ token: token as string, fetchImpl: opts.fetchImpl, timeoutMs: opts.timeoutMs }),
   });
 }

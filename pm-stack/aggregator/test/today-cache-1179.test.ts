@@ -31,7 +31,7 @@ describe("TodayCache cold miss / warm hit / expiry", () => {
     expect(calls).toBe(1);
   });
 
-  test("expiry triggers a fresh read", async () => {
+  test("expiry serves stale and refreshes in the background (#5082 SWR)", async () => {
     let now = 1_000_000;
     let calls = 0;
     const cache = new TodayCache<string>(10_000, () => now);
@@ -42,9 +42,41 @@ describe("TodayCache cold miss / warm hit / expiry", () => {
     now += TODAY_CACHE_TTL_MS - 1;
     expect(await cache.get(async () => "stale-never")).toBe("v1");
     expect(calls).toBe(1);
-    // Exactly at the TTL the entry is stale — a fresh read runs.
+    // Exactly at the TTL the entry is stale: the caller still gets the
+    // stale value immediately (never the multi-second fan-out), and
+    // one background refresh re-reads behind it.
     now += 1;
-    expect(await cache.get(async () => `v${++calls}`)).toBe("v2");
+    expect(await cache.get(async () => `v${++calls}`)).toBe("v1");
+    expect(calls).toBe(2);
+    await Bun.sleep(10);
+    expect(await cache.get(async () => "never")).toBe("v2");
+    expect(calls).toBe(2);
+  });
+
+  test("a failed background refresh keeps serving the stale value", async () => {
+    let now = 1_000_000;
+    let calls = 0;
+    const cache = new TodayCache<string>(10_000, () => now);
+    await cache.get(async () => "v1");
+    now += TODAY_CACHE_TTL_MS;
+    // The refresh throws: the stale-serving caller never sees it.
+    expect(
+      await cache.get(async () => {
+        calls++;
+        throw new Error("kaneo still down");
+      }),
+    ).toBe("v1");
+    await Bun.sleep(10);
+    expect(calls).toBe(1);
+    // The next expired read retries the refresh and lands the recovery.
+    expect(
+      await cache.get(async () => {
+        calls++;
+        return "v2";
+      }),
+    ).toBe("v1");
+    await Bun.sleep(10);
+    expect(await cache.get(async () => "never")).toBe("v2");
     expect(calls).toBe(2);
   });
 
@@ -53,6 +85,41 @@ describe("TodayCache cold miss / warm hit / expiry", () => {
     const cache = new TodayCache<string>();
     await cache.get(async () => `v${++calls}`);
     cache.clear();
+    expect(await cache.get(async () => `v${++calls}`)).toBe("v2");
+    expect(calls).toBe(2);
+  });
+
+  test("invalidate() keeps the value servable and refreshes behind it (#5082)", async () => {
+    let now = 1_000_000;
+    let calls = 0;
+    const cache = new TodayCache<string>(10_000, () => now);
+    await cache.get(async () => `v${++calls}`);
+    expect(calls).toBe(1);
+    // Still inside the TTL: invalidate marks the entry expired, so the
+    // next read serves the retained value immediately — never the cold
+    // load — and one background refresh re-reads behind it.
+    cache.invalidate();
+    expect(await cache.get(async () => `v${++calls}`)).toBe("v1");
+    expect(calls).toBe(2);
+    await Bun.sleep(10);
+    expect(await cache.get(async () => "never")).toBe("v2");
+    expect(calls).toBe(2);
+  });
+
+  test("invalidate() on an empty cache stays a cold miss", async () => {
+    let calls = 0;
+    const cache = new TodayCache<string>();
+    cache.invalidate();
+    expect(await cache.get(async () => `v${++calls}`)).toBe("v1");
+    expect(calls).toBe(1);
+  });
+
+  test("invalidate() does not resurrect a cleared cache", async () => {
+    let calls = 0;
+    const cache = new TodayCache<string>();
+    await cache.get(async () => `v${++calls}`);
+    cache.clear();
+    cache.invalidate();
     expect(await cache.get(async () => `v${++calls}`)).toBe("v2");
     expect(calls).toBe(2);
   });
@@ -140,6 +207,10 @@ describe("TodayCache failure and degraded-state behavior", () => {
     outage = false; // the source recovers behind the cache
     expect((await cache.get(loader)).quotaUnavailable).toBe(true);
     now += TODAY_CACHE_TTL_MS;
+    // Expired: the stale degraded value is served while the refresh
+    // re-reads; the recovered value lands behind it (#5082 SWR).
+    expect((await cache.get(loader)).quotaUnavailable).toBe(true);
+    await Bun.sleep(10);
     expect((await cache.get(loader)).quotaUnavailable).toBe(false);
   });
 

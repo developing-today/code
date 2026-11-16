@@ -36,14 +36,14 @@
 
 ## Decision summary
 
-| Question | Decision |
-| --- | --- |
-| Compile/runtime split | **Hybrid, compile-time-dominant:** everything decidable from source + target tables is decided ahead of time per target; the runtime only binds data/state and instantiates the compiled artefact (§2) |
-| Pipeline shape | Five stages over one target-neutral IR: parse → validate → compose → lower per target → emit artefact + report. Mapping tables (#5851/#5852/#5853) are *data* inputs to lowering, never code branches in the pipeline (§2) |
-| Conformance tests | Golden corpus per target: DOM/class expectations for web, control-kind + accessibility-tree expectations for native/GUI. Pixel/screenshot comparison is advisory only, never the conformance gate (§3) |
+| Question                         | Decision                                                                                                                                                                                                                                                         |
+| -------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Compile/runtime split            | **Hybrid, compile-time-dominant:** everything decidable from source + target tables is decided ahead of time per target; the runtime only binds data/state and instantiates the compiled artefact (§2)                                                           |
+| Pipeline shape                   | Five stages over one target-neutral IR: parse → validate → compose → lower per target → emit artefact + report. Mapping tables (#5851/#5852/#5853) are _data_ inputs to lowering, never code branches in the pipeline (§2)                                       |
+| Conformance tests                | Golden corpus per target: DOM/class expectations for web, control-kind + accessibility-tree expectations for native/GUI. Pixel/screenshot comparison is advisory only, never the conformance gate (§3)                                                           |
 | Unmapped assertion at build time | **Warning, never silent** — the build emits an assertion-coverage report per target; a target falling back to platform/layer default is recorded in that report (adopting the parent's open-question branch, consistent with #5852 §3.1 and #5854 §6) (§3.3, §4) |
-| Author tooling | One linter over source + tables, one preview command rendering every target's artefact plus the coverage/conflict report. Same-specificity ties and essential content in conditional blocks are errors, not warnings (§4) |
-| Determinism | Same source + same table/theme versions + same toolchain version ⇒ byte-identical artefact and report (no timestamps inside artefacts). Any change to a mapping table is a versioned change with corpus re-blessing (§5) |
+| Author tooling                   | One linter over source + tables, one preview command rendering every target's artefact plus the coverage/conflict report. Same-specificity ties and essential content in conditional blocks are errors, not warnings (§4)                                        |
+| Determinism                      | Same source + same table/theme versions + same toolchain version ⇒ byte-identical artefact and report (no timestamps inside artefacts). Any change to a mapping table is a versioned change with corpus re-blessing (§5)                                         |
 
 ## 1. Assumptions against the parent (stated, not silent)
 
@@ -62,8 +62,8 @@ its assumptions instead of waiting for the parent to settle:
   (semantic markup vocabulary) is not settled yet, and issue
   [#5851](https://github.com/developing-today/code/issues/5851)
   (web rendering: assertion → Tailwind) has no landed record at this
-  baseline. The pipeline is therefore defined over element *kinds* and
-  assertion *roles* generically, and consumes both vocabularies and
+  baseline. The pipeline is therefore defined over element _kinds_ and
+  assertion _roles_ generically, and consumes both vocabularies and
   the web mapping table as versioned data. A settled #5849/#5851 that
   renames kinds, roles, or classes re-issues the tables, not this
   record's decisions.
@@ -90,10 +90,10 @@ record settles it and says so.
    roles, and assertions applied to kinds that cannot carry them are
    build errors with source locations.
 3. **Compose.** Conditional blocks are resolved for the target
-   (include/exclude *before* the cascade, per #5854 §5), then the
+   (include/exclude _before_ the cascade, per #5854 §5), then the
    #5854 composition order runs: platform defaults → theme/token
    values → semantic assertions → per-target override map → raw CSS
-   (web only). Output is a *resolved* IR per target: every node
+   (web only). Output is a _resolved_ IR per target: every node
    carries its final assertion set; values stay role-named until
    lowering, so theme changes never require re-parsing.
 4. **Lower.** Each target emitter consumes the resolved IR plus its
@@ -116,11 +116,11 @@ record settles it and says so.
   decided before anything runs. Conformance (§3) tests these
   artefacts, so a non-conforming rendering is caught pre-ship, never
   first observed by a user.
-- **Runtime (thin, per target):** exactly two jobs — (a) *binding*:
+- **Runtime (thin, per target):** exactly two jobs — (a) _binding_:
   connecting the compiled artefact's state hooks and actions to
   programme state (data binding was left to the vocabulary layer;
   the pipeline's contract is only that binding points survive
-  lowering unchanged in number and kind), and (b) *instantiation*:
+  lowering unchanged in number and kind), and (b) _instantiation_:
   creating the target's real controls/DOM from the artefact (native
   targets instantiate OS-standard controls per #5852; the artefact
   names control kinds, never drawing code).
@@ -168,7 +168,7 @@ or decision, with the reason in that change.
 - **Native (per platform):** the control-kind sequence plus the
   accessibility tree (role, label, state set) — the properties #5852
   makes contractual. Platform metrics (exact sizes, fonts) are
-  explicitly *not* expected outputs.
+  explicitly _not_ expected outputs.
 - **Custom GUI:** the presentation chosen per node (standard vs.
   which override) plus the same accessibility tree as native,
   because #5853 overrides change presentation, never semantics.
@@ -181,7 +181,7 @@ or decision, with the reason in that change.
 
 - Every element kind in the #5849 vocabulary and every assertion role
   in the #5850 vocabulary must have at least one corpus case, or the
-  suite's own coverage check fails the build of the *suite* (the
+  suite's own coverage check fails the build of the _suite_ (the
   pipeline reports the gap; it does not block unrelated programme
   builds).
 - The per-target coverage report (§2.1 stage 5) lists, per target:
@@ -207,7 +207,7 @@ One toolchain surface, owned by follow-up #7920:
 - **Preview:** one command builds every target's artefact from the
   current source and tables and presents them together with the
   coverage/conflict report, so an author sees the web rendering, the
-  native control/a11y shape, and the GUI presentation choice *before*
+  native control/a11y shape, and the GUI presentation choice _before_
   committing — preview is the pipeline run in report mode, not a
   second implementation of the rendering rules.
 - **No separate author dialect:** tooling consumes exactly the

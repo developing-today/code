@@ -35,7 +35,7 @@ decisions") and it designs no importer (importers: #6436, #6438,
 Attachments are addressable resources with their own identity
 (Joplin-resources / Logseq-assets shape, matrix §3.6/§3.7 and §5
 #5844), stored as content-addressed payloads with an object record
-in the #2048 model. Pages and blocks *reference* an attachment;
+in the #2048 model. Pages and blocks _reference_ an attachment;
 they do not contain a copy of it.
 
 Evidence: attachments are first-class resources in the local-first
@@ -143,8 +143,7 @@ must satisfy for attachments.
    never mutate the source payload. Computed derivatives (OCR
    output, thumbnails/previews) are separate objects that can be
    regenerated or discarded. Authored annotations are **not**
-   derived state: they are durable user-authored objects (decision
-   3) and are never discarded or rebuilt as part of clearing or
+   derived state: they are durable user-authored objects (decision 3) and are never discarded or rebuilt as part of clearing or
    regenerating derived state.
 5. **Sync shape:** payloads sync as content-addressed blobs,
    chunked and resumable; object records (metadata, derivatives,

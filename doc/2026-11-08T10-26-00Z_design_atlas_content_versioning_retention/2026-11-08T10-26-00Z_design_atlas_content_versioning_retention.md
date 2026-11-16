@@ -40,7 +40,7 @@ to the exact state that was served.
 ### 2.1 Identity: file id vs version id
 
 - A **logical file** is identified by a stable `file_id`, minted by
-  Atlas at first ingestion. A path is an *attribute of a version*,
+  Atlas at first ingestion. A path is an _attribute of a version_,
   never the identity: paths change (renames), collide across sources,
   and disappear. Two sources may hold files at the same path; they are
   different logical files unless a lineage edge (§3) says otherwise.
@@ -61,13 +61,13 @@ Versions of one file form a chain; lineage is also where a file's
 identity survives structural change. Edges are first-class rows,
 each with a `kind`, evidence, and confidence:
 
-| edge kind | meaning |
-|---|---|
-| `edit` | version *n+1* is the successor of version *n* at the same path |
-| `rename` | successor at a different path, same logical file |
-| `split` | one file's lineage continues in two or more files |
-| `merge` | two or more files' lineages continue in one file |
-| `tombstone` | the file was deleted at the source; head resolves to nothing |
+| edge kind   | meaning                                                        |
+| ----------- | -------------------------------------------------------------- |
+| `edit`      | version _n+1_ is the successor of version _n_ at the same path |
+| `rename`    | successor at a different path, same logical file               |
+| `split`     | one file's lineage continues in two or more files              |
+| `merge`     | two or more files' lineages continue in one file               |
+| `tombstone` | the file was deleted at the source; head resolves to nothing   |
 
 The **head** of a file is the version reachable by following the
 successor chain to its end — or a tombstone marker (§5.2). Split and
@@ -121,7 +121,7 @@ silently hit the rename-detection limit. Therefore:
   below threshold, the path starts a new logical file. A later,
   stronger signal may supersede an edge — edges are versioned too,
   and resolution (§5) uses the current edge set.
-- Commit hygiene is a *hint quality* lever, not a correctness
+- Commit hygiene is a _hint quality_ lever, not a correctness
   requirement: source repos SHOULD land renames as rename-only
   commits (`git mv`, no simultaneous edit) so signal (a) is strong.
   Atlas must remain correct when they do not — that is the normal
@@ -139,7 +139,7 @@ No diff machinery exists at all, so lineage is inferred entirely:
 - **Doc trees and file shares**: identity is anchored on the
   source-native object id where the source provides one (drive file
   ids, note ids); where it does not, on `(source, content-hash
-  neighbourhood)` — a new object whose chunks substantially overlap
+neighbourhood)` — a new object whose chunks substantially overlap
   a recently deleted object's is proposed as its rename successor,
   using the same segment-association scoring as §3.1(b).
 - **Splits/merges** in non-git sources are detected the same way:
@@ -154,7 +154,7 @@ No diff machinery exists at all, so lineage is inferred entirely:
 
 #3125 (2026-10-31) rules: **keep ALL data; nothing stripped to save
 space; only byte-identical dupes cleaned.** The 2026-11-04 brief
-deliberately evolves that rule for *versions*: a version may be
+deliberately evolves that rule for _versions_: a version may be
 retired, but the default is keep, and retirement is a conjunction,
 never a single signal:
 
@@ -162,7 +162,7 @@ never a single signal:
 > fires for it, **and (b)** the retention rule for its class (§4.2)
 > permits retirement. If either side says keep, the version is kept.
 
-Class rules may only *narrow* what triggers can retire (longer
+Class rules may only _narrow_ what triggers can retire (longer
 windows, more increments, keep-head-always); no class rule may retire
 a version no trigger fired on. The head version of a live file and a
 tombstoned file's last version follow §4.2's per-class rule — the
@@ -175,13 +175,13 @@ Classes follow the classification manifest's vocabulary. Defaults
 below are starting values for the rule engine (#6041) to parameterize,
 not constants in code; who may override follows the row.
 
-| class | by date | by increments | by access | overrides |
-|---|---|---|---|---|
-| code | retire non-head versions older than 400 d | keep newest 50 versions per file | never-retrieved after 180 d may retire | repo owner (per-repo rule) |
-| docs | older than 730 d | keep newest 25 | never-retrieved after 365 d | corpus owner |
-| session logs | older than 180 d | keep newest 10 | never-retrieved after 90 d | program owner (#6018) |
-| chat logs | older than 365 d | keep newest 10 | never-retrieved after 180 d | program owner |
-| generated reports | older than 90 d | keep newest 5 | never-retrieved after 30 d | generating job's owner |
+| class             | by date                                   | by increments                    | by access                              | overrides                  |
+| ----------------- | ----------------------------------------- | -------------------------------- | -------------------------------------- | -------------------------- |
+| code              | retire non-head versions older than 400 d | keep newest 50 versions per file | never-retrieved after 180 d may retire | repo owner (per-repo rule) |
+| docs              | older than 730 d                          | keep newest 25                   | never-retrieved after 365 d            | corpus owner               |
+| session logs      | older than 180 d                          | keep newest 10                   | never-retrieved after 90 d             | program owner (#6018)      |
+| chat logs         | older than 365 d                          | keep newest 10                   | never-retrieved after 180 d            | program owner              |
+| generated reports | older than 90 d                           | keep newest 5                    | never-retrieved after 30 d             | generating job's owner     |
 
 Reading the table: a version retires when it is past its class's date
 threshold, **or** more than the class's increment count of newer
@@ -216,7 +216,7 @@ column only).
 ### 4.4 Retirement is a report before it is a deletion
 
 No silent vacuum. The rule engine's first mode is a **dry-run
-reporter** (#6041): it lists the versions each rule *would* retire,
+reporter** (#6041): it lists the versions each rule _would_ retire,
 with the trigger and class rule that fired, and nothing is deleted
 from a report alone. Deletion runs are separate, logged acts: every
 retired version leaves a tombstone record (file id, version seq,
@@ -290,7 +290,7 @@ reason §5.1 forbids destructive replacement.
   metadata needed to restore its versions without the hot index, so
   cold storage is recoverable on its own evidence.
 - **Boundary with PITR.** Turso point-in-time recovery is whole-
-  database disaster recovery (≤90-day windows) and is *never* a
+  database disaster recovery (≤90-day windows) and is _never_ a
   corpus-retention mechanism — per the decision record of PR #6269,
   per-version lineage, cold rollout, and policy deletion all live in
   Atlas, not in database recovery.

@@ -19,13 +19,13 @@ function completeSection(): Record<string, unknown> {
     rankings: [{ testRunKey: "run-1", family: "GPT" }],
     thresholds: [{ testRunKey: "run-1", target: 42, usable: true }],
     configs: [],
-    testRuns: [{ testRunKey: "run-1", snapshotDate: "2026-10-01" }],
+    testRuns: [{ testRunKey: "run-1", modelVariantKey: "openai|gpt-6-luna|max", snapshotDate: "2026-10-01" }],
   };
 }
 
 function sectionWithSnapshotDate(snapshotDate: unknown): Record<string, unknown> {
   const s = completeSection();
-  s.testRuns = [{ testRunKey: "run-1", snapshotDate }];
+  s.testRuns = [{ testRunKey: "run-1", modelVariantKey: "openai|gpt-6-luna|max", snapshotDate }];
   return s;
 }
 
@@ -39,8 +39,8 @@ describe("isAaSection snapshotDate validity (#5289)", () => {
   test("rejects a mixed section when any test run carries a bad snapshotDate", () => {
     const s = completeSection();
     s.testRuns = [
-      { testRunKey: "run-1", snapshotDate: "2026-09-28" },
-      { testRunKey: "run-2", snapshotDate: "2026-02-30" },
+      { testRunKey: "run-1", modelVariantKey: "openai|gpt-6-luna|max", snapshotDate: "2026-09-28" },
+      { testRunKey: "run-2", modelVariantKey: "openai|gpt-6-luna|max", snapshotDate: "2026-02-30" },
     ];
     expect(isAaSection(s)).toBe(false);
   });

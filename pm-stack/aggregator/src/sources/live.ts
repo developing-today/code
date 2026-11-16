@@ -5,10 +5,12 @@
 // provenance strings say exactly which facet is live vs fixture-backed.
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { createHash } from "node:crypto";
-import { dirname } from "node:path";
+import { dirname, join } from "node:path";
 import type { Config } from "../config.ts";
 import { applyBoardDonePolicy, isRetiredDoneTableTitle } from "../board-policy.ts";
-import { isAaSection } from "../aa.ts";
+import { AA_PLAN_FACTS, aaApplyPriceOverlay, isAaSection } from "../aa.ts";
+import { aaCacheFileName, aaPricesFingerprint, isAaBatchCacheEntry } from "../aa-batches.ts";
+import { isBatchUuid } from "../aa-batch-sql.ts";
 import { isDnsSection } from "../dns.ts";
 import {
   diagnoseOrchestrationSection,
@@ -35,11 +37,24 @@ import {
   type KaneoCardSnapshot,
 } from "../activity.ts";
 import { isRecord } from "../validate.ts";
-import { buildAttentionFlags } from "../derive.ts";
+import { fetchIssueBodySnapshot, type Phase12Snapshot } from "../phase12.ts";
+import { loadPhaseMapping, type PhaseMappingSnapshot } from "../phase-mapping.ts";
+import { fetchBuildHealthSnapshot, type BuildHealthSnapshot } from "../build-health.ts";
+import {
+  fetchQueueSnapshot,
+  readBrokerToken,
+  unavailableQueueSnapshot,
+  QUEUE_STALE_MS,
+  type QueueSnapshot,
+} from "../queue.ts";
+import { F12_DESIGN_ISSUE_NUMBER, parseF12Items, parseTimelinePrRefs, type F12PrRef } from "../f12-readiness.ts";
+import { buildAttentionFlags, buildQuotaActions, quotaActionFlags } from "../derive.ts";
 import { validateRoadmapHorizon } from "../roadmap-horizon.ts";
+import { describeRepoRoadmapSection, mergeRoadmapRows, readRepoRoadmaps } from "./repo-roadmap.ts";
 import { summarizeDns } from "../dns.ts";
 import {
   applyCloudflareExport,
+  applyPaygSettlements,
   applySupabaseExport,
   extractCharges,
   extractPaygLines,
@@ -57,6 +72,20 @@ import { overlayQuotaCurrent, overlayTursoUsage, parseQuotaCurrent } from "../qu
 import { SnapshotStore } from "../snapshots.ts";
 import { gristDocUrl, kaneoTaskUrl } from "../service-links.ts";
 import { fixtureSource } from "./fixtures.ts";
+
+// Cap `t` at `max` UTF-16 code units, but never leave half of a surrogate
+// pair at the cut (#7740, mirroring the #7694-family capUnits guard): an
+// astral character straddling the cap is dropped whole, so a persisted
+// event field can never end in a lone high surrogate.
+function capUnits(t: string, max: number): string {
+  if (t.length <= max) return t;
+  let end = max;
+  const before = t.charCodeAt(end - 1);
+  const after = t.charCodeAt(end);
+  if (before >= 0xd800 && before <= 0xdbff && after >= 0xdc00 && after <= 0xdfff) end--;
+  return t.slice(0, end);
+}
+
 import { mapServerSessions, type MappedSessions } from "./opencode.ts";
 import {
   type AaFeedSection,
@@ -229,7 +258,9 @@ async function kaneoBoard(cfg: Config, cookie: string): Promise<{ items: BoardIt
             // non-numeric) must not become a board link renderers throw
             // on; the card survives, the drop is traced.
             if (!isValidRef(ref)) {
-              console.error(`[board] WARNING: dropping Kaneo link with invalid ref ${JSON.stringify(ref)} for task ${t.id} (#6243)`);
+              console.error(
+                `[board] WARNING: dropping Kaneo link with invalid ref ${JSON.stringify(ref)} for task ${t.id} (#6243)`,
+              );
               return [];
             }
             return [{ ref, relation: "tracks" as const }];
@@ -471,6 +502,111 @@ export function latestPerRef(comments: Comment[]): Comment[] {
   return [...byRef.values()];
 }
 
+/** TTL for the latest-comments cache below (#9781). */
+export const LATEST_COMMENTS_TTL_MS = 60_000;
+
+/**
+ * Per-ref stale-while-revalidate cache for the briefs' latest comments
+ * (#9781). projectorLatestComments fans out one projector read per ref
+ * with an 8 s abort on every fetch, and the board/program/attention
+ * handlers call it on EVERY request — so whenever the projector is
+ * slow (measured 11.2 s for a /comments read while its 15-minute
+ * /reconcile sweep occupies the process), each page assembly pays the
+ * full ~8.2 s abort cliff, and /program's assembly crosses its 10 s
+ * deadline into a 503. This cache gives the read the same contract the
+ * page assemblies already have (#1179/#5082): fresh entries serve
+ * directly; expired entries serve the stale comment immediately and
+ * refresh single-flight in the background; only a never-seen ref pays
+ * a projector read on the request path. A failed fetch never poisons
+ * the cache: a failed refresh keeps serving the stale value, and a
+ * failed cold read falls back (fixtures, in the live source) without
+ * caching the failure, so the next request retries the projector.
+ *
+ * Truthfulness: a brief's "latest comment" can lag reality by at most
+ * the TTL plus one refresh — the same 60 s bound the health probe
+ * cache (#1147) already accepts. Only the latest comment per ref is
+ * cached, never a comment list, so nothing else can be served stale.
+ */
+export class LatestCommentsCache {
+  private entries = new Map<RefKey, { at: number; comment: Comment | null }>();
+  private inFlight = new Set<RefKey>();
+
+  constructor(
+    private readonly fetchLatest: (refs: RefKey[]) => Promise<Comment[] | null>,
+    private readonly fallback: (refs: RefKey[]) => Promise<Comment[]>,
+    private readonly ttlMs: number = LATEST_COMMENTS_TTL_MS,
+    private readonly now: () => number = Date.now,
+  ) {}
+
+  /** The latest comment for each requested ref that has one, in ref order. */
+  async get(refs: RefKey[]): Promise<Comment[]> {
+    const at = this.now();
+    const byRef = new Map<RefKey, Comment>();
+    const missing: RefKey[] = [];
+    const stale: RefKey[] = [];
+    for (const ref of refs) {
+      const hit = this.entries.get(ref);
+      if (hit && at - hit.at < this.ttlMs) {
+        if (hit.comment) byRef.set(ref, hit.comment);
+      } else if (hit) {
+        if (hit.comment) byRef.set(ref, hit.comment);
+        stale.push(ref);
+      } else {
+        missing.push(ref);
+      }
+    }
+    if (stale.length) this.refresh(stale);
+    if (missing.length) {
+      const live = await this.fetchLatest(missing);
+      if (live) {
+        const fetched = new Map(live.map((c) => [c.ref, c]));
+        for (const ref of missing) {
+          const comment = fetched.get(ref) ?? null;
+          this.store(ref, comment);
+          if (comment) byRef.set(ref, comment);
+        }
+      } else {
+        for (const c of await this.fallback(missing)) byRef.set(c.ref, c);
+      }
+    }
+    return refs.flatMap((ref) => {
+      const c = byRef.get(ref);
+      return c ? [c] : [];
+    });
+  }
+
+  /** Background re-read behind expired entries; never throws. */
+  private refresh(refs: RefKey[]): void {
+    const todo = refs.filter((ref) => !this.inFlight.has(ref));
+    if (!todo.length) return;
+    for (const ref of todo) this.inFlight.add(ref);
+    this.fetchLatest(todo).then(
+      (live) => {
+        if (live) {
+          const fetched = new Map(live.map((c) => [c.ref, c]));
+          for (const ref of todo) this.store(ref, fetched.get(ref) ?? null);
+        }
+        // A failed refresh keeps the stale entries; the next expired
+        // read retries.
+        for (const ref of todo) this.inFlight.delete(ref);
+      },
+      () => {
+        for (const ref of todo) this.inFlight.delete(ref);
+      },
+    );
+  }
+
+  private store(ref: RefKey, comment: Comment | null): void {
+    // Soft cap: briefs only ever ask for pool/board/attention refs
+    // (hundreds), so this only trims pathological growth.
+    if (!this.entries.has(ref) && this.entries.size >= 4096) {
+      const oldest = this.entries.keys().next().value;
+      if (oldest !== undefined) this.entries.delete(oldest);
+    }
+    this.entries.set(ref, { at: this.now(), comment });
+  }
+}
+
 /**
  * The latest comment for each ref, one projector read per ref (#1279).
  * The bulk /comments read applies its row limit across every requested
@@ -516,7 +652,9 @@ export async function projectorLinks(baseUrl: string, subject: string): Promise<
   // bad registry row stays visible instead of silently vanishing.
   return rows.flatMap((row) => {
     if (!isValidRef(row.ref)) {
-      console.error(`[registry] WARNING: dropping projector link with invalid ref ${JSON.stringify(row.ref)} for subject ${subject} (#6211)`);
+      console.error(
+        `[registry] WARNING: dropping projector link with invalid ref ${JSON.stringify(row.ref)} for subject ${subject} (#6211)`,
+      );
       return [];
     }
     return [{ ref: row.ref, relation: asRelation(row.relation) }];
@@ -590,7 +728,10 @@ export function titleRefs(title: string, onInvalid?: (ref: string) => void): Ref
   }
   const aliases: { at: number; repo: string }[] = [];
   for (const m of title.matchAll(/\b(code|opencode|openchamber|nix)\b/gi)) {
-    aliases.push({ at: m.index ?? 0, repo: TITLE_REPO_ALIASES[m[1].toLowerCase()] });
+    const alias = m[1].toLowerCase();
+    if (Object.hasOwn(TITLE_REPO_ALIASES, alias)) {
+      aliases.push({ at: m.index ?? 0, repo: TITLE_REPO_ALIASES[alias] });
+    }
   }
   if (aliases.length) {
     for (const m of title.matchAll(/#(\d+)/g)) {
@@ -660,9 +801,7 @@ export function inFlightBoardItems(section: OrchestrationSection, existing: Boar
     const refs: RefKey[] = [];
     const add = (ref: unknown) => {
       if (!isValidRef(ref)) {
-        console.error(
-          `[board] WARNING: dropping invalid in-flight ref ${JSON.stringify(ref)} for task ${item.id}`,
-        );
+        console.error(`[board] WARNING: dropping invalid in-flight ref ${JSON.stringify(ref)} for task ${item.id}`);
         return;
       }
       if (!refs.includes(ref)) refs.push(ref);
@@ -792,6 +931,20 @@ export function liveSource(
   // In-memory on purpose: a restart re-baselines silently, and the
   // ingestion store's persisted seen set is the durable dedupe.
   let prevKaneoCards: Map<string, KaneoCardSnapshot> | null = null;
+  // #9781: the briefs' latest-comments cache for this source instance.
+  // The fetch seam keeps projectorLatestComments' fail-soft contract
+  // (null = the whole batch failed); the fallback keeps the pre-cache
+  // behaviour for never-seen refs whose projector read failed.
+  const latestCommentsCache = new LatestCommentsCache(
+    async (refs) => {
+      const baseUrl = cfg.projector.baseUrl;
+      if (!baseUrl) return null;
+      const live = await projectorLatestComments(baseUrl, refs);
+      if (live) provenance.comments = "live (projector)";
+      return live;
+    },
+    async (refs) => latestPerRef(await fix.comments(refs)),
+  );
   async function publishKaneoFreshness(board: readonly BoardItem[]): Promise<void> {
     if (!opts?.onFreshness) return;
     const cards = board
@@ -826,7 +979,9 @@ export function liveSource(
         reason: "source-event",
       });
     } catch (err) {
-      console.error(`[freshness] WARNING: kaneo invalidation publish failed: ${err instanceof Error ? err.message : String(err)}`);
+      console.error(
+        `[freshness] WARNING: kaneo invalidation publish failed: ${err instanceof Error ? err.message : String(err)}`,
+      );
     }
   }
   // #3321: per-card ingested-transition counters (the `seq` on
@@ -996,6 +1151,23 @@ export function liveSource(
   // are read from its state file at request time (the port changes
   // across restarts). Mapped sessions are cached for 45 s (#890).
   let laptopCache: { value: MappedSessions; at: number } | null = null;
+  // #5082 (2026-11-14): a failed map is remembered briefly, and one
+  // in-flight map is shared between concurrent callers.
+  // mapServerSessions walks up to ~120 sequential fetches with 10 s
+  // aborts, so when a server stalls, one attempt costs 6-10.5 s
+  // (measured live) — and with success-only caching, EVERY caller
+  // paid that stall again: registry() runs on the request path of
+  // /program, /api/program.json and /board (via commentFormOpts),
+  // and pool-quota-steward run 381 watched three sequential
+  // assemblies each pay ~10.5 s, two of them crossing the dashboard
+  // deadline into 503s. The 15 s negative window matches the
+  // failure's timescale (a stalled server recovers in seconds to
+  // minutes); a null map already reads as "unreachable on the last
+  // read" to the coverage facet, so holding it briefly changes no
+  // one's story, only how often the stall is re-paid.
+  let laptopFailureAt = 0;
+  let laptopInFlight: Promise<MappedSessions | null> | null = null;
+  const LAPTOP_FAILURE_CACHE_MS = 15_000;
   // #1226: the Needs-Drew label census hits the GitHub search API
   // (8 queries per sweep). The sweeper caches for 5 minutes and shares
   // one in-flight sweep between concurrent callers, so the three
@@ -1010,25 +1182,225 @@ export function liveSource(
     };
     return getJson(url, headers);
   });
+  // #9922: the Path to Phase 12 body feed — one GraphQL read of
+  // #1235's body, cached for 5 minutes and shared in-flight (same
+  // discipline as the Needs-Drew sweeper above), fail-soft to the
+  // last good snapshot or null so a GitHub outage renders the panel
+  // unavailable instead of breaking /program/<id>.
+  let phase12Cache: { value: Phase12Snapshot; at: number } | null = null;
+  let phase12InFlight: Promise<Phase12Snapshot | null> | null = null;
+  async function phase12Snapshot(): Promise<Phase12Snapshot | null> {
+    if (phase12Cache && Date.now() - phase12Cache.at < 5 * 60_000) return phase12Cache.value;
+    if (!phase12InFlight) {
+      phase12InFlight = (async () => {
+        const token = process.env.PM_AGG_GITHUB_TOKEN ?? process.env.GITHUB_TOKEN;
+        if (!token) return phase12Cache?.value ?? null;
+        try {
+          const snap = await fetchIssueBodySnapshot(token);
+          phase12Cache = { value: snap, at: Date.now() };
+          return snap;
+        } catch {
+          return phase12Cache?.value ?? null;
+        }
+      })().finally(() => {
+        phase12InFlight = null;
+      });
+    }
+    return phase12InFlight;
+  }
+  // #9923 step 3: the F-item mapping feed — planning/roadmaps/id.md
+  // in the code checkout, parsed and cached for 5 minutes, shared
+  // in-flight and fail-soft to the last good snapshot or null (same
+  // discipline as the phase12 feed above).
+  let phaseMappingCache: { value: PhaseMappingSnapshot; at: number } | null = null;
+  let phaseMappingInFlight: Promise<PhaseMappingSnapshot | null> | null = null;
+  async function phaseMappingSnapshot(): Promise<PhaseMappingSnapshot | null> {
+    if (phaseMappingCache && Date.now() - phaseMappingCache.at < 5 * 60_000) return phaseMappingCache.value;
+    if (!phaseMappingInFlight) {
+      phaseMappingInFlight = (async () => {
+        try {
+          const snap = await loadPhaseMapping(cfg.codeCheckout);
+          if (snap) phaseMappingCache = { value: snap, at: Date.now() };
+          return snap ?? phaseMappingCache?.value ?? null;
+        } catch {
+          return phaseMappingCache?.value ?? null;
+        }
+      })().finally(() => {
+        phaseMappingInFlight = null;
+      });
+    }
+    return phaseMappingInFlight;
+  }
+  // #9924: the Build health snapshot — Actions API reads for the
+  // id-gating lanes + the e2e nightly, cached for 5 minutes and
+  // shared in-flight (same discipline as the phase12 feed above),
+  // fail-soft to the last good snapshot or null.
+  let buildHealthCache: { value: BuildHealthSnapshot; at: number } | null = null;
+  let buildHealthInFlight: Promise<BuildHealthSnapshot | null> | null = null;
+  async function buildHealthSnapshot(): Promise<BuildHealthSnapshot | null> {
+    if (buildHealthCache && Date.now() - buildHealthCache.at < 5 * 60_000) return buildHealthCache.value;
+    if (!buildHealthInFlight) {
+      buildHealthInFlight = (async () => {
+        try {
+          const token = process.env.PM_AGG_GITHUB_TOKEN ?? process.env.GITHUB_TOKEN ?? null;
+          const snap = await fetchBuildHealthSnapshot(token);
+          buildHealthCache = { value: snap, at: Date.now() };
+          return snap;
+        } catch {
+          return buildHealthCache?.value ?? null;
+        }
+      })().finally(() => {
+        buildHealthInFlight = null;
+      });
+    }
+    return buildHealthInFlight;
+  }
+  // #9926: the readiness panel's two extra reads — #534's body
+  // (design checklist) through the phase12 body feed, and PR
+  // cross-references from each F-item issue's timeline. Both cached
+  // for 5 minutes and shared in-flight, fail-soft like the feeds
+  // above: a failed timeline read drops that issue's PRs, never
+  // the panel.
+  let phase12DesignCache: { value: Phase12Snapshot; at: number } | null = null;
+  let phase12DesignInFlight: Promise<Phase12Snapshot | null> | null = null;
+  async function phase12DesignSnapshot(): Promise<Phase12Snapshot | null> {
+    if (phase12DesignCache && Date.now() - phase12DesignCache.at < 5 * 60_000) return phase12DesignCache.value;
+    if (!phase12DesignInFlight) {
+      phase12DesignInFlight = (async () => {
+        const token = process.env.PM_AGG_GITHUB_TOKEN ?? process.env.GITHUB_TOKEN;
+        if (!token) return phase12DesignCache?.value ?? null;
+        try {
+          const snap = await fetchIssueBodySnapshot(token, fetch, () => new Date(), F12_DESIGN_ISSUE_NUMBER);
+          phase12DesignCache = { value: snap, at: Date.now() };
+          return snap;
+        } catch {
+          return phase12DesignCache?.value ?? null;
+        }
+      })().finally(() => {
+        phase12DesignInFlight = null;
+      });
+    }
+    return phase12DesignInFlight;
+  }
+  let f12PrRefsCache: { value: Map<number, F12PrRef[]>; at: number } | null = null;
+  let f12PrRefsInFlight: Promise<Map<number, F12PrRef[]> | null> | null = null;
+  async function f12PrRefsSnapshot(): Promise<Map<number, F12PrRef[]> | null> {
+    if (f12PrRefsCache && Date.now() - f12PrRefsCache.at < 5 * 60_000) return f12PrRefsCache.value;
+    if (!f12PrRefsInFlight) {
+      f12PrRefsInFlight = (async () => {
+        const snap = await phase12Snapshot();
+        if (!snap) return f12PrRefsCache?.value ?? null;
+        const token = process.env.PM_AGG_GITHUB_TOKEN ?? process.env.GITHUB_TOKEN;
+        const headers: Record<string, string> = {
+          Accept: "application/vnd.github+json",
+          "X-GitHub-Api-Version": "2022-11-28",
+          "User-Agent": "pm-aggregator-f12-readiness",
+          ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        };
+        const out = new Map<number, F12PrRef[]>();
+        await Promise.all(
+          parseF12Items(snap.body).map(async (item) => {
+            try {
+              const res = await fetch(
+                `https://api.github.com/repos/developing-today/code/issues/${item.issueNumber}/timeline?per_page=100`,
+                { headers, signal: AbortSignal.timeout(20_000) },
+              );
+              if (!res.ok) return;
+              out.set(item.issueNumber, parseTimelinePrRefs(await res.json()));
+            } catch {
+              // One issue's timeline failing drops only its PR column.
+            }
+          }),
+        );
+        f12PrRefsCache = { value: out, at: Date.now() };
+        return out;
+      })().finally(() => {
+        f12PrRefsInFlight = null;
+      });
+    }
+    return f12PrRefsInFlight;
+  }
+  // #1116: a laptop leg's health, tracked per state file so the
+  // attention provenance can say which legs are dead instead of the
+  // failure staying silent. Before this, the OpenChamber-managed
+  // server's state file went stale on 2026-10-29 and the leg died
+  // unnoticed for days, leaving attention single-legged.
+  const laptopLegs: { standing: boolean | null; openchamber: boolean | null } = {
+    standing: null,
+    openchamber: null,
+  };
   async function laptopMapped(): Promise<MappedSessions | null> {
     if (laptopCache && Date.now() - laptopCache.at < 45_000) return laptopCache.value;
-    const state = JSON.parse(await readFile(cfg.openchamberStateFile, "utf8")) as {
-      port?: number;
-      password?: string;
-    };
-    if (!state.port || !state.password) return null;
-    const mapped = await mapServerSessions(
-      {
-        baseUrl: `http://127.0.0.1:${state.port}`,
-        password: state.password,
-      },
-      Date.now(),
-      { source: "opencode-laptop" },
-    );
-    if (!mapped) return null;
-    laptopCache = { value: mapped, at: Date.now() };
-    return mapped;
+    if (!laptopInFlight) {
+      if (Date.now() - laptopFailureAt < LAPTOP_FAILURE_CACHE_MS) return null;
+      laptopInFlight = (async () => {
+        const mapped = await mapLaptopServers();
+        if (mapped) {
+          laptopCache = { value: mapped, at: Date.now() };
+        } else {
+          laptopFailureAt = Date.now();
+        }
+        return mapped;
+      })().finally(() => {
+        laptopInFlight = null;
+      });
+    }
+    return laptopInFlight;
   }
+
+  async function mapLaptopServers(): Promise<MappedSessions | null> {
+    // Leg 1: the standing OpenCode server (opencode.service) — its own
+    // state file carries the current url + password and is rewritten
+    // on every restart, so this leg survives the restart churn that
+    // emptied the collector feed in the 2026-11-10 fixture incident.
+    try {
+      const state = JSON.parse(await readFile(cfg.opencodeServerStateFile, "utf8")) as {
+        url?: string;
+        password?: string;
+      };
+      if (state.url && state.password) {
+        const mapped = await mapServerSessions({ baseUrl: state.url, password: state.password }, Date.now(), {
+          source: "opencode-laptop",
+        });
+        laptopLegs.standing = mapped !== null;
+        if (mapped) return mapped;
+      } else {
+        laptopLegs.standing = false;
+      }
+    } catch {
+      laptopLegs.standing = false;
+      /* this leg fails soft; the OpenChamber leg is tried next */
+    }
+    // Leg 2: the OpenChamber-managed server, when one is running.
+    try {
+      const state = JSON.parse(await readFile(cfg.openchamberStateFile, "utf8")) as {
+        port?: number;
+        password?: string;
+      };
+      if (!state.port || !state.password) {
+        laptopLegs.openchamber = false;
+        return null;
+      }
+      const mapped = await mapServerSessions(
+        { baseUrl: "http://127.0.0.1:" + state.port, password: state.password },
+        Date.now(),
+        { source: "opencode-laptop" },
+      );
+      laptopLegs.openchamber = mapped !== null;
+      if (!mapped) return null;
+      return mapped;
+    } catch {
+      laptopLegs.openchamber = false;
+      return null;
+    }
+  }
+  function laptopLegsNote(): string {
+    const bits: string[] = [];
+    if (laptopLegs.standing === false) bits.push("standing-server leg down");
+    if (laptopLegs.openchamber === false) bits.push("openchamber leg down");
+    return bits.length ? " [laptop legs: " + bits.join(", ") + "]" : "";
+  }
+
   async function laptopSessions(): Promise<SessionFeedEntry[] | null> {
     const mapped = await laptopMapped();
     return mapped ? mapped.entries : null;
@@ -1069,7 +1441,7 @@ export function liveSource(
             actor: "aggregator",
             kind: "session-outcome",
             ref: `session:${r.source}:${r.id}`,
-            summary: `session ${r.label} (${r.agentLabel}) merged into the registry`.slice(0, 500),
+            summary: capUnits(`session ${r.label} (${r.agentLabel}) merged into the registry`, 500),
           });
         } catch (err) {
           console.error(
@@ -1099,6 +1471,56 @@ export function liveSource(
     return merged;
   }
 
+  // The quota view with the gatherer's quota-current overlay applied —
+  // the same view quota() serves. Usage-derived quota flags/actions must
+  // come from THIS view, not the unoverlaid feed quota (Codex P2,
+  // PR #4695): a pool the gatherer now reports healthy must clear its
+  // walled/high-usage actions on the usage strip too.
+  async function overlayCurrent(base: QuotaView): Promise<QuotaView> {
+    try {
+      const raw = await readFile(cfg.quotaCurrentFile, "utf8");
+      const file = parseQuotaCurrent(JSON.parse(raw));
+      if (file) return overlayQuotaCurrent(base, file);
+    } catch {
+      /* no gatherer file (or unreadable): base view stands */
+    }
+    return base;
+  }
+
+  // #9920: the read-only fleet-queue collector — POST /health +
+  // /list (rich) against the laptop queue-broker with the agent
+  // token from its file, cached 60s and shared in-flight. Fail-soft:
+  // a failed read re-serves the last good snapshot forced stale
+  // (available=false, error named), or the unavailable snapshot
+  // when nothing good exists yet — never a throw into a page.
+  let queueCache: { value: QueueSnapshot; at: number } | null = null;
+  let queueInFlight: Promise<QueueSnapshot> | null = null;
+  async function queueSnapshot(): Promise<QueueSnapshot> {
+    if (queueCache && Date.now() - queueCache.at < 60_000) {
+      const v = queueCache.value;
+      return { ...v, stale: v.stale || Date.now() - v.fetchedAt > QUEUE_STALE_MS };
+    }
+    if (!queueInFlight) {
+      queueInFlight = (async () => {
+        try {
+          const token = await readBrokerToken(cfg.queueBrokerTokenFile);
+          if (!token) throw new Error(`queue broker token file unreadable: ${cfg.queueBrokerTokenFile}`);
+          const snap = await fetchQueueSnapshot(cfg.queueBrokerUrl, token);
+          queueCache = { value: snap, at: Date.now() };
+          return snap;
+        } catch (err) {
+          const msg = err instanceof Error ? err.message : String(err);
+          if (queueCache) {
+            return { ...queueCache.value, available: false, stale: true, errors: [msg] };
+          }
+          return unavailableQueueSnapshot(Date.now(), msg);
+        }
+      })().finally(() => {
+        queueInFlight = null;
+      });
+    }
+    return queueInFlight;
+  }
   return {
     async board() {
       try {
@@ -1242,13 +1664,28 @@ export function liveSource(
       try {
         const rows = await gristRoadmap(cfg);
         if (rows.length > 0) {
-          provenance.roadmap = "live (Grist)";
+          let merged = rows;
+          let label = "live (Grist)";
           if (cfg.projector.baseUrl) {
-            const enriched = await enrichWithRegistryLinks(cfg.projector.baseUrl, rows, (r) => r.subject);
-            provenance.roadmap = "live (Grist + projector links)";
-            return enriched;
+            merged = await enrichWithRegistryLinks(cfg.projector.baseUrl, rows, (r) => r.subject);
+            label = "live (Grist + projector links)";
           }
-          return rows;
+          // #1738: merge the repos' own roadmap files in alongside the
+          // Grist rows. The repo-file read never throws (its failures
+          // are section states), but guard anyway: a broken repo source
+          // must never take the Grist roadmap down with it. Empty
+          // sections name their state + reason in the label (#1500).
+          try {
+            const repo = await readRepoRoadmaps(cfg);
+            const out = mergeRoadmapRows(merged, repo.rows);
+            merged = out.rows;
+            const sections = repo.sections.map(describeRepoRoadmapSection).join("; ");
+            label += ` + repo files (${sections}${out.collapsedCount ? `; ${out.collapsedCount} grist duplicate(s) collapsed` : ""})`;
+          } catch (err) {
+            label += ` + repo files (unreadable: ${err instanceof Error ? err.message : err})`;
+          }
+          provenance.roadmap = label;
+          return merged;
         }
       } catch (err) {
         provenance.roadmap = `fixtures (grist unreachable: ${err instanceof Error ? err.message : err})`;
@@ -1325,6 +1762,24 @@ export function liveSource(
     async needsDrew(): Promise<NeedsDrewCensus | null> {
       return needsDrewSweep();
     },
+    async phase12(): Promise<Phase12Snapshot | null> {
+      return phase12Snapshot();
+    },
+    async phaseMapping(): Promise<PhaseMappingSnapshot | null> {
+      return phaseMappingSnapshot();
+    },
+    async buildHealth(): Promise<BuildHealthSnapshot | null> {
+      return buildHealthSnapshot();
+    },
+    async phase12Design(): Promise<Phase12Snapshot | null> {
+      return phase12DesignSnapshot();
+    },
+    async f12PrRefs(): Promise<Map<number, F12PrRef[]> | null> {
+      return f12PrRefsSnapshot();
+    },
+    async queue(): Promise<QueueSnapshot | null> {
+      return queueSnapshot();
+    },
     async coverageCensus(): Promise<RepoCensus[] | null> {
       const feed = await getFeed();
       return coverageFromFeed(feed);
@@ -1340,14 +1795,13 @@ export function liveSource(
       return fix.comments(refs);
     },
     async latestComments(refs) {
-      if (cfg.projector.baseUrl) {
-        const live = await projectorLatestComments(cfg.projector.baseUrl, refs);
-        if (live) {
-          provenance.comments = "live (projector)";
-          return live;
-        }
+      if (!cfg.projector.baseUrl) {
+        return latestPerRef(await fix.comments(refs));
       }
-      return latestPerRef(await fix.comments(refs));
+      // #9781: ride the per-ref SWR cache (see LatestCommentsCache) —
+      // the uncached fan-out made /program and /board pay an ~8.2 s
+      // abort cliff on every request whenever the projector was slow.
+      return latestCommentsCache.get(refs);
     },
     async quota() {
       // Slice 1 (#890): quota comes from the fleet feed file produced
@@ -1486,17 +1940,26 @@ export function liveSource(
         const partial = {
           services: applySupabaseExport(applyCloudflareExport(feed.saas, cfExport), supabaseExport),
           uninstrumentedServices,
-          payg: feed.payg ?? [],
+          // #1056: feed lines are built by the collector without
+          // settlements — reconcile them against local history here,
+          // before attention flags are built from them (CodeRabbit,
+          // PR #10433: this branch previously returned unreconciled).
+          payg: applyPaygSettlements(feed.payg ?? [], Object.values(history).flat()),
           charges: feedCharges,
           subscriptions: feed.subscriptions ?? [],
         };
         partial.services = await tursoOverlay(cfg, partial.services);
+        const quotaForFlags = await overlayCurrent(feed.quota);
         return {
           ...partial,
           chargesNote: partial.charges.length
             ? undefined
             : "No charge evidence in the feed's records yet — rows appear as Plaid/Gmail receipt evidence is recorded (§2.4).",
-          attention: [...buildAttentionFlags(feed.quota, partial), ...feedChargeFlags],
+          attention: [
+            ...buildAttentionFlags(quotaForFlags, partial),
+            ...quotaActionFlags(buildQuotaActions(quotaForFlags, AA_PLAN_FACTS)),
+            ...feedChargeFlags,
+          ],
           domains,
           history,
         };
@@ -1519,7 +1982,7 @@ export function liveSource(
         const partial = {
           services: applySupabaseExport(applyCloudflareExport(extractSaasServices(doc), cfExport), supabaseExport),
           uninstrumentedServices,
-          payg: extractPaygLines(doc, registryText),
+          payg: extractPaygLines(doc, registryText, { settlements: Object.values(history).flat() }),
           charges: mergeChargeRows(feedCharges, extractCharges(doc, registryText)),
           subscriptions: extractSubscriptions(doc),
         };
@@ -1527,12 +1990,17 @@ export function liveSource(
         provenance.usage =
           "live (quota-view.md + provider registry, direct read — feed carries no hub sections yet)" +
           feedSanitizationNotes;
+        const quotaForFlags = await overlayCurrent(feed?.quota ?? (await fix.quota()));
         return {
           ...partial,
           chargesNote: partial.charges.length
             ? undefined
             : "No charge evidence in the local records yet — rows appear as Plaid/Gmail receipt evidence is recorded (§2.4).",
-          attention: [...buildAttentionFlags(feed?.quota ?? (await fix.quota()), partial), ...feedChargeFlags],
+          attention: [
+            ...buildAttentionFlags(quotaForFlags, partial),
+            ...quotaActionFlags(buildQuotaActions(quotaForFlags, AA_PLAN_FACTS)),
+            ...feedChargeFlags,
+          ],
           domains,
           history,
         };
@@ -1580,15 +2048,33 @@ export function liveSource(
       }
 
       if (byId.size > 0) {
-        provenance.attention = `live (${parts.join(" + ")})`;
+        provenance.attention = "live (" + parts.join(" + ") + ")" + laptopLegsNote();
         return [...byId.values()];
       }
-      provenance.attention = "fixtures (no live attention source reachable)";
-      return fix.attention();
+      // #1116 (2026-11-10): production attention must never serve the
+      // demo fixtures. Both live legs being empty/down is an outage
+      // state, not content: serve an empty list with the cause named
+      // in provenance (and logged), so consumers see "no data" rather
+      // than a plausible fake fleet whose synthetic session IDs 404
+      // against the real server. The incident: OpenCode server
+      // restarts emptied the collector feed for two runs and this
+      // branch served FIXTURE_ATTENTION for ~10 minutes.
+      console.error(
+        "[attention] no live attention source reachable (feed " +
+          (feed ? "present, " + feed.attention.length + " entries" : "unreadable") +
+          ";" +
+          (laptopLegsNote() || " laptop legs untested") +
+          ") — serving empty, NOT fixtures",
+      );
+      provenance.attention =
+        "unavailable (no live attention source reachable; fixtures withheld in live mode)" + laptopLegsNote();
+      return [];
     },
     async orchestration(): Promise<OrchestrationSection | null> {
       // #899: the orchestration section rides the fleet feed, embedded
-      // by the collector from the orchestrator's own output file. The
+      // by the collector from the latest orch_runs.document since the
+      // #10504 reader flip (orchestration.json export as its fallback).
+      // The
       // section carries its own provenance; absent = not measured yet.
       // #1140: three states, told apart — live (accepted, served in
       // the normalized contract shape, #1110), invalid (a section is
@@ -1634,7 +2120,7 @@ export function liveSource(
                 actor: "orchestrator",
                 kind: action.kind,
                 ref: orchestrationActionRef(action.target),
-                summary: action.summary.slice(0, 500),
+                summary: capUnits(action.summary, 500),
               });
             }
             if (lastOrchEventRunId !== null) {
@@ -1647,7 +2133,7 @@ export function liveSource(
                     actor: "orchestrator",
                     kind: "tier-change",
                     ref: id,
-                    summary: `tier ${prev ?? "—"} → ${tier ?? "—"} (run ${section.runId})`.slice(0, 500),
+                    summary: capUnits(`tier ${prev ?? "—"} → ${tier ?? "—"} (run ${section.runId})`, 500),
                   });
                 }
               }
@@ -1714,13 +2200,88 @@ export function liveSource(
               : "fixtures (no fleet feed file yet)";
       return null;
     },
-    async aa(): Promise<AaFeedSection | null> {
+    async aa(batch?: string | null): Promise<AaFeedSection | null> {
       // AA cost explorer: the section rides the fleet feed, read from
       // Supabase ainventory by the collector. Its absent form is a real
       // section (the page renders the reason); a missing section means
       // the collector has not embedded one yet.
       const feed = await getFeed();
       const collection = feed?.meta?.sections.aa;
+      // #3302: a selected historical batch is a collector-built cache file
+      // beside the feed. The feed's latest section carries the index, so the
+      // historical render keeps the same selector list.
+      if (batch !== undefined && batch !== null && batch !== "") {
+        const batchList = feed?.aa && isAaSection(feed.aa) && feed.aa.status === "ok" ? (feed.aa.batches ?? []) : [];
+        if (!isBatchUuid(batch)) {
+          provenance.aa = "live (fleet feed · invalid ?batch value)";
+          return {
+            status: "absent",
+            reason: "invalid batch id",
+            generatedAt: feed?.generatedAt ?? new Date().toISOString(),
+          };
+        }
+        try {
+          const parsed: unknown = JSON.parse(
+            await readFile(join(dirname(cfg.feedFile), "aa-batches", aaCacheFileName(batch)), "utf8"),
+          );
+          if (isAaBatchCacheEntry(parsed) && isAaSection(parsed.section) && parsed.section.status === "ok") {
+            // #3302: the collector marks a cache stale when the opencode config
+            // changed under it (configFingerprint mismatch) and rebuilds a few
+            // per tick. Serving such a payload as ordinary success would show
+            // the old catalog and coverage with no warning, so honour the
+            // index's cache-validity flag.
+            const staleCache = batchList.find((b) => b.importBatch === batch)?.cached === false;
+            if (staleCache) {
+              provenance.aa = `live (fleet feed · historical batch ${batch.slice(0, 8)} · collected ${parsed.section.generatedAt} · awaiting rebuild)`;
+              return {
+                ...parsed.section,
+                batches: batchList,
+                stale: true,
+                staleReason:
+                  "this version is awaiting rebuilding — its opencode config or the current-price overlay changed since it was built",
+              };
+            }
+            // #8211: the cached payload is batch-bound, but its prices are
+            // the batch-independent current overlay (v_current_prices).
+            // When the entry was built under a different overlay than the
+            // feed's latest section now carries, re-derive the served
+            // section's prices and catalog rates from the current overlay
+            // instead of serving the frozen snapshot — no batch data is
+            // refetched. When the feed carries no current overlay to
+            // refresh from, frozen prices are served stale-marked, never
+            // silently.
+            const currentPrices =
+              feed?.aa && isAaSection(feed.aa) && feed.aa.status === "ok" ? feed.aa.prices : undefined;
+            if (currentPrices !== undefined) {
+              if ((parsed.pricesFingerprint ?? null) === aaPricesFingerprint(currentPrices)) {
+                provenance.aa = `live (fleet feed · historical batch ${batch.slice(0, 8)} · collected ${parsed.section.generatedAt})`;
+                return { ...parsed.section, batches: batchList };
+              }
+              provenance.aa = `live (fleet feed · historical batch ${batch.slice(0, 8)} · collected ${parsed.section.generatedAt} · price overlay refreshed at serve)`;
+              return { ...aaApplyPriceOverlay(parsed.section, currentPrices), batches: batchList };
+            }
+            provenance.aa = `live (fleet feed · historical batch ${batch.slice(0, 8)} · collected ${parsed.section.generatedAt})`;
+            if (parsed.section.prices?.length) {
+              return {
+                ...parsed.section,
+                batches: batchList,
+                stale: true,
+                staleReason:
+                  "the current price overlay is unavailable in the latest feed, so this version's token prices are shown as collected and may be out of date",
+              };
+            }
+            return { ...parsed.section, batches: batchList };
+          }
+        } catch {
+          // No cache file yet — fall through to the honest absent form.
+        }
+        provenance.aa = `live (fleet feed · batch ${batch.slice(0, 8)} not cached yet)`;
+        return {
+          status: "absent",
+          reason: `batch ${batch} is indexed but its payload has not been built yet — the collector builds a few versions per tick`,
+          generatedAt: feed?.generatedAt ?? new Date().toISOString(),
+        };
+      }
       if (feed?.aa && isAaSection(feed.aa)) {
         const detail =
           feed.aa.status === "ok"
@@ -1837,6 +2398,13 @@ export function liveSource(
           state = "absent";
         else if (text.startsWith("store only")) state = "live";
         else state = "fixtures";
+        // #1500: a mixed items pass — pool-served refs plus a fixture
+        // fallback for refs outside the pool — is its own facet state,
+        // not plain "live": the fallback is exactly what a reader of
+        // the item pages needs the facet to say.
+        if (key === "items" && state === "live" && /\+ fixtures for \d+ ref\(s\) outside the pool/.test(text)) {
+          state = "partial-fixtures";
+        }
         const feedBacked = text.includes("fleet feed");
         if (state === "live" && feedBacked && feedAgeMs !== undefined && feedAgeMs >= FEED_STALE_MS) {
           state = "stale";

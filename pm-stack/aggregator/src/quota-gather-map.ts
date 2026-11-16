@@ -85,14 +85,24 @@ export function normalizeResetAt(v: unknown): string | null {
  * entriesWithPoolSplits below ALSO files attributable rows under
  * their split pool ids. Antigravity's per-model windows likewise keep
  * their flattened names here; the pool grouping is a split-row step.
+ * The OpenCode Zen door (provider ids `opencode.<workspace>`, the
+ * zen-plans door set in .opencode/route-fallbacks.md;
+ * the group was named opencode-zen-plans until the 2026-11-15 rename) reads
+ * the SAME plan meters as the Go door: on the 2026-11-15 ticks its
+ * per-workspace rows carried windows and reset instants identical to
+ * the matching `opencode-go.<workspace>` rows (#10443). Its rows
+ * therefore file under the Go pool ids below — aliasing, not three
+ * new pools, so the same meter is never double-counted. The provider
+ * id itself stays the Zen config id (canonicalProviderId is a
+ * separate contract; the router matches by exact provider id).
  */
 export function serviceIdFor(providerId: string): string {
   switch (providerId) {
     case "claude":
     case "_claude":
       return "anthropic:claude-pro";
-    case "codex":
-      return "openai.main";
+    case "_openai":
+      return "_openai.main";
     case "cline-pass":
       return "cline-pass";
     case "command-code":
@@ -106,6 +116,12 @@ export function serviceIdFor(providerId: string): string {
       return "meta";
     case "opendesign":
       return "opendesign";
+    case "opencode.drewrypope":
+      return "opencode-go.drewrypope";
+    case "opencode.popesdrew":
+      return "opencode-go.popesdrew";
+    case "opencode.developing-today-0":
+      return "opencode-go.developing-today-0";
     default:
       return providerId;
   }
@@ -121,13 +137,16 @@ export function serviceIdFor(providerId: string): string {
  * (#1823, 2026-11-07): antigravity -> _antigravity, the claude-code door
  * (module: "claude") -> _claude, commandcode (module: "command-code")
  * -> _commandcode, and the muse-direct door (module: "meta", the Muse
- * Code High Usage reading) -> _muse. Normalize here, at the one mapping
+ * Code High Usage reading) -> _muse. The OpenAI quota door (module:
+ * "codex" before fork PR #2261) -> _openai by the same rule (2026-11-10,
+ * code#8163). Normalize here, at the one mapping
  * point every gathered result passes through. Pool/service ids are a
  * separate contract and stay put: serviceIdFor carries the dual-spelling
  * cases (both "claude" and "_claude" land on anthropic:claude-pro, and
  * "_muse" keeps the "meta" pool).
  */
 const CANONICAL_PROVIDER_IDS: Readonly<Record<string, string>> = {
+  codex: "_openai",
   antigravity: "_antigravity",
   claude: "_claude",
   "command-code": "_commandcode",
@@ -162,6 +181,47 @@ export const ANTIGRAVITY_CLAUDE_GPT_SERVICE_ID = "_antigravity.claude-gpt";
 export const ANTIGRAVITY_LEGACY_GEMINI_SERVICE_ID = "antigravity-direct.gemini";
 export const ANTIGRAVITY_LEGACY_CLAUDE_GPT_SERVICE_ID = "antigravity-direct.claude-gpt";
 
+export const OPENAI_MAIN_SERVICE_ID = "_openai.main";
+export const OPENAI_ALTERNATE_SERVICE_ID = "_openai.alt";
+export const OPENAI_SELF_SERVICE_ID = "_openai.main";
+
+/**
+ * Which OpenAI pool a folded `_openai` entry belongs to, from the
+ * credential's human label / the instance name the fork stamps on the
+ * folded result. The fork's _openai provider folds every OpenAI instance
+ * credential into its per-credential answer under the bare provider id
+ * "_openai" (foldInstanceCredentials), and serviceIdFor historically
+ * filed ALL of those rows under the main pool — so the alternate
+ * account's 5h window landed in the snapshot store under main's key
+ * (its values mirror the alternate series tick-for-tick) and its
+ * weekly competed under main's key in the #1624 max-collapse
+ * (2026-11-04: main|weekly published 100 with the ALTERNATE window's
+ * reset label while main's own read was ~17). Like goPoolServiceId,
+ * the label is the only stable gatherer-side signal: instance ids are
+ * config names, credential ids are opaque row ids the mapping would
+ * have to hardcode. Unmatched entries yield null and keep the fallback
+ * (serviceIdFor: _openai.main, the base provider's own pool) — never a
+ * fabricated pool row.
+ *
+ * Service ids are the door ids (Drew, 2026-11-10, code#8163):
+ * _openai.main (drewrypope) and _openai.alt (popesdrew). The
+ * pre-rename ids (openai.main / openai.alternate) survive only in the
+ * historical snapshot series, unrewritten; the dedicated _openai door
+ * and the openai.main instance are the same account, so their rows
+ * file together under _openai.main.
+ */
+export function openaiPoolServiceId(entry: {
+  credentialLabel?: string | null;
+  providerName?: string | null;
+}): string | null {
+  const text = `${entry.credentialLabel ?? ""} ${entry.providerName ?? ""}`.toLowerCase();
+  if (text.includes("alternate") || text.includes("_openai.alt")) return OPENAI_ALTERNATE_SERVICE_ID;
+  if (text.includes("_openai") || text.includes("self-contained") || text.includes("self contained"))
+    return OPENAI_SELF_SERVICE_ID;
+  if (text.includes("main")) return OPENAI_MAIN_SERVICE_ID;
+  return null;
+}
+
 /**
  * Which split Go pool a per-workspace entry belongs to, from the
  * credential's human label. OpenCode credential labels are user-set; on
@@ -188,7 +248,8 @@ export function goPoolServiceId(entry: QuotaCurrentEntry): string | null {
  * quota would disagree about which pool a model draws from.
  */
 function antigravityPoolForModel(model: string, legacy = false): string {
-  if (legacy) return model.startsWith("gemini") ? ANTIGRAVITY_LEGACY_GEMINI_SERVICE_ID : ANTIGRAVITY_LEGACY_CLAUDE_GPT_SERVICE_ID;
+  if (legacy)
+    return model.startsWith("gemini") ? ANTIGRAVITY_LEGACY_GEMINI_SERVICE_ID : ANTIGRAVITY_LEGACY_CLAUDE_GPT_SERVICE_ID;
   return model.startsWith("gemini") ? ANTIGRAVITY_GEMINI_SERVICE_ID : ANTIGRAVITY_CLAUDE_GPT_SERVICE_ID;
 }
 
@@ -265,7 +326,9 @@ export function entriesWithPoolSplits(entries: readonly QuotaCurrentEntry[]): Qu
   for (const entry of entries) {
     if (entry.providerId === "opencode-go") {
       // Unconfigured rows are host state, not pool state: the pools keep
-      // their dated reads until a real read (ok or error) arrives.
+      // their dated reads until a real read (ok, error, or lapsed) arrives.
+      // Lapsed rows split exactly like error rows — one terminal row per
+      // workspace pool — so the hub names the planned lapse instead of a failure.
       const serviceId = goPoolServiceId(entry);
       if (serviceId && entry.state !== "unconfigured") out.push({ ...entry, serviceId });
     } else if (entry.providerId === "antigravity" || entry.providerId === "_antigravity") {
@@ -395,6 +458,47 @@ export function entryFromFileExport(
   return entry;
 }
 
+/**
+ * A configured OpenCode Go result whose Console answers "no active
+ * subscription" is a planned lapse (#1118, Drew ruled both plans stay
+ * cancelled) — a terminal state of its own, never a provider failure.
+ */
+export function isGoLapseResult(result: QuotaProviderResult): boolean {
+  return (
+    canonicalProviderId(result.providerId) === "opencode-go" &&
+    !result.ok &&
+    result.configured &&
+    typeof result.error === "string" &&
+    result.error.includes("No active OpenCode Go subscription")
+  );
+}
+
+/** The remedy every Meta session-lapse surface must name (#8294). */
+export const META_SESSION_LAPSE_REMEDY =
+  "dev.meta.ai portal session is logged out; re-auth (re-login) in the hub browser profile to restore Meta quota reads";
+
+/**
+ * A configured Meta result that failed because the dev.meta.ai portal
+ * session lapsed (#8294). The Meta read rides the provider-owned
+ * credential the Meta keeper captures and renews (see meta-renewal.ts);
+ * when that session expires, the provider leg fails session-class
+ * ("unauthorized", or the exporter's "session-expired" shape) rather
+ * than with a provider error. A lapsed session has a known remedy
+ * (re-auth on the hub) and is not a provider failure, so — following
+ * the OpenCode Go lapse template (#1161 / PR #7898) — it classifies
+ * as "lapsed", never "error". Unlike the Go lapse this one is
+ * temporary: the gatherer retains the pool's last good windows as
+ * stale rows alongside the lapsed entry (see gather-quota.ts).
+ */
+export function isMetaSessionLapseResult(result: QuotaProviderResult): boolean {
+  if (canonicalProviderId(result.providerId) !== "_muse" || result.ok || !result.configured) {
+    return false;
+  }
+  if (result.failureClass === "unauthorized") return true;
+  const error = typeof result.error === "string" ? result.error : "";
+  return /unauthorized|session-expired|session expired|logged out/i.test(error);
+}
+
 /** Map one provider result onto a quota-current entry. */
 export function entryFromResult(result: QuotaProviderResult, tickIso: string): QuotaCurrentEntry {
   let measuredAt = tickIso;
@@ -402,12 +506,27 @@ export function entryFromResult(result: QuotaProviderResult, tickIso: string): Q
     const fetchedDate = new Date(result.fetchedAt);
     if (Number.isFinite(fetchedDate.getTime())) measuredAt = fetchedDate.toISOString();
   }
-  const state: QuotaCurrentEntry["state"] = result.ok ? "ok" : result.configured ? "error" : "unconfigured";
+  const state: QuotaCurrentEntry["state"] = result.ok
+    ? "ok"
+    : isGoLapseResult(result) || isMetaSessionLapseResult(result)
+      ? "lapsed"
+      : result.configured
+        ? "error"
+        : "unconfigured";
   const providerId = canonicalProviderId(result.providerId);
+  // Folded _openai rows carry one credential per OpenAI instance; file
+  // each under its own pool (openaiPoolServiceId) instead of the base
+  // provider's pool, or a sibling account's windows contaminate
+  // _openai.main's rows and snapshot series.
+  const serviceId =
+    providerId === "_openai"
+      ? (openaiPoolServiceId({ credentialLabel: result.credentialLabel, providerName: result.providerName }) ??
+        serviceIdFor(providerId))
+      : serviceIdFor(providerId);
   const entry: QuotaCurrentEntry = {
     providerId,
     providerName: result.providerName ?? providerId,
-    serviceId: serviceIdFor(providerId),
+    serviceId,
     state,
     measuredAt,
     source: GATHERER_SOURCE,
@@ -426,11 +545,24 @@ export function entryFromResult(result: QuotaProviderResult, tickIso: string): Q
   if (result.credentialSource) entry.credentialSource = result.credentialSource;
   if (result.planLabel) entry.planLabel = result.planLabel;
   if (result.error) entry.error = safeProviderReason(result.error);
+  if (isMetaSessionLapseResult(result)) {
+    // Name the remedy on the entry itself: this text is what the pool
+    // note surfaces (quota-current freshness.error), so a lapsed Meta
+    // session reads as an actionable re-auth state, not a bare error.
+    entry.error = `session lapsed: ${entry.error ?? "unauthorized"} — ${META_SESSION_LAPSE_REMEDY}`;
+  }
   if (typeof result.failureClass === "string" && result.failureClass !== "") entry.failureClass = result.failureClass;
   if (typeof result.lastSuccessAt === "number" && Number.isFinite(result.lastSuccessAt) && result.lastSuccessAt > 0) {
     entry.lastSuccessAt = new Date(result.lastSuccessAt).toISOString();
   }
   if (result.usage != null) entry.usage = result.usage;
+
+  if (state === "lapsed") {
+    // The provider may leave old usage alongside its lapse signal.
+    // Preserve the raw response for evidence, but never publish those
+    // percentages as a fresh quota window.
+    return entry;
+  }
 
   const pushWindow = (name: string, raw: RawWindow | null | undefined): void => {
     const pct = isFiniteNumber(raw?.usedPercent) ? raw.usedPercent : null;
@@ -574,8 +706,7 @@ export function recordsFromEntries(
       // native-record branch; a prototype spelling falls through to the
       // normal pct path like any unknown window name.
       const nativeRecords = entry.serviceId === "turso" ? tursoNativeRecords(entry.planLabel) : undefined;
-      const native =
-        nativeRecords && Object.hasOwn(nativeRecords, w.name) ? nativeRecords[w.name] : undefined;
+      const native = nativeRecords && Object.hasOwn(nativeRecords, w.name) ? nativeRecords[w.name] : undefined;
       if (native) {
         if (w.value == null) continue;
         const key = `${entry.serviceId}|${w.name}`;
@@ -773,8 +904,9 @@ const positiveQuota = (v: unknown): number | null => (isFiniteNumber(v) && v > 0
  * behaviour).
  */
 export function resolveTursoLimits(planLabel?: string, plansDoc?: TursoPlansDoc | null): TursoLimits {
-  const fallback: TursoLimits =
-    (planLabel ? TURSO_PLAN_LIMITS[planLabel.toLowerCase()] : undefined) ?? { ...TURSO_LIMITS };
+  const fallback: TursoLimits = (planLabel ? TURSO_PLAN_LIMITS[planLabel.toLowerCase()] : undefined) ?? {
+    ...TURSO_LIMITS,
+  };
   if (!plansDoc || typeof planLabel !== "string" || planLabel === "" || !Array.isArray(plansDoc.plans)) {
     return fallback;
   }
@@ -982,4 +1114,78 @@ export function markRetained(entries: readonly QuotaCurrentEntry[], failedTickIs
     providerId: canonicalProviderId(e.providerId),
     retainedFromFailedTick: failedTickIso,
   }));
+}
+/** #5928: cross-tick memory for the _claude read. The quota fetcher's
+ * 429 cooldown + last-good cache live inside the long-lived OpenChamber
+ * process; the gatherer is a fresh oneshot every ~15 min, so both reset
+ * every tick. The gatherer therefore persists its own copy —
+ * { lastGoodEntry, cooldownUntil } — as one JSON string value in
+ * quota-gatherer-state.json under this reserved key (the state file is
+ * a flat string map; the key round-trips through readState/writeState
+ * untouched by the snapshot-append bookkeeping). Claude only: every
+ * other provider's finalize/retention behavior is unchanged. */
+export const CLAUDE_CROSS_TICK_STATE_KEY = "claudeCrossTick:v1";
+
+export interface ClaudeCrossTickMemory {
+  lastGoodEntry: QuotaCurrentEntry | null;
+  /** Epoch ms; 0 = no cooldown in force. */
+  cooldownUntil: number;
+}
+
+export const CLAUDE_COOLDOWN_FALLBACK_MS = 5 * 60_000;
+export const CLAUDE_COOLDOWN_CAP_MS = 60 * 60_000;
+
+export function parseClaudeCrossTick(raw: string | undefined): ClaudeCrossTickMemory {
+  if (raw) {
+    try {
+      const parsed: unknown = JSON.parse(raw);
+      if (typeof parsed === "object" && parsed !== null) {
+        const rec = parsed as Record<string, unknown>;
+        const entry = rec.lastGoodEntry;
+        const until = rec.cooldownUntil;
+        return {
+          lastGoodEntry:
+            typeof entry === "object" && entry !== null && typeof (entry as QuotaCurrentEntry).providerId === "string"
+              ? (entry as QuotaCurrentEntry)
+              : null,
+          cooldownUntil: typeof until === "number" && Number.isFinite(until) && until > 0 ? until : 0,
+        };
+      }
+    } catch {
+      // unreadable memory = no memory: the read behaves as a first tick
+    }
+  }
+  return { lastGoodEntry: null, cooldownUntil: 0 };
+}
+
+export function serializeClaudeCrossTick(memory: ClaudeCrossTickMemory): string {
+  return JSON.stringify({ lastGoodEntry: memory.lastGoodEntry, cooldownUntil: memory.cooldownUntil });
+}
+
+/** A claude failure is a rate-limit failure when the failure text says
+ * so (HTTP 429 / rate_limit_error / "Rate limited"). The 401 dead-token
+ * mapping ("Claude session expired") is never a rate limit and must
+ * not engage the cooldown — it is a credential fault, not pressure. */
+export function isClaudeRateLimitFailure(text: string): boolean {
+  if (/session expired/i.test(text)) return false;
+  return /\b429\b|rate.?limit/i.test(text);
+}
+
+/** Retry-After carried in a failure text, in ms. Accepts the header
+ * forms "Retry-After: 120" and "retry after 120s"; null when absent or
+ * unparseable (the caller then applies the fallback). */
+export function retryAfterMsFromFailure(text: string): number | null {
+  const m = /retry[- ]after[:\s]*([0-9]+(?:\.[0-9]+)?)\s*(?:s|sec|secs|second|seconds)?\b/i.exec(text);
+  if (!m) return null;
+  const seconds = Number(m[1]);
+  if (!Number.isFinite(seconds) || seconds < 0) return null;
+  return Math.round(seconds * 1000);
+}
+
+/** Cooldown length for a fresh 429: Retry-After when the failure
+ * carries one, else the fetcher's 5-minute default; always capped at
+ * 60 minutes (the issue #5928 fix shape). */
+export function claudeCooldownMs(failureText: string): number {
+  const fromHeader = retryAfterMsFromFailure(failureText);
+  return Math.min(fromHeader ?? CLAUDE_COOLDOWN_FALLBACK_MS, CLAUDE_COOLDOWN_CAP_MS);
 }

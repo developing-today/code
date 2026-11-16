@@ -42,16 +42,16 @@
 
 ## Decision summary
 
-| Question | Decision |
-| --- | --- |
-| How many pipelines | **One.** All three surfaces call the same five-stage pipeline of §2.2. A surface may add a *front-door step* that produces KDL text, and a *presentation step* after decomposition; it may never skip, reorder, or re-implement a pipeline stage (§2) |
-| Export surface | A **read-only, derived view**: KDL is rendered from the triple store through the canonical JSON (triples → canonical JSON → KDL). Export never writes; it is not an ingest path (§3) |
-| Hand upload | A **document** submitted to the pipeline with an author identity. Multi-node documents are accepted and decomposed as one compound statement set (§4) |
-| Agent statements | **The same document path**, with a machine author identity and a required provenance stamp. No agent-only endpoint, no privileged validation (§5) |
-| Trust | Trust is a **property of the author**, evaluated by one policy stage; it never changes which pipeline runs. Untrusted authors (human or agent) go to staging, not to a separate pipeline (§6) |
-| Round trip | **Canonical JSON → KDL → canonical JSON** has #5906's Tier A guarantee. Store/triples → KDL reconstruction, reimport idempotency, and statement identity are **not** promised here; #5907 must settle them (§3.3) |
-| Surface-specific steps | Exactly three, all outside the shared pipeline: authoring/upload UX (§4.2), the export renderer's grouping choices (§3.2), and the agent provenance stamp (§5.2) |
-| What is deferred | Decomposition rules (#5907), payload boundary (#5908), re-composition grouping heuristics (§3.4), and the annotation syntax (#5753) |
+| Question               | Decision                                                                                                                                                                                                                                              |
+| ---------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| How many pipelines     | **One.** All three surfaces call the same five-stage pipeline of §2.2. A surface may add a _front-door step_ that produces KDL text, and a _presentation step_ after decomposition; it may never skip, reorder, or re-implement a pipeline stage (§2) |
+| Export surface         | A **read-only, derived view**: KDL is rendered from the triple store through the canonical JSON (triples → canonical JSON → KDL). Export never writes; it is not an ingest path (§3)                                                                  |
+| Hand upload            | A **document** submitted to the pipeline with an author identity. Multi-node documents are accepted and decomposed as one compound statement set (§4)                                                                                                 |
+| Agent statements       | **The same document path**, with a machine author identity and a required provenance stamp. No agent-only endpoint, no privileged validation (§5)                                                                                                     |
+| Trust                  | Trust is a **property of the author**, evaluated by one policy stage; it never changes which pipeline runs. Untrusted authors (human or agent) go to staging, not to a separate pipeline (§6)                                                         |
+| Round trip             | **Canonical JSON → KDL → canonical JSON** has #5906's Tier A guarantee. Store/triples → KDL reconstruction, reimport idempotency, and statement identity are **not** promised here; #5907 must settle them (§3.3)                                     |
+| Surface-specific steps | Exactly three, all outside the shared pipeline: authoring/upload UX (§4.2), the export renderer's grouping choices (§3.2), and the agent provenance stamp (§5.2)                                                                                      |
+| What is deferred       | Decomposition rules (#5907), payload boundary (#5908), re-composition grouping heuristics (§3.4), and the annotation syntax (#5753)                                                                                                                   |
 
 ## 1. What the parent already fixed (not re-decided here)
 
@@ -64,8 +64,8 @@
    provenance anchor.
 3. **§1.4 names three presentation uses** — human-readable exports,
    hand-authored upload, agent-authored statements — and states the
-   governing constraint verbatim: *"Same pipeline, no agent-only back
-   door."*
+   governing constraint verbatim: _"Same pipeline, no agent-only back
+   door."_
 4. **Qualifiers and namespaces are triples, never special cases**
    (§2.3). This record does not introduce a surface-specific store,
    column, or parser branch.
@@ -101,13 +101,13 @@ agent   ──► [front door: author + document] ──┤
 
 ### 2.1 The shared stages, named once
 
-| Stage | Input | Output | Where it lives |
-| --- | --- | --- | --- |
-| 1. Parse + validate | KDL text | validated KDL document + actionable errors | shared |
-| 2. Canonical JSON | validated document | canonical JSON (per #5906 §3) | shared |
-| 3. Decompose | canonical JSON | atomic triples + statement node | shared (#5907 owns rules) |
-| 4. Resolve through IDs | triples | ID-referenced triples | shared |
-| 5. Trust / policy gate | statement + author | accepted, staged, or rejected | shared (§6; additive to the parent) |
+| Stage                  | Input              | Output                                     | Where it lives                      |
+| ---------------------- | ------------------ | ------------------------------------------ | ----------------------------------- |
+| 1. Parse + validate    | KDL text           | validated KDL document + actionable errors | shared                              |
+| 2. Canonical JSON      | validated document | canonical JSON (per #5906 §3)              | shared                              |
+| 3. Decompose           | canonical JSON     | atomic triples + statement node            | shared (#5907 owns rules)           |
+| 4. Resolve through IDs | triples            | ID-referenced triples                      | shared                              |
+| 5. Trust / policy gate | statement + author | accepted, staged, or rejected              | shared (§6; additive to the parent) |
 
 Every **write** surface enters at stage 1. The export read path starts
 from a retained canonical JSON anchor and renders it as KDL; it is not
@@ -118,8 +118,8 @@ surface and skips validation and canonicalisation.
 
 ### 2.2 Why the gate is stage 5, not stage 0
 
-An untrusted author's document must still be *validated and
-canonicalised* before anyone decides whether to trust it — otherwise
+An untrusted author's document must still be _validated and
+canonicalised_ before anyone decides whether to trust it — otherwise
 the trust decision is made about text nobody has parsed, and a
 malformed document reaches a human reviewer as an ambiguous error.
 Validation first, policy second, and the policy decision is recorded
@@ -185,7 +185,7 @@ Stated explicitly, with the follow-on named where deferred:
   reconstructing that authored tree from triples.
 - **Not claimed:** `triples/store → KDL → upload → the same triples`.
   Decomposition and re-composition rules are not settled, and #5906 §5
-  calls the content hash an identity *candidate*, not a decision that
+  calls the content hash an identity _candidate_, not a decision that
   reimport deduplicates. #5907 owns grouping, identity, and the
   store-level round-trip contract. Until then, export/reimport must not
   be represented as an idempotent store operation.
@@ -253,8 +253,8 @@ literally.
 
 Rationale: an agent is an author whose output is reviewable. The value
 of KDL for agents — readable in logs, reviewable by a human before
-commit — depends on the agent's output being *the same artifact a
-human would submit*, so a reviewer reads exactly what the pipeline
+commit — depends on the agent's output being _the same artifact a
+human would submit_, so a reviewer reads exactly what the pipeline
 will parse.
 
 ### 5.2 The front-door step: a provenance stamp
@@ -279,18 +279,18 @@ staging route.
 
 The trust gate (stage 5) evaluates **the author**, not the surface:
 
-| Author class | Route |
-| --- | --- |
-| Verified human | accepted on validation success |
-| Verified agent (a known, approved tool identity) | accepted on validation success |
-| Unverified human | staged: canonical JSON anchor recorded, triples held for approval |
-| Unverified agent | staged, same as unverified human |
-| Author disallowed by endpoint access control | refused before the ingest pipeline starts, with a clear reason; this is access control, not a different trust pipeline |
+| Author class                                     | Route                                                                                                                  |
+| ------------------------------------------------ | ---------------------------------------------------------------------------------------------------------------------- |
+| Verified human                                   | accepted on validation success                                                                                         |
+| Verified agent (a known, approved tool identity) | accepted on validation success                                                                                         |
+| Unverified human                                 | staged: canonical JSON anchor recorded, triples held for approval                                                      |
+| Unverified agent                                 | staged, same as unverified human                                                                                       |
+| Author disallowed by endpoint access control     | refused before the ingest pipeline starts, with a clear reason; this is access control, not a different trust pipeline |
 
 Two invariants:
 
 1. **Trust never changes the pipeline.** A staged submission has still
-   been parsed, canonicalised, and decomposed; only the *commit* of
+   been parsed, canonicalised, and decomposed; only the _commit_ of
    its triples is held.
 2. **Staging is recorded against the anchor**, so approving a staged
    submission commits exactly what was reviewed — the canonical JSON
@@ -331,8 +331,8 @@ is open and blocked. This record does not depend on it because:
   grammar without changing the three-front-door structure.
 
 If #5753 lands a different annotation model, the change is confined to
-  stage 1's accepted grammar and the export renderer's annotation
-  emission — neither of which alters the three-front-door structure.
+stage 1's accepted grammar and the export renderer's annotation
+emission — neither of which alters the three-front-door structure.
 
 ## 9. Where this record touches a parent decision
 
@@ -348,15 +348,15 @@ It does not change any parent decision. It refines two:
 
 ## 10. Alternatives rejected, and why
 
-| Alternative | Why rejected |
-| --- | --- |
-| Three separate pipelines, one per surface | The parent's explicit constraint; three pipelines drift, and the drift is invisible until an export fails to convert back |
-| An agent endpoint that accepts pre-decomposed triples | Skips validation and canonicalisation — the agent-only back door the parent forbids, and it makes the canonical JSON anchor unverifiable |
-| Trust gate at stage 0 (before parsing) | Decides trust about unparsed text; malformed documents reach reviewers as ambiguous errors |
-| Export as a first-class data path (export → store) | Export must be derived and read-only, or the store has two write paths with different validation |
-| Round-trip guarantee on KDL text | #5906 already ruled Tier B (formatting) out of the promise; requiring text equality would forbid the renderer from normalising |
-| Separate staging store for untrusted submissions | Staging is a *state* of a submission against its anchor, not a second store; a second store duplicates the schema and the resolution path |
-| Client-side validation as the real validator | Two validators disagree; the client's is a convenience over stage 1 |
+| Alternative                                           | Why rejected                                                                                                                              |
+| ----------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------- |
+| Three separate pipelines, one per surface             | The parent's explicit constraint; three pipelines drift, and the drift is invisible until an export fails to convert back                 |
+| An agent endpoint that accepts pre-decomposed triples | Skips validation and canonicalisation — the agent-only back door the parent forbids, and it makes the canonical JSON anchor unverifiable  |
+| Trust gate at stage 0 (before parsing)                | Decides trust about unparsed text; malformed documents reach reviewers as ambiguous errors                                                |
+| Export as a first-class data path (export → store)    | Export must be derived and read-only, or the store has two write paths with different validation                                          |
+| Round-trip guarantee on KDL text                      | #5906 already ruled Tier B (formatting) out of the promise; requiring text equality would forbid the renderer from normalising            |
+| Separate staging store for untrusted submissions      | Staging is a _state_ of a submission against its anchor, not a second store; a second store duplicates the schema and the resolution path |
+| Client-side validation as the real validator          | Two validators disagree; the client's is a convenience over stage 1                                                                       |
 
 ## 11. Invariants implementation must hold
 
@@ -386,5 +386,5 @@ It does not change any parent decision. It refines two:
   (#5907), payload boundary (#5908), and annotation syntax (#5753).
 - 2026-11-08 — narrowed the round-trip promise before opening the PR:
   store-level reimport identity and triple→KDL reconstruction are
-  #5907's to settle (#5906 calls the content hash a *candidate*), so
+  #5907's to settle (#5906 calls the content hash a _candidate_), so
   this record claims only the canonical-JSON conversion guarantee.

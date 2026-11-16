@@ -142,10 +142,20 @@ function modelStep(
   const now = Date.parse(obs.at);
   if (m.cooldownUntil !== null && now < m.cooldownUntil) return { action: "wait-cooldown" };
   const desired: Rung =
-    obs.class === "rate-limited" ? 0 : obs.class === "endpoint-changed" || obs.class === "unknown" ? 1 : obs.class === "browser-down" || obs.class === "cdp-unreachable" ? 2 : 3;
+    obs.class === "rate-limited"
+      ? 0
+      : obs.class === "endpoint-changed" || obs.class === "unknown"
+        ? 1
+        : obs.class === "browser-down" || obs.class === "cdp-unreachable"
+          ? 2
+          : 3;
   let rung: Rung | null = null;
   if (desired === 0 && m.attempts[0] >= MAX_ATTEMPTS_PER_RUNG) return { action: "escalate" };
-  for (let r = desired; r <= 3; r++) if (m.attempts[r as Rung] < MAX_ATTEMPTS_PER_RUNG) { rung = r as Rung; break; }
+  for (let r = desired; r <= 3; r++)
+    if (m.attempts[r as Rung] < MAX_ATTEMPTS_PER_RUNG) {
+      rung = r as Rung;
+      break;
+    }
   if (rung === null) return { action: "escalate" };
   m.attempts[rung] += 1;
   if (rung === 0) {
@@ -160,7 +170,11 @@ describe("watchdog-state: MBT against the reference ladder model", () => {
     for (let seed = 1; seed <= 300; seed++) {
       const r = rng(seed);
       let h = initialHealth("fixture");
-      const m = { fails: 0, attempts: { 0: 0, 1: 0, 2: 0, 3: 0 } as Record<Rung, number>, cooldownUntil: null as number | null };
+      const m = {
+        fails: 0,
+        attempts: { 0: 0, 1: 0, 2: 0, 3: 0 } as Record<Rung, number>,
+        cooldownUntil: null as number | null,
+      };
       for (let i = 0; i < 40; i++) {
         const obs = genObs(r, iso(i * 15));
         const expected = modelStep(m, obs);

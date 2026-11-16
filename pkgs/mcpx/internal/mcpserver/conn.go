@@ -300,7 +300,10 @@ func (p Peer) CanElicit(mode string) bool {
 }
 
 // CanSample reports whether mcpx may ask this client for a model completion.
-func (p Peer) CanSample() bool { return p.Declared("sampling") }
+// The root declaration itself must be a usable value: a client that
+// serializes an unset sampling capability as JSON null has declared
+// nothing (#2474 pattern, #9828) -- presence alone counted it.
+func (p Peer) CanSample() bool { return declaredValue(p.Caps["sampling"]) }
 
 // samplingSub reports whether the client's sampling declaration carries the
 // named sub-capability ("tools" or "context"), parsing the declaration once
@@ -600,7 +603,8 @@ func (q Question) Sendable(p Peer) bool {
 		// questions stay with the broker via sendableTo.
 		return p.CanSample() && (!q.carriesSamplingTools() || p.CanSampleTools())
 	case "roots/list":
-		return p.Declared("roots")
+		// Same null rule as CanSample: {"roots":null} declares nothing.
+		return declaredValue(p.Caps["roots"])
 	}
 	return false
 }

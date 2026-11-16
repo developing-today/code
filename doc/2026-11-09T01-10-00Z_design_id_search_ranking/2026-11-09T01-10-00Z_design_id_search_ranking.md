@@ -6,7 +6,7 @@ for notes"). Written per `doc/DOCUMENTATION_PROTOCOL.md` (dated record in
 #5677 (notes, boards, multiplayer editing v1; decomposition item 7).
 Adjacent contracts: #5675 (querying local and remote ID servers — the
 search this record ranks), #5732 (recommendations — the discovery system
-this record is *not*), #5683 (residency & boundaries — sensitivity rules).
+this record is _not_), #5683 (residency & boundaries — sensitivity rules).
 Status: v1 decision, settled except §9. No implementation is authorized
 by this record alone; §8 states what implementation must wait for and how
 it splits.
@@ -24,7 +24,7 @@ leaves this system to this record.
 
 #5675 search answers an expressed intent: it returns the objects that
 match a query, filtered server-side to what the searcher is cleared to
-see. It does not order those matches *for the searcher*. #5677 §6
+see. It does not order those matches _for the searcher_. #5677 §6
 requires that ordering to be personal: a searcher's own version of an
 object leads their own results, ranking beyond that is stated and
 ordered, and the whole ranking is explainable. #5677 §7 (sovereignty)
@@ -39,7 +39,7 @@ of ranking, and graffiti demotion without erasure.
 Search ranking is a **per-request, per-searcher re-ranking of the
 #5675 result set**, never a precomputed list and never a change to what
 the query matched. Candidates are visibility- and sensitivity-filtered
-*before* ranking (the #5732 §6 rule, adopted unchanged). Ranking is a
+_before_ ranking (the #5732 §6 rule, adopted unchanged). Ranking is a
 **tier order, not a weighted blend**: tier 0 is the searcher's own
 versions (own-edit-first, absolute within the candidate set); below it,
 results order by base text relevance, then most-correct marks in the
@@ -74,16 +74,16 @@ reversible, and with content, attribution, and history untouched.
 Within the candidate set, results sort by the first tier that
 distinguishes them:
 
-| Tier | Signal | Rule |
-|---|---|---|
-| 0 | **Own version** | A version/fork the searcher authored, edited, or forked ranks before every other version of any object. Among the searcher's own versions, most recent edit first. |
-| 1 | **Base relevance** | The #5675 query's own relevance score, unchanged. Personalization never promotes a weaker match above a stronger one across tiers 1–4. |
-| 2 | **Most-correct marks** | Versions marked most-correct within a community scope the searcher belongs to rank above unmarked versions. Marks from scopes the searcher is not in have no effect on their ranking. |
-| 3 | **Graph proximity** | Shorter path in the note↔post↔reply↔edit graph (#5677 §2) to the object or context the searcher navigated from ranks first. No context → signal absent, not zero-distance. |
-| 4 | **Recency** | Most recent edit first. Final tie-break: object id, so ordering is total and reproducible. |
+| Tier | Signal                 | Rule                                                                                                                                                                                  |
+| ---- | ---------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 0    | **Own version**        | A version/fork the searcher authored, edited, or forked ranks before every other version of any object. Among the searcher's own versions, most recent edit first.                    |
+| 1    | **Base relevance**     | The #5675 query's own relevance score, unchanged. Personalization never promotes a weaker match above a stronger one across tiers 1–4.                                                |
+| 2    | **Most-correct marks** | Versions marked most-correct within a community scope the searcher belongs to rank above unmarked versions. Marks from scopes the searcher is not in have no effect on their ranking. |
+| 3    | **Graph proximity**    | Shorter path in the note↔post↔reply↔edit graph (#5677 §2) to the object or context the searcher navigated from ranks first. No context → signal absent, not zero-distance.            |
+| 4    | **Recency**            | Most recent edit first. Final tie-break: object id, so ordering is total and reproducible.                                                                                            |
 
-This answers #5677's open question — *how strongly does own-edit-first
-outweigh most-correct marks?* — **absolutely, by tier separation, for
+This answers #5677's open question — _how strongly does own-edit-first
+outweigh most-correct marks?_ — **absolutely, by tier separation, for
 the searcher's own view only.** A weighted blend is rejected (§6): any
 finite weight lets a popular community mark bury the searcher's own
 version in their own results, which is exactly what #5677 §6 forbids
@@ -150,7 +150,7 @@ attribution or history. This record settles the mechanics:
    them un-demoted, and their content, author attribution, and
    changelog render unchanged everywhere.
 4. **Per-searcher filters compose on top.** A searcher may mute an
-   author or a fork lineage *for themselves*; this is a personal tier-0
+   author or a fork lineage _for themselves_; this is a personal tier-0
    inverse (their own view only), recorded as a personal preference,
    never published as a community signal.
 5. **Scope is never global.** Demotion exists only relative to a
@@ -176,11 +176,11 @@ attribution or history. This record settles the mechanics:
 - **Precomputed per-user rankings.** Rejected: rankings depend on the
   query, the searcher's provenance, and current marks; precomputation
   is either stale or a cache of the deterministic function in §3, which
-  needs no separate system. Precomputed *discovery* already has an
+  needs no separate system. Precomputed _discovery_ already has an
   owner — #5732 — and is a different product (§7).
 - **Deletion, hiding, or history edits as spam control.** Rejected by
   #5677 §7 outright; demotion (§5) is the strongest ranking action
-  available, and visibility restriction remains a *sharing* decision
+  available, and visibility restriction remains a _sharing_ decision
   made before publication, not a ranking decision after it.
 - **A trained/opaque ranking model in v1.** Rejected: it cannot satisfy
   §4 (every signal explainable, deterministic, reproducible). Revisit
@@ -211,7 +211,7 @@ attribution or history. This record settles the mechanics:
 - **#5677 (parent).** This record re-decides nothing the parent fixed:
   the note↔board reference model, the merge model, the sovereignty
   rule, and the approval flow are inputs, cited not restated. The
-  most-correct *marking mechanism* (who may mark, how marks conflict
+  most-correct _marking mechanism_ (who may mark, how marks conflict
   across communities) belongs to the parent's decomposition item 4
   (edit/fork graph); this record consumes marks as an input signal and
   states only what ranking does with them. If that design changes mark
@@ -253,7 +253,7 @@ prerequisite lands — not before):**
   graffiti judgment is a safety signal and the object remains one
   toggle away) needs a parent-level ruling if #5677 item 4 settles mark
   conflicts differently. Routed to #5677, not forked here.
-- **Pagination interaction** — if a query surface paginates *before*
+- **Pagination interaction** — if a query surface paginates _before_
   ranking, tier 0 objects on later pages can never surface first. This
   record's contract (§3.1) requires ranking over the full filtered
   candidate set; a surface that cannot do that must say so in its
@@ -265,8 +265,8 @@ prerequisite lands — not before):**
 
 1. Ranking never changes the candidate set: no additions, no removals,
    no leakage of filtered objects or their existence.
-2. A searcher's own version outranks every other version *for that
-   searcher*, and affects no one else's ordering.
+2. A searcher's own version outranks every other version _for that
+   searcher_, and affects no one else's ordering.
 3. Every ordering decision is reproducible from the reason codes; there
    are no signals outside §3.2.
 4. Demotion never deletes, hides from direct access, or alters content,

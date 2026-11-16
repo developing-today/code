@@ -16,3 +16,16 @@ class_name = "UserDO"
 [[migrations]]
 tag = "v1"
 new_sqlite_classes = ["UserDO"]
+
+# Slice A of #3811 (#9954): content-addressed blob bytes. Local
+# emulation only — no production bucket is provisioned by this
+# config (account gates #2285 / #3403 stay untouched).
+[[r2_buckets]]
+binding = "BLOBS"
+bucket_name = "id-hosted-blobs-test"
+
+# Slice B (#9955): a generous ceiling for the harness so the usage
+# read path reports a configured ceiling without tripping it; the
+# at-cap behavior itself is proven in test/usage.test.ts.
+[vars]
+USER_CEILING_BYTES = "1073741824"

@@ -257,3 +257,67 @@ fn the_root_docs_name_the_pinned_rust_version() {
         stale.join("\n")
     );
 }
+
+/// The example directories scripts/rebuild-roc-examples.sh rebuilds, read
+/// from its examples=( ...) list. The script is the enumeration the
+/// roc-examples flake check actually runs, so it is the source of truth the
+/// pin list is compared against (#7909).
+fn rebuild_script_examples(script: &str) -> std::collections::BTreeSet<String> {
+    let mut in_list = false;
+    let mut examples = std::collections::BTreeSet::new();
+    for line in script.lines() {
+        let line = line.trim();
+        if line.starts_with("examples=(") {
+            in_list = true;
+            continue;
+        }
+        if in_list {
+            if line == ")" {
+                break;
+            }
+            if !line.is_empty() {
+                examples.insert(line.to_owned());
+            }
+        }
+    }
+    examples
+}
+
+/// Oracle: the rebuild script and ROC_EXAMPLE_BUILDS name the same set of
+/// examples. #7909: roc-text-counter was in the pin list but not the rebuild
+/// list, so CI never rebuilt its checked-in wasm; a future example must not
+/// be able to land in one enumeration only.
+#[test]
+fn rebuild_script_and_pin_list_cover_the_same_roc_examples() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let script = fs::read_to_string(root.join("scripts/rebuild-roc-examples.sh")).unwrap();
+    let rebuilt = rebuild_script_examples(&script);
+    let pinned: std::collections::BTreeSet<String> = ROC_EXAMPLE_BUILDS
+        .iter()
+        .map(|build| {
+            build
+                .strip_suffix("/build.sh")
+                .expect("ROC_EXAMPLE_BUILDS entries name a build.sh")
+                .to_owned()
+        })
+        .collect();
+    assert_eq!(
+        rebuilt, pinned,
+        "scripts/rebuild-roc-examples.sh and ROC_EXAMPLE_BUILDS disagree on the Roc examples"
+    );
+}
+
+#[test]
+fn rebuild_script_examples_reads_the_bash_list() {
+    let script = "examples=(\n  examples/lounge\n  apps/tic-tac-toe/program\n)\n";
+    let examples = rebuild_script_examples(script);
+    assert_eq!(
+        examples,
+        [
+            "apps/tic-tac-toe/program".to_owned(),
+            "examples/lounge".to_owned()
+        ]
+        .into_iter()
+        .collect()
+    );
+}

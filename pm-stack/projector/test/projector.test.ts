@@ -199,6 +199,12 @@ describe("projector: PR + review + review comment (PR-interior)", () => {
     expect(review?.kind).toBe("review");
     expect(review?.review_state).toBe("approved");
     expect(review?.commit_id).toBe("abc123");
+    // Decision 4 (#4302/#3087): the webhook review object carries no
+    // created_at/updated_at — created_at and the guard key come from
+    // submitted_at, never from a fabricated delivery-time "now".
+    expect(review?.created_at).toBe("2026-10-25T01:00:00Z");
+    expect(review?.source_updated_at).toBe("2026-10-25T01:00:00Z");
+    expect(review?.submitted_at).toBe("2026-10-25T01:00:00Z");
 
     await applyEvent(store, "pull_request_review_comment", {
       action: "created",
@@ -289,8 +295,10 @@ describe("projector: comment deletion + push", () => {
     });
     expect(deleted).toEqual([["700", "issue_comment"]]);
     await applyEvent(store, "pull_request_review_comment", {
-      action: "deleted", repository: { full_name: "developing-today/code" },
-      pull_request: { number: 300 }, comment: { id: 700 },
+      action: "deleted",
+      repository: { full_name: "developing-today/code" },
+      pull_request: { number: 300 },
+      comment: { id: 700 },
     });
     expect(deleted[1]).toEqual(["700", "review_comment"]);
   });
@@ -501,7 +509,11 @@ describe("projector: item deletion marker (#6782)", () => {
     expect(items.has(ref)).toBe(false);
     // A previously unprocessed delivery of the original opened event
     // arrives late; its source timestamp predates the deletion.
-    const r = await applyEvent(store, "issues", { action: "opened", repository: repo, issue: issueAt("2026-10-25T00:00:00Z") });
+    const r = await applyEvent(store, "issues", {
+      action: "opened",
+      repository: repo,
+      issue: issueAt("2026-10-25T00:00:00Z"),
+    });
     expect(r.wrote).toBe(false);
     expect(items.has(ref)).toBe(false);
   });
@@ -514,7 +526,12 @@ describe("projector: item deletion marker (#6782)", () => {
       action: "created",
       repository: repo,
       issue: issueAt("2026-10-25T01:00:00Z"),
-      comment: { id: 9001, body: "late comment", created_at: "2026-10-25T01:00:00Z", updated_at: "2026-10-25T01:00:00Z" },
+      comment: {
+        id: 9001,
+        body: "late comment",
+        created_at: "2026-10-25T01:00:00Z",
+        updated_at: "2026-10-25T01:00:00Z",
+      },
     });
     expect(items.has(ref)).toBe(false);
     expect(comments.has("9001")).toBe(false);
@@ -534,7 +551,12 @@ describe("projector: item deletion marker (#6782)", () => {
       action: "deleted",
       repository: repo,
       issue: issueAt("2026-10-25T01:00:00Z"),
-      comment: { id: 9002, body: "since removed", created_at: "2026-10-25T01:00:00Z", updated_at: "2026-10-25T01:30:00Z" },
+      comment: {
+        id: 9002,
+        body: "since removed",
+        created_at: "2026-10-25T01:00:00Z",
+        updated_at: "2026-10-25T01:30:00Z",
+      },
     });
     expect(items.has(ref)).toBe(false);
     expect(deleted).toContainEqual(["9002", "issue_comment"]);

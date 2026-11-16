@@ -80,6 +80,32 @@ export interface Incident {
   humanBlocked: boolean;
   /** Surfacing flag the stewardship/orchestration sweeps read. */
   surfacing: "none" | "human-blocked" | "escalate";
+  /** Rung-4 hand-off record (#6033), set once the escalation effects
+   *  have run for this incident. Its (source, class) pair is the dedupe
+   *  key: while it is present, no second queue task or incident issue
+   *  is created for the same failure. Absent/null = not yet escalated. */
+  escalation?: EscalationRecord | null;
+}
+
+/** What rung 4 created for one incident (#6033). */
+export interface EscalationRecord {
+  /** Failure class at escalation time — half of the dedupe pair. */
+  class: FailureClass;
+  /** When the escalation effects ran. */
+  since: string;
+  /** Fleet queue task id, or null if the enqueue has not confirmed. */
+  queueTaskId: string | null;
+  /** Repo owning the adapter (and therefore the incident issue). */
+  issueRepo: string;
+  /** Incident issue number, or null if creation has not confirmed. */
+  issueNumber: number | null;
+  /** Earlier hand-offs for OTHER failure classes of this same
+   *  incident, displaced as "current" when the class changed but
+   *  still open (Codex P2 on PR #8357): dedupe consults them (a class
+   *  that changes back finds its pair here) and recovery closes and
+   *  completes every one. Flat: entries carry no `previous` of their
+   *  own. Absent = no earlier hand-off. */
+  previous?: EscalationRecord[];
 }
 
 /** What one tick saw for one source. */
@@ -201,13 +227,12 @@ export function decide(
   // --- failure tick ---
   const cls = obs.class;
   const consecutiveFailures = health.consecutiveFailures + 1;
-  const incident: Incident =
-    health.incident ?? {
-      id: `${health.source}:${at}`,
-      openedAt: at,
-      humanBlocked: false,
-      surfacing: "none",
-    };
+  const incident: Incident = health.incident ?? {
+    id: `${health.source}:${at}`,
+    openedAt: at,
+    humanBlocked: false,
+    surfacing: "none",
+  };
 
   // A human-blocked incident stays blocked until a human clears it or the
   // source recovers — the ladder must not hammer a login challenge.
@@ -389,6 +414,30 @@ export function coerceHealth(source: string, raw: unknown): SourceHealth {
     }))
     .slice(-REPAIR_LOG_LIMIT);
   const incidentRaw = r.incident as Record<string, unknown> | null | undefined;
+  const coerceEscalation = (raw: unknown): EscalationRecord | null => {
+    const e = raw as Record<string, unknown> | null;
+    return typeof e === "object" &&
+      e !== null &&
+      FAILURE_CLASSES.includes(e.class as FailureClass) &&
+      typeof e.since === "string" &&
+      typeof e.issueRepo === "string"
+      ? {
+          class: e.class as FailureClass,
+          since: e.since,
+          queueTaskId: typeof e.queueTaskId === "string" ? e.queueTaskId : null,
+          issueRepo: e.issueRepo,
+          issueNumber: typeof e.issueNumber === "number" && Number.isFinite(e.issueNumber) ? e.issueNumber : null,
+        }
+      : null;
+  };
+  const escRaw = (incidentRaw?.escalation ?? null) as Record<string, unknown> | null;
+  const escalation: EscalationRecord | null = coerceEscalation(escRaw);
+  if (escalation && Array.isArray(escRaw?.previous)) {
+    const previous = escRaw.previous
+      .map((entry) => coerceEscalation(entry))
+      .filter((entry): entry is EscalationRecord => entry !== null);
+    if (previous.length > 0) escalation.previous = previous;
+  }
   const incident: Incident | null =
     typeof incidentRaw === "object" && incidentRaw !== null && typeof incidentRaw.id === "string"
       ? {
@@ -398,6 +447,7 @@ export function coerceHealth(source: string, raw: unknown): SourceHealth {
           surfacing: (["none", "human-blocked", "escalate"].includes(incidentRaw.surfacing as string)
             ? incidentRaw.surfacing
             : "none") as Incident["surfacing"],
+          escalation,
         }
       : null;
   return {

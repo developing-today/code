@@ -1,0 +1,266 @@
+# Feature-coverage exemptions (#1978).
+#
+# One exemption per line: kind, name, and a one-line reason. A feature
+# listed here has no integration-test ledger row yet; the reason names
+# the burn-down issue that tracks giving it one. The guard
+# (feature_coverage_guard_test.go, evaluated by guardedMain after a
+# full suite run) fails when an exemption's reason is empty, when it
+# names a feature the registries do not declare, or when the feature
+# has since gained a ledger row — so burn-down deletes lines here and
+# the deletion is self-verifying.
+#
+# Measured against a full-suite ledger recorded on main 2b3db37221
+# (2026-11-11, task 14824): 403 required features, 152 covered, 251
+# exempt below.
+
+op	adapters_remove	no integration-test exercise yet; burn-down #8466 (ops group)
+op	authz_decisions_clear	no integration-test exercise yet; burn-down #8466 (ops group)
+op	daemon_restart	no integration-test exercise yet; burn-down #8466 (ops group)
+op	refresh	no integration-test exercise yet; burn-down #8466 (ops group)
+op	restart	no integration-test exercise yet; burn-down #8466 (ops group)
+op	secret_request_decline	no integration-test exercise yet; burn-down #8466 (ops group)
+op	secrets_set	no integration-test exercise yet; burn-down #8466 (ops group)
+op	secrets_unset	no integration-test exercise yet; burn-down #8466 (ops group)
+op	shutdown	no integration-test exercise yet; burn-down #8466 (ops group)
+cli	adapter	no integration-test exercise yet; burn-down #8460 (cli configuration group)
+cli	api	no integration-test exercise yet; burn-down #8460 (cli configuration group)
+cli	completion	no integration-test exercise yet; burn-down #8460 (cli configuration group)
+cli	init	no integration-test exercise yet; burn-down #8460 (cli configuration group)
+cli	man	no integration-test exercise yet; burn-down #8460 (cli configuration group)
+cli	plugin	no integration-test exercise yet; burn-down #8460 (cli configuration group)
+cli	cache	no integration-test exercise yet; burn-down #8461 (cli daemon group)
+cli	daemon	no integration-test exercise yet; burn-down #8461 (cli daemon group)
+cli	reload	no integration-test exercise yet; burn-down #8461 (cli daemon group)
+cli	stdio-proxy	no integration-test exercise yet; burn-down #8461 (cli daemon group)
+cli	supervise	no integration-test exercise yet; burn-down #8461 (cli daemon group)
+cli	upgrade	no integration-test exercise yet; burn-down #8461 (cli daemon group)
+cli	batch	no integration-test exercise yet; burn-down #8462 (cli discovery group)
+cli	list	no integration-test exercise yet; burn-down #8462 (cli discovery group)
+cli	namespaces	no integration-test exercise yet; burn-down #8462 (cli discovery group)
+cli	dashboard	no integration-test exercise yet; burn-down #8463 (cli inspection group)
+cli	explore	no integration-test exercise yet; burn-down #8463 (cli inspection group)
+cli	hook	no integration-test exercise yet; burn-down #8463 (cli inspection group)
+cli	interactions	no integration-test exercise yet; burn-down #8463 (cli inspection group)
+cli	logs	no integration-test exercise yet; burn-down #8463 (cli inspection group)
+cli	artifacts	no integration-test exercise yet; burn-down #8464 (cli operations group)
+cli	complete	no integration-test exercise yet; burn-down #8464 (cli operations group)
+cli	events	no integration-test exercise yet; burn-down #8464 (cli operations group)
+cli	tool	no integration-test exercise yet; burn-down #8464 (cli operations group)
+cli	embeddings	no integration-test exercise yet; burn-down #8465 (cli running group)
+cli	feedback	no integration-test exercise yet; burn-down #8465 (cli running group)
+cli	proxy	no integration-test exercise yet; burn-down #8465 (cli running group)
+cli	scripts	no integration-test exercise yet; burn-down #8465 (cli running group)
+cli	skills	no integration-test exercise yet; burn-down #8465 (cli running group)
+setting	daemon.address	no integration-test exercise yet; burn-down #8468 (settings daemon family); needs an EffectProbes entry + e2e test
+setting	daemon.autostart	no integration-test exercise yet; burn-down #8468 (settings daemon family); needs an EffectProbes entry + e2e test
+setting	daemon.endpoint	no integration-test exercise yet; burn-down #8468 (settings daemon family); needs an EffectProbes entry + e2e test
+setting	daemon.idleExit	no integration-test exercise yet; burn-down #8468 (settings daemon family); needs an EffectProbes entry + e2e test
+setting	daemon.inline	no integration-test exercise yet; burn-down #8468 (settings daemon family); needs an EffectProbes entry + e2e test
+setting	daemon.inlineStartPoll	no integration-test exercise yet; burn-down #8468 (settings daemon family); needs an EffectProbes entry + e2e test
+setting	daemon.inlineStartTimeout	no integration-test exercise yet; burn-down #8468 (settings daemon family); needs an EffectProbes entry + e2e test
+setting	daemon.leaseTTL	no integration-test exercise yet; burn-down #8468 (settings daemon family); needs an EffectProbes entry + e2e test
+setting	daemon.port	no integration-test exercise yet; burn-down #8468 (settings daemon family); needs an EffectProbes entry + e2e test
+setting	daemon.probeTimeout	no integration-test exercise yet; burn-down #8468 (settings daemon family); needs an EffectProbes entry + e2e test
+setting	daemon.reapInterval	no integration-test exercise yet; burn-down #8468 (settings daemon family); needs an EffectProbes entry + e2e test
+setting	daemon.refreshTimeout	no integration-test exercise yet; burn-down #8468 (settings daemon family); needs an EffectProbes entry + e2e test
+setting	daemon.roots	no integration-test exercise yet; burn-down #8468 (settings daemon family); needs an EffectProbes entry + e2e test
+setting	daemon.saveInterval	no integration-test exercise yet; burn-down #8468 (settings daemon family); needs an EffectProbes entry + e2e test
+setting	daemon.socketProbeTimeout	no integration-test exercise yet; burn-down #8468 (settings daemon family); needs an EffectProbes entry + e2e test
+setting	daemon.takeoverTimeout	no integration-test exercise yet; burn-down #8468 (settings daemon family); needs an EffectProbes entry + e2e test
+setting	daemon.tsnet.hostname	no integration-test exercise yet; burn-down #8468 (settings daemon family); needs an EffectProbes entry + e2e test
+setting	daemon.tsnetUpTimeout	no integration-test exercise yet; burn-down #8468 (settings daemon family); needs an EffectProbes entry + e2e test
+setting	daemon.ui	no integration-test exercise yet; burn-down #8468 (settings daemon family); needs an EffectProbes entry + e2e test
+setting	daemon.uiDir	no integration-test exercise yet; burn-down #8468 (settings daemon family); needs an EffectProbes entry + e2e test
+setting	daemon.warm	no integration-test exercise yet; burn-down #8468 (settings daemon family); needs an EffectProbes entry + e2e test
+setting	daemon.warmTimeout	no integration-test exercise yet; burn-down #8468 (settings daemon family); needs an EffectProbes entry + e2e test
+setting	daemon.watchConfig	no integration-test exercise yet; burn-down #8468 (settings daemon family); needs an EffectProbes entry + e2e test
+setting	http.bodyLimit	no integration-test exercise yet; burn-down #8469 (settings http-transport family); needs an EffectProbes entry + e2e test
+setting	http.callBodyLimit	no integration-test exercise yet; burn-down #8469 (settings http-transport family); needs an EffectProbes entry + e2e test
+setting	http.controlBodyLimit	no integration-test exercise yet; burn-down #8469 (settings http-transport family); needs an EffectProbes entry + e2e test
+setting	http.idleConnTimeout	no integration-test exercise yet; burn-down #8469 (settings http-transport family); needs an EffectProbes entry + e2e test
+setting	http.idleConns	no integration-test exercise yet; burn-down #8469 (settings http-transport family); needs an EffectProbes entry + e2e test
+setting	http.readHeaderTimeout	no integration-test exercise yet; burn-down #8469 (settings http-transport family); needs an EffectProbes entry + e2e test
+setting	http.remoteIdleConns	no integration-test exercise yet; burn-down #8469 (settings http-transport family); needs an EffectProbes entry + e2e test
+setting	http.requestTimeout	no integration-test exercise yet; burn-down #8469 (settings http-transport family); needs an EffectProbes entry + e2e test
+setting	http.shutdownGrace	no integration-test exercise yet; burn-down #8469 (settings http-transport family); needs an EffectProbes entry + e2e test
+setting	http.ssePing	no integration-test exercise yet; burn-down #8469 (settings http-transport family); needs an EffectProbes entry + e2e test
+setting	http.sseRetry	no integration-test exercise yet; burn-down #8469 (settings http-transport family); needs an EffectProbes entry + e2e test
+setting	http.streamBufferInit	no integration-test exercise yet; burn-down #8469 (settings http-transport family); needs an EffectProbes entry + e2e test
+setting	http.streamBufferMax	no integration-test exercise yet; burn-down #8469 (settings http-transport family); needs an EffectProbes entry + e2e test
+setting	transport.allowedOrigins	no integration-test exercise yet; burn-down #8469 (settings http-transport family); needs an EffectProbes entry + e2e test
+setting	transport.bearerToken	no integration-test exercise yet; burn-down #8469 (settings http-transport family); needs an EffectProbes entry + e2e test
+setting	transport.sessionMetaKeys	no integration-test exercise yet; burn-down #8469 (settings http-transport family); needs an EffectProbes entry + e2e test
+setting	transport.sseKeepAlive	no integration-test exercise yet; burn-down #8469 (settings http-transport family); needs an EffectProbes entry + e2e test
+setting	transport.stdioDrain	no integration-test exercise yet; burn-down #8469 (settings http-transport family); needs an EffectProbes entry + e2e test
+setting	script.before	no integration-test exercise yet; burn-down #8474 (settings script family); needs an EffectProbes entry + e2e test
+setting	script.checkOnError	no integration-test exercise yet; burn-down #8474 (settings script family); needs an EffectProbes entry + e2e test
+setting	script.checkOnUnsupported	no integration-test exercise yet; burn-down #8474 (settings script family); needs an EffectProbes entry + e2e test
+setting	script.imports	no integration-test exercise yet; burn-down #8474 (settings script family); needs an EffectProbes entry + e2e test
+setting	script.importsCrossProject	no integration-test exercise yet; burn-down #8474 (settings script family); needs an EffectProbes entry + e2e test
+setting	script.importsNetwork	no integration-test exercise yet; burn-down #8474 (settings script family); needs an EffectProbes entry + e2e test
+setting	script.importsOnDynamic	no integration-test exercise yet; burn-down #8474 (settings script family); needs an EffectProbes entry + e2e test
+setting	script.importsOnMissing	no integration-test exercise yet; burn-down #8474 (settings script family); needs an EffectProbes entry + e2e test
+setting	script.launcher	no integration-test exercise yet; burn-down #8474 (settings script family); needs an EffectProbes entry + e2e test
+setting	script.onError	no integration-test exercise yet; burn-down #8474 (settings script family); needs an EffectProbes entry + e2e test
+setting	script.onSuccess	no integration-test exercise yet; burn-down #8474 (settings script family); needs an EffectProbes entry + e2e test
+setting	script.permissions	no integration-test exercise yet; burn-down #8474 (settings script family); needs an EffectProbes entry + e2e test
+setting	script.profiles	no integration-test exercise yet; burn-down #8474 (settings script family); needs an EffectProbes entry + e2e test
+setting	script.runtime	no integration-test exercise yet; burn-down #8474 (settings script family); needs an EffectProbes entry + e2e test
+setting	script.runtimeOrder	no integration-test exercise yet; burn-down #8474 (settings script family); needs an EffectProbes entry + e2e test
+setting	script.runtimes	no integration-test exercise yet; burn-down #8474 (settings script family); needs an EffectProbes entry + e2e test
+setting	script.suffix	no integration-test exercise yet; burn-down #8474 (settings script family); needs an EffectProbes entry + e2e test
+setting	proto.askPoll	no integration-test exercise yet; burn-down #8473 (settings proto family); needs an EffectProbes entry + e2e test
+setting	proto.askRounds	no integration-test exercise yet; burn-down #8473 (settings proto family); needs an EffectProbes entry + e2e test
+setting	proto.askTTL	no integration-test exercise yet; burn-down #8473 (settings proto family); needs an EffectProbes entry + e2e test
+setting	proto.askTimeout	no integration-test exercise yet; burn-down #8473 (settings proto family); needs an EffectProbes entry + e2e test
+setting	proto.elicitationPerMinute	no integration-test exercise yet; burn-down #8473 (settings proto family); needs an EffectProbes entry + e2e test
+setting	proto.mcpPath	no integration-test exercise yet; burn-down #8473 (settings proto family); needs an EffectProbes entry + e2e test
+setting	proto.native	no integration-test exercise yet; burn-down #8473 (settings proto family); needs an EffectProbes entry + e2e test
+setting	proto.samplingPerMinute	no integration-test exercise yet; burn-down #8473 (settings proto family); needs an EffectProbes entry + e2e test
+setting	proto.samplingSessionPerMinute	no integration-test exercise yet; burn-down #8473 (settings proto family); needs an EffectProbes entry + e2e test
+setting	proto.serveMCP	no integration-test exercise yet; burn-down #8473 (settings proto family); needs an EffectProbes entry + e2e test
+setting	proto.sessionIdle	no integration-test exercise yet; burn-down #8473 (settings proto family); needs an EffectProbes entry + e2e test
+setting	proto.stateTTL	no integration-test exercise yet; burn-down #8473 (settings proto family); needs an EffectProbes entry + e2e test
+setting	protoMessages.listMaxAge	no integration-test exercise yet; burn-down #8473 (settings proto family); needs an EffectProbes entry + e2e test
+setting	protoMessages.readMaxAge	no integration-test exercise yet; burn-down #8473 (settings proto family); needs an EffectProbes entry + e2e test
+setting	protoMessages.taskAfter	no integration-test exercise yet; burn-down #8473 (settings proto family); needs an EffectProbes entry + e2e test
+setting	protoTasks.cancelGrace	no integration-test exercise yet; burn-down #8473 (settings proto family); needs an EffectProbes entry + e2e test
+setting	protoTasks.maxPerRequestor	no integration-test exercise yet; burn-down #8473 (settings proto family); needs an EffectProbes entry + e2e test
+setting	protoTasks.maxTTL	no integration-test exercise yet; burn-down #8473 (settings proto family); needs an EffectProbes entry + e2e test
+setting	protoTasks.perMinute	no integration-test exercise yet; burn-down #8473 (settings proto family); needs an EffectProbes entry + e2e test
+setting	protoTasks.pollInterval	no integration-test exercise yet; burn-down #8473 (settings proto family); needs an EffectProbes entry + e2e test
+setting	spec.first	no integration-test exercise yet; burn-down #8473 (settings proto family); needs an EffectProbes entry + e2e test
+setting	spec.lenient	no integration-test exercise yet; burn-down #8473 (settings proto family); needs an EffectProbes entry + e2e test
+setting	spec.precedence	no integration-test exercise yet; burn-down #8473 (settings proto family); needs an EffectProbes entry + e2e test
+setting	plugin.annotate	no integration-test exercise yet; burn-down #8472 (settings plugin family); needs an EffectProbes entry + e2e test
+setting	plugin.backend	no integration-test exercise yet; burn-down #8472 (settings plugin family); needs an EffectProbes entry + e2e test
+setting	plugin.bin	no integration-test exercise yet; burn-down #8472 (settings plugin family); needs an EffectProbes entry + e2e test
+setting	plugin.binArgs	no integration-test exercise yet; burn-down #8472 (settings plugin family); needs an EffectProbes entry + e2e test
+setting	plugin.daemonTools	no integration-test exercise yet; burn-down #8472 (settings plugin family); needs an EffectProbes entry + e2e test
+setting	plugin.disabledTools	no integration-test exercise yet; burn-down #8472 (settings plugin family); needs an EffectProbes entry + e2e test
+setting	plugin.discoveryRetry	no integration-test exercise yet; burn-down #8472 (settings plugin family); needs an EffectProbes entry + e2e test
+setting	plugin.env	no integration-test exercise yet; burn-down #8472 (settings plugin family); needs an EffectProbes entry + e2e test
+setting	plugin.headless	no integration-test exercise yet; burn-down #8472 (settings plugin family); needs an EffectProbes entry + e2e test
+setting	plugin.instructions	no integration-test exercise yet; burn-down #8472 (settings plugin family); needs an EffectProbes entry + e2e test
+setting	plugin.remember	no integration-test exercise yet; burn-down #8472 (settings plugin family); needs an EffectProbes entry + e2e test
+setting	plugin.toolTiming	no integration-test exercise yet; burn-down #8472 (settings plugin family); needs an EffectProbes entry + e2e test
+setting	plugin.tools	no integration-test exercise yet; burn-down #8472 (settings plugin family); needs an EffectProbes entry + e2e test
+setting	logging.dir	no integration-test exercise yet; burn-down #8467 (settings core-paths family); needs an EffectProbes entry + e2e test
+setting	logging.format	no integration-test exercise yet; burn-down #8467 (settings core-paths family); needs an EffectProbes entry + e2e test
+setting	logging.include	no integration-test exercise yet; burn-down #8467 (settings core-paths family); needs an EffectProbes entry + e2e test
+setting	logging.keep	no integration-test exercise yet; burn-down #8467 (settings core-paths family); needs an EffectProbes entry + e2e test
+setting	logging.level	no integration-test exercise yet; burn-down #8467 (settings core-paths family); needs an EffectProbes entry + e2e test
+setting	logging.maxAge	no integration-test exercise yet; burn-down #8467 (settings core-paths family); needs an EffectProbes entry + e2e test
+setting	logging.maxBytes	no integration-test exercise yet; burn-down #8467 (settings core-paths family); needs an EffectProbes entry + e2e test
+setting	logging.maxLines	no integration-test exercise yet; burn-down #8467 (settings core-paths family); needs an EffectProbes entry + e2e test
+setting	logging.source	no integration-test exercise yet; burn-down #8467 (settings core-paths family); needs an EffectProbes entry + e2e test
+setting	logging.trace	no integration-test exercise yet; burn-down #8467 (settings core-paths family); needs an EffectProbes entry + e2e test
+setting	logstore.followBacklog	no integration-test exercise yet; burn-down #8467 (settings core-paths family); needs an EffectProbes entry + e2e test
+setting	logstore.queryLimit	no integration-test exercise yet; burn-down #8467 (settings core-paths family); needs an EffectProbes entry + e2e test
+setting	output.color	no integration-test exercise yet; burn-down #8467 (settings core-paths family); needs an EffectProbes entry + e2e test
+setting	paths.adapters	no integration-test exercise yet; burn-down #8467 (settings core-paths family); needs an EffectProbes entry + e2e test
+setting	paths.apis	no integration-test exercise yet; burn-down #8467 (settings core-paths family); needs an EffectProbes entry + e2e test
+setting	paths.cache	no integration-test exercise yet; burn-down #8467 (settings core-paths family); needs an EffectProbes entry + e2e test
+setting	paths.config	no integration-test exercise yet; burn-down #8467 (settings core-paths family); needs an EffectProbes entry + e2e test
+setting	paths.placeholders	no integration-test exercise yet; burn-down #8467 (settings core-paths family); needs an EffectProbes entry + e2e test
+setting	paths.plugins	no integration-test exercise yet; burn-down #8467 (settings core-paths family); needs an EffectProbes entry + e2e test
+setting	paths.scripts	no integration-test exercise yet; burn-down #8467 (settings core-paths family); needs an EffectProbes entry + e2e test
+setting	pool.callTimeout	no integration-test exercise yet; burn-down #8467 (settings core-paths family); needs an EffectProbes entry + e2e test
+setting	pool.idleTimeout	no integration-test exercise yet; burn-down #8467 (settings core-paths family); needs an EffectProbes entry + e2e test
+setting	pool.min	no integration-test exercise yet; burn-down #8467 (settings core-paths family); needs an EffectProbes entry + e2e test
+setting	pool.startTimeout	no integration-test exercise yet; burn-down #8467 (settings core-paths family); needs an EffectProbes entry + e2e test
+setting	elicit.askTimeout	no integration-test exercise yet; burn-down #8471 (settings model-ai family); needs an EffectProbes entry + e2e test
+setting	elicit.confirmDestructive	no integration-test exercise yet; burn-down #8471 (settings model-ai family); needs an EffectProbes entry + e2e test
+setting	elicit.disambiguate	no integration-test exercise yet; burn-down #8471 (settings model-ai family); needs an EffectProbes entry + e2e test
+setting	elicit.disambiguateDefault	no integration-test exercise yet; burn-down #8471 (settings model-ai family); needs an EffectProbes entry + e2e test
+setting	elicit.maxAge	no integration-test exercise yet; burn-down #8471 (settings model-ai family); needs an EffectProbes entry + e2e test
+setting	elicit.pendingLimit	no integration-test exercise yet; burn-down #8471 (settings model-ai family); needs an EffectProbes entry + e2e test
+setting	elicit.ttl	no integration-test exercise yet; burn-down #8471 (settings model-ai family); needs an EffectProbes entry + e2e test
+setting	embeddings.apiKey	no integration-test exercise yet; burn-down #8471 (settings model-ai family); needs an EffectProbes entry + e2e test
+setting	embeddings.backend	no integration-test exercise yet; burn-down #8471 (settings model-ai family); needs an EffectProbes entry + e2e test
+setting	embeddings.model	no integration-test exercise yet; burn-down #8471 (settings model-ai family); needs an EffectProbes entry + e2e test
+setting	embeddings.url	no integration-test exercise yet; burn-down #8471 (settings model-ai family); needs an EffectProbes entry + e2e test
+setting	embeddings.wasmPath	no integration-test exercise yet; burn-down #8471 (settings model-ai family); needs an EffectProbes entry + e2e test
+setting	model.apiKeyEnv	no integration-test exercise yet; burn-down #8471 (settings model-ai family); needs an EffectProbes entry + e2e test
+setting	model.baseURL	no integration-test exercise yet; burn-down #8471 (settings model-ai family); needs an EffectProbes entry + e2e test
+setting	model.budget	no integration-test exercise yet; burn-down #8471 (settings model-ai family); needs an EffectProbes entry + e2e test
+setting	model.default	no integration-test exercise yet; burn-down #8471 (settings model-ai family); needs an EffectProbes entry + e2e test
+setting	model.profiles	no integration-test exercise yet; burn-down #8471 (settings model-ai family); needs an EffectProbes entry + e2e test
+setting	model.provider	no integration-test exercise yet; burn-down #8471 (settings model-ai family); needs an EffectProbes entry + e2e test
+setting	model.providers	no integration-test exercise yet; burn-down #8471 (settings model-ai family); needs an EffectProbes entry + e2e test
+setting	model.timeout	no integration-test exercise yet; burn-down #8471 (settings model-ai family); needs an EffectProbes entry + e2e test
+setting	prompt.autonomy	no integration-test exercise yet; burn-down #8471 (settings model-ai family); needs an EffectProbes entry + e2e test
+setting	prompt.catalogBudget	no integration-test exercise yet; burn-down #8471 (settings model-ai family); needs an EffectProbes entry + e2e test
+setting	prompt.maxTokens	no integration-test exercise yet; burn-down #8471 (settings model-ai family); needs an EffectProbes entry + e2e test
+setting	prompt.runTimeout	no integration-test exercise yet; burn-down #8471 (settings model-ai family); needs an EffectProbes entry + e2e test
+setting	prompt.sample	no integration-test exercise yet; burn-down #8471 (settings model-ai family); needs an EffectProbes entry + e2e test
+setting	prompt.sampleTimeout	no integration-test exercise yet; burn-down #8471 (settings model-ai family); needs an EffectProbes entry + e2e test
+setting	artifacts.chunkBytes	no integration-test exercise yet; burn-down #8470 (settings long-tail families); needs an EffectProbes entry + e2e test
+setting	artifacts.delivery	no integration-test exercise yet; burn-down #8470 (settings long-tail families); needs an EffectProbes entry + e2e test
+setting	artifacts.dir	no integration-test exercise yet; burn-down #8470 (settings long-tail families); needs an EffectProbes entry + e2e test
+setting	artifacts.enabled	no integration-test exercise yet; burn-down #8470 (settings long-tail families); needs an EffectProbes entry + e2e test
+setting	artifacts.gcInterval	no integration-test exercise yet; burn-down #8470 (settings long-tail families); needs an EffectProbes entry + e2e test
+setting	artifacts.idleTtl	no integration-test exercise yet; burn-down #8470 (settings long-tail families); needs an EffectProbes entry + e2e test
+setting	artifacts.inlineMaxBytes	no integration-test exercise yet; burn-down #8470 (settings long-tail families); needs an EffectProbes entry + e2e test
+setting	artifacts.interceptImages	no integration-test exercise yet; burn-down #8470 (settings long-tail families); needs an EffectProbes entry + e2e test
+setting	artifacts.maxAge	no integration-test exercise yet; burn-down #8470 (settings long-tail families); needs an EffectProbes entry + e2e test
+setting	artifacts.maxBytes	no integration-test exercise yet; burn-down #8470 (settings long-tail families); needs an EffectProbes entry + e2e test
+setting	artifacts.quota	no integration-test exercise yet; burn-down #8470 (settings long-tail families); needs an EffectProbes entry + e2e test
+setting	artifacts.ttl	no integration-test exercise yet; burn-down #8470 (settings long-tail families); needs an EffectProbes entry + e2e test
+setting	autonomy.max	no integration-test exercise yet; burn-down #8470 (settings long-tail families); needs an EffectProbes entry + e2e test
+setting	autostart.args	no integration-test exercise yet; burn-down #8470 (settings long-tail families); needs an EffectProbes entry + e2e test
+setting	autostart.bin	no integration-test exercise yet; burn-down #8470 (settings long-tail families); needs an EffectProbes entry + e2e test
+setting	autostart.connectTimeout	no integration-test exercise yet; burn-down #8470 (settings long-tail families); needs an EffectProbes entry + e2e test
+setting	autostart.idleExit	no integration-test exercise yet; burn-down #8470 (settings long-tail families); needs an EffectProbes entry + e2e test
+setting	autostart.logTail	no integration-test exercise yet; burn-down #8470 (settings long-tail families); needs an EffectProbes entry + e2e test
+setting	autostart.pingTimeout	no integration-test exercise yet; burn-down #8470 (settings long-tail families); needs an EffectProbes entry + e2e test
+setting	autostart.pollInterval	no integration-test exercise yet; burn-down #8470 (settings long-tail families); needs an EffectProbes entry + e2e test
+setting	catalog.bias	no integration-test exercise yet; burn-down #8470 (settings long-tail families); needs an EffectProbes entry + e2e test
+setting	catalog.budget	no integration-test exercise yet; burn-down #8470 (settings long-tail families); needs an EffectProbes entry + e2e test
+setting	catalog.instructions	no integration-test exercise yet; burn-down #8470 (settings long-tail families); needs an EffectProbes entry + e2e test
+setting	catalog.pinnedTools	no integration-test exercise yet; burn-down #8470 (settings long-tail families); needs an EffectProbes entry + e2e test
+setting	completion.maxValues	no integration-test exercise yet; burn-down #8470 (settings long-tail families); needs an EffectProbes entry + e2e test
+setting	completion.perMinute	no integration-test exercise yet; burn-down #8470 (settings long-tail families); needs an EffectProbes entry + e2e test
+setting	completion.serverPerMinute	no integration-test exercise yet; burn-down #8470 (settings long-tail families); needs an EffectProbes entry + e2e test
+setting	deps.autoInstall	no integration-test exercise yet; burn-down #8470 (settings long-tail families); needs an EffectProbes entry + e2e test
+setting	diagnose.history	no integration-test exercise yet; burn-down #8470 (settings long-tail families); needs an EffectProbes entry + e2e test
+setting	diagnose.preflight	no integration-test exercise yet; burn-down #8470 (settings long-tail families); needs an EffectProbes entry + e2e test
+setting	doctor.timeout	no integration-test exercise yet; burn-down #8470 (settings long-tail families); needs an EffectProbes entry + e2e test
+setting	events.history	no integration-test exercise yet; burn-down #8470 (settings long-tail families); needs an EffectProbes entry + e2e test
+setting	events.reconnect	no integration-test exercise yet; burn-down #8470 (settings long-tail families); needs an EffectProbes entry + e2e test
+setting	exec.maxOutputBytes	no integration-test exercise yet; burn-down #8470 (settings long-tail families); needs an EffectProbes entry + e2e test
+setting	exec.output	no integration-test exercise yet; burn-down #8470 (settings long-tail families); needs an EffectProbes entry + e2e test
+setting	exec.timeout	no integration-test exercise yet; burn-down #8470 (settings long-tail families); needs an EffectProbes entry + e2e test
+setting	exec.where	no integration-test exercise yet; burn-down #8470 (settings long-tail families); needs an EffectProbes entry + e2e test
+setting	hooks	no integration-test exercise yet; burn-down #8470 (settings long-tail families); needs an EffectProbes entry + e2e test
+setting	hooks.autonomy	no integration-test exercise yet; burn-down #8470 (settings long-tail families); needs an EffectProbes entry + e2e test
+setting	hooks.timeout	no integration-test exercise yet; burn-down #8470 (settings long-tail families); needs an EffectProbes entry + e2e test
+setting	mcp.pageSize	no integration-test exercise yet; burn-down #8470 (settings long-tail families); needs an EffectProbes entry + e2e test
+setting	mcp.passthrough	no integration-test exercise yet; burn-down #8470 (settings long-tail families); needs an EffectProbes entry + e2e test
+setting	plumbing.allowTsJsOverlap	no integration-test exercise yet; burn-down #8470 (settings long-tail families); needs an EffectProbes entry + e2e test
+setting	plumbing.indexOnQuery	no integration-test exercise yet; burn-down #8470 (settings long-tail families); needs an EffectProbes entry + e2e test
+setting	plumbing.launcherPlaceholderRepeat	no integration-test exercise yet; burn-down #8470 (settings long-tail families); needs an EffectProbes entry + e2e test
+setting	plumbing.sourceDirAllowed	no integration-test exercise yet; burn-down #8470 (settings long-tail families); needs an EffectProbes entry + e2e test
+setting	plumbing.sourceDirRecursive	no integration-test exercise yet; burn-down #8470 (settings long-tail families); needs an EffectProbes entry + e2e test
+setting	plumbing.sourceProbePaths	no integration-test exercise yet; burn-down #8470 (settings long-tail families); needs an EffectProbes entry + e2e test
+setting	plumbing.validatePaths	no integration-test exercise yet; burn-down #8470 (settings long-tail families); needs an EffectProbes entry + e2e test
+setting	policy.write	no integration-test exercise yet; burn-down #8470 (settings long-tail families); needs an EffectProbes entry + e2e test
+setting	preset	no integration-test exercise yet; burn-down #8470 (settings long-tail families); needs an EffectProbes entry + e2e test
+setting	presets	no integration-test exercise yet; burn-down #8470 (settings long-tail families); needs an EffectProbes entry + e2e test
+setting	recipes.limit	no integration-test exercise yet; burn-down #8470 (settings long-tail families); needs an EffectProbes entry + e2e test
+setting	recipes.matchMargin	no integration-test exercise yet; burn-down #8470 (settings long-tail families); needs an EffectProbes entry + e2e test
+setting	recipes.minScore	no integration-test exercise yet; burn-down #8470 (settings long-tail families); needs an EffectProbes entry + e2e test
+setting	registry.timeout	no integration-test exercise yet; burn-down #8470 (settings long-tail families); needs an EffectProbes entry + e2e test
+setting	repair.autonomy	no integration-test exercise yet; burn-down #8470 (settings long-tail families); needs an EffectProbes entry + e2e test
+setting	retention.maxTools	no integration-test exercise yet; burn-down #8470 (settings long-tail families); needs an EffectProbes entry + e2e test
+setting	retention.stickyWindow	no integration-test exercise yet; burn-down #8470 (settings long-tail families); needs an EffectProbes entry + e2e test
+setting	sampling.answerLocally	no integration-test exercise yet; burn-down #8470 (settings long-tail families); needs an EffectProbes entry + e2e test
+setting	search.semantic	no integration-test exercise yet; burn-down #8470 (settings long-tail families); needs an EffectProbes entry + e2e test
+setting	serve.mode	no integration-test exercise yet; burn-down #8470 (settings long-tail families); needs an EffectProbes entry + e2e test
+setting	session.releaseTimeout	no integration-test exercise yet; burn-down #8470 (settings long-tail families); needs an EffectProbes entry + e2e test
+setting	stats.top	no integration-test exercise yet; burn-down #8470 (settings long-tail families); needs an EffectProbes entry + e2e test
+setting	tasks.resultWait	no integration-test exercise yet; burn-down #8470 (settings long-tail families); needs an EffectProbes entry + e2e test
+setting	tasks.ttl	no integration-test exercise yet; burn-down #8470 (settings long-tail families); needs an EffectProbes entry + e2e test
+setting	upstream.eraCache	no integration-test exercise yet; burn-down #8470 (settings long-tail families); needs an EffectProbes entry + e2e test
+setting	upstream.probeTimeout	no integration-test exercise yet; burn-down #8470 (settings long-tail families); needs an EffectProbes entry + e2e test
+setting	upstream.protocol	no integration-test exercise yet; burn-down #8470 (settings long-tail families); needs an EffectProbes entry + e2e test

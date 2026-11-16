@@ -20,13 +20,13 @@ double the liveness reads for nothing).
 
 ## What is reaped, and the proof each class needs
 
-| Class | Proof before reap |
-|---|---|
-| `target/` trees (incl. ad-hoc `target-<id>`, scratch root targets, `queue/` children) | The janitor's gates: not claimed (task or issue), no open PR, terminal task or idle ≥ 48h, no build process inside, cap pressure. Re-verified fresh before each removal. Removal is `rmtree` of the exact planned path (build output is regenerable; this is the janitor's standing behavior). |
-| Nested clones (`.git` is a directory, not a registered worktree) | `git status` completely clean AND HEAD equal to the **live** tip of the upstream branch (`git ls-remote`, never a stale tracking ref). Anything uncommitted or unpushed protects the clone. |
-| Scratch trees (probe-*, lane scratch, fixture floods) | **Zero keep-set files** outside bulk subtrees, per the heuristics below. |
-| Registered worktrees | Never touched here — the worktree-reaper owns them (their `target/` trees are still in the target plan). Registration is read from **every** primary under `~/git`, not just one: the yard holds worktrees of code, opencode, openchamber, nix, and more, and a worktree of any primary is registered. |
-| Yard-root loose files | Never touched — the known-precious set. |
+| Class                                                                                 | Proof before reap                                                                                                                                                                                                                                                                                      |
+| ------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `target/` trees (incl. ad-hoc `target-<id>`, scratch root targets, `queue/` children) | The janitor's gates: not claimed (task or issue), no open PR, terminal task or idle ≥ 48h, no build process inside, cap pressure. Re-verified fresh before each removal. Removal is `rmtree` of the exact planned path (build output is regenerable; this is the janitor's standing behavior).         |
+| Nested clones (`.git` is a directory, not a registered worktree)                      | `git status` completely clean AND HEAD equal to the **live** tip of the upstream branch (`git ls-remote`, never a stale tracking ref). Anything uncommitted or unpushed protects the clone.                                                                                                            |
+| Scratch trees (probe-*, lane scratch, fixture floods)                                 | **Zero keep-set files** outside bulk subtrees, per the heuristics below.                                                                                                                                                                                                                               |
+| Registered worktrees                                                                  | Never touched here — the worktree-reaper owns them (their `target/` trees are still in the target plan). Registration is read from **every** primary under `~/git`, not just one: the yard holds worktrees of code, opencode, openchamber, nix, and more, and a worktree of any primary is registered. |
+| Yard-root loose files                                                                 | Never touched — the known-precious set.                                                                                                                                                                                                                                                                |
 
 Whole entries are **moved to the recoverable trash**
 (`~/.local/share/Trash/yard-reaper/<run-id>/`, `queue/` children

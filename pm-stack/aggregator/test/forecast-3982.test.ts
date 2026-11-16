@@ -57,7 +57,6 @@ function history(total: number, closesAtWeek: (number | null)[]): ItemHistoryCut
   );
 }
 
-
 // --- Generated model-based coverage for the design \u00a71 resampling
 // estimator (Codex P1 on PR #6169; testing doctrine: PBT/MBT with a
 // named oracle). The fixed examples alone cannot detect a wrong
@@ -287,7 +286,6 @@ describe("deriveEpicEta", () => {
     const b = deriveEpicEta({ subjectRef: EPIC, cutoffs });
     expect(b).toEqual(a);
   });
-
 
   test("generated cases match the exact DP oracle within the stated sampling tolerance (MBT, #5274 / PR #6169 Codex P1)", () => {
     let forecastCases = 0;

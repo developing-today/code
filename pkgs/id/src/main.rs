@@ -434,6 +434,27 @@ async fn main() -> Result<()> {
         Some(Command::Claim { json, command }) => {
             id::commands::cmd_claim(cli.event_store, json, command).await
         }
+        Some(Command::WriterSets { json, command }) => {
+            id::commands::cmd_writer_sets(cli.event_store, json, command).await
+        }
+        Some(Command::Publish {
+            world,
+            listen,
+            path,
+            acknowledge_shadow,
+        }) => {
+            id::commands::cmd_publish(
+                &world,
+                listen.as_deref(),
+                path.as_deref(),
+                acknowledge_shadow,
+            )
+            .await
+        }
+        Some(Command::Unpublish { listen, path }) => {
+            id::commands::cmd_unpublish(listen.as_deref(), path.as_deref()).await
+        }
+        Some(Command::Publications) => id::commands::cmd_publications().await,
         #[cfg(feature = "sandbox")]
         Some(Command::MatchAudit(command)) => id::commands::cmd_match_audit(command),
         #[cfg(feature = "world")]
@@ -450,6 +471,14 @@ async fn main() -> Result<()> {
             no_relay,
         }) => cmd_put_multi(files, content, stdin, hash_only, no_relay).await,
         Some(Command::PutHash { source }) => cmd_put_hash(&source).await,
+        Some(Command::Send {
+            source,
+            name,
+            to,
+            dest_name,
+            replace,
+            no_relay,
+        }) => id::commands::cmd_send(&source, &name, &to, dest_name, replace, no_relay).await,
         Some(Command::Get {
             sources,
             stdin,

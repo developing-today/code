@@ -79,7 +79,9 @@ describe("stale issue coverage panel", () => {
     };
     const html = projectsBodyHtml([], { coverage });
     expect(html).toContain("Open issues untouched &gt;90 days");
-    expect(html).toContain(">4</td><td><time datetime=\"2026-10-01T12:00:00.000Z\">2026-10-01T12:00:00.000Z</time></td><td>STALE — collection is over 7 days old</td>");
+    expect(html).toContain(
+      '>4</td><td><time datetime="2026-10-01T12:00:00.000Z">2026-10-01T12:00:00.000Z</time></td><td>STALE — collection is over 7 days old</td>',
+    );
     expect(html).toContain("Collection error: search 503 &lt;retry&gt;");
     expect(html).toContain("Unavailable — collection failed or not collected");
     expect(html).toContain(">—</td>");
@@ -571,7 +573,13 @@ describe("renderProgramProject", () => {
         ref: "developing-today/code#1",
         title: "code item",
       }),
-      poolItem({ area: "fleet-ops", repo: "dezren39/nix", ref: "dezren39/nix#2", number: 2, title: "nix item" }),
+      poolItem({
+        area: "fleet-ops",
+        repo: "dezren39/darwin-nix",
+        ref: "dezren39/darwin-nix#2",
+        number: 2,
+        title: "nix item",
+      }),
       poolItem({
         area: "pm-dashboard",
         repo: "developing-today/code",
@@ -590,7 +598,7 @@ describe("renderProgramProject", () => {
     ]);
     const byRepo = new Map(detail.repoCards.map((c) => [c.card.repo, c]));
     expect(byRepo.get("developing-today/code")?.poolItems.map((p) => p.title)).toEqual(["code item"]);
-    expect(byRepo.get("dezren39/nix")?.poolItems.map((p) => p.title)).toEqual(["nix item"]);
+    expect(byRepo.get("dezren39/darwin-nix")?.poolItems.map((p) => p.title)).toEqual(["nix item"]);
     expect(byRepo.get("developing-today-forks/opencode")?.poolItems).toEqual([]);
     // Fixture roadmap rows name their repo in the title / links.
     expect(byRepo.get("developing-today-forks/opencode")?.roadmapRows.length).toBeGreaterThan(0);

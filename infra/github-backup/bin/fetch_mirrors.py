@@ -13,7 +13,17 @@ import json, os, subprocess, sys, time
 from datetime import date, timedelta
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from ghb_common import load_config, backup_root, mirror_path, valid_mirror, load_plan, load_state, report_problems, save_json, state_lock
+from ghb_common import (
+    load_config,
+    backup_root,
+    mirror_path,
+    valid_mirror,
+    load_plan,
+    load_state,
+    report_problems,
+    save_json,
+    state_lock,
+)
 import manifest as manifest_mod
 
 COALESCE_S = 12 * 3600

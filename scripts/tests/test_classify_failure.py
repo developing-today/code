@@ -37,7 +37,7 @@ class QuotaOrSecretTests(unittest.TestCase):
 
     def test_echoed_run_script_secret_text_is_not_evidence(self):
         r = classify(
-            "##[group]Run if [ -z \\\"$TOKEN\\\" ]; then\n"
+            '##[group]Run if [ -z \\"$TOKEN\\" ]; then\n'
             "  echo 'secret MISSING_TOKEN is not set'\n"
             "fi\n"
             "##[endgroup]\n"
@@ -48,7 +48,7 @@ class QuotaOrSecretTests(unittest.TestCase):
 
     def test_executed_secret_error_after_run_group_is_evidence(self):
         r = classify(
-            "##[group]Run if [ -z \\\"$TOKEN\\\" ]; then\n"
+            '##[group]Run if [ -z \\"$TOKEN\\" ]; then\n'
             "  echo 'secret MISSING_TOKEN is not set'\n"
             "fi\n"
             "##[endgroup]\n"
@@ -84,7 +84,9 @@ class InfraNetworkTests(unittest.TestCase):
         self.assertEqual(r["route"], "rerun")
 
     def test_registry_502(self):
-        r = classify("error sending request for url (https://crates.io): 502 Bad Gateway\n")
+        r = classify(
+            "error sending request for url (https://crates.io): 502 Bad Gateway\n"
+        )
         self.assertEqual(r["classification"], "infra-network")
 
 
@@ -97,7 +99,9 @@ class FlakeSuspectTests(unittest.TestCase):
     def test_nix_flake_check_is_not_flake_suspect(self):
         # The bare word "flake" in "nix flake check" output is Nix
         # terminology, not an intermittency signal (Codex, PR #7806).
-        r = classify("+ nix flake check ./pkgs/id/ -L --keep-going\nerror[E0308]: mismatched types\n")
+        r = classify(
+            "+ nix flake check ./pkgs/id/ -L --keep-going\nerror[E0308]: mismatched types\n"
+        )
         self.assertEqual(r["classification"], "real-regression")
 
     def test_nix_flake_check_opaque_failure_is_unknown(self):
@@ -154,7 +158,9 @@ if __name__ == "__main__":
 
 class CompilerPrecedenceTests(unittest.TestCase):
     def test_compiler_error_beats_test_timeout(self):
-        r = classify("panic: test timed out after 10m0s\nerror[E0308]: mismatched types\n")
+        r = classify(
+            "panic: test timed out after 10m0s\nerror[E0308]: mismatched types\n"
+        )
         self.assertEqual(r["classification"], "real-regression")
         self.assertEqual(r["route"], "fix")
 

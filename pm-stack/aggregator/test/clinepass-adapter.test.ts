@@ -96,9 +96,7 @@ describe("parseClinePassPayload (ported OpenChamber mapping)", () => {
         ],
       },
     });
-    expect(reading.windows).toEqual([
-      { name: "weekly", usedPct: 51.5, windowSeconds: 604800, resetsAt: null },
-    ]);
+    expect(reading.windows).toEqual([{ name: "weekly", usedPct: 51.5, windowSeconds: 604800, resetsAt: null }]);
   });
 
   test("skips malformed windows and unknown types, keeping valid siblings", () => {

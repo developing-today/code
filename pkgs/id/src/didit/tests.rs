@@ -6,7 +6,7 @@
 use cbor_core::Value;
 use chrono::{NaiveDate, TimeZone};
 use chrono_tz::Tz;
-use p2panda_core::Hash;
+use p2panda_core::{Hash, SigningKey};
 
 use super::*;
 
@@ -99,7 +99,50 @@ fn round_trip_record(record: &Record) -> Vec<u8> {
     assert_eq!(&decoded, record);
     let again = encode_record_body(&decoded).expect("re-encode");
     assert_eq!(again, bytes, "re-encoding must reproduce the same bytes");
+    signed_body_round_trip(RECORD_KIND, &bytes);
     bytes
+}
+
+fn round_trip_expectation(expectation: &Expectation) -> Vec<u8> {
+    let bytes = encode_expectation_body(expectation).expect("encode");
+    let decoded = decode_expectation_body(&bytes).expect("decode");
+    assert_eq!(&decoded, expectation);
+    assert_eq!(
+        encode_expectation_body(&decoded).expect("re-encode"),
+        bytes,
+        "re-encoding must reproduce the same bytes"
+    );
+    signed_body_round_trip(EXPECTATION_KIND, &bytes);
+    bytes
+}
+
+fn signed_body_round_trip(kind: &str, body: &[u8]) {
+    // The event header signs the body's hash; the body remains the same
+    // canonical byte sequence across the sign/decode boundary.
+    let key = SigningKey::from_bytes(&[0x5A; 32]);
+    let event = crate::chain::sign(
+        &key,
+        0,
+        None,
+        Some(body),
+        crate::chain::ChainExt {
+            kind: kind.to_owned(),
+            group: Some(household()),
+            after: Vec::new(),
+            tag: None,
+            document: None,
+            removes: None,
+            note: None,
+            link: None,
+            checkpoint: None,
+            rotation: None,
+            chat: None,
+        },
+    )
+    .expect("sign body");
+    let decoded = crate::chain::decode(&event.bytes).expect("verify signed event");
+    assert_eq!(decoded.bytes, event.bytes, "signed header bytes are stable");
+    assert_eq!(decoded.header.payload_hash, Some(Hash::digest(body)));
 }
 
 fn current(verdicts: &[Verdict], start: i64) -> Vec<&Verdict> {
@@ -150,8 +193,7 @@ fn worked_example_fed_twice_a_day() {
     // §4(a): the evening record has no measure, and that is valid content.
     round_trip_record(&morning);
     round_trip_record(&evening);
-    let bytes = encode_expectation_body(&fed).expect("encode");
-    assert_eq!(decode_expectation_body(&bytes).expect("decode"), fed);
+    round_trip_expectation(&fed);
 
     let now = chicago(2026, 6, 15, 20, 0);
     let verdicts = evaluate(&[fed], &[morning, evening], now).expect("evaluate");
@@ -181,6 +223,7 @@ fn worked_example_outside_every_two_to_four_hours() {
             max_seconds: 14_400,
         },
     );
+    round_trip_expectation(&outside);
     let records = [
         record(
             0x21,
@@ -370,6 +413,69 @@ fn worked_example_opinion_attached_later() {
     let decoded = decode_opinion_body(&bytes).expect("decode");
     assert_eq!(decoded, opinion);
     assert_eq!(encode_opinion_body(&decoded).expect("re-encode"), bytes);
+    signed_body_round_trip(OPINION_KIND, &bytes);
+}
+
+#[test]
+fn record_projections_keep_stable_references_and_drop_only_summary_fields() {
+    let mut walk = record(
+        0x30,
+        vec![dog_a(), dog_b()],
+        "walked",
+        chicago(2026, 6, 15, 16, 0),
+    );
+    walk.details = vec![(
+        dog_b(),
+        RecordDetail {
+            note: Some("after sunset next time".to_owned()),
+            outcome: Some("did not pee".to_owned()),
+            measure: None,
+        },
+    )];
+    walk.shared = Some(RecordDetail {
+        note: None,
+        outcome: None,
+        measure: Some(Measure {
+            value: 25.0,
+            unit: "min".to_owned(),
+        }),
+    });
+    walk.measure = Some(Measure {
+        value: 25.0,
+        unit: "min".to_owned(),
+    });
+    walk.note = Some("warm afternoon".to_owned());
+    walk.place = Some(Place {
+        latitude: 41.88,
+        longitude: -87.63,
+    });
+
+    let summary = walk.summary_projection();
+    assert_eq!(summary.id, walk.id);
+    assert_eq!(summary.subjects, walk.subjects);
+    assert_eq!(summary.subject_count, walk.subjects.len());
+    assert_eq!(summary.act, walk.act);
+    assert_eq!(summary.at, walk.at);
+    assert_eq!(summary.tz_offset_minutes, walk.tz_offset_minutes);
+
+    let opinion = Opinion {
+        about: vec![summary.id],
+        stance: "bad".to_owned(),
+        note: None,
+        at: walk.at + 10_800,
+    };
+    assert!(
+        opinion.about.contains(&summary.id),
+        "opinion resolves by stable ID"
+    );
+
+    let full = walk.full_projection();
+    assert_eq!(full, walk, "full projection preserves every field");
+    assert_eq!(full.details, walk.details);
+    assert_eq!(full.shared, walk.shared);
+    assert_eq!(full.measure, walk.measure);
+    assert_eq!(full.note, walk.note);
+    assert_eq!(full.place, walk.place);
 }
 
 #[test]

@@ -545,7 +545,11 @@ export type Validated<T> = { ok: true; values: T } | { ok: false; error: string 
 type OptionalField<T> = { ok: true; value: T } | { ok: false; error: string };
 
 function optionalStringField(body: Record<string, unknown>, field: string, fallback: string): OptionalField<string>;
-function optionalStringField(body: Record<string, unknown>, field: string, fallback: null): OptionalField<string | null>;
+function optionalStringField(
+  body: Record<string, unknown>,
+  field: string,
+  fallback: null,
+): OptionalField<string | null>;
 function optionalStringField(
   body: Record<string, unknown>,
   field: string,
@@ -566,9 +570,7 @@ function optionalIntegerField(body: Record<string, unknown>, field: string): Opt
   return { ok: true, value };
 }
 
-export function validateMachineBody(
-  body: Record<string, unknown>,
-): Validated<{
+export function validateMachineBody(body: Record<string, unknown>): Validated<{
   name: string;
   role: string;
   cpu: string | null;
@@ -625,7 +627,9 @@ export function isMachineNameConflict(error: unknown): boolean {
 
 // Notes check title before body, matching the order the fields are named
 // in the route's contract (and the triage note for #2480).
-export function validateNoteBody(body: Record<string, unknown>): Validated<{ title: string; text: string; tags: string }> {
+export function validateNoteBody(
+  body: Record<string, unknown>,
+): Validated<{ title: string; text: string; tags: string }> {
   const title = requireNonBlankString(body, "title");
   if (!title.ok) return title;
   const text = requireNonBlankString(body, "body");

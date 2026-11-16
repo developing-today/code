@@ -20,6 +20,9 @@
 //   deploy.mjs [--dry-run]                 upload + deploy HEAD
 //   deploy.mjs --deploy-version <id>       deploy (or roll back to) an
 //                                          existing version at 100%
+//   deploy.mjs --deploy-version <id> --dry-run
+//                                          preview that deployment;
+//                                          creates nothing (#3252)
 //
 // Needs CLOUDFLARE_ACCOUNT_ID and BWS_ACCESS_TOKEN; deploy.sh sets them.
 // The API token comes from Bitwarden by name (default
@@ -32,6 +35,7 @@ import { fileURLToPath } from "node:url";
 
 import { parseArgs } from "./deploy-args.mjs";
 import { probeWorkerExists } from "./deploy-probe.mjs";
+import { deployExistingVersion } from "./deploy-version.mjs";
 import { verifyDeployment } from "./deploy-verification.mjs";
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -74,9 +78,16 @@ if (!existsSync(join(here, "node_modules"))) {
 }
 
 if (deployVersion !== null) {
-  createDeployment(deployVersion);
-  await reportLive(deployVersion);
-  console.log(`live: ${WORKER_URL} at version ${deployVersion}`);
+  // The branch decision lives in deploy-version.mjs so the flag x path
+  // matrix is tested: --dry-run previews and creates nothing (#3252).
+  await deployExistingVersion({
+    dryRun,
+    deployVersion,
+    worker: WORKER,
+    workerUrl: WORKER_URL,
+    createDeployment,
+    reportLive,
+  });
   process.exit(0);
 }
 

@@ -109,8 +109,8 @@ func ScriptEnv() []EnvVar {
 		},
 		{
 			Name:    "MCPX_PARENT_SESSION_ID",
-			SetBy:   []Setter{SetByCLI, SetByPlugin},
-			When:    "the CLI passes through what it was given; the plugin at plugin.env=full, when there is a parent",
+			SetBy:   []Setter{SetByCLI, SetByConsumer, SetByPlugin},
+			When:    "the CLI passes through what it was given; the daemon passes the caller's parent session into a script run's environment; the plugin at plugin.env=full, when there is a parent",
 			Meaning: "the session that spawned this one, so a parent agent and its subagents can share a server",
 			ReadBy:  nested + ", and " + client + " for parent-session scoping",
 		},
@@ -267,6 +267,14 @@ func ScriptEnv() []EnvVar {
 			ReadBy:  client + " (paths.config)",
 		},
 		{
+			Name:    "MCPX_PATHS_CONFIG",
+			SetBy:   []Setter{SetByCLI},
+			When:    "a daemon auto-started by this invocation, only when a --paths-config seed lives in this process's memory; an environment seed needs no forwarding, as the child inherits the environment",
+			Meaning: "the paths.config seed this process resolved configuration discovery from, forwarded so the auto-started daemon resolves the same chain this process did",
+			Setting: "paths.config",
+			ReadBy:  nested + ", in configuration discovery (a bootstrap read: paths.config decides which files the settings are read from, so there is no resolved Set to ask)",
+		},
+		{
 			Name:    "MCPX_SCRIPT_DIRS",
 			SetBy:   []Setter{SetByCLI},
 			Meaning: "the directories searched for named scripts, nearest first, colon-separated",
@@ -281,16 +289,8 @@ func ScriptEnv() []EnvVar {
 		{
 			Name:    "MCPX_ADAPTER_DECLARATION_SHA256",
 			SetBy:   []Setter{SetByCLI},
-			Meaning: "the fingerprint of a declared adapter's declaration, set on the adapter server entry mcpx adds: PoolID hashes the environment, so editing the declaration replaces the pool instead of keeping a child started for the old one",
-			ReadBy:  "the pool, as a pool identity input (adapter serve: PoolID hashes the server environment); the daemon, to tell an adapter's own servers from name collisions",
-		},
-		{
-			Name:    "MCPX_PATHS_CONFIG",
-			SetBy:   []Setter{SetByCLI},
-			When:    "only when a --paths-config seed is in memory and the daemon is auto-started",
-			Meaning: "the config search seed forwarded to the auto-started daemon, so it resolves the same chain",
-			ReadBy:  "`mcpx` run inside, as its config search seed (paths.config)",
-			Setting: "paths.config",
+			Meaning: "the fingerprint of an adapter's declaration, set on the server an adapter launches: PoolID hashes the environment, so editing the declaration replaces the pool instead of keeping a child started for the old one",
+			ReadBy:  "the pool, as a pool identity input (PoolID hashes the server environment); the daemon, which exempts an adapter's own exact name from the namespace-collision check when the adapter is replaced",
 		},
 		// ---- how the script runs ----
 		{

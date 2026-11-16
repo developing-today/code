@@ -20,10 +20,15 @@ if [ -f "$dir/.lock" ]; then
   exit 1
 fi
 touch "$dir/.lock"
+tmp_enc=""
 function cleanup() {
   echo "cleaning up"
   echo "deleting lock file"
   rm -f "$dir/.lock"
+  if [ -n "$tmp_enc" ]; then
+    echo "deleting temporary encrypted state file"
+    rm -f "$tmp_enc"
+  fi
   # echo "saving tfstate"
   # "$dir/save.sh"
   # echo "successfully saved tfstate"
@@ -47,5 +52,30 @@ if [ -f "$dir/terraform.tfstate.enc" ] && sops -d "$dir/terraform.tfstate.enc" 2
 fi
 
 echo "Encrypting with sops: terraform.tfstate -> terraform.tfstate.enc (dir=$dir)"
-sops -e "$dir/terraform.tfstate" >"$dir/terraform.tfstate.enc"
+# Encrypt to a temporary file in the same directory and atomically rename
+# it over terraform.tfstate.enc only after the ciphertext is verified.
+# Writing directly (sops -e ... > terraform.tfstate.enc) truncates the
+# state of record before sops runs, so any encryption failure — missing
+# or expired sops key, sops error, disk full, interruption — would leave
+# the only encrypted copy empty or partial (#6536). A failed run here
+# leaves the previous terraform.tfstate.enc byte-identical; the EXIT
+# trap removes the temp file and the lock, exactly as before.
+tmp_enc="$(mktemp "$dir/.terraform.tfstate.enc.tmp.XXXXXX")"
+sops -e "$dir/terraform.tfstate" >"$tmp_enc"
+if [ ! -s "$tmp_enc" ]; then
+  echo "Error: sops encryption produced an empty file; leaving terraform.tfstate.enc untouched" >&2
+  exit 1
+fi
+# Post-write sanity check on the temp file, before it becomes the record:
+# the new ciphertext must decrypt back to exactly this plaintext state
+# (which also proves its lineage matches, mirroring plan.sh's check).
+if ! sops -d "$tmp_enc" 2>/dev/null | cmp -s - "$dir/terraform.tfstate"; then
+  echo "Error: encrypted temp file does not decrypt to terraform.tfstate; leaving terraform.tfstate.enc untouched" >&2
+  exit 1
+fi
+if [ -f "$dir/terraform.tfstate.enc" ]; then
+  chmod --reference="$dir/terraform.tfstate.enc" "$tmp_enc" || true
+fi
+mv -f "$tmp_enc" "$dir/terraform.tfstate.enc"
+tmp_enc=""
 echo "Encrypted with sops: terraform.tfstate -> terraform.tfstate.enc (dir=$dir)"

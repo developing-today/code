@@ -26,16 +26,16 @@ concurrency:
 
 jobs:
   cleanup:
-    name: Remove stale branches solely behind the default branch
+    name: Remove stale merged branches
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    timeout-minutes: 30
     steps:
       - name: Check out with full history
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
 
-      - name: Delete stale branches solely behind the default branch
+      - name: Delete stale merged branches
         env:
           GH_TOKEN: ${{ github.token }}
           DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
@@ -81,6 +81,25 @@ jobs:
           gh pr list --state open --limit 1000 --json headRefName,baseRefName --jq ".[].baseRefName" > open-pr-bases.txt
           mapfile -t open_pr_bases < open-pr-bases.txt
           rm -f open-pr-bases.txt
+          # Merged-PR evidence (code#7094): a branch whose PR has merged is
+          # a cleanup candidate on the MERGE date, even when its tip is not
+          # an ancestor of the default branch (squash/rebase merges leave
+          # tips unmerged by SHA) and even when later fleet merges topped
+          # its tree up after the merge. Fail closed, exactly like the
+          # open-PR read above: no merged list, no deletions.
+          # Limit 10000, not 1000: at fleet merge velocity the 1000 most
+          # recent merged PRs reach back only ~3 days (measured
+          # 2026-11-10), shorter than the inactivity window, so a smaller
+          # limit would make the merged evidence unreachable in practice.
+          # The full list takes ~15s.
+          gh pr list --state merged --limit 10000 --json headRefName,mergedAt --jq ".[] | [.headRefName, .mergedAt] | @tsv" > merged-prs.txt
+          declare -A merged_at=()
+          while IFS=$'\t' read -r m_branch m_at; do
+            [[ -n "$m_branch" && -n "$m_at" ]] || continue
+            merged_at["$m_branch"]="$(date -d "$m_at" +%s)"
+          done < merged-prs.txt
+          rm -f merged-prs.txt
+
           is_open_pr_head() {
             local candidate="$1"
             local head
@@ -104,7 +123,11 @@ jobs:
 
           candidates=()
           while IFS= read -r ref; do
-            branch="${ref#origin/}"
+            # Full refname, not %(refname:short): the short name of
+            # refs/remotes/origin/HEAD renders as plain "origin", which
+            # turned branch into "origin" and killed the scan on
+            # git log origin/origin (code#7094).
+            branch="${ref#refs/remotes/origin/}"
             if [[ "$branch" == "$DEFAULT_BRANCH" || "$branch" == "HEAD" ]]; then
               continue
             fi
@@ -114,6 +137,16 @@ jobs:
             fi
             if is_open_pr_base "$branch"; then
               echo "SKIP open-pr-base: $branch"
+              continue
+            fi
+            if [[ -n "${merged_at[$branch]:-}" ]]; then
+              # PR-verified merged branch: the inactivity clock runs from
+              # the merge date, not the newest commit date (code#7094).
+              if (( merged_at[$branch] >= cutoff )); then
+                echo "SKIP recently-merged: $branch"
+                continue
+              fi
+              candidates+=("$branch")
               continue
             fi
             newest="$(git log -1 --format=%ct "origin/$branch")"
@@ -126,7 +159,7 @@ jobs:
             else
               echo "SKIP unique-commits: $branch"
             fi
-          done < <(git for-each-ref --format="%(refname:short)" "refs/remotes/origin")
+          done < <(git for-each-ref --format="%(refname)" "refs/remotes/origin")
 
           count="${#candidates[@]}"
           echo "Stale branches solely behind $DEFAULT_BRANCH and inactive for ${inactive_days}d: $count"
@@ -139,13 +172,13 @@ jobs:
           } >> "$GITHUB_STEP_SUMMARY"
 
           if (( count > max_deletions )); then
-            echo "Candidate count $count exceeds the per-run cap of $max_deletions; deleting nothing."
-            echo "Candidate count $count exceeds the per-run cap of $max_deletions; nothing was deleted." >> "$GITHUB_STEP_SUMMARY"
-            for branch in "${candidates[@]}"; do
-              echo "CANDIDATE: $branch"
-              echo "- \`$branch\`" >> "$GITHUB_STEP_SUMMARY"
+            echo "Candidate count $count exceeds the per-run cap of $max_deletions; deleting the first $max_deletions and deferring the rest to the next run."
+            echo "Candidate count $count exceeds the per-run cap of $max_deletions; deleting the first $max_deletions, deferring $((count - max_deletions)) to the next run." >> "$GITHUB_STEP_SUMMARY"
+            for branch in "${candidates[@]:$max_deletions}"; do
+              echo "DEFERRED: $branch"
+              echo "- deferred \`$branch\`" >> "$GITHUB_STEP_SUMMARY"
             done
-            exit 0
+            candidates=("${candidates[@]:0:$max_deletions}")
           fi
 
           deleted=0

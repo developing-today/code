@@ -338,11 +338,11 @@ RTC are alpha and data loss is possible; automated/SQLite backups are
 recommended.
 
 - Data model: Graph -> Pages / Blocks as a block outliner (Markdown
-  or Org-mode support). The DB version unifies pages and blocks as
-  Nodes (a node is a page or a block; the two now behave similarly),
-  referenced with [[]], with properties, tags that can carry
-  inherited tag properties, journals, tasks, queries,
-  cards/flashcards, templates, and a Library for namespaced pages.
+    or Org-mode support). The DB version unifies pages and blocks as
+    Nodes (a node is a page or a block; the two now behave similarly),
+    referenced with [[]], with properties, tags that can carry
+    inherited tag properties, journals, tasks, queries,
+    cards/flashcards, templates, and a Library for namespaced pages.
 - Local vs cloud: local-first / privacy-first. File graphs are
   Markdown/Org files; DB graphs are backed by SQLite (graph export
   is a .db file; automated backups keep the last 12 in a backups
@@ -376,10 +376,10 @@ recommended.
   sync does not lock in the data. The app is open source, supported
   via Open Collective.
 - Graph: nodes have Linked References and Unlinked References
-  sections; [[]] page/node references and block embeds. A visual
-  graph-view claim from a primary page in this pass: unknown (the
-  references model is verified; the visualisation is not stated on
-  the pages opened).
+    sections; [[]] page/node references and block embeds. A visual
+    graph-view claim from a primary page in this pass: unknown (the
+    references model is verified; the visualisation is not stated on
+    the pages opened).
 - AI over notes: no built-in AI chat or summarisation is documented
   in the primary README/DB doc. AI access is via an optional MCP
   Server (enable in Settings > AI, HTTP-server auth token): AI apps
@@ -560,19 +560,19 @@ cell: evidence primary, observed 2026-11-08, except cells marked
 (U) = unknown from primary sources in this pass, and (S) =
 secondary. Open Knowledge is omitted — identity blocker, §3.9.
 
-| Feature | Obsidian | Evernote | Notion | OneNote | NotebookLM / Gemini Notebook | Logseq | Joplin | Anytype |
-|---|---|---|---|---|---|---|---|---|
-| Data model | Markdown files in a vault folder; Canvas/Bases views | Note in one notebook or space; stacks; tags | Pages of blocks; databases (rows = pages) | Notebook > sections > pages (.one files) | Notebook of sources; generated notes/chat | Pages/blocks outliner; DB version unifies as Nodes | Markdown notes/to-dos in nested notebooks; tags | Objects with Types, Relations, Blocks; Spaces |
-| Storage locus | Local files | Vendor cloud (no local notebooks in v10+) | Vendor cloud only | OneDrive/SharePoint (local copy for offline) | Vendor cloud (Google account) | Local files (Markdown/Org) or local SQLite | Local SQLite DB | Local object DB |
-| Sync | Optional paid Sync (E2E); or any file sync | Cloud; 3 devices (Starter) to unlimited | Inherent (hosted) | Auto, change-level, via OneDrive/SharePoint | Cross-app cloud sync | Optional Sync = RTC; self-hostable | Many targets (Cloud, Nextcloud, S3, WebDAV, Dropbox, OneDrive, filesystem) | Any-Sync: network, LAN P2P, self-hosted, local-only |
-| Sharing granularity | Shared vault, all-or-nothing per vault | Space/notebook/note invite; single-note public URL | Page-level, 5 permission levels, guests | Whole notebook only (page sharing removed) | Whole notebook; enterprise Viewer/Editor | Publish pages read-only; RTC collaboration; per-page roles (U) | Notebook share / note public link, Cloud/Server only | Space-level only; no per-object permissions |
-| Export | None needed (files); importers for rivals | ENEX/HTML/PDF, desktop only, <=100 notes or per notebook | PDF/HTML/Markdown+CSV; workspace export by expiring link | ZIP (personal OneDrive only); .onepkg/PDF desktop | Mind Map download; general export (U) | SQLite, EDN (full), Markdown (lossy), assets zip | JEX (full), Markdown, HTML, PDF, JSON | Markdown, Any-Block (full), PDF, HTML |
-| Lock-in | Minimal (plain files) | Medium-high: ENEX-first, manual bulk export | Medium: export exists, re-import does not recreate | Medium-high: export asymmetry by account type | High: no documented whole-notebook export | Low: local data, EDN/SQLite/Markdown out | Low: own-storage sync + Markdown/JEX | Medium: Markdown loses relations; Any-Block is native |
-| Graph / backlinks | Graph view + backlinks (core) | (U) | Backlinks (access-scoped); graph view (U) | (U) / not documented | Mind Maps over sources; no backlinks | Linked/unlinked references; embeds; visual graph (U) | (U) native; plugins provide | Native graph over objects/relations |
-| AI over notes | None native over vault (U); clipper Interpreter (BYO model) | AI Assistant + semantic search over account (hosted) | Notion AI search/Q&A over workspace + connected apps (hosted) | Copilot, licence-gated (hosted) | Core product: source-grounded chat + Studio (hosted) | None built in; MCP server exposes graph to external AI | Cloud AI beta (hosted, Cloud plans) | None built in (U); local API + MCP for external AI |
-| Extensibility | Core + community plugins, open API | Legacy API; current API (U) | Public API, connections, automations, Workers (beta) | Graph REST API (delegated only) | Enterprise REST API only | Plugin API + marketplace, CLI, MCP | Plugins, REST Data API | Local HTTP API, CLI, MCP; plugin marketplace (U) |
-| Capture | Web Clipper; mobile apps | Web Clipper; web/mobile/email capture | Web Clipper (Chrome/Safari); mobile share sheet | Web Clipper (free) | Upload sources in web/mobile apps; clipper (U) | iOS Capture tab (alpha); share into journal; clipper (U) | Web Clipper; email-to-note (Pro+); mobile capture | Web Clipper; mobile share sheet |
-| Offline | Full | Selected notebooks on mobile; plan gating (U) | Downloaded pages only; DBs truncated to 50 rows | Full via local copy | (U) | Core use on-device; explicit statement (U) | Full | Full |
+| Feature             | Obsidian                                                    | Evernote                                                 | Notion                                                        | OneNote                                           | NotebookLM / Gemini Notebook                         | Logseq                                                         | Joplin                                                                     | Anytype                                               |
+| ------------------- | ----------------------------------------------------------- | -------------------------------------------------------- | ------------------------------------------------------------- | ------------------------------------------------- | ---------------------------------------------------- | -------------------------------------------------------------- | -------------------------------------------------------------------------- | ----------------------------------------------------- |
+| Data model          | Markdown files in a vault folder; Canvas/Bases views        | Note in one notebook or space; stacks; tags              | Pages of blocks; databases (rows = pages)                     | Notebook > sections > pages (.one files)          | Notebook of sources; generated notes/chat            | Pages/blocks outliner; DB version unifies as Nodes             | Markdown notes/to-dos in nested notebooks; tags                            | Objects with Types, Relations, Blocks; Spaces         |
+| Storage locus       | Local files                                                 | Vendor cloud (no local notebooks in v10+)                | Vendor cloud only                                             | OneDrive/SharePoint (local copy for offline)      | Vendor cloud (Google account)                        | Local files (Markdown/Org) or local SQLite                     | Local SQLite DB                                                            | Local object DB                                       |
+| Sync                | Optional paid Sync (E2E); or any file sync                  | Cloud; 3 devices (Starter) to unlimited                  | Inherent (hosted)                                             | Auto, change-level, via OneDrive/SharePoint       | Cross-app cloud sync                                 | Optional Sync = RTC; self-hostable                             | Many targets (Cloud, Nextcloud, S3, WebDAV, Dropbox, OneDrive, filesystem) | Any-Sync: network, LAN P2P, self-hosted, local-only   |
+| Sharing granularity | Shared vault, all-or-nothing per vault                      | Space/notebook/note invite; single-note public URL       | Page-level, 5 permission levels, guests                       | Whole notebook only (page sharing removed)        | Whole notebook; enterprise Viewer/Editor             | Publish pages read-only; RTC collaboration; per-page roles (U) | Notebook share / note public link, Cloud/Server only                       | Space-level only; no per-object permissions           |
+| Export              | None needed (files); importers for rivals                   | ENEX/HTML/PDF, desktop only, <=100 notes or per notebook | PDF/HTML/Markdown+CSV; workspace export by expiring link      | ZIP (personal OneDrive only); .onepkg/PDF desktop | Mind Map download; general export (U)                | SQLite, EDN (full), Markdown (lossy), assets zip               | JEX (full), Markdown, HTML, PDF, JSON                                      | Markdown, Any-Block (full), PDF, HTML                 |
+| Lock-in             | Minimal (plain files)                                       | Medium-high: ENEX-first, manual bulk export              | Medium: export exists, re-import does not recreate            | Medium-high: export asymmetry by account type     | High: no documented whole-notebook export            | Low: local data, EDN/SQLite/Markdown out                       | Low: own-storage sync + Markdown/JEX                                       | Medium: Markdown loses relations; Any-Block is native |
+| Graph / backlinks   | Graph view + backlinks (core)                               | (U)                                                      | Backlinks (access-scoped); graph view (U)                     | (U) / not documented                              | Mind Maps over sources; no backlinks                 | Linked/unlinked references; embeds; visual graph (U)           | (U) native; plugins provide                                                | Native graph over objects/relations                   |
+| AI over notes       | None native over vault (U); clipper Interpreter (BYO model) | AI Assistant + semantic search over account (hosted)     | Notion AI search/Q&A over workspace + connected apps (hosted) | Copilot, licence-gated (hosted)                   | Core product: source-grounded chat + Studio (hosted) | None built in; MCP server exposes graph to external AI         | Cloud AI beta (hosted, Cloud plans)                                        | None built in (U); local API + MCP for external AI    |
+| Extensibility       | Core + community plugins, open API                          | Legacy API; current API (U)                              | Public API, connections, automations, Workers (beta)          | Graph REST API (delegated only)                   | Enterprise REST API only                             | Plugin API + marketplace, CLI, MCP                             | Plugins, REST Data API                                                     | Local HTTP API, CLI, MCP; plugin marketplace (U)      |
+| Capture             | Web Clipper; mobile apps                                    | Web Clipper; web/mobile/email capture                    | Web Clipper (Chrome/Safari); mobile share sheet               | Web Clipper (free)                                | Upload sources in web/mobile apps; clipper (U)       | iOS Capture tab (alpha); share into journal; clipper (U)       | Web Clipper; email-to-note (Pro+); mobile capture                          | Web Clipper; mobile share sheet                       |
+| Offline             | Full                                                        | Selected notebooks on mobile; plan gating (U)            | Downloaded pages only; DBs truncated to 50 rows               | Full via local copy                               | (U)                                                  | Core use on-device; explicit statement (U)                     | Full                                                                       | Full                                                  |
 
 ## 5. Findings — traced to the cluster designs #5837-#5844
 
