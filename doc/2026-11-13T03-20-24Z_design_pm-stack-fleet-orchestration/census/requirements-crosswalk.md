@@ -293,3 +293,39 @@ The current census command inventory `census/commands.jsonl` contains **215 uniq
 ## Validation oracle
 
 Re-run exact set equality and uniqueness of crosswalk IDs vs current requirements JSONL; occurrence-ref existence against dispositions; command-key equality vs command-slice-map; actual-heading resolution for every design ref; enum check for status; concrete evidence fields for verified/partial rows; and one primary slice for every exact command row. A zero unmapped count is valid only after those checks; issue URL joins remain pending until real filing.
+
+## CEN-02 evidence audit (2026-11-16, task 15934)
+
+Independent re-check of every row's evidence claims against the pinned
+tree `a038f084dbeb525494d7bb928ad91f597db2ac51`, run by
+`census/test_census_evidence.py` (the audit is table-driven over all
+389 rows; per-row results are recorded additively as the
+`evidence_audit` object in `requirements-crosswalk.jsonl` — no row's
+status or pinned claim was rewritten).
+
+| Class | Rows | Result |
+|---|---|---|
+| `verified existing` / `partially implemented` | 47 | All structurally audited: pin correct, every cited path exists at the pin, every cited line range in bounds, required evidence fields (path/symbol/lines/test/timestamp) complete |
+| All other statuses | 342 | Every row carries explicit `missing_evidence` — no silent gaps (`verdict: missing_recorded`) |
+
+**Findings (bounded claims, not upgrades):**
+
+- **Exact-symbol: 0 of 47.** Every positive row's `symbol` field is a
+  descriptive phrase for an area (e.g. "one-queue matcher / atomic
+  claim selection"), not a literal symbol verified in the cited
+  window. Under the CEN-02 oracle (`test_census_evidence_requires_exact_symbol_and_bounded_claim`),
+  descriptive evidence is `descriptive_bounded`: it supports the
+  row's bounded claim and can never upgrade a separate capability.
+- **Test artifacts: 0 of 47.** Every positive row's `test` field is a
+  prose pointer or note (e.g. "See census/track-b.md §Pinned existing
+  test evidence", "Documented contract; live Project mutation not
+  retested") — `note_only`, not a test artifact at the pin.
+- **Spot checks pass** for the done-check artifacts at the pin:
+  projector `webhook.ts:7–57`, `server.ts:147–201`,
+  `webhook-delivery-id.test.ts:90–154`, `validate.ts` 11–60,
+  `turso_queue.rs` claim/filter 3110–3129.
+- The counterexamples are pinned by the oracle test: an adjacent
+  verb's evidence, a closed parent issue, a mock, and a projector
+  delivery ACK each fail `evidence_supports` for a target capability
+  (a projector ACK is transport evidence, not Fleet command
+  acceptance; #8187 evidence is not #6533 proof).
