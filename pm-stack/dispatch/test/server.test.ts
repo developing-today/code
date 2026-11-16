@@ -156,6 +156,66 @@ describe("POST /v1/sessions body cap is measured in UTF-8 bytes (issue #3010)", 
   });
 });
 
+describe("POST /v1/sessions body is bounded before buffering (issue #10646)", () => {
+  // A stream whose chunks dwarf the cap: the handler must cancel early
+  // instead of materialising the whole body. `declaredLength` sets the
+  // content-length header on the request itself — rewrapping an existing
+  // Request around the same stream makes Bun's cancel() hang, so build the
+  // request directly.
+  function floodingRequest(
+    token: string,
+    chunks: number,
+    declaredLength?: number,
+  ): { request: Request; pulled: () => number } {
+    let pulled = 0;
+    const stream = new ReadableStream<Uint8Array>({
+      pull(controller) {
+        pulled += 1;
+        controller.enqueue(new Uint8Array(64 * 1024).fill(120)); // 'x', invalid JSON on purpose
+        if (pulled >= chunks) controller.close();
+      },
+    });
+    return {
+      request: new Request("http://x/v1/sessions", {
+        method: "POST",
+        headers: {
+          authorization: `Bearer ${token}`,
+          "content-type": "application/json",
+          ...(declaredLength === undefined ? {} : { "content-length": String(declaredLength) }),
+        },
+        body: stream,
+        duplex: "half",
+      } as RequestInit),
+      pulled: () => pulled,
+    };
+  }
+
+  test("a multi-MiB stream is rejected without reading it all", async () => {
+    const token = signOidc("developing-today/code");
+    // 64 chunks of 64 KiB = 4 MiB offered; the 256 KiB cap trips after
+    // the 5th chunk, so a bounded reader pulls a handful, not dozens.
+    const { request, pulled } = floodingRequest(token, 64);
+    const res = await handler(request);
+    expect(res.status).toBe(400);
+    const body = (await res.json()) as { error: string };
+    expect(body.error).toMatch(/too large/);
+    expect(pulled()).toBeLessThan(64);
+  });
+
+  test("an announced-too-large content-length rejects without pulling a chunk", async () => {
+    const token = signOidc("developing-today/code");
+    const { request, pulled } = floodingRequest(token, 64, 4 * 1024 * 1024);
+    const res = await handler(request);
+    expect(res.status).toBe(400);
+    const body = (await res.json()) as { error: string };
+    expect(body.error).toMatch(/too large/);
+    // The handler never takes a reader. Bun's Request constructor may
+    // prime at most one chunk into its internal buffer, so 1 is the
+    // floor here — what matters is that a 4 MiB stream is not drained.
+    expect(pulled()).toBeLessThanOrEqual(1);
+  });
+});
+
 describe("taskStatusView / sessionStatusView (#5555)", () => {
   test("task view surfaces status/worker/progress and payload repo/kind, never the packet body", () => {
     const view = taskStatusView({
