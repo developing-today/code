@@ -54,6 +54,7 @@ fn server_frame_type(frame: &ServerFrame<'_>) -> &'static str {
         ServerFrame::UploadReady { .. } => "upload_ready",
         ServerFrame::ModuleInstalled { .. } => "module_installed",
         ServerFrame::Revoked { .. } => "revoked",
+        ServerFrame::ProviderRequest { .. } => "provider_request",
         ServerFrame::ProgramChanged { .. } => "program_changed",
         ServerFrame::EventHistoryBegin { .. } => "event_history_begin",
         ServerFrame::EventHistoryEvent { .. } => "event_history_event",
@@ -89,6 +90,7 @@ const SERVER_FRAME_TYPES: &[&str] = &[
     "upload_ready",
     "module_installed",
     "revoked",
+    "provider_request",
     "program_changed",
     "event_history_begin",
     "event_history_event",
@@ -155,6 +157,7 @@ fn every_server_frame_variant_is_in_the_contract_and_nothing_else_is() {
         participant_id: 1,
         kind: crate::world::WorldEventKind::Chat("x".to_owned()),
     };
+    let provider_args = serde_json::json!({"path": "notes.txt"});
     for frame in [
         ServerFrame::FormResultStatus {
             form_id: "form-1",
@@ -230,6 +233,13 @@ fn every_server_frame_variant_is_in_the_contract_and_nothing_else_is() {
         ServerFrame::Revoked {
             participant_id: 7,
             revoked: true,
+        },
+        ServerFrame::ProviderRequest {
+            nonce: "n-1",
+            provider: "client.file.read",
+            args: &provider_args,
+            max_bytes: 32768,
+            deadline: 1799999999999,
         },
         ServerFrame::ModuleInfo {
             world_id: "w".to_owned(),

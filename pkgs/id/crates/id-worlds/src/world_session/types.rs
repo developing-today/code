@@ -33,6 +33,20 @@ pub(crate) const MAX_RESUME_TOKEN_BYTES: usize = 64;
 
 /// Longest accepted admin secret, in bytes.
 pub const MAX_ADMIN_TOKEN_BYTES: usize = 256;
+
+/// Longest accepted client-provider nonce, in bytes. The nonce is an
+/// opaque host-minted correlation string; a longer value is malformed
+/// and the reply is refused without routing (F13.7 invariant 6).
+pub(crate) const MAX_PROVIDER_NONCE_BYTES: usize = 128;
+
+/// Most provider names one `provider_offer` may advertise. The offer is
+/// session-local; the cap keeps a single frame from naming an unbounded set.
+pub(crate) const MAX_PROVIDER_OFFER_COUNT: usize = 32;
+
+/// Longest accepted provider reply payload, in hex characters: the 32 KiB
+/// effective result bound (`doc/2026-11-01_design_id789.md` §4) hex-encoded.
+/// An oversized reply is refused, never truncated (F13.7 invariant 6).
+pub(crate) const MAX_PROVIDER_REPLY_HEX_BYTES: usize = 65536;
 /// Sent with a capability ceiling change: unlike a profile, it takes effect now.
 pub(crate) const CAPS_CEILING_NOTICE: &str =
     "ceiling saved; it applies immediately to new uses and active subscriptions";
@@ -337,6 +351,27 @@ pub(crate) enum ClientFrame {
     Revoke {
         participant_id: u64,
     },
+    /// Joined: advertise the client-side providers this shell opts into
+    /// for this world (F13.7 step 2). Session-local only until the step-3
+    /// broker lands: the host records the offer for this connection and
+    /// routes nothing yet. Every name must carry the reserved `client.`
+    /// namespace (step-1 `ProviderSide` contract); anything else is refused.
+    ProviderOffer {
+        providers: Vec<String>,
+    },
+    /// Joined: answer one pending host provider request (F13.7 step 2).
+    /// The reply matches a host-minted opaque `nonce` on this same
+    /// connection — no session/participant field is accepted or trusted
+    /// (invariant 5). Until the step-3 broker lands every nonce is
+    /// unknown, so a well-formed reply is refused and never routed.
+    ProviderReply {
+        nonce: String,
+        ok: bool,
+        #[serde(default)]
+        data_hex: Option<String>,
+        #[serde(default)]
+        error: Option<String>,
+    },
 }
 
 /// Signer metadata supplied with an uploaded module. Public keys and
@@ -516,6 +551,20 @@ pub(crate) enum ServerFrame<'a> {
     Revoked {
         participant_id: u64,
         revoked: bool,
+    },
+    /// Ask the originating session's shell to run a client-side provider
+    /// (F13.7 step 2). The host sends this only to a session that sent
+    /// `provider_offer`; a v1 shell never advertises and never receives
+    /// it (shells ignore unknown server frames). `nonce` is opaque and
+    /// host-minted; the reply matches on this connection's session, never
+    /// on a frame-supplied session/participant field (invariant 5).
+    /// `deadline` is unix milliseconds; the reply must arrive by then.
+    ProviderRequest {
+        nonce: &'a str,
+        provider: &'a str,
+        args: &'a serde_json::Value,
+        max_bytes: u32,
+        deadline: u64,
     },
     ProgramChanged {
         module_hash: &'a str,

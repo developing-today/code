@@ -1,7 +1,7 @@
 {
   "contract": "id-shell",
   "version": 1,
-  "revision": 8,
+  "revision": 9,
   "description": "The client-server frame protocol every id shell (terminal, web, native) speaks to a world host. Version 1 is the protocol behind the /id-world/1 ALPN. A shell sends only frames and fields named here; it ignores server frame types and fields it does not know. Additive changes bump `revision`; removing or changing a frame or field needs version 2 and a new ALPN. Event-producing frames must name their stable world-event contract here.",
   "max_frame_bytes": 1048576,
   "routing_fields": ["world"],
@@ -312,6 +312,21 @@
         "scopes": "string[]",
         "expires_at": "u64?"
       }
+    },
+    "provider_offer": {
+      "class": "ephemeral",
+      "phases": ["joined"],
+      "fields": { "providers": "string[]" }
+    },
+    "provider_reply": {
+      "class": "ephemeral",
+      "phases": ["joined"],
+      "fields": {
+        "nonce": { "type": "string", "max_bytes": 128 },
+        "ok": "bool",
+        "data_hex": { "type": "hex", "optional": true, "max_bytes": 65536 },
+        "error": { "type": "string", "optional": true, "max_bytes": 256 }
+      }
     }
   },
   "server_frames": {
@@ -460,6 +475,16 @@
       "class": "reply",
       "fields": { "participant_id": "u64", "revoked": "bool" }
     },
+    "provider_request": {
+      "class": "reply",
+      "fields": {
+        "nonce": { "type": "string", "max_bytes": 128 },
+        "provider": "string",
+        "args": "object",
+        "max_bytes": "u32",
+        "deadline": "u64"
+      }
+    },
     "error": {
       "class": "reply",
       "fields": { "message": "string", "code": "string?" }
@@ -475,7 +500,6 @@
   "reserved": {
     "presentation_tiers": "In-band terminal tier detection and negotiation (F13.4). Needs a new frame kind, so it waits for F11.12.",
     "focus": "A focus frame for typed input (F13.4/F13.5). Not in version 1.",
-    "kitty_keyboard": "Kitty keyboard protocol key events (F13.5).",
-    "client_providers": "Client-side capability requests and replies (F13.7). Gated on F12.4 and F12.6."
+    "kitty_keyboard": "Kitty keyboard protocol key events (F13.5)."
   }
 }

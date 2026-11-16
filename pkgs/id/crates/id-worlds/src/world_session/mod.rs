@@ -60,6 +60,7 @@ mod service;
 pub use types::MAX_ADMIN_TOKEN_BYTES;
 pub(crate) use types::{
     CAPS_CEILING_NOTICE, ClientFrame, MAX_CAPABILITY_BYTES, MAX_CONCURRENT_MODULE_UPLOADS,
+    MAX_PROVIDER_NONCE_BYTES, MAX_PROVIDER_OFFER_COUNT, MAX_PROVIDER_REPLY_HEX_BYTES,
     MAX_RESUME_TOKEN_BYTES, ServerFrame, invite_bounds,
 };
 pub use types::{
@@ -990,6 +991,8 @@ async fn run_world_session<I: SessionIo>(
         | ClientFrame::Resize { .. }
         | ClientFrame::Revoke { .. }
         | ClientFrame::Paste { .. }
+        | ClientFrame::ProviderOffer { .. }
+        | ClientFrame::ProviderReply { .. }
         | ClientFrame::FormResult { .. } => {
             let _ = send_error(
                 service.frame_meter(),
@@ -3174,6 +3177,49 @@ async fn handle_client_frame<I: SessionIo>(
                     .await;
                 }
             }
+        }
+        ClientFrame::ProviderOffer { providers } => {
+            // Step 2: offers are session-local state only — no broker
+            // exists yet to record them, and nothing is routed. Validate
+            // bounds and the reserved `client.` namespace, then accept
+            // without effect: the session continues and no frame is sent.
+            // Step 3 stores the offer per connection and gates
+            // `provider_request` on it.
+            if providers.len() > MAX_PROVIDER_OFFER_COUNT
+                || providers.iter().any(|name| {
+                    name.is_empty()
+                        || name.len() > MAX_CAPABILITY_BYTES
+                        || !name.starts_with(crate::world_caps::CLIENT_PROVIDER_NAMESPACE)
+                })
+            {
+                return send_error(service.frame_meter(), io, "invalid provider offer").await;
+            }
+            return true;
+        }
+        ClientFrame::ProviderReply {
+            nonce,
+            ok,
+            data_hex,
+            error,
+        } => {
+            // Step 2 fail-closed: no broker tracks nonces yet, so every
+            // nonce is unknown. Validate the shape, then refuse — never
+            // route. Step 3 matches the nonce against the pending request
+            // bound to this connection's session.
+            let shape_ok = !nonce.is_empty()
+                && nonce.len() <= MAX_PROVIDER_NONCE_BYTES
+                && data_hex.as_ref().is_none_or(|hex| {
+                    hex.len() <= MAX_PROVIDER_REPLY_HEX_BYTES && decode_hex(hex).is_some()
+                })
+                && error.as_ref().is_none_or(|message| {
+                    !message.is_empty() && message.len() <= MAX_CAPABILITY_BYTES
+                })
+                && (ok == data_hex.is_some())
+                && (!ok == error.is_some());
+            if !shape_ok {
+                return send_error(service.frame_meter(), io, "invalid provider reply").await;
+            }
+            return send_error(service.frame_meter(), io, "unknown provider reply").await;
         }
         ClientFrame::Join { .. }
         | ClientFrame::Invite { .. }
