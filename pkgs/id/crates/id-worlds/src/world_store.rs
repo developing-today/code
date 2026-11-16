@@ -35,6 +35,20 @@ use crate::world::{
 };
 use crate::world_session::{WorldService, module_hash};
 
+/// Production byte cap for one world's journal file: the F12.18
+/// journal-size bound (#560, option B, decided 2026-11-16).
+///
+/// Checkpoint trimming (`WorldLimits::checkpoint_every`) keeps a healthy
+/// journal far below this — a checkpoint replaces the whole history with
+/// one snapshot entry — so the cap is a backstop, not a sizing tool: it
+/// binds only when trimming cannot run (a program with no snapshot
+/// support, a world that never checkpoints). When an append would cross
+/// the cap the append is refused before anything is written; the remedy
+/// is the world's own checkpoint/trim or transaction rewrite, which
+/// re-baselines the tracked size through `compact`, and appends resume
+/// once the journal is back under the cap.
+pub const MAX_JOURNAL_BYTES: u64 = 64 * 1024 * 1024;
+
 /// Append-only, fsynced JSON-lines journal.
 #[derive(Debug)]
 pub struct FileJournal {
@@ -46,6 +60,11 @@ pub struct FileJournal {
     /// The version in the journal's `Created` header, kept in step with the
     /// bump-on-first-write contract (see `world::JOURNAL_VERSION`).
     version: u32,
+    /// Bytes currently in the journal file, tracked across appends and
+    /// compactions so the cap check never stats the file on the hot path.
+    bytes: u64,
+    /// The byte cap this journal enforces (see [`MAX_JOURNAL_BYTES`]).
+    max_bytes: u64,
 }
 
 #[derive(Debug)]
@@ -145,6 +164,20 @@ impl FileJournal {
     ///
     /// I/O failures, or a malformed entry before the last line.
     pub fn open(path: &Path, world_id: &str) -> Result<(Self, Vec<JournalEntry>)> {
+        Self::open_with_max_bytes(path, world_id, MAX_JOURNAL_BYTES)
+    }
+
+    /// Open (or create) a journal enforcing an explicit byte cap.
+    /// Production callers use [`FileJournal::open`] and the production
+    /// cap ([`MAX_JOURNAL_BYTES`]); the explicit form exists for tests
+    /// and operator tooling. A journal already over the cap still opens
+    /// — its history is readable and a checkpoint can trim it — but
+    /// appends refuse until it is back under the cap.
+    pub fn open_with_max_bytes(
+        path: &Path,
+        world_id: &str,
+        max_bytes: u64,
+    ) -> Result<(Self, Vec<JournalEntry>)> {
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)
                 .with_context(|| format!("create {}", parent.display()))?;
@@ -180,6 +213,8 @@ impl FileJournal {
             path: path.to_owned(),
             broken: false,
             version,
+            bytes: good_len,
+            max_bytes,
         };
         if entries.is_empty() {
             let header = JournalEntry::Created {
@@ -309,7 +344,18 @@ impl WorldJournal for FileJournal {
         }
         let mut line = serde_json::to_vec(entry).context("encode journal entry")?;
         line.push(b'\n');
+        // F12.18 journal-size bound (#560, option B): refuse the append
+        // BEFORE writing when it would cross the byte cap, so the file
+        // never exceeds the cap and no partial line lands.
+        let new_bytes = self.bytes + line.len() as u64;
+        ensure!(
+            new_bytes <= self.max_bytes,
+            "world journal {} would exceed its byte cap ({new_bytes} > {} bytes); append refused",
+            self.path.display(),
+            self.max_bytes
+        );
         self.writer.append(line)?;
+        self.bytes = new_bytes;
         Ok(())
     }
 
@@ -384,7 +430,7 @@ impl WorldJournal for FileJournal {
         let tmp = self.path.with_extension("jsonl.tmp");
         // Build the replacement beside the journal; the live file is untouched
         // until the rename, so any failure before it leaves the old journal.
-        let built = (|| -> Result<File> {
+        let built = (|| -> Result<(File, u64)> {
             let mut options = OpenOptions::new();
             options.read(true).append(true).create(true).truncate(false);
             #[cfg(unix)]
@@ -401,10 +447,10 @@ impl WorldJournal for FileJournal {
             file.write_all(&encoded)
                 .context("write compacted journal")?;
             file.sync_all().context("sync compacted journal")?;
-            Ok(file)
+            Ok((file, encoded.len() as u64))
         })();
-        let file = match built {
-            Ok(file) => file,
+        let (file, compacted_bytes) = match built {
+            Ok(pair) => pair,
             Err(error) => {
                 let _ = std::fs::remove_file(&tmp);
                 return Err(error);
@@ -431,6 +477,10 @@ impl WorldJournal for FileJournal {
         if let Some(JournalEntry::Created { version, .. }) = entries.first() {
             self.version = *version;
         }
+        // The rewrite IS the journal now: re-baseline the tracked size
+        // (this is how a checkpoint trim brings an over-cap journal back
+        // under its cap, and how transactions account for their bytes).
+        self.bytes = compacted_bytes;
         Ok(())
     }
 }
@@ -1149,6 +1199,59 @@ mod tests {
         let mut line = serde_json::to_vec(entry).unwrap();
         line.push(b'\n');
         line
+    }
+
+    // #560 (option B): appends refuse at the byte cap, the file never
+    // exceeds it, and the accepted prefix is exactly what a reopen reads.
+    #[test]
+    fn journal_appends_are_refused_at_the_byte_cap() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("journal.jsonl");
+        let (mut journal, entries) = FileJournal::open_with_max_bytes(&path, "w", 512).unwrap();
+        assert_eq!(entries.len(), 1, "a fresh journal holds only its header");
+        let entry = JournalEntry::CapsGranted {
+            granted: vec!["chat".to_owned()],
+        };
+        let mut appended = 0usize;
+        let refusal = loop {
+            match journal.append(&entry) {
+                Ok(()) => appended += 1,
+                Err(error) => break error,
+            }
+        };
+        assert!(appended > 0, "some entries fit under the cap");
+        assert!(
+            refusal.to_string().contains("byte cap"),
+            "the refusal names the cap: {refusal}"
+        );
+        let file_len = std::fs::metadata(&path).unwrap().len();
+        assert!(
+            file_len <= 512,
+            "the file never exceeds the cap: {file_len}"
+        );
+        let (_journal, replayed) = FileJournal::open_with_max_bytes(&path, "w", 512).unwrap();
+        assert_eq!(replayed.len(), 1 + appended);
+    }
+
+    // The production cap leaves ordinary appends untouched, and a capped
+    // journal does not disturb a healthy neighbour (the DoS probe shape).
+    #[test]
+    fn journal_under_the_production_cap_appends_normally() {
+        let dir = TempDir::new().unwrap();
+        let entry = JournalEntry::CapsGranted {
+            granted: vec!["chat".to_owned()],
+        };
+        let capped_path = dir.path().join("capped.jsonl");
+        let (mut capped, _entries) =
+            FileJournal::open_with_max_bytes(&capped_path, "w", 128).unwrap();
+        let big_entry = JournalEntry::CapsGranted {
+            granted: vec!["x".repeat(200)],
+        };
+        assert!(capped.append(&big_entry).is_err(), "a tiny cap refuses");
+        let probe_path = dir.path().join("probe.jsonl");
+        let (mut probe, _entries) = FileJournal::open(&probe_path, "probe").unwrap();
+        probe.append(&entry).unwrap();
+        assert!(MAX_JOURNAL_BYTES >= 64 * 1024 * 1024);
     }
 
     fn scan(data: Vec<u8>) -> (anyhow::Result<(Vec<JournalEntry>, u64, bool)>, usize) {
