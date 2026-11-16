@@ -112,6 +112,15 @@ pub struct SessionState {
     program_module_hash: Option<String>,
 }
 
+/// Maximum durable events retained since the most recent snapshot.
+///
+/// The host only sends `snapshot` on join, lagged catch-up, and program
+/// install, so a session that keeps up would otherwise accumulate every
+/// `event` frame for its whole lifetime. Nothing in the running binary
+/// consumes these (only views feed the presenter), so retention is a
+/// bounded tail: the newest events, oldest dropped first.
+pub const MAX_RETAINED_EVENTS: usize = 512;
+
 impl SessionState {
     /// Apply one host frame after checking it against the embedded F13.1
     /// contract. Unknown reply kinds are not interpreted as session state.
@@ -136,6 +145,10 @@ impl SessionState {
             }
             "event" => {
                 self.events.push(frame["event"].clone());
+                if self.events.len() > MAX_RETAINED_EVENTS {
+                    let excess = self.events.len() - MAX_RETAINED_EVENTS;
+                    self.events.drain(..excess);
+                }
                 Ok(ServerUpdate::Event)
             }
             "view" => {
@@ -167,6 +180,9 @@ impl SessionState {
     }
 
     /// Durable events received since the most recent snapshot.
+    ///
+    /// Bounded tail: at most [`MAX_RETAINED_EVENTS`] newest events are
+    /// kept; older events are dropped on receipt, oldest first.
     #[must_use]
     pub fn events(&self) -> &[Value] {
         &self.events
@@ -441,5 +457,26 @@ mod tests {
                 )
                 .is_err()
         );
+    }
+
+    #[test]
+    fn event_retention_is_bounded_without_an_intervening_snapshot() {
+        let mut state = SessionState::default();
+        state
+            .apply_server_frame(json!({"type":"snapshot", "snapshot":{"sequence":0}}))
+            .unwrap();
+        let total = MAX_RETAINED_EVENTS + 64;
+        for sequence in 1..=total as u64 {
+            state
+                .apply_server_frame(json!({"type":"event", "event":{"sequence":sequence}}))
+                .unwrap();
+        }
+        assert_eq!(state.events().len(), MAX_RETAINED_EVENTS);
+        // Tail semantics: newest kept, oldest dropped first.
+        assert_eq!(
+            state.events().first().unwrap()["sequence"],
+            (total - MAX_RETAINED_EVENTS + 1) as u64
+        );
+        assert_eq!(state.events().last().unwrap()["sequence"], total as u64);
     }
 }
