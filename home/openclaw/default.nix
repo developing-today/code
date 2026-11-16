@@ -23,6 +23,7 @@
 # store) and is read at service start.
 let
   homeDir = "/home/user";
+  acpxPlugin = inputs.nix-openclaw.packages.${system}.openclaw-runtime-plugin-acpx;
   # Local service ports, repeated here because OpenClaw's config is
   # rendered as data, not shell env. (The provider-proxy ports that
   # once had to stay in sync with home/common/default.nix are all
@@ -92,10 +93,20 @@ in
   # FALLBACK (#1243): to revert opencode to the private-server path,
   # restore opencode.command below (and agents.opencode in the embedded
   # acpx override) to "/etc/profiles/per-user/user/bin/opencode acp".
+  # code#1711: the codex ACP adapter resolves from the Nix store via a
+  # stable symlink, and the managed wrapper below (separate name, so
+  # plugin admission cannot rewrite it) runs it. OpenClaw's generated
+  # wrappers in ~/.openclaw/acpx stay untouched as rollback until the
+  # plugin-captures tree is removed after verification.
+  home.file = {
+    ".openclaw/acpx/bin/codex-acp.mjs".source =
+      "${acpxPlugin}/node_modules/@agentclientprotocol/codex-acp/dist/index.js";
+    ".openclaw/acpx/managed-codex-acp-wrapper.mjs".source = ./acpx/codex-acp-wrapper.mjs;
+  };
   home.file.".acpx/config.json".text = builtins.toJSON {
     agents = {
       opencode.command = "/home/user/code/bin/opencode-acp-adapter.mjs --server http://127.0.0.1:13420";
-      codex.command = "/home/user/.openclaw/acpx/codex-acp-wrapper.mjs";
+      codex.command = "/home/user/.openclaw/acpx/managed-codex-acp-wrapper.mjs";
       agy.command = "/run/current-system/sw/bin/agy_acp_server";
     };
   };
@@ -584,8 +595,8 @@ in
         # so the acpx startup check never resolves a harness to an
         # npx-fetched adapter (that fetch hangs on this laptop's flaky
         # npmjs route; 120s check timeout, 2026-10-26). codex runs
-        # the local wrapper in ~/.openclaw/acpx (adapter bundled with
-        # the acpx plugin; the store repoint is code#1711); agy runs the
+        # the managed wrapper in ~/.openclaw/acpx (adapter resolves
+        # from the Nix store, code#1711); agy runs the
         # system antigravity-acp binary. Drew enabled all four
         # 2026-10-28; claude was REMOVED 2026-11-08 by Drew's order -
         # the real Claude Code CLI must never be spawned headlessly
@@ -635,7 +646,7 @@ in
                 ];
               };
               agents.codex = {
-                command = "/home/user/.openclaw/acpx/codex-acp-wrapper.mjs";
+                command = "/home/user/.openclaw/acpx/managed-codex-acp-wrapper.mjs";
               };
               agents.agy = {
                 command = "/run/current-system/sw/bin/agy_acp_server";
