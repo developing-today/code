@@ -137,7 +137,9 @@ function optString(body: Record<string, unknown>, field: string): string | undef
  * a blank directory to the repo default, not defeat them with "". */
 function optNonBlankString(body: Record<string, unknown>, field: string): string | undefined {
   const v = optString(body, field);
-  return v !== undefined && v.trim() !== "" ? v : undefined;
+  if (v === undefined) return undefined;
+  const t = v.trim();
+  return t !== "" ? t : undefined;
 }
 
 function optBool(body: Record<string, unknown>, field: string, dflt: boolean): boolean {
