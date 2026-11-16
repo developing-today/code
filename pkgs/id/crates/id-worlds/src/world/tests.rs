@@ -10716,6 +10716,126 @@ mod schedule_tests {
         assert!(seen_b.lock().unwrap().is_empty());
     }
 
+    /// Oracle (PR #10840 CodeRabbit regression): simultaneous
+    /// sends in both directions complete - the send orchestration
+    /// runs outside the actor command loops, so neither actor
+    /// waits on the other while holding its own loop.
+    #[tokio::test]
+    async fn portal_bidirectional_sends_do_not_deadlock() {
+        let (a, b, seen_a, seen_b) = portal_pair().await;
+        grant_both(&a, &b).await;
+        let both = tokio::time::timeout(std::time::Duration::from_secs(15), async {
+            tokio::join!(
+                a.send_portal_message("world-b".to_owned(), "ping".to_owned()),
+                b.send_portal_message("world-a".to_owned(), "pong".to_owned())
+            )
+        })
+        .await
+        .expect("bidirectional portal sends must not deadlock");
+        both.0.unwrap();
+        both.1.unwrap();
+        assert_eq!(seen_b.lock().unwrap().len(), 1);
+        assert_eq!(seen_a.lock().unwrap().len(), 1);
+    }
+
+    /// Oracle (PR #10840 CodeRabbit regression): a world can send
+    /// a portal message to itself - its own grant book is both
+    /// halves of the mutual check, and the delivery is processed
+    /// because the send does not hold the actor loop while waiting.
+    #[tokio::test]
+    async fn portal_self_send_delivers() {
+        let (a, _b, seen_a, _seen_b) = portal_pair().await;
+        a.admin_set_portal_grant("world-a".to_owned(), true)
+            .await
+            .unwrap();
+        tokio::time::timeout(
+            std::time::Duration::from_secs(15),
+            a.send_portal_message("world-a".to_owned(), "note to self".to_owned()),
+        )
+        .await
+        .expect("self portal send must not deadlock")
+        .unwrap();
+        let seen = seen_a.lock().unwrap().clone();
+        assert_eq!(seen.len(), 1);
+        let event: serde_json::Value = serde_json::from_str(&seen[0]).unwrap();
+        assert_eq!(event["from"], "world-a");
+        assert_eq!(event["message"], "note to self");
+    }
+
+    /// Oracle (PR #10840 CodeRabbit regression): a peer whose
+    /// grant book cannot be read (unknown to the transport) is a
+    /// transport failure - `Unavailable`, with NO portal.send audit
+    /// entry, because no policy decision was ever made. Contrast
+    /// `portal_peer_ungranted_refuses`, where the book IS read and
+    /// the refusal is audited.
+    #[tokio::test]
+    async fn portal_unreadable_peer_book_is_unavailable_not_refused() {
+        let (a, _b, _seen_a, _seen_b) = portal_pair().await;
+        a.admin_set_portal_grant("world-c".to_owned(), true)
+            .await
+            .unwrap();
+        let error = a
+            .send_portal_message("world-c".to_owned(), "anyone there?".to_owned())
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(error, PortalSendError::Unavailable(_)),
+            "unreadable peer book must be Unavailable, got {error:?}"
+        );
+        assert!(portal_audit(&a, "portal.send").is_empty());
+    }
+
+    /// Oracle (PR #10840 CodeRabbit regression): a granted send
+    /// with NO transport installed is `Unavailable`, not a
+    /// peer-not-granted refusal - no peer book exists to refuse on.
+    #[tokio::test]
+    async fn portal_granted_send_without_sink_is_unavailable() {
+        let handle =
+            WorldHandle::spawn(WorldCore::new("world-solo", WorldLimits::default()).unwrap());
+        handle
+            .admin_set_portal_grant("world-b".to_owned(), true)
+            .await
+            .unwrap();
+        let error = handle
+            .send_portal_message("world-b".to_owned(), "hello?".to_owned())
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(error, PortalSendError::Unavailable(_)),
+            "sinkless send must be Unavailable, got {error:?}"
+        );
+        assert!(portal_audit(&handle, "portal.send").is_empty());
+    }
+
+    /// Oracle (PR #10840 CodeRabbit regression): a message at the
+    /// raw 16 KiB bound made of control characters passes the raw
+    /// check, but its serialized host event escapes past
+    /// MAX_EVENT_BYTES - it refuses as message-too-large carrying
+    /// the envelope size and the event ceiling, on the send side,
+    /// instead of being dropped by delivery as Unavailable.
+    #[tokio::test]
+    async fn portal_escapable_message_refuses_on_envelope_bound() {
+        let (a, b, _seen_a, seen_b) = portal_pair().await;
+        grant_both(&a, &b).await;
+        let message = "\0".repeat(id_caps::portal::MAX_PORTAL_MESSAGE_BYTES);
+        assert_eq!(message.len(), id_caps::portal::MAX_PORTAL_MESSAGE_BYTES);
+        let error = a
+            .send_portal_message("world-b".to_owned(), message.clone())
+            .await
+            .unwrap_err();
+        assert_eq!(
+            error,
+            PortalSendError::Refused(id_caps::portal::PortalRefusal::MessageTooLarge {
+                bytes: portal_message_event("world-a", &message).len(),
+                max: crate::world_caps::MAX_EVENT_BYTES,
+            })
+        );
+        let sends = portal_audit(&a, "portal.send");
+        assert_eq!(sends.len(), 1);
+        assert_eq!(sends[0].parameters["refusal"], "portal.message_too_large");
+        assert!(portal_audit(&b, "portal.deliver").is_empty());
+        assert!(seen_b.lock().unwrap().is_empty());
+    }
     /// Oracle: revoking mid-conversation refuses the next message as
     /// revoked — distinct from never-granted — on whichever side
     /// revoked: the sender's own revoke refuses as sender-revoked,

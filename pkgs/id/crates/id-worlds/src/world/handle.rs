@@ -15,6 +15,13 @@ pub struct WorldHandle {
     audit: WorldAuditLog,
     /// Whether the actor runs in F12.13 read-only replica mode.
     read_only: bool,
+    /// The F12.14 portal transport sink (code#1068), shared by all
+    /// clones of this handle. It lives here, not on the actor, so
+    /// send orchestration runs outside the actor's command loop:
+    /// a send never waits on a peer actor while holding its own
+    /// loop (the bidirectional/self-send deadlock CodeRabbit
+    /// flagged on PR #10840).
+    portal_delivery: PortalDeliverySlot,
 }
 
 use super::*;
@@ -315,7 +322,6 @@ impl WorldHandle {
             location_fix_received_at: None,
             loc_watches: BTreeMap::new(),
             schedule_delivery: None,
-            portal_delivery: None,
             portal_rate: BTreeMap::new(),
             auth: crate::directory_auth::DirectoryAuth::default(),
             admission_gate,
@@ -330,6 +336,7 @@ impl WorldHandle {
             metrics,
             audit,
             read_only,
+            portal_delivery: PortalDeliverySlot::default(),
         }
     }
 
@@ -842,33 +849,146 @@ impl WorldHandle {
 
     /// Send one F12.14 portal message to `target` (code#1068 wiring
     /// slice). The send runs the mutual-grant check against both
-    /// worlds' books, the 16 KiB size bound, and the per-ordered-pair
-    /// rate window (32 per 60 s), and records the send-side audit
-    /// entry; the target records the deliver-side entry on
-    /// acceptance.
+    /// worlds' books, the 16 KiB size bound (and the delivered-
+    /// envelope bound), and the per-ordered-pair rate window
+    /// (32 per 60 s), and records the send-side audit entry; the
+    /// target records the deliver-side entry on acceptance.
+    ///
+    /// The orchestration runs HERE, outside the actor's command
+    /// loop, in five phases (the actor phases are local-only; the
+    /// transport phases run while no actor loop is held):
+    /// 1. actor: writability fence + this world's own grant;
+    /// 2. transport: read the peer's grant book through the sink -
+    ///    an unreadable book (no sink installed, unknown, busy, or
+    ///    closed peer) is `Unavailable`, never a peer-not-granted
+    ///    refusal, because no book was ever read;
+    /// 3. actor: full mutual check + envelope bound + rate admit;
+    /// 4. transport: deliver through the sink (the target's
+    ///    delivery handler is local-only, so it answers promptly);
+    /// 5. actor: record the send-side audit shape for the outcome.
+    /// Because no actor ever awaits a peer while processing a
+    /// command, simultaneous sends in both directions - and a send
+    /// to one's own world - cannot deadlock the command loops
+    /// (CodeRabbit finding on PR #10840).
     ///
     /// # Errors
     ///
     /// `PortalSendError::Refused` with the kernel's refusal for a
     /// policy refusal, or `PortalSendError::Unavailable` for a
-    /// transport failure (including a closed actor).
+    /// transport/fencing failure (including a closed actor).
     pub async fn send_portal_message(
         &self,
         target: String,
         message: String,
     ) -> Result<(), PortalSendError> {
+        let bytes = message.len();
+        // Phase 1 (actor-local).
+        self.portal_send_precheck(&target, bytes).await?;
+        // Phase 2 (transport, outside the actor).
+        let Some(sink) = self.portal_delivery.get() else {
+            return Err(PortalSendError::Unavailable(
+                "no portal transport installed on this world".to_owned(),
+            ));
+        };
+        let Some(peer_grants) = sink.peer_portal_grants(&target).await else {
+            return Err(PortalSendError::Unavailable(format!(
+                "portal peer {target} grant book could not be read"
+            )));
+        };
+        // Phase 3 (actor-local): replies with this world's id.
+        let from_world = self
+            .portal_send_admit(&target, peer_grants, &message)
+            .await?;
+        // Phase 4 (transport, outside the actor).
+        match sink.deliver_portal(&from_world, &target, &message).await {
+            Ok(()) => {
+                // Phase 5 (actor-local): the accepted audit shape.
+                self.portal_send_record(&target, bytes, None).await
+            }
+            Err(PortalSendError::Refused(refusal)) => {
+                // Phase 5: record the target's refusal on this side
+                // too; the record call replies with that same
+                // refusal, which is the error returned here.
+                let _ = self
+                    .portal_send_record(&target, bytes, Some(refusal.clone()))
+                    .await;
+                Err(PortalSendError::Refused(refusal))
+            }
+            Err(unavailable) => Err(unavailable),
+        }
+    }
+
+    /// Phase 1 of [`WorldHandle::send_portal_message`]: the actor
+    /// fences writability and checks this world's own grant book.
+    async fn portal_send_precheck(
+        &self,
+        target: &str,
+        bytes: usize,
+    ) -> Result<(), PortalSendError> {
         let (reply, response) = oneshot::channel();
         self.commands
-            .send(WorldCommand::SendPortal {
-                target,
-                message,
+            .send(WorldCommand::PortalSendPrecheck {
+                target: target.to_owned(),
+                bytes,
                 reply,
             })
             .await
             .map_err(|_| PortalSendError::Unavailable("world actor is closed".to_owned()))?;
         response.await.unwrap_or_else(|_| {
             Err(PortalSendError::Unavailable(
-                "world actor dropped portal send response".to_owned(),
+                "world actor dropped portal precheck response".to_owned(),
+            ))
+        })
+    }
+
+    /// Phase 3 of [`WorldHandle::send_portal_message`]: the actor
+    /// runs the full mutual check against `peer_grants`, the
+    /// envelope bound, and rate admission. Replies with this
+    /// world's id on success.
+    async fn portal_send_admit(
+        &self,
+        target: &str,
+        peer_grants: PortalGrants,
+        message: &str,
+    ) -> Result<String, PortalSendError> {
+        let (reply, response) = oneshot::channel();
+        self.commands
+            .send(WorldCommand::PortalSendAdmit {
+                target: target.to_owned(),
+                peer_grants,
+                message: message.to_owned(),
+                reply,
+            })
+            .await
+            .map_err(|_| PortalSendError::Unavailable("world actor is closed".to_owned()))?;
+        response.await.unwrap_or_else(|_| {
+            Err(PortalSendError::Unavailable(
+                "world actor dropped portal admit response".to_owned(),
+            ))
+        })
+    }
+
+    /// Phase 5 of [`WorldHandle::send_portal_message`]: the actor
+    /// records the send-side audit shape for the observed outcome.
+    async fn portal_send_record(
+        &self,
+        target: &str,
+        bytes: usize,
+        refusal: Option<PortalRefusal>,
+    ) -> Result<(), PortalSendError> {
+        let (reply, response) = oneshot::channel();
+        self.commands
+            .send(WorldCommand::PortalSendRecord {
+                target: target.to_owned(),
+                bytes,
+                refusal,
+                reply,
+            })
+            .await
+            .map_err(|_| PortalSendError::Unavailable("world actor is closed".to_owned()))?;
+        response.await.unwrap_or_else(|_| {
+            Err(PortalSendError::Unavailable(
+                "world actor dropped portal record response".to_owned(),
             ))
         })
     }
@@ -902,24 +1022,33 @@ impl WorldHandle {
         })
     }
 
-    /// Install the F12.14 portal transport sink used by this world's
-    /// actor for its outbound portal sends (code#1068 wiring slice).
+    /// Install the F12.14 portal transport sink used by this
+    /// world's outbound portal sends (code#1068 wiring slice). The
+    /// sink lives on the handle (shared by its clones), not on the
+    /// actor: send orchestration runs outside the actor's command
+    /// loop (see [`WorldHandle::send_portal_message`]).
     ///
     /// # Errors
     ///
-    /// Fails if the world actor is closed.
+    /// Never fails today; the `Result` keeps the install surface
+    /// symmetric with the other composition installs.
     pub async fn set_portal_delivery(
         &self,
         delivery: std::sync::Arc<dyn PortalDelivery>,
     ) -> Result<()> {
-        let (reply, response) = oneshot::channel();
-        self.commands
-            .send(WorldCommand::SetPortalDelivery { delivery, reply })
-            .await
-            .map_err(|_| anyhow::anyhow!("world actor is closed"))?;
-        response
-            .await
-            .context("world actor dropped portal delivery-install response")
+        self.portal_delivery.set(delivery);
+        Ok(())
+    }
+
+    /// Install the F12.14 portal transport sink only when none is
+    /// installed yet (the hub's lease path, code#1068): a sink a
+    /// world already carries - its own composition's - is never
+    /// displaced by a lease. Returns whether it installed.
+    pub(crate) fn install_portal_delivery(
+        &self,
+        delivery: std::sync::Arc<dyn PortalDelivery>,
+    ) -> bool {
+        self.portal_delivery.install(delivery)
     }
 
     /// Admin: cancel a pending schedule by id (a no-op when absent),

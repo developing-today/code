@@ -1344,12 +1344,59 @@ pub(crate) type PortalDeliveryFuture<'a, T> =
     std::pin::Pin<Box<dyn std::future::Future<Output = T> + Send + 'a>>;
 
 /// Carries F12.14 portal messages between world actors (code#1068
-/// wiring slice). Installed on an actor by the composition layer
-/// (the hub); an actor with no sink cannot evidence a peer's grant
-/// and refuses every send as peer-not-granted. The sink is the
-/// transport only: policy lives in the actors, which run
-/// `id_caps::portal::check_portal_message` against both worlds'
-/// books and record the audit shapes on their own sides.
+/// wiring slice). Installed on a world's handle by the composition
+/// layer (the hub installs its sink on every lease; see
+/// `WorldHub::lease_with`); a handle with no sink cannot evidence
+/// a peer's grant, so its sends fail as `Unavailable` — a
+/// transport failure, never a policy refusal, because no peer book
+/// was ever read. The sink is the transport only: policy lives in
+/// the actors, which run `id_caps::portal::check_portal_message`
+/// against both worlds' books and record the audit shapes on
+/// their own sides.
+/// Shared storage for a world's installed [`PortalDelivery`] sink:
+/// one slot per world, shared by every clone of its handle, so the
+/// composition layer installs once and every handle clone sends
+/// through the same sink.
+#[derive(Clone, Default)]
+pub(crate) struct PortalDeliverySlot {
+    inner: std::sync::Arc<
+        std::sync::Mutex<Option<std::sync::Arc<dyn PortalDelivery>>>,
+    >,
+}
+
+impl std::fmt::Debug for PortalDeliverySlot {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("PortalDeliverySlot(..)")
+    }
+}
+
+impl PortalDeliverySlot {
+    /// The installed sink, if any.
+    pub(crate) fn get(&self) -> Option<std::sync::Arc<dyn PortalDelivery>> {
+        self.inner.lock().ok().and_then(|slot| slot.clone())
+    }
+
+    /// Install `delivery`, replacing any sink already installed.
+    pub(crate) fn set(&self, delivery: std::sync::Arc<dyn PortalDelivery>) {
+        if let Ok(mut slot) = self.inner.lock() {
+            *slot = Some(delivery);
+        }
+    }
+
+    /// Install `delivery` only when no sink is installed yet (the
+    /// hub's lease path: a world's own explicitly installed sink
+    /// is never displaced). Returns whether it installed.
+    pub(crate) fn install(&self, delivery: std::sync::Arc<dyn PortalDelivery>) -> bool {
+        if let Ok(mut slot) = self.inner.lock() {
+            if slot.is_none() {
+                *slot = Some(delivery);
+                return true;
+            }
+        }
+        false
+    }
+}
+
 pub(crate) trait PortalDelivery: Send + Sync {
     /// The named world's current portal grant book, or `None` when
     /// the world cannot be reached (unknown, busy, closed).

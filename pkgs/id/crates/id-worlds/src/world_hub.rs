@@ -607,6 +607,17 @@ impl WorldHub {
             .await;
         match opened {
             Ok(service) => {
+                // F12.14 (code#1068): every world this hub opens -
+                // created, reopened after eviction, or its pinned
+                // single world - carries the hub's portal transport
+                // sink, installed on lease when it has none yet, so
+                // portal sends work in production and not only in
+                // tests that install a sink by hand (CodeRabbit
+                // finding on PR #10840). Install-if-absent: a sink
+                // a world already carries is never displaced.
+                service
+                    .world()
+                    .install_portal_delivery(self.portal_delivery());
                 guard.armed = false;
                 Ok(WorldLease {
                     service: service.clone(),
@@ -955,6 +966,39 @@ mod tests {
     fn new_hub(opener: &Arc<MemoryOpener>, limits: HubLimits) -> WorldHub {
         let opener: Arc<dyn WorldOpener> = opener.clone();
         WorldHub::new(opener, Some("admin".to_owned()), "lobby", limits)
+    }
+
+    /// Oracle (PR #10840 CodeRabbit regression): worlds leased
+    /// through a hub carry the hub's portal transport sink with no
+    /// manual install - a mutually granted pair leased from the
+    /// hub exchanges a portal message in production shape, where
+    /// before this fix every production send refused for want of
+    /// a sink.
+    #[tokio::test]
+    async fn hub_leased_worlds_exchange_portal_without_manual_sink() {
+        let opener = MemoryOpener::new(false);
+        let hub = new_hub(&opener, HubLimits::default());
+        hub.create("world-a").await.unwrap();
+        hub.create("world-b").await.unwrap();
+        let a = hub.lease(Some("world-a"), None).await.unwrap();
+        let b = hub.lease(Some("world-b"), None).await.unwrap();
+        a.service()
+            .world()
+            .admin_set_portal_grant("world-b".to_owned(), true)
+            .await
+            .unwrap();
+        b.service()
+            .world()
+            .admin_set_portal_grant("world-a".to_owned(), true)
+            .await
+            .unwrap();
+        // No set_portal_delivery call anywhere: the hub lease
+        // installed its sink on both worlds.
+        a.service()
+            .world()
+            .send_portal_message("world-b".to_owned(), "hello via hub".to_owned())
+            .await
+            .unwrap();
     }
 
     /// Oracle (#5728): a pinned view resolves only its own world.
@@ -1495,10 +1539,11 @@ struct HubScheduleDelivery {
 
 /// [`PortalDelivery`] through a [`WorldHub`]: read the peer's grant
 /// book and deliver checked messages by leasing the target world.
-/// Any failure to lease is `None` / `Unavailable`, which the sending
-/// actor turns into the kernel's peer-not-granted refusal (for a
-/// book it cannot read) or a transport error (for a delivery that
-/// never arrived).
+/// Any failure to lease is `None` / `Unavailable`: for a book it
+/// cannot read the sending handle answers `Unavailable` (a
+/// transport failure - no book was read, so no policy refusal is
+/// recorded), and a delivery that never arrives is likewise a
+/// transport error.
 struct HubPortalDelivery {
     hub: WorldHub,
 }
