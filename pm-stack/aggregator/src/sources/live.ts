@@ -2398,6 +2398,13 @@ export function liveSource(
           state = "absent";
         else if (text.startsWith("store only")) state = "live";
         else state = "fixtures";
+        // #1500: a mixed items pass — pool-served refs plus a fixture
+        // fallback for refs outside the pool — is its own facet state,
+        // not plain "live": the fallback is exactly what a reader of
+        // the item pages needs the facet to say.
+        if (key === "items" && state === "live" && /\+ fixtures for \d+ ref\(s\) outside the pool/.test(text)) {
+          state = "partial-fixtures";
+        }
         const feedBacked = text.includes("fleet feed");
         if (state === "live" && feedBacked && feedAgeMs !== undefined && feedAgeMs >= FEED_STALE_MS) {
           state = "stale";

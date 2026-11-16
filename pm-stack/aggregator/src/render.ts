@@ -2068,6 +2068,23 @@ export function eventTableHtml(events: readonly AuditEvent[]): string {
   return `<div class="tblwrap"><table class="activity-events"><caption>Shared activity events</caption><thead><tr><th scope="col">When</th><th scope="col">Actor</th><th scope="col">Kind</th><th scope="col">Ref</th><th scope="col">Summary</th><th scope="col">Source</th></tr></thead><tbody>${rows || '<tr><td colspan="6" class="muted">No matching events; this does not establish complete coverage.</td></tr>'}</tbody></table></div>`;
 }
 
+/** #1500: the honest empty-section wording, keyed off the provenance
+ * strings the renderers already receive — no new data plumbing. The
+ * comment stream is fixture-sourced while the projector is off (#1199),
+ * so a bare "no comments" would claim a fact about the work when it is
+ * really a fact about the dashboard's resolution path. */
+export const FIXTURE_COMMENTS_CAUSE = "the comment stream is fixture-sourced while the projector is off (#1199)";
+
+export function commentsFixtureSourced(provenance: Provenance): boolean {
+  return provenance.comments.startsWith("fixtures");
+}
+
+export function fixtureCommentsBannerHtml(provenance: Provenance): string {
+  return commentsFixtureSourced(provenance)
+    ? `<div class="banner">The comment stream is fixture-sourced while the projector is off (#1199) — GitHub comments may be missing or stale, and an empty stream does not mean the work has no discussion.</div>`
+    : "";
+}
+
 export function renderItem(
   title: string,
   subject: string,
@@ -2092,6 +2109,24 @@ export function renderItem(
         `<tr><td class="muted">${fmtDate(c.createdAt)}</td><td><span class="badge ${esc(c.kind)}">${esc(c.kind)}</span></td><td>${esc(c.author)}</td><td>${esc(c.body)}${c.path ? ` <span class="muted">(${esc(c.path)}${c.line ? `:${c.line}` : ""})</span>` : ""}</td></tr>`,
     )
     .join("");
+  // #1500: when some linked refs did not resolve, the Linked header
+  // carries the tally and the cause; when every ref resolves it stays
+  // plain. The fixture cause is keyed off the items provenance string
+  // only (the partial-fixtures shape from sources/live.ts, or a fully
+  // fixture-sourced items facet).
+  const linkedResolved = all.length;
+  const linkedHeader =
+    links.length > 0 && linkedResolved < links.length
+      ? `Linked issues / PRs — ${links.length} linked · ${linkedResolved} resolved — ${
+          /\+ fixtures for \d+ ref\(s\) outside the pool/.test(provenance.items) || provenance.items.startsWith("fixtures")
+            ? "resolution fell back to fixtures (projector off, #1199)"
+            : "some linked refs could not be resolved from the current sources"
+        }`
+      : "Linked issues / PRs";
+  const commentsBanner = fixtureCommentsBannerHtml(provenance);
+  const emptyCommentRow = commentsFixtureSourced(provenance)
+    ? `<tr><td colspan="4" class="muted">no comments loaded — ${FIXTURE_COMMENTS_CAUSE}</td></tr>`
+    : '<tr><td colspan="4" class="muted">no comments</td></tr>';
   const dashSection = extras
     ? `<h2>Dashboard comments</h2>${
         extras.dashComments.length
@@ -2137,8 +2172,8 @@ ${
       )
     : ""
 }
-<h2>Linked issues / PRs</h2><div class="tblwrap"><table class="table table-zebra"><caption>Linked issues and pull requests</caption><tr><th scope="col">Ref</th><th scope="col">Title</th><th scope="col">Labels</th><th scope="col">Updated</th></tr>${refRows || '<tr><td colspan="4" class="muted">none resolved</td></tr>'}</table></div>
- <h2>Activity stream comments</h2><div class="tblwrap"><table class="table table-zebra"><caption>Comments</caption><tr><th scope="col">When</th><th scope="col">Kind</th><th scope="col">Author</th><th scope="col">Body</th></tr>${commentRows || '<tr><td colspan="4" class="muted">no comments</td></tr>'}</table></div>
+<h2>${linkedHeader}</h2><div class="tblwrap"><table class="table table-zebra"><caption>Linked issues and pull requests</caption><tr><th scope="col">Ref</th><th scope="col">Title</th><th scope="col">Labels</th><th scope="col">Updated</th></tr>${refRows || '<tr><td colspan="4" class="muted">none resolved</td></tr>'}</table></div>
+ <h2>Activity stream comments</h2>${commentsBanner}<div class="tblwrap"><table class="table table-zebra"><caption>Comments</caption><tr><th scope="col">When</th><th scope="col">Kind</th><th scope="col">Author</th><th scope="col">Body</th></tr>${commentRows || emptyCommentRow}</table></div>
  ${activitySection}${sessionSection}${statusSection}${roadmapAnnotationSection}${dashSection}`,
     provenance,
     "/board",
@@ -6548,7 +6583,14 @@ export function renderDiscuss(
       : objectRef.startsWith("session:")
         ? `<p class="muted"><a href="/sessions">← the session registry</a> · <a href="/attention">Needs you</a></p>`
         : `<p class="muted"><a href="/attention">← Needs you</a></p>`;
-  const body = `<h1>${esc(title)}</h1><p class="muted">object: <code>${esc(objectRef)}</code></p>${back}
+  // #1500: the same fixture banner + honest empty wording as the item
+  // page, keyed off the comments provenance this page already receives.
+  const discussFixtureBanner = fixtureCommentsBannerHtml(provenance);
+  const discussEmptyWording =
+    commentsFixtureSourced(provenance) && comments.length === 0
+      ? `<p class="muted">no comments loaded — ${FIXTURE_COMMENTS_CAUSE}</p>`
+      : "";
+  const body = `<h1>${esc(title)}</h1><p class="muted">object: <code>${esc(objectRef)}</code></p>${back}${discussFixtureBanner}${discussEmptyWording}
 <p class="muted">Two kinds, visibly distinct: a <strong>note</strong> is read when this is next picked up and triggers nothing; a <strong>message to Muse</strong> is triaged by the orchestrator on its next pass and may create work.${
     opts.githubRefs?.length
       ? ` This item is GitHub-backed, so a comment can also be posted as a <strong>GitHub comment</strong> on an explicit target.`
