@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
-import { applyScreenPatch, renderWorldSurface, type ScreenSurface } from "./world-surface";
+import { applyScreenPatch, isEmojiPresentationSeqBase, renderWorldSurface, type ScreenSurface } from "./world-surface";
 import screenCellParityCorpus from "./test-fixtures/screen-cell-parity.json";
+import emojiPresentationFixture from "./test-fixtures/emoji-presentation-seq-ranges.json";
 
 function makeScreen(cells: ScreenSurface["cells"]): ScreenSurface {
   return { kind: "screen", version: 1, width: cells.length, height: 1, cells };
@@ -521,4 +522,48 @@ describe("world screen presenter", () => {
       expect(renderWorldSurface(root, screenWith(symbol, 1))).toBe(false);
     }
   });
+});
+
+describe("EMOJI_PRESENTATION_SEQ_RANGES parity with unicode-width 0.2.2 (#10819)", () => {
+  // The fixture is decoded from the crate's EMOJI_PRESENTATION_LEAVES bit
+  // table by scripts/generate-emoji-presentation-fixture.py; the ranges in
+  // world-surface.ts are a hand transcription of the same table (#4355).
+  // Any future edit to a range edge must fail here, not in production.
+  const fixtureRanges = emojiPresentationFixture.ranges as Array<[number, number]>;
+  const hex = (cp: number): string => `U+${cp.toString(16).toUpperCase()}`;
+
+  it("fixture carries the full crate table (183 ranges, 371 code points)", () => {
+    expect(emojiPresentationFixture.range_count).toBe(183);
+    expect(emojiPresentationFixture.code_point_count).toBe(371);
+    expect(fixtureRanges.length).toBe(183);
+    expect(fixtureRanges.reduce((total, [low, high]) => total + high - low + 1, 0)).toBe(371);
+  });
+
+  it("matches the crate at every range boundary (low-1, low, high, high+1)", () => {
+    for (const [low, high] of fixtureRanges) {
+      expect(isEmojiPresentationSeqBase(low), `${hex(low)} (range low) must start a sequence`).toBe(true);
+      expect(isEmojiPresentationSeqBase(high), `${hex(high)} (range high) must start a sequence`).toBe(true);
+      if (low > 0) {
+        expect(isEmojiPresentationSeqBase(low - 1), `${hex(low - 1)} (low-1) must not start a sequence`).toBe(false);
+      }
+      if (high < 0x10ffff) {
+        expect(isEmojiPresentationSeqBase(high + 1), `${hex(high + 1)} (high+1) must not start a sequence`).toBe(false);
+      }
+    }
+  });
+
+  it("reproduces the fixture ranges exactly over the whole codespace", () => {
+    const derived: Array<[number, number]> = [];
+    let start: number | null = null;
+    for (let cp = 0; cp <= 0x10ffff; cp += 1) {
+      const member = isEmojiPresentationSeqBase(cp);
+      if (member && start === null) start = cp;
+      if (!member && start !== null) {
+        derived.push([start, cp - 1]);
+        start = null;
+      }
+    }
+    if (start !== null) derived.push([start, 0x10ffff]);
+    expect(derived).toEqual(fixtureRanges);
+  }, 60_000);
 });
