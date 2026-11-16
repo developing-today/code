@@ -58,6 +58,7 @@ fn server_frame_type(frame: &ServerFrame<'_>) -> &'static str {
         ServerFrame::EventHistoryBegin { .. } => "event_history_begin",
         ServerFrame::EventHistoryEvent { .. } => "event_history_event",
         ServerFrame::Error { .. } => "error",
+        ServerFrame::ProviderRequest { .. } => "provider_request",
     }
 }
 
@@ -93,6 +94,7 @@ const SERVER_FRAME_TYPES: &[&str] = &[
     "event_history_begin",
     "event_history_event",
     "error",
+    "provider_request",
 ];
 
 #[test]
@@ -226,6 +228,12 @@ fn every_server_frame_variant_is_in_the_contract_and_nothing_else_is() {
         ServerFrame::Error {
             message: "denied",
             code: Some("actor_denied"),
+        },
+        ServerFrame::ProviderRequest {
+            nonce: "ab12",
+            provider: "client.file.read",
+            args: serde_json::json!({"path": "notes.txt"}),
+            deadline_ms: 5000,
         },
         ServerFrame::Revoked {
             participant_id: 7,
@@ -496,4 +504,56 @@ fn a_transcript_follows_the_session_phases() {
 
     assert!(check_transcript(contract, "not json").is_err());
     assert!(check_transcript(contract, r#"{"from": "peer", "frame": {}}"#).is_err());
+}
+
+#[test]
+fn provider_frames_conform_only_where_the_contract_allows_them() {
+    let contract = contract();
+
+    // F13.7 step 2: the offer and the reply are client frames for a
+    // joined session only — a provider frame in the opening phase is
+    // a violation, so a session that has not joined can neither
+    // advertise a provider nor answer a request.
+    let offer = json!({"type": "provider_offer", "providers": ["client.file.read"]});
+    assert_eq!(
+        contract.check_client_frame(&offer, Phase::Joined).unwrap(),
+        "provider_offer"
+    );
+    assert!(contract.check_client_frame(&offer, Phase::Opening).is_err());
+    let parsed: ClientFrame = serde_json::from_value(offer).unwrap();
+    assert!(matches!(parsed, ClientFrame::ProviderOffer { .. }));
+
+    let reply =
+        json!({"type": "provider_reply", "nonce": "ab12", "ok": true, "result_hex": "00ff"});
+    assert_eq!(
+        contract.check_client_frame(&reply, Phase::Joined).unwrap(),
+        "provider_reply"
+    );
+    assert!(contract.check_client_frame(&reply, Phase::Query).is_err());
+    let parsed: ClientFrame = serde_json::from_value(reply).unwrap();
+    assert!(matches!(parsed, ClientFrame::ProviderReply { .. }));
+
+    // The request is a server frame; an undeclared field (a session
+    // or participant claim the design says never to trust from the
+    // wire) is a violation.
+    let request = json!({
+        "type": "provider_request",
+        "nonce": "ab12",
+        "provider": "client.file.read",
+        "args": {"path": "notes.txt"},
+        "deadline_ms": 5000
+    });
+    assert_eq!(
+        contract.check_server_frame(&request).unwrap(),
+        "provider_request"
+    );
+    let mut claimed = request.clone();
+    claimed["session"] = json!("someone-else");
+    assert!(contract.check_server_frame(&claimed).is_err());
+
+    // Nothing about the v1 frame set changed: every pre-existing
+    // client frame type is still in the contract (the sync test
+    // above pins the exact set both ways).
+    assert!(contract.client_frames.contains_key("join"));
+    assert!(contract.server_frames.contains_key("view"));
 }

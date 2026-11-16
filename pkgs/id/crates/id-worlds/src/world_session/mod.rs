@@ -990,6 +990,8 @@ async fn run_world_session<I: SessionIo>(
         | ClientFrame::Resize { .. }
         | ClientFrame::Revoke { .. }
         | ClientFrame::Paste { .. }
+        | ClientFrame::ProviderOffer { .. }
+        | ClientFrame::ProviderReply { .. }
         | ClientFrame::FormResult { .. } => {
             let _ = send_error(
                 service.frame_meter(),
@@ -1188,9 +1190,15 @@ async fn query_session<I: SessionIo>(
                     io.mark_authorized();
                 }
                 let store = documents_store.as_ref().or(service.blobs.as_ref());
-                if let Err(message) =
-                    document_session(service.frame_meter(), service.world(), io, token, store, &name)
-                        .await
+                if let Err(message) = document_session(
+                    service.frame_meter(),
+                    service.world(),
+                    io,
+                    token,
+                    store,
+                    &name,
+                )
+                .await
                 {
                     let _ = send_error(service.frame_meter(), io, message).await;
                     return;
@@ -2655,6 +2663,14 @@ async fn handle_client_frame<I: SessionIo>(
         return send_error(service.frame_meter(), io, "invalid world frame").await;
     };
     let result = match frame {
+        ClientFrame::ProviderOffer { .. } | ClientFrame::ProviderReply { .. } => {
+            // F13.7 step 2 lands the frame types and the contract
+            // rules only: no broker exists yet (step 3), so an offer
+            // enables nothing and a reply correlates with nothing.
+            // Both are contract-valid in a joined session and are
+            // ignored here — fail-closed, and never a session error.
+            return true;
+        }
         ClientFrame::Attenuate {
             name,
             scopes,
