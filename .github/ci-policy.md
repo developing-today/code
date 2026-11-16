@@ -65,6 +65,17 @@ The existing guard/build registry remains checked by
 `.github/scripts/check-ci-policy-agreement.sh`; its main-only trigger check
 also scans the full workflow directory. Main and manual venues are explicit:
 
+**Agreement contract (#7089).** For every workflow in the registry below,
+three records must agree: the venue this policy assigns, the triggers the
+workflow file declares, and the workflow's Actions enablement state. The
+tier-to-trigger mapping lives in the checker's registry (a `main` venue
+requires a push trigger on `branches: [main]`; a `manual` venue requires
+`workflow_dispatch`), the checker enforces the policy and trigger legs, and
+enablement is audited from the Actions API by the repo-health fleet on the
+recurring cadence recorded under #6187. A disagreement in any leg is a
+defect with exactly one recorded disposition — re-arm, fold, or retire —
+never a state that persists by default.
+
 | Workflow                  | Automatic venue          | Manual |
 | ------------------------- | ------------------------ | ------ |
 | workflow-lint             | none                     | yes    |
