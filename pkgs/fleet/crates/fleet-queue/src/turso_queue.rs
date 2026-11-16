@@ -5597,11 +5597,11 @@ fn verb_block(t: &TursoBackend, req: &Value) -> Value {
             &row.get("progress").cloned().unwrap_or(json!({})),
             &req.get("progress").cloned().unwrap_or(json!({})),
         ),
-        &json!({"blocker": blocker, "reason_class": reason_class}),
+        &json!({"blocker": blocker, "reason_class": reason_class, "blocked_via": "lane"}),
     );
     let result = merge_obj(
         &row.get("result").cloned().unwrap_or(json!({})),
-        &json!({"blocker": blocker, "reason_class": reason_class}),
+        &json!({"blocker": blocker, "reason_class": reason_class, "blocked_via": "lane"}),
     );
     // #8276: typed deps, when the request carries them — the block
     // becomes data the broker watches (see run_dep_rechecks). The
@@ -5633,10 +5633,19 @@ fn verb_block(t: &TursoBackend, req: &Value) -> Value {
         None => (None, None, None, None, json!({})),
     };
     let work = (|| -> Result<Value, TErr> {
+        // #10714: a lane block supersedes any stale last_error. The
+        // quarantine rechecker (#10648) selects blocked rows by a
+        // `last_error LIKE 'quarantined by claim path%'` prefix, so a
+        // row that once carried a repaired #5444 quarantine error
+        // would be requeued within one sweep minute after a lane
+        // blocked it. Clearing the fossil here keeps the lane's block
+        // authoritative; the rechecker's release branch also refuses
+        // lane-blocked rows (defence in depth).
         t.exec(
             "UPDATE tasks SET status = 'blocked', worker_id = NULL, lease_until = NULL, \
                progress = ?, result = ?, blocked_deps = ?, dep_next_recheck_at = ?, \
-               dep_blocked_until = ?, dep_recheck_seconds = ?, updated_at = ? WHERE id = ?",
+               dep_blocked_until = ?, dep_recheck_seconds = ?, last_error = NULL, updated_at = ? \
+             WHERE id = ?",
             &[
                 Arg::Text(progress.to_string()),
                 Arg::Text(result.to_string()),
@@ -5913,11 +5922,40 @@ enum QuarantineRecheck {
     StillQuarantined(String),
 }
 
+/// #10714: was this row blocked by a lane (verb_block) rather than by
+/// the #5444 claim-path quarantine? verb_block records the blocker and
+/// the `blocked_via: "lane"` marker in both progress and result;
+/// quarantine_task records neither. Rows blocked by a lane before the
+/// marker existed still carry `blocker`/`reason_class`, so the check
+/// covers legacy rows too. The quarantine rechecker must never undo a
+/// lane's block, even when a fossil quarantine last_error survives on
+/// the row.
+fn lane_blocked(row: &Value) -> bool {
+    fn marks_lane(v: Option<&Value>) -> bool {
+        let Some(o) = v.filter(|v| v.is_object()) else {
+            return false;
+        };
+        o.get("blocked_via").and_then(|v| v.as_str()) == Some("lane")
+            || o.get("blocker")
+                .and_then(|v| v.as_str())
+                .is_some_and(|s| !s.is_empty())
+            || o.get("reason_class")
+                .and_then(|v| v.as_str())
+                .is_some_and(|s| !s.is_empty())
+    }
+    marks_lane(row.get("progress")) || marks_lane(row.get("result"))
+}
+
 fn quarantine_recheck_verdict(row: &Value) -> QuarantineRecheck {
     if row.get("status").and_then(|v| v.as_str()) != Some("blocked") {
         return QuarantineRecheck::NotApplicable;
     }
     if dep_block_active(row) {
+        return QuarantineRecheck::NotApplicable;
+    }
+    // #10714 defence in depth: a lane block owns the row. Its
+    // last_error may be a fossil of a repaired #5444 quarantine.
+    if lane_blocked(row) {
         return QuarantineRecheck::NotApplicable;
     }
     let recorded = row.get("last_error").and_then(|v| v.as_str()).unwrap_or("");
@@ -6000,8 +6038,10 @@ fn quarantine_recheck_one(t: &TursoBackend, row: &Value) -> Result<&'static str,
 /// The #10648 quarantine recheck pass: every blocked, dep-free
 /// row whose recorded error is a claim-path quarantine is re-run
 /// through the claim guard; a row whose error no longer
-/// reproduces is requeued automatically. Rides the sweep beside
-/// the dep rechecker (same timer, same opt-out shape), and
+/// reproduces is requeued automatically. Lane-blocked rows are
+/// excluded (#10714): a lane block owns the row, and a fossil
+/// quarantine error under it must not undo that block. Rides the
+/// sweep beside the dep rechecker (same timer, same opt-out shape), and
 /// /quarantine-recheck runs it directly. This is the blocked-row
 /// re-validation the dep rechecker never provided: it watches
 /// dep-blocked rows only, and a quarantine block carries no deps.
@@ -9473,6 +9513,52 @@ mod tests {
         assert_eq!(
             quarantine_recheck_verdict(&queued),
             QuarantineRecheck::NotApplicable
+        );
+        // #10714: a row a LANE blocked afterwards is never released by
+        // this pass, even when its last_error is the fossil quarantine
+        // error. verb_block records blocker/reason_class (and, since
+        // this fix, blocked_via=lane) in progress and result.
+        let mut lane_block = fossil.clone();
+        lane_block["result"] = json!({
+            "blocker": "escalated to Drew", "reason_class": "escalated-to-user",
+            "blocked_via": "lane",
+        });
+        assert_eq!(
+            quarantine_recheck_verdict(&lane_block),
+            QuarantineRecheck::NotApplicable
+        );
+        // Legacy lane blocks predate the marker; blocker/reason_class
+        // alone must still protect them.
+        let mut legacy_lane_block = fossil.clone();
+        legacy_lane_block["progress"] = json!({
+            "blocker": "CI red on PR 1", "reason_class": "blocked",
+        });
+        assert_eq!(
+            quarantine_recheck_verdict(&legacy_lane_block),
+            QuarantineRecheck::NotApplicable
+        );
+    }
+
+    #[test]
+    fn verb_block_clears_stale_quarantine_error_10714() {
+        // Oracle: the SQL verb_block runs. A lane block must clear the
+        // fossil quarantine last_error (so the rechecker's prefix
+        // selection cannot see the row) and stamp the lane marker.
+        let src = include_str!("turso_queue.rs");
+        let impl_src = src.split("#[cfg(test)]").next().unwrap_or("");
+        let body = impl_src
+            .split("fn verb_block(")
+            .nth(1)
+            .and_then(|s| s.split("\nfn ").next())
+            .unwrap_or("");
+        assert!(!body.is_empty(), "verb_block body found");
+        assert!(
+            body.contains("last_error = NULL"),
+            "verb_block must clear the stale quarantine last_error"
+        );
+        assert!(
+            body.contains("\"blocked_via\": \"lane\""),
+            "verb_block must stamp the lane block marker"
         );
     }
 
