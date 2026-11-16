@@ -22,7 +22,9 @@ use std::sync::Mutex;
 use anyhow::{Context, Result, bail};
 use bevy::prelude::{App, DefaultPlugins, Res, ResMut, Resource, Startup, Update};
 use id_native_shell::render::{PresentedView, ShellRenderPlugin};
-use id_native_shell::{CONTRACT_NAME, CONTRACT_VERSION, SessionView, run_session};
+use id_native_shell::{
+    CONTRACT_NAME, CONTRACT_VERSION, ProviderAdapter, SessionView, run_session_with_providers,
+};
 use iroh::endpoint::{RelayMode, presets};
 use iroh::{Endpoint, EndpointAddr, EndpointId, TransportAddr};
 use serde_json::Value;
@@ -105,6 +107,7 @@ fn spawn_session(args: &SessionArgs) -> Result<SessionBridge> {
     let no_relay = args.no_relay;
     let (views_tx, views_rx) = mpsc::unbounded_channel::<SessionView>();
     let (outbound_tx, outbound_rx) = mpsc::channel::<Value>(32);
+    let provider_outbound = outbound_tx.clone();
     std::thread::Builder::new()
         .name("id-native-shell-session".to_string())
         .spawn(move || {
@@ -118,15 +121,59 @@ fn spawn_session(args: &SessionArgs) -> Result<SessionBridge> {
             runtime.block_on(async move {
                 match connect(&node, &addrs, no_relay).await {
                     Ok((endpoint, client)) => {
-                        let result = run_session(
+                        // F13.7 step 4: the local provider adapter. The
+                        // shipped shell registers no executor and holds
+                        // no grants, so nothing is offered and any
+                        // provider_request the host sends is refused by
+                        // the local check and recorded in the local
+                        // audit log (printed to stderr, the shell's
+                        // user-visible surface). Grants/executors are
+                        // registered on this adapter by the local
+                        // opt-in surface; the adapter alone decides
+                        // what executes.
+                        let mut adapter = ProviderAdapter::new();
+                        let provider_offer =
+                            adapter.offer_frame(world.as_deref().unwrap_or_default());
+                        let (provider_tx, mut provider_rx) =
+                            mpsc::unbounded_channel::<Value>();
+                        let provider_world = world.clone().unwrap_or_default();
+                        let provider_task = tokio::spawn(async move {
+                            while let Some(request) = provider_rx.recv().await {
+                                let audited = adapter.audit_entries().len();
+                                let now_ms = std::time::SystemTime::now()
+                                    .duration_since(std::time::UNIX_EPOCH)
+                                    .map_or(0, |elapsed| {
+                                        u64::try_from(elapsed.as_millis()).unwrap_or(u64::MAX)
+                                    });
+                                let reply =
+                                    adapter.handle_request(&provider_world, &request, now_ms);
+                                for entry in &adapter.audit_entries()[audited..] {
+                                    eprintln!(
+                                        "id-native-shell: local provider audit: world={}                                          provider={} nonce={} outcome={} reason={}",
+                                        entry.world,
+                                        entry.provider,
+                                        entry.nonce,
+                                        entry.outcome,
+                                        entry.reason.as_deref().unwrap_or("-"),
+                                    );
+                                }
+                                if provider_outbound.send(reply).await.is_err() {
+                                    break;
+                                }
+                            }
+                        });
+                        let result = run_session_with_providers(
                             client,
                             world.as_deref(),
                             &capability,
                             None,
                             outbound_rx,
                             views_tx,
+                            provider_tx,
+                            provider_offer,
                         )
                         .await;
+                        provider_task.abort();
                         endpoint.close().await;
                         if let Err(error) = result {
                             eprintln!("id-native-shell: session ended with error: {error:#}");
