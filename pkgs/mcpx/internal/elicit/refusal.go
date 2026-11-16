@@ -43,6 +43,13 @@ const (
 // confirm the call; an answer is never re-examined here for whether it
 // confirmed, only for how it refused.
 func RefusalCodeForAnswer(ans Answer) RefusalCode {
+	if ans.By == "expiry" {
+		// The broker expired the question unanswered: expire answers
+		// Cancel on the asker's behalf (see Broker.Await), but nobody
+		// cancelled -- the question simply went unanswered, so this is
+		// silence, not cancellation.
+		return RefusalUnanswered
+	}
 	switch ans.Action {
 	case Decline:
 		return RefusalDeclined

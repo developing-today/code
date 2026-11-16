@@ -32,17 +32,23 @@ func TestRefusalCodesAreDistinctAndNonEmpty(t *testing.T) {
 func TestRefusalCodeForAnswer(t *testing.T) {
 	cases := []struct {
 		action elicit.Action
+		by     string
 		want   elicit.RefusalCode
 	}{
-		{elicit.Decline, elicit.RefusalDeclined},
-		{elicit.Cancel, elicit.RefusalCancelled},
+		{elicit.Decline, "", elicit.RefusalDeclined},
+		{elicit.Cancel, "", elicit.RefusalCancelled},
 		// An accept whose content did not grant the confirmation is a
 		// denial, not a decline: somebody answered, and the answer was no.
-		{elicit.Accept, elicit.RefusalDenied},
+		{elicit.Accept, "", elicit.RefusalDenied},
+		// A cancel recorded by the broker's expiry path is not a
+		// cancellation: the question went unanswered, which is the
+		// unanswered refusal, so callers can tell silence from a
+		// person cancelling.
+		{elicit.Cancel, "expiry", elicit.RefusalUnanswered},
 	}
 	for _, tc := range cases {
-		if got := elicit.RefusalCodeForAnswer(elicit.Answer{Action: tc.action}); got != tc.want {
-			t.Errorf("RefusalCodeForAnswer(%q) = %q, want %q", tc.action, got, tc.want)
+		if got := elicit.RefusalCodeForAnswer(elicit.Answer{Action: tc.action, By: tc.by}); got != tc.want {
+			t.Errorf("RefusalCodeForAnswer(%q by %q) = %q, want %q", tc.action, tc.by, got, tc.want)
 		}
 	}
 }

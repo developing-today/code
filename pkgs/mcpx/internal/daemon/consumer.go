@@ -3,6 +3,7 @@ package daemon
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -519,9 +520,14 @@ func (r *Registry) confirmDestructive(ctx context.Context, p *pool.Pool, server,
 	defer cancel()
 	ans, aerr := r.broker.Await(actx, opened.ID)
 	if aerr != nil {
-		return ErrNotConfirmed{Tool: path,
-			Reason: "nobody answered within " + r.consumer.AskTimeout.String(),
-			Code:   elicit.RefusalUnanswered}
+		if errors.Is(aerr, context.DeadlineExceeded) {
+			return ErrNotConfirmed{Tool: path,
+				Reason: "nobody answered within " + r.consumer.AskTimeout.String(),
+				Code:   elicit.RefusalUnanswered}
+		}
+		// A broker failure is not a refusal: surface it as itself so
+		// callers can tell a broken broker from an unanswered question.
+		return fmt.Errorf("awaiting confirmation for %s: %w", path, aerr)
 	}
 	if v, _ := elicit.Resolve(ans, elicit.FieldConfirm, "false"); v != "true" {
 		return ErrNotConfirmed{Tool: path, Reason: "the answer was " + string(ans.Action),
@@ -746,9 +752,15 @@ func (r *Registry) applyWritePolicy(ctx context.Context, p *pool.Pool, server, t
 		defer cancel()
 		ans, aerr := r.broker.Await(actx, opened.ID)
 		if aerr != nil {
-			return false, ErrNotConfirmed{Tool: path,
-				Reason: "nobody answered within " + r.consumer.AskTimeout.String(),
-				Code:   elicit.RefusalUnanswered}
+			if errors.Is(aerr, context.DeadlineExceeded) {
+				return false, ErrNotConfirmed{Tool: path,
+					Reason: "nobody answered within " + r.consumer.AskTimeout.String(),
+					Code:   elicit.RefusalUnanswered}
+			}
+			// A broker failure is not a refusal: surface it as itself
+			// so callers can tell a broken broker from an unanswered
+			// question.
+			return false, fmt.Errorf("awaiting confirmation for %s: %w", path, aerr)
 		}
 		if v, _ := elicit.Resolve(ans, elicit.FieldConfirm, "false"); v != "true" {
 			return false, ErrNotConfirmed{Tool: path, Reason: "the answer was " + string(ans.Action),

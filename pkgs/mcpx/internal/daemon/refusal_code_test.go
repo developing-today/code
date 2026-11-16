@@ -143,3 +143,35 @@ func TestWritePolicyAskWithNoBrokerCarriesRefusalCode(t *testing.T) {
 			body.Code, body.RefusalCode, elicit.RefusalUnavailable)
 	}
 }
+
+// A broker failure while awaiting the answer is not an unanswered
+// question: the error must surface as itself, never as an
+// ErrNotConfirmed carrying confirmation_unanswered, so callers can
+// tell a broken broker from silence.
+func TestConfirmDestructiveBrokerFailureIsNotUnanswered(t *testing.T) {
+	broker, err := elicit.Open(filepath.Join(t.TempDir(), "elicit.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	r := &Registry{
+		consumer: ConsumerPolicy{
+			WritePolicy:        "allow",
+			ConfirmDestructive: true,
+			AskTimeout:         10 * time.Second,
+		},
+		broker: broker,
+	}
+	// Closing the broker makes Await's lookups fail immediately with
+	// a storage error, long before the ask deadline.
+	if err := broker.Close(); err != nil {
+		t.Fatal(err)
+	}
+	err = r.confirmDestructive(context.Background(), refusalPool(), "demo", "wipe", config.CallContext{})
+	if err == nil {
+		t.Fatal("confirmDestructive with a closed broker returned nil error")
+	}
+	var notConfirmed ErrNotConfirmed
+	if errors.As(err, &notConfirmed) {
+		t.Fatalf("broker failure surfaced as ErrNotConfirmed (%v); it must surface as the broker error itself", err)
+	}
+}
