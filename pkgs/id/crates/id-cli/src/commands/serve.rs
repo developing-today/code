@@ -2310,7 +2310,12 @@ pub async fn cmd_serve(opts: ServeOptions) -> Result<()> {
                     );
                 }
                 handles.push(tokio::spawn(async move {
-                    if let Err(e) = axum::serve(listener, web_router).await {
+                    if let Err(e) = axum::serve(
+                        listener,
+                        web_router.into_make_service_with_connect_info::<SocketAddr>(),
+                    )
+                    .await
+                    {
                         tracing::error!("web server error: {}", e);
                     }
                 }));

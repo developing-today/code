@@ -2,12 +2,13 @@
 //!
 //! Defines all the Axum routes and their handlers for serving the web UI.
 
+use std::net::SocketAddr;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use axum::{
     Form, Json, Router,
     body::Body,
-    extract::{DefaultBodyLimit, Multipart, Path, Query, State},
+    extract::{ConnectInfo, DefaultBodyLimit, Multipart, Path, Query, State},
     http::{HeaderMap, StatusCode, header},
     response::{Html, IntoResponse, Redirect, Response},
     routing::{get, post},
@@ -2093,6 +2094,99 @@ struct DeleteResponse {
 ///
 /// The file remains in the store and can be restored by removing the "deleted" tag.
 /// Soft-deleted files are hidden from the file list.
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+mod identity_register_rate_limit_tests {
+    use std::{sync::Arc, time::Duration};
+
+    use axum::{body::to_bytes, extract::State};
+    use iroh::endpoint::{Endpoint, RelayMode, presets};
+    use iroh_blobs::{api::Store, store::mem::MemStore};
+    use iroh_docs::protocol::Docs;
+    use iroh_gossip::net::Gossip;
+
+    use super::*;
+    use id_store::tags::TagStore;
+
+    use crate::{AppState, RegisterRateLimiter};
+
+    async fn state_with_limit(limit: usize) -> AppState {
+        let endpoint = Endpoint::builder(presets::Minimal)
+            .relay_mode(RelayMode::Disabled)
+            .bind()
+            .await
+            .unwrap();
+        let store: Store = MemStore::new().into();
+        let gossip = Gossip::builder().spawn(endpoint.clone());
+        let docs = Docs::memory()
+            .spawn(endpoint.clone(), store.clone(), gossip)
+            .await
+            .unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let tags = Arc::new(
+            TagStore::init_in(&docs, "register-limit-test", dir.path().join("meta"))
+                .await
+                .unwrap(),
+        );
+        let mut state = AppState::new(
+            store,
+            None,
+            "register-limit-test".to_owned(),
+            tags,
+            [7; 32],
+            dir.path().join(".identity.redb"),
+        )
+        .await
+        .unwrap();
+        state.register_limiter = RegisterRateLimiter::new(limit, Duration::from_secs(60));
+        state
+    }
+
+    async fn register(state: &AppState, name: &str) -> Response {
+        identity_register_handler(
+            State(state.clone()),
+            ConnectInfo("203.0.113.7:12345".parse().unwrap()),
+            Json(IdentityRegisterRequest {
+                name: Some(name.to_owned()),
+            }),
+        )
+        .await
+        .into_response()
+    }
+
+    async fn response_json(response: Response) -> serde_json::Value {
+        serde_json::from_slice(&to_bytes(response.into_body(), usize::MAX).await.unwrap()).unwrap()
+    }
+
+    #[tokio::test]
+    async fn register_is_rate_limited_per_source_with_an_observable_429() {
+        let state = state_with_limit(2).await;
+
+        // Under the limit: registrations succeed.
+        let first = register(&state, "one").await;
+        assert_eq!(first.status(), StatusCode::OK);
+        let first_body = response_json(first).await;
+        let token = first_body["token"].as_str().unwrap().to_owned();
+        let second = register(&state, "two").await;
+        assert_eq!(second.status(), StatusCode::OK);
+
+        // Over the limit: a structured 429 with a Retry-After header.
+        let third = register(&state, "three").await;
+        assert_eq!(third.status(), StatusCode::TOO_MANY_REQUESTS);
+        assert!(third.headers().contains_key(header::RETRY_AFTER));
+        let third_body = response_json(third).await;
+        assert_eq!(third_body["error"], "registration_rate_limited");
+        assert_eq!(third_body["reason"], "rate_limited");
+
+        // The limit is on registration only: /api/identity/me for an
+        // already-registered identity is unaffected.
+        let me = identity_me_handler(State(state.clone()), Query(IdentityMeQuery { token }))
+            .await
+            .into_response();
+        assert_eq!(me.status(), StatusCode::OK);
+    }
+}
 
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
@@ -4230,10 +4324,44 @@ struct IdentityUpdateNameRequest {
 /// for future reconnection.
 async fn identity_register_handler(
     State(state): State<AppState>,
+    connect_info: ConnectInfo<SocketAddr>,
     Json(req): Json<IdentityRegisterRequest>,
 ) -> impl IntoResponse {
+    // #1766 (remainder): throttle registrations per source. The key is
+    // the peer IP from the listener's connect-info — forwarded headers
+    // are client-spoofable on the direct listener and are never
+    // consulted (security.rs doctrine). The `id serve` listener wiring
+    // supplies connect-info (id-cli serve.rs); a surface that served
+    // this router without it would reject the request, and no such
+    // production surface exists (the program router served by
+    // publication listeners carries no identity routes). Only
+    // successful registrations are recorded, so a refusal at the
+    // admission cap below does not consume a source's budget.
+    let source = connect_info.0.ip().to_string();
+    if let Err(remaining) = state.register_limiter.check(&source).await {
+        #[allow(clippy::cast_sign_loss, clippy::cast_possible_truncation)]
+        let secs = remaining.as_secs_f64().ceil() as u64;
+        tracing::info!(
+            "[identity] Registration rate limited for source {source}: {secs}s remaining"
+        );
+        // Structured refusal, same shape as the save limiter's
+        // (#2244): machine-readable reason + retry value in the body,
+        // `Retry-After` header alongside.
+        return (
+            StatusCode::TOO_MANY_REQUESTS,
+            [(header::RETRY_AFTER, secs.to_string())],
+            Json(serde_json::json!({
+                "error": "registration_rate_limited",
+                "detail": format!("Too many registrations from this source. Try again in {secs}s."),
+                "reason": "rate_limited",
+                "retry_after_ms": secs.saturating_mul(1_000),
+            })),
+        )
+            .into_response();
+    }
     match state.identity.register(req.name).await {
         Ok((token, identity)) => {
+            state.register_limiter.record(&source).await;
             tracing::info!("[identity] Registered new client: {}", identity.client_id);
             (
                 StatusCode::OK,
