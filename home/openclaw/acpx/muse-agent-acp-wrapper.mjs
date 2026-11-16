@@ -18,8 +18,9 @@
 //   as one JSON line to the ledger file (default
 //   ~/.local/state/muse-acp/ledger.jsonl), with the MSP
 //   session/tokenUsage figures when the CLI reports them.
-// - Pre-dispatch pool check: before a session starts, and again whenever
-//   the last check is over an hour old, the freshest Meta pool reading
+// - Pre-dispatch pool check: the freshest Meta pool reading is
+//   consulted before every new session, and again whenever the last
+//   check is over an hour old. The reading
 //   (default ~/atlas/meta-quota-export/latest.json, written by the
 //   meta quota exporter) is consulted. A fresh (<= 60 min) reading with
 //   any window at >= 100% refuses dispatch. A stale or absent reading is
@@ -142,19 +143,19 @@ function poolReading() {
   try {
     const doc = JSON.parse(readFileSync(POOL_FILE, "utf8"));
     const measuredAt = Date.parse(doc.measuredAt || "");
-    if (!Number.isFinite(measuredAt)) return { state: "unknown", detail: "pool reading has no measuredAt" };
+    if (!Number.isFinite(measuredAt)) return { state: "unknown", detail: "pool reading has no measuredAt", measuredAt: null };
     const ageMs = Date.now() - measuredAt;
     if (ageMs > POOL_MAX_AGE_MS) {
-      return { state: "unknown", detail: `pool reading is ${Math.round(ageMs / 60000)}m old (stale)` };
+      return { state: "unknown", detail: `pool reading is ${Math.round(ageMs / 60000)}m old (stale)`, measuredAt };
     }
     const windows = Array.isArray(doc.windows) ? doc.windows : [];
     const full = windows.find((w) => typeof w?.usedPct === "number" && w.usedPct >= 100);
     if (full) {
-      return { state: "full", detail: `pool window "${full.name}" at ${full.usedPct}% (reading ${Math.round(ageMs / 60000)}m old)` };
+      return { state: "full", detail: `pool window "${full.name}" at ${full.usedPct}% (reading ${Math.round(ageMs / 60000)}m old)`, measuredAt };
     }
-    return { state: "ok", detail: `pool ok (reading ${Math.round(ageMs / 60000)}m old)` };
+    return { state: "ok", detail: `pool ok (reading ${Math.round(ageMs / 60000)}m old)`, measuredAt };
   } catch (err) {
-    return { state: "unknown", detail: `pool reading unreadable: ${err.message}` };
+    return { state: "unknown", detail: `pool reading unreadable: ${err.message}`, measuredAt: null };
   }
 }
 
@@ -188,18 +189,48 @@ const host = {
     const child = spawn(MUSE_BIN, args, { env: childEnv(), stdio: ["pipe", "pipe", "pipe"] });
     this.child = child;
     this.stderrTail = "";
+    // Every callback below is guarded on this child still being the
+    // live host: a disposed child's late events must never clear or
+    // reject the replacement host's state (Codex review, PR #9026).
+    const isCurrent = () => this.child === child;
     const rl = createInterface({ input: child.stdout });
-    rl.on("line", (line) => this._onLine(line));
+    rl.on("line", (line) => {
+      if (isCurrent()) this._onLine(line);
+    });
     child.stderr.on("data", (chunk) => {
-      this.stderrTail = (this.stderrTail + chunk.toString()).slice(-2000);
+      if (isCurrent()) this.stderrTail = (this.stderrTail + chunk.toString()).slice(-2000);
     });
-    child.on("error", (err) => this._onExit(`spawn error: ${err.message}`));
-    child.on("close", (code, signal) => this._onExit(`serve host exited (code ${code}, signal ${signal})`));
-    await this.rpc("initialize", {
-      clientInfo: { name: "muse_acp_adapter", version: "0.1.0" },
-      capabilities: { userInputDialogs: false },
+    // A closed input pipe surfaces as an asynchronous stdin 'error'
+    // (EPIPE) that the ChildProcess 'error' listener does not cover;
+    // route it through the same host-failure path.
+    child.stdin.on("error", (err) => {
+      if (isCurrent()) this._onExit(`serve host stdin error: ${err.message}`);
     });
-    this._write({ jsonrpc: "2.0", method: "initialized" });
+    child.on("error", (err) => {
+      if (isCurrent()) this._onExit(`spawn error: ${err.message}`);
+    });
+    child.on("close", (code, signal) => {
+      if (isCurrent()) this._onExit(`serve host exited (code ${code}, signal ${signal})`);
+    });
+    try {
+      await this.rpc("initialize", {
+        clientInfo: { name: "muse_acp_adapter", version: "0.1.0" },
+        capabilities: { userInputDialogs: false },
+      });
+      this._write({ jsonrpc: "2.0", method: "initialized" });
+    } catch (err) {
+      // Dispose of the failed host before any restart: a serve
+      // process that outlives its initialize failure would leak and
+      // its callbacks could invalidate the replacement host.
+      if (isCurrent()) {
+        this.child = null;
+        this.ready = null;
+      }
+      try {
+        child.kill("SIGKILL");
+      } catch { /* already gone */ }
+      throw err;
+    }
   },
 
   _onExit(reason) {
@@ -306,19 +337,46 @@ const host = {
 
 // One MSP turn on a loaded session. Streams text deltas to onDelta and
 // resolves { usage } at turn/completed; rejects on any other terminal.
-function runServeTurn({ sessionId, text, onDelta, isCancelled }) {
+function runServeTurn({ sessionId, text, onDelta, isCancelled, turnState }) {
   return new Promise((resolve, reject) => {
     let turnId = null;
     let usage = null;
     let settled = false;
+    let wantCancel = false;
+    let cancelSent = false;
+    let cancelTimer = null;
     const itemKinds = new Map();
     const settle = (fn, value) => {
       if (settled) return;
       settled = true;
       clearTimeout(timer);
+      if (cancelTimer) clearTimeout(cancelTimer);
       off();
       fn(value);
     };
+    // ACP session/cancel lands here (wired via turnState): forward it
+    // to the backend as MSP turn/cancel so the turn actually stops
+    // consuming quota and executing tools — hiding its output is not
+    // cancellation (Codex review, PR #9026).
+    const sendCancel = () => {
+      if (cancelSent) return;
+      cancelSent = true;
+      host
+        .rpc("turn/cancel", { commandId: uuidv7(), sessionId, ...(turnId ? { turnId } : {}) }, 10_000)
+        .catch(() => {});
+    };
+    if (turnState) {
+      turnState.cancelBackend = () => {
+        wantCancel = true;
+        if (turnId) sendCancel();
+        // If the backend never reports a terminal after a cancel,
+        // settle as cancelled rather than leaving the prompt pending.
+        cancelTimer = setTimeout(
+          () => settle(resolve, { usage, cancelled: true, cancelUnconfirmed: true }),
+          15_000,
+        );
+      };
+    }
     const timer = setTimeout(() => settle(reject, new Error("serve turn timed out after 600000ms")), 600_000);
     const off = host.onNotification((msg) => {
       const params = msg.params || {};
@@ -357,12 +415,16 @@ function runServeTurn({ sessionId, text, onDelta, isCancelled }) {
         case "turn/completed":
           if (turnId && params.turnId !== turnId) break;
           if (params.terminal !== "completed") {
-            settle(
-              reject,
-              new Error(`turn terminated '${params.terminal}'${params.reason ? `: ${params.reason}` : ""}`),
-            );
+            if (isCancelled()) {
+              settle(resolve, { usage, cancelled: true });
+            } else {
+              settle(
+                reject,
+                new Error(`turn terminated '${params.terminal}'${params.reason ? `: ${params.reason}` : ""}`),
+              );
+            }
           } else {
-            settle(resolve, { usage });
+            settle(resolve, { usage, cancelled: isCancelled() });
           }
           break;
         default:
@@ -373,6 +435,7 @@ function runServeTurn({ sessionId, text, onDelta, isCancelled }) {
       .rpc("turn/start", { commandId: uuidv7(), sessionId, input: [{ type: "text", text }] })
       .then((ack) => {
         turnId = ack?.turnId || turnId;
+        if (wantCancel) sendCancel();
       })
       .catch((err) => settle(reject, err));
   });
@@ -384,7 +447,7 @@ function runServeTurn({ sessionId, text, onDelta, isCancelled }) {
 // turn's first output is committed.
 // ---------------------------------------------------------------------------
 
-async function runExecTurn({ text, cwd, onDelta }) {
+async function runExecTurn({ text, cwd, onDelta, turnState }) {
   const args = await buildArgs("exec", [
     { flag: "--json", optional: true },
     { flag: "--provider", value: PROVIDER },
@@ -392,6 +455,15 @@ async function runExecTurn({ text, cwd, onDelta }) {
   args.push(text);
   return new Promise((resolve, reject) => {
     const child = spawn(MUSE_BIN, args, { env: childEnv(), cwd, stdio: ["ignore", "pipe", "pipe"] });
+    // ACP session/cancel terminates the one-shot child (Codex review,
+    // PR #9026): an exec turn has no control lane, the process is it.
+    if (turnState) {
+      turnState.cancelBackend = () => {
+        try {
+          child.kill("SIGTERM");
+        } catch { /* already gone */ }
+      };
+    }
     let usage = null;
     let terminal = null;
     let stderrTail = "";
@@ -424,7 +496,9 @@ async function runExecTurn({ text, cwd, onDelta }) {
     });
     child.on("error", (err) => reject(err));
     child.on("close", (code) => {
-      if (terminal && terminal !== "completed") {
+      if (turnState?.cancelled) {
+        resolve({ usage, cancelled: true });
+      } else if (terminal && terminal !== "completed") {
         reject(new Error(`exec turn terminated '${terminal}'${stderrTail ? `: ${stderrTail.trim()}` : ""}`));
       } else if (code !== 0 && !terminal) {
         reject(new Error(`muse exec exited ${code}${stderrTail ? `: ${stderrTail.trim()}` : ""}`));
@@ -453,19 +527,36 @@ function sessionUpdate(sessionId, update) {
 }
 
 const sessions = new Map(); // acpSessionId -> session record
-let lastPoolCheckAt = 0;
-let lastPoolState = "unknown";
+let lastPoolCheck = null; // { at, measuredAt, state, detail }
 
-function freshPoolGate() {
-  // Re-check at least hourly across the adapter's life; the reading
-  // itself must be <= 60 min old to count as known.
-  if (Date.now() - lastPoolCheckAt > POOL_MAX_AGE_MS || lastPoolCheckAt === 0) {
-    const reading = poolReading();
-    lastPoolCheckAt = Date.now();
-    lastPoolState = reading.state;
-    return reading;
+// session/new gate: ALWAYS consult the freshest exporter snapshot —
+// a cached verdict must never wave a new session through (or refuse
+// one) on an hour-old reading (Codex review, PR #9026).
+function poolGateForNewSession() {
+  const reading = poolReading();
+  lastPoolCheck = {
+    at: Date.now(),
+    measuredAt: reading.measuredAt,
+    state: reading.state,
+    detail: reading.detail,
+  };
+  return reading;
+}
+
+// Prompt gate on a live session: the cached verdict stands until it
+// is an hour old OR the snapshot it came from ages past the 60-minute
+// freshness bound — burns re-check at least hourly (acceptance), and
+// a verdict never outlives its own reading.
+function poolGateForPrompt() {
+  const now = Date.now();
+  if (
+    !lastPoolCheck ||
+    now - lastPoolCheck.at > POOL_MAX_AGE_MS ||
+    (lastPoolCheck.measuredAt !== null && now - lastPoolCheck.measuredAt > POOL_MAX_AGE_MS)
+  ) {
+    return poolGateForNewSession();
   }
-  return { state: lastPoolState, detail: "pool reading cached within the hour" };
+  return { state: lastPoolCheck.state, detail: "pool verdict cached within its reading's freshness window" };
 }
 
 function isAuthFailure(err) {
@@ -478,7 +569,7 @@ async function handleSessionNew(id, params) {
     ledger({ kind: "refusal", reason: "no-login", detail: "auth.json absent" });
     return sendError(id, -32000, LOGIN_REQUIRED);
   }
-  const pool = freshPoolGate();
+  const pool = poolGateForNewSession();
   if (pool.state === "full") {
     ledger({ kind: "refusal", reason: "pool-full", detail: pool.detail });
     return sendError(id, -32000, `meta pool at capacity: ${pool.detail}; dispatch refused`);
@@ -523,35 +614,47 @@ async function handleSessionPrompt(id, params) {
     ledger({ kind: "refusal", reason: "turn-budget", sessionId, turns: session.turns, budget: TURN_BUDGET });
     return sendResult(id, { stopReason: "max_turn_requests" });
   }
-  const pool = freshPoolGate();
+  const pool = poolGateForPrompt();
   if (pool.state === "full") {
     ledger({ kind: "refusal", reason: "pool-full", sessionId, detail: pool.detail });
     return sendError(id, -32000, `meta pool at capacity: ${pool.detail}; dispatch refused`);
   }
-  const turnState = { cancelled: false };
+  const turnState = { cancelled: false, cancelBackend: null };
   session.activeTurn = turnState;
+  // The budget counts DISPATCHED turns, including ones that go on to
+  // fail: a turn that consumed tokens or ran tools has spent from the
+  // session's resource guard whether or not it completed (Codex
+  // review, PR #9026).
+  session.turns += 1;
+  const turnNo = session.turns;
   const onDelta = (delta) =>
     sessionUpdate(sessionId, {
       sessionUpdate: "agent_message_chunk",
       content: { type: "text", text: delta },
     });
   try {
-    const { usage } =
+    const { usage, cancelled } =
       session.mode === "exec"
-        ? await runExecTurn({ text, cwd: session.cwd, onDelta })
-        : await runServeTurn({ sessionId: session.mspSessionId, text, onDelta, isCancelled: () => turnState.cancelled });
-    session.turns += 1;
+        ? await runExecTurn({ text, cwd: session.cwd, onDelta, turnState })
+        : await runServeTurn({
+            sessionId: session.mspSessionId,
+            text,
+            onDelta,
+            isCancelled: () => turnState.cancelled,
+            turnState,
+          });
+    const wasCancelled = Boolean(cancelled) || turnState.cancelled;
     ledger({
       kind: "turn",
       sessionId,
-      turn: session.turns,
+      turn: turnNo,
       mode: session.mode,
       inputTokens: usage?.inputTokens,
       outputTokens: usage?.outputTokens,
       cacheReadTokens: usage?.cacheReadTokens,
-      stopReason: turnState.cancelled ? "cancelled" : "end_turn",
+      stopReason: wasCancelled ? "cancelled" : "end_turn",
     });
-    return sendResult(id, { stopReason: turnState.cancelled ? "cancelled" : "end_turn" });
+    return sendResult(id, { stopReason: wasCancelled ? "cancelled" : "end_turn" });
   } catch (err) {
     if (isAuthFailure(err)) {
       session.dead = true;
@@ -583,7 +686,14 @@ async function handleMessage(msg) {
   if (method === "session/prompt") return handleSessionPrompt(id, params);
   if (method === "session/cancel") {
     const session = sessions.get(params?.sessionId);
-    if (session?.activeTurn) session.activeTurn.cancelled = true;
+    if (session?.activeTurn) {
+      session.activeTurn.cancelled = true;
+      // Propagate to the backend (Codex review, PR #9026): the MSP
+      // turn / exec child must actually stop, not just go quiet.
+      try {
+        session.activeTurn.cancelBackend?.();
+      } catch { /* backend gone */ }
+    }
     return undefined;
   }
   if (id !== undefined) return sendError(id, -32601, `method not found: ${method}`);

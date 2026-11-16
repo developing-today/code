@@ -48,10 +48,23 @@ if (args[0] === "serve") {
       send({ jsonrpc: "2.0", id: msg.id, result: { serverInfo: { name: "fake-muse", version: "0" } } });
     } else if (msg.method === "session/start") {
       send({ jsonrpc: "2.0", id: msg.id, result: { session: { sessionId: "fake-session-1" } } });
+    } else if (msg.method === "turn/cancel") {
+      if (process.env.FAKE_MUSE_CANCEL_DUMP) {
+        writeFileSync(process.env.FAKE_MUSE_CANCEL_DUMP, JSON.stringify(msg.params));
+      }
+      send({ jsonrpc: "2.0", id: msg.id, result: {} });
+      send({ jsonrpc: "2.0", method: "turn/completed", params: { sessionId: msg.params.sessionId, turnId: msg.params.turnId || "t1", terminal: "cancelled" } });
     } else if (msg.method === "turn/start") {
       const sessionId = msg.params.sessionId;
       const text = msg.params.input?.[0]?.text || "";
       send({ jsonrpc: "2.0", id: msg.id, result: { turnId: "t1" } });
+      if (text.includes("HANG")) return; // never completes on its own
+      if (text.includes("FAIL:")) {
+        setTimeout(() => {
+          send({ jsonrpc: "2.0", method: "turn/completed", params: { sessionId, turnId: "t1", terminal: "failed", reason: "backend exploded" } });
+        }, 10);
+        return;
+      }
       setTimeout(() => {
         if (text.includes("AUTHFAIL")) {
           send({ jsonrpc: "2.0", method: "turn/completed", params: { sessionId, turnId: "t1", terminal: "failed", reason: "OAuth login expired; please login again" } });
@@ -96,6 +109,7 @@ function startAdapter(opts = {}) {
       MUSE_ACP_POOL_FILE: join(ctx.dir, "latest.json"),
       MUSE_ACP_LEDGER: join(ctx.dir, "ledger.jsonl"),
       FAKE_MUSE_ENV_DUMP: ctx.envDump,
+      FAKE_MUSE_CANCEL_DUMP: join(ctx.dir, "cancel.json"),
       ...(opts.adapterEnv || {}),
     },
     stdio: ["pipe", "pipe", "pipe"],
@@ -123,10 +137,21 @@ function startAdapter(opts = {}) {
       state.pending.set(id, resolve);
       child.stdin.write(`${JSON.stringify({ jsonrpc: "2.0", id, method, params })}\n`);
     });
+  const notify = (method, params) =>
+    child.stdin.write(`${JSON.stringify({ jsonrpc: "2.0", method, params })}\n`);
   const ledgerFile = join(ctx.dir, "ledger.jsonl");
   const ledger = () =>
     existsSync(ledgerFile) ? readFileSync(ledgerFile, "utf8").trim().split("\n").map((l) => JSON.parse(l)) : [];
-  return { child, rpc, state, ledger, envDump: ctx.envDump };
+  return {
+    child,
+    rpc,
+    notify,
+    state,
+    ledger,
+    envDump: ctx.envDump,
+    poolFile: join(ctx.dir, "latest.json"),
+    cancelDump: join(ctx.dir, "cancel.json"),
+  };
 }
 
 const freshPool = (weeklyPct) => ({
@@ -250,6 +275,66 @@ test("exec fallback: serve failing before commit opens an exec-backed session", 
     const turn = ctx.ledger().find((e) => e.kind === "turn");
     assert.equal(turn.mode, "exec");
     assert.equal(turn.inputTokens, 7);
+  } finally {
+    ctx.child.kill();
+  }
+});
+
+test("cancellation propagates to the MSP turn and settles the prompt as cancelled", async () => {
+  const ctx = startAdapter({ poolDoc: freshPool(10) });
+  try {
+    await newSession(ctx);
+    const promptPromise = ctx.rpc("session/prompt", {
+      sessionId: "fake-session-1",
+      prompt: [{ type: "text", text: "HANG on" }],
+    });
+    // Give the turn time to start, then cancel as an ACP client would.
+    await new Promise((r) => setTimeout(r, 150));
+    ctx.notify("session/cancel", { sessionId: "fake-session-1" });
+    const res = await promptPromise;
+    assert.equal(res.result.stopReason, "cancelled");
+    // The backend actually received turn/cancel for the session —
+    // hiding output would not have produced this.
+    const cancel = JSON.parse(readFileSync(ctx.cancelDump, "utf8"));
+    assert.equal(cancel.sessionId, "fake-session-1");
+    const turn = ctx.ledger().find((e) => e.kind === "turn");
+    assert.equal(turn.stopReason, "cancelled");
+  } finally {
+    ctx.child.kill();
+  }
+});
+
+test("turn budget counts failed dispatched turns", async () => {
+  const ctx = startAdapter({ poolDoc: freshPool(10), adapterEnv: { MUSE_ACP_TURN_BUDGET: "1" } });
+  try {
+    await newSession(ctx);
+    const first = await ctx.rpc("session/prompt", {
+      sessionId: "fake-session-1",
+      prompt: [{ type: "text", text: "FAIL: hard" }],
+    });
+    assert.ok(first.error, "the failed turn surfaces as an error");
+    const second = await ctx.rpc("session/prompt", {
+      sessionId: "fake-session-1",
+      prompt: [{ type: "text", text: "again" }],
+    });
+    // Budget was spent by the failed dispatch: no second dispatch.
+    assert.equal(second.result.stopReason, "max_turn_requests");
+  } finally {
+    ctx.child.kill();
+  }
+});
+
+test("pool check re-reads the snapshot before every new session", async () => {
+  const ctx = startAdapter({ poolDoc: freshPool(10) });
+  try {
+    const first = await newSession(ctx);
+    assert.equal(first.result.sessionId, "fake-session-1");
+    // The exporter now reports a full pool on a fresh reading; a new
+    // session must see it, not the adapter's cached verdict.
+    writeFileSync(ctx.poolFile, JSON.stringify(freshPool(100)));
+    await ctx.rpc("initialize", { protocolVersion: 1, clientCapabilities: {} });
+    const second = await ctx.rpc("session/new", { cwd: "/tmp", mcpServers: [] });
+    assert.match(second.error.message, /meta pool at capacity/);
   } finally {
     ctx.child.kill();
   }
