@@ -702,7 +702,53 @@ struct FbArgs {
     opts: Map<String, Value>,
 }
 
+// ---------------------------------------------------------------------------
+// Discoverable usage (#10838): per-verb `--help`/`-h`, and every
+// argument-shape rejection carries the verb's usage — the same
+// contract as the primary client's parse_verb_args.
+// ---------------------------------------------------------------------------
+
+/// Group usage for `repo-queue fallback --help`.
+pub(crate) const GROUP_USAGE: &str = "\
+usage: repo-queue fallback <scan|status|claim|heartbeat|release> ...\n\
+\n\
+GitHub-backed queue used when the primary broker is down; issue\n\
+comments carry the claims. Run `repo-queue fallback <sub> --help`\n\
+for flags:\n\
+  scan <repo> <issue-number>  (--repo/--limit/--lease-min live on scan)\n\
+  status <repo> <issue-number>\n\
+  claim <repo> <issue-number> --worker <id>\n\
+  heartbeat <repo> <issue-number> --worker <id>\n\
+  release <repo> <issue-number> --worker <id>";
+
+/// Per-verb usage for the fallback verbs.
+pub(crate) fn usage(verb: &str) -> &'static str {
+    match verb {
+        "scan" => "usage: repo-queue fallback scan [--repo <repo>] [--limit <1..100>] [--lease-min <minutes>]\n\nScans the fallback repos' labelled issues for live/stale claims.",
+        "status" => "usage: repo-queue fallback status <repo> <issue-number> [--lease-min <minutes>]\n\nShows the folded claim state for one fallback issue.",
+        "claim" => "usage: repo-queue fallback claim <repo> <issue-number> --worker <id> [--lease-min <minutes>] [--note <text>]\n\nClaims a fallback issue by posting a claim marker comment (races are detected on read-back).",
+        "heartbeat" => "usage: repo-queue fallback heartbeat <repo> <issue-number> --worker <id> [--lease-min <minutes>] [--note <text>]\n\nRefreshes your fallback claim with a progress marker.",
+        "release" => "usage: repo-queue fallback release <repo> <issue-number> --worker <id> [--lease-min <minutes>] [--outcome done|free] [--summary <text>]\n\nReleases a fallback claim (done keeps the terminal state, free returns it to the pool).",
+        _ => GROUP_USAGE,
+    }
+}
+
+fn is_help_arg(s: &str) -> bool {
+    matches!(s, "--help" | "-h" | "help")
+}
+
+/// Die with a usage error (exit 2): the message plus the verb's
+/// usage, so the error teaches the accepted flags.
+fn usage_error(verb: &str, msg: &str) -> ! {
+    die(EXIT_USAGE, &format!("{msg}\n{}", usage(verb)));
+}
+
 fn parse_fb_args(verb: &str, rest: &[String], flags: &[&str]) -> FbArgs {
+    // Help wins over every other argument (#10838).
+    if rest.iter().any(|a| is_help_arg(a)) {
+        println!("{}", usage(verb));
+        exit(0);
+    }
     let mut pos = Vec::new();
     let mut opts = Map::new();
     let mut i = 0;
@@ -714,14 +760,14 @@ fn parse_fb_args(verb: &str, rest: &[String], flags: &[&str]) -> FbArgs {
                 None => (long.to_string(), None),
             };
             if !flags.contains(&name.as_str()) {
-                die(
-                    EXIT_USAGE,
+                usage_error(
+                    verb,
                     &format!("fallback {verb}: unrecognized argument: --{name}"),
                 );
             }
             if opts.contains_key(&name) {
-                die(
-                    EXIT_USAGE,
+                usage_error(
+                    verb,
                     &format!("fallback {verb}: argument --{name}: duplicate flag"),
                 );
             }
@@ -732,8 +778,8 @@ fn parse_fb_args(verb: &str, rest: &[String], flags: &[&str]) -> FbArgs {
                 opts.insert(name, Value::String(rest[i + 1].clone()));
                 i += 2;
             } else {
-                die(
-                    EXIT_USAGE,
+                usage_error(
+                    verb,
                     &format!("fallback {verb}: argument --{name}: expected one argument"),
                 );
             }
@@ -757,8 +803,8 @@ impl FbArgs {
             None => None,
             Some(s) => match s.parse::<i64>() {
                 Ok(n) => Some(n),
-                Err(_) => die(
-                    EXIT_USAGE,
+                Err(_) => usage_error(
+                    verb,
                     &format!("fallback {verb}: argument --{name}: invalid int value {s:?}"),
                 ),
             },
@@ -777,15 +823,15 @@ fn resolve_repo(raw: &str) -> String {
 
 fn repo_and_issue(verb: &str, args: &FbArgs) -> (String, i64) {
     if args.pos.len() != 2 {
-        die(
-            EXIT_USAGE,
-            &format!("usage: repo-queue fallback {verb} <repo> <issue-number> [flags]"),
+        usage_error(
+            verb,
+            &format!("fallback {verb}: expected <repo> <issue-number>, got {} positional argument(s)", args.pos.len()),
         );
     }
     let repo = resolve_repo(&args.pos[0]);
     if !REPOS.contains(&repo.as_str()) && !repo.contains('/') {
-        die(
-            EXIT_USAGE,
+        usage_error(
+            verb,
             &format!(
                 "fallback {verb}: unknown repo {:?} (want owner/repo or one of: code, opencode, openchamber, nix, fleet)",
                 args.pos[0]
@@ -794,8 +840,8 @@ fn repo_and_issue(verb: &str, args: &FbArgs) -> (String, i64) {
     }
     let number: i64 = match args.pos[1].parse() {
         Ok(n) if n >= 1 => n,
-        _ => die(
-            EXIT_USAGE,
+        _ => usage_error(
+            verb,
             &format!("fallback {verb}: invalid issue number {:?}", args.pos[1]),
         ),
     };
@@ -805,10 +851,7 @@ fn repo_and_issue(verb: &str, args: &FbArgs) -> (String, i64) {
 fn lease_seconds(verb: &str, args: &FbArgs) -> i64 {
     if let Some(m) = args.get_i64(verb, "lease-min") {
         if m < 1 {
-            die(
-                EXIT_USAGE,
-                &format!("fallback {verb}: --lease-min must be >= 1"),
-            );
+            usage_error(verb, &format!("fallback {verb}: --lease-min must be >= 1"));
         }
         return m * 60;
     }
@@ -830,14 +873,14 @@ fn worker_id(verb: &str, args: &FbArgs) -> String {
         .filter(|s| !s.is_empty());
     match w {
         Some(w) if valid_worker(&w) => w,
-        Some(w) => die(
-            EXIT_USAGE,
+        Some(w) => usage_error(
+            verb,
             &format!(
                 "fallback {verb}: worker id {w:?} is not a valid marker token (letters, digits, '.', '_', '-', max 64)"
             ),
         ),
-        None => die(
-            EXIT_USAGE,
+        None => usage_error(
+            verb,
             &format!(
                 "fallback {verb}: --worker <id> is required (or set FLEET_FALLBACK_WORKER): the claim marker carries your worker id, and two workers sharing an id would share one lease"
             ),
@@ -856,15 +899,15 @@ fn issue_url(repo: &str, number: i64) -> String {
 fn cmd_scan(rest: &[String]) -> i32 {
     let args = parse_fb_args("scan", rest, &["repo", "limit", "lease-min"]);
     if !args.pos.is_empty() {
-        die(
-            EXIT_USAGE,
-            "usage: repo-queue fallback scan [--repo <repo>]... [--limit <n>] [--lease-min <m>]",
+        usage_error(
+            "scan",
+            "fallback scan: takes no positional arguments (the sweep covers the fallback repos)",
         );
     }
     let lease = lease_seconds("scan", &args);
     let limit = args.get_i64("scan", "limit").unwrap_or(15);
     if !(1..=100).contains(&limit) {
-        die(EXIT_USAGE, "fallback scan: --limit must be 1..=100");
+        usage_error("scan", "fallback scan: --limit must be 1..=100");
     }
     let repos: Vec<String> = match args.get("repo") {
         Some(r) => vec![resolve_repo(&r)],
@@ -1085,11 +1128,11 @@ fn cmd_release(rest: &[String]) -> i32 {
     let worker = worker_id("release", &args);
     let outcome = args.get("outcome").unwrap_or_else(|| "done".to_string());
     if outcome != "done" && outcome != "free" {
-        die(EXIT_USAGE, "fallback release: --outcome must be done|free");
+        usage_error("release", "fallback release: --outcome must be done|free");
     }
     let summary = args.get("summary").unwrap_or_else(|| {
-        die(
-            EXIT_USAGE,
+        usage_error(
+            "release",
             "fallback release: --summary is required (what landed, with PR links for outcome=done)",
         )
     });
@@ -1162,9 +1205,12 @@ pub fn issue_claim_state(repo: &str, number: i64) -> Result<Value, String> {
 
 pub fn run(args: &[String]) -> i32 {
     if args.is_empty() {
-        eprintln!("usage: repo-queue fallback <scan|status|claim|heartbeat|release> ...");
+        println!("{GROUP_USAGE}");
         return EXIT_USAGE;
     }
+    // A known subverb dispatches even when `--help` is present: the
+    // verb's own parser prints the verb's exact-form usage (#10838).
+    // Bare `fallback --help` prints the group usage.
     let sub = args[0].as_str();
     let rest = &args[1..];
     match sub {
@@ -1173,9 +1219,15 @@ pub fn run(args: &[String]) -> i32 {
         "claim" => cmd_claim(rest),
         "heartbeat" => cmd_heartbeat(rest),
         "release" => cmd_release(rest),
+        s if is_help_arg(s) => {
+            println!("{GROUP_USAGE}");
+            0
+        }
         _ => {
-            eprintln!("repo-queue fallback: unknown command {sub:?}");
-            EXIT_USAGE
+            die(
+                EXIT_USAGE,
+                &format!("unknown command {sub:?}\n{GROUP_USAGE}"),
+            );
         }
     }
 }
@@ -1608,5 +1660,30 @@ mod tests {
         fn ts_round_trip_any_epoch(epoch in -31_622_400i64..4_102_444_800) {
             prop_assert_eq!(parse_ts(&format_ts(epoch)), Some(epoch));
         }
+    }
+
+    // ---- #10838: discoverable fallback usage ----
+
+    #[test]
+    fn fallback_usage_covers_every_subverb() {
+        for verb in ["scan", "status", "claim", "heartbeat", "release"] {
+            let u = usage(verb);
+            assert!(
+                u.starts_with("usage: repo-queue fallback"),
+                "{verb} usage header: {u:?}"
+            );
+            assert!(u.contains(verb), "{verb} usage names the verb: {u:?}");
+        }
+        assert!(GROUP_USAGE.contains("scan|status|claim|heartbeat|release"));
+        // Unknown verbs fall back to the group usage, never nothing.
+        assert_eq!(usage("bogus"), GROUP_USAGE);
+    }
+
+    #[test]
+    fn fallback_help_flag_matching() {
+        assert!(is_help_arg("--help"));
+        assert!(is_help_arg("-h"));
+        assert!(is_help_arg("help"));
+        assert!(!is_help_arg("--bogus"));
     }
 }
