@@ -21,6 +21,29 @@
         "type": "github"
       }
     },
+    "antigravity-cli-nix": {
+      "inputs": {
+        "flake-utils": [
+          "flake-utils"
+        ],
+        "nixpkgs": [
+          "nixpkgs-unstable"
+        ]
+      },
+      "locked": {
+        "lastModified": 1794654022,
+        "narHash": "sha256-0w9dkDfIq5VK6RMset1Jw7D2lcnvZWW78c2epNYxbCc=",
+        "owner": "selfhost-it",
+        "repo": "antigravity-cli-nix",
+        "rev": "c081b0688d176cf315418b49afbcc600e2461ade",
+        "type": "github"
+      },
+      "original": {
+        "owner": "selfhost-it",
+        "repo": "antigravity-cli-nix",
+        "type": "github"
+      }
+    },
     "aquamarine": {
       "inputs": {
         "hyprutils": [
@@ -2372,6 +2395,7 @@
     "root": {
       "inputs": {
         "affinity-nix": "affinity-nix",
+        "antigravity-cli-nix": "antigravity-cli-nix",
         "chatgpt-desktop": "chatgpt-desktop",
         "clan-core": "clan-core",
         "claude-desktop": "claude-desktop",
