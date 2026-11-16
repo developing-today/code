@@ -629,13 +629,14 @@ func (p *Pool) subscribeServerEvents(cl *mcpclient.Client) {
 // serves: its root is stored on the instance at creation and read back
 // for every restart, never re-resolved (decision 0004 §2).
 func (p *Pool) startLane(ctx context.Context, legacy bool, rs config.ResolvedScope) (*Instance, error) {
-	return p.startLaneMode(ctx, legacy, rs, false)
+	return p.startLaneMode(ctx, legacy, rs, dialSpawn)
 }
 
-// startLaneMode is startLane with the dial mode threaded through: with
-// attachOnly set, a supervised server is adopted from its running
-// supervisor or not started at all (#9962).
-func (p *Pool) startLaneMode(ctx context.Context, legacy bool, rs config.ResolvedScope, attachOnly bool) (*Instance, error) {
+// startLaneMode is startLane with the dial kind threaded through:
+// dialAttachOnly adopts a supervised server from its running
+// supervisor or does not start it at all (#9962); dialRestart
+// restarts its child through the supervisor (#9963).
+func (p *Pool) startLaneMode(ctx context.Context, legacy bool, rs config.ResolvedScope, kind dialKind) (*Instance, error) {
 	sctx, cancel := context.WithTimeout(ctx, p.cfg.StartTimeout)
 	defer cancel()
 	launched := time.Now()
@@ -657,7 +658,7 @@ func (p *Pool) startLaneMode(ctx context.Context, legacy bool, rs config.Resolve
 	}
 	execStamp, execIdentity, _ := eff.ExecStateAt(spawnCwd)
 
-	tr, err := p.dialMode(sctx, eff, rs.Root, attachOnly)
+	tr, err := p.dialMode(sctx, eff, rs.Root, kind)
 	if err != nil {
 		return nil, fmt.Errorf("server %q: %w", p.cfg.Name, err)
 	}
@@ -701,7 +702,7 @@ func (p *Pool) startLaneMode(ctx context.Context, legacy bool, rs config.Resolve
 		// transport; going straight there saves the two refused POSTs.
 		if cl, tr, err = p.connectSSE(sctx, tr, opts); err == nil {
 			source = mcpclient.SourceCache
-		} else if tr, err = p.dialMode(sctx, eff, rs.Root, attachOnly); err != nil {
+		} else if tr, err = p.dialMode(sctx, eff, rs.Root, kind); err != nil {
 			return nil, fmt.Errorf("server %q: %w", p.cfg.Name, err)
 		}
 	}
@@ -746,7 +747,7 @@ func (p *Pool) startLaneMode(ctx context.Context, legacy bool, rs config.Resolve
 		// that hears initialize first -- and the cache is what keeps this
 		// from happening on every start.
 		_ = tr.Close()
-		if tr, err = p.dialMode(sctx, eff, rs.Root, attachOnly); err != nil {
+		if tr, err = p.dialMode(sctx, eff, rs.Root, kind); err != nil {
 			return nil, fmt.Errorf("server %q: %w", p.cfg.Name, err)
 		}
 		opts.Preference, opts.Cached = mcpclient.ForceLegacy, ""
@@ -1001,6 +1002,21 @@ func SpawnCwd(configCwd, root string) (cwd, source string) {
 	}
 }
 
+// dialKind selects how a supervised server's transport is obtained.
+type dialKind int
+
+const (
+	// dialSpawn attaches to the server's supervisor, spawning it when
+	// it is not live (the ordinary start).
+	dialSpawn dialKind = iota
+	// dialAttachOnly attaches to an already-running supervisor or
+	// fails — it never spawns one (#9962 adoption scan).
+	dialAttachOnly
+	// dialRestart has the supervisor restart its child and attaches
+	// to the new child (#9963 restart-through-supervisor).
+	dialRestart
+)
+
 // dial creates the transport for one instance. ctx is the caller's
 // startup context: it bounds any nix: program-spec resolution at spawn,
 // so a slow build cannot outlive the startup budget that owns it. root
@@ -1010,20 +1026,19 @@ func SpawnCwd(configCwd, root string) (cwd, source string) {
 // callers with no instance being spawned (HTTP session adoption) it is
 // simply the pool's stored config.
 func (p *Pool) dial(ctx context.Context, eff *config.Resolved, root string) (mcpclient.Transport, error) {
-	return p.dialMode(ctx, eff, root, false)
+	return p.dialMode(ctx, eff, root, dialSpawn)
 }
 
-// dialMode is dial with one variation: with attachOnly set, a supervised
-// server attaches to its already-running supervisor or fails — it never
-// spawns a supervisor (#9962 adoption scan). Unsupervised paths ignore
-// the flag.
-func (p *Pool) dialMode(ctx context.Context, eff *config.Resolved, root string, attachOnly bool) (mcpclient.Transport, error) {
+// dialMode is dial with the supervised variation selected by kind:
+// dialAttachOnly never spawns a supervisor, dialRestart restarts the
+// child through its supervisor. Unsupervised paths ignore the kind.
+func (p *Pool) dialMode(ctx context.Context, eff *config.Resolved, root string, kind dialKind) (mcpclient.Transport, error) {
 	spawnCwd, _ := SpawnCwd(eff.Cwd, root)
 	auth, err := p.resolveAuth()
 	if err != nil {
 		return nil, err
 	}
-	if eff.Stdio() && eff.Mcpx != nil && eff.Mcpx.Supervised {
+	if eff.Stdio() && eff.Mcpx.SupervisedEnabled() {
 		opts := mcpclient.SupervisedOptions{
 			Name:       eff.Name,
 			Command:    eff.Command,
@@ -1033,10 +1048,14 @@ func (p *Pool) dialMode(ctx context.Context, eff *config.Resolved, root string, 
 			InheritEnv: true,
 			Context:    ctx,
 		}
-		if attachOnly {
+		switch kind {
+		case dialAttachOnly:
 			return mcpclient.AttachSupervised(opts)
+		case dialRestart:
+			return mcpclient.RestartSupervised(opts)
+		default:
+			return mcpclient.NewSupervised(opts)
 		}
-		return mcpclient.NewSupervised(opts)
 	}
 	if eff.Stdio() {
 		return mcpclient.NewStdio(mcpclient.StdioOptions{
@@ -1894,6 +1913,51 @@ func (p *Pool) Restart(ctx context.Context, lazy bool) RestartResult {
 			return res
 		}
 		keys = []string{"global"}
+	}
+	// Supervised servers restart THROUGH their supervisor (#9963):
+	// the instances above were retired (a supervised close is a
+	// detach), and each lane now restarts with a restart dial, so
+	// the supervisor kills and respawns the child instead of the
+	// pool reattaching to the very child it was asked to restart.
+	// Busy instances keep the generic path below: their calls drain
+	// on the old child first, as for any restart.
+	if p.cfg.Stdio() && p.cfg.Mcpx.SupervisedEnabled() && busy == 0 {
+		for _, key := range keys {
+			switch {
+			case strings.HasPrefix(key, "call:"):
+				res.Skipped = append(res.Skipped, RestartFailure{Key: key, Error: "per-call instance; its call is over"})
+				continue
+			case p.cfg.Scope.WatchesPID() && !keyPIDAlive(key):
+				res.Skipped = append(res.Skipped, RestartFailure{Key: key, Error: "owning process has exited"})
+				continue
+			}
+			rs := config.ResolvedScope{Key: key, Root: roots[key], Cwd: cwds[key]}
+			p.mu.Lock()
+			p.starting++
+			p.mu.Unlock()
+			in, err := p.startLaneMode(ctx, false, rs, dialRestart)
+			p.mu.Lock()
+			p.starting--
+			if err != nil {
+				p.cond.Broadcast()
+				p.mu.Unlock()
+				res.Failed = append(res.Failed, RestartFailure{Key: key, Error: err.Error()})
+				continue
+			}
+			if p.closed || p.findLaneLocked(key, false) != nil {
+				p.cond.Broadcast()
+				p.mu.Unlock()
+				go func() { _ = in.Client.Close() }()
+				continue
+			}
+			in.key = key
+			in.lastUsed = time.Now()
+			p.instances = append(p.instances, in)
+			p.cond.Broadcast()
+			p.mu.Unlock()
+			res.Started = append(res.Started, in.ID)
+		}
+		return res
 	}
 	for _, key := range keys {
 		switch {

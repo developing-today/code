@@ -397,6 +397,9 @@ func (s *Server) Listen(tcpPort int) error {
 	// Adopt supervised instances a previous daemon left running
 	// (#9962): their supervisors outlive the daemon by design.
 	s.reg.AdoptSupervised(context.Background())
+	// Reap the supervisors no configured server claims anymore
+	// (#9963, the other half of the adopt-or-reap scan).
+	s.reg.ReapOrphanedSupervisors()
 	return s.publish()
 }
 

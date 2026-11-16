@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/developing-today/code/pkgs/mcpx/internal/defaults"
+	"github.com/developing-today/code/pkgs/mcpx/internal/mcpclient"
 	"github.com/developing-today/code/pkgs/mcpx/internal/pool"
 )
 
@@ -212,4 +213,22 @@ func (r *Registry) AdoptSupervised(ctx context.Context) {
 	for _, p := range pools {
 		p.AdoptRunningSupervised(ctx)
 	}
+}
+
+// ReapOrphanedSupervisors runs the reap half of the #9963
+// adopt-or-reap scan at daemon startup: a supervisor socket no
+// configured supervised server maps to belongs to a server that
+// left the config (or opted out), so its supervisor and child are
+// terminated and the reap logged; a socket whose supervisor refuses
+// (a daemon attached, a protocol-version mismatch) and stale socket
+// files are logged and left or removed accordingly. See
+// mcpclient.ScanSupervisorSockets.
+func (r *Registry) ReapOrphanedSupervisors() {
+	var configured []string
+	for _, name := range r.Names() {
+		if v, ok := r.View(name); ok && v.Stdio() && v.Mcpx.SupervisedEnabled() {
+			configured = append(configured, name)
+		}
+	}
+	mcpclient.ScanSupervisorSockets(mcpclient.StateDir(), configured, r.logf)
 }

@@ -117,6 +117,12 @@ func (w *connWriter) closeAfterFlush() {
 
 type supervisorHandshake struct {
 	Version int `json:"version"`
+	// Action is "" or "attach" for the ordinary attach handshake.
+	// "restart" asks the supervisor to restart its child first and
+	// then attach the requester to the new child; "terminate" asks
+	// it to kill the child and exit (the reap half of the #9963
+	// adopt-or-reap scan) and is answered without attaching.
+	Action string `json:"action,omitempty"`
 }
 
 type supervisorReply struct {
@@ -230,6 +236,12 @@ type supervisor struct {
 	attached     *connWriter
 	attachedEver bool
 	reported     bool
+	// generation increments on every supervisor-side child restart
+	// (#9963): the per-child watcher goroutines capture their
+	// generation and a stale generation's finishWhenDone returns
+	// without closing the listener, because the supervisor lives on
+	// with the new child.
+	generation   int
 	buf          *tailBuffer
 	exited       bool
 	exitErr      error
@@ -284,17 +296,7 @@ func RunSupervisor(opts SupervisorOptions) error {
 		return err
 	}
 	s.ln = ln
-	go s.pumpStdout()
-	go func() {
-		err := s.child.Wait()
-		s.mu.Lock()
-		s.exitErr = err
-		s.exited = true
-		s.mu.Unlock()
-		s.signal()
-		close(s.waitDone)
-	}()
-	go s.finishWhenDone()
+	s.launchWatchers(0, s.pumpDone, s.waitDone)
 
 	for {
 		conn, err := ln.Accept()
@@ -306,6 +308,29 @@ func RunSupervisor(opts SupervisorOptions) error {
 		}
 		s.handleAttach(conn)
 	}
+}
+
+// launchWatchers starts the per-child goroutines for one child
+// generation: the stdout pump, the wait reporter, and the finisher.
+// They take their channels and generation as parameters so a
+// supervisor-side restart (#9963) can launch a fresh set for the new
+// child while the old set is still draining.
+func (s *supervisor) launchWatchers(gen int, pumpDone, waitDone chan struct{}) {
+	child := s.child
+	outR := s.stdoutR
+	go s.pumpStdout(outR, pumpDone)
+	go func() {
+		err := child.Wait()
+		s.mu.Lock()
+		if gen == s.generation {
+			s.exitErr = err
+			s.exited = true
+		}
+		s.mu.Unlock()
+		s.signal()
+		close(waitDone)
+	}()
+	go s.finishWhenDone(gen, pumpDone, waitDone)
 }
 
 // spawnChild mirrors NewStdio's process semantics: own process group,
@@ -383,11 +408,11 @@ func (s *supervisor) spawnChild() error {
 // deadline, so a stalled daemon can block this pump for at most
 // AttachedWriteTimeout — never the supervisor's state, and never
 // forever.
-func (s *supervisor) pumpStdout() {
-	defer close(s.pumpDone)
+func (s *supervisor) pumpStdout(outR *os.File, pumpDone chan struct{}) {
+	defer close(pumpDone)
 	chunk := make([]byte, 32<<10)
 	for {
-		n, err := s.stdoutR.Read(chunk)
+		n, err := outR.Read(chunk)
 		if n > 0 {
 			data := chunk[:n]
 			// The unattached decision and the tail-buffer append
@@ -488,6 +513,24 @@ func (s *supervisor) handleAttach(conn net.Conn) {
 		_ = conn.Close()
 		return
 	}
+	switch hs.Action {
+	case "", "attach":
+		// The ordinary path, below.
+	case "terminate":
+		s.handleTerminate(conn)
+		return
+	case "restart":
+		if err := s.restartChild(); err != nil {
+			_ = writeReply(conn, supervisorReply{Error: "restart: " + err.Error()})
+			_ = conn.Close()
+			return
+		}
+		// Fall through: the requester attaches to the new child.
+	default:
+		_ = writeReply(conn, supervisorReply{Error: "unknown supervisor action " + hs.Action})
+		_ = conn.Close()
+		return
+	}
 
 	s.mu.Lock()
 	if s.attached != nil {
@@ -551,6 +594,104 @@ func (s *supervisor) handleAttach(conn net.Conn) {
 	}()
 }
 
+// handleTerminate answers a terminate handshake (#9963): it refuses
+// while a daemon is attached (that supervisor is in use, not an
+// orphan), otherwise it replies, then kills the child and closes the
+// listener so RunSupervisor returns and removes the socket. It is
+// the reap mechanism of the adopt-or-reap scan: the scan only sends
+// it to supervisors no configured server maps to.
+func (s *supervisor) handleTerminate(conn net.Conn) {
+	s.mu.Lock()
+	attached := s.attached != nil
+	pid := 0
+	if s.child != nil && s.child.Process != nil {
+		pid = s.child.Process.Pid
+	}
+	s.mu.Unlock()
+	if attached {
+		_ = writeReply(conn, supervisorReply{Error: "supervisor in use: a daemon is attached"})
+		_ = conn.Close()
+		return
+	}
+	_ = writeReply(conn, supervisorReply{Version: SupervisorProtocolVersion, PID: pid})
+	_ = conn.Close()
+	go func() {
+		s.mu.Lock()
+		waitDone := s.waitDone
+		s.mu.Unlock()
+		s.killChild(syscall.SIGTERM, 2*time.Second, waitDone)
+		if s.ln != nil {
+			_ = s.ln.Close()
+		}
+	}()
+}
+
+// killChild signals the current child's process group and escalates
+// to SIGKILL if the child has not exited within grace. waitDone is
+// the channel the child's wait goroutine closes — passed explicitly
+// because a restart replaces the struct's channels before it kills
+// the old child.
+func (s *supervisor) killChild(sig syscall.Signal, grace time.Duration, waitDone chan struct{}) {
+	s.mu.Lock()
+	child := s.child
+	exited := s.exited
+	s.mu.Unlock()
+	if child == nil || child.Process == nil || exited {
+		return
+	}
+	_ = syscall.Kill(-child.Process.Pid, sig)
+	select {
+	case <-waitDone:
+	case <-time.After(grace):
+		_ = syscall.Kill(-child.Process.Pid, syscall.SIGKILL)
+		<-waitDone
+	}
+}
+
+// restartChild replaces the supervisor's child with a fresh spawn of
+// the same command (#9963): `mcpx restart` operates through the
+// supervisor, so the supervisor — not the daemon — owns the restart,
+// and the socket, the state directory entry, and the supervisor
+// process itself all survive it. It refuses while a daemon is
+// attached (the pool detaches first, as it does for any restart).
+// A child that already exited is simply revived.
+func (s *supervisor) restartChild() error {
+	s.mu.Lock()
+	if s.attached != nil {
+		s.mu.Unlock()
+		return errors.New("already attached")
+	}
+	oldStdin := s.stdin
+	oldPumpDone := s.pumpDone
+	oldWaitDone := s.waitDone
+	s.generation++
+	gen := s.generation
+	s.exited = false
+	s.exitErr = nil
+	s.reported = false
+	s.pumpDone = make(chan struct{})
+	s.waitDone = make(chan struct{})
+	pumpDone, waitDone := s.pumpDone, s.waitDone
+	s.mu.Unlock()
+
+	s.killChild(syscall.SIGTERM, 2*time.Second, oldWaitDone)
+	// The old pump exits once the dead child's stdout closes; bound
+	// the wait so a wedged pump cannot wedge the restart.
+	select {
+	case <-oldPumpDone:
+	case <-time.After(2 * time.Second):
+	}
+	if oldStdin != nil {
+		_ = oldStdin.Close()
+	}
+	s.buf.Drain()
+	if err := s.spawnChild(); err != nil {
+		return err
+	}
+	s.launchWatchers(gen, pumpDone, waitDone)
+	return nil
+}
+
 func (s *supervisor) detach(w *connWriter) {
 	s.mu.Lock()
 	if s.attached == w {
@@ -585,9 +726,18 @@ func writeReply(conn net.Conn, reply supervisorReply) error {
 // the supervisor waits a bounded grace for that first, reporting
 // attach; with nobody attached after that there is nobody to report
 // to, so it exits (no lingering supervisors for dead children).
-func (s *supervisor) finishWhenDone() {
-	<-s.waitDone
-	<-s.pumpDone
+func (s *supervisor) finishWhenDone(gen int, pumpDone, waitDone chan struct{}) {
+	<-waitDone
+	<-pumpDone
+	s.mu.Lock()
+	if gen != s.generation {
+		// A supervisor-side restart replaced this child (#9963):
+		// the supervisor lives on with the new generation, so this
+		// finisher must not close the listener or the socket.
+		s.mu.Unlock()
+		return
+	}
+	s.mu.Unlock()
 	grace := time.NewTimer(10 * time.Second)
 	defer grace.Stop()
 	for {
@@ -707,7 +857,36 @@ func AttachSupervised(opts SupervisedOptions) (*SupervisedTransport, error) {
 	if opts.StateDir == "" {
 		opts.StateDir = StateDir()
 	}
-	return attachSupervisor(SupervisorSocketPath(opts.StateDir, opts.Name), opts)
+	return attachSupervisor(SupervisorSocketPath(opts.StateDir, opts.Name), opts, "")
+}
+
+// RestartSupervised attaches to the server's supervisor and has it
+// restart its child first (#9963): the returned transport speaks to
+// the NEW child, whose PID differs from the previous one. It never
+// spawns a supervisor — no live supervisor is an error, exactly as
+// for AttachSupervised — and a supervisor with a daemon attached
+// refuses, so callers detach before restarting.
+func RestartSupervised(opts SupervisedOptions) (*SupervisedTransport, error) {
+	if opts.StateDir == "" {
+		opts.StateDir = StateDir()
+	}
+	return attachSupervisor(SupervisorSocketPath(opts.StateDir, opts.Name), opts, "restart")
+}
+
+// IsSupervisorRefusal reports whether err is a live supervisor's
+// explicit refusal (already attached, version mismatch, in use):
+// the socket is alive, so spawning a replacement would be wrong.
+func IsSupervisorRefusal(err error) bool {
+	var refusal *supervisorRefusal
+	return errors.As(err, &refusal)
+}
+
+// IsProtocolRefusal reports whether err is a supervisor's
+// protocol-version refusal — the failure #9963 requires status to
+// name rather than silently work around.
+func IsProtocolRefusal(err error) bool {
+	return IsSupervisorRefusal(err) &&
+		strings.Contains(err.Error(), "protocol version mismatch")
 }
 
 // spawnFunc starts a supervisor for the socket; nil means re-exec.
@@ -725,7 +904,7 @@ func newSupervised(opts SupervisedOptions, spawn spawnFunc) (*SupervisedTranspor
 	}
 	sock := SupervisorSocketPath(opts.StateDir, opts.Name)
 
-	tr, err := attachSupervisor(sock, opts)
+	tr, err := attachSupervisor(sock, opts, "")
 	if err == nil {
 		return tr, nil
 	}
@@ -775,7 +954,7 @@ func newSupervised(opts SupervisedOptions, spawn spawnFunc) (*SupervisedTranspor
 	deadline := time.Now().Add(opts.SpawnTimeout)
 	var lastErr error
 	for time.Now().Before(deadline) {
-		tr, err := attachSupervisor(sock, opts)
+		tr, err := attachSupervisor(sock, opts, "")
 		if err == nil {
 			return tr, nil
 		}
@@ -785,13 +964,13 @@ func newSupervised(opts SupervisedOptions, spawn spawnFunc) (*SupervisedTranspor
 	return nil, fmt.Errorf("supervised transport for %s: supervisor did not attach within %s: %v", opts.Name, opts.SpawnTimeout, lastErr)
 }
 
-func attachSupervisor(sock string, opts SupervisedOptions) (*SupervisedTransport, error) {
+func attachSupervisor(sock string, opts SupervisedOptions, action string) (*SupervisedTransport, error) {
 	conn, err := net.DialTimeout("unix", sock, 2*time.Second)
 	if err != nil {
 		return nil, err
 	}
 	r := bufio.NewReaderSize(conn, 1<<20)
-	hs, _ := json.Marshal(supervisorHandshake{Version: SupervisorProtocolVersion})
+	hs, _ := json.Marshal(supervisorHandshake{Version: SupervisorProtocolVersion, Action: action})
 	if _, err := conn.Write(append(hs, '\n')); err != nil {
 		_ = conn.Close()
 		return nil, err
@@ -814,8 +993,9 @@ func attachSupervisor(sock string, opts SupervisedOptions) (*SupervisedTransport
 	}
 	if reply.Version != SupervisorProtocolVersion {
 		_ = conn.Close()
-		return nil, fmt.Errorf("supervisor protocol version mismatch: supervisor sent %d, daemon speaks %d",
-			reply.Version, SupervisorProtocolVersion)
+		return nil, &supervisorRefusal{msg: fmt.Sprintf(
+			"supervisor protocol version mismatch: supervisor sent %d, daemon speaks %d",
+			reply.Version, SupervisorProtocolVersion)}
 	}
 	tr := &SupervisedTransport{
 		conn:       conn,
