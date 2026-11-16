@@ -96,6 +96,31 @@ export interface SwProbeSummary {
 
 const probe: SwProbeSummary = { reports: 0, lastReportAt: null, foreignSeen: {}, evictedSeen: {} };
 
+/** #10539: bound the observational probe maps. POST /api/sw-probe accepts
+ * arbitrary client-supplied strings and the old code stored every distinct
+ * one forever, so repeated requests grew process memory and the GET
+ * summary payload without limit (request bodies are capped at 100KB, but
+ * distinct keys accumulate across requests). Each map keeps at most
+ * MAX_SW_PROBE_KEYS distinct keys; keys past the cap (or longer than
+ * MAX_SW_PROBE_KEY_LENGTH) are dropped, not stored — same shape as the
+ * #4981 class-key cap in alerts.ts. Counts for already-tracked keys still
+ * increment, so the probe keeps its "what did we see" signal at a fixed
+ * memory ceiling (~2 * 64 * ~512B worst case). */
+export const MAX_SW_PROBE_KEYS = 64;
+/** #10539: longest accepted probe key. Real script URLs/paths are short;
+ * anything longer is not a plausible service-worker script reference. */
+export const MAX_SW_PROBE_KEY_LENGTH = 512;
+
+/** #10539: record one probe key, enforcing the length + count caps. */
+function noteSwProbeKey(map: Record<string, number>, key: string): void {
+  if (key.length === 0 || key.length > MAX_SW_PROBE_KEY_LENGTH) return;
+  // "__proto__" assignment on a plain object hits the prototype setter
+  // instead of creating an own key, so it can never be counted — skip it.
+  if (key === "__proto__") return;
+  if (!Object.hasOwn(map, key) && Object.keys(map).length >= MAX_SW_PROBE_KEYS) return;
+  map[key] = (map[key] ?? 0) + 1;
+}
+
 /** Our own worker's script path — any other registration is foreign. */
 export const SW_SCRIPT_PATH = "/sw.js";
 
@@ -113,12 +138,12 @@ export function recordSwProbe(report: { registrations?: unknown; evicted?: unkno
   const regs = Array.isArray(report.registrations) ? report.registrations : [];
   for (const r of regs) {
     if (typeof r === "string" && isForeignSwScript(r)) {
-      probe.foreignSeen[r] = (probe.foreignSeen[r] ?? 0) + 1;
+      noteSwProbeKey(probe.foreignSeen, r);
     }
   }
   const evicted = Array.isArray(report.evicted) ? report.evicted : [];
   for (const r of evicted) {
-    if (typeof r === "string") probe.evictedSeen[r] = (probe.evictedSeen[r] ?? 0) + 1;
+    if (typeof r === "string") noteSwProbeKey(probe.evictedSeen, r);
   }
   return swProbeSummary();
 }

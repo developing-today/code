@@ -31,7 +31,15 @@ import {
   type Incident,
   type PushSubscriptionRow,
 } from "../src/alerts.ts";
-import { isForeignSwScript, type PushOutcome, type PushTarget } from "../src/push.ts";
+import {
+  isForeignSwScript,
+  MAX_SW_PROBE_KEY_LENGTH,
+  MAX_SW_PROBE_KEYS,
+  type PushOutcome,
+  type PushTarget,
+  recordSwProbe,
+  swProbeSummary,
+} from "../src/push.ts";
 import { renderAlerts } from "../src/render.ts";
 import type { Provenance } from "../src/model.ts";
 import { sqlInt, sqlJson, sqlStr, type SupabaseClient } from "../src/supabase.ts";
@@ -363,6 +371,49 @@ describe("sw-probe foreign test (design §6)", () => {
     expect(isForeignSwScript("https://amd-6.example.ts.net/sw.js")).toBe(false);
     expect(isForeignSwScript("https://amd-6.example.ts.net/service-worker.js")).toBe(true);
     expect(isForeignSwScript("not a url")).toBe(true);
+  });
+
+  // #10539: the probe maps are observational only, so distinct-key growth
+  // is capped and over-long keys are dropped — memory and the GET summary
+  // payload stay bounded no matter how many distinct strings clients send.
+  test("probe maps are bounded in count and key length", () => {
+    const tooLong = "k".repeat(MAX_SW_PROBE_KEY_LENGTH + 1);
+    recordSwProbe({ registrations: [tooLong], evicted: [tooLong] });
+    let s = swProbeSummary();
+    expect(s.foreignSeen[tooLong]).toBeUndefined();
+    expect(s.evictedSeen[tooLong]).toBeUndefined();
+
+    // Exactly-at-limit keys are still accepted (non-URLs count as foreign).
+    const edge = "e".repeat(MAX_SW_PROBE_KEY_LENGTH);
+    recordSwProbe({ registrations: [edge], evicted: [edge] });
+    s = swProbeSummary();
+    expect(s.foreignSeen[edge]).toBe(1);
+    expect(s.evictedSeen[edge]).toBe(1);
+
+    // Flood past the cap with unique keys; both maps stop at the cap.
+    const flood = Array.from(
+      { length: MAX_SW_PROBE_KEYS + 10 },
+      (_, i) => `https://probe-cap-10539.example/sw-${i}.js`,
+    );
+    recordSwProbe({ registrations: flood, evicted: flood });
+    s = swProbeSummary();
+    expect(Object.keys(s.foreignSeen).length).toBeLessThanOrEqual(MAX_SW_PROBE_KEYS);
+    expect(Object.keys(s.evictedSeen).length).toBeLessThanOrEqual(MAX_SW_PROBE_KEYS);
+    // The summary a GET returns stays a small bounded payload.
+    expect(JSON.stringify(s).length).toBeLessThan(100_000);
+
+    // Already-tracked keys still increment once the cap is reached.
+    const tracked = Object.keys(s.foreignSeen)[0];
+    const n = s.foreignSeen[tracked];
+    recordSwProbe({ registrations: [tracked] });
+    expect(swProbeSummary().foreignSeen[tracked]).toBe(n + 1);
+  });
+
+  test("probe keys cannot pollute the object prototype", () => {
+    recordSwProbe({ registrations: ["__proto__"], evicted: ["__proto__"] });
+    const s = swProbeSummary();
+    expect(Object.hasOwn(s.foreignSeen, "__proto__")).toBe(false);
+    expect(Object.hasOwn(s.evictedSeen, "__proto__")).toBe(false);
   });
 });
 
