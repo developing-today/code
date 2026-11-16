@@ -5978,7 +5978,11 @@ fn quarantine_recheck_one(t: &TursoBackend, row: &Value) -> Result<&'static str,
                 t.exec(
                     "UPDATE tasks SET last_error = ?, updated_at = ? \
                      WHERE id = ? AND status = 'blocked'",
-                    &[Arg::Text(reason.clone()), Arg::Text(now_iso()), Arg::Int(id)],
+                    &[
+                        Arg::Text(reason.clone()),
+                        Arg::Text(now_iso()),
+                        Arg::Int(id),
+                    ],
                 )?;
                 event(
                     t,
@@ -9452,7 +9456,8 @@ mod tests {
         // rechecker owns it, even under a stale quarantine error),
         // a classically blocked row, and a non-blocked row.
         let mut dep_row = fossil.clone();
-        dep_row["blocked_deps"] = json!([{"kind": "issue", "repo": "developing-today/code", "number": 5444}]);
+        dep_row["blocked_deps"] =
+            json!([{"kind": "issue", "repo": "developing-today/code", "number": 5444}]);
         assert_eq!(
             quarantine_recheck_verdict(&dep_row),
             QuarantineRecheck::NotApplicable
