@@ -333,7 +333,7 @@ export function parseTaskRequest(body: unknown): TaskRequest {
     model: parseModel(b.model),
     issue: optBool(b, "issue", false),
     issueNumber: parseIssueNumber(b.issue_number),
-    dedupeKey: optString(b, "dedupe_key"),
+    dedupeKey: optNonBlankString(b, "dedupe_key"),
   };
 }
 
