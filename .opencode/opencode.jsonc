@@ -4301,7 +4301,15 @@
           // 2026-11-15 (Drew, direct order): Spark #high -> #medium (all Spark seats).
           "_muse/muse-spark-1.3-contributor#medium",
           "_antigravity/gemini-4-hydrogen#low",
-          "_antigravity/claude-sonnet-5-5#medium"
+          // 2026-11-16 (Drew, direct order): Antigravity Sonnet
+          // effort lowered one rung, #medium -> #low; the seat
+          // and its weight 10 are otherwise unchanged. PR #10711
+          // replaced this seat the same minute the correction
+          // arrived (only lower antigrav effort, otherwise leave
+          // as is); that replacement is reverted by the
+          // reconciliation PR, so the net change from pre-#10711
+          // main is this effort drop alone.
+          "_antigravity/claude-sonnet-5-5#low"
         ],
         "selection": "weighted",
         "weights": {
