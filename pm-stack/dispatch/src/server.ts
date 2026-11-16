@@ -825,7 +825,7 @@ export async function handler(req: Request): Promise<Response> {
     }
     return json(404, { error: "not found" });
   } catch (e) {
-    if (e instanceof AuthError) return json(401, { error: e.message });
+    if (e instanceof AuthError) return json(e.status, { error: e.message });
     if (e instanceof ValidationError) return json(400, { error: e.message });
     if (e instanceof QueueError) return json(502, { error: e.message });
     return json(500, { error: e instanceof Error ? e.message : String(e) });
