@@ -23,6 +23,13 @@
 #   (~/repo-archive -> local + R2 + Drive). The unit + timer are declared
 #   here so the schedule lives in the flake; the script itself stays at
 #   ~/tools/repo-archive-backup.sh, the path its author maintains.
+# - laptop-state-backup (daily ~05:40): the small irreplaceable laptop
+#   state no other routine covers (code#1849) — ~/.local/state/opencode,
+#   ~/secrets/*.sops.yaml, ~/.ssh — as restic snapshots to a dedicated
+#   restic-laptop-state repository on each backend (local + R2 +
+#   Drive), same password key as repo-archive, independent
+#   retention/listing. Script: ./laptop-state-backup.sh (vendored here;
+#   same Bitwarden-at-runtime credential pattern).
 # - openclaw-backup (daily ~04:05): the OpenClaw state dir (~/.openclaw,
 #   minus the tmp/ and cache/ scratch trees) as a dated tar.zst with a
 #   sha256 manifest to the local backup dir, R2 (supabase-backups,
@@ -86,6 +93,9 @@ let
   );
   openclawPkg = pkgs.writeShellScriptBin "openclaw-backup" (builtins.readFile ./openclaw-backup.sh);
   atlasPkg = pkgs.writeShellScriptBin "atlas-backup" (builtins.readFile ./atlas-backup.sh);
+  statePkg = pkgs.writeShellScriptBin "laptop-state-backup" (
+    builtins.readFile ./laptop-state-backup.sh
+  );
   watchdogPkg = pkgs.writeShellScriptBin "laptop-backups-watchdog" (
     builtins.readFile ./laptop-backups-watchdog.sh
   );
@@ -188,6 +198,19 @@ in
         type = lib.types.str;
         default = "04:47";
         description = "Daily run time (local) for the atlas backup.";
+      };
+    };
+
+    state = {
+      enable = lib.mkOption {
+        type = lib.types.bool;
+        default = true;
+        description = "Daily restic backup of the small irreplaceable laptop state (opencode state, secrets, ssh) to local + R2 + Drive (code#1849).";
+      };
+      onCalendar = lib.mkOption {
+        type = lib.types.str;
+        default = "05:40";
+        description = "Daily run time (local) for the laptop-state backup.";
       };
     };
 
@@ -298,13 +321,28 @@ in
           };
         };
       })
+      (lib.mkIf cfg.state.enable {
+        laptop-state-backup = {
+          Unit.Description = "Daily small-state restic backup - local + R2 + Drive (code#1849)";
+          Service = {
+            Type = "oneshot";
+            ExecStart = "${statePkg}/bin/laptop-state-backup";
+            Environment = "PATH=${servicePath}:${home}/tools/bin:/run/current-system/sw/bin";
+            TimeoutStartSec = "90m";
+          };
+        };
+      })
       (lib.mkIf cfg.coldStoreNightly.enable {
         cold-store-nightly = {
           Unit.Description = "Cold-store nightly backup set (D1 + Supabase + Turso exports to Drive) (code#1723)";
           Service = {
             Type = "oneshot";
             ExecStart = cfg.coldStoreNightly.script;
-            TimeoutStartSec = "30m";
+            # 120m, not 30m: the Turso export leg alone ran past
+            # 30m on 2026-11-08/09/10, and systemd's timeout kill
+            # leaked its scratch directory each night
+            # (darwin-nix#373).
+            TimeoutStartSec = "120m";
           };
         };
       })
@@ -386,6 +424,17 @@ in
           Unit.Description = "Run the atlas backup daily (code#1515)";
           Timer = {
             OnCalendar = cfg.atlas.onCalendar;
+            Persistent = true;
+            RandomizedDelaySec = "15m";
+          };
+          Install.WantedBy = [ "timers.target" ];
+        };
+      })
+      (lib.mkIf cfg.state.enable {
+        laptop-state-backup = {
+          Unit.Description = "Run the laptop-state backup daily (code#1849)";
+          Timer = {
+            OnCalendar = cfg.state.onCalendar;
             Persistent = true;
             RandomizedDelaySec = "15m";
           };

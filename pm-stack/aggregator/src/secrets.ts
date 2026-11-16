@@ -20,7 +20,9 @@ import { join } from "node:path";
 
 const HOME = homedir();
 const CACHE_TTL_MS = 5 * 60_000;
-const cache = new Map<string, { value: string | null; at: number }>();
+export type BwsSecretLookup = { status: "found"; value: string } | { status: "missing" } | { status: "unavailable" };
+
+const cache = new Map<string, { result: BwsSecretLookup; at: number }>();
 
 async function firstReadable(paths: string[]): Promise<string | null> {
   for (const p of paths) {
@@ -34,16 +36,16 @@ async function firstReadable(paths: string[]): Promise<string | null> {
   return null;
 }
 
-async function resolveBwsSecretUncached(key: string): Promise<string | null> {
+async function resolveBwsSecretUncached(key: string): Promise<BwsSecretLookup> {
   const bwsBin =
     process.env.BWS_BIN ?? (await firstReadable([join("/run/current-system/sw/bin/bws"), join(HOME, "tools/bin/bws")]));
   const accessTokenFile =
     process.env.BWS_ACCESS_TOKEN_FILE ??
     (await firstReadable([join(HOME, ".config/bws/access-token"), join(HOME, ".config/bitwarden/access-token")]));
-  if (!bwsBin || !accessTokenFile) return null;
+  if (!bwsBin || !accessTokenFile) return { status: "unavailable" };
   try {
     const accessToken = (await readFile(accessTokenFile, "utf8")).trim();
-    if (!accessToken) return null;
+    if (!accessToken) return { status: "unavailable" };
     const run = (args: string[]): Promise<string> =>
       new Promise((resolve, reject) => {
         execFile(
@@ -55,21 +57,27 @@ async function resolveBwsSecretUncached(key: string): Promise<string | null> {
       });
     const list = JSON.parse(await run(["secret", "list"])) as { id?: string; key?: string }[];
     const entry = list.find((s) => s.key === key);
-    if (!entry?.id) return null;
+    if (!entry?.id) return { status: "missing" };
     const got = JSON.parse(await run(["secret", "get", entry.id])) as { value?: string };
-    return got.value && got.value.trim() ? got.value.trim() : null;
+    return got.value && got.value.trim() ? { status: "found", value: got.value.trim() } : { status: "missing" };
   } catch {
-    return null; // bws unreachable/unreadable — fail soft, no details logged
+    return { status: "unavailable" }; // bws unreachable/unreadable — no details logged
   }
+}
+
+/** Resolve one Bitwarden secret while preserving missing vs. unavailable (cached ~5 min). */
+export async function resolveBwsSecretLookup(key: string): Promise<BwsSecretLookup> {
+  const hit = cache.get(key);
+  if (hit && Date.now() - hit.at < CACHE_TTL_MS) return hit.result;
+  const result = await resolveBwsSecretUncached(key);
+  cache.set(key, { result, at: Date.now() });
+  return result;
 }
 
 /** Resolve one Bitwarden Secrets Manager secret by key (cached ~5 min). */
 export async function resolveBwsSecret(key: string): Promise<string | null> {
-  const hit = cache.get(key);
-  if (hit && Date.now() - hit.at < CACHE_TTL_MS) return hit.value;
-  const value = await resolveBwsSecretUncached(key);
-  cache.set(key, { value, at: Date.now() });
-  return value;
+  const result = await resolveBwsSecretLookup(key);
+  return result.status === "found" ? result.value : null;
 }
 
 /** Drop a cached secret (e.g. after an auth failure suggests rotation). */

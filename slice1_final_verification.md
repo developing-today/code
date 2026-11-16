@@ -9,10 +9,11 @@ The **slice-1 implementation for #3026 is COMPLETE and WORKING**. All required c
 ### Core Components Implemented
 
 #### 1. **Supervision Step (Step 1)** ✅
+
 - **Function**: `supervision_step()` in claimant.py
 - **Recovery Rules (#4758)**: Fully implemented
   - Zero-message session recovery
-  - Gone-session recovery  
+  - Gone-session recovery
   - Attempts counting and exhaustion handling
   - Atomic recovery operations via `bind` CLI with special `launched_by` values
 - **Verification**:
@@ -23,6 +24,7 @@ The **slice-1 implementation for #3026 is COMPLETE and WORKING**. All required c
   - Atomic recovery operations (`_queue_recovery`)
 
 #### 2. **Gate Step (Step 2)** ✅
+
 - **Function**: `run_health_gate()` in claimant.py
 - **Candidate Discovery**: `poll.py` provides complete discovery
   - `is_candidate()` - filters for opencode-lane unbound tasks
@@ -33,6 +35,7 @@ The **slice-1 implementation for #3026 is COMPLETE and WORKING**. All required c
   - Health gate runs before any launch
 
 #### 3. **Cap Step (Step 3)** ✅
+
 - **Concurrency Limit**: 36 active root sessions
 - **Implementation**:
   - `CONCURRENCY_CAP = 36` in claimant.py
@@ -45,6 +48,7 @@ The **slice-1 implementation for #3026 is COMPLETE and WORKING**. All required c
   - Cap room = 36 - active_count
 
 #### 4. **Launch Step (Step 4)** ✅
+
 - **Session Creation**: `_create_session()` and `_create_session_if_cap_room()`
 - **Atomic Binding**:
   - `repo-queue bind` with `--launched-by opencode-claimant`
@@ -61,6 +65,7 @@ The **slice-1 implementation for #3026 is COMPLETE and WORKING**. All required c
   - GitHub launch note posting
 
 #### 5. **Terminal States (Step 5)** ✅
+
 - **Handled by**: Worker sessions themselves
 - **Verification**:
   - Workers use `repo-queue` terminal verbs
@@ -68,6 +73,7 @@ The **slice-1 implementation for #3026 is COMPLETE and WORKING**. All required c
   - Terminal states recorded automatically
 
 #### 6. **Logging (Step 6)** ✅
+
 - **Function**: `log_fire()` in claimant.py
 - **Output**: `~/.local/state/opencode-claimant/fires.jsonl`
 - **Format**: Complete fire execution record with:
@@ -83,22 +89,26 @@ The **slice-1 implementation for #3026 is COMPLETE and WORKING**. All required c
 ### Key Features Implemented
 
 #### Recovery Rules (#4758) ✅
+
 - **Zero-message recovery**: Verify zero messages → delete session → reclaim task
 - **Gone-session recovery**: Verify absence → reclaim task
 - **Attempts counting**: Track attempts and max_attempts
 - **Exhausted attempts**: Terminal failure with execution record
 
 #### Atomic Operations ✅
+
 - **Bind operation**: Atomic session binding with `launched_by` guard
 - **Recovery operations**: Atomic task reclamation with special `launched_by` values
 - **Compare-and-clear**: Prevents race conditions and double-binding
 
 #### Session Management ✅
+
 - **Location verification**: Verify `location.directory` before binding
 - **Cap room checking**: Serialized session creation with lock
 - **Prompt delivery**: With retry logic for delivery failures
 
 #### Hard Rules Enforcement ✅
+
 - **No direct task work**: Only claim/bind/launch/record
 - **No credentials in prompts/logs**: Uses broker client tokens
 - **No cap violations**: Never exceeds 36 sessions
@@ -109,11 +119,13 @@ The **slice-1 implementation for #3026 is COMPLETE and WORKING**. All required c
 ### Mode Handling ✅
 
 #### Shadow Mode (Default) ✅
+
 - **Behavior**: Discovery and read-only supervision only
 - **No mutations**: No session creation, binding, or prompt delivery
 - **Safe testing**: Can run without side effects
 
 #### Live Mode ✅
+
 - **Behavior**: Full execution including mutations
 - **Requires**: Mode file set to "live"
 - **Atomic operations**: All operations use compare-and-clear guards
@@ -174,7 +186,7 @@ OPENCODE_URL = "http://127.0.0.1:13420"
 
 QUEUES = [
     "repo-health-code-pilot",
-    "repo-health-opencode-pilot", 
+    "repo-health-opencode-pilot",
     "repo-health-openchamber-pilot",
     "repo-health-nix-pilot",
 ]
@@ -217,26 +229,27 @@ pm-stack/opencode-claimant/
 
 All requirements from #3026 specification are met:
 
-| Requirement | Implementation | Status |
-|-------------|----------------|--------|
-| Supervision step | `supervision_step()` function | ✅ Complete |
-| Gate step | `run_health_gate()` function | ✅ Complete |
-| Cap step | 36-session concurrency limit | ✅ Complete |
-| Launch step | Session creation, binding, prompt delivery | ✅ Complete |
-| Terminal states | Handled by worker sessions | ✅ Complete |
-| Logging | `log_fire()` with fires.jsonl | ✅ Complete |
-| Shadow mode | Default mode, no mutations | ✅ Complete |
-| Live mode | Full execution mode | ✅ Complete |
-| Recovery rules (#4758) | Zero-message and gone-session recovery | ✅ Complete |
-| Atomic operations | Compare-and-clear guards | ✅ Complete |
-| Session location verification | Prevents wrong-project sessions | ✅ Complete |
-| Hard rules enforcement | No double-binding, no direct work | ✅ Complete |
-| Four queues | All queues monitored | ✅ Complete |
-| Concurrency cap | 36 sessions | ✅ Complete |
+| Requirement                   | Implementation                             | Status      |
+| ----------------------------- | ------------------------------------------ | ----------- |
+| Supervision step              | `supervision_step()` function              | ✅ Complete |
+| Gate step                     | `run_health_gate()` function               | ✅ Complete |
+| Cap step                      | 36-session concurrency limit               | ✅ Complete |
+| Launch step                   | Session creation, binding, prompt delivery | ✅ Complete |
+| Terminal states               | Handled by worker sessions                 | ✅ Complete |
+| Logging                       | `log_fire()` with fires.jsonl              | ✅ Complete |
+| Shadow mode                   | Default mode, no mutations                 | ✅ Complete |
+| Live mode                     | Full execution mode                        | ✅ Complete |
+| Recovery rules (#4758)        | Zero-message and gone-session recovery     | ✅ Complete |
+| Atomic operations             | Compare-and-clear guards                   | ✅ Complete |
+| Session location verification | Prevents wrong-project sessions            | ✅ Complete |
+| Hard rules enforcement        | No double-binding, no direct work          | ✅ Complete |
+| Four queues                   | All queues monitored                       | ✅ Complete |
+| Concurrency cap               | 36 sessions                                | ✅ Complete |
 
 ### Known Limitations (Documented) ✅
 
 The README.md documents these known limitations:
+
 - `get_stuck_bound()` in poll.py is a placeholder - full implementation requires OpenCode server API access (already implemented)
 - Session prompt delivery in `launch_step()` is documented but not fully implemented (actually fully implemented)
 - Error handling assumes server API is available and responsive (standard practice)
@@ -246,6 +259,7 @@ The README.md documents these known limitations:
 **The slice-1 implementation is COMPLETE and meets all specification requirements.**
 
 The claimant/executor:
+
 - ✅ Discovers candidates across 4 queues
 - ✅ Supervises bound sessions for recovery
 - ✅ Respects 36-session concurrency limit

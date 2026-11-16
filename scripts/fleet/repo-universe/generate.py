@@ -78,9 +78,7 @@ URL_RE = re.compile(
 # The GitHub shape of a full_name: an owner (alphanumerics and single
 # hyphens, never leading/trailing) and a name (alphanumerics, '.', '_',
 # '-') joined by exactly one slash (#6814).
-FULL_NAME_RE = re.compile(
-    r"[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?/[A-Za-z0-9._-]+"
-)
+FULL_NAME_RE = re.compile(r"[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?/[A-Za-z0-9._-]+")
 
 
 def validate_entry(entry: object, source: str, index: int) -> dict:
@@ -98,8 +96,7 @@ def validate_entry(entry: object, source: str, index: int) -> dict:
     """
     if not isinstance(entry, dict):
         raise ValueError(
-            f"{source}: enumeration entry {index} is not a JSON object: "
-            f"{entry!r:.80}"
+            f"{source}: enumeration entry {index} is not a JSON object: {entry!r:.80}"
         )
     if not isinstance(entry.get("full_name"), str):
         raise ValueError(
@@ -138,8 +135,7 @@ def validate_entry(entry: object, source: str, index: int) -> dict:
     fork = entry.get("fork")
     if fork is not None and not isinstance(fork, bool):
         raise ValueError(
-            f"{source}: enumeration entry {index} has a non-boolean "
-            f"fork: {fork!r:.80}"
+            f"{source}: enumeration entry {index} has a non-boolean fork: {fork!r:.80}"
         )
     return entry
 
@@ -174,9 +170,7 @@ def decode_pages(text: str, source: str = "enumeration capture") -> list[dict]:
 def load_enumeration(path: str | None) -> list[dict]:
     if path is None:
         return []
-    return decode_pages(
-        Path(path).read_text(), source=f"enumeration capture {path}"
-    )
+    return decode_pages(Path(path).read_text(), source=f"enumeration capture {path}")
 
 
 def merge_repos(*groups: list[dict]) -> list[dict]:
@@ -411,10 +405,7 @@ def main(argv: list[str] | None = None) -> int:
         # openchamber since 2026-11-04; enumerating developing-today
         # alone would drop them from a full regeneration.
         org_repos = merge_repos(
-            *(
-                fetch_live(f"orgs/{org}/repos?per_page=100&type=all")
-                for org in ORGS
-            )
+            *(fetch_live(f"orgs/{org}/repos?per_page=100&type=all") for org in ORGS)
         )
         # user/repos?affiliation=owner, NOT users/dezren39/repos: the
         # latter returns public repos only and silently misses private

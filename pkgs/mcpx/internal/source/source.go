@@ -17,6 +17,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"syscall"
 	"unicode"
 )
 
@@ -173,8 +174,10 @@ func readDir(dir string, opt Options, explicit bool) (Resolved, error) {
 				if entryInfo.Mode()&fs.ModeSymlink != 0 {
 					entryInfo, err = os.Stat(entryPath)
 					if err != nil {
-						if errors.Is(err, fs.ErrNotExist) {
-							// A dangling link has no regular target to read.
+						if errors.Is(err, fs.ErrNotExist) || errors.Is(err, syscall.ELOOP) {
+							// A dangling link has no regular target to read,
+							// and a link loop can never resolve to one:
+							// neither names a file this walk could read.
 							continue
 						}
 						return fmt.Errorf("reading %s: %w", entryPath, err)

@@ -1,0 +1,3 @@
+sections: research-and-incidental-findings, containers-and-ci, nix
+kind: Changed
+summary: the research chapter's second slice (#1871): the Containers and CI outline is harvested (static Go builds, image-size anatomy, setup-go in a monorepo, stopping test daemons) and the standalone Nix section is written from the #1871 seeds (vendorHash repair, the computed sandbox test list, pure-Go SQLite, wrapProgram PATH suffixes, generated man pages and completions, the monorepo flake, fork patch maintenance, Renovate delegation, macOS findings), with the placement answer recorded in the chapter (the section lives in this book; a future repository-wide book gets a link, no pre-emptive split)

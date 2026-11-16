@@ -2,3 +2,4 @@
 /result
 /result-*
 mcpx-client.ts
+.cache/

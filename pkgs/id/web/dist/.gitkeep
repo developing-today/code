@@ -1,0 +1,4 @@
+Placeholder so the web/dist directory exists in source copies.
+The real assets are built by bun (locally and in the Nix
+id-web package); id-web's rust-embed needs the folder to
+exist at compile time even when it is empty.

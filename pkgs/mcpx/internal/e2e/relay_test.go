@@ -15,7 +15,17 @@ import (
 // the call's response, and the response.
 func relaySession(t *testing.T, e *env, caps map[string]any, level string, meta map[string]any) (notes []map[string]any, result map[string]any) {
 	t.Helper()
-	cmd := exec.Command(e.mcpx, "serve", "--passthrough", "demo")
+	return relaySessionAs(t, e, "2025-11-25", nil, caps, level, meta)
+}
+
+// relaySessionAs is relaySession for a client that states protocolVersion
+// and for a daemon started with extra flags (--mcp-spec), so the revision
+// policy can be demonstrated against a real daemon (#2212).
+func relaySessionAs(t *testing.T, e *env, protocolVersion string, serveArgs []string, caps map[string]any, level string, meta map[string]any) (notes []map[string]any, result map[string]any) {
+	t.Helper()
+	args := append([]string{"serve"}, serveArgs...)
+	args = append(args, "--passthrough", "demo")
+	cmd := exec.Command(e.mcpx, args...)
 	cmd.Dir = e.dir
 	cmd.Env = e.envVars
 	stdin, err := cmd.StdinPipe()
@@ -68,7 +78,7 @@ func relaySession(t *testing.T, e *env, caps map[string]any, level string, meta 
 		}
 	}
 	send(map[string]any{"jsonrpc": "2.0", "id": 1, "method": "initialize",
-		"params": map[string]any{"protocolVersion": "2025-11-25", "capabilities": caps,
+		"params": map[string]any{"protocolVersion": protocolVersion, "capabilities": caps,
 			"clientInfo": map[string]any{"name": "t", "version": "1"}}})
 	init := await(1)
 	send(map[string]any{"jsonrpc": "2.0", "method": "notifications/initialized"})
