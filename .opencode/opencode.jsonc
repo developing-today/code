@@ -4051,7 +4051,8 @@
         // medium-vs-high outcome record (code#1191).
         "targets": [
           "opencode-route/luna-effort-rr",
-          "_muse/muse-spark-1.3-contributor#high",
+          // 2026-11-15 (Drew, direct order): Spark #high -> #medium (all Spark seats).
+          "_muse/muse-spark-1.3-contributor#medium",
           "_antigravity/gemini-4-hydrogen#low",
           "_antigravity/claude-sonnet-5-5#medium"
         ],
@@ -4157,7 +4158,8 @@
           // proves (9,243 successes at #high in workhorse-weighted in
           // the trailing 7d vs 384 at #xhigh; AA publishes no Spark
           // effort curve below max).
-          "opencode-route/spark-plan#high",
+          // 2026-11-15 (Drew, direct order): spark-plan #high -> #medium (all Spark seats).
+          "opencode-route/spark-plan#medium",
           "opencode-route/sol-plan#medium"
         ],
         "selection": "ordered",
@@ -4210,7 +4212,8 @@
           "opencode-route/opus-plan#high",
           "opencode-route/argon-plan#high",
           "_antigravity/gemini-4-hydrogen#high",
-          "_muse/muse-wonder-1.0-contributor#xhigh",
+          // 2026-11-15 (Drew, direct order): Wonder #xhigh -> #high.
+          "_muse/muse-wonder-1.0-contributor#high",
           // 2026-11-15 (Drew): sol at #high — AA xhigh 52.5 vs
           // high 50.3; a near-flat step at materially fewer tokens.
           "opencode-route/sol-plan#high",
