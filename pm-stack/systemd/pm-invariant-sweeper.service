@@ -4,4 +4,4 @@ After=network.target docker.service
 
 [Service]
 Type=oneshot
-ExecStart=/bin/sh -lc 'python3 /home/user/pm-stack/invariant-sweeper.py --post-epic'
+ExecStart=/bin/sh -lc 'python3 /home/user/pm-stack/invariant-sweeper.py --act --post-epic'
