@@ -1046,12 +1046,21 @@ pub fn task_from_packet(packet: &Value, queue: &str) -> Value {
     // a stale mirror is harmless now that validation never compares
     // the copies, but an over-ceiling payload would fail the claim
     // guard's size check.
+    let prior_mirror = payload.get("max_attempts").cloned();
     if let Some(obj) = payload.as_object_mut() {
-        let before = obj.clone();
         obj.insert("max_attempts".to_string(), max_attempts.clone());
-        let size = serde_json::to_string(&payload).map(|s| s.len()).unwrap_or(0);
-        if size > PAYLOAD_MAX_BYTES {
-            *obj = before;
+    }
+    let size = serde_json::to_string(&payload).map(|s| s.len()).unwrap_or(0);
+    if size > PAYLOAD_MAX_BYTES {
+        if let Some(obj) = payload.as_object_mut() {
+            match prior_mirror {
+                Some(v) => {
+                    obj.insert("max_attempts".to_string(), v);
+                }
+                None => {
+                    obj.remove("max_attempts");
+                }
+            }
         }
     }
     json!({
