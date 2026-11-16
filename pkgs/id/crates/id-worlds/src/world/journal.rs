@@ -354,6 +354,20 @@ pub enum JournalEntry {
         /// `peer` may deliver schedule fires to this world.
         receive: bool,
     },
+    /// The admin set this world's F12.14 portal grant for one peer
+    /// world (code#1068 wiring slice): `granted: true` records the
+    /// grant, `granted: false` records its revocation. Written only
+    /// when the recorded state actually changes (a grant, or the
+    /// revocation of a live grant), so replaying it restores the
+    /// peer's exact `PortalGrantState` — a revoked peer replays as
+    /// revoked, never as never-granted, keeping the two refusal
+    /// codes distinct across restarts.
+    PortalGrantSet {
+        /// The peer world's name.
+        peer: String,
+        /// Whether the portal to `peer` is granted after this entry.
+        granted: bool,
+    },
     /// This world durably accepted a cross-world schedule fire from
     /// `source` (#1355 part 2): the receipt, keyed by source world,
     /// schedule id, and the fire's planned time (its occurrence). Written
@@ -706,10 +720,17 @@ pub const JOURNAL_VERSION_SCHEDULE_RECURRENCE: u32 = 8;
 /// bump renumbered it to 9.)
 pub const JOURNAL_VERSION_SIGNED_PLAY: u32 = 9;
 
+/// Header version of a journal that contains a portal-grant entry
+/// ([`JournalEntry::PortalGrantSet`], F12.14 wiring, code#1068).
+/// Version-9 binaries cannot read these entries and would restore a
+/// world whose portal grants were silently lost, so they must refuse
+/// the journal at the header check.
+pub const JOURNAL_VERSION_PORTALS: u32 = 10;
+
 /// Newest journal version this binary can read. Journals with a higher
 /// header version are refused at the header check, before any entry is
 /// applied.
-pub const MAX_JOURNAL_VERSION: u32 = JOURNAL_VERSION_SIGNED_PLAY;
+pub const MAX_JOURNAL_VERSION: u32 = JOURNAL_VERSION_PORTALS;
 
 /// The header version a journal must carry once it contains `entry`: version 2
 /// for execution-profile entries, version 3 for region-handoff entries,
@@ -763,6 +784,7 @@ pub fn journal_version_required_by(entry: &JournalEntry) -> u32 {
         JournalEntry::ScheduleGrantSet { .. } | JournalEntry::ScheduleReceived { .. } => {
             JOURNAL_VERSION_SCHEDULE_RECURRENCE
         }
+        JournalEntry::PortalGrantSet { .. } => JOURNAL_VERSION_PORTALS,
         JournalEntry::Checkpoint {
             transfers,
             lease,

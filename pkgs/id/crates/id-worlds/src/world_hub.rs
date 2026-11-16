@@ -30,7 +30,10 @@ use serde::Serialize;
 use tokio::sync::{OnceCell, OwnedSemaphorePermit, Semaphore};
 use tokio::task::JoinHandle;
 
-use crate::world::{Isolation, ScheduleDelivery, ScheduleDeliveryFuture};
+use crate::world::{
+    Isolation, PortalDelivery, PortalDeliveryFuture, PortalGrants, PortalSendError,
+    ScheduleDelivery, ScheduleDeliveryFuture,
+};
 use crate::world_session::WorldService;
 
 /// Longest world name, in bytes.
@@ -604,6 +607,17 @@ impl WorldHub {
             .await;
         match opened {
             Ok(service) => {
+                // F12.14 (code#1068): every world this hub opens -
+                // created, reopened after eviction, or its pinned
+                // single world - carries the hub's portal transport
+                // sink, installed on lease when it has none yet, so
+                // portal sends work in production and not only in
+                // tests that install a sink by hand (CodeRabbit
+                // finding on PR #10840). Install-if-absent: a sink
+                // a world already carries is never displaced.
+                service
+                    .world()
+                    .install_portal_delivery(self.portal_delivery());
                 guard.armed = false;
                 Ok(WorldLease {
                     service: service.clone(),
@@ -682,6 +696,18 @@ impl WorldHub {
     #[must_use]
     pub fn schedule_delivery(&self) -> Arc<dyn ScheduleDelivery> {
         Arc::new(HubScheduleDelivery { hub: self.clone() })
+    }
+
+    /// The F12.14 portal transport sink backed by this hub
+    /// (code#1068 wiring slice): install it on a world's handle
+    /// (`WorldHandle::set_portal_delivery`) and that world's outbound
+    /// portal sends are checked against the peer's grant book and
+    /// delivered through the hub to the target world. The sink
+    /// leases worlds (never creates them); policy stays in the
+    /// actors.
+    #[must_use]
+    pub fn portal_delivery(&self) -> Arc<dyn PortalDelivery> {
+        Arc::new(HubPortalDelivery { hub: self.clone() })
     }
 
     /// Open the default world (creating it), for startup.
@@ -940,6 +966,39 @@ mod tests {
     fn new_hub(opener: &Arc<MemoryOpener>, limits: HubLimits) -> WorldHub {
         let opener: Arc<dyn WorldOpener> = opener.clone();
         WorldHub::new(opener, Some("admin".to_owned()), "lobby", limits)
+    }
+
+    /// Oracle (PR #10840 CodeRabbit regression): worlds leased
+    /// through a hub carry the hub's portal transport sink with no
+    /// manual install - a mutually granted pair leased from the
+    /// hub exchanges a portal message in production shape, where
+    /// before this fix every production send refused for want of
+    /// a sink.
+    #[tokio::test]
+    async fn hub_leased_worlds_exchange_portal_without_manual_sink() {
+        let opener = MemoryOpener::new(false);
+        let hub = new_hub(&opener, HubLimits::default());
+        hub.create("world-a").await.unwrap();
+        hub.create("world-b").await.unwrap();
+        let a = hub.lease(Some("world-a"), None).await.unwrap();
+        let b = hub.lease(Some("world-b"), None).await.unwrap();
+        a.service()
+            .world()
+            .admin_set_portal_grant("world-b".to_owned(), true)
+            .await
+            .unwrap();
+        b.service()
+            .world()
+            .admin_set_portal_grant("world-a".to_owned(), true)
+            .await
+            .unwrap();
+        // No set_portal_delivery call anywhere: the hub lease
+        // installed its sink on both worlds.
+        a.service()
+            .world()
+            .send_portal_message("world-b".to_owned(), "hello via hub".to_owned())
+            .await
+            .unwrap();
     }
 
     /// Oracle (#5728): a pinned view resolves only its own world.
@@ -1476,6 +1535,49 @@ mod tests {
 /// source occurrence pending for a later retry.
 struct HubScheduleDelivery {
     hub: WorldHub,
+}
+
+/// [`PortalDelivery`] through a [`WorldHub`]: read the peer's grant
+/// book and deliver checked messages by leasing the target world.
+/// Any failure to lease is `None` / `Unavailable`: for a book it
+/// cannot read the sending handle answers `Unavailable` (a
+/// transport failure - no book was read, so no policy refusal is
+/// recorded), and a delivery that never arrives is likewise a
+/// transport error.
+struct HubPortalDelivery {
+    hub: WorldHub,
+}
+
+impl PortalDelivery for HubPortalDelivery {
+    fn peer_portal_grants<'a>(
+        &'a self,
+        world: &'a str,
+    ) -> PortalDeliveryFuture<'a, Option<PortalGrants>> {
+        Box::pin(async move {
+            let lease = self.hub.lease(Some(world), None).await.ok()?;
+            lease.service().world().portal_grants().await.ok()
+        })
+    }
+
+    fn deliver_portal<'a>(
+        &'a self,
+        source: &'a str,
+        target: &'a str,
+        message: &'a str,
+    ) -> PortalDeliveryFuture<'a, Result<(), PortalSendError>> {
+        Box::pin(async move {
+            let lease = self
+                .hub
+                .lease(Some(target), None)
+                .await
+                .map_err(|error| PortalSendError::Unavailable(format!("{error:?}")))?;
+            lease
+                .service()
+                .world()
+                .deliver_portal_message(source.to_owned(), message.to_owned())
+                .await
+        })
+    }
 }
 
 impl ScheduleDelivery for HubScheduleDelivery {
