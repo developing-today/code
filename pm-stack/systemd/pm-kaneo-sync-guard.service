@@ -1,0 +1,7 @@
+[Unit]
+Description=Kaneo GitHub sync guard — assert statusTransitions can never close issues (code#10137)
+After=network.target docker.service
+
+[Service]
+Type=oneshot
+ExecStart=/bin/sh -lc 'python3 /home/user/pm-stack/kaneo-sync-guard.py'

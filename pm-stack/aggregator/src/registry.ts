@@ -7,6 +7,8 @@
 //
 // Loose v1 by design: identity is (source, session id); task linkage is
 // whatever refs the session's title/PR/branch or launch record names.
+import { readFile } from "node:fs/promises";
+
 import { isValidRef, refsInText, type SessionFeedEntry, type SessionRecord } from "./model.ts";
 import { isIsoDate } from "./validate.ts";
 
@@ -114,6 +116,36 @@ export function parseLaunchRecords(jsonl: string): SessionRecord[] {
     }
   }
   return out;
+}
+
+/** The result of reading the Muse launch-records file (#8353). */
+export interface LaunchRecordsLoad {
+  /** Records parsed from the file (empty when absent or unreadable). */
+  records: SessionRecord[];
+  /** The read failure when the file is present but could not be read
+   * (permissions, a directory in its place, a corrupt handle); `null` when
+   * the file was read, and also when it is simply absent — absence is the
+   * normal state until the launch helper is used, never an error. */
+  error: unknown | null;
+}
+
+/**
+ * Read and parse the launch-records JSONL at `path`, distinguishing the
+ * three states a bare catch used to merge (#8353): absent (ENOENT — no
+ * error), read (records, however few parse), and present-but-unreadable
+ * (any other failure — surfaced as `error` so the caller can mark its
+ * section honestly instead of reporting ok/skipped from other sources).
+ */
+export async function loadLaunchRecords(path: string): Promise<LaunchRecordsLoad> {
+  let jsonl: string;
+  try {
+    jsonl = await readFile(path, "utf8");
+  } catch (err) {
+    const code = typeof err === "object" && err !== null && "code" in err ? (err as { code: unknown }).code : undefined;
+    if (code === "ENOENT") return { records: [], error: null };
+    return { records: [], error: err };
+  }
+  return { records: parseLaunchRecords(jsonl), error: null };
 }
 
 /**

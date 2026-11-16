@@ -24,7 +24,7 @@
   ],
   "owner_notes": {
     "vertexinc": "GAP: org enforces SAML SSO; the token cannot enumerate it. Nothing under it is mirrored.",
-    "developing-today-vendored": "Archive org (created 2026-11-04): vendored pure-clone forks moved here from developing-today, developing-today-fork and developing-today-forks; existing mirrors were ported to the new owner paths the same day so backups stay incremental. Backup App not yet installed here: sweep-only coverage for now.",
+    "developing-today-vendored": "Archive org (created 2026-11-04): vendored pure-clone forks moved here from developing-today, developing-today-fork and developing-today-forks; existing mirrors were ported to the new owner paths the same day so backups stay incremental. Backup App installed here (fleet-apps coverage verified 2026-11-12).",
     "NixOS": "Member-only org: mirrored by the sweep (readable), but the backup GitHub App cannot be installed here \u2014 no webhook coverage.",
     "dezren39/edsebooks": "GAP: GitHub returns HTTP 451 (repository access blocked). Cannot be fetched."
   },
@@ -93,10 +93,17 @@
     "name": "developing-today-backup",
     "owner": "dezren39",
     "permissions": {
+      "actions": "write",
+      "checks": "write",
+      "contents": "write",
+      "issues": "write",
       "metadata": "read",
-      "contents": "read"
+      "organization_projects": "write",
+      "pull_requests": "write",
+      "statuses": "write",
+      "workflows": "write"
     },
-    "events": ["push", "repository"],
+    "events": ["issues", "issue_comment", "pull_request", "push", "repository"],
     "bitwarden_secret_names": {
       "app_id": "github-app.backup-app-id",
       "client_id": "github-app.backup-client-id",

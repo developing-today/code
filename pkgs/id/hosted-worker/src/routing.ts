@@ -46,6 +46,29 @@ export function parseJurisdiction(raw: string | null): Jurisdiction {
   return raw as Jurisdiction;
 }
 
+/** Minimal structural shape of an R2 bucket binding (the package
+ * carries no workers-types dependency; workerd satisfies this). */
+export interface R2BucketLike {
+  head(key: string): Promise<{ size: number } | null>;
+  get(key: string): Promise<{ body: ReadableStream; size: number } | null>;
+  put(key: string, value: ArrayBuffer | Uint8Array): Promise<unknown>;
+  delete(key: string): Promise<void>;
+}
+
+/** The #2283 jurisdiction seam for blob storage: the bucket binding
+ * is chosen per jurisdiction HERE, in the routing module, never
+ * inline at a call site. Today every supported jurisdiction resolves
+ * to the package's single local binding (BLOBS); per-jurisdiction
+ * production buckets plug in at this one point when the #3403
+ * provisioning gate lands. A missing binding fails closed. */
+export function blobsBindingFor(env: { BLOBS?: R2BucketLike }, jurisdiction: Jurisdiction): R2BucketLike {
+  void jurisdiction;
+  if (!env.BLOBS) {
+    throw new FailClosed(503, "blobs_unavailable", "no blob bucket binding is configured; failing closed");
+  }
+  return env.BLOBS;
+}
+
 export interface ObjectNamespaceLike {
   jurisdiction(j: string): ObjectNamespaceLike;
   idFromName(name: string): unknown;

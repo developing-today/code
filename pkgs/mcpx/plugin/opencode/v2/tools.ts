@@ -27,6 +27,11 @@
  *    action at "ask", and a rejection applies nothing. With no
  *    permission domain wired there is no channel to confirm through,
  *    and the tool says so instead of applying silently.
+ *  - The daemon picker (#1858 SET-REMAINDER item (3)) is a tool, not a
+ *    dialog: the pinned v2 Context has no ui/tui selection domain
+ *    (picker.ts records the pinned-API evidence), so mcpx_daemon_pick
+ *    renders the candidate menu and makes the choice through the same
+ *    permission assert as daemon_select, persisted via ctx.storage.
  *  - No toasts. The v2 server context slice this tree uses has no TUI
  *    channel; ambiguity is surfaced the other v1 way — the annotation line
  *    on tool results — which needs no interface at all.
@@ -50,9 +55,10 @@ import {
   type Discovery,
   type DiscoverOptions,
   type Target,
-} from "../mcpx/daemon.ts";
+} from "../../core/daemon.ts";
 import type { Options } from "./options.ts";
 import { DAEMON_SELECT_ACTION, type PermissionAssertInput } from "./permission.ts";
+import { renderPickerMenu, runPickerSelection, type PickerScope } from "./picker.ts";
 import { forgetDaemon, readRememberedDaemon, rememberDaemon, type StorageLike } from "./remember.ts";
 
 /** The slice of the v2 ToolEditor this module uses (promise/tool.ts). */
@@ -442,6 +448,75 @@ export function createToolRuntime(deps: ToolRuntimeDeps): ToolRuntime {
             (results.length ? results.map((r) => `${label(r.c)}${r.ok ? "" : " (failed)"}`).join(", ") : "none");
         }
         return result(`Now using ${label(pick)} (${targetKey(pick.target)}). ${note}${stopped}`);
+      },
+    },
+    {
+      name: "daemon_pick",
+      description:
+        "The daemon picker: with no candidate, show the picker menu — every daemon, " +
+        "best match first, the one in use marked. With a candidate index, pick that " +
+        "daemon: the user confirms first, and cancelling changes nothing. (The pinned " +
+        "v2 surface has no TUI select; this tool is its closest equivalent — picker.ts.)",
+      input: {
+        type: "object",
+        properties: {
+          candidate: {
+            type: "integer",
+            description: "the [index] from the picker menu; omit to just show the menu",
+          },
+          remember: {
+            type: "string",
+            enum: ["session", "until-gone", "indefinite", "permanent"],
+            description:
+              "session: this session only (default). until-gone: until that daemon stops " +
+              "answering. indefinite: for this directory, until changed. permanent: " +
+              "written into the mcpx config.",
+          },
+          stopOthers: {
+            type: "boolean",
+            description: "stop every other daemon after picking. Destructive: their sessions end.",
+          },
+        },
+        additionalProperties: false,
+      },
+      options: { namespace: NAMESPACE },
+      execute: async (
+        input: { candidate?: number; remember?: string; stopOthers?: boolean },
+        context: { sessionID: string },
+      ) => {
+        const record = await readRememberedDaemon(deps.storage, deps.directory).catch(() => undefined);
+        const d = await discoverFn({
+          ...ladderOptions(),
+          remembered: chosen ?? record?.target,
+        });
+        const list = rank(d.candidates, deps.directory);
+        if (input.candidate === undefined) {
+          if (list.length === 0 && d.target) {
+            return result(`Using ${targetKey(d.target)} (named explicitly; no scan was done).`);
+          }
+          return result(renderPickerMenu(list, d.target));
+        }
+        const scope = (input.remember ?? options.remember ?? "session") as PickerScope;
+        const outcome = await runPickerSelection({
+          sessionID: context.sessionID,
+          candidates: list,
+          current: d.target,
+          index: input.candidate,
+          scope,
+          stopOthers: input.stopOthers === true,
+          assertPermission: deps.assertPermission,
+          applyChoice,
+        });
+        if (!outcome.applied) return result(outcome.text);
+        let stopped = "";
+        if (input.stopOthers) {
+          const others = list.filter((c) => targetKey(c.target) !== targetKey(outcome.candidate.target));
+          const results = await Promise.all(others.map(async (c) => ({ c, ok: await clientFor(c.target).shutdown() })));
+          stopped =
+            "\nStopped: " +
+            (results.length ? results.map((r) => `${label(r.c)}${r.ok ? "" : " (failed)"}`).join(", ") : "none");
+        }
+        return result(outcome.text + stopped);
       },
     },
     {

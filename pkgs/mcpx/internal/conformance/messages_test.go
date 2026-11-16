@@ -818,12 +818,20 @@ func TestMessagesClient(t *testing.T) {
 		p := newPeer(t, rev)
 		dialClient(t, p, clientOpts())
 		caps := asMap(asMap(asMap(p.sent()[0]["params"])["_meta"])[mcpserver.MetaClientCapabilities])
-		// Register CAP-11 (#1918, code#2653): the client deliberately
-		// declares an EMPTY extensions map on modern connections -- it
-		// names no extension, so it owes no extension ResultType values.
-		// Only a non-empty map declares values the client must handle.
-		if ext := asMap(caps["extensions"]); len(ext) > 0 {
-			t.Errorf("declares extensions it does not handle: %v", caps)
+		// Register CAP-11 (#1918, code#2653): the client declares an
+		// extension only when it implements it, and owes handling for
+		// the ResultType values of every extension it names. The map
+		// was empty when this guard was written; since #1556 the
+		// client implements io.modelcontextprotocol/tasks (mcpclient
+		// tasks.go: a resultType "task" answer is polled to its
+		// terminal payload), so that one declaration is handled. Any
+		// other declared extension is an advertised-but-unimplemented
+		// promise -- the failure this guard exists for (#2716).
+		handled := map[string]bool{"io.modelcontextprotocol/tasks": true}
+		for name := range asMap(caps["extensions"]) {
+			if !handled[name] {
+				t.Errorf("declares extension it does not handle: %v (all declared: %v)", name, caps["extensions"])
+			}
 		}
 	})
 	// https://modelcontextprotocol.io/specification/2026-07-28/basic/transports#request-metadata

@@ -216,12 +216,12 @@ handing a generated client the socket path as a URL and hoping.
 ### The client that exists: `DaemonClient`
 
 For harness plugins and Bun/TypeScript programs there is the
-plugin's `DaemonClient` (`plugin/opencode/mcpx/daemon.ts`): a
+plugin's `DaemonClient` (`plugin/core/daemon.ts`): a
 connection-reusing client that knows the discovery ladder (a named
 endpoint first, then the daemon info files, then health checks),
 speaks to the socket through Bun's `fetch` `unix` option, and
 reaches every operation through its generated `ops` methods
-(`plugin/opencode/mcpx/ops.gen.ts`, generated from the same table),
+(`plugin/core/ops.gen.ts`, generated from the same table),
 with named convenience methods beside them for the common calls.
 It is tested against a real daemon. It is also **not published as
 a package** — using it today means taking it from the plugin — and

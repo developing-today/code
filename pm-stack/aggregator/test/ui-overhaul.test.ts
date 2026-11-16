@@ -80,11 +80,15 @@ describe("stylesheet pipeline (Phase C)", () => {
     const css = readFileSync(built, "utf8");
     expect(css.length).toBeGreaterThan(50_000);
     for (const marker of [".btn", ".badge", ".card", ".navbar", ".select", ".table-zebra", "--color-primary"]) {
-    // The explicit-theme scoped rules must survive the Tailwind build
-    // (a malformed generated selector once dropped a span of them).
-    for (const scoped of ['html[data-theme="light"] .skel', 'html[data-theme="light"] nav select', 'html[data-theme="light"] .cform textarea']) {
-      expect(css).toContain(scoped);
-    }
+      // The explicit-theme scoped rules must survive the Tailwind build
+      // (a malformed generated selector once dropped a span of them).
+      for (const scoped of [
+        'html[data-theme="light"] .skel',
+        'html[data-theme="light"] nav select',
+        'html[data-theme="light"] .cform textarea',
+      ]) {
+        expect(css).toContain(scoped);
+      }
       expect(css).toContain(marker);
     }
   });

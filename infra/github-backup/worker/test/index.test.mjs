@@ -129,8 +129,100 @@ test("POST /queue/ack deletes every id and reports the count", async () => {
     env,
   );
   assert.equal(response.status, 200);
-  assert.deepEqual(await response.json(), { acked: 3 });
+  const result = await response.json();
+  assert.deepEqual(result, { acked: 3 });
+  assert.equal(result.acked, deleted.length);
   assert.deepEqual([...deleted].sort(), ["ev:a", "ev:b", "ev:c"]);
+});
+
+test("POST /queue/ack rejects malformed JSON and non-object bodies without deleting", async () => {
+  const deleted = [];
+  const env = {
+    DRAIN_BEARER: "test-bearer",
+    GHB_EVENTS: { async delete(name) { deleted.push(name); } },
+  };
+  const cases = [
+    ["non-JSON", "{"],
+    ["empty", ""],
+    ["JSON null", "null"],
+    ["array", "[]"],
+    ["string", JSON.stringify("ids")],
+    ["number", "1"],
+  ];
+
+  for (const [label, body] of cases) {
+    const response = await worker.fetch(
+      new Request("https://worker.test/queue/ack", {
+        method: "POST",
+        headers: { Authorization: "Bearer test-bearer", "Content-Type": "application/json" },
+        body,
+      }),
+      env,
+    );
+    assert.equal(response.status, 400, label);
+    assert.ok((await response.json()).error, label);
+  }
+  assert.deepEqual(deleted, []);
+});
+
+test("POST /queue/ack rejects missing or malformed ids without deleting", async () => {
+  const deleted = [];
+  const env = {
+    DRAIN_BEARER: "test-bearer",
+    GHB_EVENTS: { async delete(name) { deleted.push(name); } },
+  };
+  const cases = [
+    ["missing ids", {}],
+    ["string ids", { ids: "abc" }],
+    ["numeric ids", { ids: 123 }],
+    ["numeric entry", { ids: [123] }],
+    ["null entry", { ids: [null] }],
+    ["empty entry", { ids: [""] }],
+    ["whitespace entry", { ids: ["   "] }],
+  ];
+
+  for (const [label, body] of cases) {
+    const response = await worker.fetch(
+      new Request("https://worker.test/queue/ack", {
+        method: "POST",
+        headers: { Authorization: "Bearer test-bearer", "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      }),
+      env,
+    );
+    assert.equal(response.status, 400, label);
+    assert.match((await response.json()).error, /ids/, label);
+  }
+  assert.deepEqual(deleted, []);
+});
+
+test("GET /queue names a corrupt KV key instead of throwing a bare parse error", async () => {
+  const env = {
+    DRAIN_BEARER: "test-bearer",
+    GHB_EVENTS: {
+      async list() {
+        return {
+          keys: [{ name: "ev:good" }, { name: "ev:corrupt" }],
+          cursor: null,
+          list_complete: true,
+        };
+      },
+      async get(names) {
+        return new Map(names.map((name) => [
+          name,
+          name === "ev:corrupt" ? "" : JSON.stringify({ id: "good" }),
+        ]));
+      },
+    },
+  };
+  const response = await worker.fetch(
+    new Request("https://worker.test/queue", {
+      headers: { Authorization: "Bearer test-bearer" },
+    }),
+    env,
+  );
+  assert.equal(response.status, 500);
+  assert.match(await response.text(), /ev:corrupt/);
 });
 
 test("POST /queue/ack requires auth", async () => {

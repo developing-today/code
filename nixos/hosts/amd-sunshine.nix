@@ -79,6 +79,23 @@ let
     echo "OK: VAAPI hardware encoder confirmed in Sunshine's log."
     exit 0
   '';
+  # On-screen keyboard, stream-tied (Drew, 2026-11-08): Sunshine's
+  # global prep commands run these at stream start/stop, so wvkbd is
+  # on screen ONLY while a Moonlight stream is live — never at plain
+  # desktop login. The start script detaches wvkbd (setsid -f) and
+  # returns immediately: Sunshine waits for a prep command to exit
+  # before it starts streaming. pgrep guard keeps a second stream
+  # from stacking a second keyboard.
+  sunshine-wvkbd-start = pkgs.writeShellScriptBin "sunshine-wvkbd-start" ''
+    set -u
+    if ${pkgs.procps}/bin/pgrep -x wvkbd-mobintl >/dev/null 2>&1; then
+      exit 0
+    fi
+    exec ${pkgs.util-linux}/bin/setsid -f ${pkgs.wvkbd}/bin/wvkbd-mobintl -L 500
+  '';
+  sunshine-wvkbd-stop = pkgs.writeShellScriptBin "sunshine-wvkbd-stop" ''
+    ${pkgs.procps}/bin/pkill -x wvkbd-mobintl || true
+  '';
 in
 {
   services.sunshine = {
@@ -101,6 +118,12 @@ in
       # fall through to software if VAAPI fails validation — which is
       # why the encoder check below exists and runs hourly).
       encoder = "vaapi";
+      # Stream-tied on-screen keyboard (see the let block above):
+      # do at stream start, undo at stream stop. Rendered verbatim
+      # into sunshine.conf by the module's keyValue format, in the
+      # JSON shape this Sunshine build parses (key verified present
+      # in the pinned binary; prep_cmd_t in src/config.cpp upstream).
+      global_prep_cmd = "[{\"do\":\"sunshine-wvkbd-start\",\"undo\":\"sunshine-wvkbd-stop\",\"elevated\":false}]";
     };
   };
 
@@ -112,6 +135,8 @@ in
       # Project/ and is created interactively — see header.
       pkgs.moonlight-qt
       sunshine-encoder-check
+      sunshine-wvkbd-start
+      sunshine-wvkbd-stop
     ];
 
     systemd.user.services.sunshine-encoder-check = {

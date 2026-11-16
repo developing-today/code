@@ -17,11 +17,17 @@
 export HOME=/home/user
 export PATH="/run/current-system/sw/bin:$HOME/.local/bin:/usr/local/bin:$PATH"
 
-serve="$1"
-if [ -z "$serve" ]; then
-  echo "openchamber-start: no serve script argument given (the unit shim passes openchamberStart)" >&2
-  exit 1
+if [[ $# -ne 1 ]]; then
+  echo "openchamber-start: usage: openchamber-start.sh <serve-script>" >&2
+  if [[ $# -eq 0 ]]; then
+    echo "openchamber-start: no serve script argument given (the unit shim passes openchamberStart)" >&2
+  else
+    echo "openchamber-start: unexpected argument: $2" >&2
+  fi
+  exit 2
 fi
+
+serve="$1"
 
 state="$HOME/.local/state/opencode/service-prod.json"
 if [ ! -r "$state" ]; then

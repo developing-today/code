@@ -18,7 +18,13 @@ flight, not just after one has finished.
 
 1. **Reservation at the boundary.** `SaveRateLimiter::acquire(name)`
    combines the existing cooldown check with an in-flight reservation,
-   taken atomically under the in-flight lock. If the name is already
+   and re-validates the cooldown after taking the reservation: the
+   check and the reservation use different locks, but `complete()`
+   records the save before `Drop` releases the reservation (decision
+   2), so any save completing between an `acquire`'s check and its
+   reservation is observed by the re-validation and refused, with the
+   just-taken reservation released — the admission decision is atomic
+   with respect to record + release (#9587). If the name is already
    reserved, `acquire` returns `Err(cooldown)` and the handler refuses
    with the same `429 / "Try again in Ns"` contract clients already
    handle for the cooldown, so no client change is needed to understand
@@ -38,8 +44,10 @@ flight, not just after one has finished.
    an await, and `Drop` cannot await — releasing the reservation from
    `Drop` requires a synchronous lock. The cooldown map keeps its
    `tokio::sync::Mutex` because it is only used from async contexts.
-   Poisoning is recovered with `into_inner()` on the acquire path: a
-   poisoned set must not wedge saves for a filename forever.
+   Poisoning is recovered with `into_inner()` on the acquire path
+   and on the permit's `Drop` path alike (#9587): a poisoned set must
+   not wedge saves for a filename forever, and a `Drop` that skipped
+   the release on a poisoned lock would wedge it silently.
 4. **Client retry survives the winner's broadcast.** The refusal makes
    the losing client schedule a rate-limit retry; the winning save's
    `notify_new_version` broadcast must not cancel that retry, because
