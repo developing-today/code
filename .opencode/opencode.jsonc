@@ -4198,7 +4198,7 @@
         "health": { "firstTokenTimeoutMs": 60000 }
       },
       "workhorse-weighted": {
-        "name": "Workhorse weighted - Luna medium/high round-robin (luna-effort-rr), Spark contributor #high, Gemini 4 Hydrogen #low, Claude Haiku 5.5 #high, all w10: last-tier fallbacks behind the Flash primary (Drew 2026-11-07; Sonnet seat 2026-11-09, replaced by Haiku 2026-11-16)",
+        "name": "Workhorse weighted - Luna medium/high round-robin (luna-effort-rr), Spark contributor #medium, Gemini 4 Hydrogen #low, Claude Haiku 5.5 #high, all w10: last-tier fallbacks behind the Flash primary (Drew 2026-11-07; Sonnet seat 2026-11-09, replaced by Haiku 2026-11-16)",
         // The weighted half of workhorse's incremental structure: sessions
         // that fail over (or are demoted off) the Flash primary draw here
         // by weight. Not addressed by any agent directly.
@@ -4354,6 +4354,16 @@
 "opencode-route/haiku-plan#high"
         ],
         "selection": "weighted",
+        // Weights keys are BARE provider/model ids on purpose
+        // (code#10725, verified against the fork 2026-11-16): the
+        // router looks a leaf target weight up by its bare
+        // provider/model id - the target #effort pin is not part
+        // of the lookup key (fork packages/core/src/config/plugin/
+        // model-routes.ts: attach() receives the leaf key as
+        // providerID + "/" + model id, no variant suffix). Do NOT
+        // suffix these keys with #effort to match the targets -
+        // a suffixed key misses the lookup and the leg silently
+        // falls back to weight 1.
         "weights": {
           "opencode-route/luna-effort-rr": 10,
           "_muse/muse-spark-1.3-contributor": 10,
