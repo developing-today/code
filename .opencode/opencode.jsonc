@@ -977,6 +977,19 @@
     // 2026-11-16) -- re-issue at docs.exaone.ai My Profile >
     // API Key when auth failures start. Wire-proven direct
     // 2026-11-16 (HTTP 200 chat completion on k-exaone_v2.5).
+    // KEY EXPIRY: this key dies 2026-12-16 (30 days after its
+    // 2026-11-16 issuance); auth failures from that date are the
+    // known expiry, not a new breakage -- re-issue and rotate the
+    // Bitwarden item + credential-store row.
+    // 2026-11-16 (R33 fix): the model's limit MUST name output
+    // alongside context -- the fork's v1 config schema requires
+    // limit.output, and a context-only limit fails the whole
+    // provider's decode: normalization silently skips the provider
+    // ("$.provider.exaone kind=invalid"), the route resolves to
+    // no models, and the door draws zero attempts with no error
+    // anywhere but the server log. Output 524288 is the vendor's
+    // published max output (docs.exaone.ai Models: 512K max
+    // output; endpoint caps input + max_tokens at 524,288).
     "exaone": {
       "npm": "@ai-sdk/openai-compatible",
       "name": "EXAONE (K-EXAONE 2.5 Free API)",
@@ -987,7 +1000,8 @@
         "k-exaone_v2.5": {
           "name": "K-EXAONE 2.5 (EXAONE API Platform Free)",
           "limit": {
-            "context": 524288
+            "context": 524288,
+            "output": 524288
           }
         }
       }
