@@ -4914,6 +4914,7 @@ name = "id-sync"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "blake3",
  "ed25519-dalek 3.0.0",
  "futures-lite",
  "futures-util",
