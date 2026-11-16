@@ -121,11 +121,11 @@ impl fleet_secrets::CommandRunner for BwsRunner {
         // launched under a stripped PATH (#10743); resolve through
         // the well-known install locations instead.
         let resolved;
-        let program = if program == "bws" {
+        let program: &std::path::Path = if program == "bws" {
             resolved = fleet_secrets::resolve_bws_program();
             &resolved
         } else {
-            program
+            std::path::Path::new(program)
         };
         let out = Command::new(program)
             .args(args)
@@ -157,6 +157,16 @@ fn refresh(state: &Arc<State>) -> Result<usize, String> {
         *r = true;
     }
     let result = do_refresh(state);
+    // The refresh-error bookkeeping lives here, in the one shared
+    // operation, so every caller records it — the background loop
+    // AND the manual POST /refresh path, whose caller discards the
+    // result (CodeRabbit review, #10757). The guard rejection
+    // above returns before this point and never overwrites the
+    // recorded error: a rejected overlap is not an attempt.
+    match &result {
+        Ok(_) => *state.last_refresh_error.write().unwrap() = None,
+        Err(e) => *state.last_refresh_error.write().unwrap() = Some(e.clone()),
+    }
     *state.refreshing.write().unwrap() = false;
     result
 }
@@ -711,14 +721,8 @@ pub fn run() -> i32 {
         std::thread::spawn(move || {
             loop {
                 match refresh(&state) {
-                    Ok(n) => {
-                        *state.last_refresh_error.write().unwrap() = None;
-                        crate::log::info("secrets-broker", &format!("refreshed {n} secrets"));
-                    }
-                    Err(e) => {
-                        *state.last_refresh_error.write().unwrap() = Some(e.clone());
-                        crate::log::info("secrets-broker", &format!("refresh failed: {e}"));
-                    }
+                    Ok(n) => crate::log::info("secrets-broker", &format!("refreshed {n} secrets")),
+                    Err(e) => crate::log::info("secrets-broker", &format!("refresh failed: {e}")),
                 }
                 std::thread::sleep(Duration::from_secs(ttl_s));
             }

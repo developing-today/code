@@ -785,7 +785,7 @@ fn bws_access_token() -> Option<String> {
 /// every `fleet gh` call burned its full retry budget. Falls back
 /// to the bare name, so a host with none of these keeps the
 /// historical error shape.
-pub fn resolve_bws_program() -> String {
+pub fn resolve_bws_program() -> PathBuf {
     resolve_bws_program_from(
         std::env::var("BWS_BIN").ok().as_deref(),
         std::env::var_os("PATH").as_deref(),
@@ -793,11 +793,19 @@ pub fn resolve_bws_program() -> String {
     )
 }
 
+/// A candidate wins only when it is a regular file this process
+/// may actually execute: `access(2)` X_OK, not a mode-bit guess —
+/// a root-owned 0750 file passes a mode check for a caller outside
+/// its group and then fails at spawn (CodeRabbit review, #10757).
 fn is_executable_file(p: &Path) -> bool {
-    use std::os::unix::fs::PermissionsExt;
-    std::fs::metadata(p)
-        .map(|m| m.is_file() && m.permissions().mode() & 0o111 != 0)
-        .unwrap_or(false)
+    use std::os::unix::ffi::OsStrExt;
+    if !std::fs::metadata(p).map(|m| m.is_file()).unwrap_or(false) {
+        return false;
+    }
+    let Ok(c) = std::ffi::CString::new(p.as_os_str().as_bytes()) else {
+        return false;
+    };
+    unsafe { libc::access(c.as_ptr(), libc::X_OK) } == 0
 }
 
 /// The pure core of [`resolve_bws_program`], split out for tests:
@@ -807,18 +815,22 @@ fn resolve_bws_program_from(
     env_override: Option<&str>,
     path_var: Option<&std::ffi::OsStr>,
     home: &Path,
-) -> String {
+) -> PathBuf {
     if let Some(p) = env_override {
         let p = p.trim();
         if !p.is_empty() && is_executable_file(Path::new(p)) {
-            return p.to_string();
+            // Canonicalize a relative override: the bare name would
+            // make Command::new search PATH and could run a
+            // different program than the one validated here
+            // (CodeRabbit review, #10757).
+            return std::fs::canonicalize(p).unwrap_or_else(|_| PathBuf::from(p));
         }
     }
     if let Some(path_var) = path_var {
         for dir in std::env::split_paths(path_var) {
             let cand = dir.join("bws");
             if is_executable_file(&cand) {
-                return cand.to_string_lossy().into_owned();
+                return cand;
             }
         }
     }
@@ -828,10 +840,10 @@ fn resolve_bws_program_from(
         PathBuf::from("/run/current-system/sw/bin/bws"),
     ] {
         if is_executable_file(&cand) {
-            return cand.to_string_lossy().into_owned();
+            return cand;
         }
     }
-    "bws".to_string()
+    PathBuf::from("bws")
 }
 
 /// A [`ProcessRunner`] that hands the child the resolved
@@ -866,11 +878,11 @@ impl CommandRunner for BwsTokenRunner {
         // (#10743) -- resolve the bare name through the same
         // well-known locations the broker uses.
         let resolved;
-        let program = if program == "bws" {
+        let program: &Path = if program == "bws" {
             resolved = resolve_bws_program();
             &resolved
         } else {
-            program
+            Path::new(program)
         };
         let mut cmd = Command::new(program);
         cmd.args(args);
@@ -1465,22 +1477,19 @@ mod tests {
                 Some(&path_var),
                 &home
             ),
-            override_bws.to_string_lossy()
+            std::fs::canonicalize(&override_bws).unwrap()
         );
         assert_eq!(
             resolve_bws_program_from(None, Some(&path_var), &home),
-            path_bws.to_string_lossy()
+            path_bws
         );
-        assert_eq!(
-            resolve_bws_program_from(None, None, &home),
-            home_bws.to_string_lossy()
-        );
+        assert_eq!(resolve_bws_program_from(None, None, &home), home_bws);
         // A non-executable override is skipped, not trusted.
         let plain = dir.join("plain-bws");
         std::fs::write(&plain, "x").unwrap();
         assert_eq!(
             resolve_bws_program_from(Some(plain.to_str().unwrap()), Some(&path_var), &home),
-            path_bws.to_string_lossy()
+            path_bws
         );
         // Nothing in the override, PATH, or home: the NixOS system
         // location when the host has one, else the bare name.
@@ -1488,9 +1497,9 @@ mod tests {
         std::fs::create_dir_all(&empty_home).unwrap();
         let sys = Path::new("/run/current-system/sw/bin/bws");
         let expected = if is_executable_file(sys) {
-            sys.to_string_lossy().into_owned()
+            sys.to_path_buf()
         } else {
-            "bws".to_string()
+            PathBuf::from("bws")
         };
         assert_eq!(
             resolve_bws_program_from(None, None, &empty_home),
