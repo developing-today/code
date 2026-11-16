@@ -1737,7 +1737,7 @@ export function renderBoardShell(provenance: Provenance, detail?: ProvenanceDeta
   const fragBoard = viewQuery ? `/frag/board?${viewQuery}` : "/frag/board";
   return layout(
     "Cross-repo WIP board",
-    `<h1>Cross-repo WIP board</h1><p class="muted">What is being worked on now is the <strong>in-flight</strong> lane: synthetic entries from the orchestrator's lined-up tasks (the fleet feed's orchestration section), not Kaneo cards.</p><noscript><meta http-equiv="refresh" content="0; url=/board"></noscript><div id="board-main" data-frag data-on-load="@get('${fragBoard}')" data-on:dashrefresh__window="@get('${fragBoard}')"><div class="skel">Loading the board…</div></div>`,
+    `<h1>Cross-repo WIP board</h1><p class="muted">What is being worked on now is the <strong>in-flight</strong> lane: synthetic entries from the orchestrator's lined-up tasks (the fleet feed's orchestration section), not Kaneo cards.</p><noscript><meta http-equiv="refresh" content="0; url=/board"></noscript><div id="board-main" data-frag data-init="@get('${fragBoard}')" data-on:dashrefresh__window="@get('${fragBoard}')"><div class="skel">Loading the board…</div></div>`,
     provenance,
     "/board",
     ACTION_SCRIPT + FRAG_WATCHDOG_SCRIPT,
@@ -3566,10 +3566,23 @@ ${view.expiredCount ? `<p class="muted">${view.expiredCount} finished or stale $
 
 /** Wrap one attention section as a Datastar fragment container: the
  *  shell's placeholder and the fragment payload share this shape, so
- *  a refresh re-patches the container with itself (attrs included). */
-export function attentionFragment(section: "header" | "queues" | "sessions", innerHtml: string, query = ""): string {
+ *  a refresh re-patches the container with itself (attrs included).
+ *
+ *  `initial` marks the shell placeholder (#10605): it carries
+ *  `data-init` so the first paint fetches the section with no
+ *  freshness event. The `/frag/*` payload that replaces it (outer
+ *  mode) must leave `initial` off — a re-initialising element would
+ *  fetch itself again on every patch, i.e. loop.
+ */
+export function attentionFragment(
+  section: "header" | "queues" | "sessions",
+  innerHtml: string,
+  query = "",
+  options: { initial?: boolean } = {},
+): string {
   const q = query ? `?${query}` : "";
-  return `<div id="attn-${section}" data-frag data-on-load="@get('/frag/attention/${section}${q}')" data-on:dashrefresh__window="@get('/frag/attention/${section}${q}')">${innerHtml}</div>`;
+  const init = options.initial ? ` data-init="@get('/frag/attention/${section}${q}')"` : "";
+  return `<div id="attn-${section}" data-frag${init} data-on:dashrefresh__window="@get('/frag/attention/${section}${q}')">${innerHtml}</div>`;
 }
 
 /**
@@ -3586,9 +3599,9 @@ export function renderAttentionShell(
   const refsQuery = refs ? `refs=${encodeURIComponent(refs)}` : "";
   const skel = (label: string) => `<div class="skel">Loading ${label}…</div>`;
   const body = `<h1>Needs you</h1><p class="muted">Loading the Needs User and Needs Orchestrator queues…</p><noscript><meta http-equiv="refresh" content="0; url=/attention?full=1"></noscript>
-${attentionFragment("header", skel("queue status"), refsQuery)}
-${attentionFragment("queues", skel("the queues"), refsQuery)}
-${attentionFragment("sessions", skel("sessions"), refsQuery)}${questionsHtml}`;
+${attentionFragment("header", skel("queue status"), refsQuery, { initial: true })}
+${attentionFragment("queues", skel("the queues"), refsQuery, { initial: true })}
+${attentionFragment("sessions", skel("sessions"), refsQuery, { initial: true })}${questionsHtml}`;
   return layout(
     "Needs you",
     body,
@@ -3829,7 +3842,7 @@ export function renderTodayShell(
 ): string {
   return layout(
     "Today",
-    `<h1>Today</h1><noscript><meta http-equiv="refresh" content="0; url=/today?full=1"></noscript><div id="today-main" data-frag data-on-load="@get('/frag/today')" data-on:dashrefresh__window="@get('/frag/today')">${todayHealthStrip(health, quota, quotaUnavailable)}<div class="skel">Loading today…</div></div>${questionsHtml}`,
+    `<h1>Today</h1><noscript><meta http-equiv="refresh" content="0; url=/today?full=1"></noscript><div id="today-main" data-frag data-init="@get('/frag/today')" data-on:dashrefresh__window="@get('/frag/today')">${todayHealthStrip(health, quota, quotaUnavailable)}<div class="skel">Loading today…</div></div>${questionsHtml}`,
     provenance,
     "/today",
     FRAG_WATCHDOG_SCRIPT,
@@ -3906,7 +3919,7 @@ export function renderQueue(view: QueueView, provenance: Provenance, detail?: Pr
 export function renderQueueShell(provenance: Provenance, detail?: ProvenanceDetail): string {
   return layout(
     "Queue",
-    `<h1>Queue visibility</h1><noscript><meta http-equiv="refresh" content="0; url=/queue?full=1"></noscript><div id="queue-main" data-frag data-on-load="@get('/frag/queue')" data-on:dashrefresh__window="@get('/frag/queue')"><div class="skel">Loading queue…</div></div>`,
+    `<h1>Queue visibility</h1><noscript><meta http-equiv="refresh" content="0; url=/queue?full=1"></noscript><div id="queue-main" data-frag data-init="@get('/frag/queue')" data-on:dashrefresh__window="@get('/frag/queue')"><div class="skel">Loading queue…</div></div>`,
     provenance,
     "/queue",
     FRAG_WATCHDOG_SCRIPT,
@@ -4106,7 +4119,7 @@ export function renderOverview(data: OverviewData, provenance: Provenance, detai
 export function renderOverviewShell(provenance: Provenance, detail?: ProvenanceDetail): string {
   return layout(
     "Overview",
-    `<h1>Overview</h1><noscript><meta http-equiv="refresh" content="0; url=/?full=1"></noscript><div id="overview-main" data-frag data-on-load="@get('/frag/overview')" data-on:dashrefresh__window="@get('/frag/overview')"><div class="skel">Loading the overview…</div></div>`,
+    `<h1>Overview</h1><noscript><meta http-equiv="refresh" content="0; url=/?full=1"></noscript><div id="overview-main" data-frag data-init="@get('/frag/overview')" data-on:dashrefresh__window="@get('/frag/overview')"><div class="skel">Loading the overview…</div></div>`,
     provenance,
     "/",
     FRAG_WATCHDOG_SCRIPT,

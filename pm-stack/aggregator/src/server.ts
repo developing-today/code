@@ -1697,9 +1697,13 @@ async function attentionContext(opts: { census?: boolean } = {}) {
 }
 
 /**
- * One Datastar patch-elements event (#1444). The fragment root
- * carries its own id + data-on-load attributes, so "outer" mode
- * replaces the shell's placeholder with a self-refreshing container.
+ * One Datastar patch-elements event (#1444). The fragment root carries
+ * its own id + `data-on:dashrefresh__window` refresh hook, so "outer"
+ * mode replaces the shell's placeholder with a self-refreshing
+ * container. The payload deliberately carries NO `data-init` (#10605):
+ * an outer-mode patch re-mounts the element, so an init trigger inside
+ * the payload would fetch itself again on every patch — a loop. First
+ * paint is driven by the shell placeholder's `data-init` instead.
  */
 function ssePatch(selector: string, elementHtml: string): string {
   const lines = elementHtml
@@ -2553,7 +2557,7 @@ async function handler(req: Request): Promise<Response> {
   }
   if (path === "/frag/overview") {
     const data = await overviewContext();
-    const wrapped = `<div id="overview-main" data-frag data-on-load="@get('/frag/overview')" data-on:dashrefresh__window="@get('/frag/overview')">${renderOverviewBody(deriveOverview(data))}</div>`;
+    const wrapped = `<div id="overview-main" data-frag data-on:dashrefresh__window="@get('/frag/overview')">${renderOverviewBody(deriveOverview(data))}</div>`;
     return sseResponse(ssePatch("#overview-main", wrapped));
   }
   if (path === "/board") {
@@ -2584,7 +2588,7 @@ async function handler(req: Request): Promise<Response> {
     const fragUrl = fragBoardUrl(url.searchParams);
     const resolved = await resolveView(url);
     const view = resolved ? filterBoardForView(board, items, act.poolByRef, resolved.filters) : { board, items };
-    const wrapped = `<div id="board-main" data-frag data-on-load="@get('${fragUrl}')" data-on:dashrefresh__window="@get('${fragUrl}')">${renderBoardBody(view.board, view.items, counts, act, { showAllDone: url.searchParams.get("done") === "all" })}</div>`;
+    const wrapped = `<div id="board-main" data-frag data-on:dashrefresh__window="@get('${fragUrl}')">${renderBoardBody(view.board, view.items, counts, act, { showAllDone: url.searchParams.get("done") === "all" })}</div>`;
     return sseResponse(ssePatch("#board-main", wrapped));
   }
 
@@ -2629,7 +2633,7 @@ async function handler(req: Request): Promise<Response> {
     // is from page load, which its footer states. (?full=1 never uses
     // the shell, so it passes questionsHtml via renderToday instead.)
     const { today, view, coverage, quota, health, quotaUnavailable, queue, queueStale } = await todayContext();
-    const wrapped = `<div id="today-main" data-frag data-on-load="@get('/frag/today')" data-on:dashrefresh__window="@get('/frag/today')">${renderTodayBody(today, view, quota, coverage, health, quotaUnavailable, queue, queueStale)}</div>`;
+    const wrapped = `<div id="today-main" data-frag data-on:dashrefresh__window="@get('/frag/today')">${renderTodayBody(today, view, quota, coverage, health, quotaUnavailable, queue, queueStale)}</div>`;
     return sseResponse(ssePatch("#today-main", wrapped));
   }
 
@@ -2653,7 +2657,7 @@ async function handler(req: Request): Promise<Response> {
   }
   if (path === "/frag/queue") {
     const view = await queueContext();
-    const wrapped = `<div id="queue-main" data-frag data-on-load="@get('/frag/queue')" data-on:dashrefresh__window="@get('/frag/queue')">${renderQueueBody(view)}</div>`;
+    const wrapped = `<div id="queue-main" data-frag data-on:dashrefresh__window="@get('/frag/queue')">${renderQueueBody(view)}</div>`;
     return sseResponse(ssePatch("#queue-main", wrapped));
   }
 
