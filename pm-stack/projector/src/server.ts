@@ -79,6 +79,20 @@ export const DEFAULT_ITEMS_LIMIT = 200;
 export const MAX_ITEMS_LIMIT = 1000;
 export const DEFAULT_COMMENTS_LIMIT = 500;
 export const MAX_COMMENTS_LIMIT = 1000;
+export const DEFAULT_LINKS_LIMIT = 500;
+export const MAX_LINKS_LIMIT = 1000;
+
+/** Cap on the ref list accepted by the `refs` query parameter (#10595).
+ *  Each ref becomes one SQL placeholder, so an unbounded list is both a row
+ *  amplification and a host-variable-size hazard. The aggregator chunks its
+ *  reads at 200 refs (PROJECTOR_REFS_PER_REQUEST), well under this. */
+export const MAX_REFS = 500;
+
+/** Split a comma-separated `refs` parameter into a de-duplicated ref list. */
+export function parseRefs(raw: string | null): string[] {
+  if (!raw) return [];
+  return [...new Set(raw.split(",").map((s) => s.trim()).filter(Boolean))];
+}
 
 /**
  * Parse the `limit` query parameter (#1547). Only a positive integer is
@@ -292,11 +306,13 @@ export async function handleRequest(
   if (path === "/items" && method === "GET") {
     const refsParam = url.searchParams.get("refs");
     if (refsParam) {
-      const refs = refsParam
-        .split(",")
-        .map((s) => s.trim())
-        .filter(Boolean);
-      const rows = await store.getItems(db, refs);
+      const refs = parseRefs(refsParam);
+      if (refs.length > MAX_REFS) {
+        return jsonResponse(400, { error: "too_many_refs", max: MAX_REFS });
+      }
+      const rows = await store.getItems(db, refs, {
+        limit: parseLimit(url.searchParams.get("limit"), DEFAULT_ITEMS_LIMIT, MAX_ITEMS_LIMIT),
+      });
       return jsonResponse(200, { items: rows });
     }
     const rows = await store.listItems(db, {
@@ -317,10 +333,10 @@ export async function handleRequest(
       const rows = await store.getCommentsForSubject(db, subject, { limit });
       return jsonResponse(200, { comments: rows });
     }
-    const refs = (refsParam ?? "")
-      .split(",")
-      .map((s) => s.trim())
-      .filter(Boolean);
+    const refs = parseRefs(refsParam);
+    if (refs.length > MAX_REFS) {
+      return jsonResponse(400, { error: "too_many_refs", max: MAX_REFS });
+    }
     const rows = await store.getComments(db, refs, { limit });
     return jsonResponse(200, { comments: rows });
   }
@@ -330,8 +346,18 @@ export async function handleRequest(
     if (method === "GET") {
       const subject = url.searchParams.get("subject");
       const ref = url.searchParams.get("ref");
-      const rows = await store.getLinks(db, { subject: subject ?? undefined, ref: ref ?? undefined });
-      return jsonResponse(200, { links: rows });
+      const limit = parseLimit(url.searchParams.get("limit"), DEFAULT_LINKS_LIMIT, MAX_LINKS_LIMIT);
+      const offset = parseCursor(url.searchParams.get("offset")) ?? 0;
+      const rows = await store.getLinks(db, {
+        subject: subject ?? undefined,
+        ref: ref ?? undefined,
+        limit,
+        offset,
+      });
+      return jsonResponse(200, {
+        links: rows,
+        next_offset: rows.length === limit ? offset + limit : null,
+      });
     }
     if (method === "POST" && bearerAuthorized(req, env)) {
       let body: any;
