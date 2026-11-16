@@ -17,7 +17,8 @@ func TestTaskStoreAccessorReturnsTheOneStore(t *testing.T) {
 	if s.TaskStore() != s.taskStore() {
 		t.Fatal("TaskStore() must return the daemon's one store instance")
 	}
-	if s.TaskStore() != s.TaskStore() {
+	one, two := s.TaskStore(), s.TaskStore()
+	if one != two {
 		t.Fatal("TaskStore() must not create a second store")
 	}
 }

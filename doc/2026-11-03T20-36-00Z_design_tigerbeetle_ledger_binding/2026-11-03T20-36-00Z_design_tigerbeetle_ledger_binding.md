@@ -123,3 +123,19 @@ the submitted leg, all legs report `Exists`. A genuinely failed
 chain never starts with `Exists`, and a differing stored leg fails
 verification, so both keep the raw mapping. Covered live by
 `live_same_request_twice_posts_once` (Codex review, PR #5072).
+
+---
+
+## 2026-11-09T00-34-06Z Update: failure contract is now fallible, not panicking
+
+**Superseded:** "Status mapping and panic stance" and the `wire_code` /
+`poc_code` panic notes above. The binding no longer panics on unmodelled
+statuses, transport failures, out-of-range codes or poisoned registries.
+Unmodelled statuses and transport failures become typed errors
+(`AccountError`/`TransferError`), and the trait gained fallible
+`try_lookup_transfer`, `try_lookup_account`, `try_account_balance` and
+`try_transfers_with_user_data_128` methods; the old `Option`/`Vec`
+lookups survive as best-effort defaults. This was required by issue #5950
+(fix production diagnostics, do not allow them). See
+[`2026-11-09T00-34-06Z_design_tigerbeetle_ledger_binding_failure_contract.md`](2026-11-09T00-34-06Z_design_tigerbeetle_ledger_binding_failure_contract.md)
+for the full contract.

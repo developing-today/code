@@ -21,9 +21,11 @@ import (
 // something a human types, and it survives being written by every runtime.
 const Sentinel = "\x1emcpx\x1e"
 
-// wireRecord is the JSON a script emits. Three kinds travel the same channel:
-// "log" is diagnostics, "result" is a streamed value, and "artifact" is a
-// file the script registered with the daemon. Sharing the channel keeps them
+// wireRecord is the JSON a script emits. Four kinds travel the same channel:
+// "log" is diagnostics, "result" is a streamed value, "artifact" is a
+// file the script registered with the daemon, and "final" is the value of
+// a snippet's final top-level expression (CODE-19). Sharing the channel
+// keeps them
 // ordered relative to one another, which matters when a log line explains the
 // result that follows it, and when a consumer wants to know an artifact
 // exists before the run has finished.
@@ -55,6 +57,32 @@ type Artifacted struct {
 	Time time.Time
 	ID   string
 	Name string
+}
+
+// ParseFinal returns the value of a snippet's final top-level
+// expression (CODE-19) if the line carries one. An absent value --
+// the expression evaluated to undefined, which JSON drops from the
+// record -- reads as null, matching ParseResult.
+func ParseFinal(line string) (Streamed, bool) {
+	rest, ok := strings.CutPrefix(line, Sentinel)
+	if !ok {
+		return Streamed{}, false
+	}
+	var w wireRecord
+	if err := json.Unmarshal([]byte(rest), &w); err != nil || w.Kind != "final" {
+		return Streamed{}, false
+	}
+	ts := time.Now()
+	if w.Time != "" {
+		if parsed, perr := time.Parse(time.RFC3339Nano, w.Time); perr == nil {
+			ts = parsed
+		}
+	}
+	value := w.Value
+	if len(value) == 0 {
+		value = json.RawMessage("null")
+	}
+	return Streamed{Time: ts, Value: value}, true
 }
 
 // ParseArtifact returns an artifact announcement if the line carries one.
@@ -108,7 +136,7 @@ func ParseLine(line string) (Record, bool) {
 		return Record{}, false
 	}
 	var w wireRecord
-	if err := json.Unmarshal([]byte(rest), &w); err == nil && (w.Kind == "result" || w.Kind == "artifact") {
+	if err := json.Unmarshal([]byte(rest), &w); err == nil && (w.Kind == "result" || w.Kind == "artifact" || w.Kind == "final") {
 		return Record{}, false
 	} else if err != nil {
 		// A malformed record is still more useful surfaced than dropped.
@@ -159,6 +187,9 @@ type StreamOptions struct {
 	Result func(Streamed)
 	// Artifact receives each file the script registered, in order.
 	Artifact func(Artifacted)
+	// Final receives the value of the snippet's final top-level
+	// expression (CODE-19), when the client reports one.
+	Final func(Streamed)
 }
 
 // Stream reads a script's stderr, rendering structured records through w and
@@ -176,6 +207,12 @@ func Stream(src io.Reader, w *Writer, opts StreamOptions) error {
 			}
 			continue
 		}
+		if fin, ok := ParseFinal(line); ok {
+			if opts.Final != nil {
+				opts.Final(fin)
+			}
+			continue
+		}
 		if art, ok := ParseArtifact(line); ok {
 			if opts.Artifact != nil {
 				opts.Artifact(art)
@@ -185,7 +222,7 @@ func Stream(src io.Reader, w *Writer, opts StreamOptions) error {
 		rec, ok := ParseLine(line)
 		if !ok {
 			if opts.Passthrough != nil {
-				io.WriteString(opts.Passthrough, line+"\n")
+				_, _ = io.WriteString(opts.Passthrough, line+"\n")
 			}
 			continue
 		}

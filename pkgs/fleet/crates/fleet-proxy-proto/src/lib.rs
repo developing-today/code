@@ -141,6 +141,17 @@ pub struct ServiceInfo {
 /// names the file whose contents the broker sends as `X-Agent-Token`
 /// for that request — the file is read by the broker per request; the
 /// token itself never appears in the frame beyond that name.
+///
+/// The 2026-11-15 transport fields (code#10356) ride the legacy
+/// dialect the Python clients already speak: `trip` is the caller's
+/// per-request id (the broker forwards it to the service as the
+/// `X-Trip-Id` header, joining the trip logs), `transport` is the
+/// caller's transport preference (`auto` | `cf` | `ts` — the broker
+/// owns the actual selection and reports the outcome on the
+/// response), and `cf_ok` is the caller's verdict that the request
+/// may ride the Cloudflare leg (the broker computes the same verdict
+/// from the body when the field is absent). All three are optional
+/// and additive: pre-field frames parse exactly as before.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Request {
     pub method: String,
@@ -151,14 +162,25 @@ pub struct Request {
     pub port: Option<u16>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub token_file: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub trip: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub transport: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cf_ok: Option<bool>,
 }
 
 /// A response frame: `{status, body}` — the HTTP status and parsed
-/// JSON body of the routed service's reply.
+/// JSON body of the routed service's reply. `transport` (2026-11-15,
+/// code#10356) names the transport leg the broker actually used
+/// (`cf` | `ts`), so a caller's trip record can prove which path a
+/// request rode; absent when the broker predates the field.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Response {
     pub status: u16,
     pub body: serde_json::Value,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub transport: Option<String>,
 }
 
 /// Frame-level errors. None of these ever carry payload contents —
@@ -329,12 +351,18 @@ mod tests {
             body: None,
             port: None,
             token_file: None,
+            trip: None,
+            transport: None,
+            cf_ok: None,
         };
         let frame = serde_json::to_value(&req).unwrap();
         assert_eq!(frame["method"], "GET");
         assert!(frame.get("body").is_none());
         assert!(frame.get("port").is_none());
         assert!(frame.get("token_file").is_none());
+        assert!(frame.get("trip").is_none());
+        assert!(frame.get("transport").is_none());
+        assert!(frame.get("cf_ok").is_none());
         assert_eq!(roundtrip(&req), req);
     }
 
@@ -355,6 +383,7 @@ mod tests {
         let resp = Response {
             status: 200,
             body: serde_json::json!({"ok": true}),
+            transport: None,
         };
         assert_eq!(roundtrip(&resp), resp);
     }

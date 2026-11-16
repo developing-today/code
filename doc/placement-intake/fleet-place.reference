@@ -1,0 +1,800 @@
+#!/usr/bin/env python3
+"""fleet-place — placement dispatcher for fleet build jobs.
+
+Reads the surface registry (tools/fleet-surfaces.json, data — never
+hardcoded here), decides WHERE a job runs across the fleet's Actions
+copies / runner providers / overflow surfaces, and — with --dispatch —
+submits it AS THE developing-today GitHub App (both installations, via
+the fleet-paperwork token machinery on the laptop). There is no
+user-token dispatch path in this tool.
+
+Every dispatch writes a session record (see docs/placement.md,
+" Sessions"). STOPGAP: session records live in a local JSON store at
+~/.local/state/fleet-place/sessions.json until the placement_sessions
+table designed in docs/placement.md lands in the queue backend
+(Supabase muse-dev2); the handle semantics are identical either way —
+clients present the handle, the store answers. Nothing about the
+client interface changes when the backend swaps.
+
+Placement cascade (docs/placement.md):
+  1. free GitHub-hosted Actions capacity on an eligible owner copy,
+     least-loaded owner first (live running+queued counts per owner
+     vs the plan concurrency cap in the registry);
+  2. Blacksmith on an org surface, inside its free-minute budget
+     (plus any paid cap the job/registry explicitly allows);
+  3. Codespaces, when Actions is tapped AND the laptop is saturated;
+  4. otherwise the job stays QUEUED — recorded, never dropped.
+
+Kinds are adapters: a new placement type is a new Adapter subclass
+plus a registry `kind` value. The dispatcher core below does not
+change when surfaces or kinds are added.
+
+Usage:
+  fleet-place submit --repo developing-today/code --command 'nix build .#mcpx' [--dispatch]
+  fleet-place status HANDLE
+  fleet-place result HANDLE
+  fleet-place surfaces
+"""
+
+import argparse
+import getpass
+import json
+import os
+import socket
+import subprocess
+import sys
+import time
+import urllib.error
+import urllib.request
+import uuid
+from datetime import datetime, timezone
+
+HERE = os.path.dirname(os.path.abspath(__file__))
+DEFAULT_REGISTRY = os.path.join(HERE, "fleet-surfaces.json")
+STATE_DIR = os.environ.get(
+    "FLEET_PLACE_STATE", os.path.expanduser("~/.local/state/fleet-place")
+)
+STATE_FILE = os.path.join(STATE_DIR, "sessions.json")
+PAPERWORK = os.environ.get(
+    "FLEET_PAPERWORK",
+    os.path.expanduser("~/git/code/infra/fleet-paperwork/fleet_paperwork.py"),
+)
+API = "https://api.github.com"
+
+
+def now_iso():
+    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def die(msg, code=2):
+    print(f"fleet-place: {msg}", file=sys.stderr)
+    sys.exit(code)
+
+
+# ---------------------------------------------------------------- store
+
+def load_store():
+    if os.path.exists(STATE_FILE):
+        with open(STATE_FILE) as f:
+            return json.load(f)
+    return {"sessions": {}, "blacksmith_dispatches": []}
+
+
+def save_store(store):
+    os.makedirs(STATE_DIR, exist_ok=True)
+    tmp = STATE_FILE + ".tmp"
+    with open(tmp, "w") as f:
+        json.dump(store, f, indent=2, sort_keys=True)
+    os.replace(tmp, STATE_FILE)
+
+
+# ------------------------------------------------------- app token flow
+
+_token_cache = {}
+
+
+def _mint_token(repo):
+    """Return an installation token for the repo's owner via the
+    fleet-paperwork helper, or None if the app does not cover the
+    repo / the helper is unavailable."""
+    if repo in _token_cache:
+        return _token_cache[repo]
+    if not os.path.exists(PAPERWORK):
+        return None
+    out = subprocess.run(
+        [sys.executable, PAPERWORK, "token", "--repo", repo],
+        capture_output=True, text=True,
+    )
+    if out.returncode != 0:
+        return None
+    tok = out.stdout.strip()
+    if not tok:
+        return None
+    _token_cache[repo] = tok
+    return tok
+
+
+def app_token(repo):
+    tok = _mint_token(repo)
+    if tok is None:
+        die(f"app token mint failed for {repo} (app does not cover it, "
+            f"or {PAPERWORK} is unavailable) — surface is ineligible for "
+            "app dispatch until covered")
+    return tok
+
+
+def gh_api(method, path, token=None, body=None):
+    url = path if path.startswith("http") else API + path
+    data = json.dumps(body).encode() if body is not None else None
+    req = urllib.request.Request(url, data=data, method=method)
+    req.add_header("Accept", "application/vnd.github+json")
+    req.add_header("X-GitHub-Api-Version", "2022-11-28")
+    if token:
+        req.add_header("Authorization", f"Bearer {token}")
+    if data:
+        req.add_header("Content-Type", "application/json")
+    try:
+        with urllib.request.urlopen(req, timeout=60) as resp:
+            raw = resp.read().decode()
+            return resp.status, (json.loads(raw) if raw else {})
+    except urllib.error.HTTPError as e:
+        raw = e.read().decode()
+        try:
+            payload = json.loads(raw) if raw else {}
+        except json.JSONDecodeError:
+            payload = {"message": raw}
+        return e.code, payload
+
+
+# ------------------------------------------------------------ adapters
+
+class Adapter:
+    """One adapter per registry `kind`. Contract:
+       eligible(job, ctx) -> (bool, reason)
+       capacity(job, ctx) -> dict with at least {'summary': str}
+       dispatch(job, surface, ctx) -> {'run_id':..., 'run_url':...}
+       status(session, ctx) -> mapped state str
+    ctx carries live per-owner load + testing overrides."""
+
+    kind = "?"
+
+    def __init__(self, surface):
+        self.surface = surface
+
+    def eligible(self, job, ctx):
+        s = self.surface
+        if s.get("status") != "active":
+            return False, f"surface status is {s.get('status')!r}, not 'active'"
+        targets = s.get("targets") or []
+        if "*" not in targets and job["repo"] not in targets:
+            return False, f"{job['repo']} is not in this surface's targets"
+        return True, "eligible"
+
+    def capacity(self, job, ctx):
+        return {"summary": "n/a"}
+
+    def dispatch(self, job, ctx):
+        raise NotImplementedError
+
+    def status(self, session, ctx):
+        return session["state"]
+
+
+class GithubActionsAdapter(Adapter):
+    kind = "github-actions"
+
+    def capacity(self, job, ctx):
+        owner = self.surface["owner"]
+        load = ctx["owner_load"].get(owner, {"running": 0, "queued": 0})
+        cap = ctx["owners"][owner]["concurrent_jobs_cap"]
+        active = load["running"] + load["queued"]
+        return {
+            "owner": owner, "running": load["running"],
+            "queued": load["queued"], "cap": cap,
+            "free_slots": max(0, cap - active),
+            "summary": (f"owner {owner}: {active} active job(s) on fleet "
+                        f"runner hosts (proxy for account load) vs cap "
+                        f"{cap} -> {max(0, cap - active)} free slot(s)"),
+        }
+
+    def eligible(self, job, ctx):
+        ok, why = Adapter.eligible(self, job, ctx)
+        if not ok:
+            return ok, why
+        if job.get("runner") == "blacksmith":
+            return False, "job pins runner=blacksmith; this is a github-runner surface"
+        return True, "eligible"
+
+    # -- dispatch plumbing shared with the Blacksmith adapter
+    def workflow_inputs(self, job):
+        entry = {"repo": job["repo"], "command": job["command"]}
+        if job.get("ref"):
+            entry["ref"] = job["ref"]
+        cache = {}
+        if job.get("push_nix_cache"):
+            cache["push_nix"] = True
+        if job.get("actions_cache"):
+            key, _, path = job["actions_cache"].partition(":")
+            cache["actions_key"] = key
+            cache["actions_path"] = path or "."
+        if cache:
+            entry["cache"] = cache
+            inputs = {"jobs": json.dumps([entry])}
+        else:
+            inputs = {"repo": job["repo"], "command": job["command"]}
+        # The `runner` input exists only on revisions of fleet-run
+        # that carry the fork deltas; upstream's workflow rejects
+        # unknown inputs. Send it only when it changes something
+        # (blacksmith) — github is every revision's default behavior.
+        if self.runner_name(job) == "blacksmith":
+            inputs["runner"] = "blacksmith"
+        if job.get("ref"):
+            inputs["ref"] = job["ref"]
+        return inputs
+
+    def runner_name(self, job):
+        return "github"
+
+    def dispatch(self, job, ctx):
+        s = self.surface
+        token = app_token(s["repo"])
+        inputs = self.workflow_inputs(job)
+        status, payload = gh_api(
+            "POST",
+            f"/repos/{s['repo']}/actions/workflows/{s['workflow']}/dispatches",
+            token=token, body={"ref": "main", "inputs": inputs},
+        )
+        if status != 204:
+            die(f"dispatch to {s['id']} failed: HTTP {status}: "
+                f"{payload.get('message', payload)}")
+        # Find the run the dispatch created (newest workflow_dispatch
+        # run at/after the dispatch instant).
+        since = time.time() - 5
+        run = None
+        for _ in range(12):
+            time.sleep(3)
+            st, runs = gh_api(
+                "GET",
+                f"/repos/{s['repo']}/actions/workflows/{s['workflow']}/runs"
+                "?event=workflow_dispatch&per_page=5",
+                token=token,
+            )
+            for r in runs.get("workflow_runs", []):
+                created = datetime.strptime(
+                    r["created_at"], "%Y-%m-%dT%H:%M:%SZ"
+                ).replace(tzinfo=timezone.utc).timestamp()
+                if created >= since:
+                    run = r
+                    break
+            if run:
+                break
+        if not run:
+            return {"run_id": None, "run_url": None,
+                    "note": "dispatch accepted (HTTP 204) but the run did "
+                            "not appear within ~40s; resolve it from the "
+                            "workflow's run list"}
+        return {"run_id": run["id"], "run_url": run["html_url"]}
+
+    def status(self, session, ctx):
+        if not session.get("run_id"):
+            return session["state"]
+        s = self.surface
+        token = app_token(s["repo"])
+        st, run = gh_api(
+            "GET", f"/repos/{s['repo']}/actions/runs/{session['run_id']}",
+            token=token,
+        )
+        if st != 200:
+            return session["state"]
+        return map_run_state(run)
+
+
+def map_run_state(run):
+    if run["status"] in ("queued", "waiting", "pending", "requested"):
+        return "queued"
+    if run["status"] == "in_progress":
+        return "running"
+    if run["status"] == "completed":
+        return {"success": "succeeded", "failure": "failed",
+                "timed_out": "failed", "cancelled": "cancelled",
+                "skipped": "succeeded", "neutral": "succeeded",
+                }.get(run.get("conclusion"), "failed")
+    return "unknown"
+
+
+class BlacksmithAdapter(GithubActionsAdapter):
+    """Blacksmith is a runner variant of an org fleet-run surface:
+    same workflow, runner input = blacksmith. Orgs only, budgeted."""
+
+    kind = "blacksmith"
+
+    def runner_name(self, job):
+        return "blacksmith"
+
+    def eligible(self, job, ctx):
+        s = self.surface
+        if s["owner"] == "dezren39":
+            return False, "Blacksmith is orgs-only; never the personal copy"
+        ok, why = Adapter.eligible(self, job, ctx)
+        if not ok:
+            return ok, why
+        if job.get("runner") == "github":
+            return False, "job pins runner=github"
+        return True, "eligible"
+
+    def budget(self, job, ctx):
+        b = self.surface.get("budget", {})
+        free = b.get("free_minutes_monthly", 3000)
+        paid_cap = b.get("paid_cap_minutes", 0) + (job.get("allow_paid_blacksmith") or 0)
+        used = ctx["blacksmith_used_minutes"]
+        return {
+            "free_minutes": free, "paid_cap_minutes": paid_cap,
+            "used_minutes": used,
+            "remaining_free": max(0, free - used),
+            "budget_minutes": free + paid_cap,
+            "remaining_total": max(0, free + paid_cap - used),
+        }
+
+    def capacity(self, job, ctx):
+        b = self.budget(job, ctx)
+        return {
+            **b,
+            "summary": (f"blacksmith budget: {b['used_minutes']:.0f} of "
+                        f"{b['free_minutes']} free min/mo used "
+                        f"(+{b['paid_cap_minutes']:.0f} paid cap allowed) "
+                        f"-> {b['remaining_total']:.0f} min placeable"),
+        }
+
+
+class CodespaceAdapter(Adapter):
+    kind = "codespace"
+
+    def _scope_ok(self):
+        if getattr(self, "_scope", None) is None:
+            out = subprocess.run(["gh", "codespace", "list", "--json", "name"],
+                                 capture_output=True, text=True)
+            self._scope = out.returncode == 0
+        return self._scope
+
+    def eligible(self, job, ctx):
+        ok, why = Adapter.eligible(self, job, ctx)
+        # status is pending-scope while the OAuth scope is ungranted;
+        # the live check below is the real gate either way.
+        if not self._scope_ok():
+            return False, ("gh codespace list fails (codespace OAuth scope "
+                           "not granted on this token) — surface pending-scope")
+        if not ctx["laptop_busy"]:
+            return False, ("codespaces are the last resort: laptop is not "
+                           "marked saturated, so this tier is not reached")
+        targets = self.surface.get("targets") or []
+        if "*" not in targets and job["repo"] not in targets:
+            return False, f"{job['repo']} is not in this surface's targets"
+        return True, "eligible"
+
+    def capacity(self, job, ctx):
+        return {"summary": (f"codespace budget: "
+                            f"{self.surface.get('budget', {}).get('core_hours_monthly', 180)} "
+                            "core-hours/mo (Pro); reuse-only, max "
+                            f"{self.surface.get('max_live', 3)} live")}
+
+    def dispatch(self, job, ctx):
+        out = subprocess.run(["gh", "codespace", "list", "--json",
+                              "name,repository,state"],
+                             capture_output=True, text=True)
+        if out.returncode != 0:
+            die("codespace list failed at dispatch time (scope lost?)")
+        spaces = [c for c in json.loads(out.stdout or "[]")
+                  if c["repository"] == job["repo"]]
+        if not spaces:
+            die("codespace surface selected but no existing codespace for "
+                f"{job['repo']} to reuse — fleet-place never creates "
+                "codespaces; create one deliberately, then resubmit")
+        name = spaces[0]["name"]
+        cmd = job["command"]
+        ssh = subprocess.run(
+            ["gh", "codespace", "ssh", "-c", name, "--", cmd],
+            capture_output=True, text=True)
+        return {"run_id": None, "run_url": None,
+                "codespace": name,
+                "note": f"job handed to a session in codespace {name} "
+                        f"(ssh exit {ssh.returncode})"}
+
+
+class LaptopAdapter(Adapter):
+    kind = "laptop"
+
+    def eligible(self, job, ctx):
+        if job.get("surface_pin") == self.surface["id"]:
+            return True, "job pins the laptop surface"
+        return False, ("laptop work is owned by pm-dispatch/repo-queue "
+                       "lanes; fleet-place only records pinned handoffs")
+
+    def capacity(self, job, ctx):
+        busy = ctx["laptop_busy"]
+        return {"summary": f"laptop busy flag: {busy} "
+                           f"({ctx['laptop_busy_source']})"}
+
+    def dispatch(self, job, ctx):
+        return {"run_id": None, "run_url": None,
+                "note": "handoff recorded; execution belongs to the "
+                        "laptop's pm-dispatch/repo-queue lanes"}
+
+
+ADAPTERS = {
+    "github-actions": GithubActionsAdapter,
+    "blacksmith": BlacksmithAdapter,
+    "codespace": CodespaceAdapter,
+    "laptop": LaptopAdapter,
+}
+
+
+# ------------------------------------------------------------- context
+
+def build_ctx(registry, args):
+    owners = registry["owners"]
+    # Live load per owner: running+queued Actions runs on the fleet's
+    # runner-host repos (a proxy for account load — GitHub exposes no
+    # account-wide runs endpoint). Testing overrides are labeled.
+    hosts = {}
+    for s in registry["surfaces"]:
+        if s.get("kind") in ("github-actions", "blacksmith") and s.get("repo"):
+            hosts.setdefault(s["owner"], set()).add(s["repo"])
+    owner_load = {}
+    overrides = {}
+    for raw in (getattr(args, "assume_owner_load", None) or "").split(","):
+        if "=" in raw:
+            k, v = raw.split("=", 1)
+            overrides[k.strip()] = int(v)
+    read_errors = []
+    for owner, repos in hosts.items():
+        running = queued = 0
+        for repo in repos:
+            token = _mint_token(repo)
+            if token is None:
+                read_errors.append(f"{repo}: app token unavailable "
+                                   "(not covered) — load counted as 0")
+                continue
+            for status_name in ("in_progress", "queued"):
+                st, payload = gh_api(
+                    "GET",
+                    f"/repos/{repo}/actions/runs?status={status_name}&per_page=1",
+                    token=token)
+                if st == 200:
+                    if status_name == "in_progress":
+                        running += payload.get("total_count", 0)
+                    else:
+                        queued += payload.get("total_count", 0)
+                else:
+                    read_errors.append(f"{repo} ({status_name}): HTTP {st}")
+        if owner in overrides:
+            running, queued = overrides[owner], 0
+        owner_load[owner] = {"running": running, "queued": queued}
+    laptop_cfg = registry.get("laptop", {})
+    laptop_busy = bool(getattr(args, "laptop_busy", False) or laptop_cfg.get("busy"))
+    store = load_store()
+    month = datetime.now(timezone.utc).strftime("%Y-%m")
+    used = 0.0
+    for rec in store.get("blacksmith_dispatches", []):
+        if rec["month"] == month:
+            used += rec.get("minutes", 0.0)
+    if getattr(args, "assume_blacksmith_used", None) is not None:
+        used = float(args.assume_blacksmith_used)
+    return {
+        "owners": owners, "owner_load": owner_load,
+        "owner_load_overridden": sorted(overrides),
+        "load_read_errors": read_errors,
+        "laptop_busy": laptop_busy,
+        "laptop_busy_source": ("--laptop-busy flag" if getattr(args, "laptop_busy", False)
+                               else laptop_cfg.get("busy_source", "registry laptop.busy")),
+        "blacksmith_used_minutes": used,
+        "store": store,
+    }
+
+
+# ------------------------------------------------------------- cascade
+
+def decide(registry, job, ctx):
+    """Return (surface, adapter, reasoning list). Surface may be None
+    (job stays queued)."""
+    reasoning = []
+    surfaces = registry["surfaces"]
+    adapters = {}
+    for s in surfaces:
+        cls = ADAPTERS.get(s["kind"])
+        if cls:
+            adapters[s["id"]] = cls(s)
+
+    if job.get("surface_pin"):
+        sid = job["surface_pin"]
+        if sid not in adapters:
+            die(f"--surface {sid}: no such surface in the registry")
+        ad = adapters[sid]
+        ok, why = ad.eligible(job, ctx)
+        reasoning.append(f"pinned surface {sid}: eligible={ok} ({why})")
+        if not ok:
+            die(f"pinned surface {sid} is ineligible: {why}")
+        return ad.surface, ad, reasoning
+
+    # Tier 1 — free GitHub-hosted Actions capacity, least-loaded first.
+    tier1 = []
+    for s in surfaces:
+        if s["kind"] != "github-actions":
+            continue
+        ad = adapters[s["id"]]
+        ok, why = ad.eligible(job, ctx)
+        if not ok:
+            reasoning.append(f"tier1 skip {s['id']}: {why}")
+            continue
+        cap = ad.capacity(job, ctx)
+        reasoning.append(f"tier1 candidate {s['id']}: {cap['summary']}")
+        if cap["free_slots"] > 0:
+            tier1.append((cap["free_slots"], s["id"], ad))
+    if tier1:
+        tier1.sort(key=lambda t: (-t[0], t[1]))
+        _, sid, ad = tier1[0]
+        reasoning.append(f"tier1 pick {sid}: most free slots among eligible "
+                         "GitHub-hosted surfaces")
+        return ad.surface, ad, reasoning
+    reasoning.append("tier1 exhausted: no eligible GitHub-hosted surface "
+                     "has a free slot")
+
+    # Tier 2 — Blacksmith within budget (org surfaces only).
+    for s in surfaces:
+        if s["kind"] != "blacksmith":
+            continue
+        ad = adapters[s["id"]]
+        ok, why = ad.eligible(job, ctx)
+        if not ok:
+            reasoning.append(f"tier2 skip {s['id']}: {why}")
+            continue
+        cap = ad.capacity(job, ctx)
+        reasoning.append(f"tier2 candidate {s['id']}: {cap['summary']}")
+        if cap["remaining_total"] > 0:
+            reasoning.append(f"tier2 pick {s['id']}: budget remains")
+            return ad.surface, ad, reasoning
+    reasoning.append("tier2 exhausted: Blacksmith budget spent or ineligible")
+
+    # Tier 3 — Codespaces (last resort; needs laptop saturation).
+    for s in surfaces:
+        if s["kind"] != "codespace":
+            continue
+        ad = adapters[s["id"]]
+        ok, why = ad.eligible(job, ctx)
+        reasoning.append(f"tier3 {'candidate' if ok else 'skip'} {s['id']}: {why}")
+        if ok:
+            reasoning.append(f"tier3 pick {s['id']}")
+            return ad.surface, ad, reasoning
+
+    reasoning.append("all tiers exhausted — job stays queued (recorded, "
+                     "never dropped; repo-queue remains its system of record)")
+    return None, None, reasoning
+
+
+# ------------------------------------------------------------ commands
+
+def job_from_args(args):
+    return {
+        "repo": args.repo, "command": args.command, "ref": args.ref or "",
+        "runner": args.runner, "surface_pin": args.surface,
+        "push_nix_cache": bool(args.push_nix_cache),
+        "actions_cache": args.actions_cache,
+        "allow_paid_blacksmith": args.allow_paid_blacksmith,
+    }
+
+
+def cmd_submit(args):
+    with open(args.registry) as f:
+        registry = json.load(f)
+    job = job_from_args(args)
+    ctx = build_ctx(registry, args)
+    surface, adapter, reasoning = decide(registry, job, ctx)
+    out = {
+        "job": {k: v for k, v in job.items() if v not in ("", None, False)},
+        "decision": (surface["id"] if surface else "queued"),
+        "reasoning": reasoning,
+    }
+    if ctx["owner_load_overridden"]:
+        out["note"] = ("owner load OVERRIDDEN for this decision "
+                       f"({ctx['owner_load_overridden']}) — simulation, "
+                       "not live counts")
+    if ctx["load_read_errors"]:
+        out["load_read_errors"] = ctx["load_read_errors"]
+    if not args.dispatch:
+        out["mode"] = "dry-run (no session written; pass --dispatch to submit)"
+        print(json.dumps(out, indent=2) if args.json else render_decision(out))
+        return 0
+    if surface is None:
+        store = ctx["store"]
+        handle = "fp_" + uuid.uuid4().hex
+        store["sessions"][handle] = {
+            "handle": handle, "job": job, "surface": None,
+            "decision_reasoning": reasoning, "run_id": None,
+            "run_url": None, "state": "queued",
+            "submitted_by": f"{getpass.getuser()}@{socket.gethostname()}",
+            "actor": "developing-today[bot] (GitHub App dispatch)",
+            "created_at": now_iso(), "updated_at": now_iso(),
+        }
+        save_store(store)
+        out["handle"] = handle
+        out["state"] = "queued"
+        print(json.dumps(out, indent=2) if args.json else render_decision(out))
+        return 0
+    result = adapter.dispatch(job, ctx)
+    store = ctx["store"]
+    handle = "fp_" + uuid.uuid4().hex
+    record = {
+        "handle": handle, "job": job, "surface": surface["id"],
+        "surface_kind": surface["kind"],
+        "decision_reasoning": reasoning,
+        "run_id": result.get("run_id"), "run_url": result.get("run_url"),
+        "state": "queued" if result.get("run_id") else "dispatched",
+        "submitted_by": f"{getpass.getuser()}@{socket.gethostname()}",
+        "actor": "developing-today[bot] (GitHub App dispatch)",
+        "created_at": now_iso(), "updated_at": now_iso(),
+    }
+    if result.get("note"):
+        record["note"] = result["note"]
+    if result.get("codespace"):
+        record["codespace"] = result["codespace"]
+    store["sessions"][handle] = record
+    if surface["kind"] == "blacksmith":
+        store.setdefault("blacksmith_dispatches", []).append({
+            "handle": handle,
+            "month": datetime.now(timezone.utc).strftime("%Y-%m"),
+            "minutes": 0.0, "run_id": result.get("run_id"),
+            "note": "minutes reconciled from the run's duration on "
+                    "later invocations",
+        })
+    save_store(store)
+    out["handle"] = handle
+    out["run_id"] = result.get("run_id")
+    out["run_url"] = result.get("run_url")
+    print(json.dumps(out, indent=2) if args.json else render_decision(out))
+    return 0
+
+
+def render_decision(out):
+    lines = [f"decision: {out['decision']}"]
+    if out.get("handle"):
+        lines.append(f"handle:   {out['handle']}")
+    if out.get("run_url"):
+        lines.append(f"run:      {out['run_url']}")
+    for r in out["reasoning"]:
+        lines.append(f"  - {r}")
+    if out.get("note"):
+        lines.append(f"note: {out['note']}")
+    if out.get("mode"):
+        lines.append(out["mode"])
+    return "\n".join(lines)
+
+
+def load_session(handle):
+    store = load_store()
+    rec = store["sessions"].get(handle)
+    if not rec:
+        die(f"no session with handle {handle} in {STATE_FILE}")
+    return store, rec
+
+
+def refresh_session(rec, registry):
+    """Map the backing run's live state onto the session record."""
+    if not rec.get("run_id") or not rec.get("surface"):
+        return rec
+    surface = next((s for s in registry["surfaces"]
+                    if s["id"] == rec["surface"]), None)
+    if not surface:
+        return rec
+    adapter = ADAPTERS[surface["kind"]](surface)
+    ctx = {"owners": registry["owners"], "owner_load": {},
+           "laptop_busy": False, "laptop_busy_source": "n/a",
+           "blacksmith_used_minutes": 0.0, "store": None,
+           "owner_load_overridden": [], "load_read_errors": []}
+    state = adapter.status(rec, ctx)
+    if state != rec["state"]:
+        rec["state"] = state
+        rec["updated_at"] = now_iso()
+    # Reconcile Blacksmith minutes from the run's real duration.
+    if surface["kind"] == "blacksmith" and state in ("succeeded", "failed", "cancelled"):
+        token = app_token(surface["repo"])
+        st, run = gh_api("GET",
+                         f"/repos/{surface['repo']}/actions/runs/{rec['run_id']}",
+                         token=token)
+        if st == 200 and run.get("run_started_at") and run.get("updated_at"):
+            fmt = "%Y-%m-%dT%H:%M:%SZ"
+            dur = (datetime.strptime(run["updated_at"], fmt)
+                   - datetime.strptime(run["run_started_at"], fmt)).total_seconds() / 60.0
+            store = load_store()
+            for d in store.get("blacksmith_dispatches", []):
+                if d.get("handle") == rec["handle"]:
+                    d["minutes"] = round(dur, 2)
+            save_store(store)
+    return rec
+
+
+def cmd_status(args):
+    with open(args.registry) as f:
+        registry = json.load(f)
+    store, rec = load_session(args.handle)
+    rec = refresh_session(rec, registry)
+    store["sessions"][args.handle] = rec
+    save_store(store)
+    print(json.dumps(rec, indent=2) if args.json else
+          f"{rec['handle']}: state={rec['state']} surface={rec['surface']} "
+          f"run={rec.get('run_url')}")
+    return 0
+
+
+def cmd_result(args):
+    with open(args.registry) as f:
+        registry = json.load(f)
+    store, rec = load_session(args.handle)
+    rec = refresh_session(rec, registry)
+    store["sessions"][args.handle] = rec
+    save_store(store)
+    terminal = rec["state"] in ("succeeded", "failed", "cancelled")
+    out = dict(rec)
+    out["terminal"] = terminal
+    if not terminal:
+        out["note"] = "not terminal yet — reconnect with the same handle"
+    print(json.dumps(out, indent=2) if args.json else
+          f"{rec['handle']}: {rec['state']} (terminal={terminal}) "
+          f"run={rec.get('run_url')}")
+    return 0
+
+
+def cmd_surfaces(args):
+    with open(args.registry) as f:
+        registry = json.load(f)
+    print(json.dumps(registry, indent=2))
+    return 0
+
+
+def main():
+    p = argparse.ArgumentParser(prog="fleet-place", description=__doc__,
+                                formatter_class=argparse.RawDescriptionHelpFormatter)
+    p.add_argument("--registry", default=DEFAULT_REGISTRY)
+    sub = p.add_subparsers(dest="cmd", required=True)
+
+    ps = sub.add_parser("submit", help="place a job (dry-run unless --dispatch)")
+    ps.add_argument("--repo", required=True)
+    ps.add_argument("--command", required=True)
+    ps.add_argument("--ref", default="")
+    ps.add_argument("--runner", choices=["auto", "github", "blacksmith"],
+                    default="auto")
+    ps.add_argument("--surface", default=None, help="pin a surface id")
+    ps.add_argument("--push-nix-cache", action="store_true",
+                    help="job leaves ./result; push its closure to the fleet R2 cache")
+    ps.add_argument("--actions-cache", default=None, metavar="KEY:PATH",
+                    help="opt into actions/cache for PATH under KEY")
+    ps.add_argument("--allow-paid-blacksmith", type=float, default=0,
+                    help="extra PAID Blacksmith minutes this job may spend")
+    ps.add_argument("--laptop-busy", action="store_true",
+                    help="mark the laptop saturated (gates the codespace tier)")
+    ps.add_argument("--assume-owner-load", default="",
+                    help="TESTING: override live load, e.g. developing-today=20,dezren39=40")
+    ps.add_argument("--assume-blacksmith-used", type=float, default=None,
+                    help="TESTING: override Blacksmith minutes used this month")
+    ps.add_argument("--dispatch", action="store_true",
+                    help="actually submit (default is dry-run)")
+    ps.add_argument("--json", action="store_true")
+    ps.set_defaults(fn=cmd_submit)
+
+    pst = sub.add_parser("status", help="fetch a session's state by handle")
+    pst.add_argument("handle")
+    pst.add_argument("--json", action="store_true")
+    pst.set_defaults(fn=cmd_status)
+
+    pr = sub.add_parser("result", help="fetch a session's terminal result by handle")
+    pr.add_argument("handle")
+    pr.add_argument("--json", action="store_true")
+    pr.set_defaults(fn=cmd_result)
+
+    psu = sub.add_parser("surfaces", help="print the surface registry")
+    psu.set_defaults(fn=cmd_surfaces)
+
+    args = p.parse_args()
+    return args.fn(args)
+
+
+if __name__ == "__main__":
+    sys.exit(main())

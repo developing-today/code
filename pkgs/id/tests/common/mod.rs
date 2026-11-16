@@ -11,6 +11,7 @@
 
 pub mod chain;
 pub mod ingest;
+pub mod loadgen;
 
 /// Every network step in these tests must finish within this, so a stuck
 /// request fails the test instead of hanging the suite (issue #5218).

@@ -16,6 +16,7 @@ import (
 	"github.com/developing-today/code/pkgs/mcpx/internal/elicit"
 	"github.com/developing-today/code/pkgs/mcpx/internal/mcpclient"
 	"github.com/developing-today/code/pkgs/mcpx/internal/pool"
+	"github.com/developing-today/code/pkgs/mcpx/internal/testsupport"
 )
 
 // The write policy gate (#1979), in the destructive_test.go fixture
@@ -119,6 +120,77 @@ func TestRegistryPreDispatchFailureDoesNotRecordUnknownOutcome(t *testing.T) {
 	}
 	if _, blocked := ledger.Lookup("demo"); blocked {
 		t.Fatal("pre-dispatch failure incorrectly recorded an unknown outcome")
+	}
+}
+
+// (#6493) The post-dispatch ledger classification honors the operator's
+// readOnlyTools declaration, not just tool annotations. Oracle: after a
+// genuinely post-dispatch failure -- the fake server's "slow" tool is
+// dispatched, then the call context times out before any response --
+// the ledger must contain no unknown-outcome record for the declared
+// read-only tool, and must still contain one for the same tool when it
+// is not declared. "slow" carries no annotations, so the annotation
+// path alone classifies it as a write in both cases.
+func TestCallWithLedgerHonorsDeclaredReadOnlyAfterDispatch(t *testing.T) {
+	run := func(t *testing.T, declared bool) (error, bool) {
+		t.Helper()
+		ledger, err := OpenWriteLedger(t.TempDir())
+		if err != nil {
+			t.Fatal(err)
+		}
+		var r *Registry
+		if declared {
+			r = writePolicyRegistryWithReadOnly("allow", "slow")
+		} else {
+			r = writePolicyRegistry("allow")
+		}
+		r.writeLedger = ledger
+		// Resolve through the real config path, as the pool tests do:
+		// a hand-built Resolved leaves the folded defaults (instance
+		// cap, start/call timeouts) at zero and the pool cannot serve.
+		cfg := &config.Config{MCPServers: map[string]*config.Server{
+			"demo": {Name: "demo", Command: testsupport.FakeMCPBinary(t)},
+		}}
+		resolved, err := cfg.Resolve("demo")
+		if err != nil {
+			t.Fatalf("resolve: %v", err)
+		}
+		scopeKey, _ := resolved.Scope.Key(config.CallContext{})
+		p := pool.New(resolved)
+		t.Cleanup(p.Close)
+		// Warm the pool with a generous context first: cold start and
+		// discovery must not eat the timed call's budget, or the failure
+		// lands in discovery (pre-dispatch) instead of after dispatch.
+		warmCtx, warmCancel := context.WithTimeout(context.Background(), 90*time.Second)
+		defer warmCancel()
+		if _, err := p.Call(warmCtx, config.ResolvedScope{Key: scopeKey}, "echo", map[string]any{"message": "warm"}); err != nil {
+			t.Fatalf("warm-up call: %v", err)
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		_, callErr := r.callWithLedger(ctx, p, "demo", "slow", map[string]any{"ms": 30000}, config.ResolvedScope{Key: scopeKey}, "call")
+		if callErr == nil {
+			t.Fatal("slow call unexpectedly succeeded")
+		}
+		_, blocked := ledger.Lookup("demo")
+		return callErr, blocked
+	}
+
+	callErr, blocked := run(t, true)
+	var unknown ErrUnknownOutcome
+	if errors.As(callErr, &unknown) {
+		t.Fatalf("declared read-only post-dispatch failure = %v, want the raw call error", callErr)
+	}
+	if blocked {
+		t.Fatal("declared read-only tool recorded an unknown outcome after a post-dispatch failure")
+	}
+
+	callErr, blocked = run(t, false)
+	if !errors.As(callErr, &unknown) {
+		t.Fatalf("undeclared post-dispatch failure = %T %v, want ErrUnknownOutcome", callErr, callErr)
+	}
+	if !blocked {
+		t.Fatal("undeclared write tool recorded no unknown outcome after a post-dispatch failure")
 	}
 }
 
@@ -388,7 +460,7 @@ func TestDeclaredReadOnlyClearsTheDestructiveFloor(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer broker.Close()
+	defer func() { _ = broker.Close() }()
 	r := &Registry{
 		consumer: ConsumerPolicy{
 			WritePolicy:        "allow",

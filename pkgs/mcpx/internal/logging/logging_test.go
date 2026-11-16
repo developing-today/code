@@ -355,3 +355,37 @@ func TestSlogSourceAppliesOnlyAtOrAboveTheLevel(t *testing.T) {
 		t.Errorf("warn should be traced at a warn threshold: %s", buf.String())
 	}
 }
+
+// CODE-19 (#1937): the "final" record kind carries a snippet's
+// final-expression value, parses only as itself, and streams to
+// its own handler.
+func TestFinalKindParsesAndStaysApart(t *testing.T) {
+	fin, ok := logging.ParseFinal(logging.Sentinel + `{"kind":"final","value":{"answer":42}}`)
+	if !ok || string(fin.Value) != `{"answer":42}` {
+		t.Errorf("final record: ok = %v, value = %s", ok, fin.Value)
+	}
+	// An absent value -- the expression was undefined, which JSON
+	// drops -- reads as null.
+	fin, ok = logging.ParseFinal(logging.Sentinel + `{"kind":"final"}`)
+	if !ok || string(fin.Value) != "null" {
+		t.Errorf("valueless final: ok = %v, value = %s", ok, fin.Value)
+	}
+	if _, ok := logging.ParseFinal(logging.Sentinel + `{"kind":"result","value":1}`); ok {
+		t.Error("a result record should not parse as a final")
+	}
+	if _, ok := logging.ParseLine(logging.Sentinel + `{"kind":"final","value":1}`); ok {
+		t.Error("a final record should not parse as a log record")
+	}
+	var finals []logging.Streamed
+	var buf bytes.Buffer
+	src := logging.Sentinel + `{"kind":"final","value":7}` + "\n"
+	err := logging.Stream(strings.NewReader(src),
+		logging.NewWriter(&buf, logging.FormatLogfmt, slog.LevelDebug),
+		logging.StreamOptions{Final: func(v logging.Streamed) { finals = append(finals, v) }})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(finals) != 1 || string(finals[0].Value) != "7" {
+		t.Errorf("streamed finals = %+v", finals)
+	}
+}

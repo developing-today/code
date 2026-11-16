@@ -450,7 +450,7 @@ func newClient(ctx context.Context, t Transport, o Options) (*Client, error) {
 		err = c.probe(ctx, true)
 	}
 	if err != nil {
-		c.Close()
+		_ = c.Close()
 		return nil, err
 	}
 	if c.Era == EraModern {
@@ -664,7 +664,7 @@ func (c *Client) dispatch(origin context.Context, raw []byte) {
 	}
 }
 
-// OnElicit is called when a server asks a question. Nil means mcpx answers
+// ElicitHandler is called when a server asks a question. Nil means mcpx answers
 // on the server's behalf, which it must do rather than ignore: a server that
 // asks into silence waits until the call times out.
 type ElicitHandler func(ctx context.Context, method string, params json.RawMessage) (any, error)
@@ -706,6 +706,63 @@ func (c *Client) SetSessionSettledHook(fn func()) {
 	c.mu.Lock()
 	c.onSessionSettled = fn
 	c.mu.Unlock()
+}
+
+// requestStateOf returns the requestState a -32042 error's data carries,
+// the server's handle for the still-suspended call (#2897), or "".
+func requestStateOf(err error) string {
+	var re *rpcError
+	if !errors.As(err, &re) {
+		return ""
+	}
+	var d struct {
+		RequestState string `json:"requestState"`
+	}
+	if json.Unmarshal(re.Data, &d) != nil {
+		return ""
+	}
+	return d.RequestState
+}
+
+// MetaRequestState is the _meta key a -32042 requestState is echoed
+// under on the retry (#2897). Repeated here rather than imported from
+// mcpserver so the two halves of mcpx do not depend on each other.
+// 2025-11-25 defines no requestState request parameter, so the token
+// travels in _meta, the open extension object: a top-level field would
+// fail strict schema validation of the retry frame.
+const MetaRequestState = "dev.mcpx/requestState"
+
+// withRequestState adds the requestState to a request's params _meta so
+// the retry resumes the original call rather than starting a second
+// one. A server that sent none (or params that are not an object) is
+// left as is.
+func withRequestState(params json.RawMessage, state string) json.RawMessage {
+	if state == "" {
+		return params
+	}
+	m := map[string]json.RawMessage{}
+	if json.Unmarshal(params, &m) != nil {
+		return params
+	}
+	b, err := json.Marshal(state)
+	if err != nil {
+		return params
+	}
+	meta := map[string]json.RawMessage{}
+	if raw, ok := m["_meta"]; ok {
+		_ = json.Unmarshal(raw, &meta)
+	}
+	meta[MetaRequestState] = b
+	mb, err := json.Marshal(meta)
+	if err != nil {
+		return params
+	}
+	m["_meta"] = mb
+	out, err := json.Marshal(m)
+	if err != nil {
+		return params
+	}
+	return out
 }
 
 // parseURLElicitations reads a -32042 error's data. ok is false for any
@@ -1757,6 +1814,7 @@ func (c *Client) CallTool(ctx context.Context, name string, args any) (json.RawM
 			retry, rerr := c.urlElicitationRetry(ctx, name, err)
 			if retry {
 				retried32042 = true
+				params = withRequestState(params, requestStateOf(err))
 				continue
 			}
 			err = rerr

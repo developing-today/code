@@ -50,6 +50,14 @@ func (p *Pool) watchExec(every time.Duration) {
 			return
 		case <-t.C:
 			if p.isClosed() {
+				// The pool is parked for a takeover. Exit so the
+				// closed pool costs nothing, but clear `watching`
+				// so a later Restore can start a fresh watch —
+				// otherwise the pool silently stops noticing
+				// executable changes for the rest of its life.
+				p.mu.Lock()
+				p.watching = false
+				p.mu.Unlock()
 				return
 			}
 			p.checkExec()
@@ -353,7 +361,7 @@ func (p *Pool) replaceable(in *Instance) bool {
 	if strings.HasPrefix(in.key, "call:") {
 		return false
 	}
-	return !(p.cfg.Scope.WatchesPID() && !keyPIDAlive(in.key))
+	return !p.cfg.Scope.WatchesPID() || keyPIDAlive(in.key)
 }
 
 // drain waits until the calls running on in have finished, or d has passed,

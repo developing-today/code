@@ -1,3 +1,4 @@
+// Package scripting implements mcpx's LLM-assisted script synthesis, validation and repair.
 package scripting
 
 import (
@@ -116,7 +117,7 @@ func (p *OpenAICompatibleProvider) Complete(ctx context.Context, req CompletionR
 	if err != nil {
 		return "", fmt.Errorf("provider %s request failed: %w", p.name, err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		errBody, _ := io.ReadAll(io.LimitReader(resp.Body, defaults.HTTPErrorBodyLimit))

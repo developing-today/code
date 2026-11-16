@@ -12,11 +12,35 @@
 // renewal date, but they render as explicit candidate cards — never
 // silently absent, never presented as held.
 
-import type { ChargeRow, DatedRead, PaygEstimate, PaygLine, SaasGroup, SaasService, UsageMetric } from "./model.ts";
+import type {
+  ChargeRow,
+  DatedRead,
+  ExtractionHealth,
+  PaygEstimate,
+  PaygLine,
+  SaasGroup,
+  SaasService,
+  SnapshotRecord,
+  UninstrumentedSaasService,
+  UsageMetric,
+} from "./model.ts";
 import { sectionOf } from "./quota-extract.ts";
 import { isFiniteNumber, isNonEmptyString, isNonNegative, isRecord, parseIsoDate } from "./validate.ts";
 
 const DATE_RE = /\d{4}-\d{2}-\d{2}/g;
+
+// Cap the string at max UTF-16 code units, but never leave half of a surrogate
+// pair at the cut (#7743, mirroring the #7694/#7711 capUnits guard in
+// actions.ts): an astral character straddling the cap is dropped whole.
+// Local copy, like comments.ts (#7731) and activity.ts (#7725).
+function capUnits(t: string, max: number): string {
+  if (t.length <= max) return t;
+  let end = max;
+  const before = t.charCodeAt(end - 1);
+  const after = t.charCodeAt(end);
+  if (before >= 0xd800 && before <= 0xdbff && after >= 0xdc00 && after <= 0xdfff) end--;
+  return t.slice(0, end);
+}
 
 /** Every ISO date in a text, ascending. */
 function datesIn(text: string): string[] {
@@ -72,7 +96,7 @@ function readsOf(section: string, cap = 14): DatedRead[] {
   for (const raw of section.split("\n")) {
     const line = raw.replace(/^-\s/, "").replace(/\*\*/g, "").trim();
     const at = freshestDate(line);
-    if (at && line.length > 12) reads.push({ at, text: line.slice(0, 400) });
+    if (at && line.length > 12) reads.push({ at, text: capUnits(line, 400) });
   }
   return reads.sort((a, b) => b.at.localeCompare(a.at)).slice(0, cap);
 }
@@ -82,7 +106,7 @@ function conflictsOf(section: string): string[] {
   const out: string[] = [];
   for (const raw of section.split("\n")) {
     const line = raw.replace(/^-\s/, "").replace(/\*\*/g, "").trim();
-    if (/conflict|discrepancy|disagree/i.test(line) && line.length > 12) out.push(line.slice(0, 400));
+    if (/conflict|discrepancy|disagree/i.test(line) && line.length > 12) out.push(capUnits(line, 400));
   }
   return out;
 }
@@ -107,7 +131,7 @@ function paygOf(section: string): { estimate: PaygEstimate | null; note?: string
         low: Number(m[1]),
         high: Number(m[2]),
         period: "per month",
-        note: stripPaygLabel(text).replace(/\*\*/g, "").slice(0, 300),
+        note: capUnits(stripPaygLabel(text).replace(/\*\*/g, ""), 300),
       },
     };
   }
@@ -118,7 +142,7 @@ function paygOf(section: string): { estimate: PaygEstimate | null; note?: string
     const why = stripPaygLabel(text)
       .replace(/^not applicable\s*—\s*/i, "")
       .split(".")[0];
-    return { estimate: null, note: `not applicable — ${why}`.slice(0, 220) };
+    return { estimate: null, note: capUnits(`not applicable — ${why}`, 220) };
   }
   return { estimate: null };
 }
@@ -159,7 +183,7 @@ function allowance(text: string, after: RegExp): number | null {
 
 // --- per-service metric extractors ----------------------------------------
 
-type MetricExtractor = (section: string, doc: string) => UsageMetric[];
+type MetricExtractor = (section: string, doc: string) => UsageMetric[] | null;
 
 const cloudflareMetrics: MetricExtractor = (section) => {
   const allowances = bullet(section, /\*\*Monthly allowances:\*\*/);
@@ -326,7 +350,8 @@ const cloudflareMetrics: MetricExtractor = (section) => {
       metric({ id: "queues-count", label: "Queues", unit: "count", used: Number(counts[5].replace(/,/g, "")) }),
     );
   }
-  return out.filter((m) => m.used != null || m.limit != null);
+  const metrics = out.filter((m) => m.used != null || m.limit != null);
+  return metrics.length ? metrics : null;
 };
 
 const tursoMetrics: MetricExtractor = (section) => {
@@ -334,7 +359,7 @@ const tursoMetrics: MetricExtractor = (section) => {
   const usage = bullet(section, /\*\*Usage \/ dates:\*\*/);
   const db = /([\d,]+) DB/.exec(usage);
   const zero = /0 B, 0 usage/.test(usage);
-  return [
+  const metrics = [
     metric({
       id: "databases",
       label: "Databases",
@@ -374,6 +399,7 @@ const tursoMetrics: MetricExtractor = (section) => {
       highlight: true,
     }),
   ].filter((m) => m.used != null || m.limit != null);
+  return metrics.length ? metrics : null;
 };
 
 const supabaseMetrics: MetricExtractor = () => [
@@ -447,6 +473,7 @@ const githubMetrics: MetricExtractor = (section) => {
       }),
     );
   }
+  if (!out.some((m) => m.used != null || m.limit != null)) return null;
   return out.filter((m) => m.used != null || m.limit != null || m.id === "actions-billable-minutes");
 };
 
@@ -466,6 +493,7 @@ const modalMetrics: MetricExtractor = (section) => {
     /used[:\s]+\$([\d,]+(?:\.\d+)?)/i.exec(usage) ??
     /used[:\s]+([\d,]+(?:\.\d+)?)\s*credits?\b/i.exec(usage);
   const used = usedMatch ? Number(usedMatch[1].replace(/,/g, "")) : null;
+  if (!credits && used == null) return null;
   return [
     metric({
       id: "compute-credits",
@@ -488,9 +516,10 @@ const modalMetrics: MetricExtractor = (section) => {
  * read 2026-10-26)". No metrics until a dated count is recorded. */
 const bitwardenMetrics: MetricExtractor = (section) => {
   const usage = bullet(section, /\*\*Usage \/ dates:\*\*/);
+
   const secrets = /([\d,]+)\s*secrets?/i.exec(usage);
   const projects = /([\d,]+)\s*projects?/i.exec(usage);
-  return [
+  const metrics = [
     metric({
       id: "secrets-count",
       label: "Secrets",
@@ -508,11 +537,12 @@ const bitwardenMetrics: MetricExtractor = (section) => {
       note: "bws count-only read (§2.2); names/values never enter the hub.",
     }),
   ].filter((m) => m.used != null);
+  return metrics.length ? metrics : null;
 };
 
 const ociMetrics: MetricExtractor = (section) => {
   const plan = bullet(section, /\*\*Plan \/ price \/ allowance:\*\*/);
-  return [
+  const metrics = [
     metric({
       id: "ocpu-hours",
       label: "A1 OCPU-hours / month",
@@ -539,6 +569,7 @@ const ociMetrics: MetricExtractor = (section) => {
       limit: allowance(plan, /([\d,.]+) GB object storage/),
     }),
   ].filter((m) => m.limit != null);
+  return metrics.length ? metrics : null;
 };
 
 // --- service table ----------------------------------------------------------
@@ -553,6 +584,8 @@ interface ServiceSpec {
   cadenceDays: number;
   metrics: MetricExtractor;
   shellNote: string;
+  /** False when this service intentionally has no local metric extractor. */
+  instrumented?: boolean;
 }
 
 const SERVICE_SPECS: ServiceSpec[] = [
@@ -587,6 +620,11 @@ const SERVICE_SPECS: ServiceSpec[] = [
     status: "active",
     cadenceDays: 7,
     metrics: supabaseMetrics,
+    // supabaseMetrics returns fixed placeholders (no pattern extraction
+    // from the section), so the service is intentionally uninstrumented
+    // for extraction-health purposes; live numbers arrive through the
+    // supabase-export overlay instead (Codex P2 on PR #3957).
+    instrumented: false,
     shellNote: "Free plan (muse-dev); numerical quotas unknown in local records.",
   },
   {
@@ -610,6 +648,7 @@ const SERVICE_SPECS: ServiceSpec[] = [
     cadenceDays: 7,
     metrics: () => [],
     shellNote: "In use for web deploys; tier, price and caps unknown — the first read establishes the baseline (§2.2).",
+    instrumented: false,
   },
   {
     id: "modal",
@@ -656,6 +695,7 @@ const SERVICE_SPECS: ServiceSpec[] = [
     metrics: () => [],
     shellNote:
       "Candidate — not held: no account exists (§1.4); evaluated in free-services-to-check.md. Listed so it is never silently absent (#1058).",
+    instrumented: false,
   },
   {
     id: "fly-io",
@@ -668,6 +708,7 @@ const SERVICE_SPECS: ServiceSpec[] = [
     metrics: () => [],
     shellNote:
       "Candidate — not held: no account, no meter, no renewal date. Listed so it is never silently absent (#1058).",
+    instrumented: false,
   },
   {
     id: "baseten",
@@ -680,6 +721,7 @@ const SERVICE_SPECS: ServiceSpec[] = [
     metrics: () => [],
     shellNote:
       "Candidate — not held: no account, no meter, no renewal date. Listed so it is never silently absent (#1058).",
+    instrumented: false,
   },
 ];
 
@@ -702,7 +744,11 @@ export function extractSaasServices(doc: string): SaasService[] {
       sourceClass: "manual",
       sourceNote: "quota-view.md Part (b) — local-record snapshot; no live checks performed",
       sources: {
-        quotaViewSection: spec.heading.source.replace(/^\^/, "").replace(/\$$/, ""),
+        // The displayed section name is the literal heading text: strip the
+        // regex anchors, then unescape regex escapes (Fly.io's heading is
+        // /^### Fly\.io$/ - without the unescape it renders a section name
+        // that does not exist in quota-view.md; #6848).
+        quotaViewSection: spec.heading.source.replace(/^\^/, "").replace(/\$$/, "").replace(/\\(.)/g, "$1"),
         trackerRow: row?.[0] ?? null,
         baselineDoc: "evidence-and-interpretation-baseline-2026-10-20.md (~/workspace/ai-subscriptions/)",
       },
@@ -712,12 +758,25 @@ export function extractSaasServices(doc: string): SaasService[] {
       reads: [],
       usageNote: spec.shellNote,
     };
+    const intentional: ExtractionHealth = {
+      status: "intentional",
+      matched: null,
+      reason: "uninstrumented",
+      count: 0,
+    };
     if (!section) {
-      services.push(shell);
+      services.push({
+        ...shell,
+        extractionHealth:
+          spec.instrumented === false
+            ? intentional
+            : { status: "gap", matched: false, reason: "section-missing", count: 0 },
+      });
       continue;
     }
     try {
       const payg = paygOf(section);
+      const metrics = spec.metrics(section, doc);
       const usageText = bullet(section, /\*\*Usage \/ dates:\*\*/).replace(/^\*\*Usage \/ dates:\*\*\s*/, "");
       // measuredAt = the freshest date in the section's own "Last
       // checked" record — NOT the freshest date anywhere in the
@@ -726,17 +785,26 @@ export function extractSaasServices(doc: string): SaasService[] {
       const measuredAt = freshestDate(bullet(section, /\*\*Last checked:\*\*/)) ?? freshestDate(section);
       services.push({
         ...shell,
-        metrics: spec.metrics(section, doc),
+        metrics: metrics ?? [],
+        extractionHealth:
+          metrics === null
+            ? { status: "gap", matched: false, reason: "extractor-null", count: 0 }
+            : spec.instrumented === false
+              ? intentional
+              : { status: "matched", matched: true, count: metrics.length },
         paygEstimate: payg.estimate,
         paygNote: payg.note,
         measuredAt,
         conflicts: conflictsOf(section),
         reads: readsOf(section),
-        usageNote: usageText ? usageText.slice(0, 600) : spec.shellNote,
+        usageNote: usageText ? capUnits(usageText, 600) : spec.shellNote,
         billedUsd: spec.id === "supabase" ? 0 : undefined,
       });
     } catch {
-      services.push(shell);
+      services.push({
+        ...shell,
+        extractionHealth: { status: "gap", matched: false, reason: "extractor-threw", count: 0 },
+      });
     }
   }
   // The Cloudflare zone is part of the one Cloudflare card (Q6): fold
@@ -750,6 +818,75 @@ export function extractSaasServices(doc: string): SaasService[] {
     if (zoneDate && (!cf.measuredAt || zoneDate > cf.measuredAt)) cf.measuredAt = zoneDate;
   }
   return services;
+}
+
+/** Extract the evaluated services table from free-services-to-check.md.
+ * Names, states, dates and guardrails remain source data: this function
+ * does not maintain a second code-defined registry. */
+export function extractUninstrumentedServices(doc: string): UninstrumentedSaasService[] {
+  const rows: UninstrumentedSaasService[] = [];
+  let columns: Record<string, number> | null = null;
+
+  const cellsOf = (line: string): string[] => {
+    // Split only on UNescaped pipes: a `\|` is cell content, not a
+    // delimiter — splitting on every `|` first shifts all later columns
+    // and the unescape afterwards cannot repair them (Codex P2, PR
+    // #3939). Backslash pairs are consumed while scanning so a `\\|`
+    // (escaped backslash, then a real delimiter) still splits.
+    const parts: string[] = [];
+    let current = "";
+    for (let i = 0; i < line.length; i++) {
+      const ch = line[i];
+      if (ch === "\\" && i + 1 < line.length) {
+        current += ch + line[i + 1];
+        i++;
+      } else if (ch === "|") {
+        parts.push(current);
+        current = "";
+      } else {
+        current += ch;
+      }
+    }
+    parts.push(current);
+    return parts.slice(1, -1).map((cell) => cell.replace(/\\\|/g, "|").replace(/\*\*/g, "").trim());
+  };
+
+  for (const line of doc.split(/\r?\n/)) {
+    if (!line.trimStart().startsWith("|")) {
+      columns = null;
+      continue;
+    }
+    const cells = cellsOf(line);
+    const header = cells.map((cell) => cell.toLowerCase());
+    const required = ["service", "what for", "status", "overage behavior", "guardrail notes"];
+    if (required.every((name) => header.includes(name))) {
+      columns = Object.fromEntries(required.map((name) => [name, header.indexOf(name)]));
+      continue;
+    }
+    if (!columns || cells.every((cell) => /^:?-{3,}:?$/.test(cell))) continue;
+
+    const name = cells[columns.service] ?? "";
+    const rawStatus = cells[columns.status] ?? "";
+    if (!name || !rawStatus) continue;
+
+    const checkedAt =
+      [...rawStatus.matchAll(DATE_RE)].map((match) => match[0]).find((date) => parseIsoDate(date) !== null) ?? null;
+    const status =
+      (checkedAt ? rawStatus.replace(checkedAt, "") : rawStatus)
+        .replace(/^\s*[—–-]\s*/, "")
+        .replace(/\s+/g, " ")
+        .trim() || (checkedAt ? "checked" : "unknown");
+
+    rows.push({
+      name,
+      whatFor: cells[columns["what for"]] ?? "",
+      status,
+      checkedAt,
+      overageBehavior: cells[columns["overage behavior"]] ?? "",
+      guardrailNotes: cells[columns["guardrail notes"]] ?? "",
+    });
+  }
+  return rows;
 }
 
 // --- Cloudflare live export overlay (#1048) ----------------------------------
@@ -984,7 +1121,7 @@ export function applySupabaseExport(
       limit,
       unit,
       percent: used != null && limit != null && limit > 0 ? Math.round((used / limit) * 1000) / 10 : undefined,
-      note: parts.join(" ").slice(0, 600),
+      note: capUnits(parts.join(" "), 600),
     };
   });
   if (doc.billing && doc.billing.measured !== false && isNonNegative(doc.billing.billedUsd)) {
@@ -1011,47 +1148,212 @@ export function applySupabaseExport(
 
 // --- PAYG lines (§1.2) -------------------------------------------------------
 
+/** One invoice cycle for the stewardship stale-estimate flag rule
+ * (#1056): an unreconciled estimate whose period ended longer ago than
+ * this, with no settled record, is flagged on the PAYG card and named
+ * in the stewardship cycle log. */
+export const INVOICE_CYCLE_MS = 31 * 24 * 60 * 60 * 1000;
+
+const roundUsd = (n: number): number => Math.round(n * 100) / 100;
+const signedUsd = (n: number): string => `${n < 0 ? "-$" : "+$"}${Math.abs(n).toFixed(2)}`;
+
+/** Snapshot-store settlement records, keyed by PAYG line id: the settled
+ * counterpart records the reconciliation writes (invoice-source for
+ * Cloudflare; the collected-figure record for Meta). See
+ * recordsFromPaygLines for the writer side of the same keying. */
+const PAYG_SETTLEMENT_KEYS: Record<string, { serviceId: string; metricId: string }> = {
+  "cloudflare-gateway": { serviceId: "cloudflare", metricId: "gateway-accrual" },
+  "meta-payg": { serviceId: "meta", metricId: "payg-settled" },
+};
+
+/** The newest usable settlement record for a PAYG line, or null. A record
+ * settles a line only with a finite non-negative USD value; anything else
+ * is ignored rather than corrupting the card. */
+function newestSettlement(records: readonly SnapshotRecord[] | undefined, lineId: string): SnapshotRecord | null {
+  const key = PAYG_SETTLEMENT_KEYS[lineId];
+  if (!key || !records?.length) return null;
+  let best: SnapshotRecord | null = null;
+  for (const r of records) {
+    if (r.serviceId !== key.serviceId || r.metricId !== key.metricId) continue;
+    if (r.unit !== "usd" || typeof r.value !== "number" || !Number.isFinite(r.value) || r.value < 0) continue;
+    if (!best) {
+      best = r;
+      continue;
+    }
+    // Compare as instants, not strings (CodeRabbit, PR #10433): offsets
+    // make lexical order lie — 2026-11-02T09:30:00-06:00 is LATER than
+    // 2026-11-02T10:00:00Z. Unparseable timestamps fall back to lexical
+    // order rather than dropping the record.
+    const t = Date.parse(r.ts);
+    const bt = Date.parse(best.ts);
+    if (Number.isNaN(t) || Number.isNaN(bt) ? r.ts > best.ts : t > bt) best = r;
+  }
+  return best;
+}
+
+/** The reconciled Cloudflare gateway line (#1056): the invoice record
+ * settles the estimate pair — both estimates stay on the line with the
+ * variance against each, and the note's conclusion about which estimate
+ * was closer is DERIVED from those variances, never hard-coded
+ * (CodeRabbit, PR #10433). Shared by extractPaygLines and
+ * applyPaygSettlements so every path renders the same settled line. */
+function settledGatewayLine(low: number, high: number, settlement: SnapshotRecord): PaygLine {
+  const invoiced = settlement.value as number;
+  const settledAt = settlement.ts.slice(0, 10);
+  const varHigh = roundUsd(invoiced - high);
+  const varLow = roundUsd(invoiced - low);
+  const closer =
+    Math.abs(varHigh) <= Math.abs(varLow)
+      ? `gateway cost attribution was the closer measure (variance ${signedUsd(varHigh)} vs it); the budget-alert figure is rejected`
+      : `the budget alert was the closer measure (variance ${signedUsd(varLow)} vs it); the gateway-attribution figure is rejected`;
+  return {
+    id: "cloudflare-gateway",
+    label: "Cloudflare AI Gateway accrual (DeepSeek V4 Pro, Oct 24–25)",
+    accruedUsd: null,
+    estimate: {
+      low,
+      high,
+      period: "Oct 24–25 accrual",
+      note: "Budget alert vs gateway cost attribution disagreed — both shown; settled by the Nov 2 invoice (see line note).",
+    },
+    settledUsd: invoiced,
+    settledAt,
+    settledTs: settlement.ts,
+    settledSource: settlement.source,
+    settledVarianceUsd: varHigh,
+    estimatePeriodEnd: "2026-10-25",
+    staleEstimate: false,
+    unbilledUsd: 0,
+    note: `Settled by the Nov 2 invoice: $${invoiced.toFixed(2)} paid (invoice record ${settledAt}, source: invoice). Estimates were $${low.toFixed(2)} (budget alert) vs $${high.toFixed(2)} (gateway cost attribution): variance ${signedUsd(varHigh)} vs the high estimate and ${signedUsd(varLow)} vs the low — ${closer}. No line-item decomposition is exposed by the billing API, so the split is inferred from totals (#1056).`,
+    measuredAt: settledAt,
+    sourceClass: "invoice",
+  };
+}
+
+/** Reconcile already-built PAYG lines against snapshot-store settlement
+ * records (#1056). The fleet-feed path builds its lines in the collector
+ * WITHOUT settlements; live.ts applies this with the local history
+ * before rendering, so the feed path settles the gateway card exactly
+ * like the direct-read path (CodeRabbit, PR #10433 — the feed branch
+ * previously returned before any reconciliation could apply). Lines
+ * with no matching settlement pass through untouched. */
+export function applyPaygSettlements(lines: PaygLine[], settlements?: readonly SnapshotRecord[]): PaygLine[] {
+  if (!settlements?.length) return lines;
+  return lines.map((line) => {
+    const settlement = newestSettlement(settlements, line.id);
+    if (!settlement) return line;
+    if (line.id === "cloudflare-gateway" && line.estimate) {
+      if (line.settledTs === settlement.ts && line.settledUsd === settlement.value) return line;
+      return { ...settledGatewayLine(line.estimate.low, line.estimate.high, settlement), label: line.label };
+    }
+    if (line.id === "meta-payg" && line.accruedUsd != null) {
+      const settledUsd = settlement.value as number;
+      if (line.settledTs === settlement.ts && line.settledUsd === settledUsd) return line;
+      const settledVariance = roundUsd(settledUsd - line.accruedUsd);
+      return {
+        ...line,
+        settledUsd,
+        settledAt: settlement.ts.slice(0, 10),
+        settledTs: settlement.ts,
+        settledSource: settlement.source,
+        settledVarianceUsd: settledVariance,
+        unbilledUsd: roundUsd(line.accruedUsd - settledUsd),
+        note: `Oct 19–25 console read (dev.meta.ai, 2026-10-25 09:38 CDT): spill past the plan's short window bills automatically — no charge-past-plan disable exists on the account. Reconciled (#1056): accrued $${line.accruedUsd.toFixed(2)} vs settled $${settledUsd.toFixed(2)} — variance ${signedUsd(settledVariance)}; the settled figure is the snapshot-store settlement record (source: ${settlement.source}), superseding the console collected figure of $${(line.collectedUsd ?? settledUsd).toFixed(2)}.`,
+      };
+    }
+    return line;
+  });
+}
+
+/** The stale-estimate flag (#1056): unreconciled, period ended more than
+ * one invoice cycle before now. An unknown period end never flags — the
+ * flag asserts a closed period, it does not guess one. */
+function isStaleEstimate(periodEnd: string | null, settled: boolean, nowMs: number): boolean {
+  if (settled || !periodEnd) return false;
+  const end = parseIsoDate(periodEnd);
+  if (end === null) return false;
+  return nowMs - end.getTime() > INVOICE_CYCLE_MS;
+}
+
+export interface PaygExtractOptions {
+  /** Snapshot-store records to reconcile against (invoice settlements). */
+  settlements?: readonly SnapshotRecord[];
+  /** Clock for the stale-estimate flag; defaults to Date.now(). */
+  nowMs?: number;
+}
+
 /**
  * The PAYG dollars card's lines. Sources: the Meta Model API section of
  * quota-view.md (console figures) and, when supplied, the provider
  * registry's billing-incidents section (the Cloudflare gateway accrual
- * the two sources price differently — shown, not resolved).
+ * the two sources price differently — shown, not resolved). When
+ * settlement records are supplied, a line whose settled record exists
+ * renders reconciled: settled figure, both estimates kept, variance
+ * named (#1056).
  */
-export function extractPaygLines(doc: string, registryText = ""): PaygLine[] {
+export function extractPaygLines(doc: string, registryText = "", opts: PaygExtractOptions = {}): PaygLine[] {
+  const nowMs = opts.nowMs ?? Date.now();
   const lines: PaygLine[] = [];
   const meta = sectionOf(doc, /^### Meta Model API/);
   const payg = /PAYG Oct 19–25: \$(\d+(?:\.\d+)?) accrued \/ \$(\d+(?:\.\d+)?) collected/.exec(meta);
   if (payg) {
     const accrued = Number(payg[1]);
     const collected = Number(payg[2]);
+    // Reconciled (#1056): the collected figure is the settled one — money
+    // actually moved (Visa card charges in the charges evidence). A
+    // snapshot-store settlement record, when one exists, is the same
+    // figure recorded; the console collected figure stands in for it.
+    const settlement = newestSettlement(opts.settlements, "meta-payg");
+    const settledUsd = settlement ? (settlement.value as number) : collected;
+    const settledVariance = roundUsd(settledUsd - accrued);
     lines.push({
       id: "meta-payg",
       label: "Meta Model API PAYG",
       accruedUsd: accrued,
       collectedUsd: collected,
-      unbilledUsd: Math.round((accrued - collected) * 100) / 100,
-      note: "Oct 19–25 console read (dev.meta.ai, 2026-10-25 09:38 CDT): spill past the plan's short window bills automatically — no charge-past-plan disable exists on the account.",
+      settledUsd,
+      settledAt: settlement ? settlement.ts.slice(0, 10) : "2026-10-25",
+      settledTs: settlement ? settlement.ts : null,
+      settledSource: settlement ? settlement.source : "console",
+      settledVarianceUsd: settledVariance,
+      // The remainder is against the authoritative settlement, not the
+      // console collected observation (CodeRabbit, PR #10433): a store
+      // settlement covering the accrual leaves nothing unbilled even
+      // when the console read showed only part collected. collectedUsd
+      // stays on the line as the original console observation.
+      unbilledUsd: roundUsd(accrued - settledUsd),
+      note: `Oct 19–25 console read (dev.meta.ai, 2026-10-25 09:38 CDT): spill past the plan's short window bills automatically — no charge-past-plan disable exists on the account. Reconciled (#1056): accrued $${accrued.toFixed(2)} vs settled $${settledUsd.toFixed(2)} collected — variance ${signedUsd(settledVariance)}; the collected figure is the settled one (console evidence; no separate Meta invoice document exists).`,
       measuredAt: "2026-10-25",
       sourceClass: "console",
     });
   }
   const gw = /\$(\d+(?:\.\d+)?) per budget alert vs \$(\d+(?:\.\d+)?) per gateway cost attribution/.exec(registryText);
   if (gw) {
-    lines.push({
-      id: "cloudflare-gateway",
-      label: "Cloudflare AI Gateway accrual (DeepSeek V4 Pro, Oct 24–25)",
-      accruedUsd: null,
-      estimate: {
-        low: Number(gw[1]),
-        high: Number(gw[2]),
-        period: "Oct 24–25 accrual",
-        note: "Budget alert vs gateway cost attribution disagree — both shown; the Nov 2 invoice is authoritative.",
-      },
-      unbilledUsd: Math.round(Number(gw[2]) * 1.2 * 100) / 100,
-      note: "Gateway providers were disabled fleet-wide 2026-10-25; accrual is closed, the invoice lands Nov 2.",
-      measuredAt: "2026-10-25",
-      sourceClass: "estimate",
-    });
+    const low = Number(gw[1]);
+    const high = Number(gw[2]);
+    const settlement = newestSettlement(opts.settlements, "cloudflare-gateway");
+    if (settlement) {
+      // Reconciled (#1056): the invoice record settles the estimate pair.
+      lines.push(settledGatewayLine(low, high, settlement));
+    } else {
+      lines.push({
+        id: "cloudflare-gateway",
+        label: "Cloudflare AI Gateway accrual (DeepSeek V4 Pro, Oct 24–25)",
+        accruedUsd: null,
+        estimate: {
+          low,
+          high,
+          period: "Oct 24–25 accrual",
+          note: "Budget alert vs gateway cost attribution disagree — both shown; the Nov 2 invoice is authoritative.",
+        },
+        estimatePeriodEnd: "2026-10-25",
+        staleEstimate: isStaleEstimate("2026-10-25", false, nowMs),
+        unbilledUsd: Math.round(high * 1.2 * 100) / 100,
+        note: "Gateway providers were disabled fleet-wide 2026-10-25; accrual is closed, the invoice lands Nov 2.",
+        measuredAt: "2026-10-25",
+        sourceClass: "estimate",
+      });
+    }
   }
   const cf = extractSaasServices(doc).find((s) => s.id === "cloudflare");
   if (cf?.paygEstimate) {

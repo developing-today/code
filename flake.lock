@@ -21,6 +21,29 @@
         "type": "github"
       }
     },
+    "antigravity-cli-nix": {
+      "inputs": {
+        "flake-utils": [
+          "flake-utils"
+        ],
+        "nixpkgs": [
+          "nixpkgs-unstable"
+        ]
+      },
+      "locked": {
+        "lastModified": 1794654022,
+        "narHash": "sha256-0w9dkDfIq5VK6RMset1Jw7D2lcnvZWW78c2epNYxbCc=",
+        "owner": "selfhost-it",
+        "repo": "antigravity-cli-nix",
+        "rev": "c081b0688d176cf315418b49afbcc600e2461ade",
+        "type": "github"
+      },
+      "original": {
+        "owner": "selfhost-it",
+        "repo": "antigravity-cli-nix",
+        "type": "github"
+      }
+    },
     "aquamarine": {
       "inputs": {
         "hyprutils": [
@@ -117,6 +140,22 @@
       }
     },
     "crane": {
+      "locked": {
+        "lastModified": 1766774972,
+        "narHash": "sha256-8qxEFpj4dVmIuPn9j9z6NTbU+hrcGjBOvaxTzre5HmM=",
+        "owner": "ipetkov",
+        "repo": "crane",
+        "rev": "01bc1d404a51a0a07e9d8759cd50a7903e218c82",
+        "type": "github"
+      },
+      "original": {
+        "owner": "ipetkov",
+        "repo": "crane",
+        "rev": "01bc1d404a51a0a07e9d8759cd50a7903e218c82",
+        "type": "github"
+      }
+    },
+    "crane_2": {
       "locked": {
         "lastModified": 1766774972,
         "narHash": "sha256-8qxEFpj4dVmIuPn9j9z6NTbU+hrcGjBOvaxTzre5HmM=",
@@ -1262,11 +1301,11 @@
         ]
       },
       "locked": {
-        "lastModified": 1791535654,
-        "narHash": "sha256-QFgGi6Wgh7AgqPFdAXEmkTgnR0B5M0omheIHvo/02dU=",
+        "lastModified": 1794561628,
+        "narHash": "sha256-oWtItM1eQqkp9OJXq2/Zo10Y9Vu9PDE6O8JRjj4+EkE=",
         "owner": "oxalica",
         "repo": "rust-overlay",
-        "rev": "4ca2963243427cb86bd6b4d9ca6010db0162a619",
+        "rev": "84edd48f141b0c8910dffdd0296ddd577e829132",
         "type": "github"
       },
       "original": {
@@ -1480,15 +1519,15 @@
         "qmd": "qmd"
       },
       "locked": {
-        "lastModified": 1793860488,
-        "narHash": "sha256-nJuhwbielPiFM/LTm2t70baUsA7u1JnKTOAYGUbVuMk=",
-        "owner": "openclaw",
+        "lastModified": 1794515660,
+        "narHash": "sha256-Hhkx8vP4sFknZ7zW/BnKBN5xjrciKPjwjMljMjUWLSY=",
+        "owner": "developing-today",
         "repo": "nix-openclaw",
-        "rev": "26516d997d7e1794d708c63e1e1285529c17ee62",
+        "rev": "75961c688c13c6ee9278744c3e1fd30392a1b2d3",
         "type": "github"
       },
       "original": {
-        "owner": "openclaw",
+        "owner": "developing-today",
         "repo": "nix-openclaw",
         "type": "github"
       }
@@ -2224,11 +2263,11 @@
         ]
       },
       "locked": {
-        "lastModified": 1793786409,
-        "narHash": "sha256-yimwZMpUUknr18zB4SScE53r/8DvNhF5FJp5XfypMPU=",
+        "lastModified": 1794701110,
+        "narHash": "sha256-zaEglOngiL3LK/vWDPnTtBooaXrkX4YuVWwQrcIbcMg=",
         "owner": "developing-today-forks",
         "repo": "openchamber",
-        "rev": "794e5f5c260ee4de1d8d9c4a29b330b009fde5aa",
+        "rev": "ce3173a4923e4bd365bea77f0b16c55636fbc8c2",
         "type": "github"
       },
       "original": {
@@ -2248,11 +2287,11 @@
         ]
       },
       "locked": {
-        "lastModified": 1794115313,
-        "narHash": "sha256-nzRLhyiFBRD9yPg7HiQGxdzd2EJvOSiKLoNDtvoUwJ0=",
+        "lastModified": 1794783126,
+        "narHash": "sha256-qKoBg2CFcpBqqnXl0liu5PSxuz0YP4PF42b8+ShmfWk=",
         "owner": "developing-today-forks",
         "repo": "opencode",
-        "rev": "f7152ad4f1fae208a6cccff5f498c6fedd288197",
+        "rev": "5b65c2a21d2fadbdcdf58ed96f85563bc5d25966",
         "type": "github"
       },
       "original": {
@@ -2356,9 +2395,11 @@
     "root": {
       "inputs": {
         "affinity-nix": "affinity-nix",
+        "antigravity-cli-nix": "antigravity-cli-nix",
         "chatgpt-desktop": "chatgpt-desktop",
         "clan-core": "clan-core",
         "claude-desktop": "claude-desktop",
+        "crane": "crane",
         "disko": "disko_2",
         "esp-dev": "esp-dev",
         "esp-dev-6": "esp-dev-6",
@@ -2428,7 +2469,7 @@
     },
     "rust-flake": {
       "inputs": {
-        "crane": "crane",
+        "crane": "crane_2",
         "nixpkgs": [
           "omnix",
           "nixpkgs"

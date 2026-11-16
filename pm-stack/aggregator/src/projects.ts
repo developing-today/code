@@ -11,7 +11,8 @@
 // the live source so the wire shape is parsed exactly once.
 import type { GhItem, OrchestrationSection, ProjectAudit, ProjectPoolItem, RefKey } from "./model.ts";
 import { isValidRef, refKey } from "./model.ts";
-import { isRecord, isTimestampNotFuture } from "./validate.ts";
+import { canonicalStatusFor, type CanonicalStatus } from "./status-taxonomy.ts";
+import { isIsoDate, isRecord, isTimestampNotFuture } from "./validate.ts";
 import { workItemRefSet } from "./work-items.ts";
 
 export const PROJECT_ID = "PVT_kwDOAZNvF84Bouay";
@@ -294,14 +295,17 @@ export function isProjectAudit(value: unknown): value is ProjectAudit {
     Number.isInteger(value.totalItems) &&
     (value.totalItems as number) >= 0 &&
     Array.isArray(value.fields) &&
-    value.fields.every((field) =>
-      isRecord(field) &&
-      typeof field.id === "string" &&
-      typeof field.name === "string" &&
-      typeof field.dataType === "string" &&
-      (field.options === undefined ||
-        (Array.isArray(field.options) &&
-          field.options.every((option) => isRecord(option) && typeof option.id === "string" && typeof option.name === "string"))),
+    value.fields.every(
+      (field) =>
+        isRecord(field) &&
+        typeof field.id === "string" &&
+        typeof field.name === "string" &&
+        typeof field.dataType === "string" &&
+        (field.options === undefined ||
+          (Array.isArray(field.options) &&
+            field.options.every(
+              (option) => isRecord(option) && typeof option.id === "string" && typeof option.name === "string",
+            ))),
     ) &&
     Array.isArray(value.views) &&
     value.views.every(
@@ -324,6 +328,14 @@ export function isProjectAudit(value: unknown): value is ProjectAudit {
 export interface ProjectSnapshot {
   items: ProjectPoolItem[];
   audit: ProjectAudit;
+  /** Section counts for feed health (#5180): the provider total made
+   * comparable to the emitted count. totalCount counts every board
+   * item, while `items` excludes drafts and unlinked items, so the
+   * exclusions (raw nodes minus emitted items) come off the total —
+   * comparing the raw total against the emitted count reported
+   * positive lag on a complete collection whenever the board held a
+   * draft (Codex P2 on PR #5180). */
+  counts: { reportedTotal: number; emittedEntries: number };
 }
 
 /** Fetch the whole pool, board schema, views, and distributions (paginated). */
@@ -334,10 +346,15 @@ export async function fetchProjectSnapshot(
 ): Promise<ProjectSnapshot> {
   const parsedItems: ProjectPoolItem[] = [];
   const auditItems: GqlItem[] = [];
+  const seenItemIds = new Set<string>();
   let firstPage: unknown;
   let cursor: string | null = null;
   let lastPageInfo: ReturnType<typeof projectPageInfo> | null = null;
-  for (let page = 0; page < 10; page++) {
+  // Paginate to exhaustion (Drew, 2026-11-12: scan them all, or paginate —
+  // no page-count cap; the old 10-page fetch cap discarded the whole pool
+  // once Project #4 passed 1,000 items). The did-not-advance guard below
+  // is the loop-safety bound.
+  for (let page = 0; ; page++) {
     const res = await fetchFn("https://api.github.com/graphql", {
       method: "POST",
       headers: {
@@ -353,22 +370,43 @@ export async function fetchProjectSnapshot(
     if ((json as GqlProjectPage).errors) throw new Error("github GraphQL returned errors");
     if (!firstPage) firstPage = json;
     const nodes = (json as GqlProjectPage).data?.node?.items?.nodes ?? [];
-    auditItems.push(...nodes.filter((node): node is GqlItem => node !== null));
-    parsedItems.push(...parseProjectItems(json));
+    // #8599: overlapping pages (the board mutating mid-export) can
+    // deliver the same node twice. Deduplicate by item id at
+    // collection, first delivery wins: the audit distributions and
+    // the completeness check below are judged on the deduplicated
+    // export, so an over-delivered export still sums to totalItems
+    // and survives the feed-side isProjectAudit gate instead of
+    // being discarded as an absent snapshot. Fetch-side tolerance
+    // and feed-side strictness agree on the distinct-item count.
+    const freshNodes = nodes.filter((node): node is GqlItem => {
+      if (node === null) return false;
+      if (!node.id) return true;
+      if (seenItemIds.has(node.id)) return false;
+      seenItemIds.add(node.id);
+      return true;
+    });
+    auditItems.push(...freshNodes);
+    const freshIds = new Set(freshNodes.map((node) => node.id));
+    parsedItems.push(...parseProjectItems(json).filter((item) => freshIds.has(item.id)));
     const info = projectPageInfo(json);
     if (!info.hasNextPage) {
       if (auditItems.length < info.totalCount) {
-        // Shortfall only: overlapping pages can over-deliver nodes, but
-        // fewer nodes than the board total means the export lost items.
+        // Shortfall only, judged on the deduplicated count: fewer
+        // distinct items than the board total means the export lost
+        // items. Over-delivery is absorbed by the dedupe above.
         throw new Error(`github GraphQL project export incomplete (${auditItems.length}/${info.totalCount} items)`);
       }
       return {
         items: resolveEpicRefs(parsedItems),
         audit: parseProjectAudit(firstPage, auditItems, generatedAt),
+        counts: {
+          reportedTotal: info.totalCount - (auditItems.length - parsedItems.length),
+          emittedEntries: parsedItems.length,
+        },
       };
     }
-    if (!info.endCursor || info.endCursor === cursor) throw new Error("github GraphQL project pagination did not advance");
-    if (page === 9) throw new Error(`github project pool truncated at 10-page cap (totalCount: ${info.totalCount})`);
+    if (!info.endCursor || info.endCursor === cursor)
+      throw new Error("github GraphQL project pagination did not advance");
     cursor = info.endCursor;
   }
   throw new Error("github GraphQL project pagination ended unexpectedly");
@@ -385,7 +423,8 @@ export async function fetchProjectPool(token: string, fetchFn: typeof fetch = fe
   const out: ProjectPoolItem[] = [];
   let cursor: string | null = null;
   let lastPageInfo: ReturnType<typeof projectPageInfo> | null = null;
-  for (let page = 0; page < 10; page++) {
+  // Paginate to exhaustion, same as fetchProjectSnapshot (no page cap).
+  for (let page = 0; ; page++) {
     const res = await fetchFn("https://api.github.com/graphql", {
       method: "POST",
       headers: {
@@ -401,11 +440,10 @@ export async function fetchProjectPool(token: string, fetchFn: typeof fetch = fe
     if ((json as GqlProjectPage).errors) throw new Error("github GraphQL returned errors");
     out.push(...parseProjectItems(json));
     lastPageInfo = projectPageInfo(json);
-    if (!lastPageInfo.hasNextPage || !lastPageInfo.endCursor) break;
+    if (!lastPageInfo.hasNextPage) break;
+    if (!lastPageInfo.endCursor || lastPageInfo.endCursor === cursor)
+      throw new Error("github GraphQL project pagination did not advance");
     cursor = lastPageInfo.endCursor;
-  }
-  if (lastPageInfo?.hasNextPage && lastPageInfo.endCursor) {
-    throw new Error(`github project pool truncated at 10-page cap (totalCount: ${lastPageInfo.totalCount})`);
   }
   // Epic membership needs the whole pool (parents may sit on other
   // pages), so it resolves once over the aggregate, not per page.
@@ -446,7 +484,11 @@ export function isProjectPoolItem(v: unknown): v is ProjectPoolItem {
     (p.draft === undefined || typeof p.draft === "boolean") &&
     (p.labels === undefined || (Array.isArray(p.labels) && p.labels.every((x) => typeof x === "string"))) &&
     (p.author === undefined || typeof p.author === "string") &&
-    (p.updatedAt === undefined || typeof p.updatedAt === "string") &&
+    // updatedAt feeds derive.ts momentum/recency math, which Date.parse's
+    // it: a bare string check lets impossible dates roll into fabricated
+    // activity (#5202). A present non-empty stamp must be a real ISO date;
+    // '' is the collector's missing-stamp form and counts as absent.
+    (p.updatedAt === undefined || p.updatedAt === "" || isIsoDate(p.updatedAt)) &&
     (p.closedAt === undefined || typeof p.closedAt === "string") &&
     (p.mergedAt === undefined || typeof p.mergedAt === "string") &&
     (p.state === "open" || p.state === "closed" || p.state === "merged") &&
@@ -476,19 +518,23 @@ export function poolItemToGhItem(p: ProjectPoolItem): GhItem {
   };
 }
 
-export type DerivedProjectState = "Todo" | "In Progress" | "Done";
+/** The derived state IS a canonical status (#1198): the derived side
+ * and every source side speak the one taxonomy in status-taxonomy.ts. */
+export type DerivedProjectState = CanonicalStatus;
 
 /**
- * Derived state — what the rest of the dashboard derives for an issue,
- * kept deliberately simple (documented per #910 stage 5):
+ * Derived state — what the rest of the dashboard derives for an item,
+ * in the canonical taxonomy (#1198; documented per #910 stage 5):
  *   - issue/PR closed or merged            -> Done
+ *   - open, ready (non-draft) PR            -> In Review
+ *     (GitHub's draft/ready distinction is the review boundary: a
+ *     ready PR is under review by construction, so a Project Status
+ *     of "In Review" AGREES for ready PRs instead of disagreeing by
+ *     construction, as it did before #1198)
  *   - open, and its ref appears anywhere in the orchestration
- *     section (a tier item, a goal's lined-up task, or a dependency)
- *                                            -> In Progress
+ *     section (a tier item, a goal's lined-up task, or a dependency),
+ *     or the item is an open draft PR        -> In Progress
  *   - otherwise                              -> Todo
- * There is no derived "In Review": a Project Status of "In Review"
- * therefore disagrees with an "In Progress" derivation, and the
- * /projects page shows that disagreement rather than hiding it.
  */
 export function derivedProjectState(
   p: ProjectPoolItem,
@@ -496,7 +542,9 @@ export function derivedProjectState(
   additionalInProgressRefs?: ReadonlySet<RefKey>,
 ): DerivedProjectState {
   if (p.state === "closed" || p.state === "merged") return "Done";
+  if (p.contentKind === "pr" && p.state === "open" && !p.draft) return "In Review";
   if ((section && refInOrchestration(p.ref, section)) || additionalInProgressRefs?.has(p.ref)) return "In Progress";
+  if (p.contentKind === "pr" && p.state === "open") return "In Progress";
   return "Todo";
 }
 
@@ -508,7 +556,12 @@ function refInOrchestration(ref: RefKey, section: OrchestrationSection): boolean
 }
 
 /** The disagreement to display, or null when both sides agree (or the
- * Project carries no Status to disagree with). */
+ * Project carries no Status to disagree with). The comparison is
+ * canonical (#1198): the Project Status is mapped through the
+ * taxonomy's project table first, so a spelling variant of the same
+ * status never fakes a disagreement — and an UNMAPPED Project Status
+ * (canonical null) always disagrees, because an unknown vocabulary
+ * silently treated as agreement is how the pages drifted apart. */
 export function projectDisagreement(
   p: ProjectPoolItem,
   section?: OrchestrationSection | null,
@@ -516,5 +569,5 @@ export function projectDisagreement(
 ): { project: string; derived: DerivedProjectState } | null {
   if (!p.status) return null;
   const derived = derivedProjectState(p, section, additionalInProgressRefs);
-  return p.status === derived ? null : { project: p.status, derived };
+  return canonicalStatusFor("project", p.status) === derived ? null : { project: p.status, derived };
 }

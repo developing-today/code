@@ -34,7 +34,7 @@ func upstreamRow(t *testing.T, e *env) map[string]any {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	body := decodeJSON(t, resp.Body)
 	asClient, _ := body["asClient"].(map[string]any)
 	servers, _ := asClient["servers"].([]any)

@@ -29,7 +29,7 @@ func sampleRig(t *testing.T) (*Registry, *elicit.Broker) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { b.Close() })
+	t.Cleanup(func() { _ = b.Close() })
 	r.InstallHooks(events.New(0), b, nil)
 	return r, b
 }

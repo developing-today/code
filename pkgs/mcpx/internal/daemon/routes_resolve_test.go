@@ -150,7 +150,7 @@ func TestResolveReportsRunningOnlyWhenSomethingAccepts(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer l.Close()
+	defer func() { _ = l.Close() }()
 	if !resolveDir(base, project).Running {
 		t.Error("a listening socket must be reported as running")
 	}

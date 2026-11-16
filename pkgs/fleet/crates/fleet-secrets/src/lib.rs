@@ -26,10 +26,29 @@
 //!     had actually failed — so an empty value counts as a source
 //!     failure everywhere in this crate, and the chain moves on or
 //!     fails loudly.
+//!   * a broker leg that cannot answer is retried before the chain
+//!     moves on ([`RetryPolicy`]): a broker restart — a switch
+//!     restarting the laptop's units is the routine case — is a
+//!     seconds-long window, and the 2026-11-15 incident was a
+//!     16-second broker+tunnel restart degrading a whole consumer
+//!     run that never retried. Only `Unavailable` outcomes retry:
+//!     a broker's 404 is a definitive answer about the name and is
+//!     never retried. Each attempt is time-bounded, so a peer that
+//!     accepts a connection and then never answers cannot wedge
+//!     the caller the way an unbounded read once could.
+//!   * the `bws` fallback carries its own credential: the token is
+//!     resolved the way the secrets broker resolves its own (the
+//!     `BWS_ACCESS_TOKEN` env var when non-empty, else the on-disk
+//!     machine-account token file) and handed to the `bws` child
+//!     explicitly. Before this, the fallback inherited the ambient
+//!     environment only, and non-interactive callers run with the
+//!     variable unset or empty — the fallback was dead exactly
+//!     when it was needed (the other half of 2026-11-15).
 
 use std::os::unix::net::UnixStream;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use fleet_proxy_proto::{Request, Response};
 
@@ -143,6 +162,115 @@ pub trait SecretSource {
     fn resolve(&self, name: &str) -> Result<SecretValue, SecretError>;
 }
 
+/// The broker retry budget, in one obvious place: how long a
+/// broker leg keeps retrying `Unavailable` outcomes before the
+/// chain moves to the next source. ~2 minutes spans the observed
+/// restart windows (a full switch restarts the broker and its
+/// tunnel together; the broker itself is back in ~16s) without
+/// making a genuinely dead broker a hang.
+pub const BROKER_RETRY_BUDGET: Duration = Duration::from_secs(120);
+/// First pause between broker attempts; doubles per attempt.
+pub const BROKER_RETRY_INITIAL_DELAY: Duration = Duration::from_secs(2);
+/// Cap on the pause between broker attempts.
+pub const BROKER_RETRY_MAX_DELAY: Duration = Duration::from_secs(15);
+/// Per-attempt ceiling on a single broker exchange (connect +
+/// write + read). Bounds an accept-but-silent peer: without it
+/// one attempt could block forever and no retry or fallback
+/// would ever run.
+pub const BROKER_ATTEMPT_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// How a broker source retries `Unavailable` outcomes before
+/// giving up to the chain. `NotFound` (a broker 404) and
+/// `InvalidName` are definitive and never retry, at any policy.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RetryPolicy {
+    /// Total wall-clock budget for the retry loop. Zero means a
+    /// single attempt — the shape for a leg that must stay
+    /// fast-failing (the `list` path, and the session-broker leg
+    /// when a direct leg ahead of it already owns the budget).
+    pub budget: Duration,
+    /// First pause between attempts; doubles per attempt.
+    pub initial_delay: Duration,
+    /// Cap on the pause between attempts.
+    pub max_delay: Duration,
+    /// Per-attempt exchange timeout (see [`BROKER_ATTEMPT_TIMEOUT`]).
+    pub attempt_timeout: Duration,
+}
+
+impl RetryPolicy {
+    /// No retries: exactly one attempt. The per-attempt timeout
+    /// still applies — a single attempt must not hang either.
+    pub const NONE: RetryPolicy = RetryPolicy {
+        budget: Duration::ZERO,
+        initial_delay: Duration::ZERO,
+        max_delay: Duration::ZERO,
+        attempt_timeout: BROKER_ATTEMPT_TIMEOUT,
+    };
+}
+
+impl Default for RetryPolicy {
+    fn default() -> Self {
+        RetryPolicy {
+            budget: BROKER_RETRY_BUDGET,
+            initial_delay: BROKER_RETRY_INITIAL_DELAY,
+            max_delay: BROKER_RETRY_MAX_DELAY,
+            attempt_timeout: BROKER_ATTEMPT_TIMEOUT,
+        }
+    }
+}
+
+/// `delay` plus up to +50% jitter, derived from the wall clock —
+/// enough to decorrelate clients that hit the same restart
+/// window; this crate takes no RNG dependency for it.
+fn jittered(delay: Duration) -> Duration {
+    if delay.is_zero() {
+        return delay;
+    }
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| u64::from(d.subsec_nanos()))
+        .unwrap_or(0);
+    let base = delay.as_nanos() as u64;
+    delay + Duration::from_nanos(nanos % (base / 2 + 1))
+}
+
+/// Run `attempt` until it succeeds, answers definitively
+/// (`NotFound` / `InvalidName` — returned at once), or the
+/// policy's budget is spent, retrying `Unavailable` outcomes
+/// with capped exponential backoff + jitter. The error returned
+/// on exhaustion is the most recent attempt's.
+fn resolve_with_retry(
+    policy: &RetryPolicy,
+    mut attempt: impl FnMut() -> Result<SecretValue, SecretError>,
+) -> Result<SecretValue, SecretError> {
+    let started = Instant::now();
+    let mut delay = policy.initial_delay;
+    loop {
+        match attempt() {
+            Ok(value) => return Ok(value),
+            Err(err @ SecretError::Unavailable { .. }) => {
+                let elapsed = started.elapsed();
+                if elapsed >= policy.budget {
+                    return Err(err);
+                }
+                let pause = jittered(if delay.is_zero() {
+                    Duration::from_millis(1)
+                } else {
+                    delay
+                })
+                .min(policy.budget - elapsed);
+                std::thread::sleep(pause);
+                delay = delay.saturating_mul(2).min(if policy.max_delay.is_zero() {
+                    Duration::from_millis(1)
+                } else {
+                    policy.max_delay
+                });
+            }
+            Err(err) => return Err(err),
+        }
+    }
+}
+
 /// The ordered chain: broker protocol first, `bws` fallback (§1).
 pub struct Resolver {
     sources: Vec<Box<dyn SecretSource>>,
@@ -153,15 +281,33 @@ impl Resolver {
         Resolver { sources }
     }
 
-    /// The default chain for a resolved fleet config.
+    /// The default chain for a resolved fleet config. On a host
+    /// where the secrets-broker's own socket answers (the laptop,
+    /// #6218), the direct source comes first: there is no session
+    /// broker there. On the sandbox the probe selects TCP, no
+    /// direct source is inserted, and the chain is exactly the
+    /// historical broker-protocol-then-`bws` shape.
     pub fn default_chain(config: &fleet_config::Config) -> Resolver {
-        Resolver::new(vec![
-            Box::new(BrokerSource {
-                broker_socket: config.broker_socket(),
-                token_file: config.secrets_token_file(),
-            }),
-            Box::new(BwsSource::new()),
-        ])
+        let mut sources: Vec<Box<dyn SecretSource>> = Vec::new();
+        // Exactly one broker leg owns the retry budget: the first
+        // one. On the laptop that is the direct leg; the
+        // session-broker leg behind it gets RetryPolicy::NONE —
+        // there is no session broker on the laptop, so its socket
+        // failure is a permanent shape, and retrying it would only
+        // delay the `bws` fallback by a second budget. On the
+        // sandbox there is no direct leg, and the session-broker
+        // leg owns the budget.
+        let mut broker_retry = RetryPolicy::default();
+        if let Some(direct) = DirectBrokerSource::from_config(config) {
+            sources.push(Box::new(direct));
+            broker_retry = RetryPolicy::NONE;
+        }
+        sources.push(Box::new(
+            BrokerSource::new(config.broker_socket(), config.secrets_token_file())
+                .with_retry_policy(broker_retry),
+        ));
+        sources.push(Box::new(BwsSource::new()));
+        Resolver::new(sources)
     }
 
     pub fn resolve(&self, name: &str) -> Result<SecretValue, SecretError> {
@@ -194,9 +340,26 @@ pub struct BrokerSource {
     /// Path of the token file the session broker reads per request.
     /// fleet names it in the request and never opens it.
     pub token_file: PathBuf,
+    /// Retry behaviour for `resolve` (see [`RetryPolicy`]).
+    /// `list_names` never retries — a listing stays fast-failing —
+    /// but the policy's per-attempt timeout bounds its exchange
+    /// too.
+    pub retry_policy: RetryPolicy,
 }
 
 impl BrokerSource {
+    pub fn new(broker_socket: PathBuf, token_file: PathBuf) -> BrokerSource {
+        BrokerSource {
+            broker_socket,
+            token_file,
+            retry_policy: RetryPolicy::default(),
+        }
+    }
+
+    pub fn with_retry_policy(mut self, retry_policy: RetryPolicy) -> BrokerSource {
+        self.retry_policy = retry_policy;
+        self
+    }
     /// One framed exchange over an already-connected session-broker
     /// stream. Split from `resolve` so tests can drive it over a
     /// socket pair.
@@ -227,8 +390,19 @@ impl BrokerSource {
             body: None,
             port: Some(fleet_config::PORT_SECRETS_BROKER),
             token_file: Some(self.token_file.to_string_lossy().into_owned()),
+            trip: None,
+            transport: None,
+            cf_ok: None,
         };
         let mut stream = self.connect(name)?;
+        // Bound the exchange: a session broker (or the path behind
+        // it) that accepts and then never answers must fail the
+        // attempt, not wedge the caller — the retry loop and the
+        // chain can only run if an attempt returns.
+        if !self.retry_policy.attempt_timeout.is_zero() {
+            let _ = stream.set_read_timeout(Some(self.retry_policy.attempt_timeout));
+            let _ = stream.set_write_timeout(Some(self.retry_policy.attempt_timeout));
+        }
         self.exchange(&mut stream, &request, name)
     }
 
@@ -292,6 +466,17 @@ impl SecretSource for BrokerSource {
 
     fn resolve(&self, name: &str) -> Result<SecretValue, SecretError> {
         validate_name(name)?;
+        resolve_with_retry(&self.retry_policy, || self.resolve_once(name))
+    }
+}
+
+impl BrokerSource {
+    /// One resolution attempt: a single framed exchange and its
+    /// status mapping. 404 maps to `NotFound` (definitive — the
+    /// retry loop returns it at once); every other non-200, and
+    /// every transport failure inside `request`, is `Unavailable`
+    /// and therefore retryable under the source's policy.
+    fn resolve_once(&self, name: &str) -> Result<SecretValue, SecretError> {
         let response = self.request(&format!("/secret/{name}"), name)?;
         match response.status {
             200 => {
@@ -304,6 +489,195 @@ impl SecretSource for BrokerSource {
                         name: name.to_string(),
                         detail: "200 response without a string \"value\" field".to_string(),
                     })?;
+                if value.is_empty() {
+                    return Err(SecretError::Unavailable {
+                        source: "secrets-broker",
+                        name: name.to_string(),
+                        detail: "200 response with an empty \"value\"".to_string(),
+                    });
+                }
+                Ok(SecretValue(value.to_string()))
+            }
+            404 => Err(SecretError::NotFound {
+                source: "secrets-broker",
+                name: name.to_string(),
+            }),
+            status => Err(SecretError::Unavailable {
+                source: "secrets-broker",
+                name: name.to_string(),
+                detail: format!("secrets-broker answered HTTP {status}"),
+            }),
+        }
+    }
+}
+
+/// The secrets-broker token file for direct (laptop-local)
+/// connections: the broker's own config dir, sibling of its socket
+/// and of the queue client's direct token default (#6218).
+pub const DIRECT_SECRETS_TOKEN_FILE: &str = ".config/secrets-broker/token";
+
+/// Source 1b: the secrets-broker protocol, direct over the
+/// broker's own Unix socket (#6218) -- the laptop-local path. On
+/// the laptop there is no session broker; the secrets broker
+/// dual-binds its role socket (#6216) with the same handler, so
+/// the exchange is a plain HTTP/1.1 GET. Unlike [`BrokerSource`],
+/// which only *names* the token file for the session proxy, this
+/// source reads the token file itself -- the value goes into the
+/// request header and nowhere else.
+pub struct DirectBrokerSource {
+    pub socket: PathBuf,
+    pub token_file: PathBuf,
+    /// Retry behaviour for `resolve` (see [`RetryPolicy`]);
+    /// `list_names` never retries, but the policy's per-attempt
+    /// timeout bounds its exchange too.
+    pub retry_policy: RetryPolicy,
+}
+
+impl DirectBrokerSource {
+    pub fn new(socket: PathBuf, token_file: PathBuf) -> DirectBrokerSource {
+        DirectBrokerSource {
+            socket,
+            token_file,
+            retry_policy: RetryPolicy::default(),
+        }
+    }
+
+    pub fn with_retry_policy(mut self, retry_policy: RetryPolicy) -> DirectBrokerSource {
+        self.retry_policy = retry_policy;
+        self
+    }
+
+    /// The direct source for a resolved config, when fleet-config's
+    /// probe-based choice for the secrets-broker role selects the
+    /// socket (#6218). `None` on the TCP choice (the sandbox): the
+    /// caller keeps the session-broker source.
+    pub fn from_config(config: &fleet_config::Config) -> Option<DirectBrokerSource> {
+        match config.role_transport_choice("secrets-broker") {
+            Some(fleet_config::RoleTransport::Socket(socket)) => Some(DirectBrokerSource::new(
+                socket,
+                fleet_config::Config::home_dir().join(DIRECT_SECRETS_TOKEN_FILE),
+            )),
+            _ => None,
+        }
+    }
+
+    /// One GET exchange over the broker socket: status + JSON body.
+    fn get(&self, path: &str, name: &str) -> Result<(u16, serde_json::Value), SecretError> {
+        use std::io::{Read, Write};
+        let unavailable = |detail: String| SecretError::Unavailable {
+            source: "secrets-broker",
+            name: name.to_string(),
+            detail,
+        };
+        let token = std::fs::read_to_string(&self.token_file).map_err(|e| {
+            unavailable(format!(
+                "secrets-broker token file {}: {}",
+                self.token_file.display(),
+                e.kind()
+            ))
+        })?;
+        let mut stream = UnixStream::connect(&self.socket).map_err(|e| {
+            unavailable(format!(
+                "secrets-broker socket {}: {}",
+                self.socket.display(),
+                e.kind()
+            ))
+        })?;
+        // Bound the exchange, as in BrokerSource::request: an
+        // accept-but-silent broker must fail the attempt so the
+        // retry loop (and then the chain) can run.
+        if !self.retry_policy.attempt_timeout.is_zero() {
+            let _ = stream.set_read_timeout(Some(self.retry_policy.attempt_timeout));
+            let _ = stream.set_write_timeout(Some(self.retry_policy.attempt_timeout));
+        }
+        let req = format!(
+            "GET {path} HTTP/1.1\r\nHost: localhost\r\nX-Agent-Token: {}\r\nConnection: close\r\n\r\n",
+            token.trim()
+        );
+        stream
+            .write_all(req.as_bytes())
+            .map_err(|e| unavailable(e.to_string()))?;
+        let mut raw = Vec::new();
+        stream
+            .read_to_end(&mut raw)
+            .map_err(|e| unavailable(e.to_string()))?;
+        let text = String::from_utf8_lossy(&raw).into_owned();
+        let mut parts = text.splitn(2, "\r\n\r\n");
+        let head = parts.next().unwrap_or("");
+        let status: u16 = head
+            .split_whitespace()
+            .nth(1)
+            .and_then(|c| c.parse().ok())
+            .ok_or_else(|| unavailable("secrets-broker bad reply".to_string()))?;
+        let body: serde_json::Value =
+            serde_json::from_str(parts.next().unwrap_or("")).unwrap_or(serde_json::Value::Null);
+        Ok((status, body))
+    }
+
+    /// The broker's names listing over the direct socket -- the
+    /// same `GET /secrets` route [`BrokerSource::list_names`]
+    /// reads through the session broker. Names only.
+    pub fn list_names(&self) -> Result<Vec<String>, SecretError> {
+        let name = "names";
+        let (status, body) = self.get("/secrets", name)?;
+        match status {
+            200 => {
+                let names = body
+                    .get("names")
+                    .and_then(|v| v.as_array())
+                    .ok_or_else(|| SecretError::Unavailable {
+                        source: "secrets-broker",
+                        name: name.to_string(),
+                        detail: "200 response without a \"names\" array".to_string(),
+                    })?;
+                names
+                    .iter()
+                    .map(|v| {
+                        v.as_str()
+                            .map(str::to_string)
+                            .ok_or_else(|| SecretError::Unavailable {
+                                source: "secrets-broker",
+                                name: name.to_string(),
+                                detail: "\"names\" array holds a non-string entry".to_string(),
+                            })
+                    })
+                    .collect()
+            }
+            status => Err(SecretError::Unavailable {
+                source: "secrets-broker",
+                name: name.to_string(),
+                detail: format!("secrets-broker answered HTTP {status}"),
+            }),
+        }
+    }
+}
+
+impl SecretSource for DirectBrokerSource {
+    fn source_name(&self) -> &'static str {
+        "secrets-broker"
+    }
+
+    fn resolve(&self, name: &str) -> Result<SecretValue, SecretError> {
+        validate_name(name)?;
+        resolve_with_retry(&self.retry_policy, || self.resolve_once(name))
+    }
+}
+
+impl DirectBrokerSource {
+    /// One resolution attempt: a single direct GET and its status
+    /// mapping — the same shapes as [`BrokerSource::resolve_once`]
+    /// (404 definitive, everything else retryable `Unavailable`).
+    fn resolve_once(&self, name: &str) -> Result<SecretValue, SecretError> {
+        let (status, body) = self.get(&format!("/secret/{name}"), name)?;
+        match status {
+            200 => {
+                let value = body.get("value").and_then(|v| v.as_str()).ok_or_else(|| {
+                    SecretError::Unavailable {
+                        source: "secrets-broker",
+                        name: name.to_string(),
+                        detail: "200 response without a string \"value\" field".to_string(),
+                    }
+                })?;
                 if value.is_empty() {
                     return Err(SecretError::Unavailable {
                         source: "secrets-broker",
@@ -350,6 +724,87 @@ impl CommandRunner for ProcessRunner {
     }
 }
 
+/// The Bitwarden machine-account token for a `bws` child,
+/// resolved from an env value and a home dir: the env value when
+/// non-empty, else the on-disk token files (the sandbox's
+/// `.config/bitwarden/access-token`, the laptop's
+/// `.config/bws/access-token`). This is the secrets broker's own
+/// lookup (fleet-queue's `bws_token`), mirrored so the client
+/// fallback resolves its credential exactly the way the broker
+/// resolves its. The token is returned trimmed; empty files and
+/// an empty env value count as absent.
+fn bws_token_from(env_value: Option<&str>, home: &Path) -> Option<String> {
+    if let Some(t) = env_value {
+        if !t.trim().is_empty() {
+            return Some(t.trim().to_string());
+        }
+    }
+    for rel in [".config/bitwarden/access-token", ".config/bws/access-token"] {
+        if let Ok(t) = std::fs::read_to_string(home.join(rel)) {
+            if !t.trim().is_empty() {
+                return Some(t.trim().to_string());
+            }
+        }
+    }
+    None
+}
+
+/// The ambient lookup: this process's env + the fleet home dir.
+fn bws_access_token() -> Option<String> {
+    bws_token_from(
+        std::env::var("BWS_ACCESS_TOKEN").ok().as_deref(),
+        &fleet_config::Config::home_dir(),
+    )
+}
+
+/// A [`ProcessRunner`] that hands the child the resolved
+/// Bitwarden token explicitly. Before this runner existed, the
+/// `bws` fallback inherited the ambient environment only — and
+/// non-interactive callers (cron workers, scheduled sweeps) run
+/// with `BWS_ACCESS_TOKEN` unset or set-but-empty, so the
+/// fallback failed with bws's "missing access token" in exactly
+/// the runs that needed it (2026-11-15). The runner always
+/// controls the variable: set from the resolved token, or
+/// removed when no token resolves, so a stale empty ambient
+/// value cannot masquerade as a credential either.
+pub struct BwsTokenRunner {
+    token: Option<String>,
+}
+
+impl BwsTokenRunner {
+    pub fn from_environment() -> BwsTokenRunner {
+        BwsTokenRunner {
+            token: bws_access_token(),
+        }
+    }
+
+    pub fn with_token(token: Option<String>) -> BwsTokenRunner {
+        BwsTokenRunner { token }
+    }
+}
+
+impl CommandRunner for BwsTokenRunner {
+    fn run(&self, program: &str, args: &[&str]) -> Result<String, String> {
+        let mut cmd = Command::new(program);
+        cmd.args(args);
+        match &self.token {
+            Some(token) => {
+                cmd.env("BWS_ACCESS_TOKEN", token);
+            }
+            None => {
+                cmd.env_remove("BWS_ACCESS_TOKEN");
+            }
+        }
+        let out = cmd
+            .output()
+            .map_err(|e| format!("spawn failed: {}", e.kind()))?;
+        if !out.status.success() {
+            return Err(format!("exit status {}", out.status));
+        }
+        String::from_utf8(out.stdout).map_err(|_| "output not utf8".to_string())
+    }
+}
+
 /// Source 2: the `bws` CLI fallback — `bws secret list` to find the
 /// id for a name, then `bws secret get <id>`, exactly the shape the
 /// secrets broker's own cache refresh uses.
@@ -360,7 +815,7 @@ pub struct BwsSource {
 impl BwsSource {
     pub fn new() -> BwsSource {
         BwsSource {
-            runner: Box::new(ProcessRunner),
+            runner: Box::new(BwsTokenRunner::from_environment()),
         }
     }
 
@@ -670,6 +1125,84 @@ mod tests {
     }
 
     #[test]
+    fn direct_broker_source_roundtrip_over_a_temp_socket() {
+        // #6218: the laptop-local source speaks plain HTTP over
+        // the broker's own socket, reading its token from the file.
+        use std::io::{Read, Write};
+        use std::os::unix::net::UnixListener;
+
+        let dir =
+            std::env::temp_dir().join(format!("fleet-secrets-direct-test-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let sock = dir.join("secrets.sock");
+        let token_file = dir.join("token");
+        std::fs::write(&token_file, "test-token\n").unwrap();
+        let listener = UnixListener::bind(&sock).unwrap();
+        let handle = std::thread::spawn(move || {
+            for _ in 0..2 {
+                let (mut stream, _) = listener.accept().unwrap();
+                let mut buf = [0u8; 2048];
+                let n = stream.read(&mut buf).unwrap();
+                let req = String::from_utf8_lossy(&buf[..n]).into_owned();
+                assert!(req.contains("X-Agent-Token: test-token"), "req: {req}");
+                let body = if req.starts_with("GET /secrets") {
+                    "{\"names\":[\"a.name\",\"b.name\"]}"
+                } else {
+                    assert!(req.starts_with("GET /secret/wanted.name"), "req: {req}");
+                    "{\"value\":\"direct-value\"}"
+                };
+                let resp = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                    body.len(),
+                    body
+                );
+                stream.write_all(resp.as_bytes()).unwrap();
+            }
+        });
+        let source = DirectBrokerSource::new(sock, token_file).with_retry_policy(RetryPolicy::NONE);
+        let value = source.resolve("wanted.name").unwrap();
+        assert_eq!(value.expose(), "direct-value");
+        let names = source.list_names().unwrap();
+        assert_eq!(names, vec!["a.name".to_string(), "b.name".to_string()]);
+        handle.join().unwrap();
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn direct_broker_source_404_is_notfound() {
+        // #6218: the direct leg maps statuses like the proxied one.
+        use std::io::{Read, Write};
+        use std::os::unix::net::UnixListener;
+
+        let dir =
+            std::env::temp_dir().join(format!("fleet-secrets-direct-404-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let sock = dir.join("secrets.sock");
+        let token_file = dir.join("token");
+        std::fs::write(&token_file, "test-token\n").unwrap();
+        let listener = UnixListener::bind(&sock).unwrap();
+        let handle = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut buf = [0u8; 1024];
+            let _ = stream.read(&mut buf);
+            stream
+                .write_all(
+                    b"HTTP/1.1 404 Not Found\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{}",
+                )
+                .unwrap();
+        });
+        let source = DirectBrokerSource::new(sock, token_file).with_retry_policy(RetryPolicy::NONE);
+        assert!(matches!(
+            source.resolve("missing.name"),
+            Err(SecretError::NotFound { .. })
+        ));
+        handle.join().unwrap();
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
     fn broker_list_names_roundtrip_over_a_temp_socket() {
         use std::os::unix::net::UnixListener;
 
@@ -687,13 +1220,11 @@ mod tests {
             let resp = Response {
                 status: 200,
                 body: serde_json::json!({"names": ["a.name", "b.name"]}),
+                transport: None,
             };
             fleet_proxy_proto::write_frame(&mut stream, &resp).unwrap();
         });
-        let source = BrokerSource {
-            broker_socket: sock,
-            token_file: PathBuf::from("/nonexistent/token"),
-        };
+        let source = BrokerSource::new(sock, PathBuf::from("/nonexistent/token"));
         let names = source.list_names().unwrap();
         assert_eq!(names, vec!["a.name".to_string(), "b.name".to_string()]);
         handle.join().unwrap();
@@ -717,13 +1248,15 @@ mod tests {
                 let (mut stream, _) = listener.accept().unwrap();
                 let req: Request = fleet_proxy_proto::read_typed(&mut stream).unwrap();
                 assert_eq!(req.path, "/secret/wanted.name");
-                let resp = Response { status: 200, body };
+                let resp = Response {
+                    status: 200,
+                    body,
+                    transport: None,
+                };
                 fleet_proxy_proto::write_frame(&mut stream, &resp).unwrap();
             });
-            let source = BrokerSource {
-                broker_socket: sock,
-                token_file: PathBuf::from("/nonexistent/token"),
-            };
+            let source = BrokerSource::new(sock, PathBuf::from("/nonexistent/token"))
+                .with_retry_policy(RetryPolicy::NONE);
             let out = source.resolve("wanted.name");
             handle.join().unwrap();
             std::fs::remove_dir_all(&dir).ok();
@@ -765,13 +1298,17 @@ mod tests {
                 assert_eq!(req.path, "/secret/wanted.name");
                 assert_eq!(req.port, Some(fleet_config::PORT_SECRETS_BROKER));
                 assert_eq!(req.token_file.as_deref(), Some("/nonexistent/token"));
-                let resp = Response { status, body };
+                let resp = Response {
+                    status,
+                    body,
+                    transport: None,
+                };
                 fleet_proxy_proto::write_frame(&mut server, &resp).unwrap();
             });
-            let source = BrokerSource {
-                broker_socket: PathBuf::from("/nonexistent/broker.sock"),
-                token_file: PathBuf::from("/nonexistent/token"),
-            };
+            let source = BrokerSource::new(
+                PathBuf::from("/nonexistent/broker.sock"),
+                PathBuf::from("/nonexistent/token"),
+            );
             (source, handle, client)
         }
 
@@ -786,6 +1323,9 @@ mod tests {
             body: None,
             port: Some(fleet_config::PORT_SECRETS_BROKER),
             token_file: Some("/nonexistent/token".to_string()),
+            trip: None,
+            transport: None,
+            cf_ok: None,
         };
         let resp = source
             .exchange(&mut client, &request, "wanted.name")
@@ -804,5 +1344,342 @@ mod tests {
             .unwrap();
         assert_eq!(resp.status, 404);
         handle.join().unwrap();
+    }
+
+    /// A unique temp dir for a socket-level test.
+    fn test_temp_dir(tag: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "fleet-secrets-{tag}-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0)
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    /// A fast policy for retry tests: millisecond backoff, a
+    /// budget wide enough for the scripted failures, and a
+    /// per-attempt timeout that cannot stall the suite.
+    fn test_retry_policy() -> RetryPolicy {
+        RetryPolicy {
+            budget: Duration::from_secs(10),
+            initial_delay: Duration::from_millis(1),
+            max_delay: Duration::from_millis(4),
+            attempt_timeout: Duration::from_secs(2),
+        }
+    }
+
+    #[test]
+    fn retry_loop_retries_only_unavailable() {
+        use std::cell::Cell;
+        // NotFound is definitive: exactly one attempt.
+        let calls = Cell::new(0);
+        let out = resolve_with_retry(&test_retry_policy(), || {
+            calls.set(calls.get() + 1);
+            Err(SecretError::NotFound {
+                source: "secrets-broker",
+                name: "x".to_string(),
+            })
+        });
+        assert!(matches!(out, Err(SecretError::NotFound { .. })));
+        assert_eq!(calls.get(), 1);
+
+        // Unavailable twice, then success.
+        let calls = Cell::new(0);
+        let out = resolve_with_retry(&test_retry_policy(), || {
+            calls.set(calls.get() + 1);
+            if calls.get() < 3 {
+                Err(SecretError::Unavailable {
+                    source: "secrets-broker",
+                    name: "x".to_string(),
+                    detail: "down".to_string(),
+                })
+            } else {
+                Ok(SecretValue("fixture-value-not-a-secret".to_string()))
+            }
+        });
+        assert_eq!(out.unwrap().expose(), "fixture-value-not-a-secret");
+        assert_eq!(calls.get(), 3);
+    }
+
+    #[test]
+    fn retry_loop_spends_its_budget_and_returns_the_last_error() {
+        use std::cell::Cell;
+        let policy = RetryPolicy {
+            budget: Duration::from_millis(30),
+            initial_delay: Duration::from_millis(1),
+            max_delay: Duration::from_millis(2),
+            attempt_timeout: Duration::from_millis(1),
+        };
+        let calls = Cell::new(0);
+        let started = Instant::now();
+        let out = resolve_with_retry(&policy, || {
+            calls.set(calls.get() + 1);
+            Err(SecretError::Unavailable {
+                source: "secrets-broker",
+                name: "x".to_string(),
+                detail: "down".to_string(),
+            })
+        });
+        assert!(matches!(out, Err(SecretError::Unavailable { .. })));
+        assert!(calls.get() > 1, "the budget buys more than one attempt");
+        assert!(started.elapsed() < Duration::from_secs(5));
+    }
+
+    #[test]
+    fn retry_policy_none_is_a_single_attempt() {
+        use std::cell::Cell;
+        let calls = Cell::new(0);
+        let out = resolve_with_retry(&RetryPolicy::NONE, || {
+            calls.set(calls.get() + 1);
+            Err(SecretError::Unavailable {
+                source: "secrets-broker",
+                name: "x".to_string(),
+                detail: "down".to_string(),
+            })
+        });
+        assert!(matches!(out, Err(SecretError::Unavailable { .. })));
+        assert_eq!(calls.get(), 1);
+    }
+
+    /// A scripted session broker on a temp socket: answers the
+    /// given (status, body) replies in order, one connection per
+    /// reply, and reports how many requests it served.
+    fn scripted_broker_replies(
+        replies: Vec<(u16, serde_json::Value)>,
+    ) -> (BrokerSource, std::thread::JoinHandle<usize>, PathBuf) {
+        use std::os::unix::net::UnixListener;
+        let dir = test_temp_dir("retry");
+        let sock = dir.join("broker.sock");
+        let listener = UnixListener::bind(&sock).unwrap();
+        let handle = std::thread::spawn(move || {
+            let mut served = 0;
+            for (status, body) in replies {
+                let (mut stream, _) = listener.accept().unwrap();
+                let req: Request = fleet_proxy_proto::read_typed(&mut stream).unwrap();
+                assert_eq!(req.path, "/secret/wanted.name");
+                let resp = Response {
+                    status,
+                    body,
+                    transport: None,
+                };
+                fleet_proxy_proto::write_frame(&mut stream, &resp).unwrap();
+                served += 1;
+            }
+            served
+        });
+        let source = BrokerSource::new(sock, PathBuf::from("/nonexistent/token"))
+            .with_retry_policy(test_retry_policy());
+        (source, handle, dir)
+    }
+
+    #[test]
+    fn broker_retries_unavailable_statuses_then_resolves() {
+        // The 2026-11-15 shape: while the broker and its tunnel
+        // restart, the leg answers 503 (cache not loaded) and 502
+        // (upstream path down), then serves. The caller rides out
+        // the window instead of failing over.
+        let (source, handle, dir) = scripted_broker_replies(vec![
+            (503, serde_json::json!({"error": "not loaded"})),
+            (502, serde_json::json!({"error": "bad gateway"})),
+            (
+                200,
+                serde_json::json!({"key": "wanted.name", "value": "fixture-value-not-a-secret"}),
+            ),
+        ]);
+        let v = source.resolve("wanted.name").unwrap();
+        assert_eq!(v.expose(), "fixture-value-not-a-secret");
+        assert_eq!(handle.join().unwrap(), 3);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn broker_404_is_definitive_and_never_retried() {
+        // Even with the full production budget, a 404 returns
+        // after exactly one attempt: it is an answer about the
+        // name, not a failure to answer.
+        let (source, handle, dir) =
+            scripted_broker_replies(vec![(404, serde_json::json!({"error": "not found"}))]);
+        let source = source.with_retry_policy(RetryPolicy::default());
+        let started = Instant::now();
+        let out = source.resolve("wanted.name");
+        assert!(
+            matches!(out, Err(SecretError::NotFound { .. })),
+            "got {out:?}"
+        );
+        assert!(started.elapsed() < Duration::from_secs(5));
+        assert_eq!(handle.join().unwrap(), 1);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn broker_silent_peer_fails_each_attempt_on_the_attempt_timeout() {
+        // A peer that accepts and never answers must fail the
+        // attempt (on the per-attempt timeout), not wedge the
+        // caller: before the timeout existed this read blocked
+        // forever and neither retry nor fallback could run.
+        use std::os::unix::net::UnixListener;
+        let dir = test_temp_dir("silent");
+        let sock = dir.join("broker.sock");
+        let listener = UnixListener::bind(&sock).unwrap();
+        std::thread::spawn(move || {
+            let mut held = Vec::new();
+            while let Ok((stream, _)) = listener.accept() {
+                held.push(stream);
+            }
+        });
+        let policy = RetryPolicy {
+            budget: Duration::from_millis(600),
+            initial_delay: Duration::from_millis(1),
+            max_delay: Duration::from_millis(4),
+            attempt_timeout: Duration::from_millis(120),
+        };
+        let source =
+            BrokerSource::new(sock, PathBuf::from("/nonexistent/token")).with_retry_policy(policy);
+        let started = Instant::now();
+        let out = source.resolve("wanted.name");
+        assert!(
+            matches!(out, Err(SecretError::Unavailable { .. })),
+            "got {out:?}"
+        );
+        assert!(
+            started.elapsed() < Duration::from_secs(10),
+            "attempts must be time-bounded"
+        );
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn chain_falls_through_to_bws_once_broker_retries_are_spent() {
+        // Broker hard down (no socket at all): the broker leg
+        // spends its (here, tiny) retry budget, then the chain
+        // reaches the `bws` fallback — the rescue that failed on
+        // 2026-11-15 for the token reason, exercised here with a
+        // working fallback behind it.
+        let broker = BrokerSource::new(
+            PathBuf::from("/nonexistent/broker.sock"),
+            PathBuf::from("/nonexistent/token"),
+        )
+        .with_retry_policy(RetryPolicy {
+            budget: Duration::from_millis(50),
+            initial_delay: Duration::from_millis(1),
+            max_delay: Duration::from_millis(2),
+            attempt_timeout: Duration::from_millis(50),
+        });
+        let resolver = Resolver::new(vec![
+            Box::new(broker),
+            Box::new(BwsSource::with_runner(Box::new(FakeRunner {
+                list: r#"[{"id":"id-1","key":"wanted.name"}]"#.to_string(),
+                get: r#"{"id":"id-1","key":"wanted.name","value":"fixture-value-not-a-secret"}"#
+                    .to_string(),
+            }))),
+        ]);
+        let v = resolver.resolve("wanted.name").unwrap();
+        assert_eq!(v.expose(), "fixture-value-not-a-secret");
+    }
+
+    #[test]
+    fn direct_broker_source_retries_a_503_then_resolves() {
+        use std::io::{Read, Write};
+        use std::os::unix::net::UnixListener;
+        let dir = test_temp_dir("direct-retry");
+        let sock = dir.join("secrets.sock");
+        let token_file = dir.join("token");
+        std::fs::write(&token_file, "test-token\n").unwrap();
+        let listener = UnixListener::bind(&sock).unwrap();
+        let handle = std::thread::spawn(move || {
+            for status in [503u16, 200] {
+                let (mut stream, _) = listener.accept().unwrap();
+                let mut buf = [0u8; 2048];
+                let _ = stream.read(&mut buf);
+                let (line, body) = if status == 200 {
+                    ("HTTP/1.1 200 OK", "{\"value\":\"direct-value\"}")
+                } else {
+                    ("HTTP/1.1 503 Service Unavailable", "{}")
+                };
+                let resp = format!(
+                    "{line}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                    body.len(),
+                    body
+                );
+                stream.write_all(resp.as_bytes()).unwrap();
+            }
+        });
+        let source =
+            DirectBrokerSource::new(sock, token_file).with_retry_policy(test_retry_policy());
+        let v = source.resolve("wanted.name").unwrap();
+        assert_eq!(v.expose(), "direct-value");
+        handle.join().unwrap();
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn bws_token_prefers_a_nonempty_env_value() {
+        let dir = test_temp_dir("token-env");
+        assert_eq!(
+            bws_token_from(Some("  env-token  "), &dir).as_deref(),
+            Some("env-token")
+        );
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn bws_token_falls_back_to_the_token_files() {
+        let dir = test_temp_dir("token-file");
+        let config_dir = dir.join(".config/bitwarden");
+        std::fs::create_dir_all(&config_dir).unwrap();
+        std::fs::write(config_dir.join("access-token"), "file-token\n").unwrap();
+        assert_eq!(bws_token_from(None, &dir).as_deref(), Some("file-token"));
+        // An empty (or whitespace) env value counts as absent —
+        // the 2026-11-15 shape, where the variable was present
+        // but empty and the fallback died on it.
+        assert_eq!(
+            bws_token_from(Some(""), &dir).as_deref(),
+            Some("file-token")
+        );
+        assert_eq!(
+            bws_token_from(Some("   "), &dir).as_deref(),
+            Some("file-token")
+        );
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn bws_token_absent_everywhere_is_none() {
+        let dir = test_temp_dir("token-none");
+        assert_eq!(bws_token_from(None, &dir), None);
+        assert_eq!(bws_token_from(Some(""), &dir), None);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn bws_token_runner_controls_the_child_env() {
+        // /bin/sh reports whether the variable is set in its
+        // environment: the runner must set it from the resolved
+        // token, and must remove it when no token resolved (so a
+        // stale empty ambient value cannot leak through either).
+        let probe = |runner: &BwsTokenRunner| -> String {
+            runner
+                .run(
+                    "sh",
+                    &[
+                        "-c",
+                        "if [ -n \"$BWS_ACCESS_TOKEN\" ]; then echo set; else echo unset; fi",
+                    ],
+                )
+                .unwrap()
+                .trim()
+                .to_string()
+        };
+        assert_eq!(
+            probe(&BwsTokenRunner::with_token(Some(
+                "fixture-token".to_string()
+            ))),
+            "set"
+        );
+        assert_eq!(probe(&BwsTokenRunner::with_token(None)), "unset");
     }
 }

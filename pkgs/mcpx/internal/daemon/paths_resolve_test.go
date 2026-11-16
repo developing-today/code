@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/developing-today/code/pkgs/mcpx/internal/daemon"
+	"github.com/developing-today/code/pkgs/mcpx/internal/testsupport"
 )
 
 // longState returns a state directory whose in-state socket path exceeds
@@ -42,7 +43,7 @@ func TestResolveThroughInfoRecordWithMismatchedRuntimeDir(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer os.RemoveAll(runtimeA)
+	defer func() { _ = os.RemoveAll(runtimeA) }()
 	t.Setenv("XDG_RUNTIME_DIR", runtimeA)
 	daemonPaths := daemon.Paths{State: state}.ForConfig("abcdef123456")
 	realSocket := daemonPaths.Socket
@@ -57,7 +58,7 @@ func TestResolveThroughInfoRecordWithMismatchedRuntimeDir(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer ln.Close()
+	defer func() { _ = ln.Close() }()
 	if err := daemonPaths.WriteInfo(daemon.Info{PID: os.Getpid(), Socket: realSocket}); err != nil {
 		t.Fatal(err)
 	}
@@ -68,7 +69,7 @@ func TestResolveThroughInfoRecordWithMismatchedRuntimeDir(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer os.RemoveAll(runtimeB)
+	defer func() { _ = os.RemoveAll(runtimeB) }()
 	t.Setenv("XDG_RUNTIME_DIR", runtimeB)
 	clientPaths := daemon.Paths{State: state}.ForConfig("abcdef123456")
 	if clientPaths.Socket == realSocket {
@@ -138,7 +139,7 @@ func TestRelocated(t *testing.T) {
 	if preferred != filepath.Join(state, "daemon-abcdef123456.sock") {
 		t.Fatalf("preferred = %q", preferred)
 	}
-	short := daemon.Paths{State: t.TempDir()}.ForConfig("abcdef123456")
+	short := daemon.Paths{State: testsupport.SocketDir(t)}.ForConfig("abcdef123456")
 	if _, relocated := short.Relocated(); relocated {
 		t.Fatal("short state path must not report relocation")
 	}

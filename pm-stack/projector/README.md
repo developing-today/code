@@ -23,7 +23,9 @@ record:
 - **Webhook intake** (`POST /github/webhook`): HMAC-SHA256-verified GitHub App
   webhook receiver for `issues`, `issue_comment`, `pull_request`,
   `pull_request_review`, `pull_request_review_comment`, and `push` events.
-  Delivery-GUID idempotency (a redelivered webhook applies at most once).
+  Delivery-GUID dedupe: intake rejects a missing delivery id with 400, and
+  a delivery counts as handled only once it applied or was ignored (see the
+  projection contract below).
 - **Reconciliation reads** (`POST /reconcile`, or `bun run src/cli.ts
 reconcile`): polls the GitHub API with the GitHub App credentials so the
   projection self-heals beyond webhook delivery. Idempotent upserts keyed by
@@ -32,6 +34,128 @@ reconcile`): polls the GitHub API with the GitHub App credentials so the
 - **Joined read model + comment projection** (`GET /items`, `GET /comments`,
   `GET /subjects/<subject>`) and SQL views `pmp_v_links_items` /
   `pmp_v_subject_activity` for direct database reads.
+
+## Projection contract (#4302, audited in #4303)
+
+**A projection writes only what the event proves. An absent field proves
+nothing — it neither defaults a value nor erases a stored one — and the only
+timestamps a row carries are ones its own payload reported.**
+
+The six decisions, as implemented:
+
+1. **Delivery identity.** Webhook intake rejects a request with no
+   `x-github-delivery` header (400 `missing_delivery_id`) before any write;
+   every dedupe key is the delivery GUID. `recordPush` inherits the rule —
+   its insert keys `ON CONFLICT(delivery_id) DO NOTHING`.
+2. **Dedupe counts success only.** A delivery counts as handled iff its
+   outcome is `applied` or `ignored`; error rows are audit-only and stay
+   retryable. A later success replaces the delivery row's outcome while the
+   prior error is retained in `pmp_delivery_errors`. One deliberate
+   deviation: an `invalid_json` delivery is recorded as an error and is
+   *not* counted as handled, so a redelivery is rejected 400 again rather
+   than acked as a duplicate — a malformed body can never become valid
+   under the same GUID, and the 400 keeps the failure visible (pinned by
+   the e2e test "invalid JSON redelivery remains a 400").
+3. **Comment identity is kind-namespaced.** The primary key is
+   `(id, kind)`; every writer builds rows through the shared constructors
+   (`commentCommon` for webhooks, the per-stream builders in reconcile), so
+   an issue comment, a review, and a review comment with the same numeric
+   id are three rows, never one.
+4. **The comment guard key is the last-update time the payload reports** —
+   `updated_at` for comments, `submitted_at` for reviews — never a
+   fabricated timestamp. A payload carrying none of its kind's timestamps
+   writes no row. (The webhook review writer fabricated delivery-time
+   timestamps until the #4303 audit fixed it to derive from
+   `submitted_at`, matching reconcile byte-for-byte.)
+5. **Comment deletion is absorbing.** A tombstone wins over any later
+   upsert regardless of guard key; the upsert's conflict clause requires
+   `deleted = 0`.
+6. **Item deletion removes the item, its links, and its live comments**,
+   and plants an absorbing deletion marker (`pmp_item_deletions`, #6782):
+   only a strictly newer item write clears it. Comment tombstones are
+   retained — they are the absorbing guard of decision 5, and read paths
+   exclude deleted rows.
+
+Field absence on items follows the same rule (origins #4158/#4210): merge
+fields (`draft`, `merged`, `merged_at`) are carried only by pulls-shaped
+payloads, detected by key presence; an issues-shaped write leaves stored
+values untouched (COALESCE in the upsert), and a pulls-shaped payload that
+reports `merged_at: null` clears it.
+
+### Writer inventory (Phase 4 audit, #4303)
+
+Every writer of the four projected tables, dispositioned against the
+contract. "Conforms" was verified against the code and tests this audit,
+not assumed.
+
+**`pmp_items`** — via `store.upsertItem(s)` unless noted:
+- Webhook `issues` (all non-deleted actions) — conforms. The `transferred`
+  action also lands here today; see disposition D-1 below.
+- Webhook `issues` `deleted` — `store.deleteItem` — conforms (decision 6).
+- Webhook `pull_request` — conforms.
+- Webhook `issue_comment`, `pull_request_review`,
+  `pull_request_review_comment` (parent-item refresh) — conforms.
+- Reconcile `issues` stream — conforms (issues-shaped: merge fields absent,
+  stored values preserved by the key-presence rule).
+- Reconcile `prs` stream — conforms (pulls-shaped; also heals rows first
+  written from issues-shaped data).
+
+**`pmp_comments`** — via `store.upsertComment(s)` unless noted:
+- Webhook `issue_comment` created/edited — `commentCommon` — conforms.
+- Webhook `issue_comment` deleted — `store.markCommentDeleted` — conforms
+  (absorbing tombstone, decision 5).
+- Webhook `pull_request_review` submitted — **fixed in this audit**:
+  created_at and the guard key were fabricated from delivery time; both
+  now derive from `submitted_at` (decision 4).
+- Webhook `pull_request_review_comment` created/edited/deleted — conforms.
+- Reconcile `issue_comments` / `review_comments` streams — conforms (own
+  row builders; rows with no payload timestamps are skipped).
+- Reconcile `reviews` stream — conforms (`submitted_at`-derived).
+- `store.deleteItem`'s comment delete (live comments only; tombstones
+  retained as decision 5's guard) — conforms, see decision 6 note.
+
+**`pmp_deliveries`** — `store.recordDelivery` from the webhook intake only:
+outcomes `applied` / `ignored` / `error` — conforms (decision 2, with the
+`invalid_json` deviation recorded there). Error detail is additionally
+retained in `pmp_delivery_errors` (insert-or-ignore: the first error for a
+delivery is the one kept).
+
+**`pmp_push_events`** — webhook `push` branch via `store.recordPush` only
+— conforms (decision 1: intake guarantees the delivery id; the insert is
+`ON CONFLICT(delivery_id) DO NOTHING`; a redelivered push GUID yields one
+row, proven by the e2e duplicate-delivery test).
+
+**`pmp_links`** — `POST /links` → `store.upsertLink`, `DELETE /links` →
+`store.deleteLink`; no other writers — conforms.
+
+### Audit dispositions (#4303)
+
+- **D-1, transferred issues.** Decided: **delete the source-repo row.** A
+  `transferred` event proves the issue left the source repo; keeping a live
+  row renders an issue that no longer exists there. Implementation is a
+  named follow-up, not done blind here: the repo holds no captured
+  `transferred` payload, and the payload's number semantics (source number
+  vs new number in `payload.issue`) are unverified — deleting on an
+  unverified key risks removing the wrong row. The follow-up captures a
+  real payload as a fixture first, then wires the branch to
+  `store.deleteItem`.
+- **D-2, the item row's `new Date()` created-at fallback** (and
+  `commentCommon`'s, for comment kinds): **deliberately local.** GitHub
+  issue/PR/comment objects always carry `created_at` and `updated_at` in
+  both webhook and API shapes — every fixture in this repo does — so the
+  fallback is unreachable from the only two sources; it exists for
+  synthetic payloads. Removing it would mean a skip-row redesign across
+  the reconcile streams for no production effect. The one kind whose real
+  payload lacks those fields — reviews — is fixed above.
+- **D-3, `recordPush` dedupe under Phase 1:** verified, not assumed —
+  intake 400 (above), conflict key on the delivery id, e2e duplicate test.
+- **D-4, secondary comment fields** (`review_state`, `path` / `line`,
+  `diff_hunk`): the comment upsert overwrites all fields on a
+  guard-passing write — no COALESCE — and that is sound: each kind's
+  events re-send the kind's full field set, the guard admits only the
+  newest version of the comment, and reconcile writes the same full-row
+  shape. A null in a newer full payload is the payload's truth (the field
+  was cleared), not an absence. No change.
 
 ## Storage
 
@@ -42,6 +166,26 @@ the comment-activity stream — are specific to this glue layer, but they are
 general/muse-meta database rather than requiring a dedicated database. Run
 locally against a SQLite file (`file:` URL) or remotely via
 `DATABASE_URL` + `TURSO_AUTH_TOKEN`.
+
+### Upgrading the comment identity schema
+
+Existing databases with the old `pmp_comments(id)` primary key fail startup
+with an explicit error. Stop all projector writers and back up the entire
+database first, including the human-written `pmp_links` registry. Do not
+delete the database: it may contain unrelated fleet data. Using the SQL client
+for that database, run:
+
+```sql
+DROP VIEW IF EXISTS pmp_v_subject_activity;
+DROP TABLE pmp_comments;
+```
+
+Start the upgraded projector to recreate the table and view, then run a full
+reconciliation for every configured repository and check all stream errors.
+The comment and review streams reread their full GitHub collections. This
+rebuild cannot recover deleted comments or overwritten historical records
+that GitHub no longer returns; retain the backup for those records. Links,
+items, deliveries, cursors, and other applications' tables are untouched.
 
 ## Secrets (referenced by name only — never commit values)
 
@@ -89,6 +233,28 @@ local source you don't commit.
 | `/hot/checkpoints?consumer=<id>`              | GET    | none   | a consumer's acked checkpoint cursor                              |
 | `/hot/checkpoints`                            | POST   | bearer | ack a checkpoint `{consumer, cursor, highWater}`                  |
 | `/reconcile`                                  | POST   | bearer | trigger a reconciliation poll                                     |
+
+### Integrated queue/PM view — machine + human faces (#7078, #2072 slice 3)
+
+`bun run src/cli.ts queue-view --tasks <tasks.json> [--window-hours 24] [--consumer queue-view] [--no-ack]`
+prints one read-only JSON view joining fleet queue task records (JSON
+exported from the queue broker: an array, or `{ "tasks": [...] }`) with
+this projector's slice-2 hot list, consumed through a consumer
+checkpoint (pinned high-water; the checkpoint is acked only after the
+view prints, unless `--no-ack`). The view lists queued items in claim
+order, items claimed inside the window with their claiming
+system/lane, snapshot counts by status (which reconcile with
+`fleet queue health` when fed the full task list), and links to the
+existing aggregator/projector trend stores. It writes nothing and
+collects nothing new.
+
+`--format html` on the same command prints the human face: the same
+view rendered as one standalone HTML page/report (status counts,
+queued in claim order, picked-up items with their claiming
+system/lane, hot-list summary, and trend panels that link — never
+copy — the same stores the machine face links). The read model is
+identical for both faces; only the rendering differs
+(`src/queue-view-html.ts`).
 
 **Subjects** are external keys:
 

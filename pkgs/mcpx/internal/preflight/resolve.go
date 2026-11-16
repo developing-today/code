@@ -304,11 +304,12 @@ func ResolveGraph(ctx context.Context, g *Graph, opts ResolveOptions, dynamic []
 		} else {
 			add(rootPackages, p)
 		}
-		if opts.Missing == MissingFail {
+		switch opts.Missing {
+		case MissingFail:
 			addResolutionProblem(r, fmt.Sprintf("unresolved import %q resolved to %s@%s but is not installed", missing.Specifier, name, version), missing.Span, true)
-		} else if opts.Missing == MissingWarn {
+		case MissingWarn:
 			addResolutionProblem(r, fmt.Sprintf("unresolved import %q resolved to %s@%s; dependency was not installed", missing.Specifier, name, version), missing.Span, false)
-		} else {
+		default:
 			addResolutionProblem(r, fmt.Sprintf("resolved %s@%s for import %q; stage 2 records the set but does not install it", name, version, missing.Specifier), missing.Span, false)
 		}
 	}
@@ -424,7 +425,7 @@ func npmLatestVersion(ctx context.Context, name string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusOK {
 		return "", fmt.Errorf("npm registry returned %s", resp.Status)
 	}

@@ -83,10 +83,7 @@ describe("blockedSummary", () => {
     expect(onlyBad.blockedCount).toBe(0);
     expect(onlyBad.longestChain).toEqual([]);
 
-    const withControl = blockedSummary([
-      item({ number: 1, blockedBy: [unsafe, R(3)] }),
-      item({ number: 3 }),
-    ]);
+    const withControl = blockedSummary([item({ number: 1, blockedBy: [unsafe, R(3)] }), item({ number: 3 })]);
     expect(withControl.blockedCount).toBe(1);
     expect(withControl.longestChain).toEqual([R(1), R(3)]);
   });
@@ -191,10 +188,7 @@ describe("renderProgramProject graph section (#2400)", () => {
 
   test("a raw pool with an unsafe blocker edge renders its valid chain link", () => {
     const unsafe = "developing-today/code#99999999999999999999";
-    const html = renderWith([
-      item({ number: 1, blockedBy: [unsafe, R(3)] }),
-      item({ number: 3 }),
-    ]);
+    const html = renderWith([item({ number: 1, blockedBy: [unsafe, R(3)] }), item({ number: 3 })]);
     expect(html).toContain('href="https://github.com/developing-today/code/issues/3"');
     expect(html).not.toContain('href="https://github.com/developing-today/code/issues/99999999999999999999"');
   });

@@ -3,19 +3,43 @@
 
   inputs.nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
 
-  outputs = { nixpkgs, ... }:
+  outputs =
+    { nixpkgs, ... }:
     let
-      systems = [ "x86_64-linux" "aarch64-linux" ];
-      forAllSystems = f: builtins.listToAttrs (map (system: {
-        name = system;
-        value = f system;
-      }) systems);
-    in {
-      apps = forAllSystems (system:
+      systems = [
+        "x86_64-linux"
+        "aarch64-linux"
+      ];
+      forAllSystems =
+        f:
+        builtins.listToAttrs (
+          map (system: {
+            name = system;
+            value = f system;
+          }) systems
+        );
+    in
+    {
+      apps = forAllSystems (
+        system:
         let
           pkgs = nixpkgs.legacyPackages.${system};
           labPackages = with pkgs; [
-            bash cargo coreutils gcc gnugrep gnused iproute2 nftables openssl pkg-config procps python3 rustc sccache util-linux
+            bash
+            cargo
+            coreutils
+            gcc
+            gnugrep
+            gnused
+            iproute2
+            nftables
+            openssl
+            pkg-config
+            procps
+            python3
+            rustc
+            sccache
+            util-linux
           ];
           app = pkgs.writeShellScript "c2-holepunch-reproduce" ''
             set -eu
@@ -27,11 +51,13 @@
             fi
             exec ${pkgs.bash}/bin/bash "$spike/lab/reproduce.sh" "$@"
           '';
-        in {
+        in
+        {
           c2-lab = {
             type = "app";
             program = "${app}";
           };
-        });
+        }
+      );
     };
 }

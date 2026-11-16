@@ -28,7 +28,7 @@ import sys
 import tempfile
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-PY_CLI = os.path.expanduser("~/atlas/turso-atlas/scripts/atlas_search.py")
+PY_CLI = os.path.join(os.path.dirname(HERE), "atlas_search.py")
 
 spec = importlib.util.spec_from_file_location("atlas_search", PY_CLI)
 A = importlib.util.module_from_spec(spec)
