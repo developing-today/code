@@ -95,7 +95,11 @@ def parse_verdict_footers(comment_bodies):
                     "at": match.group("at"),
                 }
             )
-    verdicts.sort(key=lambda v: v["at"])
+    def sort_key(v):
+        parsed = parse_ts(v["at"])
+        return parsed if parsed is not None else datetime.min.replace(tzinfo=timezone.utc)
+
+    verdicts.sort(key=sort_key)
     return verdicts
 
 
@@ -119,7 +123,12 @@ def check_verdict_without_packet(artifacts, packets):
     """§7.3.1 — a second-pass verdict (or label) with no live packet."""
     findings = []
     for artifact in artifacts:
-        live = live_packets_for(packets, artifact["number"])
+        # Only review packets commission a pass; an unrelated live
+        # packet for the same issue must not mask a protocol gap.
+        live = [
+            p for p in live_packets_for(packets, artifact["number"])
+            if p.get("review_pass") is not None
+        ]
         live_passes = {p.get("review_pass") for p in live}
         outstanding = [
             v for v in artifact.get("verdicts", []) if v["pass"] not in live_passes
@@ -170,8 +179,23 @@ def check_count_divergence(artifacts, packets):
                 )
             continue
         by_label = label_pass(labels)
-        live = live_packets_for(packets, artifact["number"])
-        by_payload = live[0].get("review_pass") if live else None
+        pass_labels = [l for l in labels if PASS_LABEL_RE.match(l)]
+        live = [
+            p for p in live_packets_for(packets, artifact["number"])
+            if p.get("review_pass") is not None
+        ]
+        # With several live packets, the authoritative payload is the
+        # highest commissioned pass (ties: latest created) — never an
+        # arbitrary first row.
+        authoritative_packet = None
+        if live:
+            authoritative_packet = max(
+                live,
+                key=lambda p: (p["review_pass"], p.get("created_at") or ""),
+            )
+        by_payload = (
+            authoritative_packet.get("review_pass") if authoritative_packet else None
+        )
         verdicts = artifact.get("verdicts", [])
         by_footer = verdicts[-1]["pass"] if verdicts else None
         present = {
@@ -180,7 +204,7 @@ def check_count_divergence(artifacts, packets):
             "verdict_footer": by_footer,
         }
         values = {v for v in present.values() if v is not None}
-        if len(values) > 1:
+        if len(values) > 1 or len(pass_labels) > 1:
             finding = {
                 "check": "count_divergence",
                 "repo": artifact["repo"],
@@ -190,7 +214,9 @@ def check_count_divergence(artifacts, packets):
                 "values": present,
                 "authoritative": by_payload,
             }
-            if by_payload is not None and by_label != by_payload:
+            if len(pass_labels) > 1:
+                finding["pass_labels"] = pass_labels
+            if by_payload is not None and (by_label != by_payload or len(pass_labels) > 1):
                 finding["repair"] = {
                     "action": "set_label",
                     "remove": [l for l in labels if PASS_LABEL_RE.match(l)],
