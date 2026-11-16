@@ -44,6 +44,7 @@ mod replica;
 mod replication;
 mod replication_receiver;
 pub mod signed;
+pub mod spill_gate;
 mod upgrade;
 mod util;
 
