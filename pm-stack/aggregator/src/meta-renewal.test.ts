@@ -6,8 +6,11 @@ import {
   credentialFromCookies,
   pickMetaCookies,
   renewMetaSession,
+  restoreBackoffMs,
+  restoreCookiesFromCredential,
   type MetaBrowserCookie,
   type MetaCredential,
+  type MetaExporterDoc,
   type MetaRenewalDeps,
 } from "./meta-renewal.ts";
 
@@ -182,5 +185,198 @@ describe("renewMetaSession — provider-owned credential (#6120)", () => {
     );
     expect(state.status).toBe("attention");
     expect(state.capture.result).toBe("cdp-unreachable");
+  });
+});
+
+describe("renewMetaSession — browser-jar restore (#10839)", () => {
+  const okDoc: MetaExporterDoc = { status: "ok", measuredAt: NOW.toISOString(), attemptedAt: NOW.toISOString() };
+  const expiredDoc: MetaExporterDoc = { status: "session-expired", measuredAt: null, attemptedAt: NOW.toISOString() };
+
+  test("restoreCookiesFromCredential: captured cookies win; legacy header parses onto .meta.ai", () => {
+    const withCookies: MetaCredential = { ...storedCred(), cookies: browserCookies() };
+    const fromArray = restoreCookiesFromCredential(withCookies);
+    expect(fromArray.map((c) => c.name)).toEqual(["session"]);
+    expect(fromArray[0]?.domain).toBe(".meta.ai");
+
+    const fromHeader = restoreCookiesFromCredential(storedCred());
+    expect(fromHeader).toEqual([
+      { name: "session", value: "stored-value", domain: ".meta.ai", expires: Date.parse(FUTURE) / 1000 },
+    ]);
+
+    expect(restoreBackoffMs(1)).toBe(30 * 60 * 1000);
+    expect(restoreBackoffMs(2)).toBe(2 * 3_600_000);
+    expect(restoreBackoffMs(3)).toBe(6 * 3_600_000);
+    expect(restoreBackoffMs(9)).toBe(6 * 3_600_000);
+  });
+
+  test("persistent exporter session-expired + valid stored credential → jar restored from the stored credential", async () => {
+    const { statePath, credentialPath } = await paths();
+    const sets: MetaBrowserCookie[][] = [];
+    let doc: MetaExporterDoc = okDoc;
+    const deps = baseDeps({
+      statePath,
+      credentialPath,
+      readLatest: async () => doc,
+      readCredential: async () => storedCred(),
+      validateCredential: async () => true,
+      getBrowserCookies: async () => browserCookies(),
+      setBrowserCookies: async (_cdpUrl, cookies) => {
+        sets.push(cookies);
+      },
+    });
+
+    const baseline = await renewMetaSession(deps);
+    expect(baseline.status).toBe("valid");
+    expect(baseline.restore.attempts).toBe(0);
+
+    // First session-expired sighting: not yet persistent, no restore.
+    doc = expiredDoc;
+    const first = await renewMetaSession(deps);
+    expect(first.status).toBe("valid");
+    expect(first.restore.attempted).toBe(false);
+    expect(sets).toHaveLength(0);
+
+    // Second consecutive sighting: restore the jar from the stored
+    // credential — the reverse of capture.
+    const second = await renewMetaSession(deps);
+    expect(second.status).toBe("valid");
+    expect(second.alert).toBeNull();
+    expect(second.restore.attempted).toBe(true);
+    expect(second.restore.result).toBe("restored");
+    expect(second.restore.attempts).toBe(1);
+    expect(second.restore.lastAttemptAt).toBe(NOW.toISOString());
+    expect(second.restore.nextAttemptAt).toBe(new Date(NOW.getTime() + 30 * 60 * 1000).toISOString());
+    expect(sets).toHaveLength(1);
+    expect(sets[0]?.map((c) => c.name)).toEqual(["session"]);
+    expect(sets[0]?.[0]?.domain).toBe(".meta.ai");
+    // The state file records the restore event without the value.
+    const stateRaw = await readFile(statePath, "utf8");
+    expect(stateRaw).toContain('"restore"');
+    expect(stateRaw).not.toContain("stored-value");
+  });
+
+  test("restore backoff: no re-attempt inside the window, next attempt after it", async () => {
+    const { statePath, credentialPath } = await paths();
+    const sets: MetaBrowserCookie[][] = [];
+    let nowMs = NOW.getTime();
+    const deps = baseDeps({
+      statePath,
+      credentialPath,
+      now: () => new Date(nowMs),
+      readLatest: async () => expiredDoc,
+      readCredential: async () => storedCred(),
+      validateCredential: async () => true,
+      setBrowserCookies: async (_cdpUrl, cookies) => {
+        sets.push(cookies);
+      },
+    });
+
+    await renewMetaSession(deps); // first sighting — no restore
+    const first = await renewMetaSession(deps); // persistent — attempt 1
+    expect(first.restore.attempts).toBe(1);
+    expect(sets).toHaveLength(1);
+
+    nowMs += 15 * 60 * 1000; // inside the 30 min backoff
+    const backedOff = await renewMetaSession(deps);
+    expect(backedOff.restore.attempted).toBe(false);
+    expect(backedOff.restore.attempts).toBe(1);
+    expect(sets).toHaveLength(1);
+
+    nowMs += 16 * 60 * 1000; // 31 min after attempt 1 — backoff over
+    const second = await renewMetaSession(deps);
+    expect(second.restore.attempted).toBe(true);
+    expect(second.restore.attempts).toBe(2);
+    expect(second.restore.nextAttemptAt).toBe(new Date(nowMs + 2 * 3_600_000).toISOString());
+    expect(sets).toHaveLength(2);
+  });
+
+  test("invalid stored credential → no restore attempted, attention stands (no restore loop)", async () => {
+    const { statePath, credentialPath } = await paths();
+    let setCalls = 0;
+    const deps = baseDeps({
+      statePath,
+      credentialPath,
+      readLatest: async () => expiredDoc,
+      readCredential: async () => storedCred(),
+      validateCredential: async () => false,
+      getBrowserCookies: async () => browserCookies(),
+      setBrowserCookies: async () => {
+        setCalls += 1;
+      },
+    });
+    const first = await renewMetaSession(deps);
+    const second = await renewMetaSession(deps);
+    expect(first.status).toBe("attention");
+    expect(second.status).toBe("attention");
+    expect(second.capture.result).toBe("validation-failed");
+    expect(second.alert).toContain("Last-resort fallback");
+    expect(setCalls).toBe(0);
+    expect(second.restore.attempts).toBe(0);
+  });
+
+  test("restores that keep failing → attention after 3 attempts; exporter recovery resets the episode", async () => {
+    const { statePath, credentialPath } = await paths();
+    let setCalls = 0;
+    let nowMs = NOW.getTime();
+    let doc: MetaExporterDoc = expiredDoc;
+    const deps = baseDeps({
+      statePath,
+      credentialPath,
+      now: () => new Date(nowMs),
+      readLatest: async () => doc,
+      readCredential: async () => storedCred(),
+      validateCredential: async () => true,
+      setBrowserCookies: async () => {
+        setCalls += 1;
+        throw new Error("CDP Storage.setCookies failed");
+      },
+    });
+
+    await renewMetaSession(deps); // first sighting — no restore
+    const a1 = await renewMetaSession(deps);
+    expect(a1.restore.result).toBe("restore-failed");
+    expect(a1.status).toBe("valid");
+
+    nowMs += 31 * 60 * 1000;
+    const a2 = await renewMetaSession(deps);
+    expect(a2.restore.attempts).toBe(2);
+    expect(a2.status).toBe("valid");
+
+    nowMs += 2 * 3_600_000 + 60 * 1000;
+    const a3 = await renewMetaSession(deps);
+    expect(a3.restore.attempts).toBe(3);
+    expect(a3.status).toBe("attention");
+    expect(a3.alert).toContain("restored the laptop Helium cookie jar");
+    expect(setCalls).toBe(3);
+
+    // The read path recovers: episode closes, alert clears.
+    doc = okDoc;
+    const healed = await renewMetaSession(deps);
+    expect(healed.status).toBe("valid");
+    expect(healed.alert).toBeNull();
+    expect(healed.restore.attempts).toBe(0);
+    expect(healed.restore.nextAttemptAt).toBeNull();
+  });
+
+  test("cadence capture finds a dead jar while the stored credential validates → restore attempted", async () => {
+    const { statePath, credentialPath } = await paths();
+    const sets: MetaBrowserCookie[][] = [];
+    const state = await renewMetaSession(
+      baseDeps({
+        statePath,
+        credentialPath,
+        readCredential: async () => storedCred(SOON),
+        validateCredential: async () => true,
+        getBrowserCookies: async () => [{ name: "a", value: "b", domain: ".example.com" }],
+        setBrowserCookies: async (_cdpUrl, cookies) => {
+          sets.push(cookies);
+        },
+      }),
+    );
+    expect(state.status).toBe("valid");
+    expect(state.capture.result).toBe("no-browser-session");
+    expect(state.restore.attempted).toBe(true);
+    expect(state.restore.result).toBe("restored");
+    expect(sets).toHaveLength(1);
   });
 });
