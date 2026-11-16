@@ -1959,7 +1959,7 @@ func (p *Pool) CloseGraceful(timeout time.Duration) {
 // tuning change or a removed server cut a call that ran past that grace.
 // WaitDrained covers this as well as a lazy restart.
 func (p *Pool) CloseDrained() {
-	p.closeDrained(ExecDrainTimeout, "reconfigured", "replaced by a configuration change", true)
+	p.closeDrained(ExecDrainTimeout, "reconfigured", "replaced by a configuration change", true, false)
 }
 
 // CloseDrainedWithin is CloseDrained for a daemon that is shutting down. drain
@@ -1967,10 +1967,19 @@ func (p *Pool) CloseDrained() {
 // its drain window once the HTTP server has stopped taking calls. The window
 // is ExecDrainTimeout, the same as a reload's, so a stop is bounded by it.
 func (p *Pool) CloseDrainedWithin(drain time.Duration) {
-	p.closeDrained(drain, "shutdown", "stopped because the daemon is shutting down", false)
+	p.closeDrained(drain, "shutdown", "stopped because the daemon is shutting down", false, false)
 }
 
-func (p *Pool) closeDrained(drain time.Duration, stopReason, callErr string, forgetSessions bool) {
+// CloseDrainedWithinForRestart is CloseDrainedWithin for a daemon that is
+// restarting rather than stopping for good (#1414). Each instance's transport
+// is told the close is a restart, so an upstream HTTP session is kept alive
+// and the record persisted for it stays resumable by the next daemon process
+// instead of being ended by a DELETE the successor could never use.
+func (p *Pool) CloseDrainedWithinForRestart(drain time.Duration) {
+	p.closeDrained(drain, "restart", "stopped because the daemon is restarting", false, true)
+}
+
+func (p *Pool) closeDrained(drain time.Duration, stopReason, callErr string, forgetSessions, restartIntent bool) {
 	p.mu.Lock()
 	if !p.closed {
 		p.closed = true
@@ -1989,6 +1998,13 @@ func (p *Pool) closeDrained(drain time.Duration, stopReason, callErr string, for
 	if forgetSessions {
 		for _, in := range stop {
 			p.forgetUpstreamSession(in)
+		}
+	}
+	if restartIntent {
+		// Before any child closes: Close skips the upstream DELETE and
+		// keeps the persisted record resumable (#1414).
+		for _, in := range stop {
+			in.Client.MarkRestartIntent()
 		}
 	}
 	for _, in := range stop {
