@@ -235,6 +235,9 @@ impl BrokerSource {
             body: None,
             port: Some(fleet_config::PORT_SECRETS_BROKER),
             token_file: Some(self.token_file.to_string_lossy().into_owned()),
+            trip: None,
+            transport: None,
+            cf_ok: None,
         };
         let mut stream = self.connect(name)?;
         self.exchange(&mut stream, &request, name)
@@ -935,6 +938,7 @@ mod tests {
             let resp = Response {
                 status: 200,
                 body: serde_json::json!({"names": ["a.name", "b.name"]}),
+                transport: None,
             };
             fleet_proxy_proto::write_frame(&mut stream, &resp).unwrap();
         });
@@ -965,7 +969,11 @@ mod tests {
                 let (mut stream, _) = listener.accept().unwrap();
                 let req: Request = fleet_proxy_proto::read_typed(&mut stream).unwrap();
                 assert_eq!(req.path, "/secret/wanted.name");
-                let resp = Response { status: 200, body };
+                let resp = Response {
+                    status: 200,
+                    body,
+                    transport: None,
+                };
                 fleet_proxy_proto::write_frame(&mut stream, &resp).unwrap();
             });
             let source = BrokerSource {
@@ -1013,7 +1021,11 @@ mod tests {
                 assert_eq!(req.path, "/secret/wanted.name");
                 assert_eq!(req.port, Some(fleet_config::PORT_SECRETS_BROKER));
                 assert_eq!(req.token_file.as_deref(), Some("/nonexistent/token"));
-                let resp = Response { status, body };
+                let resp = Response {
+                    status,
+                    body,
+                    transport: None,
+                };
                 fleet_proxy_proto::write_frame(&mut server, &resp).unwrap();
             });
             let source = BrokerSource {
@@ -1034,6 +1046,9 @@ mod tests {
             body: None,
             port: Some(fleet_config::PORT_SECRETS_BROKER),
             token_file: Some("/nonexistent/token".to_string()),
+            trip: None,
+            transport: None,
+            cf_ok: None,
         };
         let resp = source
             .exchange(&mut client, &request, "wanted.name")

@@ -142,13 +142,37 @@ pub(crate) fn valid_path(path: &str) -> bool {
     path.starts_with('/') && path.bytes().all(|b| b > 0x20 && b != 0x7f)
 }
 
-/// The byte stream under an [`HttpConn`]: a TCP tunnel stream, or
-/// a colocated service's Unix socket (#6219). Both are plain
-/// Read+Write byte streams once connected; the HTTP exchange does
-/// not care which it rides.
+/// Whether `name` is a valid header field name: the method-token
+/// rule (RFC 9110 `token`) — the extra headers the broker adds
+/// (code#10356) are interpolated into the head, so their names
+/// get the same #5750 treatment as the method.
+pub(crate) fn valid_header_name(name: &str) -> bool {
+    valid_method(name)
+}
+
+/// Whether `value` may appear as a header field value: no CR, LF,
+/// or other control bytes and no DEL — a value carrying one would
+/// forge the headers after it (#5750). The Access ids and trip
+/// ids the broker sends are plain tokens; anything else is a bug
+/// or an attack, and the request is refused before it is written.
+pub(crate) fn valid_header_value(value: &str) -> bool {
+    value.bytes().all(|b| b >= 0x20 && b != 0x7f)
+}
+
+/// The byte stream under an [`HttpConn`]: a TCP tunnel stream, a
+/// colocated service's Unix socket (#6219), or TLS to the
+/// Cloudflare edge for the broker's Cloudflare leg (code#10356,
+/// serve-gated like the leg itself). All are plain Read+Write
+/// byte streams once connected; the HTTP exchange does not care
+/// which it rides. The TLS variant's clone is a second handle on
+/// the one shared session (see
+/// [`crate::tunnel::SharedTlsStream`]); the others clone the
+/// socket itself.
 pub enum ConnStream {
     Tcp(TcpStream),
     Unix(UnixStream),
+    #[cfg(feature = "serve")]
+    Tls(crate::tunnel::SharedTlsStream),
 }
 
 impl ConnStream {
@@ -156,6 +180,8 @@ impl ConnStream {
         Ok(match self {
             ConnStream::Tcp(s) => ConnStream::Tcp(s.try_clone()?),
             ConnStream::Unix(s) => ConnStream::Unix(s.try_clone()?),
+            #[cfg(feature = "serve")]
+            ConnStream::Tls(s) => ConnStream::Tls(s.try_clone()?),
         })
     }
 }
@@ -165,6 +191,8 @@ impl Read for ConnStream {
         match self {
             ConnStream::Tcp(s) => s.read(buf),
             ConnStream::Unix(s) => s.read(buf),
+            #[cfg(feature = "serve")]
+            ConnStream::Tls(s) => s.read(buf),
         }
     }
 }
@@ -174,12 +202,16 @@ impl Write for ConnStream {
         match self {
             ConnStream::Tcp(s) => s.write(buf),
             ConnStream::Unix(s) => s.write(buf),
+            #[cfg(feature = "serve")]
+            ConnStream::Tls(s) => s.write(buf),
         }
     }
     fn flush(&mut self) -> std::io::Result<()> {
         match self {
             ConnStream::Tcp(s) => s.flush(),
             ConnStream::Unix(s) => s.flush(),
+            #[cfg(feature = "serve")]
+            ConnStream::Tls(s) => s.flush(),
         }
     }
 }
@@ -202,6 +234,14 @@ impl HttpConn {
     /// TCP loopback.
     pub fn from_unix(stream: UnixStream) -> std::io::Result<HttpConn> {
         Self::from_stream(ConnStream::Unix(stream))
+    }
+
+    /// An HTTP connection over a TLS stream to the Cloudflare
+    /// edge (code#10356): the same exchange, encrypted to the
+    /// tunnel hostname instead of tunnelled to the tailnet host.
+    #[cfg(feature = "serve")]
+    pub fn from_tls(stream: crate::tunnel::SharedTlsStream) -> std::io::Result<HttpConn> {
+        Self::from_stream(ConnStream::Tls(stream))
     }
 
     fn from_stream(stream: ConnStream) -> std::io::Result<HttpConn> {
@@ -259,6 +299,25 @@ impl HttpConn {
         token: &str,
         body: Option<&[u8]>,
     ) -> Result<(u16, Vec<u8>), HttpError> {
+        self.request_with_extra_headers(method, path, host_header, token, body, &[])
+    }
+
+    /// [`HttpConn::request`] with extra headers interpolated into
+    /// the head — the Cloudflare leg's `CF-Access-*` pair and the
+    /// caller's `X-Trip-Id` (code#10356). Header names and values
+    /// are validated with the same CRLF rule as the method and
+    /// path: a control character in either is an injection onto
+    /// this pooled connection (#5750's class) and is rejected
+    /// before a byte is written.
+    pub fn request_with_extra_headers(
+        &mut self,
+        method: &str,
+        path: &str,
+        host_header: &str,
+        token: &str,
+        body: Option<&[u8]>,
+        extra_headers: &[(String, String)],
+    ) -> Result<(u16, Vec<u8>), HttpError> {
         // The method and path are interpolated into the request
         // line below: a control character in either is a CRLF
         // injection that forges headers or smuggles a whole second
@@ -271,6 +330,14 @@ impl HttpConn {
                 "invalid request method or path (method {method:?})"
             )));
         }
+        for (name, value) in extra_headers {
+            if !valid_header_name(name) || !valid_header_value(value) {
+                self.reusable = false;
+                return Err(HttpError::Malformed(format!(
+                    "invalid extra header (name {name:?})"
+                )));
+            }
+        }
         let mut head = format!(
             "{method} {path} HTTP/1.1\r\n\
              Host: {host_header}\r\n\
@@ -278,6 +345,9 @@ impl HttpConn {
              Content-Type: application/json\r\n\
              Accept-Encoding: identity\r\n"
         );
+        for (name, value) in extra_headers {
+            head.push_str(&format!("{name}: {value}\r\n"));
+        }
         if let Some(b) = body {
             head.push_str(&format!("Content-Length: {}\r\n", b.len()));
         }

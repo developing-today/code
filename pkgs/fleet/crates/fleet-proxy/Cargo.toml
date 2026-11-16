@@ -31,9 +31,25 @@ required-features = ["serve"]
 [features]
 # The broker half. The connect variant compiles this crate without
 # it: a dropped-on-a-box artifact carries the client and nothing
-# else (§2's mechanical-incapability rule).
+# else (§2's mechanical-incapability rule). The TLS stack for the
+# broker's Cloudflare leg (code#10356) rides this feature for the
+# same reason: rustls + two root stores is exactly the weight the
+# size-gated connect artifact must not grow.
 default = ["serve"]
-serve = []
+serve = ["dep:rustls", "dep:webpki-roots", "dep:rustls-native-certs"]
+
+[dependencies.rustls]
+version = "0.23"
+features = ["ring"]
+optional = true
+
+[dependencies.webpki-roots]
+version = "1"
+optional = true
+
+[dependencies.rustls-native-certs]
+version = "0.8"
+optional = true
 
 [dev-dependencies]
 # Property-based tests for the fleet-udp-forward parser invariants

@@ -178,6 +178,46 @@ pub fn egress_from_env(proxy_port: u16) -> Result<Egress, String> {
     egress_from_url(&raw, proxy_port)
 }
 
+/// The egress endpoint for the Cloudflare leg (code#10356): the
+/// same proxy, but dialled at the URL's OWN port — the internet
+/// egress port (3128 in the runtime shape), NOT the tailnet
+/// tunnel port [`egress_from_env`] substitutes. The asymmetry is
+/// the runtime's, exactly as the Python client's two socket
+/// builders encoded it before the leg moved into fleet: the
+/// tailnet CONNECT goes to the session proxy on the configured
+/// port; the Cloudflare CONNECT goes to the platform egress at
+/// the port the proxy URL itself names.
+pub fn egress_from_env_url_port() -> Result<Egress, String> {
+    let raw = std::env::var("HTTPS_PROXY")
+        .map_err(|_| "HTTPS_PROXY must be set (runtime proxy env)".to_string())?;
+    egress_from_url_url_port(&raw)
+}
+
+/// [`egress_from_env_url_port`] with the URL supplied (tests).
+pub fn egress_from_url_url_port(raw: &str) -> Result<Egress, String> {
+    egress_from_url(raw, url_port(raw).unwrap_or(3128))
+}
+
+/// The port named by a proxy URL, if it names one. Mirrors the
+/// authority parsing in [`egress_from_url`]: userinfo ends at the
+/// last '@'; a bracketed v6 literal's port follows the bracket.
+fn url_port(raw: &str) -> Option<u16> {
+    let after_scheme = raw.split_once("://").map(|(_, rest)| rest).unwrap_or(raw);
+    let authority = after_scheme
+        .split(['/', '?', '#'])
+        .next()
+        .unwrap_or(after_scheme);
+    let hostport = match authority.rfind('@') {
+        Some(at) => &authority[at + 1..],
+        None => authority,
+    };
+    if let Some(rest) = hostport.strip_prefix('[') {
+        let (_, after) = rest.split_once(']')?;
+        return after.strip_prefix(':')?.parse().ok();
+    }
+    hostport.rsplit_once(':')?.1.parse().ok()
+}
+
 /// [`egress_from_env`] with the URL supplied (tests, diagnostics).
 pub fn egress_from_url(raw: &str, proxy_port: u16) -> Result<Egress, String> {
     let after_scheme = raw.split_once("://").map(|(_, rest)| rest).unwrap_or(raw);
@@ -339,6 +379,138 @@ fn tune(stream: &TcpStream, http_timeouts: bool) {
     stream.set_nodelay(true).ok();
 }
 
+// ---------------------------------------------------------------------------
+// The Cloudflare leg (code#10356): TLS to the named tunnel's edge
+// hostname, through the egress proxy. Serve-gated: the connect
+// variants must not grow a TLS stack (the D7 size gate), and only
+// the broker speaks to the edge. The daemon end of the tunnel is
+// untouched — cloudflared on the laptop terminates the tunnel and
+// dials the daemon's own listener, so the daemon's token auth is
+// preserved end to end; the Access headers ride the HTTP layer
+// (http.rs), not this one.
+// ---------------------------------------------------------------------------
+
+/// Setup budget for the Cloudflare leg: the CONNECT through the
+/// egress proxy plus the TLS handshake to the edge. The edge is
+/// an internet endpoint, not the local tailnet proxy, so the 2 s
+/// transport deadline is too tight; the Python client's cf_socket
+/// allowed the establishment 60 s — 15 s keeps the same order of
+/// bound. Once established, the stream carries the standard HTTP
+/// timeouts, like every other tunnel.
+#[cfg(feature = "serve")]
+pub const CF_SETUP_DEADLINE: Duration = Duration::from_secs(15);
+
+/// A TLS stream to the Cloudflare edge, shared between an HTTP
+/// connection's reader and writer halves. A rustls session is
+/// stateful in both directions over one socket, so unlike a plain
+/// `TcpStream` the halves cannot be independent socket clones:
+/// they are two handles on one session behind a mutex. The broker
+/// uses a pooled connection from one thread at a time (checkout
+/// is exclusive) and every lock is held only for a single read or
+/// write call, so the mutex never serializes real work.
+#[cfg(feature = "serve")]
+#[derive(Clone)]
+pub struct SharedTlsStream {
+    inner:
+        std::sync::Arc<std::sync::Mutex<rustls::StreamOwned<rustls::ClientConnection, TcpStream>>>,
+}
+
+#[cfg(feature = "serve")]
+impl SharedTlsStream {
+    /// The other half of the same session (see the type docs).
+    pub fn try_clone(&self) -> std::io::Result<SharedTlsStream> {
+        Ok(self.clone())
+    }
+}
+
+#[cfg(feature = "serve")]
+impl Read for SharedTlsStream {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        self.inner.lock().unwrap().read(buf)
+    }
+}
+
+#[cfg(feature = "serve")]
+impl Write for SharedTlsStream {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        self.inner.lock().unwrap().write(buf)
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        self.inner.lock().unwrap().flush()
+    }
+}
+
+/// The TLS client configuration for the edge, built once. Roots:
+/// the public webpki set PLUS the platform store — hosts behind
+/// the sandbox's TLS-intercepting egress proxy present the
+/// proxy's CA, which only the platform store carries (the fleet
+/// gh leg learned this the hard way; see crates/fleet/src/gh.rs),
+/// while the edge's real certificate chains to the public set.
+/// Carrying both keeps the leg working whether or not the proxy
+/// intercepts this host. Platform-store load errors are not
+/// fatal: the webpki roots still anchor the uninterrupted case.
+/// The crypto provider is pinned to ring explicitly, so building
+/// the config never depends on a process-level provider another
+/// part of the binary happened to install.
+#[cfg(feature = "serve")]
+fn cf_tls_config() -> &'static std::sync::Arc<rustls::ClientConfig> {
+    static CONFIG: std::sync::OnceLock<std::sync::Arc<rustls::ClientConfig>> =
+        std::sync::OnceLock::new();
+    CONFIG.get_or_init(|| {
+        let mut roots = rustls::RootCertStore::empty();
+        roots.extend(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
+        for cert in rustls_native_certs::load_native_certs().certs {
+            let _ = roots.add(cert);
+        }
+        let config = rustls::ClientConfig::builder_with_provider(
+            rustls::crypto::ring::default_provider().into(),
+        )
+        .with_safe_default_protocol_versions()
+        .expect("rustls safe default protocol versions")
+        .with_root_certificates(roots)
+        .with_no_client_auth();
+        std::sync::Arc::new(config)
+    })
+}
+
+/// Open the Cloudflare leg: a TLS stream to `cf_host:443` through
+/// the egress proxy (a CONNECT at the egress URL's own port —
+/// see [`egress_from_env_url_port`]), with the handshake completed
+/// eagerly so an establishment failure surfaces at open time. The
+/// pool's accounting relies on that contract, the same reason the
+/// Python broker connected eagerly.
+#[cfg(feature = "serve")]
+pub fn connect_cf_tunnel(egress: &Egress, cf_host: &str) -> std::io::Result<SharedTlsStream> {
+    let start = Instant::now();
+    let tcp = connect_tunnel_with_deadline(Some(egress), cf_host, 443, CF_SETUP_DEADLINE)?;
+    // The CONNECT applied the HTTP timeouts; the handshake gets
+    // only what is left of the setup budget.
+    let left = remaining(CF_SETUP_DEADLINE, start)
+        .ok_or_else(|| deadline_exceeded("TLS handshake", CF_SETUP_DEADLINE))?;
+    tcp.set_read_timeout(Some(left))?;
+    tcp.set_write_timeout(Some(left))?;
+    let server_name =
+        rustls::pki_types::ServerName::try_from(cf_host.to_string()).map_err(|e| {
+            std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                format!("bad CF host name: {e}"),
+            )
+        })?;
+    let conn = rustls::ClientConnection::new(cf_tls_config().clone(), server_name)
+        .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidInput, e.to_string()))?;
+    let mut stream = rustls::StreamOwned::new(conn, tcp);
+    while stream.conn.is_handshaking() {
+        stream.conn.complete_io(&mut stream.sock)?;
+    }
+    // Established: the standard HTTP timeouts apply from here.
+    stream.sock.set_read_timeout(Some(TUNNEL_READ_TIMEOUT))?;
+    stream.sock.set_write_timeout(Some(TUNNEL_WRITE_TIMEOUT))?;
+    Ok(SharedTlsStream {
+        inner: std::sync::Arc::new(std::sync::Mutex::new(stream)),
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -481,5 +653,79 @@ mod tests {
         proxy.join().unwrap();
         assert_eq!(stream.read_timeout().unwrap(), None);
         assert_eq!(stream.write_timeout().unwrap(), None);
+    }
+
+    #[test]
+    fn url_port_reads_the_urls_own_port() {
+        // The Cloudflare leg dials the egress proxy at the port
+        // the URL itself names (code#10356) — the one place the
+        // URL's port is used instead of the configured tunnel
+        // port.
+        assert_eq!(url_port("http://user:pass@198.19.0.1:3128"), Some(3128));
+        assert_eq!(url_port("http://user:pass@198.19.0.1:3130/"), Some(3130));
+        assert_eq!(url_port("http://[2001:db8::1]:3128"), Some(3128));
+        assert_eq!(url_port("http://user:pass@198.19.0.1"), None);
+        assert_eq!(url_port("http://user:pass@198.19.0.1:notaport"), None);
+    }
+
+    #[test]
+    fn cf_egress_uses_the_url_port_not_the_tunnel_port() {
+        let egress = egress_from_url_url_port("http://u:p@proxy.invalid:3128").unwrap();
+        assert_eq!(egress.host, "proxy.invalid");
+        assert_eq!(egress.port, 3128);
+        // No port in the URL: the runtime's internet egress port.
+        let egress = egress_from_url_url_port("http://u:p@proxy.invalid").unwrap();
+        assert_eq!(egress.port, 3128);
+        // The tailnet construction is untouched by the split:
+        // the configured port still wins there.
+        let egress = egress_from_url("http://u:p@proxy.invalid:3128", 3130).unwrap();
+        assert_eq!(egress.port, 3130);
+    }
+
+    #[cfg(feature = "serve")]
+    #[test]
+    fn cf_tunnel_speaks_tls_after_the_connect() {
+        // Fault-injection shape: a fake egress proxy that answers
+        // the CONNECT 200 and records the first byte that follows.
+        // A correct Cloudflare leg sends a TLS ClientHello next
+        // (0x16, the handshake record type) addressed to the
+        // tunnel hostname — never plaintext HTTP.
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        let proxy = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut request = Vec::new();
+            let mut byte = [0u8; 1];
+            while !request.ends_with(b"\r\n\r\n") {
+                stream.read_exact(&mut byte).unwrap();
+                request.push(byte[0]);
+            }
+            stream
+                .write_all(b"HTTP/1.1 200 Connection Established\r\n\r\n")
+                .unwrap();
+            let mut first = [0u8; 1];
+            stream.read_exact(&mut first).unwrap();
+            (String::from_utf8_lossy(&request).into_owned(), first[0])
+        });
+        let egress = Egress {
+            host: "127.0.0.1".to_string(),
+            port: addr.port(),
+            authorization: "Basic dTpw".to_string(),
+        };
+        // The handshake cannot complete against the fake proxy
+        // (nothing answers the ClientHello, and the name would not
+        // verify anyway) — the open must FAIL, having first sent
+        // the CONNECT for the tunnel host and a ClientHello.
+        let got = connect_cf_tunnel(&egress, "sandbox-link.security.cab");
+        assert!(got.is_err(), "no real edge, no tunnel");
+        let (request, first) = proxy.join().unwrap();
+        assert!(
+            request.starts_with("CONNECT sandbox-link.security.cab:443 "),
+            "CONNECT must target the tunnel host at 443: {request:?}"
+        );
+        assert_eq!(
+            first, 0x16,
+            "first post-CONNECT byte must be a TLS handshake record"
+        );
     }
 }
