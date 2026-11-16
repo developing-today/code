@@ -10,7 +10,8 @@ import { defineConfig } from "vitest/config";
 const retentionSettings = ["0", "7d", "8640000000000", "3600"];
 
 export default defineConfig({
-  projects: [
+  test: {
+    projects: [
     {
       plugins: [
         cloudflareTest({
@@ -18,7 +19,7 @@ export default defineConfig({
         }),
       ],
       test: {
-        include: ["test/worker.test.ts"],
+        include: ["test/worker.test.ts", "test/deploy-*.test.ts"],
         name: "default",
       },
     },
@@ -27,7 +28,7 @@ export default defineConfig({
         cloudflareTest({
           wrangler: { configPath: "./wrangler.jsonc" },
           miniflare: {
-            vars: { RETENTION_SECONDS: setting },
+            bindings: { RETENTION_SECONDS: setting },
           },
         }),
       ],
@@ -36,5 +37,6 @@ export default defineConfig({
         name: `retention-${setting}`,
       },
     })),
-  ],
+    ],
+  },
 });
