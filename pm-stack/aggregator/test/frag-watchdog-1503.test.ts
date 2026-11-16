@@ -31,7 +31,10 @@ describe("shell fragment watchdog (#1503)", () => {
       expect(html).toContain("frag-failed");
       expect(html).toContain("the live view did not arrive");
       expect(html).toContain("?full=1");
-      expect(html).toContain("data-on-load=\"@get('");
+      // #10605: first paint is a Datastar v1 `data-init` (one-shot), not
+      // the v0-era `data-on-load`, which the vendored bundle never fires.
+      expect(html).toContain("data-init=\"@get('");
+      expect(html).not.toContain("data-on-load");
       expect(html).toContain('class="skel"');
     }
   });
