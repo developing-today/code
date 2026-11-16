@@ -36,6 +36,7 @@ pub mod feedback;
 pub mod feedback_normalise;
 pub mod filters;
 pub mod fusion;
+pub mod github_comments;
 pub mod local;
 pub mod search;
 pub mod shards;
