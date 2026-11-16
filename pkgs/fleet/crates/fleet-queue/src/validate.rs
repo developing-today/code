@@ -185,6 +185,18 @@ fn manual_schema_errors(p: &Value) -> Vec<String> {
             errs.push(format!("payload.{f}: must be a positive integer"));
         }
     }
+    // #3418: optional minimum uninterrupted budget to reach the next
+    // safe checkpoint. Absent/null means no requirement (legacy rows
+    // stay claimable as today); when present it must be a positive
+    // integer. No upper bound: a 5256-class 120-minute requirement
+    // (and larger future ones) must be declarable.
+    match get("required_budget_minutes") {
+        None | Some(Value::Null) => {}
+        Some(Value::Number(n)) if n.as_i64().map(|v| v >= 1).unwrap_or(false) => {}
+        _ => errs.push(
+            "payload.required_budget_minutes: must be a positive integer".to_string(),
+        ),
+    }
     if let Some(value) = get("max_attempts") {
         if !valid_max_attempts(value) {
             errs.push(format!(
@@ -953,6 +965,18 @@ pub fn validate_packet(packet: &Value) -> (Vec<String>, Vec<String>) {
         // old rule a bulk row update split the copies and the claim
         // guard quarantined 449 tasks for it (2026-11-14..16).
     }
+    // #3418: top-level required_budget_minutes is the packet copy
+    // (task_from_packet normalizes it into the payload mirror at
+    // enqueue, same #10648 shape as max_attempts). Absent/null
+    // means no requirement; a present value must be a positive
+    // integer.
+    if let Some(value) = obj.get("required_budget_minutes").filter(|v| !v.is_null()) {
+        if !matches!(value, Value::Number(n) if n.as_i64().map(|v| v >= 1).unwrap_or(false)) {
+            errors.push(
+                "packet.required_budget_minutes: must be a positive integer".to_string(),
+            );
+        }
+    }
 
     match obj.get("title") {
         Some(Value::String(t)) if !t.trim().is_empty() => {}
@@ -1071,6 +1095,29 @@ pub fn task_from_packet(packet: &Value, queue: &str) -> Value {
             }
         }
     }
+    // #3418: the packet-level required_budget_minutes (when present
+    // and valid) is the selected requirement; otherwise the payload
+    // copy stands. Mirror the selected value into the payload so the
+    // column stamp and the JSONB copy are born aligned (#10648
+    // shape). Absent in both places: no requirement (NULL downstream,
+    // legacy claim behavior). NO default from timebox_minutes here:
+    // stamping a default would make every new task requirement-
+    // bearing while deployed helpers predate --remaining-budget-
+    // minutes and could then claim nothing (#4712 deployment lag).
+    let required_budget = packet
+        .get("required_budget_minutes")
+        .filter(|v| !v.is_null())
+        .or_else(|| payload.get("required_budget_minutes").filter(|v| !v.is_null()))
+        .cloned()
+        .unwrap_or(Value::Null);
+    if !required_budget.is_null() {
+        if let Some(obj) = payload.as_object_mut() {
+            obj.insert(
+                "required_budget_minutes".to_string(),
+                required_budget.clone(),
+            );
+        }
+    }
     json!({
         "queue": queue,
         "title": packet.get("title").cloned().unwrap_or(Value::Null),
@@ -1080,6 +1127,7 @@ pub fn task_from_packet(packet: &Value, queue: &str) -> Value {
         "priority": packet.get("priority").cloned().unwrap_or(Value::Null),
         "not_before": packet.get("not_before").cloned().unwrap_or(Value::Null),
         "max_attempts": max_attempts,
+        "required_budget_minutes": required_budget,
     })
 }
 
@@ -1167,6 +1215,96 @@ mod tests {
         assert_eq!(task_from_packet(&packet, "q")["max_attempts"], 1000);
         packet["payload"]["max_attempts"] = json!(7);
         assert_eq!(task_from_packet(&packet, "q")["max_attempts"], 7);
+    }
+
+    #[test]
+    fn required_budget_minutes_validation_and_selection_3418() {
+        // #3418 (#4712): optional at both levels; absent/null in both
+        // means no requirement (NULL downstream, legacy claim
+        // behavior). Present values must be positive integers; the
+        // packet copy wins and the payload mirror is normalized.
+        let payload = payload_with(json!({"issue": {"number": 4712}}));
+        let base = json!({"title": "test", "priority": 30, "payload": payload});
+        // Absent everywhere validates clean and selects NULL.
+        assert!(
+            !validate_packet(&base)
+                .0
+                .iter()
+                .any(|e| e.contains("required_budget")),
+            "{}",
+            validate_packet(&base).0.join("; ")
+        );
+        let row = task_from_packet(&base, "q");
+        assert_eq!(row["required_budget_minutes"], Value::Null);
+        assert!(row["payload"].get("required_budget_minutes").is_none());
+        // Explicit null at either level is also "no requirement".
+        for top in [true, false] {
+            let mut packet = base.clone();
+            if top {
+                packet["required_budget_minutes"] = Value::Null;
+            } else {
+                packet["payload"]["required_budget_minutes"] = Value::Null;
+            }
+            assert!(
+                !validate_packet(&packet)
+                    .0
+                    .iter()
+                    .any(|e| e.contains("required_budget")),
+                "{packet}"
+            );
+            assert_eq!(task_from_packet(&packet, "q")["required_budget_minutes"], Value::Null);
+        }
+        // Bad values fail at their own level.
+        for bad in [json!(0), json!(-5), json!(1.5), json!("120"), json!(-1)] {
+            for top in [true, false] {
+                let mut packet = base.clone();
+                if top {
+                    packet["required_budget_minutes"] = bad.clone();
+                } else {
+                    packet["payload"]["required_budget_minutes"] = bad.clone();
+                }
+                let field = if top {
+                    "packet.required_budget_minutes"
+                } else {
+                    "payload.required_budget_minutes"
+                };
+                assert!(
+                    validate_packet(&packet).0.iter().any(|e| e.contains(field)),
+                    "{packet}"
+                );
+            }
+        }
+        // 5256-class 120-minute requirement (above the 45-min
+        // standard timebox) validates clean — no upper bound.
+        for good in [1, 10, 45, 120, 1000] {
+            let mut packet = base.clone();
+            packet["payload"]["required_budget_minutes"] = json!(good);
+            assert!(
+                !validate_packet(&packet)
+                    .0
+                    .iter()
+                    .any(|e| e.contains("required_budget")),
+                "{packet}"
+            );
+            let row = task_from_packet(&packet, "q");
+            assert_eq!(row["required_budget_minutes"], good);
+            assert_eq!(row["payload"]["required_budget_minutes"], good);
+        }
+        // Packet copy wins; payload mirror normalized to it.
+        let mut packet = base.clone();
+        packet["required_budget_minutes"] = json!(120);
+        packet["payload"]["required_budget_minutes"] = json!(10);
+        assert!(
+            !validate_packet(&packet)
+                .0
+                .iter()
+                .any(|e| e.contains("required_budget")),
+            "{}",
+            validate_packet(&packet).0.join("; ")
+        );
+        let row = task_from_packet(&packet, "q");
+        assert_eq!(row["required_budget_minutes"], 120);
+        assert_eq!(row["payload"]["required_budget_minutes"], 120);
     }
 
     #[test]

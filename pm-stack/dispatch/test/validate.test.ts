@@ -391,6 +391,28 @@ describe("task blank dedupe_key parsing (issue #10739)", () => {
   });
 });
 
+describe("#3418 required_budget_minutes parsing", () => {
+  const base = {
+    repo: "developing-today/code",
+    title: "long job",
+    prompt: "a job needing a full shift",
+  };
+  test("omitted and null parse as omitted", () => {
+    expect(parseTaskRequest(base).requiredBudgetMinutes).toBeUndefined();
+    expect(parseTaskRequest({ ...base, required_budget_minutes: null }).requiredBudgetMinutes).toBeUndefined();
+  });
+  test("a positive integer is preserved", () => {
+    expect(parseTaskRequest({ ...base, required_budget_minutes: 120 }).requiredBudgetMinutes).toBe(120);
+  });
+  test("non-positive, fractional, and non-numeric values are rejected", () => {
+    for (const bad of [0, -5, 1.5, "120", true]) {
+      expect(() => parseTaskRequest({ ...base, required_budget_minutes: bad })).toThrow(
+        /required_budget_minutes/,
+      );
+    }
+  });
+});
+
 describe("session directory symlink confinement (issue #3999)", () => {
   // Fixture layout under a fresh temp dir:
   //   base/clone/            the repo clone (configured root)

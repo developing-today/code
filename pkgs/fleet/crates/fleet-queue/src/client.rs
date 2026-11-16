@@ -3300,7 +3300,32 @@ const NO_CLAIM_EXIT: i32 = 5;
 fn claim_output(resp: &Value) -> (Value, i32) {
     let row = resp.get("row").cloned().unwrap_or(Value::Null);
     if row.is_null() {
-        return (json!({"task": Value::Null}), NO_CLAIM_EXIT);
+        // #3418 (#4712): carry the broker's budget-skip summary on
+        // the no-claim output so lanes see impossible-fit work
+        // instead of an empty claim.
+        let mut out = json!({"task": Value::Null});
+        if let Some(obj) = out.as_object_mut() {
+            for k in ["budget_skipped", "max_required_budget_minutes"] {
+                if let Some(v) = resp.get(k) {
+                    obj.insert(k.to_string(), v.clone());
+                }
+            }
+        }
+        if resp
+            .get("budget_skipped")
+            .and_then(|v| v.as_i64())
+            .unwrap_or(0)
+            > 0
+        {
+            eprint(&format!(
+                "repo-queue: claim skipped {} task(s) on budget (#3418); largest requirement: {} min",
+                resp.get("budget_skipped").cloned().unwrap_or(Value::Null),
+                resp.get("max_required_budget_minutes")
+                    .cloned()
+                    .unwrap_or(Value::Null),
+            ));
+        }
+        return (out, NO_CLAIM_EXIT);
     }
     // Defense in depth (#5444): the broker's claim path validates
     // packets before handing them out, but a row that still arrives
@@ -7272,6 +7297,28 @@ mod tests {
                     "no-claim marker must not carry task field {field}"
                 );
             }
+        }
+    }
+
+    #[test]
+    fn claim_no_claim_carries_budget_skip_summary_when_present() {
+        // #3418 (#4712): a broker no-claim response carrying the
+        // budget-skip summary keeps the distinguishable shape and
+        // exit code, and surfaces the summary for impossible-fit
+        // escalation. A response without the keys stays byte-exact.
+        let (out, code) = claim_output(&json!({"ok": true, "row": Value::Null,
+            "budget_skipped": 3, "max_required_budget_minutes": 120}));
+        assert_eq!(code, NO_CLAIM_EXIT);
+        assert_eq!(
+            out,
+            json!({"task": Value::Null, "budget_skipped": 3,
+                "max_required_budget_minutes": 120})
+        );
+        for field in ["id", "queue", "status", "dedupe_key"] {
+            assert!(
+                out.get(field).is_none(),
+                "no-claim marker must not carry task field {field}"
+            );
         }
     }
 
