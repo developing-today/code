@@ -1,4 +1,4 @@
-// repo-task/v1 packet construction for the Supabase queue, mirroring the
+// repo-task/v1 packet construction for the queue broker, mirroring the
 // shape ~/tools/repo-queue.py validates: an envelope (title/body/priority/
 // dedupe_key) around a repo-task/v1 payload. Dispatch adds `origin`,
 // `caller`, `model_hint` and `directory` as extra payload fields (the
