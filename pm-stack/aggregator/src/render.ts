@@ -403,7 +403,10 @@ setTimeout(function () {
     if (!skel) return;
     var p = document.createElement("p");
     p.className = "frag-failed";
-    p.innerHTML = "the live view did not arrive &mdash; <a href="" + location.pathname + "?full=1">load the full page</a>";
+    var a = document.createElement("a");
+    a.href = location.pathname + "?full=1";
+    a.textContent = "load the full page";
+    p.append("the live view did not arrive \u2014 ", a);
     skel.replaceWith(p);
   });
 }, ${FRAG_WATCHDOG_MS});
