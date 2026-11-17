@@ -30,12 +30,19 @@
 # repo-archive-backup is covered via its timer's last-trigger time
 # only: its script and restic credentials live outside this repo, so
 # no run record is required of it (stated in laptop-backups.nix too).
+# cold-store-nightly is covered via its timer's last-trigger time
+# PLUS completion evidence (e): its service's last Result must be
+# success and the cold-store manifest's transfer ledger must hold a
+# fresh backup-upload row. A trigger alone cannot see the 2026-11-12
+# failure shape (code#9093): the timer fired and the service started,
+# but the 30-minute start timeout killed the every-DB Turso export
+# mid-flight, filing almost nothing.
 #
 # Usage: laptop-backups-watchdog [max-age-hours] [jobs]
 #   max-age-hours   (default 26, a little over one daily period; the
 #                   module option services.laptop-backups.watchdog
 #                   .maxAgeHours feeds this argument).
-#   jobs            comma-separated subset of dashboard,repo-archive
+#   jobs            comma-separated subset of dashboard,repo-archive,cold-store
 #                   (default both). The module passes only the jobs
 #                   whose enable flag is on: a disabled job has no
 #                   record and no timer, so requiring them would fail
@@ -46,6 +53,7 @@ MAX_AGE_HOURS="${1:-26}"
 JOBS="${2:-dashboard,repo-archive}"
 want_job() { case ",$JOBS," in *",$1,"*) return 0 ;; *) return 1 ;; esac }
 RECORD="${LAPTOP_BACKUPS_RECORD:-$HOME/backups/dashboard/.last-run.json}"
+MANIFEST="${COLD_STORE_MANIFEST:-$HOME/.config/cold-store/manifest.sqlite}"
 NOW_EPOCH="$(date +%s)"
 MAX_AGE_SEC=$((MAX_AGE_HOURS * 3600))
 # A timestamp further in the future than this tolerance cannot be a
@@ -99,6 +107,7 @@ fi
 timers=()
 want_job dashboard && timers+=(pm-dashboard-backup.timer)
 want_job repo-archive && timers+=(repo-archive-backup.timer)
+want_job cold-store && timers+=(cold-store-nightly.timer)
 for timer in "${timers[@]}"; do
   job="${timer%.timer}"
   raw="$(systemctl --user show -p LastTriggerUSec --value "$timer" 2>/dev/null || true)"
@@ -210,6 +219,52 @@ if [ -d "$PM_STACK_ROOT" ]; then
     if [ ! -f "$expected_archive" ]; then
       complain "pm-stack-backup: day $newest_pm_stack_day missing archive $expected_archive"
     fi
+  fi
+fi
+
+# --- (e) cold-store-nightly completion evidence ------------------------------
+if want_job cold-store; then
+  cs_result="$(systemctl --user show -p Result --value cold-store-nightly.service 2>/dev/null || true)"
+  if [ "$cs_result" != "success" ]; then
+    complain "cold-store-nightly: last run result '${cs_result:-unknown}' is not success"
+  fi
+  if [ ! -f "$MANIFEST" ]; then
+    complain "cold-store-nightly: no cold-store manifest at $MANIFEST"
+  else
+    cs_verdict="$(
+      MANIFEST="$MANIFEST" NOW_EPOCH="$NOW_EPOCH" MAX_AGE_SEC="$MAX_AGE_SEC" SKEW_TOLERANCE_SEC="$SKEW_TOLERANCE_SEC" \
+        python3 - <<'PYEOF' 2>/dev/null
+import os, sqlite3
+from datetime import datetime, timezone
+try:
+    con = sqlite3.connect(f"file:{os.environ['MANIFEST']}?mode=ro", uri=True)
+    row = con.execute("select max(ts) from transfer_ledger where kind = 'backup-upload'").fetchone()
+    latest = row[0] if row else None
+except Exception:
+    print("unreadable")
+    raise SystemExit
+if latest is None:
+    print("no backup-upload rows in transfer ledger")
+    raise SystemExit
+try:
+    ts = datetime.strptime(latest, "%Y-%m-%d %H:%M:%S").replace(tzinfo=timezone.utc)
+except Exception:
+    print("unreadable")
+    raise SystemExit
+age = int(os.environ["NOW_EPOCH"]) - int(ts.timestamp())
+if age < -int(os.environ["SKEW_TOLERANCE_SEC"]):
+    print(f"future last backup-upload {latest} is {-age}s ahead of now (skew tolerance {os.environ['SKEW_TOLERANCE_SEC']}s)")
+elif age > int(os.environ["MAX_AGE_SEC"]):
+    print(f"stale last backup-upload {latest} age_hours={age // 3600}")
+else:
+    print("ok")
+PYEOF
+    )"
+    case "$cs_verdict" in
+    ok) ;;
+    unreadable | "") complain "cold-store-nightly: transfer ledger in $MANIFEST is unreadable" ;;
+    *) complain "cold-store-nightly: transfer ledger $cs_verdict (threshold ${MAX_AGE_HOURS}h)" ;;
+    esac
   fi
 fi
 

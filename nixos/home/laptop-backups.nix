@@ -74,7 +74,12 @@
 #   the job/timer. repo-archive-backup is covered via its timer's
 #   last-trigger time ONLY: its script (~/tools/repo-archive-
 #   backup.sh) and its restic credentials live outside this repo, so
-#   no run record is required of it.
+#   no run record is required of it. cold-store-nightly is covered
+#   via its timer's last-trigger time PLUS completion evidence
+#   (code#9093): the service's last Result must be success and the
+#   cold-store manifest's transfer ledger must hold a fresh
+#   backup-upload row — a timer trigger alone cannot see a run the
+#   start timeout killed mid-export (the 2026-11-12 failure).
 #
 # Pruning discipline: each job prunes only the dated directories it
 # created itself. The sandbox's backup job writes into its own tree under
@@ -105,6 +110,7 @@ let
   watchdogJobs = lib.concatStringsSep "," (
     (lib.optional cfg.dashboard.enable "dashboard")
     ++ (lib.optional cfg.repoArchive.enable "repo-archive")
+    ++ (lib.optional cfg.coldStoreNightly.enable "cold-store")
   );
   watchdogWanted = cfg.watchdog.enable && watchdogJobs != "";
   servicePath = lib.makeBinPath [
