@@ -3,6 +3,7 @@ import {
   buildNeedsDrewCensus,
   createNeedsDrewSweeper,
   extractNeedsDrewReason,
+  needsDrewIncidentKey,
   needsDrewSearchUrl,
   type NeedsDrewFetchPage,
   shouldFetchNeedsDrewCensus,
@@ -289,5 +290,15 @@ describe("needs-drew census rendering", () => {
     expect(html).toContain("Label census incomplete");
     expect(html).toContain("dezren39/darwin-nix");
     expect(html).toContain("HTTP 403");
+  });
+});
+
+describe("needsDrewIncidentKey (#8605)", () => {
+  test("spells the incident key the raiser posts under", () => {
+    // The fleet-queue poster files the question's alert incident with
+    // key `needs-drew:<ledgerId>`; the answer path closes it by the
+    // same spelling, so the two must never drift.
+    expect(needsDrewIncidentKey("ledger-42")).toBe("needs-drew:ledger-42");
+    expect(needsDrewIncidentKey("proof-8568-needs-drew")).toBe("needs-drew:proof-8568-needs-drew");
   });
 });

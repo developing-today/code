@@ -72,9 +72,7 @@ class FakeTurso:
                     cur = conn.execute(stmt["sql"], args)
                     if cur.description:
                         cols = [{"name": d[0]} for d in cur.description]
-                        rows = [
-                            [{"value": v} for v in row] for row in cur.fetchall()
-                        ]
+                        rows = [[{"value": v} for v in row] for row in cur.fetchall()]
                         result = {
                             "cols": cols,
                             "rows": rows,
@@ -88,11 +86,17 @@ class FakeTurso:
                         }
                     conn.commit()
                     results.append(
-                        {"type": "ok", "response": {"type": "execute", "result": result}}
+                        {
+                            "type": "ok",
+                            "response": {"type": "execute", "result": result},
+                        }
                     )
                 except Exception as e:  # noqa: BLE001 - mirrors pipeline errors
                     results.append(
-                        {"type": "error", "error": {"message": str(e), "code": "SQLITE"}}
+                        {
+                            "type": "error",
+                            "error": {"message": str(e), "code": "SQLITE"},
+                        }
                     )
             if closed:
                 self.sessions.pop(baton, None)
