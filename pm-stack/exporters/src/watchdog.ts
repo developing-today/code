@@ -48,6 +48,7 @@ import {
 } from "./watchdog-state.ts";
 import {
   applyEscalationActions,
+  buildQueueTaskWrapper,
   EscalationPartialError,
   planEscalation,
   planRecovery,
@@ -279,17 +280,11 @@ function productionEscalationEffectors(live: boolean): EscalationEffectors {
   return {
     async enqueueTask(packet) {
       guard();
-      const wrapper = {
-        title: `watchdog incident: ${packet.source} (${packet.failure.class ?? "unknown"})`,
-        body: packet.outcomeWanted,
-        dedupe_key: packet.dedupeKey,
-        priority: 30,
-        payload: {
-          schema: "repo-task/v1",
-          kind: packet.kind,
-          packet,
-        },
-      };
+      // The validated repo-task/v1 envelope (task 20118): the packet
+      // names the incident issue created earlier in this hand-off —
+      // buildQueueTaskWrapper throws when it does not, rather than
+      // enqueueing a packet the queue would reject.
+      const wrapper = buildQueueTaskWrapper(packet, new Date().toISOString());
       const file = join("/tmp", `watchdog-escalation-${packet.source}-${Date.now()}.json`);
       await writeFile(file, JSON.stringify(wrapper));
       const out = await run(["fleet", "queue", "enqueue", "--queue", "repo-health-code-pilot", file]);
