@@ -165,6 +165,12 @@ type Options struct {
 	TypeCheckOnError string
 	// TypeCheckOnUnsupported selects what to do when the runtime cannot check.
 	TypeCheckOnUnsupported string
+	// TypeCheckDefaulted says the check is on only because a
+	// per-command default switched it on, not because anybody asked:
+	// the Deno-only notice is suppressed then (#1868 point 4). The
+	// zero value is deliberate -- a caller that names a mode in
+	// Options asked for the check.
+	TypeCheckDefaulted bool
 	// TypeCheckTimeout bounds that check.
 	TypeCheckTimeout time.Duration
 	// Imports selects the preflight import-graph stage: "off" or "report"
@@ -808,9 +814,9 @@ func Run(ctx context.Context, opts Options) (*Result, error) {
 		// checker the flags its own runtime would carry for this set
 		// (Codex review, PR #6111).
 		checkerFlags := checkerDepsFlags(rt.Kind, opts.TypeCheckOnUnsupported, opts.Deps, depsFlags)
-		rep := preflight.TypeCheckWithPolicy(ctx, rt.Bin, scriptPath, preflight.TypeCheckMode(mode), timeout,
+		rep := preflight.TypeCheckWithPolicyExplicit(ctx, rt.Bin, scriptPath, preflight.TypeCheckMode(mode), timeout,
 			append(append([]string{}, rt.ConfigArgs...), checkerFlags...), opts.Dir,
-			opts.TypeCheckOnError, opts.TypeCheckOnUnsupported)
+			opts.TypeCheckOnError, opts.TypeCheckOnUnsupported, !opts.TypeCheckDefaulted)
 		if err := rep.Err(); err != nil {
 			return nil, err
 		}
