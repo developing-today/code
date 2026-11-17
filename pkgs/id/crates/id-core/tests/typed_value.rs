@@ -126,11 +126,17 @@ fn type_tag_participates_in_equality() {
     assert_ne!(left.type_id(), right.type_id());
     // Same name under two profiles is a different type.
     let p1 = TypedValue::opaque(
-        TypeId { profile: "profile-one/v1".to_string(), name: TypeName::Registered("t/v1".to_string()) },
+        TypeId {
+            profile: "profile-one/v1".to_string(),
+            name: TypeName::Registered("t/v1".to_string()),
+        },
         vec![],
     );
     let p2 = TypedValue::opaque(
-        TypeId { profile: "profile-two/v1".to_string(), name: TypeName::Registered("t/v1".to_string()) },
+        TypeId {
+            profile: "profile-two/v1".to_string(),
+            name: TypeName::Registered("t/v1".to_string()),
+        },
         vec![],
     );
     assert_ne!(p1, p2);
@@ -237,10 +243,7 @@ fn unknown_non_critical_type_is_preserved_opaque() {
     );
     let permissive = CodecProfile::permissive();
     let value = TypedValue::decode_strict(&permissive, &encoded).unwrap();
-    assert_eq!(
-        value.type_id(),
-        &TypeId::registered("x-example/unknown/v9")
-    );
+    assert_eq!(value.type_id(), &TypeId::registered("x-example/unknown/v9"));
     assert_eq!(value.payload(), [0xde, 0xad, 0xbe, 0xef]);
     // Opaque bytes survive the round trip exactly.
     assert_eq!(value.encode(), encoded);
@@ -306,10 +309,7 @@ fn decode_validates_known_type_payload_shapes() {
     let mut bad_text = TypedValue::text("ok").encode();
     let last = bad_text.len() - 1;
     bad_text[last] = 0xff;
-    assert_eq!(
-        TypedValue::decode(&bad_text),
-        Err(ValueError::InvalidUtf8)
-    );
+    assert_eq!(TypedValue::decode(&bad_text), Err(ValueError::InvalidUtf8));
     // Integer payload must be exactly 8 bytes.
     let mut short_int = TypedValue::integer(1).encode();
     // Payload length lives in the 8 bytes before the payload.
@@ -336,10 +336,7 @@ fn decode_validates_known_type_payload_shapes() {
     // Tuple payload must parse as count-prefixed typed elements.
     let mut bad_tuple = TypedValue::tuple(vec![]).encode();
     bad_tuple.pop();
-    assert_eq!(
-        TypedValue::decode(&bad_tuple),
-        Err(ValueError::Truncated)
-    );
+    assert_eq!(TypedValue::decode(&bad_tuple), Err(ValueError::Truncated));
 }
 
 #[test]

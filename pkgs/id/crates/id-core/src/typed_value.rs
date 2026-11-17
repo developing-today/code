@@ -432,8 +432,7 @@ fn decode_type_id(cursor: &mut Cursor<'_>, profile: &str) -> Result<TypeId, Valu
     let name = match cursor.byte()? {
         TAG_REGISTERED => {
             let raw = cursor.field()?;
-            let name =
-                std::str::from_utf8(raw).map_err(|_| ValueError::BadProfile)?;
+            let name = std::str::from_utf8(raw).map_err(|_| ValueError::BadProfile)?;
             if name.is_empty() {
                 return Err(ValueError::EmptyTypeName);
             }
@@ -474,8 +473,7 @@ fn parse_elements(
         let name = match cursor.byte()? {
             TAG_REGISTERED => {
                 let raw = cursor.field()?;
-                let name =
-                    std::str::from_utf8(raw).map_err(|_| ValueError::BadProfile)?;
+                let name = std::str::from_utf8(raw).map_err(|_| ValueError::BadProfile)?;
                 if name.is_empty() {
                     return Err(ValueError::EmptyTypeName);
                 }
