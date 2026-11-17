@@ -2688,6 +2688,34 @@ fn sink_return_sql() -> &'static str {
 /// Anything else (claimed, blocked, a genuine wait park — a
 /// 'parked' row is never a sink row since #8234, whatever its
 /// progress carries) is not claimable by id.
+/// The live holder of a row, when the row is claimed and its lease
+/// has not lapsed at `now`: (worker_id, lane_id, lease_until).
+/// #6985 recurrence (task 17490, 2026-11-16): two lanes sharing
+/// worker_id repo-worker-code both believed they held one task, and
+/// nothing in the task's record showed the second claim attempt.
+/// A claim surface that refuses a row because a live claim stands
+/// must be able to name that claim — from the row's lease fields,
+/// never from the claimer's worker identity, which all lanes share.
+fn live_claim_holder(row: &Value, now: &str) -> Option<(String, Option<String>, String)> {
+    if row.get("status").and_then(|v| v.as_str()) != Some("claimed") {
+        return None;
+    }
+    let lease_until = row.get("lease_until").and_then(|v| v.as_str())?;
+    if lease_until < now {
+        return None;
+    }
+    let worker = row
+        .get("worker_id")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
+    let lane = row
+        .get("lane_id")
+        .and_then(|v| v.as_str())
+        .map(str::to_string);
+    Some((worker, lane, lease_until.to_string()))
+}
+
 fn by_id_claimable(row: &Value, now: &str) -> bool {
     // #8187: platform is a mark, not a filter — a by-id claim takes
     // the row whatever platform either side carries (or none).
@@ -2994,6 +3022,32 @@ fn claim_by_id(
     let now_unix = now_unix();
     let now = iso(now_unix);
     if !by_id_claimable(&row, &now) {
+        // #6985: a by-id claim refused because a live claim stands
+        // leaves a claim-transition event naming the holder's lease
+        // (worker, lane, lease_until from the row) and the refused
+        // claimer — a refused claim is part of the task's record,
+        // not a silent no-op. The pick path's lost races stay
+        // event-free by design (ordinary contention, re-picked in
+        // the same call); a by-id refusal names its row explicitly,
+        // so it is recorded exactly once here.
+        if let Some((holder_worker, holder_lane, holder_lease_until)) =
+            live_claim_holder(&row, &now)
+        {
+            let _ = event(
+                t,
+                Some(worker),
+                Some(task_id),
+                "claim_refused",
+                &json!({
+                    "via": "claim_by_id",
+                    "reason": "already_claimed",
+                    "holder_worker_id": holder_worker,
+                    "holder_lane_id": holder_lane,
+                    "holder_lease_until": holder_lease_until,
+                    "claimer_lane_id": lane,
+                }),
+            );
+        }
         return Ok(None);
     }
     // One-queue union matching (#8097, 2026-11-10): a by-id
@@ -8927,6 +8981,54 @@ mod tests {
     }
 
     #[test]
+    #[test]
+    fn claim_race_same_worker_two_lanes_live_claim_refusal_is_recorded() {
+        // #6985 recurrence fixture (task 17490, 2026-11-16, lanes
+        // code-j / code-g, both worker repo-worker-code): the second
+        // lane's claim attempt against a live-claimed row must be
+        // refused by every claim surface AND leave a record. Before
+        // this fix the by-id refusal was a silent Ok(None): no
+        // event, indistinguishable from the first claim in every
+        // readback the fleet has.
+        let now = "2026-11-16T13:47:00Z";
+        let task = json!({
+            "status": "claimed", "attempts": 1, "max_attempts": 1000,
+            "not_before": null, "platform": null, "lane_id": "code-j",
+            "worker_id": "repo-worker-code",
+            "lease_until": "2026-11-16T14:25:22Z",
+        });
+        // No claim surface may take the row while the lease stands.
+        assert!(!by_id_claimable(&task, now));
+        // The refusal names the holder from the row's lease fields.
+        let (worker, lane, lease_until) =
+            live_claim_holder(&task, now).expect("a live claim has a holder");
+        assert_eq!(worker, "repo-worker-code");
+        assert_eq!(lane.as_deref(), Some("code-j"));
+        assert_eq!(lease_until, "2026-11-16T14:25:22Z");
+        // Once the lease lapses the row is no longer live-held (the
+        // expire path, not a second claim, is what releases it).
+        assert!(live_claim_holder(&task, "2026-11-16T14:25:23Z").is_none());
+        // A queued row has no holder.
+        let queued = json!({"status": "queued", "lease_until": null});
+        assert!(live_claim_holder(&queued, now).is_none());
+        // Source oracle: the by-id refusal path records the
+        // claim_refused event (the event half of this fix).
+        let src = include_str!("turso_queue.rs");
+        let seg = src
+            .split("fn claim_by_id(")
+            .nth(1)
+            .and_then(|s| s.split("\nfn ").next())
+            .unwrap_or("");
+        assert!(
+            seg.contains("\"claim_refused\""),
+            "claim_by_id records a claim_refused event for a live-claimed row"
+        );
+        assert!(
+            seg.contains("live_claim_holder(&row, &now)"),
+            "the refusal is keyed on the row's live lease, not the claimer"
+        );
+    }
+
     fn claim_paths_never_reread_a_workers_newest_claimed_row() {
         // #7068 source oracle: the pre-#7617 claim shape claimed
         // via a subquery and re-read the result as the newest
