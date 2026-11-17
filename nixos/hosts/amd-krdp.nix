@@ -51,7 +51,7 @@
       Service = {
         Type = "exec";
         ExecStart = "${pkgs.kdePackages.krdp}/bin/krdpserver";
-        Restart = "on-abnormal";
+        Restart = "on-failure";
       };
       Install.WantedBy = [ "plasma-workspace.target" ];
     };
