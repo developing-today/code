@@ -38,15 +38,23 @@ grep -q "GRANDFATHERED pkgs/id/src/boards.rs: 3000 production lines (limit 2500)
 echo "pass: grandfathered file passes with a warning naming its split issue"
 
 # A grandfathered file that MOVED keeps its exemption only when the
-# key names its current path (#8894). The fixture uses a nested,
-# still-grandfathered key (fleet-queue's turso_queue.rs, #8589) so it
-# survives splits elsewhere: directory.rs (#8591) left the list when it
-# was split, and a fixture pinned to it turned this test red.
-mkdir -p "$TMP/moved/pkgs/fleet/crates/fleet-queue/src"
-gen "$TMP/moved/pkgs/fleet/crates/fleet-queue/src/turso_queue.rs" 3000
+# key names its current path (#8894). The fixture takes its key from
+# the script's own list, the deepest path still grandfathered, so it
+# survives splits: fixtures pinned to directory.rs (#8591), then to
+# fleet-queue's turso_queue.rs (#8589), turned this test red when
+# those files were split and left the list.
+moved_entry="$(grep -oE '^ *\["[^"]+"\]="#[0-9]+"' "$SCRIPT" | sed -E 's/^ *\["([^"]+)"\]="(#[0-9]+)"/\1 \2/' | awk '{ print gsub("/", "/", $1), $0 }' | sort -rn | head -n 1 | cut -d' ' -f2-)"
+moved_key="${moved_entry% *}"
+moved_issue="${moved_entry##* }"
+[ -n "$moved_key" ] && [ -n "$moved_issue" ] || {
+  echo "FAIL: no grandfather entry to build the moved-path fixture from" >&2
+  exit 1
+}
+mkdir -p "$TMP/moved/$(dirname "$moved_key")"
+gen "$TMP/moved/$moved_key" 3000
 bash "$SCRIPT" "$TMP/moved" >"$TMP/moved.out"
 grep -q "production-line-guard: OK" "$TMP/moved.out"
-grep -q "GRANDFATHERED pkgs/fleet/crates/fleet-queue/src/turso_queue.rs: 3000 production lines (limit 2500) - split tracked by #8589" "$TMP/moved.out"
+grep -qF "GRANDFATHERED $moved_key: 3000 production lines (limit 2500) - split tracked by $moved_issue" "$TMP/moved.out"
 echo "pass: grandfather entry matches the file at its nested crate path"
 
 # Violating tree: one synthetic over-limit production file.
