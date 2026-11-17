@@ -484,10 +484,31 @@ fn canonical_lanes() -> Vec<(String, &'static str, bool)> {
     let mut lanes = Vec::with_capacity(FAMILIES.len() * 26);
     for (family, worker) in FAMILIES {
         for c in 'a'..='z' {
-            lanes.push((format!("{family}-{c}"), worker, true));
+            let id = format!("{family}-{c}");
+            let worker = not_code_lane_owner(&id).unwrap_or(worker);
+            lanes.push((id, worker, true));
         }
     }
     lanes
+}
+
+/// The five not-code lanes that belong to another worker than the
+/// family default. They predate the full-universe seed (#8097's
+/// not-code-a..g set): not-code-a was nix-a and not-code-g is the
+/// nix event-hook worker's own lane, not-code-b was opencode-a and
+/// not-code-e is the opencode-project OpenChamber task, not-code-d
+/// is OpenChamber's. Live rows carry these owners, and claim_preamble
+/// refuses a claim whose worker is not the row's, so a re-seed (a
+/// fresh database, or a row deleted by hand) must restore the same
+/// owner or that worker's claims fail with "lane ... belongs to
+/// worker repo-worker-code".
+fn not_code_lane_owner(lane_id: &str) -> Option<&'static str> {
+    match lane_id {
+        "not-code-a" | "not-code-g" => Some("repo-worker-nix"),
+        "not-code-b" | "not-code-e" => Some("repo-worker-opencode"),
+        "not-code-d" => Some("repo-worker-openchamber"),
+        _ => None,
+    }
 }
 
 /// The family of a lane id shaped `<family>-<suffix>`, when the
@@ -8714,6 +8735,14 @@ mod tests {
         assert_eq!(owner("code-z"), Some("repo-worker-code"));
         assert_eq!(owner("any-z"), Some("repo-worker-code"));
         assert_eq!(owner("not-code-z"), Some("repo-worker-code"));
+        assert_eq!(owner("not-code-c"), Some("repo-worker-code"));
+        assert_eq!(owner("not-code-f"), Some("repo-worker-code"));
+        // The not-code lanes other workers own keep their owners.
+        assert_eq!(owner("not-code-a"), Some("repo-worker-nix"));
+        assert_eq!(owner("not-code-g"), Some("repo-worker-nix"));
+        assert_eq!(owner("not-code-b"), Some("repo-worker-opencode"));
+        assert_eq!(owner("not-code-e"), Some("repo-worker-opencode"));
+        assert_eq!(owner("not-code-d"), Some("repo-worker-openchamber"));
         assert_eq!(owner("opencode-a"), Some("repo-worker-opencode"));
         assert_eq!(owner("openchamber-a"), Some("repo-worker-openchamber"));
         assert_eq!(owner("nix-a"), Some("repo-worker-nix"));
