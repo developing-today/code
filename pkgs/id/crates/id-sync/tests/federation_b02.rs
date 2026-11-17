@@ -29,8 +29,8 @@ use std::collections::BTreeMap;
 
 use b02_key_revocation::{
     AcceptedRecord, AffectCause, Decision, DenyReason, HistoricalValidity, RecordStatus,
-    RevocationError, RevocationReason, RevocationRecord, RevocationRegistry, RevocationSubject,
-    RevalidationEvidence, RevalidationMethod,
+    RevalidationEvidence, RevalidationMethod, RevocationError, RevocationReason, RevocationRecord,
+    RevocationRegistry, RevocationSubject,
 };
 use ed25519_dalek::{Signer, SigningKey};
 
@@ -105,7 +105,10 @@ impl RefModel {
 
     fn revoke_key(&mut self, key: &[u8; 32], from: u64, until: Option<u64>) {
         let tag = ref_key_tag(key);
-        self.key_intervals.entry(tag.clone()).or_default().push((from, until));
+        self.key_intervals
+            .entry(tag.clone())
+            .or_default()
+            .push((from, until));
         self.sweep(&tag, true, from);
     }
 
@@ -118,7 +121,11 @@ impl RefModel {
         self.sweep(&tag, false, from);
     }
 
-    fn blocked(intervals: &BTreeMap<String, Vec<(u64, Option<u64>)>>, subject: &str, at: u64) -> bool {
+    fn blocked(
+        intervals: &BTreeMap<String, Vec<(u64, Option<u64>)>>,
+        subject: &str,
+        at: u64,
+    ) -> bool {
         intervals.get(subject).is_some_and(|ivs| {
             ivs.iter()
                 .any(|(from, until)| at >= *from && until.is_none_or(|u| at < u))
@@ -243,7 +250,10 @@ fn admit(
 }
 
 fn status_of(reg: &RevocationRegistry, id: &str) -> RecordStatus {
-    reg.find_record(id).expect("record must exist").status.clone()
+    reg.find_record(id)
+        .expect("record must exist")
+        .status
+        .clone()
 }
 
 fn check_against_reference(
@@ -303,7 +313,10 @@ fn emergency_key_revocation_blocks_new_acceptance_and_relay_immediately() {
     let mut reg = RevocationRegistry::new();
 
     admit(&mut reg, "early-a", key_a, "peer-1", 100, None);
-    assert_eq!(reg.admission_decision(&key_a, "peer-1", 150), Decision::Allow);
+    assert_eq!(
+        reg.admission_decision(&key_a, "peer-1", 150),
+        Decision::Allow
+    );
 
     // Emergency revocation lands at t=200, effective immediately.
     let affected = reg
@@ -334,7 +347,10 @@ fn emergency_key_revocation_blocks_new_acceptance_and_relay_immediately() {
     );
 
     // Unrelated keys and peers are unaffected.
-    assert_eq!(reg.admission_decision(&key_b, "peer-1", 250), Decision::Allow);
+    assert_eq!(
+        reg.admission_decision(&key_b, "peer-1", 250),
+        Decision::Allow
+    );
     assert_eq!(reg.relay_decision(&key_b, "peer-2", 250), Decision::Allow);
     admit(&mut reg, "other", key_b, "peer-2", 250, None);
     assert_eq!(status_of(&reg, "other"), RecordStatus::Accepted);
@@ -358,7 +374,10 @@ fn peer_disable_blocks_acceptance_and_relay_with_peer_reason() {
         Decision::Deny(DenyReason::DisabledPeer)
     );
     // Same key via a different peer still admits: disable is per-peer.
-    assert_eq!(reg.admission_decision(&key_a, "peer-10", 400), Decision::Allow);
+    assert_eq!(
+        reg.admission_decision(&key_a, "peer-10", 400),
+        Decision::Allow
+    );
 }
 
 #[test]
@@ -490,7 +509,10 @@ fn revalidation_clears_quarantine_only_on_explicit_evidence() {
             admitted_at: 220
         })
     );
-    assert!(matches!(status_of(&reg, "q"), RecordStatus::Quarantined { .. }));
+    assert!(matches!(
+        status_of(&reg, "q"),
+        RecordStatus::Quarantined { .. }
+    ));
 
     // Independent witness covering admission clears to Valid.
     assert_eq!(
@@ -644,12 +666,18 @@ fn bounded_interval_blocks_only_inside_and_quarantine_is_sticky() {
         reg.admission_decision(&key_a, "peer-1", 250),
         Decision::Deny(DenyReason::RevokedKey)
     );
-    assert_eq!(reg.admission_decision(&key_a, "peer-1", 300), Decision::Allow);
+    assert_eq!(
+        reg.admission_decision(&key_a, "peer-1", 300),
+        Decision::Allow
+    );
     admit(&mut reg, "after", key_a, "peer-1", 300, None);
     assert_eq!(status_of(&reg, "after"), RecordStatus::Accepted);
 
     // The sweep already applied is sticky: expiry does not un-quarantine.
-    assert!(matches!(status_of(&reg, "old"), RecordStatus::Flagged { .. }));
+    assert!(matches!(
+        status_of(&reg, "old"),
+        RecordStatus::Flagged { .. }
+    ));
 }
 
 #[test]
@@ -822,7 +850,11 @@ fn differential_against_reference_model() {
             if id.len() % 2 == 0 {
                 let through = 50 + (next() % 500);
                 let got = reg
-                    .revalidate(&id, &RevalidationEvidence::WitnessedGoodThrough { through }, 450)
+                    .revalidate(
+                        &id,
+                        &RevalidationEvidence::WitnessedGoodThrough { through },
+                        450,
+                    )
                     .is_ok();
                 let want = model.revalidate(&id, through);
                 assert_eq!(got, want, "revalidate divergence for {id}");

@@ -305,7 +305,10 @@ impl fmt::Display for RevocationError {
             }
             Self::DuplicateRecordId(id) => write!(f, "record id already stored: {id}"),
             Self::InvertedInterval { from, until } => {
-                write!(f, "effective interval ends before it starts: {from}..{until}")
+                write!(
+                    f,
+                    "effective interval ends before it starts: {from}..{until}"
+                )
             }
             Self::RevokedKey => write!(f, "signing key is revoked"),
             Self::DisabledPeer => write!(f, "supplying peer is disabled"),
@@ -313,7 +316,10 @@ impl fmt::Display for RevocationError {
             Self::NotEligibleForRevalidation(id) => {
                 write!(f, "record is not quarantined or flagged: {id}")
             }
-            Self::InsufficientWitness { through, admitted_at } => write!(
+            Self::InsufficientWitness {
+                through,
+                admitted_at,
+            } => write!(
                 f,
                 "witness through {through} does not cover admission at {admitted_at}"
             ),
@@ -394,9 +400,9 @@ impl RevocationRegistry {
     /// revocation for it covers `at`.
     #[must_use]
     pub fn is_key_blocked_at(&self, key: &[u8; 32], at: LogicalTime) -> bool {
-        self.revocations.iter().any(|r| {
-            matches!(&r.subject, RevocationSubject::Key(k) if k == key) && r.covers(at)
-        })
+        self.revocations
+            .iter()
+            .any(|r| matches!(&r.subject, RevocationSubject::Key(k) if k == key) && r.covers(at))
     }
 
     /// Whether the peer is blocked at local instant `at`: some recorded
@@ -413,12 +419,7 @@ impl RevocationRegistry {
     /// or the peer is blocked then (the key reason reports first when
     /// both are blocked).
     #[must_use]
-    pub fn admission_decision(
-        &self,
-        key: &[u8; 32],
-        peer_id: &str,
-        at: LogicalTime,
-    ) -> Decision {
+    pub fn admission_decision(&self, key: &[u8; 32], peer_id: &str, at: LogicalTime) -> Decision {
         if self.is_key_blocked_at(key, at) {
             Decision::Deny(DenyReason::RevokedKey)
         } else if self.is_peer_blocked_at(peer_id, at) {
