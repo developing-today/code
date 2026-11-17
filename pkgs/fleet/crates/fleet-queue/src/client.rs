@@ -2183,6 +2183,18 @@ fn cmd_list(rest: &[String]) -> i32 {
         Ok(limit) => limit,
         Err(e) => die(2, &e),
     };
+    // #9027: --not-before is validated with the same rule park and
+    // revive apply (#6426). Forwarded raw, a garbage value silently
+    // narrowed the listing on the Turso backend, whose TEXT
+    // comparison made the predicate false for every row carrying a
+    // not_before (or disabled the filter) with exit 0.
+    let not_before = match args.get("not-before") {
+        Some(nb) => match validate_not_before_flag(&nb) {
+            Ok(v) => Some(v),
+            Err(e) => die(2, &e),
+        },
+        None => None,
+    };
     // #7871: fetch in pages of LIST_PAGE_SIZE (see list_pages) — a
     // single oversized /list response comes back unusable and used
     // to render as a silent "(no tasks)". `--task <id>` narrows to
@@ -2199,7 +2211,7 @@ fn cmd_list(rest: &[String]) -> i32 {
                 "status": args.get("status"),
                 "limit": page_limit,
                 "offset": offset,
-                "not_before": args.get("not-before"),
+                "not_before": not_before,
                 "lane": args.get("lane"),
                 "worker": args.get("worker"),
                 "task": args.get_i64("task"),
@@ -7484,6 +7496,40 @@ mod tests {
             "2026-11-06T05:30:00+05:30",
         ] {
             assert_eq!(validate_not_before_flag(ok), Ok(ok.to_string()));
+        }
+    }
+
+    #[test]
+    fn list_not_before_is_validated_before_the_call_9027() {
+        // #9027: cmd_list forwarded --not-before raw; on the Turso
+        // backend the TEXT comparison then silently narrowed the
+        // listing (a value sorting before every timestamp hid every
+        // row carrying a not_before; one sorting after disabled the
+        // filter) with exit 0. cmd_list now validates the flag with
+        // the park/revive rule and the /list body carries the
+        // validated value.
+        let src = include_str!("client.rs");
+        let seg = src
+            .split("fn cmd_list(")
+            .nth(1)
+            .and_then(|s| s.split("fn cmd_").next())
+            .unwrap_or("");
+        assert!(
+            seg.contains("validate_not_before_flag(&nb)"),
+            "cmd_list validates --not-before before the /list call"
+        );
+        assert!(
+            seg.contains("\"not_before\": not_before"),
+            "the /list body carries the validated value, not the raw flag"
+        );
+        assert!(
+            !seg.contains("\"not_before\": args.get(\"not-before\")"),
+            "the raw flag must not reach the /list body"
+        );
+        // The exact garbage shapes from the finding die at the
+        // validator the client now applies:
+        for bad in ["0", "!", "banana"] {
+            assert!(validate_not_before_flag(bad).is_err(), "{bad} must be rejected");
         }
     }
 
