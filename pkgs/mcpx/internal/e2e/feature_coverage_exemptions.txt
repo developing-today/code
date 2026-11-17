@@ -144,7 +144,6 @@ setting	paths.cache	no integration-test exercise yet; burn-down #8467 (settings 
 setting	paths.config	no integration-test exercise yet; burn-down #8467 (settings core-paths family); needs an EffectProbes entry + e2e test
 setting	paths.placeholders	no integration-test exercise yet; burn-down #8467 (settings core-paths family); needs an EffectProbes entry + e2e test
 setting	paths.plugins	no integration-test exercise yet; burn-down #8467 (settings core-paths family); needs an EffectProbes entry + e2e test
-setting	paths.scripts	no integration-test exercise yet; burn-down #8467 (settings core-paths family); needs an EffectProbes entry + e2e test
 setting	pool.callTimeout	no integration-test exercise yet; burn-down #8467 (settings core-paths family); needs an EffectProbes entry + e2e test
 setting	pool.idleTimeout	no integration-test exercise yet; burn-down #8467 (settings core-paths family); needs an EffectProbes entry + e2e test
 setting	pool.min	no integration-test exercise yet; burn-down #8467 (settings core-paths family); needs an EffectProbes entry + e2e test
