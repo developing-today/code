@@ -3,7 +3,7 @@ module github.com/developing-today/code/src/database
 go 1.25.0
 
 require (
-	github.com/cockroachdb/cockroach-go/v2 v2.3.5
+	github.com/cockroachdb/cockroach-go/v2 v2.4.3
 	github.com/google/uuid v1.4.0
 	github.com/jackc/pgx/v5 v5.9.2
 )
