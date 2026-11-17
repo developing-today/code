@@ -34,9 +34,7 @@
           "total": 78
         }
       },
-      "carriedOverEpics": [
-        "developing-today/code#5350"
-      ],
+      "carriedOverEpics": ["developing-today/code#5350"],
       "descriptionLine": "Program milestone (rolling, never closes) — retroactive accounting: 78 items: 47 issues, 30 designs, 1 epics (34 closed, 44 carried over)."
     },
     {
@@ -206,9 +204,7 @@
           "total": 46
         }
       },
-      "carriedOverEpics": [
-        "developing-today/code#6312"
-      ],
+      "carriedOverEpics": ["developing-today/code#6312"],
       "descriptionLine": "Program milestone (rolling, never closes) — retroactive accounting: 46 items: 0 issues, 45 designs, 1 epics (10 closed, 36 carried over)."
     },
     {
@@ -242,10 +238,7 @@
           "total": 117
         }
       },
-      "carriedOverEpics": [
-        "developing-today/code#2056",
-        "developing-today/code#6487"
-      ],
+      "carriedOverEpics": ["developing-today/code#2056", "developing-today/code#6487"],
       "descriptionLine": "Program milestone (rolling, never closes) — retroactive accounting: 117 items: 85 issues, 29 designs, 3 epics (48 closed, 69 carried over)."
     },
     {
@@ -398,9 +391,7 @@
           "total": 59
         }
       },
-      "carriedOverEpics": [
-        "developing-today/code#1184"
-      ],
+      "carriedOverEpics": ["developing-today/code#1184"],
       "descriptionLine": "Program milestone (rolling, never closes) — retroactive accounting: 59 items: 52 issues, 6 designs, 1 epics (45 closed, 14 carried over)."
     },
     {

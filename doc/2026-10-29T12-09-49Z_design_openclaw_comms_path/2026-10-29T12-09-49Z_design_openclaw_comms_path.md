@@ -264,8 +264,8 @@ wrote it.
   bind (close code 1008); #2300 stayed open for the authorized-caller /
   per-consumer identity remainder — see the G2 status note in §2.
   Status 2026-11-17: that remainder is verified live (authorized connect
-  + `health` call under two distinct per-consumer `instanceId`s) and
-  #2300 is closed — see the G2 status note in §2.
+  - `health` call under two distinct per-consumer `instanceId`s) and
+    #2300 is closed — see the G2 status note in §2.
 - **Sandbox tailnet route (G3):** join the sandbox VM to the tailnet (or
   record the stated refusal and fall back to a relay design) so the
   phase-2 direct-API path has a route. Filed as a follow-up issue: **#2301**.

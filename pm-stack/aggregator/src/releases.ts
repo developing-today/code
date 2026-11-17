@@ -92,7 +92,8 @@ function snapshotDescriptionLine(
 ): string {
   const covered = `${counts.total.total} items: ${counts.issues.total} issues, ${counts.designs.total} designs, ${counts.epics.total} epics`;
   const split = `${counts.total.closed} closed, ${counts.total.carriedOver} carried over`;
-  if (kind === "program") return `Program milestone (rolling, never closes) — retroactive accounting: ${covered} (${split}).`;
+  if (kind === "program")
+    return `Program milestone (rolling, never closes) — retroactive accounting: ${covered} (${split}).`;
   if (releaseDate) return `Closed with the release on ${releaseDate} covering ${covered} (${split}).`;
   return `Release milestone (open) — accounting so far: ${covered} (${split}).`;
 }
@@ -144,7 +145,10 @@ export function computeMilestoneSnapshot(milestone: MilestoneRef, items: Milesto
  * existing program milestones all appear in /api/releases.json even
  * before their items are Project-board members. Sorted by title for
  * a stable served shape. */
-export function buildReleaseSnapshots(items: ProjectPoolItem[], knownMilestones: MilestoneRef[] = []): ReleaseSnapshot[] {
+export function buildReleaseSnapshots(
+  items: ProjectPoolItem[],
+  knownMilestones: MilestoneRef[] = [],
+): ReleaseSnapshot[] {
   const byTitle = new Map<string, { milestone: MilestoneRef; items: ProjectPoolItem[] }>();
   for (const known of knownMilestones) {
     if (!byTitle.has(known.title)) byTitle.set(known.title, { milestone: known, items: [] });

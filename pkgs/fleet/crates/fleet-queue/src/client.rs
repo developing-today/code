@@ -7529,7 +7529,10 @@ mod tests {
         // The exact garbage shapes from the finding die at the
         // validator the client now applies:
         for bad in ["0", "!", "banana"] {
-            assert!(validate_not_before_flag(bad).is_err(), "{bad} must be rejected");
+            assert!(
+                validate_not_before_flag(bad).is_err(),
+                "{bad} must be rejected"
+            );
         }
     }
 

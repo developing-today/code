@@ -646,7 +646,9 @@ class TestCapUnknownFireLog(unittest.TestCase):
                 patch.object(
                     claimant, "run_poll", return_value={"candidates": [dict(CANDIDATE)]}
                 ),
-                patch.object(claimant, "run_queue_health", return_value="health-test-line"),
+                patch.object(
+                    claimant, "run_queue_health", return_value="health-test-line"
+                ),
                 stub_claimed_rows([]),
                 patch.object(
                     claimant, "get_active_root_session_count", return_value=-1
@@ -677,7 +679,9 @@ class TestGateUnknownFireLog(unittest.TestCase):
                 patch.object(
                     claimant, "run_poll", side_effect=RuntimeError("poll blew up")
                 ),
-                patch.object(claimant, "run_queue_health", return_value="health-test-line"),
+                patch.object(
+                    claimant, "run_queue_health", return_value="health-test-line"
+                ),
                 stub_claimed_rows([]),
                 patch.object(claimant, "STATE_DIR", state_dir),
                 patch.object(claimant, "FIRES_FILE", fires),
@@ -703,7 +707,9 @@ class TestGateExitFireLog(unittest.TestCase):
             with (
                 patch.object(claimant, "read_mode", return_value="shadow"),
                 patch.object(claimant, "run_poll", return_value={"candidates": []}),
-                patch.object(claimant, "run_queue_health", return_value="health-test-line"),
+                patch.object(
+                    claimant, "run_queue_health", return_value="health-test-line"
+                ),
                 patch.object(claimant, "STATE_DIR", state_dir),
                 patch.object(claimant, "FIRES_FILE", fires),
             ):
@@ -780,7 +786,9 @@ class TestGateQueueReadFailed(unittest.TestCase):
             with (
                 patch.object(claimant, "read_mode", return_value="live"),
                 patch.object(claimant, "run_poll", return_value=poll_data),
-                patch.object(claimant, "run_queue_health", return_value="health-test-line"),
+                patch.object(
+                    claimant, "run_queue_health", return_value="health-test-line"
+                ),
                 stub_claimed_rows([]),
                 patch.object(claimant, "STATE_DIR", state_dir),
                 patch.object(claimant, "FIRES_FILE", fires),
@@ -813,7 +821,9 @@ class TestBindFailedRecordsError(unittest.TestCase):
             return base_fake(cmd, **kwargs)
 
         with (
-            patch.object(claimant, "run_poll", return_value={"candidates": [dict(CANDIDATE)]}),
+            patch.object(
+                claimant, "run_poll", return_value={"candidates": [dict(CANDIDATE)]}
+            ),
             patch.object(claimant.subprocess, "run", fake_run),
         ):
             launched, skips = claimant.launch_step("live", 1)
@@ -824,7 +834,6 @@ class TestBindFailedRecordsError(unittest.TestCase):
         self.assertEqual(
             skips[0]["error"], "bind failed: task not claimed with a live lease"
         )
-
 
 
 class TestClaimant8038(unittest.TestCase):
@@ -857,7 +866,11 @@ class TestClaimant8038(unittest.TestCase):
         now_ms = int(time.time() * 1000)
         cases = {
             "terminal_marker": (
-                [dict(self.STUCK_SESSION, time={"created": 1, "updated": 2, "idle": 3})],
+                [
+                    dict(
+                        self.STUCK_SESSION, time={"created": 1, "updated": 2, "idle": 3}
+                    )
+                ],
                 set(),
                 BOUND_ROW,
             ),
@@ -883,9 +896,7 @@ class TestClaimant8038(unittest.TestCase):
             with self.subTest(case=name):
                 binds = []
                 with (
-                    stub_claimed_rows(
-                        [row], sessions=sessions, active_ids=active_ids
-                    ),
+                    stub_claimed_rows([row], sessions=sessions, active_ids=active_ids),
                     patch.object(
                         claimant.subprocess,
                         "run",
@@ -958,9 +969,7 @@ class TestClaimant8038(unittest.TestCase):
             return base_fake(cmd, **kwargs)
 
         with (
-            stub_claimed_rows(
-                [row], sessions=[self.STUCK_SESSION], active_ids=set()
-            ),
+            stub_claimed_rows([row], sessions=[self.STUCK_SESSION], active_ids=set()),
             patch.object(claimant.subprocess, "run", fake_run),
         ):
             recovered = claimant.supervision_step("live")
@@ -973,9 +982,7 @@ class TestClaimant8038(unittest.TestCase):
             patch.object(
                 claimant, "run_poll", return_value={"candidates": [dict(CANDIDATE)]}
             ),
-            patch.object(
-                claimant, "run_queue_health", return_value="health-test-line"
-            ),
+            patch.object(claimant, "run_queue_health", return_value="health-test-line"),
         ):
             self.assertTrue(claimant.gate_step())
         self.assertEqual(claimant._fire_health, "health-test-line")

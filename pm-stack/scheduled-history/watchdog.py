@@ -69,7 +69,9 @@ def run_instant(row):
 
 def derive_window(runs):
     """Observed cadence: min positive gap between consecutive run instants."""
-    instants = sorted({instant for instant in (run_instant(r) for r in runs) if instant})
+    instants = sorted(
+        {instant for instant in (run_instant(r) for r in runs) if instant}
+    )
     gaps = [
         (later - earlier).total_seconds()
         for earlier, later in zip(instants, instants[1:])
@@ -80,13 +82,19 @@ def derive_window(runs):
 
 def check_task(task_id, runs, now, declared_windows, stale_multiplier):
     """Return (alerts, facts) for one task's rows."""
-    facts = {"task_id": task_id, "task_name": None, "window_seconds": None,
-             "window_source": None}
+    facts = {
+        "task_id": task_id,
+        "task_name": None,
+        "window_seconds": None,
+        "window_source": None,
+    }
     alerts = []
     if not runs:
         return alerts, facts
     facts["task_name"] = runs[-1].get("task_name")
-    latest = max(runs, key=lambda r: run_instant(r) or datetime.min.replace(tzinfo=timezone.utc))
+    latest = max(
+        runs, key=lambda r: run_instant(r) or datetime.min.replace(tzinfo=timezone.utc)
+    )
     if latest.get("enabled") is False:
         facts["skipped"] = "disabled"
         return alerts, facts
@@ -113,56 +121,67 @@ def check_task(task_id, runs, now, declared_windows, stale_multiplier):
             terminal_rows,
             key=lambda r: run_instant(r) or datetime.min.replace(tzinfo=timezone.utc),
         )
-    if latest_terminal and (latest_terminal.get("outcome") or "").lower() in ERROR_OUTCOMES:
-        alerts.append({
-            "task_id": task_id,
-            "task_name": facts["task_name"],
-            "condition": "failed_latest",
-            "evidence": {
-                "latest_terminal_scheduled_for": latest_terminal.get("scheduled_for"),
-                "latest_terminal_outcome": latest_terminal.get("outcome"),
-                "finished_at": latest_terminal.get("finished_at"),
-            },
-        })
+    if (
+        latest_terminal
+        and (latest_terminal.get("outcome") or "").lower() in ERROR_OUTCOMES
+    ):
+        alerts.append(
+            {
+                "task_id": task_id,
+                "task_name": facts["task_name"],
+                "condition": "failed_latest",
+                "evidence": {
+                    "latest_terminal_scheduled_for": latest_terminal.get(
+                        "scheduled_for"
+                    ),
+                    "latest_terminal_outcome": latest_terminal.get("outcome"),
+                    "finished_at": latest_terminal.get("finished_at"),
+                },
+            }
+        )
 
     if window and age is not None:
-        first_seen_candidates = [
-            parse_instant(r.get("first_seen_at")) for r in runs
-        ]
+        first_seen_candidates = [parse_instant(r.get("first_seen_at")) for r in runs]
         first_seen = min((t for t in first_seen_candidates if t), default=None)
-        in_first_window = first_seen is not None and (now - first_seen).total_seconds() < window
+        in_first_window = (
+            first_seen is not None and (now - first_seen).total_seconds() < window
+        )
         in_flight = not latest.get("outcome_terminal")
         stale_after = window * stale_multiplier
         facts["stale_after_seconds"] = stale_after
         if not in_first_window and not in_flight:
             if age > stale_after:
-                alerts.append({
-                    "task_id": task_id,
-                    "task_name": facts["task_name"],
-                    "condition": "stale",
-                    "evidence": {
-                        "latest_scheduled_for": latest.get("scheduled_for"),
-                        "latest_outcome": latest.get("outcome"),
-                        "age_seconds": age,
-                        "window_seconds": window,
-                        "window_source": source,
-                        "stale_after_seconds": stale_after,
-                    },
-                })
+                alerts.append(
+                    {
+                        "task_id": task_id,
+                        "task_name": facts["task_name"],
+                        "condition": "stale",
+                        "evidence": {
+                            "latest_scheduled_for": latest.get("scheduled_for"),
+                            "latest_outcome": latest.get("outcome"),
+                            "age_seconds": age,
+                            "window_seconds": window,
+                            "window_source": source,
+                            "stale_after_seconds": stale_after,
+                        },
+                    }
+                )
             elif age > window:
-                alerts.append({
-                    "task_id": task_id,
-                    "task_name": facts["task_name"],
-                    "condition": "missing_run",
-                    "evidence": {
-                        "latest_scheduled_for": latest.get("scheduled_for"),
-                        "latest_outcome": latest.get("outcome"),
-                        "age_seconds": age,
-                        "window_seconds": window,
-                        "window_source": source,
-                        "stale_after_seconds": stale_after,
-                    },
-                })
+                alerts.append(
+                    {
+                        "task_id": task_id,
+                        "task_name": facts["task_name"],
+                        "condition": "missing_run",
+                        "evidence": {
+                            "latest_scheduled_for": latest.get("scheduled_for"),
+                            "latest_outcome": latest.get("outcome"),
+                            "age_seconds": age,
+                            "window_seconds": window,
+                            "window_source": source,
+                            "stale_after_seconds": stale_after,
+                        },
+                    }
+                )
     return alerts, facts
 
 
@@ -185,7 +204,9 @@ def run_check(rows, now, declared_windows=None, stale_multiplier=2.0):
         "checked_at": now.isoformat(),
         "tasks_checked": len(by_task),
         "alerts": alerts,
-        "healthy_task_ids": [t for t in sorted(by_task, key=lambda t: str(t)) if t not in alerted],
+        "healthy_task_ids": [
+            t for t in sorted(by_task, key=lambda t: str(t)) if t not in alerted
+        ],
         "tasks": facts,
     }
 
@@ -208,11 +229,15 @@ def main(argv=None):
     sub = parser.add_subparsers(dest="command", required=True)
     check = sub.add_parser("check", help="evaluate the store and print alerts as JSON")
     check.add_argument("--store", default=collect.DEFAULT_STORE)
-    check.add_argument("--windows", default=None,
-                       help="JSON file mapping task id -> declared window seconds")
+    check.add_argument(
+        "--windows",
+        default=None,
+        help="JSON file mapping task id -> declared window seconds",
+    )
     check.add_argument("--stale-multiplier", type=float, default=2.0)
-    check.add_argument("--now", default=None,
-                       help="override the evaluation instant (ISO; tests)")
+    check.add_argument(
+        "--now", default=None, help="override the evaluation instant (ISO; tests)"
+    )
     check.set_defaults(func=cmd_check)
     args = parser.parse_args(argv)
     return args.func(args)

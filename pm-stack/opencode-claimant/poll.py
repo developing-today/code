@@ -633,11 +633,7 @@ _READ_ERRORS = {}
 def queue_read_errors(queue):
     """Recorded read errors for one queue from the latest poll cycle:
     {status: error text}; empty when every read for the queue succeeded."""
-    return {
-        status: err
-        for (q, status), err in _READ_ERRORS.items()
-        if q == queue
-    }
+    return {status: err for (q, status), err in _READ_ERRORS.items() if q == queue}
 
 
 def _fetch_rows(queue, status):

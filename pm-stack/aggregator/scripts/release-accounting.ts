@@ -68,7 +68,8 @@ function main(): void {
   const doc = {
     generatedAt: new Date().toISOString(),
     repo: REPO,
-    source: "scripts/release-accounting.ts via gh api (issues by milestone, labels classification) — #9067 retroactive pass",
+    source:
+      "scripts/release-accounting.ts via gh api (issues by milestone, labels classification) — #9067 retroactive pass",
     snapshots,
   };
   const text = `${JSON.stringify(doc, null, 2)}\n`;

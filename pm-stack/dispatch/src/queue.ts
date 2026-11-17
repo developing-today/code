@@ -108,7 +108,10 @@ export class QueueClient {
       try {
         parsed = JSON.parse(text);
       } catch {
-        throw new QueueError(`queue broker ${path} returned a non-JSON body (HTTP ${res.status}): ${text.slice(0, 300)}`, res.status);
+        throw new QueueError(
+          `queue broker ${path} returned a non-JSON body (HTTP ${res.status}): ${text.slice(0, 300)}`,
+          res.status,
+        );
       }
     }
     if (!res.ok) {
@@ -179,12 +182,7 @@ export class QueueClient {
    * a bind-step partial throws — the session binding is the point of
    * the claim, and a launch whose session is not bound must back out
    * through the caller's failure compensation. */
-  async claimTask(
-    task: TaskRow,
-    sessionId: string,
-    launchedBy: string,
-    leaseSeconds: number,
-  ): Promise<TaskRow> {
+  async claimTask(task: TaskRow, sessionId: string, launchedBy: string, leaseSeconds: number): Promise<TaskRow> {
     const env = await this.call("/claim-flow", {
       task_id: task.id,
       worker: DISPATCH_WORKER,
@@ -238,7 +236,10 @@ export class QueueClient {
     return this.scanBySessionField("session_cleared", sessionId);
   }
 
-  private async scanBySessionField(field: "session_id" | "session_cleared", sessionId: string): Promise<TaskRow | null> {
+  private async scanBySessionField(
+    field: "session_id" | "session_cleared",
+    sessionId: string,
+  ): Promise<TaskRow | null> {
     const STATUSES = ["claimed", "parked", "handed_off", "queued", "blocked", "done", "cancelled", "failed"];
     const PAGE = 1000;
     const MAX_PAGES = 20;
@@ -248,7 +249,8 @@ export class QueueClient {
         const rows = this.envelopeRows(env, "/list");
         for (const row of rows) {
           const progress = row.progress as Record<string, unknown> | undefined;
-          const holder = field === "session_id" ? progress : (progress?.session_cleared as Record<string, unknown> | undefined);
+          const holder =
+            field === "session_id" ? progress : (progress?.session_cleared as Record<string, unknown> | undefined);
           if (holder && holder.session_id === sessionId) return row;
         }
         if (rows.length < PAGE) break;

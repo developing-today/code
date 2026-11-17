@@ -23,16 +23,16 @@
     <strong>Simulated — runs in your browser.</strong>
     This example calls a mock <code>demo</code> server in this page, through the
     real generated mcpx client. No daemon, no install, nothing leaves the tab.
-    To run it for real, copy it as a command below — or run it against your
-    own daemon with "Run on my machine".
+    To run it for real, copy it as a command below — or run it against your own
+    daemon with "Run on my machine".
   </p>
   <p class="mcpx-home-example-label mcpx-home-example-label-local" hidden>
     <strong>Local daemon — runs on your machine.</strong>
-    This example calls the mcpx daemon at the address below, through the
-    real generated mcpx client. That daemon must be running, listen on a
-    fixed <code>daemon.port</code>, and list this site's origin in
-    <code>transport.allowedOrigins</code>; if it cannot be reached, the
-    output says what to check instead of failing silently.
+    This example calls the mcpx daemon at the address below, through the real
+    generated mcpx client. That daemon must be running, listen on a fixed
+    <code>daemon.port</code>, and list this site's origin in
+    <code>transport.allowedOrigins</code>; if it cannot be reached, the output
+    says what to check instead of failing silently.
   </p>
 
   <!-- Static fallback: shown as-is when JavaScript is unavailable. -->
@@ -95,9 +95,7 @@ console.log("demo.echo:", String(echoed));</code></pre>
     );
     const addrWrap = root.querySelector(".mcpx-home-example-daemon-addr");
     const addrInput = addrWrap.querySelector("input");
-    const simLabel = root.querySelector(
-      ".mcpx-home-example-label-simulated",
-    );
+    const simLabel = root.querySelector(".mcpx-home-example-label-simulated");
     const localLabel = root.querySelector(".mcpx-home-example-label-local");
 
     textarea.value = source;

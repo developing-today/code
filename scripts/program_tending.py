@@ -698,7 +698,6 @@ def section_roadmaps(
     }
 
 
-
 # ------------------------------------------------------------- projects
 
 _PROJECTS_QUERY = """
@@ -741,7 +740,14 @@ mutation($project: ID!, $item: ID!, $field: ID!, $option: ID!) {
 """
 
 _BOARD_DONE = ("done", "closed", "complete", "completed")
-_BOARD_NOT_DONE = ("todo", "to do", "backlog", "in progress", "in review", "not started")
+_BOARD_NOT_DONE = (
+    "todo",
+    "to do",
+    "backlog",
+    "in progress",
+    "in review",
+    "not started",
+)
 
 
 def _flatten_project_items(data: dict, repo: str) -> list[dict]:
@@ -777,7 +783,8 @@ def _flatten_project_items(data: dict, repo: str) -> list[dict]:
                     "project_id": project.get("id"),
                     "project_title": project.get("title", ""),
                     "item_id": node.get("id"),
-                    "board_status": (node.get("fieldValueByName") or {}).get("name") or "",
+                    "board_status": (node.get("fieldValueByName") or {}).get("name")
+                    or "",
                     "content_number": int(content["number"]),
                     "content_state": state,
                     "content_title": content.get("title", ""),
@@ -818,7 +825,9 @@ def _correction_option(item: dict) -> dict | None:
     return None
 
 
-def section_projects(repos: list[str], live: bool, now: dt.datetime, budget: int) -> dict:
+def section_projects(
+    repos: list[str], live: bool, now: dt.datetime, budget: int
+) -> dict:
     checked: list[dict] = []
     actions: list[dict] = []
     if not (os.environ.get("GH_TOKEN") or os.environ.get("GITHUB_TOKEN")):
@@ -843,7 +852,9 @@ def section_projects(repos: list[str], live: bool, now: dt.datetime, budget: int
         try:
             data = _gh_graphql(_PROJECTS_QUERY, {"owner": owner, "name": name})
         except Exception as exc:  # noqa: BLE001 - report, never fail
-            checked.append({"repo": repo, "board_state": "unverified", "error": str(exc)})
+            checked.append(
+                {"repo": repo, "board_state": "unverified", "error": str(exc)}
+            )
             continue
         items = _flatten_project_items(data, repo)
         entry: dict = {
@@ -948,7 +959,9 @@ def _stalled_comment(pr: dict, waiting: str, next_step: str, silent_days: int) -
     )
 
 
-def section_stalled_prs(repos: list[str], live: bool, now: dt.datetime, budget: int) -> dict:
+def section_stalled_prs(
+    repos: list[str], live: bool, now: dt.datetime, budget: int
+) -> dict:
     checked: list[dict] = []
     actions: list[dict] = []
     hard = set(HARD_STOPS) - {"user/owned"}
@@ -999,7 +1012,9 @@ def section_stalled_prs(repos: list[str], live: bool, now: dt.datetime, budget: 
             waiting, next_step = _stalled_waiting_on(pr)
             author = (pr.get("user") or {}).get("login", "")
             action = {
-                "kind": "stalled-pr-user-owned-checkin" if user_owned else "stalled-pr-checkin",
+                "kind": "stalled-pr-user-owned-checkin"
+                if user_owned
+                else "stalled-pr-checkin",
                 "repo": repo,
                 "pr": number,
                 "silent_days": silent.days,
@@ -1067,11 +1082,15 @@ def _duplicate_ref_counts(text: str, default_repo: str) -> dict:
     return {k: c for k, c in counts.items() if c > 1}
 
 
-def section_loose_ends(repos: list[str], live: bool, now: dt.datetime, budget: int) -> dict:
+def section_loose_ends(
+    repos: list[str], live: bool, now: dt.datetime, budget: int
+) -> dict:
     checked: list[dict] = []
     actions: list[dict] = []
     cache: dict = {}
-    since = (now - dt.timedelta(days=LOOSE_CHILD_WINDOW_DAYS)).strftime("%Y-%m-%dT%H:%M:%SZ")
+    since = (now - dt.timedelta(days=LOOSE_CHILD_WINDOW_DAYS)).strftime(
+        "%Y-%m-%dT%H:%M:%SZ"
+    )
     aging_all: list[dict] = []
     for repo in repos:
         entry: dict = {"repo": repo, "parent_notifications": 0}

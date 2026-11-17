@@ -10,9 +10,9 @@ site.
 ## What a reader gets
 
 - **Stage 1 — copy-as-command** (`copy-command.js`). Every docs example
-  can be copied two ways: *Copy as mcpx exec* (a quoted-heredoc command
+  can be copied two ways: _Copy as mcpx exec_ (a quoted-heredoc command
   that runs the snippet against the reader's real daemon; see the file
-  header for why the quoting has to be a heredoc) and *Copy as script*
+  header for why the quoting has to be a heredoc) and _Copy as script_
   (the source itself, plus `scriptCommands()` for the save-and-`mcpx run`
   two-liner).
 - **Stage 2 — run it in the page** (`component.html`, `run-example.js`).

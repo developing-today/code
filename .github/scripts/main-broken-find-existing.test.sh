@@ -24,7 +24,10 @@ exit 1
 GH
 chmod +x "$TMP/bin/gh"
 
-fail() { echo "FAIL: $1" >&2; exit 1; }
+fail() {
+  echo "FAIL: $1" >&2
+  exit 1
+}
 
 find_existing() { # $1 = issues json file
   PATH="$TMP/bin:$PATH" FAKE_ISSUES_JSON="$1" \
@@ -80,11 +83,11 @@ cat >"$TMP/after-create.json" <<'JSON'
 JSON
 second="$(find_existing "$TMP/after-create.json")"
 [ "$second" = "$(printf '9528\topen')" ] || fail "replay firing 2 must append to the issue firing 1 created"
-grep -Fq 'dedupe_key: main-broken-run-${{ steps.identify.outputs.run_id }}-dispatch-append' "$WATCHER_YML" \
-  || fail "append dispatch is not keyed on the failing run id"
-grep -Fq 'dedupe_key: main-broken-run-${{ steps.identify.outputs.run_id }}-dispatch-create' "$WATCHER_YML" \
-  || fail "create dispatch is not keyed on the failing run id"
-grep -Fq "steps.identify.outputs.action == 'comment'" "$WATCHER_YML" \
-  || fail "watcher has no comment-only path for closed run matches"
+grep -Fq 'dedupe_key: main-broken-run-${{ steps.identify.outputs.run_id }}-dispatch-append' "$WATCHER_YML" ||
+  fail "append dispatch is not keyed on the failing run id"
+grep -Fq 'dedupe_key: main-broken-run-${{ steps.identify.outputs.run_id }}-dispatch-create' "$WATCHER_YML" ||
+  fail "create dispatch is not keyed on the failing run id"
+grep -Fq "steps.identify.outputs.action == 'comment'" "$WATCHER_YML" ||
+  fail "watcher has no comment-only path for closed run matches"
 
 echo "main-broken-find-existing.test: all tests passed"

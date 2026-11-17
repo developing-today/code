@@ -447,11 +447,7 @@ def supervision_step(mode: str) -> List[Dict]:
     now_ms = int(time.time() * 1000)
     sessions = _fetch_sessions()
     sessions_by_id = (
-        {
-            s.get("id"): s
-            for s in sessions
-            if isinstance(s, dict) and s.get("id")
-        }
+        {s.get("id"): s for s in sessions if isinstance(s, dict) and s.get("id")}
         if isinstance(sessions, list)
         else {}
     )

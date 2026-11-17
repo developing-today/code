@@ -20,9 +20,7 @@
                     "type": "string"
                   }
                 },
-                "required": [
-                  "path"
-                ],
+                "required": ["path"],
                 "type": "object"
               }
             }
@@ -35,9 +33,7 @@
           }
         },
         "summary": "Read one file or folder's metadata",
-        "tags": [
-          "files"
-        ]
+        "tags": ["files"]
       }
     },
     "/files/list_folder": {
@@ -62,9 +58,7 @@
                     "type": "boolean"
                   }
                 },
-                "required": [
-                  "path"
-                ],
+                "required": ["path"],
                 "type": "object"
               }
             }
@@ -77,9 +71,7 @@
           }
         },
         "summary": "List the contents of a folder",
-        "tags": [
-          "files"
-        ]
+        "tags": ["files"]
       }
     },
     "/files/list_folder/continue": {
@@ -96,9 +88,7 @@
                     "type": "string"
                   }
                 },
-                "required": [
-                  "cursor"
-                ],
+                "required": ["cursor"],
                 "type": "object"
               }
             }
@@ -111,9 +101,7 @@
           }
         },
         "summary": "Continue a folder listing",
-        "tags": [
-          "files"
-        ]
+        "tags": ["files"]
       }
     },
     "/files/search_v2": {
@@ -142,9 +130,7 @@
                     "type": "string"
                   }
                 },
-                "required": [
-                  "query"
-                ],
+                "required": ["query"],
                 "type": "object"
               }
             }
@@ -157,9 +143,7 @@
           }
         },
         "summary": "Search files by name and content",
-        "tags": [
-          "files"
-        ]
+        "tags": ["files"]
       }
     },
     "/users/get_current_account": {
@@ -172,9 +156,7 @@
           }
         },
         "summary": "Read the caller's own account",
-        "tags": [
-          "users"
-        ]
+        "tags": ["users"]
       }
     }
   },

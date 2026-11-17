@@ -5,9 +5,7 @@
       "headers": {
         "Authorization": "Bearer ${DROPBOX_ACCESS_TOKEN}"
       },
-      "methods": [
-        "POST"
-      ],
+      "methods": ["POST"],
       "name": "dropbox",
       "spec": "./dropbox.openapi.json"
     }

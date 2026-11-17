@@ -43,13 +43,21 @@ def row(task_id, when, outcome="success", terminal=True, first_seen=None, enable
     }
 
 
-def hourly(task_id, last_age_hours, outcome="success", runs=6, first_seen_age_hours=None):
+def hourly(
+    task_id, last_age_hours, outcome="success", runs=6, first_seen_age_hours=None
+):
     latest = NOW - timedelta(hours=last_age_hours)
     rows = {}
     for i in range(runs):
         when = latest - timedelta(hours=(runs - 1 - i))
-        r = row(task_id, when, outcome=outcome if i == runs - 1 else "success",
-                first_seen=NOW - timedelta(hours=first_seen_age_hours) if first_seen_age_hours else None)
+        r = row(
+            task_id,
+            when,
+            outcome=outcome if i == runs - 1 else "success",
+            first_seen=NOW - timedelta(hours=first_seen_age_hours)
+            if first_seen_age_hours
+            else None,
+        )
         rows[r["run_key"]] = r
     return rows
 
@@ -67,19 +75,28 @@ check("healthy: listed healthy", "t-healthy" in report["healthy_task_ids"])
 report = watchdog.run_check(hourly("t-missing", 1.5), NOW)
 check("missing: missing_run fires", conditions(report, "t-missing") == ["missing_run"])
 ev = report["alerts"][0]["evidence"]
-check("missing: evidence carries window + source",
-      ev["window_seconds"] == 3600.0 and ev["window_source"] == "observed-schedule")
+check(
+    "missing: evidence carries window + source",
+    ev["window_seconds"] == 3600.0 and ev["window_source"] == "observed-schedule",
+)
 
 # 3. stale: hourly cadence, latest run 5 hours ago -> stale (past 2x threshold)
 report = watchdog.run_check(hourly("t-stale", 5), NOW)
 check("stale: stale fires", conditions(report, "t-stale") == ["stale"])
-check("stale: threshold named", report["alerts"][0]["evidence"]["stale_after_seconds"] == 7200.0)
+check(
+    "stale: threshold named",
+    report["alerts"][0]["evidence"]["stale_after_seconds"] == 7200.0,
+)
 
 # 4. failed latest: latest terminal outcome error -> failed_latest, even when fresh
 report = watchdog.run_check(hourly("t-failed", 0.25, outcome="error"), NOW)
-check("failed: failed_latest fires", conditions(report, "t-failed") == ["failed_latest"])
-check("failed: outcome in evidence",
-      report["alerts"][0]["evidence"]["latest_terminal_outcome"] == "error")
+check(
+    "failed: failed_latest fires", conditions(report, "t-failed") == ["failed_latest"]
+)
+check(
+    "failed: outcome in evidence",
+    report["alerts"][0]["evidence"]["latest_terminal_outcome"] == "error",
+)
 
 # 5. first window: brand-new task, one run seen 10 minutes ago inside its
 #    first (declared) window -> no false alert
@@ -89,11 +106,15 @@ check("first-window: no alert inside first window", conditions(report, "t-new") 
 
 # 6. declared window overrides the observed one: hourly history but a
 #    declared daily window -> a 90-minute-old latest run is healthy
-report = watchdog.run_check(hourly("t-declared", 1.5), NOW, declared_windows={"t-declared": 86400})
+report = watchdog.run_check(
+    hourly("t-declared", 1.5), NOW, declared_windows={"t-declared": 86400}
+)
 check("declared: window source wins", conditions(report, "t-declared") == [])
 report2 = watchdog.run_check(hourly("t-declared", 1.5), NOW)
-check("declared: same rows alert without the declaration",
-      conditions(report2, "t-declared") == ["missing_run"])
+check(
+    "declared: same rows alert without the declaration",
+    conditions(report2, "t-declared") == ["missing_run"],
+)
 
 # 7. disabled task never alerts, however old its latest run
 rows = hourly("t-off", 72)
@@ -108,8 +129,10 @@ latest_key = max(rows)
 rows[latest_key]["outcome"] = "running"
 rows[latest_key]["outcome_terminal"] = False
 report = watchdog.run_check(rows, NOW)
-check("in-flight: no missing/stale while a run is in flight",
-      conditions(report, "t-running") == [])
+check(
+    "in-flight: no missing/stale while a run is in flight",
+    conditions(report, "t-running") == [],
+)
 
 print(f"\n{sum(1 for _, ok in PASS if ok)}/{len(PASS)} checks passed")
 sys.exit(0 if all(ok for _, ok in PASS) else 1)

@@ -587,7 +587,6 @@ class DriftPrGitIdentityTest(unittest.TestCase):
         self.assertTrue(any(x.startswith("user.email=") for x in commit), commit)
 
 
-
 class Slice3ProjectsTest(unittest.TestCase):
     """Slice 3 projects: board-vs-reality, reported never fabricated."""
 
@@ -634,7 +633,9 @@ class Slice3ProjectsTest(unittest.TestCase):
 
     def test_no_token_reports_unverified(self):
         with mock.patch.dict(os.environ, {}, clear=True):
-            section = pt.section_projects(["developing-today/code"], False, self.now, 12)
+            section = pt.section_projects(
+                ["developing-today/code"], False, self.now, 12
+            )
         self.assertEqual(section["status"], "no-action")
         self.assertIn("unverified", section["checked"][0]["board_state"])
 
@@ -642,7 +643,9 @@ class Slice3ProjectsTest(unittest.TestCase):
         data = self.data("Done", {"number": 7, "state": "open", "title": "X"})
         with mock.patch.dict(os.environ, {"GH_TOKEN": "t"}, clear=True):
             with mock.patch.object(pt, "_gh_graphql", return_value=data):
-                section = pt.section_projects(["developing-today/code"], False, self.now, 12)
+                section = pt.section_projects(
+                    ["developing-today/code"], False, self.now, 12
+                )
         self.assertEqual(len(section["actions"]), 1)
         self.assertEqual(section["actions"][0]["kind"], "project-board-correction")
         self.assertFalse(section["actions"][0]["live"])
@@ -652,20 +655,26 @@ class Slice3ProjectsTest(unittest.TestCase):
         data = self.data("Todo", {"number": 8, "state": "closed", "title": "Y"})
         with mock.patch.dict(os.environ, {"GH_TOKEN": "t"}, clear=True):
             with mock.patch.object(pt, "_gh_graphql", return_value=data):
-                section = pt.section_projects(["developing-today/code"], False, self.now, 12)
+                section = pt.section_projects(
+                    ["developing-today/code"], False, self.now, 12
+                )
         self.assertEqual(len(section["actions"]), 1)
 
     def test_consistent_board_no_action(self):
         data = self.data("In Progress", {"number": 7, "state": "open", "title": "X"})
         with mock.patch.dict(os.environ, {"GH_TOKEN": "t"}, clear=True):
             with mock.patch.object(pt, "_gh_graphql", return_value=data):
-                section = pt.section_projects(["developing-today/code"], False, self.now, 12)
+                section = pt.section_projects(
+                    ["developing-today/code"], False, self.now, 12
+                )
         self.assertEqual(section["actions"], [])
 
     def test_graphql_failure_reports_unverified_never_fails(self):
         with mock.patch.dict(os.environ, {"GH_TOKEN": "t"}, clear=True):
             with mock.patch.object(pt, "_gh_graphql", side_effect=RuntimeError("down")):
-                section = pt.section_projects(["developing-today/code"], False, self.now, 12)
+                section = pt.section_projects(
+                    ["developing-today/code"], False, self.now, 12
+                )
         self.assertEqual(section["checked"][0]["board_state"], "unverified")
         self.assertIn("error", section["checked"][0])
 
@@ -679,7 +688,9 @@ class Slice3ProjectsTest(unittest.TestCase):
 
         with mock.patch.dict(os.environ, {"GH_TOKEN": "t"}, clear=True):
             with mock.patch.object(pt, "_gh_graphql", side_effect=fake_graphql):
-                section = pt.section_projects(["developing-today/code"], True, self.now, 12)
+                section = pt.section_projects(
+                    ["developing-today/code"], True, self.now, 12
+                )
         action = section["actions"][0]
         self.assertTrue(action["live"])
         self.assertEqual(action["corrected_to"], "Done")
@@ -720,7 +731,9 @@ class Slice3StalledPrsTest(unittest.TestCase):
     def test_stalled_pr_planned_checkin(self):
         prs = [self.pr(10, "2026-11-14T00:00:00Z")]
         with mock.patch.object(pt, "_gh_api", self.api(prs)):
-            section = pt.section_stalled_prs(["developing-today/code"], False, self.now, 12)
+            section = pt.section_stalled_prs(
+                ["developing-today/code"], False, self.now, 12
+            )
         self.assertEqual(len(section["actions"]), 1)
         action = section["actions"][0]
         self.assertEqual(action["kind"], "stalled-pr-checkin")
@@ -730,7 +743,9 @@ class Slice3StalledPrsTest(unittest.TestCase):
     def test_fleet_owned_pr_gets_shepherd_packet(self):
         prs = [self.pr(11, "2026-11-14T00:00:00Z", author="dezren39")]
         with mock.patch.object(pt, "_gh_api", self.api(prs)):
-            section = pt.section_stalled_prs(["developing-today/code"], False, self.now, 12)
+            section = pt.section_stalled_prs(
+                ["developing-today/code"], False, self.now, 12
+            )
         packet = section["actions"][0]["packet"]
         self.assertEqual(packet["kind"], "pr_shepherd")
         self.assertIn("pr:11", packet["dedupe_key"])
@@ -738,24 +753,40 @@ class Slice3StalledPrsTest(unittest.TestCase):
     def test_recent_pr_no_action(self):
         prs = [self.pr(12, "2026-11-16T12:00:00Z")]
         with mock.patch.object(pt, "_gh_api", self.api(prs)):
-            section = pt.section_stalled_prs(["developing-today/code"], False, self.now, 12)
+            section = pt.section_stalled_prs(
+                ["developing-today/code"], False, self.now, 12
+            )
         self.assertEqual(section["actions"], [])
 
     def test_held_pr_skipped(self):
         prs = [self.pr(13, "2026-11-01T00:00:00Z", labels=("held",))]
         with mock.patch.object(pt, "_gh_api", self.api(prs)):
-            section = pt.section_stalled_prs(["developing-today/code"], False, self.now, 12)
+            section = pt.section_stalled_prs(
+                ["developing-today/code"], False, self.now, 12
+            )
         self.assertEqual(section["actions"], [])
         self.assertEqual(section["checked"][0]["skipped_hard_stop"], 1)
 
     def test_user_owned_waits_seven_days_and_never_packets(self):
-        young = [self.pr(14, "2026-11-14T00:00:00Z", labels=("user/owned",), author="dezren39")]
+        young = [
+            self.pr(
+                14, "2026-11-14T00:00:00Z", labels=("user/owned",), author="dezren39"
+            )
+        ]
         with mock.patch.object(pt, "_gh_api", self.api(young)):
-            section = pt.section_stalled_prs(["developing-today/code"], False, self.now, 12)
+            section = pt.section_stalled_prs(
+                ["developing-today/code"], False, self.now, 12
+            )
         self.assertEqual(section["actions"], [])
-        old = [self.pr(14, "2026-11-09T00:00:00Z", labels=("user/owned",), author="dezren39")]
+        old = [
+            self.pr(
+                14, "2026-11-09T00:00:00Z", labels=("user/owned",), author="dezren39"
+            )
+        ]
         with mock.patch.object(pt, "_gh_api", self.api(old)):
-            section = pt.section_stalled_prs(["developing-today/code"], False, self.now, 12)
+            section = pt.section_stalled_prs(
+                ["developing-today/code"], False, self.now, 12
+            )
         self.assertEqual(section["actions"][0]["kind"], "stalled-pr-user-owned-checkin")
         self.assertNotIn("packet", section["actions"][0])
 
@@ -763,7 +794,9 @@ class Slice3StalledPrsTest(unittest.TestCase):
         prs = [self.pr(15, "2026-11-10T00:00:00Z")]
         comments = {15: [{"body": "check-in <!-- program-tending:stalled-prs -->"}]}
         with mock.patch.object(pt, "_gh_api", self.api(prs, comments)):
-            section = pt.section_stalled_prs(["developing-today/code"], False, self.now, 12)
+            section = pt.section_stalled_prs(
+                ["developing-today/code"], False, self.now, 12
+            )
         self.assertEqual(section["actions"], [])
         self.assertEqual(section["checked"][0]["already_tended"], [15])
 
@@ -771,7 +804,9 @@ class Slice3StalledPrsTest(unittest.TestCase):
         prs = [self.pr(16, "2026-11-14T00:00:00Z")]
         with mock.patch.object(pt, "_gh_api", self.api(prs)):
             with mock.patch.object(pt, "_gh_write", return_value={"id": 42}) as write:
-                section = pt.section_stalled_prs(["developing-today/code"], True, self.now, 12)
+                section = pt.section_stalled_prs(
+                    ["developing-today/code"], True, self.now, 12
+                )
         self.assertTrue(section["actions"][0]["live"])
         self.assertEqual(section["actions"][0]["comment_id"], 42)
         self.assertIn("/issues/16/comments", write.call_args[0][0])
@@ -779,7 +814,9 @@ class Slice3StalledPrsTest(unittest.TestCase):
     def test_zero_budget_defers(self):
         prs = [self.pr(17, "2026-11-14T00:00:00Z")]
         with mock.patch.object(pt, "_gh_api", self.api(prs)):
-            section = pt.section_stalled_prs(["developing-today/code"], False, self.now, 0)
+            section = pt.section_stalled_prs(
+                ["developing-today/code"], False, self.now, 0
+            )
         self.assertEqual(section["actions"], [])
         self.assertEqual(section["checked"][0]["deferred"], 1)
 
@@ -812,7 +849,9 @@ class Slice3LooseEndsTest(unittest.TestCase):
         child = {"number": 60, "title": "Kid", "body": "Child of #50"}
         parent = {"number": 50, "state": "open", "title": "Parent", "labels": []}
         with mock.patch.object(pt, "_gh_api", self.api(closed=[child], parent=parent)):
-            section = pt.section_loose_ends(["developing-today/code"], False, self.now, 12)
+            section = pt.section_loose_ends(
+                ["developing-today/code"], False, self.now, 12
+            )
         kinds = [a["kind"] for a in section["actions"]]
         self.assertIn("loose-end-parent-notification", kinds)
         action = section["actions"][0]
@@ -823,15 +862,21 @@ class Slice3LooseEndsTest(unittest.TestCase):
         parent = {"number": 50, "state": "open", "title": "Parent", "labels": []}
         comments = [{"body": "child #60 closed <!-- program-tending:loose-ends -->"}]
         with mock.patch.object(
-            pt, "_gh_api", self.api(closed=[child], parent=parent, parent_comments=comments)
+            pt,
+            "_gh_api",
+            self.api(closed=[child], parent=parent, parent_comments=comments),
         ):
-            section = pt.section_loose_ends(["developing-today/code"], False, self.now, 12)
+            section = pt.section_loose_ends(
+                ["developing-today/code"], False, self.now, 12
+            )
         self.assertEqual(section["actions"], [])
 
     def test_duplicate_cross_links_counted(self):
         opened = [{"number": 70, "body": "see #7 and #7 and #8", "labels": []}]
         with mock.patch.object(pt, "_gh_api", self.api(opened=opened)):
-            section = pt.section_loose_ends(["developing-today/code"], False, self.now, 12)
+            section = pt.section_loose_ends(
+                ["developing-today/code"], False, self.now, 12
+            )
         self.assertEqual(
             section["checked"][0]["duplicate_cross_links"],
             [{"issue": 70, "duplicate_refs": {"developing-today/code#7": 2}}],
@@ -840,8 +885,14 @@ class Slice3LooseEndsTest(unittest.TestCase):
     def test_user_review_surface_planned(self):
         review = [{"number": 80, "updated_at": "2026-10-01T00:00:00Z", "labels": []}]
         with mock.patch.object(pt, "_gh_api", self.api(review=review)):
-            section = pt.section_loose_ends(["developing-today/code"], False, self.now, 12)
-        surface = [a for a in section["actions"] if a["kind"] == "loose-end-user-review-surface"]
+            section = pt.section_loose_ends(
+                ["developing-today/code"], False, self.now, 12
+            )
+        surface = [
+            a
+            for a in section["actions"]
+            if a["kind"] == "loose-end-user-review-surface"
+        ]
         self.assertEqual(len(surface), 1)
         self.assertEqual(surface[0]["items"], 1)
         self.assertEqual(section["checked"][0]["user_review_aging"][0]["age_days"], 47)

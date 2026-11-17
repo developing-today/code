@@ -49,6 +49,7 @@ order; stop and report if a step fails.
      own machine, but a daemon must be running somewhere; enable its
      tools with `MCPX_PLUGIN_TOOLS=1` (or `tools: true` in the plugin
      config) and its guidance with `instructions: true`.
+
    - **Any other harness:** run mcpx as an MCP server. Point the
      harness's MCP configuration at mcpx (the daemon autostarts on
      first use); per-harness adapters beyond "run mcpx as an MCP

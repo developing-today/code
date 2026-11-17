@@ -1,7 +1,12 @@
 import { describe, expect, test } from "bun:test";
 import type { ProjectPoolItem } from "../src/model.ts";
 import { isProjectPoolItem, parseProjectItems, PROJECT_QUERY } from "../src/projects.ts";
-import { buildReleaseSnapshots, classifyMilestoneItem, computeMilestoneSnapshot, milestoneKind } from "../src/releases.ts";
+import {
+  buildReleaseSnapshots,
+  classifyMilestoneItem,
+  computeMilestoneSnapshot,
+  milestoneKind,
+} from "../src/releases.ts";
 
 // #9067: pm-stack release milestones — ingestion, close-out accounting,
 // /api/releases.json. Oracle for the accounting: every counted item is
@@ -52,7 +57,11 @@ describe("collector milestone ingestion (#9067)", () => {
                   updatedAt: "2026-11-17T00:00:00Z",
                   author: { login: "dezren39" },
                   labels: { nodes: [{ name: "design/id" }] },
-                  milestone: { title: "ID platform — release 2026-12-01", dueOn: "2026-12-01T00:00:00Z", closedAt: null },
+                  milestone: {
+                    title: "ID platform — release 2026-12-01",
+                    dueOn: "2026-12-01T00:00:00Z",
+                    closedAt: null,
+                  },
                   parent: null,
                   blockedBy: { nodes: [] },
                   blocking: { nodes: [] },
@@ -96,7 +105,11 @@ describe("close-out accounting (#9067)", () => {
   });
 
   test("snapshot splits closed vs carried-over per category and names carried-over epics", () => {
-    const milestone = { title: "ID platform — release 2026-12-01", dueOn: "2026-12-01T00:00:00Z", closedAt: "2026-12-01T00:00:00Z" };
+    const milestone = {
+      title: "ID platform — release 2026-12-01",
+      dueOn: "2026-12-01T00:00:00Z",
+      closedAt: "2026-12-01T00:00:00Z",
+    };
     const snap = computeMilestoneSnapshot(milestone, [
       { ref: "developing-today/code#1", state: "closed", labels: [] },
       { ref: "developing-today/code#2", state: "open", labels: [] },

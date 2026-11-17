@@ -49,6 +49,7 @@ at pkgs/laptop-agent/src/ as the single daemon source; the fleet
 round-trip parity for both lineages' surfaces is the acceptance
 evidence on #10131.
 """
+
 import hashlib
 import hmac
 import json
@@ -81,40 +82,57 @@ def _parse_startup_int(name, raw, requirement, minimum, maximum=None):
         value = int(raw)
     except (TypeError, ValueError):
         value = None
-    if (value is None or value < minimum
-            or (maximum is not None and value > maximum)):
-        print(f"laptop-agent: invalid {name}={raw!r}: {requirement}",
-              file=sys.stderr, flush=True)
+    if value is None or value < minimum or (maximum is not None and value > maximum):
+        print(
+            f"laptop-agent: invalid {name}={raw!r}: {requirement}",
+            file=sys.stderr,
+            flush=True,
+        )
         sys.exit(3)
     return value
 
 
 BIND_HOST = os.environ.get("LAPTOP_AGENT_HOST", "100.99.113.103")
 BIND_PORT = _parse_startup_int(
-    "LAPTOP_AGENT_PORT", os.environ.get("LAPTOP_AGENT_PORT", "4799"),
-    "must be an integer 1-65535", 1, 65535)
+    "LAPTOP_AGENT_PORT",
+    os.environ.get("LAPTOP_AGENT_PORT", "4799"),
+    "must be an integer 1-65535",
+    1,
+    65535,
+)
 # Absolute interpreter for `shell` requests: NixOS has no /bin/bash, and
 # the package wrapper sets this to the store path. The live lineage's
 # resolution chain is the fallback when the wrapper did not set it
 # (the 2026-11-04 laptop-ssh retirement verification caught shell mode
 # failing with ENOENT for a hardcoded /bin/bash).
 BASH = os.environ.get("LAPTOP_AGENT_BASH") or next(
-    (p for p in (shutil.which("bash"),
-                 "/etc/profiles/per-user/user/bin/bash",
-                 "/run/current-system/sw/bin/bash",
-                 "/bin/bash")
-     if p and os.path.exists(p)), "/bin/bash")
-TOKEN_FILE = Path(os.environ.get(
-    "LAPTOP_AGENT_TOKEN_FILE", Path.home() / ".config/laptop-agent/token"))
-STATE_DIR = Path(os.environ.get(
-    "LAPTOP_AGENT_STATE", Path.home() / ".local/state/laptop-agent"))
-MAX_OUT = 1 << 20            # per-stream capture cap for /exec (tail kept)
-MAX_BODY = 1 << 20           # request body cap for /exec and /jobs
-FILE_CHUNK_MAX = 1 << 20     # max bytes served per GET /file request
+    (
+        p
+        for p in (
+            shutil.which("bash"),
+            "/etc/profiles/per-user/user/bin/bash",
+            "/run/current-system/sw/bin/bash",
+            "/bin/bash",
+        )
+        if p and os.path.exists(p)
+    ),
+    "/bin/bash",
+)
+TOKEN_FILE = Path(
+    os.environ.get(
+        "LAPTOP_AGENT_TOKEN_FILE", Path.home() / ".config/laptop-agent/token"
+    )
+)
+STATE_DIR = Path(
+    os.environ.get("LAPTOP_AGENT_STATE", Path.home() / ".local/state/laptop-agent")
+)
+MAX_OUT = 1 << 20  # per-stream capture cap for /exec (tail kept)
+MAX_BODY = 1 << 20  # request body cap for /exec and /jobs
+FILE_CHUNK_MAX = 1 << 20  # max bytes served per GET /file request
 EXEC_TIMEOUT_DEFAULT = 120
 EXEC_TIMEOUT_MAX = 600
 JOB_TTL_S = 24 * 3600
-REAP_INTERVAL_S = 3600       # background reaper cadence (#1504)
+REAP_INTERVAL_S = 3600  # background reaper cadence (#1504)
 KILL_GRACE_S = 5
 # Slot semantics (#1545): LAPTOP_AGENT_SLOTS is ONE shared pool for all
 # work the daemon runs, not a per-route cap. POST /exec acquires a slot
@@ -123,15 +141,20 @@ KILL_GRACE_S = 5
 # releases it when the process exits, including after a kill). Both
 # routes wait up to 5s for a slot and then return 503 {"error": "busy"}:
 # submissions are never queued indefinitely and never spawn past the cap.
-SEMA = threading.Semaphore(_parse_startup_int(
-    "LAPTOP_AGENT_SLOTS", os.environ.get("LAPTOP_AGENT_SLOTS", "32"),
-    "must be an integer >= 1", 1))
+SEMA = threading.Semaphore(
+    _parse_startup_int(
+        "LAPTOP_AGENT_SLOTS",
+        os.environ.get("LAPTOP_AGENT_SLOTS", "32"),
+        "must be an integer >= 1",
+        1,
+    )
+)
 STARTED = time.time()
 
-JOBS = {}                    # job_id -> dict
+JOBS = {}  # job_id -> dict
 JOBS_LOCK = threading.Lock()
 TRIPS_FILE = STATE_DIR / "trips.jsonl"
-EXEC_PROCS = {}              # trip -> set[Popen] currently running for /exec
+EXEC_PROCS = {}  # trip -> set[Popen] currently running for /exec
 EXEC_PROCS_LOCK = threading.Lock()
 
 
@@ -144,12 +167,18 @@ def read_token(path: Path) -> str:
     try:
         token = path.read_text().strip()
     except OSError as e:
-        print(f"laptop-agent: cannot read token file {path}: {e}",
-              file=sys.stderr, flush=True)
+        print(
+            f"laptop-agent: cannot read token file {path}: {e}",
+            file=sys.stderr,
+            flush=True,
+        )
         sys.exit(3)
     if not token:
-        print(f"laptop-agent: token file {path} is empty; refusing to start",
-              file=sys.stderr, flush=True)
+        print(
+            f"laptop-agent: token file {path} is empty; refusing to start",
+            file=sys.stderr,
+            flush=True,
+        )
         sys.exit(3)
     return token
 
@@ -196,8 +225,9 @@ def _group_alive(pid: int) -> bool:
         return False
 
 
-def log_trip(trip, kind, cmd_str, duration_ms, exit_code, out_bytes,
-             err_bytes, t_received=None):
+def log_trip(
+    trip, kind, cmd_str, duration_ms, exit_code, out_bytes, err_bytes, t_received=None
+):
     """Append one trip record (single O_APPEND write) to trips.jsonl.
 
     Safety: only the command's first token and the sha256 of the full
@@ -211,18 +241,23 @@ def log_trip(trip, kind, cmd_str, duration_ms, exit_code, out_bytes,
     legs. v1 fields are kept verbatim for v1 readers."""
     try:
         parts = (cmd_str or "").split()
-        rec = {"v": 2,
-               "ts": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
-               "trip": trip, "kind": kind,
-               "cmd0": parts[0] if parts else "",
-               "cmd_sha256": hashlib.sha256(
-                   (cmd_str or "").encode("utf-8", "replace")).hexdigest(),
-               "duration_ms": duration_ms, "exit": exit_code,
-               "out_bytes": out_bytes, "err_bytes": err_bytes}
+        rec = {
+            "v": 2,
+            "ts": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+            "trip": trip,
+            "kind": kind,
+            "cmd0": parts[0] if parts else "",
+            "cmd_sha256": hashlib.sha256(
+                (cmd_str or "").encode("utf-8", "replace")
+            ).hexdigest(),
+            "duration_ms": duration_ms,
+            "exit": exit_code,
+            "out_bytes": out_bytes,
+            "err_bytes": err_bytes,
+        }
         if t_received is not None:
             rec["t_received"] = t_received
-        fd = os.open(TRIPS_FILE, os.O_WRONLY | os.O_CREAT | os.O_APPEND,
-                     0o644)
+        fd = os.open(TRIPS_FILE, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o644)
         try:
             os.write(fd, (json.dumps(rec) + "\n").encode())
         finally:
@@ -289,24 +324,32 @@ def run_one(spec, timeout_s, trip=None, cancel_event=None):
         cmd_str = " ".join(argv)
     t0 = time.time()
     try:
-        proc = subprocess.Popen(argv, cwd=cwd, env=env,
-                                stdout=subprocess.PIPE,
-                                stderr=subprocess.PIPE,
-                                start_new_session=True)
+        proc = subprocess.Popen(
+            argv,
+            cwd=cwd,
+            env=env,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            start_new_session=True,
+        )
     except Exception as e:  # cwd missing, argv[0] missing, ...
-        return {"exit": None, "error": f"{type(e).__name__}: {e}",
-                "stdout": "", "stderr": "",
-                "duration_ms": int((time.time() - t0) * 1000),
-                "truncated": False,
-                "_cmd": cmd_str, "_out_bytes": 0, "_err_bytes": 0}
+        return {
+            "exit": None,
+            "error": f"{type(e).__name__}: {e}",
+            "stdout": "",
+            "stderr": "",
+            "duration_ms": int((time.time() - t0) * 1000),
+            "truncated": False,
+            "_cmd": cmd_str,
+            "_out_bytes": 0,
+            "_err_bytes": 0,
+        }
     if trip:
         with EXEC_PROCS_LOCK:
             EXEC_PROCS.setdefault(trip, set()).add(proc)
     out_parts, err_parts = [], []
-    t_out = threading.Thread(target=_drain,
-                             args=(proc.stdout, out_parts), daemon=True)
-    t_err = threading.Thread(target=_drain,
-                             args=(proc.stderr, err_parts), daemon=True)
+    t_out = threading.Thread(target=_drain, args=(proc.stdout, out_parts), daemon=True)
+    t_err = threading.Thread(target=_drain, args=(proc.stderr, err_parts), daemon=True)
     t_out.start()
     t_err.start()
     timed_out = False
@@ -342,13 +385,16 @@ def run_one(spec, timeout_s, trip=None, cancel_event=None):
     err = b"".join(err_parts)
     out_t, out_tr = tail_bytes(out, MAX_OUT)
     err_t, err_tr = tail_bytes(err, MAX_OUT)
-    result = {"exit": proc.returncode,
-              "stdout": out_t.decode("utf-8", "replace"),
-              "stderr": err_t.decode("utf-8", "replace"),
-              "duration_ms": int((time.time() - t0) * 1000),
-              "truncated": out_tr or err_tr,
-              "_cmd": cmd_str, "_out_bytes": len(out),
-              "_err_bytes": len(err)}
+    result = {
+        "exit": proc.returncode,
+        "stdout": out_t.decode("utf-8", "replace"),
+        "stderr": err_t.decode("utf-8", "replace"),
+        "duration_ms": int((time.time() - t0) * 1000),
+        "truncated": out_tr or err_tr,
+        "_cmd": cmd_str,
+        "_out_bytes": len(out),
+        "_err_bytes": len(err),
+    }
     if timed_out:
         result["exit"] = None
         result["timeout"] = True
@@ -368,8 +414,13 @@ def _jobs_root():
 
 
 def job_dir(job_id):
-    if (not isinstance(job_id, str) or not job_id or job_id in (".", "..")
-            or "/" in job_id or "\\" in job_id):
+    if (
+        not isinstance(job_id, str)
+        or not job_id
+        or job_id in (".", "..")
+        or "/" in job_id
+        or "\\" in job_id
+    ):
         raise ValueError("invalid laptop-agent job id")
     base = _jobs_root()
     d = base / job_id
@@ -378,18 +429,23 @@ def job_dir(job_id):
     try:
         resolved = d.resolve()
     except (OSError, RuntimeError) as e:
-        raise ValueError(
-            "cannot safely resolve laptop-agent job directory") from e
+        raise ValueError("cannot safely resolve laptop-agent job directory") from e
     if resolved.parent != base:
         raise ValueError("laptop-agent job directory escapes jobs directory")
     return resolved
 
 
 def _write_meta(job):
-    meta = {"id": job["id"], "cwd": job["cwd"], "cmd": job["cmd_repr"],
-            "started_at": job["started_at"], "ended_at": job["ended_at"],
-            "exit": job["exit"], "state": job["state"],
-            "interrupted": job.get("interrupted", False)}
+    meta = {
+        "id": job["id"],
+        "cwd": job["cwd"],
+        "cmd": job["cmd_repr"],
+        "started_at": job["started_at"],
+        "ended_at": job["ended_at"],
+        "exit": job["exit"],
+        "state": job["state"],
+        "interrupted": job.get("interrupted", False),
+    }
     try:
         d = job_dir(job["id"])
     except (RuntimeError, ValueError) as e:
@@ -398,8 +454,11 @@ def _write_meta(job):
         # an OSError is -- job_state() calls this from both serializers,
         # so a leak would poison every read of the job. One stderr line
         # naming the job, as in the loader/reaper skip contract.
-        print(f"laptop-agent: cannot write meta for job "
-              f"{job['id']}: {e}", file=sys.stderr, flush=True)
+        print(
+            f"laptop-agent: cannot write meta for job {job['id']}: {e}",
+            file=sys.stderr,
+            flush=True,
+        )
         return
     try:
         d.mkdir(parents=True, exist_ok=True)
@@ -431,36 +490,48 @@ def _write_meta(job):
 # exactly as the fold-in rule first stated here required.
 RESTORE_FIELD_TABLE = (
     # (field, writer shape, missing/null default, malformed disposition)
-    ("id", "str job id (secrets.token_hex(6))",
-     "the spool directory name (also for an empty string)",
-     "skip: non-string, or a string that is not the directory "
-     "name or carries '.'/'..'/a path separator (#1548/#1554)"),
-    ("cwd", "str working directory",
-     "str(Path.home()) (via the restore tail's `or` default)",
-     "skip: any non-string present value (#1568, folded in as "
-     "a table row per #1579)"),
-    ("cmd", "str command representation",
-     "'' (via the restore tail's `or` default)",
-     "skip: any non-string present value (#1568, folded in as "
-     "a table row per #1579)"),
-    ("started_at", "float seconds since the epoch",
-     "0.0",
-     "skip: non-numeric, bool, non-finite, or oversized int "
-     "(#1513/#1523, PR #1534)"),
-    ("ended_at", "float seconds since the epoch, or None",
-     "stamped with time.time() at load (the transitions below)",
-     "skip: non-numeric, bool, non-finite, or oversized int "
-     "(#1513/#1523, PR #1534)"),
-    ("exit", "int process returncode, or None while running",
-     "None",
-     "skip: non-integer or bool present value (#1568, folded "
-     "in as a table row per #1579)"),
-    ("state", "'running' or 'done'",
-     "'done'",
-     "skip: any other present value (#1556)"),
-    ("interrupted", "bool",
-     "False",
-     "skip: any non-boolean present value (#1556)"),
+    (
+        "id",
+        "str job id (secrets.token_hex(6))",
+        "the spool directory name (also for an empty string)",
+        "skip: non-string, or a string that is not the directory "
+        "name or carries '.'/'..'/a path separator (#1548/#1554)",
+    ),
+    (
+        "cwd",
+        "str working directory",
+        "str(Path.home()) (via the restore tail's `or` default)",
+        "skip: any non-string present value (#1568, folded in as "
+        "a table row per #1579)",
+    ),
+    (
+        "cmd",
+        "str command representation",
+        "'' (via the restore tail's `or` default)",
+        "skip: any non-string present value (#1568, folded in as "
+        "a table row per #1579)",
+    ),
+    (
+        "started_at",
+        "float seconds since the epoch",
+        "0.0",
+        "skip: non-numeric, bool, non-finite, or oversized int (#1513/#1523, PR #1534)",
+    ),
+    (
+        "ended_at",
+        "float seconds since the epoch, or None",
+        "stamped with time.time() at load (the transitions below)",
+        "skip: non-numeric, bool, non-finite, or oversized int (#1513/#1523, PR #1534)",
+    ),
+    (
+        "exit",
+        "int process returncode, or None while running",
+        "None",
+        "skip: non-integer or bool present value (#1568, folded "
+        "in as a table row per #1579)",
+    ),
+    ("state", "'running' or 'done'", "'done'", "skip: any other present value (#1556)"),
+    ("interrupted", "bool", "False", "skip: any non-boolean present value (#1556)"),
 )
 
 # The only coercions restore may perform (the table's transitions):
@@ -510,16 +581,18 @@ def _restore_persisted_job(meta, dir_name):
     """
     if not isinstance(meta, dict):
         return None, False, "meta.json is not a JSON object"
-    _bad_fields = [name for name in ("started_at", "ended_at")
-                   if _bad_persisted_timestamp(meta.get(name))]
+    _bad_fields = [
+        name
+        for name in ("started_at", "ended_at")
+        if _bad_persisted_timestamp(meta.get(name))
+    ]
     if _bad_fields:
         return None, False, f"bad {'/'.join(_bad_fields)} in meta.json"
     _raw_id = meta.get("id")
     if _raw_id is not None and not isinstance(_raw_id, str):
         return None, False, "non-string id in meta.json"
     job_id = _raw_id or dir_name
-    if (job_id != dir_name or job_id in (".", "..")
-            or "/" in job_id or "\\" in job_id):
+    if job_id != dir_name or job_id in (".", "..") or "/" in job_id or "\\" in job_id:
         return None, False, "invalid id in meta.json"
     try:
         job_dir(job_id)
@@ -529,8 +602,7 @@ def _restore_persisted_job(meta, dir_name):
     if _raw_state is not None and _raw_state not in ("running", "done"):
         return None, False, "invalid state in meta.json"
     _raw_interrupted = meta.get("interrupted")
-    if (_raw_interrupted is not None
-            and not isinstance(_raw_interrupted, bool)):
+    if _raw_interrupted is not None and not isinstance(_raw_interrupted, bool):
         return None, False, "non-boolean interrupted in meta.json"
     # Issue #1568, folded in as table rows per the fold-in rule at
     # the table above: _write_meta only ever writes exit as an int
@@ -543,15 +615,13 @@ def _restore_persisted_job(meta, dir_name):
     # subclass, but the writer never produces one. Missing/None
     # keeps the established defaults (None / home / "").
     _raw_exit = meta.get("exit")
-    if (_raw_exit is not None
-            and (isinstance(_raw_exit, bool)
-                 or not isinstance(_raw_exit, int))):
+    if _raw_exit is not None and (
+        isinstance(_raw_exit, bool) or not isinstance(_raw_exit, int)
+    ):
         return None, False, "non-integer exit in meta.json"
-    if (meta.get("cwd") is not None
-            and not isinstance(meta.get("cwd"), str)):
+    if meta.get("cwd") is not None and not isinstance(meta.get("cwd"), str):
         return None, False, "non-string cwd in meta.json"
-    if (meta.get("cmd") is not None
-            and not isinstance(meta.get("cmd"), str)):
+    if meta.get("cmd") is not None and not isinstance(meta.get("cmd"), str):
         return None, False, "non-string cmd in meta.json"
     state = _raw_state or "done"
     exit_code = meta.get("exit")
@@ -576,13 +646,18 @@ def _restore_persisted_job(meta, dir_name):
         # and duration is stable.
         ended_at = time.time()
         stamped = True
-    job = {"id": job_id, "proc": None,
-           "cwd": meta.get("cwd") or str(Path.home()),
-           "cmd_repr": meta.get("cmd") or "",
-           "started_at": float(meta.get("started_at") or 0.0),
-           "ended_at": ended_at,
-           "exit": exit_code, "state": state,
-           "interrupted": interrupted, "_files": ()}
+    job = {
+        "id": job_id,
+        "proc": None,
+        "cwd": meta.get("cwd") or str(Path.home()),
+        "cmd_repr": meta.get("cmd") or "",
+        "started_at": float(meta.get("started_at") or 0.0),
+        "ended_at": ended_at,
+        "exit": exit_code,
+        "state": state,
+        "interrupted": interrupted,
+        "_files": (),
+    }
     return job, (interrupted or stamped), None
 
 
@@ -601,9 +676,12 @@ def load_persisted_jobs():
         return
     for d in entries:
         if d.is_symlink():
-            print(f"laptop-agent: skipping persisted job {d}: "
-                  "spool directory is a symlink",
-                  file=sys.stderr, flush=True)
+            print(
+                f"laptop-agent: skipping persisted job {d}: "
+                "spool directory is a symlink",
+                file=sys.stderr,
+                flush=True,
+            )
             continue
         if not d.is_dir():
             continue
@@ -613,13 +691,16 @@ def load_persisted_jobs():
             continue
         job, persist, reason = _restore_persisted_job(meta, d.name)
         if job is None:
-            print(f"laptop-agent: skipping persisted job {d}: "
-                  f"{reason}",
-                  file=sys.stderr, flush=True)
+            print(
+                f"laptop-agent: skipping persisted job {d}: {reason}",
+                file=sys.stderr,
+                flush=True,
+            )
             continue
         JOBS[job["id"]] = job
         if persist:
             _write_meta(job)
+
 
 def job_state(job):
     if job["state"] == "running":
@@ -643,8 +724,11 @@ def job_public(job, out_off=0, err_off=0):
         # Post-load spool swap (#1575): serve the job's in-memory
         # record with empty output instead of raising ValueError,
         # which do_GET would turn into a 400 blaming the request.
-        print(f"laptop-agent: cannot read spool for job "
-              f"{job['id']}: {e}", file=sys.stderr, flush=True)
+        print(
+            f"laptop-agent: cannot read spool for job {job['id']}: {e}",
+            file=sys.stderr,
+            flush=True,
+        )
         d = None
     out = b""
     err = b""
@@ -661,16 +745,22 @@ def job_public(job, out_off=0, err_off=0):
                 err = f.read(MAX_OUT)
         except OSError:
             pass
-    return {"job_id": job["id"], "state": state,
-            "exit": job["exit"] if state == "done" else None,
-            "cwd": job["cwd"], "cmd": job["cmd_repr"],
-            "started_at": job["started_at"],
-            "interrupted": job.get("interrupted", False),
-            "duration_ms": int(((job["ended_at"] or time.time())
-                                - job["started_at"]) * 1000),
-            "stdout": out.decode("utf-8", "replace"),
-            "stderr": err.decode("utf-8", "replace"),
-            "out_next": out_off + len(out), "err_next": err_off + len(err)}
+    return {
+        "job_id": job["id"],
+        "state": state,
+        "exit": job["exit"] if state == "done" else None,
+        "cwd": job["cwd"],
+        "cmd": job["cmd_repr"],
+        "started_at": job["started_at"],
+        "interrupted": job.get("interrupted", False),
+        "duration_ms": int(
+            ((job["ended_at"] or time.time()) - job["started_at"]) * 1000
+        ),
+        "stdout": out.decode("utf-8", "replace"),
+        "stderr": err.decode("utf-8", "replace"),
+        "out_next": out_off + len(out),
+        "err_next": err_off + len(err),
+    }
 
 
 def job_summary(job):
@@ -690,8 +780,11 @@ def job_summary(job):
         # Post-load spool swap (#1575): one poisoned spool must not
         # fail the whole GET /jobs list -- report zero sizes for this
         # job (same shape as a missing spool file) and serve the rest.
-        print(f"laptop-agent: cannot read spool for job "
-              f"{job['id']}: {e}", file=sys.stderr, flush=True)
+        print(
+            f"laptop-agent: cannot read spool for job {job['id']}: {e}",
+            file=sys.stderr,
+            flush=True,
+        )
         d = None
     try:
         out_size = (d / "stdout").stat().st_size if d else 0
@@ -701,15 +794,22 @@ def job_summary(job):
         err_size = (d / "stderr").stat().st_size if d else 0
     except OSError:
         err_size = 0
-    return {"job_id": job["id"], "state": state,
-            "exit": job["exit"] if state == "done" else None,
-            "cwd": job["cwd"], "cmd": job["cmd_repr"],
-            "started_at": job["started_at"],
-            "interrupted": job.get("interrupted", False),
-            "duration_ms": int(((job["ended_at"] or time.time())
-                                - job["started_at"]) * 1000),
-            "out_bytes": out_size, "err_bytes": err_size,
-            "out_next": out_size, "err_next": err_size}
+    return {
+        "job_id": job["id"],
+        "state": state,
+        "exit": job["exit"] if state == "done" else None,
+        "cwd": job["cwd"],
+        "cmd": job["cmd_repr"],
+        "started_at": job["started_at"],
+        "interrupted": job.get("interrupted", False),
+        "duration_ms": int(
+            ((job["ended_at"] or time.time()) - job["started_at"]) * 1000
+        ),
+        "out_bytes": out_size,
+        "err_bytes": err_size,
+        "out_next": out_size,
+        "err_next": err_size,
+    }
 
 
 def reap_old_jobs():
@@ -734,8 +834,11 @@ def reap_old_jobs():
         try:
             shutil.rmtree(job_dir(j["id"]), ignore_errors=True)
         except (OSError, RuntimeError, ValueError) as e:
-            print(f"laptop-agent: reap: cannot remove spool for job "
-                  f"{j['id']}: {e}", file=sys.stderr, flush=True)
+            print(
+                f"laptop-agent: reap: cannot remove spool for job {j['id']}: {e}",
+                file=sys.stderr,
+                flush=True,
+            )
 
 
 class FramingError(ValueError):
@@ -832,16 +935,18 @@ class Handler(BaseHTTPRequestHandler):
 
     def _send_bad_request(self, e):
         try:
-            self._send(400, {"error": str(e) or "bad request"},
-                       close=isinstance(e, FramingError))
+            self._send(
+                400,
+                {"error": str(e) or "bad request"},
+                close=isinstance(e, FramingError),
+            )
         except Exception:
             pass
 
     def do_GET(self):
         try:
             self._do_GET()
-        except (ValueError, KeyError, TypeError, AttributeError,
-                IndexError) as e:
+        except (ValueError, KeyError, TypeError, AttributeError, IndexError) as e:
             self._send_bad_request(e)
         except (BrokenPipeError, ConnectionResetError):
             pass
@@ -853,9 +958,15 @@ class Handler(BaseHTTPRequestHandler):
         if path.path == "/health":
             with JOBS_LOCK:
                 n = len(JOBS)
-            return self._send(200, {"ok": True,
-                                    "uptime_s": int(time.time() - STARTED),
-                                    "jobs": n, "load1": os.getloadavg()[0]})
+            return self._send(
+                200,
+                {
+                    "ok": True,
+                    "uptime_s": int(time.time() - STARTED),
+                    "jobs": n,
+                    "load1": os.getloadavg()[0],
+                },
+            )
         if path.path == "/file":
             q = parse_qs(path.query)
             fpath = (q.get("path") or [""])[0]
@@ -876,13 +987,13 @@ class Handler(BaseHTTPRequestHandler):
             except OSError as e:
                 return self._send(404, {"error": f"no such file: {e}"})
             if off > size:
-                return self._send(416, {"error": "off beyond end of file",
-                                        "size": size})
+                return self._send(
+                    416, {"error": "off beyond end of file", "size": size}
+                )
             with open(fpath, "rb") as fh:
                 fh.seek(off)
                 data = fh.read(length)
-            return self._send_bytes(200, data, {"X-File-Size": size,
-                                                "X-File-Off": off})
+            return self._send_bytes(200, data, {"X-File-Size": size, "X-File-Off": off})
         if path.path == "/jobs":
             with JOBS_LOCK:
                 items = [job_summary(j) for j in JOBS.values()]
@@ -907,8 +1018,7 @@ class Handler(BaseHTTPRequestHandler):
     def do_POST(self):
         try:
             self._do_POST()
-        except (ValueError, KeyError, TypeError, AttributeError,
-                IndexError) as e:
+        except (ValueError, KeyError, TypeError, AttributeError, IndexError) as e:
             self._send_bad_request(e)
         except (BrokenPipeError, ConnectionResetError):
             pass
@@ -929,23 +1039,21 @@ class Handler(BaseHTTPRequestHandler):
             try:
                 timeout = int(body.get("timeout_s", EXEC_TIMEOUT_DEFAULT))
             except (TypeError, ValueError, OverflowError):
-                return self._send(400,
-                                  {"error": "timeout_s must be an integer"})
+                return self._send(400, {"error": "timeout_s must be an integer"})
             timeout = max(1, min(timeout, EXEC_TIMEOUT_MAX))
             cmds = body.get("cmds") or []
             if not isinstance(cmds, list) or not cmds:
                 return self._send(400, {"error": "cmds required"})
             for c in cmds:
                 if not isinstance(c, dict) or (
-                        c.get("shell") is None and not (
-                            isinstance(c.get("argv"), (list, tuple))
-                            and c["argv"])):
+                    c.get("shell") is None
+                    and not (isinstance(c.get("argv"), (list, tuple)) and c["argv"])
+                ):
                     return self._send(
-                        400, {"error": "each cmd requires 'argv' or 'shell'"})
-                if (c.get("env") is not None
-                        and not isinstance(c.get("env"), dict)):
-                    return self._send(
-                        400, {"error": "cmd env must be an object"})
+                        400, {"error": "each cmd requires 'argv' or 'shell'"}
+                    )
+                if c.get("env") is not None and not isinstance(c.get("env"), dict):
+                    return self._send(400, {"error": "cmd env must be an object"})
             if not SEMA.acquire(timeout=5):
                 return self._send(503, {"error": "busy"})
             cancel_event = threading.Event()
@@ -965,13 +1073,13 @@ class Handler(BaseHTTPRequestHandler):
                         return
                     ev.wait(0.25)
 
-            watcher = threading.Thread(target=watch_disconnect,
-                                       daemon=True)
+            watcher = threading.Thread(target=watch_disconnect, daemon=True)
             watcher.start()
             try:
-                results = [run_one(c, timeout, trip=trip,
-                                   cancel_event=cancel_event)
-                           for c in cmds]
+                results = [
+                    run_one(c, timeout, trip=trip, cancel_event=cancel_event)
+                    for c in cmds
+                ]
             finally:
                 cancel_event.set()
                 watcher.join(timeout=1)
@@ -980,21 +1088,32 @@ class Handler(BaseHTTPRequestHandler):
                 cmd_str = r.pop("_cmd", "")
                 out_b = r.pop("_out_bytes", 0)
                 err_b = r.pop("_err_bytes", 0)
-                log_trip(trip, "exec", cmd_str, r.get("duration_ms"),
-                         r.get("exit"), out_b, err_b,
-                         t_received=t_received_ms)
+                log_trip(
+                    trip,
+                    "exec",
+                    cmd_str,
+                    r.get("duration_ms"),
+                    r.get("exit"),
+                    out_b,
+                    err_b,
+                    t_received=t_received_ms,
+                )
             try:
-                return self._send(200, {"results": results,
-                                        "_t_received": t_received_ms})
+                return self._send(
+                    200, {"results": results, "_t_received": t_received_ms}
+                )
             except (BrokenPipeError, ConnectionResetError):
                 pass  # client already gone; the work is done/killed
             return
-        if path == "/cancel" or (path.startswith("/exec/")
-                                  and path.endswith("/cancel")):
+        if path == "/cancel" or (
+            path.startswith("/exec/") and path.endswith("/cancel")
+        ):
             body = self._body()
-            trip = (body.get("trip") or self.headers.get("X-Trip-Id")
-                    or (path.split("/")[2]
-                        if path.startswith("/exec/") else None))
+            trip = (
+                body.get("trip")
+                or self.headers.get("X-Trip-Id")
+                or (path.split("/")[2] if path.startswith("/exec/") else None)
+            )
             if not isinstance(trip, str) or not trip:
                 return self._send(400, {"error": "trip required"})
             with EXEC_PROCS_LOCK:
@@ -1011,8 +1130,7 @@ class Handler(BaseHTTPRequestHandler):
             if not isinstance(trip, str) or not trip:
                 trip = secrets.token_hex(6)
             cwd = body.get("cwd") or str(Path.home())
-            if body.get("env") is not None and not isinstance(
-                    body.get("env"), dict):
+            if body.get("env") is not None and not isinstance(body.get("env"), dict):
                 return self._send(400, {"error": "env must be an object"})
             if body.get("shell") is not None:
                 argv = [BASH, "-lc", body["shell"]]
@@ -1036,14 +1154,28 @@ class Handler(BaseHTTPRequestHandler):
                 env.update(body.get("env") or {})
                 out_f = open(d / "stdout", "wb")
                 err_f = open(d / "stderr", "wb")
-                proc = subprocess.Popen(argv, cwd=cwd, env=env,
-                                        stdout=out_f, stderr=err_f,
-                                        start_new_session=True)
-                job = {"id": job_id, "proc": proc, "cwd": cwd,
-                       "cmd_repr": cmd_repr, "started_at": time.time(),
-                       "ended_at": None, "exit": None, "state": "running",
-                       "interrupted": False, "_files": (out_f, err_f),
-                       "trip": trip, "t_received": t_received_ms}
+                proc = subprocess.Popen(
+                    argv,
+                    cwd=cwd,
+                    env=env,
+                    stdout=out_f,
+                    stderr=err_f,
+                    start_new_session=True,
+                )
+                job = {
+                    "id": job_id,
+                    "proc": proc,
+                    "cwd": cwd,
+                    "cmd_repr": cmd_repr,
+                    "started_at": time.time(),
+                    "ended_at": None,
+                    "exit": None,
+                    "state": "running",
+                    "interrupted": False,
+                    "_files": (out_f, err_f),
+                    "trip": trip,
+                    "t_received": t_received_ms,
+                }
                 _write_meta(job)
                 with JOBS_LOCK:
                     JOBS[job_id] = job
@@ -1066,10 +1198,16 @@ class Handler(BaseHTTPRequestHandler):
                         err_b = (d / "stderr").stat().st_size
                     except (OSError, RuntimeError, ValueError):
                         out_b = err_b = 0
-                    log_trip(j["trip"], "job", j["cmd_repr"],
-                             int((j["ended_at"] - j["started_at"]) * 1000),
-                             j["proc"].returncode, out_b, err_b,
-                             t_received=j.get("t_received"))
+                    log_trip(
+                        j["trip"],
+                        "job",
+                        j["cmd_repr"],
+                        int((j["ended_at"] - j["started_at"]) * 1000),
+                        j["proc"].returncode,
+                        out_b,
+                        err_b,
+                        t_received=j.get("t_received"),
+                    )
 
                 watch_thread = threading.Thread(target=watch, daemon=True)
                 watch_thread.start()
@@ -1103,8 +1241,7 @@ class Handler(BaseHTTPRequestHandler):
                         SEMA.release()
                 return self._send(400, {"error": f"{type(e).__name__}: {e}"})
             reap_old_jobs()
-            return self._send(200, {"job_id": job_id,
-                                    "_t_received": t_received_ms})
+            return self._send(200, {"job_id": job_id, "_t_received": t_received_ms})
         if path.startswith("/jobs/") and path.endswith("/kill"):
             job_id = path.split("/")[2]
             with JOBS_LOCK:
@@ -1123,6 +1260,7 @@ class Handler(BaseHTTPRequestHandler):
                         time.sleep(0.1)
                     if _group_alive(p):
                         _kill_group(p, signal.SIGKILL)
+
                 threading.Thread(target=hard_kill, daemon=True).start()
             return self._send(200, {"ok": True, "job_id": job_id})
         return self._send(404, {"error": "no such route"})
@@ -1140,8 +1278,11 @@ def _reaper_loop():
         try:
             reap_old_jobs()
         except Exception as e:  # a reaper fault must not kill the daemon
-            print(f"laptop-agent: background reap failed: {e}",
-                  file=sys.stderr, flush=True)
+            print(
+                f"laptop-agent: background reap failed: {e}",
+                file=sys.stderr,
+                flush=True,
+            )
 
 
 def main():

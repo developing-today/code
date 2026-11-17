@@ -503,20 +503,20 @@ touching any caller.
 
 ## Configuration (env)
 
-| Name                                              | Default                                     | Notes                                                                                                                                            |
-| ------------------------------------------------- | ------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `DISPATCH_HOSTS`                                  | `127.0.0.1`                                 | install.sh renders loopback + the laptop tailnet IP                                                                                              |
-| `DISPATCH_PORT`                                   | `4879`                                      |                                                                                                                                                  |
-| `DISPATCH_BUILD_VERSION`                          | `dev`                                       | set by install.sh to the deployed commit                                                                                                         |
-| `DISPATCH_API_TOKEN`                              | —                                           | from `~/secrets/dispatch.env`                                                                                                                    |
-| `DISPATCH_OIDC_AUDIENCE`                          | `pm-dispatch`                               |                                                                                                                                                  |
-| `DISPATCH_REPO_ALLOWLIST`                         | the six fleet repos                         |                                                                                                                                                  |
-| `QUEUE_BROKER_URL`                                | `http://100.99.113.103:4801`                | rendered by install.sh (the laptop queue broker, #9028)                                                                                         |
-| `QUEUE_BROKER_TOKEN_FILE`                         | `~/.config/queue-broker/token`              | the broker token stays in its own file; dispatch holds no database credential (#9028)                                                          |
-| `QUEUE_BROKER_TOKEN`                              | —                                           | inline token override; wins over the token file                                                                                                |
-| `OPENCODE_URL`                                    | `http://127.0.0.1:13420`                    | laptop standing server                                                                                                                           |
-| `OPENCODE_AUTH_FILE`                              | `~/.local/state/opencode/service-prod.json` | password read at runtime, never logged                                                                                                           |
-| `GITHUB_APP_ID` / `GITHUB_APP_PRIVATE_KEY_BASE64` | —                                           | rendered by install.sh from `~/secrets/pm-stack.sops.yaml`                                                                                       |
+| Name                                              | Default                                     | Notes                                                                                 |
+| ------------------------------------------------- | ------------------------------------------- | ------------------------------------------------------------------------------------- |
+| `DISPATCH_HOSTS`                                  | `127.0.0.1`                                 | install.sh renders loopback + the laptop tailnet IP                                   |
+| `DISPATCH_PORT`                                   | `4879`                                      |                                                                                       |
+| `DISPATCH_BUILD_VERSION`                          | `dev`                                       | set by install.sh to the deployed commit                                              |
+| `DISPATCH_API_TOKEN`                              | —                                           | from `~/secrets/dispatch.env`                                                         |
+| `DISPATCH_OIDC_AUDIENCE`                          | `pm-dispatch`                               |                                                                                       |
+| `DISPATCH_REPO_ALLOWLIST`                         | the six fleet repos                         |                                                                                       |
+| `QUEUE_BROKER_URL`                                | `http://100.99.113.103:4801`                | rendered by install.sh (the laptop queue broker, #9028)                               |
+| `QUEUE_BROKER_TOKEN_FILE`                         | `~/.config/queue-broker/token`              | the broker token stays in its own file; dispatch holds no database credential (#9028) |
+| `QUEUE_BROKER_TOKEN`                              | —                                           | inline token override; wins over the token file                                       |
+| `OPENCODE_URL`                                    | `http://127.0.0.1:13420`                    | laptop standing server                                                                |
+| `OPENCODE_AUTH_FILE`                              | `~/.local/state/opencode/service-prod.json` | password read at runtime, never logged                                                |
+| `GITHUB_APP_ID` / `GITHUB_APP_PRIVATE_KEY_BASE64` | —                                           | rendered by install.sh from `~/secrets/pm-stack.sops.yaml`                            |
 
 GitHub issue creation uses the pm-stack GitHub App (installed on
 developing-today/code and dezren39/darwin-nix — **not** on

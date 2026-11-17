@@ -16,9 +16,7 @@
           }
         },
         "summary": "Read the caller's own profile",
-        "tags": [
-          "profile"
-        ]
+        "tags": ["profile"]
       }
     },
     "/me/events": {
@@ -65,9 +63,7 @@
           }
         },
         "summary": "List calendar events",
-        "tags": [
-          "calendar"
-        ]
+        "tags": ["calendar"]
       }
     },
     "/me/mailFolders": {
@@ -90,9 +86,7 @@
           }
         },
         "summary": "List mail folders",
-        "tags": [
-          "mail"
-        ]
+        "tags": ["mail"]
       }
     },
     "/me/messages": {
@@ -147,9 +141,7 @@
           }
         },
         "summary": "List and search mail messages",
-        "tags": [
-          "mail"
-        ]
+        "tags": ["mail"]
       }
     },
     "/me/messages/{messageId}": {
@@ -181,9 +173,7 @@
           }
         },
         "summary": "Read one mail message",
-        "tags": [
-          "mail"
-        ]
+        "tags": ["mail"]
       }
     }
   },
