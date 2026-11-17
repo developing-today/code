@@ -620,6 +620,26 @@ def _broker_post(path, body):
     return data
 
 
+# Read failures from the most recent poll cycle, keyed (queue, status)
+# -> first-line error text (#8042). _fetch_rows still returns [] on a
+# failure — a queue that cannot be read contributes no candidates and
+# no stuck-bound rows, and the cap still fails closed via the session
+# reads, so a partial view can never cause a launch by itself — but the
+# failure is RECORDED here so main() can publish read_ok per queue and
+# a consumer never has to mistake an unread queue for an empty one.
+_READ_ERRORS = {}
+
+
+def queue_read_errors(queue):
+    """Recorded read errors for one queue from the latest poll cycle:
+    {status: error text}; empty when every read for the queue succeeded."""
+    return {
+        status: err
+        for (q, status), err in _READ_ERRORS.items()
+        if q == queue
+    }
+
+
 def _fetch_rows(queue, status):
     """Rows of one status for one queue from the broker's rich /list.
     The repo-queue binary's list verb prints a human table, and
@@ -628,7 +648,8 @@ def _fetch_rows(queue, status):
     (#7325/#7375). Returns [] with a warning on any failure: a queue
     that cannot be read contributes no candidates and no stuck-bound
     rows, and the cap still fails closed via the session reads, so a
-    partial view can never cause a launch by itself."""
+    partial view can never cause a launch by itself. The failure is
+    also recorded in _READ_ERRORS (#8042)."""
     try:
         data = _broker_post(
             "/list",
@@ -641,10 +662,12 @@ def _fetch_rows(queue, status):
         )
     except Exception as e:
         print(f"Warning: Could not poll queue {queue}: {e}", file=sys.stderr)
+        _READ_ERRORS[(queue, status)] = str(e)[:200]
         return []
     if isinstance(data, dict):
         data = data.get("rows") or []
     if not isinstance(data, list):
+        _READ_ERRORS[(queue, status)] = "unexpected broker response shape"
         return []
     rows = []
     for row in data:
@@ -866,6 +889,7 @@ def main():
         for s in sessions:
             if isinstance(s, dict) and s.get("id"):
                 session_by_id[s["id"]] = s
+    _READ_ERRORS.clear()
     out = {"queues": {}, "candidates": [], "stuck_bound": [], "stale_binding": []}
     # Fetch every queue's rows first so the lane ledger is read ONCE
     # for the whole poll (#5508): candidate-shaped rows from claimed
@@ -900,12 +924,18 @@ def main():
             )
             for r in get_stuck_bound(rows, session_by_id, active_ids, now_ms)
         ]
+        read_errors = queue_read_errors(q)
         out["queues"][q] = {
             "claimed": len(rows),
             "handed_off": len(handed_off_rows),
             "candidates": cands,
             "stuck_bound": stuck,
             "stale_binding": stale,
+            # #8042: a queue whose broker read failed is UNKNOWN, not
+            # empty — consumers (claimant gate_step) must not conclude
+            # "no candidates" from its empty lists.
+            "read_ok": not read_errors,
+            "read_errors": read_errors,
         }
         out["candidates"].extend(cands)
         out["stuck_bound"].extend(stuck)

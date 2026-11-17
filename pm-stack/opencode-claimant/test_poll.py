@@ -921,5 +921,39 @@ class TestStaleBinding(unittest.TestCase):
             run.assert_not_called()
 
 
+class TestFetchRowsReadErrors(unittest.TestCase):
+    """#8042: a failed broker read must be distinguishable from an
+    empty queue — _fetch_rows still returns [] (fail-closed for
+    launches) but records the failure for queue_read_errors."""
+
+    def setUp(self):
+        poll._READ_ERRORS.clear()
+
+    def test_broker_failure_records_read_error(self):
+        with patch.object(
+            poll, "_broker_post", side_effect=RuntimeError("broker down: HTTP 503")
+        ):
+            rows = poll._fetch_rows("repo-health-code-pilot", "claimed")
+        self.assertEqual(rows, [])
+        errors = poll.queue_read_errors("repo-health-code-pilot")
+        self.assertIn("claimed", errors)
+        self.assertIn("broker down", errors["claimed"])
+        self.assertEqual(poll.queue_read_errors("other-queue"), {})
+
+    def test_successful_read_records_no_error(self):
+        with patch.object(
+            poll, "_broker_post", return_value={"rows": []}
+        ):
+            rows = poll._fetch_rows("repo-health-code-pilot", "handed_off")
+        self.assertEqual(rows, [])
+        self.assertEqual(poll.queue_read_errors("repo-health-code-pilot"), {})
+
+    def test_unexpected_shape_records_read_error(self):
+        with patch.object(poll, "_broker_post", return_value=42):
+            rows = poll._fetch_rows("repo-health-code-pilot", "claimed")
+        self.assertEqual(rows, [])
+        self.assertIn("claimed", poll.queue_read_errors("repo-health-code-pilot"))
+
+
 if __name__ == "__main__":
     unittest.main()
