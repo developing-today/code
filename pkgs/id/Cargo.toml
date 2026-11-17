@@ -167,7 +167,7 @@ argon2 = "0.6"
 chacha20poly1305 = "0.10"
 zeroize = "1"
 rpassword = "7"
-base64 = "0.22"
+base64 = "0.23"
 blake3 = "1"
 # Turso/libsql HTTP adapter v1 (#7577, decision record #5806): raw HTTP
 # pipeline client in src/foreign_libsql.rs. rustls, tokio-rustls and
@@ -236,7 +236,7 @@ crypto_secretbox = "0.1"
 # Reads the vector's msgpack byte strings (P6.1 known-answer test). Dev only; already in the lock.
 serde_bytes = "0.11"
 # Decodes the Keybase vector constants as published (P6.1 known-answer test). Dev only; already in the lock.
-base64 = "0.22"
+base64 = "0.23"
 
 # The DHT testnet test needs the `dht` feature (P7.3).
 [[test]]

@@ -21,7 +21,7 @@ sandbox = ["id-worlds/sandbox"]
 
 [dependencies]
 anyhow = "1"
-base64 = "0.22"
+base64 = "0.23"
 ed25519-dalek = { version = "3", features = ["rand_core"] }
 id-caps = { path = "../id-caps", default-features = false }
 id-core = { path = "../id-core", default-features = false, features = [

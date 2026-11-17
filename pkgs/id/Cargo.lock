@@ -4615,7 +4615,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "argon2",
- "base64 0.22.1",
+ "base64 0.23.1",
  "blake3",
  "cbor-core",
  "chacha20poly1305",
@@ -4786,7 +4786,7 @@ name = "id-directory"
 version = "0.1.0"
 dependencies = [
  "anyhow",
- "base64 0.22.1",
+ "base64 0.23.1",
  "crypto_secretbox",
  "ed25519-dalek 3.0.0",
  "hmac 0.13.0",
@@ -4958,7 +4958,7 @@ dependencies = [
  "aes-gcm 0.11.1",
  "anyhow",
  "axum",
- "base64 0.22.1",
+ "base64 0.23.1",
  "comrak",
  "ed25519-dalek 3.0.0",
  "futures",
