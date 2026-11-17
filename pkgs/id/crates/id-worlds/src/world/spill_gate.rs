@@ -37,7 +37,7 @@
 //! the spilled copy is an input here: both prove authorship and
 //! confidentiality, never locality (design §3, §6).
 
-use id_core::residency::{evaluate, Decision, DenyReason, EvidenceVerifier, Hop, Scope};
+use id_core::residency::{Decision, DenyReason, EvidenceVerifier, Hop, Scope, evaluate};
 
 use super::{LeaseRejectionReason, WriteLease};
 
@@ -288,10 +288,12 @@ mod tests {
             SpillDeny::Residency(v) if v.contains(&DenyReason::PlaneUnknown(Plane::Processing))
         )));
         let sent: RefCell<Vec<Vec<u8>>> = RefCell::new(Vec::new());
-        assert!(dispatch_spill(&decision, b"journal-copy", |copy| {
-            sent.borrow_mut().push(copy.to_vec());
-        })
-        .is_err());
+        assert!(
+            dispatch_spill(&decision, b"journal-copy", |copy| {
+                sent.borrow_mut().push(copy.to_vec());
+            })
+            .is_err()
+        );
         assert!(sent.borrow().is_empty(), "no copy may cross on denial");
     }
 
@@ -308,10 +310,12 @@ mod tests {
             SpillDeny::Residency(v) if v.contains(&DenyReason::Expired(Plane::Processing))
         )));
         let sent: RefCell<Vec<Vec<u8>>> = RefCell::new(Vec::new());
-        assert!(dispatch_spill(&decision, b"journal-copy", |copy| {
-            sent.borrow_mut().push(copy.to_vec());
-        })
-        .is_err());
+        assert!(
+            dispatch_spill(&decision, b"journal-copy", |copy| {
+                sent.borrow_mut().push(copy.to_vec());
+            })
+            .is_err()
+        );
         assert!(sent.borrow().is_empty());
     }
 
@@ -327,10 +331,12 @@ mod tests {
             SpillDecision::Deny(vec![SpillDeny::Lease(LeaseRejectionReason::NotHolder)])
         );
         let sent: RefCell<Vec<Vec<u8>>> = RefCell::new(Vec::new());
-        assert!(dispatch_spill(&decision, b"journal-copy", |copy| {
-            sent.borrow_mut().push(copy.to_vec());
-        })
-        .is_err());
+        assert!(
+            dispatch_spill(&decision, b"journal-copy", |copy| {
+                sent.borrow_mut().push(copy.to_vec());
+            })
+            .is_err()
+        );
         assert!(sent.borrow().is_empty());
     }
 

@@ -28,12 +28,12 @@ use redb::{ReadableDatabase, ReadableTable};
 
 use super::resolve::{self, author_of};
 use super::{
-    corrupt, decode_stored, EventStore, StoreError, ACTIONS, APPLIED, DEVICE_OPS, EVENTS, FORKS,
-    PROOF_HEADERS,
+    ACTIONS, APPLIED, DEVICE_OPS, EVENTS, EventStore, FORKS, PROOF_HEADERS, StoreError, corrupt,
+    decode_stored,
 };
 use crate::groups::{Projection, Role as GroupRole};
 use id_core::waiting::AuthorKey;
-use id_store::documents::{DocumentRecord, DOCUMENT_KIND, REMOVAL_KIND};
+use id_store::documents::{DOCUMENT_KIND, DocumentRecord, REMOVAL_KIND};
 
 /// Whether a removal signed by `signer` is effective against a document whose author is
 /// `author` and whose `document.put` names `group` (`None` when it names none): the author
