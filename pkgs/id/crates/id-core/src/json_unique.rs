@@ -56,6 +56,7 @@
 
 use serde::Deserialize;
 use serde::de::{self, MapAccess, SeqAccess, Visitor};
+use std::collections::HashSet;
 use std::fmt;
 
 /// Parse one JSON value from bytes while refusing repeated object keys at
