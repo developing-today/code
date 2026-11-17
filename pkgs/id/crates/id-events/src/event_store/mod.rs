@@ -458,7 +458,7 @@ impl EventStore {
         if recovery_incomplete {
             tracing::warn!(
                 recovered,
-                "device-operation recovery may be incomplete: some committed event bodies were not retained"
+                "device-operation recovery may be incomplete: some stored or held group-event bodies were unavailable"
             );
         }
         let mut store = Self {
