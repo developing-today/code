@@ -2262,6 +2262,29 @@ mod tests {
             );
         }
     }
+
+    /// Guard for #9578: proptest's default SourceParallel persistence
+    /// resolves this test's regression seeds to the artifact.txt file in
+    /// the proptest-regressions directory beside this crate (it walks up
+    /// from the test's source file to the directory holding lib.rs).
+    /// Before the crate split the seed lived at the pkgs/id root
+    /// proptest-regressions directory and was silently never read. Keep a
+    /// real seed at the resolved path so a future move cannot orphan it
+    /// again unnoticed.
+    #[test]
+    fn paging_regression_seed_sits_where_proptest_reads_it() {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("proptest-regressions")
+            .join("artifact.txt");
+        let contents = std::fs::read_to_string(&path).unwrap_or_else(|error| {
+            panic!("proptest regression seed missing at {}: {error}", path.display())
+        });
+        assert!(
+            contents.lines().any(|line| line.starts_with("cc ")),
+            "no saved seed line in {}",
+            path.display()
+        );
+    }
     async fn endpoint() -> Endpoint {
         Endpoint::builder(presets::Minimal)
             .relay_mode(RelayMode::Disabled)
