@@ -1,74 +1,83 @@
-use anyhow::result;
-use iroh::endpoint::{endpoint, secretkey};
-use iroh_gossip::net::gossip;
-use distributed_topic_tracker::{autodiscoverygossip, recordpublisher, topicid, secretrotation, rotationhandle};
-use ed25519_dalek::signingkey;
-use futures_lite::streamext;
+use anyhow::Result;
+use distributed_topic_tracker::{
+    AutoDiscoveryGossip, RecordPublisher, RotationHandle, SecretRotation, TopicId,
+};
+use ed25519_dalek::SigningKey;
+use iroh::{Endpoint, SecretKey};
+use iroh_gossip::{api::Event, net::Gossip};
 
-struct mysecretrotation;
+struct MySecretRotation;
 
-impl secretrotation for mysecretrotation {
-    fn derive(&self, topic_hash: [u8; 32], unix_minute: u64, initial_secret_hash: [u8; 32]) -> [u8; 32] {
-        use sha2::{sha512, digest::digest;
-        let mut hash = sha512::new();
-        hash.update(topic_hash);
-        hash.update(unix_minute.to_be_bytes());
-        hash.update(initial_secret_hash);
-        hash.update(b"rotate");
-        hash.finalize()[..32].try_into().expect("hash")
+impl SecretRotation for MySecretRotation {
+    fn derive(
+        &self,
+        topic_hash: [u8; 32],
+        unix_minute: u64,
+        initial_secret_hash: [u8; 32],
+    ) -> [u8; 32] {
+        dht_rotation::derive(topic_hash, unix_minute, initial_secret_hash)
     }
 }
 
 #[tokio::main]
-async fn main() -> result<()> {
+async fn main() -> Result<()> {
     tracing_subscriber::fmt()
         .with_thread_ids(true)
         .with_ansi(true)
-        .with_env_filter(tracing_subscriber::envfilter::try_from_default_env()
-            .unwrap_or_else(|_| "distributed_topic_tracker=info".parse().unwrap()))
+        .with_env_filter(
+            tracing_subscriber::EnvFilter::try_from_default_env()
+                .unwrap_or_else(|_| "distributed_topic_tracker=info".parse().unwrap()),
+        )
         .init();
 
-    let secret_key = secretkey::generate(&mut rand::rng());
-    let signing_key = signingkey::from_bytes(&secret_key.to_bytes());
+    let secret_key = SecretKey::generate(&mut rand::rng());
+    let signing_key = SigningKey::from_bytes(&secret_key.to_bytes());
 
-    let endpoint = endpoint::builder()
+    let endpoint = Endpoint::builder()
         .secret_key(secret_key.clone())
-        .bind().await?;
+        .bind()
+        .await?;
 
-    let gossip = gossip::builder().spawn(endpoint.clone());
-    let _router = iroh::protocol::router::builder(endpoint.clone())
-        .accept(iroh_gossip::alpn, gossip.clone())
+    let gossip = Gossip::builder().spawn(endpoint.clone());
+    let _router = iroh::protocol::Router::builder(endpoint.clone())
+        .accept(iroh_gossip::ALPN, gossip.clone())
         .spawn();
 
-    let topic_id = topicid::new("my-iroh-gossip-topic".to_string());
+    let topic_id = TopicId::new("my-iroh-gossip-topic".to_string());
     let initial_secret = b"my-initial-secret".to_vec();
 
-    let record_publisher = recordpublisher::new(
+    let record_publisher = RecordPublisher::new(
         topic_id.clone(),
         signing_key.verifying_key(),
         signing_key.clone(),
-        Some(rotationhandle::new(mysecretrotation)),
+        Some(RotationHandle::new(MySecretRotation)),
         initial_secret,
     );
 
-    let (gossip_sender, mut gossip_receiver) = gossip
-        .subscribe_and_join_with_auto_discovery(record_publisher).await?
-        .split()?;
+    let (gossip_sender, gossip_receiver) = gossip
+        .subscribe_and_join_with_auto_discovery(record_publisher)
+        .await?
+        .split()
+        .await?;
 
-    println!("joined topic: {}", &topic_id);
-    println!("node id: {}", &endpoint.node_id().to_string()[..8]);
+    println!("joined topic: {}", topic_id.raw());
+    let node_id = endpoint.id().to_string();
+    println!("node id: {}", &node_id[..8]);
 
     tokio::spawn(async move {
         while let Some(event) = gossip_receiver.next().await {
             match event {
-                Ok(gossip::event::Event::Received(msg)) => {
-                    println!("\n{}: {}", &msg.delivered_from.to_string()[..8],
-                        String::from_utf8_lossy(&msg.content));
+                Ok(Event::Received(msg)) => {
+                    println!(
+                        "\n{}: {}",
+                        &msg.delivered_from.to_string()[..8],
+                        String::from_utf8_lossy(&msg.content)
+                    );
                 }
-                Ok(gossip::event::Event::NeighborUp(peer)) => {
+                Ok(Event::NeighborUp(peer)) => {
                     println!("\njoined: {}", &peer.to_string()[..8]);
                 }
-                Ok(gossip::event::Event::NeighborDown(peer)) => {
+                Ok(Event::NeighborDown(peer)) => {
                     println!("\nleft: {}", &peer.to_string()[..8]);
                 }
                 _ => {}

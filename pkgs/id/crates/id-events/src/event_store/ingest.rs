@@ -130,6 +130,64 @@ enum Decision {
 }
 
 impl EventStore {
+    /// Rebuilds device-operation rows from retained bodies when opening an older store.
+    /// Bodies that were never retained cannot be recovered; the caller reports that limit.
+    pub(super) fn recover_device_ops(txn: &WriteTransaction) -> Result<(usize, bool), StoreError> {
+        let mut meta = txn.open_table(super::META)?;
+        if meta.get(super::DEVICE_OPS_RECOVERED_KEY)?.is_some() {
+            return Ok((0, false));
+        }
+        let (events, waiting) = {
+            let bodies = txn.open_table(super::BODIES)?;
+            let stored = txn
+                .open_table(EVENTS)?
+                .iter()?
+                .map(|row| {
+                    let (_position, bytes) = row.map_err(StoreError::from)?;
+                    decode_stored(bytes.value())
+                })
+                .collect::<Result<Vec<_>, StoreError>>()?;
+            let waiting = super::waiting_rows::all(txn)?
+                .into_iter()
+                .map(|row| chain::decode(&row.bytes).map_err(|err| corrupt(err.to_string())))
+                .collect::<Result<Vec<_>, StoreError>>()?;
+            (stored, (bodies, waiting))
+        };
+        let mut recovered = Vec::new();
+        let (bodies, waiting) = waiting;
+        let mut incomplete = false;
+        for event in events.into_iter().chain(waiting) {
+            let has_device_op = {
+                txn.open_table(DEVICE_OPS)?
+                    .get(event.id.as_bytes().as_slice())?
+                    .is_some()
+            };
+            if has_device_op {
+                continue;
+            }
+            let body = bodies.get(event.id.as_bytes().as_slice())?;
+            let Some(body) = body else {
+                incomplete |= event.header.payload_hash.is_some()
+                    && event.header.extensions.kind == "group.event";
+                continue;
+            };
+            let body = body.value();
+            if committed(&event, body).is_err() {
+                continue;
+            }
+            if let Some(device) = body_device_op(&event, Some(body))
+                .map_err(|refusal| corrupt(format!("{refusal:?}")))?
+            {
+                recovered.push((event.id, device));
+            }
+        }
+        for (id, (op, group)) in &recovered {
+            store_device_op(txn, id, op, group.as_ref())?;
+        }
+        meta.insert(super::DEVICE_OPS_RECOVERED_KEY, b"1".as_slice())?;
+        Ok((recovered.len(), incomplete))
+    }
+
     /// Verifies one received event and applies what it allows.
     ///
     /// `now_ms` is the clock. The events due at it expire first, so the caps and the rivals
@@ -203,53 +261,13 @@ impl EventStore {
                 Err(refusal) => return Ok(Ingest::Refused(refusal)),
             }
         };
-        let device = if is_tag_kind(kind) || is_document_kind(kind) || is_removal_kind(kind) {
-            None
-        } else {
-            match body_device_op(&event, body) {
-                Ok(device) => device,
-                Err(refusal) => return Ok(Ingest::Refused(refusal)),
-            }
-        };
         let result = self.ingest_event(event, action.as_ref(), body, now_ms)?;
         if let Some(body) = retain_body
             && !matches!(result, Ingest::Refused(_))
         {
             self.record_writer_body(&event_id, body)?;
         }
-        if let Some((op, group)) = &device
-            && !matches!(result, Ingest::Refused(_))
-        {
-            self.record_device_op(&event_id, op, group.as_ref())?;
-        }
         Ok(result)
-    }
-
-    /// Records the device operation a verified `group.event` body carries, by event ID
-    /// (issue #5656). Written after the ingest decision, in its own transaction, like
-    /// [`EventStore::record_writer_body`]: the row is keyed by the event's ID and read
-    /// back only for events the store holds, so recording one for an event that is held
-    /// or later released is inert until the event is stored, and a duplicate delivery
-    /// simply rewrites the same row.
-    ///
-    /// # Errors
-    ///
-    /// Returns a redb error if the write fails, or [`StoreError::Corrupt`] if the op
-    /// does not encode.
-    fn record_device_op(
-        &self,
-        id: &Hash,
-        op: &crate::groups::DeviceOp,
-        group: Option<&Hash>,
-    ) -> Result<(), StoreError> {
-        let encoded = encode_device_op(op, group)?;
-        let txn = self.db.begin_write()?;
-        {
-            let mut device_ops = txn.open_table(DEVICE_OPS)?;
-            device_ops.insert(id.as_bytes().as_slice(), encoded.as_slice())?;
-        }
-        txn.commit()?;
-        Ok(())
     }
 
     /// Verifies one received event, which may be a group operation, and applies what it allows.
@@ -473,6 +491,10 @@ fn body_device_op(
     event: &Event,
     body: Option<&[u8]>,
 ) -> Result<Option<(crate::groups::DeviceOp, Option<Hash>)>, Refusal> {
+    let kind = &event.header.extensions.kind;
+    if is_tag_kind(kind) || is_document_kind(kind) || is_removal_kind(kind) {
+        return Ok(None);
+    }
     let Some(body) = body else {
         return Ok(None);
     };
@@ -627,8 +649,22 @@ fn ingest_in(
     let expired = m.expire(now)?;
     let id = event.id;
     let author = author_of(&event);
+    let device = match body_device_op(&event, body) {
+        Ok(device) => device,
+        Err(refusal) => return Ok((Staged::Ready(Ingest::Refused(refusal)), expired > 0)),
+    };
     let rivals = held_rivals(m.pool, &event);
-    let settled = settle(m, event, action, body, &rivals, now, false, labels)?;
+    let settled = settle(
+        m,
+        event,
+        action,
+        body,
+        device.as_ref(),
+        &rivals,
+        now,
+        false,
+        labels,
+    )?;
     let attached = matches!(settled, Settled::Duplicate { attached: true });
     let changed = expired > 0
         || attached
@@ -687,6 +723,7 @@ fn settle(
     event: Event,
     action: Option<&GroupAction<AuthId, ()>>,
     body: Option<&[u8]>,
+    device: Option<&(crate::groups::DeviceOp, Option<Hash>)>,
     rivals: &[Event],
     now: u64,
     from_pool: bool,
@@ -700,6 +737,9 @@ fn settle(
             }
             if let Some(body) = body {
                 store_body(m.txn, &id, body)?;
+            }
+            if let Some((op, group)) = device {
+                store_device_op(m.txn, &id, op, group.as_ref())?;
             }
             // In a store with no group state every stored event applies, so the label is known
             // now, whatever the batch does later. Otherwise the label waits for the resolution.
@@ -725,6 +765,11 @@ fn settle(
         }
         Decision::Duplicate => {
             drop_released(m, &event, from_pool)?;
+            let device_attached = is_stored(m.txn, &id)? && device.is_some();
+            if device_attached && let Some((op, group)) = device {
+                store_device_op(m.txn, &id, op, group.as_ref())?;
+                refresh(m.txn)?;
+            }
             // A body that arrives after its event was stored header-only is stored now:
             // the header commits to it by hash and size, so it is the author's body.
             // Storing it counts as attached, so the call commits: a duplicate that
@@ -737,7 +782,7 @@ fn settle(
                 }
             }
             Settled::Duplicate {
-                attached: attach_action(m.txn, &id, action)? || stored_body,
+                attached: attach_action(m.txn, &id, action)? || stored_body || device_attached,
             }
         }
         Decision::Fork { seq, proof } => {
@@ -771,6 +816,9 @@ fn settle(
                 if let Some(body) = body {
                     store_body(m.txn, &id, body)?;
                 }
+                if let Some((op, group)) = device {
+                    store_device_op(m.txn, &id, op, group.as_ref())?;
+                }
             }
             held(hold)
         }
@@ -783,11 +831,27 @@ fn settle(
                 if let Some(body) = body {
                     store_body(m.txn, &id, body)?;
                 }
+                if let Some((op, group)) = device {
+                    store_device_op(m.txn, &id, op, group.as_ref())?;
+                }
             }
             held(hold)
         }
     };
     Ok(settled)
+}
+
+/// Writes a verified device operation in the same transaction as its ingest decision.
+fn store_device_op(
+    txn: &WriteTransaction,
+    id: &Hash,
+    op: &crate::groups::DeviceOp,
+    group: Option<&Hash>,
+) -> Result<(), StoreError> {
+    let encoded = encode_device_op(op, group)?;
+    txn.open_table(DEVICE_OPS)?
+        .insert(id.as_bytes().as_slice(), encoded.as_slice())?;
+    Ok(())
 }
 
 /// The action of a held or stored group operation, from the actions table. A held event keeps
@@ -836,7 +900,17 @@ fn drain(
         let id = event.id;
         let rivals = held_rivals(m.pool, &event);
         let action = stored_action(m.txn, &id)?;
-        match settle(m, event, action.as_ref(), None, &rivals, now, true, labels)? {
+        match settle(
+            m,
+            event,
+            action.as_ref(),
+            None,
+            None,
+            &rivals,
+            now,
+            true,
+            labels,
+        )? {
             Settled::Stored { applied, released } => {
                 // A label that is not read yet keeps the event as a candidate. Its label decides
                 // whether it stays in the list, once the batch has resolved.
@@ -1218,9 +1292,12 @@ pub(super) fn present_in(
 mod tests {
     use super::*;
     use crate::event_store::waiting_rows::{self, Row};
+    use crate::groups::event::encode as encode_group_event;
+    use crate::groups::{Body as GroupBody, DeviceOp, Event as GroupEvent, Role as GroupRole};
     use id_core::rejection::Reason;
     use id_core::waiting::WaitingLimits;
     use id_store::chain::{ChainExt, sign};
+    use id_store::tag_claims::TagOp;
     use p2panda_core::SigningKey;
     use redb::ReadableDatabase;
 
@@ -1380,6 +1457,208 @@ mod tests {
             "{outcomes:?}"
         );
         assert_eq!(store.event_body(&event.id).unwrap(), body.as_slice());
+    }
+
+    fn device_grant(signer: &SigningKey) -> (Event, Vec<u8>) {
+        let group = Hash::digest(b"device-op recovery group");
+        let body = encode_group_event(&GroupEvent {
+            id: Hash::digest(b"device grant body id"),
+            author: *signer.verifying_key().as_bytes(),
+            after: vec![],
+            group: Some(group),
+            body: GroupBody::Device(DeviceOp::Add {
+                device: *key(91).verifying_key().as_bytes(),
+                scope: GroupRole::Admin,
+            }),
+        })
+        .unwrap();
+        let ext = ChainExt {
+            kind: "group.event".to_owned(),
+            group: Some(group),
+            after: vec![],
+            tag: None,
+            document: None,
+            removes: None,
+            note: None,
+            link: None,
+            checkpoint: None,
+            rotation: None,
+            chat: None,
+            anchor: None,
+        };
+        (sign(signer, 0, None, Some(&body), ext).unwrap(), body)
+    }
+
+    #[test]
+    fn test_batch_ingest_persists_device_operation_and_body_for_range_sync() {
+        let (_dir, mut store) = open();
+        let signer = key(90);
+        let (event, body) = device_grant(&signer);
+        let outcomes = store
+            .ingest_events_with_bodies(vec![(event.clone(), Some(body.clone()))], 0)
+            .unwrap();
+        assert!(
+            matches!(outcomes[0], Ingest::Accepted { .. }),
+            "{outcomes:?}"
+        );
+        assert!(store.stored_body(&event.id).unwrap().is_some());
+        let txn = store.db.begin_read().unwrap();
+        assert!(
+            txn.open_table(DEVICE_OPS)
+                .unwrap()
+                .get(event.id.as_bytes().as_slice())
+                .unwrap()
+                .is_some()
+        );
+    }
+
+    #[test]
+    fn test_batch_tag_event_body_does_not_become_a_device_operation() {
+        let (_dir, mut store) = open();
+        let signer = key(93);
+        let (_grant, body) = device_grant(&signer);
+        let event = sign(
+            &signer,
+            0,
+            None,
+            Some(&body),
+            ChainExt {
+                kind: "tag.set".to_owned(),
+                group: None,
+                after: vec![],
+                tag: Some(TagOp::Set {
+                    subject: Hash::digest(b"batch tag subject"),
+                    name: "name".to_owned(),
+                    value: Some("value".to_owned()),
+                }),
+                document: None,
+                removes: None,
+                note: None,
+                link: None,
+                checkpoint: None,
+                rotation: None,
+                chat: None,
+                anchor: None,
+            },
+        )
+        .unwrap();
+
+        let outcomes = store
+            .ingest_events_with_bodies(vec![(event.clone(), Some(body))], 0)
+            .unwrap();
+        assert!(
+            matches!(outcomes[0], Ingest::Accepted { .. }),
+            "{outcomes:?}"
+        );
+        let txn = store.db.begin_read().unwrap();
+        assert!(
+            txn.open_table(DEVICE_OPS)
+                .unwrap()
+                .get(event.id.as_bytes().as_slice())
+                .unwrap()
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn test_open_recovers_device_operation_from_a_retained_verified_body() {
+        let (dir, mut store) = open();
+        let signer = key(92);
+        let (event, body) = device_grant(&signer);
+        assert!(matches!(
+            store
+                .ingest_with_body(&event.bytes, Some(&body), 0)
+                .unwrap(),
+            Ingest::Accepted { .. }
+        ));
+        store
+            .write(|txn| {
+                txn.open_table(DEVICE_OPS)?
+                    .remove(event.id.as_bytes().as_slice())?;
+                txn.open_table(super::super::META)?
+                    .remove(super::super::DEVICE_OPS_RECOVERED_KEY)?;
+                Ok(())
+            })
+            .unwrap();
+        drop(store);
+
+        let store = EventStore::open(dir.path(), WaitingLimits::default(), 0).unwrap();
+        let txn = store.db.begin_read().unwrap();
+        assert!(
+            txn.open_table(DEVICE_OPS)
+                .unwrap()
+                .get(event.id.as_bytes().as_slice())
+                .unwrap()
+                .is_some()
+        );
+    }
+
+    #[test]
+    fn test_open_recovers_device_operation_for_a_held_event() {
+        let (dir, mut store) = open();
+        let signer = key(94);
+        let group = Hash::digest(b"held recovery group");
+        let body = encode_group_event(&GroupEvent {
+            id: Hash::digest(b"held recovery body id"),
+            author: *signer.verifying_key().as_bytes(),
+            after: vec![],
+            group: Some(group),
+            body: GroupBody::Device(DeviceOp::Add {
+                device: *key(95).verifying_key().as_bytes(),
+                scope: GroupRole::Admin,
+            }),
+        })
+        .unwrap();
+        let missing = Hash::digest(b"held recovery missing dependency");
+        let event = sign(
+            &signer,
+            0,
+            None,
+            Some(&body),
+            ChainExt {
+                kind: "group.event".to_owned(),
+                group: Some(group),
+                after: vec![missing],
+                tag: None,
+                document: None,
+                removes: None,
+                note: None,
+                link: None,
+                checkpoint: None,
+                rotation: None,
+                chat: None,
+                anchor: None,
+            },
+        )
+        .unwrap();
+        assert!(matches!(
+            store
+                .ingest_with_body(&event.bytes, Some(&body), 0)
+                .unwrap(),
+            Ingest::Waiting { .. }
+        ));
+        store
+            .write(|txn| {
+                txn.open_table(DEVICE_OPS)?
+                    .remove(event.id.as_bytes().as_slice())?;
+                txn.open_table(super::super::META)?
+                    .remove(super::super::DEVICE_OPS_RECOVERED_KEY)?;
+                Ok(())
+            })
+            .unwrap();
+        drop(store);
+
+        let store = EventStore::open(dir.path(), WaitingLimits::default(), 0).unwrap();
+        assert!(store.is_waiting(&event.id));
+        let txn = store.db.begin_read().unwrap();
+        assert!(
+            txn.open_table(DEVICE_OPS)
+                .unwrap()
+                .get(event.id.as_bytes().as_slice())
+                .unwrap()
+                .is_some(),
+            "held grant's retained body is recovered on upgrade"
+        );
     }
 
     fn ingest_all(store: &mut EventStore, events: &[Event]) {
@@ -2062,6 +2341,148 @@ mod tests {
         );
         assert!(store.event(&author(&signer), 1).unwrap().is_none());
         assert_eq!(store.waiting_len(), 0);
+    }
+
+    #[test]
+    fn test_expiring_a_held_event_removes_its_device_operation_row() {
+        let (_dir, mut store) = open_with(WaitingLimits::new(256, 1_000));
+        let signer = key(160);
+        let events = chain_of(&signer, 2);
+        assert_eq!(
+            ingest(&mut store, &events[1]),
+            Ingest::Waiting { id: events[1].id }
+        );
+        store
+            .write(|txn| {
+                txn.open_table(DEVICE_OPS)?
+                    .insert(events[1].id.as_bytes().as_slice(), b"test op".as_slice())?;
+                Ok(())
+            })
+            .unwrap();
+
+        assert_eq!(store.expire_waiting(1_000).unwrap(), 1);
+        let txn = store.db.begin_read().unwrap();
+        assert!(
+            txn.open_table(DEVICE_OPS)
+                .unwrap()
+                .get(events[1].id.as_bytes().as_slice())
+                .unwrap()
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn test_a_held_device_operation_is_written_with_its_event_and_kept_when_released() {
+        let (_dir, mut store) = open_with(WaitingLimits::new(256, WEEK_MS));
+        let signer = key(96);
+        let group = Hash::digest(b"released device group");
+        let body = encode_group_event(&GroupEvent {
+            id: Hash::digest(b"released device body id"),
+            author: *signer.verifying_key().as_bytes(),
+            after: vec![],
+            group: Some(group),
+            body: GroupBody::Device(DeviceOp::Add {
+                device: *key(98).verifying_key().as_bytes(),
+                scope: GroupRole::Admin,
+            }),
+        })
+        .unwrap();
+        // The dependency the device event waits for: a plain event it does not have.
+        let dependency = event(&key(97), 0, None, Vec::new(), "message");
+        let device = sign(
+            &signer,
+            0,
+            None,
+            Some(&body),
+            ChainExt {
+                kind: "group.event".to_owned(),
+                group: Some(group),
+                after: vec![dependency.id],
+                tag: None,
+                document: None,
+                removes: None,
+                note: None,
+                link: None,
+                checkpoint: None,
+                rotation: None,
+                chat: None,
+                anchor: None,
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            store
+                .ingest_with_body(&device.bytes, Some(&body), 0)
+                .unwrap(),
+            Ingest::Waiting { id: device.id }
+        );
+        // The waiting path writes the operation in the ingest transaction, not on release.
+        {
+            let txn = store.db.begin_read().unwrap();
+            assert!(
+                txn.open_table(DEVICE_OPS)
+                    .unwrap()
+                    .get(device.id.as_bytes().as_slice())
+                    .unwrap()
+                    .is_some(),
+                "a held device operation is written with its event"
+            );
+        }
+
+        // The dependency arrives, releasing the held event, which is stored.
+        assert!(matches!(
+            store.ingest(&dependency.bytes, 0).unwrap(),
+            Ingest::Accepted { .. }
+        ));
+        assert!(store.event(&author(&signer), 0).unwrap().is_some());
+        let txn = store.db.begin_read().unwrap();
+        assert!(
+            txn.open_table(DEVICE_OPS)
+                .unwrap()
+                .get(device.id.as_bytes().as_slice())
+                .unwrap()
+                .is_some(),
+            "a released event keeps the operation it was held with"
+        );
+    }
+
+    #[test]
+    fn test_a_device_operation_body_on_a_duplicate_attaches_in_the_same_transaction() {
+        let (_dir, mut store) = open();
+        let signer = key(99);
+        let (event, body) = device_grant(&signer);
+        // The header arrives alone first, as an older sync path would deliver it.
+        assert!(matches!(
+            store.ingest_with_body(&event.bytes, None, 0).unwrap(),
+            Ingest::Accepted { .. }
+        ));
+        {
+            let txn = store.db.begin_read().unwrap();
+            assert!(
+                txn.open_table(DEVICE_OPS)
+                    .unwrap()
+                    .get(event.id.as_bytes().as_slice())
+                    .unwrap()
+                    .is_none()
+            );
+        }
+
+        // The body follows on the duplicate path, and its operation is written there.
+        assert_eq!(
+            store
+                .ingest_with_body(&event.bytes, Some(&body), 0)
+                .unwrap(),
+            Ingest::Duplicate { id: event.id }
+        );
+        let txn = store.db.begin_read().unwrap();
+        assert!(
+            txn.open_table(DEVICE_OPS)
+                .unwrap()
+                .get(event.id.as_bytes().as_slice())
+                .unwrap()
+                .is_some(),
+            "a duplicate carrying the body writes its device operation"
+        );
     }
 
     #[test]
@@ -2881,6 +3302,15 @@ mod tests {
                 store.ingest(&events[1].bytes, 0).unwrap(),
                 Ingest::Waiting { id: events[1].id }
             );
+            store
+                .write(|txn| {
+                    txn.open_table(DEVICE_OPS)?.insert(
+                        events[1].id.as_bytes().as_slice(),
+                        b"legacy device op".as_slice(),
+                    )?;
+                    Ok(())
+                })
+                .unwrap();
         }
         // Not due yet: the event has waited 999 ms.
         let store = reopen(&dir, limits, 999);
@@ -2890,6 +3320,15 @@ mod tests {
         let store = reopen(&dir, limits, 1_000);
         assert_eq!(store.waiting_len(), 0);
         assert!(store.waiting_ids().unwrap().is_empty());
+        let txn = store.db.begin_read().unwrap();
+        assert!(
+            txn.open_table(DEVICE_OPS)
+                .unwrap()
+                .get(events[1].id.as_bytes().as_slice())
+                .unwrap()
+                .is_none(),
+            "reload expiry removes the matching device-op row"
+        );
         store.check_invariants().unwrap();
         drop(store);
         let store = reopen(&dir, limits, 1_000);

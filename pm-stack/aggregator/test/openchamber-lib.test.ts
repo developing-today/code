@@ -20,8 +20,12 @@ async function makeLib({ missingExport, brokenDependencyExport }: FixtureOptions
   await mkdir(join(dir, "quota/providers"), { recursive: true });
   await writeFile(join(dir, "quota/index.js"), "export {};\n");
 
-  const credentialExports = ["readManagedCredential", "writeManagedCredential"].filter((name) => name !== missingExport);
-  const imports = brokenDependencyExport ? `import { ${brokenDependencyExport} } from "./auth.js";\nvoid ${brokenDependencyExport};\n` : "";
+  const credentialExports = ["readManagedCredential", "writeManagedCredential"].filter(
+    (name) => name !== missingExport,
+  );
+  const imports = brokenDependencyExport
+    ? `import { ${brokenDependencyExport} } from "./auth.js";\nvoid ${brokenDependencyExport};\n`
+    : "";
   await writeFile(
     join(dir, "quota/credentials/providers.js"),
     `${imports}${credentialExports.map((name) => `export function ${name}() { return null; }`).join("\n")}\n`,
@@ -61,10 +65,7 @@ describe("resolveLibDir (candidate gate: git state, no imports)", () => {
     const messages: string[] = [];
 
     const resolved = await resolveLibDir([dirty.dir, clean.dir], {
-      gitRun: fakeGit([
-        { ...dirty, changes: "?? untracked.txt" },
-        clean,
-      ]),
+      gitRun: fakeGit([{ ...dirty, changes: "?? untracked.txt" }, clean]),
       log: (message) => messages.push(message),
     });
 
@@ -85,7 +86,9 @@ describe("resolveLibDir (candidate gate: git state, no imports)", () => {
     });
 
     expect(resolved.dir).toBe(clean.dir);
-    expect(messages.some((message) => message.includes(`${offMain.dir}: checkout is on branch queue/8357-224, not main`))).toBe(true);
+    expect(
+      messages.some((message) => message.includes(`${offMain.dir}: checkout is on branch queue/8357-224, not main`)),
+    ).toBe(true);
   });
 
   test("rejects a detached HEAD", async () => {
@@ -143,6 +146,8 @@ describe("loadOpenChamberLib (export check, after dependency install)", () => {
   test("names a missing export imported by the required module", async () => {
     const incomplete = await makeLib({ brokenDependencyExport: "openCodeLocalCredentialSource" });
     const resolved = await resolveLibDir([incomplete.dir], { gitRun: fakeGit([incomplete]), log: () => {} });
-    await expect(loadOpenChamberLib(resolved)).rejects.toThrow('missing required export "openCodeLocalCredentialSource"');
+    await expect(loadOpenChamberLib(resolved)).rejects.toThrow(
+      'missing required export "openCodeLocalCredentialSource"',
+    );
   });
 });

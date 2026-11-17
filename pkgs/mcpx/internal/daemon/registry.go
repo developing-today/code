@@ -28,6 +28,7 @@ import (
 	"github.com/developing-today/code/pkgs/mcpx/internal/events"
 	"github.com/developing-today/code/pkgs/mcpx/internal/logstore"
 	"github.com/developing-today/code/pkgs/mcpx/internal/mcpclient"
+	"github.com/developing-today/code/pkgs/mcpx/internal/mcpserver"
 	"github.com/developing-today/code/pkgs/mcpx/internal/nearmiss"
 	"github.com/developing-today/code/pkgs/mcpx/internal/policy"
 	"github.com/developing-today/code/pkgs/mcpx/internal/pool"
@@ -2710,10 +2711,38 @@ func (r *Registry) callWithLedger(ctx context.Context, p *pool.Pool, server, too
 	// block later writes. declaredReadOnly reads the requested server's
 	// view -- the same name this call was made under.
 	readOnly := toolReadOnly(p, tool) || r.declaredReadOnly(server, tool)
-	if err != nil && dispatched.Load() && !readOnly && r.writeLedger != nil && !mcpclient.IsConclusiveUpstreamError(err) {
+	if err != nil && dispatched.Load() && !readOnly && r.writeLedger != nil && !mcpclient.IsConclusiveUpstreamError(err) && !r.taskCancelled(ctx) {
 		return nil, r.recordUnknownOutcome(p, server, tool, args, surface)
 	}
 	return result, err
+}
+
+// taskCancelled reports whether this call is a task's inner call whose
+// task context was cancelled (#8922). A tasks/cancel is a protocol-level
+// disposition owned by the task store: the task's status becomes
+// cancelled, visible to the client that cancelled it, so the outcome is
+// accounted for -- not unknown. Recording it poisoned the server: the
+// conformance suite cancels the task it just created as cleanup, the
+// in-flight upstream call aborted with the cancellation, and every
+// later non-read-only call to that server was refused as an unknown
+// write. A task call that fails while its context is still live (a
+// genuine transport failure) still records, exactly as before. The mark
+// reaches this check three ways: directly, for the in-process surfaces
+// (mcpserver.WithinTask); restored from the X-Mcpx-Task-Execution
+// header for calls that crossed the daemon API, where context values do
+// not travel (mcpclient.TaskExecutionFrom); and, for an interruptible
+// (ask) call, through the ask table -- an asked call starts before its
+// task exists, so the flag can only be set retroactively, when the
+// task's cancellation abandons the ask (Registry.markAskTaskCancelled).
+func (r *Registry) taskCancelled(ctx context.Context) bool {
+	if ctx.Err() == nil {
+		return false
+	}
+	if mcpserver.WithinTask(ctx) || mcpclient.TaskExecutionFrom(ctx) {
+		return true
+	}
+	id, _ := ctx.Value(askCallKey{}).(string)
+	return r.askTaskCancelled(id)
 }
 
 // ledgerLookupFor finds an unknown-outcome block affecting server, across
