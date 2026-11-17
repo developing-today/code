@@ -4289,6 +4289,50 @@ mod tests {
         );
     }
 
+    /// #5873 section 3 / #7616 acceptance: the flow verbs reach every surface
+    /// through the same shared parser, so the SSH command mode sees exactly
+    /// the actions the parser produced — and none of them is emitted as a
+    /// chat message or a shell frame the world program cannot mean.
+    #[test]
+    fn the_flow_verbs_map_identically_on_the_ssh_surface() {
+        use crate::world_line::parse_line;
+        for line in [
+            "/anchor id://abc",
+            "/anchor id://abc anchored-to-part",
+            "/anchor confirm 2",
+            "/anchor list",
+            "/talk id://abc",
+            "/anchors the design doc",
+            "/resolve thread-9",
+            "/resolve thread-9 into id://abc",
+            "/queue",
+            "/flush",
+        ] {
+            let command = world_command(line).unwrap_or_else(|| panic!("{line}: no command"));
+            // The surface is a faithful mirror of the shared parse.
+            let expected = match parse_line(line).unwrap() {
+                crate::world_line::WorldLine::Anchor { target, relation } => {
+                    WorldCommand::Anchor { target, relation }
+                }
+                crate::world_line::WorldLine::AnchorConfirm { proposal } => {
+                    WorldCommand::AnchorConfirm { proposal }
+                }
+                crate::world_line::WorldLine::AnchorList => WorldCommand::AnchorList,
+                crate::world_line::WorldLine::Talk { target } => WorldCommand::Talk { target },
+                crate::world_line::WorldLine::Anchors { target } => WorldCommand::Anchors { target },
+                crate::world_line::WorldLine::Resolve { thread, into } => {
+                    WorldCommand::Resolve { thread, into }
+                }
+                crate::world_line::WorldLine::Queue => WorldCommand::Queue,
+                crate::world_line::WorldLine::Flush => WorldCommand::Flush,
+                other => panic!("{line}: parser produced {other:?}"),
+            };
+            assert_eq!(command, expected, "{line}");
+            // And no flow verb is forwarded to the world program as a frame.
+            assert_eq!(command_frame(&command, "cap"), None, "{line}");
+        }
+    }
+
     #[test]
     fn world_line_buffer_discards_overlong_line_until_newline() {
         let mut input = WorldLineBuffer::default();

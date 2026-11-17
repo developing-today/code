@@ -2506,6 +2506,29 @@ mod tests {
                 "{line}"
             );
         }
+        // #7616 / #5873 section 3: the flow verbs are recognised on the pump
+        // too, and they answer locally rather than sending a frame the host
+        // cannot mean — identical grammar, surface-appropriate answer.
+        for line in [
+            "/anchor id://abc",
+            "/anchor id://abc about",
+            "/anchor confirm 1",
+            "/anchor list",
+            "/talk id://abc",
+            "/anchors the design doc",
+            "/resolve thread-9",
+            "/resolve thread-9 into id://abc",
+            "/queue",
+            "/flush",
+        ] {
+            assert!(
+                matches!(
+                    pump_command(line, "cap"),
+                    PumpLine::Say { level: "error", .. }
+                ),
+                "{line}"
+            );
+        }
         assert_eq!(pump_command("/quit", "cap"), PumpLine::Quit);
     }
 
