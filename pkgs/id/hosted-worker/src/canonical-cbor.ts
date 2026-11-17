@@ -76,7 +76,9 @@ function isKey(value: CborValue): boolean {
   return value.kind === "text" || value.kind === "uint" || value.kind === "int";
 }
 
-function encodeInto(value: CborValue, out: number[]): void {
+function encodeInto(value: CborValue, out: number[], depth: number): void {
+  // #11315: refuse what decodeCanonical would refuse, and bound recursion.
+  if (depth > MAX_NESTING_DEPTH) throw new CborError("TooDeeplyNested");
   switch (value.kind) {
     case "null":
       out.push(0xf6);
@@ -102,14 +104,14 @@ function encodeInto(value: CborValue, out: number[]): void {
     }
     case "array":
       encodeArgument(4, BigInt(value.value.length), out);
-      for (const item of value.value) encodeInto(item, out);
+      for (const item of value.value) encodeInto(item, out, depth + 1);
       return;
     case "map": {
       const encoded: { keyBytes: Uint8Array; val: CborValue }[] = [];
       for (const [key, val] of value.value) {
         if (!isKey(key)) throw new CborError("InvalidMapKey");
         const keyOut: number[] = [];
-        encodeInto(key, keyOut);
+        encodeInto(key, keyOut, depth + 1);
         const keyBytes = new Uint8Array(keyOut);
         if (encoded.some((e) => compareBytes(e.keyBytes, keyBytes) === 0)) {
           throw new CborError("DuplicateKey");
@@ -120,7 +122,7 @@ function encodeInto(value: CborValue, out: number[]): void {
       encodeArgument(5, BigInt(encoded.length), out);
       for (const { keyBytes, val } of encoded) {
         out.push(...keyBytes);
-        encodeInto(val, out);
+        encodeInto(val, out, depth + 1);
       }
       return;
     }
@@ -130,7 +132,7 @@ function encodeInto(value: CborValue, out: number[]): void {
 /** Encode a value in the canonical profile. */
 export function encodeCanonical(value: CborValue): Uint8Array {
   const out: number[] = [];
-  encodeInto(value, out);
+  encodeInto(value, out, 0);
   return new Uint8Array(out);
 }
 
