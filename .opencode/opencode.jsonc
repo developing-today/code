@@ -3662,14 +3662,16 @@
         // NEW 2026-11-14 (Drew, Zen pass): Recursive's Flint 40B coding
         // model, free on Zen. No AA listing (vendor-claimed SWE-bench
         // only). Seated in background as a coding-leaning free leg.
-        "targets": [
-          "zen-plans/flint-40b-free"
-        ],
+        // 2026-11-16 (Drew, direct order — pool-composition run 42,
+        // R35): the plan's only leaf (zen-plans/flint-40b-free) is
+        // REMOVED — 0 successes in 57 attempts this window across all
+        // three Zen workspaces (dt0 0/34, drewrypope 0/12, popesdrew
+        // 0/11), and the dt0 leg is 0/80 cumulative across windows.
+        // The plan definition stays, emptied, ready to re-seat on a
+        // live completion through the Zen leaf.
+        "targets": [],
         "selection": "round-robin",
-        "autonomy": "rules",
-        "weights": {
-          "zen-plans/flint-40b-free": 3
-        }
+        "autonomy": "rules"
       },
       "big-pickle-plan": {
         "name": "Big Pickle Free (Zen) - plan providers",
