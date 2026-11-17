@@ -59,6 +59,27 @@ grandfather_allowance() {
     printf '2610|F11.10 split tracked in #1438 — allowance must only shrink'
     return 0
     ;;
+  crates/id-cli/src/commands/serve.rs)
+    # Baseline allowance 2026-11-17 at 3,089 production lines: over the
+    # limit on main after the crate split (#10603), which failed the guard
+    # on main (#10869). Same ratchet disposition as the rows above: an
+    # exact current count, so main is green and any growth still fails.
+    # The F11.10 split that shrinks it is tracked in #1438.
+    printf '3089|F11.10 split tracked in #1438 — allowance must only shrink'
+    return 0
+    ;;
+  crates/id-worlds/src/world/actor.rs)
+    # Baseline allowance 2026-11-17 at 4,496 production lines (#10869,
+    # ratchet as above). The split is tracked in #8592. Any growth fails.
+    printf '4496|split tracked in #8592 — allowance must only shrink'
+    return 0
+    ;;
+  crates/id-worlds/src/world/core.rs)
+    # Baseline allowance 2026-11-17 at 3,195 production lines (#10869,
+    # ratchet as above). The F11.10 split is tracked in #1438.
+    printf '3195|F11.10 split tracked in #1438 — allowance must only shrink'
+    return 0
+    ;;
   esac
   return 1
 }
