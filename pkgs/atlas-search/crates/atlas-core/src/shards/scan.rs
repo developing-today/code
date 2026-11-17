@@ -8,7 +8,8 @@
 //! against a single-store oracle.
 
 use std::collections::BTreeSet;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, RwLock};
+use std::time::{Duration, Instant};
 
 use super::content::ContentStores;
 use super::{ShardInfo, ShardSet, Tier, TierCeiling};
@@ -164,6 +165,20 @@ pub fn fanout_scan(set: &ShardSet, q: &FanoutQuery<'_>) -> Result<FanoutResult> 
     })
 }
 
+/// Periodic shard re-discovery for a serving [`ShardedBackend`]
+/// (#6666 slice 1): re-open the shard set from `spec` on an
+/// interval and swap it in atomically when its snapshot changes,
+/// so new shards and promotion batches are observed without a
+/// restart. The swap is the whole mechanism: the result cache is
+/// snapshot-bound (#9943), so a changed `snapshot_id()` invalidates
+/// cached results on the next query.
+pub struct ShardRefresh {
+    spec: String,
+    ceiling: TierCeiling,
+    interval: Duration,
+    last_check: Mutex<Instant>,
+}
+
 /// A [`SearchBackend`] that serves the **vector** branch from the
 /// shard core and delegates everything else (FTS, details,
 /// neighbors, messages, notes) to the wrapped backend — the libSQL
@@ -180,7 +195,8 @@ pub fn fanout_scan(set: &ShardSet, q: &FanoutQuery<'_>) -> Result<FanoutResult> 
 /// itself still refuses such filters loudly for direct callers.
 pub struct ShardedBackend<B> {
     inner: B,
-    set: Arc<ShardSet>,
+    set: RwLock<Arc<ShardSet>>,
+    refresh: Option<ShardRefresh>,
     topics: Option<Vec<String>>,
     /// Per-query diagnostics recorded during `branch_pools` (the
     /// monolith-fallback notices, #6665). `notes()` surfaces them;
@@ -200,7 +216,8 @@ impl<B: SearchBackend> ShardedBackend<B> {
     pub fn new(inner: B, set: Arc<ShardSet>) -> ShardedBackend<B> {
         ShardedBackend {
             inner,
-            set,
+            set: RwLock::new(set),
+            refresh: None,
             topics: None,
             fallback_notes: Mutex::new(Vec::new()),
             content: None,
@@ -241,8 +258,87 @@ impl<B: SearchBackend> ShardedBackend<B> {
         &self.inner
     }
 
-    pub fn shard_set(&self) -> &Arc<ShardSet> {
-        &self.set
+    pub fn shard_set(&self) -> Arc<ShardSet> {
+        self.set
+            .read()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clone()
+    }
+
+    /// Enable periodic re-discovery (#6666 slice 1): every
+    /// `interval`, the shard set is re-opened from `spec` at
+    /// `ceiling` and swapped in when its snapshot changed. A
+    /// zero interval disables the opportunistic checks (explicit
+    /// [`ShardedBackend::refresh_shard_set`] calls still work).
+    pub fn with_refresh(
+        mut self,
+        spec: String,
+        ceiling: TierCeiling,
+        interval: Duration,
+    ) -> ShardedBackend<B> {
+        self.refresh = Some(ShardRefresh {
+            spec,
+            ceiling,
+            interval,
+            // Backdate so the first query after the interval has
+            // elapsed checks; construction itself just discovered.
+            last_check: Mutex::new(Instant::now()),
+        });
+        self
+    }
+
+    /// Re-open the shard set from the refresh spec now and swap it
+    /// in if its snapshot changed. Returns true when a swap
+    /// happened. A discovery failure keeps the current set and
+    /// records a diagnostic note; it never fails the caller.
+    pub fn refresh_shard_set(&self) -> bool {
+        let Some(refresh) = &self.refresh else {
+            return false;
+        };
+        let new = match super::open_from_spec(
+            &refresh.spec,
+            refresh.ceiling,
+            self.set
+                .read()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .vec_table(),
+        ) {
+            Ok(new) => new,
+            Err(e) => {
+                if let Ok(mut notes) = self.fallback_notes.lock() {
+                    let note = format!("shard re-discovery failed; serving the previous set: {e}");
+                    if !notes.contains(&note) {
+                        notes.push(note);
+                    }
+                }
+                return false;
+            }
+        };
+        let mut guard = self
+            .set
+            .write()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if guard.snapshot_id() == new.snapshot_id() {
+            return false;
+        }
+        *guard = new;
+        true
+    }
+
+    /// The shard set to serve from: when refresh is configured and
+    /// the interval has elapsed, re-discover first (the check is
+    /// cheap and at most once per interval per backend).
+    fn current_set(&self) -> Arc<ShardSet> {
+        if let Some(refresh) = &self.refresh
+            && !refresh.interval.is_zero()
+            && let Ok(mut last) = refresh.last_check.lock()
+            && last.elapsed() >= refresh.interval
+        {
+            *last = Instant::now();
+            drop(last);
+            self.refresh_shard_set();
+        }
+        self.shard_set()
     }
 }
 
@@ -314,7 +410,7 @@ impl<B: SearchBackend> SearchBackend for ShardedBackend<B> {
         // The shard set IS the corpus state for this backend: its
         // snapshot id moves on every re-shard / promotion, which
         // is exactly the result-cache invalidation signal (#9943).
-        Some(self.set.snapshot_id())
+        Some(self.current_set().snapshot_id())
     }
 
     fn vec_table(&self) -> &str {
@@ -325,8 +421,8 @@ impl<B: SearchBackend> SearchBackend for ShardedBackend<B> {
         let mut notes = self.inner.notes();
         notes.push(format!(
             "vector branch served by shard fan-out over {} shards (snapshot {})",
-            self.set.shards().len(),
-            &self.set.snapshot_id()[..12]
+            self.shard_set().shards().len(),
+            &self.shard_set().snapshot_id()[..12]
         ));
         if let Ok(fallback) = self.fallback_notes.lock() {
             notes.extend(fallback.iter().cloned());
@@ -387,7 +483,8 @@ impl<B: SearchBackend> SearchBackend for ShardedBackend<B> {
             global_top_k: q.global_top_k,
             vector_backend: q.vector_backend,
         };
-        let (set, topics) = (&*self.set, self.topics.as_deref());
+        let set = self.current_set();
+        let (set, topics) = (&*set, self.topics.as_deref());
         std::thread::scope(|scope| {
             let vec_handle = q
                 .query_vector
