@@ -100,7 +100,39 @@ mod tests {
     use proptest::prelude::*;
 
     #[test]
-    #[test]
+    fn execution_lane_split_7598() {
+        // Oracle (#7598): a worker passing its own lane id in
+        // --execution.lane is accepted; the recorded execution
+        // carries the mode in `lane` and the lane id in `lane_id`,
+        // so a claim-to-complete round trip leaves claim lane ==
+        // completion lane_id. The old mode values pass through
+        // unchanged, and garbage still dies with a clear message.
+        let v = normalize_execution(json!({"lane": "any-n"})).unwrap();
+        assert_eq!(v["lane"], json!("direct"));
+        assert_eq!(v["lane_id"], json!("any-n"));
+        let v = normalize_execution(json!({"lane": "opencode-a"})).unwrap();
+        assert_eq!(v["lane"], json!("opencode"));
+        assert_eq!(v["lane_id"], json!("opencode-a"));
+        let v = normalize_execution(json!({"lane": "code-a"})).unwrap();
+        assert_eq!(v["lane"], json!("direct"));
+        assert_eq!(v["lane_id"], json!("code-a"));
+        // Mode-only callers are untouched (no lane_id invented).
+        let v = normalize_execution(json!({"lane": "opencode"})).unwrap();
+        assert_eq!(v["lane"], json!("opencode"));
+        assert!(v.get("lane_id").is_none());
+        let v = normalize_execution(json!({"lane": "direct"})).unwrap();
+        assert_eq!(v["lane"], json!("direct"));
+        assert!(v.get("lane_id").is_none());
+        // Explicit lane_id alongside a mode is kept as-is.
+        let v = normalize_execution(json!({"lane": "direct", "lane_id": "any-f"})).unwrap();
+        assert_eq!(v["lane"], json!("direct"));
+        assert_eq!(v["lane_id"], json!("any-f"));
+        // Disagreement and garbage are refused, naming the semantics.
+        assert!(normalize_execution(json!({"lane": "any-n", "lane_id": "any-f"})).is_err());
+        assert!(normalize_execution(json!({"lane": "banana"})).is_err());
+        assert!(normalize_execution(json!({"lane_id": "banana-1"})).is_err());
+    }
+
     #[test]
     fn timeline_surfaces_claim_displacement_events_6985() {
         // #6985: the recurrence on task 17490 read as "exactly two
@@ -133,6 +165,7 @@ mod tests {
         }
     }
 
+    #[test]
     fn collapse_timeline_9046_drops_only_duplicate_writes() {
         // #9046 oracle: same (kind, session, leaf, trigger) inside
         // 120 s = one record written by two surfaces; a changed
@@ -229,6 +262,7 @@ mod tests {
         assert!(bare_claim_refusal(&mk(&["--handoff"]), &None).is_none());
     }
 
+    #[test]
     fn rollup_event_reads_row_task_id() {
         // Claim-link rollup: the row's own task_id column joins
         // the stamp (fleet-cli stamp details carry no task_id).

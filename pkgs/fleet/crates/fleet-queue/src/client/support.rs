@@ -830,6 +830,91 @@ pub(super) fn progress_arg(args: &Args) -> Option<Value> {
     Some(val)
 }
 
+/// #7598: two different "lane" vocabularies share the word. The
+/// claim path's `--lane` takes a registry lane id (code-a, any-n);
+/// `--execution.lane` historically took only the execution MODE
+/// ('opencode' | 'direct') and died on a lane id, so a worker that
+/// naturally passed its own lane id was rejected client-side and
+/// retried with the surface name -- recording executed_lane as the
+/// surface next to a claim stamped with the lane id: the recorded
+/// claim-to-complete "lane mismatch". The split: `lane` keeps the
+/// mode; a lane id passed in `lane` (or explicitly as `lane_id`)
+/// is recorded under `lane_id` and the mode is derived from its
+/// family (the opencode family executed via an opencode session;
+/// every other family executed directly). Mirrors the broker's
+/// lane_family_of (turso_queue.rs) family rule.
+pub(super) fn execution_lane_id_family(lane_id: &str) -> Option<&'static str> {
+    const FAMILIES: [&str; 7] = [
+        "code",
+        "any",
+        "not-code",
+        "opencode",
+        "openchamber",
+        "nix",
+        "darwin-nix",
+    ];
+    let (family, suffix) = lane_id.rsplit_once('-')?;
+    if suffix.is_empty() || !suffix.bytes().all(|b| b.is_ascii_lowercase()) {
+        return None;
+    }
+    FAMILIES.iter().find(|f| **f == family).copied()
+}
+
+pub(super) fn normalize_execution(mut val: Value) -> Result<Value, String> {
+    let mut lane_id: Option<String> = None;
+    {
+        let obj = val.as_object_mut().expect("execution object");
+        if let Some(raw_id) = obj.get("lane_id").cloned() {
+            let Some(id) = raw_id.as_str() else {
+                return Err(
+                    "--execution.lane_id must be a string lane id (e.g. 'code-a')".to_string(),
+                );
+            };
+            if execution_lane_id_family(id).is_none() {
+                return Err(format!(
+                    "--execution.lane_id '{id}' is not a known lane id (family + lowercase suffix, e.g. 'code-a', 'any-n', 'opencode-a')"
+                ));
+            }
+            lane_id = Some(id.to_string());
+        }
+        if let Some(raw_lane) = obj.get("lane").cloned() {
+            let Some(lane) = raw_lane.as_str() else {
+                return Err(
+                    "--execution.lane must be a string: the execution mode 'opencode' or 'direct', or a lane id (e.g. 'code-a')"
+                        .to_string(),
+                );
+            };
+            if lane == "opencode" || lane == "direct" {
+                // The mode, exactly as before.
+            } else if let Some(family) = execution_lane_id_family(lane) {
+                if let Some(existing) = &lane_id {
+                    if existing != lane {
+                        return Err(format!(
+                            "--execution.lane '{lane}' and --execution.lane_id '{existing}' disagree"
+                        ));
+                    }
+                }
+                lane_id = Some(lane.to_string());
+                let mode = if family == "opencode" {
+                    "opencode"
+                } else {
+                    "direct"
+                };
+                obj.insert("lane".to_string(), json!(mode));
+            } else {
+                return Err(format!(
+                    "--execution.lane '{lane}' is neither the execution mode ('opencode' or 'direct') nor a known lane id (e.g. 'code-a'); pass the mode in 'lane' and the executing lane in 'lane_id'"
+                ));
+            }
+        }
+        if let Some(id) = &lane_id {
+            obj.insert("lane_id".to_string(), json!(id));
+        }
+    }
+    Ok(val)
+}
+
+
 pub(super) fn execution_arg(args: &Args) -> Option<Value> {
     let raw = args.get("execution")?;
     let val: Value = match serde_json::from_str(&raw) {
@@ -839,12 +924,10 @@ pub(super) fn execution_arg(args: &Args) -> Option<Value> {
     if !val.is_object() {
         die(2, "--execution must be a JSON object");
     }
-    if let Some(lane) = val.get("lane") {
-        if lane != &json!("opencode") && lane != &json!("direct") {
-            die(2, "--execution.lane must be 'opencode' or 'direct'");
-        }
+    match normalize_execution(val) {
+        Ok(v) => Some(v),
+        Err(e) => die(2, &e),
     }
-    Some(val)
 }
 
 pub(super) fn py_str_list(items: &[String]) -> String {
