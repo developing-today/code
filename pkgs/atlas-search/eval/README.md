@@ -23,6 +23,13 @@ corpus-specific retrieval runner beside the Rust tooling:
   `~/atlas/turso-atlas/scripts/eval3.py`; this copy updates only the usage
   example to point at the checked-in fixture. Source SHA-256:
   `d121c442566286b6f1ee3327693756bdf0f031f87f00e95ce486582d09d66360`.
+  The in-repo copy now diverges from that source by the three #8738
+  fixes (2026-11-17): query embeddings are truncated + renormalized
+  under `--trunc` exactly as document embeddings are (fresh and
+  cached); a `--qcache` is reused only when its sidecar identity
+  (framework + model + ordered query texts) matches, instead of on
+  row count alone; and per-category recall@10 applies the same
+  ten-rank cutoff as the overall counter when `--k` exceeds 10.
 - `fixtures/golden-311.json` — the 311-query v3 set copied byte-for-byte
   from `~/atlas/v3/golden-queries-v3.json`
   (SHA-256 `b64bc1905384405c9127c744d3874ffd149a9429b6710b0664c2198505bf291c`).
