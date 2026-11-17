@@ -120,16 +120,19 @@ fn string_list(value: Option<&serde_json::Value>) -> Vec<String> {
 /// nothing, so it replays as nothing. `UpdateCaps` folds exactly as
 /// the actor applies it: revokes are removed first, then grants are
 /// added. `SetCapsCeiling` replaces the ceiling. A `provider_use`
-/// record with outcome `first_use_grant` (or a later `allowed` use of
-/// the same capability) folds the used capability into `granted`,
-/// mirroring `CapLedger::decide_for` under `grant_on_use`. Every other
-/// action leaves grants untouched.
+/// record with outcome `first_use_grant` folds the used capability into
+/// `granted`, mirroring `CapLedger::decide_for` under `grant_on_use`.
+/// An `allowed` use folds nothing: `decide_for` returns `Allow` only for
+/// a name already granted or covered by a `*` grant, and in neither case
+/// does it add the name, so folding it would keep a wildcard-covered
+/// name granted after `*` is revoked (#10828). Every other action
+/// leaves grants untouched.
 #[must_use]
 pub fn replay_grants(records: &[AuditRecord]) -> GrantsState {
     let mut state = GrantsState::default();
     for record in records {
         if record.action == "provider_use" {
-            if matches!(record.outcome.as_str(), "first_use_grant" | "allowed") {
+            if record.outcome == "first_use_grant" {
                 if let Some(capability) = record
                     .parameters
                     .get("capability")
@@ -352,6 +355,32 @@ mod tests {
             state.granted,
             BTreeSet::from(["chat.say".to_owned(), "time.now".to_owned()])
         );
+    }
+
+    #[test]
+    fn replay_does_not_grant_wildcard_covered_uses() {
+        // Oracle: CapLedger::decide_for returns Allow for a non-sensor
+        // cap covered by `*` without inserting the name, so revoking
+        // `*` leaves nothing granted. Replay must agree (#10828).
+        let records = vec![
+            record(
+                "UpdateCaps",
+                "accepted",
+                serde_json::json!({"grant": ["*"], "revoke": []}),
+            ),
+            record(
+                "provider_use",
+                "allowed",
+                serde_json::json!({"capability": "time.now"}),
+            ),
+            record(
+                "UpdateCaps",
+                "accepted",
+                serde_json::json!({"grant": [], "revoke": ["*"]}),
+            ),
+        ];
+        let state = replay_grants(&records);
+        assert!(state.granted.is_empty(), "{:?}", state.granted);
     }
 
     #[test]
