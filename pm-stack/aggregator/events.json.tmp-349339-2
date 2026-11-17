@@ -1,0 +1,442 @@
+{
+  "version": 2,
+  "events": [
+    {
+      "at": "2026-11-11T15:39:13.817Z",
+      "actor": "orch-fixture-1",
+      "kind": "action-applied",
+      "ref": "orch:http-item",
+      "summary": "triage/acknowledge applied by orch-fixture-1 — ack carried in the next published tier entry",
+      "version": 2,
+      "id": "811a3c2a-fb9f-4abd-9ff0-9c564ae44808",
+      "ingestedAt": "2026-11-11T15:39:13.817Z",
+      "attribution": {
+        "confidence": "unknown",
+        "asserted": false
+      },
+      "source": {
+        "identity": "pm-stack/aggregator"
+      },
+      "prevHash": "0000000000000000000000000000000000000000000000000000000000000000",
+      "hash": "87c6d868a618dbc076f67a319ccd0917f8c138e36f19afb8938796dd6b34bd93"
+    },
+    {
+      "at": "2026-11-11T15:39:13.819Z",
+      "actor": "orch-fixture-state-all",
+      "kind": "action-applied",
+      "ref": "orch:state-all-item",
+      "summary": "triage/acknowledge applied by orch-fixture-state-all — applied for the #4620 history-read regression test",
+      "version": 2,
+      "id": "a08320e8-b8b0-4b9e-b586-e0e8665cc9cb",
+      "ingestedAt": "2026-11-11T15:39:13.819Z",
+      "attribution": {
+        "confidence": "unknown",
+        "asserted": false
+      },
+      "source": {
+        "identity": "pm-stack/aggregator"
+      },
+      "prevHash": "87c6d868a618dbc076f67a319ccd0917f8c138e36f19afb8938796dd6b34bd93",
+      "hash": "8b994a1fd6961b543d24fb6e1c9a4a625300ad34cdfefd1d18a0bd7181bf0550"
+    },
+    {
+      "at": "2026-11-11T15:39:13.821Z",
+      "actor": "jules-fixture",
+      "kind": "action-applied",
+      "ref": "session:duplicate-answer",
+      "summary": "session/answer applied by jules-fixture",
+      "version": 2,
+      "id": "bb71b53b-526b-46c2-83fa-b431169e0e12",
+      "ingestedAt": "2026-11-11T15:39:13.821Z",
+      "attribution": {
+        "confidence": "unknown",
+        "asserted": false
+      },
+      "source": {
+        "identity": "pm-stack/aggregator"
+      },
+      "prevHash": "8b994a1fd6961b543d24fb6e1c9a4a625300ad34cdfefd1d18a0bd7181bf0550",
+      "hash": "b6b98e552624032bc83dc6209d9a696fb08e54296651694f8ce57b3ca32d8a49"
+    },
+    {
+      "at": "2026-11-11T15:39:13.822Z",
+      "actor": "jules-fixture",
+      "kind": "action-applied",
+      "ref": "session:duplicate-answer",
+      "summary": "session/answer applied by jules-fixture",
+      "version": 2,
+      "id": "19e8366f-b517-444e-9596-8fde9a978e01",
+      "ingestedAt": "2026-11-11T15:39:13.822Z",
+      "attribution": {
+        "confidence": "unknown",
+        "asserted": false
+      },
+      "source": {
+        "identity": "pm-stack/aggregator"
+      },
+      "prevHash": "b6b98e552624032bc83dc6209d9a696fb08e54296651694f8ce57b3ca32d8a49",
+      "hash": "0dca370eba451a297b2d2870a5d1debd329642475479cc0f3c81933f25b2dca4"
+    },
+    {
+      "at": "2026-11-11T15:39:16.404Z",
+      "actor": "orchestrator",
+      "kind": "orchestration-published",
+      "ref": "orchestration:orch-health-test",
+      "summary": "orchestration run orch-health-test published: 0 needs-user, 0 needs-orchestrator",
+      "version": 2,
+      "id": "0570021d-0422-4418-b636-d13e18a0a639",
+      "ingestedAt": "2026-11-11T15:39:16.404Z",
+      "attribution": {
+        "confidence": "unknown",
+        "asserted": false
+      },
+      "source": {
+        "identity": "pm-stack/aggregator"
+      },
+      "prevHash": "0dca370eba451a297b2d2870a5d1debd329642475479cc0f3c81933f25b2dca4",
+      "hash": "cf61b994bac42ff42249b5fcbdf5638bcf3cffc950f133247797dafa9d26966b"
+    },
+    {
+      "at": "2026-11-11T15:39:16.612Z",
+      "actor": "aggregator",
+      "kind": "session-outcome",
+      "ref": "session:opencode-laptop:ses_e5e34cb7551ffeiLJvpfvyhFZg",
+      "summary": "session Plans Space freshness keeper — complete + fresh quota picture 2026-11-11 09:23 (OpenCode · build (laptop)) merged into the registry",
+      "version": 2,
+      "id": "03fd7ec4-e206-418f-aa49-55fcef9a7d42",
+      "ingestedAt": "2026-11-11T15:39:16.612Z",
+      "attribution": {
+        "confidence": "unknown",
+        "asserted": false
+      },
+      "source": {
+        "identity": "pm-stack/aggregator"
+      },
+      "prevHash": "cf61b994bac42ff42249b5fcbdf5638bcf3cffc950f133247797dafa9d26966b",
+      "hash": "49e3b22a92431fc011379475174c634ab99740c76442a35d7e07b1b9333db5aa"
+    },
+    {
+      "at": "2026-11-11T15:39:16.613Z",
+      "actor": "aggregator",
+      "kind": "session-outcome",
+      "ref": "session:opencode-laptop:ses_e5e34ce3179ffeHABt5Yp7YGFM",
+      "summary": "session Queue lane (scheduled) - any-n 2026-11-11 09:20 (OpenCode · build (laptop)) merged into the registry",
+      "version": 2,
+      "id": "58788952-7fb8-4b9e-865f-567ecce3c0fe",
+      "ingestedAt": "2026-11-11T15:39:16.613Z",
+      "attribution": {
+        "confidence": "unknown",
+        "asserted": false
+      },
+      "source": {
+        "identity": "pm-stack/aggregator"
+      },
+      "prevHash": "49e3b22a92431fc011379475174c634ab99740c76442a35d7e07b1b9333db5aa",
+      "hash": "e0e7fa590383a401d753fa42f1ad6b55f7d9a2156ec62a025fe4b3144c1c0812"
+    },
+    {
+      "at": "2026-11-11T15:39:16.615Z",
+      "actor": "aggregator",
+      "kind": "session-outcome",
+      "ref": "session:opencode-laptop:ses_e5e34ce2f62ffeb8YgRx2pr93K",
+      "summary": "session Fleet conductor — session sweep + dispatch 2026-11-11 09:20 (OpenCode · build (laptop)) merged into the registry",
+      "version": 2,
+      "id": "8857cb8e-1253-4a47-935a-686af0c74776",
+      "ingestedAt": "2026-11-11T15:39:16.615Z",
+      "attribution": {
+        "confidence": "unknown",
+        "asserted": false
+      },
+      "source": {
+        "identity": "pm-stack/aggregator"
+      },
+      "prevHash": "e0e7fa590383a401d753fa42f1ad6b55f7d9a2156ec62a025fe4b3144c1c0812",
+      "hash": "91628ccdf6ff5d45d102c68524f7d5634598614a712c7de19c1042b583b7a61c"
+    },
+    {
+      "at": "2026-11-11T15:39:16.615Z",
+      "actor": "aggregator",
+      "kind": "session-outcome",
+      "ref": "session:opencode-laptop:ses_e5e34ce3574ffeBptKmITocAxi",
+      "summary": "session Quota gatherer guardian — keep the quota record fresh 2026-11-11 09:20 (OpenCode · build (laptop)) merged into the registry",
+      "version": 2,
+      "id": "c4c81f24-c23d-45f3-b20a-d16f0e65cbfb",
+      "ingestedAt": "2026-11-11T15:39:16.616Z",
+      "attribution": {
+        "confidence": "unknown",
+        "asserted": false
+      },
+      "source": {
+        "identity": "pm-stack/aggregator"
+      },
+      "prevHash": "91628ccdf6ff5d45d102c68524f7d5634598614a712c7de19c1042b583b7a61c",
+      "hash": "1719aa25fd2ca07311afefa4b53e893618accc5c961df5dee878591e0ac066f7"
+    },
+    {
+      "at": "2026-11-11T15:39:16.615Z",
+      "actor": "aggregator",
+      "kind": "session-outcome",
+      "ref": "session:opencode-laptop:ses_e5e34ce3418ffetVA0wKs5qf3H",
+      "summary": "session Main CI failure — fix trigger 2026-11-11 09:20 (OpenCode · build (laptop)) merged into the registry",
+      "version": 2,
+      "id": "607de498-7106-4988-8f1b-efdbe52cf3e6",
+      "ingestedAt": "2026-11-11T15:39:16.617Z",
+      "attribution": {
+        "confidence": "unknown",
+        "asserted": false
+      },
+      "source": {
+        "identity": "pm-stack/aggregator"
+      },
+      "prevHash": "1719aa25fd2ca07311afefa4b53e893618accc5c961df5dee878591e0ac066f7",
+      "hash": "66cbefe8bf4cd753b8309fcf10f5337c1be3ad27ca76bafdfa708daa44e98473"
+    },
+    {
+      "at": "2026-11-11T15:39:16.616Z",
+      "actor": "aggregator",
+      "kind": "session-outcome",
+      "ref": "session:opencode-laptop:ses_e5e34ce364cffeF7GZjj4gKTwh",
+      "summary": "session Opencode lane claimant/executor - #3026 2026-11-11 09:20 (OpenCode · build (laptop)) merged into the registry",
+      "version": 2,
+      "id": "93fa7685-0d40-40d3-9433-1d04d4a4ebc1",
+      "ingestedAt": "2026-11-11T15:39:16.618Z",
+      "attribution": {
+        "confidence": "unknown",
+        "asserted": false
+      },
+      "source": {
+        "identity": "pm-stack/aggregator"
+      },
+      "prevHash": "66cbefe8bf4cd753b8309fcf10f5337c1be3ad27ca76bafdfa708daa44e98473",
+      "hash": "9988a93999c8e8bf442983a3dbb8982e3904cbdf7c1e22454b6f960e2f255c73"
+    },
+    {
+      "at": "2026-11-11T15:39:16.616Z",
+      "actor": "aggregator",
+      "kind": "session-outcome",
+      "ref": "session:opencode-laptop:ses_e5e34c07695ffeXX7NPC3DGwqO",
+      "summary": "session Opencode lane claimant/executor - #3026 2026-11-11 09:35 (OpenCode · build (laptop)) merged into the registry",
+      "version": 2,
+      "id": "dd35e622-537d-422b-a1fd-259a4b6d12c9",
+      "ingestedAt": "2026-11-11T15:39:16.619Z",
+      "attribution": {
+        "confidence": "unknown",
+        "asserted": false
+      },
+      "source": {
+        "identity": "pm-stack/aggregator"
+      },
+      "prevHash": "9988a93999c8e8bf442983a3dbb8982e3904cbdf7c1e22454b6f960e2f255c73",
+      "hash": "2c756e2b9f4f73f2caf3aff383e58676877662accbf80f6bd688c761e339050e"
+    },
+    {
+      "at": "2026-11-11T15:39:16.616Z",
+      "actor": "aggregator",
+      "kind": "session-outcome",
+      "ref": "session:opencode-laptop:ses_e5e34d2c997ffe4bbJxjw4WeNl",
+      "summary": "session Opencode lane claimant/executor - #3026 2026-11-11 09:15 (OpenCode · build (laptop)) merged into the registry",
+      "version": 2,
+      "id": "8201976c-fbc5-463f-832f-7f4bbe92cde4",
+      "ingestedAt": "2026-11-11T15:39:16.620Z",
+      "attribution": {
+        "confidence": "unknown",
+        "asserted": false
+      },
+      "source": {
+        "identity": "pm-stack/aggregator"
+      },
+      "prevHash": "2c756e2b9f4f73f2caf3aff383e58676877662accbf80f6bd688c761e339050e",
+      "hash": "e9a1f4e81d6a45a9d554de39b2a94a679bb725b8506b8ec4a40d5624701b585d"
+    },
+    {
+      "at": "2026-11-11T15:39:16.617Z",
+      "actor": "aggregator",
+      "kind": "session-outcome",
+      "ref": "session:opencode-laptop:ses_e5e34d2c914ffecOaKQYWejVDl",
+      "summary": "session Improvement issue creator 2026-11-11 09:15 (OpenCode · build (laptop)) merged into the registry",
+      "version": 2,
+      "id": "0fd3bf82-3d87-49c7-b167-bbcda5630e35",
+      "ingestedAt": "2026-11-11T15:39:16.621Z",
+      "attribution": {
+        "confidence": "unknown",
+        "asserted": false
+      },
+      "source": {
+        "identity": "pm-stack/aggregator"
+      },
+      "prevHash": "e9a1f4e81d6a45a9d554de39b2a94a679bb725b8506b8ec4a40d5624701b585d",
+      "hash": "b2e5552ebd48b0e655542f0a8540fd4ffd6434df5407645308aca8179a53fb75"
+    },
+    {
+      "at": "2026-11-11T15:39:16.617Z",
+      "actor": "aggregator",
+      "kind": "session-outcome",
+      "ref": "session:opencode-laptop:ses_e5e34c50b46ffeglvpC5gBHfBn",
+      "summary": "session Improvement issue creator — lane B 2026-11-11 09:30 (OpenCode · build (laptop)) merged into the registry",
+      "version": 2,
+      "id": "273f2b06-7fac-4c2a-9580-31196463df31",
+      "ingestedAt": "2026-11-11T15:39:16.622Z",
+      "attribution": {
+        "confidence": "unknown",
+        "asserted": false
+      },
+      "source": {
+        "identity": "pm-stack/aggregator"
+      },
+      "prevHash": "b2e5552ebd48b0e655542f0a8540fd4ffd6434df5407645308aca8179a53fb75",
+      "hash": "51a51c4a88e43e189964c8ae4fcd0b6b06400f04d4a56c3de3a2be30080730a1"
+    },
+    {
+      "at": "2026-11-11T15:39:16.618Z",
+      "actor": "aggregator",
+      "kind": "session-outcome",
+      "ref": "session:opencode-laptop:ses_e5e34c50c24ffe7K7LcjJh4qWH",
+      "summary": "session Main CI failure — fix trigger 2026-11-11 09:30 (OpenCode · build (laptop)) merged into the registry",
+      "version": 2,
+      "id": "77d6f288-8853-493e-9725-0e10d5fede8f",
+      "ingestedAt": "2026-11-11T15:39:16.623Z",
+      "attribution": {
+        "confidence": "unknown",
+        "asserted": false
+      },
+      "source": {
+        "identity": "pm-stack/aggregator"
+      },
+      "prevHash": "51a51c4a88e43e189964c8ae4fcd0b6b06400f04d4a56c3de3a2be30080730a1",
+      "hash": "4ad5bc6aad938c3dbb6b3631448014753204ef51bebd0966b71ba76284b7b731"
+    },
+    {
+      "at": "2026-11-11T15:39:16.618Z",
+      "actor": "aggregator",
+      "kind": "session-outcome",
+      "ref": "session:opencode-laptop:ses_e5e34c50d3effezUUvyb0ywFcF",
+      "summary": "session Opencode lane claimant/executor - #3026 2026-11-11 09:30 (OpenCode · build (laptop)) merged into the registry",
+      "version": 2,
+      "id": "850ef1cc-6f66-4fc1-80f0-2b5046c524f1",
+      "ingestedAt": "2026-11-11T15:39:16.624Z",
+      "attribution": {
+        "confidence": "unknown",
+        "asserted": false
+      },
+      "source": {
+        "identity": "pm-stack/aggregator"
+      },
+      "prevHash": "4ad5bc6aad938c3dbb6b3631448014753204ef51bebd0966b71ba76284b7b731",
+      "hash": "c4b4e6c3dc4fa49d6818180b73940d246d24f46ae18ffb75f088aed09a51e7e5"
+    },
+    {
+      "at": "2026-11-11T15:39:16.618Z",
+      "actor": "aggregator",
+      "kind": "session-outcome",
+      "ref": "session:opencode-laptop:ses_e5e34c99bf8ffeg7eaFS3g22x7",
+      "summary": "session Opencode lane claimant/executor - #3026 2026-11-11 09:25 (OpenCode · build (laptop)) merged into the registry",
+      "version": 2,
+      "id": "3e8cedf9-3625-4c8a-9541-f133216cc835",
+      "ingestedAt": "2026-11-11T15:39:16.625Z",
+      "attribution": {
+        "confidence": "unknown",
+        "asserted": false
+      },
+      "source": {
+        "identity": "pm-stack/aggregator"
+      },
+      "prevHash": "c4b4e6c3dc4fa49d6818180b73940d246d24f46ae18ffb75f088aed09a51e7e5",
+      "hash": "6e1207c59c537d8aeaa3c276468d57b144de492e35144c9f13f0a212b3085468"
+    },
+    {
+      "at": "2026-11-11T15:39:16.619Z",
+      "actor": "aggregator",
+      "kind": "session-outcome",
+      "ref": "session:opencode-laptop:ses_e5e34d75c10ffe97KDuScuZuLu",
+      "summary": "session Opencode lane claimant/executor - #3026 2026-11-11 09:10 (OpenCode · build (laptop)) merged into the registry",
+      "version": 2,
+      "id": "96c7a6b5-f028-4489-8791-6bd9201d9015",
+      "ingestedAt": "2026-11-11T15:39:16.626Z",
+      "attribution": {
+        "confidence": "unknown",
+        "asserted": false
+      },
+      "source": {
+        "identity": "pm-stack/aggregator"
+      },
+      "prevHash": "6e1207c59c537d8aeaa3c276468d57b144de492e35144c9f13f0a212b3085468",
+      "hash": "6a4754eb5b0d0a00ff03affbe44be51d696f7f11f8a5d8f23cf3ab04ce3e1d86"
+    },
+    {
+      "at": "2026-11-11T15:39:16.620Z",
+      "actor": "aggregator",
+      "kind": "session-outcome",
+      "ref": "session:opencode-laptop:ses_e5e34d75962ffe0EIMISdPM6y5",
+      "summary": "session Main CI failure — fix trigger 2026-11-11 09:10 (OpenCode · build (laptop)) merged into the registry",
+      "version": 2,
+      "id": "c8ac4c2e-c904-4bd3-bd9c-6f0e532ffcb5",
+      "ingestedAt": "2026-11-11T15:39:16.627Z",
+      "attribution": {
+        "confidence": "unknown",
+        "asserted": false
+      },
+      "source": {
+        "identity": "pm-stack/aggregator"
+      },
+      "prevHash": "6a4754eb5b0d0a00ff03affbe44be51d696f7f11f8a5d8f23cf3ab04ce3e1d86",
+      "hash": "357c12b90c49cd976880821a6d52949690249d1a82a9c2eae2a14a54a37ce9df"
+    },
+    {
+      "at": "2026-11-11T15:39:33.240Z",
+      "actor": "orchestrator",
+      "kind": "orchestration-published",
+      "ref": "orchestration:orch-api-health-comments-test",
+      "summary": "orchestration run orch-api-health-comments-test published: 0 needs-user, 0 needs-orchestrator",
+      "version": 2,
+      "id": "b73cedbf-7b4a-46bd-99b5-2b42ea522b08",
+      "ingestedAt": "2026-11-11T15:39:33.240Z",
+      "attribution": {
+        "confidence": "unknown",
+        "asserted": false
+      },
+      "source": {
+        "identity": "pm-stack/aggregator"
+      },
+      "prevHash": "357c12b90c49cd976880821a6d52949690249d1a82a9c2eae2a14a54a37ce9df",
+      "hash": "286e6aab09ee73903e1c920680eb80788cb670f9951238b35e6149060f003ce2"
+    },
+    {
+      "at": "2026-11-11T15:39:34.069Z",
+      "actor": "orchestrator",
+      "kind": "orchestration-published",
+      "ref": "orchestration:orch-watchdog-test",
+      "summary": "orchestration run orch-watchdog-test published: 1 needs-user, 0 needs-orchestrator",
+      "version": 2,
+      "id": "c9f0b055-0f55-455f-8290-fa34275c668c",
+      "ingestedAt": "2026-11-11T15:39:34.069Z",
+      "attribution": {
+        "confidence": "unknown",
+        "asserted": false
+      },
+      "source": {
+        "identity": "pm-stack/aggregator"
+      },
+      "prevHash": "286e6aab09ee73903e1c920680eb80788cb670f9951238b35e6149060f003ce2",
+      "hash": "3523ff2de46100d6714304b439dbba4dc4a0395f7ad61a43596779562e64b17d"
+    },
+    {
+      "at": "2026-11-11T13:44:33.905Z",
+      "actor": "watchdog",
+      "kind": "watchdog-event",
+      "ref": "watchdog:fleet-feed",
+      "summary": "Watchdog: fleet feed is stale — last collected 2.0h old ago",
+      "version": 2,
+      "id": "activity:watchdog:watchdog:fleet-feed@2026-11-11T13:44:33.905Z",
+      "ingestedAt": "2026-11-11T15:39:34.087Z",
+      "attribution": {
+        "confidence": "unknown",
+        "asserted": false
+      },
+      "source": {
+        "identity": "pm-stack/aggregator"
+      },
+      "prevHash": "3523ff2de46100d6714304b439dbba4dc4a0395f7ad61a43596779562e64b17d",
+      "hash": "44b446f9495a6eecaba2f96fa5538c2a29c1fd35ac9288c2911331e83775c29c"
+    }
+  ]
+}
