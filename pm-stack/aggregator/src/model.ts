@@ -53,6 +53,16 @@ export interface GhItem {
   resolution?: ItemResolution;
 }
 
+/** A GitHub milestone as the collector ingests it per item (#9067):
+ * the title plus the two stamps the release accounting needs — dueOn
+ * is the release date for release milestones (program milestones are
+ * rolling and carry null), closedAt marks a closed release. */
+export interface MilestoneRef {
+  title: string;
+  dueOn: string | null;
+  closedAt: string | null;
+}
+
 /**
  * One item of the org GitHub Project pool (#910 stage 5): a Project
  * item plus its linked issue/PR, as read by the fleet-feed collector
@@ -90,6 +100,8 @@ export interface ProjectPoolItem {
    * section selects by these, never by updatedAt (#5279 Codex). */
   closedAt?: string;
   mergedAt?: string;
+  /** The linked issue's GitHub milestone, when it has one (#9067). */
+  milestone?: MilestoneRef;
   /** Project single-select fields; null when unset on the item. */
   status: string | null;
   area: string | null;
@@ -1582,6 +1594,11 @@ export interface QuotaCurrentEntry {
    *  only one tick old, well inside the freshness bound). Absent on
    *  fresh reads. */
   retainedFromFailedTick?: string;
+  /** #8725: why the tick that retained this entry failed, when the
+   * gatherer classified the failure (Claude leg kinds: rate_limited,
+   * credential, other). A rate-limit retention must never be read
+   * downstream as a credential or session failure. */
+  retentionFailureKind?: string;
   source: string;
   error?: string;
   windows: QuotaCurrentWindow[];
@@ -1594,7 +1611,10 @@ export interface QuotaGatherHeartbeat {
   tickAt: string;
   ok: boolean;
   durationMs: number;
-  perProvider: Record<string, { state: "ok" | "error" | "lapsed"; ms: number; rows: number; error?: string }>;
+  perProvider: Record<
+    string,
+    { state: "ok" | "error" | "lapsed"; ms: number; rows: number; error?: string; errorKind?: string }
+  >;
   /** Set when the tick itself failed before any provider ran (import / credential store). */
   error?: string;
 }

@@ -42,7 +42,7 @@
 #   max-age-hours   (default 26, a little over one daily period; the
 #                   module option services.laptop-backups.watchdog
 #                   .maxAgeHours feeds this argument).
-#   jobs            comma-separated subset of dashboard,repo-archive,state
+#   jobs            comma-separated subset of dashboard,repo-archive,state,opencode-db
 #                   (default dashboard,repo-archive). The module passes only the jobs
 #                   whose enable flag is on: a disabled job has no
 #                   record and no timer, so requiring them would fail
@@ -107,6 +107,7 @@ timers=()
 want_job dashboard && timers+=(pm-dashboard-backup.timer)
 want_job repo-archive && timers+=(repo-archive-backup.timer)
 want_job state && timers+=(laptop-state-backup.timer)
+want_job opencode-db && timers+=(opencode-db-backup.timer)
 for timer in "${timers[@]}"; do
   job="${timer%.timer}"
   raw="$(systemctl --user show -p LastTriggerUSec --value "$timer" 2>/dev/null || true)"
@@ -126,6 +127,30 @@ for timer in "${timers[@]}"; do
     complain "$job: timer $timer last triggered $((age / 3600))h ago (threshold ${MAX_AGE_HOURS}h)"
   fi
 done
+
+# --- (e) opencode-db success marker (completion evidence, code#10297) -------
+# opencode-db-backup.sh writes the epoch of its last fully successful
+# run (all three restic legs verified) to the marker; a stale, future,
+# unreadable or missing marker names the job, exactly like the
+# dashboard run record in (a). Timer coverage comes from (b) above.
+OPENCODE_DB_MARKER="${LAPTOP_BACKUPS_OPENCODE_DB_MARKER:-$HOME/backups/restic/.opencode-db-last-success-epoch}"
+if want_job opencode-db; then
+  if [ ! -f "$OPENCODE_DB_MARKER" ]; then
+    complain "opencode-db-backup: no success marker at $OPENCODE_DB_MARKER"
+  else
+    marker_epoch="$(head -1 "$OPENCODE_DB_MARKER" 2>/dev/null || true)"
+    if ! [[ $marker_epoch =~ ^[0-9]+$ ]]; then
+      complain "opencode-db-backup: success marker at $OPENCODE_DB_MARKER is unreadable"
+    else
+      age=$((NOW_EPOCH - marker_epoch))
+      if [ "$age" -lt "$((-SKEW_TOLERANCE_SEC))" ]; then
+        complain "opencode-db-backup: success marker is $((-age))s in the future (skew tolerance ${SKEW_TOLERANCE_SEC}s)"
+      elif [ "$age" -gt "$MAX_AGE_SEC" ]; then
+        complain "opencode-db-backup: last success $((age / 3600))h ago (threshold ${MAX_AGE_HOURS}h)"
+      fi
+    fi
+  fi
+fi
 
 # --- (c) offsite presence on R2 ----------------------------------------------
 if want_job dashboard && [ "${LAPTOP_BACKUPS_OFFSITE_CHECK:-0}" = "1" ]; then

@@ -182,7 +182,7 @@ for base in "$R2_MONTHLY" "$DRIVE_MONTHLY"; do
     test -f "$base/$MONTH/dashboard-$TODAY.tar.zst"
   check "pinned monthly copy matches the daily archive on $base" \
     cmp "$base/$MONTH/dashboard-$TODAY.tar.zst" \
-      "$HOME_DIR/backups/dashboard/$TODAY/dashboard-$TODAY.tar.zst"
+    "$HOME_DIR/backups/dashboard/$TODAY/dashboard-$TODAY.tar.zst"
 done
 check "log names the monthly pin (Drive)" \
   grep -q "monthly Drive $MONTH pinned from $TODAY" "$TMP_ROOT/run-$TODAY.log"

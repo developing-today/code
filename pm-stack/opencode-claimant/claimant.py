@@ -34,10 +34,29 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Dict, List, Optional, Any
 
+
+def _required_home() -> Path:
+    """Home per the #5762 home-resolution contract (code#8221): a
+    non-empty HOME, or a named error -- never the passwd fallback
+    Path.home() applies when HOME is unset. The claimant is fired
+    programmatically (OpenChamber cron), a context with no HOME
+    guarantee, and every path anchored below is fleet state."""
+    home = os.environ.get("HOME")
+    if not home:
+        raise RuntimeError(
+            "HOME is unset or empty: opencode-claimant cannot resolve "
+            "its state paths (#5762 home-resolution contract)"
+        )
+    return Path(home)
+
+
+HOME_DIR = _required_home()
+
+
 # Constants
-MODE_FILE = Path.home() / ".local" / "state" / "opencode-claimant" / "mode"
-FIRES_FILE = Path.home() / ".local" / "state" / "opencode-claimant" / "fires.jsonl"
-STATE_DIR = Path.home() / ".local" / "state" / "opencode-claimant"
+MODE_FILE = HOME_DIR / ".local" / "state" / "opencode-claimant" / "mode"
+FIRES_FILE = HOME_DIR / ".local" / "state" / "opencode-claimant" / "fires.jsonl"
+STATE_DIR = HOME_DIR / ".local" / "state" / "opencode-claimant"
 
 QUEUES = [
     "repo-health-code-pilot",
@@ -50,8 +69,8 @@ QUEUES = [
 # (~/.local/bin/repo-queue -> ~/.local/bin/fleet); the hand-built
 # ~/fleet-brokers/bin tree was retired by the code#5362 cutover
 # (task 12731).
-REPO_QUEUE_CMD = Path.home() / ".local" / "bin" / "repo-queue"
-PRIMARY_CLONE = Path.home() / "git" / "code"
+REPO_QUEUE_CMD = HOME_DIR / ".local" / "bin" / "repo-queue"
+PRIMARY_CLONE = HOME_DIR / "git" / "code"
 
 # OpenCode server coordinates: the standing server requires HTTP
 # Basic auth (user "opencode", password in its state file — the same
@@ -60,7 +79,7 @@ PRIMARY_CLONE = Path.home() / "git" / "code"
 OPENCODE_URL = os.environ.get("OPENCODE_URL", "http://127.0.0.1:13420")
 AUTH_FILE = os.environ.get(
     "OPENCODE_AUTH_FILE",
-    os.path.expanduser("~/.local/state/opencode/service-prod.json"),
+    str(HOME_DIR / ".local/state/opencode/service-prod.json"),
 )
 
 
@@ -224,6 +243,7 @@ def log_fire(
     cap_room: "int | None",
     skips: List[Dict],
     health: "str | None" = None,
+    provider_wall: "Dict | None" = None,
 ) -> None:
     """Append a fire log entry to fires.jsonl.
 
@@ -247,6 +267,7 @@ def log_fire(
         "cap_room": cap_room,
         "skips": skips,
         "queue_health": health,
+        "provider_wall": provider_wall,
     }
 
     with FIRES_FILE.open("a") as f:
@@ -447,11 +468,7 @@ def supervision_step(mode: str) -> List[Dict]:
     now_ms = int(time.time() * 1000)
     sessions = _fetch_sessions()
     sessions_by_id = (
-        {
-            s.get("id"): s
-            for s in sessions
-            if isinstance(s, dict) and s.get("id")
-        }
+        {s.get("id"): s for s in sessions if isinstance(s, dict) and s.get("id")}
         if isinstance(sessions, list)
         else {}
     )
@@ -692,9 +709,13 @@ def _post_prompt(session_id: str, prompt: str) -> bool:
     """One prompt POST through the verified transport; True iff the
     server answered 2xx. A non-2xx POST did not land, whatever
     curl's exit code says."""
-    status, _payload = _server_request(
+    global _last_prompt_wall
+    status, payload = _server_request(
         "POST", f"/api/session/{session_id}/prompt", body={"text": prompt}, timeout=15
     )
+    wall = _provider_wall_error(payload)
+    if wall is not None:
+        _last_prompt_wall = wall
     return _is_2xx(status)
 
 
@@ -748,6 +769,75 @@ CLAIMANT_WORKER = "opencode-claimant"
 # session model.
 LAUNCH_MODEL_PROVIDER = "opencode-route"
 LAUNCH_MODEL_ID = "workhorse"
+
+
+# #8166: the provider-capacity wall. The route's membership ceiling
+# answers a launch with a tier_limit_exceeded body; that is a
+# route-wide capacity verdict, not a per-task failure, so the first
+# wall answer closes the launch gate for the rest of the fire. The
+# route exposes its capacity only through launch-shaped answers, so
+# the first launch attempt is the probe: a create or prompt answer
+# carrying the wall stops every later launch in the fire.
+LAUNCHED_BY_RECOVERY_PROVIDER_WALL = "opencode-claimant-recovery:provider-wall"
+
+# The fire's provider-wall record ({"error", "route",
+# "serving_leaf"}) once launch_step meets the wall, else None;
+# main() threads it into log_fire like _fire_candidates /
+# _fire_health.
+_fire_provider_wall: "Dict | None" = None
+
+# The verbatim provider error from the most recent prompt POST when
+# that POST was answered with the wall (#8166): _post_prompt records
+# it here because _send_prompt's bool cannot carry it.
+_last_prompt_wall: "str | None" = None
+
+
+def _provider_wall_error(payload) -> "str | None":
+    """The provider's verbatim error text when a server reply body
+    carries the tier_limit_exceeded wall (#8166), else None. The
+    search walks the parsed body (dict values, list items, strings):
+    the wall may sit at the top level or nested in an error object,
+    and the string that names the code is the provider's own
+    message, returned unmodified. A dict's message/error string is
+    preferred over a bare code value."""
+    if isinstance(payload, dict):
+        for key in ("message", "error"):
+            value = payload.get(key)
+            if isinstance(value, str) and "tier_limit_exceeded" in value:
+                return value
+        for value in payload.values():
+            found = _provider_wall_error(value)
+            if found is not None:
+                return found
+        return None
+    if isinstance(payload, list):
+        for item in payload:
+            found = _provider_wall_error(item)
+            if found is not None:
+                return found
+        return None
+    if isinstance(payload, str):
+        return payload if "tier_limit_exceeded" in payload else None
+    return None
+
+
+def _provider_wall_record(error: str) -> Dict:
+    """The fire-log provider_wall entry (#8166): the verbatim
+    provider error, the route, and the serving leaf, so the record
+    distinguishes "no candidates" from "nowhere to run them"."""
+    return {
+        "error": error,
+        "route": LAUNCH_MODEL_PROVIDER,
+        "serving_leaf": LAUNCH_MODEL_ID,
+    }
+
+
+def _take_prompt_wall() -> "str | None":
+    """Read-and-clear the prompt POST's wall record (#8166)."""
+    global _last_prompt_wall
+    wall = _last_prompt_wall
+    _last_prompt_wall = None
+    return wall
 
 
 def _collect_handed_offs(queue: str, want: int) -> Dict[int, Dict]:
@@ -929,6 +1019,7 @@ def launch_step(
     fire log can state why a zero-launch fire launched nothing
     (#6865).
     """
+    global _fire_provider_wall
     if mode != "live":
         # Shadow fires observe only (#7366): report the candidates
         # that WOULD launch, bounded by cap room, and mutate nothing —
@@ -967,6 +1058,8 @@ def launch_step(
 
     launched = []
     skips = []
+    _fire_provider_wall = None
+    provider_wall: "Dict | None" = None
 
     excluded = set(exclude_task_ids or ())
     try:
@@ -1021,6 +1114,13 @@ def launch_step(
             collected.update(_collect_handed_offs(queue_name, want))
 
         for candidate in unbound_opencode:
+            if provider_wall is not None:
+                # #8166: the provider wall is route-wide - no later
+                # launch this fire can succeed, and each attempt
+                # would burn shared provider rpm against the wall.
+                skips.append({"task_id": candidate["id"], "reason": "provider_wall"})
+                continue
+
             if cap_room <= 0:
                 skips.append({"task_id": candidate["id"], "reason": "cap_saturated"})
                 continue
@@ -1118,6 +1218,16 @@ def launch_step(
                 status, create_payload = _server_request(
                     "POST", "/api/session", body=session_create_body, timeout=10
                 )
+                create_wall = _provider_wall_error(create_payload)
+                if create_wall is not None:
+                    # #8166: the route is walled. This candidate was
+                    # never bound or launched, so no attempt is
+                    # consumed; the gate closes for the rest of the
+                    # fire and the wall is recorded verbatim.
+                    provider_wall = _provider_wall_record(create_wall)
+                    _fire_provider_wall = provider_wall
+                    skips.append({"task_id": task_id, "reason": "provider_wall"})
+                    continue
                 if not _is_2xx(status):
                     raise RuntimeError(
                         f"Session creation failed: http status "
@@ -1236,8 +1346,43 @@ Finish with a queue terminal verb (complete, park, block, or fail) carrying --wo
                     "queue": candidate.get("queue"),
                     "timestamp": datetime.now(timezone.utc).isoformat(),
                 }
+                _take_prompt_wall()
                 if not _send_prompt(session_id, prompt):
                     entry["prompt_failed"] = True
+                prompt_wall = _take_prompt_wall()
+                if prompt_wall is not None:
+                    # #8166 item 3: the bound session's first step
+                    # died on the provider wall - the launch never
+                    # became work, so it must not stand as a launch
+                    # (a bound dead session is how the task used to
+                    # pay an attempt for provider weather). Roll it
+                    # back like supervision's zero-message recovery:
+                    # verified delete, then the recovery bind clears
+                    # the binding. The gate closes for the fire.
+                    provider_wall = _provider_wall_record(prompt_wall)
+                    _fire_provider_wall = provider_wall
+                    if _delete_session(session_id):
+                        unbind_result = subprocess.run(
+                            [
+                                str(REPO_QUEUE_CMD),
+                                "bind",
+                                str(task_id),
+                                "--worker",
+                                "opencode-claimant",
+                                "--session-id",
+                                session_id,
+                                "--launched-by",
+                                LAUNCHED_BY_RECOVERY_PROVIDER_WALL,
+                            ],
+                            capture_output=True,
+                            text=True,
+                            timeout=10,
+                        )
+                        if unbind_result.returncode == 0:
+                            skips.append(
+                                {"task_id": task_id, "reason": "provider_wall"}
+                            )
+                            continue
                 # Step 4e: the launch agent-note on the issue,
                 # naming task id + session id. Its failure flags
                 # the entry but never unbinds the session.
@@ -1342,7 +1487,15 @@ def main():
     # snapshot, never a hardcoded [] (#8038 item 3).
     print(f"Fire complete. Launched {len(launched)} sessions.")
 
-    log_fire(mode, fire_candidates, launched, cap_room, skips, health=fire_health)
+    log_fire(
+        mode,
+        fire_candidates,
+        launched,
+        cap_room,
+        skips,
+        health=fire_health,
+        provider_wall=_fire_provider_wall,
+    )
 
     return 0
 

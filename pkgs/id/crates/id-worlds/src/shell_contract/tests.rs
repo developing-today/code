@@ -59,6 +59,7 @@ fn server_frame_type(frame: &ServerFrame<'_>) -> &'static str {
         ServerFrame::EventHistoryEvent { .. } => "event_history_event",
         ServerFrame::Error { .. } => "error",
         ServerFrame::ProviderRequest { .. } => "provider_request",
+        ServerFrame::InputRefused { .. } => "input_refused",
     }
 }
 
@@ -95,6 +96,7 @@ const SERVER_FRAME_TYPES: &[&str] = &[
     "event_history_event",
     "error",
     "provider_request",
+    "input_refused",
 ];
 
 #[test]
@@ -556,4 +558,114 @@ fn provider_frames_conform_only_where_the_contract_allows_them() {
     // above pins the exact set both ways).
     assert!(contract.client_frames.contains_key("join"));
     assert!(contract.server_frames.contains_key("view"));
+}
+
+#[test]
+fn pointer_and_hover_frames_conform_to_the_input_event_model() {
+    // Oracle: the #1831 S2 design — activation events are journaled
+    // (class event), hover is ephemeral, refusals name a reason from
+    // the design's table, and scroll deltas are signed cell units.
+    let contract = contract();
+    assert_eq!(contract.revision, 10);
+    assert_eq!(contract.client_frames["pointer"].class, FrameClass::Event);
+    assert_eq!(contract.client_frames["hover"].class, FrameClass::Ephemeral);
+    assert_eq!(
+        contract.server_frames["input_refused"].class,
+        FrameClass::Reply
+    );
+
+    let scroll = json!({
+        "type": "pointer",
+        "event": "scroll",
+        "environment": "android",
+        "pointer_id": 0,
+        "x": 3,
+        "y": 4,
+        "dx": -2,
+        "dy": 5
+    });
+    assert_eq!(
+        contract.check_client_frame(&scroll, Phase::Joined).unwrap(),
+        "pointer"
+    );
+    let parsed: ClientFrame = serde_json::from_value(scroll.clone()).unwrap();
+    assert!(matches!(parsed, ClientFrame::Pointer { .. }));
+
+    // A non-integer scroll delta is not a signed integer.
+    let mut bad_scroll = scroll.clone();
+    bad_scroll["dx"] = json!(1.5);
+    assert!(
+        contract
+            .check_client_frame(&bad_scroll, Phase::Joined)
+            .is_err()
+    );
+
+    // An event the model does not name is refused by the contract check.
+    let mut mystery = scroll.clone();
+    mystery["event"] = json!("pinch");
+    assert!(
+        contract
+            .check_client_frame(&mystery, Phase::Joined)
+            .is_err()
+    );
+    assert!(serde_json::from_value::<ClientFrame>(mystery).is_err());
+
+    let hover = json!({
+        "type": "hover",
+        "event": "hover_move",
+        "environment": "web",
+        "pointer_id": 0,
+        "x": 1,
+        "y": 2
+    });
+    assert_eq!(
+        contract.check_client_frame(&hover, Phase::Joined).unwrap(),
+        "hover"
+    );
+    let parsed: ClientFrame = serde_json::from_value(hover).unwrap();
+    assert!(matches!(parsed, ClientFrame::Hover { .. }));
+
+    // The refusal answer: every reason in the design's table conforms,
+    // and a reason outside the table does not.
+    for reason in [
+        "no_timing_source",
+        "hover_unsupported",
+        "context_menu_not_claimed",
+        "reserved_by_browser",
+        "no_secondary_button",
+        "not_reported_by_terminal",
+        "button_identity_unavailable",
+        "no_tracking_mode",
+        "gesture_not_in_subset",
+        "multi_touch_deferred",
+        "not_declared_by_app",
+        "unknown_or_unsupported_event",
+    ] {
+        let refusal = json!({
+            "type": "input_refused",
+            "event": "hover_enter",
+            "environment": "android",
+            "reason": reason
+        });
+        assert_eq!(
+            contract.check_server_frame(&refusal).unwrap(),
+            "input_refused",
+            "{reason}"
+        );
+    }
+    let refusal = json!({
+        "type": "input_refused",
+        "event": "hover_enter",
+        "reason": "not_a_reason"
+    });
+    assert!(contract.check_server_frame(&refusal).is_err());
+
+    let frame = ServerFrame::InputRefused {
+        event: "secondary_press",
+        environment: Some(crate::world_session::InputEnvironment::Web),
+        reason: crate::world_session::InputRefusalReason::ContextMenuNotClaimed,
+    };
+    let value = serde_json::to_value(&frame).unwrap();
+    assert_eq!(value["type"], "input_refused");
+    contract.check_server_frame(&value).unwrap();
 }

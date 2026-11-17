@@ -11,6 +11,7 @@
 // the live source so the wire shape is parsed exactly once.
 import type {
   GhItem,
+  MilestoneRef,
   OrchestrationSection,
   ProjectAudit,
   ProjectPoolEdgeDiagnostic,
@@ -49,8 +50,8 @@ export const PROJECT_QUERY = `query($id: ID!, $cursor: String) {
           databaseId
           type
           content {
-            ... on Issue { number title state url repository { nameWithOwner } updatedAt closedAt author { login } labels(first: 20) { nodes { name } } parent { number url repository { nameWithOwner } } blockedBy(first: 50) { nodes { number url repository { nameWithOwner } } } blocking(first: 50) { nodes { number url repository { nameWithOwner } } } }
-            ... on PullRequest { number title state url repository { nameWithOwner } updatedAt mergedAt closedAt author { login } isDraft }
+            ... on Issue { number title state url repository { nameWithOwner } updatedAt closedAt milestone { title dueOn closedAt } author { login } labels(first: 20) { nodes { name } } parent { number url repository { nameWithOwner } } blockedBy(first: 50) { nodes { number url repository { nameWithOwner } } } blocking(first: 50) { nodes { number url repository { nameWithOwner } } } }
+            ... on PullRequest { number title state url repository { nameWithOwner } updatedAt mergedAt closedAt milestone { title dueOn closedAt } author { login } isDraft }
             ... on DraftIssue { title }
           }
           fieldValues(first: 100) {
@@ -86,6 +87,8 @@ interface GqlContent {
   mergedAt?: string;
   author?: { login?: string } | null;
   isDraft?: boolean;
+  /** Milestone ingestion (#9067): { title, dueOn, closedAt } or null. */
+  milestone?: { title?: string; dueOn?: string | null; closedAt?: string | null } | null;
   labels?: { nodes?: { name?: string }[] } | null;
   /** Sub-issue parent (issues only; null when none). */
   parent?: GqlEdgeNode | null;
@@ -231,6 +234,15 @@ export function parseProjectItems(json: unknown, projectUrl = PROJECT_URL): Proj
       updatedAt: c.updatedAt ?? "",
       ...(c.closedAt ? { closedAt: c.closedAt } : {}),
       ...(c.mergedAt ? { mergedAt: c.mergedAt } : {}),
+      ...(c.milestone && typeof c.milestone.title === "string"
+        ? {
+            milestone: {
+              title: c.milestone.title,
+              dueOn: c.milestone.dueOn ?? null,
+              closedAt: c.milestone.closedAt ?? null,
+            } satisfies MilestoneRef,
+          }
+        : {}),
       status: singleSelect(item, "Status"),
       area: singleSelect(item, "Area"),
       horizon: singleSelect(item, "Horizon"),
@@ -537,6 +549,12 @@ export function isProjectPoolItem(v: unknown): v is ProjectPoolItem {
     (p.updatedAt === undefined || p.updatedAt === "" || isIsoDate(p.updatedAt)) &&
     (p.closedAt === undefined || typeof p.closedAt === "string") &&
     (p.mergedAt === undefined || typeof p.mergedAt === "string") &&
+    (p.milestone === undefined ||
+      (typeof p.milestone === "object" &&
+        p.milestone !== null &&
+        typeof p.milestone.title === "string" &&
+        (p.milestone.dueOn === null || typeof p.milestone.dueOn === "string") &&
+        (p.milestone.closedAt === null || typeof p.milestone.closedAt === "string"))) &&
     (p.state === "open" || p.state === "closed" || p.state === "merged") &&
     (p.parentRef === undefined || isValidRef(p.parentRef)) &&
     (p.epicRef === undefined || isValidRef(p.epicRef)) &&

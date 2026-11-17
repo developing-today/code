@@ -137,6 +137,37 @@ jobs:
           fi
           echo "pm-stack Python suites: test_poll.py + test_claimant.py + test/test_claimant.py (#7670) + grist discovery passed."
 
+      # Python suite for #10423: pm-stack/scheduled-history/
+      # test_collect.py (19 checks, the regression suite for the
+      # scheduled-history reconciler/collector from #2174 Gap 1) was
+      # run by no workflow. The suite is script-style (not
+      # unittest-discoverable), so it is run directly; the file is
+      # asserted to exist first and its checks-passed line is
+      # required in the output, so a green run cannot be a silently
+      # skipped or empty suite; any failure fails the job. (This
+      # workflow runs nightly on main with no path filters, per the
+      # 2026-11-16 nightly-CI policy — being a step here is the
+      # coverage; there is no path filter to extend.)
+      - name: Test scheduled-history collector Python suite
+        run: |
+          t=pm-stack/scheduled-history/test_collect.py
+          if [ ! -f "$t" ]; then
+            echo "::error::Missing suite file $t — the scheduled-history collector suite was not run."
+            exit 1
+          fi
+          rc=0
+          out="$(python3 "$t" 2>&1)" || rc=$?
+          printf '%s\n' "$out"
+          if [ "$rc" -ne 0 ]; then
+            echo "::error::scheduled-history collector suite failed (exit $rc)."
+            exit 1
+          fi
+          if ! printf '%s' "$out" | grep -q 'checks passed'; then
+            echo "::error::scheduled-history collector suite did not report its checks-passed line — the suite did not run in full."
+            exit 1
+          fi
+          echo "scheduled-history collector suite passed."
+
       # Required inputs are explicit so discovery cannot silently drop a suite.
       - name: Test claimant launch, handoff, and batch dispatch (#9877)
         working-directory: pm-stack/opencode-claimant

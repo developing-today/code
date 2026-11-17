@@ -4,6 +4,7 @@
 Run with: python3 -m unittest discover -s pkgs/laptop-agent/tests
 Wired as the flake check `laptop-agent-tests` (Linux).
 """
+
 import contextlib
 import http.client
 import io
@@ -34,18 +35,24 @@ class EmptyTokenTest(unittest.TestCase):
     """PR #1459 codex P1: an empty/whitespace token must fail closed."""
 
     def _run_with_token(self, text):
-        with tempfile.NamedTemporaryFile("w", suffix="-token",
-                                         delete=False) as f:
+        with tempfile.NamedTemporaryFile("w", suffix="-token", delete=False) as f:
             f.write(text)
             token = f.name
         try:
-            env = dict(os.environ,
-                       LAPTOP_AGENT_TOKEN_FILE=token,
-                       LAPTOP_AGENT_HOST="127.0.0.1",
-                       LAPTOP_AGENT_PORT=str(free_port()),
-                       LAPTOP_AGENT_STATE=tempfile.mkdtemp())
-            return subprocess.run([sys.executable, str(AGENT)], env=env,
-                                  capture_output=True, text=True, timeout=20)
+            env = dict(
+                os.environ,
+                LAPTOP_AGENT_TOKEN_FILE=token,
+                LAPTOP_AGENT_HOST="127.0.0.1",
+                LAPTOP_AGENT_PORT=str(free_port()),
+                LAPTOP_AGENT_STATE=tempfile.mkdtemp(),
+            )
+            return subprocess.run(
+                [sys.executable, str(AGENT)],
+                env=env,
+                capture_output=True,
+                text=True,
+                timeout=20,
+            )
         finally:
             os.unlink(token)
 
@@ -59,13 +66,20 @@ class EmptyTokenTest(unittest.TestCase):
         self.assertEqual(p.returncode, 3, p.stderr)
 
     def test_missing_token_file_refuses_to_start(self):
-        env = dict(os.environ,
-                   LAPTOP_AGENT_TOKEN_FILE="/nonexistent/token",
-                   LAPTOP_AGENT_HOST="127.0.0.1",
-                   LAPTOP_AGENT_PORT=str(free_port()),
-                   LAPTOP_AGENT_STATE=tempfile.mkdtemp())
-        p = subprocess.run([sys.executable, str(AGENT)], env=env,
-                           capture_output=True, text=True, timeout=20)
+        env = dict(
+            os.environ,
+            LAPTOP_AGENT_TOKEN_FILE="/nonexistent/token",
+            LAPTOP_AGENT_HOST="127.0.0.1",
+            LAPTOP_AGENT_PORT=str(free_port()),
+            LAPTOP_AGENT_STATE=tempfile.mkdtemp(),
+        )
+        p = subprocess.run(
+            [sys.executable, str(AGENT)],
+            env=env,
+            capture_output=True,
+            text=True,
+            timeout=20,
+        )
         self.assertEqual(p.returncode, 3, p.stderr)
 
 
@@ -73,19 +87,25 @@ class StartupEnvValidationTest(unittest.TestCase):
     """#1510: invalid PORT/SLOTS must exit 3 naming var+value, no traceback."""
 
     def _run_with_env(self, extra):
-        with tempfile.NamedTemporaryFile("w", suffix="-token",
-                                         delete=False) as f:
+        with tempfile.NamedTemporaryFile("w", suffix="-token", delete=False) as f:
             f.write("test-token\n")
             token = f.name
         try:
-            env = dict(os.environ,
-                       LAPTOP_AGENT_TOKEN_FILE=token,
-                       LAPTOP_AGENT_HOST="127.0.0.1",
-                       LAPTOP_AGENT_PORT=str(free_port()),
-                       LAPTOP_AGENT_STATE=tempfile.mkdtemp())
+            env = dict(
+                os.environ,
+                LAPTOP_AGENT_TOKEN_FILE=token,
+                LAPTOP_AGENT_HOST="127.0.0.1",
+                LAPTOP_AGENT_PORT=str(free_port()),
+                LAPTOP_AGENT_STATE=tempfile.mkdtemp(),
+            )
             env.update(extra)
-            return subprocess.run([sys.executable, str(AGENT)], env=env,
-                                  capture_output=True, text=True, timeout=20)
+            return subprocess.run(
+                [sys.executable, str(AGENT)],
+                env=env,
+                capture_output=True,
+                text=True,
+                timeout=20,
+            )
         finally:
             os.unlink(token)
 
@@ -117,19 +137,24 @@ class AuthHeaderTest(unittest.TestCase):
             f.write(token + "\n")
             token_path = f.name
         port = free_port()
-        env = dict(os.environ,
-                   LAPTOP_AGENT_TOKEN_FILE=token_path,
-                   LAPTOP_AGENT_HOST="127.0.0.1",
-                   LAPTOP_AGENT_PORT=str(port),
-                   LAPTOP_AGENT_STATE=tempfile.mkdtemp())
-        proc = subprocess.Popen([sys.executable, str(AGENT)], env=env,
-                                stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        env = dict(
+            os.environ,
+            LAPTOP_AGENT_TOKEN_FILE=token_path,
+            LAPTOP_AGENT_HOST="127.0.0.1",
+            LAPTOP_AGENT_PORT=str(port),
+            LAPTOP_AGENT_STATE=tempfile.mkdtemp(),
+        )
+        proc = subprocess.Popen(
+            [sys.executable, str(AGENT)],
+            env=env,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
         try:
             deadline = time.time() + 10
             while time.time() < deadline:
                 try:
-                    urllib.request.urlopen(
-                        f"http://127.0.0.1:{port}/health", timeout=1)
+                    urllib.request.urlopen(f"http://127.0.0.1:{port}/health", timeout=1)
                 except urllib.error.HTTPError as e:
                     self.assertEqual(e.code, 401)
                     break
@@ -138,8 +163,8 @@ class AuthHeaderTest(unittest.TestCase):
             else:
                 self.fail("agent did not start")
             req = urllib.request.Request(
-                f"http://127.0.0.1:{port}/health",
-                headers={"X-Agent-Token": token})
+                f"http://127.0.0.1:{port}/health", headers={"X-Agent-Token": token}
+            )
             with urllib.request.urlopen(req, timeout=5) as r:
                 self.assertEqual(r.status, 200)
                 self.assertTrue(json.loads(r.read())["ok"])
@@ -161,19 +186,23 @@ class AuthNonAsciiTest(unittest.TestCase):
     """
 
     def _start_agent(self, token_text):
-        f = tempfile.NamedTemporaryFile("w", encoding="utf-8",
-                                        delete=False)
+        f = tempfile.NamedTemporaryFile("w", encoding="utf-8", delete=False)
         f.write(token_text + "\n")
         f.close()
         port = free_port()
-        env = dict(os.environ,
-                   LAPTOP_AGENT_TOKEN_FILE=f.name,
-                   LAPTOP_AGENT_HOST="127.0.0.1",
-                   LAPTOP_AGENT_PORT=str(port),
-                   LAPTOP_AGENT_STATE=tempfile.mkdtemp())
-        proc = subprocess.Popen([sys.executable, str(AGENT)], env=env,
-                                stdout=subprocess.PIPE,
-                                stderr=subprocess.PIPE)
+        env = dict(
+            os.environ,
+            LAPTOP_AGENT_TOKEN_FILE=f.name,
+            LAPTOP_AGENT_HOST="127.0.0.1",
+            LAPTOP_AGENT_PORT=str(port),
+            LAPTOP_AGENT_STATE=tempfile.mkdtemp(),
+        )
+        proc = subprocess.Popen(
+            [sys.executable, str(AGENT)],
+            env=env,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
         self.addCleanup(os.unlink, f.name)
         self.addCleanup(proc.kill)
         deadline = time.time() + 10
@@ -188,10 +217,8 @@ class AuthNonAsciiTest(unittest.TestCase):
         self.fail("agent did not start")
 
     def _raw_health(self, port, token_bytes):
-        with socket.create_connection(("127.0.0.1", port),
-                                      timeout=5) as sock:
-            lines = [b"GET /health HTTP/1.1", b"Host: 127.0.0.1",
-                     b"Connection: close"]
+        with socket.create_connection(("127.0.0.1", port), timeout=5) as sock:
+            lines = [b"GET /health HTTP/1.1", b"Host: 127.0.0.1", b"Connection: close"]
             if token_bytes is not None:
                 lines.append(b"X-Agent-Token: " + token_bytes)
             sock.sendall(b"\r\n".join(lines) + b"\r\n\r\n")
@@ -210,8 +237,7 @@ class AuthNonAsciiTest(unittest.TestCase):
         self.assertEqual(wrong_status, 401)
         self.assertEqual(json.loads(wrong_body), {"error": "bad token"})
         for enc in ("utf-8", "latin-1"):
-            status, body = self._raw_health(
-                port, "caf\u00e9-token".encode(enc))
+            status, body = self._raw_health(port, "caf\u00e9-token".encode(enc))
             self.assertEqual(status, 401, enc)
             self.assertEqual(json.loads(body), {"error": "bad token"}, enc)
             self.assertNotIn(b"TypeError", body)
@@ -230,8 +256,7 @@ class AuthNonAsciiTest(unittest.TestCase):
 
 class TailFileTest(unittest.TestCase):
     def test_job_public_samples_state_before_reading_spools(self):
-        with tempfile.NamedTemporaryFile("w", suffix="-token",
-                                         delete=False) as f:
+        with tempfile.NamedTemporaryFile("w", suffix="-token", delete=False) as f:
             f.write("tail-test-token\n")
             token_path = f.name
         os.environ.setdefault("LAPTOP_AGENT_TOKEN_FILE", token_path)
@@ -245,10 +270,17 @@ class TailFileTest(unittest.TestCase):
                 spool.mkdir(parents=True)
                 (spool / "stdout").write_bytes(b"")
                 (spool / "stderr").write_bytes(b"")
-                job = {"id": job_id, "state": "running", "proc": None,
-                       "exit": None, "cwd": "/", "cmd_repr": "test",
-                       "started_at": time.time(), "ended_at": None,
-                       "interrupted": False}
+                job = {
+                    "id": job_id,
+                    "state": "running",
+                    "proc": None,
+                    "exit": None,
+                    "cwd": "/",
+                    "cmd_repr": "test",
+                    "started_at": time.time(),
+                    "ended_at": None,
+                    "interrupted": False,
+                }
 
                 def finish_job(current):
                     (spool / "stdout").write_bytes(b"final output")
@@ -271,6 +303,7 @@ class TailFileTest(unittest.TestCase):
         os.environ.setdefault("LAPTOP_AGENT_TOKEN_FILE", token_path)
         sys.path.insert(0, str(AGENT.parent))
         import laptop_agent as la
+
         with tempfile.NamedTemporaryFile(delete=False) as f:
             f.write(b"x" * 100 + b"END")
             path = Path(f.name)
@@ -285,7 +318,6 @@ class TailFileTest(unittest.TestCase):
             os.unlink(path)
 
 
-
 class JobsListShapeTest(unittest.TestCase):
     """Issue #1503: GET /jobs is a summary; output lives on /jobs/<id>.
 
@@ -295,13 +327,13 @@ class JobsListShapeTest(unittest.TestCase):
     """
 
     def _import_agent(self):
-        with tempfile.NamedTemporaryFile("w", suffix="-token",
-                                         delete=False) as f:
+        with tempfile.NamedTemporaryFile("w", suffix="-token", delete=False) as f:
             f.write("jobs-list-test-token\n")
             token_path = f.name
         os.environ.setdefault("LAPTOP_AGENT_TOKEN_FILE", token_path)
         sys.path.insert(0, str(AGENT.parent))
         import laptop_agent as la
+
         return la
 
     def test_summary_has_no_output_but_single_job_shape_does(self):
@@ -313,15 +345,31 @@ class JobsListShapeTest(unittest.TestCase):
                 spool.mkdir(parents=True)
                 (spool / "stdout").write_bytes(b"known stdout payload")
                 (spool / "stderr").write_bytes(b"known stderr payload")
-                job = {"id": job_id, "state": "done", "proc": None,
-                       "exit": 0, "cwd": "/", "cmd_repr": "test",
-                       "started_at": time.time(), "ended_at": time.time(),
-                       "interrupted": False}
+                job = {
+                    "id": job_id,
+                    "state": "done",
+                    "proc": None,
+                    "exit": 0,
+                    "cwd": "/",
+                    "cmd_repr": "test",
+                    "started_at": time.time(),
+                    "ended_at": time.time(),
+                    "interrupted": False,
+                }
                 summary = la.job_summary(job)
                 full = la.job_public(job)
-        for key in ("job_id", "state", "exit", "cwd", "cmd",
-                    "started_at", "duration_ms", "interrupted",
-                    "out_next", "err_next"):
+        for key in (
+            "job_id",
+            "state",
+            "exit",
+            "cwd",
+            "cmd",
+            "started_at",
+            "duration_ms",
+            "interrupted",
+            "out_next",
+            "err_next",
+        ):
             self.assertIn(key, summary)
         self.assertNotIn("stdout", summary)
         self.assertNotIn("stderr", summary)
@@ -338,22 +386,29 @@ class JobsListShapeTest(unittest.TestCase):
             f.write(token + "\n")
             token_path = f.name
         port = free_port()
-        env = dict(os.environ,
-                   LAPTOP_AGENT_TOKEN_FILE=token_path,
-                   LAPTOP_AGENT_HOST="127.0.0.1",
-                   LAPTOP_AGENT_PORT=str(port),
-                   LAPTOP_AGENT_STATE=tempfile.mkdtemp())
-        proc = subprocess.Popen([sys.executable, str(AGENT)], env=env,
-                                stdout=subprocess.PIPE,
-                                stderr=subprocess.PIPE)
-        headers = {"X-Agent-Token": token,
-                   "Content-Type": "application/json"}
+        env = dict(
+            os.environ,
+            LAPTOP_AGENT_TOKEN_FILE=token_path,
+            LAPTOP_AGENT_HOST="127.0.0.1",
+            LAPTOP_AGENT_PORT=str(port),
+            LAPTOP_AGENT_STATE=tempfile.mkdtemp(),
+        )
+        proc = subprocess.Popen(
+            [sys.executable, str(AGENT)],
+            env=env,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
+        headers = {"X-Agent-Token": token, "Content-Type": "application/json"}
 
         def call(method, path, body=None):
             data = json.dumps(body).encode() if body is not None else None
             req = urllib.request.Request(
-                f"http://127.0.0.1:{port}{path}", data=data,
-                headers=headers, method=method)
+                f"http://127.0.0.1:{port}{path}",
+                data=data,
+                headers=headers,
+                method=method,
+            )
             with urllib.request.urlopen(req, timeout=5) as r:
                 return json.loads(r.read())
 
@@ -367,11 +422,19 @@ class JobsListShapeTest(unittest.TestCase):
                     if time.time() > deadline:
                         raise
                     time.sleep(0.1)
-            job_id = call("POST", "/jobs", {
-                "cwd": "/",
-                "argv": [sys.executable, "-c",
-                         "import sys; sys.stdout.write('k' * 64); "
-                         "sys.stderr.write('e' * 64)"]})["job_id"]
+            job_id = call(
+                "POST",
+                "/jobs",
+                {
+                    "cwd": "/",
+                    "argv": [
+                        sys.executable,
+                        "-c",
+                        "import sys; sys.stdout.write('k' * 64); "
+                        "sys.stderr.write('e' * 64)",
+                    ],
+                },
+            )["job_id"]
             deadline = time.time() + 10
             single = None
             while time.time() < deadline:
@@ -397,7 +460,6 @@ class JobsListShapeTest(unittest.TestCase):
             os.unlink(token_path)
 
 
-
 class JobSlotsTest(unittest.TestCase):
     """Issue #1545: POST /jobs shares the LAPTOP_AGENT_SLOTS pool.
 
@@ -414,23 +476,30 @@ class JobSlotsTest(unittest.TestCase):
             f.write(token + "\n")
             token_path = f.name
         port = free_port()
-        env = dict(os.environ,
-                   LAPTOP_AGENT_TOKEN_FILE=token_path,
-                   LAPTOP_AGENT_HOST="127.0.0.1",
-                   LAPTOP_AGENT_PORT=str(port),
-                   LAPTOP_AGENT_SLOTS="1",
-                   LAPTOP_AGENT_STATE=tempfile.mkdtemp())
-        proc = subprocess.Popen([sys.executable, str(AGENT)], env=env,
-                                stdout=subprocess.PIPE,
-                                stderr=subprocess.PIPE)
-        headers = {"X-Agent-Token": token,
-                   "Content-Type": "application/json"}
+        env = dict(
+            os.environ,
+            LAPTOP_AGENT_TOKEN_FILE=token_path,
+            LAPTOP_AGENT_HOST="127.0.0.1",
+            LAPTOP_AGENT_PORT=str(port),
+            LAPTOP_AGENT_SLOTS="1",
+            LAPTOP_AGENT_STATE=tempfile.mkdtemp(),
+        )
+        proc = subprocess.Popen(
+            [sys.executable, str(AGENT)],
+            env=env,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
+        headers = {"X-Agent-Token": token, "Content-Type": "application/json"}
 
         def call(method, path, body=None):
             data = json.dumps(body).encode() if body is not None else None
             req = urllib.request.Request(
-                f"http://127.0.0.1:{port}{path}", data=data,
-                headers=headers, method=method)
+                f"http://127.0.0.1:{port}{path}",
+                data=data,
+                headers=headers,
+                method=method,
+            )
             try:
                 with urllib.request.urlopen(req, timeout=20) as r:
                     return r.status, json.loads(r.read())
@@ -448,34 +517,42 @@ class JobSlotsTest(unittest.TestCase):
                     if time.time() > deadline:
                         raise
                     time.sleep(0.1)
-            status, body = call("POST", "/jobs", {
-                "cwd": "/",
-                "argv": [sys.executable, "-c",
-                         "import time; time.sleep(30)"]})
+            status, body = call(
+                "POST",
+                "/jobs",
+                {
+                    "cwd": "/",
+                    "argv": [sys.executable, "-c", "import time; time.sleep(30)"],
+                },
+            )
             self.assertEqual(status, 200, body)
             job_id = body["job_id"]
             # The single slot is held for the job's lifetime: a second
             # job must not run concurrently.
-            status, body = call("POST", "/jobs", {
-                "cwd": "/", "argv": [sys.executable, "-c", "pass"]})
+            status, body = call(
+                "POST", "/jobs", {"cwd": "/", "argv": [sys.executable, "-c", "pass"]}
+            )
             self.assertEqual(status, 503, body)
             self.assertEqual(body.get("error"), "busy")
             listing_status, listing = call("GET", "/jobs")
             self.assertEqual(listing_status, 200, listing)
-            running = [j for j in listing["jobs"]
-                       if j["state"] == "running"]
+            running = [j for j in listing["jobs"] if j["state"] == "running"]
             self.assertEqual([j["job_id"] for j in running], [job_id])
             # Shared pool: /exec is busy too while the job holds the slot.
-            status, body = call("POST", "/exec", {
-                "cmds": [{"argv": [sys.executable, "-c", "pass"]}]})
+            status, body = call(
+                "POST", "/exec", {"cmds": [{"argv": [sys.executable, "-c", "pass"]}]}
+            )
             self.assertEqual(status, 503, body)
             # Killing the held job releases the slot for new work.
             status, body = call("POST", f"/jobs/{job_id}/kill")
             self.assertEqual(status, 200, body)
             deadline = time.time() + 15
             while time.time() < deadline:
-                status, body = call("POST", "/jobs", {
-                    "cwd": "/", "argv": [sys.executable, "-c", "pass"]})
+                status, body = call(
+                    "POST",
+                    "/jobs",
+                    {"cwd": "/", "argv": [sys.executable, "-c", "pass"]},
+                )
                 if status == 200:
                     break
                 time.sleep(0.2)
@@ -492,23 +569,30 @@ class JobSlotsTest(unittest.TestCase):
             token_path = f.name
         state_dir = tempfile.mkdtemp()
         port = free_port()
-        env = dict(os.environ,
-                   LAPTOP_AGENT_TOKEN_FILE=token_path,
-                   LAPTOP_AGENT_HOST="127.0.0.1",
-                   LAPTOP_AGENT_PORT=str(port),
-                   LAPTOP_AGENT_SLOTS="1",
-                   LAPTOP_AGENT_STATE=state_dir)
-        proc = subprocess.Popen([sys.executable, str(AGENT)], env=env,
-                                stdout=subprocess.PIPE,
-                                stderr=subprocess.PIPE)
-        headers = {"X-Agent-Token": token,
-                   "Content-Type": "application/json"}
+        env = dict(
+            os.environ,
+            LAPTOP_AGENT_TOKEN_FILE=token_path,
+            LAPTOP_AGENT_HOST="127.0.0.1",
+            LAPTOP_AGENT_PORT=str(port),
+            LAPTOP_AGENT_SLOTS="1",
+            LAPTOP_AGENT_STATE=state_dir,
+        )
+        proc = subprocess.Popen(
+            [sys.executable, str(AGENT)],
+            env=env,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
+        headers = {"X-Agent-Token": token, "Content-Type": "application/json"}
 
         def call(method, path, body=None):
             data = json.dumps(body).encode() if body is not None else None
             req = urllib.request.Request(
-                f"http://127.0.0.1:{port}{path}", data=data,
-                headers=headers, method=method)
+                f"http://127.0.0.1:{port}{path}",
+                data=data,
+                headers=headers,
+                method=method,
+            )
             try:
                 with urllib.request.urlopen(req, timeout=20) as r:
                     return r.status, json.loads(r.read())
@@ -533,15 +617,17 @@ class JobSlotsTest(unittest.TestCase):
             jobs_dir = Path(state_dir) / "jobs"
             jobs_dir.rmdir()
             jobs_dir.write_text("not a directory")
-            status, body = call("POST", "/jobs", {
-                "cwd": "/", "argv": [sys.executable, "-c", "pass"]})
+            status, body = call(
+                "POST", "/jobs", {"cwd": "/", "argv": [sys.executable, "-c", "pass"]}
+            )
             self.assertEqual(status, 400, body)
             self.assertIn("error", body)
 
             jobs_dir.unlink()
             jobs_dir.mkdir()
-            status, body = call("POST", "/jobs", {
-                "cwd": "/", "argv": [sys.executable, "-c", "pass"]})
+            status, body = call(
+                "POST", "/jobs", {"cwd": "/", "argv": [sys.executable, "-c", "pass"]}
+            )
             self.assertEqual(status, 200, body)
             job_id = body["job_id"]
             deadline = time.time() + 10
@@ -553,8 +639,9 @@ class JobSlotsTest(unittest.TestCase):
             self.assertEqual(status, 200, job)
             self.assertEqual(job.get("state"), "done", job)
 
-            status, body = call("POST", "/exec", {
-                "cmds": [{"argv": [sys.executable, "-c", "pass"]}]})
+            status, body = call(
+                "POST", "/exec", {"cmds": [{"argv": [sys.executable, "-c", "pass"]}]}
+            )
             self.assertEqual(status, 200, body)
         finally:
             proc.terminate()
@@ -581,14 +668,19 @@ class MalformedRequestTest(unittest.TestCase):
             f.write(self.token + "\n")
             self.token_path = f.name
         self.port = free_port()
-        env = dict(os.environ,
-                   LAPTOP_AGENT_TOKEN_FILE=self.token_path,
-                   LAPTOP_AGENT_HOST="127.0.0.1",
-                   LAPTOP_AGENT_PORT=str(self.port),
-                   LAPTOP_AGENT_STATE=tempfile.mkdtemp())
-        self.proc = subprocess.Popen([sys.executable, str(AGENT)], env=env,
-                                     stdout=subprocess.PIPE,
-                                     stderr=subprocess.PIPE)
+        env = dict(
+            os.environ,
+            LAPTOP_AGENT_TOKEN_FILE=self.token_path,
+            LAPTOP_AGENT_HOST="127.0.0.1",
+            LAPTOP_AGENT_PORT=str(self.port),
+            LAPTOP_AGENT_STATE=tempfile.mkdtemp(),
+        )
+        self.proc = subprocess.Popen(
+            [sys.executable, str(AGENT)],
+            env=env,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
         deadline = time.time() + 10
         while time.time() < deadline:
             try:
@@ -610,10 +702,12 @@ class MalformedRequestTest(unittest.TestCase):
 
     def _call(self, method, path, body=None, raw=None, conn=None):
         c = conn or self._conn()
-        headers = {"X-Agent-Token": self.token,
-                   "Content-Type": "application/json"}
-        data = raw if raw is not None else (
-            json.dumps(body).encode() if body is not None else None)
+        headers = {"X-Agent-Token": self.token, "Content-Type": "application/json"}
+        data = (
+            raw
+            if raw is not None
+            else (json.dumps(body).encode() if body is not None else None)
+        )
         c.request(method, path, body=data, headers=headers)
         r = c.getresponse()
         payload = r.read()
@@ -694,8 +788,7 @@ class MalformedRequestTest(unittest.TestCase):
         self.assertTrue(body["ok"])
 
     def test_content_length_at_max_body_is_accepted(self):
-        body = {"cmds": [{"cwd": os.getcwd(),
-                          "argv": [sys.executable, "-c", "pass"]}]}
+        body = {"cmds": [{"cwd": os.getcwd(), "argv": [sys.executable, "-c", "pass"]}]}
         raw = json.dumps(body).encode()
         raw += b" " * ((1 << 20) - len(raw))
         status, result = self._call("POST", "/exec", raw=raw)
@@ -704,9 +797,13 @@ class MalformedRequestTest(unittest.TestCase):
 
     def test_exec_timeout_not_an_integer(self):
         self._assert_400_then_health(
-            "POST", "/exec",
-            body={"cmds": [{"argv": [sys.executable, "-c", "pass"]}],
-                  "timeout_s": "abc"})
+            "POST",
+            "/exec",
+            body={
+                "cmds": [{"argv": [sys.executable, "-c", "pass"]}],
+                "timeout_s": "abc",
+            },
+        )
 
     def test_exec_non_finite_timeout_is_rejected(self):
         conn = self._conn()
@@ -714,16 +811,17 @@ class MalformedRequestTest(unittest.TestCase):
             for timeout in (float("nan"), float("inf"), float("-inf")):
                 with self.subTest(timeout=timeout):
                     status, body = self._call(
-                        "POST", "/exec",
-                        body={"cmds": [{"argv": [sys.executable, "-c",
-                                                  "pass"]}],
-                              "timeout_s": timeout},
-                        conn=conn)
+                        "POST",
+                        "/exec",
+                        body={
+                            "cmds": [{"argv": [sys.executable, "-c", "pass"]}],
+                            "timeout_s": timeout,
+                        },
+                        conn=conn,
+                    )
                     self.assertEqual(status, 400, body)
-                    self.assertEqual(
-                        body.get("error"), "timeout_s must be an integer")
-                    status, body = self._call(
-                        "GET", "/health", conn=conn)
+                    self.assertEqual(body.get("error"), "timeout_s must be an integer")
+                    status, body = self._call("GET", "/health", conn=conn)
                     self.assertEqual(status, 200, body)
                     self.assertTrue(body["ok"])
         finally:
@@ -731,36 +829,36 @@ class MalformedRequestTest(unittest.TestCase):
 
     def test_exec_negative_timeout_is_clamped(self):
         status, body = self._call(
-            "POST", "/exec",
-            body={"cmds": [{"cwd": os.getcwd(),
-                             "argv": [sys.executable, "-c", "pass"]}],
-                  "timeout_s": -5})
+            "POST",
+            "/exec",
+            body={
+                "cmds": [{"cwd": os.getcwd(), "argv": [sys.executable, "-c", "pass"]}],
+                "timeout_s": -5,
+            },
+        )
         self.assertEqual(status, 200, body)
         self.assertEqual(body["results"][0]["exit"], 0)
         self.assertNotIn("timeout", body["results"][0])
 
     def test_exec_cmd_without_argv_or_shell(self):
-        self._assert_400_then_health(
-            "POST", "/exec", body={"cmds": [{"cwd": "/"}]})
+        self._assert_400_then_health("POST", "/exec", body={"cmds": [{"cwd": "/"}]})
 
     def test_jobs_without_argv_or_shell(self):
         self._assert_400_then_health("POST", "/jobs", body={})
 
     def test_jobs_argv_not_a_list(self):
-        self._assert_400_then_health(
-            "POST", "/jobs", body={"argv": "echo hi"})
+        self._assert_400_then_health("POST", "/jobs", body={"argv": "echo hi"})
 
     def test_job_query_offsets_malformed(self):
         status, body = self._call(
-            "POST", "/jobs",
-            body={"cwd": os.getcwd(),
-                  "argv": [sys.executable, "-c", "pass"]})
+            "POST",
+            "/jobs",
+            body={"cwd": os.getcwd(), "argv": [sys.executable, "-c", "pass"]},
+        )
         self.assertEqual(status, 200, body)
         job_id = body["job_id"]
-        self._assert_400_then_health(
-            "GET", f"/jobs/{job_id}?out_off=abc")
-        self._assert_400_then_health(
-            "GET", f"/jobs/{job_id}?err_off=-1")
+        self._assert_400_then_health("GET", f"/jobs/{job_id}?out_off=abc")
+        self._assert_400_then_health("GET", f"/jobs/{job_id}?err_off=-1")
 
 
 class PersistedJobTimestampTest(unittest.TestCase):
@@ -776,13 +874,13 @@ class PersistedJobTimestampTest(unittest.TestCase):
     """
 
     def _import_agent(self):
-        with tempfile.NamedTemporaryFile("w", suffix="-token",
-                                         delete=False) as f:
+        with tempfile.NamedTemporaryFile("w", suffix="-token", delete=False) as f:
             f.write("persisted-ts-test-token\n")
             token_path = f.name
         os.environ.setdefault("LAPTOP_AGENT_TOKEN_FILE", token_path)
         sys.path.insert(0, str(AGENT.parent))
         import laptop_agent as la
+
         return la
 
     def _write_job(self, state_dir, job_id, **meta):
@@ -814,11 +912,10 @@ class PersistedJobTimestampTest(unittest.TestCase):
     def test_started_at_string_skipped_healthy_kept_stderr_names_dir(self):
         la = self._import_agent()
         with tempfile.TemporaryDirectory() as state_dir:
-            bad = self._write_job(state_dir, "bad-started",
-                                  started_at="not-a-number",
-                                  ended_at=200.0)
-            self._write_job(state_dir, "healthy",
-                            started_at=100.0, ended_at=150.0)
+            bad = self._write_job(
+                state_dir, "bad-started", started_at="not-a-number", ended_at=200.0
+            )
+            self._write_job(state_dir, "healthy", started_at=100.0, ended_at=150.0)
             stderr = self._load(la, state_dir)
             self.assertNotIn("bad-started", la.JOBS)
             self.assertIn("healthy", la.JOBS)
@@ -831,10 +928,10 @@ class PersistedJobTimestampTest(unittest.TestCase):
     def test_ended_at_string_skipped_summary_and_reaper_succeed(self):
         la = self._import_agent()
         with tempfile.TemporaryDirectory() as state_dir:
-            bad = self._write_job(state_dir, "bad-ended",
-                                  started_at=100.0, ended_at="never")
-            self._write_job(state_dir, "healthy",
-                            started_at=100.0, ended_at=150.0)
+            bad = self._write_job(
+                state_dir, "bad-ended", started_at=100.0, ended_at="never"
+            )
+            self._write_job(state_dir, "healthy", started_at=100.0, ended_at=150.0)
             stderr = self._load(la, state_dir)
             self.assertNotIn("bad-ended", la.JOBS)
             self.assertIn("healthy", la.JOBS)
@@ -843,11 +940,9 @@ class PersistedJobTimestampTest(unittest.TestCase):
             self.assertEqual(len(lines), 1, stderr)
             self.assertIn(str(bad), lines[0])
             with patch.object(la, "STATE_DIR", Path(state_dir)):
-                summaries = [la.job_summary(j)
-                             for j in list(la.JOBS.values())]
+                summaries = [la.job_summary(j) for j in list(la.JOBS.values())]
                 la.reap_old_jobs()
-            self.assertEqual([s["job_id"] for s in summaries],
-                             ["healthy"])
+            self.assertEqual([s["job_id"] for s in summaries], ["healthy"])
 
     def test_done_null_ended_at_stamped_and_reapable(self):
         # Issue #1532: a restored done job with ended_at=null kept the
@@ -858,9 +953,9 @@ class PersistedJobTimestampTest(unittest.TestCase):
         la = self._import_agent()
         with tempfile.TemporaryDirectory() as state_dir:
             now = time.time()
-            spool = self._write_job(state_dir, "done-null-ended",
-                                    started_at=now - 48 * 3600,
-                                    ended_at=None)
+            spool = self._write_job(
+                state_dir, "done-null-ended", started_at=now - 48 * 3600, ended_at=None
+            )
             stderr = self._load(la, state_dir)
             self.assertEqual(stderr, "")
             job = la.JOBS["done-null-ended"]
@@ -873,13 +968,18 @@ class PersistedJobTimestampTest(unittest.TestCase):
                     la.reap_old_jobs()
             self.assertNotIn("done-null-ended", la.JOBS)
             self.assertFalse(spool.exists())
+
     def test_non_object_meta_skipped_healthy_kept(self):
         # Issue #1522: meta.json that is valid JSON but not an object
         # gets the same skip contract as malformed timestamps.
         la = self._import_agent()
-        shapes = [("[1, 2, 3]", "list-meta"), ('"hello"', "string-meta"),
-                  ("42", "number-meta"), ("true", "bool-meta"),
-                  ("null", "null-meta")]
+        shapes = [
+            ("[1, 2, 3]", "list-meta"),
+            ('"hello"', "string-meta"),
+            ("42", "number-meta"),
+            ("true", "bool-meta"),
+            ("null", "null-meta"),
+        ]
         for raw, job_id in shapes:
             with self.subTest(shape=raw):
                 with tempfile.TemporaryDirectory() as state_dir:
@@ -888,8 +988,9 @@ class PersistedJobTimestampTest(unittest.TestCase):
                     (spool / "meta.json").write_text(raw)
                     (spool / "stdout").write_bytes(b"")
                     (spool / "stderr").write_bytes(b"")
-                    self._write_job(state_dir, "healthy",
-                                    started_at=100.0, ended_at=150.0)
+                    self._write_job(
+                        state_dir, "healthy", started_at=100.0, ended_at=150.0
+                    )
                     stderr = self._load(la, state_dir)
                     self.assertNotIn(job_id, la.JOBS)
                     self.assertIn("healthy", la.JOBS)
@@ -904,51 +1005,44 @@ class PersistedJobTimestampTest(unittest.TestCase):
             ("bool-started", {"started_at": True, "ended_at": 150.0}),
             ("list-ended", {"started_at": 100.0, "ended_at": [150.0]}),
             ("numeric-string", {"started_at": "123", "ended_at": 150.0}),
-            ("object-started", {"started_at": {"t": 1},
-                                "ended_at": 150.0}),
+            ("object-started", {"started_at": {"t": 1}, "ended_at": 150.0}),
         ]
         for job_id, stamps in cases:
             with self.subTest(job_id=job_id):
                 with tempfile.TemporaryDirectory() as state_dir:
                     self._write_job(state_dir, job_id, **stamps)
-                    self._write_job(state_dir, "healthy",
-                                    started_at=100.0, ended_at=150.0)
+                    self._write_job(
+                        state_dir, "healthy", started_at=100.0, ended_at=150.0
+                    )
                     stderr = self._load(la, state_dir)
                     self.assertNotIn(job_id, la.JOBS)
                     self.assertIn("healthy", la.JOBS)
-                    lines = [ln for ln in stderr.splitlines()
-                             if ln.strip()]
+                    lines = [ln for ln in stderr.splitlines() if ln.strip()]
                     self.assertEqual(len(lines), 1, stderr)
                     self.assertIn(job_id, lines[0])
 
     def test_nonfinite_timestamps_are_skipped(self):
         la = self._import_agent()
         cases = [
-            ("nan-started", {"started_at": float("nan"),
-                             "ended_at": 150.0}),
-            ("nan-ended", {"started_at": 100.0,
-                           "ended_at": float("nan")}),
-            ("inf-started", {"started_at": float("inf"),
-                             "ended_at": 150.0}),
-            ("neg-inf-started", {"started_at": float("-inf"),
-                                 "ended_at": 150.0}),
-            ("inf-ended", {"started_at": 100.0,
-                           "ended_at": float("inf")}),
-            ("neg-inf-ended", {"started_at": 100.0,
-                               "ended_at": float("-inf")}),
+            ("nan-started", {"started_at": float("nan"), "ended_at": 150.0}),
+            ("nan-ended", {"started_at": 100.0, "ended_at": float("nan")}),
+            ("inf-started", {"started_at": float("inf"), "ended_at": 150.0}),
+            ("neg-inf-started", {"started_at": float("-inf"), "ended_at": 150.0}),
+            ("inf-ended", {"started_at": 100.0, "ended_at": float("inf")}),
+            ("neg-inf-ended", {"started_at": 100.0, "ended_at": float("-inf")}),
         ]
         for job_id, stamps in cases:
             with self.subTest(job_id=job_id):
                 with tempfile.TemporaryDirectory() as state_dir:
                     bad = self._write_job(state_dir, job_id, **stamps)
-                    self._write_job(state_dir, "healthy",
-                                    started_at=100.0, ended_at=150.0)
+                    self._write_job(
+                        state_dir, "healthy", started_at=100.0, ended_at=150.0
+                    )
                     stderr = self._load(la, state_dir)
                     self.assertNotIn(job_id, la.JOBS)
                     self.assertIn("healthy", la.JOBS)
                     self.assertTrue(bad.exists())
-                    lines = [ln for ln in stderr.splitlines()
-                             if ln.strip()]
+                    lines = [ln for ln in stderr.splitlines() if ln.strip()]
                     self.assertEqual(len(lines), 1, stderr)
                     self.assertIn(str(bad), lines[0])
 
@@ -967,50 +1061,52 @@ class PersistedJobTimestampTest(unittest.TestCase):
             with self.subTest(job_id=job_id):
                 with tempfile.TemporaryDirectory() as state_dir:
                     bad = self._write_job(state_dir, job_id, **stamps)
-                    self._write_job(state_dir, "healthy",
-                                    started_at=100.0, ended_at=150.0)
+                    self._write_job(
+                        state_dir, "healthy", started_at=100.0, ended_at=150.0
+                    )
                     stderr = self._load(la, state_dir)
                     self.assertNotIn(job_id, la.JOBS)
                     self.assertIn("healthy", la.JOBS)
                     self.assertTrue(bad.exists())
-                    lines = [ln for ln in stderr.splitlines()
-                             if ln.strip()]
+                    lines = [ln for ln in stderr.splitlines() if ln.strip()]
                     self.assertEqual(len(lines), 1, stderr)
                     self.assertIn(str(bad), lines[0])
 
     def test_nonfinite_skipped_summary_and_public_succeed(self):
         la = self._import_agent()
         with tempfile.TemporaryDirectory() as state_dir:
-            self._write_job(state_dir, "nan-started",
-                            started_at=float("nan"), ended_at=150.0)
-            self._write_job(state_dir, "inf-ended",
-                            started_at=100.0, ended_at=float("inf"))
-            self._write_job(state_dir, "healthy",
-                            started_at=100.0, ended_at=150.0)
+            self._write_job(
+                state_dir, "nan-started", started_at=float("nan"), ended_at=150.0
+            )
+            self._write_job(
+                state_dir, "inf-ended", started_at=100.0, ended_at=float("inf")
+            )
+            self._write_job(state_dir, "healthy", started_at=100.0, ended_at=150.0)
             stderr = self._load(la, state_dir)
             self.assertEqual(sorted(la.JOBS), ["healthy"])
             lines = [ln for ln in stderr.splitlines() if ln.strip()]
             self.assertEqual(len(lines), 2, stderr)
             with patch.object(la, "STATE_DIR", Path(state_dir)):
-                summaries = [la.job_summary(j)
-                             for j in list(la.JOBS.values())]
-                publics = [la.job_public(j)
-                           for j in list(la.JOBS.values())]
+                summaries = [la.job_summary(j) for j in list(la.JOBS.values())]
+                publics = [la.job_public(j) for j in list(la.JOBS.values())]
                 la.reap_old_jobs()
-            self.assertEqual([s["job_id"] for s in summaries],
-                             ["healthy"])
+            self.assertEqual([s["job_id"] for s in summaries], ["healthy"])
             self.assertEqual(summaries[0]["duration_ms"], 50000)
-            self.assertEqual([p["job_id"] for p in publics],
-                             ["healthy"])
+            self.assertEqual([p["job_id"] for p in publics], ["healthy"])
             self.assertEqual(publics[0]["duration_ms"], 50000)
 
     def test_well_formed_restore_unchanged_and_running_interrupted(self):
         la = self._import_agent()
         with tempfile.TemporaryDirectory() as state_dir:
-            self._write_job(state_dir, "done-job",
-                            started_at=100.0, ended_at=150.5)
-            self._write_job(state_dir, "running-job", state="running",
-                            exit=None, started_at=100.0, ended_at=None)
+            self._write_job(state_dir, "done-job", started_at=100.0, ended_at=150.5)
+            self._write_job(
+                state_dir,
+                "running-job",
+                state="running",
+                exit=None,
+                started_at=100.0,
+                ended_at=None,
+            )
             self._write_job(state_dir, "no-stamps")
             stderr = self._load(la, state_dir)
             self.assertEqual(stderr, "")
@@ -1049,17 +1145,17 @@ class PersistedJobTimestampTest(unittest.TestCase):
         for job_id, bad_id in cases:
             with self.subTest(job_id=job_id, bad_id=repr(bad_id)):
                 with tempfile.TemporaryDirectory() as state_dir:
-                    bad = self._write_job(state_dir, job_id, id=bad_id,
-                                          started_at=100.0,
-                                          ended_at=150.0)
-                    self._write_job(state_dir, "healthy",
-                                    started_at=100.0, ended_at=150.0)
+                    bad = self._write_job(
+                        state_dir, job_id, id=bad_id, started_at=100.0, ended_at=150.0
+                    )
+                    self._write_job(
+                        state_dir, "healthy", started_at=100.0, ended_at=150.0
+                    )
                     stderr = self._load(la, state_dir)
                     self.assertNotIn(job_id, la.JOBS)
                     self.assertEqual(sorted(la.JOBS), ["healthy"])
                     self.assertTrue(bad.exists())
-                    lines = [ln for ln in stderr.splitlines()
-                             if ln.strip()]
+                    lines = [ln for ln in stderr.splitlines() if ln.strip()]
                     self.assertEqual(len(lines), 1, stderr)
                     self.assertIn(str(bad), lines[0])
                     self.assertIn("id", lines[0])
@@ -1071,12 +1167,17 @@ class PersistedJobTimestampTest(unittest.TestCase):
         # must be skipped before any of that, spool untouched.
         la = self._import_agent()
         with tempfile.TemporaryDirectory() as state_dir:
-            bad = self._write_job(state_dir, "running-bad-id", id=42,
-                                  state="running", exit=None,
-                                  started_at=100.0, ended_at=None)
+            bad = self._write_job(
+                state_dir,
+                "running-bad-id",
+                id=42,
+                state="running",
+                exit=None,
+                started_at=100.0,
+                ended_at=None,
+            )
             before = (bad / "meta.json").read_text()
-            self._write_job(state_dir, "healthy",
-                            started_at=100.0, ended_at=150.0)
+            self._write_job(state_dir, "healthy", started_at=100.0, ended_at=150.0)
             stderr = self._load(la, state_dir)
             self.assertEqual(sorted(la.JOBS), ["healthy"])
             self.assertEqual((bad / "meta.json").read_text(), before)
@@ -1086,45 +1187,44 @@ class PersistedJobTimestampTest(unittest.TestCase):
     def test_non_string_id_summary_public_and_reaper_succeed(self):
         la = self._import_agent()
         with tempfile.TemporaryDirectory() as state_dir:
-            self._write_job(state_dir, "list-id-job", id=[1, 2],
-                            started_at=100.0, ended_at=150.0)
-            self._write_job(state_dir, "numeric-id-job", id=7,
-                            started_at=100.0, ended_at=150.0)
-            self._write_job(state_dir, "healthy",
-                            started_at=100.0, ended_at=150.0)
+            self._write_job(
+                state_dir, "list-id-job", id=[1, 2], started_at=100.0, ended_at=150.0
+            )
+            self._write_job(
+                state_dir, "numeric-id-job", id=7, started_at=100.0, ended_at=150.0
+            )
+            self._write_job(state_dir, "healthy", started_at=100.0, ended_at=150.0)
             stderr = self._load(la, state_dir)
             self.assertEqual(sorted(la.JOBS), ["healthy"])
             lines = [ln for ln in stderr.splitlines() if ln.strip()]
             self.assertEqual(len(lines), 2, stderr)
             with patch.object(la, "STATE_DIR", Path(state_dir)):
-                summaries = [la.job_summary(j)
-                             for j in list(la.JOBS.values())]
-                publics = [la.job_public(j)
-                           for j in list(la.JOBS.values())]
+                summaries = [la.job_summary(j) for j in list(la.JOBS.values())]
+                publics = [la.job_public(j) for j in list(la.JOBS.values())]
                 la.reap_old_jobs()
-            self.assertEqual([s["job_id"] for s in summaries],
-                             ["healthy"])
-            self.assertEqual([p["job_id"] for p in publics],
-                             ["healthy"])
+            self.assertEqual([s["job_id"] for s in summaries], ["healthy"])
+            self.assertEqual([p["job_id"] for p in publics], ["healthy"])
 
     def test_missing_null_empty_id_falls_back_to_dir_name(self):
         # Acceptance #1548: missing/null/empty-string id keeps the
         # current fallback to the spool directory name.
         la = self._import_agent()
         with tempfile.TemporaryDirectory() as state_dir:
-            self._write_job(state_dir, "null-id", id=None,
-                            started_at=100.0, ended_at=150.0)
-            self._write_job(state_dir, "empty-id", id="",
-                            started_at=100.0, ended_at=150.0)
-            missing = self._write_job(state_dir, "missing-id",
-                                      started_at=100.0, ended_at=150.0)
+            self._write_job(
+                state_dir, "null-id", id=None, started_at=100.0, ended_at=150.0
+            )
+            self._write_job(
+                state_dir, "empty-id", id="", started_at=100.0, ended_at=150.0
+            )
+            missing = self._write_job(
+                state_dir, "missing-id", started_at=100.0, ended_at=150.0
+            )
             meta = json.loads((missing / "meta.json").read_text())
             del meta["id"]
             (missing / "meta.json").write_text(json.dumps(meta))
             stderr = self._load(la, state_dir)
             self.assertEqual(stderr, "")
-            self.assertEqual(sorted(la.JOBS),
-                             ["empty-id", "missing-id", "null-id"])
+            self.assertEqual(sorted(la.JOBS), ["empty-id", "missing-id", "null-id"])
 
     def test_parent_string_id_is_skipped_without_reaping_outside_jobs(self):
         # Issue #1554: a persisted traversal id must not escape the jobs
@@ -1133,10 +1233,15 @@ class PersistedJobTimestampTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as state_dir:
             state = Path(state_dir)
             bad = self._write_job(
-                state_dir, "bad-parent-id", id="..",
-                started_at=100.0, ended_at=time.time() - 2 * la.JOB_TTL_S)
+                state_dir,
+                "bad-parent-id",
+                id="..",
+                started_at=100.0,
+                ended_at=time.time() - 2 * la.JOB_TTL_S,
+            )
             healthy = self._write_job(
-                state_dir, "healthy", started_at=100.0, ended_at=time.time())
+                state_dir, "healthy", started_at=100.0, ended_at=time.time()
+            )
             sentinel = state / "keep-me"
             sentinel.write_text("outside the jobs directory")
 
@@ -1149,10 +1254,8 @@ class PersistedJobTimestampTest(unittest.TestCase):
             self.assertIn("id", lines[0])
 
             with patch.object(la, "STATE_DIR", state):
-                summaries = [la.job_summary(j)
-                             for j in list(la.JOBS.values())]
-                publics = [la.job_public(j)
-                           for j in list(la.JOBS.values())]
+                summaries = [la.job_summary(j) for j in list(la.JOBS.values())]
+                publics = [la.job_public(j) for j in list(la.JOBS.values())]
                 la.reap_old_jobs()
 
             self.assertEqual([s["job_id"] for s in summaries], ["healthy"])
@@ -1165,28 +1268,44 @@ class PersistedJobTimestampTest(unittest.TestCase):
         la = self._import_agent()
         with tempfile.TemporaryDirectory() as state_dir:
             bad_separator = self._write_job(
-                state_dir, "bad-separator", id="../escape", state="running",
-                exit=None, started_at=100.0, ended_at=None)
+                state_dir,
+                "bad-separator",
+                id="../escape",
+                state="running",
+                exit=None,
+                started_at=100.0,
+                ended_at=None,
+            )
             bad_separator_meta = (bad_separator / "meta.json").read_text()
             cross_job = self._write_job(
-                state_dir, "cross-job", id="healthy",
-                started_at=100.0, ended_at=time.time() - 2 * la.JOB_TTL_S)
+                state_dir,
+                "cross-job",
+                id="healthy",
+                started_at=100.0,
+                ended_at=time.time() - 2 * la.JOB_TTL_S,
+            )
             healthy = self._write_job(
-                state_dir, "healthy", started_at=100.0, ended_at=time.time())
+                state_dir, "healthy", started_at=100.0, ended_at=time.time()
+            )
 
             stderr = self._load(la, state_dir)
             self.assertEqual(sorted(la.JOBS), ["healthy"])
             self.assertEqual(la.JOBS["healthy"]["cmd_repr"], "test")
             self.assertTrue(bad_separator.exists())
-            self.assertEqual((bad_separator / "meta.json").read_text(),
-                             bad_separator_meta)
+            self.assertEqual(
+                (bad_separator / "meta.json").read_text(), bad_separator_meta
+            )
             self.assertFalse((Path(state_dir) / "escape").exists())
             self.assertTrue(cross_job.exists())
             lines = [ln for ln in stderr.splitlines() if ln.strip()]
             self.assertEqual(len(lines), 2, stderr)
-            self.assertTrue(all(any(str(spool) in line for line in lines)
-                                for spool in (bad_separator, cross_job)),
-                            stderr)
+            self.assertTrue(
+                all(
+                    any(str(spool) in line for line in lines)
+                    for spool in (bad_separator, cross_job)
+                ),
+                stderr,
+            )
 
             with patch.object(la, "STATE_DIR", Path(state_dir)):
                 la.reap_old_jobs()
@@ -1204,8 +1323,14 @@ class PersistedJobTimestampTest(unittest.TestCase):
             outside.mkdir()
             (jobs / "linked").symlink_to(outside, target_is_directory=True)
             with patch.object(la, "STATE_DIR", state):
-                for job_id in ("..", ".", "../outside", "nested/job",
-                               "nested\\job", "linked"):
+                for job_id in (
+                    "..",
+                    ".",
+                    "../outside",
+                    "nested/job",
+                    "nested\\job",
+                    "linked",
+                ):
                     with self.subTest(job_id=job_id):
                         with self.assertRaises(ValueError):
                             la.job_dir(job_id)
@@ -1218,11 +1343,15 @@ class PersistedJobTimestampTest(unittest.TestCase):
         # unchanged through _write_meta across repeated loads.
         la = self._import_agent()
         with tempfile.TemporaryDirectory() as state_dir:
-            self._write_job(state_dir, "interrupted-job",
-                            interrupted=True, exit=None,
-                            started_at=100.0, ended_at=150.0)
-            self._write_job(state_dir, "plain-job",
-                            started_at=100.0, ended_at=150.0)
+            self._write_job(
+                state_dir,
+                "interrupted-job",
+                interrupted=True,
+                exit=None,
+                started_at=100.0,
+                ended_at=150.0,
+            )
+            self._write_job(state_dir, "plain-job", started_at=100.0, ended_at=150.0)
             stderr = self._load(la, state_dir)
             self.assertEqual(stderr, "")
             job = la.JOBS["interrupted-job"]
@@ -1231,9 +1360,11 @@ class PersistedJobTimestampTest(unittest.TestCase):
             with patch.object(la, "STATE_DIR", Path(state_dir)):
                 self.assertTrue(la.job_public(job)["interrupted"])
                 la._write_meta(job)
-                meta = json.loads((Path(state_dir) / "jobs"
-                                   / "interrupted-job"
-                                   / "meta.json").read_text())
+                meta = json.loads(
+                    (
+                        Path(state_dir) / "jobs" / "interrupted-job" / "meta.json"
+                    ).read_text()
+                )
             self.assertIs(meta["interrupted"], True)
             stderr = self._load(la, state_dir)
             self.assertEqual(stderr, "")
@@ -1257,12 +1388,16 @@ class PersistedJobTimestampTest(unittest.TestCase):
         for job_id, bad_state in cases:
             with self.subTest(job_id=job_id, bad_state=repr(bad_state)):
                 with tempfile.TemporaryDirectory() as state_dir:
-                    bad = self._write_job(state_dir, job_id,
-                                          state=bad_state,
-                                          started_at=100.0,
-                                          ended_at=150.0)
-                    self._write_job(state_dir, "healthy",
-                                    started_at=100.0, ended_at=150.0)
+                    bad = self._write_job(
+                        state_dir,
+                        job_id,
+                        state=bad_state,
+                        started_at=100.0,
+                        ended_at=150.0,
+                    )
+                    self._write_job(
+                        state_dir, "healthy", started_at=100.0, ended_at=150.0
+                    )
                     stderr = self._load(la, state_dir)
                     self.assertNotIn(job_id, la.JOBS)
                     self.assertEqual(sorted(la.JOBS), ["healthy"])
@@ -1278,18 +1413,23 @@ class PersistedJobTimestampTest(unittest.TestCase):
         # follows the loader's malformed-field handling (skip whole).
         la = self._import_agent()
         with tempfile.TemporaryDirectory() as state_dir:
-            missing = self._write_job(state_dir, "missing-state",
-                                      started_at=100.0, ended_at=150.0)
+            missing = self._write_job(
+                state_dir, "missing-state", started_at=100.0, ended_at=150.0
+            )
             meta = json.loads((missing / "meta.json").read_text())
             del meta["state"]
             (missing / "meta.json").write_text(json.dumps(meta))
-            self._write_job(state_dir, "null-state", state=None,
-                            started_at=100.0, ended_at=150.0)
-            bad = self._write_job(state_dir, "string-interrupted",
-                                  interrupted="yes",
-                                  started_at=100.0, ended_at=150.0)
-            self._write_job(state_dir, "healthy",
-                            started_at=100.0, ended_at=150.0)
+            self._write_job(
+                state_dir, "null-state", state=None, started_at=100.0, ended_at=150.0
+            )
+            bad = self._write_job(
+                state_dir,
+                "string-interrupted",
+                interrupted="yes",
+                started_at=100.0,
+                ended_at=150.0,
+            )
+            self._write_job(state_dir, "healthy", started_at=100.0, ended_at=150.0)
             stderr = self._load(la, state_dir)
             self.assertEqual(la.JOBS["missing-state"]["state"], "done")
             self.assertEqual(la.JOBS["null-state"]["state"], "done")
@@ -1299,6 +1439,7 @@ class PersistedJobTimestampTest(unittest.TestCase):
             self.assertEqual(len(lines), 1, stderr)
             self.assertIn(str(bad), lines[0])
             self.assertIn("interrupted", lines[0])
+
     def test_reap_guards_unsafe_spool_and_removes_healthy(self):
         # Issue #1560: PR #1555 made job_dir() raise ValueError, but
         # reap_old_jobs() called it unguarded after popping every dead
@@ -1315,18 +1456,24 @@ class PersistedJobTimestampTest(unittest.TestCase):
             jobs_root.mkdir(parents=True)
             outside = state / "outside"
             outside.mkdir()
-            (jobs_root / "badjob").symlink_to(outside,
-                                              target_is_directory=True)
+            (jobs_root / "badjob").symlink_to(outside, target_is_directory=True)
             healthy = jobs_root / "goodjob"
             healthy.mkdir()
             (healthy / "stdout").write_bytes(b"hi")
             now = time.time()
             for job_id in ("badjob", "goodjob"):
                 la.JOBS[job_id] = {
-                    "id": job_id, "proc": None, "cwd": "/",
-                    "cmd_repr": "test", "started_at": now - 90000,
-                    "ended_at": now - 90000, "exit": 0, "state": "done",
-                    "interrupted": False, "_files": ()}
+                    "id": job_id,
+                    "proc": None,
+                    "cwd": "/",
+                    "cmd_repr": "test",
+                    "started_at": now - 90000,
+                    "ended_at": now - 90000,
+                    "exit": 0,
+                    "state": "done",
+                    "interrupted": False,
+                    "_files": (),
+                }
             err = io.StringIO()
             with patch.object(la, "STATE_DIR", state):
                 with contextlib.redirect_stderr(err):
@@ -1355,34 +1502,42 @@ class PersistedJobTimestampTest(unittest.TestCase):
             jobs_root.mkdir(parents=True)
             outside = state / "outside"
             outside.mkdir()
-            (jobs_root / "badjob").symlink_to(outside,
-                                              target_is_directory=True)
-            (jobs_root / "runbad").symlink_to(outside,
-                                              target_is_directory=True)
+            (jobs_root / "badjob").symlink_to(outside, target_is_directory=True)
+            (jobs_root / "runbad").symlink_to(outside, target_is_directory=True)
             healthy = jobs_root / "goodjob"
             healthy.mkdir()
             (healthy / "stdout").write_bytes(b"hi")
             (healthy / "stderr").write_bytes(b"")
             now = time.time()
-            for job_id, st in (("badjob", "done"), ("goodjob", "done"),
-                               ("runbad", "running")):
+            for job_id, st in (
+                ("badjob", "done"),
+                ("goodjob", "done"),
+                ("runbad", "running"),
+            ):
                 la.JOBS[job_id] = {
-                    "id": job_id, "proc": None, "cwd": "/",
-                    "cmd_repr": "test", "started_at": now - 10,
+                    "id": job_id,
+                    "proc": None,
+                    "cwd": "/",
+                    "cmd_repr": "test",
+                    "started_at": now - 10,
                     "ended_at": now if st == "done" else None,
-                    "exit": 0 if st == "done" else None, "state": st,
-                    "interrupted": False, "_files": ()}
+                    "exit": 0 if st == "done" else None,
+                    "state": st,
+                    "interrupted": False,
+                    "_files": (),
+                }
             err = io.StringIO()
             with patch.object(la, "STATE_DIR", state):
                 with contextlib.redirect_stderr(err):
-                    summaries = [la.job_summary(j)
-                                 for j in la.JOBS.values()
-                                 if j["state"] == "done"]
+                    summaries = [
+                        la.job_summary(j)
+                        for j in la.JOBS.values()
+                        if j["state"] == "done"
+                    ]
                     public_bad = la.job_public(la.JOBS["badjob"])
                     public_good = la.job_public(la.JOBS["goodjob"])
                     # job_state on a running job calls _write_meta.
-                    self.assertEqual(la.job_state(la.JOBS["runbad"]),
-                                     "done")
+                    self.assertEqual(la.job_state(la.JOBS["runbad"]), "done")
             by_id = {x["job_id"]: x for x in summaries}
             self.assertEqual(by_id["goodjob"]["out_bytes"], 2)
             self.assertEqual(by_id["badjob"]["out_bytes"], 0)
@@ -1390,10 +1545,9 @@ class PersistedJobTimestampTest(unittest.TestCase):
             self.assertEqual(public_bad["stdout"], "")
             self.assertEqual(public_bad["state"], "done")
             self.assertEqual(public_good["stdout"], "hi")
-            lines = [ln for ln in err.getvalue().splitlines()
-                     if ln.strip()]
-            self.assertTrue(any("badjob" in ln for ln in lines),
-                            err.getvalue())
+            lines = [ln for ln in err.getvalue().splitlines() if ln.strip()]
+            self.assertTrue(any("badjob" in ln for ln in lines), err.getvalue())
+
 
 class PersistedJobRestoreContractTest(unittest.TestCase):
     """Issue #1579 (design #1578 phase 1): the contract probe matrix
@@ -1414,19 +1568,26 @@ class PersistedJobRestoreContractTest(unittest.TestCase):
     """
 
     def _import_agent(self):
-        with tempfile.NamedTemporaryFile("w", suffix="-token",
-                                         delete=False) as f:
+        with tempfile.NamedTemporaryFile("w", suffix="-token", delete=False) as f:
             f.write("restore-contract-test-token\n")
             token_path = f.name
         os.environ.setdefault("LAPTOP_AGENT_TOKEN_FILE", token_path)
         sys.path.insert(0, str(AGENT.parent))
         import laptop_agent as la
+
         return la
 
     def _base_meta(self, job_id):
-        return {"id": job_id, "cwd": "/", "cmd": "test",
-                "started_at": 100.0, "ended_at": 150.0, "exit": 0,
-                "state": "done", "interrupted": False}
+        return {
+            "id": job_id,
+            "cwd": "/",
+            "cmd": "test",
+            "started_at": 100.0,
+            "ended_at": 150.0,
+            "exit": 0,
+            "state": "done",
+            "interrupted": False,
+        }
 
     def _write_raw(self, state_dir, job_id, meta):
         spool = Path(state_dir) / "jobs" / job_id
@@ -1454,8 +1615,17 @@ class PersistedJobRestoreContractTest(unittest.TestCase):
         la = self._import_agent()
         self.assertEqual(
             [row[0] for row in la.RESTORE_FIELD_TABLE],
-            ["id", "cwd", "cmd", "started_at", "ended_at",
-             "exit", "state", "interrupted"])
+            [
+                "id",
+                "cwd",
+                "cmd",
+                "started_at",
+                "ended_at",
+                "exit",
+                "state",
+                "interrupted",
+            ],
+        )
         for row in la.RESTORE_FIELD_TABLE:
             self.assertEqual(len(row), 4, row)
         by_field = {row[0]: row for row in la.RESTORE_FIELD_TABLE}
@@ -1464,14 +1634,22 @@ class PersistedJobRestoreContractTest(unittest.TestCase):
 
     def test_malformed_matrix_rows_are_skipped(self):
         la = self._import_agent()
-        ts_bad = ["123", True, False, [150.0], {"t": 1},
-                  float("nan"), float("inf"), float("-inf"), 10**400]
+        ts_bad = [
+            "123",
+            True,
+            False,
+            [150.0],
+            {"t": 1},
+            float("nan"),
+            float("inf"),
+            float("-inf"),
+            10**400,
+        ]
         cases = []
         for value in ts_bad:
             cases.append(("started_at", value))
             cases.append(("ended_at", value))
-        for value in [42, True, ["a"], {"a": 1},
-                      "..", ".", "a/b", "a\\b", "other-job"]:
+        for value in [42, True, ["a"], {"a": 1}, "..", ".", "a/b", "a\\b", "other-job"]:
             cases.append(("id", value))
         for value in ["bogus", 7, True, ["done"], {"s": 1}]:
             cases.append(("state", value))
@@ -1482,18 +1660,14 @@ class PersistedJobRestoreContractTest(unittest.TestCase):
                 with tempfile.TemporaryDirectory() as state_dir:
                     meta = self._base_meta("bad-job")
                     meta[field] = value
-                    spool, raw = self._write_raw(state_dir, "bad-job",
-                                                 meta)
-                    self._write_raw(state_dir, "healthy",
-                                    self._base_meta("healthy"))
+                    spool, raw = self._write_raw(state_dir, "bad-job", meta)
+                    self._write_raw(state_dir, "healthy", self._base_meta("healthy"))
                     stderr = self._load(la, state_dir)
                     self.assertNotIn("bad-job", la.JOBS)
                     self.assertIn("healthy", la.JOBS)
                     self.assertTrue(spool.exists())
-                    self.assertEqual((spool / "meta.json").read_text(),
-                                     raw)
-                    lines = [ln for ln in stderr.splitlines()
-                             if ln.strip()]
+                    self.assertEqual((spool / "meta.json").read_text(), raw)
+                    lines = [ln for ln in stderr.splitlines() if ln.strip()]
                     self.assertEqual(len(lines), 1, stderr)
                     self.assertIn(str(spool), lines[0])
                     self.assertIn(field, lines[0])
@@ -1508,22 +1682,18 @@ class PersistedJobRestoreContractTest(unittest.TestCase):
                     (spool / "meta.json").write_text(raw)
                     (spool / "stdout").write_bytes(b"")
                     (spool / "stderr").write_bytes(b"")
-                    self._write_raw(state_dir, "healthy",
-                                    self._base_meta("healthy"))
+                    self._write_raw(state_dir, "healthy", self._base_meta("healthy"))
                     stderr = self._load(la, state_dir)
                     self.assertNotIn("bad-job", la.JOBS)
                     self.assertIn("healthy", la.JOBS)
-                    self.assertEqual((spool / "meta.json").read_text(),
-                                     raw)
-                    lines = [ln for ln in stderr.splitlines()
-                             if ln.strip()]
+                    self.assertEqual((spool / "meta.json").read_text(), raw)
+                    lines = [ln for ln in stderr.splitlines() if ln.strip()]
                     self.assertEqual(len(lines), 1, stderr)
                     self.assertIn(str(spool), lines[0])
 
     def test_missing_and_null_rows_take_table_defaults(self):
         la = self._import_agent()
-        for field in ["started_at", "ended_at", "id", "state",
-                      "interrupted"]:
+        for field in ["started_at", "ended_at", "id", "state", "interrupted"]:
             for mode in ["missing", "null"]:
                 with self.subTest(field=field, mode=mode):
                     with tempfile.TemporaryDirectory() as state_dir:
@@ -1540,8 +1710,7 @@ class PersistedJobRestoreContractTest(unittest.TestCase):
                             self.assertEqual(job["started_at"], 0.0)
                         elif field == "ended_at":
                             # #1532 transition: stamped at load.
-                            self.assertIsInstance(job["ended_at"],
-                                                  float)
+                            self.assertIsInstance(job["ended_at"], float)
                         elif field == "state":
                             self.assertEqual(job["state"], "done")
                         elif field == "interrupted":
@@ -1556,8 +1725,7 @@ class PersistedJobRestoreContractTest(unittest.TestCase):
     def test_well_formed_writer_values_restore_verbatim(self):
         la = self._import_agent()
         with tempfile.TemporaryDirectory() as state_dir:
-            self._write_raw(state_dir, "writer-job",
-                            self._base_meta("writer-job"))
+            self._write_raw(state_dir, "writer-job", self._base_meta("writer-job"))
             meta = self._base_meta("int-stamps")
             meta["started_at"] = 100
             meta["ended_at"] = 150
@@ -1583,12 +1751,10 @@ class PersistedJobRestoreContractTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as state_dir:
             running = self._base_meta("was-running")
             running.update(state="running", exit=5, ended_at=None)
-            spool_r, _ = self._write_raw(state_dir, "was-running",
-                                         running)
+            spool_r, _ = self._write_raw(state_dir, "was-running", running)
             done = self._base_meta("done-no-end")
             done["ended_at"] = None
-            spool_d, _ = self._write_raw(state_dir, "done-no-end",
-                                         done)
+            spool_d, _ = self._write_raw(state_dir, "done-no-end", done)
             stderr = self._load(la, state_dir)
             self.assertEqual(stderr, "")
             job = la.JOBS["was-running"]
@@ -1608,48 +1774,82 @@ class PersistedJobRestoreContractTest(unittest.TestCase):
 
     def test_validator_returns_a_single_reason_naming_the_field(self):
         la = self._import_agent()
-        cases = [("started_at", "123"), ("ended_at", float("nan")),
-                 ("id", 42), ("id", ".."), ("state", "bogus"),
-                 ("interrupted", "yes")]
+        cases = [
+            ("started_at", "123"),
+            ("ended_at", float("nan")),
+            ("id", 42),
+            ("id", ".."),
+            ("state", "bogus"),
+            ("interrupted", "yes"),
+        ]
         with tempfile.TemporaryDirectory() as state_dir:
             with patch.object(la, "STATE_DIR", Path(state_dir)):
                 for field, value in cases:
                     with self.subTest(field=field, value=repr(value)):
                         meta = self._base_meta("case-job")
                         meta[field] = value
-                        job, persist, reason = \
-                            la._restore_persisted_job(meta, "case-job")
+                        job, persist, reason = la._restore_persisted_job(
+                            meta, "case-job"
+                        )
                         self.assertIsNone(job)
                         self.assertFalse(persist)
                         self.assertIn(field, reason)
                 job, persist, reason = la._restore_persisted_job(
-                    self._base_meta("case-job"), "case-job")
+                    self._base_meta("case-job"), "case-job"
+                )
                 self.assertIsNotNone(job)
                 self.assertIsNone(reason)
 
     def test_write_meta_reload_round_trip_serves_identical_job(self):
         la = self._import_agent()
-        job = {"id": "round-trip", "proc": None, "cwd": "/",
-               "cmd_repr": "echo hi", "started_at": 100.0,
-               "ended_at": 150.0, "exit": 3, "state": "done",
-               "interrupted": False, "_files": ()}
+        job = {
+            "id": "round-trip",
+            "proc": None,
+            "cwd": "/",
+            "cmd_repr": "echo hi",
+            "started_at": 100.0,
+            "ended_at": 150.0,
+            "exit": 3,
+            "state": "done",
+            "interrupted": False,
+            "_files": (),
+        }
         with tempfile.TemporaryDirectory() as state_dir:
             with patch.object(la, "STATE_DIR", Path(state_dir)):
                 la._write_meta(job)
             stderr = self._load(la, state_dir)
             self.assertEqual(stderr, "")
             restored = la.JOBS["round-trip"]
-            for key in ("id", "cwd", "cmd_repr", "started_at",
-                        "ended_at", "exit", "state", "interrupted"):
+            for key in (
+                "id",
+                "cwd",
+                "cmd_repr",
+                "started_at",
+                "ended_at",
+                "exit",
+                "state",
+                "interrupted",
+            ):
                 self.assertEqual(restored[key], job[key], key)
             with patch.object(la, "STATE_DIR", Path(state_dir)):
                 public = la.job_public(restored)
-            self.assertEqual(public, {
-                "job_id": "round-trip", "state": "done", "exit": 3,
-                "cwd": "/", "cmd": "echo hi", "started_at": 100.0,
-                "interrupted": False, "duration_ms": 50000,
-                "stdout": "", "stderr": "", "out_next": 0,
-                "err_next": 0})
+            self.assertEqual(
+                public,
+                {
+                    "job_id": "round-trip",
+                    "state": "done",
+                    "exit": 3,
+                    "cwd": "/",
+                    "cmd": "echo hi",
+                    "started_at": 100.0,
+                    "interrupted": False,
+                    "duration_ms": 50000,
+                    "stdout": "",
+                    "stderr": "",
+                    "out_next": 0,
+                    "err_next": 0,
+                },
+            )
 
 
 class PersistedJobExitCwdCmdTest(unittest.TestCase):
@@ -1669,19 +1869,26 @@ class PersistedJobExitCwdCmdTest(unittest.TestCase):
     """
 
     def _import_agent(self):
-        with tempfile.NamedTemporaryFile("w", suffix="-token",
-                                         delete=False) as f:
+        with tempfile.NamedTemporaryFile("w", suffix="-token", delete=False) as f:
             f.write("persisted-exit-cwd-cmd-test-token\n")
             token_path = f.name
         os.environ.setdefault("LAPTOP_AGENT_TOKEN_FILE", token_path)
         sys.path.insert(0, str(AGENT.parent))
         import laptop_agent as la
+
         return la
 
     def _base_meta(self, job_id):
-        return {"id": job_id, "cwd": "/", "cmd": "test",
-                "started_at": 100.0, "ended_at": 150.0, "exit": 0,
-                "state": "done", "interrupted": False}
+        return {
+            "id": job_id,
+            "cwd": "/",
+            "cmd": "test",
+            "started_at": 100.0,
+            "ended_at": 150.0,
+            "exit": 0,
+            "state": "done",
+            "interrupted": False,
+        }
 
     def _write_raw(self, state_dir, job_id, meta):
         spool = Path(state_dir) / "jobs" / job_id
@@ -1710,8 +1917,7 @@ class PersistedJobExitCwdCmdTest(unittest.TestCase):
             meta = self._base_meta("bad-job")
             meta[field] = value
             spool, raw = self._write_raw(state_dir, "bad-job", meta)
-            self._write_raw(state_dir, "healthy",
-                            self._base_meta("healthy"))
+            self._write_raw(state_dir, "healthy", self._base_meta("healthy"))
             stderr = self._load(la, state_dir)
             self.assertNotIn("bad-job", la.JOBS)
             self.assertIn("healthy", la.JOBS)
@@ -1731,9 +1937,11 @@ class PersistedJobExitCwdCmdTest(unittest.TestCase):
     def test_exit_controls_restore_verbatim(self):
         la = self._import_agent()
         with tempfile.TemporaryDirectory() as state_dir:
-            for job_id, value in [("zero-exit", 0),
-                                  ("negative-exit", -9),
-                                  ("null-exit", None)]:
+            for job_id, value in [
+                ("zero-exit", 0),
+                ("negative-exit", -9),
+                ("null-exit", None),
+            ]:
                 meta = self._base_meta(job_id)
                 meta["exit"] = value
                 self._write_raw(state_dir, job_id, meta)
@@ -1756,9 +1964,11 @@ class PersistedJobExitCwdCmdTest(unittest.TestCase):
     def test_cwd_defaults_and_verbatim_restore(self):
         la = self._import_agent()
         with tempfile.TemporaryDirectory() as state_dir:
-            for job_id, mode in [("missing-cwd", "missing"),
-                                 ("null-cwd", "null"),
-                                 ("empty-cwd", "empty")]:
+            for job_id, mode in [
+                ("missing-cwd", "missing"),
+                ("null-cwd", "null"),
+                ("empty-cwd", "empty"),
+            ]:
                 meta = self._base_meta(job_id)
                 if mode == "missing":
                     del meta["cwd"]
@@ -1773,8 +1983,7 @@ class PersistedJobExitCwdCmdTest(unittest.TestCase):
             stderr = self._load(la, state_dir)
             self.assertEqual(stderr, "")
             for job_id in ("missing-cwd", "null-cwd", "empty-cwd"):
-                self.assertEqual(la.JOBS[job_id]["cwd"],
-                                 str(Path.home()))
+                self.assertEqual(la.JOBS[job_id]["cwd"], str(Path.home()))
             self.assertEqual(la.JOBS["real-cwd"]["cwd"], "/work/tree")
 
     def test_non_string_cmd_skipped_healthy_kept(self):
@@ -1786,9 +1995,11 @@ class PersistedJobExitCwdCmdTest(unittest.TestCase):
     def test_cmd_defaults_and_verbatim_restore(self):
         la = self._import_agent()
         with tempfile.TemporaryDirectory() as state_dir:
-            for job_id, mode in [("missing-cmd", "missing"),
-                                 ("null-cmd", "null"),
-                                 ("empty-cmd", "empty")]:
+            for job_id, mode in [
+                ("missing-cmd", "missing"),
+                ("null-cmd", "null"),
+                ("empty-cmd", "empty"),
+            ]:
                 meta = self._base_meta(job_id)
                 if mode == "missing":
                     del meta["cmd"]
@@ -1812,20 +2023,16 @@ class PersistedJobExitCwdCmdTest(unittest.TestCase):
             meta = self._base_meta("bad-exit")
             meta["exit"] = "0"
             self._write_raw(state_dir, "bad-exit", meta)
-            self._write_raw(state_dir, "healthy",
-                            self._base_meta("healthy"))
+            self._write_raw(state_dir, "healthy", self._base_meta("healthy"))
             stderr = self._load(la, state_dir)
             self.assertEqual(sorted(la.JOBS), ["healthy"])
             lines = [ln for ln in stderr.splitlines() if ln.strip()]
             self.assertEqual(len(lines), 1, stderr)
             with patch.object(la, "STATE_DIR", Path(state_dir)):
-                summaries = [la.job_summary(j)
-                             for j in list(la.JOBS.values())]
-                publics = [la.job_public(j)
-                           for j in list(la.JOBS.values())]
+                summaries = [la.job_summary(j) for j in list(la.JOBS.values())]
+                publics = [la.job_public(j) for j in list(la.JOBS.values())]
                 la.reap_old_jobs()
-            self.assertEqual([s["job_id"] for s in summaries],
-                             ["healthy"])
+            self.assertEqual([s["job_id"] for s in summaries], ["healthy"])
             self.assertEqual(publics[0]["exit"], 0)
 
 
@@ -1854,32 +2061,45 @@ class ReaperStartupTest(unittest.TestCase):
     def test_past_ttl_restored_job_reaped_at_startup(self):
         now = time.time()
         with tempfile.TemporaryDirectory() as state_dir:
-            old = self._write_job(state_dir, "old-done",
-                                  started_at=now - 26 * 3600,
-                                  ended_at=now - 25 * 3600)
-            fresh = self._write_job(state_dir, "fresh-done",
-                                    started_at=now - 7200,
-                                    ended_at=now - 3600)
-            running = self._write_job(state_dir, "was-running",
-                                      state="running", exit=None,
-                                      started_at=now - 26 * 3600,
-                                      ended_at=None)
+            old = self._write_job(
+                state_dir,
+                "old-done",
+                started_at=now - 26 * 3600,
+                ended_at=now - 25 * 3600,
+            )
+            fresh = self._write_job(
+                state_dir, "fresh-done", started_at=now - 7200, ended_at=now - 3600
+            )
+            running = self._write_job(
+                state_dir,
+                "was-running",
+                state="running",
+                exit=None,
+                started_at=now - 26 * 3600,
+                ended_at=None,
+            )
             with tempfile.NamedTemporaryFile("w", delete=False) as f:
                 f.write("reaper-test-token\n")
                 token_path = f.name
             port = free_port()
-            env = dict(os.environ,
-                       LAPTOP_AGENT_TOKEN_FILE=token_path,
-                       LAPTOP_AGENT_HOST="127.0.0.1",
-                       LAPTOP_AGENT_PORT=str(port),
-                       LAPTOP_AGENT_STATE=state_dir)
-            proc = subprocess.Popen([sys.executable, str(AGENT)], env=env,
-                                    stdout=subprocess.PIPE,
-                                    stderr=subprocess.PIPE)
+            env = dict(
+                os.environ,
+                LAPTOP_AGENT_TOKEN_FILE=token_path,
+                LAPTOP_AGENT_HOST="127.0.0.1",
+                LAPTOP_AGENT_PORT=str(port),
+                LAPTOP_AGENT_STATE=state_dir,
+            )
+            proc = subprocess.Popen(
+                [sys.executable, str(AGENT)],
+                env=env,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+            )
             try:
                 req = urllib.request.Request(
                     f"http://127.0.0.1:{port}/jobs",
-                    headers={"X-Agent-Token": "reaper-test-token"})
+                    headers={"X-Agent-Token": "reaper-test-token"},
+                )
                 deadline = time.time() + 15
                 jobs = None
                 while time.time() < deadline:
@@ -1906,17 +2126,29 @@ class ReaperStartupTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as state_dir:
             state = Path(state_dir)
             bad_parent = self._write_job(
-                state_dir, "bad-parent", id="..", started_at=now - 26 * 3600,
-                ended_at=now - 25 * 3600)
+                state_dir,
+                "bad-parent",
+                id="..",
+                started_at=now - 26 * 3600,
+                ended_at=now - 25 * 3600,
+            )
             bad_separator = self._write_job(
-                state_dir, "bad-separator", id="a/b",
-                started_at=now - 26 * 3600, ended_at=now - 25 * 3600)
+                state_dir,
+                "bad-separator",
+                id="a/b",
+                started_at=now - 26 * 3600,
+                ended_at=now - 25 * 3600,
+            )
             cross_job = self._write_job(
-                state_dir, "cross-job", id="healthy",
-                started_at=now - 26 * 3600, ended_at=now - 25 * 3600)
+                state_dir,
+                "cross-job",
+                id="healthy",
+                started_at=now - 26 * 3600,
+                ended_at=now - 25 * 3600,
+            )
             healthy = self._write_job(
-                state_dir, "healthy", started_at=now - 3600,
-                ended_at=now - 1800)
+                state_dir, "healthy", started_at=now - 3600, ended_at=now - 1800
+            )
             sentinel = state / "keep-me"
             sentinel.write_text("state outside jobs must survive")
 
@@ -1924,18 +2156,24 @@ class ReaperStartupTest(unittest.TestCase):
                 f.write("reaper-test-token\n")
                 token_path = f.name
             port = free_port()
-            env = dict(os.environ,
-                       LAPTOP_AGENT_TOKEN_FILE=token_path,
-                       LAPTOP_AGENT_HOST="127.0.0.1",
-                       LAPTOP_AGENT_PORT=str(port),
-                       LAPTOP_AGENT_STATE=state_dir)
-            proc = subprocess.Popen([sys.executable, str(AGENT)], env=env,
-                                    stdout=subprocess.DEVNULL,
-                                    stderr=subprocess.DEVNULL)
+            env = dict(
+                os.environ,
+                LAPTOP_AGENT_TOKEN_FILE=token_path,
+                LAPTOP_AGENT_HOST="127.0.0.1",
+                LAPTOP_AGENT_PORT=str(port),
+                LAPTOP_AGENT_STATE=state_dir,
+            )
+            proc = subprocess.Popen(
+                [sys.executable, str(AGENT)],
+                env=env,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
             try:
                 req = urllib.request.Request(
                     f"http://127.0.0.1:{port}/jobs",
-                    headers={"X-Agent-Token": "reaper-test-token"})
+                    headers={"X-Agent-Token": "reaper-test-token"},
+                )
                 deadline = time.time() + 15
                 jobs = None
                 while time.time() < deadline:

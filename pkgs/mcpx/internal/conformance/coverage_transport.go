@@ -22,6 +22,7 @@ func init() {
 		C("streamable-http-client-respects-retry", "mcpclient.TestLegacyHTTPStreamResumption/2025-11-25/transport/client-resumes-closed-stream-with-last-event-id-after-retry"),
 		C("streamable-http-client-resume-with-last-event-id", "mcpclient.TestLegacyHTTPStreamResumption/2025-11-25/transport/client-resumes-closed-stream-with-last-event-id-after-retry@2025-03-26,2025-06-18,2025-11-25"),
 		C("stdio-client-correlates-subscription-id", "mcpclient.TestModernListenStream/2026-07-28/transport-stdio/client-correlates-subscription-id"),
+		C("stdio-client-restart-crashed-server", "pool.TestCrashRespawnNotRefusedByCooldown@2026-07-28"),
 		SReq("conformance.TestTransportServer",
 			"stdio-no-embedded-newlines",
 			"stdio-server-stdout-only-mcp",
@@ -111,8 +112,5 @@ func init() {
 			"streamable-http-header-names-case-insensitive",
 			"streamable-http-intermediary-http-error",
 		),
-	)
-	registerGaps(
-		Gap{ID: "stdio-client-restart-crashed-server", Side: Client, Issue: "#257", Why: "unverified: the in-flight call fails and the pool respawns only on the next acquire, subject to its start-failure cooldown"},
 	)
 }

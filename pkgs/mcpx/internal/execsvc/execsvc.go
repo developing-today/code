@@ -175,6 +175,10 @@ type Options struct {
 	// TypeCheckOnError and TypeCheckOnUnsupported carry the caller's preflight policies.
 	TypeCheckOnError       string `json:"checkOnError,omitempty"`
 	TypeCheckOnUnsupported string `json:"checkOnUnsupported,omitempty"`
+	// TypeCheckDefaulted says TypeCheck is on only because the
+	// caller's per-command default switched it on (#1868 point 4):
+	// the Deno-only notice is suppressed for a defaulted check.
+	TypeCheckDefaulted bool `json:"typecheckDefaulted,omitempty"`
 	// Imports is off, report or prepare; empty takes the daemon's default.
 	Imports string `json:"imports,omitempty"`
 	// ImportsOnDynamic is warn, fail or ignore; empty takes the daemon's.
@@ -877,6 +881,7 @@ func (s *Service) Run(ctx context.Context, req Request, sink Sink) (*Result, err
 		TypeCheck:              firstNonEmpty(opts.TypeCheck, s.Limits.Typecheck),
 		TypeCheckOnError:       firstNonEmpty(opts.TypeCheckOnError, s.Limits.TypeCheckOnError),
 		TypeCheckOnUnsupported: firstNonEmpty(opts.TypeCheckOnUnsupported, s.Limits.TypeCheckOnUnsupported),
+		TypeCheckDefaulted:     opts.TypeCheck != "" && opts.TypeCheckDefaulted,
 		Imports:                firstNonEmpty(opts.Imports, s.Limits.Imports),
 		ImportsOnDynamic:       firstNonEmpty(opts.ImportsOnDynamic, s.Limits.ImportsOnDynamic),
 		ImportsOnMissing:       firstNonEmpty(opts.ImportsOnMissing, s.Limits.ImportsOnMissing),

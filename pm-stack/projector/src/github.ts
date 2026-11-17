@@ -262,9 +262,7 @@ export async function listResource<T>(
     if (opts.stopAfterPage?.(page as T[])) break;
     path = nextPageFromLink(res.headers.get("link"));
     if (path && pages >= MAX_LIST_PAGES) {
-      throw new Error(
-        "github_api_pagination_bound: " + initialPath + " exceeded " + MAX_LIST_PAGES + " pages",
-      );
+      throw new Error("github_api_pagination_bound: " + initialPath + " exceeded " + MAX_LIST_PAGES + " pages");
     }
   }
   return out;

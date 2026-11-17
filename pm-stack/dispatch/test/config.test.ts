@@ -48,14 +48,21 @@ describe("fleet config", () => {
   });
 
   test("QUEUE_BROKER_URL is used verbatim, minus a trailing slash; token env wins over the file", () => {
-    const c = loadConfig({ QUEUE_BROKER_URL: "http://broker.test:4801/", QUEUE_BROKER_TOKEN: " tok ", QUEUE_BROKER_TOKEN_FILE: "/tmp/tok" });
+    const c = loadConfig({
+      QUEUE_BROKER_URL: "http://broker.test:4801/",
+      QUEUE_BROKER_TOKEN: " tok ",
+      QUEUE_BROKER_TOKEN_FILE: "/tmp/tok",
+    });
     expect(c.queueBrokerUrl).toBe("http://broker.test:4801");
     expect(c.queueBrokerToken).toBe("tok");
     expect(c.queueBrokerTokenFile).toBe("/tmp/tok");
   });
 
   test("no Supabase config remains in the loaded config (#9028)", () => {
-    const c = loadConfig({ SUPABASE_URL: "https://fixture.supabase.co", SUPABASE_SERVICE_ROLE_KEY: "k" }) as unknown as Record<string, unknown>;
+    const c = loadConfig({
+      SUPABASE_URL: "https://fixture.supabase.co",
+      SUPABASE_SERVICE_ROLE_KEY: "k",
+    }) as unknown as Record<string, unknown>;
     expect(c.supabaseUrl).toBeUndefined();
     expect(c.supabaseServiceRoleKey).toBeUndefined();
   });

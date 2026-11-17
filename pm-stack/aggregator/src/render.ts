@@ -7695,10 +7695,28 @@ export function renderProgramProject(
   } else {
     linkBits.push(`<span class="muted">No home doc configured for this project yet.</span>`);
   }
-  if (config.statusReport) {
+  if (detail.doc?.latestStatus) {
+    const status = detail.doc.latestStatus;
+    linkBits.push(
+      `Latest status: <a href="${esc(status.url)}">${esc(status.title ?? status.dir)}</a> <span class="muted">(${esc(status.timestamp)} \u2014 newest <code>doc/</code> status record, derived at request time)</span>`,
+    );
+  } else if (detail.doc) {
+    linkBits.push(
+      `<span class="muted">No status record under <code>doc/</code> for this project yet \u2014 checked the code checkout at ${esc(detail.doc.fetchedAt)}.</span>`,
+    );
+  } else if (config.statusReport) {
     linkBits.push(`Status report: <a href="${esc(config.statusReport.url)}">${esc(config.statusReport.label)}</a>`);
   } else {
     linkBits.push(`<span class="muted">No status report yet for this project.</span>`);
+  }
+  if (detail.doc?.description) {
+    linkBits.push(
+      `Description derived from <a href="${esc(detail.doc.roadmapUrl)}">${esc(detail.doc.roadmapPath)}</a> <span class="muted">(read at request time)</span>`,
+    );
+  } else if (detail.doc) {
+    linkBits.push(
+      `<span class="muted">No prose description found in ${esc(detail.doc.roadmapPath)} \u2014 the registry intro is shown instead.</span>`,
+    );
   }
   for (const l of config.dashboardLinks ?? []) {
     linkBits.push(
@@ -7807,7 +7825,7 @@ export function renderProgramProject(
     : "";
 
   const body = `<h1>${esc(config.title)}</h1>
-<p class="muted">${esc(config.intro)}</p>
+<p class="muted">${esc(detail.doc?.description ?? config.intro)}</p>
 <p class="muted">${linkBits.join(" · ")}</p>
 <p class="muted"><a href="/program">← all projects</a></p>
 ${archHtml}

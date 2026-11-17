@@ -1,4 +1,4 @@
-// Smoke test for the home-page example component (#1876 stages 1-2).
+// Smoke test for the home-page example component (#1876 stages 1-3).
 //
 // Run with Node (>= 22, for node:module type stripping of client.ts if the
 // browser build has not been generated yet):
@@ -15,14 +15,26 @@
 //   2. Stage 2 end-to-end: the fake daemon + the REAL generated client +
 //      example.ts produce the example's expected output.
 //   3. The strip-only transform runs a typed edit of the example.
+//   4. Stage 3 end-to-end: the example runs through the
+//      local-daemon transport against a local-daemon test double (a
+//      plain HTTP server speaking POST /v1/call with CORS headers,
+//      standing in for the reader's daemon), and a dead address
+//      produces the clear no-daemon message instead of a raw error.
+//      The client here is a stub whose tools.demo.echo makes the one
+//      call the real generated client makes (POST /v1/call, see
+//      internal/codegen/emit.go); the real client itself is exercised
+//      by check 2, and the daemon's CORS behaviour by the Go tests in
+//      internal/daemon/cors_test.go.
 //
 // #1941 (site build) should wire this into the docs CI pipeline.
 
 import { execCommand, scriptCommands } from "./copy-command.js";
 import { installFakeDaemon } from "./fake-daemon.js";
 import { formatRecordLine, installScriptGlobals } from "./run-example.js";
+import { installLocalDaemon } from "./local-daemon.js";
 import { stripTypes } from "./strip-types.js";
 import { execFileSync } from "node:child_process";
+import { createServer } from "node:http";
 import { mkdtempSync, readFileSync, writeFileSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, dirname } from "node:path";
@@ -353,6 +365,117 @@ async function runSource(source) {
   } finally {
     delete globalThis.tools;
     restore();
+  }
+}
+
+// --- 4. stage 3: local-daemon transport against a test double -------------
+{
+  // The test double: the reader's daemon, reduced to the one route
+  // the example exercises plus the CORS headers the real daemon
+  // answers with for an allow-listed origin (internal/daemon/cors.go).
+  const double = createServer((req, res) => {
+    const cors = {
+      "access-control-allow-origin": req.headers.origin ?? "*",
+    };
+    if (req.method === "OPTIONS") {
+      res.writeHead(204, {
+        ...cors,
+        "access-control-allow-methods": "POST",
+        "access-control-allow-headers": "content-type",
+      });
+      res.end();
+      return;
+    }
+    let body = "";
+    req.on("data", (c) => (body += c));
+    req.on("end", () => {
+      let parsed = {};
+      try {
+        parsed = JSON.parse(body || "{}");
+      } catch {
+        /* answered as an unknown call below */
+      }
+      res.writeHead(200, { "content-type": "application/json", ...cors });
+      if (parsed.server === "demo" && parsed.tool === "echo") {
+        res.end(
+          JSON.stringify({
+            result: {
+              content: [
+                { type: "text", text: String(parsed.args?.message ?? "") },
+              ],
+            },
+          }),
+        );
+      } else {
+        res.end(JSON.stringify({ error: "test double: unknown call" }));
+      }
+    });
+  });
+  await new Promise((resolve) => double.listen(0, "127.0.0.1", resolve));
+  const daemonBase = `http://127.0.0.1:${double.address().port}`;
+
+  // A stub client whose demo.echo makes exactly the generated
+  // client's hot-path call and unwraps the text content the way the
+  // real client does.
+  const stubClient = {
+    tools: {
+      demo: {
+        echo: async ({ message }) => {
+          const resp = await fetch("http://mcpx.invalid/v1/call", {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({
+              server: "demo",
+              tool: "echo",
+              args: { message },
+            }),
+          });
+          const out = await resp.json();
+          if (out.error) throw new Error(out.error);
+          return out.result.content.map((c) => c.text ?? "").join("");
+        },
+      },
+    },
+  };
+
+  // runSource mirrors runExampleOnce (which creates a blob: module --
+  // a browser-only seam), so the stage-3 checks drive the transport
+  // through the same mirror, with installLocalDaemon standing where
+  // runExample would install it for transport: "local".
+  const example = readFileSync(join(here, "example.ts"), "utf8");
+  globalThis.tools = stubClient.tools;
+  try {
+    const restore = installLocalDaemon(daemonBase);
+    try {
+      const lines = await runSource(example);
+      check(
+        "stage3: example runs against the local-daemon test double",
+        lines.join("\n") === "demo.echo: hello from a script",
+        lines.join("\n"),
+      );
+    } finally {
+      restore();
+    }
+
+    const restoreDead = installLocalDaemon("http://127.0.0.1:1");
+    try {
+      let message = "";
+      try {
+        await runSource(example);
+      } catch (e) {
+        message = String(e?.message ?? e);
+      }
+      check(
+        "stage3: no daemon at the address gives the clear message",
+        message.includes("no mcpx daemon answered"),
+        message,
+      );
+    } finally {
+      restoreDead();
+    }
+  } finally {
+    delete globalThis.tools;
+    double.close();
   }
 }
 

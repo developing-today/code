@@ -39,6 +39,7 @@ import {
 import { isRecord } from "../validate.ts";
 import { fetchIssueBodySnapshot, type Phase12Snapshot } from "../phase12.ts";
 import { loadPhaseMapping, type PhaseMappingSnapshot } from "../phase-mapping.ts";
+import { loadProjectDoc, type ProjectDocSnapshot, type ProjectDocTarget } from "../project-doc.ts";
 import { fetchBuildHealthSnapshot, type BuildHealthSnapshot } from "../build-health.ts";
 import {
   fetchQueueSnapshot,
@@ -1239,6 +1240,33 @@ export function liveSource(
     }
     return phaseMappingInFlight;
   }
+  // #1108 remainder: per-project derived docs (roadmap description
+  // + newest doc/ status record) from the code checkout, cached per
+  // slug for 5 minutes and shared in-flight, fail-soft to the last
+  // good snapshot or null (same discipline as the phaseMapping feed
+  // above).
+  const projectDocCache = new Map<string, { value: ProjectDocSnapshot; at: number }>();
+  const projectDocInFlight = new Map<string, Promise<ProjectDocSnapshot | null>>();
+  async function projectDocSnapshot(target: ProjectDocTarget): Promise<ProjectDocSnapshot | null> {
+    const cached = projectDocCache.get(target.slug);
+    if (cached && Date.now() - cached.at < 5 * 60_000) return cached.value;
+    let inFlight = projectDocInFlight.get(target.slug);
+    if (!inFlight) {
+      inFlight = (async () => {
+        try {
+          const snap = await loadProjectDoc(cfg.codeCheckout, target);
+          if (snap) projectDocCache.set(target.slug, { value: snap, at: Date.now() });
+          return snap ?? projectDocCache.get(target.slug)?.value ?? null;
+        } catch {
+          return projectDocCache.get(target.slug)?.value ?? null;
+        }
+      })().finally(() => {
+        projectDocInFlight.delete(target.slug);
+      });
+      projectDocInFlight.set(target.slug, inFlight);
+    }
+    return inFlight;
+  }
   // #9924: the Build health snapshot — Actions API reads for the
   // id-gating lanes + the e2e nightly, cached for 5 minutes and
   // shared in-flight (same discipline as the phase12 feed above),
@@ -1779,6 +1807,9 @@ export function liveSource(
     },
     async phaseMapping(): Promise<PhaseMappingSnapshot | null> {
       return phaseMappingSnapshot();
+    },
+    async projectDoc(target: ProjectDocTarget): Promise<ProjectDocSnapshot | null> {
+      return projectDocSnapshot(target);
     },
     async buildHealth(): Promise<BuildHealthSnapshot | null> {
       return buildHealthSnapshot();

@@ -12,11 +12,15 @@
 # service (systemd / launchd / cloudflare / sandbox / container).
 {
   fleet,
+  laptopAgent,
   mcpx,
   routeProxy,
   idMailDeploy,
   pkarrDeploy,
   developingTodayBackupDeploy,
+  coldStoreRehydratorDeploy,
+  labOpsHubDeploy,
+  cfContainerHelloDeploy,
 }:
 {
   queue-broker = {
@@ -28,10 +32,16 @@
     ];
     environment = {
       PORT = "4801"; # PORT_QUEUE_BROKER, pkgs/fleet/crates/fleet-config
+      # Live since the Turso cutover (#6741): matches the
+      # 30-turso-queue.conf drop-in the running unit carries.
+      QUEUE_BROKER_BACKEND = "turso";
     };
     # Names only — values are resolved by the secrets broker at
     # activation time (later slice); a definition never carries a value.
-    secrets = [ "supabase.muse-dev2.service-role-key" ];
+    secrets = [
+      "turso.fleet-queue-rw-token" # the Turso backend token, by name
+      "supabase.muse-dev2.service-role-key" # legacy Postgres backend
+    ];
     user = "user";
     ports = [ 4801 ];
     restart = "on-failure";
@@ -55,6 +65,33 @@
     ports = [ 4800 ];
     restart = "on-failure";
     healthCheck = "http://100.99.113.103:4800/health";
+    targets = [ "laptop" ];
+    class = "systemd";
+  };
+
+  laptop-agent = {
+    package = laptopAgent;
+    entryPoint = "bin/laptop-agent";
+    args = [ ];
+    environment = {
+      LAPTOP_AGENT_HOST = "100.99.113.103";
+      LAPTOP_AGENT_PORT = "4799";
+    };
+    # The daemon token is a local file (~/.config/laptop-agent/token)
+    # the daemon reads itself at startup; no broker-resolved secrets.
+    secrets = [ ];
+    user = "user";
+    ports = [ 4799 ];
+    # The hand-written unit this replaces ran Restart=always: the
+    # 2026-11-16 daemon-death episode (code#2879) showed on-failure
+    # does not restart a clean (SIGTERM/success) exit.
+    restart = "always";
+    # No unauthenticated health endpoint exists: /health requires the
+    # daemon token (401 without it), which the deploy probe cannot
+    # present, so healthCheck stays null (the session-proxy/mcpx
+    # shape) and health is verified through the authenticated client
+    # (laptop-agent.py health) after activation - issue #5769.
+    healthCheck = null;
     targets = [ "laptop" ];
     class = "systemd";
   };
@@ -124,6 +161,54 @@
   pkarr = {
     package = pkarrDeploy;
     entryPoint = "bin/pkarr-deploy";
+    args = [ ];
+    environment = { };
+    secrets = [ ]; # resolved by the deploy app itself at deploy time
+    user = "user";
+    ports = [ ];
+    restart = "no";
+    healthCheck = null;
+    targets = [ "cloudflare" ];
+    class = "cloudflare";
+  };
+
+  # Issue #5767, phase 2: the remaining in-repo Workers from the
+  # issue's target list, registered behind the deploy CLI. Each
+  # deploy app runs its Worker's flake package (bundle / Worker tree
+  # with lockfile-pinned deps — no deploy-time npm install) and
+  # gathers its Cloudflare credentials impurely at deploy time, so
+  # the definitions name no secrets of their own (the phase-1 shape).
+  cold-store-rehydrator = {
+    package = coldStoreRehydratorDeploy;
+    entryPoint = "bin/cold-store-rehydrator-deploy";
+    args = [ ];
+    environment = { };
+    secrets = [ ]; # resolved by the deploy app itself at deploy time
+    user = "user";
+    ports = [ ];
+    restart = "no";
+    healthCheck = null;
+    targets = [ "cloudflare" ];
+    class = "cloudflare";
+  };
+
+  lab-ops-hub = {
+    package = labOpsHubDeploy;
+    entryPoint = "bin/lab-ops-hub-deploy";
+    args = [ ];
+    environment = { };
+    secrets = [ ]; # resolved by the deploy app itself at deploy time
+    user = "user";
+    ports = [ ];
+    restart = "no";
+    healthCheck = null;
+    targets = [ "cloudflare" ];
+    class = "cloudflare";
+  };
+
+  cf-container-hello = {
+    package = cfContainerHelloDeploy;
+    entryPoint = "bin/cf-container-hello-deploy";
     args = [ ];
     environment = { };
     secrets = [ ]; # resolved by the deploy app itself at deploy time

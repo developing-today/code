@@ -1145,12 +1145,20 @@ pub(crate) fn parse_img_tag(html: &str) -> Option<Value> {
 /// reference, a fragment, a query, or a protocol-relative `//host/path`
 /// reference, none of which can name an executable scheme — or its
 /// scheme is exactly `http`, `https`, or `mailto` (case-insensitive).
+/// The one exception is a validated `id://` Reference degradation
+/// (see [`id_reference_url_is_valid`]). The probe also removes the
+/// `idweb-newline-<n>-token` placeholders that
+/// `protect_newline_destinations` substitutes for newlines inside
+/// angle-form destinations, so a protected destination is judged by
+/// the scheme its newline interrupted (see
+/// [`remove_newline_placeholders`]).
 /// Everything else (`javascript:`, `data:`, `vbscript:`, any unknown
 /// scheme, and any obfuscation of those the stripping above exposes)
 /// is unsafe. This explicit allowed set is the oracle every link test
 /// for #5745 checks against; do not rely on browser sanitization.
 pub(crate) fn link_url_is_safe(url: &str) -> bool {
-    let probe: String = url
+    let unplaceholdered = remove_newline_placeholders(url);
+    let probe: String = unplaceholdered
         .chars()
         .filter(|c| !matches!(c, '\t' | '\n' | '\r'))
         .collect();
@@ -1180,10 +1188,75 @@ pub(crate) fn link_url_is_safe(url: &str) -> bool {
         // (e.g. a relative path containing a colon) is not a scheme.
         return true;
     }
-    matches!(
-        scheme.to_ascii_lowercase().as_str(),
-        "http" | "https" | "mailto"
-    )
+    match scheme.to_ascii_lowercase().as_str() {
+        "http" | "https" | "mailto" => true,
+        // #5745 remainder (task 19948): the validated `id://`
+        // degradation `Reference::to_markdown` emits is a native
+        // reference target, not an executable scheme.
+        "id" => id_reference_url_is_valid(&probe, colon),
+        _ => false,
+    }
+}
+
+/// #5745 remainder (task 19948): remove every
+/// `idweb-newline-<n>-token` placeholder (the shape
+/// `protect_newline_destinations` substitutes for a newline inside an
+/// angle-form destination) from `url`, returning the string the
+/// scheme probe should judge. The placeholder stands for a newline,
+/// which the probe strips anyway, so removing it outright is the
+/// same judgment with the token's characters unable to hide inside
+/// a scheme name: `https<token>://` judges as `https`, while
+/// `java<token>script:` still judges as `javascript`. A literally
+/// authored token gets no special power from this: stripping can
+/// only expose the scheme the surrounding characters already spell,
+/// never turn an executable scheme into an allowed one, and the
+/// judged string is never the returned one (a safe URL is returned
+/// verbatim, token included, for `restore_attr_newlines` to restore).
+fn remove_newline_placeholders(url: &str) -> String {
+    if !url.contains("idweb-newline-") {
+        return url.to_owned();
+    }
+    let mut out = String::with_capacity(url.len());
+    let mut rest = url;
+    while let Some(idx) = rest.find("idweb-newline-") {
+        out.push_str(&rest[..idx]);
+        let tail = &rest[idx + "idweb-newline-".len()..];
+        let digits = tail.len() - tail.trim_start_matches(|c: char| c.is_ascii_digit()).len();
+        if digits > 0 {
+            if let Some(after) = tail[digits..].strip_prefix("-token") {
+                rest = after;
+                continue;
+            }
+        }
+        // Not a placeholder shape: keep the literal text and move on.
+        out.push_str("idweb-newline-");
+        rest = tail;
+    }
+    out.push_str(rest);
+    out
+}
+
+/// #5745 remainder (task 19948): is `probe` (already placeholder- and
+/// control-stripped by [`link_url_is_safe`], with its scheme colon at
+/// byte index `colon`) exactly a validated `id://` Reference
+/// degradation? The grammar is the one `Reference::from_markdown`
+/// parses and `Reference::to_markdown` emits: `id://<hex>` or
+/// `id://<hex>@<hex>`, where each `<hex>` is the hex form of a
+/// `p2panda_core::Hash` — exactly 64 ASCII hex digits. Anything else
+/// carrying an `id` scheme (non-hex, a short or over-long hex, extra
+/// path segments, an empty target, more than one `@`, a missing
+/// `//`) is not a degradation and stays neutralized.
+fn id_reference_url_is_valid(probe: &str, colon: usize) -> bool {
+    let Some(rest) = probe[colon + 1..].strip_prefix("//") else {
+        return false;
+    };
+    let valid_hash = |s: &str| s.len() == 64 && s.bytes().all(|b| b.is_ascii_hexdigit());
+    let mut parts = rest.split('@');
+    match (parts.next(), parts.next(), parts.next()) {
+        (Some(target), None, None) => valid_hash(target),
+        (Some(target), Some(revision), None) => valid_hash(target) && valid_hash(revision),
+        _ => false,
+    }
 }
 
 /// #5745: return `url` unchanged when [`link_url_is_safe`], else the

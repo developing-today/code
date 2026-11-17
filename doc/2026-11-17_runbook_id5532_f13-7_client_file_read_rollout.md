@@ -5,7 +5,7 @@ Design: `doc/2026-11-01_design_id789.md` · Final implementation step:
 step 6 (end-to-end hardening + this runbook). Step 5 (the provider
 itself) landed in PR #10925.
 
-`client.file.read` lets a world program ask a *joined shell* to read
+`client.file.read` lets a world program ask a _joined shell_ to read
 one file under a root directory the local user chose, and return the
 bytes as the ordinary journaled capability result. It is the first
 provider with `side: client` in the provider registry: the host
@@ -20,10 +20,10 @@ from the legacy host `CATALOG` view and from every default ceiling.
 
 ## The two gates
 
-| Gate | Who controls it | What it decides |
-| --- | --- | --- |
-| Host gate | Host operator (server ceiling, at `serve` time) and world operator (world ceiling + grant, via `id world caps`) | The provider is named in the **server ceiling**, in the **world ceiling**, AND **granted** to the world — ceilings compose by intersection, so a world may allow less than the server, never more. The host broker checks, in order: ceiling → actor scope → explicit grant → session attribution → argument shape → the *originating session's* offer. Grant-on-use never applies to a client provider. |
-| Local gate (shell) | The local user at the shell | The shell has opted the provider in for that world with the disclosure acknowledged. The shell's adapter re-checks the grant on every request; a host "allow" cannot bypass it, and revoking locally takes effect on the next request. |
+| Gate               | Who controls it                                                                                                 | What it decides                                                                                                                                                                                                                                                                                                                                                                                          |
+| ------------------ | --------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Host gate          | Host operator (server ceiling, at `serve` time) and world operator (world ceiling + grant, via `id world caps`) | The provider is named in the **server ceiling**, in the **world ceiling**, AND **granted** to the world — ceilings compose by intersection, so a world may allow less than the server, never more. The host broker checks, in order: ceiling → actor scope → explicit grant → session attribution → argument shape → the _originating session's_ offer. Grant-on-use never applies to a client provider. |
+| Local gate (shell) | The local user at the shell                                                                                     | The shell has opted the provider in for that world with the disclosure acknowledged. The shell's adapter re-checks the grant on every request; a host "allow" cannot bypass it, and revoking locally takes effect on the next request.                                                                                                                                                                   |
 
 A request is routed only to the session whose input caused it and
 which offered the provider. Another session's offer never makes the
@@ -102,7 +102,7 @@ journaled bytes — it never re-reads your disk.
 
 That is why the acknowledgment is mandatory, not a formality:
 
-- Setting `ID_SHELL_FILE_READ_ROOT` *is* the acknowledgment in the
+- Setting `ID_SHELL_FILE_READ_ROOT` _is_ the acknowledgment in the
   shipped shell.
 - An executor built without the acknowledgment refuses every read
   with `content_disclosure_not_acknowledged`, and the adapter's
@@ -132,7 +132,7 @@ an over-bound result is refused whole, never silently truncated.
 ## Revoking
 
 - **World side:** `id world caps <node-id> --admin-token <token>
-  --revoke client.file.read` — the next request refuses
+--revoke client.file.read` — the next request refuses
   `cap_denied` (host audit reason `not_granted`). Removing the name
   from the ceiling instead refuses `outside_ceiling`.
 - **Shell side:** unset `ID_SHELL_FILE_READ_ROOT` and restart the
@@ -172,20 +172,20 @@ an over-bound result is refused whole, never silently truncated.
 Result events carry a stable `error` and, where one applies, a
 stable `reason`. The codes a program may observe:
 
-| error | reason | Meaning |
-| --- | --- | --- |
-| `outside_ceiling` | — | The world ceiling does not name the provider. |
-| `cap_denied` | — | No explicit world grant (host audit records `not_granted`). |
-| `actor_denied` | `unattributed` | No originating joined session; never routed. |
-| `actor_denied` | `restarted` | The request predates a world reopen; never re-executed. |
-| `failed` | `provider_unavailable` | The originating session did not offer the provider (no local opt-in). |
-| `failed` | `provider_busy` / `provider_timeout` | In-flight cap reached / no reply before the deadline. |
-| `cap_denied` | `content_disclosure_not_acknowledged` | Local disclosure not acknowledged; nothing was read. |
-| `cap_denied` | `file_read_invalid_path` / `file_read_not_found` / `file_read_not_a_file` / `file_read_io` | The local path rules refused the read. |
-| `cap_denied` | `provider_not_granted` / `provider_revoked` / `provider_unavailable` / `provider_rate_limited` | The shell's local grant state refused the request. |
-| `cap_denied` | `provider_refused` | The client replied with a refusal code outside the stable shape; the host substitutes this generic code rather than journaling arbitrary client text (step-6 hardening). |
-| `result_too_large` | — | The reply exceeded the 32 KiB bound at the host. |
-| `bad_args` | e.g. `missing_required_arg` | Arguments fail the manifest schema or the 8 KiB bound. |
+| error              | reason                                                                                         | Meaning                                                                                                                                                                  |
+| ------------------ | ---------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `outside_ceiling`  | —                                                                                              | The world ceiling does not name the provider.                                                                                                                            |
+| `cap_denied`       | —                                                                                              | No explicit world grant (host audit records `not_granted`).                                                                                                              |
+| `actor_denied`     | `unattributed`                                                                                 | No originating joined session; never routed.                                                                                                                             |
+| `actor_denied`     | `restarted`                                                                                    | The request predates a world reopen; never re-executed.                                                                                                                  |
+| `failed`           | `provider_unavailable`                                                                         | The originating session did not offer the provider (no local opt-in).                                                                                                    |
+| `failed`           | `provider_busy` / `provider_timeout`                                                           | In-flight cap reached / no reply before the deadline.                                                                                                                    |
+| `cap_denied`       | `content_disclosure_not_acknowledged`                                                          | Local disclosure not acknowledged; nothing was read.                                                                                                                     |
+| `cap_denied`       | `file_read_invalid_path` / `file_read_not_found` / `file_read_not_a_file` / `file_read_io`     | The local path rules refused the read.                                                                                                                                   |
+| `cap_denied`       | `provider_not_granted` / `provider_revoked` / `provider_unavailable` / `provider_rate_limited` | The shell's local grant state refused the request.                                                                                                                       |
+| `cap_denied`       | `provider_refused`                                                                             | The client replied with a refusal code outside the stable shape; the host substitutes this generic code rather than journaling arbitrary client text (step-6 hardening). |
+| `result_too_large` | —                                                                                              | The reply exceeded the 32 KiB bound at the host.                                                                                                                         |
+| `bad_args`         | e.g. `missing_required_arg`                                                                    | Arguments fail the manifest schema or the 8 KiB bound.                                                                                                                   |
 
 ## Step-6 verification coverage
 
