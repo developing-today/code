@@ -74,6 +74,8 @@ func httpSettings() []Setting {
 			Path: "http.streamBufferInit", Kind: KindBytes, Default: defaults.Bytes(defaults.HTTPStreamBufferInit),
 			Scope: ScopeClient, Plumbing: true,
 			Name: "Stream buffer", Short: "the initial line buffer when reading an event stream",
+			Long: "Only an allocation hint: a value above http.streamBufferMax " +
+				"is clamped to it, so the line ceiling always holds.",
 		},
 		{
 			Path: "http.streamBufferMax", Kind: KindBytes, Default: defaults.Bytes(defaults.HTTPStreamBufferMax),
