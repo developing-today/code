@@ -29,7 +29,7 @@ impl GhRunner {
         GhRunner { bin }
     }
 
-    fn with_bin(bin: impl Into<String>) -> Self {
+    pub(super) fn with_bin(bin: impl Into<String>) -> Self {
         GhRunner { bin: bin.into() }
     }
 
@@ -120,7 +120,7 @@ impl GhCreator {
         }
     }
 
-    fn with_runner(gh: GhRunner) -> Self {
+    pub(super) fn with_runner(gh: GhRunner) -> Self {
         GhCreator { gh }
     }
 }
@@ -278,7 +278,7 @@ impl GhCreator {
     /// entries (#8331): the search index lags, so the REST issues
     /// list is scanned as a second leg before `Absent` (see
     /// `find_issue_in_recent_list`).
-    fn find_by_marker(&mut self, entry: &Value) -> MarkerLookup {
+    pub(super) fn find_by_marker(&mut self, entry: &Value) -> MarkerLookup {
         let repo = s(entry, "repo");
         let kind = s(entry, "kind");
         let id = s(entry, "id");

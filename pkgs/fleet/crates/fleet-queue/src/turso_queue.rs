@@ -9831,7 +9831,16 @@ mod tests {
         assert!(impl_src.contains("\"transfer\": true"));
         assert!(impl_src.contains("\"from_session\": from_session"));
         assert!(impl_src.contains("\"previous_worker\": old_worker"));
-        let client_src = include_str!("client.rs");
+        let client_src = [
+            include_str!("client/transport.rs"),
+            include_str!("client/support.rs"),
+            include_str!("client/commands_query.rs"),
+            include_str!("client/commands_lifecycle.rs"),
+            include_str!("client/fallback_stack.rs"),
+            include_str!("client.rs"),
+        ]
+        .concat();
+        let client_src = client_src.as_str();
         assert!(client_src.contains("\"from-session\""));
         assert!(client_src.contains("body[\"from_session\"] = json!(fs)"));
     }
@@ -9893,7 +9902,16 @@ mod tests {
         assert!(impl_src.contains("ADD COLUMN {col} TEXT"));
         assert!(impl_src.contains("platform_limit_cleared_invalid"));
         assert!(impl_src.contains("\"platform_limit_cleared\": true"));
-        let client_src = include_str!("client.rs");
+        let client_src = [
+            include_str!("client/transport.rs"),
+            include_str!("client/support.rs"),
+            include_str!("client/commands_query.rs"),
+            include_str!("client/commands_lifecycle.rs"),
+            include_str!("client/fallback_stack.rs"),
+            include_str!("client.rs"),
+        ]
+        .concat();
+        let client_src = client_src.as_str();
         assert!(client_src.contains("\"limit-platform\""));
         assert!(client_src.contains("\"platform_limit\": args.get(\"limit-platform\")"));
         assert!(client_src.contains("\"clear-platform-limit\""));
@@ -9918,7 +9936,16 @@ mod tests {
         // No balancing artifact survives in the lane decision path.
         assert!(!impl_src.contains("opencode_count"));
         assert!(!impl_src.contains("o_count <= d_count"));
-        let client_src = include_str!("client.rs");
+        let client_src = [
+            include_str!("client/transport.rs"),
+            include_str!("client/support.rs"),
+            include_str!("client/commands_query.rs"),
+            include_str!("client/commands_lifecycle.rs"),
+            include_str!("client/fallback_stack.rs"),
+            include_str!("client.rs"),
+        ]
+        .concat();
+        let client_src = client_src.as_str();
         assert!(client_src.contains("\"opencode-reason\""));
         assert!(client_src.contains("\"opencode_reason\": args.get(\"opencode-reason\")"));
     }
@@ -10336,7 +10363,16 @@ mod tests {
             "pick must exclude blocked: {pred}"
         );
         // Client surface.
-        let client_src = include_str!("client.rs");
+        let client_src = [
+            include_str!("client/transport.rs"),
+            include_str!("client/support.rs"),
+            include_str!("client/commands_query.rs"),
+            include_str!("client/commands_lifecycle.rs"),
+            include_str!("client/fallback_stack.rs"),
+            include_str!("client.rs"),
+        ]
+        .concat();
+        let client_src = client_src.as_str();
         for f in [
             "blocked-by-pr",
             "blocked-by-issue",
@@ -10636,7 +10672,16 @@ mod tests {
         );
         assert!(impl_src.contains("run_quarantine_rechecks(t, req_i64(req, \"limit\")"));
         assert!(impl_src.contains("\"via\": \"quarantine_recheck\""));
-        let client_src = include_str!("client.rs");
+        let client_src = [
+            include_str!("client/transport.rs"),
+            include_str!("client/support.rs"),
+            include_str!("client/commands_query.rs"),
+            include_str!("client/commands_lifecycle.rs"),
+            include_str!("client/fallback_stack.rs"),
+            include_str!("client.rs"),
+        ]
+        .concat();
+        let client_src = client_src.as_str();
         assert!(client_src.contains("\"quarantine-recheck\" => cmd_quarantine_recheck"));
         assert!(client_src.contains("call(\"/quarantine-recheck\""));
     }

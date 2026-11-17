@@ -140,12 +140,12 @@ mod tests {
         // lease-expiry displacement and any claim refusal — the two
         // transitions that explain a double claim. They render now.
         let src = [
-            include_str!("client.rs"),
             include_str!("client/transport.rs"),
             include_str!("client/support.rs"),
             include_str!("client/commands_query.rs"),
             include_str!("client/commands_lifecycle.rs"),
             include_str!("client/fallback_stack.rs"),
+            include_str!("client.rs"),
         ]
         .concat();
         let seg = src
@@ -1310,12 +1310,12 @@ mod tests {
         // the park/revive rule and the /list body carries the
         // validated value.
         let src = [
-            include_str!("client.rs"),
             include_str!("client/transport.rs"),
             include_str!("client/support.rs"),
             include_str!("client/commands_query.rs"),
             include_str!("client/commands_lifecycle.rs"),
             include_str!("client/fallback_stack.rs"),
+            include_str!("client.rs"),
         ]
         .concat();
         let seg = src
@@ -2224,12 +2224,12 @@ esac
     #[test]
     fn every_verb_usage_matches_its_parser() {
         let src = [
-            include_str!("client.rs"),
             include_str!("client/transport.rs"),
             include_str!("client/support.rs"),
             include_str!("client/commands_query.rs"),
             include_str!("client/commands_lifecycle.rs"),
             include_str!("client/fallback_stack.rs"),
+            include_str!("client.rs"),
         ]
         .concat();
         let list = |text: &str| -> Vec<String> {
