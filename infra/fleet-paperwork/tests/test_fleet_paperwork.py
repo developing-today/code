@@ -515,6 +515,78 @@ class TestResponseShapes(unittest.TestCase):
         self.assertEqual(hit["number"], 5)
 
 
+class TestPageBounds(unittest.TestCase):
+    """#9150 (#6622 rule 2): both App page loops stop at a page bound and
+    fail naming the listing instead of following pages forever."""
+
+    def client(self):
+        c = fp.AppClient.__new__(fp.AppClient)
+        c.jwt = "jwt"
+        c._tokens = {}
+        c._installations = None
+        return c
+
+    def test_installations_stops_at_short_page(self):
+        def fake_http(method, path, token, body=None, expect=dict):
+            page = int(path.rsplit("page=", 1)[1])
+            return 200, [
+                {"id": page * 1000 + i} for i in range(100 if page == 1 else 3)
+            ]
+
+        with unittest.mock.patch.object(fp, "http", fake_http):
+            self.assertEqual(len(self.client().installations()), 103)
+
+    def test_installations_never_short_fails_at_bound(self):
+        calls = []
+
+        def fake_http(method, path, token, body=None, expect=dict):
+            calls.append(path)
+            return 200, [{"id": i} for i in range(100)]
+
+        with (
+            unittest.mock.patch.object(fp, "http", fake_http),
+            unittest.mock.patch("sys.stderr"),
+        ):
+            with self.assertRaises(SystemExit):
+                self.client().installations()
+        self.assertEqual(len(calls), fp.GITHUB_LIST_MAX_PAGES)
+
+    def test_repositories_never_reaching_total_fails_at_bound(self):
+        calls = []
+
+        def fake_http(method, path, token, body=None, expect=dict):
+            calls.append(path)
+            page = int(path.rsplit("page=", 1)[1])
+            return 200, {
+                "total_count": 10**9,
+                "repositories": [{"full_name": f"o/r{page}-{i}"} for i in range(100)],
+            }
+
+        c = self.client()
+        c.token_for = lambda owner: "tok"
+        with (
+            unittest.mock.patch.object(fp, "http", fake_http),
+            unittest.mock.patch("sys.stderr"),
+        ):
+            with self.assertRaises(SystemExit):
+                c.assert_repo_in_scope("o/missing")
+        self.assertEqual(len(calls), fp.GITHUB_LIST_MAX_PAGES)
+
+    def test_repositories_found_on_second_page(self):
+        def fake_http(method, path, token, body=None, expect=dict):
+            page = int(path.rsplit("page=", 1)[1])
+            names = [f"o/r{i}" for i in range(100)] if page == 1 else ["o/target"]
+            return 200, {
+                "total_count": 101,
+                "repositories": [{"full_name": n} for n in names],
+            }
+
+        c = self.client()
+        c.token_for = lambda owner: "tok"
+        with unittest.mock.patch.object(fp, "http", fake_http):
+            self.assertIsNone(c.assert_repo_in_scope("o/target"))
+
+
 if __name__ == "__main__":
     unittest.main()
 
