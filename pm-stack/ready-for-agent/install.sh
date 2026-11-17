@@ -25,6 +25,12 @@
 # bump it deliberately after reading the upstream release notes —
 # never float on @latest.
 set -euo pipefail
+# Argument contract (#3352): no arguments, or exactly `clone`; anything
+# else is a usage error before any work runs.
+if ! { [ "$#" -eq 0 ] || { [ "$#" -eq 1 ] && [ "$1" = clone ]; }; }; then
+  echo "install.sh: unexpected arguments '$*'; usage: ./install.sh [clone]" >&2
+  exit 2
+fi
 
 PINNED_VERSION="1.1.0"
 

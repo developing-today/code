@@ -6,6 +6,12 @@
 # (SUPABASE_TOKEN_SECRET_NAME, default supabase.muse-dev2.access-token-muse-cli);
 # this script never reads, prints, or stores its value.
 set -euo pipefail
+# Argument contract (#3352): this script takes no command-line
+# arguments; anything given is a usage error before any work runs.
+if [ "$#" -gt 0 ]; then
+  echo "install-laptop.sh: unexpected argument '$1'; usage: bash install-laptop.sh" >&2
+  exit 2
+fi
 
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 target="${SUPABASE_EXPORT_DIR:-$HOME/atlas/supabase-export}"
