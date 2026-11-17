@@ -13,12 +13,6 @@ use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, HashMap, HashSet};
 
-pub mod adapters {
-    //! Engine workload adapters for the #9133 benchmark contract
-    //! (one module per engine slice in C9133-02).
-    pub mod d1;
-}
-
 pub const ENGINES: [&str; 4] = ["d1", "r2", "redb", "turso"];
 
 /// Canonical fixture content identity: `sha256:` + hex of the exact bytes.
