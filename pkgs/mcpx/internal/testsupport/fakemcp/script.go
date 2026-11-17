@@ -63,6 +63,23 @@ type scriptResponse struct {
 	DelayMs  int          `json:"delayMs"`
 	EchoArgs bool         `json:"echoArgs"`
 	Error    *scriptError `json:"error"`
+	// IsError answers with an MCP tool-error result (isError: true)
+	// carrying Text, instead of a successful result or a JSON-RPC
+	// error: the shape a real server's failed tool call takes.
+	IsError bool `json:"isError"`
+	// IfEnv makes the response conditional on this process's
+	// environment: when the named variable equals Equals this
+	// response is used, otherwise Else is used (which may itself be
+	// conditional). It is how a test makes a server's answer depend
+	// on the credential it was spawned with.
+	IfEnv *scriptEnvCond  `json:"ifEnv,omitempty"`
+	Else  *scriptResponse `json:"else,omitempty"`
+}
+
+// scriptEnvCond is the condition on a scriptResponse's IfEnv branch.
+type scriptEnvCond struct {
+	Name   string `json:"name"`
+	Equals string `json:"equals"`
 }
 
 type scriptError struct {
@@ -127,6 +144,16 @@ func scriptedToolDefs(s *fakeScript) []map[string]any {
 // scriptCall answers a tools/call for a scripted tool.
 func scriptCall(id *int64, t scriptTool, args map[string]any) map[string]any {
 	resp := t.Response
+	for resp.IfEnv != nil {
+		if os.Getenv(resp.IfEnv.Name) == resp.IfEnv.Equals {
+			resp.IfEnv = nil
+			break
+		}
+		if resp.Else == nil {
+			return ok(id, textResult(""))
+		}
+		resp = *resp.Else
+	}
 	if resp.DelayMs > 0 {
 		time.Sleep(time.Duration(resp.DelayMs) * time.Millisecond)
 	}
@@ -140,6 +167,12 @@ func scriptCall(id *int64, t scriptTool, args map[string]any) map[string]any {
 	if resp.EchoArgs {
 		b, _ := json.Marshal(args)
 		return ok(id, textResult(string(b)))
+	}
+	if resp.IsError {
+		return ok(id, map[string]any{
+			"isError": true,
+			"content": []map[string]any{{"type": "text", "text": resp.Text}},
+		})
 	}
 	return ok(id, textResult(resp.Text))
 }
