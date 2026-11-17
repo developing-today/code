@@ -300,9 +300,19 @@ impl<'writer> FormatFields<'writer> for PlainFields {
 /// Each clone shares one file behind a mutex; `tracing_subscriber`
 /// asks the writer factory for a writer per event, so clones write
 /// whole events without interleaving.
-#[derive(Clone, Debug)]
+#[derive(Debug)]
 pub struct SharedFileWriter {
     inner: Arc<Mutex<SharedFileState>>,
+    pending: Vec<u8>,
+}
+
+impl Clone for SharedFileWriter {
+    fn clone(&self) -> Self {
+        Self {
+            inner: Arc::clone(&self.inner),
+            pending: Vec::new(),
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -324,6 +334,7 @@ impl SharedFileWriter {
                 path: path.to_path_buf(),
                 file,
             })),
+            pending: Vec::new(),
         })
     }
 
@@ -359,12 +370,16 @@ fn same_file(_left: &std::fs::Metadata, _right: &std::fs::Metadata) -> bool {
 
 impl io::Write for SharedFileWriter {
     fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
-        let mut state = self
-            .inner
-            .lock()
-            .map_err(|_| io::Error::other("log file lock poisoned"))?;
-        Self::reopen_if_rotated(&mut state)?;
-        state.file.write_all(buf)?;
+        self.pending.extend_from_slice(buf);
+        while let Some(end) = self.pending.iter().position(|byte| *byte == b'\n') {
+            let line: Vec<_> = self.pending.drain(..=end).collect();
+            let mut state = self
+                .inner
+                .lock()
+                .map_err(|_| io::Error::other("log file lock poisoned"))?;
+            Self::reopen_if_rotated(&mut state)?;
+            state.file.write_all(&line)?;
+        }
         Ok(buf.len())
     }
 
@@ -374,6 +389,8 @@ impl io::Write for SharedFileWriter {
             .lock()
             .map_err(|_| io::Error::other("log file lock poisoned"))?;
         Self::reopen_if_rotated(&mut state)?;
+        state.file.write_all(&self.pending)?;
+        self.pending.clear();
         state.file.flush()
     }
 }
