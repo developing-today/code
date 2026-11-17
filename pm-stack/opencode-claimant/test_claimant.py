@@ -1044,6 +1044,35 @@ class TestBindFailedRecordsError(unittest.TestCase):
             skips[0]["error"], "bind failed: task not claimed with a live lease"
         )
 
+    def test_bind_failure_deletes_the_created_session(self):
+        """A refused bind leaves the new session bound to nothing.
+        The created session must be deleted before the skip, or the
+        fire orphans an unowned root and leaks a cap slot. #8042
+        added the error text and dropped this delete; the regression
+        went unnoticed because nothing asserted it."""
+        binds = []
+        deletes = []
+        base_fake = make_fake_run(binds, deletes=deletes)
+
+        def fake_run(cmd, **kwargs):
+            argv = [str(part) for part in cmd]
+            if "repo-queue" in argv[0] and "bind" in argv:
+                binds.append(cmd)
+                return Result(1, "", "bind failed: already bound to session ses_old")
+            return base_fake(cmd, **kwargs)
+
+        with (
+            patch.object(
+                claimant, "run_poll", return_value={"candidates": [dict(CANDIDATE)]}
+            ),
+            patch.object(claimant.subprocess, "run", fake_run),
+        ):
+            launched, skips = claimant.launch_step("live", 1)
+        self.assertEqual(launched, [])
+        self.assertEqual(skips[0]["reason"], "bind_failed")
+        self.assertEqual(len(deletes), 1, "created session was not deleted")
+        self.assertIn("ses_new1", " ".join(str(p) for p in deletes[0]))
+
 
 class TestClaimant8038(unittest.TestCase):
     """#8038: supervision consumes poll.is_stuck_bound, step-1e
