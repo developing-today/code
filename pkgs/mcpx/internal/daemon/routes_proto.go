@@ -906,8 +906,10 @@ func (s *Server) handleAskAbandon(w http.ResponseWriter, r *http.Request) {
 	var body struct {
 		TaskCancelled bool `json:"taskCancelled"`
 	}
-	if r.Body != nil {
-		_ = json.NewDecoder(r.Body).Decode(&body)
+	// The decode is capped like every other body read here; a missing
+	// or malformed body leaves the zero value (not cancelled).
+	if limited := http.MaxBytesReader(w, r.Body, defaults.HTTPCallBodyLimit); r.Body != nil {
+		_ = json.NewDecoder(limited).Decode(&body)
 	}
 	if body.TaskCancelled {
 		s.reg.markAskTaskCancelled(id)
