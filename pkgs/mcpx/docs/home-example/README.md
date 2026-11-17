@@ -1,6 +1,6 @@
 # The home-page example component
 
-Issue #1876, Approach C, stages 1–2. This directory is the example slot of
+Issue #1876, Approach C, stages 1–3. This directory is the example slot of
 the mcpx home page, landed in the docs source because the page itself
 (#1874) and the site build/deploy (#1941) have not landed yet — when they
 do, the generator includes `component.html` where the example goes and
@@ -39,17 +39,47 @@ site.
 - Mocks are computed from the same rules as the fixture where the fixture
   is deterministic (echo, open/state/wipe, structured, boom, fancy-name).
 
-## Stage 3 is not here
+## Stage 3 — run on my machine (`local-daemon.js`)
 
-Running against the reader's own daemon (a `daemon.cors` allow-list
-setting, a fixed `daemon.port`, Chrome Local Network Access handling) is
-excluded — a separate later follow-on. A hosted public daemon is rejected
-in the issue, permanently. This component makes no daemon changes.
+The opt-in control in `component.html` (off by default, switched only
+by the reader) swaps the fake daemon for the local-daemon transport:
+`/v1` requests are rewritten to the reader's daemon address (default
+`http://127.0.0.1:7432`, editable in the component) and carried by the
+page's real fetch, so the example runs against the reader's own
+daemon through the same generated client. The label changes to say
+so. A hosted public daemon is rejected in the issue, permanently.
+
+The daemon side is the recorded surface choice on #1876/#1890, taken
+because #1890 had not decided its shared-vs-docs-only question: the
+daemon already refused browser origins outside
+`transport.allowedOrigins` (`internal/daemon/origin.go`); stage 3
+adds the missing CORS protocol for those allow-listed origins —
+preflight answers and `Access-Control-Allow-Origin` —
+(`internal/daemon/cors.go`). No new setting, no hardcoded origin, no
+origin allow-listed by default: the reader opts in twice, here and
+in their daemon's allow-list.
+
+What a reader needs, and what the in-page error names when it is
+missing:
+
+- a running daemon on a **fixed `daemon.port`** (the default is a
+  free port only the daemon itself reports, so the page cannot
+  discover it);
+- this site's origin in **`transport.allowedOrigins`** (without it
+  the daemon refuses the page, and its error says exactly that);
+- **no bearer token** on the daemon (`transport.bearerToken`): a
+  browser tab has nowhere safe to keep one, so the local run is for
+  the default loopback trust setup.
+
+Chrome's Local Network Access restrictions on public pages calling
+loopback are answered by the same CORS exchange (the preflight is
+the permission probe); a browser that still blocks it surfaces the
+same no-daemon message.
 
 ## Verify
 
 ```sh
-node smoke-test.mjs   # shell round-trip for stage 1; end-to-end run for stage 2
+node smoke-test.mjs   # shell round-trip for stage 1; end-to-end runs for stages 2 and 3
 ./generate-client.sh  # regenerate client.ts / client.browser.js from the fixture
 ```
 

@@ -476,7 +476,7 @@ func (s *Server) startHTTP() {
 	mux := http.NewServeMux()
 	s.routes(mux)
 	srv := &http.Server{
-		Handler:           s.refuseBrowserPages(s.trackActivity(s.authorize(s.requireBearer(mux)))),
+		Handler:           s.corsForAllowedOrigins(s.refuseBrowserPages(s.trackActivity(s.authorize(s.requireBearer(mux))))),
 		ReadHeaderTimeout: s.set.Duration("http.readHeaderTimeout"),
 		ConnState:         s.observeConn,
 		ConnContext:       connPrincipal,
@@ -560,7 +560,7 @@ func (s *Server) ServeInline(ctx context.Context, socket string) error {
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 	s.routes(mux)
-	return s.refuseBrowserPages(s.authorize(s.requireBearer(mux)))
+	return s.corsForAllowedOrigins(s.refuseBrowserPages(s.authorize(s.requireBearer(mux))))
 }
 
 // InProcessHandler returns Handler with the daemon's lifetime tied to
