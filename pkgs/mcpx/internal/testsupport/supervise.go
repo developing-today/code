@@ -57,14 +57,17 @@ func StopSupervisors(stateDir string) error {
 					break
 				}
 			}
-			if outcome == nil || outcome.Action == "terminate-failed" {
-				if outcome == nil {
-					return fmt.Errorf("supervisor socket %s disappeared from scan while still present", socket)
-				}
+			// A socket missing from the scan was removed between the stat
+			// and the glob: the stat at the top of the loop settles it.
+			if outcome != nil && outcome.Action == "terminate-failed" {
 				return fmt.Errorf("terminate supervisor %s: %s", socket, outcome.Detail)
 			}
 			if time.Now().After(deadline) {
-				return fmt.Errorf("supervisor %s did not stop within 15s (last scan: %s %s)", socket, outcome.Action, outcome.Detail)
+				last := "not in scan"
+				if outcome != nil {
+					last = outcome.Action + " " + outcome.Detail
+				}
+				return fmt.Errorf("supervisor %s did not stop within 15s (last scan: %s)", socket, last)
 			}
 			time.Sleep(100 * time.Millisecond)
 		}
