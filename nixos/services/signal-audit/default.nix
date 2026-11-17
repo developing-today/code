@@ -8,7 +8,11 @@
 # auditd is ever dropped.
 {
   security.auditd.enable = true;
+  # Signal 0 is a liveness probe, not a signal: supervisors and agents
+  # send it constantly, so it is filtered out to keep the log to real
+  # kills. The signal is a1 for kill/tkill and a2 for tgkill.
   security.audit.rules = [
-    "-a always,exit -F arch=b64 -S kill -S tkill -S tgkill -k signal-attribution"
+    "-a always,exit -F arch=b64 -S kill -S tkill -F a1!=0 -k signal-attribution"
+    "-a always,exit -F arch=b64 -S tgkill -F a2!=0 -k signal-attribution"
   ];
 }
