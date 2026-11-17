@@ -513,6 +513,7 @@ async function handleTasks(req: Request, caller: CallerIdentity): Promise<Respon
     model: body.model,
     directory,
     issue,
+    requiredBudgetMinutes: body.requiredBudgetMinutes,
   };
   const packet = buildPacket(packetInput, dedupeKey);
   const payloadErrors = validatePayload(packet.payload);

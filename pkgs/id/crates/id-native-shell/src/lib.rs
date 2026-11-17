@@ -27,12 +27,9 @@ pub mod providers;
 pub mod render;
 mod session;
 
-pub use providers::{
-    ClientProviderExecutor, LocalAuditEntry, LocalBounds, ProviderAdapter,
-};
+pub use providers::{ClientProviderExecutor, LocalAuditEntry, LocalBounds, ProviderAdapter};
 pub use session::{
-    ServerUpdate, SessionState, SessionView, join_frame, run_session,
-    run_session_with_providers,
+    ServerUpdate, SessionState, SessionView, join_frame, run_session, run_session_with_providers,
 };
 
 use id::world_presentation::WorldSurface;
