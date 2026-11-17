@@ -23,6 +23,8 @@ test-provider = []
 anyhow = "1"
 id-core = { path = "../id-core", default-features = false }
 serde = { version = "1", features = ["derive"] }
+ed25519-dalek = { version = "3", features = ["rand_core"] }
+sha2 = "0.11"
 serde_json = "1"
 toml = "1"
 
