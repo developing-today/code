@@ -27,6 +27,7 @@ test-utils = []
 [dependencies]
 anyhow = "1"
 blake3 = "1"
+cbor-core = { version = "=0.10.1", features = ["serde"] }
 futures-lite = "2"
 futures-util = { version = "0.3", features = ["sink"] }
 ed25519-dalek = { version = "3", features = ["rand_core"] }

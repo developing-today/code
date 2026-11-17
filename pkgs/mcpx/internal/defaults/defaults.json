@@ -120,7 +120,8 @@
     "handlerTimeout": "5m",
     "inputRounds": 8,
     "retentionMaxAge": "720h",
-    "retentionMaxTerminalRows": 1000
+    "retentionMaxTerminalRows": 1000,
+    "audienceWindow": "2m"
   },
   "proto": {
     "native": true,

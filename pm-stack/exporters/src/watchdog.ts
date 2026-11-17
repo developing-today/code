@@ -48,6 +48,7 @@ import {
 } from "./watchdog-state.ts";
 import {
   applyEscalationActions,
+  buildQueueTaskWrapper,
   EscalationPartialError,
   planEscalation,
   planRecovery,
@@ -110,7 +111,11 @@ async function cdpCookieNames(port: number, origins: string[], timeoutMs = 5000)
   return await new Promise<string[] | null>((resolve) => {
     const ws = new WebSocket(version.webSocketDebuggerUrl!);
     const timer = setTimeout(() => {
-      try { ws.close(); } catch { /* already closed */ }
+      try {
+        ws.close();
+      } catch {
+        /* already closed */
+      }
       resolve(null);
     }, timeoutMs);
     ws.onopen = () => {
@@ -129,10 +134,18 @@ async function cdpCookieNames(port: number, origins: string[], timeoutMs = 5000)
         const names = new Set<string>();
         for (const c of cookies) {
           // Keep only cookies scoped to an allowlist origin's host.
-          if (origins.some((o) => {
-            try { return new URL(o).hostname.endsWith(c.domain.replace(/^\./, "")) || c.domain.endsWith(new URL(o).hostname); }
-            catch { return false; }
-          })) names.add(c.name);
+          if (
+            origins.some((o) => {
+              try {
+                return (
+                  new URL(o).hostname.endsWith(c.domain.replace(/^\./, "")) || c.domain.endsWith(new URL(o).hostname)
+                );
+              } catch {
+                return false;
+              }
+            })
+          )
+            names.add(c.name);
         }
         resolve([...names]);
       } catch {
@@ -178,7 +191,8 @@ export function productionEffects(env: Record<string, string | undefined> = proc
     probeCdp,
     async rung2(adapter) {
       if (!adapter.cdpPort) return { outcome: "skipped", detail: "adapter declares no CDP port" };
-      if (!liveRepairs) return { outcome: "skipped", detail: "live repairs not enabled (QUOTA_WATCHDOG_LIVE_REPAIRS != 1)" };
+      if (!liveRepairs)
+        return { outcome: "skipped", detail: "live repairs not enabled (QUOTA_WATCHDOG_LIVE_REPAIRS != 1)" };
       const probe = await probeCdp(adapter.cdpPort);
       if (!probe.ok) {
         // Browser down: one bounded supervised restart, then re-probe.
@@ -187,10 +201,14 @@ export function productionEffects(env: Record<string, string | undefined> = proc
           if (rs.ok) {
             await sleep(3000);
             const again = await probeCdp(adapter.cdpPort);
-            if (again.ok) return { outcome: "succeeded", detail: `browser unit ${adapter.browserUnit} restarted; ${again.detail}` };
+            if (again.ok)
+              return { outcome: "succeeded", detail: `browser unit ${adapter.browserUnit} restarted; ${again.detail}` };
             return { outcome: "failed", detail: `browser unit restarted but CDP still unreachable: ${again.detail}` };
           }
-          return { outcome: "failed", detail: `CDP unreachable and restart of ${adapter.browserUnit} failed: ${rs.detail}` };
+          return {
+            outcome: "failed",
+            detail: `CDP unreachable and restart of ${adapter.browserUnit} failed: ${rs.detail}`,
+          };
         }
         return { outcome: "failed", detail: probe.detail };
       }
@@ -212,13 +230,19 @@ export function productionEffects(env: Record<string, string | undefined> = proc
         const missing = adapter.cookieNames.filter((n) => !names.includes(n));
         if (missing.length > 0) return { outcome: "failed", detail: `cookies missing by name: ${missing.join(", ")}` };
       }
-      return { outcome: "succeeded", detail: "CDP session re-validated: browser live, allowlist origin open, cookies present by name" };
+      return {
+        outcome: "succeeded",
+        detail: "CDP session re-validated: browser live, allowlist origin open, cookies present by name",
+      };
     },
     async rung3(adapter) {
-      if (!adapter.cdpPort || !adapter.loginUrl) return { outcome: "skipped", detail: "adapter declares no CDP port or login URL" };
-      if (!liveRepairs) return { outcome: "skipped", detail: "live repairs not enabled (QUOTA_WATCHDOG_LIVE_REPAIRS != 1)" };
+      if (!adapter.cdpPort || !adapter.loginUrl)
+        return { outcome: "skipped", detail: "adapter declares no CDP port or login URL" };
+      if (!liveRepairs)
+        return { outcome: "skipped", detail: "live repairs not enabled (QUOTA_WATCHDOG_LIVE_REPAIRS != 1)" };
       const originOk = adapter.origins.some((o) => adapter.loginUrl!.startsWith(o));
-      if (!originOk) return { outcome: "failed", detail: "login URL is outside the adapter origin allowlist — refusing" };
+      if (!originOk)
+        return { outcome: "failed", detail: "login URL is outside the adapter origin allowlist — refusing" };
       let targetId: string | null = null;
       try {
         const created = (await fetchJson(
@@ -228,27 +252,46 @@ export function productionEffects(env: Record<string, string | undefined> = proc
         )) as { id?: string };
         targetId = created.id ?? null;
         await sleep(5000);
-        const targets = (await fetchJson(`http://127.0.0.1:${adapter.cdpPort}/json/list`, 3000)) as { id?: string; url?: string; title?: string }[];
-        const tab = targets.find((t) => t.id === targetId) ?? targets.find((t) => (t.url ?? "").startsWith(adapter.loginUrl!));
+        const targets = (await fetchJson(`http://127.0.0.1:${adapter.cdpPort}/json/list`, 3000)) as {
+          id?: string;
+          url?: string;
+          title?: string;
+        }[];
+        const tab =
+          targets.find((t) => t.id === targetId) ?? targets.find((t) => (t.url ?? "").startsWith(adapter.loginUrl!));
         const where = `${tab?.url ?? ""} ${tab?.title ?? ""}`;
         const marker = adapter.challengeMarkers.find((m) => where.toLowerCase().includes(m.toLowerCase()));
         if (marker) {
-          return { outcome: "failed", detail: `human-only challenge at login (${marker}) — stopping; a human must complete it` };
+          return {
+            outcome: "failed",
+            detail: `human-only challenge at login (${marker}) — stopping; a human must complete it`,
+          };
         }
         if (adapter.cookieNames.length > 0) {
           const names = await cdpCookieNames(adapter.cdpPort, adapter.origins);
           if (names !== null) {
             const missing = adapter.cookieNames.filter((n) => !names.includes(n));
-            if (missing.length === 0) return { outcome: "succeeded", detail: "re-login restored the adapter cookies (present by name)" };
-            return { outcome: "failed", detail: `re-login did not restore cookies: ${missing.join(", ")} still missing` };
+            if (missing.length === 0)
+              return { outcome: "succeeded", detail: "re-login restored the adapter cookies (present by name)" };
+            return {
+              outcome: "failed",
+              detail: `re-login did not restore cookies: ${missing.join(", ")} still missing`,
+            };
           }
         }
-        return { outcome: "failed", detail: `login flow landed on ${tab?.url ?? "unknown page"} without confirming a session` };
+        return {
+          outcome: "failed",
+          detail: `login flow landed on ${tab?.url ?? "unknown page"} without confirming a session`,
+        };
       } catch (e) {
         return { outcome: "failed", detail: `re-login driver error: ${e instanceof Error ? e.message : String(e)}` };
       } finally {
         if (targetId) {
-          try { await fetchJson(`http://127.0.0.1:${adapter.cdpPort}/json/close/${targetId}`, 2000); } catch { /* tab already gone */ }
+          try {
+            await fetchJson(`http://127.0.0.1:${adapter.cdpPort}/json/close/${targetId}`, 2000);
+          } catch {
+            /* tab already gone */
+          }
         }
       }
     },
@@ -279,17 +322,11 @@ function productionEscalationEffectors(live: boolean): EscalationEffectors {
   return {
     async enqueueTask(packet) {
       guard();
-      const wrapper = {
-        title: `watchdog incident: ${packet.source} (${packet.failure.class ?? "unknown"})`,
-        body: packet.outcomeWanted,
-        dedupe_key: packet.dedupeKey,
-        priority: 30,
-        payload: {
-          schema: "repo-task/v1",
-          kind: packet.kind,
-          packet,
-        },
-      };
+      // The validated repo-task/v1 envelope (task 20118): the packet
+      // names the incident issue created earlier in this hand-off —
+      // buildQueueTaskWrapper throws when it does not, rather than
+      // enqueueing a packet the queue would reject.
+      const wrapper = buildQueueTaskWrapper(packet, new Date().toISOString());
       const file = join("/tmp", `watchdog-escalation-${packet.source}-${Date.now()}.json`);
       await writeFile(file, JSON.stringify(wrapper));
       const out = await run(["fleet", "queue", "enqueue", "--queue", "repo-health-code-pilot", file]);
@@ -303,8 +340,17 @@ function productionEscalationEffectors(live: boolean): EscalationEffectors {
       const file = join("/tmp", `watchdog-issue-${Date.now()}.md`);
       await writeFile(file, action.body);
       const out = await run([
-        "gh", "issue", "create", "--repo", action.repo, "--title", action.title,
-        "--body-file", file, "--label", "watchdog-incident",
+        "gh",
+        "issue",
+        "create",
+        "--repo",
+        action.repo,
+        "--title",
+        action.title,
+        "--body-file",
+        file,
+        "--label",
+        "watchdog-incident",
       ]);
       const m = out.match(/\/issues\/(\d+)/);
       if (!m) throw new Error(`issue create output carried no number: ${out.slice(0, 200)}`);
@@ -322,13 +368,44 @@ function productionEscalationEffectors(live: boolean): EscalationEffectors {
     },
     async completeTask(action) {
       guard();
-      // The escalation task is completed by whoever claimed and fixed
-      // it in the normal case; the watchdog's recovery completion is
-      // best-effort (the task may already be claimed/done).
-      await run([
-        "fleet", "queue", "complete", action.queueTaskId, "--worker", "repo-worker-code",
-        "--result", JSON.stringify({ outcome: "already_done", note: "watchdog recovery: source healthy again (#6033)" }),
-      ]).catch(() => "");
+      // Recovery resolution of the escalation task, best-effort at
+      // every step (task 20118 live demo): `complete` requires
+      // holding the claim, and the watchdog never claims — so for a
+      // task still sitting queued it always fails with "not claimed
+      // by repo-worker-code". That case is the common one (the
+      // source healed before any fixer picked the task up), and the
+      // honest terminal verb for it is `cancel` with the recovery
+      // reason — but cancel also cancels CLAIMED tasks, so it is
+      // only safe when the task is untouched: an unclaimed task has
+      // no timeline records. A task with records has an owner; leave
+      // it to them — the auto-closed incident issue is their signal,
+      // and their own completion closes the task out.
+      const completed = await run([
+        "fleet",
+        "queue",
+        "complete",
+        action.queueTaskId,
+        "--worker",
+        "repo-worker-code",
+        "--result",
+        JSON.stringify({ outcome: "already_done", note: "watchdog recovery: source healthy again (#6033)" }),
+      ])
+        .then(() => true)
+        .catch(() => false);
+      if (completed) return;
+      const timeline = await run(["fleet", "queue", "timeline", action.queueTaskId]).catch(() => "");
+      if (timeline.includes("no timeline records")) {
+        await run([
+          "fleet",
+          "queue",
+          "cancel",
+          action.queueTaskId,
+          "--worker",
+          "repo-worker-code",
+          "--reason",
+          "watchdog recovery: source healthy again; the repair this task commissioned is no longer needed (#6033)",
+        ]).catch(() => "");
+      }
     },
   };
 }
@@ -355,13 +432,14 @@ const STATUS_CLASS: Record<string, FailureClass> = {
   "cookie-missing": "cookie-missing",
   "endpoint-changed": "endpoint-changed",
   "rate-limited": "rate-limited",
-  "rate_limited": "rate-limited",
+  rate_limited: "rate-limited",
 };
 
 function classifyText(text: string): FailureClass | null {
   const t = text.toLowerCase();
   if (t.includes("rate-limit") || t.includes("rate limit") || t.includes("429")) return "rate-limited";
-  if (t.includes("cdp-unavailable") || t.includes("cdp unavailable") || t.includes("cdp-unreachable")) return "cdp-unreachable";
+  if (t.includes("cdp-unavailable") || t.includes("cdp unavailable") || t.includes("cdp-unreachable"))
+    return "cdp-unreachable";
   if (t.includes("session") && (t.includes("expired") || t.includes("login"))) return "session-expired";
   if (t.includes("cookie") && t.includes("missing")) return "cookie-missing";
   if (t.includes("login page") || t.includes("sign-in") || t.includes("sign in")) return "session-expired";
@@ -389,9 +467,19 @@ export function buildObservation(adapter: WatchdogAdapter, inp: ObservationInput
         // producer has gone silent while everything looks alive.
         // A dead CDP endpoint at the same moment names the culprit.
         if (inp.cdp && !inp.cdp.ok) {
-          return { kind: "failed", at, class: "cdp-unreachable", detail: `stale read (${Math.round((inp.nowMs - measured) / 60000)} min old) and ${inp.cdp.detail}` };
+          return {
+            kind: "failed",
+            at,
+            class: "cdp-unreachable",
+            detail: `stale read (${Math.round((inp.nowMs - measured) / 60000)} min old) and ${inp.cdp.detail}`,
+          };
         }
-        return { kind: "failed", at, class: "unknown", detail: `stale read: producer document is ${Math.round((inp.nowMs - measured) / 60000)} min old (limit ${Math.round(adapter.staleAfterMs / 60000)} min)` };
+        return {
+          kind: "failed",
+          at,
+          class: "unknown",
+          detail: `stale read: producer document is ${Math.round((inp.nowMs - measured) / 60000)} min old (limit ${Math.round(adapter.staleAfterMs / 60000)} min)`,
+        };
       }
       return { kind: "healthy", at, detail: "producer ok" };
     }
@@ -409,7 +497,12 @@ export function buildObservation(adapter: WatchdogAdapter, inp: ObservationInput
   if (inp.docError) {
     // Missing/unreadable document — a class the producer cannot see.
     if (inp.cdp && !inp.cdp.ok) {
-      return { kind: "failed", at, class: "browser-down", detail: `producer document missing (${inp.docError}); ${inp.cdp.detail}` };
+      return {
+        kind: "failed",
+        at,
+        class: "browser-down",
+        detail: `producer document missing (${inp.docError}); ${inp.cdp.detail}`,
+      };
     }
     return { kind: "failed", at, class: "unknown", detail: `producer document missing or unreadable: ${inp.docError}` };
   }
@@ -421,7 +514,8 @@ export function buildObservation(adapter: WatchdogAdapter, inp: ObservationInput
       return { kind: "failed", at, class: "unknown", detail: "stale read: gatherer heartbeat is stale" };
     }
     const entry = inp.heartbeatEntry;
-    if (!entry) return { kind: "failed", at, class: "unknown", detail: `no heartbeat entry for ${adapter.heartbeatKey}` };
+    if (!entry)
+      return { kind: "failed", at, class: "unknown", detail: `no heartbeat entry for ${adapter.heartbeatKey}` };
     if (entry.state === "ok") return { kind: "healthy", at, detail: "gatherer heartbeat ok" };
     const detail = sanitizeDetail(entry.error ?? `heartbeat state ${entry.state ?? "?"}`);
     return { kind: "failed", at, class: classifyText(detail) ?? "unknown", detail };
@@ -431,8 +525,13 @@ export function buildObservation(adapter: WatchdogAdapter, inp: ObservationInput
 }
 
 const FAILURE_CLASS_SET = new Set<string>([
-  "session-expired", "cookie-missing", "endpoint-changed", "browser-down",
-  "cdp-unreachable", "rate-limited", "unknown",
+  "session-expired",
+  "cookie-missing",
+  "endpoint-changed",
+  "browser-down",
+  "cdp-unreachable",
+  "rate-limited",
+  "unknown",
 ]);
 
 // ---------------------------------------------------------------------------
@@ -458,7 +557,9 @@ export interface HistoryEntry {
   surfacing: string | null;
 }
 
-export async function runTick(opts: TickOptions): Promise<{ state: WatchdogState; history: HistoryEntry[]; errors: string[] }> {
+export async function runTick(
+  opts: TickOptions,
+): Promise<{ state: WatchdogState; history: HistoryEntry[]; errors: string[] }> {
   const now = opts.now ?? new Date();
   const at = now.toISOString();
   const { adapters, errors } = await loadAdapters(opts.adaptersDir);
@@ -470,9 +571,7 @@ export async function runTick(opts: TickOptions): Promise<{ state: WatchdogState
       state = {
         version: 1,
         updatedAt: typeof raw.updatedAt === "string" ? raw.updatedAt : at,
-        sources: Object.fromEntries(
-          Object.entries(raw.sources).map(([k, v]) => [k, coerceHealth(k, v)]),
-        ),
+        sources: Object.fromEntries(Object.entries(raw.sources).map(([k, v]) => [k, coerceHealth(k, v)])),
       };
     }
   } catch {
@@ -490,9 +589,7 @@ export async function runTick(opts: TickOptions): Promise<{ state: WatchdogState
     }
   }
   const heartbeatStale =
-    heartbeat?.tickAt !== undefined
-      ? now.getTime() - Date.parse(heartbeat.tickAt) > 30 * 60_000
-      : false;
+    heartbeat?.tickAt !== undefined ? now.getTime() - Date.parse(heartbeat.tickAt) > 30 * 60_000 : false;
 
   const history: HistoryEntry[] = [];
 
@@ -513,7 +610,7 @@ export async function runTick(opts: TickOptions): Promise<{ state: WatchdogState
     const obs = buildObservation(adapter, {
       doc,
       docError,
-      heartbeatEntry: adapter.heartbeatKey ? heartbeat?.perProvider?.[adapter.heartbeatKey] ?? null : null,
+      heartbeatEntry: adapter.heartbeatKey ? (heartbeat?.perProvider?.[adapter.heartbeatKey] ?? null) : null,
       heartbeatStale,
       cdp,
       nowMs: now.getTime(),
@@ -525,10 +622,14 @@ export async function runTick(opts: TickOptions): Promise<{ state: WatchdogState
       if (recovery.length > 0) {
         if (opts.liveEscalation) {
           await applyEscalationActions(recovery, opts.effects.escalation).catch((e) => {
-            opts.effects.log(`watchdog: recovery effects for ${adapter.name} failed: ${e instanceof Error ? e.message : String(e)}`);
+            opts.effects.log(
+              `watchdog: recovery effects for ${adapter.name} failed: ${e instanceof Error ? e.message : String(e)}`,
+            );
           });
         } else {
-          opts.effects.log(`watchdog: dry-run recovery plan for ${adapter.name}: ${recovery.map((a) => a.type).join(", ")}`);
+          opts.effects.log(
+            `watchdog: dry-run recovery plan for ${adapter.name}: ${recovery.map((a) => a.type).join(", ")}`,
+          );
         }
       }
     }
@@ -539,11 +640,12 @@ export async function runTick(opts: TickOptions): Promise<{ state: WatchdogState
 
     if (decision.action === "repair") {
       const rung = decision.rung;
-      const res = rung === 2
-        ? await opts.effects.rung2(adapter)
-        : rung === 3
-          ? await opts.effects.rung3(adapter)
-          : { outcome: "skipped" as const, detail: `rung ${rung} has no executor` };
+      const res =
+        rung === 2
+          ? await opts.effects.rung2(adapter)
+          : rung === 3
+            ? await opts.effects.rung3(adapter)
+            : { outcome: "skipped" as const, detail: `rung ${rung} has no executor` };
       health = recordRungOutcome(health, at, rung, res.outcome, res.detail);
     }
 
@@ -565,7 +667,9 @@ export async function runTick(opts: TickOptions): Promise<{ state: WatchdogState
             if (e instanceof EscalationPartialError) {
               health = recordEscalation(health, ctx, e.refs, at);
             }
-            opts.effects.log(`watchdog: escalation for ${adapter.name} failed: ${e instanceof Error ? e.message : String(e)}`);
+            opts.effects.log(
+              `watchdog: escalation for ${adapter.name} failed: ${e instanceof Error ? e.message : String(e)}`,
+            );
           }
         } else {
           opts.effects.log(
@@ -610,10 +714,16 @@ function argValue(args: string[], flag: string): string | undefined {
   return i >= 0 ? args[i + 1] : undefined;
 }
 
-export async function main(args: string[] = process.argv.slice(2), env: Record<string, string | undefined> = process.env): Promise<number> {
+export async function main(
+  args: string[] = process.argv.slice(2),
+  env: Record<string, string | undefined> = process.env,
+): Promise<number> {
   const home = homedir();
   const stateDir = join(home, ".local", "state", "pm-aggregator");
-  const adaptersDir = argValue(args, "--adapters-dir") ?? env.QUOTA_WATCHDOG_ADAPTERS_DIR ?? join(home, ".config", "quota-watchdog", "adapters");
+  const adaptersDir =
+    argValue(args, "--adapters-dir") ??
+    env.QUOTA_WATCHDOG_ADAPTERS_DIR ??
+    join(home, ".config", "quota-watchdog", "adapters");
   const stateFile = argValue(args, "--state-file") ?? join(stateDir, "quota-watchdog-state.json");
   const historyFile = argValue(args, "--history-file") ?? join(stateDir, "quota-watchdog-history.jsonl");
   const heartbeatFile = argValue(args, "--heartbeat-file") ?? join(stateDir, "quota-gatherer-heartbeat.json");
