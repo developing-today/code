@@ -2635,6 +2635,9 @@ fn cmd_timeline(rest: &[String]) -> i32 {
         "session_unbound",
         "session_binding_cleared",
         "completed",
+        "lease_expired",
+        "lease_expired_at_cap",
+        "claim_refused",
         "released",
         "parked",
         "failed",
@@ -6324,6 +6327,30 @@ mod tests {
 
     #[test]
     #[test]
+    #[test]
+    fn timeline_surfaces_claim_displacement_events_6985() {
+        // #6985: the recurrence on task 17490 read as "exactly two
+        // events" because the timeline's kind list omitted the
+        // lease-expiry displacement and any claim refusal — the two
+        // transitions that explain a double claim. They render now.
+        let src = include_str!("client.rs");
+        let seg = src
+            .split("fn cmd_timeline(")
+            .nth(1)
+            .and_then(|s| s.split("let resp = call(").next())
+            .unwrap_or("");
+        for kind in [
+            "\"lease_expired\"",
+            "\"lease_expired_at_cap\"",
+            "\"claim_refused\"",
+        ] {
+            assert!(
+                seg.contains(kind),
+                "cmd_timeline queries {kind} so claim displacements are visible"
+            );
+        }
+    }
+
     fn collapse_timeline_9046_drops_only_duplicate_writes() {
         // #9046 oracle: same (kind, session, leaf, trigger) inside
         // 120 s = one record written by two surfaces; a changed
