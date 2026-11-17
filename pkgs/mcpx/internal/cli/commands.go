@@ -105,10 +105,12 @@ func (a *App) ensure(ctx context.Context) (*Client, error) {
 	if a.client != nil && a.connected {
 		return a.client, nil
 	}
+	inlineMode := a.Settings().String("daemon.inline")
 	c, ladder, err := a.Connect(ctx, ConnectOptions{
 		Endpoint:    a.Settings().String("daemon.endpoint"),
 		AllowSpawn:  a.Settings().Bool("daemon.autostart"),
-		AllowInline: a.Settings().Bool("daemon.inline"),
+		AllowInline: inlineMode == "fallback" || inlineMode == "always",
+		ForceInline: inlineMode == "always",
 	})
 	if err != nil {
 		return nil, err
