@@ -15,6 +15,7 @@
 // enqueueDispatchTask in server.ts (issue #2677).
 import type { Packet } from "./packet.ts";
 import { REPO_QUEUES } from "./config.ts";
+import { outboundTimeout } from "./fetchTimeout.ts";
 
 export class QueueError extends Error {
   status = 502;
@@ -73,6 +74,7 @@ export class QueueClient {
       method: "POST",
       headers: this.headers(true),
       body: JSON.stringify(args),
+      signal: outboundTimeout(),
     });
     const text = await res.text();
     if (!res.ok) {
@@ -116,6 +118,7 @@ export class QueueClient {
       method: "PATCH",
       headers: { ...this.headers(true), Prefer: "return=representation" },
       body: JSON.stringify(fields),
+      signal: outboundTimeout(),
     });
     const text = await res.text();
     if (!res.ok) {
@@ -144,6 +147,7 @@ export class QueueClient {
   async getTask(id: number): Promise<TaskRow | null> {
     const res = await fetch(`${this.baseUrl}/rest/v1/tasks?id=eq.${id}&select=*`, {
       headers: this.headers(false),
+      signal: outboundTimeout(),
     });
     // A failed lookup is not a missing task: returning null here made
     // the read route report an existing task as 404 whenever PostgREST
@@ -192,7 +196,7 @@ export class QueueClient {
 
   private async findTaskByProgressField(field: string, sessionId: string): Promise<TaskRow | null> {
     const url = this.baseUrl + "/rest/v1/tasks?" + field + "=eq." + encodeURIComponent(sessionId) + "&select=*&limit=1";
-    const res = await fetch(url, { headers: this.headers(false) });
+    const res = await fetch(url, { headers: this.headers(false), signal: outboundTimeout() });
     if (!res.ok) {
       throw new QueueError("task lookup by session failed (HTTP " + res.status + ")", res.status);
     }
@@ -223,7 +227,7 @@ export class QueueClient {
   async findByDedupeKey(dedupeKey: string): Promise<TaskRow | null> {
     const res = await fetch(
       `${this.baseUrl}/rest/v1/tasks?dedupe_key=eq.${encodeURIComponent(dedupeKey)}&select=*&limit=1`,
-      { headers: this.headers(false) },
+      { headers: this.headers(false), signal: outboundTimeout() },
     );
     if (!res.ok) return null;
     // Lookup failures resolve null by contract (see above), and a
@@ -268,6 +272,7 @@ export class QueueClient {
           display_name: "PM dispatch — OpenCode session launcher",
           status: "working",
         }),
+        signal: outboundTimeout(),
       });
       if (!res.ok) {
         const text = await res.text();

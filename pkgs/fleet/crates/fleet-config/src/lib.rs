@@ -61,6 +61,12 @@ pub const DEFAULT_CF_HOST: &str = "sandbox-link.security.cab";
 /// no file, no leg, the tailnet path carries everything.
 pub const DEFAULT_CF_ACCESS_FILE: &str = "tools/laptop-agent-cf-access.json";
 
+/// The gh credential/token cache daemon's default TCP port (code#10742):
+/// the next port after the queue broker's 4801. Both the localhost
+/// daemon and the laptop daemon listen on this port unless the
+/// `[gh]` settings say otherwise; an address without a port gets
+/// this one.
+pub const DEFAULT_GH_CACHE_PORT: u16 = 4802;
 /// Default listen address for the CONNECT-UDP endpoint
 /// (RFC 9298 spike, #6109) when `[proxy] connect_udp` enables
 /// it: loopback only. The endpoint is a local capability,
@@ -96,6 +102,25 @@ pub struct SearchConfig {
     pub url: Option<String>,
 }
 
+/// `[gh]` — the gh domain's credential-cache view (code#10742).
+/// All optional: with no section the client tries the localhost
+/// daemon at the default port, then the laptop daemon (the proxy's
+/// reach target) at the same port. Both are preferences between
+/// working routes, never a disable: an unreachable daemon falls
+/// back to in-process resolution with a visible note.
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct GhConfig {
+    /// Localhost daemon address (`host[:port]`); default
+    /// `127.0.0.1:<DEFAULT_GH_CACHE_PORT>`. A bare host without a
+    /// port gets the default port.
+    pub cache_local: Option<String>,
+    /// Laptop daemon address (`host[:port]`); default
+    /// `<target_host>:<DEFAULT_GH_CACHE_PORT>`. Same default-port
+    /// rule. On the laptop itself localhost IS the laptop, so the
+    /// same localhost-then-laptop order serves both machines.
+    pub cache_laptop: Option<String>,
+}
 /// The `fleet serve` role names a `[host]` manifest may assign
 /// (design #5687 §1). The role set of a manifest is exactly the key
 /// set of its `[host.roles]` table; any other name is a loud parse
@@ -336,6 +361,8 @@ pub struct Config {
     #[serde(rename = "dispatch-test")]
     pub dispatch_test: DispatchTestConfig,
     pub search: SearchConfig,
+    /// `[gh]` — the gh domain's credential-cache view (code#10742).
+    pub gh: GhConfig,
     /// `[host]` — the location/role manifest (design #5687,
     /// implementation #6770). Absent means "no manifest": fleet
     /// init reports an unknown location and starts nothing.
@@ -761,6 +788,8 @@ impl Config {
             (&self.secrets.token_file, "[secrets] token_file"),
             (&self.dispatch.url, "[dispatch] url"),
             (&self.dispatch.token_name, "[dispatch] token_name"),
+            (&self.gh.cache_local, "[gh] cache_local"),
+            (&self.gh.cache_laptop, "[gh] cache_laptop"),
         ] {
             if blank(value) {
                 return Err(ConfigError::Parse {
@@ -1356,6 +1385,83 @@ impl Config {
             .filter(|v| !v.is_empty())
     }
 
+    /// Append the default gh-cache port when `addr` carries none
+    /// (code#10742): `host` → `host:<DEFAULT_GH_CACHE_PORT>`,
+    /// `host:port` unchanged. A trailing `]`-less IPv6 literal
+    /// without brackets also gets the port suffix; bracketed forms
+    /// pass through on the same rule (a closing `]:` means a port
+    /// is present).
+    pub fn with_default_port(addr: &str) -> String {
+        let addr = addr.trim();
+        if addr.is_empty() {
+            return format!("127.0.0.1:{}", DEFAULT_GH_CACHE_PORT);
+        }
+        if addr.starts_with('[') {
+            if addr.contains("]:") {
+                return addr.to_string();
+            }
+            return format!("{addr}:{}", DEFAULT_GH_CACHE_PORT);
+        }
+        match addr.chars().filter(|&c| c == ':').count() {
+            0 => format!("{addr}:{}", DEFAULT_GH_CACHE_PORT),
+            1 => {
+                let after = addr.rsplit(':').next().unwrap_or("");
+                if after.is_empty() {
+                    format!("{addr}{}", DEFAULT_GH_CACHE_PORT)
+                } else if after.chars().all(|c| c.is_ascii_digit()) {
+                    addr.to_string()
+                } else {
+                    format!("{addr}:{}", DEFAULT_GH_CACHE_PORT)
+                }
+            }
+            // Bare IPv6 literal (multiple colons, no brackets): suffix
+            // the port rather than misreading an interior colon.
+            _ => format!("{addr}:{}", DEFAULT_GH_CACHE_PORT),
+        }
+    }
+
+    /// The gh credential-cache daemon addresses to try, in order
+    /// (code#10742): `FLEET_GH_CACHE` (comma list, first wins per
+    /// position) beats `[gh] cache_local` / `[gh] cache_laptop`
+    /// beats the localhost-then-laptop defaults. Every address
+    /// without a port gets [`DEFAULT_GH_CACHE_PORT`]. All are
+    /// preferences between working routes: an unreachable daemon
+    /// falls back to in-process resolution with a visible note.
+    pub fn gh_cache_addrs(&self) -> Vec<String> {
+        if let Ok(env) = std::env::var("FLEET_GH_CACHE") {
+            let addrs: Vec<String> = env
+                .split(',')
+                .map(|s| s.trim())
+                .filter(|s| !s.is_empty())
+                .map(Self::with_default_port)
+                .collect();
+            if !addrs.is_empty() {
+                return addrs;
+            }
+        }
+        let local = self
+            .gh
+            .cache_local
+            .as_deref()
+            .map(|s| s.trim())
+            .filter(|s| !s.is_empty())
+            .map(Self::with_default_port)
+            .unwrap_or_else(|| format!("127.0.0.1:{}", DEFAULT_GH_CACHE_PORT));
+        let laptop = self
+            .gh
+            .cache_laptop
+            .as_deref()
+            .map(|s| s.trim())
+            .filter(|s| !s.is_empty())
+            .map(Self::with_default_port)
+            .unwrap_or_else(|| format!("{}:{}", self.target_host(), DEFAULT_GH_CACHE_PORT));
+        if local == laptop {
+            vec![local]
+        } else {
+            vec![local, laptop]
+        }
+    }
+
     /// The secrets-broker token *file path* (never its contents).
     pub fn secrets_token_file(&self) -> PathBuf {
         match &self.secrets.token_file {
@@ -1439,6 +1545,70 @@ mod tests {
         let (_dir2, path2) = write_temp("[search]\nvia = \"sideways\"\n");
         let cfg2 = Config::load_from(&path2).unwrap();
         assert_eq!(cfg2.search_via(), None);
+    }
+
+    #[test]
+    fn gh_section_defaults_to_localhost_then_laptop() {
+        // Oracle: code#10742 — no [gh] section means try the
+        // localhost daemon at the default port, then the laptop
+        // daemon (the proxy's reach target) at the same port.
+        let cfg = Config::default();
+        assert_eq!(
+            cfg.gh_cache_addrs(),
+            vec![
+                format!("127.0.0.1:{}", DEFAULT_GH_CACHE_PORT),
+                format!("{}:{}", DEFAULT_TARGET_HOST, DEFAULT_GH_CACHE_PORT),
+            ]
+        );
+    }
+
+    #[test]
+    fn gh_section_parses_and_applies_default_port() {
+        // Oracle: code#10742 — a bare host without a port gets the
+        // default port; an explicit port is kept.
+        let (_dir, path) = write_temp("[gh]\ncache_local = \"127.0.0.1\"\ncache_laptop = \"laptop:9999\"\n");
+        let cfg = Config::load_from(&path).unwrap();
+        assert_eq!(
+            cfg.gh_cache_addrs(),
+            vec![
+                format!("127.0.0.1:{}", DEFAULT_GH_CACHE_PORT),
+                "laptop:9999".to_string(),
+            ]
+        );
+        assert_eq!(
+            Config::with_default_port("example.com"),
+            format!("example.com:{}", DEFAULT_GH_CACHE_PORT)
+        );
+        assert_eq!(
+            Config::with_default_port("example.com:1234"),
+            "example.com:1234"
+        );
+        assert_eq!(
+            Config::with_default_port("::1"),
+            format!("::1:{}", DEFAULT_GH_CACHE_PORT)
+        );
+        assert_eq!(
+            Config::with_default_port("[::1]:1234"),
+            "[::1]:1234"
+        );
+    }
+
+    #[test]
+    fn gh_blank_cache_addr_is_a_loud_error() {
+        // Oracle: the #6405 blank-scalar rule — a blank cache
+        // address is a misspelling-class error naming the field.
+        for contents in [
+            "[gh]\ncache_local = \"\"\n",
+            "[gh]\ncache_laptop = \"   \"\n",
+        ] {
+            let (_dir, path) = write_temp(contents);
+            match Config::load_from(&path) {
+                Err(ConfigError::Parse { message, .. }) => {
+                    assert!(message.contains("[gh]"), "{message}");
+                }
+                other => panic!("expected Parse error for {contents:?}, got {other:?}"),
+            }
+        }
     }
 
     #[test]

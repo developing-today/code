@@ -29,7 +29,13 @@ Main execution script that implements the 6-step process:
 
 3. **Cap** (Step 3): Checks concurrency limits
    - Queries OpenCode server for active root sessions
-   - Uses 36-session cap (raised from 12→20→36 on 2026-11-05)
+   - Counts CLAIMANT roots only (ruling `session-cap-5016`, #5016):
+     scheduled fleet sessions — lane runners, the claimant's own fire,
+     sweeps, the conductor — are infrastructure outside the cap
+   - A server-active root silent past `ACTIVE_SET_STALE_MS` (2 h) is a
+     zombie and releases its slot (#5016's 18h session)
+   - Uses 36-session cap (raised from 12→20→36 on 2026-11-05; the
+     value is unchanged by #5016)
    - Returns cap_room (available slots) or -1 if unknown
 
 4. **Launch** (Step 4): Creates sessions and binds tasks
@@ -49,7 +55,8 @@ Candidate discovery and system state reporting:
 
 - **get_candidates()**: Discovers unbound opencode-lane tasks from all four queues
 - **get_stuck_bound()**: Identifies bound tasks with stuck sessions (placeholder implementation)
-- **get_active_root_session_count()**: Queries OpenCode server for active session count
+- **get_active_root_session_count()**: Queries OpenCode server for the
+  active claimant root session count (scheduled fleet sessions excluded)
 - Outputs JSON with candidates, stuck_bound list, and cap_room
 
 ### launch_one.py

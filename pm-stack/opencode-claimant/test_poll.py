@@ -121,6 +121,161 @@ class TestSummarizeCap(unittest.TestCase):
         self.assertEqual((live, active, room), (2, 1, poll.CAP - 1))
 
 
+class TestClaimantCapAccounting(unittest.TestCase):
+    """#5016, ruling `session-cap-5016`: the concurrency cap is the
+    claimant's LAUNCH budget. Scheduled fleet sessions (lane runners,
+    the claimant's own fire, sweeps, the conductor) are infrastructure
+    and never consume a slot; claimant work roots do; a server-active
+    root silent past ACTIVE_SET_STALE_MS is a zombie and releases its
+    slot (#5016's 18h session).
+
+    Oracle: the census table on #5016 — 11 scheduled lane runners, the
+    claimant's own fire, 1 genuinely running bound work session, 1
+    unbound ~18h zombie — plus the invariant that the count equals the
+    number of live claimant work roots regardless of how many scheduled
+    roots sit beside them."""
+
+    def lane_runner(self, i=0, **over):
+        s = {
+            "id": f"ses_lane_{i}",
+            "title": f"Queue lane (scheduled) - code 2026-11-03 1{i}:00",
+            "metadata": {"openchamber": {"kind": "scheduled"}},
+            "time": {"created": NOW - 90 * MIN, "updated": NOW - 90 * MIN},
+        }
+        s.update(over)
+        return s
+
+    def claimant_fire(self, **over):
+        s = {
+            "id": "ses_fire",
+            "title": "Opencode lane claimant/executor - #3026 2026-11-03 10:10",
+            "metadata": {"openchamber": {"kind": "scheduled"}},
+            "time": {"created": NOW - 10 * MIN, "updated": NOW - 1 * MIN},
+        }
+        s.update(over)
+        return s
+
+    def work_root(self, sid="ses_work", **over):
+        s = {
+            "id": sid,
+            "title": f"Queue task 8067 - 5016 claimant cap",
+            "time": {"created": NOW - 30 * MIN, "updated": NOW - 1 * MIN},
+        }
+        s.update(over)
+        return s
+
+    def test_lane_runner_never_consumes_a_claimant_slot(self):
+        live, active, room = poll.summarize_cap(
+            [self.lane_runner(0), self.lane_runner(1), self.work_root()],
+            {"ses_lane_0", "ses_lane_1", "ses_work"},
+            NOW,
+        )
+        self.assertEqual((live, active, room), (3, 1, poll.CAP - 1))
+
+    def test_claimant_fire_session_does_not_count_itself(self):
+        _live, active, _room = poll.summarize_cap(
+            [self.claimant_fire()], {"ses_fire"}, NOW
+        )
+        self.assertEqual(active, 0)
+
+    def test_claimant_work_roots_do_count(self):
+        roots = [self.work_root(f"ses_w{i}") for i in range(12)]
+        _live, active, room = poll.summarize_cap(roots, {r["id"] for r in roots}, NOW)
+        self.assertEqual(active, 12)
+        self.assertEqual(room, max(0, poll.CAP - 12))
+
+    def test_scheduled_roots_never_change_claimant_headroom(self):
+        # Invariant sweep: lane-runner population must not move the
+        # claimant count at any size (0..40), the exact shape that
+        # starved the fleet on 2026-11-03.
+        for n in range(41):
+            sessions = [self.lane_runner(i) for i in range(n)] + [self.work_root()]
+            active_ids = {s["id"] for s in sessions}
+            _live, active, room = poll.summarize_cap(sessions, active_ids, NOW)
+            self.assertEqual(active, 1, f"n={n}")
+            self.assertEqual(room, poll.CAP - 1, f"n={n}")
+
+    def test_issue_5016_census_mix(self):
+        # 11 lane runners + the claimant fire + 1 running bound work
+        # session + the 18h unbound zombie (a lane runner, still in the
+        # server's active set). Claimant count must be 1, not 14.
+        sessions = [self.lane_runner(i) for i in range(11)]
+        sessions.append(self.claimant_fire())
+        sessions.append(self.work_root())
+        zombie = self.lane_runner(
+            99,
+            title="Queue lane (scheduled) - opencode 2026-11-02 16:00",
+            time={"created": NOW - 19 * 60 * MIN, "updated": NOW - 18 * 60 * MIN},
+        )
+        sessions.append(zombie)
+        active_ids = {s["id"] for s in sessions}
+        live, active, room = poll.summarize_cap(sessions, active_ids, NOW)
+        self.assertEqual(live, len(sessions))
+        self.assertEqual(active, 1)
+        self.assertEqual(room, poll.CAP - 1)
+
+    def test_active_set_zombie_releases_its_slot_after_the_bound(self):
+        zombie = self.work_root(
+            "ses_zombie",
+            time={
+                "created": NOW - 19 * 60 * MIN,
+                "updated": NOW - poll.ACTIVE_SET_STALE_MS,
+            },
+        )
+        self.assertFalse(poll.is_active_root(zombie, NOW, {"ses_zombie"}))
+        _live, active, _room = poll.summarize_cap([zombie], {"ses_zombie"}, NOW)
+        self.assertEqual(active, 0)
+
+    def test_boundary_just_inside_the_staleness_bound_still_counts(self):
+        s = self.work_root(
+            "ses_zombie",
+            time={
+                "created": NOW - 19 * 60 * MIN,
+                "updated": NOW - poll.ACTIVE_SET_STALE_MS + 1,
+            },
+        )
+        self.assertTrue(poll.is_active_root(s, NOW, {"ses_zombie"}))
+
+    def test_zombie_does_not_need_a_terminal_marker(self):
+        # #5016's zombie has no outcome and no time.idle; silence past
+        # the bound is the whole evidence.
+        s = self.work_root(
+            "ses_zombie",
+            time={"created": NOW - 19 * 60 * MIN, "updated": NOW - 18 * 60 * MIN},
+        )
+        self.assertIsNone(s.get("outcome"))
+        self.assertIsNone((s.get("time") or {}).get("idle"))
+        self.assertFalse(poll.is_active_root(s, NOW, {"ses_zombie"}))
+
+    def test_scheduled_marker_survives_missing_metadata(self):
+        # The title is the fallback when a legacy row carries no
+        # metadata (rows created before OpenChamber stamped `kind`).
+        legacy = self.lane_runner(0, metadata=None)
+        self.assertTrue(poll.is_scheduled_session(legacy))
+        self.assertFalse(poll.is_scheduled_session(self.work_root()))
+        self.assertFalse(poll.is_scheduled_session({"id": "x", "metadata": "soon"}))
+        self.assertFalse(poll.is_scheduled_session(None))
+
+    def test_claimant_root_count_delegates_to_the_exclusion(self):
+        sessions = [self.lane_runner(i) for i in range(3)] + [
+            self.work_root("ses_w0"),
+            self.work_root("ses_w1"),
+        ]
+        self.assertEqual(
+            poll.count_active_claimant_roots(
+                sessions, NOW, {"ses_lane_0", "ses_w0", "ses_w1"}
+            ),
+            2,
+        )
+
+    def test_unreadable_active_set_stays_unknown_with_scheduled_roots(self):
+        _live, active, room = poll.summarize_cap(
+            [self.lane_runner(0), self.work_root()], None, NOW
+        )
+        self.assertIsNone(active)
+        self.assertIsNone(room)
+
+
 class TestWrongShapeTime(unittest.TestCase):
     """#6868: a wrong-shaped `time` / timestamp must never raise out of
     the classifiers, and must fail closed: never counted as a

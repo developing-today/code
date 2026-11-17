@@ -66,6 +66,7 @@ fn chain_ext() -> impl Strategy<Value = ChainExt> {
             checkpoint: None,
             rotation: None,
             chat: None,
+            anchor: None,
         }
     })
 }
@@ -130,6 +131,7 @@ proptest! {
             checkpoint: None,
             rotation: None,
             chat: None,
+                    anchor: None,
         };
         prop_assert!(sign(&key(), 0, None, None, ext.clone()).is_err());
         prop_assert!(ext.validate().is_err());
@@ -201,6 +203,7 @@ proptest! {
                     checkpoint: None,
                     rotation: None,
                     chat: None,
+                                    anchor: None,
                 },
             )
             .encode();

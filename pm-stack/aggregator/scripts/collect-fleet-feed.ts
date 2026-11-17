@@ -169,6 +169,9 @@ import { loadLaunchRecords, recordFromSessionEntry } from "../src/registry.ts";
 import { defaultHiddenDir, defaultQuotaViewPath, defaultUsageOutboxPath } from "../src/default-paths.ts";
 import { mapServerSessions, poolBurn } from "../src/sources/opencode.ts";
 import { resolveSupabaseProjectRef } from "../src/supabase.ts";
+import { AaLastGoodStore } from "../src/aa-last-good.ts";
+import { createSupabaseDocumentRemote } from "../src/remote-stores.ts";
+import { parseStoreBackend } from "../src/store-backend.ts";
 import type { FreshnessInput } from "../src/freshness.ts";
 
 const PKG = join(dirname(fileURLToPath(import.meta.url)), "..");
@@ -461,6 +464,14 @@ async function resolveProjectToken(): Promise<string | null> {
  * changes and reused untouched while neither does.
  */
 const aaLastGoodPath = join(dirname(outPath), "aa-last-good.json");
+/** #6815: the AA last-good payload is a rebuildable cache, not a
+ *  source of record. In supabase mode its canonical copy is
+ *  public.agg_store_documents keyed "aa-last-good"; the local file is
+ *  then neither read nor written. */
+const aaLastGoodStore = new AaLastGoodStore(
+  aaLastGoodPath,
+  parseStoreBackend() === "supabase" ? createSupabaseDocumentRemote() : undefined,
+);
 // #1116: last-good attention entries, carried across runs whose server
 // read fails (restart churn) so one bad read cannot zero the feed.
 const attentionLastGoodPath = join(dirname(outPath), "attention-last-good.json");
@@ -483,7 +494,8 @@ interface AaLastGood {
 
 async function readAaLastGood(): Promise<AaLastGood | null> {
   try {
-    const parsed = JSON.parse(await readFile(aaLastGoodPath, "utf8")) as Partial<AaLastGood>;
+    const parsed = (await aaLastGoodStore.read()) as Partial<AaLastGood> | null;
+    if (!parsed || typeof parsed !== "object") return null;
     if (typeof parsed.batch !== "string" || typeof parsed.configFingerprint !== "string") return null;
     if (!isAaSection(parsed.section) || parsed.section.status !== "ok") return null;
     return {
@@ -500,9 +512,7 @@ async function readAaLastGood(): Promise<AaLastGood | null> {
 
 async function writeAaLastGood(entry: AaLastGood): Promise<void> {
   try {
-    const tmp = `${aaLastGoodPath}.tmp`;
-    await writeFile(tmp, JSON.stringify(entry));
-    await rename(tmp, aaLastGoodPath);
+    await aaLastGoodStore.write(entry);
   } catch (err) {
     console.error(`collector: AA last-good store write failed (${err instanceof Error ? err.message : "error"})`);
   }

@@ -56,6 +56,7 @@ import {
   type RepoCensus,
 } from "./coverage.ts";
 import { loadConfig } from "./config.ts";
+import { createSupabaseRemotes } from "./remote-stores.ts";
 import { itemServiceLinks } from "./service-links.ts";
 import { loadFeed } from "./feed.ts";
 import { AA_PLAN_FACTS, sectionPoolIdsFromConfig } from "./aa.ts";
@@ -333,7 +334,12 @@ async function coverageSnapshot(
   }
   return next;
 }
-const actionsStore = new ActionsStore(cfg.actionsFile);
+// #6815: the four formerly laptop-local stores (actions, activity
+// ingestion, usage snapshots, aa-last-good) move to muse-dev2 when
+// PM_AGG_STORE_BACKEND=supabase. Exactly one backend is active: with
+// "file" (the default) no remote exists and no database call is made.
+const storeRemotes = cfg.storeBackend === "supabase" ? createSupabaseRemotes() : null;
+const actionsStore = new ActionsStore(cfg.actionsFile, undefined, storeRemotes?.actions);
 const viewsStore = new ViewsStore(cfg.viewsFile);
 const eventsStore = new EventsStore(cfg.eventsFile);
 const freshnessStore = new FreshnessStore(cfg.freshnessFile);
@@ -344,7 +350,7 @@ const freshnessStore = new FreshnessStore(cfg.freshnessFile);
  *  collector's notice identity (generatedAt + sha256 of the file).
  *  Its health view feeds /health + /api/health via healthContext. */
 const freshnessReconciler = new FreshnessReconciler(freshnessStore, [fleetFeedRevisionReader(cfg.feedFile)]);
-const activityStore = new IngestionStore(cfg.activityFile);
+const activityStore = new IngestionStore(cfg.activityFile, storeRemotes?.activity);
 const githubHotListConsumer =
   cfg.source === "live" && cfg.projector.baseUrl && cfg.projector.apiToken
     ? new GithubHotListConsumer({
@@ -459,6 +465,7 @@ function pickSource(): Source {
         onFreshness: recordFreshness,
         onSourceGap: recordSourceGap,
         seenActivityIds: (source) => activityStore.seenIds(source),
+        snapshotRemote: storeRemotes?.usage,
       })
     : fixtureSource();
 }
@@ -3088,10 +3095,13 @@ async function handler(req: Request): Promise<Response> {
         404,
       );
     }
-    const [items, pool, rows] = await Promise.all([
+    const [items, pool, rows, orchestration, formOpts, actionsByObject] = await Promise.all([
       source.items(allProjectRefs()).catch(() => new Map()),
       source.projects().catch(() => []),
       source.roadmap().catch(() => []),
+      source.orchestration().catch(() => null),
+      commentFormOpts(),
+      actionsStore.byObject(),
     ]);
     // #9922: the id page's Path to Phase 12 panel — fetch the #1235
     // body snapshot when the source carries one, and resolve the
@@ -3170,6 +3180,12 @@ async function handler(req: Request): Promise<Response> {
         f12,
         queueSnap,
         phaseMapping,
+        {
+          orchestration,
+          actionsByObject,
+          identities: formOpts.identities,
+          orchestrationState: source.diagnostics?.().orchestration.state,
+        },
       ),
     );
   }

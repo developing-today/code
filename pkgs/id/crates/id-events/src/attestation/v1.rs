@@ -156,6 +156,7 @@ fn sign_body(
             checkpoint: None,
             rotation: None,
             chat: None,
+            anchor: None,
         },
     )?)
 }

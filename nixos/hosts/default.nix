@@ -31,6 +31,7 @@ in
       "services/openai-cred-watchdog"
       "services/opencode-go-seating-guard"
       "services/opencode-watchdog"
+      "services/keyring-auto-unlock"
       # "microvm"
       # "server"
       "networking/dhcp-nat"
@@ -125,6 +126,14 @@ in
             in
             if m == null then "" else builtins.head m;
         };
+      }
+      {
+        # Keyring auto-unlock (code#10724): re-unlock the GNOME login
+        # keyring after out-of-session daemon restarts. Caches the
+        # login password in the kernel user keyring at graphical login
+        # (RAM-only, never disk) and replays it via a .path-triggered
+        # user oneshot when the daemon control socket changes.
+        services.keyring-auto-unlock.enable = true;
       }
       {
         # Laptop backups (code#1516, dezren39/nix#976): the dashboard

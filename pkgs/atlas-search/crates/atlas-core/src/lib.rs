@@ -27,7 +27,9 @@
 //! mutex; session load (~1.6 GB RSS) is shared state by design,
 //! never per-request.
 
+pub mod aggregate;
 pub mod backend;
+pub mod detect;
 pub mod embed;
 pub mod embed_cache;
 pub mod error;
@@ -54,8 +56,15 @@ pub mod types;
 /// Keep this aligned with the service's get-chunk neighbors ceiling.
 pub const MAX_EXPAND_NEIGHBORS: usize = 100;
 
+pub use aggregate::{PromoteReport, embed_unit_into_shard, tier_sensitivity_name};
 pub use backend::SearchBackend;
-pub use embed::{AtlasEmbedder, FixedEmbedder, QUERY_PROMPT, QueryEmbedder};
+pub use detect::{
+    DETECTION_LEDGER_SCHEMA, DetectionLedger, DetectionPass, LandedState, Mechanism, PathVerdict,
+    SourceLedger, Verdict, VerdictCounts, default_ledger_path, git_tree_detection, resolve_commit,
+};
+pub use embed::{
+    AtlasEmbedder, DocEmbedder, FixedDocEmbedder, FixedEmbedder, QUERY_PROMPT, QueryEmbedder,
+};
 pub use embed_cache::{
     CachingEmbedder, QueryEmbeddingCache, RawQueryEmbedder, SharedEmbeddingStore,
     TursoEmbeddingStore, cache_key, normalize_query_text,

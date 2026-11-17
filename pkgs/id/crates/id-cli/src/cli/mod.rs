@@ -35,7 +35,7 @@
 //!   group        Groups: create, policy, add, remove, set roles, list, join
 //!   delegate     Grant a delegate a scope in a group
 //!   revoke       Revoke a delegation by its grant's event ID
-//!   doc          Documents: publish a file; list events, frontier, history
+//!   doc          Documents: publish a file, fetch its bytes; list events, frontier, history
 //!   claim        Tag claims on any subject (set, clear, list, search)
 //!   writer-sets  Writer sets in the event store (show, expand, discover)
 //!   migrate-tags Migrate existing files to name/file auto-tags (alias: migrate)
@@ -118,12 +118,13 @@ pub use groups::{DelegateArgs, GroupCommand, GroupRemoveMode, GroupTemplate, Rev
 pub use match_audit::MatchAuditCommand;
 pub use tag::TagCommand;
 pub use world::{
-    WorldApplyArgs, WorldCapsArgs, WorldCommand, WorldCompileArgs, WorldCrossWorldWriteArgs,
-    WorldDevArgs, WorldDiffArgs, WorldDoctorArgs, WorldDownloadArgs, WorldFileScopeArgs,
-    WorldForceCrossWorldWriteArgs, WorldInstallArgs, WorldInviteArgs, WorldIsolationArgs,
-    WorldJoinArgs, WorldListArgs, WorldLogsArgs, WorldMeasureArgs, WorldMirrorArgs,
-    WorldProfileArgs, WorldRecordArgs, WorldRecordsArgs, WorldReplayArgs, WorldReplicaArgs,
-    WorldRuntimeArgs, WorldSshTunnelArgs, WorldStatsArgs, WorldVerifyArgs, WorldVia,
+    JournalCommand, WorldApplyArgs, WorldCapsArgs, WorldCommand, WorldCompileArgs,
+    WorldCrossWorldWriteArgs, WorldDevArgs, WorldDiffArgs, WorldDoctorArgs, WorldDownloadArgs,
+    WorldFileScopeArgs, WorldForceCrossWorldWriteArgs, WorldInstallArgs, WorldInviteArgs,
+    WorldIsolationArgs, WorldJoinArgs, WorldJournalArgs, WorldListArgs, WorldLogsArgs,
+    WorldMeasureArgs, WorldMirrorArgs, WorldProfileArgs, WorldRecordArgs, WorldRecordsArgs,
+    WorldReplayArgs, WorldReplicaArgs, WorldRuntimeArgs, WorldSshTunnelArgs, WorldStatsArgs,
+    WorldVerifyArgs, WorldVia,
 };
 pub use writer_sets::WriterSetCommand;
 
@@ -1391,16 +1392,20 @@ pub enum Command {
     Delegate(DelegateArgs),
     /// Revoke a delegation by its grant's event ID, as `delegate` printed it (P6.7b).
     Revoke(RevokeArgs),
-    /// Documents: publish a file, and list a document's events, frontier and history (P6.7c).
+    /// Documents: publish a file, fetch a document's bytes, and list a document's events,
+    /// frontier and history (P6.7c).
     ///
     /// Each action signs one event into the event store and prints one line, or one JSON object
     /// with `--json`. The store stands in for sync: nodes that share it see each other's events.
-    /// Lists print one line per row, or one JSON array with `--json`.
+    /// Publish also stores the file's bytes in the blob store under their hash, so `content`
+    /// can fetch them back by document ID. Lists print one line per row, or one JSON array
+    /// with `--json`.
     ///
     /// # Examples
     ///
     /// ```bash
     /// id doc publish notes.md --media-type text/markdown --tag topic=plans
+    /// id doc content DOCUMENT
     /// id doc history DOCUMENT
     /// id doc frontier --json
     /// ```

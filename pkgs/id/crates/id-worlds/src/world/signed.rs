@@ -102,6 +102,7 @@ pub fn sign_move(
             rotation: None,
 
             chat: None,
+            anchor: None,
         },
     )
 }

@@ -87,13 +87,17 @@ const serveFake = (socket: string, opts: FakeOptions = {}): Fake => {
           status: "ok",
           version: opts.version ?? "test",
           pid: 1,
-          ...(opts.missingOperationFingerprint ? {} : { operationFingerprint: opts.operationFingerprint ?? OPERATION_FINGERPRINT }),
+          ...(opts.missingOperationFingerprint
+            ? {}
+            : { operationFingerprint: opts.operationFingerprint ?? OPERATION_FINGERPRINT }),
         });
       }
       if (url.pathname === "/v1/status") {
         return Response.json({
           version: opts.version ?? "test",
-          ...(opts.missingOperationFingerprint ? {} : { operationFingerprint: opts.operationFingerprint ?? OPERATION_FINGERPRINT }),
+          ...(opts.missingOperationFingerprint
+            ? {}
+            : { operationFingerprint: opts.operationFingerprint ?? OPERATION_FINGERPRINT }),
           pid: 1,
           socket,
           config: opts.config,

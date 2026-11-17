@@ -11,7 +11,6 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"slices"
 	"sort"
@@ -38,6 +37,7 @@ type env struct {
 	mcpx    string
 	fake    string
 	envVars []string
+	runner  runner
 }
 
 func newEnv(t *testing.T, cfgBody string) *env {
@@ -55,10 +55,11 @@ func newEnv(t *testing.T, cfgBody string) *env {
 	}
 
 	e := &env{
-		t:    t,
-		dir:  dir,
-		mcpx: mcpx,
-		fake: fake,
+		t:      t,
+		dir:    dir,
+		mcpx:   mcpx,
+		fake:   fake,
+		runner: binaryRunner{},
 		// The child environment is built from an allowlist, not inherited:
 		// ChildEnv drops everything the test does not control, so no caller
 		// variable reaches the binary whatever the caller's shell exported
@@ -172,18 +173,20 @@ func (e *env) tryUnrecorded(args ...string) (string, error) {
 	return e.tryWithCoverage(e.mcpx, false, args...)
 }
 
+// tryWithCoverage runs one invocation through the env's runner
+// (#1980 stage 2). A different binary than the env's own — an upgrade
+// build, say — is a process by definition and always goes to the
+// binary runner, whatever the env's runner is.
 func (e *env) tryWithCoverage(bin string, record bool, args ...string) (string, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
-	defer cancel()
-	cmd := exec.CommandContext(ctx, bin, args...)
-	cmd.Dir = e.dir
-	cmd.Env = e.envVars
-	out, err := cmd.CombinedOutput()
-	err = harnessTimeout(ctx, err)
+	r := e.runner
+	if r == nil || bin != e.mcpx {
+		r = binaryRunner{bin: bin}
+	}
+	out, err := r.run(context.Background(), e, nil, args...)
 	if err == nil && record {
 		e.recordCLI(args)
 	}
-	return string(out), err
+	return out, err
 }
 
 // harnessTimeout names the harness's own deadline as the killer. Without it
@@ -200,16 +203,16 @@ func harnessTimeout(ctx context.Context, err error) error {
 // protocol server is spoken to.
 func (e *env) runStdin(stdin string, args ...string) string {
 	e.t.Helper()
-	cmd := exec.Command(e.mcpx, args...)
-	cmd.Dir = e.dir
-	cmd.Env = e.envVars
-	cmd.Stdin = strings.NewReader(stdin)
-	out, err := cmd.CombinedOutput()
+	r := e.runner
+	if r == nil {
+		r = binaryRunner{}
+	}
+	out, err := r.run(context.Background(), e, strings.NewReader(stdin), args...)
 	if err != nil {
 		e.t.Fatalf("mcpx %s failed: %v\n%s", strings.Join(args, " "), err, out)
 	}
 	e.recordCLI(args)
-	return string(out)
+	return out
 }
 
 func (e *env) run(args ...string) string {

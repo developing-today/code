@@ -12,5 +12,6 @@ import (
 // removed when the run ends; a process still executing from one of them
 // fails the run.
 func TestMain(m *testing.M) {
+	testsupport.SuperviseReExec()
 	os.Exit(testsupport.MainWithSweep(m))
 }

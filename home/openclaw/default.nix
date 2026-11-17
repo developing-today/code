@@ -171,6 +171,18 @@ in
       # start-limit-hit — down for a day, silently. A transient
       # pre-start failure must never be able to do that again: wide
       # window, generous burst, slower restart spacing.
+      # #2875: the gateway's tokens come from /run/secrets/openclaw/*,
+      # which sops-nix materializes only on hosts that declare
+      # nixos/hosts/amd-openclaw-secrets.nix (the amd host block). This
+      # home module is imported for every host that includes
+      # nixos/users/user, so on a host without those secrets (the Intel
+      # `nixos` host) the unit could only ever fail. Skip it explicitly
+      # there instead of letting it crash-loop against a missing
+      # credential file: a condition-skipped unit is inactive and quiet,
+      # and it starts by itself the moment the host declares the
+      # secrets. Delete this when every host carrying the user env also
+      # carries its own openclaw secrets.
+      ConditionPathExists = "/run/secrets/openclaw/gateway-token";
       StartLimitIntervalSec = "600";
       StartLimitBurst = 30;
     };

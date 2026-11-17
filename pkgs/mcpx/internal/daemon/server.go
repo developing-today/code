@@ -394,6 +394,12 @@ func (s *Server) Listen(tcpPort int) error {
 	}
 	s.endpoint = "http://" + tcpLn.Addr().String()
 	s.started = time.Now()
+	// Adopt supervised instances a previous daemon left running
+	// (#9962): their supervisors outlive the daemon by design.
+	s.reg.AdoptSupervised(context.Background())
+	// Reap the supervisors no configured server claims anymore
+	// (#9963, the other half of the adopt-or-reap scan).
+	s.reg.ReapOrphanedSupervisors()
 	return s.publish()
 }
 
@@ -767,7 +773,18 @@ func (s *Server) shutdown() error {
 // the whole stop is bounded by pool.ExecDrainTimeout, the same window a reload
 // gives a replaced pool. The HTTP grace is capped to that window too, so a
 // long http.shutdownGrace cannot stretch the stop past it.
-func (s *Server) stopServing() {
+func (s *Server) stopServing() { s.stopServingForRestart(false) }
+
+// stopServingForRestart stops the front door and then the pools. restart marks
+// a restart-intent graceful shutdown (#1414): each pool then keeps its upstream
+// HTTP sessions alive for the successor process instead of ending them with an
+// upstream DELETE. The HTTP server goes first, so calls already running can
+// finish and take the leases they still need. The pools are then drained with
+// what is left of the drain window, so the whole stop is bounded by
+// pool.ExecDrainTimeout, the same window a reload gives a replaced pool. The
+// HTTP grace is capped to that window too, so a long http.shutdownGrace cannot
+// stretch the stop past it.
+func (s *Server) stopServingForRestart(restart bool) {
 	window := pool.ExecDrainTimeout
 	start := time.Now()
 	if s.httpSrv != nil {
@@ -780,6 +797,10 @@ func (s *Server) stopServing() {
 		cancel()
 	}
 	if s.reg != nil {
+		if restart {
+			s.reg.CloseWithinForRestart(window - time.Since(start))
+			return
+		}
 		s.reg.CloseWithin(window - time.Since(start))
 	}
 }
@@ -1589,10 +1610,20 @@ func (s *Server) handleDaemonRestart(w http.ResponseWriter, _ *http.Request) {
 			if err := s.reg.SaveCache(); err != nil && s.logger != nil {
 				s.logger.Printf("save cache before restart: %v", err)
 			}
+			// The restart keeps upstream sessions alive instead of
+			// DELETING them (#1414), so the persisted session table is
+			// what the successor resumes from: flush it before the
+			// exec, the same way a final stop does.
+			if err := s.reg.SaveSessions(); err != nil && s.logger != nil {
+				s.logger.Printf("save sessions before restart: %v", err)
+			}
 		}
 		execPath, err := os.Executable()
 		if err == nil {
-			s.stopServing()
+			// Restart intent, not a final stop: pools close without an
+			// upstream DELETE so the next daemon process can resume the
+			// sessions recorded here (#1414).
+			s.stopServingForRestart(true)
 			if s.paths.Socket != "" {
 				_ = os.Remove(s.paths.Socket)
 			}

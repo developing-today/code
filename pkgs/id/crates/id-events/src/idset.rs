@@ -910,6 +910,7 @@ mod tests {
                 checkpoint: None,
                 rotation: None,
                 chat: None,
+                anchor: None,
             },
         )
         .unwrap();

@@ -526,7 +526,7 @@ class ColdStore:
             )
         try:
             creds = json.loads(self.credentials_path.read_text())
-        except json.JSONDecodeError as e:
+        except (json.JSONDecodeError, UnicodeDecodeError) as e:
             raise ColdStoreError(
                 f"credentials.json at {self.credentials_path} is corrupt "
                 f"(invalid JSON: {e}) - repair or delete the file and "
@@ -556,7 +556,7 @@ class ColdStore:
         if self.state_path.exists():
             try:
                 state = json.loads(self.state_path.read_text())
-            except json.JSONDecodeError as e:
+            except (json.JSONDecodeError, UnicodeDecodeError) as e:
                 raise ColdStoreError(
                     f"state.json at {self.state_path} is corrupt "
                     f"(invalid JSON: {e}) - repair the file, or delete "

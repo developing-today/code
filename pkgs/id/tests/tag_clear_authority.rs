@@ -58,6 +58,7 @@ impl Chains {
             rotation: None,
 
             chat: None,
+            anchor: None,
         };
         let event = sign(&key(who), seq, backlink, body.as_deref(), ext).unwrap();
         self.last.insert(who, (seq, event.id));

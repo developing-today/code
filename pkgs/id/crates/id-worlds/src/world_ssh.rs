@@ -3819,6 +3819,8 @@ mod tests {
                 "values": {"name": "Ada"}
             })
             .to_string(),
+            Phase::Joined,
+        ));
         let more_documents = WorldCommand::DocumentsContinue {
             prefix: None,
             after: "a.md".to_owned(),

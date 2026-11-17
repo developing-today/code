@@ -23,7 +23,12 @@
 //! review_comments=N reviews=N documents=N`. Requests are issued
 //! sequentially — that is the rate-limit discipline: no parallel
 //! pressure on the API, and any gh failure stops the run with
-//! the state saved and a non-zero exit.
+//! the state saved and a non-zero exit. One exception: a repo
+//! GitHub has access-blocked (HTTP 451, e.g. a DMCA block) can
+//! never be extracted, so it is logged as skipped and the run
+//! continues — otherwise one permanently blocked repo (found:
+//! dezren39/edsebooks, blocked since 2019) would stop the whole
+//! estate feed at the same repo on every run.
 
 use std::collections::BTreeMap;
 use std::fs;
@@ -350,6 +355,7 @@ fn run() -> Result<(), String> {
 
     println!("estate: {} repos", repos.len());
     let mut totals = (0usize, 0usize, 0usize, 0usize);
+    let mut skipped = 0usize;
     for repo in &repos {
         match extract_repo(
             repo,
@@ -369,6 +375,16 @@ fn run() -> Result<(), String> {
                 totals.2 += counts.reviews;
                 totals.3 += counts.documents;
             }
+            Err(e) if is_access_blocked(&e) => {
+                // Permanently access-blocked repo (HTTP 451): no
+                // extraction is possible, now or on a rerun. Log
+                // the skip and continue; the watermark is left
+                // unadvanced, so if the block is ever lifted a
+                // later run extracts the repo in full.
+                save_watermarks(&args.state, &state)?;
+                println!("{repo}: skipped — repository access blocked (HTTP 451)");
+                skipped += 1;
+            }
             Err(e) => {
                 save_watermarks(&args.state, &state)?;
                 println!(
@@ -383,7 +399,17 @@ fn run() -> Result<(), String> {
         "totals: issue_comments={} review_comments={} reviews={} documents={}",
         totals.0, totals.1, totals.2, totals.3
     );
+    if skipped > 0 {
+        println!("skipped_repos: {skipped} (repository access blocked, HTTP 451)");
+    }
     Ok(())
+}
+
+/// True when a gh failure is GitHub's permanent access block for
+/// a repo (HTTP 451, e.g. a DMCA takedown), as opposed to a
+/// transient or auth failure that must stay fatal.
+fn is_access_blocked(error: &str) -> bool {
+    error.contains("Repository access blocked") || error.contains("HTTP 451")
 }
 
 fn main() -> ExitCode {
@@ -393,5 +419,34 @@ fn main() -> ExitCode {
             eprintln!("atlas-github-comments: {e}");
             ExitCode::FAILURE
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::is_access_blocked;
+
+    #[test]
+    fn dmca_blocked_repo_error_is_access_blocked() {
+        // Oracle: the verbatim gh failure for dezren39/edsebooks
+        // (DMCA block, 2019) must be classified skippable.
+        let e = "gh api repos/dezren39/edsebooks/issues?state=all&per_page=100: \
+                   exited exit status: 1: gh: Repository access blocked (HTTP 451)";
+        assert!(is_access_blocked(e));
+    }
+
+    #[test]
+    fn ordinary_gh_failures_stay_fatal() {
+        // Oracle: rate-limit / auth / not-found failures are NOT
+        // access blocks and must keep stopping the run.
+        assert!(!is_access_blocked(
+            "gh api x: exited exit status: 1: gh: API rate limit exceeded"
+        ));
+        assert!(!is_access_blocked(
+            "gh api x: exited exit status: 1: gh: Not Found (HTTP 404)"
+        ));
+        assert!(!is_access_blocked(
+            "gh api x: spawn failed: No such file or directory"
+        ));
     }
 }
