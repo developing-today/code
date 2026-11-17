@@ -51,9 +51,11 @@ export type WorkActionState = (typeof WORK_ACTION_STATES)[number];
 export const WORK_ACTION_EDGES: Readonly<
   Record<WorkActionState, readonly WorkActionState[]>
 > = {
-  draft: ["previewed", "rejected"],
-  previewed: ["accepted", "rejected", "conflict"],
-  accepted: ["running", "rejected"],
+  // Preview, accept and apply each re-read the authoritative version, so
+  // each can end in `conflict` (it moved) or `uncertain` (unreadable).
+  draft: ["previewed", "rejected", "conflict", "uncertain"],
+  previewed: ["accepted", "rejected", "conflict", "uncertain"],
+  accepted: ["running", "rejected", "conflict", "uncertain"],
   running: [
     "pending_sync",
     "partial",
@@ -141,8 +143,21 @@ export interface WorkActionAuthority {
   readWorkVersion(objectRef: string): string | null;
   /** Current roles for the actor, re-read at each gate. */
   readRoles(actorId: string): readonly string[];
-  /** The downstream effect. Called at most once per envelope. */
+  /** The downstream effect. Called at most once per operation key. */
   issueEffect(request: WorkActionRequest): void;
+  /**
+   * Atomically claim an operation key for apply. The first claim wins and
+   * returns `{ claimed: true }`; every later claim, from any envelope,
+   * returns `{ claimed: false }` with the receipt recorded for the key, or
+   * null while the first apply is still in flight. This is what makes
+   * "one effect per operation key" hold across envelopes, not just across
+   * replays of one envelope object.
+   */
+  claimOperation(
+    operationKey: string,
+  ): { claimed: true } | { claimed: false; receipt: WorkActionReceipt | null };
+  /** Record the receipt for a claimed key so later claims can return it. */
+  recordReceipt(receipt: WorkActionReceipt): void;
 }
 
 const ROLES_BY_STATE: Partial<Record<WorkActionState, string>> = {
@@ -343,9 +358,18 @@ export function acceptWorkAction(
  * accepted → running, issuing the downstream effect exactly once, then to
  * the outcome the downstream reports.
  *
- * The replay guard is structural: an envelope that already issued its effect
- * is returned unchanged, carrying the original receipt. That is the
- * one-effect-per-idempotency-key oracle.
+ * Gates, in order, all before any effect:
+ * - authorization is re-read (a revoked role ends in `rejected`);
+ * - the authoritative version is re-read (unreadable ends in `uncertain`,
+ *   moved since preview ends in `conflict`), so work that changed after
+ *   accept is never applied;
+ * - the operation key is claimed through the authority. A key another
+ *   envelope already claimed ends this envelope in `rejected` with no
+ *   effect, and its receipt is the ORIGINAL operation's receipt (or a
+ *   rejected receipt saying the first apply is still in flight).
+ *
+ * Replaying apply on the same envelope object returns it unchanged, so the
+ * cheap in-process replay never reaches the authority at all.
  */
 export function applyWorkAction(
   envelope: WorkActionEnvelope,
@@ -377,6 +401,43 @@ export function applyWorkAction(
     );
   }
 
+  const current = authority.readWorkVersion(envelope.request.objectRef);
+  if (current === null) {
+    return refuse(
+      envelope,
+      "uncertain",
+      "work-action/expected-version-readable",
+      "authoritative work version became unreadable before apply",
+    );
+  }
+  if (current !== envelope.previewedVersion) {
+    return refuse(
+      envelope,
+      "conflict",
+      "work-action/expected-version",
+      `work moved from ${envelope.previewedVersion} to ${current} before apply`,
+    );
+  }
+
+  const claim = authority.claimOperation(envelope.request.operationKey);
+  if (!claim.claimed) {
+    const refused = refuse(
+      envelope,
+      "rejected",
+      "work-action/operation-key",
+      "operation key already applied by another envelope",
+    );
+    return claim.receipt === null
+      ? {
+          ...refused,
+          receipt: {
+            ...(refused.receipt as WorkActionReceipt),
+            note: "operation key already claimed; the first apply is still in flight",
+          },
+        }
+      : { ...refused, receipt: claim.receipt };
+  }
+
   authority.issueEffect(envelope.request);
 
   const running: WorkActionEnvelope = {
@@ -394,15 +455,17 @@ export function applyWorkAction(
   if (!canTransition("running", target))
     invalid({ ...running, state: "running" }, `downstream reported ${target}`);
 
+  const receipt: WorkActionReceipt = {
+    operationKey: envelope.request.operationKey,
+    outcome: target,
+    workVersion,
+    note: report.note ?? "",
+  };
+  authority.recordReceipt(receipt);
   return {
     ...running,
     state: target,
-    receipt: {
-      operationKey: envelope.request.operationKey,
-      outcome: target,
-      workVersion,
-      note: report.note ?? "",
-    },
+    receipt,
     transitions: [
       ...running.transitions,
       { from: "running", to: target, oracle: "work-action/downstream-outcome" },

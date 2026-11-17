@@ -8,9 +8,13 @@
 // - the expected-work-version fixture (an authoritative version per object)
 //   — stale or unreadable versions never reach an effect;
 // - the effect sink's call count — one effect per operation key, proven by
-//   replaying apply on the same envelope.
+//   replaying apply on the same envelope and applying a second envelope
+//   that carries the same key;
+// - edge conformance — every transition any operation records is one the
+//   edge table declares.
 import { describe, expect, test } from "bun:test";
 import {
+  type WorkActionReceipt,
   WORK_ACTION_EDGES,
   WORK_ACTION_STATES,
   acceptWorkAction,
@@ -46,14 +50,26 @@ function fixture(objectRef: string, version: string | null) {
   const rolesByActor = new Map<string, readonly string[]>([
     ["drew", ALL_ROLES],
   ]);
+  // The server's operation-key store: present means claimed, the value is
+  // the receipt once the first apply finished.
+  const operations = new Map<string, WorkActionReceipt | null>();
   const authority: WorkActionAuthority = {
     readWorkVersion: (ref) => versions.get(ref) ?? null,
     readRoles: (id) => rolesByActor.get(id) ?? [],
     issueEffect: (request) => effects.push(request),
+    claimOperation: (key) => {
+      if (!operations.has(key)) {
+        operations.set(key, null);
+        return { claimed: true };
+      }
+      return { claimed: false, receipt: operations.get(key) ?? null };
+    },
+    recordReceipt: (receipt) => operations.set(receipt.operationKey, receipt),
   };
   return {
     authority,
     effects,
+    operations,
     setVersion: (v: string | null) => versions.set(objectRef, v),
     setRoles: (id: string, roles: readonly string[]) =>
       rolesByActor.set(id, roles),
@@ -238,6 +254,118 @@ describe("work action contract — idempotency (oracle: effect sink call count)"
     expect(applied.effectIssued).toBe(true);
     expect(fx.effects).toHaveLength(1);
     expect(fx.effects[0]?.operationKey).toBe("op-9472-0001");
+  });
+});
+
+describe("work action contract — operation key across envelopes (oracle: effect sink call count)", () => {
+  test("a second envelope with the same operation key issues no effect and returns the original receipt", () => {
+    const { fx, envelope } = accepted();
+    const first = applyWorkAction(envelope, actor(), fx.authority, {
+      outcome: "verified_complete",
+      note: "first",
+    });
+    const second = acceptWorkAction(
+      previewWorkAction(createWorkAction(request()), actor(), fx.authority),
+      actor(),
+      fx.authority,
+    );
+    expect(second.state).toBe("accepted");
+    const replayed = applyWorkAction(second, actor(), fx.authority, {
+      outcome: "verified_complete",
+      note: "second",
+    });
+    expect(fx.effects).toHaveLength(1);
+    expect(replayed.effectIssued).toBe(false);
+    expect(replayed.state).toBe("rejected");
+    expect(replayed.receipt).toEqual(first.receipt);
+  });
+
+  test("a key claimed by an apply still in flight refuses the second envelope without an effect", () => {
+    const { fx, envelope } = accepted();
+    fx.operations.set("op-9472-0001", null); // first apply claimed, not finished
+    const applied = applyWorkAction(envelope, actor(), fx.authority, {
+      outcome: "verified_complete",
+    });
+    expect(fx.effects).toHaveLength(0);
+    expect(applied.state).toBe("rejected");
+    expect(applied.receipt?.note).toMatch(/still in flight/);
+  });
+});
+
+describe("work action contract — version re-read at apply (oracle: authoritative fixture)", () => {
+  test("work that moved after accept conflicts at apply with no effect", () => {
+    const { fx, envelope } = accepted();
+    fx.setVersion("wv-8");
+    const applied = applyWorkAction(envelope, actor(), fx.authority, {
+      outcome: "verified_complete",
+    });
+    expect(applied.state).toBe("conflict");
+    expect(applied.effectIssued).toBe(false);
+    expect(fx.effects).toHaveLength(0);
+  });
+
+  test("an authoritative version unreadable at apply is uncertain with no effect", () => {
+    const { fx, envelope } = accepted();
+    fx.setVersion(null);
+    const applied = applyWorkAction(envelope, actor(), fx.authority, {
+      outcome: "verified_complete",
+    });
+    expect(applied.state).toBe("uncertain");
+    expect(fx.effects).toHaveLength(0);
+  });
+});
+
+describe("work action contract — edge conformance (oracle: declared edge table)", () => {
+  test("every transition any operation records is a declared edge", () => {
+    const seen: WorkActionEnvelope[] = [];
+    // preview: conflict and uncertain
+    seen.push(
+      previewWorkAction(
+        createWorkAction(request()),
+        actor(),
+        fixture("orch:item-9472", "wv-9").authority,
+      ),
+      previewWorkAction(
+        createWorkAction(request()),
+        actor(),
+        fixture("orch:item-9472", null).authority,
+      ),
+    );
+    // accept and apply: moved, unreadable, revoked, and every outcome
+    for (const move of ["wv-8", null] as const) {
+      const fx = fixture("orch:item-9472", "wv-7");
+      const previewed = previewWorkAction(
+        createWorkAction(request()),
+        actor(),
+        fx.authority,
+      );
+      fx.setVersion(move);
+      seen.push(acceptWorkAction(previewed, actor(), fx.authority));
+      const later = accepted();
+      later.fx.setVersion(move);
+      seen.push(
+        applyWorkAction(later.envelope, actor(), later.fx.authority, {
+          outcome: "verified_complete",
+        }),
+      );
+    }
+    for (const outcome of [
+      "verified_complete",
+      "partial",
+      "pending_sync",
+      "conflict",
+      "uncertain",
+    ] as const) {
+      const { fx, envelope } = accepted({ operationKey: `op-edge-${outcome}` });
+      seen.push(applyWorkAction(envelope, actor(), fx.authority, { outcome }));
+    }
+    for (const envelope of seen) {
+      for (const t of envelope.transitions) {
+        expect(`${t.from}->${t.to}:${canTransition(t.from, t.to)}`).toBe(
+          `${t.from}->${t.to}:true`,
+        );
+      }
+    }
   });
 });
 
