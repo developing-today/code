@@ -143,6 +143,7 @@ import {
   allProjectRefs,
   buildProjectDetail,
   buildProjectSummaries,
+  projectDocTarget,
   projectConfigById,
 } from "./project-config.ts";
 import { PHASE12_REPO, parsePhase12Steps, type Phase12Snapshot } from "./phase12.ts";
@@ -3168,9 +3169,14 @@ async function handler(req: Request): Promise<Response> {
         }
       }
     }
+    // #1108 remainder: the project's derived doc (roadmap
+    // description + newest status record) from the checkout-reading
+    // source, when it carries one; null keeps the registry text.
+    const docTarget = projectDocTarget(config);
+    const projectDoc = docTarget && source.projectDoc ? await source.projectDoc(docTarget).catch(() => null) : null;
     return html(
       renderProgramProject(
-        buildProjectDetail(config, items, pool, rows),
+        buildProjectDetail(config, items, pool, rows, projectDoc),
         items,
         prov(),
         provDetail(),
@@ -3198,7 +3204,9 @@ async function handler(req: Request): Promise<Response> {
       source.projects().catch(() => []),
       source.roadmap().catch(() => []),
     ]);
-    return json(buildProjectDetail(config, items, pool, rows));
+    const docTarget = projectDocTarget(config);
+    const projectDoc = docTarget && source.projectDoc ? await source.projectDoc(docTarget).catch(() => null) : null;
+    return json(buildProjectDetail(config, items, pool, rows, projectDoc));
   }
 
   if (path === "/health") {
