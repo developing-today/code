@@ -234,6 +234,7 @@ build name, the source rev and the exact enabled-capability list;
 ```sh
 nix build .#fleet .#fleet-serve .#fleet-connect .#fleet-connect-static
 ./pkgs/fleet/smoke.sh ./result ./result-1 ./result-2 ./result-3
+# (the smoke suite also runs in CI: .github/workflows/fleet-smoke.yml, #6400)
 cargo test --workspace   # unit tests (registry, config, proto, secrets)
 ```
 

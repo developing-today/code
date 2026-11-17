@@ -101,6 +101,7 @@ never a state that persists by default.
 | proxy-port-fallbacks      | none             | yes    |
 | fleet-search-parity-guard | none             | yes    |
 | fleet-rust-tests          | nightly schedule | yes    |
+| fleet-smoke               | main push, path gated | yes    |
 | opencode-config-guard     | nightly schedule | yes    |
 | mcpx fix-test guard       | nightly schedule | yes    |
 | production-line guard     | nightly schedule | yes    |
