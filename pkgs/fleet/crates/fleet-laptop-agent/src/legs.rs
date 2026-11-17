@@ -9,6 +9,8 @@
 use std::io::{Read, Write};
 use std::os::unix::net::UnixStream;
 use std::path::PathBuf;
+use std::sync::Mutex;
+use std::time::{Duration, Instant};
 
 use fleet_proxy::http::{HttpConn, HttpError};
 use fleet_proxy::tunnel::{connect_cf_tunnel, connect_tunnel, egress_from_env, egress_from_env_url_port, Egress};
@@ -104,10 +106,67 @@ fn exchange(
 /// The Cloudflare leg. Its Access service token is a fleet secret,
 /// resolved when the leg is tried (so a healthy broker never pays for
 /// it); the value never leaves this process except in the headers.
+///
+/// Resolution mirrors the Python client (code#5702 lineage): a success
+/// is cached for the life of the process, a failure is cached for
+/// 60 s — the resolver chain can take ~2 minutes to fail (broker
+/// retries, then the Bitwarden subprocess), and no caller should pay
+/// that more than once a minute. The chain's own error is surfaced in
+/// the Absent message: SecretError is value-free by design, and "the
+/// secret is unavailable" without its reason is undiagnosable (the
+/// 2026-11-17 parity pass on #10796 burned its CF budget on exactly
+/// that opacity).
 pub struct CfLeg {
     pub token: String,
     pub config: fleet_config::Config,
     pub cf_host: String,
+    pub cache: Mutex<CfCache>,
+}
+
+#[derive(Default)]
+pub struct CfCache {
+    ready: Option<Vec<(String, String)>>,
+    failed_at: Option<Instant>,
+}
+
+impl CfLeg {
+    fn headers(&self) -> Result<Vec<(String, String)>, LegError> {
+        let mut cache = self.cache.lock().unwrap();
+        if let Some(headers) = &cache.ready {
+            return Ok(headers.clone());
+        }
+        if let Some(at) = cache.failed_at {
+            if at.elapsed() < Duration::from_secs(60) {
+                return Err(LegError::Absent(format!(
+                    "secret {CF_ACCESS_SECRET} unavailable (failure cached <60s)"
+                )));
+            }
+        }
+        let resolver = fleet_secrets::Resolver::default_chain(&self.config);
+        let resolved = resolver.resolve(CF_ACCESS_SECRET).map_err(|e| {
+            LegError::Absent(format!("secret {CF_ACCESS_SECRET} unavailable: {e}"))
+        });
+        let secret = match resolved {
+            Ok(secret) => secret,
+            Err(e) => {
+                cache.failed_at = Some(Instant::now());
+                return Err(e);
+            }
+        };
+        match cf_access_headers(secret.expose()) {
+            Some(headers) => {
+                cache.ready = Some(headers.clone());
+                cache.failed_at = None;
+                Ok(headers)
+            }
+            None => {
+                cache.failed_at = Some(Instant::now());
+                Err(LegError::Absent(format!(
+                    "secret {CF_ACCESS_SECRET} is not a service token"
+                )))
+            }
+        }
+    }
 }
 
 impl Leg for CfLeg {
@@ -118,12 +177,7 @@ impl Leg for CfLeg {
     fn call(&self, req: &Request) -> Result<Reply, LegError> {
         let egress: Egress = egress_from_env_url_port()
             .map_err(|e| LegError::Absent(e))?;
-        let resolver = fleet_secrets::Resolver::default_chain(&self.config);
-        let secret = resolver
-            .resolve(CF_ACCESS_SECRET)
-            .map_err(|_| LegError::Absent(format!("secret {CF_ACCESS_SECRET} unavailable")))?;
-        let headers = cf_access_headers(secret.expose())
-            .ok_or_else(|| LegError::Absent(format!("secret {CF_ACCESS_SECRET} is not a service token")))?;
+        let headers = self.headers()?;
         let conn = connect_cf_tunnel(&egress, &self.cf_host)
             .and_then(HttpConn::from_tls);
         exchange(conn, req, &self.token, &self.cf_host, &headers)
@@ -192,6 +246,7 @@ pub fn ladder(config: &fleet_config::Config) -> Result<Ladder, String> {
             token: token.clone(),
             config: config.clone(),
             cf_host: config.cf_host().to_string(),
+            cache: Mutex::new(CfCache::default()),
         }),
         Box::new(TailscaleLeg {
             token: token.clone(),
@@ -226,6 +281,7 @@ mod tests {
             body: None,
             trip: "t".into(),
             idempotent: true,
+            direct_only: false,
         };
         assert!(matches!(leg.call(&req), Err(LegError::Absent(_))));
     }
@@ -238,6 +294,7 @@ mod tests {
             body: None,
             trip: "t".into(),
             idempotent: true,
+            direct_only: false,
         };
         assert!(matches!(SshLeg.call(&req), Err(LegError::Absent(_))));
     }

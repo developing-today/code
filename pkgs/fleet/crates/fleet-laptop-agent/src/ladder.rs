@@ -19,6 +19,9 @@ pub struct Request {
     pub body: Option<serde_json::Value>,
     pub trip: String,
     pub idempotent: bool,
+    /// Raw-byte replies (GET /file) cannot cross the broker leg: its
+    /// protocol is JSON-only. Direct legs only, like the Python client.
+    pub direct_only: bool,
 }
 
 #[derive(Debug, PartialEq)]
@@ -109,6 +112,9 @@ impl Ladder {
         let mut failures: Vec<Failure> = Vec::new();
         for leg in &self.legs {
             let name = leg.name();
+            if req.direct_only && name == "broker" {
+                continue;
+            }
             match leg.call(req) {
                 Ok(reply) => {
                     return Ok(Answer {
@@ -194,6 +200,7 @@ mod tests {
             body: None,
             trip: "t".into(),
             idempotent,
+            direct_only: false,
         }
     }
 

@@ -81,6 +81,20 @@ fn send(
     idempotent: bool,
     deadline: Duration,
 ) -> Result<Answer, CallFailure> {
+    send_ex(ladder, trip, method, path, body, idempotent, deadline, false)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn send_ex(
+    ladder: &Arc<Ladder>,
+    trip: &str,
+    method: &'static str,
+    path: &str,
+    body: Option<Value>,
+    idempotent: bool,
+    deadline: Duration,
+    direct_only: bool,
+) -> Result<Answer, CallFailure> {
     let body = match body {
         Some(Value::Object(mut map)) if method == "POST" && (path == "/exec" || path == "/jobs") => {
             map.insert("trip".to_string(), json!(trip));
@@ -94,11 +108,28 @@ fn send(
         body,
         trip: trip.to_string(),
         idempotent,
+        direct_only,
     };
     let started = Instant::now();
+    let t_sent = crate::now_ms();
     let result = dispatch(ladder, req, Some(deadline));
     let status = result.as_ref().ok().map(|a| a.reply.status);
-    log_trip(trip, path, started.elapsed().as_millis(), status);
+    let transport = result.as_ref().ok().map(|a| crate::transport_name(a.leg));
+    let t_received = result.as_ref().ok().and_then(|a| {
+        serde_json::from_slice::<Value>(&a.reply.body)
+            .ok()
+            .and_then(|v| v.get("_t_received").and_then(Value::as_u64))
+    });
+    log_trip(
+        trip,
+        path,
+        started.elapsed().as_millis(),
+        status,
+        transport,
+        Some(t_sent),
+        Some(crate::now_ms()),
+        t_received,
+    );
     result
 }
 
@@ -112,7 +143,7 @@ pub fn call(
     deadline: Duration,
 ) -> Result<Reply, CallFailure> {
     let answer = send(ladder, trip, method, path, body, idempotent, deadline)?;
-    let value: Value = if answer.reply.body.is_empty() {
+    let mut value: Value = if answer.reply.body.is_empty() {
         json!({})
     } else {
         serde_json::from_slice(&answer.reply.body).map_err(|e| CallFailure::Http {
@@ -120,6 +151,11 @@ pub fn call(
             message: format!("unparseable reply: {e}"),
         })?
     };
+    // Trip-log v2 internal echo (code#5702): never surface it to
+    // callers; send_ex already recorded it in the trip line.
+    if let Some(obj) = value.as_object_mut() {
+        obj.remove("_t_received");
+    }
     if answer.reply.status >= 400 {
         let message = match value.get("error") {
             Some(Value::String(s)) => s.clone(),
@@ -147,6 +183,7 @@ pub fn cancel(ladder: &Arc<Ladder>, trip: &str) -> bool {
         body: Some(json!({ "trip": trip })),
         trip: trip.to_string(),
         idempotent: true,
+        direct_only: false,
     };
     dispatch(ladder, req, Some(Duration::from_secs(CANCEL_BUDGET_S)))
         .map(|a| a.reply.status == 200)
@@ -405,7 +442,7 @@ fn fetch_chunk(ladder: &Arc<Ladder>, remote: &str, off: u64) -> Result<Vec<u8>, 
         "/file?path={}&off={off}&len={FILE_CHUNK_MAX}",
         percent_encode(remote)
     );
-    let answer = send(ladder, &trip, "GET", &path, None, true, default_deadline())?;
+    let answer = send_ex(ladder, &trip, "GET", &path, None, true, default_deadline(), true)?;
     if answer.reply.status >= 400 {
         let message = String::from_utf8_lossy(&answer.reply.body).into_owned();
         return Err(CallFailure::Http { status: answer.reply.status, message });

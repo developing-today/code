@@ -89,24 +89,69 @@ pub fn new_trip() -> String {
 /// client wrote a line.
 #[derive(serde::Serialize, Debug, PartialEq)]
 pub struct TripRecord {
+    /// Trip-log schema version; 2 matches the Python client's v2 lines.
+    pub v: u8,
     pub ts: String,
     pub trip: String,
     pub path: String,
     pub total_ms: u128,
     pub status: Option<u16>,
+    /// The leg that answered, in the Python client's spelling
+    /// (broker / cf / ts / ssh); absent when no leg answered.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub transport: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub t_sent: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub t_returned: Option<u64>,
+    /// Daemon-echoed receive time (the reply's `_t_received`), when
+    /// the reply carried one — the Python client's third v2 stamp.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub t_received: Option<u64>,
+}
+
+/// Milliseconds since the Unix epoch.
+pub fn now_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0)
+}
+
+/// The Python client's spelling for a ladder leg name.
+pub fn transport_name(leg: &str) -> String {
+    match leg {
+        "cloudflare" => "cf".to_string(),
+        "tailscale" => "ts".to_string(),
+        other => other.to_string(),
+    }
 }
 
 /// Append one trip record with a single O_APPEND write. Logging must
 /// never break or visibly delay a call, so every error is swallowed.
-pub fn log_trip(trip: &str, path: &str, total_ms: u128, status: Option<u16>) {
+pub fn log_trip(
+    trip: &str,
+    path: &str,
+    total_ms: u128,
+    status: Option<u16>,
+    transport: Option<String>,
+    t_sent: Option<u64>,
+    t_returned: Option<u64>,
+    t_received: Option<u64>,
+) {
     let _ = append_trip(
         &trip_log(),
         &TripRecord {
+            v: 2,
             ts: iso_utc(now_secs()),
             trip: trip.to_string(),
             path: path.to_string(),
             total_ms,
             status,
+            transport,
+            t_sent,
+            t_returned,
+            t_received,
         },
     );
 }
@@ -175,15 +220,20 @@ mod tests {
     #[test]
     fn trip_record_keeps_the_python_field_order() {
         let rec = TripRecord {
+            v: 2,
             ts: "T".into(),
             trip: "t".into(),
             path: "/exec".into(),
             total_ms: 5,
             status: None,
+            transport: Some("ts".into()),
+            t_sent: Some(100),
+            t_returned: Some(105),
+            t_received: Some(103),
         };
         assert_eq!(
             serde_json::to_string(&rec).unwrap(),
-            r#"{"ts":"T","trip":"t","path":"/exec","total_ms":5,"status":null}"#
+            r#"{"v":2,"ts":"T","trip":"t","path":"/exec","total_ms":5,"status":null,"transport":"ts","t_sent":100,"t_returned":105,"t_received":103}"#
         );
     }
 
