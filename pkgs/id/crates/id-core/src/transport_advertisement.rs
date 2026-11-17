@@ -531,3 +531,188 @@ mod tests {
         std::fs::remove_dir_all(&dir).unwrap();
     }
 }
+
+/// Last-known-good cache for one pinned subject (record Decision 3).
+/// Holds at most one ad — the freshest valid one ever accepted —
+/// and never lets a replayed or invalid ad displace it.
+#[derive(Debug, Clone, Default)]
+pub struct AdCache {
+    current: Option<SignedAdvertisement>,
+}
+
+impl AdCache {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Offer an ad fetched from any substrate. Returns true when
+    /// the ad became the cached one: it must verify against
+    /// `pinned_subject` and carry a strictly higher sequence than
+    /// the cached ad (invariant 3 — a replay never displaces).
+    pub fn accept(&mut self, signed: SignedAdvertisement, pinned_subject: &str) -> bool {
+        let Ok(ad) = signed.verify(pinned_subject) else {
+            return false;
+        };
+        if let Some(cur) = &self.current {
+            if ad.sequence <= cur.advertisement.sequence {
+                return false;
+            }
+        }
+        self.current = Some(signed);
+        true
+    }
+
+    /// The cached ad as a selection at `now`: fresh, or
+    /// flagged-degraded when past expiry (Decision 3).
+    pub fn current(&self, now: u64) -> Option<Selection<'_>> {
+        let signed = self.current.as_ref()?;
+        let ad = &signed.advertisement;
+        Some(Selection {
+            advertisement: ad,
+            degraded: !ad.is_fresh(now),
+        })
+    }
+
+    /// The cached sequence, or 0 when the cache is empty.
+    pub fn cached_sequence(&self) -> u64 {
+        self.current
+            .as_ref()
+            .map_or(0, |s| s.advertisement.sequence)
+    }
+}
+
+/// A source of signed advertisements: the `.well-known` HTTPS
+/// endpoint, the Workers rendezvous, or a broker mirror. Substrates
+/// are untrusted (Decision 1): an implementation may return forged,
+/// stale, or no data, and resolution stays correct. The HTTPS
+/// implementations live with the client's HTTP stack; this trait
+/// is the seam they bind to.
+pub trait Substrate {
+    /// Fetch the substrate's current ad for `subject`, if it has
+    /// one. `None` means unreachable or empty — never an error
+    /// worth failing resolution over.
+    fn fetch(&self, subject: &str) -> Option<SignedAdvertisement>;
+}
+
+/// Resolve a subject's advertisement (record Decision 2): consult
+/// the cache first, then every substrate, and let the signed
+/// object decide — freshest valid wins across all sources, with
+/// the cache's last-known-good as the degraded fallback. Every
+/// valid ad seen is folded into the cache, so a fresher ad from
+/// any substrate upgrades later resolutions. Returns the winning
+/// selection (borrowed from the cache) plus whether any substrate
+/// answered at all.
+pub fn resolve<'c>(
+    cache: &'c mut AdCache,
+    substrates: &[&dyn Substrate],
+    pinned_subject: &str,
+    now: u64,
+) -> Option<Selection<'c>> {
+    for substrate in substrates {
+        if let Some(signed) = substrate.fetch(pinned_subject) {
+            cache.accept(signed, pinned_subject);
+        }
+    }
+    cache.current(now)
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
+mod cache_tests {
+    use super::*;
+
+    // Oracle: the #5793 decision record, Decisions 2+3, invariant 3.
+
+    fn key() -> SigningKey {
+        SigningKey::from_bytes(&[7u8; 32])
+    }
+
+    fn subject() -> String {
+        TransportAdvertisement::subject_for(&key().verifying_key())
+    }
+
+    fn signed(sequence: u64, issued_at: u64, ttl: u64) -> SignedAdvertisement {
+        TransportAdvertisement {
+            subject: subject(),
+            transports: vec![TransportEntry {
+                kind: TransportKind::Tcp,
+                endpoint: "203.0.113.7:443".to_string(),
+                priority: 30,
+                broker: None,
+            }],
+            issued_at,
+            expires_at: issued_at + ttl,
+            sequence,
+        }
+        .sign(&key())
+    }
+
+    const NOW: u64 = 1_700_000_000;
+
+    struct StaticSubstrate(Option<SignedAdvertisement>);
+    impl Substrate for StaticSubstrate {
+        fn fetch(&self, _subject: &str) -> Option<SignedAdvertisement> {
+            self.0.clone()
+        }
+    }
+
+    #[test]
+    fn cache_rejects_replays_and_forgeries() {
+        let mut cache = AdCache::new();
+        assert!(cache.accept(signed(5, NOW, 3600), &subject()));
+        // Replay of an older sequence never displaces (invariant 3).
+        assert!(!cache.accept(signed(5, NOW, 3600), &subject()));
+        assert!(!cache.accept(signed(2, NOW, 3600), &subject()));
+        assert_eq!(cache.cached_sequence(), 5);
+        // A forgery for the same subject is refused at the door.
+        let forged = TransportAdvertisement {
+            subject: subject(),
+            transports: vec![],
+            issued_at: NOW,
+            expires_at: NOW + 3600,
+            sequence: 99,
+        }
+        .sign(&SigningKey::from_bytes(&[9u8; 32]));
+        assert!(!cache.accept(forged, &subject()));
+        assert_eq!(cache.cached_sequence(), 5);
+    }
+
+    #[test]
+    fn resolve_walks_substrates_and_upgrades_cache() {
+        // Decision 2: no substrate outranks another — the highest
+        // valid sequence wins even when a later substrate is stale,
+        // and a hostile substrate's forgery is ignored.
+        let hostile = StaticSubstrate(Some(
+            TransportAdvertisement {
+                subject: subject(),
+                transports: vec![],
+                issued_at: NOW,
+                expires_at: NOW + 3600,
+                sequence: 99,
+            }
+            .sign(&SigningKey::from_bytes(&[9u8; 32])),
+        ));
+        let stale = StaticSubstrate(Some(signed(3, NOW, 3600)));
+        let fresh = StaticSubstrate(Some(signed(8, NOW, 3600)));
+        let empty = StaticSubstrate(None);
+        let mut cache = AdCache::new();
+        let substrates: [&dyn Substrate; 4] = [&hostile, &stale, &fresh, &empty];
+        let sel = resolve(&mut cache, &substrates, &subject(), NOW).expect("resolution succeeds");
+        assert_eq!(sel.advertisement.sequence, 8);
+        assert!(!sel.degraded);
+        assert_eq!(cache.cached_sequence(), 8);
+    }
+
+    #[test]
+    fn resolve_falls_back_to_degraded_cache_when_substrates_fail() {
+        // Decision 3: with every substrate down, the expired
+        // last-known-good is used, flagged degraded.
+        let mut cache = AdCache::new();
+        assert!(cache.accept(signed(4, NOW - 7200, 3600), &subject()));
+        let down = StaticSubstrate(None);
+        let substrates: [&dyn Substrate; 1] = [&down];
+        let sel = resolve(&mut cache, &substrates, &subject(), NOW).expect("LKG fallback");
+        assert!(sel.degraded);
+        assert_eq!(sel.advertisement.sequence, 4);
+    }
+}
