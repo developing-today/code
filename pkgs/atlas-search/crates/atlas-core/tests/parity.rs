@@ -383,6 +383,15 @@ impl FakeTransport {
 
     fn respond(&self, stmt: &Stmt) -> Vec<Row> {
         let sql = &stmt.sql;
+        // Manifest loader presence probe: the fixture corpus has no
+        // manifest table, so report absent without recording noise —
+        // the loader treats empty as built-in absent.
+        if sql.contains("sqlite_master") {
+            return Vec::new();
+        }
+        if sql.contains("classification_manifest") {
+            return Vec::new();
+        }
         let row = |pairs: Vec<(&str, Value)>| {
             Row::new(pairs.into_iter().map(|(k, v)| (k.to_string(), v)).collect())
         };
@@ -455,6 +464,13 @@ impl PipelineTransport for FakeTransport {
     fn pipeline(&self, stmts: &[Stmt]) -> atlas_core::Result<Vec<Vec<Row>>> {
         let mut out = Vec::new();
         for s in stmts {
+            // The manifest loader's probes are construction noise,
+            // not branch-call-sequence evidence: serve absent
+            // without recording.
+            if s.sql.contains("sqlite_master") || s.sql.contains("classification_manifest") {
+                out.push(Vec::new());
+                continue;
+            }
             self.calls.lock().unwrap().push(s.clone());
             out.push(self.respond(s));
         }
