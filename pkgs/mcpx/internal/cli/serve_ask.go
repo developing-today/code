@@ -208,6 +208,13 @@ func (d daemonAsker) Begin(ctx context.Context, kind string, params json.RawMess
 	if r := mcpserver.RelayFrom(ctx); r != nil && kind == "tools/call" {
 		body["relay"] = daemon.CallRelay{ProgressToken: r.ProgressToken, LogLevel: r.LogLevel, Meta: r.Meta}
 	}
+	if mcpserver.WithinTask(ctx) {
+		// The call is a task's inner call (SEP-2663): say so on the way
+		// to the daemon, as the direct path does (mcpBackend.Call), so
+		// the write ledger does not record the task's cancellation as
+		// an unknown write outcome (#8922).
+		ctx = mcpclient.WithTaskExecution(ctx)
+	}
 	raw, err := c.do(ctx, http.MethodPost, "/v1/ask", body)
 	if err != nil {
 		return "", err
@@ -375,13 +382,23 @@ func (d daemonAsker) Reply(ctx context.Context, callID string, answers map[strin
 	return nil
 }
 
-func (d daemonAsker) Abandon(callID string) {
+func (d daemonAsker) Abandon(callID string) { d.abandon(callID, nil) }
+
+// AbandonTask is Abandon for a call a protocol task owned (SEP-2663):
+// the abandon body says so, and the daemon marks the call before
+// cancelling it, so its write ledger does not record the task's
+// cancellation as an unknown write outcome (#8922).
+func (d daemonAsker) AbandonTask(callID string) {
+	d.abandon(callID, map[string]any{"taskCancelled": true})
+}
+
+func (d daemonAsker) abandon(callID string, body any) {
 	// Best effort, on its own deadline: the request that wanted this is
 	// already being failed, and its context is cancelled or about to be.
 	ctx, cancel := context.WithTimeout(context.Background(), defaults.ProtoAbandonGrace)
 	defer cancel()
 	if c, err := d.client(ctx); err == nil {
-		_, _ = c.do(ctx, http.MethodPost, "/v1/ask/"+callID+"/abandon", nil)
+		_, _ = c.do(ctx, http.MethodPost, "/v1/ask/"+callID+"/abandon", body)
 	}
 }
 

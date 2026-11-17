@@ -2468,7 +2468,10 @@ fn unbound_append(worker: &str, row: &Value, trigger: &str) {
 /// #9046: fleet session ids are `ses_` + alphanumerics — the
 /// shape every session surface mints. Anything else is not a
 /// session id and must never reach a route_attempt SQL string.
-fn valid_session_id(s: &str) -> bool {
+/// #8287: this is the crate's one session-id predicate — the
+/// broker's bind verb (turso_queue::verb_bind) validates against
+/// it too; do not fork a second definition.
+pub(crate) fn valid_session_id(s: &str) -> bool {
     s.len() > 4 && s.starts_with("ses_") && s.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
 }
 
@@ -3387,7 +3390,11 @@ fn cmd_claim(rest: &[String]) -> i32 {
     }
     let (mut out, code) = claim_output(&resp);
     if code != 0 {
-        eprint("repo-queue: no claimable task");
+        // #8154: name why when the envelope carries the counts.
+        eprint(
+            &no_claim_diagnostic(&resp)
+                .unwrap_or_else(|| "repo-queue: no claimable task".to_string()),
+        );
         print_json(&out);
         return code;
     }
@@ -3581,14 +3588,33 @@ fn claim_batch_output(resp: &Value, worker: &str, requested: i64) -> i32 {
         }
     }
     let claimed = tasks.len();
-    print_json(&json!({
+    let mut out = json!({
         "tasks": tasks,
         "claimed": claimed,
         "requested": requested,
         "guard_held": held,
-    }));
+    });
+    // #8154: an empty batch carries the no-claim counts too.
     if claimed == 0 {
-        eprint("repo-queue: no claimable task");
+        if let Some(obj) = out.as_object_mut() {
+            for k in [
+                "queued",
+                "at_cap_queued",
+                "queued_not_yet_due",
+                "parked_due",
+            ] {
+                if let Some(v) = resp.get(k) {
+                    obj.insert(k.to_string(), v.clone());
+                }
+            }
+        }
+    }
+    print_json(&out);
+    if claimed == 0 {
+        eprint(
+            &no_claim_diagnostic(resp)
+                .unwrap_or_else(|| "repo-queue: no claimable task".to_string()),
+        );
         return NO_CLAIM_EXIT;
     }
     0
@@ -3655,6 +3681,33 @@ const NO_CLAIM_EXIT: i32 = 5;
 /// (or missing) row yields the distinct `{"task": null}` marker with
 /// NO_CLAIM_EXIT, a value carrying no id/queue/status/dedupe_key
 /// fields a caller could mistake for a task.
+/// #8154 (follow-on #2937 acceptance 4): the no-claim diagnostic.
+/// When the broker's no-row envelope carries the scoped counts,
+/// name why the claim found nothing — most importantly the attempt
+/// cap, the case that otherwise reads as a mysteriously empty
+/// queue. Returns None when the envelope has no counts (an older
+/// broker), so callers fall back to the bare line.
+fn no_claim_diagnostic(resp: &Value) -> Option<String> {
+    let queued = resp.get("queued")?.as_i64()?;
+    let at_cap = resp
+        .get("at_cap_queued")
+        .and_then(|v| v.as_i64())
+        .unwrap_or(0);
+    let not_due = resp
+        .get("queued_not_yet_due")
+        .and_then(|v| v.as_i64())
+        .unwrap_or(0);
+    let parked_due = resp.get("parked_due").and_then(|v| v.as_i64()).unwrap_or(0);
+    let mut line = format!(
+        "repo-queue: no claimable task — {queued} queued ({at_cap} at the attempt cap, \
+         {not_due} not yet due), {parked_due} parked due (#8154)"
+    );
+    if queued > 0 && at_cap >= queued {
+        line.push_str("; every queued task is at the attempt cap");
+    }
+    Some(line)
+}
+
 fn claim_output(resp: &Value) -> (Value, i32) {
     let row = resp.get("row").cloned().unwrap_or(Value::Null);
     if row.is_null() {
@@ -3663,7 +3716,16 @@ fn claim_output(resp: &Value) -> (Value, i32) {
         // instead of an empty claim.
         let mut out = json!({"task": Value::Null});
         if let Some(obj) = out.as_object_mut() {
-            for k in ["budget_skipped", "max_required_budget_minutes"] {
+            for k in [
+                "budget_skipped",
+                "max_required_budget_minutes",
+                // #8154: the no-claim counts ride the printed
+                // envelope next to the budget summary.
+                "queued",
+                "at_cap_queued",
+                "queued_not_yet_due",
+                "parked_due",
+            ] {
                 if let Some(v) = resp.get(k) {
                     obj.insert(k.to_string(), v.clone());
                 }
@@ -7362,6 +7424,50 @@ mod tests {
         let (out, code) = claim_output(&full);
         assert_eq!(code, 0);
         assert!(out.get("claim_flow_partial").is_none());
+    }
+
+    #[test]
+    fn no_claim_diagnostic_names_at_cap_reason_8154() {
+        // #8154 oracle (follow-on #2937 acceptance 4): a null row
+        // whose envelope carries the counts produces a diagnostic
+        // naming the attempt cap; when every queued task is at cap
+        // the line says so outright. No counts (older broker) -> no
+        // diagnostic, and claim_output still carries the counts on
+        // the printed {task: null} envelope with exit 5.
+        let resp = json!({
+            "row": Value::Null,
+            "queued": 7,
+            "at_cap_queued": 7,
+            "queued_not_yet_due": 0,
+            "parked_due": 2,
+        });
+        let line = no_claim_diagnostic(&resp).expect("counts yield a diagnostic");
+        assert!(line.contains("7 queued"), "{line}");
+        assert!(line.contains("7 at the attempt cap"), "{line}");
+        assert!(
+            line.contains("every queued task is at the attempt cap"),
+            "{line}"
+        );
+        assert!(line.contains("2 parked due"), "{line}");
+        let mixed = json!({
+            "row": Value::Null,
+            "queued": 9,
+            "at_cap_queued": 3,
+            "queued_not_yet_due": 4,
+            "parked_due": 0,
+        });
+        let line = no_claim_diagnostic(&mixed).expect("counts yield a diagnostic");
+        assert!(line.contains("3 at the attempt cap"), "{line}");
+        assert!(line.contains("4 not yet due"), "{line}");
+        assert!(!line.contains("every queued task"), "{line}");
+        assert!(no_claim_diagnostic(&json!({"row": Value::Null})).is_none());
+        let (out, code) = claim_output(&resp);
+        assert_eq!(code, NO_CLAIM_EXIT);
+        assert!(out["task"].is_null());
+        assert_eq!(out["queued"], 7);
+        assert_eq!(out["at_cap_queued"], 7);
+        assert_eq!(out["queued_not_yet_due"], 0);
+        assert_eq!(out["parked_due"], 2);
     }
 
     #[test]

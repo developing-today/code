@@ -34,6 +34,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Dict, List, Optional, Any
 
+
 def _required_home() -> Path:
     """Home per the #5762 home-resolution contract (code#8221): a
     non-empty HOME, or a named error -- never the passwd fallback
@@ -1117,9 +1118,7 @@ def launch_step(
                 # #8166: the provider wall is route-wide - no later
                 # launch this fire can succeed, and each attempt
                 # would burn shared provider rpm against the wall.
-                skips.append(
-                    {"task_id": candidate["id"], "reason": "provider_wall"}
-                )
+                skips.append({"task_id": candidate["id"], "reason": "provider_wall"})
                 continue
 
             if cap_room <= 0:

@@ -1,0 +1,15 @@
+{
+  "browserUnit": "fixture-browser.service",
+  "cdpPort": 19299,
+  "challengeMarkers": ["verify-it", "2fa", "passkey"],
+  "classMap": {},
+  "cookieNames": ["fixture-session"],
+  "cooldownMs": 900000,
+  "enabled": true,
+  "issueRepo": "developing-today/code",
+  "latestPath": "${FIXTURE_STATE_DIR}/latest.json",
+  "loginUrl": "https://fixture.invalid/login",
+  "name": "fixture",
+  "origins": ["https://fixture.invalid"],
+  "staleAfterMs": 1800000
+}

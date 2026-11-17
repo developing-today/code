@@ -30,6 +30,26 @@ fi
 db="$(git -C "$d" symbolic-ref --short refs/remotes/origin/HEAD 2>/dev/null | sed 's|^origin/||')"
 [ -z "$db" ] && db=main
 [ "$(git -C "$d" branch --show-current)" = "$db" ] || exit 0
+# Oversized-tracked-file guard (code#10559): GitHub rejects files over
+# 100 MB, so a tracked file past that limit makes every push fail while
+# pack-objects burns the full push timeout re-hashing the blob — and
+# this every-minute sweep re-entered that spiral forever (131 MB live
+# sqlite, ~10 cores burned per run). Refuse loudly BEFORE staging:
+# stat only the files git already reports as modified (cheap; no tree
+# scan), name the file and its size, and fail this repo's cycle
+# (exit 1, so the unit shows failed) instead of entering a push that
+# can never succeed. Untrack or shrink the file to clear it.
+autocommit_size_limit=95000000 # ~95 MB, safely under GitHub's 100 MB hard limit
+while IFS= read -r -d '' f; do
+  sz="$(stat -c %s -- "$d/$f" 2>/dev/null || echo 0)"
+  if [ "${sz:-0}" -gt "$autocommit_size_limit" ]; then
+    echo "autocommit: OVERSIZED tracked file in $d: $f is $sz bytes (limit $autocommit_size_limit) — refusing to stage/commit; untrack or shrink it (code#10559)" >&2
+    exit 1
+  fi
+done < <(
+  git -C "$d" diff --name-only -z
+  git -C "$d" diff --cached --name-only -z
+)
 git -C "$d" add -u || exit 0
 if ! git -C "$d" diff --cached --quiet; then
   if git -C "$d" commit -q -m "autocommit: $(basename "$d") $(date '+%Y-%m-%d %H:%M')"; then

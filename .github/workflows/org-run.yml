@@ -1,4 +1,5 @@
 name: org-run (generic dispatch runner)
+run-name: "org-run ${{ inputs.dispatch_id }}"
 
 # A generic, dispatch-only build/test runner for the developing-today
 # org (Drew, 2026-11-04) — the org-level counterpart to dezren39/fleet's
@@ -158,7 +159,11 @@ on:
         options:
           - blacksmith
           - github
-
+      dispatch_id:
+        description: "Unique id for this dispatch (fleet-place run correlation, issue #8371); surfaced in the run display title via run-name - blank for manual dispatches"
+        type: string
+        required: false
+        default: ""
 permissions:
   contents: read
 
