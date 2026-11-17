@@ -224,3 +224,22 @@ jobs:
             exit 1
           fi
           node --test pm-stack/meta-exporter/meta-quota-export.test.mjs
+
+      # watchdog-state: bun test (suite for #8026;
+      # pm-stack/exporters/test/watchdog-state.test.ts, 12 tests, is the
+      # only verification of the quota watchdog decision layer in
+      # pm-stack/exporters/src/watchdog-state.ts and was run by no
+      # workflow - bare `bun test` never reaches it because
+      # pm-stack/exporters/ has no package.json. The invocation is the
+      # one documented in pm-stack/exporters/README.md, run from
+      # pm-stack/aggregator (whose dependencies are installed above).
+      # The file is asserted to exist first, so a green run cannot be
+      # a silently skipped suite; any failure fails the job.
+      - name: Test watchdog-state suite
+        working-directory: pm-stack/aggregator
+        run: |
+          if [ ! -f ../exporters/test/watchdog-state.test.ts ]; then
+            echo "::error::Missing suite file pm-stack/exporters/test/watchdog-state.test.ts - the watchdog-state suite was not run."
+            exit 1
+          fi
+          bun test ../exporters/test/watchdog-state.test.ts
