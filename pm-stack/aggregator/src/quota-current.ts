@@ -483,7 +483,15 @@ const NON_POOL_SERVICE_IDS: ReadonlySet<string> = new Set([
   "antigravity",
   "_antigravity",
   "opencode-go",
+  // These providers publish no API-readable quota surface; their error rows
+  // are attribution records, not standalone pools.
   "groq",
+  "exaone",
+  "google.muse",
+  "google.gen-lang",
+  "google.personal",
+  "google.drew",
+  "google.developing-today",
 ]);
 
 /**

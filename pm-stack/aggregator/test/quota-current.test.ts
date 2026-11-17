@@ -1392,29 +1392,29 @@ describe("spec-pool retained path with dead base windows (#7033)", () => {
 describe("non-pool registration (#10575)", () => {
   // Oracle: overlayQuotaCurrent's documented contract — every
   // serviceId the read reports renders as a pool EXCEPT the
-  // NON_POOL_SERVICE_IDS. groq joined that set in #10575: Groq has
-  // no quota surface, so its permanently error-state, windowless row
-  // must not synthesize an identity-only pool. The control entry
-  // (an unregistered id) proves the exemption is groq-specific, not
-  // a blanket drop of error rows.
-  test("a groq error row synthesizes no pool, while an unregistered id still does", () => {
+  // NON_POOL_SERVICE_IDS. Groq, EXAONE and Google AI Studio joined this
+  // set because each has a measured provider row but no API-readable
+  // quota surface; none may synthesize an identity-only pool. The
+  // control entry proves this is not a blanket drop of error rows.
+  test("no-quota-surface rows synthesize no pool, while an unregistered id still does", () => {
     const out = overlayQuotaCurrent(
       baseView(),
       file([
-        entry({
-          serviceId: "groq",
-          state: "error",
-          error: "Groq exposes no first-party usage/quota endpoint for an API key",
-        }),
+        ...["groq", "exaone", "google.muse", "google.gen-lang", "google.personal", "google.drew", "google.developing-today"].map((serviceId) =>
+          entry({ serviceId, state: "error", error: "no quota surface" }),
+        ),
         entry({ serviceId: "some-new-provider", windows: [win("monthly", 3, iso(5 * 60_000))] }),
       ]),
       NOW,
     );
-    expect(out.pools.map((pool) => pool.id)).not.toContain("groq");
-    expect(out.pools.map((pool) => pool.id)).toContain("some-new-provider");
-    // The groq read is still reported in the gatherer summary; only
-    // pool synthesis is exempted.
-    expect(out.gatherer?.providers.map((provider) => provider.serviceId)).toContain("groq");
+    const poolIds = out.pools.map((pool) => pool.id);
+    for (const serviceId of ["groq", "exaone", "google.muse", "google.gen-lang", "google.personal", "google.drew", "google.developing-today"]) {
+      expect(poolIds).not.toContain(serviceId);
+    }
+    expect(poolIds).toContain("some-new-provider");
+    // The measured reads remain in the gatherer summary; only pool
+    // synthesis is exempted.
+    expect(out.gatherer?.providers.map((provider) => provider.serviceId)).toContain("exaone");
   });
 });
 
