@@ -371,6 +371,34 @@ class ItemsTests(unittest.TestCase):
         self.assertEqual(result["segments"], [])
         self.assertEqual(result["reserved"], ["G"])
 
+    def test_ids_validates_the_package_manifest_shape(self):
+        package = self.rendered()
+        manifest = package / "package.json"
+        # Controls: a well-formed manifest lists its segment ids, and a
+        # manifest without segments behaves exactly as no manifest does.
+        manifest.write_text(
+            json.dumps({"segments": [{"id": "S1"}, {"id": "S2"}]}) + "\n",
+            encoding="utf-8",
+        )
+        self.assertEqual(self.cli("ids", "--package", package)["segments"], ["S1", "S2"])
+        manifest.write_text("{}\n", encoding="utf-8")
+        self.assertEqual(self.cli("ids", "--package", package)["segments"], [])
+        # Wrong shapes fail via the tool's single-line error contract,
+        # naming package.json — never a bare Attribute/Key/Type message.
+        for content in (
+            "[]",
+            '"segments"',
+            '{"segments": "S1"}',
+            '{"segments": {"id": "S1"}}',
+            '{"segments": ["S1"]}',
+            '{"segments": [{"name": "S1"}]}',
+            '{"segments": [{"id": 3}]}',
+            "not json",
+        ):
+            manifest.write_text(content + "\n", encoding="utf-8")
+            error = self.cli("ids", "--package", package, ok=False)
+            self.assertIn("package.json", error, content)
+
     # ------------------------------------------------------------- render
 
     def test_render_is_idempotent_and_replaces_init_placeholders(self):

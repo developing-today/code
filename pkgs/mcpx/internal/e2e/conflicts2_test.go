@@ -17,7 +17,7 @@ import (
 func mcpText(t *testing.T, ep, session string, frame map[string]any) string {
 	t.Helper()
 	resp := mcpPost(t, ep, session, frame)
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	body := decodeJSON(t, resp.Body)
 	res, _ := body["result"].(map[string]any)
 	if res == nil {
@@ -48,7 +48,7 @@ func legacySession(t *testing.T, ep string) string {
 		"params": map[string]any{"protocolVersion": "2025-11-25", "capabilities": map[string]any{},
 			"clientInfo": map[string]any{"name": "wp11", "version": "0"}},
 	})
-	resp.Body.Close()
+	_ = resp.Body.Close()
 	id := resp.Header.Get("Mcp-Session-Id")
 	if id == "" {
 		t.Fatal("initialize minted no session")
@@ -113,7 +113,7 @@ func TestHTTPMCPClientsHaveTheirOwnIdentity(t *testing.T) {
 		resp := mcpPost(t, ep, a, map[string]any{"jsonrpc": "2.0", "id": 2, "method": "resources/read",
 			"params": map[string]any{"uri": "mcpx://demo/demo://greeting"}})
 		body := dumpJSON(t, decodeJSON(t, resp.Body))
-		resp.Body.Close()
+		_ = resp.Body.Close()
 		if !strings.Contains(body, "hello from a resource") {
 			t.Fatalf("%s", body)
 		}
@@ -254,11 +254,11 @@ func TestMCPSurfaceAnswersLikeV1(t *testing.T) {
 			r := mcpPost(t, ep, "", rpc(1, "initialize", map[string]any{"protocolVersion": "2025-11-25",
 				"capabilities": map[string]any{"elicitation": map[string]any{}},
 				"clientInfo":   map[string]any{"name": "wp11", "version": "0"}}))
-			r.Body.Close()
+			_ = r.Body.Close()
 			return r.Header.Get("Mcp-Session-Id")
 		}()
 		r := mcpPost(t, ep, sess, rpc(2, "resources/read", map[string]any{"uri": "mcpx://demo/demo://nope"}))
-		defer r.Body.Close()
+		defer func() { _ = r.Body.Close() }()
 		raw, _ := io.ReadAll(r.Body)
 		if !strings.Contains(string(raw), `"code":-32002`) || !strings.Contains(string(raw), `"uri":"mcpx://demo/demo://nope"`) {
 			t.Fatalf("%s", raw)

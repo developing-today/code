@@ -27,11 +27,32 @@ EOF
 | `jules` | Jules tasks, issues, and orchestration | Google Jules integration |
 | `antigravity-jules-orchestration` | Orchestration tasks | Multi-agent coordination |
 | `antigravity` | Agent tooling | Antigravity interface |
+| `comms` | msg, topics, sessions | Cross-session messaging between running sessions (see below) |
 | `desktop-commander` | Desktop commander | System administration & actions |
 | `sequential-thinking` | sequentialthinking | Step-by-step reasoning server |
 | `mcp-server-neon` | database operations | Neon serverless Postgres tools |
 | `cloudrun` | service management | Google Cloud Run deployment and inspection |
 | `gopls-mcp-server` | Go LSP tools | Go language server diagnostics and navigation |
+
+## Cross-session messaging (`comms`)
+
+Running sessions can message each other through the `comms` namespace in
+code mode (verified 2026-11-06). Discover it first with `mcpx_discover`
+(namespace `comms`; if discovery errors once, retry), then use
+`tools.comms.msg`:
+
+```typescript
+// Send + wake the recipient session
+await tools.comms.msg({ mode: "send", to: "ses_<recipient>", text: "Token: TOK-987. Reply with it reversed.", deliver: "wake" });
+
+// Receive: block inside your turn until a message arrives
+const incoming = await tools.comms.msg({ mode: "unread", wait: 120 });
+```
+
+Send-with-`wake` plus a blocked unread-with-`wait` receive is a complete
+request/response loop between two live sessions. `topics` lists message
+topics; `sessions` lists reachable sessions. Messaging is reached through
+code mode only — it is not a plain tool call.
 
 ## Script Patterns
 

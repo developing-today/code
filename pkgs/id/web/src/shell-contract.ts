@@ -58,6 +58,17 @@ type Field = {
 export type Check = { ok: true; type: string } | { ok: false; error: string };
 
 const FIELD_TYPES = new Set<string>(["string", "hex", "bool", "u16", "u32", "u64", "string[]", "array", "object"]);
+const PHASES = new Set<string>(["opening", "query", "install", "joined", "closed"]);
+const FRAME_CLASSES = new Set<string>([
+  "event",
+  "ephemeral",
+  "query",
+  "control",
+  "admin",
+  "delegation",
+  "durable",
+  "reply",
+]);
 const INTEGER_MAX: Partial<Record<FieldType, number>> = {
   u16: 0xffff,
   u32: 0xffff_ffff,
@@ -88,6 +99,11 @@ function parseField(raw: unknown): Field {
     if (bound !== undefined && (typeof bound !== "number" || !Number.isFinite(bound))) {
       throw new Error(`${key} must be a finite number`);
     }
+    // The Rust parser deserializes bounds as u64/usize, so a negative or
+    // fractional bound refuses the whole document there.
+    if (bound !== undefined && (!Number.isInteger(bound) || (bound as number) < 0)) {
+      throw new Error(`${key} must be a non-negative integer`);
+    }
   }
   if (raw.enum !== undefined && (!Array.isArray(raw.enum) || raw.enum.some((item) => typeof item !== "string"))) {
     throw new Error("enum must be an array of strings");
@@ -112,6 +128,38 @@ const isInteger = (value: unknown): value is number => typeof value === "number"
 export function parseShellContract(value: unknown): ShellContract {
   if (!isObject(value)) throw new Error("shell contract must be an object");
 
+  // Top-level fields the checks read, mirroring the Rust RawContract: each
+  // is required there, so a document missing one -- or carrying one of the
+  // wrong shape -- fails to load there. Validate them here too, so a
+  // malformed document is rejected at load with a named error instead of
+  // throwing a TypeError at check time (missing routing_fields/projection)
+  // or silently disabling a check (missing max_frame_bytes turns off the
+  // frame cap; a string routing_fields substring-matches field names).
+  if (!isInteger(value.max_frame_bytes) || value.max_frame_bytes < 0) {
+    throw new Error("max_frame_bytes must be a non-negative integer");
+  }
+  if (!Array.isArray(value.routing_fields) || value.routing_fields.some((field) => typeof field !== "string")) {
+    throw new Error("routing_fields must be an array of strings");
+  }
+  // The remaining header fields RawContract requires: each is present and
+  // typed there, so a document missing one -- or carrying one of the wrong
+  // shape -- fails to load there too.
+  if (typeof value.contract !== "string") throw new Error("contract must be a string");
+  if (!isInteger(value.version) || value.version < 0) {
+    throw new Error("version must be a non-negative integer");
+  }
+  if (!isInteger(value.revision) || value.revision < 0) {
+    throw new Error("revision must be a non-negative integer");
+  }
+  if (!isObject(value.transports)) throw new Error("transports must be an object");
+  if (!isObject(value.projection)) throw new Error("projection must be an object");
+  if (
+    !Array.isArray(value.projection.redacted_keys) ||
+    value.projection.redacted_keys.some((key) => typeof key !== "string")
+  ) {
+    throw new Error("projection.redacted_keys must be an array of strings");
+  }
+
   for (const side of ["client_frames", "server_frames"] as const) {
     const frames = value[side];
     if (!isObject(frames)) throw new Error(`${side} must be an object`);
@@ -119,6 +167,34 @@ export function parseShellContract(value: unknown): ShellContract {
     for (const [frameName, frame] of Object.entries(frames)) {
       if (!isObject(frame) || !isObject(frame.fields)) {
         throw new Error(`${frameName}: frame fields must be an object`);
+      }
+      // Frame-spec fields the Rust RawFrame deserializes strictly: class
+      // is a required enum, phases/opens must name real phases (a string
+      // phases would otherwise substring-match in checkClientFrame's
+      // includes, and a bogus opens would become the session's phase), and
+      // forbidden_keys is a string array (a bare string would otherwise be
+      // iterated by character at check time).
+      if (typeof frame.class !== "string" || !FRAME_CLASSES.has(frame.class)) {
+        throw new Error(`${frameName}: unknown frame class \`${String(frame.class)}\``);
+      }
+      if (
+        frame.phases !== undefined &&
+        (!Array.isArray(frame.phases) || frame.phases.some((phase) => typeof phase !== "string" || !PHASES.has(phase)))
+      ) {
+        throw new Error(`${frameName}: phases must be an array of phase names`);
+      }
+      if (
+        frame.opens !== undefined &&
+        frame.opens !== null &&
+        (typeof frame.opens !== "string" || !PHASES.has(frame.opens))
+      ) {
+        throw new Error(`${frameName}: opens must be a phase name`);
+      }
+      if (
+        frame.forbidden_keys !== undefined &&
+        (!Array.isArray(frame.forbidden_keys) || frame.forbidden_keys.some((key) => typeof key !== "string"))
+      ) {
+        throw new Error(`${frameName}: forbidden_keys must be an array of strings`);
       }
       for (const [fieldName, raw] of Object.entries(frame.fields)) {
         try {

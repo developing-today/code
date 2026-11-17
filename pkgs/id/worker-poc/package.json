@@ -8,11 +8,12 @@
   "private": true,
   "scripts": {
     "dev": "wrangler dev",
-    "smoke": "node smoke/counter-smoke.mjs && node smoke/post-update-failure.mjs",
+    "smoke": "node smoke/counter-smoke.mjs && node smoke/participant-clamp.mjs && node smoke/post-update-failure.mjs && node smoke/participant-validation.mjs",
     "typecheck": "tsc --noEmit",
     "compare": "node compare/compare.mjs",
     "do-cold-start": "node compare/do-cold-start.mjs",
     "participant-clamp": "node smoke/participant-clamp.mjs",
+    "participant-validation": "node smoke/participant-validation.mjs",
     "post-update-failure": "node smoke/post-update-failure.mjs"
   },
   "type": "module"

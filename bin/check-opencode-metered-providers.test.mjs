@@ -227,6 +227,33 @@ test('guard runs when invoked through a symlinked directory (metered config fail
   assert.match(res.stderr, /Metered-provider config guard failed/);
 });
 
+test('extra arguments are a usage error, not silently ignored (#7751)', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'metered-guard-argv-'));
+  const goodPath = join(dir, 'good.jsonc');
+  const badPath = join(dir, 'bad.jsonc');
+  writeFileSync(goodPath, cleanCliConfig);
+  writeFileSync(badPath, meteredConfig);
+  const run = (argv) => spawnSync(process.execPath, [guardPath, ...argv], { encoding: 'utf8' });
+
+  // Controls: a single config is checked exactly as before.
+  assert.equal(run([goodPath]).status, 0);
+  const badOnly = run([badPath]);
+  assert.equal(badOnly.status, 1);
+  assert.match(badOnly.stderr, /deepseek/);
+
+  // A second positional is never silently dropped: the failing config
+  // can no longer hide behind a passing first argument.
+  const extra = run([goodPath, badPath]);
+  assert.equal(extra.status, 2);
+  assert.match(extra.stderr, /unexpected extra argument/);
+  assert.match(extra.stderr, /bad\.jsonc/);
+
+  // An unknown flag is rejected the same way, before any file is read.
+  const flag = run([goodPath, '--bogus']);
+  assert.equal(flag.status, 2);
+  assert.match(flag.stderr, /--bogus/);
+});
+
 test('importing the guard module does not run main()', () => {
   const res = spawnSync(
     process.execPath,

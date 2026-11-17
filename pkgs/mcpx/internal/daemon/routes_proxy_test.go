@@ -21,7 +21,7 @@ func TestHandleChatCompletionsSemanticToolInjection(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer ts.Close()
+	defer func() { _ = ts.Close() }()
 
 	reg := &Registry{
 		testTools: []ToolInfo{
@@ -266,7 +266,7 @@ func TestProxyCapsFeedbackCopyAndForwardsFullStream(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer fs.Close()
+	defer func() { _ = fs.Close() }()
 	s := &Server{reg: &Registry{feedbackStore: fs}}
 
 	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{"messages":[{"role":"user","content":"hello"}]}`))

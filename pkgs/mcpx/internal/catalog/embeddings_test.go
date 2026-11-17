@@ -82,7 +82,7 @@ func TestVectorIndexExportAndImport(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer idx1.Close()
+	defer func() { _ = idx1.Close() }()
 
 	idx1.IndexTool("demo.echo", "echo a message back")
 	idx1.IndexTool("demo.add", "add two numbers together")
@@ -97,7 +97,7 @@ func TestVectorIndexExportAndImport(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer idx2.Close()
+	defer func() { _ = idx2.Close() }()
 
 	count, err := idx2.Import(&buf)
 	if err != nil {

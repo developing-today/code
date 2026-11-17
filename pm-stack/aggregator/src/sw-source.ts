@@ -35,13 +35,16 @@ self.addEventListener('push', (event) => {
     body: data.body || '',
     tag: data.objectRef || undefined,
     renotify: !!data.escalation,
-    data: { url: data.url || '/alerts', class: data.class || null, objectRef: data.objectRef || null },
+    data: { url: data.url || '/alerts', class: data.class || null, objectRef: data.objectRef || null, items: Array.isArray(data.items) ? data.items : null },
   };
   event.waitUntil(self.registration.showNotification(title, options));
 });
 self.addEventListener('notificationclick', (event) => {
   event.notification.close();
-  const target = (event.notification.data && event.notification.data.url) || '/alerts';
+  const nd = event.notification.data || {};
+  // A single-item digest deep-links to that item; multi-item digests open
+  // their (refs-filtered) landing URL with the items carried in data.
+  const target = (Array.isArray(nd.items) && nd.items.length === 1 && nd.items[0] && nd.items[0].url) || nd.url || '/alerts';
   event.waitUntil((async () => {
     const url = new URL(target, self.location.origin);
     const windows = await self.clients.matchAll({ type: 'window', includeUncontrolled: true });

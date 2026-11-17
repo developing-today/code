@@ -1,0 +1,13 @@
+diff --git a/pkgs/id/src/groups/delegation.rs b/pkgs/id/src/groups/delegation.rs
+index 416f69b209..b3ef4c33b8 100644
+--- a/pkgs/id/src/groups/delegation.rs
++++ b/pkgs/id/src/groups/delegation.rs
+@@ -552,7 +552,7 @@ impl Engine {
+     /// (design §6.3). The removals are read from the events, not from the round's state: a
+     /// concurrent removal may be judged after the grant in canonical order.
+     fn void(&self, by_id: &BTreeMap<Hash, &Event>, grant: &Grant) -> bool {
+-        if !self.strong_removal(grant.group) {
++        if self.strong_removal(grant.group) {
+             return false;
+         }
+         let past_grant = causal_past(by_id, &[grant.id]);

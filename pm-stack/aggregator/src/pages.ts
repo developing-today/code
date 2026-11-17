@@ -161,7 +161,7 @@ export const PAGES: PageDef[] = [
     title: "Search",
     route: "/search",
     api: "/api/search.json",
-    blurb: "Search board and roadmap work by title or linked issue/PR ref.",
+    blurb: "Search board, roadmap, registry sessions, DNS, services, and tier items by title or linked issue/PR ref.",
     group: "work",
     nav: "dropdown",
   },

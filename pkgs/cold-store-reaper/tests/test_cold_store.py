@@ -356,6 +356,92 @@ class TestAuth(ColdStoreTestBase):
         self.assertNotIn("fake-refresh-token", json.dumps(result))
 
 
+
+class TestTokenResponseShapes(ColdStoreTestBase):
+    """#6846: a shape-drifted HTTP-200 token response must raise the
+    module's ColdStoreError naming the flow and the shape — never a
+    raw JSONDecodeError/AttributeError/TypeError/KeyError — mirroring
+    the D1 hardening in #2618. Transport is stubbed, as in the probe.
+    """
+
+    def stub_token(self, body: bytes):
+        return mock.patch(
+            "cold_store.http_request", return_value=(200, {}, body)
+        )
+
+    # -- access_token -------------------------------------------------
+    def test_access_token_non_json_body(self):
+        with self.stub_token(b"not json"):
+            with self.assertRaises(cold_store.ColdStoreError) as ctx:
+                self.store.access_token()
+        self.assertIn("token refresh", str(ctx.exception))
+
+    def test_access_token_list_body(self):
+        with self.stub_token(b"[]"):
+            with self.assertRaises(cold_store.ColdStoreError):
+                self.store.access_token()
+
+    def test_access_token_string_body(self):
+        with self.stub_token(b'"hello"'):
+            with self.assertRaises(cold_store.ColdStoreError):
+                self.store.access_token()
+
+    def test_access_token_missing_token_field(self):
+        with self.stub_token(b'{"expires_in": 3600}'):
+            with self.assertRaises(cold_store.ColdStoreError):
+                self.store.access_token()
+
+    def test_access_token_non_string_token(self):
+        with self.stub_token(b'{"access_token": 123, "expires_in": 3600}'):
+            with self.assertRaises(cold_store.ColdStoreError):
+                self.store.access_token()
+
+    def test_access_token_string_expires_in(self):
+        with self.stub_token(b'{"access_token": "tok", "expires_in": "3600"}'):
+            with self.assertRaises(cold_store.ColdStoreError):
+                self.store.access_token()
+
+    def test_access_token_null_expires_in(self):
+        with self.stub_token(b'{"access_token": "tok", "expires_in": null}'):
+            with self.assertRaises(cold_store.ColdStoreError):
+                self.store.access_token()
+
+    def test_access_token_happy_path_and_default_expiry(self):
+        with self.stub_token(b'{"access_token": "tok-1", "expires_in": 3600}'):
+            self.assertEqual(self.store.access_token(), "tok-1")
+        self.store._access_token = None
+        self.store._access_token_expires_at = 0
+        with self.stub_token(b'{"access_token": "tok-2"}'):
+            self.assertEqual(self.store.access_token(), "tok-2")
+
+    # -- auth_exchange ------------------------------------------------
+    def test_auth_exchange_non_json_body(self):
+        with self.stub_token(b"not json"):
+            with self.assertRaises(cold_store.ColdStoreError) as ctx:
+                self.store.auth_exchange("fake-code")
+        self.assertIn("token exchange", str(ctx.exception))
+
+    def test_auth_exchange_list_body(self):
+        with self.stub_token(b"[]"):
+            with self.assertRaises(cold_store.ColdStoreError):
+                self.store.auth_exchange("fake-code")
+
+    def test_auth_exchange_non_string_refresh_token_refused(self):
+        before = self.store.credentials_path.read_bytes()
+        with self.stub_token(b'{"refresh_token": 123}'):
+            with self.assertRaises(cold_store.ColdStoreError):
+                self.store.auth_exchange("fake-code")
+        # Nothing was written into credentials.json.
+        self.assertEqual(self.store.credentials_path.read_bytes(), before)
+
+    def test_auth_exchange_happy_path(self):
+        with self.stub_token(b'{"refresh_token": "new-refresh", "expires_in": 3600}'):
+            result = self.store.auth_exchange("fake-code")
+        self.assertEqual(result["stored"], "refresh_token")
+        creds = json.loads(self.store.credentials_path.read_text())
+        self.assertEqual(creds["refresh_token"], "new-refresh")
+
+
 class TestPack(ColdStoreTestBase):
     def test_pack_rows_offsets_and_frame_roundtrip(self):
         a = self.write_src("a.txt", b"hello cold store\n" * 40)
@@ -3288,3 +3374,55 @@ class TestResumableUploadStalls(ColdStoreTestBase):
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
+import json
+from unittest import mock
+
+
+class TestListingBounds6602Drive(ColdStoreTestBase):
+    """#6602: a fresh-token page stream must hit the listing bound."""
+
+    def _fresh_token_fake(self, calls):
+        def fake(method, url, headers=None, **kw):
+            calls["n"] += 1
+            body = {"files": [{"id": "f1", "name": "b", "size": 1,
+                               "createdTime": "2026-01-01T00:00:00Z"}],
+                    "nextPageToken": "tok-%d" % calls["n"]}
+            return 200, {}, json.dumps(body).encode()
+        return fake
+
+    def test_drive_fresh_token_stream_hits_page_bound(self):
+        calls = {"n": 0}
+        with mock.patch.object(cold_store, "http_request", self._fresh_token_fake(calls)), mock.patch.object(cold_store, "LIST_MAX_PAGES", 5):
+            with mock.patch.object(self.store, "_folder_id", lambda name: "folder1"), mock.patch.object(self.store, "_auth_headers", lambda: {}):
+                with self.assertRaises(cold_store.ColdStoreError) as ctx:
+                    self.store.list_backups("supabase")
+        self.assertIn("supabase", str(ctx.exception))
+        self.assertEqual(calls["n"], 5)
+
+    def test_drive_result_bound_trips(self):
+        calls = {"n": 0}
+        with mock.patch.object(cold_store, "http_request", self._fresh_token_fake(calls)), mock.patch.object(cold_store, "LIST_MAX_RESULTS", 0):
+            with mock.patch.object(self.store, "_folder_id", lambda name: "folder1"), mock.patch.object(self.store, "_auth_headers", lambda: {}):
+                with self.assertRaises(cold_store.ColdStoreError):
+                    self.store.list_backups("supabase")
+
+
+class TestListingBounds6602S3(S3TestBase):
+    def test_s3_fresh_token_stream_hits_page_bound(self):
+        calls = {"n": 0}
+
+        def fake(method, bucket, query=None, **kw):
+            calls["n"] += 1
+            body = ("<ListBucketResult xmlns=\"http://s3.amazonaws.com/doc/2006-03-01/\">"
+                    "<IsTruncated>true</IsTruncated>"
+                    f"<NextContinuationToken>tok-{calls[chr(110)]}</NextContinuationToken>"
+                    "<Contents><Key>k1</Key><Size>1</Size>"
+                    "<LastModified>2026-10-01T00:00:00.000Z</LastModified></Contents>"
+                    "</ListBucketResult>")
+            return 200, {}, body.encode()
+
+        with mock.patch.object(self.store, "_s3_request", fake), mock.patch.object(cold_store, "LIST_MAX_PAGES", 5):
+            with self.assertRaises(cold_store.ColdStoreError) as ctx:
+                self.store.s3_list_objects("supabase-backups")
+        self.assertIn("supabase-backups", str(ctx.exception))
+        self.assertEqual(calls["n"], 5)

@@ -338,9 +338,7 @@ func wildcardPrefix(rest string) (prefix []int, ok bool) {
 func satisfiesWildcard(op string, prefix []int, v semver) bool {
 	if op == ">=" || op == "<" || op == ">" || op == "<=" {
 		low := semver{}
-		for i, n := range prefix {
-			low.nums[i] = n
-		}
+		copy(low.nums[:], prefix)
 		switch op {
 		case ">=":
 			return compareSemver(v, low) >= 0
@@ -373,9 +371,7 @@ func satisfiesWildcard(op string, prefix []int, v semver) bool {
 			return true
 		}
 		low := semver{}
-		for i, n := range prefix {
-			low.nums[i] = n
-		}
+		copy(low.nums[:], prefix)
 		if compareSemver(v, low) < 0 {
 			return false
 		}

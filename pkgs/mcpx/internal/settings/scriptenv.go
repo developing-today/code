@@ -116,7 +116,7 @@ func ScriptEnv() []EnvVar {
 		},
 		{
 			Name:    "MCPX_EPHEMERAL",
-			SetBy:   []Setter{SetByCLI},
+			SetBy:   []Setter{SetByCLI, SetByExec},
 			Meaning: "1 when the session key was minted for this run alone, so its instances may be stopped as soon as it ends",
 			ReadBy:  client,
 		},
@@ -210,7 +210,7 @@ func ScriptEnv() []EnvVar {
 		},
 		{
 			Name:  "MCPX_TRANSPORT_BEARER_TOKEN",
-			SetBy: []Setter{SetByCLI},
+			SetBy: []Setter{SetByCLI, SetByExec, SetByConsumer},
 			When:  "only when transport.bearerToken is configured",
 			Meaning: "the daemon's bearer token, handed to the script so the " +
 				"generated client can authenticate to a daemon that requires " +
@@ -267,6 +267,14 @@ func ScriptEnv() []EnvVar {
 			ReadBy:  client + " (paths.config)",
 		},
 		{
+			Name:    "MCPX_PATHS_CONFIG",
+			SetBy:   []Setter{SetByCLI},
+			When:    "a daemon auto-started by this invocation, only when a --paths-config seed lives in this process's memory; an environment seed needs no forwarding, as the child inherits the environment",
+			Meaning: "the paths.config seed this process resolved configuration discovery from, forwarded so the auto-started daemon resolves the same chain this process did",
+			Setting: "paths.config",
+			ReadBy:  nested + ", in configuration discovery (a bootstrap read: paths.config decides which files the settings are read from, so there is no resolved Set to ask)",
+		},
+		{
 			Name:    "MCPX_SCRIPT_DIRS",
 			SetBy:   []Setter{SetByCLI},
 			Meaning: "the directories searched for named scripts, nearest first, colon-separated",
@@ -277,6 +285,12 @@ func ScriptEnv() []EnvVar {
 			SetBy:   []Setter{SetByCLI},
 			Meaning: "the fingerprint of a declared API's declaration, set on the child a declared API launches: PoolID hashes the environment, so editing the declaration replaces the pool instead of keeping a child started for the old one",
 			ReadBy:  "the pool, as a pool identity input (api serve: PoolID hashes the server environment)",
+		},
+		{
+			Name:    "MCPX_ADAPTER_DECLARATION_SHA256",
+			SetBy:   []Setter{SetByCLI},
+			Meaning: "the fingerprint of an adapter's declaration, set on the server an adapter launches: PoolID hashes the environment, so editing the declaration replaces the pool instead of keeping a child started for the old one",
+			ReadBy:  "the pool, as a pool identity input (PoolID hashes the server environment); the daemon, which exempts an adapter's own exact name from the namespace-collision check when the adapter is replaced",
 		},
 		// ---- how the script runs ----
 		{

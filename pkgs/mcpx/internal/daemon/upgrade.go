@@ -139,7 +139,7 @@ func (s *Server) handleUpgrade(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-	defer conn.Close()
+	defer func() { _ = conn.Close() }()
 
 	u := &upgradeRun{conn: conn, done: make(chan struct{})}
 	// Registered before the successor starts, since it can dial back before

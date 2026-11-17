@@ -36,10 +36,14 @@ func sendWithDialer(path, state string, dialer unixgramDialer, timeout time.Dura
 	if err != nil {
 		return fmt.Errorf("notify %s: %w", path, err)
 	}
+<<<<<<< HEAD
 	defer conn.Close()
 	if err := conn.SetWriteDeadline(time.Now().Add(timeout)); err != nil {
 		return fmt.Errorf("notify %s: set write deadline: %w", path, err)
 	}
+=======
+	defer func() { _ = conn.Close() }()
+>>>>>>> origin/main
 	if _, err := conn.Write([]byte(state)); err != nil {
 		return fmt.Errorf("notify %s: %w", path, err)
 	}

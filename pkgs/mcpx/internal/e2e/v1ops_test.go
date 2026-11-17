@@ -19,7 +19,7 @@ func getJSON(t *testing.T, c *http.Client, path string) map[string]any {
 	if err != nil {
 		t.Fatalf("GET %s: %v", path, err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	b, _ := io.ReadAll(resp.Body)
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("GET %s: status %d: %s", path, resp.StatusCode, b)
@@ -37,7 +37,7 @@ func postJSON(t *testing.T, c *http.Client, path, body string) (int, map[string]
 	if err != nil {
 		t.Fatalf("POST %s: %v", path, err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	b, _ := io.ReadAll(resp.Body)
 	var doc map[string]any
 	_ = json.Unmarshal(b, &doc)
@@ -78,7 +78,7 @@ func TestTheLogIsQueryableOverTheAPI(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	resp.Body.Close()
+	_ = resp.Body.Close()
 	if resp.StatusCode != http.StatusBadRequest {
 		t.Errorf("status %d", resp.StatusCode)
 	}
@@ -135,7 +135,7 @@ func TestStatsOverTheAPIMirrorTheCommand(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	resp.Body.Close()
+	_ = resp.Body.Close()
 	if resp.StatusCode != http.StatusBadRequest {
 		t.Errorf("an unknown dimension should be refused: %d", resp.StatusCode)
 	}
@@ -152,7 +152,7 @@ func TestRegistrySearchOverTheAPIFailsWithoutANetworkRatherThanHanging(t *testin
 	if err != nil {
 		t.Fatalf("the route should answer: %v", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusBadGateway {
 		t.Errorf("status %d", resp.StatusCode)
 	}
@@ -229,7 +229,7 @@ func TestALongCallCanBeRunAsATask(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	resp.Body.Close()
+	_ = resp.Body.Close()
 	if resp.StatusCode != http.StatusNotFound {
 		t.Errorf("status %d", resp.StatusCode)
 	}
@@ -360,7 +360,7 @@ func TestTasksMaxAgeIsReachableFromEnvironment(t *testing.T) {
 		t.Fatal(err)
 	}
 	_, _ = io.Copy(io.Discard, resp.Body)
-	resp.Body.Close()
+	_ = resp.Body.Close()
 	if resp.StatusCode != http.StatusBadGateway {
 		t.Fatalf("cancelled result should be reported as a task fault, got %d", resp.StatusCode)
 	}
@@ -466,7 +466,7 @@ func TestEveryDeclaredRouteAnswersOverTheSocket(t *testing.T) {
 			continue
 		}
 		b, _ := io.ReadAll(resp.Body)
-		resp.Body.Close()
+		_ = resp.Body.Close()
 		if resp.StatusCode == http.StatusNotFound && strings.Contains(string(b), "404 page not found") {
 			t.Errorf("%s: %s %s is declared but not routed", op.Name, op.Method, path)
 		}

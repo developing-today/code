@@ -13,6 +13,21 @@ default, see MODE below) you must not double-launch against the live
 conductor: you discover, verify, and report exactly what you WOULD
 launch, and you launch nothing.
 
+## EXECUTION
+
+The deterministic implementation of these steps is
+`pm-stack/opencode-claimant/claimant.py`. A fire EXECUTES it
+(`python3 pm-stack/opencode-claimant/claimant.py`, run from the
+primary clone) and reports from its fire-log line; it does not
+improvise the steps by hand. Inside a fire, claimant.py launches
+distinct candidates in parallel under a bounded pool and a
+single-instance lock; exactly-once stays anchored on the atomic DB
+bind. (History: the cap was 12 until 2026-11-05, when the
+binding-rate fix raised it first to 20, then to 36 the same day (at 20, scheduled lane-runner waves of ~39 roots at load ~4/16 cores still left the claimant cap_room 0; 36 sits above the observed wave size while keeping total roots within ~2x the census-proven level);
+claimant.py itself was committed the same day - before that it
+existed only as an untracked file in the laptop primary checkout,
+which is part of why the standing claimant never went live.)
+
 ## MODE
 
 Read the mode from `~/.local/state/opencode-claimant/mode` (one word:
@@ -21,6 +36,22 @@ In shadow mode: run discovery (steps 2-3) and the READ-ONLY part of
 supervision (step 1: check bound sessions, report stalls in the fire
 log -- never relaunch), write the shadow report (step 6), end.
 Never claim, bind, launch, or mutate a task in shadow mode.
+
+## BACKEND OUTAGE — FALLBACK MODE (2026-11-06, code#6619)
+
+If the queue backend is down —  (or any broker
+verb) fails with a broker/PostgREST error instead of returning
+state — do NOT improvise a fallback bind. Session binding is a
+database operation; the GitHub-native fallback protocol
+(, doc/fleet/queue-fallback-mode.md in this
+repo) deliberately has no claimant equivalent, because its claims
+are worked by the claiming worker itself. In an outage: record the
+failure in the fire log (the health error verbatim), launch
+nothing, and end the fire. The Muse lane shifts carry the work
+under their instruction's fallback section (§0a) until the backend
+returns; your supervision resumes with it. Claiming or binding
+against a half-dead backend is how double-launches happen — the
+outage is recoverable, a double-launch's damage is not.
 
 ## Constants
 
@@ -38,9 +69,29 @@ Never claim, bind, launch, or mutate a task in shadow mode.
   close — plus the live root-session count for the cap, plus a
   `stuck_bound` list: bound tasks whose sessions look
   created-but-never-prompted and dead (step 1's recovery rule, #4758).
+  Candidates ALSO include handed-off tasks sitting PARKED
+  (`status: "parked"` in the candidate entry): the handing-off lane
+  parks the task as its handoff sink (the park clears its claim and
+  stamps a default timer), so claimed-only discovery never saw them
+  and they looped claim → handoff → park → re-claim (#7907/#6533).
+  For parked candidates, claimant.py first collects their claims
+  WITHOUT naming any task id (#8097 Rule 1): one
+  `repo-queue claim --handoff --platform openchamber` per parked
+  candidate, as worker `opencode-claimant`, lets the BROKER pick
+  the next parked recorded opencode handoff (the pick only ever
+  returns an unbound yield, never a live claim or a genuine wait
+  park; the `openchamber` family declaration keeps a
+  `muse`-selected item out of this claimant's hands, #8097
+  Rule 2). It then launches exactly as for a claimed candidate,
+  with the session working under `--worker opencode-claimant`.
+  A parked candidate the collection did not claim is skipped
+  with the reason logged — never launched over a guessed claim.
+  (The by-id claim, `claim --task <id>`, remains only as the
+  special-case verb for one-off revivals; no default flow uses
+  it.)
   Retain the candidate list from the start of each fire; a task recovered
   during supervision is eligible on the next fire, not this one.
-- Concurrency cap: **12** active root sessions across the fleet. Count
+- Concurrency cap: **36** active root sessions across the fleet. Count
   with poll.py (OpenCode server `GET /api/session` on
   http://127.0.0.1:13420, root sessions only; poll.py counts a root as
   active only with no terminal marker — `time.idle`/`outcome` — and
@@ -130,7 +181,7 @@ Never claim, bind, launch, or mutate a task in shadow mode.
    shows 0 claimed-with-lane-opencode unbound candidates (poll.py
    returns an empty candidate list), end the fire quietly.
 3. CAP: if poll.py reports `cap_room` 0 (active root sessions at the
-   12 cap) or null (server unreadable), end the fire; record the
+   36 cap) or null (server unreadable), end the fire; record the
    saturation in the fire log (step 6).
 4. For each candidate, highest queue priority first, while cap room
    remains:
@@ -233,7 +284,7 @@ queue task and issue>, "model": {"id": <route model>,
 - Never work a task yourself; you claim/bind/launch/record only.
 - Never launch for a task whose issue carries `held`, `user/owned`,
   `do-not-merge`, or `do-not-auto-edit` — skip and log it.
-- Never exceed the 12-session cap, never double-bind a task, never
+- Never exceed the 36-session cap, never double-bind a task, never
   bind a session id you did not just create.
 - No credential value ever enters a prompt, log, or task record; the queue
   CLI and poll.py reach the queue-broker with the broker's client

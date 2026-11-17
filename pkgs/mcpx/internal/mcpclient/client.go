@@ -450,7 +450,7 @@ func newClient(ctx context.Context, t Transport, o Options) (*Client, error) {
 		err = c.probe(ctx, true)
 	}
 	if err != nil {
-		c.Close()
+		_ = c.Close()
 		return nil, err
 	}
 	if c.Era == EraModern {
@@ -664,7 +664,7 @@ func (c *Client) dispatch(origin context.Context, raw []byte) {
 	}
 }
 
-// OnElicit is called when a server asks a question. Nil means mcpx answers
+// ElicitHandler is called when a server asks a question. Nil means mcpx answers
 // on the server's behalf, which it must do rather than ignore: a server that
 // asks into silence waits until the call times out.
 type ElicitHandler func(ctx context.Context, method string, params json.RawMessage) (any, error)

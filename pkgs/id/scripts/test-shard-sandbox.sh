@@ -33,9 +33,11 @@ for i in "${!targets[@]}"; do
 done
 
 echo "test-shard-sandbox $shard/$count targets: ${args[*]}"
-cargo test --all-features "${args[@]}" -- --skip serve_tests
+cargo nextest run --all-features "${args[@]}" -E 'not test(serve_tests)'
 
 if [ "$shard" -eq 0 ]; then
-  cargo test --all-features --bins -- --skip serve_tests
+  cargo nextest run --all-features --bins -E 'not test(serve_tests)'
+  # nextest does not run doc tests; keep them on cargo test so shard 0
+  # still covers exactly what it covered before (#6378).
   cargo test --all-features --doc
 fi

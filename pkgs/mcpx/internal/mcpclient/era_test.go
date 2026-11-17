@@ -130,7 +130,7 @@ func TestALegacyServerIsReachedOnTheFirstTry(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer c.Close()
+	defer func() { _ = c.Close() }()
 	if c.Era != mcpclient.EraLegacy {
 		t.Errorf("era = %q", c.Era)
 	}
@@ -144,7 +144,7 @@ func TestAModernServerIsReachedByFallingForward(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer c.Close()
+	defer func() { _ = c.Close() }()
 	if c.Era != mcpclient.EraModern {
 		t.Errorf("era = %q", c.Era)
 	}
@@ -161,7 +161,7 @@ func TestAModernServerIsReachedDirectlyWhenPreferred(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer c.Close()
+	defer func() { _ = c.Close() }()
 	if f.seen[0] != "server/discover" {
 		t.Errorf("modern should have been tried first: %v", f.seen)
 	}
@@ -174,7 +174,7 @@ func TestALegacyServerIsStillReachedWhenModernIsPreferred(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer c.Close()
+	defer func() { _ = c.Close() }()
 	if c.Era != mcpclient.EraLegacy {
 		t.Errorf("era = %q", c.Era)
 	}
@@ -222,7 +222,7 @@ func TestAServerQuestionIsAnsweredRatherThanDropped(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer c.Close()
+	defer func() { _ = c.Close() }()
 
 	answered := make(chan json.RawMessage, 1)
 	f.onSend = func(msg []byte) {
@@ -266,7 +266,7 @@ func TestWithNoHandlerAServerQuestionIsCancelledNotIgnored(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer c.Close()
+	defer func() { _ = c.Close() }()
 
 	answered := make(chan json.RawMessage, 1)
 	f.onSend = func(msg []byte) {

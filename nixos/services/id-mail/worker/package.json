@@ -3,6 +3,6 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "test": "node --test deploy.test.mjs"
+    "test": "node --test deploy.test.mjs runtime.test.mjs"
   }
 }

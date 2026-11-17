@@ -209,7 +209,9 @@ export function openImageBrowser(view: EditorView, schema: Schema): void {
       }
     })
     .catch((err) => {
-      grid.textContent = `Failed to load images: ${err}`;
+      // Show the error's message only: a raw `err` interpolation leaks
+      // engine text ("TypeError: ...") into the dialog (#7812).
+      grid.textContent = `Failed to load images: ${err instanceof Error ? err.message : String(err)}`;
     });
 
   function insertImage(img: ImageEntry): void {
@@ -237,10 +239,39 @@ export function openImageBrowser(view: EditorView, schema: Schema): void {
 // API
 // ============================================================================
 
+/**
+ * Validate the /api/images payload against its contract before the
+ * caller touches the grid (#7812). The server contract
+ * (routes.rs `images_list_handler`) is a bare array of entries with
+ * string `hash`/`name`/`url` and numeric `size`. Validation is
+ * all-or-nothing — one malformed element rejects the whole payload —
+ * so a wrong-shape 200 fails closed with a clean error instead of
+ * rendering a raw TypeError or bogus cards from unvalidated fields.
+ * Oracle: the ImageEntry struct in pkgs/id/src/web/routes.rs.
+ */
+function parseImageEntries(data: unknown): ImageEntry[] {
+  if (!Array.isArray(data)) {
+    throw new Error("unexpected response from /api/images");
+  }
+  for (const entry of data as Array<Record<string, unknown> | null>) {
+    if (
+      entry === null ||
+      typeof entry !== "object" ||
+      typeof entry.hash !== "string" ||
+      typeof entry.name !== "string" ||
+      typeof entry.url !== "string" ||
+      typeof entry.size !== "number"
+    ) {
+      throw new Error("unexpected response from /api/images");
+    }
+  }
+  return data as ImageEntry[];
+}
+
 async function fetchImages(): Promise<ImageEntry[]> {
   const response = await fetch("/api/images");
   if (!response.ok) {
     throw new Error(`Failed to fetch images: ${response.status}`);
   }
-  return (await response.json()) as ImageEntry[];
+  return parseImageEntries(await response.json());
 }

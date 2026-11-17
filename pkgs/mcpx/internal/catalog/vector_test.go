@@ -27,14 +27,14 @@ func TestVectorIndexSQLite(t *testing.T) {
 
 	idx.IndexTool("chrome.snapshot", "inspect web page contents and DOM elements")
 	idx.IndexTool("git.commit", "git commit staged changes to branch")
-	idx.Close()
+	_ = idx.Close()
 
 	// Reopen
 	idx2, err := NewVectorIndex(dbPath)
 	if err != nil {
 		t.Fatalf("failed to reopen vector index: %v", err)
 	}
-	defer idx2.Close()
+	defer func() { _ = idx2.Close() }()
 
 	vec, ok := idx2.Get("chrome.snapshot")
 	if !ok || len(vec) != VectorDim {

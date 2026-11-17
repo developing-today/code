@@ -72,9 +72,15 @@ const KNOWN_VEC_PAIRS: [(&str, &str); 4] = [
 ];
 
 fn expanduser(p: &str) -> String {
-    if let Some(rest) = p.strip_prefix("~/")
-        && let Some(home) = std::env::var_os("HOME")
-    {
+    if let Some(rest) = p.strip_prefix("~/") {
+        // Home-resolution contract (issues #5640 / #5762): expanding
+        // "~/" with a missing or empty HOME fails loudly naming
+        // HOME, never leaving the literal "~" to resolve
+        // relative to the CWD.
+        let home = match std::env::var_os("HOME") {
+            Some(home) if !home.is_empty() => home,
+            _ => panic!("HOME is not set or is empty: atlas-core requires a non-empty HOME to expand ~/ paths (issue #5640)"),
+        };
         return PathBuf::from(home)
             .join(rest)
             .to_string_lossy()

@@ -665,3 +665,55 @@ func TestResolveCarriesTags(t *testing.T) {
 		t.Fatalf("resolved toolTags = %v", r.ToolTags)
 	}
 }
+
+// #6116: readOnlyTools in a server's mcpx block resolves onto the
+// view, by exact name: a listed tool is declared read-only, an
+// unlisted one is not, and a server with no declaration declares
+// nothing.
+func TestResolveCarriesReadOnlyTools(t *testing.T) {
+	c := &config.Config{MCPServers: map[string]*config.Server{
+		"a": {Name: "a", Command: "x", Mcpx: &config.Extras{
+			ReadOnlyTools: []string{"find_files", "grep"},
+		}},
+		"b": {Name: "b", Command: "x"},
+	}}
+	r, err := c.Resolve("a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !r.DeclaresReadOnly("find_files") || !r.DeclaresReadOnly("grep") {
+		t.Fatalf("resolved readOnlyTools = %v, want find_files and grep declared", r.ReadOnlyTools)
+	}
+	if r.DeclaresReadOnly("wipe") {
+		t.Fatal("an unlisted tool must not be declared read-only")
+	}
+	rb, err := c.Resolve("b")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rb.DeclaresReadOnly("find_files") {
+		t.Fatal("a server with no readOnlyTools declared a tool read-only")
+	}
+}
+
+// The declaration survives the JSON wire form, which is how an
+// operator actually writes it.
+func TestReadOnlyToolsFromJSONConfig(t *testing.T) {
+	dir := t.TempDir()
+	p := write(t, dir, "c.json", `{
+	  "mcpServers": {
+	    "fff": { "command": "fff-mcp", "mcpx": { "readOnlyTools": ["find_files"] } }
+	  }
+	}`)
+	c, err := config.Load(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	r, err := c.Resolve("fff")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !r.DeclaresReadOnly("find_files") {
+		t.Fatalf("readOnlyTools from JSON did not resolve: %v", r.ReadOnlyTools)
+	}
+}

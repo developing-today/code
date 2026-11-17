@@ -10,6 +10,10 @@ description = "The Atlas search binary: one-shot CLI (search, get-chunk) at Pyth
 name = "atlas-search"
 path = "src/main.rs"
 
+[[bin]]
+name = "atlas-stage"
+path = "src/bin/atlas-stage.rs"
+
 [dependencies]
 atlas-core = { path = "../atlas-core" }
 atlas-proto = { path = "../atlas-proto" }

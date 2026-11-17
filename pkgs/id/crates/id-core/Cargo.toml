@@ -12,6 +12,10 @@ world = []
 sandbox = []
 web = ["dep:qrcode"]
 test-utils = []
+# Registry exit proof for #1061: registers one test-only provider through the
+# provider registry alone (pkgs/id/tests/provider_registry_exit_proof.rs).
+# Never enabled by a production build.
+test-provider = []
 
 [dependencies]
 anyhow = "1"

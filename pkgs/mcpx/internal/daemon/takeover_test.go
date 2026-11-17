@@ -33,18 +33,18 @@ func unixPair(t *testing.T) (*net.UnixConn, *net.UnixConn) {
 	}
 	a := os.NewFile(uintptr(fds[0]), "a")
 	b := os.NewFile(uintptr(fds[1]), "b")
-	defer a.Close()
-	defer b.Close()
+	defer func() { _ = a.Close() }()
+	defer func() { _ = b.Close() }()
 	ca, err := net.FileConn(a)
 	if err != nil {
 		t.Fatal(err)
 	}
 	cb, err := net.FileConn(b)
 	if err != nil {
-		ca.Close()
+		_ = ca.Close()
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { ca.Close(); cb.Close() })
+	t.Cleanup(func() { _ = ca.Close(); _ = cb.Close() })
 	return ca.(*net.UnixConn), cb.(*net.UnixConn)
 }
 
@@ -54,7 +54,7 @@ func TestAFrameCarriesItsDescriptorWithItsBody(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 	if _, err := f.WriteString("pipe-contents"); err != nil {
 		t.Fatal(err)
 	}
@@ -76,7 +76,7 @@ func TestAFrameCarriesItsDescriptorWithItsBody(t *testing.T) {
 	if fd == nil {
 		t.Fatal("the descriptor did not arrive with its frame")
 	}
-	defer fd.Close()
+	defer func() { _ = fd.Close() }()
 	if got.Kind != kindPipe {
 		t.Fatalf("kind = %q, want %q", got.Kind, kindPipe)
 	}
@@ -178,7 +178,7 @@ func TestAFailedHandoffLeavesTheDaemonServing(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { os.RemoveAll(dir) })
+	t.Cleanup(func() { _ = os.RemoveAll(dir) })
 	paths := Paths{State: dir, Cache: dir, Socket: filepath.Join(dir, "d.sock"), Info: filepath.Join(dir, "d.json")}
 	srv, err := NewServer(Options{
 		Config:  &config.Config{MCPServers: map[string]*config.Server{}},
@@ -252,7 +252,7 @@ func TestAFailedHandoffLeavesTheDaemonServing(t *testing.T) {
 	if err != nil {
 		t.Fatalf("the old daemon stopped answering after a refused handoff: %v", err)
 	}
-	resp.Body.Close()
+	_ = resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("health after a refused handoff: %s", resp.Status)
 	}

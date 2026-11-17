@@ -12,11 +12,19 @@ HOME_TEST="$TMP/home"
 STATE="$HOME_TEST/.local/state/pm-aggregator"
 INSTALL_SRC="$HOME_TEST/git/code/pm-stack/aggregator"
 LOG="$TMP/commands.log"
+REAL_CP="$(command -v cp)"
 mkdir -p "$BIN" "$HOME_TEST/pm-stack" "$STATE"
 mkdir -p "$(dirname "$INSTALL_SRC")"
 ln -s "$PKG" "$INSTALL_SRC"
 ln -s "$PKG/../systemd" "$HOME_TEST/git/code/pm-stack/systemd"
 ln -s "$STATE" "$HOME_TEST/pm-stack/aggregator"
+UNIT_DST="$HOME_TEST/.config/systemd/user/pm-aggregator.service"
+STORE_UNIT="$TMP/nix/store/home-manager-files/.config/systemd/user/pm-aggregator.service"
+mkdir -p "$(dirname "$UNIT_DST")" "$(dirname "$STORE_UNIT")"
+cp "$PKG/../systemd/pm-aggregator.service" "$STORE_UNIT"
+printf '%s\n' '# preserved Home Manager unit' >>"$STORE_UNIT"
+chmod 444 "$STORE_UNIT"
+ln -s "$STORE_UNIT" "$UNIT_DST"
 printf '{"kept":"existing feed"}\n' >"$STATE/fleet-feed.json"
 
 cat >"$BIN/systemctl" <<'STUB'
@@ -55,17 +63,32 @@ cat >"$BIN/sops" <<'STUB'
 printf 'test-only-placeholder\n'
 STUB
 
-chmod +x "$BIN/systemctl" "$BIN/bun" "$BIN/curl" "$BIN/sops"
-if TEST_LOG="$LOG" HOME="$HOME_TEST" PATH="$BIN:$PATH" \
+cat >"$BIN/cp" <<'STUB'
+#!/usr/bin/env bash
+set -euo pipefail
+dest="${@: -1}"
+if [[ "$dest" == "${TEST_UNIT_DST:?}" ]]; then
+  echo "unexpected attempt to copy over Home Manager unit symlink: $dest" >&2
+  exit 1
+fi
+exec "${TEST_REAL_CP:?}" "$@"
+STUB
+
+chmod +x "$BIN/systemctl" "$BIN/bun" "$BIN/curl" "$BIN/sops" "$BIN/cp"
+if TEST_LOG="$LOG" TEST_UNIT_DST="$UNIT_DST" TEST_REAL_CP="$REAL_CP" HOME="$HOME_TEST" PATH="$BIN:$PATH" \
   bash "$PKG/install.sh" >"$TMP/worktree-refused.out" 2>&1; then
   echo 'install unexpectedly accepted a non-primary checkout' >&2
   exit 1
 fi
 TEST_LOG="$LOG" \
+  TEST_UNIT_DST="$UNIT_DST" \
+  TEST_REAL_CP="$REAL_CP" \
   TEST_LIVE_VERSION="$(git -C "$PKG" rev-parse HEAD)" \
   HOME="$HOME_TEST" PATH="$BIN:$PATH" \
   bash "$INSTALL_SRC/install.sh" >"$TMP/install.out"
 TEST_LOG="$LOG" \
+  TEST_UNIT_DST="$UNIT_DST" \
+  TEST_REAL_CP="$REAL_CP" \
   TEST_LIVE_VERSION="$(git -C "$PKG" rev-parse HEAD)" \
   HOME="$HOME_TEST" PATH="$BIN:$PATH" \
   bash "$INSTALL_SRC/install.sh" >"$TMP/install-second.out"
@@ -86,7 +109,10 @@ grep -Fx "PM_AGG_COVERAGE_SNAPSHOT_FILE=$STATE/coverage-snapshot.json" "$STATE/.
 grep -Fx 'WorkingDirectory=%h/git/code/pm-stack/aggregator' \
   "$HOME_TEST/.config/systemd/user/pm-aggregator.service" >/dev/null
 grep -Fx 'EnvironmentFile=%h/.local/state/pm-aggregator/.env' \
-  "$HOME_TEST/.config/systemd/user/pm-aggregator.service" >/dev/null
+  "$UNIT_DST" >/dev/null
+grep -Fx '# preserved Home Manager unit' "$UNIT_DST" >/dev/null
+test -L "$UNIT_DST"
+test "$(readlink "$UNIT_DST")" = "$STORE_UNIT"
 grep -Fx 'WorkingDirectory=%h/git/code/pm-stack/aggregator' \
   "$HOME_TEST/.config/systemd/user/quota-gatherer.service" >/dev/null
 grep -Fx 'Environment=QUOTA_CURRENT_PATH=%h/.local/state/pm-aggregator/quota-current.json' \

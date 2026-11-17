@@ -39,6 +39,7 @@ import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { dirname } from "node:path";
 import type { EventsStore } from "./events.ts";
 import type { TierItem } from "./model.ts";
+import { isIsoDate, isNonNegative } from "./validate.ts";
 
 export type ActivitySourceId = "watchdog" | "kaneo" | "github";
 
@@ -103,6 +104,19 @@ export const ACTIVITY_SOURCE_COVERAGE: readonly ActivityCoverage[] = [
   },
 ];
 
+// Cap `t` at `max` UTF-16 code units, but never leave half of a surrogate
+// pair at the cut (#7725, mirroring the #7694/#7711 capUnits guard in
+// actions.ts): an astral character straddling the cap is dropped whole, so
+// a persisted summary can never end in a lone high surrogate.
+function capUnits(t: string, max: number): string {
+  if (t.length <= max) return t;
+  let end = max;
+  const before = t.charCodeAt(end - 1);
+  const after = t.charCodeAt(end);
+  if (before >= 0xd800 && before <= 0xdbff && after >= 0xdc00 && after <= 0xdfff) end--;
+  return t.slice(0, end);
+}
+
 // -- writers: pure mappings from source observations to deliveries -------
 
 /** Map watchdog tier items to deliveries, one per breach episode.
@@ -117,7 +131,7 @@ export function watchdogDeliveries(items: readonly TierItem[]): ActivityDelivery
     at: item.since,
     kind: "watchdog-event",
     ref: item.id,
-    summary: item.title.slice(0, 500),
+    summary: capUnits(item.title, 500),
   }));
 }
 
@@ -193,7 +207,7 @@ export function kaneoChangeDeliveries(
         at: card.updatedAt ?? new Date().toISOString(),
         kind: "kaneo-change",
         ref: card.id,
-        summary: `Kaneo card appeared in ${card.status}: ${card.title}`.slice(0, 500),
+        summary: capUnits(`Kaneo card appeared in ${card.status}: ${card.title}`, 500),
         ...(card.kaneoUrl ? { link: card.kaneoUrl } : {}),
       });
     } else if (before.status !== card.status) {
@@ -204,7 +218,7 @@ export function kaneoChangeDeliveries(
         at: card.updatedAt ?? new Date().toISOString(),
         kind: "kaneo-change",
         ref: card.id,
-        summary: `Kaneo card moved ${before.status} -> ${card.status}: ${card.title}`.slice(0, 500),
+        summary: capUnits(`Kaneo card moved ${before.status} -> ${card.status}: ${card.title}`, 500),
         ...(card.kaneoUrl ? { link: card.kaneoUrl } : {}),
       });
     }
@@ -288,10 +302,11 @@ function isGapRecord(v: unknown): v is GapRecord {
   return (
     typeof g.id === "string" &&
     typeof g.source === "string" &&
-    typeof g.from === "string" &&
-    typeof g.to === "string" &&
+    isIsoDate(g.from) &&
+    isIsoDate(g.to) &&
     (g.status === "open" || g.status === "backfilled" || g.status === "unrecoverable") &&
-    typeof g.detectedAt === "string"
+    isIsoDate(g.detectedAt) &&
+    (g.resolvedAt === undefined || isIsoDate(g.resolvedAt))
   );
 }
 
@@ -301,10 +316,12 @@ function isCheckpoint(v: unknown): v is SourceCheckpoint {
   return (
     typeof c.source === "string" &&
     (c.lastSourceId === null || typeof c.lastSourceId === "string") &&
-    (c.lastEventAt === null || typeof c.lastEventAt === "string") &&
+    (c.lastEventAt === null || isIsoDate(c.lastEventAt)) &&
+    isNonNegative(c.deliveries) &&
     Number.isInteger(c.deliveries) &&
+    isNonNegative(c.duplicates) &&
     Number.isInteger(c.duplicates) &&
-    typeof c.updatedAt === "string"
+    isIsoDate(c.updatedAt)
   );
 }
 
@@ -482,7 +499,7 @@ export class IngestionStore {
           actor: d.source,
           kind: d.kind,
           ref: d.ref,
-          summary: (d.link ? `${d.summary} — ${d.link}` : d.summary).slice(0, 500),
+          summary: capUnits(d.link ? `${d.summary} — ${d.link}` : d.summary, 500),
         });
       } catch (err) {
         failed++;

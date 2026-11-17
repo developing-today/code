@@ -33,7 +33,7 @@ func (a *App) statsOpencode(dim, dbPath, since, until string, top int) error {
 	if err != nil {
 		return err
 	}
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 
 	now := time.Now()
 	from, err := logstore.ParseWhen(since, now)
@@ -58,24 +58,24 @@ func (a *App) statsOpencode(dim, dbPath, since, until string, top int) error {
 			return a.out(o)
 		}
 		w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
-		fmt.Fprintf(w, "database\t%s\n", o.Path)
-		fmt.Fprintf(w, "size\t%s\n", humanBytes(o.SizeBytes))
-		fmt.Fprintf(w, "sessions\t%d\n", o.Sessions)
-		fmt.Fprintf(w, "messages\t%d\n", o.Messages)
-		fmt.Fprintf(w, "parts\t%d\n", o.Parts)
-		fmt.Fprintf(w, "projects\t%d\n", o.Projects)
+		_, _ = fmt.Fprintf(w, "database\t%s\n", o.Path)
+		_, _ = fmt.Fprintf(w, "size\t%s\n", humanBytes(o.SizeBytes))
+		_, _ = fmt.Fprintf(w, "sessions\t%d\n", o.Sessions)
+		_, _ = fmt.Fprintf(w, "messages\t%d\n", o.Messages)
+		_, _ = fmt.Fprintf(w, "parts\t%d\n", o.Parts)
+		_, _ = fmt.Fprintf(w, "projects\t%d\n", o.Projects)
 		if !o.Earliest.IsZero() {
-			fmt.Fprintf(w, "span\t%s to %s\n",
+			_, _ = fmt.Fprintf(w, "span\t%s to %s\n",
 				o.Earliest.Format("2006-01-02"), o.Latest.Format("2006-01-02"))
 		}
-		fmt.Fprintf(w, "cost\t$%.2f\n", o.TotalCost)
-		fmt.Fprintf(w, "tokens in\t%s\n", humanCount(o.TokensIn))
-		fmt.Fprintf(w, "tokens out\t%s\n", humanCount(o.TokensOut))
+		_, _ = fmt.Fprintf(w, "cost\t$%.2f\n", o.TotalCost)
+		_, _ = fmt.Fprintf(w, "tokens in\t%s\n", humanCount(o.TokensIn))
+		_, _ = fmt.Fprintf(w, "tokens out\t%s\n", humanCount(o.TokensOut))
 		if o.TokensThink > 0 {
-			fmt.Fprintf(w, "reasoning\t%s\n", humanCount(o.TokensThink))
+			_, _ = fmt.Fprintf(w, "reasoning\t%s\n", humanCount(o.TokensThink))
 		}
 		if o.CacheRead > 0 || o.CacheWrite > 0 {
-			fmt.Fprintf(w, "cache r/w\t%s / %s\n", humanCount(o.CacheRead), humanCount(o.CacheWrite))
+			_, _ = fmt.Fprintf(w, "cache r/w\t%s / %s\n", humanCount(o.CacheRead), humanCount(o.CacheWrite))
 		}
 		return w.Flush()
 
@@ -100,9 +100,9 @@ func (a *App) statsOpencode(dim, dbPath, since, until string, top int) error {
 			return nil
 		}
 		w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
-		fmt.Fprintln(w, strings.ToUpper(dim[:len(dim)-1])+"\tSESSIONS\tCOST\tTOKENS IN\tTOKENS OUT")
+		_, _ = fmt.Fprintln(w, strings.ToUpper(dim[:len(dim)-1])+"\tSESSIONS\tCOST\tTOKENS IN\tTOKENS OUT")
 		for _, g := range groups {
-			fmt.Fprintf(w, "%s\t%d\t$%.2f\t%s\t%s\n", trunc(g.Key, 46), g.Sessions, g.Cost,
+			_, _ = fmt.Fprintf(w, "%s\t%d\t$%.2f\t%s\t%s\n", trunc(g.Key, 46), g.Sessions, g.Cost,
 				humanCount(g.TokensIn), humanCount(g.TokensOut))
 		}
 		return w.Flush()
@@ -116,9 +116,9 @@ func (a *App) statsOpencode(dim, dbPath, since, until string, top int) error {
 			return a.out(ss)
 		}
 		w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
-		fmt.Fprintln(w, "MESSAGES\tCOST\tAGENT\tMODEL\tCREATED\tTITLE")
+		_, _ = fmt.Fprintln(w, "MESSAGES\tCOST\tAGENT\tMODEL\tCREATED\tTITLE")
 		for _, s := range ss {
-			fmt.Fprintf(w, "%d\t$%.2f\t%s\t%s\t%s\t%s\n", s.Messages, s.Cost,
+			_, _ = fmt.Fprintf(w, "%d\t$%.2f\t%s\t%s\t%s\t%s\n", s.Messages, s.Cost,
 				orDash(s.Agent), trunc(orDash(s.Model), 28),
 				s.Created.Format("01-02 15:04"), trunc(s.Title, 40))
 		}
@@ -139,9 +139,9 @@ func (a *App) statsOpencode(dim, dbPath, since, until string, top int) error {
 			}
 		}
 		w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
-		fmt.Fprintln(w, "HOUR\tSESSIONS\tMESSAGES\t")
+		_, _ = fmt.Fprintln(w, "HOUR\tSESSIONS\tMESSAGES\t")
 		for _, b := range bs {
-			fmt.Fprintf(w, "%s\t%d\t%d\t%s\n", b.When.Format("01-02 15:04"),
+			_, _ = fmt.Fprintf(w, "%s\t%d\t%d\t%s\n", b.When.Format("01-02 15:04"),
 				b.Sessions, b.Messages, bar(b.Sessions, peak, 24))
 		}
 		return w.Flush()

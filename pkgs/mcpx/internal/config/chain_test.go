@@ -391,7 +391,7 @@ func TestPathsConfigDeclarationsApplyInChainOrder(t *testing.T) {
 			}
 		}
 	}
-	if !(idx[dirA] < idx[dirC] && idx[dirC] < idx[dirB] && idx[dirB] < idx[dirX]) {
+	if idx[dirA] >= idx[dirC] || idx[dirC] >= idx[dirB] || idx[dirB] >= idx[dirX] {
 		t.Errorf("load order = %v, want A's file, then C, B, X", cfg.Chain.Load)
 	}
 }

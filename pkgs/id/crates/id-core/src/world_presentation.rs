@@ -59,8 +59,10 @@ impl WorldSurface {
     }
 }
 
-/// A validated `text/1` document: UTF-8 lines, already wrapped to `width`
-/// columns. Serializes in exactly the guest document shape
+/// A validated `text/1` document: UTF-8 lines, wrapped to `width` columns
+/// except for the one-grapheme overhang documented on [`TextSurface::with_width`]
+/// (a single grapheme can be wider than `width` and is never split).
+/// Serializes in exactly the guest document shape
 /// (`kind: text, version, width, lines`), so a parsed text surface
 /// round-trips through [`parse_surface`].
 #[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
@@ -89,6 +91,16 @@ impl TextSurface {
 
     /// Build a validated text surface, wrapping each line to `width`
     /// columns (capped at [`MAX_SCREEN_WIDTH`]) on grapheme boundaries.
+    ///
+    /// Wrapping keeps every stored line within `width` columns with one
+    /// documented exception: a single grapheme that is itself wider than
+    /// `width` is placed whole on its own line, because splitting it would
+    /// corrupt the character. Such a line exceeds `width` by at most the
+    /// width of that one grapheme (one column for a CJK or emoji grapheme at
+    /// `width` 1). Presenters that must hard-fit a viewport of `width` 1-2
+    /// should therefore clamp or blank the overhanging grapheme themselves
+    /// ([`ScreenSurface`] is the cell-precise alternative), rather than
+    /// assuming the stored lines are never wider than `width`.
     ///
     /// # Errors
     ///
@@ -126,9 +138,12 @@ impl TextSurface {
 
 /// Wrap one logical line to `width` display columns. Breaks prefer the last
 /// space that fits; a word longer than `width` is hard-wrapped on grapheme
-/// boundaries so no output line ever exceeds `width` columns (zero-width
-/// graphemes attach to the preceding column). A line that already fits is
-/// returned unchanged, so conforming documents round-trip exactly.
+/// boundaries, so no output line exceeds `width` columns except when a single
+/// grapheme is itself wider than `width`: that grapheme is never split, so it
+/// occupies a line of its own that is wider than `width` by the grapheme's
+/// width (zero-width graphemes attach to the preceding column). A line that
+/// already fits is returned unchanged, so conforming documents round-trip
+/// exactly.
 fn wrap_text_line(line: &str, width: usize) -> Vec<String> {
     if UnicodeWidthStr::width(line) <= width {
         return vec![line.to_owned()];
@@ -1082,6 +1097,39 @@ mod tests {
                 .all(|line| UnicodeWidthStr::width(line.as_str()) <= MAX_SCREEN_WIDTH)
         );
         assert!(TextSurface::with_width(0, vec!["x".to_owned()]).is_err());
+    }
+
+    #[test]
+    fn text_wrapping_keeps_an_unsplittable_grapheme_whole() {
+        // A grapheme wider than the requested width is never split: it takes
+        // its own line, and that line is wider than the width by exactly the
+        // grapheme's width (the documented one-grapheme exception).
+        let text = TextSurface::with_width(1, vec!["界".to_owned()]).unwrap();
+        assert_eq!(usize::from(text.width), 1);
+        assert_eq!(text.lines, ["界"]);
+        assert_eq!(UnicodeWidthStr::width(text.lines[0].as_str()), 2);
+
+        // The same grapheme at the width it needs fits exactly, with no
+        // exception: the line is within the width.
+        let text = TextSurface::with_width(2, vec!["界".to_owned()]).unwrap();
+        assert_eq!(text.lines, ["界"]);
+        let widths: Vec<usize> = text
+            .lines
+            .iter()
+            .map(|line| UnicodeWidthStr::width(line.as_str()))
+            .collect();
+        assert!(widths.iter().all(|width| *width <= 2));
+
+        // Text around the wide grapheme still wraps normally, and only the
+        // lone over-wide grapheme may exceed the width.
+        let text = TextSurface::with_width(1, vec!["a界b".to_owned()]).unwrap();
+        assert_eq!(text.lines, ["a", "界", "b"]);
+        let widths: Vec<usize> = text
+            .lines
+            .iter()
+            .map(|line| UnicodeWidthStr::width(line.as_str()))
+            .collect();
+        assert_eq!(widths, [1, 2, 1]);
     }
 
     #[test]

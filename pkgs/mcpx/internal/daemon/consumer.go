@@ -414,6 +414,13 @@ func describeInstance(in pool.InstanceStatus) string {
 // ---- confirm a destructive call ----
 
 // ErrNotConfirmed is returned when a destructive call was not approved.
+//
+// It is a typed refusal, not a tool failure (#6116): failureStatus
+// answers it 403 and callErrorBody carries code
+// "confirmation_required", so a caller -- above all a headless one,
+// which can never answer the question -- can tell "the gate refused
+// this call" apart from "the tool ran and failed" (a 502 with an
+// upstream error) instead of quoting the gate text as a result.
 type ErrNotConfirmed struct {
 	Tool   string
 	Reason string
@@ -434,7 +441,27 @@ func (e ErrNotConfirmed) Error() string {
 // An unanswered question refuses the call. That is the opposite of the
 // disambiguation default, and for the opposite reason: there, doing nothing
 // is safe; here, doing nothing is the destructive thing.
-func (r *Registry) confirmDestructive(ctx context.Context, p *pool.Pool, tool string, cc config.CallContext) error {
+// declaredReadOnly reports whether the operator declared this tool
+// read-only for this server in local configuration (#6116): the
+// per-server readOnlyTools list, read from the requested server's
+// view for the same reason the write policy override is -- pools are
+// shared between aliases, and the declaration belongs to the name
+// the caller asked for. The operator's own declaration is trusted
+// outright, as the locally declared stdio server's annotations are
+// (#2191); a server cannot declare its own tools read-only this way.
+func (r *Registry) declaredReadOnly(server, tool string) bool {
+	view, ok := r.View(server)
+	return ok && view.DeclaresReadOnly(tool)
+}
+
+func (r *Registry) confirmDestructive(ctx context.Context, p *pool.Pool, server, tool string, cc config.CallContext) error {
+	if r.declaredReadOnly(server, tool) {
+		// The operator declared this tool read-only (#6116): a
+		// pre-authorized call, not a destructive one, so there is
+		// nothing to confirm -- in any session mode, including a
+		// headless one with nobody to answer.
+		return nil
+	}
 	if !r.consumer.ConfirmDestructive || r.broker == nil {
 		return nil
 	}
@@ -566,7 +593,8 @@ func (r *Registry) applyWritePolicy(ctx context.Context, p *pool.Pool, server, t
 			tools = fresh
 		}
 		for _, candidate := range tools {
-			if candidate.Name == tool && policy.Classify(candidate.Annotations).ReadOnly {
+			if candidate.Name == tool && (policy.Classify(candidate.Annotations).ReadOnly ||
+				r.declaredReadOnly(server, tool)) {
 				return policy.Decision{}, false
 			}
 		}
@@ -654,6 +682,16 @@ func (r *Registry) applyWritePolicy(ctx context.Context, p *pool.Pool, server, t
 			class = policy.Classify(all[i].Annotations)
 			break
 		}
+	}
+	if r.declaredReadOnly(server, tool) {
+		// The operator declared this tool read-only in local
+		// configuration (#6116). That declaration outranks the
+		// server's annotations -- including their absence, which
+		// the specification's defaults read as a possibly
+		// destructive write and which is what gated manifestly
+		// read-only search tools (fff.find_files) in headless
+		// sessions, where the gate's question has no answerer.
+		class = policy.Classification{ReadOnly: true}
 	}
 
 	decision := policy.Evaluator{}.Evaluate(policy.Input{

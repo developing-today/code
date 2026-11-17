@@ -59,7 +59,7 @@ func TestDirectorySkipsUnixSocket(t *testing.T) {
 	if err != nil {
 		t.Skipf("cannot create Unix socket: %v", err)
 	}
-	defer listener.Close()
+	defer func() { _ = listener.Close() }()
 
 	got, err := source.Resolve("@dir:"+dir, opts(dir))
 	if err != nil {
@@ -86,7 +86,7 @@ func TestDirectoryReportsInaccessibleSymlinkTarget(t *testing.T) {
 	if err := os.Chmod(private, 0); err != nil {
 		t.Skipf("cannot make target directory inaccessible: %v", err)
 	}
-	defer os.Chmod(private, 0o700)
+	defer func() { _ = os.Chmod(private, 0o700) }()
 
 	_, err := source.Resolve("@dir:"+root, opts(root))
 	if !errors.Is(err, os.ErrPermission) {

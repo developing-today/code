@@ -110,7 +110,11 @@ idle time, pid — because a choice without that is not a choice.
 
 **Destructive confirmation** (`elicit.confirmDestructive`, off). Before a call
 to a tool that may be destructive: annotated `destructiveHint: true`, or (the specification's default) not annotated `readOnlyHint: true` or `destructiveHint: false`. This is the step a
-human-driven client has and a script does not.
+human-driven client has and a script does not. A tool the operator
+declared in the server's `readOnlyTools` (#6116) is pre-authorized
+and never asked about: the declaration is the answer, given in
+configuration ahead of time, which is the only answer a headless
+caller can give.
 
 The two disagree about what a silent deadline means, deliberately. An
 unanswered disambiguation takes `elicit.disambiguateDefault`, which is `new` —

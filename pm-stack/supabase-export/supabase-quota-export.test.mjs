@@ -125,7 +125,16 @@ describe("supabase-quota-export", () => {
 
   test("parsers reject shape drift", () => {
     expect(() => parseDbSize([{ bytes: "nope" }])).toThrow(ExportError);
+    for (const bytes of ["", "   ", "0x10", "1e3", "1.5", 1.5, -1, "-1"]) {
+      expect(() => parseDbSize([{ bytes }])).toThrow(ExportError);
+    }
+    expect(parseDbSize([{ bytes: "0012" }])).toBe(12);
+    expect(parseDbSize([{ bytes: 12 }])).toBe(12);
     expect(parseRequestCount({ result: [{ count: "12" }] })).toBe(12);
+    for (const count of ["", "  ", "0x10", "1e3", "1.5", 1.5, -1, "-1"]) {
+      expect(parseRequestCount({ result: [{ count }] })).toBeNull();
+    }
+    expect(parseRequestCount({ result: [{ count: 12 }] })).toBe(12);
     expect(parseRequestCount({ result: [] })).toBeNull();
     expect(() => billedFromAddons({})).toThrow(ExportError);
     expect(billedFromAddons({ selected_addons: [{ price: { amount: 25 } }] })).toBe(25);

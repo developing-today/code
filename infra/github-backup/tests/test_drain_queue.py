@@ -38,10 +38,10 @@ def iso_age(seconds):
 class Harness:
     """One drain run against a stub Worker + stub fetch."""
 
-    def __init__(self, events, planned, fetch_results, initial_state=None):
+    def __init__(self, events, planned, fetch_results, initial_state=None, plan_raw=None):
         self.root = tempfile.mkdtemp(prefix="ghb-drain-test-")
         with open(os.path.join(self.root, "plan.json"), "w") as f:
-            json.dump([{"repo": r} for r in planned], f)
+            json.dump(plan_raw if plan_raw is not None else [{"repo": r} for r in planned], f)
         if initial_state is not None:
             with open(os.path.join(self.root, "state.json"), "w") as f:
                 json.dump(initial_state, f)
@@ -438,5 +438,159 @@ check(
 )
 summary = json.loads(buf.getvalue().strip().splitlines()[-1])
 check("after-malformed: drop counted in summary", summary.get("dropped_foreign") == 1)
+
+
+# 17. a page stream that never completes — every page incomplete with a
+#     fresh, never-repeated cursor (#6572) — must raise at the named
+#     pagination bound instead of looping forever, and a Harness-level
+#     run over the bound acks nothing. Oracle: design #6622's contract —
+#     complete, bounded, or say so; the error names the bound it hit.
+_calls = {"n": 0}
+
+
+def _novel_cursor_req(path, payload=None):
+    _calls["n"] += 1
+    return {
+        "events": [ev(f"novel-{_calls['n']}", "owner/repo")],
+        "cursor": f"cursor-{_calls['n']}",
+        "list_complete": False,
+    }
+
+
+_saved_req = drain_queue.worker_req
+drain_queue.worker_req = _novel_cursor_req
+try:
+    try:
+        drain_queue.queue_events("/queue")
+        raised = None
+    except RuntimeError as e:
+        raised = str(e)
+finally:
+    drain_queue.worker_req = _saved_req
+check("page bound: novel-cursor stream raises", raised is not None)
+check(
+    "page bound: error names MAX_QUEUE_PAGES",
+    raised is not None and "MAX_QUEUE_PAGES" in raised,
+)
+check(
+    "page bound: stopped exactly at the bound",
+    _calls["n"] == drain_queue.MAX_QUEUE_PAGES,
+)
+
+# the accumulated-events bound trips on few-but-huge incomplete pages
+_huge_calls = {"n": 0}
+
+
+def _huge_page_req(path, payload=None):
+    _huge_calls["n"] += 1
+    return {
+        "events": [ev(f"huge-{_huge_calls['n']}-{i}", "owner/repo") for i in range(30_000)],
+        "cursor": f"huge-cursor-{_huge_calls['n']}",
+        "list_complete": False,
+    }
+
+
+drain_queue.worker_req = _huge_page_req
+try:
+    try:
+        drain_queue.queue_events("/queue")
+        raised = None
+    except RuntimeError as e:
+        raised = str(e)
+finally:
+    drain_queue.worker_req = _saved_req
+check("event bound: huge-page stream raises", raised is not None)
+check(
+    "event bound: error names MAX_QUEUE_EVENTS",
+    raised is not None and "MAX_QUEUE_EVENTS" in raised,
+)
+check("event bound: tripped on the second page", _huge_calls["n"] == 2)
+
+# a stream that completes exactly at the page bound still returns
+_edge_calls = {"n": 0}
+
+
+def _edge_req(path, payload=None):
+    _edge_calls["n"] += 1
+    last = _edge_calls["n"] >= drain_queue.MAX_QUEUE_PAGES
+    return {
+        "events": [ev(f"edge-{_edge_calls['n']}", "owner/repo")],
+        "cursor": None if last else f"edge-cursor-{_edge_calls['n']}",
+        "list_complete": last,
+    }
+
+
+drain_queue.worker_req = _edge_req
+try:
+    got = drain_queue.queue_events("/queue")
+finally:
+    drain_queue.worker_req = _saved_req
+check(
+    "page bound: completion at the bound returns every event",
+    len(got) == drain_queue.MAX_QUEUE_PAGES,
+)
+
+
+# 20. poison plan entries (#6835): string/int entries are named + skipped,
+# the valid planned repo still drains
+h = Harness(
+    [ev("e1", "owner/repo")],
+    [],
+    {"owner/repo": "ok"},
+    plan_raw=["o/r1", 123, {"repo": "owner/repo"}],
+)
+check("poison plan entries: exit 0", h.run() == 0)
+check("poison plan entries: fetched + acked", h.fetch_calls == ["owner/repo"] and h.acked_ids() == ["e1"])
+check("poison plan entries: coalesce stamp set", "drain_last::owner/repo" in h.state())
+
+# 21. plan top level is a dict (#6835): whole file treated as empty,
+# the repo drains as unplanned instead of crashing the tick
+h = Harness(
+    [ev("e1", "owner/repo")],
+    [],
+    {},
+    plan_raw={"repo": "owner/repo"},
+)
+check("dict plan: exit 0", h.run() == 0)
+check("dict plan: event acked as unplanned", h.acked_ids() == ["e1"] and h.fetch_calls == [])
+check("dict plan: fetch.log note", "unplanned repo" in h.fetch_log())
+
+# 22. state top level is a list (#6835): whole file treated as empty,
+# state.json is rewritten as a clean object
+h = Harness(
+    [ev("e1", "owner/repo")],
+    ["owner/repo"],
+    {"owner/repo": "ok"},
+    initial_state=[],
+)
+check("list state: exit 0", h.run() == 0)
+check("list state: fetched + acked", h.fetch_calls == ["owner/repo"] and h.acked_ids() == ["e1"])
+check("list state: rewritten as object with stamp", isinstance(h.state(), dict) and "drain_last::owner/repo" in h.state())
+
+# 23. drain_last wrong shape (#6835): string/dict stamps are dropped and
+# treated as absent — the coalesce window does not apply, fetch runs
+for bad_stamp in ("soon", {"t": 1}):
+    h = Harness(
+        [ev("e1", "owner/repo")],
+        ["owner/repo"],
+        {"owner/repo": "ok"},
+        initial_state={"drain_last::owner/repo": bad_stamp},
+    )
+    check(f"drain_last {type(bad_stamp).__name__}: exit 0", h.run() == 0)
+    check(f"drain_last {type(bad_stamp).__name__}: fetched + acked", h.fetch_calls == ["owner/repo"] and h.acked_ids() == ["e1"])
+    check(f"drain_last {type(bad_stamp).__name__}: stamp rewritten numeric", isinstance(h.state()["drain_last::owner/repo"], float))
+
+# 24. drain_fail wrong shape (#6835): int/string counters are dropped and
+# the failure count starts fresh instead of crashing the tick
+for bad_counter in (3, "many"):
+    h = Harness(
+        [ev("e1", "owner/repo")],
+        ["owner/repo"],
+        {"owner/repo": "fail"},
+        initial_state={"drain_fail::owner/repo": bad_counter},
+    )
+    check(f"drain_fail {type(bad_counter).__name__}: exit 0", h.run() == 0)
+    check(f"drain_fail {type(bad_counter).__name__}: event NOT acked", h.acked_ids() == [])
+    check(f"drain_fail {type(bad_counter).__name__}: count starts fresh", h.state()["drain_fail::owner/repo"]["count"] == 1)
 
 print(f"\n{sum(1 for _, ok in PASS if ok)}/{len(PASS)} checks passed")

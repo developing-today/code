@@ -1,0 +1,6 @@
+[Unit]
+Description=Reap the ~/git/fleet scratch yard (code#7093)
+
+[Service]
+Type=oneshot
+ExecStart=%h/.local/bin/yard-reaper --apply

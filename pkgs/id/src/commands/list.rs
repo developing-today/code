@@ -83,7 +83,7 @@ pub async fn cmd_list(node: Option<String>, no_relay: bool) -> Result<()> {
         send.write_all(&req).await?;
         send.finish()?;
         let resp_buf = crate::meta_client::read_capped_response(&mut recv).await?;
-        let resp: MetaResponse = postcard::from_bytes(&resp_buf)?;
+        let resp: MetaResponse = crate::protocol::decode_meta_exact(&resp_buf)?;
         meta_conn.close(0u32.into(), b"done");
 
         let result = match resp {
@@ -169,7 +169,7 @@ pub async fn cmd_list_remote(server_node_id: EndpointId, no_relay: bool) -> Resu
     send.write_all(&req).await?;
     send.finish()?;
     let resp_buf = crate::meta_client::read_capped_response(&mut recv).await?;
-    let resp: MetaResponse = postcard::from_bytes(&resp_buf)?;
+    let resp: MetaResponse = crate::protocol::decode_meta_exact(&resp_buf)?;
     meta_conn.close(0u32.into(), b"done");
 
     let result = match resp {

@@ -360,7 +360,7 @@ func (b mcpBackend) Log(ctx context.Context, since, level, event string, limit i
 	if err != nil {
 		return "", err
 	}
-	defer st.Close()
+	defer func() { _ = st.Close() }()
 	if limit <= 0 {
 		limit = 50
 	}
@@ -387,10 +387,10 @@ func (b mcpBackend) Stats(ctx context.Context, dimension string) (string, error)
 	if dimension == "" {
 		dimension = "calls"
 	}
-	t, err := tuiSource{app: b.app}.Stats(ctx, dimension)
+	t, err := tuiSource(b).Stats(ctx, dimension)
 	if err != nil {
 		if dimension == "instances" {
-			t, err = tuiSource{app: b.app}.Instances(ctx)
+			t, err = tuiSource(b).Instances(ctx)
 		}
 		if err != nil {
 			return "", err
@@ -522,6 +522,13 @@ func (a *App) MCPServer(ctx context.Context) (*mcpserver.Server, error) {
 	// below reads -- so neither surface's cadence changes.
 	if a.daemonStore != nil {
 		srv.TaskStore = a.daemonStore
+		// Retention follows the same settings the daemon's taskStore()
+		// reads on /v1 access (#6247): without this, a tasks.ttl /
+		// tasks.maxAge change made through /v1/settings never reached
+		// the MCP surface's cached store pointer.
+		srv.TaskRetention = func() (time.Duration, time.Duration) {
+			return a.Settings().Duration("tasks.ttl"), a.Settings().Duration("tasks.maxAge")
+		}
 	} else {
 		// A standalone server (mcpx serve) keeps a private store;
 		// wire its audit seam to the durable log or its task
@@ -682,11 +689,6 @@ func unspecifiedHost(h string) bool {
 	return ip != nil && ip.IsUnspecified()
 }
 
-func writeJSONResponse(w http.ResponseWriter, v any) {
-	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(v)
-}
-
 // adapterTools turns declarations into MCP tools.
 //
 // prefixed names each tool <adapter>_<tool>, as mcpx's own tools/list must
@@ -753,24 +755,6 @@ func renderAdapterResult(r *adapter.Result) string {
 		return "(no output)"
 	}
 	return b.String()
-}
-
-// runInline runs a snippet and collects what it printed.
-//
-// It goes through the same runScript the exec command uses rather than a
-// parallel path, because two ways to run a script is two sets of bugs, and
-// the one nobody runs by hand is the one that rots.
-func (a *App) runInline(ctx context.Context, source string, out interface {
-	Write([]byte) (int, error)
-}) error {
-	// The redirection is set and restored rather than done on a copy. An App
-	// holds a sync.Once, and copying one copies the Once -- which vet catches
-	// and which would otherwise mean the clone silently re-resolved every
-	// setting from scratch.
-	prevOut, prevMachine := a.stdoutOverride, a.machineOutput
-	a.stdoutOverride, a.machineOutput = out, true
-	defer func() { a.stdoutOverride, a.machineOutput = prevOut, prevMachine }()
-	return a.runScript(ctx, []string{source}, true)
 }
 
 func firstLine(s string) string {

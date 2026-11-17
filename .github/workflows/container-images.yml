@@ -1,0 +1,64 @@
+name: container images
+
+# CI tier policy: see .github/ci-policy.md
+
+on:
+  pull_request:
+    paths:
+      - "pkgs/mcpx/**"
+      - "pkgs/identity/**"
+      - "pkgs/lab-ops-hub/container-image.nix"
+      - "pkgs/lab-ops-hub/container/**"
+      - "pkgs/lab-ops-hub/wrangler.jsonc"
+      - "lib/default.nix"
+      - "flake.nix"
+      - "flake.lock"
+      - ".github/workflows/container-images.yml"
+  push:
+    branches: [main]
+    paths:
+      - "pkgs/mcpx/**"
+      - "pkgs/identity/**"
+      - "pkgs/lab-ops-hub/container-image.nix"
+      - "pkgs/lab-ops-hub/container/**"
+      - "pkgs/lab-ops-hub/wrangler.jsonc"
+      - "lib/default.nix"
+      - "flake.nix"
+      - "flake.lock"
+      - ".github/workflows/container-images.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event_name == 'push' && github.run_id || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: "basic: Nix container image builds"
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: DeterminateSystems/nix-installer-action@3138316df39ed29be04236d7ffc686fa525866aa # v23
+
+      - uses: DeterminateSystems/magic-nix-cache-action@84c0677f58dcedf3b91f8223ce36a9ea5b3c84b7 # v15
+        continue-on-error: true
+        with:
+          use-flakehub: false
+          use-gha-cache: true
+
+      - name: Build Nix-owned application images
+        run: >-
+          nix build
+          .#packages.x86_64-linux.mcpx-container
+          .#packages.x86_64-linux.identity-image
+          .#packages.x86_64-linux.identity-provider-image
+          --print-build-logs
+
+      - name: Build Lab Ops Hub image
+        working-directory: pkgs/lab-ops-hub
+        run: nix build -f container-image.nix --print-build-logs

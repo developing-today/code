@@ -145,12 +145,12 @@ func (s ExecStamp) Identity() (string, error) {
 		var head [2]byte
 		n, err := io.ReadFull(f, head[:])
 		if err != nil && err != io.EOF && err != io.ErrUnexpectedEOF {
-			f.Close()
+			_ = f.Close()
 			return "", err
 		}
 		h.Write(head[:n])
 		_, err = io.Copy(h, f)
-		f.Close()
+		_ = f.Close()
 		if err != nil {
 			return "", err
 		}
@@ -166,7 +166,7 @@ func (s ExecStamp) Identity() (string, error) {
 		}
 		return "sha256:" + hex.EncodeToString(h.Sum(nil))[:16], nil
 	}
-	fmt.Fprintf(h, "%s\x00%d\x00%d\x00%d", s.Inode, s.Size, s.MTime, s.Mode)
+	_, _ = fmt.Fprintf(h, "%s\x00%d\x00%d\x00%d", s.Inode, s.Size, s.MTime, s.Mode)
 	return "stat:" + hex.EncodeToString(h.Sum(nil))[:16], nil
 }
 
@@ -174,13 +174,6 @@ func (s ExecStamp) Identity() (string, error) {
 // configured process definition and the executable it currently resolves to.
 func (r *Resolved) ProcessID() string {
 	return r.PoolID() + "/" + r.ExecIdentity()
-}
-
-// resolveExec finds the file the child will run. It searches the PATH the
-// child will see -- the server's own env if it sets one, else the daemon's --
-// rather than the daemon's PATH alone, since a server can set its own.
-func (r *Resolved) resolveExec() string {
-	return r.resolveExecAt(r.Cwd)
 }
 
 // ExecUsesScopeRoot reports whether resolving the configured executable can

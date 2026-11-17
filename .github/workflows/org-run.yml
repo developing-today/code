@@ -15,6 +15,13 @@ name: org-run (generic dispatch runner)
 # (blacksmith-4vcpu-ubuntu-2404). See docs/placement.md in
 # developing-today/fleet.
 #
+# Setup runner (2026-11-06): the setup job has its own
+# `setup_runner` input, defaulting to Blacksmith, so matrix
+# expansion is never gated by the GitHub-hosted queue (in the
+# Blacksmith evaluation an org-run setup job on ubuntu-24.04
+# waited 34.6 minutes and was never assigned a runner). The
+# legs still follow the `runner` input below.
+#
 # Single-shot — one repo, one command:
 #
 #   gh workflow run org-run.yml --repo developing-today/code \
@@ -143,6 +150,14 @@ on:
         options:
           - github
           - blacksmith
+      setup_runner:
+        description: "Runner provider for the setup job: blacksmith (default; keeps matrix expansion off the GitHub-hosted queue) or github (ubuntu-24.04)"
+        type: choice
+        required: false
+        default: "blacksmith"
+        options:
+          - blacksmith
+          - github
 
 permissions:
   contents: read
@@ -154,7 +169,7 @@ defaults:
 jobs:
   setup:
     name: setup
-    runs-on: ubuntu-24.04
+    runs-on: ${{ inputs.setup_runner == 'blacksmith' && 'blacksmith-4vcpu-ubuntu-2404' || 'ubuntu-24.04' }}
     timeout-minutes: 5
     outputs:
       matrix: ${{ steps.resolve.outputs.matrix }}

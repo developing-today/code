@@ -110,23 +110,23 @@ func Load(ctx context.Context, src []byte, grants ...string) (*Source, error) {
 		}).Export("log")
 	}
 	if _, err := host.Instantiate(ctx); err != nil {
-		rt.Close(ctx)
+		_ = rt.Close(ctx)
 		return nil, fmt.Errorf("wasmtools: instantiate host: %w", err)
 	}
 
 	mod, err := rt.Instantiate(ctx, src)
 	if err != nil {
-		rt.Close(ctx)
+		_ = rt.Close(ctx)
 		return nil, fmt.Errorf("wasmtools: instantiate guest (ungranted import?): %w", err)
 	}
 	if _, ok := mod.ExportedMemoryDefinitions()["memory"]; !ok {
-		rt.Close(ctx)
+		_ = rt.Close(ctx)
 		return nil, fmt.Errorf("wasmtools: guest does not export memory")
 	}
 	s.mod = mod
 	for _, fn := range []string{inputPtrFn, outputPtrFn, listFn, callFn} {
 		if mod.ExportedFunction(fn) == nil {
-			rt.Close(ctx)
+			_ = rt.Close(ctx)
 			return nil, fmt.Errorf("wasmtools: guest does not export %s", fn)
 		}
 	}

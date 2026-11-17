@@ -1,6 +1,14 @@
 import { Packr, Unpackr } from "msgpackr";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { MAX_STEPS_MESSAGE_BYTES, MAX_STEPS_PER_MESSAGE, buildCollabWsUrl, initCollab, stepBatch } from "./collab";
+import {
+  MAX_STEPS_MESSAGE_BYTES,
+  MAX_STEPS_PER_MESSAGE,
+  buildCollabWsUrl,
+  initCollab,
+  stepBatch,
+  stepWireSize,
+} from "./collab";
+import { getSendableSteps, getVersion } from "./editor";
 
 // Same MessagePack configuration as collab.ts
 const packr = new Packr({ useRecords: false, structuredClone: true });
@@ -347,6 +355,67 @@ describe("stepBatch (client side of the server step cap, #1965)", () => {
     const steps = ["exact", "later"];
     const batch = stepBatch(steps, (s) => (s === "exact" ? MAX_STEPS_MESSAGE_BYTES : 1));
     expect(batch).toEqual(["exact"]);
+  });
+});
+
+describe("large text insertion collaboration (#4119)", () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+    FakeWebSocket.instances = [];
+    vi.stubGlobal("WebSocket", FakeWebSocket);
+  });
+
+  afterEach(() => {
+    while (liveConnections.length > 0) liveConnections.pop()?.disconnect();
+    vi.unstubAllGlobals();
+    vi.useRealTimers();
+    document.body.innerHTML = "";
+  });
+
+  it("sends and confirms all bounded steps from a single oversized paste", () => {
+    const { conn, socket } = openCollab();
+    socket.deliver([MSG_INIT, 0, { type: "doc", content: [{ type: "code_block" }] }, "raw"]);
+    expect(conn.editor).not.toBeNull();
+
+    const view = conn.editor!.view;
+    const text = "x".repeat(1_100_000);
+    view.dispatch(view.state.tr.insertText(text, 1));
+
+    let confirmed = 0;
+    for (let frameIndex = 0; frameIndex < 100; frameIndex++) {
+      const frames = socket.sent.map((data) => unpackr.unpack(data as Uint8Array) as unknown[]);
+      const stepFrames = frames.filter((frame) => frame[0] === 1);
+      const frame = stepFrames[frameIndex];
+      if (!frame) break;
+
+      const steps = frame[2] as unknown[];
+      const clientID = frame[3] as number;
+      expect(steps.length).toBeGreaterThan(0);
+      expect(steps.length).toBeLessThanOrEqual(MAX_STEPS_PER_MESSAGE);
+      expect(steps.every((step) => stepWireSize(step) <= MAX_STEPS_MESSAGE_BYTES)).toBe(true);
+
+      confirmed += steps.length;
+      socket.deliver([2, steps, steps.map(() => clientID)]);
+    }
+
+    const allFrames = socket.sent.map((data) => unpackr.unpack(data as Uint8Array) as unknown[]);
+    const stepFrameData = socket.sent.filter((data) => (unpackr.unpack(data as Uint8Array) as unknown[])[0] === 1);
+    const sentSteps = allFrames.filter((frame) => frame[0] === 1).flatMap((frame) => frame[2] as unknown[]);
+    expect(stepFrameData.every((data) => (data as Uint8Array).byteLength <= 1024 * 1024)).toBe(true);
+    expect(sentSteps.length).toBeGreaterThan(1);
+    expect(
+      sentSteps
+        .map((step) =>
+          (step as { slice: { content: Array<{ text?: string }> } }).slice.content
+            .map((node) => node.text ?? "")
+            .join(""),
+        )
+        .join(""),
+    ).toBe(text);
+    expect(confirmed).toBe(sentSteps.length);
+    expect(getSendableSteps(view)).toBeNull();
+    expect(getVersion(view.state)).toBe(confirmed);
+    expect(view.state.doc.textContent).toBe(text);
   });
 });
 

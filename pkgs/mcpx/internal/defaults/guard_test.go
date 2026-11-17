@@ -111,7 +111,7 @@ func TestNoPackageRedeclaresADefault(t *testing.T) {
 		if err != nil {
 			return err
 		}
-		defer f.Close()
+		defer func() { _ = f.Close() }()
 		sc := bufio.NewScanner(f)
 		n := 0
 		for sc.Scan() {

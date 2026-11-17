@@ -19,7 +19,7 @@ func TestHTTPTransportReportsDispatchedToolCall(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer transport.Close()
+	defer func() { _ = transport.Close() }()
 
 	var dispatched atomic.Bool
 	ctx := WithToolCallDispatchHook(context.Background(), func() { dispatched.Store(true) })
