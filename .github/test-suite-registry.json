@@ -1238,6 +1238,18 @@
       "status": "uncovered-in-fact",
       "phase2_issue": 10330,
       "reason": "Named by no registry entry and no venue invocation found in the #6188 inventory (2026-11-14). #10330 owns proving or wiring it."
+    },
+    {
+      "id": "fleet.queue-reconcile.check-coverage",
+      "paths": ["scripts/fleet/queue-reconcile/test_check_coverage.py"],
+      "invocation": "python3 -I -m unittest discover -s scripts/fleet/queue-reconcile -p 'test_check_coverage.py' -v",
+      "venue": {
+        "workflow": ".github/workflows/scripts-test.yml",
+        "job_step": "update-nixpkgs-inputs-contract / Run queue-reconcile coverage contract tests (#8028)",
+        "state": "active",
+        "dispatchable": true
+      },
+      "status": "mapped"
     }
   ],
   "waivers": []
