@@ -835,6 +835,50 @@ impl SearchBackend for Monolith {
 }
 
 #[test]
+fn sharded_backend_refresh_swaps_in_new_shards_and_moves_the_snapshot() {
+    // #6666 slice 1 oracle: the shard files on disk. A shard file
+    // that appears after the set was opened is invisible until
+    // re-discovery; after refresh it is served, and the snapshot
+    // id — the result-cache binding (#9943) — has moved, which is
+    // what invalidates serve-mode cached results on rotation.
+    let dir = temp_dir("refresh");
+    let mut rng = Rng(7);
+    let chunks: Vec<Chunk> = (1..=5)
+        .map(|id| Chunk {
+            id,
+            sens: "personal",
+            vec: rng.vec(),
+        })
+        .collect();
+    write_shard(&dir, "atlas-core-internal-work-01", &chunks);
+    let spec = format!("dir:{}", dir.display());
+    let set =
+        atlas_core::shards::open_from_spec(&spec, TierCeiling(Tier::Internal), DEFAULT_VEC_TABLE)
+            .unwrap();
+    let be = ShardedBackend::new(
+        Monolith {
+            seen: Mutex::new(vec![]),
+        },
+        set,
+    )
+    .with_refresh(spec, TierCeiling(Tier::Internal), Duration::ZERO);
+    let before = be.snapshot_id().unwrap();
+    assert_eq!(be.shard_set().shards().len(), 1);
+    assert!(!be.refresh_shard_set(), "nothing changed on disk: no swap");
+    let more: Vec<Chunk> = (6..=9)
+        .map(|id| Chunk {
+            id,
+            sens: "personal",
+            vec: rng.vec(),
+        })
+        .collect();
+    write_shard(&dir, "atlas-core-internal-media-01", &more);
+    assert!(be.refresh_shard_set(), "the new shard file must swap in");
+    assert_eq!(be.shard_set().shards().len(), 2);
+    assert_ne!(be.snapshot_id().unwrap(), before);
+}
+
+#[test]
 fn sharded_backend_reports_the_shard_set_snapshot_id() {
     // #9943: the service's result cache binds entries to the
     // backend's snapshot id. A sharded backend reports its shard
@@ -984,7 +1028,7 @@ fn sharded_backend_routes_filtered_queries_to_the_monolith() {
     // fanout_scan itself still refuses the same filters loudly.
     assert!(
         fanout_scan(
-            be.shard_set(),
+            &be.shard_set(),
             &FanoutQuery {
                 qvec: &q,
                 shard_top_k: 10,

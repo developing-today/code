@@ -683,6 +683,19 @@ pub struct UdpProxyClient {
     parser: CapsuleParser,
 }
 
+/// Read once, retrying on EINTR: a signal interrupting the socket
+/// read is not a session event, and under load it surfaces often
+/// enough to flake callers that treat every error as one (#8573).
+/// The same idiom as raw_stream's pump.
+fn read_retrying(reader: &mut impl std::io::Read, chunk: &mut [u8]) -> std::io::Result<usize> {
+    loop {
+        match reader.read(chunk) {
+            Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
+            other => return other,
+        }
+    }
+}
+
 impl UdpProxyClient {
     /// Open a session to `target_host:target_port` through the
     /// proxy at `proxy_addr` ("host:port").
@@ -756,7 +769,7 @@ impl UdpProxyClient {
             {
                 return Ok(d);
             }
-            let n = self.reader.read(&mut chunk)?;
+            let n = read_retrying(&mut self.reader, &mut chunk)?;
             if n == 0 {
                 return Err(std::io::Error::new(
                     std::io::ErrorKind::UnexpectedEof,
@@ -821,7 +834,7 @@ impl UdpProxyReceiver {
             {
                 return Ok(d);
             }
-            let n = self.reader.read(&mut chunk)?;
+            let n = read_retrying(&mut self.reader, &mut chunk)?;
             if n == 0 {
                 return Err(std::io::Error::new(
                     std::io::ErrorKind::UnexpectedEof,
@@ -1166,6 +1179,31 @@ mod tests {
         let mut reader = Cursor::new(vec![b'x'; MAX_HEAD_BYTES + 1024]);
         let (status, _reason) = read_request(&mut reader).unwrap_err();
         assert_eq!(status, 400);
+    }
+
+    #[test]
+    fn read_retrying_tolerates_eintr() {
+        // #8573: the oracle is a reader whose first read is
+        // interrupted by a signal; the helper must retry and
+        // deliver the bytes instead of surfacing Interrupted.
+        struct Flaky {
+            interrupted: bool,
+        }
+        impl std::io::Read for Flaky {
+            fn read(&mut self, out: &mut [u8]) -> std::io::Result<usize> {
+                if !self.interrupted {
+                    self.interrupted = true;
+                    return Err(std::io::Error::from(ErrorKind::Interrupted));
+                }
+                let data = b"capsule";
+                out[..data.len()].copy_from_slice(data);
+                Ok(data.len())
+            }
+        }
+        let mut reader = Flaky { interrupted: false };
+        let mut buf = [0u8; 16];
+        let n = read_retrying(&mut reader, &mut buf).unwrap();
+        assert_eq!(&buf[..n], b"capsule");
     }
 
     #[test]

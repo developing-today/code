@@ -69,8 +69,12 @@ rotates to the next identity; a hard block (401, a marker-less 403, 404, 422)
 surfaces immediately and never rotates. Rotation state (current identity +
 cooldowns) persists in the configured state file across server restarts, and
 every rotation is logged with the identity name and the soft-block reason.
-The pool resolves the current identity's credential at connection start; the
-session-facing tool surface is unchanged. aws signs requests (SigV4) using `~/.aws/config` profiles
+The pool resolves the current identity's credential at connection start; since
+#8017 the daemon call path also runs each tools/call through the rotator: an
+error result carrying a soft block is translated to an APIError, the identity
+rotates, the github instance is respawned on the rotated credential, and the
+call is retried, so the calling session never sees the soft block. Hard blocks
+surface unchanged. The session-facing tool surface is unchanged. aws signs requests (SigV4) using `~/.aws/config` profiles
 (with `--skip-auth` so its 8 tools load even when logged out, and `--profile`
 populated dynamically from `aws configure list-profiles` so callers can switch
 accounts per call via the `aws_profile` tool parameter).
