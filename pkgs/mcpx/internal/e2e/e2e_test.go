@@ -119,6 +119,9 @@ func newEnv(t *testing.T, cfgBody string) *env {
 			// fails is how the leak went unnoticed for so long.
 			t.Logf("cleanup: mcpx stop --all failed: %v\n%s", err, out)
 		}
+		if err := testsupport.StopSupervisors(filepath.Join(e.dir, "state")); err != nil {
+			t.Errorf("cleanup: stop supervised servers: %v", err)
+		}
 	})
 	return e
 }
