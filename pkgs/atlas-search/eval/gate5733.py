@@ -25,6 +25,7 @@ Corpus disclosure: ~/atlas/v3/corpus.db carries 101,339 of the frozen
 are absent, including one gold chunk (99555). Affected queries are
 excluded and named in the output.
 """
+
 import hashlib
 import importlib.util
 import json
@@ -76,10 +77,10 @@ def xxhash64(data: bytes) -> int:
         v3 = 0
         v4 = (-P1) & M64
         while pos + 32 <= n:
-            v1 = _round(v1, int.from_bytes(data[pos:pos + 8], "little"))
-            v2 = _round(v2, int.from_bytes(data[pos + 8:pos + 16], "little"))
-            v3 = _round(v3, int.from_bytes(data[pos + 16:pos + 24], "little"))
-            v4 = _round(v4, int.from_bytes(data[pos + 24:pos + 32], "little"))
+            v1 = _round(v1, int.from_bytes(data[pos : pos + 8], "little"))
+            v2 = _round(v2, int.from_bytes(data[pos + 8 : pos + 16], "little"))
+            v3 = _round(v3, int.from_bytes(data[pos + 16 : pos + 24], "little"))
+            v4 = _round(v4, int.from_bytes(data[pos + 24 : pos + 32], "little"))
             pos += 32
         h = (_rotl(v1, 1) + _rotl(v2, 7) + _rotl(v3, 12) + _rotl(v4, 18)) & M64
         for v in (v1, v2, v3, v4):
@@ -88,11 +89,15 @@ def xxhash64(data: bytes) -> int:
         h = P5
     h = (h + n) & M64
     while pos + 8 <= n:
-        k = _round(0, int.from_bytes(data[pos:pos + 8], "little"))
+        k = _round(0, int.from_bytes(data[pos : pos + 8], "little"))
         h = (_rotl(h ^ k, 27) * P1 + P4) & M64
         pos += 8
     if pos + 4 <= n:
-        h = _rotl(h ^ (int.from_bytes(data[pos:pos + 4], "little") * P1 & M64), 23) * P2 & M64
+        h = (
+            _rotl(h ^ (int.from_bytes(data[pos : pos + 4], "little") * P1 & M64), 23)
+            * P2
+            & M64
+        )
         h = (h + P3) & M64
         pos += 4
     for byte in data[pos:]:
@@ -130,7 +135,7 @@ def shingle_set(text: str):
     if len(toks) < 5:
         return frozenset([xxhash64(" ".join(toks).encode())])
     return frozenset(
-        xxhash64(" ".join(toks[i:i + 5]).encode()) for i in range(len(toks) - 4)
+        xxhash64(" ".join(toks[i : i + 5]).encode()) for i in range(len(toks) - 4)
     )
 
 
@@ -277,8 +282,10 @@ def main():
         if rank:
             hits += 1
             mrr += 1.0 / rank
-    print(f"[gate] sanity depth-30: recall@10={hits}/311 mrr={mrr/311:.4f} "
-          f"(recorded: 183/311, 0.3640)")
+    print(
+        f"[gate] sanity depth-30: recall@10={hits}/311 mrr={mrr / 311:.4f} "
+        f"(recorded: 183/311, 0.3640)"
+    )
 
     def run_set(queries, qmat, label):
         rows = []
@@ -356,8 +363,11 @@ def main():
     result["verdict_pass"] = (
         result["near_exact_gain"] >= 0.10 and result["general_regression"] <= 0.01
     )
-    json.dump({"result": result, "general": general, "near_exact": near_ex},
-              open(OUT, "w"), indent=1)
+    json.dump(
+        {"result": result, "general": general, "near_exact": near_ex},
+        open(OUT, "w"),
+        indent=1,
+    )
     print("[gate] RESULT " + json.dumps(result, indent=1))
 
 

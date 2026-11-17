@@ -539,9 +539,7 @@ class TestProviderWallGate(unittest.TestCase):
                     claimant, "run_queue_health", return_value="health-test-line"
                 ),
                 stub_claimed_rows([]),
-                patch.object(
-                    claimant, "get_active_root_session_count", return_value=0
-                ),
+                patch.object(claimant, "get_active_root_session_count", return_value=0),
                 patch.object(
                     claimant.subprocess,
                     "run",

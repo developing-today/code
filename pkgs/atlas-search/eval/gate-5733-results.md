@@ -7,10 +7,10 @@ production ranking change was made.**
 
 ## Measurements
 
-| Set | Metric | Rescore OFF | Rescore ON | Bar | Result |
-| --- | --- | --- | --- | --- | --- |
-| Near-exact (54 queries) | MRR@10 | 0.5635 | 0.5997 | gain ≥ +0.10 | **+0.0361 — FAIL** |
-| General (311 queries) | nDCG@10 | 0.4097 | 0.4080 | regression ≤ 0.01 | 0.0017 — pass |
+| Set                     | Metric  | Rescore OFF | Rescore ON | Bar               | Result             |
+| ----------------------- | ------- | ----------- | ---------- | ----------------- | ------------------ |
+| Near-exact (54 queries) | MRR@10  | 0.5635      | 0.5997     | gain ≥ +0.10      | **+0.0361 — FAIL** |
+| General (311 queries)   | nDCG@10 | 0.4097      | 0.4080     | regression ≤ 0.01 | 0.0017 — pass      |
 
 Diagnostics: the near-exact tier (J ≥ 0.60) fired in only 4 of 54
 near-exact queries and 0 of 311 general queries. The gold chunk was in

@@ -295,6 +295,16 @@ pub(crate) fn collect_link_reference_definitions(markdown: &str) -> Vec<(usize, 
     // lines and other definitions leave the next line block-eligible;
     // paragraph text does not.
     let mut at_block_start = true;
+    // Content columns of the list items enclosing the current
+    // line, innermost last (#8360): a definition nested in a list
+    // item can sit at raw indent >= 4 while at relative indent
+    // 0-3 from the item's content column, and the raw-indent
+    // indented-code skip below dropped it before collection.
+    // Blank lines do not disturb the stack (a loose list's items
+    // span them); a new item replaces the levels at or outside
+    // its marker column, and a plain line dedented past an item's
+    // content column leaves that item.
+    let mut list_stack: Vec<usize> = Vec::new();
     // Inside a footnote definition's block (until a blank line or
     // a new block starter), a reference-shaped line is the
     // footnote's own lazy continuation, not a standalone
@@ -371,6 +381,23 @@ pub(crate) fn collect_link_reference_definitions(markdown: &str) -> Vec<(usize, 
             i += 1;
             continue;
         }
+        // Maintain the list-container context (#8360) and the
+        // indentation relative to the innermost item's content
+        // column; the indented-code skip uses the relative value.
+        if let Some((marker_col, content_col)) = list_item_columns(line) {
+            while list_stack.last().is_some_and(|&top| top > marker_col) {
+                list_stack.pop();
+            }
+            list_stack.push(content_col);
+        } else if strip_container_prefixes(stripped) == stripped {
+            while list_stack.last().is_some_and(|&top| top > indent) {
+                list_stack.pop();
+            }
+        }
+        let rel_indent = match list_stack.last() {
+            Some(&top) if indent >= top => indent - top,
+            _ => indent,
+        };
         // An already-open HTML block sees every line, however
         // indented: an indented closing marker still closes it,
         // and gating this feed on indent left the tracker open
@@ -493,7 +520,7 @@ pub(crate) fn collect_link_reference_definitions(markdown: &str) -> Vec<(usize, 
             i += 1;
             continue;
         }
-        if fence.in_fence() || html.in_html() || indent > 3 {
+        if fence.in_fence() || html.in_html() || rel_indent > 3 {
             i += 1;
             continue;
         }
@@ -1696,5 +1723,46 @@ pub(crate) fn restore_attr_newlines(value: &mut Value, token: &str) {
             }
         }
         _ => {}
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::collect_link_reference_definitions;
+
+    // #8360: a definition nested in a list item at raw indent 4
+    // sits at relative indent 2 from the `- ` content column; the
+    // raw-indent indented-code skip dropped it before collection.
+    #[test]
+    fn list_nested_definition_is_collected() {
+        let defs = collect_link_reference_definitions("- item\n\n    [unused]: /keep\n");
+        assert_eq!(defs.len(), 1, "defs: {defs:?}");
+        assert!(defs[0].1.contains("[unused]: /keep"), "defs: {defs:?}");
+    }
+
+    // #8360: a genuinely indented code line inside a list item
+    // (relative indent 4 from the content column) is still not a
+    // definition.
+    #[test]
+    fn list_indented_code_is_not_collected() {
+        let defs = collect_link_reference_definitions("- item\n\n      [code]: /nope\n");
+        assert!(defs.is_empty(), "defs: {defs:?}");
+    }
+
+    // #8360: with no blank line, a definition-shaped line is the
+    // item paragraph's lazy continuation, not a definition.
+    #[test]
+    fn list_paragraph_continuation_is_not_collected() {
+        let defs = collect_link_reference_definitions("- item\n  [unused]: /keep\n");
+        assert!(defs.is_empty(), "defs: {defs:?}");
+    }
+
+    // #8360: the same relativity under an ordered marker (content
+    // column 3): raw indent 5 is relative indent 2.
+    #[test]
+    fn ordered_list_nested_definition_is_collected() {
+        let defs = collect_link_reference_definitions("1. item\n\n     [unused]: /keep\n");
+        assert_eq!(defs.len(), 1, "defs: {defs:?}");
+        assert!(defs[0].1.contains("[unused]: /keep"), "defs: {defs:?}");
     }
 }
