@@ -4,9 +4,10 @@
 # The contract: the fleet.rust row of .github/test-suite-registry.json
 # counts as covered only while all of these agree —
 #   1. .github/workflows/fleet-rust-tests.yml exists, is basic-tier,
-#      and runs on push to main (pkgs/fleet/** paths) and
+#      and runs on its nightly schedule against main and on
 #      workflow_dispatch — and declares no pull_request trigger
-#      (main-only CI policy, .github/ci-policy.md, 2026-11-13);
+#      (main-only CI policy, .github/ci-policy.md, 2026-11-13; nightly
+#      instead of per-push, owner ruling 2026-11-16);
 #   2. its test step runs the locked workspace test command with the
 #      toolchain channel pinned in pkgs/fleet/rust-toolchain.toml;
 #   3. the registry row fleet.rust is status "mapped" and names this
@@ -40,9 +41,13 @@ if [ "$fail" -ne 0 ]; then
 fi
 
 # 1. Triggers and tier shape. Main-only CI policy (2026-11-13): the
-# workflow runs on push to main and workflow_dispatch only; a
-# pull_request trigger is a contract violation, not a requirement.
-for trigger in push workflow_dispatch; do
+# workflow runs against main only; a pull_request trigger is a
+# contract violation, not a requirement. Since the nightly ruling
+# (2026-11-16, ci-policy.md "Nightly main CI") it runs on a nightly
+# schedule rather than on every push, so the schedule is the
+# required trigger and a nightly run covers the whole tree (no path
+# filter applies).
+for trigger in schedule workflow_dispatch; do
   if ! grep -qE "^  ${trigger}:" "$WF"; then
     err "workflow does not declare the ${trigger} trigger"
   fi
@@ -52,8 +57,8 @@ for trigger in pull_request pull_request_target merge_group; do
     err "workflow declares the ${trigger} trigger - main-only CI policy forbids PR triggers"
   fi
 done
-if ! grep -qF '"pkgs/fleet/**"' "$WF"; then
-  err "workflow path filter does not cover pkgs/fleet/** — a Fleet change could silently skip the suite"
+if ! grep -qE '^    - cron: "[^"]+"' "$WF"; then
+  err "workflow schedule declares no cron line — the nightly run would never fire"
 fi
 if ! grep -qF 'basic: fleet Rust workspace tests' "$WF"; then
   err "job display name lost its basic-tier prefix ('basic: fleet Rust workspace tests')"

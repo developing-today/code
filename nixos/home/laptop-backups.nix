@@ -30,6 +30,14 @@
 #   Drive), same password key as repo-archive, independent
 #   retention/listing. Script: ./laptop-state-backup.sh (vendored here;
 #   same Bitwarden-at-runtime credential pattern).
+# - opencode-db-backup (daily ~06:05): the OpenCode session database
+#   (~/.local/share/opencode/opencode.db, ~25G and the fleet's working
+#   memory; code#10297) snapshotted with a consistent sqlite snapshot (VACUUM INTO; .backup restarts indefinitely on this write-hot DB)
+#   against the running server), integrity-checked, then restic-backed
+#   up to local + R2 + Drive (restic-opencode-db repositories),
+#   keep-last 7 / keep-daily 7 / keep-weekly 4 / keep-monthly 12.
+#   Script: ./opencode-db-backup.sh (vendored here; same
+#   Bitwarden-at-runtime credential pattern).
 # - openclaw-backup (daily ~04:05): the OpenClaw state dir (~/.openclaw,
 #   minus the tmp/ and cache/ scratch trees) as a dated tar.zst with a
 #   sha256 manifest to the local backup dir, R2 (supabase-backups,
@@ -71,7 +79,12 @@
 #   must be complete and fresher than services.laptop-backups.
 #   watchdog.maxAgeHours, and both backup timers must have triggered
 #   within the same threshold; any violation exits non-zero naming
-#   the job/timer. repo-archive-backup is covered via its timer's
+#   the job/timer. laptop-state-backup is covered via its timer's
+#   last-trigger time AND its success marker
+#   (~/backups/restic/.laptop-state-last-success-epoch, written only
+#   after all three backends succeed) — code#10294: its 12-day stall
+#   was silent because the watchdog did not name this job.
+#   repo-archive-backup is covered via its timer's
 #   last-trigger time ONLY: its script (~/tools/repo-archive-
 #   backup.sh) and its restic credentials live outside this repo, so
 #   no run record is required of it.
@@ -96,6 +109,9 @@ let
   statePkg = pkgs.writeShellScriptBin "laptop-state-backup" (
     builtins.readFile ./laptop-state-backup.sh
   );
+  opencodeDbPkg = pkgs.writeShellScriptBin "opencode-db-backup" (
+    builtins.readFile ./opencode-db-backup.sh
+  );
   watchdogPkg = pkgs.writeShellScriptBin "laptop-backups-watchdog" (
     builtins.readFile ./laptop-backups-watchdog.sh
   );
@@ -105,6 +121,9 @@ let
   watchdogJobs = lib.concatStringsSep "," (
     (lib.optional cfg.dashboard.enable "dashboard")
     ++ (lib.optional cfg.repoArchive.enable "repo-archive")
+    ++ (lib.optional cfg.state.enable "state")
+    ++ (lib.optional cfg.opencodeDb.enable "opencode-db")
+    ++ (lib.optional cfg.coldStoreNightly.enable "cold-store")
   );
   watchdogWanted = cfg.watchdog.enable && watchdogJobs != "";
   servicePath = lib.makeBinPath [
@@ -211,6 +230,19 @@ in
         type = lib.types.str;
         default = "05:40";
         description = "Daily run time (local) for the laptop-state backup.";
+      };
+    };
+
+    opencodeDb = {
+      enable = lib.mkOption {
+        type = lib.types.bool;
+        default = true;
+        description = "Daily restic backup of the OpenCode session database (sqlite VACUUM INTO snapshot, local + R2 + Drive) (code#10297).";
+      };
+      onCalendar = lib.mkOption {
+        type = lib.types.str;
+        default = "06:05";
+        description = "Daily run time (local) for the opencode-db backup.";
       };
     };
 
@@ -332,6 +364,19 @@ in
           };
         };
       })
+      (lib.mkIf cfg.opencodeDb.enable {
+        opencode-db-backup = {
+          Unit.Description = "Daily OpenCode session DB backup - sqlite snapshot + restic local + R2 + Drive (code#10297)";
+          Service = {
+            Type = "oneshot";
+            ExecStart = "${opencodeDbPkg}/bin/opencode-db-backup";
+            Environment = "PATH=${servicePath}:${home}/tools/bin:/run/current-system/sw/bin";
+            # 240m: the snapshot alone copies ~25G, then integrity_check
+            # plus three restic legs each run backup + check + prune.
+            TimeoutStartSec = "240m";
+          };
+        };
+      })
       (lib.mkIf cfg.coldStoreNightly.enable {
         cold-store-nightly = {
           Unit.Description = "Cold-store nightly backup set (D1 + Supabase + Turso exports to Drive) (code#1723)";
@@ -435,6 +480,17 @@ in
           Unit.Description = "Run the laptop-state backup daily (code#1849)";
           Timer = {
             OnCalendar = cfg.state.onCalendar;
+            Persistent = true;
+            RandomizedDelaySec = "15m";
+          };
+          Install.WantedBy = [ "timers.target" ];
+        };
+      })
+      (lib.mkIf cfg.opencodeDb.enable {
+        opencode-db-backup = {
+          Unit.Description = "Run the OpenCode session DB backup daily (code#10297)";
+          Timer = {
+            OnCalendar = cfg.opencodeDb.onCalendar;
             Persistent = true;
             RandomizedDelaySec = "15m";
           };

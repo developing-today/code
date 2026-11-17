@@ -55,6 +55,16 @@ jobs:
           cp -rL result site
           test -f site/index.html
 
+      # The derivation already gates on twin currency (docs-twins
+      # check runs inside .#mcpx-docs); assert the agent surface is
+      # visibly present in the staged site too (#1947).
+      - name: Verify agent twins in staged site
+        run: |
+          test -f site/llms.txt
+          test -f site/llms-full.txt
+          test -f site/index.html.md
+          grep -q 'rel="alternate" type="text/markdown"' site/index.html
+
       - name: Upload site artifact (PR builds only)
         if: github.event_name == 'pull_request'
         uses: actions/upload-artifact@v7
@@ -64,7 +74,7 @@ jobs:
           if-no-files-found: error
 
   deploy:
-    name: "deploy: GitHub Pages"
+    name: "stage: build + upload Pages artifact"
     # Deploys only from main: pushes to main and manual dispatches
     # (a dispatch on a non-main ref is refused here rather than
     # publishing a branch build).
@@ -72,18 +82,8 @@ jobs:
     needs: build
     runs-on: ubuntu-latest
     timeout-minutes: 30
-    # Serialise deploys: two deploys must never interleave, and a queued
-    # deploy is never cancelled by a later one (#1941).
-    concurrency:
-      group: pages
-      cancel-in-progress: false
     permissions:
       contents: read
-      pages: write
-      id-token: write
-    environment:
-      name: github-pages
-      url: ${{ steps.deployment.outputs.page_url }}
     steps:
       - uses: actions/checkout@v7
 
@@ -122,6 +122,42 @@ jobs:
         with:
           path: site
 
+  # The publish step lives in its own job, separate from the upload
+  # (#10956): deploy-pages fetches the "github-pages" artifact metadata
+  # as its first act, and when it ran ~1s after upload-pages-artifact
+  # finalized in the same job, the metadata had not always propagated
+  # ("Found 0 artifact(s)" — runs 44014450921 and 44066621783, with
+  # successful runs interleaved). A job boundary puts runner teardown,
+  # scheduling and startup between the upload and the fetch, which is
+  # the window the metadata needs; the conditional retry below covers
+  # a propagation delay longer than that.
+  publish:
+    name: "publish: GitHub Pages"
+    if: github.ref == 'refs/heads/main' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
+    needs: deploy
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    # Serialise deploys: two deploys must never interleave, and a queued
+    # deploy is never cancelled by a later one (#1941).
+    concurrency:
+      group: pages
+      cancel-in-progress: false
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url || steps.deployment_retry.outputs.page_url }}
+    steps:
       - name: Deploy to GitHub Pages
         id: deployment
+        uses: actions/deploy-pages@v5
+
+      - name: Wait for artifact metadata to propagate (retry gate)
+        if: failure() && steps.deployment.outcome == 'failure'
+        run: sleep 60
+
+      - name: Deploy to GitHub Pages (retry)
+        id: deployment_retry
+        if: failure() && steps.deployment.outcome == 'failure'
         uses: actions/deploy-pages@v5

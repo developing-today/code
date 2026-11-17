@@ -226,6 +226,21 @@ func (c *Client) callToolAsLegacyTask(ctx context.Context, name string, args any
 		Task *legacyTask `json:"task"`
 	}
 	if err := json.Unmarshal(created, &wrap); err != nil || wrap.Task == nil || wrap.Task.TaskID == "" {
+		// A server may answer a task-augmented call in line when the
+		// tool finishes at once -- the extension permits it, and the
+		// fixture's failing_job does exactly that. A CallToolResult
+		// payload is the call's definitive answer, not a malformed
+		// handle: return it as the result. Anything else stays the
+		// malformed-response error it was.
+		var inLine struct {
+			Content           []json.RawMessage `json:"content"`
+			IsError           bool              `json:"isError"`
+			StructuredContent json.RawMessage   `json:"structuredContent"`
+		}
+		if jerr := json.Unmarshal(created, &inLine); jerr == nil &&
+			(len(inLine.Content) > 0 || inLine.IsError || len(inLine.StructuredContent) > 0) {
+			return created, nil
+		}
 		return nil, fmt.Errorf("mcpx: tool %s: malformed task-augmented response: expected a {task} handle, got %s", name, shortRaw(created))
 	}
 	task := wrap.Task

@@ -10,8 +10,14 @@
 //! (record Decision 1). This module is slice 1 of #8214: the type,
 //! the domain-separated canonical encoding, sign/verify, the
 //! freshest-valid-wins selection rule (Decisions 1+3), and the
-//! durable sequence counter (invariant 8). Fetch/cache transport
-//! and the `.well-known` serving handler are later slices.
+//! durable sequence counter (invariant 8). Slice 2 added the
+//! last-known-good cache and substrate resolution; slice 4 adds the
+//! server side: `AdMinter` (minting on transport change and per
+//! TTL, Decision 3), whose current bytes the `.well-known` handler
+//! in id-web serves byte-for-byte. Slice 3 adds the fetch side:
+//! the well-known and Workers-rendezvous HTTPS substrates bound
+//! to an injected fetch closure (no HTTP dependency in id-core),
+//! DNS bootstrap-hint parsing, and background revalidation.
 //!
 //! The oracle for the tests below is the decision record itself:
 //! invariants 1–3 and 8, and the #8214 acceptance tests
@@ -146,6 +152,12 @@ fn hex_decode(s: &str) -> Option<Vec<u8>> {
     Some(out)
 }
 
+// Serializing a string slice with serde_json cannot fail: a string has
+// no custom Serialize impl and the output is an in-memory String, so the
+// expect in this helper is provably unreachable. The serializer is kept
+// rather than a hand-rolled escaper because these bytes are canonical
+// signing input and must stay byte-identical to serde_json escaping.
+#[allow(clippy::expect_used)]
 fn json_string(s: &str) -> String {
     serde_json::to_string(s).expect("serializing a string cannot fail")
 }
@@ -337,6 +349,132 @@ impl SequenceFile {
         std::fs::write(&tmp, next.to_string())?;
         std::fs::rename(&tmp, &self.path)?;
         Ok(next)
+    }
+}
+
+/// The TTL the record recommends for minted ads (Decision 1:
+/// TTL <= 24 h, 1 h RECOMMENDED).
+pub const RECOMMENDED_TTL_SECONDS: u64 = 60 * 60;
+
+/// Server-side minter (#8214 slice 4): owns the subject identity
+/// key and the durable SequenceFile beside it, and produces the
+/// one current signed advertisement the server publishes (Decision
+/// 1). Minting follows Decision 3: a new ad (sequence + 1) is
+/// minted on any transport change and at least once per TTL;
+/// between those events the current ad's bytes are stable, so
+/// every substrate (the .well-known handler, a broker mirror, the
+/// Workers push) serves the identical object byte-for-byte
+/// (Decision 2 parity).
+pub struct AdMinter {
+    key: SigningKey,
+    sequence: SequenceFile,
+    ttl_seconds: u64,
+    current: std::sync::Mutex<Option<MintedAd>>,
+}
+
+struct MintedAd {
+    transports: Vec<TransportEntry>,
+    signed: SignedAdvertisement,
+    /// The exact bytes substrates serve: the serde JSON of the
+    /// SignedAdvertisement, captured at mint time so a later
+    /// serializer change can never alter what an already-minted
+    /// ad serves as.
+    bytes: Vec<u8>,
+}
+
+impl AdMinter {
+    /// A minter for the given identity key, issuing sequences from
+    /// the counter file that lives beside the identity key. The
+    /// TTL is clamped to the record's 24 h maximum.
+    pub fn new(key: SigningKey, sequence: SequenceFile, ttl_seconds: u64) -> Self {
+        Self {
+            key,
+            sequence,
+            ttl_seconds: ttl_seconds.clamp(1, MAX_TTL_SECONDS),
+            current: std::sync::Mutex::new(None),
+        }
+    }
+
+    /// The subject fingerprint this minter signs for.
+    pub fn subject(&self) -> String {
+        TransportAdvertisement::subject_for(&self.key.verifying_key())
+    }
+
+    fn lock(&self) -> std::sync::MutexGuard<'_, Option<MintedAd>> {
+        self.current
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
+    fn mint_locked(
+        &self,
+        slot: &mut Option<MintedAd>,
+        transports: Vec<TransportEntry>,
+        now: u64,
+    ) -> std::io::Result<Vec<u8>> {
+        let sequence = self.sequence.next_sequence()?;
+        let ad = TransportAdvertisement {
+            subject: self.subject(),
+            transports,
+            issued_at: now,
+            expires_at: now.saturating_add(self.ttl_seconds),
+            sequence,
+        };
+        let signed = ad.sign(&self.key);
+        let bytes = serde_json::to_vec(&signed).map_err(std::io::Error::other)?;
+        *slot = Some(MintedAd {
+            transports: ad.transports.clone(),
+            signed,
+            bytes: bytes.clone(),
+        });
+        Ok(bytes)
+    }
+
+    /// Mint a new ad over the transports unconditionally
+    /// (sequence + 1) and return the bytes substrates should
+    /// serve.
+    pub fn mint(&self, transports: Vec<TransportEntry>, now: u64) -> std::io::Result<Vec<u8>> {
+        let mut slot = self.lock();
+        self.mint_locked(&mut slot, transports, now)
+    }
+
+    /// The Decision 3 refresh: mint only when there is no current
+    /// ad, the transport set changed, or the current ad has
+    /// expired; otherwise return the current bytes unchanged (a
+    /// no-op refresh consumes no sequence).
+    pub fn refresh(&self, transports: Vec<TransportEntry>, now: u64) -> std::io::Result<Vec<u8>> {
+        let mut slot = self.lock();
+        let stale = match &*slot {
+            None => true,
+            Some(minted) => {
+                minted.transports != transports || minted.signed.advertisement.expires_at <= now
+            }
+        };
+        if stale {
+            return self.mint_locked(&mut slot, transports, now);
+        }
+        Ok(slot.as_ref().map(|m| m.bytes.clone()).unwrap_or_default())
+    }
+
+    /// The bytes to serve right now, or None when nothing was
+    /// ever minted. An expired current ad is re-minted in place
+    /// over its last transport set (the per-TTL mint Decision 3
+    /// requires), so a server that is asked always answers with
+    /// a fresh ad.
+    pub fn current_bytes(&self, now: u64) -> std::io::Result<Option<Vec<u8>>> {
+        let mut slot = self.lock();
+        let expired = matches!(
+            &*slot,
+            Some(minted) if minted.signed.advertisement.expires_at <= now
+        );
+        if expired {
+            let transports = slot
+                .as_ref()
+                .map(|m| m.transports.clone())
+                .unwrap_or_default();
+            return self.mint_locked(&mut slot, transports, now).map(Some);
+        }
+        Ok(slot.as_ref().map(|m| m.bytes.clone()))
     }
 }
 
@@ -714,5 +852,467 @@ mod cache_tests {
         let sel = resolve(&mut cache, &substrates, &subject(), NOW).expect("LKG fallback");
         assert!(sel.degraded);
         assert_eq!(sel.advertisement.sequence, 4);
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
+mod minter_tests {
+    use super::*;
+
+    // Oracle: the #5793 decision record, Decision 3 (mint on
+    // transport change and at least once per TTL) and invariant 8
+    // (sequence durably monotonic per subject).
+
+    const NOW: u64 = 1_700_000_000;
+
+    fn key() -> SigningKey {
+        SigningKey::from_bytes(&[7u8; 32])
+    }
+
+    fn transports(port: u16) -> Vec<TransportEntry> {
+        vec![TransportEntry {
+            kind: TransportKind::Tcp,
+            endpoint: format!("203.0.113.7:{port}"),
+            priority: 30,
+            broker: None,
+        }]
+    }
+
+    fn parse(bytes: &[u8]) -> SignedAdvertisement {
+        serde_json::from_slice(bytes).expect("served bytes parse as a SignedAdvertisement")
+    }
+
+    fn minter(dir: &std::path::Path, ttl: u64) -> AdMinter {
+        AdMinter::new(
+            key(),
+            SequenceFile::new(dir.join("transport-ad.sequence")),
+            ttl,
+        )
+    }
+
+    #[test]
+    fn minted_ad_verifies_and_carries_the_recommended_shape() {
+        let dir = tempfile::tempdir().unwrap();
+        let m = minter(dir.path(), RECOMMENDED_TTL_SECONDS);
+        let bytes = m.mint(transports(443), NOW).unwrap();
+        let signed = parse(&bytes);
+        let ad = signed
+            .verify(&m.subject())
+            .expect("a minted ad verifies against its subject");
+        assert_eq!(ad.sequence, 1);
+        assert_eq!(ad.expires_at - ad.issued_at, RECOMMENDED_TTL_SECONDS);
+        // Serving is byte-for-byte: what current_bytes returns is
+        // exactly what mint produced.
+        assert_eq!(
+            m.current_bytes(NOW).unwrap().as_deref(),
+            Some(bytes.as_slice())
+        );
+    }
+
+    #[test]
+    fn refresh_mints_only_on_change_or_expiry() {
+        let dir = tempfile::tempdir().unwrap();
+        let m = minter(dir.path(), 3600);
+        let first = m.refresh(transports(443), NOW).unwrap();
+        // Same transports, still fresh: no new sequence.
+        let again = m.refresh(transports(443), NOW + 60).unwrap();
+        assert_eq!(first, again);
+        assert_eq!(parse(&again).advertisement.sequence, 1);
+        // Transport change: Decision 3 mints sequence + 1.
+        let changed = m.refresh(transports(8443), NOW + 120).unwrap();
+        assert_eq!(parse(&changed).advertisement.sequence, 2);
+        // Expiry of the current ad: the per-TTL mint fires even
+        // with unchanged transports.
+        let expired = m.refresh(transports(8443), NOW + 120 + 3600).unwrap();
+        assert_eq!(parse(&expired).advertisement.sequence, 3);
+    }
+
+    #[test]
+    fn current_bytes_remints_an_expired_ad() {
+        let dir = tempfile::tempdir().unwrap();
+        let m = minter(dir.path(), 3600);
+        assert!(m.current_bytes(NOW).unwrap().is_none());
+        m.mint(transports(443), NOW).unwrap();
+        let bytes = m.current_bytes(NOW + 3600).unwrap().expect("re-minted");
+        let ad = parse(&bytes).advertisement;
+        assert_eq!(ad.sequence, 2);
+        assert_eq!(ad.issued_at, NOW + 3600);
+    }
+
+    #[test]
+    fn sequence_never_regresses_across_minter_restarts() {
+        // Invariant 8: the counter lives beside the identity key,
+        // so a restarted minter continues from the persisted
+        // sequence instead of reissuing a lower one.
+        let dir = tempfile::tempdir().unwrap();
+        {
+            let m = minter(dir.path(), 3600);
+            m.mint(transports(443), NOW).unwrap();
+            m.mint(transports(443), NOW + 10).unwrap();
+        }
+        let restarted = minter(dir.path(), 3600);
+        let bytes = restarted.mint(transports(443), NOW + 20).unwrap();
+        assert_eq!(parse(&bytes).advertisement.sequence, 3);
+    }
+
+    #[test]
+    fn ttl_is_clamped_to_the_record_maximum() {
+        let dir = tempfile::tempdir().unwrap();
+        let m = minter(dir.path(), MAX_TTL_SECONDS * 10);
+        let bytes = m.mint(transports(443), NOW).unwrap();
+        let ad = parse(&bytes).advertisement;
+        assert_eq!(ad.expires_at - ad.issued_at, MAX_TTL_SECONDS);
+    }
+}
+
+// ---------------------------------------------------------------------
+// Slice 3 (#8214): fetch-side HTTPS substrates.
+//
+// HTTP-stack decision (recorded on issue #8214 by lane any-j,
+// 2026-11-17, following lane any-c's framing): id-core takes NO
+// HTTP client dependency. The substrates below bind the Substrate
+// trait to an injected fetch closure (FetchBytes) owned by the
+// eventual caller's HTTP stack, so the choice of client library
+// stays with the client binary and never gets buried in id-core.
+// Substrates are untrusted (Decision 1): they return the opaque
+// signed object, and resolve()/AdCache verification against the
+// pinned subject is what makes a hostile substrate fail closed.
+
+/// An injected HTTPS GET: returns the response body for `url`, or
+/// `None` when the fetch fails or the substrate has nothing. This
+/// is the seam the caller's HTTP stack binds to; implementations
+/// must use plain HTTPS (Decision 2, invariant 5).
+pub trait FetchBytes {
+    fn get(&self, url: &str) -> Option<Vec<u8>>;
+}
+
+impl<F> FetchBytes for F
+where
+    F: Fn(&str) -> Option<Vec<u8>>,
+{
+    fn get(&self, url: &str) -> Option<Vec<u8>> {
+        self(url)
+    }
+}
+
+/// Parse substrate bytes as a signed advertisement. Malformed
+/// bytes are `None` (an empty substrate), never an error worth
+/// failing resolution over; well-formed but forged bytes parse
+/// here and are rejected later by signature verification.
+fn parse_served(bytes: &[u8]) -> Option<SignedAdvertisement> {
+    serde_json::from_slice(bytes).ok()
+}
+
+/// The well-known URL for `subject` on `host` (Decision 2.2):
+/// `https://<host>/.well-known/id-transport-advertisement?subject=<fp>`.
+pub fn well_known_url(host: &str, subject: &str) -> String {
+    format!("https://{host}/.well-known/id-transport-advertisement?subject={subject}")
+}
+
+/// `H(subject)` for the Workers rendezvous (Decision 2.3): the
+/// lowercase hex SHA-256 of the subject fingerprint string. The
+/// rendezvous learns only this hash, never the named subject
+/// (record privacy note, Decision 3). The Workers component must
+/// key its stored blobs by this same value.
+pub fn subject_hash(subject: &str) -> String {
+    use sha2::Digest as _;
+    hex_encode(&sha2::Sha256::digest(subject.as_bytes()))
+}
+
+/// The Workers rendezvous fetch URL for `subject` under
+/// `rendezvous_base` (Decision 2.3):
+/// `https://<rendezvous-host>/v1/advertisement/<H(subject)>`.
+pub fn rendezvous_url(rendezvous_base: &str, subject: &str) -> String {
+    format!(
+        "{}/v1/advertisement/{}",
+        rendezvous_base.trim_end_matches('/'),
+        subject_hash(subject)
+    )
+}
+
+/// The authoritative self-hosted substrate (Decision 2.2): fetch
+/// the subject's current signed ad from a known host's
+/// `.well-known` endpoint over the injected HTTPS fetch.
+#[derive(Debug)]
+pub struct WellKnownSubstrate<F> {
+    host: String,
+    fetch: F,
+}
+
+impl<F> WellKnownSubstrate<F> {
+    pub fn new(host: impl Into<String>, fetch: F) -> Self {
+        Self {
+            host: host.into(),
+            fetch,
+        }
+    }
+}
+
+impl<F: FetchBytes> Substrate for WellKnownSubstrate<F> {
+    fn fetch(&self, subject: &str) -> Option<SignedAdvertisement> {
+        let bytes = self.fetch.get(&well_known_url(&self.host, subject))?;
+        parse_served(&bytes)
+    }
+}
+
+/// The hosted-mirror substrate (Decision 2.3): fetch the subject's
+/// signed ad from the Workers rendezvous by `H(subject)`. The
+/// rendezvous stores opaque signed blobs only; it holds no keys
+/// and cannot mint or alter ads.
+#[derive(Debug)]
+pub struct RendezvousSubstrate<F> {
+    base: String,
+    fetch: F,
+}
+
+impl<F> RendezvousSubstrate<F> {
+    pub fn new(base: impl Into<String>, fetch: F) -> Self {
+        Self {
+            base: base.into(),
+            fetch,
+        }
+    }
+}
+
+impl<F: FetchBytes> Substrate for RendezvousSubstrate<F> {
+    fn fetch(&self, subject: &str) -> Option<SignedAdvertisement> {
+        let bytes = self.fetch.get(&rendezvous_url(&self.base, subject))?;
+        parse_served(&bytes)
+    }
+}
+
+/// Bootstrap hints learned from DNS `_id.<host>` TXT records
+/// (Decision 2.4). DNS is bootstrap-only and never authoritative:
+/// hints name the hosts for the well-known and rendezvous
+/// substrates, and everything those substrates return is still
+/// authenticated by signature (Decision 1). A TXT record carries
+/// hints as whitespace-separated `key=value` tokens:
+/// `well-known=<host>` and `rendezvous=<base-url>`; unknown tokens
+/// are ignored, so records may carry other bootstrap data.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct BootstrapHints {
+    pub well_known_hosts: Vec<String>,
+    pub rendezvous_bases: Vec<String>,
+}
+
+/// Parse `_id.<host>` TXT record values into bootstrap hints.
+/// Duplicate hints are kept once, in first-seen order.
+pub fn parse_bootstrap_hints(txt_records: &[String]) -> BootstrapHints {
+    let mut hints = BootstrapHints::default();
+    for record in txt_records {
+        for token in record.split_whitespace() {
+            if let Some(host) = token.strip_prefix("well-known=") {
+                if !host.is_empty() && !hints.well_known_hosts.iter().any(|h| h == host) {
+                    hints.well_known_hosts.push(host.to_string());
+                }
+            } else if let Some(base) = token.strip_prefix("rendezvous=") {
+                if !base.is_empty() && !hints.rendezvous_bases.iter().any(|b| b == base) {
+                    hints.rendezvous_bases.push(base.to_string());
+                }
+            }
+        }
+    }
+    hints
+}
+
+/// Background revalidation (Decision 3): when a resolution came
+/// back degraded — an expired last-known-good in use — the caller
+/// revalidates in the background by re-walking every substrate.
+/// This is that re-walk: it folds any fresher valid ad into the
+/// cache and returns the post-revalidation selection, which is
+/// non-degraded exactly when a substrate produced a fresh ad.
+/// Calling it on a timer or from a background task never blocks
+/// the connection that is proceeding on the degraded selection.
+pub fn revalidate<'c>(
+    cache: &'c mut AdCache,
+    substrates: &[&dyn Substrate],
+    pinned_subject: &str,
+    now: u64,
+) -> Option<Selection<'c>> {
+    resolve(cache, substrates, pinned_subject, now)
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
+mod substrate_tests {
+    use super::*;
+    use std::cell::RefCell;
+
+    // Oracle: the #5793 decision record, Decision 2 (substrate
+    // selection + disagreement rule) and Decision 3 (freshness,
+    // replay, last-known-good + background revalidation).
+
+    const NOW: u64 = 1_700_000_000;
+
+    fn key() -> SigningKey {
+        SigningKey::from_bytes(&[7u8; 32])
+    }
+
+    fn subject() -> String {
+        TransportAdvertisement::subject_for(&key().verifying_key())
+    }
+
+    fn signed(sequence: u64, issued_at: u64, ttl: u64) -> SignedAdvertisement {
+        TransportAdvertisement {
+            subject: subject(),
+            transports: vec![TransportEntry {
+                kind: TransportKind::Tcp,
+                endpoint: "203.0.113.7:443".to_string(),
+                priority: 30,
+                broker: None,
+            }],
+            issued_at,
+            expires_at: issued_at + ttl,
+            sequence,
+        }
+        .sign(&key())
+    }
+
+    fn served(signed: &SignedAdvertisement) -> Vec<u8> {
+        serde_json::to_vec(signed).unwrap()
+    }
+
+    #[test]
+    fn well_known_substrate_fetches_the_decision_2_url_and_parses() {
+        let seen = RefCell::new(Vec::new());
+        let body = served(&signed(3, NOW, 3600));
+        let substrate = WellKnownSubstrate::new("id.example.com", |url: &str| {
+            seen.borrow_mut().push(url.to_string());
+            Some(body.clone())
+        });
+        let fetched = substrate.fetch(&subject()).expect("substrate has the ad");
+        assert_eq!(fetched.advertisement.sequence, 3);
+        let urls = seen.borrow();
+        assert_eq!(urls.len(), 1);
+        assert_eq!(urls[0], well_known_url("id.example.com", &subject()));
+        assert!(
+            urls[0].starts_with(
+                "https://id.example.com/.well-known/id-transport-advertisement?subject="
+            )
+        );
+    }
+
+    #[test]
+    fn rendezvous_substrate_fetches_by_subject_hash_only() {
+        // Decision 3 privacy: the rendezvous URL carries H(subject),
+        // never the subject fingerprint itself.
+        let seen = RefCell::new(Vec::new());
+        let body = served(&signed(4, NOW, 3600));
+        let substrate = RendezvousSubstrate::new("https://rendezvous.example", |url: &str| {
+            seen.borrow_mut().push(url.to_string());
+            Some(body.clone())
+        });
+        let fetched = substrate.fetch(&subject()).expect("substrate has the ad");
+        assert_eq!(fetched.advertisement.sequence, 4);
+        let urls = seen.borrow();
+        assert_eq!(urls.len(), 1);
+        assert_eq!(
+            urls[0],
+            format!(
+                "https://rendezvous.example/v1/advertisement/{}",
+                subject_hash(&subject())
+            )
+        );
+        assert!(!urls[0].contains(&subject()));
+        // H is a stable 32-byte SHA-256 hex digest.
+        assert_eq!(subject_hash(&subject()).len(), 64);
+        assert_eq!(subject_hash(&subject()), subject_hash(&subject()));
+        assert_ne!(subject_hash(&subject()), subject_hash("other-subject"));
+    }
+
+    #[test]
+    fn hostile_https_substrate_fails_closed_through_resolve() {
+        // Invariants 1-3 via a real substrate: forged bytes parse
+        // but never verify, so resolution ignores them entirely.
+        let forged = TransportAdvertisement {
+            subject: subject(),
+            transports: vec![],
+            issued_at: NOW,
+            expires_at: NOW + 3600,
+            sequence: 99,
+        }
+        .sign(&SigningKey::from_bytes(&[9u8; 32]));
+        let body = served(&forged);
+        let substrate =
+            WellKnownSubstrate::new("id.example.com", move |_url: &str| Some(body.clone()));
+        let mut cache = AdCache::new();
+        let substrates: [&dyn Substrate; 1] = [&substrate];
+        assert!(resolve(&mut cache, &substrates, &subject(), NOW).is_none());
+        assert_eq!(cache.cached_sequence(), 0);
+    }
+
+    #[test]
+    fn disagreement_across_https_substrates_highest_sequence_wins() {
+        // Decision 2 disagreement rule across the two HTTPS
+        // substrates, in both fetch orders.
+        let wk_body = served(&signed(5, NOW, 3600));
+        let rv_body = served(&signed(8, NOW, 3600));
+        let wk = WellKnownSubstrate::new("id.example.com", move |_url: &str| Some(wk_body.clone()));
+        let rv = RendezvousSubstrate::new("https://rendezvous.example", move |_url: &str| {
+            Some(rv_body.clone())
+        });
+        let forward: [&dyn Substrate; 2] = [&wk, &rv];
+        let reverse: [&dyn Substrate; 2] = [&rv, &wk];
+        for substrates in [forward, reverse] {
+            let mut cache = AdCache::new();
+            let sel = resolve(&mut cache, &substrates, &subject(), NOW).expect("resolution");
+            assert_eq!(sel.advertisement.sequence, 8);
+            assert!(!sel.degraded);
+        }
+    }
+
+    #[test]
+    fn unreachable_or_malformed_substrate_is_empty_not_an_error() {
+        let down = WellKnownSubstrate::new("id.example.com", |_url: &str| None);
+        assert!(down.fetch(&subject()).is_none());
+        let garbage = RendezvousSubstrate::new("https://rendezvous.example", |_url: &str| {
+            Some(b"not json".to_vec())
+        });
+        assert!(garbage.fetch(&subject()).is_none());
+    }
+
+    #[test]
+    fn bootstrap_hints_name_hosts_only_and_ignore_the_rest() {
+        // Decision 2.4: TXT hints name substrate hosts; they carry
+        // no advertisement and vouch for nothing.
+        let records = vec![
+            "well-known=id.example.com rendezvous=https://rendezvous.example".to_string(),
+            "well-known=id.example.com other=data v=spf1".to_string(),
+            "rendezvous=https://rendezvous.example well-known=backup.example.com".to_string(),
+        ];
+        let hints = parse_bootstrap_hints(&records);
+        assert_eq!(
+            hints.well_known_hosts,
+            vec![
+                "id.example.com".to_string(),
+                "backup.example.com".to_string()
+            ]
+        );
+        assert_eq!(
+            hints.rendezvous_bases,
+            vec!["https://rendezvous.example".to_string()]
+        );
+        assert_eq!(parse_bootstrap_hints(&[]), BootstrapHints::default());
+    }
+
+    #[test]
+    fn degraded_selection_is_upgraded_by_background_revalidation() {
+        // Decision 3: an expired last-known-good is used degraded
+        // while substrates are down; background revalidation with
+        // a recovered substrate upgrades it to a fresh selection.
+        let mut cache = AdCache::new();
+        assert!(cache.accept(signed(4, NOW - 7200, 3600), &subject()));
+        let down = WellKnownSubstrate::new("id.example.com", |_url: &str| None);
+        let substrates: [&dyn Substrate; 1] = [&down];
+        let sel = resolve(&mut cache, &substrates, &subject(), NOW).expect("LKG fallback");
+        assert!(sel.degraded);
+
+        let body = served(&signed(6, NOW, 3600));
+        let up = WellKnownSubstrate::new("id.example.com", move |_url: &str| Some(body.clone()));
+        let substrates: [&dyn Substrate; 1] = [&up];
+        let sel = revalidate(&mut cache, &substrates, &subject(), NOW).expect("revalidated");
+        assert!(!sel.degraded);
+        assert_eq!(sel.advertisement.sequence, 6);
     }
 }

@@ -853,7 +853,8 @@ Run `repo-queue <verb> --help` for flags:\n\
   revive <task-id> [--worker <id>] [--reason <text>] [--not-before <ts>]\n\
   fail <task-id> [--worker <id>] [--error <text>] [--reason-class <c>] [--execution <id>]\n\
   complete <task-id> [--worker <id>] [--result <json>] [--result-file <f>] [--telemetry <json>] [--execution <id>] [--queue <name>]\n\
-  timeline <task-id> [--worker <id>]\n\
+  timeline <task-id> [--worker <id>] [--json]\n\
+  history <task-id> [--worker <id>] [--json]  (alias of timeline)\n\
   models [--days <n>] [--json]\n\
   health [--queue <name>] [--worker <id>]\n\
   signal [--queue <name>] [--reason <text>]\n\
@@ -925,7 +926,10 @@ pub(crate) fn usage(verb: &str) -> &'static str {
             "usage: repo-queue complete <task-id> [--worker <id>] [--result <json>] [--result-file <f>] [--telemetry <json>] [--execution <id>] [--queue <name>]\n\nCompletes a task."
         }
         "timeline" => {
-            "usage: repo-queue timeline <task-id> [--worker <id>]\n\nShows a task's event timeline."
+            "usage: repo-queue timeline <task-id> [--worker <id>] [--json]\n\nShows a task's event timeline."
+        }
+        "history" => {
+            "usage: repo-queue history <task-id> [--worker <id>] [--json]\n\nAlias of timeline: shows a task's event timeline."
         }
         "models" => {
             "usage: repo-queue models [--days <n>] [--json]\n\nRolls up serving-model stamps."
@@ -1469,6 +1473,90 @@ fn progress_arg(args: &Args) -> Option<Value> {
     Some(val)
 }
 
+/// #7598: two different "lane" vocabularies share the word. The
+/// claim path's `--lane` takes a registry lane id (code-a, any-n);
+/// `--execution.lane` historically took only the execution MODE
+/// ('opencode' | 'direct') and died on a lane id, so a worker that
+/// naturally passed its own lane id was rejected client-side and
+/// retried with the surface name -- recording executed_lane as the
+/// surface next to a claim stamped with the lane id: the recorded
+/// claim-to-complete "lane mismatch". The split: `lane` keeps the
+/// mode; a lane id passed in `lane` (or explicitly as `lane_id`)
+/// is recorded under `lane_id` and the mode is derived from its
+/// family (the opencode family executed via an opencode session;
+/// every other family executed directly). Mirrors the broker's
+/// lane_family_of (turso_queue.rs) family rule.
+fn execution_lane_id_family(lane_id: &str) -> Option<&'static str> {
+    const FAMILIES: [&str; 7] = [
+        "code",
+        "any",
+        "not-code",
+        "opencode",
+        "openchamber",
+        "nix",
+        "darwin-nix",
+    ];
+    let (family, suffix) = lane_id.rsplit_once('-')?;
+    if suffix.is_empty() || !suffix.bytes().all(|b| b.is_ascii_lowercase()) {
+        return None;
+    }
+    FAMILIES.iter().find(|f| **f == family).copied()
+}
+
+fn normalize_execution(mut val: Value) -> Result<Value, String> {
+    let mut lane_id: Option<String> = None;
+    {
+        let obj = val.as_object_mut().expect("execution object");
+        if let Some(raw_id) = obj.get("lane_id").cloned() {
+            let Some(id) = raw_id.as_str() else {
+                return Err(
+                    "--execution.lane_id must be a string lane id (e.g. 'code-a')".to_string(),
+                );
+            };
+            if execution_lane_id_family(id).is_none() {
+                return Err(format!(
+                    "--execution.lane_id '{id}' is not a known lane id (family + lowercase suffix, e.g. 'code-a', 'any-n', 'opencode-a')"
+                ));
+            }
+            lane_id = Some(id.to_string());
+        }
+        if let Some(raw_lane) = obj.get("lane").cloned() {
+            let Some(lane) = raw_lane.as_str() else {
+                return Err(
+                    "--execution.lane must be a string: the execution mode 'opencode' or 'direct', or a lane id (e.g. 'code-a')"
+                        .to_string(),
+                );
+            };
+            if lane == "opencode" || lane == "direct" {
+                // The mode, exactly as before.
+            } else if let Some(family) = execution_lane_id_family(lane) {
+                if let Some(existing) = &lane_id {
+                    if existing != lane {
+                        return Err(format!(
+                            "--execution.lane '{lane}' and --execution.lane_id '{existing}' disagree"
+                        ));
+                    }
+                }
+                lane_id = Some(lane.to_string());
+                let mode = if family == "opencode" {
+                    "opencode"
+                } else {
+                    "direct"
+                };
+                obj.insert("lane".to_string(), json!(mode));
+            } else {
+                return Err(format!(
+                    "--execution.lane '{lane}' is neither the execution mode ('opencode' or 'direct') nor a known lane id (e.g. 'code-a'); pass the mode in 'lane' and the executing lane in 'lane_id'"
+                ));
+            }
+        }
+        if let Some(id) = &lane_id {
+            obj.insert("lane_id".to_string(), json!(id));
+        }
+    }
+    Ok(val)
+}
+
 fn execution_arg(args: &Args) -> Option<Value> {
     let raw = args.get("execution")?;
     let val: Value = match serde_json::from_str(&raw) {
@@ -1478,12 +1566,10 @@ fn execution_arg(args: &Args) -> Option<Value> {
     if !val.is_object() {
         die(2, "--execution must be a JSON object");
     }
-    if let Some(lane) = val.get("lane") {
-        if lane != &json!("opencode") && lane != &json!("direct") {
-            die(2, "--execution.lane must be 'opencode' or 'direct'");
-        }
+    match normalize_execution(val) {
+        Ok(v) => Some(v),
+        Err(e) => die(2, &e),
     }
-    Some(val)
 }
 
 fn py_str_list(items: &[String]) -> String {
@@ -2464,7 +2550,10 @@ fn unbound_append(worker: &str, row: &Value, trigger: &str) {
 /// #9046: fleet session ids are `ses_` + alphanumerics — the
 /// shape every session surface mints. Anything else is not a
 /// session id and must never reach a route_attempt SQL string.
-fn valid_session_id(s: &str) -> bool {
+/// #8287: this is the crate's one session-id predicate — the
+/// broker's bind verb (turso_queue::verb_bind) validates against
+/// it too; do not fork a second definition.
+pub(crate) fn valid_session_id(s: &str) -> bool {
     s.len() > 4 && s.starts_with("ses_") && s.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
 }
 
@@ -2675,9 +2764,9 @@ fn binding_windows(events: &[TimelineEvent]) -> Vec<(String, String, Option<Stri
 /// #9046: render one task's model timeline — binding windows,
 /// stamps, and transitions in order, with the exact resolved
 /// models per window joined from route_attempt.
-fn cmd_timeline(rest: &[String]) -> i32 {
-    let args = parse_verb_args("timeline", rest, &["worker"], &[]);
-    reject_extra_pos("timeline", &args, 1);
+fn cmd_timeline(verb: &str, rest: &[String]) -> i32 {
+    let args = parse_verb_args(verb, rest, &["worker"], &["json"]);
+    reject_extra_pos(verb, &args, 1);
     let task_id = args.pos_i64(0, "task_id");
     let mut events: Vec<TimelineEvent> = Vec::new();
     for kind in [
@@ -2725,8 +2814,63 @@ fn cmd_timeline(rest: &[String]) -> i32 {
     }
     events.sort_by_key(|e| e.id);
     let events = collapse_timeline(events);
+    let json_out = args.has("json");
     if events.is_empty() {
+        if json_out {
+            print_json(&json!({"task_id": task_id, "events": [], "served": []}));
+            return 0;
+        }
         println!("task {task_id}: no timeline records");
+        return 0;
+    }
+    if json_out {
+        // --json (#8200 residual): the same records the table below
+        // prints, as structured data — events in order, plus the
+        // route_attempt served windows. Marks print as recorded:
+        // an absent mark is null, never invented.
+        let windows = binding_windows(&events);
+        let served: Vec<Value> = windows
+            .iter()
+            .map(|(sid, start, end)| {
+                let start_ms = parse_ts_str(start).map(|us| us / 1000).unwrap_or(0);
+                let end_ms = end
+                    .as_ref()
+                    .and_then(|e| parse_ts_str(e))
+                    .map(|us| us / 1000)
+                    .unwrap_or_else(|| {
+                        std::time::SystemTime::now()
+                            .duration_since(std::time::UNIX_EPOCH)
+                            .map(|d| d.as_millis() as i64)
+                            .unwrap_or(0)
+                    });
+                json!({
+                    "session_id": sid,
+                    "start": start,
+                    "end": end,
+                    "segments": route_segments_for_session(sid, start_ms, end_ms)
+                        .unwrap_or_default(),
+                })
+            })
+            .collect();
+        print_json(&json!({
+            "task_id": task_id,
+            "events": events
+                .iter()
+                .map(|ev| {
+                    json!({
+                        "id": ev.id,
+                        "kind": ev.kind,
+                        "created_at": ev.created_at,
+                        "session_id": ev.session_id,
+                        "provider": ev.provider,
+                        "model": ev.model,
+                        "variant": ev.variant,
+                        "trigger": ev.trigger,
+                    })
+                })
+                .collect::<Vec<_>>(),
+            "served": served,
+        }));
         return 0;
     }
     for ev in &events {
@@ -3328,7 +3472,11 @@ fn cmd_claim(rest: &[String]) -> i32 {
     }
     let (mut out, code) = claim_output(&resp);
     if code != 0 {
-        eprint("repo-queue: no claimable task");
+        // #8154: name why when the envelope carries the counts.
+        eprint(
+            &no_claim_diagnostic(&resp)
+                .unwrap_or_else(|| "repo-queue: no claimable task".to_string()),
+        );
         print_json(&out);
         return code;
     }
@@ -3522,14 +3670,33 @@ fn claim_batch_output(resp: &Value, worker: &str, requested: i64) -> i32 {
         }
     }
     let claimed = tasks.len();
-    print_json(&json!({
+    let mut out = json!({
         "tasks": tasks,
         "claimed": claimed,
         "requested": requested,
         "guard_held": held,
-    }));
+    });
+    // #8154: an empty batch carries the no-claim counts too.
     if claimed == 0 {
-        eprint("repo-queue: no claimable task");
+        if let Some(obj) = out.as_object_mut() {
+            for k in [
+                "queued",
+                "at_cap_queued",
+                "queued_not_yet_due",
+                "parked_due",
+            ] {
+                if let Some(v) = resp.get(k) {
+                    obj.insert(k.to_string(), v.clone());
+                }
+            }
+        }
+    }
+    print_json(&out);
+    if claimed == 0 {
+        eprint(
+            &no_claim_diagnostic(resp)
+                .unwrap_or_else(|| "repo-queue: no claimable task".to_string()),
+        );
         return NO_CLAIM_EXIT;
     }
     0
@@ -3596,6 +3763,33 @@ const NO_CLAIM_EXIT: i32 = 5;
 /// (or missing) row yields the distinct `{"task": null}` marker with
 /// NO_CLAIM_EXIT, a value carrying no id/queue/status/dedupe_key
 /// fields a caller could mistake for a task.
+/// #8154 (follow-on #2937 acceptance 4): the no-claim diagnostic.
+/// When the broker's no-row envelope carries the scoped counts,
+/// name why the claim found nothing — most importantly the attempt
+/// cap, the case that otherwise reads as a mysteriously empty
+/// queue. Returns None when the envelope has no counts (an older
+/// broker), so callers fall back to the bare line.
+fn no_claim_diagnostic(resp: &Value) -> Option<String> {
+    let queued = resp.get("queued")?.as_i64()?;
+    let at_cap = resp
+        .get("at_cap_queued")
+        .and_then(|v| v.as_i64())
+        .unwrap_or(0);
+    let not_due = resp
+        .get("queued_not_yet_due")
+        .and_then(|v| v.as_i64())
+        .unwrap_or(0);
+    let parked_due = resp.get("parked_due").and_then(|v| v.as_i64()).unwrap_or(0);
+    let mut line = format!(
+        "repo-queue: no claimable task — {queued} queued ({at_cap} at the attempt cap, \
+         {not_due} not yet due), {parked_due} parked due (#8154)"
+    );
+    if queued > 0 && at_cap >= queued {
+        line.push_str("; every queued task is at the attempt cap");
+    }
+    Some(line)
+}
+
 fn claim_output(resp: &Value) -> (Value, i32) {
     let row = resp.get("row").cloned().unwrap_or(Value::Null);
     if row.is_null() {
@@ -3604,7 +3798,16 @@ fn claim_output(resp: &Value) -> (Value, i32) {
         // instead of an empty claim.
         let mut out = json!({"task": Value::Null});
         if let Some(obj) = out.as_object_mut() {
-            for k in ["budget_skipped", "max_required_budget_minutes"] {
+            for k in [
+                "budget_skipped",
+                "max_required_budget_minutes",
+                // #8154: the no-claim counts ride the printed
+                // envelope next to the budget summary.
+                "queued",
+                "at_cap_queued",
+                "queued_not_yet_due",
+                "parked_due",
+            ] {
                 if let Some(v) = resp.get(k) {
                     obj.insert(k.to_string(), v.clone());
                 }
@@ -6362,7 +6565,8 @@ pub fn run(args: &[String]) -> i32 {
         "revive" => cmd_revive(rest),
         "fail" => cmd_fail(rest),
         "complete" => cmd_complete(rest),
-        "timeline" => cmd_timeline(rest),
+        "timeline" => cmd_timeline("timeline", rest),
+        "history" => cmd_timeline("history", rest),
         "models" => cmd_models(rest),
         "health" => cmd_health(rest),
         "signal" => cmd_signal(rest),
@@ -6385,7 +6589,39 @@ mod tests {
     use proptest::prelude::*;
 
     #[test]
-    #[test]
+    fn execution_lane_split_7598() {
+        // Oracle (#7598): a worker passing its own lane id in
+        // --execution.lane is accepted; the recorded execution
+        // carries the mode in `lane` and the lane id in `lane_id`,
+        // so a claim-to-complete round trip leaves claim lane ==
+        // completion lane_id. The old mode values pass through
+        // unchanged, and garbage still dies with a clear message.
+        let v = normalize_execution(json!({"lane": "any-n"})).unwrap();
+        assert_eq!(v["lane"], json!("direct"));
+        assert_eq!(v["lane_id"], json!("any-n"));
+        let v = normalize_execution(json!({"lane": "opencode-a"})).unwrap();
+        assert_eq!(v["lane"], json!("opencode"));
+        assert_eq!(v["lane_id"], json!("opencode-a"));
+        let v = normalize_execution(json!({"lane": "code-a"})).unwrap();
+        assert_eq!(v["lane"], json!("direct"));
+        assert_eq!(v["lane_id"], json!("code-a"));
+        // Mode-only callers are untouched (no lane_id invented).
+        let v = normalize_execution(json!({"lane": "opencode"})).unwrap();
+        assert_eq!(v["lane"], json!("opencode"));
+        assert!(v.get("lane_id").is_none());
+        let v = normalize_execution(json!({"lane": "direct"})).unwrap();
+        assert_eq!(v["lane"], json!("direct"));
+        assert!(v.get("lane_id").is_none());
+        // Explicit lane_id alongside a mode is kept as-is.
+        let v = normalize_execution(json!({"lane": "direct", "lane_id": "any-f"})).unwrap();
+        assert_eq!(v["lane"], json!("direct"));
+        assert_eq!(v["lane_id"], json!("any-f"));
+        // Disagreement and garbage are refused, naming the semantics.
+        assert!(normalize_execution(json!({"lane": "any-n", "lane_id": "any-f"})).is_err());
+        assert!(normalize_execution(json!({"lane": "banana"})).is_err());
+        assert!(normalize_execution(json!({"lane_id": "banana-1"})).is_err());
+    }
+
     #[test]
     fn timeline_surfaces_claim_displacement_events_6985() {
         // #6985: the recurrence on task 17490 read as "exactly two
@@ -6410,6 +6646,7 @@ mod tests {
         }
     }
 
+    #[test]
     fn collapse_timeline_9046_drops_only_duplicate_writes() {
         // #9046 oracle: same (kind, session, leaf, trigger) inside
         // 120 s = one record written by two surfaces; a changed
@@ -6506,6 +6743,7 @@ mod tests {
         assert!(bare_claim_refusal(&mk(&["--handoff"]), &None).is_none());
     }
 
+    #[test]
     fn rollup_event_reads_row_task_id() {
         // Claim-link rollup: the row's own task_id column joins
         // the stamp (fleet-cli stamp details carry no task_id).
@@ -7305,6 +7543,50 @@ mod tests {
     }
 
     #[test]
+    fn no_claim_diagnostic_names_at_cap_reason_8154() {
+        // #8154 oracle (follow-on #2937 acceptance 4): a null row
+        // whose envelope carries the counts produces a diagnostic
+        // naming the attempt cap; when every queued task is at cap
+        // the line says so outright. No counts (older broker) -> no
+        // diagnostic, and claim_output still carries the counts on
+        // the printed {task: null} envelope with exit 5.
+        let resp = json!({
+            "row": Value::Null,
+            "queued": 7,
+            "at_cap_queued": 7,
+            "queued_not_yet_due": 0,
+            "parked_due": 2,
+        });
+        let line = no_claim_diagnostic(&resp).expect("counts yield a diagnostic");
+        assert!(line.contains("7 queued"), "{line}");
+        assert!(line.contains("7 at the attempt cap"), "{line}");
+        assert!(
+            line.contains("every queued task is at the attempt cap"),
+            "{line}"
+        );
+        assert!(line.contains("2 parked due"), "{line}");
+        let mixed = json!({
+            "row": Value::Null,
+            "queued": 9,
+            "at_cap_queued": 3,
+            "queued_not_yet_due": 4,
+            "parked_due": 0,
+        });
+        let line = no_claim_diagnostic(&mixed).expect("counts yield a diagnostic");
+        assert!(line.contains("3 at the attempt cap"), "{line}");
+        assert!(line.contains("4 not yet due"), "{line}");
+        assert!(!line.contains("every queued task"), "{line}");
+        assert!(no_claim_diagnostic(&json!({"row": Value::Null})).is_none());
+        let (out, code) = claim_output(&resp);
+        assert_eq!(code, NO_CLAIM_EXIT);
+        assert!(out["task"].is_null());
+        assert_eq!(out["queued"], 7);
+        assert_eq!(out["at_cap_queued"], 7);
+        assert_eq!(out["queued_not_yet_due"], 0);
+        assert_eq!(out["parked_due"], 2);
+    }
+
+    #[test]
     fn claim_bind_path_requires_explicit_bind_single_claim_and_session() {
         // #5757-A oracle: /claim-flow is chosen ONLY for an
         // explicit --bind with a session to bind, a single claim,
@@ -7529,7 +7811,10 @@ mod tests {
         // The exact garbage shapes from the finding die at the
         // validator the client now applies:
         for bad in ["0", "!", "banana"] {
-            assert!(validate_not_before_flag(bad).is_err(), "{bad} must be rejected");
+            assert!(
+                validate_not_before_flag(bad).is_err(),
+                "{bad} must be rejected"
+            );
         }
     }
 

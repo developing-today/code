@@ -1200,6 +1200,7 @@ fn to_hex(bytes: &[u8]) -> String {
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
     use crate::world_caps::PROVIDER_REGISTRY;

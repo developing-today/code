@@ -269,3 +269,40 @@ func TestTypeCheckRunsInExecutionWorkingDirectory(t *testing.T) {
 			strings.TrimSpace(string(got)), want)
 	}
 }
+
+// TestUnsupportedWarnNeedsAnExplicitCheck is #1868 point 4: the
+// Deno-only notice under the warn policy is shown only when the check
+// was explicitly requested. A check switched on by a per-command
+// default (run, with nothing given) is quiet on a runtime that strips
+// types. Oracle: the explicit case must produce exactly the one
+// problem the pre-change code produced for every caller.
+func TestUnsupportedWarnNeedsAnExplicitCheck(t *testing.T) {
+	dir := t.TempDir()
+	entry := filepath.Join(dir, "main.ts")
+	if err := os.WriteFile(entry, []byte("export {}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		name     string
+		explicit bool
+		problems int
+	}{
+		{name: "explicit", explicit: true, problems: 1},
+		{name: "defaulted", explicit: false, problems: 0},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			rep := preflight.TypeCheckWithPolicyExplicit(context.Background(), "/usr/bin/node", entry,
+				preflight.TypeCheckTypes, 0, nil, dir, "fail", "warn", tc.explicit)
+			if len(rep.Problems) != tc.problems || rep.Err() != nil {
+				t.Fatalf("report = %+v, err = %v; want %d problems", rep, rep.Err(), tc.problems)
+			}
+		})
+	}
+	// The legacy entry point keeps its old behaviour: its callers set
+	// the mode themselves, so they are treated as explicit.
+	rep := preflight.TypeCheckWithPolicy(context.Background(), "/usr/bin/node", entry,
+		preflight.TypeCheckTypes, 0, nil, dir, "fail", "warn")
+	if len(rep.Problems) != 1 {
+		t.Fatalf("TypeCheckWithPolicy problems = %v, want 1", rep.Problems)
+	}
+}

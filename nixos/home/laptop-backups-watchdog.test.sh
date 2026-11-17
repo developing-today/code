@@ -41,9 +41,14 @@ chmod +x "$BIN/systemctl"
 iso_ago() { date -u -d "$1" +%Y-%m-%dT%H:%M:%SZ; }
 trig_ago() { date -u -d "$1" '+%a %Y-%m-%d %H:%M:%S UTC'; }
 
-set_triggers() { # $1 pm trigger spec, $2 repo-archive trigger spec
+set_triggers() { # $1 pm trigger spec, $2 repo-archive trigger spec, $3 state trigger spec
   trig_ago "$1" >"$TRIG/pm-dashboard-backup.timer"
   trig_ago "$2" >"$TRIG/repo-archive-backup.timer"
+  trig_ago "${3:-1 hour ago}" >"$TRIG/laptop-state-backup.timer"
+}
+MARKER="$TMP_ROOT/state-marker"
+write_marker() { # $1 age spec for the laptop-state success marker
+  date -d "$1" +%s >"$MARKER"
 }
 write_record() { # $1 result, $2 finished spec
   python3 - "$1" "$(iso_ago "$2")" <<'PYEOF'
@@ -80,14 +85,34 @@ STUB
 } >"$BIN/rclone"
 chmod +x "$BIN/rclone"
 
+set_cs_trigger() { trig_ago "$1" >"$TRIG/cold-store-nightly.timer"; }
+set_cs_result() { printf '%s\n' "$1" >"$TRIG/cold-store-nightly.service"; }
+write_manifest() { # $1 latest backup-upload date spec, or "none"
+  mkdir -p "$HOME_DIR/.config/cold-store"
+  HOME_DIR="$HOME_DIR" python3 - "$1" <<'PYEOF'
+import os, sqlite3, subprocess, sys
+path = os.path.join(os.environ["HOME_DIR"], ".config", "cold-store", "manifest.sqlite")
+if os.path.exists(path):
+    os.remove(path)
+con = sqlite3.connect(path)
+con.execute("create table transfer_ledger (id integer primary key autoincrement, ts text not null default (datetime('now')), direction text, bytes integer, kind text, ref text)")
+if sys.argv[1] != "none":
+    ts = subprocess.check_output(["date", "-u", "-d", sys.argv[1], "+%Y-%m-%d %H:%M:%S"]).decode().strip()
+    con.execute("insert into transfer_ledger (ts, direction, bytes, kind, ref) values (?, 'upload', 100, 'backup-upload', 'fleet-queue')", (ts,))
+con.commit()
+PYEOF
+}
+
 RECORD="$TMP_ROOT/record.json"
 run_watchdog() {
   HOME="$HOME_DIR" LAPTOP_BACKUPS_RECORD="$RECORD" WATCHDOG_STUB_TRIGGERS="$TRIG" \
+    LAPTOP_STATE_MARKER="$MARKER" \
     PATH="$BIN:$PATH" bash "$SCRIPT" 26 >"$TMP_ROOT/out.log" 2>&1
   RC=$?
 }
 run_watchdog_jobs() { # $1 jobs list
   HOME="$HOME_DIR" LAPTOP_BACKUPS_RECORD="$RECORD" WATCHDOG_STUB_TRIGGERS="$TRIG" \
+    LAPTOP_STATE_MARKER="$MARKER" \
     PATH="$BIN:$PATH" bash "$SCRIPT" 26 "$1" >"$TMP_ROOT/out.log" 2>&1
   RC=$?
 }
@@ -234,6 +259,80 @@ mkdir -p "$PM_STACK_ROOT/$STALE_DAY"
 touch -d "@$((TEST_EPOCH - 172800))" "$PM_STACK_ROOT/$STALE_DAY"
 run_watchdog
 expect_ok pm-stack-stale-day
+
+# --- laptop-state coverage (code#10294) --------------------------------------
+# state job enabled, fresh marker + fresh timer -> 0
+RECORD_OUT="$RECORD" write_record complete "1 hour ago"
+set_triggers "1 hour ago" "1 hour ago" "1 hour ago"
+write_marker "2 hours ago"
+run_watchdog_jobs dashboard,repo-archive,state
+expect_ok state-fresh
+
+# stale marker -> non-zero naming laptop-state-backup (the 12-day stall shape)
+write_marker "40 hours ago"
+run_watchdog_jobs dashboard,repo-archive,state
+expect_named_failure state-stale-marker laptop-state-backup
+
+# missing marker -> non-zero naming laptop-state-backup
+rm -f "$MARKER"
+run_watchdog_jobs dashboard,repo-archive,state
+expect_named_failure state-missing-marker laptop-state-backup
+
+# future marker (beyond skew tolerance) -> non-zero naming laptop-state-backup
+write_marker "2 hours"
+run_watchdog_jobs dashboard,repo-archive,state
+expect_named_failure state-future-marker laptop-state-backup
+
+# stale state timer -> non-zero naming laptop-state-backup
+write_marker "1 hour ago"
+set_triggers "1 hour ago" "1 hour ago" "40 hours ago"
+run_watchdog_jobs dashboard,repo-archive,state
+expect_named_failure state-stale-timer laptop-state-backup
+
+# state job not in the jobs list -> its stale marker is not a violation
+write_marker "40 hours ago"
+set_triggers "1 hour ago" "1 hour ago"
+run_watchdog_jobs dashboard,repo-archive
+expect_ok state-not-enabled
+
+# cold-store job: fresh trigger + success result + fresh ledger -> 0
+set_cs_trigger "1 hour ago"
+set_cs_result success
+write_manifest "1 hour ago"
+run_watchdog_jobs cold-store
+expect_ok cs-fresh
+
+# cold-store: stale ledger (nothing filed recently) -> named failure
+write_manifest "40 hours ago"
+run_watchdog_jobs cold-store
+expect_named_failure cs-stale-ledger cold-store-nightly
+
+# cold-store: failed last result, however fresh the ledger -> named
+# failure (the 2026-11-12 shape: fired, started, killed mid-export)
+set_cs_result failure
+write_manifest "10 minutes ago"
+run_watchdog_jobs cold-store
+expect_named_failure cs-failed-result cold-store-nightly
+
+# cold-store: missing manifest -> named failure
+set_cs_result success
+rm -f "$HOME_DIR/.config/cold-store/manifest.sqlite"
+run_watchdog_jobs cold-store
+expect_named_failure cs-missing-manifest cold-store-nightly
+
+# cold-store: stale timer -> named failure
+set_cs_trigger "40 hours ago"
+write_manifest "1 hour ago"
+run_watchdog_jobs cold-store
+expect_named_failure cs-stale-timer cold-store-nightly
+
+# cold-store is not in the default job set: its violations stay
+# silent for hosts/jobs that did not opt in
+RECORD_OUT="$RECORD" write_record complete "1 hour ago"
+set_triggers "1 hour ago" "1 hour ago"
+set_cs_result failure
+run_watchdog
+expect_ok cs-not-in-default-jobs
 
 if ((failures > 0)); then
   echo "laptop-backups-watchdog tests: $failures failure(s)" >&2

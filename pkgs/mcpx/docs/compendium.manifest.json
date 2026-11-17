@@ -96,6 +96,20 @@
       "note": "lootbox audit, why Go, what was built (historical; keeps its text)"
     },
     {
+      "path": "agents-docs/README.md",
+      "chapter": null,
+      "role": "not-compendium",
+      "lines": 19,
+      "note": "explains the hand-written agent-twin override sources (#1947); the directory is twin source material for docs-twins emit, not a book chapter"
+    },
+    {
+      "path": "agents-docs/index.md",
+      "chapter": null,
+      "role": "not-compendium",
+      "lines": 65,
+      "note": "hand-written agent twin override for the book home page (#1947); it surfaces as the home page twin, not as its own chapter"
+    },
+    {
       "path": "daemon/README.md",
       "chapter": null,
       "role": "not-compendium",
@@ -1038,6 +1052,13 @@
       "chapter": "decision-records",
       "role": "chapter-source",
       "lines": 107,
+      "note": "a decision record under the chapter index"
+    },
+    {
+      "path": "docs/decisions/0007-elicitation-identity.md",
+      "chapter": "decision-records",
+      "role": "chapter-source",
+      "lines": 123,
       "note": "a decision record under the chapter index"
     },
     {

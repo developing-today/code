@@ -10,6 +10,7 @@
 //! This crate depends on `id-core` for [`id_core::json_unique`] only;
 //! the dependency points one way — `id-core` never names this crate.
 
+pub mod agent_delegation;
 pub mod declaration;
 pub mod library_gate;
 pub mod library_manifest;

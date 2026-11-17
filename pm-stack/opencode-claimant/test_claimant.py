@@ -17,6 +17,12 @@ exercises the real step logic with no server and no queue:
 - launch_step records a skip (not silence) when a candidate's state
   changes before launch, and main() writes those skips into the
   fires.jsonl entry;
+- launch_step stops at the provider-capacity wall (#8166): a
+  tier_limit_exceeded answer from session create or the prompt POST
+  closes the gate for the rest of the fire, a prompt-walled launch
+  is rolled back (delete + recovery bind) so it does not stand as
+  an attempt-consuming launch, and main() records the verbatim
+  provider error under the fires entry's provider_wall key;
 - supervision_step recovers a bound task whose session is gone from
   the server (error body, zero messages) via delete + recovery bind;
 - supervision_step treats an unreadable message read as UNKNOWN, not
@@ -413,6 +419,151 @@ class TestLaunchStep(unittest.TestCase):
         self.assertEqual(binds, [])
 
 
+WALL_ERROR = (
+    "[code=tier_limit_exceeded] membership concurrency limit exceeded: "
+    "11/10 resets 2026-11-10T15:12:00Z"
+)
+WALL_BODY = json.dumps({"error": {"message": WALL_ERROR}})
+
+
+def make_wall_run(binds, *, wall_on, creates=None, deletes=None):
+    """Build a subprocess.run stub like make_fake_run, except the
+    named launch surface ("create" or "prompt") answers 400 with
+    the provider's tier_limit_exceeded body (#8166) - the shape the
+    Workhorse route returned in the 2026-11-10 fires."""
+
+    base = make_fake_run(binds, deletes=deletes)
+
+    def fake_run(cmd, **kwargs):
+        argv = [str(part) for part in cmd]
+        joined = " ".join(argv)
+        if (
+            argv[0] == "curl"
+            and "POST" in argv
+            and joined.rstrip().endswith("/api/session")
+        ):
+            if creates is not None:
+                creates.append(cmd)
+            if wall_on == "create":
+                return Result(0, WALL_BODY + "\n400")
+        if (
+            argv[0] == "curl"
+            and wall_on == "prompt"
+            and joined.rstrip().endswith("/prompt")
+        ):
+            return Result(0, WALL_BODY + "\n400")
+        return base(cmd, **kwargs)
+
+    return fake_run
+
+
+class TestProviderWallGate(unittest.TestCase):
+    def test_create_wall_stops_the_fire_and_records_it(self):
+        # #8166: the first candidate's session create is answered
+        # with the provider wall - nothing launches, the second
+        # candidate is never even attempted (one create total), and
+        # the fire record carries the wall verbatim with the route
+        # and serving leaf.
+        binds = []
+        creates = []
+        two = [dict(CANDIDATE), dict(CANDIDATE, id=778)]
+        with (
+            patch.object(claimant, "run_poll", return_value={"candidates": two}),
+            patch.object(
+                claimant.subprocess,
+                "run",
+                make_wall_run(binds, wall_on="create", creates=creates),
+            ),
+        ):
+            launched, skips = claimant.launch_step("live", 3)
+        self.assertEqual(launched, [])
+        self.assertEqual(
+            skips,
+            [
+                {"task_id": 777, "reason": "provider_wall"},
+                {"task_id": 778, "reason": "provider_wall"},
+            ],
+        )
+        self.assertEqual(len(creates), 1)
+        self.assertEqual(binds, [])
+        self.assertEqual(
+            claimant._fire_provider_wall,
+            {
+                "error": WALL_ERROR,
+                "route": claimant.LAUNCH_MODEL_PROVIDER,
+                "serving_leaf": claimant.LAUNCH_MODEL_ID,
+            },
+        )
+
+    def test_prompt_wall_rolls_back_the_launch(self):
+        # #8166 item 3: create + bind succeed but the prompt POST is
+        # answered with the wall - the session's first step died on
+        # provider capacity, so the launch is rolled back (verified
+        # delete + recovery bind) instead of standing as a launched
+        # session consuming the task's attempt.
+        binds = []
+        deletes = []
+        with (
+            patch.object(
+                claimant, "run_poll", return_value={"candidates": [dict(CANDIDATE)]}
+            ),
+            patch.object(
+                claimant.subprocess,
+                "run",
+                make_wall_run(binds, wall_on="prompt", deletes=deletes),
+            ),
+        ):
+            launched, skips = claimant.launch_step("live", 3)
+        self.assertEqual(launched, [])
+        self.assertEqual(skips, [{"task_id": 777, "reason": "provider_wall"}])
+        self.assertEqual(len(deletes), 1)
+        self.assertEqual(len(binds), 2)
+        recovery_argv = [str(part) for part in binds[1]]
+        self.assertIn(claimant.LAUNCHED_BY_RECOVERY_PROVIDER_WALL, recovery_argv)
+        self.assertEqual(claimant._fire_provider_wall["error"], WALL_ERROR)
+
+    def test_main_records_provider_wall_in_fires_entry(self):
+        # #8166 item 2: a walled fire's log line carries the
+        # provider_wall entry - verbatim error, route, serving
+        # leaf - next to zero launches, so the record distinguishes
+        # "nowhere to run them" from "no candidates".
+        with tempfile.TemporaryDirectory() as tmp:
+            state_dir = Path(tmp)
+            fires = state_dir / "fires.jsonl"
+            with (
+                patch.object(claimant, "read_mode", return_value="live"),
+                patch.object(
+                    claimant, "run_poll", return_value={"candidates": [dict(CANDIDATE)]}
+                ),
+                patch.object(
+                    claimant, "run_queue_health", return_value="health-test-line"
+                ),
+                stub_claimed_rows([]),
+                patch.object(claimant, "get_active_root_session_count", return_value=0),
+                patch.object(
+                    claimant.subprocess,
+                    "run",
+                    make_wall_run([], wall_on="create"),
+                ),
+                patch.object(claimant, "STATE_DIR", state_dir),
+                patch.object(claimant, "FIRES_FILE", fires),
+            ):
+                self.assertEqual(claimant.main(), 0)
+            entries = [
+                json.loads(line) for line in fires.read_text().splitlines() if line
+            ]
+        self.assertEqual(len(entries), 1)
+        self.assertEqual(entries[0]["sessions_launched"], [])
+        self.assertEqual(
+            entries[0]["provider_wall"],
+            {
+                "error": WALL_ERROR,
+                "route": claimant.LAUNCH_MODEL_PROVIDER,
+                "serving_leaf": claimant.LAUNCH_MODEL_ID,
+            },
+        )
+
+
 class TestSupervisionStep(unittest.TestCase):
     def test_gone_zero_message_session_is_recovered(self):
         binds = []
@@ -646,7 +797,9 @@ class TestCapUnknownFireLog(unittest.TestCase):
                 patch.object(
                     claimant, "run_poll", return_value={"candidates": [dict(CANDIDATE)]}
                 ),
-                patch.object(claimant, "run_queue_health", return_value="health-test-line"),
+                patch.object(
+                    claimant, "run_queue_health", return_value="health-test-line"
+                ),
                 stub_claimed_rows([]),
                 patch.object(
                     claimant, "get_active_root_session_count", return_value=-1
@@ -677,7 +830,9 @@ class TestGateUnknownFireLog(unittest.TestCase):
                 patch.object(
                     claimant, "run_poll", side_effect=RuntimeError("poll blew up")
                 ),
-                patch.object(claimant, "run_queue_health", return_value="health-test-line"),
+                patch.object(
+                    claimant, "run_queue_health", return_value="health-test-line"
+                ),
                 stub_claimed_rows([]),
                 patch.object(claimant, "STATE_DIR", state_dir),
                 patch.object(claimant, "FIRES_FILE", fires),
@@ -703,7 +858,9 @@ class TestGateExitFireLog(unittest.TestCase):
             with (
                 patch.object(claimant, "read_mode", return_value="shadow"),
                 patch.object(claimant, "run_poll", return_value={"candidates": []}),
-                patch.object(claimant, "run_queue_health", return_value="health-test-line"),
+                patch.object(
+                    claimant, "run_queue_health", return_value="health-test-line"
+                ),
                 patch.object(claimant, "STATE_DIR", state_dir),
                 patch.object(claimant, "FIRES_FILE", fires),
             ):
@@ -780,7 +937,9 @@ class TestGateQueueReadFailed(unittest.TestCase):
             with (
                 patch.object(claimant, "read_mode", return_value="live"),
                 patch.object(claimant, "run_poll", return_value=poll_data),
-                patch.object(claimant, "run_queue_health", return_value="health-test-line"),
+                patch.object(
+                    claimant, "run_queue_health", return_value="health-test-line"
+                ),
                 stub_claimed_rows([]),
                 patch.object(claimant, "STATE_DIR", state_dir),
                 patch.object(claimant, "FIRES_FILE", fires),
@@ -813,7 +972,9 @@ class TestBindFailedRecordsError(unittest.TestCase):
             return base_fake(cmd, **kwargs)
 
         with (
-            patch.object(claimant, "run_poll", return_value={"candidates": [dict(CANDIDATE)]}),
+            patch.object(
+                claimant, "run_poll", return_value={"candidates": [dict(CANDIDATE)]}
+            ),
             patch.object(claimant.subprocess, "run", fake_run),
         ):
             launched, skips = claimant.launch_step("live", 1)
@@ -824,7 +985,6 @@ class TestBindFailedRecordsError(unittest.TestCase):
         self.assertEqual(
             skips[0]["error"], "bind failed: task not claimed with a live lease"
         )
-
 
 
 class TestClaimant8038(unittest.TestCase):
@@ -857,7 +1017,11 @@ class TestClaimant8038(unittest.TestCase):
         now_ms = int(time.time() * 1000)
         cases = {
             "terminal_marker": (
-                [dict(self.STUCK_SESSION, time={"created": 1, "updated": 2, "idle": 3})],
+                [
+                    dict(
+                        self.STUCK_SESSION, time={"created": 1, "updated": 2, "idle": 3}
+                    )
+                ],
                 set(),
                 BOUND_ROW,
             ),
@@ -883,9 +1047,7 @@ class TestClaimant8038(unittest.TestCase):
             with self.subTest(case=name):
                 binds = []
                 with (
-                    stub_claimed_rows(
-                        [row], sessions=sessions, active_ids=active_ids
-                    ),
+                    stub_claimed_rows([row], sessions=sessions, active_ids=active_ids),
                     patch.object(
                         claimant.subprocess,
                         "run",
@@ -958,9 +1120,7 @@ class TestClaimant8038(unittest.TestCase):
             return base_fake(cmd, **kwargs)
 
         with (
-            stub_claimed_rows(
-                [row], sessions=[self.STUCK_SESSION], active_ids=set()
-            ),
+            stub_claimed_rows([row], sessions=[self.STUCK_SESSION], active_ids=set()),
             patch.object(claimant.subprocess, "run", fake_run),
         ):
             recovered = claimant.supervision_step("live")
@@ -973,9 +1133,7 @@ class TestClaimant8038(unittest.TestCase):
             patch.object(
                 claimant, "run_poll", return_value={"candidates": [dict(CANDIDATE)]}
             ),
-            patch.object(
-                claimant, "run_queue_health", return_value="health-test-line"
-            ),
+            patch.object(claimant, "run_queue_health", return_value="health-test-line"),
         ):
             self.assertTrue(claimant.gate_step())
         self.assertEqual(claimant._fire_health, "health-test-line")

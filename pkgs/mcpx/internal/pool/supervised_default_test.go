@@ -17,8 +17,8 @@ import (
 )
 
 // Phase 3 of #1384 (#9963), the headline acceptance: a fresh daemon
-// start with a default config — loaded from a file, no supervised
-// key anywhere — runs its stdio servers supervised. The pool is what
+// start with a config loaded from a file that opts its stdio server
+// in runs it supervised (opt-in while sockets are keyed by name). The pool is what
 // a daemon start builds from the resolved config, so the proof is:
 // load, resolve, acquire, and a supervisor socket exists with the
 // instance's child behind it.
@@ -28,7 +28,7 @@ func TestDefaultConfigStdioRunsSupervised(t *testing.T) {
 	bin := testsupport.EraMCPBinary(t)
 	log := filepath.Join(t.TempDir(), "frames")
 	cfgPath := filepath.Join(t.TempDir(), "mcpx.json")
-	body := `{"mcpServers": {"era": {"command": "` + bin + `", "env": {"ERAMCP_MODE": "modern", "ERAMCP_LOG": "` + log + `"}}}}`
+	body := `{"mcpServers": {"era": {"command": "` + bin + `", "env": {"ERAMCP_MODE": "modern", "ERAMCP_LOG": "` + log + `"}, "mcpx": {"supervised": true}}}}`
 	if err := os.WriteFile(cfgPath, []byte(body), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -41,7 +41,7 @@ func TestDefaultConfigStdioRunsSupervised(t *testing.T) {
 		t.Fatal(err)
 	}
 	if !r.Mcpx.SupervisedEnabled() {
-		t.Fatal("default config should resolve to supervised")
+		t.Fatal("an opted-in config should resolve to supervised")
 	}
 	p := pool.New(r)
 	defer p.Close()
