@@ -1629,10 +1629,21 @@ pub async fn cmd_serve(opts: ServeOptions) -> Result<()> {
     {
         let identity_db_path = std::path::Path::new(KEY_FILE).with_file_name(".identity.redb");
         let events_dir = identity_db_path.with_file_name(id_events::local_events::DIR_NAME);
-        let events = id_events::local_events::LocalEvents::open(
+        let mut events = id_events::local_events::LocalEvents::open(
             &events_dir,
             p2panda_core::SigningKey::from_bytes(&key.to_bytes()),
         )?;
+        // Publish this node's identity event if its log has none (#160, Option A):
+        // its ID is the node's user subject for tags and aliases. A failure is
+        // logged, never fatal — resolution falls back to the earliest event
+        // (Option B) and must not gate startup on the identity event.
+        match events.ensure_identity_event() {
+            Ok(Some(id)) => info!("serve: published identity event {id}"),
+            Ok(None) => info!("serve: identity event already in the log"),
+            Err(err) => {
+                warn!("serve: identity event not published ({err:#}); user subject falls back to the earliest event");
+            }
+        }
         Some(Arc::new(tokio::sync::Mutex::new(events)))
     } else {
         None
