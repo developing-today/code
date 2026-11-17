@@ -37,6 +37,7 @@ records.
 - [Design: a Muse↔OpenClaw comms path that is not laptop SSH](../../doc/2026-10-29T12-09-49Z_design_openclaw_comms_path/2026-10-29T12-09-49Z_design_openclaw_comms_path.md)
 - [Refundable grants via pending transfers — premium tokens that survive a refund](../../doc/2026-10-29T12-10-00Z_design_refundable_grants_pending_transfers/2026-10-29T12-10-00Z_design_refundable_grants_pending_transfers.md)
 - [Design: currency as the centralised exception — the hosted edition's boundary to the currency service](../../doc/2026-10-29T12-20-00Z_design_currency_centralised_exception/2026-10-29T12-20-00Z_design_currency_centralised_exception.md)
+- [Hosted tenancy architecture — per-user Turso databases + a central tenancy DB (component E of #9078)](../../doc/2026-11-17T16-55-00Z_design_hosted-tenancy-architecture/2026-11-17T16-55-00Z_design_hosted-tenancy-architecture.md)
 - [Currency control plane — design: registry, account factory, gateway](../../doc/2026-10-29T12-42-21Z_design_currency_control_plane/2026-10-29T12-42-21Z_design_currency_control_plane.md)
 - [Design: ID app packaging — app manifest, folder layout, TUI/web parity](../../doc/2026-10-29T12-50-36Z_design_id_app_packaging/2026-10-29T12-50-36Z_design_id_app_packaging.md)
 - [One `/id-sync/1` handshake, and why serve's range flights moved to](../../doc/2026-10-29T16-21-00Z_design_id_sync_alpn_split/2026-10-29T16-21-00Z_design_id_sync_alpn_split.md)
