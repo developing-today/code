@@ -1055,6 +1055,13 @@
       "note": "a decision record under the chapter index"
     },
     {
+      "path": "docs/decisions/0007-elicitation-identity.md",
+      "chapter": "decision-records",
+      "role": "chapter-source",
+      "lines": 123,
+      "note": "a decision record under the chapter index"
+    },
+    {
       "path": "docs/changes/ask-path-cancel.md",
       "chapter": null,
       "role": "not-compendium",
