@@ -1,11 +1,13 @@
 package e2e_test
 
 import (
+	"net/http"
 	"os"
 	"path/filepath"
 	"sort"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/developing-today/code/pkgs/mcpx/internal/settings"
 )
@@ -55,6 +57,7 @@ var implementedEffectProbes = map[string]string{
 	"paths.deps":                 "TestPathsDepsExtendsManifestDiscovery",
 	"proxy.timeout":              "TestProxyUpstreamTimeoutIsReachableFromTheEnvironment",
 	"tasks.maxAge":               "TestTasksMaxAgeIsReachableFromEnvironment",
+	"proto.askPoll":              "TestAskPollCeilingIsReachableFromTheEnvironment",
 }
 
 // effectProbeFuncs anchors every declared probe name to the actual
@@ -88,6 +91,7 @@ var effectProbeFuncs = map[string]func(*testing.T){
 	"TestDepsPackagesPinContradictingTheManifestFailsTheRun": TestDepsPackagesPinContradictingTheManifestFailsTheRun,
 	"TestPathsDepsExtendsManifestDiscovery":                  TestPathsDepsExtendsManifestDiscovery,
 	"TestTasksMaxAgeIsReachableFromEnvironment":              TestTasksMaxAgeIsReachableFromEnvironment,
+	"TestAskPollCeilingIsReachableFromTheEnvironment":        TestAskPollCeilingIsReachableFromTheEnvironment,
 }
 
 func TestEffectProbeDeclarationsMatchTheProbesThatExist(t *testing.T) {
@@ -219,5 +223,41 @@ func TestSearchLimitCapsTheResults(t *testing.T) {
 	capped := e.run("--json", "search", "e")
 	if n := count(capped); n != 1 {
 		t.Fatalf("search.limit=1 should cap the results at one, got %d:\n%s", n, capped)
+	}
+}
+
+// --- Surface: waiting on a question --------------------------------------
+
+// proto.askPoll is the ceiling on how long one GET /v1/ask/{id} holds
+// while a live call has nothing new to report. A script run that is
+// still working and asks nothing is such a call, so with no waitMs the
+// poll holds for exactly the ceiling: the hold time is the observable.
+func TestAskPollCeilingIsReachableFromTheEnvironment(t *testing.T) {
+	holdFor := func(env ...string) time.Duration {
+		t.Helper()
+		e := newEnv(t, oneServer)
+		e.setenv(env...)
+		e.run("ls")
+		c := e.longSocketClient(t)
+		_, begun := sockDo(t, c, http.MethodPost, "/v1/ask",
+			map[string]any{"kind": "exec", "source": "await new Promise((r) => setTimeout(r, 8000));"})
+		id, _ := begun["callId"].(string)
+		if id == "" {
+			t.Fatalf("no call id: %v", begun)
+		}
+		defer sockDo(t, c, http.MethodPost, "/v1/ask/"+id+"/abandon", nil)
+		start := time.Now()
+		st, out := sockDo(t, c, http.MethodGet, "/v1/ask/"+id, nil)
+		took := time.Since(start)
+		if st != http.StatusOK || out["done"] == true {
+			t.Fatalf("the poll should return while the call is still running: %d %v", st, out)
+		}
+		return took
+	}
+
+	def := holdFor()
+	raised := holdFor("MCPX_PROTO_ASK_POLL=2s")
+	if raised < def+time.Second {
+		t.Fatalf("proto.askPoll=2s should hold a poll about two seconds, got %v against %v at the default", raised, def)
 	}
 }
