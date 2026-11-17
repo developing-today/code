@@ -43,6 +43,20 @@
 #                             300 s cap; the download also gets one
 #                             whole-request retry on transport
 #                             failure. Small databases are unaffected.
+#   TURSO_DUMP_RETRY_DELAY_SECONDS
+#                             optional; curl --retry-delay between the
+#                             3 retries of one /dump download (default
+#                             30; must be positive).
+#   TURSO_DUMP_RETRY_PASS_DELAY_SECONDS
+#                             optional; how long to wait before the
+#                             second pass over databases that failed
+#                             the first pass (default 60; 0 = no
+#                             wait). On 2026-11-17 the
+#                             server closed the stream mid-transfer
+#                             (curl 18) on 4 of 42 databases twice in
+#                             a row while others of the same size
+#                             filed fine, so a later second pass is
+#                             the cheap way past a transient window.
 #   TURSO_API_BASE            optional; Platform API base URL
 #                             (default https://api.turso.tech).
 #                             Test seam, mirrors COLD_STORE_S3_BASE.
@@ -90,6 +104,29 @@ case "${DUMP_MAX_TIME}" in
   echo "turso export: ERROR: TURSO_DUMP_MAX_TIME_SECONDS must be a positive integer (got '${DUMP_MAX_TIME}')" >&2
   exit 1
   ;;
+esac
+RETRY_DELAY="${TURSO_DUMP_RETRY_DELAY_SECONDS:-30}"
+case "${RETRY_DELAY}" in
+*[1-9]*)
+  [[ ${RETRY_DELAY} != *[!0-9]* ]] || {
+    echo "turso export: ERROR: TURSO_DUMP_RETRY_DELAY_SECONDS must be a positive integer (got '${RETRY_DELAY}')" >&2
+    exit 1
+  }
+  ;;
+*)
+  # Empty, non-numeric or all zeros: curl --retry-delay 0 silently
+  # switches to its own backoff, so zero would not mean "no delay".
+  echo "turso export: ERROR: TURSO_DUMP_RETRY_DELAY_SECONDS must be a positive integer (got '${RETRY_DELAY}')" >&2
+  exit 1
+  ;;
+esac
+RETRY_PASS_DELAY="${TURSO_DUMP_RETRY_PASS_DELAY_SECONDS:-60}"
+case "${RETRY_PASS_DELAY}" in
+'' | *[!0-9]*)
+  echo "turso export: ERROR: TURSO_DUMP_RETRY_PASS_DELAY_SECONDS must be a non-negative integer (got '${RETRY_PASS_DELAY}')" >&2
+  exit 1
+  ;;
+*) ;;
 esac
 API_BASE="${TURSO_API_BASE:-https://api.turso.tech}"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -199,7 +236,7 @@ PY
     dump_url="https://${hostname}/dump"
   fi
   if ! curl_auth "${jwt}" -fsS --compressed --max-time "${DUMP_MAX_TIME}" \
-    --retry 1 --retry-all-errors \
+    --retry 3 --retry-delay "${RETRY_DELAY}" --retry-all-errors \
     "${dump_url}" -o "${dump_sql}"; then
     echo "turso export: ERROR: ${name}: dump download failed (${dump_url})" >&2
     return 1
@@ -295,17 +332,34 @@ export_one() {
   return "${rc}"
 }
 
-FAILURES=0
-for row in "${DB_ROWS[@]}"; do
-  name="${row%%$'\t'*}"
-  hostname="${row##*$'\t'}"
-  # shellcheck disable=SC2310 # by design: export_one guards every
-  # stage itself and returns 1, so one database's failure is counted
-  # here instead of aborting the run via set -e.
-  if ! export_one "${name}" "${hostname}"; then
-    FAILURES=$((FAILURES + 1))
-  fi
-done
+# One pass over a list of "Name<TAB>Hostname" rows; the rows that
+# failed are left in PASS_FAILED for the caller.
+run_pass() {
+  PASS_FAILED=()
+  local row name hostname
+  for row in "$@"; do
+    name="${row%%$'\t'*}"
+    hostname="${row##*$'\t'}"
+    # shellcheck disable=SC2310 # by design: export_one guards every
+    # stage itself and returns 1, so one database's failure is
+    # recorded here instead of aborting the run via set -e.
+    if ! export_one "${name}" "${hostname}"; then
+      PASS_FAILED+=("${row}")
+    fi
+  done
+}
+
+run_pass "${DB_ROWS[@]}"
+# Second pass: a database whose download was cut off is tried once
+# more at the end of the run, after a pause, rather than failing the
+# whole step on one transient window (2026-11-17: 4 of 42 failed
+# inside a few minutes, all with curl 18).
+if [[ ${#PASS_FAILED[@]} -gt 0 ]]; then
+  echo "turso export: retrying ${#PASS_FAILED[@]} failed database(s) after ${RETRY_PASS_DELAY}s"
+  sleep "${RETRY_PASS_DELAY}"
+  run_pass "${PASS_FAILED[@]}"
+fi
+FAILURES=${#PASS_FAILED[@]}
 
 if [[ ${FAILURES} -gt 0 ]]; then
   echo "turso export: ${FAILURES} of ${#DB_ROWS[@]} database(s) FAILED" >&2
