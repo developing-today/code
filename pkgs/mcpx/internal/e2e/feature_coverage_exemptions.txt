@@ -42,11 +42,6 @@ cli	artifacts	no integration-test exercise yet; burn-down #8464 (cli operations 
 cli	complete	no integration-test exercise yet; burn-down #8464 (cli operations group)
 cli	events	no integration-test exercise yet; burn-down #8464 (cli operations group)
 cli	tool	no integration-test exercise yet; burn-down #8464 (cli operations group)
-cli	embeddings	no integration-test exercise yet; burn-down #8465 (cli running group)
-cli	feedback	no integration-test exercise yet; burn-down #8465 (cli running group)
-cli	proxy	no integration-test exercise yet; burn-down #8465 (cli running group)
-cli	scripts	no integration-test exercise yet; burn-down #8465 (cli running group)
-cli	skills	no integration-test exercise yet; burn-down #8465 (cli running group)
 setting	daemon.address	no integration-test exercise yet; burn-down #8468 (settings daemon family); needs an EffectProbes entry + e2e test
 setting	daemon.autostart	no integration-test exercise yet; burn-down #8468 (settings daemon family); needs an EffectProbes entry + e2e test
 setting	daemon.endpoint	no integration-test exercise yet; burn-down #8468 (settings daemon family); needs an EffectProbes entry + e2e test
