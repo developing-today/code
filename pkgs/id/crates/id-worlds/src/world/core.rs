@@ -2758,6 +2758,37 @@ impl WorldCore {
     }
 
     pub(crate) fn prepare_input(&self, token: &JoinCapability, input: &[u8]) -> Result<WorldEvent> {
+        let sequence = self
+            .sequence
+            .checked_add(1)
+            .context("world event sequence exhausted")?;
+        self.prepare_input_at(token, input, sequence, &HashMap::new())
+    }
+
+    /// Prepare one input of a group-commit batch (#8239): the caller assigns
+    /// `sequence` explicitly (batch staging cannot use `prepare_input`,
+    /// which always prepares at `sequence + 1` without advancing it), and
+    /// `staged_spends` carries the uses already staged earlier in the batch
+    /// for each capability in the chain, so a batch from one participant
+    /// cannot over-admit past a uses limit that `spend` only reaches at
+    /// commit time.
+    pub(crate) fn prepare_input_staged(
+        &self,
+        token: &JoinCapability,
+        input: &[u8],
+        sequence: u64,
+        staged_spends: &HashMap<u64, u32>,
+    ) -> Result<WorldEvent> {
+        self.prepare_input_at(token, input, sequence, staged_spends)
+    }
+
+    fn prepare_input_at(
+        &self,
+        token: &JoinCapability,
+        input: &[u8],
+        sequence: u64,
+        staged_spends: &HashMap<u64, u32>,
+    ) -> Result<WorldEvent> {
         let participant_id = self.authorize(token, WorldScopes::INPUT)?;
         ensure!(
             !self.author_keys.contains_key(&participant_id),
@@ -2767,22 +2798,61 @@ impl WorldCore {
             !self.limits.region_sharded,
             "region-sharded worlds require entity-addressed input"
         );
-        self.ensure_uses_left(participant_id)?;
+        self.ensure_uses_left_staged(participant_id, staged_spends)?;
         ensure!(
             input.len() <= self.limits.input_bytes,
             "world input exceeds {} bytes",
             self.limits.input_bytes
         );
         ensure!(!input.is_empty(), "world input must not be empty");
-        let sequence = self
-            .sequence
-            .checked_add(1)
-            .context("world event sequence exhausted")?;
         Ok(WorldEvent {
             sequence,
             participant_id,
             kind: WorldEventKind::Input(input.to_vec()),
         })
+    }
+
+    /// `ensure_uses_left` against committed uses plus the spends a batch has
+    /// already staged (#8239): each capability in the chain must still have
+    /// a use left after both.
+    pub(crate) fn ensure_uses_left_staged(
+        &self,
+        participant_id: u64,
+        staged_spends: &HashMap<u64, u32>,
+    ) -> Result<()> {
+        let mut left: Option<u32> = None;
+        let mut current = Some(participant_id);
+        while let Some(id) = current {
+            let Some(record) = self.capabilities.get(&id) else {
+                break;
+            };
+            if let Some(limit) = record.bounds.uses {
+                let staged = staged_spends.get(&id).copied().unwrap_or(0);
+                let remaining = limit.saturating_sub(record.used.saturating_add(staged));
+                left = Some(left.map_or(remaining, |so_far: u32| so_far.min(remaining)));
+            }
+            current = record.parent;
+        }
+        ensure!(
+            left.is_none_or(|left| left > 0),
+            "world capability has no uses left"
+        );
+        Ok(())
+    }
+
+    /// Record one staged spend against the participant and each ancestor,
+    /// mirroring `spend`'s chain walk, so the next staged prepare in the
+    /// same batch sees it (#8239).
+    pub(crate) fn note_staged_spend(
+        &self,
+        participant_id: u64,
+        staged_spends: &mut HashMap<u64, u32>,
+    ) {
+        let mut current = Some(participant_id);
+        while let Some(id) = current {
+            *staged_spends.entry(id).or_insert(0) += 1;
+            current = self.capabilities.get(&id).and_then(|record| record.parent);
+        }
     }
 
     pub(crate) fn prepare_entity_input(

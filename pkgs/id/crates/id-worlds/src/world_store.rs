@@ -376,6 +376,48 @@ impl WorldJournal for FileJournal {
         Ok(())
     }
 
+    fn append_batch(&mut self, entries: &[JournalEntry]) -> Result<()> {
+        ensure!(
+            !self.broken,
+            "world journal is unusable after a failed compaction"
+        );
+        if entries.is_empty() {
+            return Ok(());
+        }
+        // One sync covers the whole batch (#8239) - unless an entry needs
+        // a header version bump, whose rewrite-then-append dance is the
+        // per-entry path's job; fall back to it for the whole batch so
+        // ordering and bump semantics stay exactly the single-append ones.
+        if entries
+            .iter()
+            .any(|entry| journal_version_required_by(entry) > self.version)
+        {
+            for entry in entries {
+                self.append(entry)?;
+            }
+            return Ok(());
+        }
+        let mut batch = Vec::new();
+        for entry in entries {
+            batch.extend_from_slice(&serde_json::to_vec(entry).context("encode journal entry")?);
+            batch.push(b'\n');
+        }
+        // The byte cap is checked on the batch total BEFORE writing, so a
+        // refusal writes nothing - never a prefix of the batch.
+        let new_bytes = self.bytes + batch.len() as u64;
+        ensure!(
+            new_bytes <= self.max_bytes,
+            "world journal {} would exceed its byte cap ({new_bytes} > {} bytes); append refused",
+            self.path.display(),
+            self.max_bytes
+        );
+        // JournalWriter::append is one write_all + one sync_data, so the
+        // concatenated batch is durable after a single sync.
+        self.writer.append(batch)?;
+        self.bytes = new_bytes;
+        Ok(())
+    }
+
     fn replication_snapshot(&mut self) -> Result<crate::world::JournalSnapshot> {
         let bytes = std::fs::read(&self.path)
             .with_context(|| format!("read world journal snapshot {}", self.path.display()))?;
@@ -1231,6 +1273,83 @@ mod tests {
         let mut line = serde_json::to_vec(entry).unwrap();
         line.push(b'\n');
         line
+    }
+
+    // #8239 group commit: a batch lands every entry in order, readable
+    // back exactly, after the one concatenated write + sync.
+    #[test]
+    fn journal_append_batch_lands_every_entry_in_order() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("journal.jsonl");
+        let batch: Vec<JournalEntry> = ["a", "b", "c"]
+            .iter()
+            .map(|name| JournalEntry::CapsGranted {
+                granted: vec![(*name).to_owned()],
+            })
+            .collect();
+        {
+            let (mut journal, entries) = FileJournal::open(&path, "w").unwrap();
+            assert_eq!(entries.len(), 1, "a fresh journal holds only its header");
+            journal.append_batch(&batch).unwrap();
+        }
+        let entries = journal_entries(dir.path());
+        assert_eq!(entries.len(), 1 + batch.len(), "{entries:?}");
+        assert_eq!(&entries[1..], batch.as_slice());
+    }
+
+    // #8239: the byte cap is checked on the batch total before writing,
+    // so a refused batch writes nothing - never a prefix of the batch.
+    #[test]
+    fn journal_append_batch_over_the_cap_writes_nothing() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("journal.jsonl");
+        let (mut journal, _) = FileJournal::open_with_max_bytes(&path, "w", 512).unwrap();
+        let batch: Vec<JournalEntry> = (0..8)
+            .map(|n| JournalEntry::CapsGranted {
+                granted: vec![format!("capability-number-{n}-with-a-long-name")],
+            })
+            .collect();
+        let error = journal.append_batch(&batch).unwrap_err();
+        assert!(error.to_string().contains("byte cap"), "{error:#}");
+        drop(journal);
+        let entries = journal_entries(dir.path());
+        assert_eq!(
+            entries.len(),
+            1,
+            "only the header survives a refused batch: {entries:?}"
+        );
+    }
+
+    // #8239: a batch containing an entry that needs a header version bump
+    // falls back to the per-entry path, whose bump semantics are unchanged.
+    #[test]
+    fn journal_append_batch_with_a_bump_entry_bumps_the_header() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("journal.jsonl");
+        let profile = crate::world_limits::WorldExecutionProfile {
+            wasm_fuel: Some(7),
+            ..Default::default()
+        };
+        let (mut journal, _) = FileJournal::open(&path, "w").unwrap();
+        journal
+            .append_batch(&[
+                JournalEntry::CapsGranted {
+                    granted: vec!["chat".to_owned()],
+                },
+                JournalEntry::ExecutionProfile { profile },
+            ])
+            .unwrap();
+        drop(journal);
+        let entries = journal_entries(dir.path());
+        assert_eq!(entries.len(), 3, "{entries:?}");
+        assert!(matches!(
+            entries[0],
+            JournalEntry::Created {
+                version: crate::world::JOURNAL_VERSION_EXECUTION_PROFILE,
+                ..
+            }
+        ));
+        assert!(matches!(entries[2], JournalEntry::ExecutionProfile { .. }));
     }
 
     // #560 (option B): appends refuse at the byte cap, the file never

@@ -836,6 +836,23 @@ pub trait WorldJournal: Send + 'static {
     /// Any I/O failure; the actor then refuses further mutations.
     fn append(&mut self, entry: &JournalEntry) -> Result<()>;
 
+    /// Durably append a batch of entries in order (group commit, #8239):
+    /// where the journal can, the batch lands with a single sync, and
+    /// durability-before-ack applies to the batch as a whole - either
+    /// every entry is durable or the batch has failed and none may be
+    /// acknowledged. The default is the per-entry append loop, which is
+    /// always correct, just slower.
+    ///
+    /// # Errors
+    ///
+    /// Any I/O failure; the actor then refuses further mutations.
+    fn append_batch(&mut self, entries: &[JournalEntry]) -> Result<()> {
+        for entry in entries {
+            self.append(entry)?;
+        }
+        Ok(())
+    }
+
     /// Capture the exact durable journal bytes and their header version.
     /// Implementations that do not own a readable journal may leave this
     /// unsupported; the replication feed is available only for durable
