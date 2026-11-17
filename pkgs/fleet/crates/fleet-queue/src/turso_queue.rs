@@ -6161,6 +6161,55 @@ fn quarantine_recheck_verdict(row: &Value) -> QuarantineRecheck {
     }
 }
 
+// Snapshot the raw stored columns before query_objs parses JSON. Comparing
+// this opaque string avoids lossy malformed-JSON normalization and detects
+// same-second replacements, not only updated_at changes. The event ID is
+// selected in the same SQLite statement; unknown block provenance fails closed.
+// Conservatively require the latest event, including non-transition events: an
+// unrelated newer event or pruned provenance needs explicit reconciliation, not
+// automatic release. This patch does not solve sweep fairness/history repair.
+fn quarantine_select() -> String {
+    format!(
+        "SELECT {TASK_COLS}, json_array({TASK_COLS}) AS quarantine_snapshot, \
+         (SELECT MAX(id) FROM events WHERE task_id = tasks.id) AS quarantine_event_id \
+         FROM tasks"
+    )
+}
+
+fn quarantine_transition_sql() -> String {
+    include_str!("quarantine_transition.sql")
+        .replace("{snapshot}", &format!("json_array({TASK_COLS})"))
+}
+
+fn quarantine_transition(
+    t: &TursoBackend,
+    row: &Value,
+    status: &str,
+    error: Option<&str>,
+) -> Result<bool, TErr> {
+    let Some(snapshot) = row.get("quarantine_snapshot").and_then(Value::as_str) else {
+        return Ok(false);
+    };
+    let Some(event_id) = row.get("quarantine_event_id").and_then(Value::as_i64) else {
+        return Ok(false);
+    };
+    let Some(id) = row.get("id").and_then(Value::as_i64) else {
+        return Ok(false);
+    };
+    let result = t.exec(
+        &quarantine_transition_sql(),
+        &[
+            Arg::Text(status.to_string()),
+            arg_str(error),
+            Arg::Text(now_iso()),
+            Arg::Int(id),
+            Arg::Text(snapshot.to_string()),
+            Arg::Int(event_id),
+        ],
+    )?;
+    Ok(result.affected == 1)
+}
+
 /// Rotation touch for the quarantine recheck window (#9609): a
 /// row the rechecker evaluated and left blocked without any
 /// other write gets updated_at bumped — deliberately no event,
@@ -6180,7 +6229,7 @@ fn touch_recheck_cursor(t: &TursoBackend, id: i64) -> Result<(), TErr> {
 /// Apply one row's quarantine recheck verdict. Returns the outcome
 /// name ("released" / "still_quarantined" / "not_applicable" /
 /// "release_raced"). Release mirrors verb_unblock's shape (queued,
-/// claim and lease cleared) plus clearing the recorded error —
+/// lease-free) plus clearing the recorded error —
 /// the rechecker's whole point is that the recorded error is
 /// stale — and the event names the discarded error, like the dep
 /// override names discarded deps. A still-quarantined row whose
@@ -6203,16 +6252,11 @@ fn quarantine_recheck_one(t: &TursoBackend, row: &Value) -> Result<&'static str,
             Ok("not_applicable")
         }
         QuarantineRecheck::Release => {
-            let upd = t.exec(
-                "UPDATE tasks SET status = 'queued', worker_id = NULL, \
-                   lease_until = NULL, last_error = NULL, updated_at = ? \
-                 WHERE id = ? AND status = 'blocked'",
-                &[Arg::Text(now_iso()), Arg::Int(id)],
-            )?;
-            if upd.affected == 0 {
+            if !quarantine_transition(t, row, "queued", None)? {
                 return Ok("release_raced");
             }
-            t.exec("DELETE FROM leases WHERE task_id = ?", &[Arg::Int(id)])?;
+            // No lease deletion: a quarantined row must be lease-free at
+            // the atomic write. A subsequent claimant owns its new lease.
             event(
                 t,
                 Some("quarantine-rechecker"),
@@ -6228,15 +6272,9 @@ fn quarantine_recheck_one(t: &TursoBackend, row: &Value) -> Result<&'static str,
         }
         QuarantineRecheck::StillQuarantined(reason) => {
             if reason != recorded {
-                t.exec(
-                    "UPDATE tasks SET last_error = ?, updated_at = ? \
-                     WHERE id = ? AND status = 'blocked'",
-                    &[
-                        Arg::Text(reason.clone()),
-                        Arg::Text(now_iso()),
-                        Arg::Int(id),
-                    ],
-                )?;
+                if !quarantine_transition(t, row, "blocked", Some(&reason))? {
+                    return Ok("release_raced");
+                }
                 event(
                     t,
                     Some("quarantine-rechecker"),
@@ -6273,9 +6311,10 @@ fn quarantine_recheck_one(t: &TursoBackend, row: &Value) -> Result<&'static str,
 pub fn run_quarantine_rechecks(t: &TursoBackend, limit: i64) -> Result<Value, TErr> {
     let rows = t.query_objs(
         &format!(
-            "SELECT {TASK_COLS} FROM tasks WHERE status = 'blocked' \
+            "{} WHERE status = 'blocked' \
              AND last_error LIKE 'quarantined by claim path%' \
-             ORDER BY updated_at ASC LIMIT {limit}"
+             ORDER BY updated_at ASC LIMIT {limit}",
+            quarantine_select()
         ),
         &[],
         &TASK_JSON_COLS,
@@ -6307,7 +6346,15 @@ pub fn run_quarantine_rechecks(t: &TursoBackend, limit: i64) -> Result<Value, TE
 fn verb_quarantine_recheck(t: &TursoBackend, req: &Value) -> Value {
     let work = (|| -> Result<Value, TErr> {
         if let Some(task_id) = req_i64(req, "task_id") {
-            let Some(row) = get_task(t, task_id)? else {
+            let Some(row) = t
+                .query_objs(
+                    &format!("{} WHERE id = ?", quarantine_select()),
+                    &[Arg::Int(task_id)],
+                    &TASK_JSON_COLS,
+                )?
+                .into_iter()
+                .next()
+            else {
                 return Ok(json!({"task_id": task_id, "outcome": "no_such_task"}));
             };
             if row.get("status").and_then(|v| v.as_str()) != Some("blocked") {
@@ -9765,6 +9812,25 @@ mod tests {
         assert!(broker_src.contains("GhDepProbe"));
         assert!(broker_src.contains("set_gh_probe"));
         assert!(broker_src.contains("github.developing-today-code-automation"));
+    }
+
+    #[test]
+    fn quarantine_atomic_sql_10671() {
+        // Oracle: synthetic interleavings execute the exact production SQL
+        // against SQLite, not a mocked affected-row count or live broker.
+        let output = std::process::Command::new("python3")
+            .arg(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/tests/quarantine_atomic_sql.py"
+            ))
+            .output()
+            .expect("quarantine SQL tests require Python 3 with stdlib sqlite3");
+        assert!(
+            output.status.success(),
+            "quarantine SQL regression failed:\n{}\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
     }
 
     #[test]
