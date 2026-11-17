@@ -104,7 +104,9 @@ pub use startup::{
     StartedServerConfig, seed_world_directory, start_server_config, start_server_config_persisted,
 };
 #[cfg(feature = "world")]
-use startup::{serve_freshness_window, serve_pull_policy, world_protocol_for};
+use startup::{
+    serve_freshness_window, serve_pull_policy, server_config_directory_path, world_protocol_for,
+};
 
 /// Print a status line to stdout **without panicking** if stdout is gone.
 ///
@@ -1384,7 +1386,9 @@ pub async fn cmd_serve(opts: ServeOptions) -> Result<()> {
             Ok(Some(id)) => info!("serve: published identity event {id}"),
             Ok(None) => info!("serve: identity event already in the log"),
             Err(err) => {
-                warn!("serve: identity event not published ({err:#}); user subject falls back to the earliest event");
+                warn!(
+                    "serve: identity event not published ({err:#}); user subject falls back to the earliest event"
+                );
             }
         }
         Some(Arc::new(tokio::sync::Mutex::new(events)))

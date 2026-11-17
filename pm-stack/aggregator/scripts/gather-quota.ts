@@ -116,7 +116,11 @@ import type { QuotaCurrentEntry, QuotaCurrentFile, QuotaGatherHeartbeat, Snapsho
 import {
   GATHERER_SOURCE,
   CLAUDE_CROSS_TICK_STATE_KEY,
+  CLAUDE_RETRY_BASE_MS,
+  CLAUDE_RETRY_MAX_ATTEMPTS,
   claudeCooldownMs,
+  claudeFailureKind,
+  claudeRetryDelayMs,
   isClaudeRateLimitFailure,
   parseClaudeCrossTick,
   serializeClaudeCrossTick,
@@ -530,6 +534,13 @@ async function readState(): Promise<Map<string, string>> {
   return new Map();
 }
 
+/** #8725: within-tick Claude retry base delay override (tests set
+ * it near zero; production uses CLAUDE_RETRY_BASE_MS). */
+function claudeRetryBaseMs(): number {
+  const raw = Number(process.env.QUOTA_CLAUDE_RETRY_BASE_MS);
+  return Number.isFinite(raw) && raw > 0 ? raw : CLAUDE_RETRY_BASE_MS;
+}
+
 /** The subcommand invocation: QUOTA_SUBCOMMAND overrides the whole
  *  command (interim fork builds, tests); the default is the deployed
  *  opencode binary's quota subcommand. Explicit provider ids are
@@ -686,6 +697,69 @@ async function collectRuns(tickAt: string): Promise<ProviderRun[]> {
     if (id === "command-code" || id === "_commandcode") run = keepCommandCodePlanWindows(run);
     runs.push(run);
   }
+  // #8725: within-tick retry of the Claude leg. A 429 from the
+  // Anthropic usage endpoint used to fail the leg for the whole
+  // tick, leaving a stale row that downstream readers misread as a
+  // credential failure. The leg now re-asks the subcommand for
+  // _claude inside the same tick - bounded retries with jittered
+  // backoff honoring Retry-After - and only a persistent 429 falls
+  // through to the cross-tick retention in main, with the failure
+  // kind recorded there. Other providers are untouched.
+  const claudeIdx = runs.findIndex((r) => r.id === "_claude");
+  if (claudeIdx >= 0) {
+    const failureOf = (r: ProviderRun): string => r.error ?? r.entries.find((e) => e.error)?.error ?? "";
+    let run = runs[claudeIdx];
+    let attempt = 0;
+    while (
+      attempt < CLAUDE_RETRY_MAX_ATTEMPTS &&
+      !run.entries.some((e) => e.state === "ok" && entryHasMeasuredWindow(e)) &&
+      isClaudeRateLimitFailure(failureOf(run))
+    ) {
+      const delayMs = claudeRetryDelayMs(attempt, failureOf(run), Math.random, claudeRetryBaseMs());
+      console.log(
+        "quota-gatherer: _claude rate-limited - retry " +
+          (attempt + 1) +
+          "/" +
+          CLAUDE_RETRY_MAX_ATTEMPTS +
+          " in " +
+          delayMs +
+          "ms (#8725)",
+      );
+      await new Promise((resolve) => setTimeout(resolve, delayMs));
+      const retryT0 = Date.now();
+      try {
+        const retryStdout = await execSubcommand(subcommandArgv(["_claude"]));
+        const retryResults = parseSubcommandResults(retryStdout, "claude retry").filter(
+          (r) => r.providerId === "_claude",
+        );
+        if (retryResults.length) {
+          run = finalizeRun(
+            "_claude",
+            retryResults.map((r) => entryFromResult(r, tickAt)),
+            retryT0,
+          );
+          runs[claudeIdx] = run;
+        }
+      } catch (err) {
+        console.log(
+          "quota-gatherer: _claude retry " +
+            (attempt + 1) +
+            " exec failed: " +
+            (err instanceof Error ? err.message : String(err)),
+        );
+      }
+      attempt++;
+    }
+    if (attempt > 0) {
+      console.log(
+        "quota-gatherer: _claude within-tick retries used=" +
+          attempt +
+          " recovered=" +
+          run.entries.some((e) => e.state === "ok" && entryHasMeasuredWindow(e)) +
+          " (#8725)",
+      );
+    }
+  }
   return runs;
 }
 
@@ -838,7 +912,7 @@ async function main(): Promise<number> {
         claudeMemoryDirty = true;
       }
       if (claudeMemory.lastGoodEntry && nowMs < claudeMemory.cooldownUntil) {
-        claudeRun.entries = markRetained([claudeMemory.lastGoodEntry], tickAt);
+        claudeRun.entries = markRetained([claudeMemory.lastGoodEntry], tickAt, claudeFailureKind(failureText));
         claudeRun.retained = true;
       }
     }
@@ -895,6 +969,7 @@ async function main(): Promise<number> {
       ms: run.ms,
       rows: run.entries.length,
       ...(run.error ? { error: safeProviderReason(run.error) } : {}),
+      ...(run.id === "_claude" && run.error ? { errorKind: claudeFailureKind(run.error) } : {}),
     };
     console.log(
       `quota-gatherer: ${run.id} ${run.state} ${run.ms}ms rows=${run.entries.length}${run.retained ? " retained-last-known" : ""}${run.error ? ` error=${safeProviderReason(run.error).slice(0, 140)}` : ""}`,

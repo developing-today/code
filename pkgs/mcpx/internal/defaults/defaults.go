@@ -110,6 +110,9 @@ type Defaults struct {
 		// state and are never pruned.
 		RetentionMaxAge          string `json:"retentionMaxAge"`
 		RetentionMaxTerminalRows int    `json:"retentionMaxTerminalRows"`
+		// AudienceWindow is how recent an answerer heartbeat must be for
+		// an audience to count as present (#2438).
+		AudienceWindow string `json:"audienceWindow"`
 	} `json:"elicit"`
 	// Proto governs how mcpx speaks the protocol to its own clients: which
 	// era mechanisms it offers, and how long it will hold a call open while
@@ -657,6 +660,13 @@ var (
 	// question is kept in the broker store before an open prunes it
 	// (#1677, design #1675 Phase 2: the recorded 30 days).
 	ElicitRetentionMaxAge = mustDur(builtin.Elicit.RetentionMaxAge, "elicit.retentionMaxAge")
+	// ElicitAudienceWindow is how recent an answerer heartbeat must be
+	// for an audience to count as present (#2438). Answerer surfaces
+	// poll on a one-second cadence (mcpx elicit watch) or per user
+	// refresh, so two minutes is generous without letting a long-gone
+	// answerer count. An internal bound: defaults.json only, absent
+	// from the settings registry.
+	ElicitAudienceWindow = mustDur(builtin.Elicit.AudienceWindow, "elicit.audienceWindow")
 	// ElicitRetentionMaxTerminalRows caps how many terminal questions
 	// the broker store keeps, oldest first out (#1677).
 	ElicitRetentionMaxTerminalRows = builtin.Elicit.RetentionMaxTerminalRows

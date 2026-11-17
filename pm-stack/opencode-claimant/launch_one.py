@@ -83,6 +83,7 @@ import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
+
 def _required_home() -> Path:
     """Home per the #5762 home-resolution contract (code#8221): a
     non-empty HOME, or a named error -- never the passwd fallback
