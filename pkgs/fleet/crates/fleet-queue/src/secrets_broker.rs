@@ -41,7 +41,7 @@
 //!      at startup, #5860).
 
 use std::collections::HashMap;
-use std::process::Command;
+use std::process::{Command, Stdio};
 use std::sync::{Arc, Condvar, Mutex, RwLock};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -106,6 +106,11 @@ fn bws_token() -> Option<String> {
     None
 }
 
+/// Deadline for one `bws` child (#10871). A child that never returns
+/// must fail its fetch, or its worker never finishes, the refresh's
+/// join never returns, and the `refreshing` guard stays set forever.
+const BWS_CHILD_TIMEOUT: Duration = Duration::from_secs(60);
+
 /// Runs `bws` for the vault refresh, through the platform crate's
 /// CommandRunner discipline (fleet-secrets, design §1): stdout on
 /// success; on failure the error carries the exit status only —
@@ -114,6 +119,7 @@ fn bws_token() -> Option<String> {
 /// the port deliberately adopts the stricter platform rule.)
 struct BwsRunner {
     token: String,
+    timeout: Duration,
 }
 
 impl fleet_secrets::CommandRunner for BwsRunner {
@@ -128,21 +134,47 @@ impl fleet_secrets::CommandRunner for BwsRunner {
         } else {
             std::path::Path::new(program)
         };
-        let out = Command::new(program)
+        let mut child = Command::new(program)
             .args(args)
             .env("BWS_ACCESS_TOKEN", &self.token)
-            .output()
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .spawn()
             .map_err(|e| format!("spawn failed: {}", e.kind()))?;
-        if !out.status.success() {
-            return Err(out.status.to_string());
+        let mut pipe = child.stdout.take();
+        let reader = std::thread::spawn(move || {
+            let mut buf = Vec::new();
+            if let Some(out) = pipe.as_mut() {
+                let _ = std::io::Read::read_to_end(out, &mut buf);
+            }
+            buf
+        });
+        let deadline = std::time::Instant::now() + self.timeout;
+        let status = loop {
+            match child.try_wait() {
+                Ok(Some(status)) => break status,
+                Ok(None) if std::time::Instant::now() >= deadline => {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    return Err(format!("timed out after {}s", self.timeout.as_secs()));
+                }
+                Ok(None) => std::thread::sleep(Duration::from_millis(20)),
+                Err(e) => return Err(format!("wait failed: {}", e.kind())),
+            }
+        };
+        let stdout = reader.join().unwrap_or_default();
+        if !status.success() {
+            return Err(status.to_string());
         }
-        String::from_utf8(out.stdout).map_err(|_| "output not utf8".to_string())
+        String::from_utf8(stdout).map_err(|_| "output not utf8".to_string())
     }
 }
 
 fn bws_run(args: &[&str], token: &str) -> Result<String, String> {
     let runner = BwsRunner {
         token: token.to_string(),
+        timeout: BWS_CHILD_TIMEOUT,
     };
     fleet_secrets::CommandRunner::run(&runner, "bws", args)
         .map_err(|e| format!("bws {} failed: {e}", args.join(" ")))
@@ -893,6 +925,7 @@ mod tests {
         install_refresh, now_unix, parse_list_entries, parse_ttl_s, pre_body_refusal,
         resolve_list_id, url_decode,
     };
+    use std::time::Duration;
 
     #[test]
     fn pre_body_refusal_decides_from_headers_alone() {
@@ -1308,6 +1341,44 @@ mod tests {
             assert!(err.contains("SECRETS_BROKER_TTL_S"), "error: {err}");
             assert!(err.contains(raw), "error: {err}");
         }
+    }
+
+    fn sh_runner(timeout: Duration) -> super::BwsRunner {
+        super::BwsRunner {
+            token: "tok".to_string(),
+            timeout,
+        }
+    }
+
+    #[test]
+    fn bws_child_that_never_exits_fails_at_the_deadline() {
+        // #10871 oracle: a child that never exits must come back as
+        // an error near its deadline, not block its caller forever.
+        use fleet_secrets::CommandRunner;
+        let started = std::time::Instant::now();
+        let err = sh_runner(Duration::from_millis(300))
+            .run("/bin/sh", &["-c", "exec sleep 600"])
+            .expect_err("a hung child must fail");
+        assert!(err.contains("timed out"), "error: {err}");
+        assert!(started.elapsed() < Duration::from_secs(20));
+    }
+
+    #[test]
+    fn bws_child_within_the_deadline_returns_its_stdout() {
+        use fleet_secrets::CommandRunner;
+        let out = sh_runner(Duration::from_secs(20))
+            .run("/bin/sh", &["-c", "printf '{\"value\":\"x\"}'"])
+            .expect("a prompt child succeeds");
+        assert_eq!(out, "{\"value\":\"x\"}");
+    }
+
+    #[test]
+    fn bws_child_failure_reports_only_the_exit_status() {
+        use fleet_secrets::CommandRunner;
+        let err = sh_runner(Duration::from_secs(20))
+            .run("/bin/sh", &["-c", "echo vault-material >&2; exit 3"])
+            .expect_err("a non-zero exit is an error");
+        assert!(!err.contains("vault-material"), "error: {err}");
     }
 
     #[test]
