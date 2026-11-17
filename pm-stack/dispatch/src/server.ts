@@ -36,7 +36,7 @@ import {
   randomDispatchSuffix,
   validatePayload,
 } from "./packet.ts";
-import { QueueClient, QueueError, type TaskRow } from "./queue.ts";
+import { ClaimLostError, QueueClient, QueueError, type TaskRow } from "./queue.ts";
 import {
   compensateOrphanedIssue,
   handleLaunchFailure,
@@ -174,21 +174,27 @@ async function launchSession(
     // Assign immediately: PATCH the exact row the enqueue created (the
     // claim RPC claims the next task in a queue, not a specific one). The
     // worker identity must exist in agent.workers first (worker_id is an
-    // FK), so register it idempotently.
+    // FK), so register it idempotently. The PATCH applies only while the
+    // row is still queued (#10737): a fleet worker that claimed it in the
+    // meantime keeps it, and this launch backs out (ClaimLostError).
     await requireQueue().ensureWorker();
     const now = new Date();
-    await requireQueue().patchTask(task.id, {
-      status: "claimed",
-      worker_id: "dispatch-opencode",
-      claimed_at: now.toISOString(),
-      lease_until: new Date(now.getTime() + LEASE_SECONDS * 1000).toISOString(),
-      progress: {
-        lane: "opencode",
-        session_id: session.id,
-        issue_number: issue?.number ?? null,
-        launched_by: caller,
+    await requireQueue().patchTask(
+      task.id,
+      {
+        status: "claimed",
+        worker_id: "dispatch-opencode",
+        claimed_at: now.toISOString(),
+        lease_until: new Date(now.getTime() + LEASE_SECONDS * 1000).toISOString(),
+        progress: {
+          lane: "opencode",
+          session_id: session.id,
+          issue_number: issue?.number ?? null,
+          launched_by: caller,
+        },
       },
-    });
+      { onlyIfStatus: "queued" },
+    );
   });
 
   // Lane ledger: the same assignment the queue workers record after a
@@ -336,7 +342,10 @@ async function handleSessions(req: Request, caller: CallerIdentity): Promise<Res
       failureContext.sessionId,
       (sessionId) => opencode.deleteSession(sessionId),
     );
-    return json(502, { task_id: task.id, error: msg, ...(warnings.length ? { warnings } : {}) });
+    // A lost claim race is a conflict, not an upstream failure: the
+    // task is running under the worker that claimed it (#10737).
+    const status = e instanceof ClaimLostError ? 409 : 502;
+    return json(status, { task_id: task.id, error: msg, ...(warnings.length ? { warnings } : {}) });
   }
 
   return json(201, {

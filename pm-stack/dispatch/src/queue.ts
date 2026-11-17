@@ -27,6 +27,19 @@ export class QueueError extends Error {
   }
 }
 
+/** The assigning PATCH found the row no longer in the status it
+ * required (#10737): another worker claimed (or someone cancelled) the
+ * task between the enqueue and the assignment. The task belongs to
+ * whoever moved it, so the launch must back out without touching it. */
+export class ClaimLostError extends QueueError {
+  constructor(
+    readonly taskId: number,
+    readonly requiredStatus: string,
+  ) {
+    super(`task ${taskId} is no longer ${requiredStatus}; another worker holds it`, 409);
+  }
+}
+
 export interface TaskRow {
   id: number;
   queue: string;
@@ -113,8 +126,12 @@ export class QueueClient {
    * is "assigned immediately": claim_repo_task claims the NEXT task in a
    * queue, not a specific one, so claiming the exact row the enqueue just
    * created has to be a PATCH on that row. */
-  async patchTask(id: number, fields: Record<string, unknown>): Promise<TaskRow> {
-    const res = await fetch(`${this.baseUrl}/rest/v1/tasks?id=eq.${id}`, {
+  async patchTask(id: number, fields: Record<string, unknown>, opts: { onlyIfStatus?: string } = {}): Promise<TaskRow> {
+    // onlyIfStatus makes the PATCH a compare-and-swap on the row's
+    // status (#10737): PostgREST applies it only to a row that still
+    // matches, so a concurrent claim leaves zero matched rows.
+    const statusFilter = opts.onlyIfStatus ? `&status=eq.${encodeURIComponent(opts.onlyIfStatus)}` : "";
+    const res = await fetch(`${this.baseUrl}/rest/v1/tasks?id=eq.${id}${statusFilter}`, {
       method: "PATCH",
       headers: { ...this.headers(true), Prefer: "return=representation" },
       body: JSON.stringify(fields),
@@ -140,7 +157,10 @@ export class QueueClient {
       throw new QueueError(`task PATCH ${id} returned an unexpected shape: first element is not a task row`);
     }
     const row = firstTaskRow(rows);
-    if (!row) throw new QueueError(`task PATCH ${id} matched no row`);
+    if (!row) {
+      if (opts.onlyIfStatus) throw new ClaimLostError(id, opts.onlyIfStatus);
+      throw new QueueError(`task PATCH ${id} matched no row`);
+    }
     return row;
   }
 
