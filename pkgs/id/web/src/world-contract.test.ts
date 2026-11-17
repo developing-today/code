@@ -236,6 +236,21 @@ describe("shell contract validator", () => {
     if (!check.ok) expect(check.error).toContain(error);
   });
 
+  it("loads the signed i64 field type and checks it like the Rust checker", () => {
+    const scroll = (dx: unknown) =>
+      checkClientFrame(
+        contract,
+        { type: "pointer", event: "scroll", environment: "web", pointer_id: 1, x: 0, y: 0, dx, dy: -3 },
+        "joined",
+      );
+    expect(scroll(-120).ok).toBe(true);
+    expect(scroll(JSON.parse("9223372036854775807") as number).ok).toBe(true);
+    expect(scroll(-(2 ** 63)).ok).toBe(true);
+    expect(scroll(2 ** 64).ok).toBe(false);
+    expect(scroll(1.5).ok).toBe(false);
+    expect(scroll("3").ok).toBe(false);
+  });
+
   it("accepts u64 values at and above 2^53, like the Rust checker (#1441)", () => {
     const seed = (value: number) =>
       checkClientFrame(contract, { type: "install_begin", admin_token: "a", total_bytes: 1, seed: value }, "opening");
