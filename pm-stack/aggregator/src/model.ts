@@ -53,6 +53,16 @@ export interface GhItem {
   resolution?: ItemResolution;
 }
 
+/** A GitHub milestone as the collector ingests it per item (#9067):
+ * the title plus the two stamps the release accounting needs — dueOn
+ * is the release date for release milestones (program milestones are
+ * rolling and carry null), closedAt marks a closed release. */
+export interface MilestoneRef {
+  title: string;
+  dueOn: string | null;
+  closedAt: string | null;
+}
+
 /**
  * One item of the org GitHub Project pool (#910 stage 5): a Project
  * item plus its linked issue/PR, as read by the fleet-feed collector
@@ -90,6 +100,8 @@ export interface ProjectPoolItem {
    * section selects by these, never by updatedAt (#5279 Codex). */
   closedAt?: string;
   mergedAt?: string;
+  /** The linked issue's GitHub milestone, when it has one (#9067). */
+  milestone?: MilestoneRef;
   /** Project single-select fields; null when unset on the item. */
   status: string | null;
   area: string | null;
