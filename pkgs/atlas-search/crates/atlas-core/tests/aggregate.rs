@@ -265,3 +265,70 @@ fn promotion_splits_a_chunk_that_exceeds_the_model_context() {
         );
     }
 }
+
+#[test]
+fn promotion_keeps_pieces_and_items_with_identical_text() {
+    // #10836: the shard's content_hash is UNIQUE, so a chunk that
+    // splits into identical pieces, or two items staging the same
+    // file, must still promote with every piece kept.
+    let dir = temp_dir("dup-pieces");
+    let registry = Registry::open(&dir.join("registry.db")).unwrap();
+    let db = dir.join("unit.db");
+    registry
+        .provision(&db, "task-dup", "repo-worker-code", Tier::Internal, NOW)
+        .unwrap();
+    let text = "dns alpha beta\ndns alpha beta\ndns alpha beta\n";
+    for path in ["infra/dns/a.yaml", "infra/dns/b.yaml"] {
+        let entry = ArtifactEntry {
+            kind: "config".into(),
+            repo: "developing-today/code".into(),
+            path: path.into(),
+            commit_sha: "abc".into(),
+            language: "yaml".into(),
+            sensitivity: Tier::Internal,
+            text: text.into(),
+        };
+        stage_artifact_in_db(&db, "task-dup", &entry, NOW).unwrap();
+    }
+
+    let shard_dir = dir.join("shards");
+    let report = embed_unit_into_shard(
+        &registry,
+        "task-dup",
+        &shard_dir,
+        "codeconfig",
+        &WordEmbedder,
+        NOW,
+    )
+    .unwrap();
+    assert_eq!(report.chunks, 6, "three pieces per item, none dropped");
+
+    let conn = rusqlite::Connection::open(&report.shard_path).unwrap();
+    let mut stmt = conn
+        .prepare("SELECT message_id, text, content_hash FROM chunks ORDER BY id")
+        .unwrap();
+    let rows = stmt
+        .query_map([], |r| {
+            Ok((
+                r.get::<_, String>(0)?,
+                r.get::<_, String>(1)?,
+                r.get::<_, String>(2)?,
+            ))
+        })
+        .unwrap()
+        .collect::<std::result::Result<Vec<_>, _>>()
+        .unwrap();
+    let hashes: std::collections::HashSet<&str> = rows.iter().map(|r| r.2.as_str()).collect();
+    assert_eq!(hashes.len(), rows.len(), "every content_hash is unique");
+    let mut by_source: std::collections::BTreeMap<&str, String> = std::collections::BTreeMap::new();
+    for (source, piece, _) in &rows {
+        by_source
+            .entry(source.as_str())
+            .or_default()
+            .push_str(piece);
+    }
+    assert_eq!(by_source.len(), 2, "both items keep their pieces");
+    for joined in by_source.values() {
+        assert_eq!(joined, text);
+    }
+}
