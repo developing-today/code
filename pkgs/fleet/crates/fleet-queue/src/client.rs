@@ -6623,8 +6623,6 @@ mod tests {
     }
 
     #[test]
-    #[test]
-    #[test]
     fn timeline_surfaces_claim_displacement_events_6985() {
         // #6985: the recurrence on task 17490 read as "exactly two
         // events" because the timeline's kind list omitted the
@@ -6648,6 +6646,7 @@ mod tests {
         }
     }
 
+    #[test]
     fn collapse_timeline_9046_drops_only_duplicate_writes() {
         // #9046 oracle: same (kind, session, leaf, trigger) inside
         // 120 s = one record written by two surfaces; a changed
@@ -6744,6 +6743,7 @@ mod tests {
         assert!(bare_claim_refusal(&mk(&["--handoff"]), &None).is_none());
     }
 
+    #[test]
     fn rollup_event_reads_row_task_id() {
         // Claim-link rollup: the row's own task_id column joins
         // the stamp (fleet-cli stamp details carry no task_id).
