@@ -5,27 +5,27 @@
   cmake,
   fetchurl,
   fuse,
-  glibmm,
-  gnome,
+  glibmm_2_4,
   gobject-introspection,
   gtk3,
   intltool,
   libnotify,
   libstartup_notification,
-  libwnck3,
+  libwnck,
   libxcursor,
+  libxdmcp,
   libxml2,
   libxslt,
   makeWrapper,
   mesa_glu,
+  metacity,
   pcre2,
   pkg-config,
   protobuf,
   python3Packages,
   stdenv,
   wrapGAppsHook3,
-  xorg,
-  xorgserver,
+  xorg-server,
   ...
 }:
 stdenv.mkDerivation (f: {
@@ -52,22 +52,22 @@ stdenv.mkDerivation (f: {
     boost
     cairo
     fuse
-    glibmm
-    gnome.metacity
+    glibmm_2_4
+    metacity
     gobject-introspection
     gtk3
     intltool
     libnotify
     libstartup_notification
-    libwnck3
+    libwnck
     libxml2
     libxslt
     mesa_glu
     pcre2
     protobuf
     libxcursor
-    xorg.libXdmcp
-    xorgserver
+    libxdmcp
+    xorg-server
   ];
 
   postInstall = ''
@@ -89,7 +89,7 @@ stdenv.mkDerivation (f: {
 
     wrapProgram "$out/bin/compiz-decorator" \
       --prefix COMPIZ_BIN_PATH : "$out/bin/" \
-      --prefix PATH : "${gnome.metacity}/bin"
+      --prefix PATH : "${metacity}/bin"
 
     # Wrap CCSM with GApps and Python path
     makeWrapperArgs+=("''${gappsWrapperArgs[@]}")
