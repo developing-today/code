@@ -122,6 +122,31 @@ jobs:
         with:
           path: site
 
+      # Wait for the uploaded artifact to become available for deploy-pages.
+      # There is a known race condition where deploy-pages cannot immediately
+      # find the artifact that was just uploaded (GitHub Actions propagation delay).
+      # This step polls the Actions API until the artifact named "github-pages" is visible.
+      - name: Wait for Pages artifact to be available
+        if: always()
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          run_id="${{ github.run_id }}"
+          repo="${{ github.repository }}"
+          max_attempts=30
+          delay=10
+          for attempt in $(seq 1 "$max_attempts"); do
+            if gh api -X GET "repos/$repo/actions/runs/$run_id/artifacts" --jq '.artifacts[] | select(.name == "github-pages") | .id' | grep -q '^[0-9]\+$'; then
+              echo "Artifact 'github-pages' found (attempt $attempt/$max_attempts)"
+              exit 0
+            fi
+            echo "Artifact not yet visible (attempt $attempt/$max_attempts), waiting ${delay}s..."
+            sleep "$delay"
+          done
+          echo "ERROR: Artifact 'github-pages' not found after $max_attempts attempts" >&2
+          exit 1
+
       - name: Deploy to GitHub Pages
         id: deployment
         uses: actions/deploy-pages@v5
