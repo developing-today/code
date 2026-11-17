@@ -38,7 +38,6 @@ declare -A GRANDFATHERED=(
   # PR that lands the split.
   ["pkgs/fleet/crates/fleet-queue/src/client.rs"]="#8588"
   ["pkgs/fleet/crates/fleet-queue/src/turso_queue.rs"]="#8589"
-  ["pkgs/id/crates/id-cli/src/commands/serve.rs"]="#8590"
   ["pkgs/id/src/boards.rs"]="#8891"
   # The id-worlds files below moved from pkgs/id/src/ to
   # pkgs/id/crates/id-worlds/src/ in the id crate restructure; a key
@@ -48,8 +47,6 @@ declare -A GRANDFATHERED=(
   # pkgs/id/crates/id-cli/ and pkgs/id/crates/id-directory/ - and
   # their keys were re-pointed in the #9526 fix; same rule.
   ["pkgs/id/crates/id-directory/src/directory.rs"]="#8591"
-  ["pkgs/id/crates/id-worlds/src/world/actor.rs"]="#8592"
-  ["pkgs/id/crates/id-worlds/src/world/core.rs"]="#8593"
 )
 
 # Count production lines of one file: every line that is not part of
