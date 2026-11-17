@@ -1,0 +1,82 @@
+{
+  "title": "Design #5681: synthesize serverless storage choice and shard placement policy",
+  "body": "Triage follow-up from task 12251 (2026-11-08): issue #5681 remains OPEN and its required parent-level decision record is absent. PR #5707 merged a general ID-program essay-answers document, but does not satisfy #5681's eight-axis D1/Turso/both comparison, journal-fit statement, cost model, common-contract/migration answer, or shard placement policy. Produce only the parent synthesis from evidence owned by #5681 and its children; do not re-do their spikes/designs or touch Drew-owned PRs.",
+  "dedupe_key": "repo-health:v1:fix:developing-today/code:issue:5681",
+  "priority": 30,
+  "payload": {
+    "schema": "repo-task/v1",
+    "kind": "small_fix",
+    "repo": "developing-today/code",
+    "issue": {
+      "number": 5681,
+      "title": "design(id): serverless edition storage — D1 vs Turso vs both for `id` on Cloudflare Workers",
+      "url": "https://github.com/developing-today/code/issues/5681",
+      "state_checked_at": "2026-11-08T18:12:50Z"
+    },
+    "problem": "Issue #5681's parent synthesis remains a live design deliverable. The issue is OPEN, PR #5707 is merged but does not cover its acceptance criteria, and the current main tree has no parent comparison or shard-placement decision record. Produce the parent-level synthesis only, using child artifacts without duplicating them.",
+    "evidence": [
+      "Fresh GitHub state 2026-11-08: #5681 OPEN; no held, user/owned, do-not-merge, or do-not-auto-edit labels. PR #5707 is MERGED (2026-11-05T01:48:54Z), but its body adds the general ID-program essay answers document, not the #5681 eight-axis storage comparison.",
+      "Laptop current main in the task worktree is 7ca8b5d36c946d015a4da772c6a927338186b564. Search of doc/ and pkgs/id finds child records #5866 and #5869, but no parent #5681 storage comparison or placement record.",
+      "Drew's architecture direction on #5681 (comment https://github.com/developing-today/code/issues/5681#issuecomment-6646491086): BOTH with roles, Turso preferred, endpoint embedded replicas, very large atlas shards spread across Turso and D1 by size/heat/access, and cold/archive tiers on the home lab. The issue's remaining question is shard placement policy, not winner-take-all vendor selection.",
+      "Child work is distinct and must not be duplicated: #5863 remains OPEN without a landed contract record; #5864 remains OPEN with Drew-authored draft PR #6350; #5865 has a 2026-11-08 triage verdict confirming its design+spike is still real/current; #5866 remains OPEN for its backend-specific §6 remainder after merged PR #7588; #5867 remains OPEN with task 12354 handed off; #5868 has Drew-authored open PR #7591; #5869 is CLOSED via merged PR #7774 and its decision record is present on main.",
+      "PR #6350 (Drew-authored, draft) is the canonical D1 spike for #5864; its latest checks include failures. PR #7591 (Drew-authored) is the canonical cost/limits decision record for #5868; basic CI is still queued. Neither PR is to be modified, merged, or superseded by this packet.",
+      "Merged child record #5866 explicitly leaves backend-specific local targets to #5867/#5681. The #5868 decision record flags D1 uncapped paid overage, D1's 10 GB hard cap, Turso BLOCKED behavior during append, plan continuity, and D1 replicas not increasing write capacity; use it as an input when its PR is merged, without reopening its owned scope.",
+      "Merged child record #5869 (doc/2026-11-08_design_id5869.md, PR #7774) now covers PITR, open-format export, and provider exit; use it for parent durability/backup/exit comparison. It explicitly leaves backend choice to #5867/#5681."
+    ],
+    "acceptance": [
+      "Add and link from #5681 a parent decision record covering D1 only, Turso/libSQL only, and both across all eight comparison axes in the issue body; distinguish measured evidence from documentation claims and list unresolved spikes rather than inventing results.",
+      "State the recommendation, evidence, and reversal conditions while preserving the recorded BOTH-with-roles direction (Turso preferred; endpoint embedded replicas; large atlas shards per-shard across D1/Turso; cold/archive at the home lab), unless verified evidence meets an explicit reversal condition.",
+      "Define a shard placement policy based on size, heat, access pattern, and vendor cost/limits, including how a shard cools/rebalances, how its placement metadata is resolved, and safe behavior when its selected store is unavailable.",
+      "State which #806 signed-stream guarantees D1 and Turso preserve, weaken, or require compensation for; specify the shared storage contract, choice granularity, and migration/export-replay path using the completed #5863/#5864/#5865/#5867 records when available.",
+      "Include the single-user, small-community, and large-world cost model with assumptions, incorporating the #5868 decision record after PR #7591 lands; retain its unresolved risks explicitly if the PR remains open.",
+      "Do not redo child spikes or design records, do not touch Drew-owned PRs #6350 or #7591, and do not close #5681 until every parent acceptance criterion is evidenced and fresh GitHub state confirms no remaining child-owned work is being claimed as parent work."
+    ],
+    "scope": {
+      "include": [
+        "Produce the missing parent-level comparison and synthesis for issue #5681, including the shard placement policy, using current merged artifacts and recording evidence gaps/dependencies precisely.",
+        "Link and reconcile the parent record with #806 and child design issues #5863-#5869; incorporate child findings without claiming their open PRs are landed."
+      ],
+      "exclude": [
+        "Implementing a D1, Turso/libSQL, shard-routing, or migration backend.",
+        "Re-running or replacing child-owned spikes/designs for #5863-#5869.",
+        "Editing, merging, closing, or creating a competing PR for Drew-owned PR #6350 or #7591.",
+        "Changing the recorded platform direction without verified evidence satisfying a stated reversal condition."
+      ]
+    },
+    "tests": [
+      "Manual acceptance review against every #5681 criterion; verify all evidence links and child PR states fresh before marking the parent deliverable complete."
+    ],
+    "risk": {
+      "level": "low",
+      "flags": [
+        "triage-doctrine-requeue",
+        "parent-design-synthesis",
+        "child-deliverables-in-flight"
+      ]
+    },
+    "priority_reason": "Normal (30): issue #5681 remains OPEN with a decision-bearing design remainder after partial verification; child tickets own their own spikes, while the parent comparison and shard-placement synthesis are still absent.",
+    "timebox_minutes": 45,
+    "max_attempts": 4,
+    "context_refs": [
+      "https://github.com/developing-today/code/issues/5681",
+      "https://github.com/developing-today/code/issues/5863",
+      "https://github.com/developing-today/code/issues/5864",
+      "https://github.com/developing-today/code/issues/5865",
+      "https://github.com/developing-today/code/issues/5866",
+      "https://github.com/developing-today/code/issues/5867",
+      "https://github.com/developing-today/code/issues/5868",
+      "https://github.com/developing-today/code/issues/5869",
+      "https://github.com/developing-today/code/issues/7016",
+      "https://github.com/developing-today/code/issues/806",
+      "https://github.com/developing-today/code/pull/5707",
+      "https://github.com/developing-today/code/pull/6350",
+      "https://github.com/developing-today/code/pull/7588",
+      "https://github.com/developing-today/code/pull/7591",
+      "https://github.com/developing-today/code/pull/7774"
+    ],
+    "dedupe": {
+      "checked_at": "2026-11-08T18:12:50Z",
+      "basis": "Triage task 12251 confirmed the parent-level comparison and placement record is absent; the current fix-family key is distinct from the existing triage key. Queue listings showed no other task for the parent synthesis as of 2026-11-08T18:09:16Z."
+    }
+  }
+}
