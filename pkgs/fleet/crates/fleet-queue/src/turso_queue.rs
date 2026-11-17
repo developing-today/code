@@ -1889,9 +1889,6 @@ fn expire_leases(t: &TursoBackend) -> Result<i64, TErr> {
     Ok(expired)
 }
 
-/// record_repo_task_lane_execution, contract-shaped: stamp the
-/// executed lane (+ fallback reason / session) onto the task's
-/// ledger row, creating a minimal row when assignment never ran.
 /// #7598: split an execution record into (mode, lane_id). `lane`
 /// is the execution MODE ('opencode' | 'direct'); a lane id that
 /// arrives in `lane` anyway (a caller that skipped the client's
@@ -1920,6 +1917,9 @@ fn execution_lane_fields(ex: &Value) -> (Option<String>, Option<String>) {
     }
 }
 
+/// record_repo_task_lane_execution, contract-shaped: stamp the
+/// executed lane (+ fallback reason / session) onto the task's
+/// ledger row, creating a minimal row when assignment never ran.
 fn record_execution(t: &TursoBackend, req: &Value, row: &Value) -> Result<Option<Value>, TErr> {
     let Some(ex) = req.get("execution").filter(|e| e.is_object()) else {
         return Ok(None);
@@ -9130,7 +9130,6 @@ mod tests {
     }
 
     #[test]
-    #[test]
     fn execution_lane_fields_split_7598() {
         // Oracle (#7598): the execution record splits into the
         // mode and the executing lane id, so a claim stamped with
@@ -9157,6 +9156,7 @@ mod tests {
         assert_eq!(execution_lane_fields(&json!({})), (None, None));
     }
 
+    #[test]
     fn lane_family_of_accepts_known_families_and_rejects_garbage() {
         // The claim-time wildcard (Drew, 2026-11-16): known
         // family + nonempty lowercase alphabetic suffix.
