@@ -810,6 +810,11 @@ func (s *Server) handleAskAnswers(w http.ResponseWriter, r *http.Request) {
 			continue
 		}
 		ans.By = by
+		// Every answer this route carries is the downstream client's
+		// own result, relayed to the upstream that asked: the only
+		// poster is the MCP relay (daemonAsker.Reply). Mark it so the
+		// broker judges it as a relayed answer (#8922).
+		ans.Relayed = true
 		if err := s.reg.broker.Respond(ans); err != nil {
 			problems[id] = err.Error()
 			continue
