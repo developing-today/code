@@ -27,7 +27,7 @@ require (
 	github.com/prometheus/client_golang v1.19.0
 	github.com/samber/do/v2 v2.0.0-beta.5
 	github.com/samber/go-type-to-string v1.2.0
-	github.com/spf13/cobra v1.8.0
+	github.com/spf13/cobra v1.10.2
 	github.com/treilik/bubbleboxer v0.2.0
 	github.com/tursodatabase/libsql-client-go v0.0.0-20260528064733-9d5d30a29a60
 	golang.org/x/crypto v0.52.0
@@ -107,7 +107,7 @@ require (
 	github.com/sblinch/kdl-go v0.0.0-20240108033718-e453df3dbf65 // indirect
 	github.com/segmentio/asm v1.2.0 // indirect
 	github.com/segmentio/encoding v0.4.0 // indirect
-	github.com/spf13/pflag v1.0.5 // indirect
+	github.com/spf13/pflag v1.0.9 // indirect
 	github.com/tyler-smith/go-bip39 v1.1.0 // indirect
 	github.com/valyala/bytebufferpool v1.0.0 // indirect
 	github.com/xrash/smetrics v0.0.0-20231213231151-1d8dd44e695e // indirect
