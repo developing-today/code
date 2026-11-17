@@ -4084,6 +4084,35 @@ fn lane_decision(
     }
 }
 
+/// The session a lane row is *live*-bound to (#8368): the ledger
+/// session_id, unless the broker itself cleared that exact binding
+/// (progress.session_cleared.session_id, stamped by clear_binding
+/// when park/release/expire dropped it). A broker-cleared session is
+/// not bound in any live sense — a row still carrying its id must
+/// behave as unbound for reassignment, or the task loops claim/park
+/// across lanes with no lane-side exit (no flip, no transfer, no
+/// fresh launch).
+fn bound_session<'a>(
+    session_id: Option<&'a str>,
+    cleared_session_id: Option<&str>,
+) -> Option<&'a str> {
+    let sid = session_id.map(str::trim).unwrap_or("");
+    if sid.is_empty() || cleared_session_id == Some(sid) {
+        None
+    } else {
+        session_id
+    }
+}
+
+/// The session id the broker recorded as cleared on a task's
+/// progress (clear_binding's session_cleared stamp), if any (#8368).
+fn cleared_session_id(task: &Value) -> Option<&str> {
+    task.get("progress")
+        .and_then(|p| p.get("session_cleared"))
+        .and_then(|c| c.get("session_id"))
+        .and_then(|v| v.as_str())
+}
+
 /// Whether an EXISTING ledger row flips to direct (#8187): only an
 /// opencode row, only when the caller passes --exclusion-reason
 /// (a Muse lane taking a sink/legacy opencode task direct), and
@@ -5010,18 +5039,22 @@ fn verb_lane(t: &TursoBackend, req: &Value) -> Value {
                 .and_then(|v| v.as_str())
                 .unwrap_or("")
                 .to_string();
+            // #8368: the binding that counts is the *live* one —
+            // a ledger session_id the broker itself cleared (it
+            // matches progress.session_cleared) is not bound, and a
+            // row carrying it flips like an unbound row.
+            let bound = bound_session(
+                existing.get("session_id").and_then(|v| v.as_str()),
+                cleared_session_id(&task),
+            );
             // #8187 reassignment: an unbound opencode row flips to
             // direct when the caller passes --exclusion-reason (a
             // Muse lane taking a sink/legacy opencode task direct).
             // The progress.lane re-sync below then stamps direct.
-            if lane_reassignment_flip(
-                &lane,
-                existing.get("session_id").and_then(|v| v.as_str()),
-                exclusion.as_deref(),
-            ) {
+            if lane_reassignment_flip(&lane, bound, exclusion.as_deref()) {
                 t.exec(
                     "UPDATE repo_task_lane_ledger SET assigned_lane = 'direct', \
-                       exclusion_reason = ?, updated_at = ? WHERE task_id = ?",
+                       session_id = NULL, exclusion_reason = ?, updated_at = ? WHERE task_id = ?",
                     &[
                         arg_str(exclusion.as_deref()),
                         Arg::Text(now_iso()),
@@ -5051,14 +5084,10 @@ fn verb_lane(t: &TursoBackend, req: &Value) -> Value {
             // task to opencode with a stated reason) and no
             // session is bound. The progress.lane re-sync below
             // then stamps opencode.
-            if lane_flip_to_opencode(
-                &lane,
-                existing.get("session_id").and_then(|v| v.as_str()),
-                opencode_reason.as_deref(),
-            ) {
+            if lane_flip_to_opencode(&lane, bound, opencode_reason.as_deref()) {
                 t.exec(
                     "UPDATE repo_task_lane_ledger SET assigned_lane = 'opencode', \
-                       opencode_reason = ?, exclusion_reason = NULL, updated_at = ? \
+                       session_id = NULL, opencode_reason = ?, exclusion_reason = NULL, updated_at = ? \
                      WHERE task_id = ?",
                     &[
                         arg_str(opencode_reason.as_deref()),
@@ -5083,6 +5112,28 @@ fn verb_lane(t: &TursoBackend, req: &Value) -> Value {
                     ),
                 )?;
                 lane = "opencode".to_string();
+            }
+            // #8368: a requested flip that a *live* bound session
+            // refuses is an explicit error naming the session —
+            // never the silent unchanged row, which lanes cannot
+            // distinguish from success.
+            if exclusion.is_some() && lane == "opencode" {
+                if let Some(sid) = bound {
+                    return Err(format!(
+                        "assign_repo_task_lane: task {task_id} is bound to session {sid} \
+                         (live, not cleared) \u{2014} the #8187 exclusion flip is refused \
+                         for a live bound session; its owner must release or transfer it"
+                    ));
+                }
+            }
+            if opencode_reason.is_some() && lane == "direct" {
+                if let Some(sid) = bound {
+                    return Err(format!(
+                        "assign_repo_task_lane: task {task_id} is bound to session {sid} \
+                         (live, not cleared) \u{2014} the #8210 opencode flip is refused \
+                         for a live bound session; its owner must release or transfer it"
+                    ));
+                }
             }
             let cur = task
                 .get("progress")
@@ -5621,15 +5672,27 @@ fn verb_park(t: &TursoBackend, req: &Value) -> Value {
     // triage classification above is a genuine wait by #8184's own
     // rule and never sinks.
     let to_sink = wk != "triage" && handoff_park(&progress, condition_defaulted, &condition);
+    // #8368: an explicit caller delay (delay_seconds / not_before in
+    // the request) is a caller-declared wait. The sink landing below
+    // keeps it as not_before even though every other wait field is
+    // NULL — discarding it re-served bound tasks immediately,
+    // defeating the park.
+    let explicit_delay = req.get("not_before").is_some_and(|v| !v.is_null())
+        || req.get("delay_seconds").is_some_and(|v| !v.is_null());
     let work = (|| -> Result<Value, TErr> {
         if to_sink {
             t.exec(
                 "UPDATE tasks SET status = 'handed_off', worker_id = NULL, lease_until = NULL, \
-                   not_before = NULL, park_kind = NULL, wait_kind = NULL, ready_condition = NULL, \
+                   not_before = ?, park_kind = NULL, wait_kind = NULL, ready_condition = NULL, \
                    required_budget_minutes = NULL, \
                    last_checked_at = ?, check_outcome = NULL, progress = ?, result = ?, \
                    updated_at = ? WHERE id = ?",
                 &[
+                    if explicit_delay {
+                        Arg::Text(not_before.clone())
+                    } else {
+                        Arg::Null
+                    },
                     Arg::Text(now_iso()),
                     Arg::Text(progress.to_string()),
                     Arg::Text(result.to_string()),
@@ -5666,7 +5729,12 @@ fn verb_park(t: &TursoBackend, req: &Value) -> Value {
             json!({
                 "reason": reason, "status": "handed_off",
                 "park_kind": Value::Null, "wait_kind": Value::Null,
-                "not_before": Value::Null, "ready_condition": Value::Null,
+                "not_before": if explicit_delay {
+                    Value::String(not_before.clone())
+                } else {
+                    Value::Null
+                },
+                "ready_condition": Value::Null,
                 "cleared_session_id": cleared,
             })
         } else {
@@ -9269,6 +9337,65 @@ mod tests {
         // Direct rows are already direct; nothing to flip.
         assert!(!lane_reassignment_flip("direct", None, Some("x")));
         assert!(!lane_reassignment_flip("direct", None, None));
+    }
+
+    #[test]
+    fn bound_session_treats_broker_cleared_as_unbound_8368() {
+        // #8368: a ledger session_id the broker itself cleared
+        // (progress.session_cleared names it) is not a live binding.
+        assert_eq!(bound_session(None, None), None);
+        assert_eq!(bound_session(Some(""), Some("ses_x")), None);
+        assert_eq!(bound_session(Some("ses_dead"), Some("ses_dead")), None);
+        assert_eq!(
+            bound_session(Some("ses_live"), Some("ses_dead")),
+            Some("ses_live")
+        );
+        assert_eq!(bound_session(Some("ses_live"), None), Some("ses_live"));
+        // Composed with the flip predicates, as verb_lane calls them:
+        // the cleared row flips; the live-bound row never does.
+        assert!(lane_reassignment_flip(
+            "opencode",
+            bound_session(Some("ses_dead"), Some("ses_dead")),
+            Some("lane takes it direct")
+        ));
+        assert!(!lane_reassignment_flip(
+            "opencode",
+            bound_session(Some("ses_live"), Some("ses_dead")),
+            Some("lane takes it direct")
+        ));
+        assert!(lane_flip_to_opencode(
+            "direct",
+            bound_session(Some("ses_dead"), Some("ses_dead")),
+            Some("send to opencode")
+        ));
+    }
+
+    #[test]
+    fn lane_and_park_honor_cleared_session_and_explicit_delay_8368() {
+        // Source-shape companions to the predicate test above, in
+        // this file's seg8217 style: verb_lane must consult the
+        // task's session_cleared stamp and refuse live-bound flips
+        // explicitly; verb_park's sink landing must be able to
+        // carry an explicit caller delay as not_before.
+        let src = include_str!("turso_queue.rs");
+        let lane_seg = seg8217(src, "fn verb_lane(", "\nfn verb_bind(");
+        assert!(
+            lane_seg.contains("cleared_session_id(&task)"),
+            "verb_lane consults progress.session_cleared (#8368)"
+        );
+        assert!(
+            lane_seg.contains("is bound to session"),
+            "a live-bound flip refusal is an explicit error naming the session (#8368)"
+        );
+        let park_seg = seg8217(src, "fn verb_park(", "\nfn verb_release(");
+        assert!(
+            park_seg.contains("explicit_delay"),
+            "the park verb tracks an explicit caller delay (#8368)"
+        );
+        assert!(
+            park_seg.contains("not_before = ?, park_kind = NULL"),
+            "the sink landing carries the explicit not_before (#8368)"
+        );
     }
 
     #[test]
