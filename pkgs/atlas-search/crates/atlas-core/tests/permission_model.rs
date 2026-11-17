@@ -308,9 +308,9 @@ fn paired_worlds() -> (World, World) {
     a.objects.insert(11, obj(11, "secret/twin.md", "alpha beta release notes", &["mid"]));
     // World B forbidden set: different ids, paths, contents, count —
     // including a byte-identical twin of object 1's content.
-    b.objects.insert(20, obj(20, "vault/x.md", "alpha alpha alpha alpha", &["high"]));
+    b.objects.insert(20, obj(20, "vault/x.md", "gamma delta vault", &["high"]));
     b.objects.insert(21, obj(21, "vault/twin.md", "alpha beta release notes", &["high"]));
-    b.objects.insert(22, obj(22, "vault/y.md", "gamma delta gamma delta", &[]));
+    b.objects.insert(22, obj(22, "vault/y.md", "epsilon zeta vault", &[]));
     (a, b)
 }
 
