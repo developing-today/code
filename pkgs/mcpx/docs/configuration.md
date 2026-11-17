@@ -1234,6 +1234,35 @@ Point `paths.adapters` at a copy of that file and the tailnet appears in
 `TestShippedTailscaleAdapterDeclaration`, so it cannot drift from the
 shape above.
 
+### Example: Dropbox, Google Drive and Outlook, a token in the environment
+
+The shipped declarations at `examples/dropbox.json`,
+`examples/google-drive.json` and `examples/outlook.json` (#1936) take
+the other route: each declares an HTTP API whose tools are generated
+from the OpenAPI document shipped beside it
+(`examples/dropbox.openapi.json` and siblings). The vendor documents
+cannot be used as published — Drive's is a discovery document,
+Dropbox's is a Stone spec, and the Microsoft Graph document covers
+every Microsoft 365 service — so each shipped document is a curated,
+read-only subset: listing, search, metadata and the caller's own
+account or profile, and nothing that writes.
+
+Each declaration carries exactly one credential shape, an
+`Authorization` header whose value is a `${VAR}` placeholder
+(`${DROPBOX_ACCESS_TOKEN}`, `${GOOGLE_DRIVE_ACCESS_TOKEN}`,
+`${OUTLOOK_ACCESS_TOKEN}`) expanded from the environment when the
+declaration loads — the declaration can be checked in, a token
+cannot. Dropbox is the one deliberate exception to the read-only
+default: API v2 is RPC over POST, so its declaration sets
+`"methods": ["POST"]` while every operation in its document is
+still a read.
+
+Point `paths.apis` at a copy of a declaration (with its document
+beside it) and the service appears in `mcpx ls` like any other
+server. The shipped copies are pinned by
+`TestShippedAPIDeclarations`, so they cannot drift from the shapes
+above.
+
 `mcpx catalog` also ends with the recipe tools in `tools/list`: how many are
 exposed against the recipe budget, and which recipes were kept out by a name
 collision or the cap.

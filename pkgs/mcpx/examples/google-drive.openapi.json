@@ -1,0 +1,148 @@
+{
+  "info": {
+    "description": "A curated read-only subset of the Google Drive API v3, shipped with the mcpx google-drive example declaration (#1936). Google publishes Drive as a discovery document rather than an OpenAPI document; this document covers only the read operations the declaration exposes: listing and reading file metadata, reading the account's storage usage, and listing shared drives.",
+    "title": "Google Drive (mcpx example subset)",
+    "version": "1.0.0"
+  },
+  "openapi": "3.0.3",
+  "paths": {
+    "/about": {
+      "get": {
+        "description": "Returns the caller's Drive information: the user, storage quota and usage, and the export formats the service supports.",
+        "operationId": "getAbout",
+        "parameters": [
+          {
+            "description": "Comma-separated fields to include.",
+            "in": "query",
+            "name": "fields",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The account's Drive information."
+          }
+        },
+        "summary": "Read the account's Drive information",
+        "tags": [
+          "about"
+        ]
+      }
+    },
+    "/drives": {
+      "get": {
+        "description": "Lists the shared drives the caller can access.",
+        "operationId": "listDrives",
+        "parameters": [
+          {
+            "description": "Maximum number of drives to return.",
+            "in": "query",
+            "name": "pageSize",
+            "schema": {
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The shared drives."
+          }
+        },
+        "summary": "List shared drives",
+        "tags": [
+          "drives"
+        ]
+      }
+    },
+    "/files": {
+      "get": {
+        "description": "Lists files in the caller's Drive. The q parameter is Drive's query language (e.g. name contains 'report' and trashed = false); omit it to list recent files.",
+        "operationId": "listFiles",
+        "parameters": [
+          {
+            "description": "A Drive query string filtering the files returned.",
+            "in": "query",
+            "name": "q",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Maximum number of files to return.",
+            "in": "query",
+            "name": "pageSize",
+            "schema": {
+              "type": "integer"
+            }
+          },
+          {
+            "description": "Comma-separated fields to include for each file.",
+            "in": "query",
+            "name": "fields",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Sort order, e.g. modifiedTime desc.",
+            "in": "query",
+            "name": "orderBy",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The matching files."
+          }
+        },
+        "summary": "List and search files",
+        "tags": [
+          "files"
+        ]
+      }
+    },
+    "/files/{fileId}": {
+      "get": {
+        "description": "Returns the metadata for one file: name, MIME type, size, timestamps, owners and parents. This reads metadata only, not the file's contents.",
+        "operationId": "getFile",
+        "parameters": [
+          {
+            "description": "The id of the file.",
+            "in": "path",
+            "name": "fileId",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Comma-separated fields to include.",
+            "in": "query",
+            "name": "fields",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The file's metadata."
+          }
+        },
+        "summary": "Read one file's metadata",
+        "tags": [
+          "files"
+        ]
+      }
+    }
+  },
+  "servers": [
+    {
+      "url": "https://www.googleapis.com/drive/v3"
+    }
+  ]
+}
