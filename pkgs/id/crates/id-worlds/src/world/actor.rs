@@ -3240,7 +3240,7 @@ mod replication_feed_tests {
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod device_info_tests {
     use super::*;
-    use crate::world_caps::{CapError, DeviceManifest};
+    use crate::world_caps::{CapError, DeviceManifest, Request};
 
     struct DeviceInfoProgram;
 
@@ -3407,6 +3407,7 @@ mod device_info_tests {
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod form_tests {
     use super::*;
+    use crate::world_caps::{CapError, Request};
     use id_core::world_presentation::{
         FormAction, FormActionKind, FormField, FormResult, FormSurface,
     };

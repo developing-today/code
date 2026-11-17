@@ -165,6 +165,8 @@ fn start() -> Harness {
         ],
         vec_table: atlas_core::DEFAULT_VEC_TABLE.to_string(),
         limits: RuntimeLimits::default(),
+        shards: None,
+        shard_refresh: std::time::Duration::from_secs(60),
     };
     let handle = start_server(settings, engine).expect("service starts on loopback");
     Harness {

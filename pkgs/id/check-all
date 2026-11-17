@@ -112,6 +112,18 @@ if ! $QUICK; then
     run_check "Doc Tests" cargo test --doc || true
 fi
 
+# 5b. Planted-bug mutation proof (#8037): applies one named mutation
+# at a time and requires the voiding/frontier suites to FAIL on each,
+# after a green unmutated baseline -- a suite that passes with the
+# bug planted proves nothing. Slow (it runs the judged suites
+# repeatedly), so it is skipped in quick mode like the other
+# integration checks. It is also a flake check (planted-bug-check in
+# flake.nix), which is the automatic venue; this step keeps the local
+# gate in step with it.
+if ! $QUICK; then
+    run_check "Planted-Bug Check" bash tests/planted-bug-check.sh || true
+fi
+
 # 6. Documentation build (skip in quick mode)
 if ! $QUICK; then
     run_check "Documentation" cargo doc --no-deps --document-private-items || true
