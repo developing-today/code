@@ -795,6 +795,20 @@
       "notes": "Current workflow YAML has workflow_dispatch plus push/pull_request path filters for external-comms; the registry records configuration, not an automatic coverage claim."
     },
     {
+      "id": "pm-stack.scheduled-history.collect",
+      "paths": ["pm-stack/scheduled-history/**"],
+      "invocation": "python3 pm-stack/scheduled-history/test_collect.py",
+      "venue": {
+        "workflow": ".github/workflows/pm-stack-tests.yml",
+        "job_step": "Test scheduled-history collector Python suite",
+        "state": "active",
+        "dispatchable": true
+      },
+      "status": "mapped",
+      "related_issues": [10423],
+      "notes": "Script-style suite (19 checks; not unittest-discoverable). The workflow runs nightly on main with no path filters (2026-11-16 nightly-CI policy), so the step is the coverage; the step asserts the file exists and requires the checks-passed line."
+    },
+    {
       "id": "pm-stack.meta-exporter",
       "paths": ["pm-stack/meta-exporter/meta-quota-export.test.mjs"],
       "invocation": "node --test pm-stack/meta-exporter/meta-quota-export.test.mjs",
