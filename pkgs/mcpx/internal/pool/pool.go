@@ -308,7 +308,7 @@ func (p *Pool) Acquire(ctx context.Context, rs config.ResolvedScope) (*Lease, er
 			p.mu.Unlock()
 			return nil, errClosed
 		}
-		p.reapDeadLocked()
+		reaped := p.reapDeadLocked()
 
 		// An instance already serving this key is the only correct choice:
 		// the key is the caller's identity, and a second process would mean a
@@ -329,7 +329,13 @@ func (p *Pool) Acquire(ctx context.Context, rs config.ResolvedScope) (*Lease, er
 		}
 
 		if p.laneSizeLocked(legacy) < p.cfg.Max {
-			if cd := p.cooldownUntil; time.Now().Before(cd) {
+			// A crash is not a start failure: when this acquire just
+			// reaped a dead instance, its restart attempt is the first
+			// post-crash acquire and must not be refused by a cooldown
+			// earned by unrelated start failures (#7846). The cooldown
+			// still throttles every later attempt, and a failed restart
+			// re-enters it through the start-failure path below.
+			if cd := p.cooldownUntil; !reaped && time.Now().Before(cd) {
 				err := p.lastErr
 				p.mu.Unlock()
 				return nil, fmt.Errorf("server %q is in restart cooldown for %s: %w",
@@ -548,19 +554,25 @@ func (p *Pool) ReleaseKey(key string) int {
 	return 1
 }
 
-func (p *Pool) reapDeadLocked() {
+// reapDeadLocked drops instances whose process has died and reports
+// whether any were reaped, so the caller can tell a crash (a server
+// that was running and terminated unexpectedly) from an idle pool.
+func (p *Pool) reapDeadLocked() bool {
 	kept := p.instances[:0]
+	reaped := false
 	for _, in := range p.instances {
 		if in.Client.Alive() {
 			kept = append(kept, in)
 			continue
 		}
+		reaped = true
 		if p.lastErr == nil {
 			p.lastErr = in.Client.Err()
 		}
 		go func() { _ = in.Client.Close() }()
 	}
 	p.instances = kept
+	return reaped
 }
 
 // installServerHooks wires what a server may ask of mcpx into the options its
