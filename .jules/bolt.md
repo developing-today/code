@@ -22,3 +22,11 @@
 
 **Learning:** `renderWorldSurface` in `pkgs/id/web/src/world-surface.ts` validated every cell of a 120x50 world frame with `Intl.Segmenter.segment()` plus the unicode-width regexes (`\p{Mn}`, `\p{Grapheme_Extend}`) — ~120k segmentations per second at 20 frames/s. On the ASCII path this is pure overhead: a single code unit in U+0020..U+007E is always exactly one grapheme and one column wide. Measured in Bun/JSC, per-frame validation + colour CPU for a full 6000-cell frame fell from 60–169 ms to 2–3 ms (30–55x). Full-render timings in happy-dom are useless for judging this: element creation dominates (hundreds of ms with 4x run-to-run noise) and is unchanged by the fix.
 **Action:** In hot render loops, fingerprint the common value class (ASCII / single code unit) and take a constant-time fast path before calling Intl or unicode-regex machinery; keep the general path for everything else. Benchmark the CPU component with `document.createElement` stubbed, not happy-dom's DOM.
+
+## 2026-11-16 - [Client-keyed plain objects silently drop `__proto__`]
+**Learning:** Count maps keyed by client strings (`probe.foreignSeen[r] = ...` in `pm-stack/aggregator/src/push.ts`) never record a `"__proto__"` key: assignment hits the prototype setter instead of creating an own property, so the count silently vanishes. The sibling `mergeClasses` in `alerts.ts` takes arbitrary client keys the same way and has the same latent trap.
+**Action:** When bounding/capping client-keyed `Record<string, number>` maps, explicitly skip `__proto__` (and gate new-key checks on `Object.hasOwn`, not `in`); consider `Map` for new code.
+
+## 2026-11-16 - [Shared laptop checkout: diffs are not all yours]
+**Learning:** The dispatch laptop checkout hosts concurrent lanes: `pkgs/id/web/src/image-browser.*` modifications and a `.Jules/palette.md` edit appeared in `git status` mid-run from another lane, after the run started clean.
+**Action:** Re-check `git status` right before committing and commit exact file paths only — never `git add .`.
