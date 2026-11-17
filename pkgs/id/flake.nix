@@ -355,7 +355,7 @@
         # Uses 'ci' command (read-only, no auto-fix modifications)
         # =======================================================================
         checks = {
-          # CI-safe checks (read-only): cargo-fmt-check web-fmt-check clippy-lint web-lint test-sandbox test-web-unit test-web-typecheck roc-test roc-examples doc build release
+          # CI-safe checks (read-only): cargo-fmt-check web-fmt-check clippy-lint web-lint test-sandbox test-crate-integration test-web-unit test-web-typecheck roc-test roc-examples doc build release
           # NixOS VM integration tests (Linux only): nixos-serve nixos-e2e
           default = mkCheck "ci" "ci";
 
@@ -369,6 +369,7 @@
           web-lint = mkCheck "web-lint" "web-lint";
           test = mkCheck "test" "test-sandbox";
           test-unit = mkCheck "test-unit" "test-unit";
+          test-crate-integration = mkCheck "test-crate-integration" "test-crate-integration";
           test-native-shell = mkCheck "test-native-shell" "test-native-shell";
           # Rust example guests (#7904): plaza-sdk (examples/rust-world)
           # and rust-counter (examples/rust-counter) are standalone
