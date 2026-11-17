@@ -4284,9 +4284,17 @@ fn claim_pick_once(
     // #5444: the pick loops past rows the guard quarantines —
     // a skipped row degrades to the next candidate or to no
     // claim, never to a handed-out invalid packet.
+    // #9609: race losses and quarantines carry SEPARATE budgets.
+    // The race budget bounds contention retries; the quarantine
+    // budget bounds how much defective head-of-queue one call
+    // chews through. They shared one 32-cap until 2026-11-16,
+    // when a ~460-packet defective intake wave made every claim
+    // call spend its whole budget quarantining and return "no
+    // claimable task" while claimable rows sat behind the wave.
     let mut row: Value;
     let mut id: i64;
     let mut skipped = 0usize;
+    let mut quarantined = 0usize;
     loop {
         // #7617: pick the candidate id FIRST, then claim THAT row by
         // id, and read it back by id. The previous shape claimed via
@@ -4388,8 +4396,8 @@ fn claim_pick_once(
         if let Some(reason) = claim_guard_reason(&candidate) {
             let cid = candidate.get("id").and_then(|v| v.as_i64()).unwrap_or(0);
             quarantine_task(t, cid, &reason)?;
-            skipped += 1;
-            if skipped >= 32 {
+            quarantined += 1;
+            if quarantined >= MAX_CLAIM_QUARANTINES_PER_CALL {
                 return Ok(None);
             }
             continue;
@@ -4469,6 +4477,19 @@ fn claim_pick_once(
     )?;
     Ok(Some(row))
 }
+
+/// The most rows one claim call may quarantine before giving up
+/// (#9609). Quarantines do not consume the claim loop's race-loss
+/// budget: the two bound different things — the race budget bounds
+/// contention retries, this one bounds how much defective
+/// head-of-queue a single call chews through. The shared 32-cap
+/// let the 2026-11-16 defective intake wave (~460 packets in one
+/// queue) starve the stream for a shift: every call burned its
+/// budget on quarantines and returned no claim. 512 absorbs a
+/// wave of that size in one call while keeping one call's write
+/// load bounded; a larger wave still drains across calls and via
+/// the quarantine rechecker's releases.
+pub const MAX_CLAIM_QUARANTINES_PER_CALL: usize = 512;
 
 /// The most tasks one batch claim may take (#8217). A batch is
 /// only legitimate paired with immediate per-item dispatch, and
@@ -6045,6 +6066,22 @@ fn quarantine_recheck_verdict(row: &Value) -> QuarantineRecheck {
     }
 }
 
+/// Rotation touch for the quarantine recheck window (#9609): a
+/// row the rechecker evaluated and left blocked without any
+/// other write gets updated_at bumped — deliberately no event,
+/// so the minutely sweep stays log-quiet — moving it to the back
+/// of the recheck's ORDER BY updated_at ASC window. Without it,
+/// any quarantine backlog larger than one pass's limit
+/// fossilizes: the front rows are rechecked every pass and the
+/// rows behind them are never reached.
+fn touch_recheck_cursor(t: &TursoBackend, id: i64) -> Result<(), TErr> {
+    t.exec(
+        "UPDATE tasks SET updated_at = ? WHERE id = ? AND status = 'blocked'",
+        &[Arg::Text(now_iso()), Arg::Int(id)],
+    )?;
+    Ok(())
+}
+
 /// Apply one row's quarantine recheck verdict. Returns the outcome
 /// name ("released" / "still_quarantined" / "not_applicable" /
 /// "release_raced"). Release mirrors verb_unblock's shape (queued,
@@ -6054,7 +6091,10 @@ fn quarantine_recheck_verdict(row: &Value) -> QuarantineRecheck {
 /// override names discarded deps. A still-quarantined row whose
 /// CURRENT reason differs from the recorded one gets its
 /// last_error refreshed (with an event); an unchanged reason
-/// writes nothing, so the minutely sweep cannot spam the log.
+/// writes no event and no error refresh, so the minutely sweep
+/// cannot spam the log — the only write is the rotation touch on
+/// updated_at (#9609), which lets the sweep's window advance
+/// past the row.
 fn quarantine_recheck_one(t: &TursoBackend, row: &Value) -> Result<&'static str, TErr> {
     let id = row.get("id").and_then(|v| v.as_i64()).unwrap_or(0);
     let recorded = row
@@ -6063,7 +6103,10 @@ fn quarantine_recheck_one(t: &TursoBackend, row: &Value) -> Result<&'static str,
         .unwrap_or("")
         .to_string();
     match quarantine_recheck_verdict(row) {
-        QuarantineRecheck::NotApplicable => Ok("not_applicable"),
+        QuarantineRecheck::NotApplicable => {
+            touch_recheck_cursor(t, id)?;
+            Ok("not_applicable")
+        }
         QuarantineRecheck::Release => {
             let upd = t.exec(
                 "UPDATE tasks SET status = 'queued', worker_id = NULL, \
@@ -6106,6 +6149,8 @@ fn quarantine_recheck_one(t: &TursoBackend, row: &Value) -> Result<&'static str,
                     "blocked",
                     &json!({"reason": reason, "via": "quarantine_recheck"}),
                 )?;
+            } else {
+                touch_recheck_cursor(t, id)?;
             }
             Ok("still_quarantined")
         }
@@ -6122,6 +6167,14 @@ fn quarantine_recheck_one(t: &TursoBackend, row: &Value) -> Result<&'static str,
 /// /quarantine-recheck runs it directly. This is the blocked-row
 /// re-validation the dep rechecker never provided: it watches
 /// dep-blocked rows only, and a quarantine block carries no deps.
+/// Rows a pass evaluates and leaves blocked without any other
+/// write get a bare updated_at touch (quarantine_recheck_one), so
+/// the ORDER BY window below rotates: every quarantined row is
+/// reached within ceil(population / limit) passes instead of the
+/// front rows being rechecked forever (#9609 — at 1,687
+/// quarantined rows against the sweep's 200-row window, the same
+/// 197 rows were rechecked every minute while releasable rows
+/// behind them fossilized).
 pub fn run_quarantine_rechecks(t: &TursoBackend, limit: i64) -> Result<Value, TErr> {
     let rows = t.query_objs(
         &format!(
@@ -9567,6 +9620,127 @@ mod tests {
         assert!(broker_src.contains("GhDepProbe"));
         assert!(broker_src.contains("set_gh_probe"));
         assert!(broker_src.contains("github.developing-today-code-automation"));
+    }
+
+    #[test]
+    fn claim_quarantine_budget_is_separate_from_race_budget_9609() {
+        // #9609 oracle: quarantines in the claim pick loop carry
+        // their own budget (MAX_CLAIM_QUARANTINES_PER_CALL), sized
+        // to chew through a defective intake wave in one call; the
+        // 32-cap bounds race losses only. Under the shared cap,
+        // the 2026-11-16 wave (~460 defective packets at one
+        // queue's head) made every claim call return "no claimable
+        // task" behind the wave for a whole shift.
+        let src = include_str!("turso_queue.rs");
+        assert!(
+            src.contains("pub const MAX_CLAIM_QUARANTINES_PER_CALL: usize = 512;"),
+            "quarantine budget constant"
+        );
+        let pick = seg8217(src, "fn claim_pick_once(", "\nfn parse_batch_count(");
+        assert!(
+            pick.contains("quarantined += 1;"),
+            "quarantine branch counts quarantines"
+        );
+        assert!(
+            pick.contains("quarantined >= MAX_CLAIM_QUARANTINES_PER_CALL"),
+            "quarantine branch bounded by the quarantine budget"
+        );
+        assert_eq!(
+            pick.matches("skipped += 1;").count(),
+            1,
+            "only the race-loss branch consumes the race budget"
+        );
+        assert!(pick.contains("skipped >= 32"), "race budget unchanged");
+    }
+
+    #[test]
+    fn quarantine_recheck_rotates_its_window_9609() {
+        // #9609 oracle: rows the rechecker evaluates and leaves
+        // blocked without another write get the rotation touch, so
+        // the sweep's ORDER BY updated_at ASC window advances
+        // through the whole quarantined population instead of
+        // rechecking the same front rows every pass (the live
+        // 2026-11-16 fossilization: 197 rows rechecked minutely,
+        // ~1,490 never reached).
+        let src = include_str!("turso_queue.rs");
+        let one = seg8217(
+            src,
+            "fn quarantine_recheck_one(",
+            "\npub fn run_quarantine_rechecks(",
+        );
+        assert_eq!(
+            one.matches("touch_recheck_cursor(t, id)?;").count(),
+            2,
+            "both no-write outcomes rotate"
+        );
+        let touch = seg8217(
+            src,
+            "fn touch_recheck_cursor(",
+            "\nfn quarantine_recheck_one(",
+        );
+        assert!(
+            touch.contains("SET updated_at = ?"),
+            "touch bumps updated_at only"
+        );
+        assert!(!touch.contains("event("), "touch writes no event");
+        let run = seg8217(
+            src,
+            "pub fn run_quarantine_rechecks(",
+            "\nfn verb_quarantine_recheck(",
+        );
+        assert!(
+            run.contains("ORDER BY updated_at ASC"),
+            "window order is the rotation cursor"
+        );
+    }
+
+    #[test]
+    fn enqueue_rejects_packet_missing_payload_dedupe_9609() {
+        // #9609 oracle: the enqueue boundary rejects the exact
+        // shape the 2026-11-16 bulk intake wrote directly to the
+        // DB — a repo-task/v1 packet with no payload.dedupe
+        // object. Validation runs before any store access, so the
+        // dummy backend is never touched on this path.
+        let backend = TursoBackend::new(
+            "http://127.0.0.1:0".to_string(),
+            "test".to_string(),
+            ureq::agent(),
+        );
+        let packet = json!({
+            "title": "probe", "priority": 30,
+            "dedupe_key": "repo-health:v1:triage:developing-today/code:issue:9609",
+            "payload": {
+                "schema": "repo-task/v1",
+                "kind": "triage",
+                "repo": "developing-today/code",
+                "problem": "p",
+                "priority_reason": "r",
+                "evidence": ["e"],
+                "acceptance": ["a"],
+                "tests": ["t"],
+                "context_refs": [],
+                "scope": {"include": ["x"], "exclude": ["y"] },
+                "risk": {"level": "low", "flags": [] },
+                "timebox_minutes": 20,
+                "issue": {"number": 9609 }
+            }
+        });
+        let req = json!({
+            "queue": "repo-health-code-pilot",
+            "packet": packet,
+            "dry_run": true
+        });
+        let out = verb_enqueue(&backend, &req);
+        assert_eq!(out["ok"], false, "{out}");
+        assert_eq!(out["exit"], 2, "{out}");
+        assert!(
+            out["errors"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|e| e.as_str().unwrap_or("").contains("payload.dedupe")),
+            "{out}"
+        );
     }
 
     #[test]
