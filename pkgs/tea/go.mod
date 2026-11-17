@@ -7,7 +7,7 @@ require (
 	github.com/charmbracelet/log v0.3.1
 	github.com/charmbracelet/ssh v0.0.0-20230822194956-1a051f898e09
 	github.com/charmbracelet/wish v1.2.0
-	github.com/muesli/termenv v0.15.2
+	github.com/muesli/termenv v0.16.0
 )
 
 require (
@@ -18,13 +18,13 @@ require (
 	github.com/containerd/console v1.0.4-0.20230313162750-1ae8d489ac81 // indirect
 	github.com/go-logfmt/logfmt v0.6.0 // indirect
 	github.com/lucasb-eyer/go-colorful v1.2.0 // indirect
-	github.com/mattn/go-isatty v0.0.18 // indirect
+	github.com/mattn/go-isatty v0.0.20 // indirect
 	github.com/mattn/go-localereader v0.0.1 // indirect
 	github.com/mattn/go-runewidth v0.0.15 // indirect
 	github.com/muesli/ansi v0.0.0-20211018074035-2e021307bc4b // indirect
 	github.com/muesli/cancelreader v0.2.2 // indirect
 	github.com/muesli/reflow v0.3.0 // indirect
-	github.com/rivo/uniseg v0.2.0 // indirect
+	github.com/rivo/uniseg v0.4.7 // indirect
 	golang.org/x/crypto v0.52.0 // indirect
 	golang.org/x/exp v0.0.0-20231006140011-7918f672742d // indirect
 	golang.org/x/sync v0.20.0 // indirect
