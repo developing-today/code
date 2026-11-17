@@ -1,7 +1,7 @@
 {
   "contract": "id-shell",
   "version": 1,
-  "revision": 10,
+  "revision": 11,
   "description": "The client-server frame protocol every id shell (terminal, web, native) speaks to a world host. Version 1 is the protocol behind the /id-world/1 ALPN. A shell sends only frames and fields named here; it ignores server frame types and fields it does not know. Additive changes bump `revision`; removing or changing a frame or field needs version 2 and a new ALPN. Event-producing frames must name their stable world-event contract here.",
   "max_frame_bytes": 1048576,
   "routing_fields": ["world"],
@@ -45,6 +45,7 @@
         "capability": { "type": "string", "max_bytes": 256 },
         "after": "u64?",
         "screen_patches": { "type": "bool", "optional": true, "nullable": false },
+        "agent_profile": { "type": "bool", "optional": true, "nullable": false },
         "resume_token": { "type": "string", "optional": true, "nullable": true, "max_bytes": 64 }
       }
     },
@@ -266,7 +267,7 @@
     "chat": {
       "class": "event",
       "phases": ["joined"],
-      "fields": { "text": "string" }
+      "fields": { "text": "string", "screen_revision": "u64?" }
     },
     "form_result": {
       "class": "event",
@@ -275,18 +276,27 @@
         "form_id": { "type": "string", "max_bytes": 64 },
         "presentation_token": { "type": "hex", "max_bytes": 32 },
         "action": { "type": "string", "max_bytes": 64 },
-        "values": "object"
+        "values": "object",
+        "screen_revision": "u64?"
       }
     },
     "input": {
       "class": "event",
       "phases": ["joined"],
-      "fields": { "data_hex": "hex" }
+      "fields": { "data_hex": "hex", "screen_revision": "u64?" }
     },
     "paste": {
       "class": "event",
       "phases": ["joined"],
-      "fields": { "text": { "type": "string", "max_bytes": 4096 } }
+      "fields": { "text": { "type": "string", "max_bytes": 4096 }, "screen_revision": "u64?" }
+    },
+    "screen_subscribe": {
+      "class": "ephemeral",
+      "phases": ["joined"],
+      "fields": {
+        "region": { "type": "object", "optional": true, "nullable": true },
+        "event_classes": { "type": "string[]", "optional": true, "nullable": true }
+      }
     },
     "pointer": {
       "class": "event",
@@ -311,7 +321,8 @@
         "held_duration_ms": "u64?",
         "is_click": "bool?",
         "dx": "i64?",
-        "dy": "i64?"
+        "dy": "i64?",
+        "screen_revision": "u64?"
       }
     },
     "hover": {
@@ -396,6 +407,24 @@
         "base_view_revision": "u64?",
         "patch": "object?",
         "resume_token": { "type": "string", "optional": true, "nullable": true, "max_bytes": 64 }
+      }
+    },
+    "semantic_diff": {
+      "class": "ephemeral",
+      "fields": {
+        "sequence": "u64",
+        "view_revision": "u64",
+        "base_view_revision": "u64?",
+        "changes": "array",
+        "region": { "type": "object", "optional": true, "nullable": true }
+      }
+    },
+    "screen_subscription": {
+      "class": "reply",
+      "fields": {
+        "region": { "type": "object", "optional": true, "nullable": true },
+        "event_classes": { "type": "string[]", "optional": true, "nullable": true },
+        "view_revision": "u64"
       }
     },
     "program_changed": {
@@ -560,6 +589,7 @@
     "redacted_keys": ["seed"]
   },
   "features": {
+    "agent_profile": "Revision 11 (agent profile for #6300, design doc/2026-11-09_design_id6300_agents_in_worlds_v1.md sections 4.2, 4.3, 8, 9.1): the capability flag is the join frame's `agent_profile` field — a shell that sets it advertises it can consume semantic diffs. A joined agent-profile shell may send `screen_subscribe` naming a screen region (an object with u16 `x`, `y`, `width`, `height` in screen cells) and/or semantic event classes (`chat_posted`, `input_applied`, `object_changed`, `system_event`, `program_changed`; an empty list means all classes, an absent field means no event diffs). The host answers with a `screen_subscription` frame echoing the active subscription and the current screen revision, then sends `semantic_diff` frames scoped to the subscription: event diffs for subscribed classes as world events commit, and region diffs (changes of kind `region_changed`, one per changed row inside the region, carrying that row's new text) as views change. Each semantic_diff names the world `sequence` it follows, the `view_revision` it was computed at, and its `base_view_revision` when it diffs against a known earlier screen. Agent input frames (`input`, `chat`, `paste`, `form_result`, `pointer`) may carry `screen_revision`, the stale-decision token: the screen revision the input was decided against. The host applies such an input only while that revision is still the session's current screen revision; otherwise it rejects the input with an `error` frame whose code is `stale_decision`, commits nothing, and returns the current view. A host without this revision does not know the flag and serves the agent full view frames at reduced fidelity with identical authority; a shell that never sets the flag is unaffected.",
     "surface": "A view frame may carry a typed `surface` (the portable screen document). A shell that does not understand it renders `data`.",
     "input_events": "Pointer input per the input event model design (doc/2026-11-08T05-48-47Z_design_input_event_model, issue #1831 slice S2; landed in revision 10). Coordinates are cells in the target surface's grid: producers map device pixels to cells at the edge, so frames never carry pixels. `pointer` frames are class event — journaled and replayed like `input`; a drag is a press, a sequence of drag_move frames, and a release, and each drag_move is its own frame, so the frame limit bounds one move, never the whole path. `hover` frames are class ephemeral: connection-local presentation context, never journaled and never seen by other sessions. A pointer_id is unique only within its producing connection; the host namespaces it with the connection's identity when journaling, and press/release pairing is scoped to that (connection, pointer_id) pair. An event an environment cannot produce, or that the target app did not declare in its manifest `interfaces.input`, is refused explicitly: the host answers `input_refused` naming the event and a reason from that frame's enum — an input event is never silently dropped."
   },

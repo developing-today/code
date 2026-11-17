@@ -21,6 +21,7 @@ pub(crate) async fn run_world_session<I: SessionIo>(
             after,
             screen_patches,
             resume_token,
+            agent_profile,
         } => {
             if capability.len() > MAX_CAPABILITY_BYTES {
                 let _ = send_error(service.frame_meter(), io, "invalid join capability").await;
@@ -34,6 +35,7 @@ pub(crate) async fn run_world_session<I: SessionIo>(
                 after,
                 screen_patches,
                 resume_token,
+                agent_profile,
                 documents_store,
             )
             .await;
@@ -453,6 +455,9 @@ pub(crate) async fn run_world_session<I: SessionIo>(
         | ClientFrame::Hover { .. }
         | ClientFrame::ProviderOffer { .. }
         | ClientFrame::ProviderReply { .. }
+        | ClientFrame::ScreenSubscribe { .. }
+        | ClientFrame::Pointer { .. }
+        | ClientFrame::Hover { .. }
         | ClientFrame::FormResult { .. } => {
             let _ = send_error(
                 service.frame_meter(),
@@ -508,6 +513,7 @@ async fn query_session<I: SessionIo>(
                 after,
                 screen_patches,
                 resume_token,
+                agent_profile,
             } => {
                 if capability.len() > MAX_CAPABILITY_BYTES {
                     let _ = send_error(service.frame_meter(), io, "invalid join capability").await;
@@ -521,6 +527,7 @@ async fn query_session<I: SessionIo>(
                     after,
                     screen_patches,
                     resume_token,
+                    agent_profile,
                     documents_store.clone(),
                 )
                 .await;
