@@ -3,7 +3,6 @@ use distributed_topic_tracker::{
     AutoDiscoveryGossip, RecordPublisher, RotationHandle, SecretRotation, TopicId,
 };
 use ed25519_dalek::SigningKey;
-use futures_lite::StreamExt;
 use iroh::{Endpoint, SecretKey};
 use iroh_gossip::{api::Event, net::Gossip};
 
@@ -26,7 +25,7 @@ async fn main() -> Result<()> {
         .with_thread_ids(true)
         .with_ansi(true)
         .with_env_filter(
-            tracing_subscriber::envfilter::try_from_default_env()
+            tracing_subscriber::EnvFilter::try_from_default_env()
                 .unwrap_or_else(|_| "distributed_topic_tracker=info".parse().unwrap()),
         )
         .init();
@@ -55,14 +54,15 @@ async fn main() -> Result<()> {
         initial_secret,
     );
 
-    let (gossip_sender, mut gossip_receiver) = gossip
+    let (gossip_sender, gossip_receiver) = gossip
         .subscribe_and_join_with_auto_discovery(record_publisher)
         .await?
         .split()
         .await?;
 
-    println!("joined topic: {}", &topic_id);
-    println!("node id: {}", &endpoint.node_id().to_string()[..8]);
+    println!("joined topic: {}", topic_id.raw());
+    let node_id = endpoint.id().to_string();
+    println!("node id: {}", &node_id[..8]);
 
     tokio::spawn(async move {
         while let Some(event) = gossip_receiver.next().await {
