@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 
 class FakeWebSocket {
   static readonly CONNECTING = 0;
@@ -38,11 +38,7 @@ async function initApp(): Promise<void> {
   await init();
 }
 
-// Every `init()` call opens the tag WebSocket. Without a stub, Happy DOM dials
-// the real `ws://<host>/ws/tags`, and in CI the refused connection surfaces as an
-// uncaught error that fails the whole run. Stub the socket for the entire file so
-// no test depends on a live server being up.
-beforeEach(() => {
+function stubAppEnvironment(): void {
   FakeWebSocket.instances = [];
   vi.stubGlobal("WebSocket", FakeWebSocket);
   // The identity bootstrap runs on every `init()`; keep it off the network
@@ -56,7 +52,27 @@ beforeEach(() => {
   // Dummy token so ensureIdentity does not hit the network in Happy DOM.
   localStorage.setItem("id_identity_token", "dummy-token");
   localStorage.setItem("id_identity_client_id", "dummy-client");
+}
+
+// Every `init()` call opens the tag WebSocket. Without a stub, Happy DOM dials
+// the real `ws://<host>/ws/tags`, and in CI the refused connection surfaces as an
+// uncaught error that fails the whole run. Stub the socket for the entire file so
+// no test depends on a live server being up.
+beforeEach(() => {
+  stubAppEnvironment();
 });
+
+// The first `import("./main")` loads the whole app module graph cold and runs
+// `init()` as a side effect. That one-time cost (about 1.5-2s unloaded, several
+// times that on a loaded CI runner) is paid here, under this hook's own budget,
+// so the first test's 5000ms budget covers only the assertions it names.
+beforeAll(async () => {
+  stubAppEnvironment();
+  await initApp();
+  window.idApp?.disconnectTagsWs();
+  vi.unstubAllGlobals();
+  localStorage.clear();
+}, 30_000);
 
 afterEach(() => {
   window.idApp?.disconnectTagsWs();

@@ -236,7 +236,24 @@ async function serveJson(pathname, { method = 'GET', body } = {}) {
 // ---------------------------------------------------------------------------
 
 let nextOutgoingId = 1;
-const pendingClientRequests = new Map(); // id -> { resolve, reject }
+const pendingClientRequests = new Map(); // id -> { resolve, reject, timer }
+
+// #8314: bound the wait for a client answer to a request we send.
+// requestClient's only caller is handlePermissionAsked
+// (session/request_permission): an approver who never answers would
+// otherwise hold the pending entry — and, through it, the serve-side
+// permission reply — for the process lifetime, wedging the gated
+// tool call until the session is interrupted. On expiry the request
+// rejects through the same failed-request path an errored answer
+// takes, which posts the reject decision to the serve reply
+// endpoint, and the pending entry is dropped. The default is
+// generous (10 minutes: a human approver may be reading the prompt,
+// and the serve has no shorter deadline of its own) but finite.
+// Tests override it via OPENCODE_ACP_PERMISSION_TIMEOUT_MS.
+const PERMISSION_REQUEST_TIMEOUT_MS = (() => {
+  const fromEnv = Number(process.env.OPENCODE_ACP_PERMISSION_TIMEOUT_MS);
+  return Number.isFinite(fromEnv) && fromEnv > 0 ? fromEnv : 600_000;
+})();
 
 function send(message) {
   process.stdout.write(`${JSON.stringify(message)}\n`);
@@ -258,7 +275,17 @@ function requestClient(method, params) {
   const id = nextOutgoingId;
   nextOutgoingId += 1;
   return new Promise((resolve, reject) => {
-    pendingClientRequests.set(id, { resolve, reject });
+    const timer = setTimeout(() => {
+      if (pendingClientRequests.delete(id)) {
+        reject(
+          new Error(
+            `client did not answer ${method} within ${PERMISSION_REQUEST_TIMEOUT_MS}ms (#8314)`,
+          ),
+        );
+      }
+    }, PERMISSION_REQUEST_TIMEOUT_MS);
+    timer.unref?.();
+    pendingClientRequests.set(id, { resolve, reject, timer });
     send({ jsonrpc: '2.0', id, method, params });
   });
 }
@@ -740,6 +767,7 @@ async function dispatch(message) {
     if (isRequest && pendingClientRequests.has(id)) {
       const pending = pendingClientRequests.get(id);
       pendingClientRequests.delete(id);
+      clearTimeout(pending.timer);
       if (message.error) pending.reject(new Error(message.error.message || 'client request failed'));
       else pending.resolve(message.result);
     }

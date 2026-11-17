@@ -323,6 +323,57 @@ test('serve permission events round-trip through session/request_permission', as
   assert.deepEqual(permCall.body, { decision: 'once' });
 });
 
+test('an unanswered permission request expires and is rejected to the serve (#8314)', async (t) => {
+  // Oracle: with a short OPENCODE_ACP_PERMISSION_TIMEOUT_MS, a
+  // session/request_permission the client never answers resolves via
+  // handlePermissionAsked's failed-request path — the adapter posts
+  // {decision: 'reject'} to the serve permission reply endpoint
+  // instead of waiting forever — and the pending entry is gone: a
+  // late answer for the same request id is ignored (no second reply)
+  // and the adapter keeps working.
+  let emitRef = null;
+  const script = (emit) => {
+    emitRef = emit;
+    emit({
+      type: 'permission.asked',
+      data: { id: 'perm-timeout', sessionID: SESSION_ID, action: 'bash', resources: ['ls'], metadata: {} },
+    });
+  };
+  const { stub, acp } = await setup(t, script, { OPENCODE_ACP_PERMISSION_TIMEOUT_MS: '200' });
+  await acp.request('session/new', { cwd: '/home/user/code', mcpServers: [] });
+  const promptPromise = acp.request('session/prompt', {
+    sessionId: SESSION_ID,
+    prompt: [{ type: 'text', text: 'list files' }],
+  });
+  const permRequest = await acp.waitFor(
+    () => acp.clientRequests.find((r) => r.method === 'session/request_permission'),
+    'session/request_permission',
+  );
+  // Never answer. The expiry must produce the reject reply on its own.
+  const permCall = await acp.waitFor(
+    () =>
+      stub.calls.find(
+        (c) => c.pathname === `/api/session/${SESSION_ID}/permission/perm-timeout/reply`,
+      ),
+    'permission reject reply after expiry',
+  );
+  assert.deepEqual(permCall.body, { decision: 'reject' });
+
+  // A late answer is a no-op: the pending entry was deleted at
+  // expiry, so nothing resolves again and no second reply is posted.
+  acp.respond(permRequest.id, { outcome: { outcome: 'selected', optionId: 'allow_once' } });
+  await sleep(300);
+  assert.equal(
+    stub.calls.filter((c) => c.pathname.endsWith('/permission/perm-timeout/reply')).length,
+    1,
+    'late answer after expiry posted a second permission reply',
+  );
+
+  emitRef({ type: 'session.execution.succeeded', data: { sessionID: SESSION_ID } });
+  const result = await promptPromise;
+  assert.equal(result.stopReason, 'end_turn');
+});
+
 test('session/cancel interrupts on the serve and the prompt resolves cancelled', async (t) => {
   const { stub, acp } = await setup(t, () => {
     // Never completes on its own: only the interrupt (stub emits

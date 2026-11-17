@@ -46,7 +46,6 @@ declare -A GRANDFATHERED=(
   # serve.rs and directory.rs moved again in that restructure - to
   # pkgs/id/crates/id-cli/ and pkgs/id/crates/id-directory/ - and
   # their keys were re-pointed in the #9526 fix; same rule.
-  ["pkgs/id/crates/id-directory/src/directory.rs"]="#8591"
 )
 
 # Count production lines of one file: every line that is not part of

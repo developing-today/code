@@ -1,0 +1,12 @@
+[Unit]
+Description=Quota watchdog — browser-dependent quota sources, ladder + state (code#6032)
+After=network-online.target quota-gatherer.service helium-cdp.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/run/current-system/sw/bin/bun /home/user/pm-stack/exporters/src/watchdog.ts
+Environment=QUOTA_WATCHDOG_ADAPTERS_DIR=/home/user/.config/quota-watchdog/adapters
+Environment=QUOTA_WATCHDOG_LIVE=1
+Environment=QUOTA_WATCHDOG_LIVE_REPAIRS=1
+TimeoutStartSec=240

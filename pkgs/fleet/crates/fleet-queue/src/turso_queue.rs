@@ -4683,11 +4683,23 @@ fn verb_claim_batch(
     match work {
         Ok(rows) => {
             let claimed = rows.len();
-            ok(json!({
+            let mut env = json!({
                 "rows": rows,
                 "claimed": claimed,
                 "requested": count,
-            }))
+            });
+            // #8154: an empty batch names why, same as a single claim.
+            if claimed == 0 {
+                let counts = no_claim_counts(t, &iso(now_unix()), scope);
+                if let Some(obj) = env.as_object_mut() {
+                    if let Some(c) = counts.as_object() {
+                        for (k, v) in c {
+                            obj.insert(k.clone(), v.clone());
+                        }
+                    }
+                }
+            }
+            ok(env)
         }
         Err(e) if e.starts_with("claim_repo_task:") => fail(4, e),
         Err(e) => terr(e),
@@ -4882,6 +4894,19 @@ fn verb_claim(t: &TursoBackend, req: &Value) -> Value {
                         }
                     }
                 }
+                // #8154 (follow-on #2937 acceptance 4): name WHY the
+                // claim found nothing — the scoped queued / at-cap /
+                // not-yet-due / parked-due counts ride the no-row
+                // envelope so the client diagnostic can say whether
+                // the stream is empty, capped, or merely not due.
+                let counts = no_claim_counts(t, &iso(now_unix()), &scope);
+                if let Some(obj) = resp.as_object_mut() {
+                    if let Some(c) = counts.as_object() {
+                        for (k, v) in c {
+                            obj.insert(k.clone(), v.clone());
+                        }
+                    }
+                }
             }
             ok(resp)
         }
@@ -4955,6 +4980,53 @@ fn budget_skip_summary(
         "budget_skipped": n,
         "max_required_budget_minutes": m,
     })
+}
+
+/// #8154 (follow-on #2937 acceptance 4): the no-claim counts query
+/// shape. One aggregate pass over the claim's own scope counts the
+/// rows the claim searched but could not take, split by reason:
+/// queued (all), at_cap_queued (attempts >= max_attempts — the
+/// #6528 health definition), queued_not_yet_due (under cap, parked
+/// behind a future not_before), parked_due (parked rows the pick
+/// could have taken early: timer lapsed or a capacity park).
+/// Placeholders: the not-yet-due `now`, then the parked-due `now`,
+/// then the scope args.
+fn no_claim_counts_sql(scope_sql: &str) -> String {
+    format!(
+        "SELECT \
+         COALESCE(SUM(CASE WHEN status = 'queued' THEN 1 ELSE 0 END), 0) AS queued, \
+         COALESCE(SUM(CASE WHEN status = 'queued' AND attempts >= max_attempts THEN 1 ELSE 0 END), 0) AS at_cap_queued, \
+         COALESCE(SUM(CASE WHEN status = 'queued' AND attempts < max_attempts \
+           AND not_before IS NOT NULL AND not_before > ? THEN 1 ELSE 0 END), 0) AS queued_not_yet_due, \
+         COALESCE(SUM(CASE WHEN status = 'parked' AND ((not_before IS NOT NULL AND not_before <= ?) \
+           OR wait_kind = 'capacity') THEN 1 ELSE 0 END), 0) AS parked_due \
+         FROM tasks \
+         WHERE payload IS NOT NULL AND payload <> '' AND payload <> '{{}}'{scope_sql}"
+    )
+}
+
+fn no_claim_counts(t: &TursoBackend, now: &str, scope: &ClaimScope) -> Value {
+    let sql = no_claim_counts_sql(&scope.sql);
+    let mut args: Vec<Arg> = vec![Arg::Text(now.to_string()), Arg::Text(now.to_string())];
+    for a in &scope.args {
+        args.push(a.clone());
+    }
+    match t.query_objs(&sql, &args, &[]) {
+        Ok(rows) => {
+            let first = rows.into_iter().next().unwrap_or_else(|| json!({}));
+            let get = |k: &str| first.get(k).and_then(|v| v.as_i64()).unwrap_or(0);
+            json!({
+                "queued": get("queued"),
+                "at_cap_queued": get("at_cap_queued"),
+                "queued_not_yet_due": get("queued_not_yet_due"),
+                "parked_due": get("parked_due"),
+            })
+        }
+        // A failed count leaves the envelope without counts (the
+        // client then falls back to the bare diagnostic) — never a
+        // fabricated number.
+        Err(_) => json!({}),
+    }
 }
 
 fn verb_lane(t: &TursoBackend, req: &Value) -> Value {
@@ -5233,6 +5305,20 @@ fn verb_bind(t: &TursoBackend, req: &Value) -> Value {
     let launched_by = req_str(req, "launched_by")
         .unwrap_or("opencode-claimant")
         .to_string();
+    // #8287: a malformed session id refuses here, as a usage
+    // error, before any state is touched — binding a ghost id
+    // strands the task until stuck-bound supervision recovers
+    // it. The predicate is the one the client/claim paths keep
+    // (client::valid_session_id); do not fork a second one.
+    if !crate::client::valid_session_id(&session_id) {
+        return fail(
+            2,
+            format!(
+                "bind_repo_task_lane_session: invalid session_id {session_id:?} \
+                 (expected ses_ + alphanumeric/underscore)"
+            ),
+        );
+    }
     // #9046: a bind may carry the bound session's own model (the
     // claimant derives it from the session record, #8176); when
     // it does, the bind stamps it via stamp_claim_model below.
@@ -8568,6 +8654,25 @@ mod tests {
     }
 
     #[test]
+    fn no_claim_counts_query_shape_8154() {
+        // #8154 oracle (follow-on #2937 acceptance 4): the no-claim
+        // counts aggregate splits the searched scope by reason —
+        // queued, at-cap (attempts >= max_attempts, the #6528
+        // definition), not-yet-due, parked-due — over payload-bearing
+        // rows only. Placeholders: two `now`s, then the scope's.
+        let sql = no_claim_counts_sql(" AND queue = ?");
+        assert_eq!(sql.matches('?').count(), 3, "{sql}");
+        assert!(sql.contains("AS queued"), "{sql}");
+        assert!(sql.contains("AS at_cap_queued"), "{sql}");
+        assert!(sql.contains("attempts >= max_attempts"), "{sql}");
+        assert!(sql.contains("AS queued_not_yet_due"), "{sql}");
+        assert!(sql.contains("not_before > ?"), "{sql}");
+        assert!(sql.contains("AS parked_due"), "{sql}");
+        assert!(sql.contains("wait_kind = 'capacity'"), "{sql}");
+        assert!(sql.ends_with(" AND queue = ?"), "{sql}");
+    }
+
+    #[test]
     fn task_creation_defaults_max_attempts_1000_per_8973() {
         // #8973 oracle: every task-creation default in this crate is
         // 1000 (Drew order 2026-11-12) - the tasks schema default
@@ -8652,6 +8757,48 @@ mod tests {
         let out = verb_enqueue(&backend, &req);
         assert_eq!(out["ok"], true, "{out}");
         assert_eq!(out["task"]["max_attempts"], 1000, "{out}");
+    }
+
+    #[test]
+    fn bind_rejects_malformed_session_id_8287() {
+        // #8287 oracle: verb_bind refuses a malformed session id
+        // as a usage error (exit 2) before any store access, so
+        // the task is left unbound — the dummy backend proves the
+        // refusal happens pre-store (any store touch would fail
+        // differently). A well-formed id must NOT produce the
+        // invalid-session refusal (it proceeds to the store path
+        // and fails there against this backend, or on the task).
+        let backend = TursoBackend::new(
+            "http://127.0.0.1:0".to_string(),
+            "test".to_string(),
+            ureq::agent(),
+        );
+        for bad in ["not-a-session", "", "ses_", "ses_a'; DROP TABLE tasks; --"] {
+            let out = verb_bind(
+                &backend,
+                &json!({"task_id": 1, "worker": "w", "session_id": bad}),
+            );
+            assert_eq!(out["ok"], false, "{bad}: {out}");
+            assert_eq!(out["exit"], 2, "{bad}: {out}");
+            assert!(
+                out["error"]
+                    .as_str()
+                    .unwrap_or("")
+                    .contains("invalid session_id"),
+                "{bad}: {out}"
+            );
+        }
+        let out = verb_bind(
+            &backend,
+            &json!({"task_id": 1, "worker": "w", "session_id": "ses_e5e37addeb0ffeumu1UPO2bI8G"}),
+        );
+        assert!(
+            !out["error"]
+                .as_str()
+                .unwrap_or("")
+                .contains("invalid session_id"),
+            "well-formed id refused as invalid: {out}"
+        );
     }
 
     #[test]
