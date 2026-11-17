@@ -924,4 +924,12 @@ def main():
 
 
 if __name__ == "__main__":
+    # Argument contract (#3352): no command-line arguments; anything given
+    # is a usage error before any work runs.
+    if len(sys.argv) > 1:
+        print(
+            f"poll.py: unexpected argument {sys.argv[1]!r}; usage: python3 poll.py",
+            file=sys.stderr,
+        )
+        sys.exit(2)
     sys.exit(main())
