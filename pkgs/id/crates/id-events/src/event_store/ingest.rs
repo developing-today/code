@@ -2372,6 +2372,120 @@ mod tests {
     }
 
     #[test]
+    fn test_a_held_device_operation_is_written_with_its_event_and_kept_when_released() {
+        let (_dir, mut store) = open_with(WaitingLimits::new(256, WEEK_MS));
+        let signer = key(96);
+        let group = Hash::digest(b"released device group");
+        let body = encode_group_event(&GroupEvent {
+            id: Hash::digest(b"released device body id"),
+            author: *signer.verifying_key().as_bytes(),
+            after: vec![],
+            group: Some(group),
+            body: GroupBody::Device(DeviceOp::Add {
+                device: *key(98).verifying_key().as_bytes(),
+                scope: GroupRole::Admin,
+            }),
+        })
+        .unwrap();
+        // The dependency the device event waits for: a plain event it does not have.
+        let dependency = event(&key(97), 0, None, Vec::new(), "message");
+        let device = sign(
+            &signer,
+            0,
+            None,
+            Some(&body),
+            ChainExt {
+                kind: "group.event".to_owned(),
+                group: Some(group),
+                after: vec![dependency.id],
+                tag: None,
+                document: None,
+                removes: None,
+                note: None,
+                link: None,
+                checkpoint: None,
+                rotation: None,
+                chat: None,
+                anchor: None,
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            store
+                .ingest_with_body(&device.bytes, Some(&body), 0)
+                .unwrap(),
+            Ingest::Waiting { id: device.id }
+        );
+        // The waiting path writes the operation in the ingest transaction, not on release.
+        {
+            let txn = store.db.begin_read().unwrap();
+            assert!(
+                txn.open_table(DEVICE_OPS)
+                    .unwrap()
+                    .get(device.id.as_bytes().as_slice())
+                    .unwrap()
+                    .is_some(),
+                "a held device operation is written with its event"
+            );
+        }
+
+        // The dependency arrives, releasing the held event, which is stored.
+        assert!(matches!(
+            store.ingest(&dependency.bytes, 0).unwrap(),
+            Ingest::Accepted { .. }
+        ));
+        assert!(store.event(&author(&signer), 0).unwrap().is_some());
+        let txn = store.db.begin_read().unwrap();
+        assert!(
+            txn.open_table(DEVICE_OPS)
+                .unwrap()
+                .get(device.id.as_bytes().as_slice())
+                .unwrap()
+                .is_some(),
+            "a released event keeps the operation it was held with"
+        );
+    }
+
+    #[test]
+    fn test_a_device_operation_body_on_a_duplicate_attaches_in_the_same_transaction() {
+        let (_dir, mut store) = open();
+        let signer = key(99);
+        let (event, body) = device_grant(&signer);
+        // The header arrives alone first, as an older sync path would deliver it.
+        assert!(matches!(
+            store.ingest_with_body(&event.bytes, None, 0).unwrap(),
+            Ingest::Accepted { .. }
+        ));
+        {
+            let txn = store.db.begin_read().unwrap();
+            assert!(
+                txn.open_table(DEVICE_OPS)
+                    .unwrap()
+                    .get(event.id.as_bytes().as_slice())
+                    .unwrap()
+                    .is_none()
+            );
+        }
+
+        // The body follows on the duplicate path, and its operation is written there.
+        assert_eq!(
+            store
+                .ingest_with_body(&event.bytes, Some(&body), 0)
+                .unwrap(),
+            Ingest::Duplicate { id: event.id }
+        );
+        let txn = store.db.begin_read().unwrap();
+        assert!(
+            txn.open_table(DEVICE_OPS)
+                .unwrap()
+                .get(event.id.as_bytes().as_slice())
+                .unwrap()
+                .is_some(),
+            "a duplicate carrying the body writes its device operation"
+        );
+    }
+
+    #[test]
     fn test_group_members_follow_applied_events_only() {
         let (_dir, mut store) = open();
         let signer = key(17);

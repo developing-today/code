@@ -1151,9 +1151,7 @@ impl EventStore {
         for row in waiting_rows::all(&txn)? {
             next_arrival = next_arrival.max(row.arrival.saturating_add(1));
             if self.limits.is_due(row.arrived_at, now_ms) {
-                waiting_rows::delete(&txn, &row.id)?;
-                txn.open_table(DEVICE_OPS)?
-                    .remove(row.id.as_bytes().as_slice())?;
+                waiting_rows::drop_held(&txn, &row.id)?;
                 dropped = true;
                 continue;
             }
@@ -1173,9 +1171,7 @@ impl EventStore {
                         }
                     }
                     Err(WaitRefusal::AuthorFull | WaitRefusal::PoolFull) => {
-                        waiting_rows::delete(&txn, &row.id)?;
-                        txn.open_table(DEVICE_OPS)?
-                            .remove(row.id.as_bytes().as_slice())?;
+                        waiting_rows::drop_held(&txn, &row.id)?;
                         dropped = true;
                     }
                 }
@@ -1183,7 +1179,9 @@ impl EventStore {
             }
             if is_present(&txn, &row.id)? {
                 // The event is already stored, applied, or voided: the row is stale, so it
-                // goes rather than holding an already-decided event again.
+                // goes rather than holding an already-decided event again. Its device
+                // operation stays: a stored event's operation is kept, only a held one's is
+                // dropped with its row (#8160).
                 waiting_rows::delete(&txn, &row.id)?;
                 dropped = true;
                 continue;
@@ -1200,15 +1198,11 @@ impl EventStore {
                 Ok(()) => {
                     // Skipped by an arrived, ready, or duplicate guard: the row names an
                     // event the rebuilt pool does not hold, so the row goes with the rebuild.
-                    waiting_rows::delete(&txn, &row.id)?;
-                    txn.open_table(DEVICE_OPS)?
-                        .remove(row.id.as_bytes().as_slice())?;
+                    waiting_rows::drop_held(&txn, &row.id)?;
                     dropped = true;
                 }
                 Err(WaitRefusal::AuthorFull | WaitRefusal::PoolFull) => {
-                    waiting_rows::delete(&txn, &row.id)?;
-                    txn.open_table(DEVICE_OPS)?
-                        .remove(row.id.as_bytes().as_slice())?;
+                    waiting_rows::drop_held(&txn, &row.id)?;
                     dropped = true;
                 }
             }
