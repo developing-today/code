@@ -99,6 +99,17 @@ func pendingQuestions(t *testing.T, e *env) []string {
 	return ids
 }
 
+// beAnswerer records answerer presence the way a real answerer does, by
+// listing the broker's questions, before a test raises a question that
+// only the broker can answer (one no interruptible call owns). The ask
+// seam refuses such a question with -32021 when no answerer is present
+// for its audience (#2438), so a test whose answerer only starts polling
+// after the question was raised would see it refused, not queued.
+func beAnswerer(t *testing.T, e *env) {
+	t.Helper()
+	e.run("elicit", "list")
+}
+
 func waitQuestions(t *testing.T, e *env, n int) []string {
 	t.Helper()
 	deadline := time.Now().Add(30 * time.Second)
@@ -229,6 +240,7 @@ func TestConflicts(t *testing.T) {
 	t.Run("mcpx/timeouts/call-budget-paused-while-a-question-is-pending", func(t *testing.T) {
 		e := askWith(t, `{"sharing":"shared","scope":"global","callTimeout":"1s"}`)
 		e.run("refresh")
+		beAnswerer(t, e)
 		c := e.longSocketClient(t)
 		done := make(chan map[string]any, 1)
 		go func() {
