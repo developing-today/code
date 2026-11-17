@@ -2468,7 +2468,10 @@ fn unbound_append(worker: &str, row: &Value, trigger: &str) {
 /// #9046: fleet session ids are `ses_` + alphanumerics — the
 /// shape every session surface mints. Anything else is not a
 /// session id and must never reach a route_attempt SQL string.
-fn valid_session_id(s: &str) -> bool {
+/// #8287: this is the crate's one session-id predicate — the
+/// broker's bind verb (turso_queue::verb_bind) validates against
+/// it too; do not fork a second definition.
+pub(crate) fn valid_session_id(s: &str) -> bool {
     s.len() > 4 && s.starts_with("ses_") && s.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
 }
 
@@ -3594,7 +3597,12 @@ fn claim_batch_output(resp: &Value, worker: &str, requested: i64) -> i32 {
     // #8154: an empty batch carries the no-claim counts too.
     if claimed == 0 {
         if let Some(obj) = out.as_object_mut() {
-            for k in ["queued", "at_cap_queued", "queued_not_yet_due", "parked_due"] {
+            for k in [
+                "queued",
+                "at_cap_queued",
+                "queued_not_yet_due",
+                "parked_due",
+            ] {
                 if let Some(v) = resp.get(k) {
                     obj.insert(k.to_string(), v.clone());
                 }
@@ -3689,10 +3697,7 @@ fn no_claim_diagnostic(resp: &Value) -> Option<String> {
         .get("queued_not_yet_due")
         .and_then(|v| v.as_i64())
         .unwrap_or(0);
-    let parked_due = resp
-        .get("parked_due")
-        .and_then(|v| v.as_i64())
-        .unwrap_or(0);
+    let parked_due = resp.get("parked_due").and_then(|v| v.as_i64()).unwrap_or(0);
     let mut line = format!(
         "repo-queue: no claimable task — {queued} queued ({at_cap} at the attempt cap, \
          {not_due} not yet due), {parked_due} parked due (#8154)"
@@ -7439,7 +7444,10 @@ mod tests {
         let line = no_claim_diagnostic(&resp).expect("counts yield a diagnostic");
         assert!(line.contains("7 queued"), "{line}");
         assert!(line.contains("7 at the attempt cap"), "{line}");
-        assert!(line.contains("every queued task is at the attempt cap"), "{line}");
+        assert!(
+            line.contains("every queued task is at the attempt cap"),
+            "{line}"
+        );
         assert!(line.contains("2 parked due"), "{line}");
         let mixed = json!({
             "row": Value::Null,

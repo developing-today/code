@@ -1,6 +1,7 @@
 package daemon
 
 import (
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -77,6 +78,29 @@ func TestBodyLimitsUnderLimitUnchanged(t *testing.T) {
 	w := post(t, s, "/v1/intent", `{}`, s.handleIntent)
 	if w.Code != http.StatusBadRequest || !strings.Contains(w.Body.String(), "prompt is required") {
 		t.Fatalf("expected prompt-required 400, got %d: %s", w.Code, w.Body.String())
+	}
+}
+
+type countedBody struct {
+	io.Reader
+	read int
+}
+
+func (b *countedBody) Read(p []byte) (int, error) {
+	n, err := b.Reader.Read(p)
+	b.read += n
+	return n, err
+}
+
+func TestAskAbandonBodyReadIsBounded(t *testing.T) {
+	s := &Server{set: bodyLimitSet(t)}
+	body := &countedBody{Reader: strings.NewReader(strings.Repeat(" ", 1024))}
+	req := httptest.NewRequest(http.MethodPost, "/v1/ask/missing/abandon", nil)
+	req.Body = io.NopCloser(body)
+	w := httptest.NewRecorder()
+	s.handleAskAbandon(w, req)
+	if body.read > 65 { // configured 64-byte ceiling, plus MaxBytesReader's probe byte
+		t.Fatalf("read %d bytes from an oversized abandon body; want at most 65", body.read)
 	}
 }
 

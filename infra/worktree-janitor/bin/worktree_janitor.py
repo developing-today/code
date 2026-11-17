@@ -83,7 +83,9 @@ def decide(f: WorktreeFacts, now: int, min_age: int = MIN_AGE_SECONDS) -> Decisi
     if f.locked:
         return Decision("keep", ["worktree is locked"])
     if f.has_submodules:
-        return Decision("keep", ["contains submodules; plain git worktree remove refuses"])
+        return Decision(
+            "keep", ["contains submodules; plain git worktree remove refuses"]
+        )
     if f.live_cwd:
         return Decision("keep", ["live process cwd inside worktree"])
     commit_age = now - f.last_commit_epoch
@@ -91,18 +93,24 @@ def decide(f: WorktreeFacts, now: int, min_age: int = MIN_AGE_SECONDS) -> Decisi
     if commit_age < min_age or mtime_age < min_age:
         return Decision(
             "keep",
-            [f"younger than 4h (last-commit age {commit_age}s, tree-mtime age {mtime_age}s)"],
+            [
+                f"younger than 4h (last-commit age {commit_age}s, tree-mtime age {mtime_age}s)"
+            ],
         )
     if f.dirty:
         if f.branch is None:
             return Decision(
                 "keep",
-                ["dirty on a detached HEAD: no branch to push upstream under, "
-                 "and the janitor invents no branch"],
+                [
+                    "dirty on a detached HEAD: no branch to push upstream under, "
+                    "and the janitor invents no branch"
+                ],
             )
         return Decision(
             "preserve_then_remove",
-            [f"dirty and aging: commit all, push origin {f.branch}, verify, then remove"],
+            [
+                f"dirty and aging: commit all, push origin {f.branch}, verify, then remove"
+            ],
         )
     if not f.head_ancestor_of_origin_main:
         return Decision("keep", ["HEAD is not an ancestor of origin/main"])
@@ -115,6 +123,7 @@ def decide(f: WorktreeFacts, now: int, min_age: int = MIN_AGE_SECONDS) -> Decisi
 
 
 # ---------------------------------------------------------------- git helpers
+
 
 def run_git(args: list[str], cwd: str | None = None) -> subprocess.CompletedProcess:
     return subprocess.run(
@@ -212,8 +221,13 @@ def newest_tree_mtime(root: str, young_epoch: int = 0) -> int:
     return newest
 
 
-def gather_facts(primary: str, entry: dict, fleet_root: str, live_cwds: set[str],
-                 young_epoch: int = 0) -> WorktreeFacts:
+def gather_facts(
+    primary: str,
+    entry: dict,
+    fleet_root: str,
+    live_cwds: set[str],
+    young_epoch: int = 0,
+) -> WorktreeFacts:
     path = entry.get("worktree", "")
     real = os.path.realpath(path)
     f = WorktreeFacts(path=real, primary=primary)
@@ -234,7 +248,9 @@ def gather_facts(primary: str, entry: dict, fleet_root: str, live_cwds: set[str]
     f.has_submodules = os.path.isfile(os.path.join(real, ".gitmodules"))
     anc = run_git(["-C", real, "merge-base", "--is-ancestor", "HEAD", "origin/main"])
     f.head_ancestor_of_origin_main = anc.returncode == 0
-    cnt = run_git(["-C", real, "rev-list", "--count", "HEAD", "--not", "--remotes=origin"])
+    cnt = run_git(
+        ["-C", real, "rev-list", "--count", "HEAD", "--not", "--remotes=origin"]
+    )
     try:
         f.commits_not_on_origin = int(cnt.stdout.strip() or "0")
     except ValueError:
@@ -251,11 +267,16 @@ def gather_facts(primary: str, entry: dict, fleet_root: str, live_cwds: set[str]
 
 # ------------------------------------------------------------------- executor
 
-def remove_worktree(f: WorktreeFacts, now: int, min_age: int, fleet_root: str) -> tuple[bool, str]:
+
+def remove_worktree(
+    f: WorktreeFacts, now: int, min_age: int, fleet_root: str
+) -> tuple[bool, str]:
     """Re-verify the full clean gate immediately before removal, then
     plain `git worktree remove` (never --force)."""
     entries = list_worktrees(f.primary)
-    entry = next((e for e in entries if os.path.realpath(e.get("worktree", "")) == f.path), None)
+    entry = next(
+        (e for e in entries if os.path.realpath(e.get("worktree", "")) == f.path), None
+    )
     if entry is None:
         return False, "registration vanished before removal"
     fresh = gather_facts(f.primary, entry, fleet_root, live_cwd_paths())
@@ -268,7 +289,9 @@ def remove_worktree(f: WorktreeFacts, now: int, min_age: int, fleet_root: str) -
     return True, "removed"
 
 
-def preserve_then_remove(f: WorktreeFacts, now: int, min_age: int, fleet_root: str) -> tuple[bool, str]:
+def preserve_then_remove(
+    f: WorktreeFacts, now: int, min_age: int, fleet_root: str
+) -> tuple[bool, str]:
     """Drew's mechanism for an aging dirty worktree: commit ALL changes,
     push upstream under the worktree's own branch, verify the push
     landed, only then remove. Any failure keeps the worktree."""
@@ -288,7 +311,10 @@ def preserve_then_remove(f: WorktreeFacts, now: int, min_age: int, fleet_root: s
     remote = run_git(["-C", path, "ls-remote", "origin", f"refs/heads/{branch}"])
     landed = remote.stdout.split()[0] if remote.stdout.split() else ""
     if remote.returncode != 0 or landed != head:
-        return False, f"push did not verify (ls-remote {landed!r} != HEAD {head!r}); kept"
+        return (
+            False,
+            f"push did not verify (ls-remote {landed!r} != HEAD {head!r}); kept",
+        )
     return remove_worktree(f, now, min_age, fleet_root)
 
 
@@ -296,12 +322,26 @@ def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("--fleet-root", default=os.path.expanduser("~/git/fleet"))
     ap.add_argument("--min-age-hours", type=float, default=MIN_AGE_SECONDS / 3600)
-    ap.add_argument("--apply", action="store_true", help="execute decisions (default: dry-run report)")
-    ap.add_argument("--no-fetch", action="store_true", help="skip the per-primary fetch")
-    ap.add_argument("--primary", action="append", default=[],
-                    help="only consider this primary (repeatable); default: all discovered")
-    ap.add_argument("--workers", type=int, default=8,
-                    help="parallel fact-gathering threads (decisions and removals stay serial)")
+    ap.add_argument(
+        "--apply",
+        action="store_true",
+        help="execute decisions (default: dry-run report)",
+    )
+    ap.add_argument(
+        "--no-fetch", action="store_true", help="skip the per-primary fetch"
+    )
+    ap.add_argument(
+        "--primary",
+        action="append",
+        default=[],
+        help="only consider this primary (repeatable); default: all discovered",
+    )
+    ap.add_argument(
+        "--workers",
+        type=int,
+        default=8,
+        help="parallel fact-gathering threads (decisions and removals stay serial)",
+    )
     ap.add_argument("--json", action="store_true", help="emit the report as JSON")
     args = ap.parse_args(argv)
 
@@ -327,11 +367,18 @@ def main(argv: list[str] | None = None) -> int:
     def gather(job: tuple[str, dict]):
         primary, entry = job
         try:
-            return primary, entry, gather_facts(primary, entry, fleet_root, live, young_epoch), None
+            return (
+                primary,
+                entry,
+                gather_facts(primary, entry, fleet_root, live, young_epoch),
+                None,
+            )
         except Exception as exc:  # unreadable facts: keep, never guess
             return primary, entry, None, exc
 
-    with concurrent.futures.ThreadPoolExecutor(max_workers=max(1, args.workers)) as pool:
+    with concurrent.futures.ThreadPoolExecutor(
+        max_workers=max(1, args.workers)
+    ) as pool:
         gathered = list(pool.map(gather, jobs))
     for primary, entry, facts, exc in gathered:
         if exc is not None:
@@ -358,20 +405,35 @@ def main(argv: list[str] | None = None) -> int:
         elif args.apply and decision.action == "prune_registration":
             out = run_git(["-C", primary, "worktree", "prune"])
             row["applied"] = out.returncode == 0
-            row["result"] = "pruned" if out.returncode == 0 else out.stderr.strip()[:200]
+            row["result"] = (
+                "pruned" if out.returncode == 0 else out.stderr.strip()[:200]
+            )
         report.append(row)
 
     if args.json:
-        print(json.dumps({"fleet_root": fleet_root, "apply": args.apply,
-                          "min_age_seconds": min_age, "rows": report,
-                          "errors": errors}, indent=2))
+        print(
+            json.dumps(
+                {
+                    "fleet_root": fleet_root,
+                    "apply": args.apply,
+                    "min_age_seconds": min_age,
+                    "rows": report,
+                    "errors": errors,
+                },
+                indent=2,
+            )
+        )
     else:
         mode = "APPLY" if args.apply else "DRY-RUN"
-        print(f"worktree-janitor {mode} root={fleet_root} min_age={min_age}s rows={len(report)}")
+        print(
+            f"worktree-janitor {mode} root={fleet_root} min_age={min_age}s rows={len(report)}"
+        )
         for row in report:
-            print(f"{row['action']:20s} {row['path']} [{row['branch'] or 'detached'}] "
-                  f"— {'; '.join(row['reasons'])}"
-                  + (f" => {row['result']}" if row["applied"] or row["result"] else ""))
+            print(
+                f"{row['action']:20s} {row['path']} [{row['branch'] or 'detached'}] "
+                f"— {'; '.join(row['reasons'])}"
+                + (f" => {row['result']}" if row["applied"] or row["result"] else "")
+            )
         for err in errors:
             print(f"ERROR (kept): {err}")
     return 0

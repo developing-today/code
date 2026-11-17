@@ -1,7 +1,9 @@
 package e2e_test
 
 import (
+	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"sort"
@@ -46,6 +48,7 @@ var implementedEffectProbes = map[string]string{
 	"plumbing.strictUnknownKeys": "TestStrictUnknownKeysRefusesATypo",
 	"paths.state":                "TestStateDirectoryIsReachableAsASetting",
 	"paths.configFile":           "TestPathsConfigFileChangesWhichConfigLoads",
+	"paths.scripts":              "TestPathsScriptsFindsRecipesThatLiveOnlyThere",
 	"search.limit":               "TestSearchLimitCapsTheResults",
 	"registry.pageSize":          "TestRegistryPageSizeChangesWhatTheCLIAsksFor",
 	"registry.limit":             "TestRegistryLimitReachesTheCLI",
@@ -58,6 +61,7 @@ var implementedEffectProbes = map[string]string{
 	"proxy.timeout":              "TestProxyUpstreamTimeoutIsReachableFromTheEnvironment",
 	"tasks.maxAge":               "TestTasksMaxAgeIsReachableFromEnvironment",
 	"proto.askPoll":              "TestAskPollCeilingIsReachableFromTheEnvironment",
+	"daemon.address":             "TestDaemonAddressIsReachableFromTheEnvironment",
 }
 
 // effectProbeFuncs anchors every declared probe name to the actual
@@ -71,6 +75,7 @@ var effectProbeFuncs = map[string]func(*testing.T){
 	"TestLoggingFileOffWritesNoDurableLog":                   TestLoggingFileOffWritesNoDurableLog,
 	"TestOutputJSONIsReachableFromTheEnvironment":            TestOutputJSONIsReachableFromTheEnvironment,
 	"TestPathsConfigFileChangesWhichConfigLoads":             TestPathsConfigFileChangesWhichConfigLoads,
+	"TestPathsScriptsFindsRecipesThatLiveOnlyThere":          TestPathsScriptsFindsRecipesThatLiveOnlyThere,
 	"TestProxyUpstreamTimeoutIsReachableFromTheEnvironment":  TestProxyUpstreamTimeoutIsReachableFromTheEnvironment,
 	"TestPoolDefaultsAreReachableFromTheEnvironment":         TestPoolDefaultsAreReachableFromTheEnvironment,
 	"TestRegistryLimitReachesTheCLI":                         TestRegistryLimitReachesTheCLI,
@@ -92,6 +97,7 @@ var effectProbeFuncs = map[string]func(*testing.T){
 	"TestPathsDepsExtendsManifestDiscovery":                  TestPathsDepsExtendsManifestDiscovery,
 	"TestTasksMaxAgeIsReachableFromEnvironment":              TestTasksMaxAgeIsReachableFromEnvironment,
 	"TestAskPollCeilingIsReachableFromTheEnvironment":        TestAskPollCeilingIsReachableFromTheEnvironment,
+	"TestDaemonAddressIsReachableFromTheEnvironment":         TestDaemonAddressIsReachableFromTheEnvironment,
 }
 
 func TestEffectProbeDeclarationsMatchTheProbesThatExist(t *testing.T) {
@@ -189,14 +195,17 @@ func TestScriptTypecheckOnRefusesATypeError(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// Off by default: the annotation is stripped and the script runs.
+	saved := e.envVars
+	defer func() { e.envVars = saved }()
+
+	// Off: the annotation is stripped and the script runs. run checks by
+	// default (#1868 point 4), so off has to be asked for.
+	e.envVars = append(append([]string{}, saved...), "MCPX_SCRIPT_TYPECHECK=off")
 	if out := e.run("run", script); !strings.Contains(out, "not a number") {
 		t.Fatalf("with typecheck off the script should run:\n%s", out)
 	}
 
-	saved := e.envVars
 	e.envVars = append(append([]string{}, saved...), "MCPX_SCRIPT_TYPECHECK=on")
-	defer func() { e.envVars = saved }()
 
 	out, err := e.try("run", script)
 	if err == nil {
@@ -259,5 +268,54 @@ func TestAskPollCeilingIsReachableFromTheEnvironment(t *testing.T) {
 	raised := holdFor("MCPX_PROTO_ASK_POLL=2s")
 	if raised < def+time.Second {
 		t.Fatalf("proto.askPoll=2s should hold a poll about two seconds, got %v against %v at the default", raised, def)
+	}
+}
+
+// TestDaemonAddressIsReachableFromTheEnvironment is the effect probe
+// for daemon.address (#8468 chain 1). The exemption it replaced said
+// a bind address is a network identity the harness cannot vary
+// deterministically; it can: the daemon port is ephemeral (default
+// 0), so two harness daemons bind different addresses without
+// colliding, and the daemon itself reports the endpoint it bound.
+//
+// Oracle: the endpoint from `mcpx --json status` (endpointOf). At
+// the default the reported host is loopback; with
+// MCPX_DAEMON_ADDRESS=0.0.0.0 the reported host is the unspecified
+// wildcard (0.0.0.0, reported as [::] on a dual-stack host) -- and
+// the widened endpoint really answers an HTTP request, so the
+// difference is the bind itself, not a string the daemon prints.
+func TestDaemonAddressIsReachableFromTheEnvironment(t *testing.T) {
+	endpointFor := func(env ...string) string {
+		t.Helper()
+		e := newEnv(t, oneServer)
+		e.setenv(env...)
+		e.run("ls")
+		return endpointOf(t, e)
+	}
+
+	def := endpointFor()
+	if !strings.HasPrefix(def, "http://127.0.0.1:") {
+		t.Fatalf("oracle: default daemon.address should report a loopback endpoint, got %s", def)
+	}
+
+	wide := endpointFor("MCPX_DAEMON_ADDRESS=0.0.0.0")
+	u, err := url.Parse(wide)
+	if err != nil {
+		t.Fatalf("oracle: unparseable widened endpoint %q: %v", wide, err)
+	}
+	host, port, err := net.SplitHostPort(u.Host)
+	if err != nil {
+		t.Fatalf("oracle: widened endpoint %q has no host:port: %v", wide, err)
+	}
+	if ip := net.ParseIP(host); ip == nil || !ip.IsUnspecified() {
+		t.Fatalf("oracle: daemon.address=0.0.0.0 should report a wildcard endpoint, got %s (default was %s)", wide, def)
+	}
+	resp, err := http.Get("http://" + net.JoinHostPort("127.0.0.1", port) + "/v1/health")
+	if err != nil {
+		t.Fatalf("oracle: the widened endpoint should answer: %v", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("oracle: the widened endpoint answered %d, want 200", resp.StatusCode)
 	}
 }

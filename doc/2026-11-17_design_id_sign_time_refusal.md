@@ -121,15 +121,15 @@ in the crate's documentation there.
 
 ## Filing status (verified fresh 2026-11-17)
 
-| Filing | Signer | Closing PR | Merged (UTC) | Merge commit | Issue state |
-|---|---|---|---|---|---|
-| #6422 | currency `sign_authorisation` | #8677 | 2026-11-11T14:15:04Z | `a222c693b7309f817987830f2173847074ab106d` | CLOSED |
-| #6424 | attestation `sign_genesis` / `sign_claim` | #6559 | 2026-11-11T16:17:05Z | `f998d270d3a5994a6346fc553e651ad721a89bbb` | CLOSED |
-| #6434 | match_audit `sign_header` / `sign_footer` | #6497 | 2026-11-06T10:24:09Z | `c0ce60b173f8520d5a52b49da3ec7b5cda1180c7` | CLOSED |
-| #6443 | directory_auth `sign_request` | #6539 | 2026-11-09T01:05:53Z | `3bd39e6f2ab4eae168904b1da6b48f628b0d74cb` | CLOSED |
-| #6447 | `sign_move` | #6544 | 2026-11-11T03:07:31Z | `ef3f1c10d2c46a68d36431009e983719254d9082` | CLOSED |
-| #6451 | `sign_rotation` | #6500 | 2026-11-06T11:20:19Z | `85c435ec6c59950f59b773776785ee78046ab69c` | CLOSED |
-| #6469 | `SignedReplicationEnvelope::sign` | #8011 | 2026-11-09T08:55:13Z | `6c5af5b86a4704bfd2448e7833b6db0e7d8bdc48` | CLOSED |
+| Filing | Signer                                    | Closing PR | Merged (UTC)         | Merge commit                               | Issue state |
+| ------ | ----------------------------------------- | ---------- | -------------------- | ------------------------------------------ | ----------- |
+| #6422  | currency `sign_authorisation`             | #8677      | 2026-11-11T14:15:04Z | `a222c693b7309f817987830f2173847074ab106d` | CLOSED      |
+| #6424  | attestation `sign_genesis` / `sign_claim` | #6559      | 2026-11-11T16:17:05Z | `f998d270d3a5994a6346fc553e651ad721a89bbb` | CLOSED      |
+| #6434  | match_audit `sign_header` / `sign_footer` | #6497      | 2026-11-06T10:24:09Z | `c0ce60b173f8520d5a52b49da3ec7b5cda1180c7` | CLOSED      |
+| #6443  | directory_auth `sign_request`             | #6539      | 2026-11-09T01:05:53Z | `3bd39e6f2ab4eae168904b1da6b48f628b0d74cb` | CLOSED      |
+| #6447  | `sign_move`                               | #6544      | 2026-11-11T03:07:31Z | `ef3f1c10d2c46a68d36431009e983719254d9082` | CLOSED      |
+| #6451  | `sign_rotation`                           | #6500      | 2026-11-06T11:20:19Z | `85c435ec6c59950f59b773776785ee78046ab69c` | CLOSED      |
+| #6469  | `SignedReplicationEnvelope::sign`         | #8011      | 2026-11-09T08:55:13Z | `6c5af5b86a4704bfd2448e7833b6db0e7d8bdc48` | CLOSED      |
 
 ## Acceptance criteria (from #6487)
 

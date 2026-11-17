@@ -57,6 +57,7 @@ var EffectProbes = map[string]string{
 	"registry.pageSize":          "TestRegistryPageSizeChangesWhatTheCLIAsksFor",
 	"registry.maxPages":          "TestTheRegistryPageCapSaysItStoppedEarly",
 	"paths.configFile":           "TestPathsConfigFileChangesWhichConfigLoads",
+	"paths.scripts":              "TestPathsScriptsFindsRecipesThatLiveOnlyThere",
 	"tasks.maxAge":               "TestTasksMaxAgeIsReachableFromEnvironment",
 	"deps.source":                "TestDepsSourceNoneDropsTheManifestLayer",
 	"deps.manifest":              "TestDepsManifestNamesTheManifestResolutionReads",
@@ -66,6 +67,7 @@ var EffectProbes = map[string]string{
 	"script.interpreter":         "TestScriptInterpreterIsReachableFromTheEnvironment",
 	"proxy.timeout":              "TestProxyUpstreamTimeoutIsReachableFromTheEnvironment",
 	"proto.askPoll":              "TestAskPollCeilingIsReachableFromTheEnvironment",
+	"daemon.address":             "TestDaemonAddressIsReachableFromTheEnvironment",
 }
 
 // EffectExemptions maps a setting path to the reason no effect probe
@@ -121,7 +123,6 @@ var EffectExemptions = map[string]string{
 	"artifacts.gcInterval":               "artifact store behaviour: its effect needs artifact-producing calls plus volume or time (ttl, quota, gc) that the fake server's fixtures do not drive",
 	"artifacts.interceptImages":          "artifact store behaviour: its effect needs artifact-producing calls plus volume or time (ttl, quota, gc) that the fake server's fixtures do not drive",
 	"paths.config":                       "a discovery search path: its effect appears only when fixture content exists solely on that path, which the harness does not plant per-path",
-	"paths.scripts":                      "a discovery search path: its effect appears only when fixture content exists solely on that path, which the harness does not plant per-path",
 	"paths.placeholders":                 "a discovery search path: its effect appears only when fixture content exists solely on that path, which the harness does not plant per-path",
 	"paths.adapters":                     "a discovery search path: its effect appears only when fixture content exists solely on that path, which the harness does not plant per-path",
 	"paths.apis":                         "a discovery search path: its effect appears only when fixture content exists solely on that path, which the harness does not plant per-path",
@@ -133,7 +134,6 @@ var EffectExemptions = map[string]string{
 	"daemon.port":                        "daemon lifecycle, binding, or timing: its effect is a bound, an interval, or a network identity the isolated harness cannot vary deterministically",
 	"daemon.endpoint":                    "daemon lifecycle, binding, or timing: its effect is a bound, an interval, or a network identity the isolated harness cannot vary deterministically",
 	"daemon.tsnet.hostname":              "daemon lifecycle, binding, or timing: its effect is a bound, an interval, or a network identity the isolated harness cannot vary deterministically",
-	"daemon.address":                     "daemon lifecycle, binding, or timing: its effect is a bound, an interval, or a network identity the isolated harness cannot vary deterministically",
 	"daemon.ui":                          "daemon lifecycle, binding, or timing: its effect is a bound, an interval, or a network identity the isolated harness cannot vary deterministically",
 	"daemon.uiDir":                       "daemon lifecycle, binding, or timing: its effect is a bound, an interval, or a network identity the isolated harness cannot vary deterministically",
 	"daemon.inline":                      "daemon lifecycle, binding, or timing: its effect is a bound, an interval, or a network identity the isolated harness cannot vary deterministically",
@@ -290,7 +290,7 @@ var EffectExemptions = map[string]string{
 // EffectExemptionPin is the ratchet: the exemption count at the time
 // the guard landed. It may only ever be lowered, and only in the PR
 // that removes an exemption by adding the probe that replaces it.
-const EffectExemptionPin = 213 // Shrunk 2026-11-17 (#8473 chain 1): proto.askPoll gained its probe. Deliberate +1 (2026-11-14, #1917 remainder shepherd of PR #7818) for script.language: covered by deterministic internal/runner tests (TestEffectiveScriptLanguage, TestExplicitPythonLanguageRunsInlineSnippet); the e2e harness script fixtures are TypeScript-only. Earlier deliberate +3 (2026-11-09, #2716) for proto.elicitationPerMinute, proto.samplingPerMinute and proto.samplingSessionPerMinute: daemon rate limits whose effect needs an over-limit sampling/elicitation flood no e2e fixture drives deterministically; the limiter is covered by internal/mcpclient and internal/daemon ratelimit tests. Earlier deliberate raises: +1 for daemon.roots and +8 for model.*: model settings are covered by internal/model and daemon unit tests; settings-driven e2e probes are not yet present. Deliberate +1 (2026-11-03, #1925 slice 3) for sampling.answerLocally: same model-layer coverage, daemon unit tests in internal/daemon/sampling_local_test.go. Deliberate +1 (2026-11-03, #5242) for plugin.disabledTools: read by the opencode plugin host (JS side); the Go e2e harness does not drive the plugin host, the same basis as every other plugin.* exemption. Deliberate +5 (2026-11-04, #1915 stage 2): import graph, missing, dynamic, cross-project and network policies are covered by deterministic internal/preflight tests, but the e2e harness has no isolated Deno graph fixture yet. Deliberate +2 (2026-11-05, #1911): checker error and unsupported-runtime policies are covered by deterministic internal/preflight stub-runtime tests; the e2e harness has no isolated Deno checker fixture.
+const EffectExemptionPin = 211 // Shrunk 2026-11-17 (#8467 settings core-paths burn-down): paths.scripts gained its probe. Earlier shrunk 2026-11-17 (#8468 chain 1): daemon.address gained its probe. Earlier shrunk 2026-11-17 (#8473 chain 1): proto.askPoll gained its probe. Deliberate +1 (2026-11-14, #1917 remainder shepherd of PR #7818) for script.language: covered by deterministic internal/runner tests (TestEffectiveScriptLanguage, TestExplicitPythonLanguageRunsInlineSnippet); the e2e harness script fixtures are TypeScript-only. Earlier deliberate +3 (2026-11-09, #2716) for proto.elicitationPerMinute, proto.samplingPerMinute and proto.samplingSessionPerMinute: daemon rate limits whose effect needs an over-limit sampling/elicitation flood no e2e fixture drives deterministically; the limiter is covered by internal/mcpclient and internal/daemon ratelimit tests. Earlier deliberate raises: +1 for daemon.roots and +8 for model.*: model settings are covered by internal/model and daemon unit tests; settings-driven e2e probes are not yet present. Deliberate +1 (2026-11-03, #1925 slice 3) for sampling.answerLocally: same model-layer coverage, daemon unit tests in internal/daemon/sampling_local_test.go. Deliberate +1 (2026-11-03, #5242) for plugin.disabledTools: read by the opencode plugin host (JS side); the Go e2e harness does not drive the plugin host, the same basis as every other plugin.* exemption. Deliberate +5 (2026-11-04, #1915 stage 2): import graph, missing, dynamic, cross-project and network policies are covered by deterministic internal/preflight tests, but the e2e harness has no isolated Deno graph fixture yet. Deliberate +2 (2026-11-05, #1911): checker error and unsupported-runtime policies are covered by deterministic internal/preflight stub-runtime tests; the e2e harness has no isolated Deno checker fixture.
 
 // CheckEffectCoverage returns one violation per way the probe and
 // exemption maps fail to cover reg exactly: a setting with neither,
