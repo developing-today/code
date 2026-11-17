@@ -28,7 +28,6 @@ cli	reload	no integration-test exercise yet; burn-down #8461 (cli daemon group)
 cli	stdio-proxy	no integration-test exercise yet; burn-down #8461 (cli daemon group)
 cli	supervise	no integration-test exercise yet; burn-down #8461 (cli daemon group)
 cli	upgrade	no integration-test exercise yet; burn-down #8461 (cli daemon group)
-setting	daemon.address	no integration-test exercise yet; burn-down #8468 (settings daemon family); needs an EffectProbes entry + e2e test
 setting	daemon.autostart	no integration-test exercise yet; burn-down #8468 (settings daemon family); needs an EffectProbes entry + e2e test
 setting	daemon.endpoint	no integration-test exercise yet; burn-down #8468 (settings daemon family); needs an EffectProbes entry + e2e test
 setting	daemon.idleExit	no integration-test exercise yet; burn-down #8468 (settings daemon family); needs an EffectProbes entry + e2e test
