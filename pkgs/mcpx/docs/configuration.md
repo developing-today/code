@@ -1155,6 +1155,63 @@ against the declaration's `dir`, then `PATH`. Without `runtime`, nothing
 changes: `command` is looked up on `PATH` and exec'd directly. `mcpx adapter
 check` reports a missing interpreter or script.
 
+### Generating a declaration: `mcpx adapter import`
+
+Hand-writing is not the only way in. `mcpx adapter import <binary>`
+generates one declaration deterministically — no model anywhere in the
+loop — from the most machine-regular source it can find, in this order
+(`--source auto|completion|man|help` pins one rung):
+
+1. **Completions.** Packager-shipped files in the system completion
+   directories first (fish, then zsh, then bash), then the binary's own
+   `completion <shell>` output (the cobra/clap convention).
+   `mcpx adapter import --completion <file>` parses a completion script
+   handed to it directly — the only path when the binary is not
+   installed.
+2. **Man.** The rendered man page's OPTIONS section.
+3. **`--help`.** Usage lines, flag blocks and subcommand tables, with
+   one level of subcommand `--help` recursion.
+
+Import runs the binary to do this (`--help`, `--version`, and the
+completion probe), so only import programs you were about to expose as
+tools anyway. A source that parses to nothing is a clear error naming
+what was tried, never a partial declaration.
+
+Output goes to stdout by default; `--out FILE` writes the file
+atomically instead. Either way, import emits **one standalone
+declaration file** and never merges into an existing adapters file:
+re-importing produces a fresh file, and hand edits in the old one are
+not carried over — diff and replace by hand. A generated declaration
+records its provenance (source, resolved binary path, the version read
+from `--version`, a fingerprint of the source text, generation date),
+`mcpx adapter check` reports version drift against that record, and
+generated declarations load through the same validation and
+de-duplication as hand-written ones.
+
+```sh
+mcpx adapter import git > git.json
+mcpx adapter import --completion ./_jq --name jq
+```
+
+### Passthrough declarations: `--bare`
+
+`mcpx adapter import --bare <binary> --description "what it is for"`
+declares the binary as a single passthrough tool that takes an argv
+array: no per-subcommand validation, and no schema for an agent to
+reason about. The description is required, the import prints a loud
+warning about what passthrough costs, and `mcpx adapter list` marks
+the entry `bare`.
+
+A bare adapter is an **argv** hole, not a **shell** hole: mcpx builds
+an argv and execs it directly, with no shell in between. The exception
+is a binary with its own argv-level exec escape — passthrough on one
+of those is a shell escape mcpx cannot see. Common offenders: `git`
+(`-c core.pager=...` and friends run commands), `ssh`
+(`-o ProxyCommand=...`), `find` (`-exec`), and anything with an
+editor, pager, or "run this command" option of its own. Declare those
+with generated or hand-written tools instead, so each subcommand is
+named and checked.
+
 ### Example: tailscale, no credential
 
 The shipped declaration at `examples/tailscale.json` wraps the local
