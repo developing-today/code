@@ -12,7 +12,7 @@
 // Signature verification is factored behind an injectable JWKS source so
 // tests can stub it; claim checks are pure.
 import { createHash, timingSafeEqual } from "node:crypto";
-import { outboundTimeout } from "./fetchTimeout.ts";
+import { isTimeoutAbort, outboundTimeout } from "./fetchTimeout.ts";
 
 export type CallerIdentity =
   | { type: "bearer" }
@@ -113,7 +113,7 @@ export const fetchGithubJwks: JwksSource = async () => {
     // endpoint parks every authenticating handler on this process.
     res = await fetch(GITHUB_JWKS_URL, { signal: outboundTimeout() });
   } catch (e) {
-    if (e instanceof DOMException && (e.name === "TimeoutError" || e.name === "AbortError")) {
+    if (isTimeoutAbort(e)) {
       // A retriable upstream stall, not a bad credential: 503 so callers
       // retry instead of rotating a token that was never the problem.
       throw new AuthError("oidc: JWKS fetch timed out", 503);
@@ -124,7 +124,10 @@ export const fetchGithubJwks: JwksSource = async () => {
   let body: unknown;
   try {
     body = await res.json();
-  } catch {
+  } catch (e) {
+    // The timeout signal also covers the body read: a stall there is the
+    // same retriable upstream stall as a stalled fetch, not a bad body.
+    if (isTimeoutAbort(e)) throw new AuthError("oidc: JWKS fetch timed out", 503);
     throw new AuthError("oidc: JWKS fetch returned a non-JSON body");
   }
   const jwks = parseJwks(body);

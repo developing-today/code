@@ -7,6 +7,11 @@
 // github.ts, raw in queue.ts like every other network failure there).
 export const OUTBOUND_FETCH_TIMEOUT_MS = 15_000;
 
+/** True for the abort an `outboundTimeout()` signal raises (or any abort). */
+export function isTimeoutAbort(e: unknown): boolean {
+  return e instanceof DOMException && (e.name === "TimeoutError" || e.name === "AbortError");
+}
+
 export function outboundTimeout(ms = OUTBOUND_FETCH_TIMEOUT_MS): AbortSignal {
   return AbortSignal.timeout(ms);
 }

@@ -16,7 +16,7 @@
 // controls are unchanged.
 import { describe, expect, test } from "bun:test";
 import { generateKeyPairSync } from "node:crypto";
-import { GitHubClient, GitHubError } from "../src/github.ts";
+import { AmbiguousCreateError, GitHubClient, GitHubError } from "../src/github.ts";
 
 const REPO = "pm-dispatch-7101/nonexistent"; // a slug no gh route can succeed on: the CLI fallback fails deterministically and can never create anything, in any environment
 const { privateKey } = generateKeyPairSync("rsa", { modulusLength: 2048 });
@@ -242,5 +242,44 @@ describe("GitHubClient response-shape validation (#7101)", () => {
       expect(out.e).not.toBeInstanceOf(TypeError);
       expect((out.e as Error).message).toContain("malformed");
     }
+  });
+});
+
+describe("GitHubClient create-issue timeout (#10849)", () => {
+  async function createWithPost(post: () => Promise<Response>) {
+    stub({});
+    const stubbed = globalThis.fetch;
+    globalThis.fetch = (async (input: unknown, init?: { method?: string }) => {
+      if (String(input).endsWith(`/repos/${REPO}/issues`) && init?.method === "POST") return post();
+      return stubbed(input as string, init as RequestInit);
+    }) as typeof fetch;
+    try {
+      return await client()
+        .createIssue(REPO, "t", "b", [])
+        .then(
+          () => null,
+          (e: unknown) => e,
+        );
+    } finally {
+      globalThis.fetch = realFetch;
+    }
+  }
+
+  test("a POST that times out does NOT fall back to a gh create (the issue may exist)", async () => {
+    const err = await createWithPost(async () => {
+      throw new DOMException("The operation timed out.", "TimeoutError");
+    });
+    expect(err).toBeInstanceOf(AmbiguousCreateError);
+    expect((err as Error).message).toContain("may exist");
+    expect((err as Error).message).not.toContain("via gh");
+  });
+
+  test("a POST that fails before reaching GitHub still falls back to gh", async () => {
+    const err = await createWithPost(async () => {
+      throw new TypeError("fetch failed");
+    });
+    // The fallback ran (and failed on the unroutable test slug).
+    expect(err).toBeInstanceOf(GitHubError);
+    expect((err as Error).message).toContain("via gh");
   });
 });

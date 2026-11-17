@@ -299,6 +299,52 @@ describe("JWKS fetch timeout (issue #10738)", () => {
     }
   });
 
+  test("a timeout while reading the JWKS body is also a retriable 503", async () => {
+    resetJwksCacheForTests();
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = (async () =>
+      ({
+        ok: true,
+        json: async () => {
+          throw new DOMException("The operation timed out.", "TimeoutError");
+        },
+      }) as unknown as Response) as unknown as typeof fetch;
+    try {
+      const err = await fetchGithubJwks().then(
+        () => null,
+        (e: unknown) => e,
+      );
+      expect(err).toBeInstanceOf(AuthError);
+      expect((err as AuthError).status).toBe(503);
+    } finally {
+      globalThis.fetch = originalFetch;
+      resetJwksCacheForTests();
+    }
+  });
+
+  test("a non-JSON JWKS body is still a 401", async () => {
+    resetJwksCacheForTests();
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = (async () =>
+      ({
+        ok: true,
+        json: async () => {
+          throw new SyntaxError("Unexpected token <");
+        },
+      }) as unknown as Response) as unknown as typeof fetch;
+    try {
+      const err = await fetchGithubJwks().then(
+        () => null,
+        (e: unknown) => e,
+      );
+      expect(err).toBeInstanceOf(AuthError);
+      expect((err as AuthError).status).toBe(401);
+    } finally {
+      globalThis.fetch = originalFetch;
+      resetJwksCacheForTests();
+    }
+  });
+
   test("AuthError still defaults to 401 so bad credentials keep their status", () => {
     expect(new AuthError("nope").status).toBe(401);
   });
