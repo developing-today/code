@@ -326,8 +326,8 @@ is filed as a new child of #9144 because nothing owns it today.
    their defaults and their ceilings (section 8), plus validation that rejects a
    `max_hops` above the ceiling. Acceptance: a config test for every default and
    every ceiling.
-2. **Partial answers, per-peer timeouts and completeness reporting — filed as a
-   new child of #9144.** The `completeness`, `unanswered_peers[]` and
+2. **Partial answers, per-peer timeouts and completeness reporting — filed as
+   #11414, a new child of #9144 (enqueued as a triage packet).** The `completeness`, `unanswered_peers[]` and
    `ProvenanceEntry.status` fields (sections 6.3, 7.2, 7.3), with a golden test
    that a slow or down peer yields `partial` and keeps every other result. Oracle:
    a fixed fixture of three peers, one slow, one down, one answering.
