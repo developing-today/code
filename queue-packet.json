@@ -1,0 +1,53 @@
+{
+  "queue": "repo-health-code-pilot",
+  "title": "Design #5893: CI tiering for adversarial and benchmark suites",
+  "body": "Real-and-current design issue #5893. Define smoke/scheduled/soak tiers, time budgets, and environment guards for the adversarial and benchmark suites. Keep final budgets aligned with the shared generator, baseline, and scenario catalogue decisions in #5891, #5894, and #5892.",
+  "dedupe_key": "repo-health:v1:fix:developing-today/code:issue:5893",
+  "priority": 30,
+  "max_attempts": 4,
+  "payload": {
+    "schema": "repo-task/v1",
+    "kind": "small_fix",
+    "repo": "developing-today/code",
+    "issue": {
+      "number": 5893,
+      "title": "id: design: CI tiering for adversarial & benchmark suites (from #5685)",
+      "url": "https://github.com/developing-today/code/issues/5893",
+      "state_checked_at": "2026-11-08T05:10:00Z"
+    },
+    "problem": "Issue #5893 remains open as an active design decision: define CI tiers (smoke / scheduled / soak), time budgets, and environment guards for the adversarial and benchmark suites. On current main, id-bench is a manually dispatched, 60-minute, non-blocking full run; the adversarial suite is an in-process refusal test suite, not a tiered load-test workflow. Parent #5685 is open; the child design tickets #5891, #5892, and #5894 are also open.",
+    "evidence": [
+      "Fresh GitHub read 2026-11-08: #5893 is OPEN and has no held, user/owned, do-not-merge, or do-not-auto-edit labels.",
+      "Fresh GitHub read 2026-11-08: parent #5685 is OPEN; the scope remains a separate CI-tiering design decision.",
+      "Open-PR title search for 'CI tiering' returned no results; a broad search for 5893 found only open PR #3965, whose body says it implements issue #3950 and is unrelated.",
+      "Current main .github/workflows/id-bench.yml:9-17,23-25,38-40 runs manually via workflow_dispatch, has a 60-minute timeout, and is explicitly non-blocking; it does not define smoke/scheduled/soak tiers or environment guards.",
+      "Current main .github/ci-policy.md:154-164 classifies id bench as no-PR/full-main; pkgs/id/tests/world_dos.rs:1-36 is a consolidated in-process refusal suite and not a tiered CI load-test design."
+    ],
+    "acceptance": [
+      "Record a decision on #5893 (or a doc/ record linked from it) that defines smoke/scheduled/soak tiers, time budgets, and environment guards against shared or production targets.",
+      "State the chosen shape, rejected alternatives and reasons, and implementation invariants; align with parent #5685 without silently changing its decisions.",
+      "Defer final tier contents and budgets until #5891/#5894/#5892 settle the shared generator, standard baseline, and scenario catalogue; make dependencies explicit.",
+      "Close #5893 with a closing keyword once the decision record lands."
+    ],
+    "scope": {
+      "include": ["developing-today/code issue #5893 only"],
+      "exclude": ["Re-doing work already landed in the listed PRs", "Unrelated issues or repos"]
+    },
+    "tests": ["Verify against current main; no runtime reproduction needed — this is a design deliverable."],
+    "risk": {"level": "low", "flags": ["design-decision-required"]},
+    "priority_reason": "Normal (30): active design issue with no landed evidence.",
+    "timebox_minutes": 45,
+    "max_attempts": 4,
+    "context_refs": [
+      "https://github.com/developing-today/code/issues/5893",
+      "https://github.com/developing-today/code/issues/5685",
+      "https://github.com/developing-today/code/issues/5891",
+      "https://github.com/developing-today/code/issues/5892",
+      "https://github.com/developing-today/code/issues/5894"
+    ],
+    "dedupe": {
+      "checked_at": "2026-11-08T05:10:00Z",
+      "basis": "Enqueued after fresh triage verification; no live equivalent for repo-health:v1:fix:developing-today/code:issue:5893 was found."
+    }
+  }
+}
