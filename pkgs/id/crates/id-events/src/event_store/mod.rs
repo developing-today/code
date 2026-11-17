@@ -442,15 +442,22 @@ impl EventStore {
             create_fresh(storage)?
         };
         verify_schema(&db)?;
-        // The blocks, writer-set-bodies and device-ops tables are additive:
-        // stores created before them gain them here, on the write every open
-        // already performs, instead of a format change that would refuse them.
-        {
+        // The additive tables are opened without a format change. Recover device operations
+        // from bodies retained by older sync/import paths where possible.
+        let (recovered, recovery_incomplete) = {
             let txn = db.begin_write()?;
             txn.open_table(BLOCKS)?;
             txn.open_table(WRITER_SET_BODIES)?;
             txn.open_table(DEVICE_OPS)?;
+            let recovery = Self::recover_device_ops(&txn)?;
             txn.commit()?;
+            recovery
+        };
+        if recovery_incomplete {
+            tracing::warn!(
+                recovered,
+                "device-operation recovery incomplete: this store has events but no retained verified grant/revocation bodies; resync or reingest those bodies to restore device authority"
+            );
         }
         let mut store = Self {
             db,
