@@ -61,8 +61,10 @@ import { itemServiceLinks } from "./service-links.ts";
 import { loadFeed } from "./feed.ts";
 import { AA_PLAN_FACTS, sectionPoolIdsFromConfig } from "./aa.ts";
 import {
+  closeAnsweredNeedsDrewIncident,
   getNeedsDrew,
   listOpenNeedsDrew,
+  needsDrewCloseDiagnostics,
   raiseNeedsDrew,
   recordAnswer,
   shouldFetchNeedsDrewCensus,
@@ -3647,6 +3649,15 @@ async function handler(req: Request): Promise<Response> {
       via: "api",
     });
     if (!updated?.answer) return json({ error: "answer not recorded" }, 500);
+    // #8605: the answered question's alert incident is closed with the
+    // raise side's own (source, key) — the item's stored source and
+    // `needs-drew:<ledgerId>`. The answer is already recorded, so a
+    // close failure is logged and surfaced in /api/health diagnostics,
+    // never turned into a failed answer.
+    const incidentClose = await closeAnsweredNeedsDrewIncident(updated, getAlertsStore);
+    if (!incidentClose.ok) {
+      console.error(`needs-drew answer: incident close failed for ${incidentClose.key} (${incidentClose.error})`);
+    }
     return json({
       ledgerId,
       answered: true,
@@ -3656,6 +3667,9 @@ async function handler(req: Request): Promise<Response> {
         at: updated.answer.at,
         via: updated.answer.via,
       },
+      incidentClose: incidentClose.ok
+        ? { source: incidentClose.source, key: incidentClose.key, ok: true, closed: incidentClose.transitioned }
+        : { source: incidentClose.source, key: incidentClose.key, ok: false, closed: false, error: incidentClose.error },
     });
   }
   const answerPageMatch = /^\/answer\/([^/]+)$/.exec(path);
@@ -4166,6 +4180,11 @@ async function handler(req: Request): Promise<Response> {
     body.jobs = view.jobs;
     body.comments = view.comments;
     body.conflicts = view.conflicts;
+    // #8605: a failed incident close on an answered needs-drew question
+    // is surfaced here (the answer itself is already recorded, so the
+    // close is best-effort and must not read as an answer failure).
+    const closeDiag = needsDrewCloseDiagnostics();
+    if (closeDiag.count > 0) body.needsDrew = { incidentCloseFailures: closeDiag };
     // #1203: the ready-for-agent harness facet — backend readiness,
     // repository settings, work-item counts and GraphQL errors reach the
     // machine surface too, not only the rendered page.

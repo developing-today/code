@@ -472,3 +472,76 @@ export async function listAnswers(file: string): Promise<NeedsDrewQuestion[]> {
   const items = await readNeedsDrewItems(file);
   return items.filter((i) => i.answer);
 }
+
+// ---------------------------------------------------------------------------
+// #8605: closing the alert incident a raised question opened. The raise
+// half posts to the alert throat with source "fleet-queue" and key
+// `needs-drew:<ledgerId>` (pkgs/fleet/crates/fleet-queue/src/needs_drew.rs),
+// and the question store records that same source on the item. The
+// answer path therefore closes with the ITEM's stored source and the
+// same key spelling — never a second guess at either.
+
+/** The alert source a question raised without one carries. */
+export const NEEDS_DREW_DEFAULT_ALERT_SOURCE = "fleet-queue";
+
+/** The incident key the raise side uses for a question. */
+export function needsDrewIncidentKey(ledgerId: string): string {
+  return `needs-drew:${ledgerId}`;
+}
+
+/** The slice of AlertsStore the close needs (structural, so this module
+ *  does not import alerts.ts, which already imports this one). */
+export interface NeedsDrewIncidentCloser {
+  closeOpenIncidentByKey(source: string, key: string): Promise<{ transitioned: boolean }>;
+}
+
+export interface NeedsDrewCloseFailure {
+  ledgerId: string;
+  source: string;
+  key: string;
+  error: string;
+  at: string;
+}
+
+export type CloseAnsweredOutcome =
+  | { ok: true; source: string; key: string; transitioned: boolean }
+  | { ok: false; source: string; key: string; error: string };
+
+const MAX_CLOSE_FAILURES = 20;
+const closeFailures: NeedsDrewCloseFailure[] = [];
+
+/** Record a failed incident close for the aggregator's own diagnostics
+ *  (/api/health). The answer itself is already recorded; the close is
+ *  best-effort and a failure must never fail the answer. */
+export function recordNeedsDrewCloseFailure(failure: NeedsDrewCloseFailure): void {
+  closeFailures.push(failure);
+  if (closeFailures.length > MAX_CLOSE_FAILURES) closeFailures.splice(0, closeFailures.length - MAX_CLOSE_FAILURES);
+}
+
+/** The close-failure diagnostics surface (most recent last). */
+export function needsDrewCloseDiagnostics(): { failures: NeedsDrewCloseFailure[]; count: number } {
+  return { failures: closeFailures.map((f) => ({ ...f })), count: closeFailures.length };
+}
+
+/** #8605: after an answer is recorded, close the open incident the
+ *  question's raise opened. Never throws: a failure is returned and
+ *  recorded, so the caller can keep the answer as the primary outcome. */
+export async function closeAnsweredNeedsDrewIncident(
+  item: Pick<NeedsDrewQuestion, "ledgerId" | "source">,
+  getCloser: () => Promise<NeedsDrewIncidentCloser | null>,
+): Promise<CloseAnsweredOutcome> {
+  const source = item.source?.trim() || NEEDS_DREW_DEFAULT_ALERT_SOURCE;
+  const key = needsDrewIncidentKey(item.ledgerId);
+  const fail = (error: string): CloseAnsweredOutcome => {
+    recordNeedsDrewCloseFailure({ ledgerId: item.ledgerId, source, key, error, at: new Date().toISOString() });
+    return { ok: false, source, key, error };
+  };
+  try {
+    const closer = await getCloser();
+    if (!closer) return fail("alerts store unavailable");
+    const res = await closer.closeOpenIncidentByKey(source, key);
+    return { ok: true, source, key, transitioned: res.transitioned };
+  } catch (err) {
+    return fail(err instanceof Error ? err.message : String(err));
+  }
+}
