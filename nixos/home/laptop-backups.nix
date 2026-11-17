@@ -71,7 +71,12 @@
 #   must be complete and fresher than services.laptop-backups.
 #   watchdog.maxAgeHours, and both backup timers must have triggered
 #   within the same threshold; any violation exits non-zero naming
-#   the job/timer. repo-archive-backup is covered via its timer's
+#   the job/timer. laptop-state-backup is covered via its timer's
+#   last-trigger time AND its success marker
+#   (~/backups/restic/.laptop-state-last-success-epoch, written only
+#   after all three backends succeed) — code#10294: its 12-day stall
+#   was silent because the watchdog did not name this job.
+#   repo-archive-backup is covered via its timer's
 #   last-trigger time ONLY: its script (~/tools/repo-archive-
 #   backup.sh) and its restic credentials live outside this repo, so
 #   no run record is required of it.
@@ -105,6 +110,7 @@ let
   watchdogJobs = lib.concatStringsSep "," (
     (lib.optional cfg.dashboard.enable "dashboard")
     ++ (lib.optional cfg.repoArchive.enable "repo-archive")
+    ++ (lib.optional cfg.state.enable "state")
   );
   watchdogWanted = cfg.watchdog.enable && watchdogJobs != "";
   servicePath = lib.makeBinPath [
