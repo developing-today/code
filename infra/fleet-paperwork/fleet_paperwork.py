@@ -64,6 +64,10 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 API = "https://api.github.com"
+# Every App call goes through one transport (`http_raw`), so one bound here
+# bounds the whole tool: a connection that is accepted and then stalls used
+# to hang a bulk paperwork run forever with no diagnostic (#11214).
+REQUEST_TIMEOUT_SECONDS = 30.0
 DEFAULT_SOPS = "~/secrets/pm-stack.sops.yaml"
 DEFAULT_LEDGER = "~/.local/state/fleet-paperwork/ledger.tsv"
 APP_SLUG_HINT = "developing.today (App ID read from the sops file at runtime)"
@@ -147,10 +151,17 @@ def http_raw(
 ) -> tuple[int, str]:
     """One HTTP call that reports HTTP errors instead of dying on them.
 
-    Returns (status, raw body text). Transport failures (DNS, TLS, refused)
-    still die — there is no status to report for them. Used directly by the
-    `api` command; `http` below is the die-on-error wrapper the issue
-    commands have always used.
+    Returns (status, raw body text). Transport failures (DNS, TLS, refused,
+    timeout) still die — there is no status to report for them. Used
+    directly by the `api` command; `http` below is the die-on-error wrapper
+    the issue commands have always used.
+
+    Every request carries REQUEST_TIMEOUT_SECONDS (#11214): a connection
+    that is accepted and then stalls used to hang the command forever, and
+    since this is the tool's only transport that hung whole bulk runs. A
+    connect-phase timeout arrives wrapped in URLError, a read-phase one
+    arrives as a bare TimeoutError, and both die with the method and URL
+    named rather than escaping as a traceback.
     """
     url = path if path.startswith("http") else API + path
     req = urllib.request.Request(url, data=data, method=method)
@@ -160,13 +171,24 @@ def http_raw(
     if data is not None:
         req.add_header("Content-Type", "application/json")
     try:
-        with urllib.request.urlopen(req) as resp:
+        with urllib.request.urlopen(req, timeout=REQUEST_TIMEOUT_SECONDS) as resp:
             return resp.status, resp.read().decode()
     except urllib.error.HTTPError as e:
         return e.code, e.read().decode(errors="replace")
     except urllib.error.URLError as e:
+        if isinstance(e.reason, TimeoutError):
+            die(_timeout_message(method, url))
         die(f"{method} {url} failed: {e.reason}")
+    except TimeoutError:
+        die(_timeout_message(method, url))
     raise AssertionError("unreachable")
+
+
+def _timeout_message(method: str, url: str) -> str:
+    return (
+        f"{method} {url} timed out after {REQUEST_TIMEOUT_SECONDS:g}s "
+        f"(no response; the connection may have been accepted and stalled)"
+    )
 
 
 def _shape_name(value: object) -> str:

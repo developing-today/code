@@ -15,6 +15,7 @@ import (
 	"github.com/developing-today/code/pkgs/mcpx/internal/config"
 	"github.com/developing-today/code/pkgs/mcpx/internal/elicit"
 	"github.com/developing-today/code/pkgs/mcpx/internal/mcpclient"
+	"github.com/developing-today/code/pkgs/mcpx/internal/mcpserver"
 	"github.com/developing-today/code/pkgs/mcpx/internal/pool"
 	"github.com/developing-today/code/pkgs/mcpx/internal/testsupport"
 )
@@ -517,5 +518,157 @@ func TestGateRefusalsAreTyped(t *testing.T) {
 	}
 	if body := callErrorBody(plain); body.Code != "" {
 		t.Errorf("callErrorBody(plain error).Code = %q, want empty", body.Code)
+	}
+}
+
+// (#8922) A task's inner call whose task context is cancelled — the
+// client cancelled the task (tasks/cancel), the disposition the task
+// store owns and reports — must not record an unknown write outcome:
+// the outcome is accounted for, and recording it refused every later
+// non-read-only call to the server (the conformance tasks cascade:
+// the suite cancels the task it just created as cleanup, and the
+// in-flight slow_compute aborted with the cancellation). Oracle: with
+// the task mark, a mid-call cancellation returns the raw call error
+// and leaves the ledger empty; without the mark, the same cancellation
+// still records ErrUnknownOutcome, so the exemption stays scoped to
+// task execution.
+func TestCallWithLedgerTaskCancellationDoesNotRecordUnknownOutcome(t *testing.T) {
+	run := func(t *testing.T, mark int) (error, bool) {
+		t.Helper()
+		ledger, err := OpenWriteLedger(t.TempDir())
+		if err != nil {
+			t.Fatal(err)
+		}
+		r := writePolicyRegistry("allow")
+		r.writeLedger = ledger
+		cfg := &config.Config{MCPServers: map[string]*config.Server{
+			"demo": {Name: "demo", Command: testsupport.FakeMCPBinary(t)},
+		}}
+		resolved, err := cfg.Resolve("demo")
+		if err != nil {
+			t.Fatalf("resolve: %v", err)
+		}
+		scopeKey, _ := resolved.Scope.Key(config.CallContext{})
+		p := pool.New(resolved)
+		t.Cleanup(p.Close)
+		warmCtx, warmCancel := context.WithTimeout(context.Background(), 90*time.Second)
+		defer warmCancel()
+		if _, err := p.Call(warmCtx, config.ResolvedScope{Key: scopeKey}, "echo", map[string]any{"message": "warm"}); err != nil {
+			t.Fatalf("warm-up call: %v", err)
+		}
+		ctx, cancel := context.WithCancel(context.Background())
+		switch mark {
+		case 1:
+			ctx = mcpserver.MarkWithinTask(ctx)
+		case 2:
+			// The mark as the daemon API carries it: restored from the
+			// X-Mcpx-Task-Execution header (see daemon.TaskExecutionHeader).
+			ctx = mcpclient.WithTaskExecution(ctx)
+		}
+		go func() {
+			time.Sleep(300 * time.Millisecond)
+			cancel()
+		}()
+		defer cancel()
+		_, callErr := r.callWithLedger(ctx, p, "demo", "slow", map[string]any{"ms": 30000}, config.ResolvedScope{Key: scopeKey}, "call")
+		if callErr == nil {
+			t.Fatal("slow call unexpectedly succeeded")
+		}
+		_, blocked := ledger.Lookup("demo")
+		return callErr, blocked
+	}
+
+	callErr, blocked := run(t, 1)
+	var unknown ErrUnknownOutcome
+	if errors.As(callErr, &unknown) {
+		t.Fatalf("task-cancelled call = %v, want the raw call error", callErr)
+	}
+	if blocked {
+		t.Fatal("task-cancelled call recorded an unknown outcome")
+	}
+
+	callErr, blocked = run(t, 2)
+	if errors.As(callErr, &unknown) {
+		t.Fatalf("header-marked task-cancelled call = %v, want the raw call error", callErr)
+	}
+	if blocked {
+		t.Fatal("header-marked task-cancelled call recorded an unknown outcome")
+	}
+
+	callErr, blocked = run(t, 0)
+	if !errors.As(callErr, &unknown) {
+		t.Fatalf("unmarked cancelled call = %T %v, want ErrUnknownOutcome", callErr, callErr)
+	}
+	if !blocked {
+		t.Fatal("unmarked cancelled call recorded no unknown outcome")
+	}
+}
+
+// An interruptible (ask) call starts before its task exists, so no
+// context mark can ride with it; the exemption arrives retroactively
+// when the task's cancellation abandons the ask and the daemon flags
+// the ask id (Registry.markAskTaskCancelled, #8922).
+func TestCallWithLedgerAskTaskCancellationDoesNotRecordUnknownOutcome(t *testing.T) {
+	run := func(t *testing.T, flagged bool) (error, bool) {
+		t.Helper()
+		ledger, err := OpenWriteLedger(t.TempDir())
+		if err != nil {
+			t.Fatal(err)
+		}
+		r := writePolicyRegistry("allow")
+		r.writeLedger = ledger
+		if r.asks == nil {
+			r.asks = newAskTable()
+		}
+		cfg := &config.Config{MCPServers: map[string]*config.Server{
+			"demo": {Name: "demo", Command: testsupport.FakeMCPBinary(t)},
+		}}
+		resolved, err := cfg.Resolve("demo")
+		if err != nil {
+			t.Fatalf("resolve: %v", err)
+		}
+		scopeKey, _ := resolved.Scope.Key(config.CallContext{})
+		p := pool.New(resolved)
+		t.Cleanup(p.Close)
+		warmCtx, warmCancel := context.WithTimeout(context.Background(), 90*time.Second)
+		defer warmCancel()
+		if _, err := p.Call(warmCtx, config.ResolvedScope{Key: scopeKey}, "echo", map[string]any{"message": "warm"}); err != nil {
+			t.Fatalf("warm-up call: %v", err)
+		}
+		r.beginAsk("ask-1", "demo", scopeKey, "")
+		defer r.endAsk("ask-1")
+		if flagged {
+			r.markAskTaskCancelled("ask-1")
+		}
+		ctx, cancel := context.WithCancel(context.Background())
+		ctx = withAskCall(ctx, "ask-1")
+		go func() {
+			time.Sleep(300 * time.Millisecond)
+			cancel()
+		}()
+		defer cancel()
+		_, callErr := r.callWithLedger(ctx, p, "demo", "slow", map[string]any{"ms": 30000}, config.ResolvedScope{Key: scopeKey}, "ask")
+		if callErr == nil {
+			t.Fatal("slow call unexpectedly succeeded")
+		}
+		_, blocked := ledger.Lookup("demo")
+		return callErr, blocked
+	}
+
+	callErr, blocked := run(t, true)
+	var unknown ErrUnknownOutcome
+	if errors.As(callErr, &unknown) {
+		t.Fatalf("task-cancelled ask call = %v, want the raw call error", callErr)
+	}
+	if blocked {
+		t.Fatal("task-cancelled ask call recorded an unknown outcome")
+	}
+
+	callErr, blocked = run(t, false)
+	if !errors.As(callErr, &unknown) {
+		t.Fatalf("unflagged cancelled ask call = %T %v, want ErrUnknownOutcome", callErr, callErr)
+	}
+	if !blocked {
+		t.Fatal("unflagged cancelled ask call recorded no unknown outcome")
 	}
 }
