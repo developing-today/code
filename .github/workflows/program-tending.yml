@@ -1,6 +1,6 @@
 name: program-tending
 
-# program-tending (issue #1352, slices 1+2 of 3).
+# program-tending (issue #1352, slices 1+2+3 of 3).
 #
 # Daily scheduled care for the planning layer across the four fleet
 # repos (code, opencode, openchamber, nix): epics, roadmaps, projects,
@@ -37,7 +37,7 @@ permissions:
 
 jobs:
   tend:
-    name: program-tending run (slices 1+2)
+    name: program-tending run (slices 1+2+3)
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
@@ -49,7 +49,7 @@ jobs:
         run: |
           test -f scripts/tests/test_program_tending.py
           python3 -m unittest discover -s scripts/tests -p 'test_program_tending.py' -v
-      - name: Run program-tending (slice 2 sections live)
+      - name: Run program-tending (all sections live)
         env:
           # Live writes span all four fleet repos; this repo's
           # GITHUB_TOKEN cannot write issues elsewhere (Codex,

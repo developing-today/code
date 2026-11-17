@@ -665,6 +665,73 @@ fn base_eligible(surface: &Value, job: &Job) -> (bool, String) {
     (true, "eligible".to_string())
 }
 
+/// The dispatch_id for a surface whose workflow declares a
+/// `dispatch_id` input (registry flag `dispatch_id_input`, set for
+/// org-run.yml and dezren39/fleet's fleet-run.yml, which surface it
+/// in the run display title via `run-name:` — issue #8371). A fresh
+/// fp_ handle per dispatch. Surfaces without the flag get None:
+/// GitHub rejects dispatch inputs the workflow does not declare,
+/// so those keep the snapshot-exclusion fallback in correlate_run.
+fn dispatch_id_for(surface: &Value) -> Option<String> {
+    if surface.get("dispatch_id_input").and_then(|v| v.as_bool()) == Some(true) {
+        Some(new_handle(&rand_source::URandom))
+    } else {
+        None
+    }
+}
+
+/// Pick the run a dispatch created out of a workflow run list.
+/// Runs in the pre-dispatch snapshot (before_ids) and runs created
+/// before `since` are never candidates. With a dispatch_id, only a
+/// run whose display_title carries the id is a candidate — exact
+/// correlation even when another dispatch of the same workflow
+/// lands in the same poll window (issue #8371). Without one, the
+/// earliest new run wins (the snapshot-exclusion fallback).
+fn correlate_run(
+    runs: &[Value],
+    before_ids: &std::collections::HashSet<i64>,
+    since: i64,
+    dispatch_id: Option<&str>,
+) -> Option<(i64, String)> {
+    let mut candidates: Vec<(i64, i64, String)> = Vec::new();
+    for r in runs {
+        let id = r.get("id").and_then(|i| i.as_i64()).unwrap_or(0);
+        if before_ids.contains(&id) {
+            continue;
+        }
+        let created = r
+            .get("created_at")
+            .and_then(|c| c.as_str())
+            .and_then(parse_iso)
+            .unwrap_or(0);
+        if created < since {
+            continue;
+        }
+        if let Some(d) = dispatch_id {
+            let title = r
+                .get("display_title")
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
+            if !title.contains(d) {
+                continue;
+            }
+        }
+        candidates.push((
+            created,
+            id,
+            r.get("html_url")
+                .and_then(|u| u.as_str())
+                .unwrap_or("")
+                .to_string(),
+        ));
+    }
+    candidates.sort();
+    candidates
+        .into_iter()
+        .next()
+        .map(|(_created, id, url)| (id, url))
+}
+
 pub struct GithubActionsAdapter {
     surface: Value,
     /// The runner this adapter dispatches: "github" for the plain
@@ -680,7 +747,7 @@ impl GithubActionsAdapter {
     /// inputs ignore entry fields they do not know); the `runner`
     /// input is sent only when it changes something (blacksmith) —
     /// upstream's fleet-run rejects unknown inputs.
-    fn workflow_inputs(&self, job: &Job) -> Value {
+    fn workflow_inputs(&self, job: &Job, dispatch_id: Option<&str>) -> Value {
         let mut entry = Map::new();
         entry.insert("repo".into(), json!(job.repo));
         entry.insert("command".into(), json!(job.command));
@@ -730,6 +797,9 @@ impl GithubActionsAdapter {
         if !job.git_ref.is_empty() {
             inputs.insert("ref".into(), json!(job.git_ref));
         }
+        if let Some(id) = dispatch_id {
+            inputs.insert("dispatch_id".into(), json!(id));
+        }
         Value::Object(inputs)
     }
 
@@ -742,16 +812,19 @@ impl GithubActionsAdapter {
         let repo = surf_str(s, "repo").to_string();
         let workflow = surf_str(s, "workflow").to_string();
         let token = gh.app_token(&repo)?;
-        let inputs = self.workflow_inputs(job);
+        let dispatch_id = dispatch_id_for(s);
+        let inputs = self.workflow_inputs(job, dispatch_id.as_deref());
         // Correlate the created run with THIS dispatch (Codex P1
-        // on PR #8325): snapshot the workflow's existing run ids
-        // BEFORE submitting, so a run another job submitted just
-        // before us can never be attached to this handle; among
-        // the runs that appear after, attach the EARLIEST one, so
-        // a concurrent later submission is not attached either.
-        // (The workflows expose no dispatch-id input or run field
-        // to carry a unique id through; snapshot exclusion is the
-        // strongest correlation the runs API supports.)
+        // on PR #8325, exact-id fix in issue #8371): when the
+        // workflow declares a dispatch_id input (dispatch_id_for),
+        // the id generated above travels with the dispatch and the
+        // workflow surfaces it in the run's display title, so
+        // correlate_run can match exactly this dispatch's run even
+        // when another dispatch lands in the same poll window.
+        // The pre-dispatch snapshot of existing run ids is kept
+        // for every surface: it is the only correlation for
+        // workflows without the input (the fallback), and with an
+        // id it still excludes runs that predate this dispatch.
         let list_runs = |gh: &dyn Gh| -> R<Vec<Value>> {
             let (_st, runs) = gh.api(
                 "GET",
@@ -795,7 +868,6 @@ impl GithubActionsAdapter {
         let mut found: Option<(i64, String)> = None;
         for _ in 0..12 {
             gh.sleep_secs(3);
-            let mut candidates: Vec<(i64, i64, String)> = Vec::new();
             // A failed run-list request after the POST was
             // accepted (HTTP 204) must not abort the command: the
             // job is already executing, and discarding the
@@ -803,29 +875,12 @@ impl GithubActionsAdapter {
             // invite a duplicate submission). Treat it as "not
             // visible yet" and keep polling; after the loop the
             // caller records an accepted-but-unresolved session.
-            for r in list_runs(gh).unwrap_or_default() {
-                let id = r.get("id").and_then(|i| i.as_i64()).unwrap_or(0);
-                if before_ids.contains(&id) {
-                    continue;
-                }
-                let created = r
-                    .get("created_at")
-                    .and_then(|c| c.as_str())
-                    .and_then(parse_iso)
-                    .unwrap_or(0);
-                if created >= since {
-                    candidates.push((
-                        created,
-                        id,
-                        r.get("html_url")
-                            .and_then(|u| u.as_str())
-                            .unwrap_or("")
-                            .to_string(),
-                    ));
-                }
-            }
-            candidates.sort();
-            if let Some((_created, id, url)) = candidates.into_iter().next() {
+            if let Some((id, url)) = correlate_run(
+                &list_runs(gh).unwrap_or_default(),
+                &before_ids,
+                since,
+                dispatch_id.as_deref(),
+            ) {
                 found = Some((id, url));
                 break;
             }
@@ -2222,6 +2277,30 @@ mod tests {
                 let mut runs = self.workflow_runs.clone();
                 if !self.posts.borrow().is_empty() {
                     runs.extend(self.post_runs.iter().cloned());
+                    // Simulate run-name surfacing (issue #8371): a
+                    // workflow that received a dispatch_id input
+                    // shows it in the display_title of the run it
+                    // created, so post_runs without a title get the
+                    // id from the recorded POST.
+                    let posted_id = self.posts.borrow().last().and_then(|(_, b)| {
+                        b.get("inputs")
+                            .and_then(|i| i.get("dispatch_id"))
+                            .and_then(|d| d.as_str())
+                            .map(|s| s.to_string())
+                    });
+                    if let Some(did) = posted_id {
+                        let pre = self.workflow_runs.len();
+                        for r in runs.iter_mut().skip(pre) {
+                            if r.get("display_title").is_none() {
+                                if let Some(obj) = r.as_object_mut() {
+                                    obj.insert(
+                                        "display_title".into(),
+                                        json!(format!("fleet-run {did}")),
+                                    );
+                                }
+                            }
+                        }
+                    }
                 }
                 return Ok((200, json!({ "workflow_runs": runs })));
             }
@@ -2276,10 +2355,12 @@ mod tests {
             "surfaces": [
                 { "id": "fleet-personal", "kind": "github-actions", "owner": "dezren39",
                   "repo": "dezren39/fleet", "workflow": "fleet-run.yml",
+                  "dispatch_id_input": true,
                   "app_installation": 175747567, "status": "active",
                   "targets": ["developing-today/code"] },
                 { "id": "org-run", "kind": "github-actions", "owner": "developing-today",
                   "repo": "developing-today/code", "workflow": "org-run.yml",
+                  "dispatch_id_input": true,
                   "app_installation": 174792676, "status": "active",
                   "targets": ["developing-today/code", "developing-today/opencode"] },
                 { "id": "fleet-org-blacksmith", "kind": "blacksmith", "owner": "developing-today",
@@ -2529,7 +2610,7 @@ mod tests {
             force_runner: "github",
         };
         // Plain job: bare repo/command inputs, no runner, no jobs.
-        let inputs = ad.workflow_inputs(&job());
+        let inputs = ad.workflow_inputs(&job(), None);
         assert_eq!(inputs["repo"], json!("developing-today/code"));
         assert_eq!(inputs["command"], json!("nix build .#mcpx"));
         assert!(inputs.get("jobs").is_none());
@@ -2539,7 +2620,7 @@ mod tests {
         j.push_nix_cache = true;
         j.actions_cache = Some("tests:./out".to_string());
         j.git_ref = "abc123".to_string();
-        let inputs = ad.workflow_inputs(&j);
+        let inputs = ad.workflow_inputs(&j, None);
         let jobs: Value = serde_json::from_str(inputs["jobs"].as_str().unwrap()).unwrap();
         assert_eq!(jobs[0]["cache"]["push_nix"], json!(true));
         assert_eq!(jobs[0]["cache"]["actions_key"], json!("tests"));
@@ -2555,7 +2636,7 @@ mod tests {
             surface: org_surface.clone(),
             force_runner: "github",
         };
-        let inputs = org_ad.workflow_inputs(&job());
+        let inputs = org_ad.workflow_inputs(&job(), None);
         assert_eq!(inputs["setup_runner"], json!("github"));
         // Blacksmith variant sends the runner input.
         let bs_surface = find_surface(&reg, "fleet-org-blacksmith").unwrap();
@@ -2563,8 +2644,14 @@ mod tests {
             surface: bs_surface.clone(),
             force_runner: "blacksmith",
         };
-        let inputs = bs.workflow_inputs(&job());
+        let inputs = bs.workflow_inputs(&job(), None);
         assert_eq!(inputs["runner"], json!("blacksmith"));
+        // A dispatch_id is sent only when the caller generated one
+        // for a surface whose workflow declares the input (#8371).
+        let inputs = ad.workflow_inputs(&job(), Some("fp_abc123"));
+        assert_eq!(inputs["dispatch_id"], json!("fp_abc123"));
+        let inputs = ad.workflow_inputs(&job(), None);
+        assert!(inputs.get("dispatch_id").is_none());
     }
 
     #[test]
@@ -2584,6 +2671,11 @@ mod tests {
         let result = ad.dispatch(&job(), &gh).unwrap();
         assert_eq!(result.run_id, Some(4242));
         let posts = gh.posts.borrow();
+        let posted_id = posts[0].1["inputs"]["dispatch_id"].as_str().unwrap();
+        assert!(
+            posted_id.starts_with("fp_"),
+            "dispatch_id posted: {posted_id}"
+        );
         assert_eq!(posts.len(), 1);
         assert!(
             posts[0]
@@ -2686,9 +2778,92 @@ mod tests {
     }
 
     #[test]
-    fn dispatch_ignores_preexisting_run_and_picks_earliest_new_run() {
+    fn dispatch_id_correlates_exactly_with_interleaved_runs() {
+        // Issue #8371 acceptance: another dispatch of the same
+        // workflow lands in the same poll window, EARLIER than
+        // ours, carrying a different dispatch_id in its title.
+        // Snapshot exclusion alone would attach that run; the
+        // display-title match must attach ours instead.
         let reg = registry();
         let surface = find_surface(&reg, "fleet-personal").unwrap().clone();
+        let ad = adapter_for(&surface).unwrap();
+        let gh = FakeGh {
+            tokens_ok: true,
+            post_runs: vec![
+                json!({
+                    "id": 7001,
+                    "html_url": "https://github.com/dezren39/fleet/actions/runs/7001",
+                    "created_at": "2026-01-01T00:00:08Z",
+                    "display_title": "fleet-run fp_ffffffffffffffffffffffffffffffff"
+                }),
+                // Ours: no title in the fixture - FakeGh fills it
+                // from the recorded POST, like run-name does.
+                json!({
+                    "id": 7002,
+                    "html_url": "https://github.com/dezren39/fleet/actions/runs/7002",
+                    "created_at": "2026-01-01T00:00:20Z"
+                }),
+            ],
+            ..Default::default()
+        };
+        let result = ad.dispatch(&job(), &gh).unwrap();
+        assert_eq!(result.run_id, Some(7002));
+    }
+
+    #[test]
+    fn dispatch_id_with_only_a_foreign_run_stays_unresolved() {
+        // With an id in play, a same-window run that is not ours
+        // must never be attached; the dispatch stays
+        // accepted-but-unresolved instead.
+        let reg = registry();
+        let surface = find_surface(&reg, "fleet-personal").unwrap().clone();
+        let ad = adapter_for(&surface).unwrap();
+        let gh = FakeGh {
+            tokens_ok: true,
+            post_runs: vec![json!({
+                "id": 8001,
+                "html_url": "https://github.com/dezren39/fleet/actions/runs/8001",
+                "created_at": "2026-01-01T00:00:10Z",
+                "display_title": "fleet-run fp_ffffffffffffffffffffffffffffffff"
+            })],
+            ..Default::default()
+        };
+        let result = ad.dispatch(&job(), &gh).unwrap();
+        assert_eq!(result.run_id, None);
+        assert!(result.note.unwrap().contains("dispatch accepted"));
+    }
+
+    #[test]
+    fn correlate_run_fallback_and_id_match() {
+        let before: std::collections::HashSet<i64> = [1111].into_iter().collect();
+        let runs = vec![
+            json!({"id": 1111, "created_at": "2026-01-01T00:00:10Z", "html_url": "u1"}),
+            json!({"id": 2222, "created_at": "2026-01-01T00:00:20Z", "html_url": "u2",
+                    "display_title": "fleet-run fp_aaaa"}),
+            json!({"id": 3333, "created_at": "2026-01-01T00:00:08Z", "html_url": "u3",
+                    "display_title": "fleet-run fp_bbbb"}),
+        ];
+        let since = FIXED_NOW - 5;
+        // Fallback: earliest new run.
+        assert_eq!(
+            correlate_run(&runs, &before, since, None),
+            Some((3333, "u3".to_string()))
+        );
+        // Id match: the run carrying the id, not the earliest.
+        assert_eq!(
+            correlate_run(&runs, &before, since, Some("fp_aaaa")),
+            Some((2222, "u2".to_string()))
+        );
+        // Id with no matching run: no candidate.
+        assert_eq!(correlate_run(&runs, &before, since, Some("fp_zzzz")), None);
+    }
+
+    #[test]
+    fn dispatch_ignores_preexisting_run_and_picks_earliest_new_run() {
+        // Fallback path (issue #8371): a surface whose workflow
+        // declares no dispatch_id input keeps snapshot exclusion.
+        let reg = registry();
+        let surface = find_surface(&reg, "fleet-org-blacksmith").unwrap().clone();
         let ad = adapter_for(&surface).unwrap();
         let gh = FakeGh {
             tokens_ok: true,

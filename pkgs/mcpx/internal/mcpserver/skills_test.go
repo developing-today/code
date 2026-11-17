@@ -270,9 +270,12 @@ func TestDirectoryReadListsEveryDirectoryOnDisk(t *testing.T) {
 		t.Error("a trailing slash lost the directory")
 	}
 
-	// Declared only where skills are served.
+	// Declared only where skills are served. An ExtrasOnly server
+	// advertises no skills extension, so the advertised-capability
+	// gate (#7844) answers -32601 for the method itself, before the
+	// handler's own -32602 for an unserved directory can apply.
 	s.ExtrasOnly = true
-	if c := errCode(handle(t, s, "resources/directory/read", modernParams(map[string]any{"uri": "skill://mcpx/mcpx-basics"}))); c != -32602 {
+	if c := errCode(handle(t, s, "resources/directory/read", modernParams(map[string]any{"uri": "skill://mcpx/mcpx-basics"}))); c != -32601 {
 		t.Errorf("ExtrasOnly serves a skill directory: code %d", c)
 	}
 }

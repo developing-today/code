@@ -100,7 +100,6 @@ describe("listResource pagination", () => {
   });
 });
 
-
 describe("listResource pagination bound (#9010)", () => {
   test("a stream that keeps minting next links errors at the bound, naming the listing", async () => {
     let calls = 0;
@@ -109,7 +108,7 @@ describe("listResource pagination bound (#9010)", () => {
       const next = url + (url.includes("page=") ? "" : "?page=2");
       return new Response(JSON.stringify([{ n: calls }]), {
         status: 200,
-        headers: { link: "<" + next + ">; rel=\"next\"" },
+        headers: { link: "<" + next + '>; rel="next"' },
       });
     };
     const result = await listResource<{ n: number }>(
@@ -130,7 +129,9 @@ describe("listResource pagination bound (#9010)", () => {
       const isLast = calls >= MAX_LIST_PAGES;
       return new Response(JSON.stringify([{ n: calls }]), {
         status: 200,
-        headers: isLast ? {} : { link: "<https://api.github.com/repos/o/r/issues?page=" + (calls + 1) + ">; rel=\"next\"" },
+        headers: isLast
+          ? {}
+          : { link: "<https://api.github.com/repos/o/r/issues?page=" + (calls + 1) + '>; rel="next"' },
       });
     };
     const rows = await listResource<{ n: number }>(

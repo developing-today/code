@@ -1,0 +1,1020 @@
+{
+  "cases": [
+    {
+      "cells": [
+        {
+          "bg": 0,
+          "bold": false,
+          "columns": 1,
+          "fg": 0,
+          "symbol": "H"
+        },
+        {
+          "bg": 0,
+          "bold": false,
+          "columns": 1,
+          "fg": 0,
+          "symbol": "i"
+        },
+        {
+          "bg": 0,
+          "bold": false,
+          "columns": 1,
+          "fg": 0,
+          "symbol": " "
+        },
+        {
+          "bg": 0,
+          "bold": false,
+          "columns": 1,
+          "fg": 0,
+          "symbol": " "
+        },
+        {
+          "bg": 0,
+          "bold": false,
+          "columns": 1,
+          "fg": 0,
+          "symbol": " "
+        },
+        {
+          "bg": 0,
+          "bold": false,
+          "columns": 1,
+          "fg": 0,
+          "symbol": " "
+        },
+        {
+          "bg": 0,
+          "bold": false,
+          "columns": 1,
+          "fg": 0,
+          "symbol": " "
+        },
+        {
+          "bg": 0,
+          "bold": false,
+          "columns": 1,
+          "fg": 0,
+          "symbol": " "
+        },
+        {
+          "bg": 0,
+          "bold": false,
+          "columns": 1,
+          "fg": 0,
+          "symbol": " "
+        },
+        {
+          "bg": 0,
+          "bold": false,
+          "columns": 1,
+          "fg": 0,
+          "symbol": " "
+        },
+        {
+          "bg": 0,
+          "bold": false,
+          "columns": 1,
+          "fg": 0,
+          "symbol": "o"
+        },
+        {
+          "bg": 0,
+          "bold": false,
+          "columns": 1,
+          "fg": 0,
+          "symbol": "k"
+        },
+        {
+          "bg": 0,
+          "bold": false,
+          "columns": 1,
+          "fg": 0,
+          "symbol": " "
+        },
+        {
+          "bg": 0,
+          "bold": false,
+          "columns": 1,
+          "fg": 0,
+          "symbol": " "
+        },
+        {
+          "bg": 0,
+          "bold": false,
+          "columns": 1,
+          "fg": 0,
+          "symbol": " "
+        },
+        {
+          "bg": 0,
+          "bold": false,
+          "columns": 1,
+          "fg": 0,
+          "symbol": " "
+        }
+      ],
+      "height": 2,
+      "name": "plain_text",
+      "verdict": {
+        "cells": [
+          {
+            "bg": 0,
+            "bold": false,
+            "col": 0,
+            "columns": 1,
+            "fg": 0,
+            "row": 0,
+            "symbol": "H"
+          },
+          {
+            "bg": 0,
+            "bold": false,
+            "col": 1,
+            "columns": 1,
+            "fg": 0,
+            "row": 0,
+            "symbol": "i"
+          },
+          {
+            "bg": 0,
+            "bold": false,
+            "col": 2,
+            "columns": 1,
+            "fg": 0,
+            "row": 0,
+            "symbol": " "
+          },
+          {
+            "bg": 0,
+            "bold": false,
+            "col": 3,
+            "columns": 1,
+            "fg": 0,
+            "row": 0,
+            "symbol": " "
+          },
+          {
+            "bg": 0,
+            "bold": false,
+            "col": 4,
+            "columns": 1,
+            "fg": 0,
+            "row": 0,
+            "symbol": " "
+          },
+          {
+            "bg": 0,
+            "bold": false,
+            "col": 5,
+            "columns": 1,
+            "fg": 0,
+            "row": 0,
+            "symbol": " "
+          },
+          {
+            "bg": 0,
+            "bold": false,
+            "col": 6,
+            "columns": 1,
+            "fg": 0,
+            "row": 0,
+            "symbol": " "
+          },
+          {
+            "bg": 0,
+            "bold": false,
+            "col": 7,
+            "columns": 1,
+            "fg": 0,
+            "row": 0,
+            "symbol": " "
+          },
+          {
+            "bg": 0,
+            "bold": false,
+            "col": 0,
+            "columns": 1,
+            "fg": 0,
+            "row": 1,
+            "symbol": " "
+          },
+          {
+            "bg": 0,
+            "bold": false,
+            "col": 1,
+            "columns": 1,
+            "fg": 0,
+            "row": 1,
+            "symbol": " "
+          },
+          {
+            "bg": 0,
+            "bold": false,
+            "col": 2,
+            "columns": 1,
+            "fg": 0,
+            "row": 1,
+            "symbol": "o"
+          },
+          {
+            "bg": 0,
+            "bold": false,
+            "col": 3,
+            "columns": 1,
+            "fg": 0,
+            "row": 1,
+            "symbol": "k"
+          },
+          {
+            "bg": 0,
+            "bold": false,
+            "col": 4,
+            "columns": 1,
+            "fg": 0,
+            "row": 1,
+            "symbol": " "
+          },
+          {
+            "bg": 0,
+            "bold": false,
+            "col": 5,
+            "columns": 1,
+            "fg": 0,
+            "row": 1,
+            "symbol": " "
+          },
+          {
+            "bg": 0,
+            "bold": false,
+            "col": 6,
+            "columns": 1,
+            "fg": 0,
+            "row": 1,
+            "symbol": " "
+          },
+          {
+            "bg": 0,
+            "bold": false,
+            "col": 7,
+            "columns": 1,
+            "fg": 0,
+            "row": 1,
+            "symbol": " "
+          }
+        ],
+        "text": "Hi\n  ok"
+      },
+      "width": 8
+    },
+    {
+      "cells": [
+        {
+          "bg": 0,
+          "bold": true,
+          "columns": 1,
+          "fg": 196,
+          "symbol": "R"
+        },
+        {
+          "bg": 0,
+          "bold": false,
+          "columns": 1,
+          "fg": 46,
+          "symbol": "G"
+        },
+        {
+          "bg": 21,
+          "bold": false,
+          "columns": 1,
+          "fg": 0,
+          "symbol": "B"
+        },
+        {
+          "bg": 0,
+          "bold": true,
+          "columns": 1,
+          "fg": 11,
+          "symbol": "W",
+          "token": "warning"
+        },
+        {
+          "bg": 0,
+          "bold": false,
+          "columns": 1,
+          "fg": 14,
+          "symbol": "C",
+          "token": "code"
+        },
+        {
+          "bg": 0,
+          "bold": false,
+          "columns": 1,
+          "fg": 0,
+          "symbol": " "
+        }
+      ],
+      "height": 1,
+      "name": "styled_row",
+      "verdict": {
+        "cells": [
+          {
+            "bg": 0,
+            "bold": true,
+            "col": 0,
+            "columns": 1,
+            "fg": 196,
+            "row": 0,
+            "symbol": "R"
+          },
+          {
+            "bg": 0,
+            "bold": false,
+            "col": 1,
+            "columns": 1,
+            "fg": 46,
+            "row": 0,
+            "symbol": "G"
+          },
+          {
+            "bg": 21,
+            "bold": false,
+            "col": 2,
+            "columns": 1,
+            "fg": 0,
+            "row": 0,
+            "symbol": "B"
+          },
+          {
+            "bg": 0,
+            "bold": true,
+            "col": 3,
+            "columns": 1,
+            "fg": 11,
+            "row": 0,
+            "symbol": "W"
+          },
+          {
+            "bg": 0,
+            "bold": false,
+            "col": 4,
+            "columns": 1,
+            "fg": 14,
+            "row": 0,
+            "symbol": "C"
+          },
+          {
+            "bg": 0,
+            "bold": false,
+            "col": 5,
+            "columns": 1,
+            "fg": 0,
+            "row": 0,
+            "symbol": " "
+          }
+        ],
+        "text": "RGBWC"
+      },
+      "width": 6
+    },
+    {
+      "cells": [
+        {
+          "bg": 0,
+          "bold": false,
+          "columns": 1,
+          "fg": 0,
+          "symbol": "a"
+        },
+        {
+          "bg": 0,
+          "bold": false,
+          "columns": 2,
+          "fg": 0,
+          "symbol": "界"
+        },
+        {
+          "bg": 0,
+          "bold": false,
+          "columns": 0,
+          "fg": 0,
+          "symbol": ""
+        },
+        {
+          "bg": 0,
+          "bold": false,
+          "columns": 1,
+          "fg": 0,
+          "symbol": "b"
+        },
+        {
+          "bg": 0,
+          "bold": false,
+          "columns": 1,
+          "fg": 0,
+          "symbol": " "
+        },
+        {
+          "bg": 0,
+          "bold": false,
+          "columns": 1,
+          "fg": 0,
+          "symbol": " "
+        }
+      ],
+      "height": 1,
+      "name": "wide_glyph",
+      "verdict": {
+        "cells": [
+          {
+            "bg": 0,
+            "bold": false,
+            "col": 0,
+            "columns": 1,
+            "fg": 0,
+            "row": 0,
+            "symbol": "a"
+          },
+          {
+            "bg": 0,
+            "bold": false,
+            "col": 1,
+            "columns": 2,
+            "fg": 0,
+            "row": 0,
+            "symbol": "界"
+          },
+          {
+            "bg": 0,
+            "bold": false,
+            "col": 3,
+            "columns": 1,
+            "fg": 0,
+            "row": 0,
+            "symbol": "b"
+          },
+          {
+            "bg": 0,
+            "bold": false,
+            "col": 4,
+            "columns": 1,
+            "fg": 0,
+            "row": 0,
+            "symbol": " "
+          },
+          {
+            "bg": 0,
+            "bold": false,
+            "col": 5,
+            "columns": 1,
+            "fg": 0,
+            "row": 0,
+            "symbol": " "
+          }
+        ],
+        "text": "a界b"
+      },
+      "width": 6
+    },
+    {
+      "cells": [
+        {
+          "bg": 0,
+          "bold": false,
+          "columns": 2,
+          "fg": 0,
+          "symbol": "😀"
+        },
+        {
+          "bg": 0,
+          "bold": false,
+          "columns": 0,
+          "fg": 0,
+          "symbol": ""
+        },
+        {
+          "bg": 0,
+          "bold": false,
+          "columns": 2,
+          "fg": 0,
+          "symbol": "✈️"
+        },
+        {
+          "bg": 0,
+          "bold": false,
+          "columns": 0,
+          "fg": 0,
+          "symbol": ""
+        },
+        {
+          "bg": 0,
+          "bold": false,
+          "columns": 1,
+          "fg": 0,
+          "symbol": "z"
+        }
+      ],
+      "height": 1,
+      "name": "emoji_sequences",
+      "verdict": {
+        "cells": [
+          {
+            "bg": 0,
+            "bold": false,
+            "col": 0,
+            "columns": 2,
+            "fg": 0,
+            "row": 0,
+            "symbol": "😀"
+          },
+          {
+            "bg": 0,
+            "bold": false,
+            "col": 2,
+            "columns": 2,
+            "fg": 0,
+            "row": 0,
+            "symbol": "✈️"
+          },
+          {
+            "bg": 0,
+            "bold": false,
+            "col": 4,
+            "columns": 1,
+            "fg": 0,
+            "row": 0,
+            "symbol": "z"
+          }
+        ],
+        "text": "😀✈️z"
+      },
+      "width": 5
+    },
+    {
+      "cells": [
+        {
+          "bg": 0,
+          "bold": false,
+          "columns": 1,
+          "fg": 0,
+          "symbol": " "
+        },
+        {
+          "bg": 0,
+          "bold": false,
+          "columns": 1,
+          "fg": 0,
+          "symbol": " "
+        },
+        {
+          "bg": 0,
+          "bold": false,
+          "columns": 1,
+          "fg": 0,
+          "symbol": " "
+        },
+        {
+          "bg": 0,
+          "bold": false,
+          "columns": 1,
+          "fg": 0,
+          "symbol": " "
+        },
+        {
+          "bg": 0,
+          "bold": false,
+          "columns": 1,
+          "fg": 0,
+          "symbol": " "
+        },
+        {
+          "bg": 0,
+          "bold": false,
+          "columns": 1,
+          "fg": 0,
+          "symbol": " "
+        },
+        {
+          "bg": 0,
+          "bold": false,
+          "columns": 1,
+          "fg": 0,
+          "symbol": " "
+        },
+        {
+          "bg": 0,
+          "bold": false,
+          "columns": 1,
+          "fg": 0,
+          "symbol": " "
+        }
+      ],
+      "height": 2,
+      "name": "blank_screen",
+      "verdict": {
+        "cells": [
+          {
+            "bg": 0,
+            "bold": false,
+            "col": 0,
+            "columns": 1,
+            "fg": 0,
+            "row": 0,
+            "symbol": " "
+          },
+          {
+            "bg": 0,
+            "bold": false,
+            "col": 1,
+            "columns": 1,
+            "fg": 0,
+            "row": 0,
+            "symbol": " "
+          },
+          {
+            "bg": 0,
+            "bold": false,
+            "col": 2,
+            "columns": 1,
+            "fg": 0,
+            "row": 0,
+            "symbol": " "
+          },
+          {
+            "bg": 0,
+            "bold": false,
+            "col": 3,
+            "columns": 1,
+            "fg": 0,
+            "row": 0,
+            "symbol": " "
+          },
+          {
+            "bg": 0,
+            "bold": false,
+            "col": 0,
+            "columns": 1,
+            "fg": 0,
+            "row": 1,
+            "symbol": " "
+          },
+          {
+            "bg": 0,
+            "bold": false,
+            "col": 1,
+            "columns": 1,
+            "fg": 0,
+            "row": 1,
+            "symbol": " "
+          },
+          {
+            "bg": 0,
+            "bold": false,
+            "col": 2,
+            "columns": 1,
+            "fg": 0,
+            "row": 1,
+            "symbol": " "
+          },
+          {
+            "bg": 0,
+            "bold": false,
+            "col": 3,
+            "columns": 1,
+            "fg": 0,
+            "row": 1,
+            "symbol": " "
+          }
+        ],
+        "text": "\n"
+      },
+      "width": 4
+    },
+    {
+      "cells": [
+        {
+          "bg": 0,
+          "bold": false,
+          "columns": 2,
+          "fg": 9,
+          "symbol": "界"
+        },
+        {
+          "bg": 0,
+          "bold": false,
+          "columns": 0,
+          "fg": 9,
+          "symbol": ""
+        },
+        {
+          "bg": 0,
+          "bold": false,
+          "columns": 1,
+          "fg": 0,
+          "symbol": "x"
+        },
+        {
+          "bg": 0,
+          "bold": true,
+          "columns": 1,
+          "fg": 10,
+          "symbol": "!"
+        },
+        {
+          "bg": 0,
+          "bold": false,
+          "columns": 1,
+          "fg": 0,
+          "symbol": " "
+        },
+        {
+          "bg": 0,
+          "bold": false,
+          "columns": 1,
+          "fg": 0,
+          "symbol": " "
+        },
+        {
+          "bg": 0,
+          "bold": false,
+          "columns": 1,
+          "fg": 0,
+          "symbol": " "
+        },
+        {
+          "bg": 0,
+          "bold": false,
+          "columns": 1,
+          "fg": 0,
+          "symbol": " "
+        },
+        {
+          "bg": 0,
+          "bold": false,
+          "columns": 1,
+          "fg": 0,
+          "symbol": " "
+        },
+        {
+          "bg": 0,
+          "bold": false,
+          "columns": 1,
+          "fg": 0,
+          "symbol": " "
+        },
+        {
+          "bg": 0,
+          "bold": false,
+          "columns": 1,
+          "fg": 10,
+          "symbol": "d",
+          "token": "success"
+        },
+        {
+          "bg": 0,
+          "bold": false,
+          "columns": 1,
+          "fg": 0,
+          "symbol": "o"
+        },
+        {
+          "bg": 0,
+          "bold": false,
+          "columns": 1,
+          "fg": 0,
+          "symbol": "n"
+        },
+        {
+          "bg": 0,
+          "bold": false,
+          "columns": 1,
+          "fg": 0,
+          "symbol": "e"
+        },
+        {
+          "bg": 0,
+          "bold": false,
+          "columns": 1,
+          "fg": 0,
+          "symbol": " "
+        },
+        {
+          "bg": 0,
+          "bold": false,
+          "columns": 1,
+          "fg": 0,
+          "symbol": " "
+        },
+        {
+          "bg": 0,
+          "bold": false,
+          "columns": 1,
+          "fg": 0,
+          "symbol": " "
+        },
+        {
+          "bg": 0,
+          "bold": false,
+          "columns": 1,
+          "fg": 0,
+          "symbol": " "
+        },
+        {
+          "bg": 0,
+          "bold": false,
+          "columns": 1,
+          "fg": 0,
+          "symbol": " "
+        },
+        {
+          "bg": 0,
+          "bold": false,
+          "columns": 1,
+          "fg": 0,
+          "symbol": " "
+        }
+      ],
+      "height": 2,
+      "name": "mixed_rows",
+      "verdict": {
+        "cells": [
+          {
+            "bg": 0,
+            "bold": false,
+            "col": 0,
+            "columns": 2,
+            "fg": 9,
+            "row": 0,
+            "symbol": "界"
+          },
+          {
+            "bg": 0,
+            "bold": false,
+            "col": 2,
+            "columns": 1,
+            "fg": 0,
+            "row": 0,
+            "symbol": "x"
+          },
+          {
+            "bg": 0,
+            "bold": true,
+            "col": 3,
+            "columns": 1,
+            "fg": 10,
+            "row": 0,
+            "symbol": "!"
+          },
+          {
+            "bg": 0,
+            "bold": false,
+            "col": 4,
+            "columns": 1,
+            "fg": 0,
+            "row": 0,
+            "symbol": " "
+          },
+          {
+            "bg": 0,
+            "bold": false,
+            "col": 5,
+            "columns": 1,
+            "fg": 0,
+            "row": 0,
+            "symbol": " "
+          },
+          {
+            "bg": 0,
+            "bold": false,
+            "col": 6,
+            "columns": 1,
+            "fg": 0,
+            "row": 0,
+            "symbol": " "
+          },
+          {
+            "bg": 0,
+            "bold": false,
+            "col": 7,
+            "columns": 1,
+            "fg": 0,
+            "row": 0,
+            "symbol": " "
+          },
+          {
+            "bg": 0,
+            "bold": false,
+            "col": 8,
+            "columns": 1,
+            "fg": 0,
+            "row": 0,
+            "symbol": " "
+          },
+          {
+            "bg": 0,
+            "bold": false,
+            "col": 9,
+            "columns": 1,
+            "fg": 0,
+            "row": 0,
+            "symbol": " "
+          },
+          {
+            "bg": 0,
+            "bold": false,
+            "col": 0,
+            "columns": 1,
+            "fg": 10,
+            "row": 1,
+            "symbol": "d"
+          },
+          {
+            "bg": 0,
+            "bold": false,
+            "col": 1,
+            "columns": 1,
+            "fg": 0,
+            "row": 1,
+            "symbol": "o"
+          },
+          {
+            "bg": 0,
+            "bold": false,
+            "col": 2,
+            "columns": 1,
+            "fg": 0,
+            "row": 1,
+            "symbol": "n"
+          },
+          {
+            "bg": 0,
+            "bold": false,
+            "col": 3,
+            "columns": 1,
+            "fg": 0,
+            "row": 1,
+            "symbol": "e"
+          },
+          {
+            "bg": 0,
+            "bold": false,
+            "col": 4,
+            "columns": 1,
+            "fg": 0,
+            "row": 1,
+            "symbol": " "
+          },
+          {
+            "bg": 0,
+            "bold": false,
+            "col": 5,
+            "columns": 1,
+            "fg": 0,
+            "row": 1,
+            "symbol": " "
+          },
+          {
+            "bg": 0,
+            "bold": false,
+            "col": 6,
+            "columns": 1,
+            "fg": 0,
+            "row": 1,
+            "symbol": " "
+          },
+          {
+            "bg": 0,
+            "bold": false,
+            "col": 7,
+            "columns": 1,
+            "fg": 0,
+            "row": 1,
+            "symbol": " "
+          },
+          {
+            "bg": 0,
+            "bold": false,
+            "col": 8,
+            "columns": 1,
+            "fg": 0,
+            "row": 1,
+            "symbol": " "
+          },
+          {
+            "bg": 0,
+            "bold": false,
+            "col": 9,
+            "columns": 1,
+            "fg": 0,
+            "row": 1,
+            "symbol": " "
+          }
+        ],
+        "text": "界x!\ndone"
+      },
+      "width": 10
+    }
+  ],
+  "oracle": "Rust presenter id_core::world_presentation::ScreenSurface: text_projection + per-cell fg/bg/bold (#8340, #796 item 9-2). Generated by crates/id-core/tests/screen_parity.rs; do not hand-edit verdicts."
+}

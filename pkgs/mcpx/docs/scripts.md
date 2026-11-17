@@ -101,7 +101,10 @@ writer hits first:
   remain accepted as legacy spellings for `--script-check` /
   `script.check`. `types` resolves imports and checks types with `deno check`,
   and `strict` also checks declaration files. The old value `on` means `types`.
-  Non-Deno runtimes warn and continue because they strip types rather than checking them.
+  `run` defaults the check on when no value is given; `exec` defaults it off.
+  Non-Deno runtimes warn and continue because they strip types rather than
+  checking them — but only when the check was explicitly requested: a
+  default-on `run` is quiet on bun and node.
 
 ### Authority
 

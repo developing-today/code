@@ -59,9 +59,9 @@ packet's call against the program's transport design):
   3. the attribute exists and is an append-list;
   4. the attribute is OPENED (§5) — a submission to an unopened
      attribute is refused, not queued.
-  A submission failing (1) or (2) is refused with a value-free
-  error; nothing is stored. A submission passing verification is
-  either appended (§4) or pended (§6), per the submitter's standing.
+     A submission failing (1) or (2) is refused with a value-free
+     error; nothing is stored. A submission passing verification is
+     either appended (§4) or pended (§6), per the submitter's standing.
 - `append-read(attribute, after-seq?, limit?)` — read entries in
   server order. Pending entries are never returned by `append-read`.
 - `append-pending-read(attribute)` — the pending queue (§6), visible
@@ -158,30 +158,30 @@ is the append.
 ## 8. Open questions, with chosen defaults
 
 1. **Pending-queue expiry.** Do pending submissions expire?
-   *Default: no expiry in v1.* The queue is durable and
+   _Default: no expiry in v1._ The queue is durable and
    approver-drained; expiry would silently drop verified
    submissions, and §5's directive does not ask for it. Revisit if
    queue growth becomes a measured problem.
-2. **Sequence at approval time vs submission time.** *Default:
-   approval time* (§4, §6). The sequence means "order in the
+2. **Sequence at approval time vs submission time.** _Default:
+   approval time_ (§4, §6). The sequence means "order in the
    list"; a submission order claim by a pending entry would let
    non-members reserve positions ahead of members.
-3. **Who approves by default.** *Default: the attribute owner is
-   the sole approver* unless the attribute's group configuration
+3. **Who approves by default.** _Default: the attribute owner is
+   the sole approver_ unless the attribute's group configuration
    names member/admin approvers. Narrowest authority that satisfies
    §5's "per config".
-4. **Pending queue on close.** *Default: preserved, not drained or
-   dropped* (§5). Closing is a pause; reopening resumes the queue
+4. **Pending queue on close.** _Default: preserved, not drained or
+   dropped_ (§5). Closing is a pause; reopening resumes the queue
    as it was. An owner who wants the queue emptied rejects entries
    explicitly.
 5. **Duplicate object from two submitters.** The same content hash
-   submitted by two different keys: *default: both may append* —
+   submitted by two different keys: _default: both may append_ —
    idempotence in §3 is per (attribute, hash) only within one
    submission's retry story as recorded by the server; two distinct
    verified submissions of the same object are two entries, each
    attributed to its signer. (If a consumer wants dedupe, it is a
    view policy, e.g. in #9128 — not a protocol rule.)
-6. **Rate/size limits.** *Default: none specified here.* Per-server
+6. **Rate/size limits.** _Default: none specified here._ Per-server
    operational limits are an implementation concern; the protocol
    only requires that a limit refusal is explicit and value-free
    like other refusals.
@@ -198,4 +198,3 @@ issue):
 2. **Client submission path**: submit + own-submission state read
    (pending / appended-at-seq / refused) against the §3 protocol,
    including retry idempotence.
-

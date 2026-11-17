@@ -372,7 +372,10 @@ func scriptSettings() []Setting {
 			Name:        "Script check",
 			Short:       "check the generated program before running it",
 			Long: "types resolves imports and checks types; strict also checks " +
-				"declaration files. Checking is off by default. Type checking is " +
+				"declaration files. Checking is off by default for exec; run " +
+				"defaults it on (types) when no value is given, and a " +
+				"default-on run does not print the Deno-only notice on a " +
+				"runtime that cannot check. Type checking is " +
 				"currently supported by Deno. The old " +
 				"script.typecheck path, MCPX_SCRIPT_TYPECHECK variable, --script-typecheck " +
 				"flag and --typecheck flag remain accepted; the old value on means types.",
@@ -762,18 +765,22 @@ func daemonSettings() []Setting {
 				"second build system.",
 		},
 		{
-			Path: "daemon.inline", Kind: KindBool, Default: "false",
-			Scope: ScopeClient,
-			Name:  "Run without a daemon",
-			Short: "as a last resort, run servers inside this process",
-			Long: "The final rung of the connection ladder, tried only after an " +
+			Path: "daemon.inline", Kind: KindEnum, Default: "off",
+			Enum:        []string{"off", "fallback", "always"},
+			EnumAliases: map[string][]string{"off": {"false"}, "fallback": {"true"}},
+			Scope:       ScopeClient,
+			Name:        "Run without a daemon",
+			Short:       "as a last resort, run servers inside this process",
+			Long: "fallback is the final rung of the connection ladder, tried only after an " +
 				"existing daemon and a spawned one have both failed. Servers start " +
 				"when first called and die when the command exits, so nothing is " +
 				"pooled between commands and a stateful server -- a browser -- " +
 				"cannot outlive one. Slower every time, but it works in a sandbox " +
 				"with no fork, on a read-only filesystem, or in a container whose " +
-				"init will not reap. Off by default because a pool that silently " +
-				"stops pooling is a performance bug nobody can see.",
+				"init will not reap. always skips the socket and spawn rungs and " +
+				"runs in-process directly. Off by default because a pool that silently " +
+				"stops pooling is a performance bug nobody can see. The old " +
+				"boolean spellings keep their meaning: true is fallback, false is off.",
 		},
 		{
 			Path: "daemon.autostart", Kind: KindBool, Default: "true",

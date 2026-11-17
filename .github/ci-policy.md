@@ -95,20 +95,20 @@ recurring cadence recorded under #6187. A disagreement in any leg is a
 defect with exactly one recorded disposition — re-arm, fold, or retire —
 never a state that persists by default.
 
-| Workflow                  | Automatic venue  | Manual |
-| ------------------------- | ---------------- | ------ |
-| workflow-lint             | none             | yes    |
-| proxy-port-fallbacks      | none             | yes    |
-| fleet-search-parity-guard | none             | yes    |
-| fleet-rust-tests          | nightly schedule | yes    |
+| Workflow                  | Automatic venue       | Manual |
+| ------------------------- | --------------------- | ------ |
+| workflow-lint             | none                  | yes    |
+| proxy-port-fallbacks      | none                  | yes    |
+| fleet-search-parity-guard | none                  | yes    |
+| fleet-rust-tests          | nightly schedule      | yes    |
 | fleet-smoke               | main push, path gated | yes    |
-| opencode-config-guard     | nightly schedule | yes    |
-| mcpx fix-test guard       | nightly schedule | yes    |
-| production-line guard     | nightly schedule | yes    |
-| go modules build          | nightly schedule | yes    |
-| identity build            | nightly schedule | yes    |
-| map build                 | nightly schedule | yes    |
-| mcpx nix build            | nightly schedule | yes    |
+| opencode-config-guard     | nightly schedule      | yes    |
+| mcpx fix-test guard       | nightly schedule      | yes    |
+| production-line guard     | nightly schedule      | yes    |
+| go modules build          | nightly schedule      | yes    |
+| identity build            | nightly schedule      | yes    |
+| map build                 | nightly schedule      | yes    |
+| mcpx nix build            | nightly schedule      | yes    |
 
 Other former PR venues retain their existing main/manual/nightly venues;
 `deploy-flake-checks` remains manually runnable. Historical `basic:` job

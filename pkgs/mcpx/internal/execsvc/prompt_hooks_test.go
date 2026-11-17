@@ -2,6 +2,7 @@ package execsvc
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
@@ -47,6 +48,11 @@ func TestValidateHooksPromptActions(t *testing.T) {
 		{"both actions", Hook{Phase: HookBefore, Script: "x.ts", Prompt: "look"}, "both script and prompt"},
 		{"neither action", Hook{Phase: HookBefore}, "neither script nor prompt"},
 		{"prompt effect apply", Hook{Phase: HookOnSuccess, Prompt: "fix it", Effect: "apply"}, "not implemented"},
+		{"prompt effect ask", Hook{Phase: HookOnSuccess, Prompt: "ask me", Effect: "ask"}, "not implemented"},
+		{"prompt propose on success", Hook{Phase: HookOnSuccess, Prompt: "propose a fix for @result", Effect: "propose"}, ""},
+		{"prompt propose on error", Hook{Phase: HookOnError, Prompt: "propose a fix for @error", Effect: "propose"}, ""},
+		{"prompt propose before", Hook{Phase: HookBefore, Prompt: "propose", Effect: "propose"}, "only available"},
+		{"prompt propose suffix", Hook{Phase: HookSuffix, Prompt: "propose", Effect: "propose"}, "only available"},
 		{"prompt effect run", Hook{Phase: HookBefore, Prompt: "do it", Effect: "run"}, "not implemented"},
 		{"script effect conflict", Hook{Phase: HookBefore, Script: "x.ts", Effect: "apply"}, "conflicts"},
 		{"script effect matches phase", Hook{Phase: HookOnSuccess, Script: "x.ts", Effect: "apply"}, ""},
@@ -163,6 +169,151 @@ func TestRunPromptHookSuccess(t *testing.T) {
 	}
 	if fake.last.Model != "fake/fake-1" {
 		t.Fatalf("per-hook model not passed through: %q", fake.last.Model)
+	}
+}
+
+// Oracle for the propose slice (#11141): a propose hook can never
+// change the outcome — it only adds a frame-carried proposal beside
+// the original. An object reply's `propose` key is the proposal;
+// keys above the declared effect are dropped and named.
+func TestRunPromptHookProposeObjectReply(t *testing.T) {
+	fake := &fakeProvider{text: `{"propose": {"total": 4}, "apply": {"total": 99}, "run": "rm -rf /"}`}
+	s := &Service{ModelProvider: fake}
+	res := &Result{RunID: "r1", Result: map[string]any{"total": 3}}
+	hctx := hookContext{RunID: "r1", Point: HookPointScript, Phase: HookOnSuccess}
+	h := Hook{Phase: HookOnSuccess, Prompt: "propose a better @result", Effect: "propose", Model: "fake/fake-1"}
+
+	run := s.runPromptHook(context.Background(), HookOnSuccess, h, hctx, runner.Options{}, res)
+	if run.Failed {
+		t.Fatalf("run failed: %s", run.Frame.Error)
+	}
+	if run.Frame.Effect != hookEffectPropose {
+		t.Fatalf("frame effect = %q", run.Frame.Effect)
+	}
+	var proposal map[string]any
+	if err := json.Unmarshal(run.Frame.Propose, &proposal); err != nil {
+		t.Fatalf("frame propose is not the reply's propose value: %s (%v)", run.Frame.Propose, err)
+	}
+	if proposal["total"] != float64(4) {
+		t.Fatalf("proposal = %v, want the propose key's value", proposal)
+	}
+	if len(run.Frame.Dropped) != 2 || run.Frame.Dropped[0] != "apply" || run.Frame.Dropped[1] != "run" {
+		t.Fatalf("frame dropped = %v, want [apply run]", run.Frame.Dropped)
+	}
+	if run.Frame.Advice != "" || run.Frame.Changed {
+		t.Fatalf("propose frame advice/changed = %q/%v, want empty/false", run.Frame.Advice, run.Frame.Changed)
+	}
+	if run.Out.Advise != "" || len(run.Out.Apply) != 0 {
+		t.Fatalf("prompt hook produced hook output: %+v", run.Out)
+	}
+	if got := res.Result.(map[string]any)["total"]; got != 3 {
+		t.Fatalf("result changed by propose hook: %v", got)
+	}
+	// The propose system text, not advise's, frames the generation.
+	if len(fake.last.Messages) != 2 || !strings.Contains(fake.last.Messages[0].Content, "proposes a replacement") {
+		t.Fatalf("provider request system = %+v", fake.last.Messages)
+	}
+}
+
+// A reply that is not a JSON object is a plain-text proposal — a
+// plan is a legitimate proposal (0002) — carried as a string value.
+func TestRunPromptHookProposePlainTextReply(t *testing.T) {
+	fake := &fakeProvider{text: "  plan: cache the lookup, then re-run  "}
+	s := &Service{ModelProvider: fake}
+	res := &Result{RunID: "r1", Result: "ok"}
+	hctx := hookContext{RunID: "r1", Point: HookPointScript, Phase: HookOnSuccess}
+	h := Hook{Phase: HookOnSuccess, Prompt: "propose a plan", Effect: "propose"}
+
+	run := s.runPromptHook(context.Background(), HookOnSuccess, h, hctx, runner.Options{}, res)
+	if run.Failed {
+		t.Fatalf("run failed: %s", run.Frame.Error)
+	}
+	var proposal string
+	if err := json.Unmarshal(run.Frame.Propose, &proposal); err != nil {
+		t.Fatalf("plain-text proposal not carried as a string value: %s (%v)", run.Frame.Propose, err)
+	}
+	if proposal != "plan: cache the lookup, then re-run" {
+		t.Fatalf("proposal = %q", proposal)
+	}
+	if len(run.Frame.Dropped) != 0 {
+		t.Fatalf("frame dropped = %v, want none", run.Frame.Dropped)
+	}
+	if res.Result != "ok" {
+		t.Fatalf("result changed by propose hook: %v", res.Result)
+	}
+}
+
+// At onError the proposal rides beside the untouched error; the
+// error still propagates exactly as the run produced it.
+func TestRunPromptHookProposeOnError(t *testing.T) {
+	fake := &fakeProvider{text: `{"propose": "retry with the fixture rebuilt"}`}
+	s := &Service{ModelProvider: fake}
+	res := &Result{RunID: "r1", Error: "it broke"}
+	hctx := hookContext{RunID: "r1", Point: HookPointScript, Phase: HookOnError}
+	h := Hook{Phase: HookOnError, Prompt: "propose a recovery for @error", Effect: "propose"}
+
+	run := s.runPromptHook(context.Background(), HookOnError, h, hctx, runner.Options{}, res)
+	if run.Failed {
+		t.Fatalf("run failed: %s", run.Frame.Error)
+	}
+	var proposal string
+	if err := json.Unmarshal(run.Frame.Propose, &proposal); err != nil || proposal != "retry with the fixture rebuilt" {
+		t.Fatalf("frame propose = %s (%v)", run.Frame.Propose, err)
+	}
+	if res.Error != "it broke" {
+		t.Fatalf("error changed by propose hook: %q", res.Error)
+	}
+}
+
+// No provider: the frame states the proposal is unavailable and the
+// run is otherwise unchanged — propose is not a gate, so it keeps
+// prompt hooks' fail-soft contract.
+func TestRunPromptHookProposeNoProvider(t *testing.T) {
+	s := &Service{}
+	res := &Result{RunID: "r1", Result: "ok"}
+	hctx := hookContext{RunID: "r1", Point: HookPointScript, Phase: HookOnSuccess}
+	h := Hook{Phase: HookOnSuccess, Prompt: "propose", Effect: "propose"}
+
+	run := s.runPromptHook(context.Background(), HookOnSuccess, h, hctx, runner.Options{}, res)
+	if !run.Failed {
+		t.Fatal("no provider must be a failed (unavailable) hook run, not a silent skip")
+	}
+	if !strings.Contains(run.Frame.Error, "proposal unavailable: no model provider is configured") {
+		t.Fatalf("frame error = %q", run.Frame.Error)
+	}
+	if len(run.Frame.Propose) != 0 {
+		t.Fatalf("unavailable proposal carried a value: %s", run.Frame.Propose)
+	}
+	if res.Result != "ok" {
+		t.Fatalf("result changed by unavailable propose hook: %v", res.Result)
+	}
+}
+
+// End to end through runHooks: the proposal is retained on the
+// result's hook frames and the delivered result is byte-identical
+// to the run's own result.
+func TestRunHooksProposeFrameRetained(t *testing.T) {
+	fake := &fakeProvider{text: `{"propose": {"total": 4}}`}
+	s := &Service{ModelProvider: fake}
+	res := &Result{RunID: "r1", Result: map[string]any{"total": 3}, Artifacts: []Artifact{}}
+	hctx := hookContext{RunID: "r1", Point: HookPointScript, Phase: HookOnSuccess}
+	var frames []Frame
+	emit := func(f Frame) { frames = append(frames, f) }
+
+	runs := s.runHooks(context.Background(), HookOnSuccess,
+		[]Hook{{Phase: HookOnSuccess, Prompt: "propose a better @result", Effect: "propose"}},
+		hctx, runner.Options{}, res, emit)
+	if len(runs) != 1 || len(frames) != 1 {
+		t.Fatalf("runs = %d, frames = %d", len(runs), len(frames))
+	}
+	if frames[0].Hook == nil || len(frames[0].Hook.Propose) == 0 {
+		t.Fatalf("emitted frame carries no proposal: %+v", frames[0])
+	}
+	if len(res.Hooks) != 1 || len(res.Hooks[0].Propose) == 0 {
+		t.Fatalf("retained hooks = %+v", res.Hooks)
+	}
+	if got := res.Result.(map[string]any)["total"]; got != 3 {
+		t.Fatalf("result changed by propose hook: %v", got)
 	}
 }
 

@@ -7,7 +7,9 @@
 //! synthetic workload fixture pins row-by-row. It is a specification
 //! model for benchmark adapters, not a production store.
 
-use serde_json::{json, Value};
+pub mod adapters;
+
+use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, HashMap, HashSet};
 
@@ -148,11 +150,11 @@ impl ReferenceStore {
             "blob_get" => {
                 let row = &self.rows[Self::expected_id(fixture)];
                 let generation = row.current;
-                let gen = &row.generations[&generation];
+                let r#gen = &row.generations[&generation];
                 json!({
-                    "bytes_hex": hex::encode(&self.physical[&gen.key]),
+                    "bytes_hex": hex::encode(&self.physical[&r#gen.key]),
                     "generation": generation,
-                    "lifecycle": gen.lifecycle.as_str(),
+                    "lifecycle": r#gen.lifecycle.as_str(),
                 })
             }
             "metadata_lookup" => {
@@ -181,13 +183,14 @@ impl ReferenceStore {
                     .expect("row exists");
                 let generation = args["generation"].as_u64().expect("generation");
                 match row.generations.get_mut(&generation) {
-                    Some(gen) if gen.lifecycle == Lifecycle::Live => {
-                        gen.refs
+                    Some(r#gen) if r#gen.lifecycle == Lifecycle::Live => {
+                        r#gen
+                            .refs
                             .insert(args["reference"].as_str().expect("reference").to_string());
                         json!({
                             "accepted": true,
                             "generation": generation,
-                            "reference_count": gen.refs.len(),
+                            "reference_count": r#gen.refs.len(),
                         })
                     }
                     _ => json!({"accepted": false, "reason": "generation-fenced"}),
@@ -199,13 +202,13 @@ impl ReferenceStore {
                     .get_mut(Self::expected_id(fixture))
                     .expect("row exists");
                 let generation = args["generation"].as_u64().expect("generation");
-                let gen = row
+                let r#gen = row
                     .generations
                     .get_mut(&generation)
                     .expect("generation exists");
                 let reference = args["reference"].as_str().expect("reference");
-                let removed = gen.refs.remove(reference);
-                json!({"removed": removed, "reference_count": gen.refs.len()})
+                let removed = r#gen.refs.remove(reference);
+                json!({"removed": removed, "reference_count": r#gen.refs.len()})
             }
             "object_tombstone_delete" => {
                 let row = self
@@ -213,22 +216,22 @@ impl ReferenceStore {
                     .get_mut(Self::expected_id(fixture))
                     .expect("row exists");
                 let generation = args["generation"].as_u64().expect("generation");
-                let gen = row
+                let r#gen = row
                     .generations
                     .get_mut(&generation)
                     .expect("generation exists");
-                if !gen.refs.is_empty() {
+                if !r#gen.refs.is_empty() {
                     json!({
                         "tombstoned": false,
                         "reason": "references-present",
-                        "lifecycle": gen.lifecycle.as_str(),
+                        "lifecycle": r#gen.lifecycle.as_str(),
                     })
                 } else {
-                    gen.lifecycle = Lifecycle::Tombstoned;
+                    r#gen.lifecycle = Lifecycle::Tombstoned;
                     json!({
                         "tombstoned": true,
                         "generation": generation,
-                        "physical_key": gen.key,
+                        "physical_key": r#gen.key,
                         "lifecycle": "Tombstoned",
                     })
                 }
@@ -237,18 +240,19 @@ impl ReferenceStore {
                 let id = Self::expected_id(fixture).to_string();
                 let row = self.rows.get_mut(&id).expect("row exists");
                 let generation = args["generation"].as_u64().expect("generation");
-                let gen = &row.generations[&generation];
+                let r#gen = &row.generations[&generation];
                 assert_eq!(
-                    gen.lifecycle,
+                    r#gen.lifecycle,
                     Lifecycle::Tombstoned,
                     "delete before authoritative fence"
                 );
-                let key = gen.key.clone();
+                let key = r#gen.key.clone();
                 assert!(self.ever_used_keys.contains(&key));
-                assert!(row
-                    .generations
-                    .iter()
-                    .all(|(n, other)| *n == generation || other.key != key));
+                assert!(
+                    row.generations
+                        .iter()
+                        .all(|(n, other)| *n == generation || other.key != key)
+                );
                 let deleted = self.physical.remove(&key).is_some();
                 let current = row.current;
                 let current_gen = &row.generations[&current];
@@ -305,8 +309,8 @@ impl ReferenceStore {
                     "content_id": cid,
                 });
             }
-            let gen = &prior.generations[&current];
-            if gen.lifecycle == Lifecycle::Tombstoned {
+            let r#gen = &prior.generations[&current];
+            if r#gen.lifecycle == Lifecycle::Tombstoned {
                 return json!({
                     "accepted": false, "created": false, "generation": current,
                     "lifecycle": "Tombstoned", "reason": "explicit-resurrection-required",
@@ -316,8 +320,8 @@ impl ReferenceStore {
             assert_eq!(prior.metadata, args["metadata"]);
             return json!({
                 "accepted": true, "created": false, "generation": current,
-                "lifecycle": "Live", "reference_count": gen.refs.len(),
-                "row_revision": gen.row_revision,
+                "lifecycle": "Live", "reference_count": r#gen.refs.len(),
+                "row_revision": r#gen.row_revision,
             });
         }
         let generation = 1;

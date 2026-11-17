@@ -71,16 +71,18 @@ var hookTimeout = defaults.ExecHookTimeout
 // exists is a file; anything else is source.
 //
 // `Prompt` is prompt text with @placeholders, sent to the configured model
-// provider (prompt_hooks.go). Its only implemented effect is advise.
+// provider (prompt_hooks.go). Its implemented effects are advise (any
+// phase) and propose (the outcome phases only; #11141).
 type Hook struct {
 	Phase  string `json:"phase"`
 	Script string `json:"script"`
 	// Prompt is the prompt action's text. Mutually exclusive with Script.
 	Prompt string `json:"prompt,omitempty"`
 	// Effect declares what the hook's output may do. For a prompt hook it
-	// must be empty or advise in this version; for a script hook it must
-	// agree with the phase's fixed effect when set. Anything else is
-	// refused at validation rather than silently ignored.
+	// must be empty (advise), advise, or propose at an outcome phase;
+	// for a script hook it must agree with the phase's fixed effect when
+	// set. Anything else is refused at validation rather than silently
+	// ignored.
 	Effect string `json:"effect,omitempty"`
 	// Model selects the model a prompt hook asks, in the provider/model
 	// namespace; empty takes the configured default. Script hooks ignore it.
@@ -108,7 +110,11 @@ type HookFrame struct {
 	// honour. Reported rather than silently ignored.
 	Dropped []string `json:"dropped,omitempty"`
 	Advice  string   `json:"advice,omitempty"`
-	Error   string   `json:"error,omitempty"`
+	// Propose is a prompt hook's proposed replacement (effect
+	// propose), carried beside the original result or error and
+	// never applied by mcpx (0002). Empty for every other hook.
+	Propose json.RawMessage `json:"propose,omitempty"`
+	Error   string          `json:"error,omitempty"`
 	// Model and Provider name what answered a prompt hook, as the model
 	// layer reports them. Empty for script hooks.
 	Model    string `json:"model,omitempty"`
@@ -170,8 +176,16 @@ func validateHooks(hooks []Hook, origin string) error {
 		case !hasScript && !hasPrompt:
 			return fmt.Errorf("exec: %s hook %d (%s): declares neither script nor prompt", origin, i, h.Phase)
 		}
-		if hasPrompt && h.Effect != "" && h.Effect != hookEffectAdvise {
-			return fmt.Errorf("exec: %s hook %d (%s): prompt effect %q is not implemented (only %q in this slice; the other dial levels stay with #1929)", origin, i, h.Phase, h.Effect, hookEffectAdvise)
+		if hasPrompt {
+			switch h.Effect {
+			case "", hookEffectAdvise:
+			case hookEffectPropose:
+				if h.Phase != HookOnSuccess && h.Phase != HookOnError {
+					return fmt.Errorf("exec: %s hook %d (%s): prompt effect %q is only available at %s and %s: a proposal needs a result or an error to propose against, and %s is clamped to at most %q (0001)", origin, i, h.Phase, h.Effect, HookOnSuccess, HookOnError, h.Phase, hookEffectAdvise)
+				}
+			default:
+				return fmt.Errorf("exec: %s hook %d (%s): prompt effect %q is not implemented (only %q and %q are implemented for prompt hooks; the other dial levels stay with #1929)", origin, i, h.Phase, h.Effect, hookEffectAdvise, hookEffectPropose)
+			}
 		}
 		if hasScript && h.Effect != "" && h.Effect != effectFor(h.Phase) {
 			return fmt.Errorf("exec: %s hook %d (%s): script effect %q conflicts with the phase's fixed effect %q", origin, i, h.Phase, h.Effect, effectFor(h.Phase))
@@ -240,9 +254,10 @@ func (s *Service) runHooks(ctx context.Context, phase string, hooks []Hook, hctx
 		// hook carrying one must still run its script (Codex
 		// review, PR #9021).
 		if strings.TrimSpace(h.Prompt) != "" {
-			// A prompt hook only advises: its frame carries the advice,
-			// and applyHookResult is never consulted for it, so it cannot
-			// change the outcome whatever phase it runs in.
+			// A prompt hook never transforms the outcome: advise and
+			// propose both ride in its frame, and applyHookResult is
+			// never consulted for it, so it cannot change the outcome
+			// whatever phase it runs in.
 			run = s.runPromptHook(ctx, phase, h, hctx, ropts, res)
 		} else {
 			run = s.runOneHook(ctx, phase, h, hctx, ropts, res, emit)

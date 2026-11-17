@@ -129,7 +129,9 @@ async function readJsonBody(req: Request): Promise<unknown> {
 
 function requireQueue(): QueueClient {
   if (!queue) {
-    throw new QueueError("dispatch is not configured with a queue broker token (QUEUE_BROKER_TOKEN or the broker token file) — queue unavailable");
+    throw new QueueError(
+      "dispatch is not configured with a queue broker token (QUEUE_BROKER_TOKEN or the broker token file) — queue unavailable",
+    );
   }
   return queue;
 }

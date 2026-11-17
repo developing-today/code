@@ -28,6 +28,7 @@
   "surfaces": [
     {
       "app_installation": 175747567,
+      "dispatch_id_input": true,
       "id": "fleet-personal",
       "kind": "github-actions",
       "notes": "Personal copy of the fleet umbrella. Dispatches as the developing-today app via the personal installation (verified 2026-11-04). Repo secrets provisioned (GHCR_ORG_PAT, CACHIX_AUTH_TOKEN, NIX_CACHE_SIGNING_KEY, NIX_CACHE_UPLOAD_URL), so cross-repo checkouts work here, and cache pushes will the moment the fork workflow deltas are adopted upstream (upstream fleet-run ignores entry cache fields until then).",
@@ -79,6 +80,7 @@
     },
     {
       "app_installation": 174792676,
+      "dispatch_id_input": true,
       "id": "org-run",
       "kind": "github-actions",
       "notes": "Org-level generic runner hosted in the code repo (org-run.yml landed on code main 2026-11-04; runner input parity added by code PR #5417, merged as the app). Dispatches as the app via the org installation. Allowlist = the six org repos in targets.",

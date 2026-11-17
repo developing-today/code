@@ -800,7 +800,7 @@ prune_monthly() { # $1 rclone dir holding the daily <date> subdirs, $2 label
     fail "monthly prune listing failed on $2 ($1/monthly/)"
   for mon in $subs; do
     mon="${mon%/}"
-    if [[ $mon =~ ^20[0-9]{2}-[0-9]{2}$ ]] && [[ $mon != "$MONTH" && $mon < "$MONTH_CUTOFF" ]]; then
+    if [[ $mon =~ ^20[0-9]{2}-[0-9]{2}$ ]] && [[ $mon != "$MONTH" && $mon < $MONTH_CUTOFF ]]; then
       rclone purge "$1/monthly/$mon" >/dev/null 2>&1 || fail "monthly prune failed on $2 ($mon)"
       log "pruned monthly $2 $mon"
     fi

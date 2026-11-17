@@ -146,9 +146,17 @@ const ClientCapsHeader = "X-Mcpx-Client-Capabilities"
 // mcpclient.WithCallerVersion.
 const CallerVersionHeader = "X-Mcpx-Caller-Protocol"
 
+// TaskExecutionHeader carries, on /v1/call and /v1/ask, that the call is
+// the inner call of a protocol task (SEP-2663); see
+// mcpclient.WithTaskExecution.
+const TaskExecutionHeader = "X-Mcpx-Task-Execution"
+
 // withClientCaps applies ClientCapsHeader and CallerVersionHeader to ctx.
 func withClientCaps(ctx context.Context, r *http.Request) context.Context {
 	ctx = mcpclient.WithCallerVersion(ctx, r.Header.Get(CallerVersionHeader))
+	if r.Header.Get(TaskExecutionHeader) != "" {
+		ctx = mcpclient.WithTaskExecution(ctx)
+	}
 	raw := r.Header.Get(ClientCapsHeader)
 	if raw == "" || !json.Valid([]byte(raw)) {
 		return ctx

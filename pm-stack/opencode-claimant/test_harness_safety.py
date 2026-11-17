@@ -35,6 +35,7 @@ class HarnessSafetyTests(unittest.TestCase):
                 (source / "test_claimant.py").write_text(injected_test)
                 (source / "test_poll.py").write_text("")
                 (source / "test/test_claimant.py").write_text("")
+                (source / "test_prompt_constants.py").write_text("")
             env = dict(
                 os.environ,
                 HOME=str(home),
