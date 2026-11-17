@@ -23,7 +23,6 @@ import (
 	"errors"
 	"fmt"
 	"github.com/developing-today/code/pkgs/mcpx/internal/defaults"
-	"net/http"
 	"net/url"
 	"os"
 	"sort"
@@ -213,6 +212,13 @@ type Pool struct {
 	// the handoff path, so this must not take p.mu.
 	reqLimMu   sync.Mutex
 	reqLimiter *mcpclient.ServerRequestLimiter
+
+	// foMu guards foIdentity: the failover identity this pool last
+	// respawned an instance for (#8017, failover.go). Empty until the
+	// first failover call records the identity connection start
+	// already resolved.
+	foMu       sync.Mutex
+	foIdentity string
 
 	mu        sync.Mutex
 	cond      *sync.Cond
@@ -1130,19 +1136,11 @@ func (p *Pool) resolveAuth() (*mcpauth.Resolved, error) {
 	// StatePath, so a (re)start after a rotation resumes on the rotated
 	// identity. Servers without a failover block are untouched.
 	if p.cfg.Auth != nil && p.cfg.Auth.Failover != nil && len(p.cfg.Auth.Failover.Identities) > 0 {
-		fo := p.cfg.Auth.Failover
-		rot := mcpauth.NewRotator(fo, nil)
-		secrets := func(name string) (string, error) {
-			if v := p.variable(name); v != "" {
-				return v, nil
-			}
-			return "", fmt.Errorf("secret %s not set in the daemon's environment", name)
-		}
+		rot, secrets, minter, _ := p.failoverRotator()
 		envNames := make([]string, 0, len(p.cfg.Auth.Env))
 		for name := range p.cfg.Auth.Env {
 			envNames = append(envNames, name)
 		}
-		minter := &mcpauth.Minter{HTTP: &http.Client{Timeout: 15 * time.Second}}
 		_, r, err := rot.ResolveCurrent(context.Background(), envNames, secrets, minter)
 		if err != nil {
 			return nil, fmt.Errorf("%s: auth: failover: %w", p.cfg.Name, err)
@@ -1621,8 +1619,10 @@ func (p *Pool) Preference() mcpclient.Preference {
 	return mcpclient.Preference(defaults.UpstreamProtocol)
 }
 
-// Call runs a tool on a leased instance.
-func (p *Pool) Call(ctx context.Context, rs config.ResolvedScope, tool string, args any) (json.RawMessage, error) {
+// callOnce runs a tool on a leased instance: one attempt, exactly
+// as the pool has always made it. Call (failover.go) wraps it with
+// identity failover for failover-configured servers (#8017).
+func (p *Pool) callOnce(ctx context.Context, rs config.ResolvedScope, tool string, args any) (json.RawMessage, error) {
 	sessionKey := rs.Key
 	lease, err := p.Acquire(ctx, rs)
 	if err != nil {
