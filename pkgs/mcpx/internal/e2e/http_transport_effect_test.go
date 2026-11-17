@@ -269,49 +269,74 @@ func TestHTTPReadHeaderTimeoutClosesSlowClients(t *testing.T) {
 }
 
 // http.shutdownGrace is how long http.Server.Shutdown waits for
-// in-flight requests when the daemon stops. An open /v1/events stream
-// is an in-flight request that never finishes, so a stop waits out
-// exactly the grace: the elapsed time of a stop command is the
-// observable, with the two values an order of magnitude apart.
+// in-flight requests when the daemon stops. A synchronous /v1/exec
+// whose script sleeps 3s is such a request, and it holds no pool
+// lease, so the pool drain window cannot mask the grace: with a
+// 200ms grace the stop cuts the call and the daemon is gone before
+// the script finishes; at the default 5s the call is allowed to
+// finish, its answer is delivered, and only then does the stop
+// complete.
 func TestHTTPShutdownGraceBoundsHowLongAStopWaits(t *testing.T) {
-	stopWithStream := func(env ...string) time.Duration {
+	graceCase := func(env ...string) (bool, time.Duration) {
 		t.Helper()
 		e := newEnv(t, oneServer)
 		e.setenv(env...)
 		e.run("ls")
 		c := e.longSocketClient(t)
-		req, err := http.NewRequest(http.MethodGet, "http://mcpx/v1/events", nil)
-		if err != nil {
-			t.Fatal(err)
+		type result struct {
+			st   int
+			body string
+			err  error
 		}
-		resp, err := c.Do(req)
-		if err != nil {
-			t.Fatal(err)
-		}
-		defer func() { _ = resp.Body.Close() }()
-		if resp.StatusCode != http.StatusOK {
-			t.Fatalf("events stream status %d", resp.StatusCode)
-		}
-		// The retry line proves the stream is being served, i.e. the
-		// request is in flight on the server being shut down.
-		if line, ok := nextLine(t, lineChan(resp.Body), 5*time.Second); !ok || !strings.HasPrefix(line, "retry:") {
-			t.Fatalf("the stream should be live before the stop, got %q (ok=%v)", line, ok)
-		}
-		start := time.Now()
+		done := make(chan result, 1)
+		go func() {
+			src := "{\"source\":\"await new Promise((r) => setTimeout(r, 3000)); console.log(\\\"exec-done\\\")\"}"
+			req, err := http.NewRequest(http.MethodPost, "http://mcpx/v1/exec", strings.NewReader(src))
+			if err != nil {
+				done <- result{err: err}
+				return
+			}
+			req.Header.Set("Content-Type", "application/json")
+			resp, err := c.Do(req)
+			if err != nil {
+				done <- result{err: err}
+				return
+			}
+			defer func() { _ = resp.Body.Close() }()
+			b, _ := io.ReadAll(resp.Body)
+			done <- result{st: resp.StatusCode, body: string(b)}
+		}()
+		// The script needs a moment to be in flight inside the
+		// daemon; the stop below is what is being measured, and it
+		// must not begin before the call it may or may not wait for.
+		// The stop command itself returns as soon as the daemon has
+		// accepted the shutdown, so what is timed is the call: cut
+		// at the grace, or answered when the script finishes.
+		time.Sleep(1 * time.Second)
 		e.run("stop")
-		return time.Since(start)
+		start := time.Now()
+		select {
+		case r := <-done:
+			return r.err == nil && r.st == http.StatusOK && strings.Contains(r.body, "exec-done"), time.Since(start)
+		case <-time.After(10 * time.Second):
+			t.Fatal("the exec call neither answered nor was cut within 10s of the stop")
+			return false, time.Since(start)
+		}
 	}
 
-	short := stopWithStream("MCPX_HTTP_SHUTDOWN_GRACE=200ms")
-	if short > 3500*time.Millisecond {
-		t.Fatalf("http.shutdownGrace=200ms should let a stop finish promptly despite an open stream, took %v", short)
+	answered, cutIn := graceCase("MCPX_HTTP_SHUTDOWN_GRACE=200ms")
+	if answered {
+		t.Fatal("http.shutdownGrace=200ms should cut a 3s in-flight exec when the daemon stops")
 	}
-	long := stopWithStream()
-	if long < 3500*time.Millisecond {
-		t.Fatalf("oracle: at the default http.shutdownGrace of 5s a stop should wait seconds for an open stream, took %v", long)
+	if cutIn > 2*time.Second {
+		t.Fatalf("with a 200ms grace the in-flight exec should be cut promptly, took %v", cutIn)
 	}
-	if long < short+2*time.Second {
-		t.Fatalf("the grace should separate the two stops, got short %v long %v", short, long)
+	answered, answeredIn := graceCase()
+	if !answered {
+		t.Fatal("oracle: at the default http.shutdownGrace of 5s a 3s in-flight exec should finish and answer across a stop")
+	}
+	if answeredIn < 1*time.Second {
+		t.Fatalf("the default grace should hold the daemon until the call finishes (~2s remained), answered in %v", answeredIn)
 	}
 }
 
@@ -344,7 +369,7 @@ func TestHTTPRequestTimeoutBoundsAClientCall(t *testing.T) {
 // http.streamBufferMax is the largest single event line the CLI
 // events scanner will read: a line over it ends the command with the
 // scanners own error. Ordinary event lines are a few hundred bytes,
-// so 64 bytes refuses every one of them, while the default (8MiB)
+// so a 256-byte ceiling refuses them, while the default (8MiB)
 // delivers the replay and the stream stays open until killed.
 func TestHTTPStreamBufferMaxEndsAnOversizedEventLine(t *testing.T) {
 	e := newEnv(t, oneServer)
@@ -362,19 +387,25 @@ func TestHTTPStreamBufferMaxEndsAnOversizedEventLine(t *testing.T) {
 		return string(out), time.Since(start)
 	}
 
-	def, _ := runEvents()
+	// The initial buffer (http.streamBufferInit, 64KiB by default) is
+	// an allocation the scanner may fill before the ceiling is ever
+	// consulted, so a ceiling below it cannot bind a short line. The
+	// fixture therefore pins the initial buffer at 64 bytes in both
+	// phases and varies only the ceiling: what differs between the
+	// two runs is http.streamBufferMax alone.
+	def, _ := runEvents("MCPX_HTTP_STREAM_BUFFER_INIT=64")
 	if !strings.Contains(def, "\"kind\":\"call.finished\"") {
 		t.Fatalf("oracle: events at the default http.streamBufferMax should deliver the replayed call:\n%s", def)
 	}
-	tiny, took := runEvents("MCPX_HTTP_STREAM_BUFFER_MAX=64")
+	tiny, took := runEvents("MCPX_HTTP_STREAM_BUFFER_INIT=64", "MCPX_HTTP_STREAM_BUFFER_MAX=256")
 	if took > 5*time.Second {
-		t.Fatalf("http.streamBufferMax=64 should end the events command on the first long line, not ride out the deadline:\n%s", tiny)
+		t.Fatalf("http.streamBufferMax=256 should end the events command on the first long line, not ride out the deadline:\n%s", tiny)
 	}
 	if !strings.Contains(tiny, "token too long") {
 		t.Fatalf("the events command should fail with the scanners token-too-long error:\n%s", tiny)
 	}
 	if strings.Contains(tiny, "\"kind\":\"call.finished\"") {
-		t.Fatalf("no event should be delivered past a 64-byte line ceiling:\n%s", tiny)
+		t.Fatalf("no event should be delivered past a 256-byte line ceiling:\n%s", tiny)
 	}
 }
 
