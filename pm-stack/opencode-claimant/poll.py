@@ -93,6 +93,24 @@ import urllib.request
 from datetime import datetime, timezone
 from pathlib import Path
 
+def _required_home() -> Path:
+    """Home per the #5762 home-resolution contract (code#8221): a
+    non-empty HOME, or a named error -- never the passwd fallback
+    Path.home() applies when HOME is unset. The claimant is fired
+    programmatically (OpenChamber cron), a context with no HOME
+    guarantee, and every path anchored below is fleet state."""
+    home = os.environ.get("HOME")
+    if not home:
+        raise RuntimeError(
+            "HOME is unset or empty: opencode-claimant cannot resolve "
+            "its state paths (#5762 home-resolution contract)"
+        )
+    return Path(home)
+
+
+HOME_DIR = _required_home()
+
+
 QUEUES = [
     "repo-health-code-pilot",
     "repo-health-opencode-pilot",
@@ -142,8 +160,8 @@ SCHEDULED_TITLE_PREFIXES = (
 # (~/.local/bin/repo-queue -> ~/.local/bin/fleet); the hand-built
 # ~/fleet-brokers/bin tree was retired by the code#5362 cutover
 # (task 12731).
-REPO_QUEUE_CMD = Path.home() / ".local" / "bin" / "repo-queue"
-PRIMARY_CLONE = Path.home() / "git" / "code"
+REPO_QUEUE_CMD = HOME_DIR / ".local" / "bin" / "repo-queue"
+PRIMARY_CLONE = HOME_DIR / "git" / "code"
 
 # Queue-broker coordinates for the rich /list read, mirroring the
 # fleet client's own resolution (pkgs/fleet crates/fleet-queue
@@ -152,8 +170,8 @@ PRIMARY_CLONE = Path.home() / "git" / "code"
 # for the client token. The token is read at call time, travels in the
 # X-Agent-Token header exactly as the binary sends it, and is never
 # logged.
-BROKER_URL_FILE = Path.home() / ".config" / "repo-queue" / "broker-url"
-BROKER_TOKEN_FILE = Path.home() / ".config" / "queue-broker" / "token"
+BROKER_URL_FILE = HOME_DIR / ".config" / "repo-queue" / "broker-url"
+BROKER_TOKEN_FILE = HOME_DIR / ".config" / "queue-broker" / "token"
 # One page at the broker's own maximum (LIST_LIMIT_MAX = 500 in
 # client.rs). A queue's claimed set is far smaller; and a short page
 # could only ever under-report candidates, never invent one.
@@ -165,13 +183,13 @@ LIST_LIMIT = 500
 # database. The broker's own /lane route ASSIGNS a lane — it is a
 # write, and poll.py is read-only by construction, so the ledger is
 # never read through it (Codex finding on PR #7059).
-TURSO_EXEC = Path.home() / "tools" / "turso-exec.py"
+TURSO_EXEC = HOME_DIR / "tools" / "turso-exec.py"
 LEDGER_DB = "fleet-queue"
 
 OPENCODE_URL = os.environ.get("OPENCODE_URL", "http://127.0.0.1:13420")
 AUTH_FILE = os.environ.get(
     "OPENCODE_AUTH_FILE",
-    os.path.expanduser("~/.local/state/opencode/service-prod.json"),
+    str(HOME_DIR / ".local/state/opencode/service-prod.json"),
 )
 
 UUID_LANE = re.compile(
