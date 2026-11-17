@@ -245,7 +245,36 @@ async function withTimeout<T>(work: Promise<T>, ms: number, label: string): Prom
   }
 }
 
+/**
+ * The service's error boundary (#10540): every route answers JSON. A
+ * store, git or reconcile failure a route does not handle itself would
+ * otherwise escape as Bun's default non-JSON 500, which clients and
+ * monitors cannot read. Routes that already answer a specific status
+ * keep it; only an escaped exception becomes this 500.
+ */
 export async function handleRequest(
+  req: Request,
+  db: Client,
+  env: ServerEnv,
+  deps: ServerDeps = {},
+): Promise<Response> {
+  try {
+    return await routeRequest(req, db, env, deps);
+  } catch (e) {
+    const message = e instanceof Error ? e.message : String(e);
+    const path = (() => {
+      try {
+        return new URL(req.url).pathname;
+      } catch {
+        return "?";
+      }
+    })();
+    console.error(`projector: ${req.method} ${path} failed: ${message}`);
+    return jsonResponse(500, { error: "internal_error", message });
+  }
+}
+
+async function routeRequest(
   req: Request,
   db: Client,
   env: ServerEnv,
