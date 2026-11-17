@@ -2531,6 +2531,12 @@ socket = "rel/s.sock"
 #[cfg(test)]
 mod tempfile_dir {
     use std::path::PathBuf;
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    // Some targets (notably static musl in parallel test runs) can
+    // return the same clock value for adjacent calls. A timestamp-only
+    // name then lets one test's Drop remove another test's fixture.
+    static NEXT_DIR: AtomicU64 = AtomicU64::new(0);
 
     pub struct Dir(PathBuf);
 
@@ -2540,12 +2546,9 @@ mod tempfile_dir {
             p.push(format!(
                 "fleet-config-test-{}-{}",
                 std::process::id(),
-                std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .map(|d| d.as_nanos())
-                    .unwrap_or(0)
+                NEXT_DIR.fetch_add(1, Ordering::Relaxed)
             ));
-            std::fs::create_dir_all(&p).unwrap();
+            std::fs::create_dir(&p).unwrap();
             Dir(p)
         }
 

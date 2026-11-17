@@ -2928,3 +2928,108 @@ fn world_journal_subcommands_parse() {
         other => panic!("unexpected: {other:?}"),
     }
 }
+
+/// #8341 (proving #796 item 9-8): full verb coverage. The existing
+/// guard above proves the TOP-LEVEL verbs match the hand-maintained
+/// command lists; this test proves the whole verb TREE: every verb
+/// path, enumerated from the clap definition itself (never a
+/// hand-maintained list), is documented (carries help text) and is
+/// exercised at the dispatch level — clap routing must reach it and
+/// answer . A verb that cannot meet either bar appears in
+/// EXEMPTIONS with its reason, in this test, never as a silent gap;
+/// a stale exemption (one naming a verb that no longer needs it, or
+/// no longer exists) also fails, so the list cannot rot.
+///
+/// Oracle: the CLI's own clap definition (Cli::command()).
+#[test]
+fn test_every_verb_is_documented_and_dispatchable() {
+    // The parse probes below recurse through the whole command
+    // tree; run on a big stack like the other parse tests (#3059).
+    std::thread::Builder::new()
+        .stack_size(32 * 1024 * 1024)
+        .spawn(move || {
+            let cmd = Cli::command();
+            let mut paths: Vec<Vec<String>> = Vec::new();
+            fn walk(cmd: &clap::Command, prefix: &mut Vec<String>, out: &mut Vec<Vec<String>>) {
+                for sub in cmd.get_subcommands() {
+                    if sub.get_name() == "help" {
+                        continue;
+                    }
+                    prefix.push(sub.get_name().to_owned());
+                    out.push(prefix.clone());
+                    walk(sub, prefix, out);
+                    prefix.pop();
+                }
+            }
+            walk(&cmd, &mut Vec::new(), &mut paths);
+            assert!(
+                paths.len() >= 40,
+                "expected the full verb tree, got {} paths",
+                paths.len()
+            );
+
+            // Named exemptions: verb path -> why it is not required
+            // to be documented and dispatchable. Empty today: every
+            // verb meets both bars.
+            const EXEMPTIONS: &[(&str, &str)] = &[];
+            let exempt = |path: &[String]| {
+                EXEMPTIONS
+                    .iter()
+                    .find(|(p, _)| *p == path.join(" "))
+                    .map(|(_, why)| *why)
+            };
+
+            let mut failures: Vec<String> = Vec::new();
+            for path in &paths {
+                if exempt(path).is_some() {
+                    continue;
+                }
+                // Documented: the verb carries help text of its own.
+                let mut node = &cmd;
+                for seg in path {
+                    node = node
+                        .get_subcommands()
+                        .find(|s| s.get_name() == seg)
+                        .expect("path from the same tree");
+                }
+                if node.get_about().is_none() && node.get_long_about().is_none() {
+                    failures.push(format!("{}: no help text", path.join(" ")));
+                }
+                // Dispatchable: clap routing reaches the verb and
+                // answers --help (DisplayHelp), rather than rejecting
+                // the path as an unknown subcommand.
+                let mut argv: Vec<String> = vec!["id".to_owned()];
+                argv.extend(path.iter().cloned());
+                argv.push("--help".to_owned());
+                match Cli::try_parse_from(&argv) {
+                    Err(e) if e.kind() == clap::error::ErrorKind::DisplayHelp => {}
+                    Err(e) => failures.push(format!(
+                        "{}: --help dispatch gave {} ({}) instead of DisplayHelp",
+                        path.join(" "),
+                        e.kind(),
+                        e
+                    )),
+                    Ok(_) => failures.push(format!(
+                        "{}: --help parsed as a run instead of displaying help",
+                        path.join(" ")
+                    )),
+                }
+            }
+            // Exemptions must not outlive their reason: each one has
+            // to name a verb that still exists in the tree.
+            for (p, _) in EXEMPTIONS {
+                assert!(
+                    paths.iter().any(|path| path.join(" ") == *p),
+                    "stale exemption: no such verb in the tree: {}", p
+                );
+            }
+            assert!(
+                failures.is_empty(),
+                "verb coverage failures (add the verb's help/dispatch, or a named exemption with its reason):\n{}",
+                failures.join("\n")
+            );
+        })
+        .unwrap()
+        .join()
+        .unwrap();
+}

@@ -39,7 +39,7 @@
 
 The signed journal (#806) is the system of record; every backend
 store is a materialisation of it (synthesis §2, #5869 §1). The
-contract is therefore the *materialisation interface*: it is the
+contract is therefore the _materialisation interface_: it is the
 smallest set of operations that lets any conforming store be
 built, read, verified, and rebuilt from the journal alone. A
 backend is a choice exactly when everything above this interface
@@ -53,7 +53,7 @@ is indifferent to which store sits below it.
    the journal layer, monotonically, with no gaps visible to
    readers (synthesis §4.1); the store never assigns sequence from
    a local counter that a second writer could fork. Appending an
-   entry whose sequence is already occupied by a *different* signed
+   entry whose sequence is already occupied by a _different_ signed
    entry is a fork event: the store must surface it as a typed
    `fork` refusal carrying both entries, never overwrite.
 2. **Read range** — `read(from_seq, to_seq | open) -> entries`.
@@ -63,9 +63,9 @@ is indifferent to which store sits below it.
    presented as complete.
 3. **Read at watermark** — `read_at_watermark(seq) -> snapshot view`.
    The only freshness primitive above the contract (synthesis
-   §6.2.5): a reader that needs state as of sequence *N* asks for
-   *N*; the store either serves a view that includes every entry
-   up to *N* or refuses with its current watermark. Replica lag is
+   §6.2.5): a reader that needs state as of sequence _N_ asks for
+   _N_; the store either serves a view that includes every entry
+   up to _N_ or refuses with its current watermark. Replica lag is
    expressed only as a lower watermark, never as silently stale
    data. Read-your-writes is the special case where the writer
    reads at the sequence its own append returned.
@@ -99,7 +99,7 @@ is indifferent to which store sits below it.
    verification; it never repairs silently.
 4. **Indexes** — `index_query(index, key_range, at_seq) -> keys`.
    Indexes are declared in the schema (name, source key pattern,
-   indexed fields) and are *derived like world state*: an index is
+   indexed fields) and are _derived like world state_: an index is
    correct iff it equals the index computed from world state at the
    same sequence. Index reads carry the same at-sequence semantics
    as world-state reads. An index that cannot be served at the
@@ -109,7 +109,7 @@ is indifferent to which store sits below it.
 
 ## 4. Declared limits and capability flags (where backends differ)
 
-Backends differ only inside this section, and only by *declared*
+Backends differ only inside this section, and only by _declared_
 values a caller can read before choosing a placement — never by
 silent behaviour differences.
 
@@ -133,10 +133,10 @@ silent behaviour differences.
      exposed through read-at-watermark, §2.3).
    - `workers_native` — reachable from a Worker with no extra
      vendor credentials. D1: **true**. Turso: **false**.
-   Flags inform placement (#5681 §5, #5867); no code above the
-   contract may branch on a flag to change semantics — only to
-   choose where a store is placed or to refuse a placement that
-   requires a flag the store lacks.
+     Flags inform placement (#5681 §5, #5867); no code above the
+     contract may branch on a flag to change semantics — only to
+     choose where a store is placed or to refuse a placement that
+     requires a flag the store lacks.
 
 ## 5. Refusals, versioning, metering
 
@@ -148,7 +148,7 @@ silent behaviour differences.
    truncation, no silent redirect to another store, no partial
    success presented as success.
 2. **Metering** (synthesis §6.2.7): `meters() -> {rows_read,
-   rows_written, stored_bytes}` per store, readable without a full
+rows_written, stored_bytes}` per store, readable without a full
    scan. Both backends expose these natively enough for the
    contract suite to check; #5868 consumes them.
 3. **Version stamp**: every snapshot and export bundle carries the
@@ -159,15 +159,15 @@ silent behaviour differences.
 
 ## 6. Parent requirements, discharged
 
-| Synthesis §6.2 requirement | Contract clause |
-| --- | --- |
-| 1. Monotonic sequence visible to readers, timestamp per entry | §2.1, §2.4 |
-| 2. Snapshot + delta read at a named sequence | §3.2 |
-| 3. Replay-in preserving sequence, timestamps, signatures | §3.3 |
-| 4. Schema/contract version on every snapshot and export | §5.3 |
-| 5. Read-at-watermark as the only freshness primitive | §2.3 |
-| 6. Typed refusal semantics, no silent truncation/redirect | §5.1 |
-| 7. Per-shard metering without a full scan | §5.2 |
+| Synthesis §6.2 requirement                                    | Contract clause |
+| ------------------------------------------------------------- | --------------- |
+| 1. Monotonic sequence visible to readers, timestamp per entry | §2.1, §2.4      |
+| 2. Snapshot + delta read at a named sequence                  | §3.2            |
+| 3. Replay-in preserving sequence, timestamps, signatures      | §3.3            |
+| 4. Schema/contract version on every snapshot and export       | §5.3            |
+| 5. Read-at-watermark as the only freshness primitive          | §2.3            |
+| 6. Typed refusal semantics, no silent truncation/redirect     | §5.1            |
+| 7. Per-shard metering without a full scan                     | §5.2            |
 
 The #806 guarantee table (synthesis §6.1) is preserved by
 construction: ordering and fork detection live in §2, integrity is

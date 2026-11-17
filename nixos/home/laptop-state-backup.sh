@@ -2,6 +2,9 @@
 # laptop-state-backup.sh — daily backup of the small irreplaceable
 # laptop state that no other routine covers (developing-today/code#1849):
 #   ~/.local/state/opencode   agent session/auth state (~0.5M)
+#   ~/.local/state/opencode-claimant
+#                             claimant mode/config + fires.jsonl history
+#                             (per-run .out/.err logs excluded; #10298)
 #   ~/secrets/*.sops.yaml     sops-encrypted secrets (ciphertext only)
 #   ~/.ssh                    SSH keys + known_hosts (irreplaceable)
 #
@@ -82,11 +85,19 @@ fi
 # --- collect the source paths (fail only if NOTHING is present) ---
 SOURCES=()
 [ -d "$HOME/.local/state/opencode" ] && SOURCES+=("$HOME/.local/state/opencode")
+[ -d "$HOME/.local/state/opencode-claimant" ] && SOURCES+=("$HOME/.local/state/opencode-claimant")
 [ -d "$HOME/.ssh" ] && SOURCES+=("$HOME/.ssh")
 for f in "$HOME"/secrets/*.sops.yaml; do
   [ -f "$f" ] && SOURCES+=("$f")
 done
-[ "${#SOURCES[@]}" -gt 0 ] || fail "no source paths present (opencode state, .ssh, secrets/*.sops.yaml all missing)"
+[ "${#SOURCES[@]}" -gt 0 ] || fail "no source paths present (opencode state, opencode-claimant state, .ssh, secrets/*.sops.yaml all missing)"
+# claimant per-run stdout/stderr logs are excluded: disposable, ~10M of churn.
+# mode, config, fires.jsonl and probe history are kept (#10298).
+EXCLUDES=()
+[ -d "$HOME/.local/state/opencode-claimant" ] && EXCLUDES+=(
+  --exclude "$HOME/.local/state/opencode-claimant/*.out"
+  --exclude "$HOME/.local/state/opencode-claimant/*.err"
+)
 log "sources: ${SOURCES[*]}"
 
 # --- credentials from Bitwarden (names only in code/logs) ---
@@ -124,7 +135,7 @@ backup_backend() { # $1 label, $2 repo
   local label="$1" repo="$2" out added
   init_if_needed "$repo"
   log "backup start: $label ($repo)"
-  out="$("$RESTIC" -r "$repo" backup "${SOURCES[@]}" --tag "$STATE_TAG" 2>&1)" ||
+  out="$("$RESTIC" -r "$repo" backup "${SOURCES[@]}" "${EXCLUDES[@]}" --tag "$STATE_TAG" 2>&1)" ||
     {
       printf '%s\n' "$out" >&2
       fail "restic backup failed for $label"

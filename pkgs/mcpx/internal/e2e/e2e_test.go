@@ -119,6 +119,9 @@ func newEnv(t *testing.T, cfgBody string) *env {
 			// fails is how the leak went unnoticed for so long.
 			t.Logf("cleanup: mcpx stop --all failed: %v\n%s", err, out)
 		}
+		if err := testsupport.StopSupervisors(filepath.Join(e.dir, "state")); err != nil {
+			t.Errorf("cleanup: stop supervised servers: %v", err)
+		}
 	})
 	return e
 }
@@ -3280,7 +3283,9 @@ func TestConcurrentRunsOfOneScriptKeepTheirOwnLauncher(t *testing.T) {
 	for i := 0; i < n; i++ {
 		go func(i int) {
 			mark := fmt.Sprintf("LAUNCHER-%d", i)
-			o, err := e.try("run", "--launcher",
+			// The launcher is deliberately headerless, so it does not
+			// type check; run checks by default (#1868 point 4).
+			o, err := e.try("run", "--script-check", "off", "--launcher",
 				fmt.Sprintf("console.log(%q); @entry", mark), script)
 			out <- res{mark, o, err}
 		}(i)
