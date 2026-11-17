@@ -176,9 +176,32 @@ impl ProviderTable {
 
     /// Record a whole announcement into the table.
     pub fn apply_announcement(&self, ann: &HolderAnnouncement, now: Instant) {
-        for h in &ann.hashes {
-            self.record(ann.world.clone(), *h, ann.node_id, HeldRanges::Unknown, now);
+        let mut guard = self.write_entries();
+        let world_map = guard.entry(ann.world.clone()).or_default();
+
+        // A complete announcement replaces this endpoint's holdings for the
+        // world. A truncated announcement is only a prefix, so omitted hashes
+        // must remain until a complete snapshot or stale cleanup removes them.
+        if !ann.truncated {
+            for hash_map in world_map.values_mut() {
+                hash_map.remove(&ann.node_id);
+            }
+            world_map.retain(|_, hash_map| !hash_map.is_empty());
         }
+
+        for h in &ann.hashes {
+            let hash_map = world_map.entry(*h).or_default();
+            hash_map.insert(
+                ann.node_id,
+                HolderEntry {
+                    endpoint: ann.node_id,
+                    ranges: HeldRanges::Unknown,
+                    last_seen: now,
+                    world: ann.world.clone(),
+                },
+            );
+        }
+        guard.retain(|_, world_map| !world_map.is_empty());
     }
 
     /// Snapshot of holders for `(world, hash)`, freshest first.
@@ -229,6 +252,7 @@ impl ProviderTable {
             .sum()
     }
 
+    /// Whether no holder rows are currently tracked.
     pub fn is_empty(&self) -> bool {
         self.len() == 0
     }
@@ -317,6 +341,77 @@ mod tests {
         t.apply_announcement(&ann, Instant::now());
         assert_eq!(t.holders(Some("public"), &h(1)).len(), 1);
         assert_eq!(t.holders(Some("public"), &h(2)).len(), 1);
+    }
+
+    #[test]
+    fn complete_announcement_replaces_only_that_endpoint_in_that_world() {
+        let t = ProviderTable::new();
+        let endpoint = node(30);
+        let other_endpoint = node(31);
+        let now = Instant::now();
+        t.apply_announcement(
+            &HolderAnnouncement::new(endpoint, Some("public:a".into()), vec![h(1), h(2)], 1),
+            now,
+        );
+        t.record(
+            Some("public:a".into()),
+            h(2),
+            other_endpoint,
+            HeldRanges::Complete,
+            now,
+        );
+        t.apply_announcement(
+            &HolderAnnouncement::new(endpoint, Some("public:b".into()), vec![h(2)], 2),
+            now,
+        );
+
+        t.apply_announcement(
+            &HolderAnnouncement::new(endpoint, Some("public:a".into()), vec![h(1)], 3),
+            now,
+        );
+
+        assert!(
+            t.holders(Some("public:a"), &h(2))
+                .iter()
+                .all(|e| e.endpoint != endpoint)
+        );
+        assert_eq!(t.holders(Some("public:a"), &h(2)).len(), 1);
+        assert_eq!(t.holders(Some("public:a"), &h(1)).len(), 1);
+        assert_eq!(t.holders(Some("public:b"), &h(2)).len(), 1);
+    }
+
+    #[test]
+    fn truncated_announcement_retains_omitted_hashes() {
+        let t = ProviderTable::new();
+        let endpoint = node(32);
+        let now = Instant::now();
+        t.apply_announcement(
+            &HolderAnnouncement::new(endpoint, Some("public".into()), vec![h(1), h(2)], 1),
+            now,
+        );
+        let mut truncated = HolderAnnouncement::new(endpoint, Some("public".into()), vec![h(1)], 2);
+        truncated.truncated = true;
+        t.apply_announcement(&truncated, now);
+
+        assert_eq!(t.holders(Some("public"), &h(2)).len(), 1);
+    }
+
+    #[test]
+    fn empty_complete_announcement_clears_endpoint_holdings() {
+        let t = ProviderTable::new();
+        let endpoint = node(33);
+        let now = Instant::now();
+        t.apply_announcement(
+            &HolderAnnouncement::new(endpoint, Some("public".into()), vec![h(1)], 1),
+            now,
+        );
+        t.apply_announcement(
+            &HolderAnnouncement::new(endpoint, Some("public".into()), Vec::new(), 2),
+            now,
+        );
+
+        assert!(t.holders(Some("public"), &h(1)).is_empty());
+        assert!(t.is_empty());
     }
 
     #[test]
