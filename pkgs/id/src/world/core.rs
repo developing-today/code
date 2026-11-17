@@ -661,6 +661,21 @@ impl WorldCore {
                         "participant {} journaled scopes must include join scope",
                         participant.id
                     );
+                    // #2958: enforce the participant limit during restore
+                    // mirroring mint's active capability counting.
+                    if !revoked_by_ancestor {
+                        let active = core
+                            .capabilities
+                            .values()
+                            .filter(|record| !record.revoked)
+                            .count();
+                        ensure!(
+                            active < core.limits.participants,
+                            "participant {} exceeds the world participant limit of {}",
+                            participant.id,
+                            core.limits.participants
+                        );
+                    }
                     core.next_participant_id = core.next_participant_id.max(
                         participant
                             .id

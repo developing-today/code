@@ -4382,6 +4382,162 @@ mod tests {
     }
 
     #[test]
+    fn restore_enforces_world_participant_limit() {
+        // #2958: WorldCore::restore must enforce limits.participants in the
+        // JournalEntry::Issued arm, mirroring mint's active capability counting.
+        let limits = WorldLimits {
+            participants: 2,
+            ..WorldLimits::default()
+        };
+        let mut source = WorldCore::new("test-world", WorldLimits::default()).unwrap();
+        let (p1, _) = source
+            .issue_capability("Ada", WorldScopes::GUEST, CapabilityBounds::default())
+            .unwrap();
+        let (p2, _) = source
+            .issue_capability("Bo", WorldScopes::GUEST, CapabilityBounds::default())
+            .unwrap();
+        let (p3, _) = source
+            .issue_capability("Cy", WorldScopes::GUEST, CapabilityBounds::default())
+            .unwrap();
+
+        let header = JournalEntry::Created {
+            world_id: "test-world".to_owned(),
+            version: JOURNAL_VERSION,
+        };
+        let e1 = source.issued_entry(p1.id).unwrap();
+        let e2 = source.issued_entry(p2.id).unwrap();
+        let e3 = source.issued_entry(p3.id).unwrap();
+
+        // (1) Over-limit restore refused (participants: 2, three Issued entries).
+        let err = WorldCore::restore(
+            "test-world",
+            limits.clone(),
+            vec![header.clone(), e1.clone(), e2.clone(), e3.clone()],
+        )
+        .unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains(&format!(
+                "participant {} exceeds the world participant limit of 2",
+                p3.id
+            )),
+            "error must name participant and limit: {msg}"
+        );
+
+        // (2) At-limit restore passes (exactly 2 participants).
+        let restored = WorldCore::restore(
+            "test-world",
+            limits.clone(),
+            vec![header.clone(), e1.clone(), e2.clone()],
+        )
+        .unwrap();
+        assert_eq!(restored.core.capabilities.len(), 2);
+
+        // (3) Issue -> revoke -> issue at the limit passes (revokes count in order).
+        let revoked_e2 = JournalEntry::Revoked {
+            participant_id: p2.id,
+            by: None,
+        };
+        let restored_revoked = WorldCore::restore(
+            "test-world",
+            limits.clone(),
+            vec![header.clone(), e1.clone(), e2.clone(), revoked_e2, e3.clone()],
+        )
+        .unwrap();
+        assert_eq!(
+            restored_revoked
+                .core
+                .capabilities
+                .values()
+                .filter(|c| !c.revoked)
+                .count(),
+            2
+        );
+
+        // (4) A delegate of a revoked ancestor does not consume a slot.
+        let limits_1 = WorldLimits {
+            participants: 1,
+            ..WorldLimits::default()
+        };
+        let mut source_delegate = WorldCore::new("test-world", WorldLimits::default()).unwrap();
+        let (owner, owner_token) = source_delegate
+            .issue_capability(
+                "Ada",
+                WorldScopes(WorldScopes::GUEST.bits() | WorldScopes::DELEGATE.bits()),
+                CapabilityBounds::default(),
+            )
+            .unwrap();
+        let (child, _) = source_delegate
+            .attenuate(
+                &owner_token,
+                WorldScopes::JOIN,
+                CapabilityBounds::default(),
+                "Bo",
+            )
+            .unwrap();
+        let (other, _) = source_delegate
+            .issue_capability("Cy", WorldScopes::GUEST, CapabilityBounds::default())
+            .unwrap();
+
+        let owner_issued = source_delegate.issued_entry(owner.id).unwrap();
+        let owner_revoked = JournalEntry::Revoked {
+            participant_id: owner.id,
+            by: None,
+        };
+        let child_issued = source_delegate.issued_entry(child.id).unwrap();
+        let other_issued = source_delegate.issued_entry(other.id).unwrap();
+
+        let restored_delegate = WorldCore::restore(
+            "test-world",
+            limits_1,
+            vec![
+                header.clone(),
+                owner_issued,
+                owner_revoked,
+                child_issued,
+                other_issued,
+            ],
+        )
+        .unwrap();
+        assert_eq!(
+            restored_delegate
+                .core
+                .capabilities
+                .values()
+                .filter(|c| !c.revoked)
+                .count(),
+            1
+        );
+
+        // (5) A checkpoint/compacted journal at the limit still restores
+        // (checkpoint_entries re-emits Revoked immediately after its Issued).
+        let mut live_world = WorldCore::new("test-world", limits.clone()).unwrap();
+        let (_live_p1, _) = live_world
+            .issue_capability("Ada", WorldScopes::GUEST, CapabilityBounds::default())
+            .unwrap();
+        let (live_p2, _) = live_world
+            .issue_capability("Bo", WorldScopes::GUEST, CapabilityBounds::default())
+            .unwrap();
+        live_world.revoke_tree(live_p2.id);
+        let (_live_p3, _) = live_world
+            .issue_capability("Cy", WorldScopes::GUEST, CapabilityBounds::default())
+            .unwrap();
+        live_world.active_module_hash = Some("test_hash".to_owned());
+
+        let compacted_entries = live_world.checkpoint_entries("snapshot".to_owned()).unwrap();
+        let restored_compacted = WorldCore::restore("test-world", limits, compacted_entries).unwrap();
+        assert_eq!(
+            restored_compacted
+                .core
+                .capabilities
+                .values()
+                .filter(|c| !c.revoked)
+                .count(),
+            2
+        );
+    }
+
+    #[test]
     fn events_are_sequenced_and_reconnect_can_catch_up() {
         let mut core = world(8);
         let (_, token) = join(&mut core, "Ada");
