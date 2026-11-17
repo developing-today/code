@@ -86,6 +86,12 @@ laptop is down nothing runs, so the gatherer/hub treats a
 
 ## Install / schedule (laptop)
 
+On the amd laptop the units and script are declared in Home Manager
+(`nixos/home/meta-quota-export.nix`, folded in by code#2775), so no
+manual install is needed there — the next rebuild replaces this
+installer's files. Use the installer below on machines without that
+module (the sandbox is out of scope).
+
 ```sh
 bash pm-stack/meta-exporter/install-laptop.sh   # run ON the laptop
 ```

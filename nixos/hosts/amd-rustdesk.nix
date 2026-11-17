@@ -55,7 +55,10 @@ in
   #
   # RustDesk itself stays imperative on this host (the package is in
   # home/common, the user service is a hand-written unit; KRdp in
-  # ./amd-krdp.nix is the declarative successor). Its permanent
+  # ./amd-krdp.nix is the declarative successor). The #2775 laptop
+  # services survey classified this as a deliberate retained
+  # exception (2026-11-09): the unit is not converted, and this
+  # password re-assertion is the only flake-managed part. Its permanent
   # password lives in ~/.config/rustdesk/RustDesk.toml, in the same
   # file as the ed25519 key pair the machine ID is derived from, so
   # any config regeneration (fresh key pair, new ID) silently drops

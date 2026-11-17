@@ -156,14 +156,23 @@ in
       {
         # Quota exporter (code#1048): Cloudflare quota snapshots
         # every 15 min for the quota gatherer. Folded into the
-        # flake 2026-11-01 (code#3720). (The Meta exporter was
-        # retired 2026-11-03: quota is gathered by asking OpenCode,
-        # PR #5040.)
+        # flake 2026-11-01 (code#3720).
         home-manager.users.user = {
           imports = [
             ../home/cloudflare-quota-export.nix
           ];
           services.cloudflare-quota-export.enable = true;
+        };
+      }
+      {
+        # Meta quota exporter (code#1301 Phase 1): the laptop-side
+        # dev.meta.ai console scrape. Retired 2026-11-03 (code#5040),
+        # then re-homed 2026-11-05 (code#5487, PR #6333); it was
+        # still installed by hand from pm-stack/meta-exporter until
+        # the 2026-11-09 survey folded it in (code#2775).
+        home-manager.users.user = {
+          imports = [ ../home/meta-quota-export.nix ];
+          services.meta-quota-export.enable = true;
         };
       }
       {
