@@ -184,6 +184,8 @@ pub const TEMP_NAME: &str = "events.redb.tmp";
 /// The format row in `meta`. A store with another format is refused.
 const FORMAT: &[u8] = b"id.events.store.v9";
 const FORMAT_KEY: &[u8] = b"format";
+/// A one-time pass over retained event and waiting bodies rebuilds legacy device-op rows.
+const DEVICE_OPS_RECOVERED_KEY: &[u8] = b"device_ops_recovered";
 
 const EVENTS: TableDefinition<'static, &'static [u8], &'static [u8]> =
     TableDefinition::new("events");
@@ -456,7 +458,7 @@ impl EventStore {
         if recovery_incomplete {
             tracing::warn!(
                 recovered,
-                "device-operation recovery incomplete: this store has events but no retained verified grant/revocation bodies; resync or reingest those bodies to restore device authority"
+                "device-operation recovery may be incomplete: some committed event bodies were not retained"
             );
         }
         let mut store = Self {
@@ -1150,6 +1152,8 @@ impl EventStore {
             next_arrival = next_arrival.max(row.arrival.saturating_add(1));
             if self.limits.is_due(row.arrived_at, now_ms) {
                 waiting_rows::delete(&txn, &row.id)?;
+                txn.open_table(DEVICE_OPS)?
+                    .remove(row.id.as_bytes().as_slice())?;
                 dropped = true;
                 continue;
             }
@@ -1170,6 +1174,8 @@ impl EventStore {
                     }
                     Err(WaitRefusal::AuthorFull | WaitRefusal::PoolFull) => {
                         waiting_rows::delete(&txn, &row.id)?;
+                        txn.open_table(DEVICE_OPS)?
+                            .remove(row.id.as_bytes().as_slice())?;
                         dropped = true;
                     }
                 }
@@ -1195,10 +1201,14 @@ impl EventStore {
                     // Skipped by an arrived, ready, or duplicate guard: the row names an
                     // event the rebuilt pool does not hold, so the row goes with the rebuild.
                     waiting_rows::delete(&txn, &row.id)?;
+                    txn.open_table(DEVICE_OPS)?
+                        .remove(row.id.as_bytes().as_slice())?;
                     dropped = true;
                 }
                 Err(WaitRefusal::AuthorFull | WaitRefusal::PoolFull) => {
                     waiting_rows::delete(&txn, &row.id)?;
+                    txn.open_table(DEVICE_OPS)?
+                        .remove(row.id.as_bytes().as_slice())?;
                     dropped = true;
                 }
             }

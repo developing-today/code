@@ -133,37 +133,49 @@ impl EventStore {
     /// Rebuilds device-operation rows from retained bodies when opening an older store.
     /// Bodies that were never retained cannot be recovered; the caller reports that limit.
     pub(super) fn recover_device_ops(txn: &WriteTransaction) -> Result<(usize, bool), StoreError> {
-        let (bodies, events_by_id, has_events, has_device_ops) = {
+        let mut meta = txn.open_table(super::META)?;
+        if meta.get(super::DEVICE_OPS_RECOVERED_KEY)?.is_some() {
+            return Ok((0, false));
+        }
+        let (events, waiting) = {
             let bodies = txn.open_table(super::BODIES)?;
-            let events = txn.open_table(EVENTS)?;
-            let device_ops = txn.open_table(DEVICE_OPS)?;
-            let bodies = bodies
-                .iter()?
-                .map(|row| {
-                    let (id, body) = row.map_err(StoreError::from)?;
-                    Ok((id.value().to_vec(), body.value().to_vec()))
-                })
-                .collect::<Result<Vec<_>, StoreError>>()?;
-            let has_events = !events.is_empty()?;
-            let events_by_id = events
+            let stored = txn
+                .open_table(EVENTS)?
                 .iter()?
                 .map(|row| {
                     let (_position, bytes) = row.map_err(StoreError::from)?;
-                    let event = decode_stored(bytes.value())?;
-                    Ok((event.id.as_bytes().to_vec(), event))
+                    decode_stored(bytes.value())
                 })
-                .collect::<Result<HashMap<_, _>, StoreError>>()?;
-            (bodies, events_by_id, has_events, !device_ops.is_empty()?)
+                .collect::<Result<Vec<_>, StoreError>>()?;
+            let waiting = super::waiting_rows::all(txn)?
+                .into_iter()
+                .map(|row| chain::decode(&row.bytes).map_err(|err| corrupt(err.to_string())))
+                .collect::<Result<Vec<_>, StoreError>>()?;
+            (stored, (bodies, waiting))
         };
         let mut recovered = Vec::new();
-        for (id, body) in bodies {
-            let Some(event) = events_by_id.get(&id) else {
-                continue;
+        let (bodies, waiting) = waiting;
+        let mut incomplete = false;
+        for event in events.into_iter().chain(waiting) {
+            let has_device_op = {
+                txn.open_table(DEVICE_OPS)?
+                    .get(event.id.as_bytes().as_slice())?
+                    .is_some()
             };
-            if committed(event, &body).is_err() {
+            if has_device_op {
                 continue;
             }
-            if let Some(device) = body_device_op(event, Some(&body))
+            let body = bodies.get(event.id.as_bytes().as_slice())?;
+            let Some(body) = body else {
+                incomplete |= event.header.payload_hash.is_some()
+                    && event.header.extensions.kind == "group.event";
+                continue;
+            };
+            let body = body.value();
+            if committed(&event, body).is_err() {
+                continue;
+            }
+            if let Some(device) = body_device_op(&event, Some(body))
                 .map_err(|refusal| corrupt(format!("{refusal:?}")))?
             {
                 recovered.push((event.id, device));
@@ -172,10 +184,8 @@ impl EventStore {
         for (id, (op, group)) in &recovered {
             store_device_op(txn, id, op, group.as_ref())?;
         }
-        Ok((
-            recovered.len(),
-            has_events && !has_device_ops && recovered.is_empty(),
-        ))
+        meta.insert(super::DEVICE_OPS_RECOVERED_KEY, b"1".as_slice())?;
+        Ok((recovered.len(), incomplete))
     }
 
     /// Verifies one received event and applies what it allows.
@@ -481,6 +491,10 @@ fn body_device_op(
     event: &Event,
     body: Option<&[u8]>,
 ) -> Result<Option<(crate::groups::DeviceOp, Option<Hash>)>, Refusal> {
+    let kind = &event.header.extensions.kind;
+    if is_tag_kind(kind) || is_document_kind(kind) || is_removal_kind(kind) {
+        return Ok(None);
+    }
     let Some(body) = body else {
         return Ok(None);
     };
@@ -751,9 +765,8 @@ fn settle(
         }
         Decision::Duplicate => {
             drop_released(m, &event, from_pool)?;
-            if is_stored(m.txn, &id)?
-                && let Some((op, group)) = device
-            {
+            let device_attached = is_stored(m.txn, &id)? && device.is_some();
+            if device_attached && let Some((op, group)) = device {
                 store_device_op(m.txn, &id, op, group.as_ref())?;
                 refresh(m.txn)?;
             }
@@ -769,7 +782,7 @@ fn settle(
                 }
             }
             Settled::Duplicate {
-                attached: attach_action(m.txn, &id, action)? || stored_body,
+                attached: attach_action(m.txn, &id, action)? || stored_body || device_attached,
             }
         }
         Decision::Fork { seq, proof } => {
@@ -1284,6 +1297,7 @@ mod tests {
     use id_core::rejection::Reason;
     use id_core::waiting::WaitingLimits;
     use id_store::chain::{ChainExt, sign};
+    use id_store::tag_claims::TagOp;
     use p2panda_core::SigningKey;
     use redb::ReadableDatabase;
 
@@ -1499,6 +1513,54 @@ mod tests {
     }
 
     #[test]
+    fn test_batch_tag_event_body_does_not_become_a_device_operation() {
+        let (_dir, mut store) = open();
+        let signer = key(93);
+        let (_grant, body) = device_grant(&signer);
+        let event = sign(
+            &signer,
+            0,
+            None,
+            Some(&body),
+            ChainExt {
+                kind: "tag.set".to_owned(),
+                group: None,
+                after: vec![],
+                tag: Some(TagOp::Set {
+                    subject: Hash::digest(b"batch tag subject"),
+                    name: "name".to_owned(),
+                    value: Some("value".to_owned()),
+                }),
+                document: None,
+                removes: None,
+                note: None,
+                link: None,
+                checkpoint: None,
+                rotation: None,
+                chat: None,
+                anchor: None,
+            },
+        )
+        .unwrap();
+
+        let outcomes = store
+            .ingest_events_with_bodies(vec![(event.clone(), Some(body))], 0)
+            .unwrap();
+        assert!(
+            matches!(outcomes[0], Ingest::Accepted { .. }),
+            "{outcomes:?}"
+        );
+        let txn = store.db.begin_read().unwrap();
+        assert!(
+            txn.open_table(DEVICE_OPS)
+                .unwrap()
+                .get(event.id.as_bytes().as_slice())
+                .unwrap()
+                .is_none()
+        );
+    }
+
+    #[test]
     fn test_open_recovers_device_operation_from_a_retained_verified_body() {
         let (dir, mut store) = open();
         let signer = key(92);
@@ -1513,6 +1575,8 @@ mod tests {
             .write(|txn| {
                 txn.open_table(DEVICE_OPS)?
                     .remove(event.id.as_bytes().as_slice())?;
+                txn.open_table(super::super::META)?
+                    .remove(super::super::DEVICE_OPS_RECOVERED_KEY)?;
                 Ok(())
             })
             .unwrap();
@@ -1526,6 +1590,74 @@ mod tests {
                 .get(event.id.as_bytes().as_slice())
                 .unwrap()
                 .is_some()
+        );
+    }
+
+    #[test]
+    fn test_open_recovers_device_operation_for_a_held_event() {
+        let (dir, mut store) = open();
+        let signer = key(94);
+        let group = Hash::digest(b"held recovery group");
+        let body = encode_group_event(&GroupEvent {
+            id: Hash::digest(b"held recovery body id"),
+            author: *signer.verifying_key().as_bytes(),
+            after: vec![],
+            group: Some(group),
+            body: GroupBody::Device(DeviceOp::Add {
+                device: *key(95).verifying_key().as_bytes(),
+                scope: GroupRole::Admin,
+            }),
+        })
+        .unwrap();
+        let missing = Hash::digest(b"held recovery missing dependency");
+        let event = sign(
+            &signer,
+            0,
+            None,
+            Some(&body),
+            ChainExt {
+                kind: "group.event".to_owned(),
+                group: Some(group),
+                after: vec![missing],
+                tag: None,
+                document: None,
+                removes: None,
+                note: None,
+                link: None,
+                checkpoint: None,
+                rotation: None,
+                chat: None,
+                anchor: None,
+            },
+        )
+        .unwrap();
+        assert!(matches!(
+            store
+                .ingest_with_body(&event.bytes, Some(&body), 0)
+                .unwrap(),
+            Ingest::Waiting { .. }
+        ));
+        store
+            .write(|txn| {
+                txn.open_table(DEVICE_OPS)?
+                    .remove(event.id.as_bytes().as_slice())?;
+                txn.open_table(super::super::META)?
+                    .remove(super::super::DEVICE_OPS_RECOVERED_KEY)?;
+                Ok(())
+            })
+            .unwrap();
+        drop(store);
+
+        let store = EventStore::open(dir.path(), WaitingLimits::default(), 0).unwrap();
+        assert!(store.is_waiting(&event.id));
+        let txn = store.db.begin_read().unwrap();
+        assert!(
+            txn.open_table(DEVICE_OPS)
+                .unwrap()
+                .get(event.id.as_bytes().as_slice())
+                .unwrap()
+                .is_some(),
+            "held grant's retained body is recovered on upgrade"
         );
     }
 
@@ -3056,6 +3188,15 @@ mod tests {
                 store.ingest(&events[1].bytes, 0).unwrap(),
                 Ingest::Waiting { id: events[1].id }
             );
+            store
+                .write(|txn| {
+                    txn.open_table(DEVICE_OPS)?.insert(
+                        events[1].id.as_bytes().as_slice(),
+                        b"legacy device op".as_slice(),
+                    )?;
+                    Ok(())
+                })
+                .unwrap();
         }
         // Not due yet: the event has waited 999 ms.
         let store = reopen(&dir, limits, 999);
@@ -3065,6 +3206,15 @@ mod tests {
         let store = reopen(&dir, limits, 1_000);
         assert_eq!(store.waiting_len(), 0);
         assert!(store.waiting_ids().unwrap().is_empty());
+        let txn = store.db.begin_read().unwrap();
+        assert!(
+            txn.open_table(DEVICE_OPS)
+                .unwrap()
+                .get(events[1].id.as_bytes().as_slice())
+                .unwrap()
+                .is_none(),
+            "reload expiry removes the matching device-op row"
+        );
         store.check_invariants().unwrap();
         drop(store);
         let store = reopen(&dir, limits, 1_000);
