@@ -223,6 +223,7 @@ def log_fire(
     launched: List[Dict],
     cap_room: "int | None",
     skips: List[Dict],
+    health: "str | None" = None,
 ) -> None:
     """Append a fire log entry to fires.jsonl.
 
@@ -245,6 +246,7 @@ def log_fire(
         "sessions_launched": launched,
         "cap_room": cap_room,
         "skips": skips,
+        "queue_health": health,
     }
 
     with FIRES_FILE.open("a") as f:
@@ -326,11 +328,111 @@ def get_active_root_session_count() -> int:
         return -1  # Unknown
 
 
+# Fire-start state recorded by gate_step (#8038): the candidate
+# snapshot this fire saw first, and the queue-health line gate_step
+# measured. main() threads both into every log_fire call so a fire
+# record answers what was eligible and what the queues reported,
+# instead of the hardcoded [] the #8038 audit found.
+_fire_candidates = None
+_fire_health = None
+
+
+def _fetch_sessions():
+    """poll.py's verified session list, or None when unreadable."""
+    try:
+        return _load_poll_module().fetch_sessions()
+    except Exception:
+        return None
+
+
+def _fetch_active_ids():
+    """poll.py's server active-id set, or None when unreadable."""
+    try:
+        return _load_poll_module().fetch_active_ids()
+    except Exception:
+        return None
+
+
+def run_queue_health():
+    """The fleet queue health line for the queues (prompt.md step
+    2), or None when the health verb cannot be read: an unreadable
+    health state is recorded as null, never invented."""
+    try:
+        result = subprocess.run(
+            [str(REPO_QUEUE_CMD), "health"],
+            capture_output=True,
+            text=True,
+            timeout=15,
+        )
+    except Exception:
+        return None
+    if result.returncode != 0:
+        return None
+    lines = [ln.strip() for ln in (result.stdout or "").splitlines() if ln.strip()]
+    return " | ".join(lines)[:500] or None
+
+
+def _fail_attempts_exhausted(task, session_id) -> bool:
+    """Step 1e: terminally fail a bound task whose attempts are
+    exhausted, as its worker_id, carrying the
+    launch_failed_attempts_exhausted execution record so the bound
+    session id survives in the record."""
+    prog = task.get("progress") or {}
+    worker_id = task.get("worker_id") or prog.get("worker_id") or CLAIMANT_WORKER
+    execution = json.dumps(
+        {
+            "lane": "opencode",
+            "session_id": session_id,
+            "fallback_reason": "launch_failed_attempts_exhausted",
+        }
+    )
+    try:
+        result = subprocess.run(
+            [
+                str(REPO_QUEUE_CMD),
+                "fail",
+                str(task["id"]),
+                "--worker",
+                str(worker_id),
+                "--error",
+                f"bound session {session_id} unavailable without terminal outcome; attempts exhausted",
+                "--reason-class",
+                "deterministic",
+                "--execution",
+                execution,
+            ],
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+    except Exception as e:
+        print(f"Failed to terminally fail exhausted task {task.get('id')}: {e}")
+        return False
+    return result.returncode == 0
+
+
 def supervision_step(mode: str) -> List[Dict]:
     """
     Step 1: Supervision - check bound sessions for recovery candidates.
 
-    Returns list of tasks that need recovery (bound but stuck/zero-message sessions).
+    Selection consumes poll.py's is_stuck_bound (#8038): a present
+    session is a recovery candidate only when poll.py selects it
+    (marker-less root, NOT in the server's active set, silent for at
+    least ACTIVE_WINDOW_MS, lease expired) - claimant.py no longer
+    reimplements that selection, and its old inverted terminal-marker
+    test is gone. A session the per-id GET proves gone (404) is the
+    step-1d gone case, gated on an expired lease. Every other state
+    (terminal marker, active-set membership, recent activity, live
+    lease, any unreadable read) leaves the task bound.
+
+    A bound task with attempts >= max_attempts is never skipped
+    silently (step 1e): a stuck zero-message session is deleted
+    first, a gone session's absence is already verified, and the
+    task is terminally failed with the
+    launch_failed_attempts_exhausted execution record.
+
+    Returns the list of tasks acted on (recovery candidates and
+    attempts-exhausted terminal fails).
     """
     if mode != "live":
         return []
@@ -342,6 +444,18 @@ def supervision_step(mode: str) -> List[Dict]:
     # binary's list verb prints a human table, and json-parsing it
     # silently supervised nothing (#7325).
     poll = _load_poll_module()
+    now_ms = int(time.time() * 1000)
+    sessions = _fetch_sessions()
+    sessions_by_id = (
+        {
+            s.get("id"): s
+            for s in sessions
+            if isinstance(s, dict) and s.get("id")
+        }
+        if isinstance(sessions, list)
+        else {}
+    )
+    active_ids = _fetch_active_ids()
     for queue in QUEUES:
         try:
             for task in poll.fetch_claimed_rows(queue):
@@ -350,66 +464,114 @@ def supervision_step(mode: str) -> List[Dict]:
                 prog = task.get("progress") or {}
                 lane = prog.get("lane") or task.get("lane")
                 session_id = prog.get("session_id") or task.get("session_id")
-                if lane == "opencode" and session_id:
-                    # Check if session exists and is progressing.
-                    # The verdict comes from the verified transport:
-                    # "gone" is a 404 from the per-id GET; "unknown"
-                    # (auth failure, 5xx, transport failure, mis-shaped
-                    # body) never authorizes recovery - the task stays
-                    # bound (#7367, #7770 decision 2).
-                    verdict, session = _get_session(session_id)
-                    if verdict == "unknown":
+                if lane != "opencode" or not session_id:
+                    continue
+                # The verdict comes from the verified transport:
+                # "gone" is a 404 from the per-id GET; "unknown"
+                # (auth failure, 5xx, transport failure, mis-shaped
+                # body) never authorizes recovery - the task stays
+                # bound (#7367, #7770 decision 2).
+                verdict, _session = _get_session(session_id)
+                if verdict == "unknown":
+                    continue
+                attempts = task.get("attempts", 0)
+                max_attempts = task.get("max_attempts", 5)
+                exhausted = attempts >= max_attempts
+                if verdict == "ok":
+                    # Present session: poll.py is the only selector.
+                    # A session absent from the verified list cannot
+                    # be proven stuck-bound here (the gone case is
+                    # the per-id 404 above, not a list absence).
+                    list_entry = sessions_by_id.get(session_id)
+                    if list_entry is None:
                         continue
-                    if verdict == "ok":
-                        # Check for terminal state
-                        has_terminal = any(
-                            marker in str(session.get("outcome", "") or "")
-                            or marker
-                            in str((session.get("time") or {}).get("idle", "") or "")
-                            for marker in ["idle", "outcome", "completed", "failed"]
+                    poll_row = {
+                        "progress": {"lane": lane, "session_id": session_id},
+                        "lease_until": task.get("lease_until"),
+                    }
+                    if not poll.is_stuck_bound(
+                        poll_row, list_entry, active_ids, now_ms
+                    ):
+                        continue
+                    # poll.py surfaces the candidate only; zero
+                    # messages is verified here before acting. An
+                    # unreadable session is UNKNOWN, never empty
+                    # (#3026).
+                    messages = _get_messages(session_id)
+                    if messages is None:
+                        print(
+                            f"Supervision: message read for session "
+                            f"{session_id} was unknown; leaving task "
+                            f"{task['id']} bound"
                         )
-                        if not has_terminal:
-                            # Session exists and is active - nothing to do
-                            continue
-
-                    # Session is gone or stuck - check if recovery is possible
-                    # Check task attempts and lease
-                    if task.get("attempts", 0) < task.get("max_attempts", 5):
-                        # Only an expired lease is recoverable: a live
-                        # lease is still owned by a worker that may be
-                        # executing, and recovery would double-launch
-                        # over it. An unreadable lease is not expired
-                        # (poll.py's rule: never act on a fact we lack).
-                        lease_ms = poll.parse_lease_ms(task.get("lease_until"))
-                        if lease_ms is None or lease_ms > int(time.time() * 1000):
-                            continue
-
-                        # Verify zero messages first. An unreadable
-                        # session is UNKNOWN, never empty: only a
-                        # confirmed [] may be deleted and rebound, or a
-                        # session that actually had messages gets
-                        # deleted and its task relaunched (#3026).
-                        messages = _get_messages(session_id)
-                        if messages is None:
-                            print(
-                                f"Supervision: message read for session "
-                                f"{session_id} was unknown; leaving task "
-                                f"{task['id']} bound"
-                            )
-                            continue
-                        if len(messages) == 0:
+                        continue
+                    if len(messages) > 0:
+                        continue
+                    if exhausted:
+                        # Step 1e: verified delete first, then the
+                        # terminal fail - never the other way round.
+                        if _delete_session(session_id) and (
+                            _fail_attempts_exhausted(task, session_id)
+                        ):
                             recovery_candidates.append(
                                 {
                                     "task_id": task["id"],
                                     "session_id": session_id,
-                                    "reason": "zero_message",
+                                    "reason": "attempts_exhausted",
                                 }
                             )
+                        continue
+                    recovery_candidates.append(
+                        {
+                            "task_id": task["id"],
+                            "session_id": session_id,
+                            "reason": "zero_message",
+                        }
+                    )
+                    continue
+                # verdict == "gone" (step 1d): only an expired lease
+                # is actionable - a live lease is still owned by a
+                # worker that may be executing, and an unreadable
+                # lease is not expired (poll.py's rule).
+                lease_ms = poll.parse_lease_ms(task.get("lease_until"))
+                if lease_ms is None or lease_ms > now_ms:
+                    continue
+                if exhausted:
+                    # Step 1e for a gone session: absence is already
+                    # verified by the 404, so fail terminally now.
+                    if _fail_attempts_exhausted(task, session_id):
+                        recovery_candidates.append(
+                            {
+                                "task_id": task["id"],
+                                "session_id": session_id,
+                                "reason": "attempts_exhausted",
+                            }
+                        )
+                    continue
+                messages = _get_messages(session_id)
+                if messages is None:
+                    print(
+                        f"Supervision: message read for session "
+                        f"{session_id} was unknown; leaving task "
+                        f"{task['id']} bound"
+                    )
+                    continue
+                if len(messages) == 0:
+                    recovery_candidates.append(
+                        {
+                            "task_id": task["id"],
+                            "session_id": session_id,
+                            "reason": "zero_message",
+                        }
+                    )
         except Exception as e:
             print(f"Warning: Supervision check failed for queue {queue}: {e}")
 
-    # Process recovery candidates
+    # Process zero-message recovery candidates (attempts-exhausted
+    # candidates were already terminally failed above).
     for candidate in recovery_candidates:
+        if candidate["reason"] != "zero_message":
+            continue
         task_id = candidate["task_id"]
         session_id = candidate["session_id"]
 
@@ -460,10 +622,21 @@ def gate_step() -> Optional[bool]:
     itself failed: an unreadable queue is UNKNOWN, not empty
     (#7770 contract — unknown never authorizes a side effect and
     is never recorded as a measurement).
+
+    Side records (#8038): the gate runs the fleet queue health verb
+    for the queues (prompt.md step 2) and stores the health line in
+    the module's fire record (`_fire_health`), and stores the
+    candidate list it read as the fire-start snapshot
+    (`_fire_candidates`) that main() threads into every log_fire
+    call and launch_step's candidate set.
     """
+    global _fire_candidates, _fire_health
+    _fire_candidates = None
+    _fire_health = run_queue_health()
     try:
         poll_data = run_poll()
         candidates = poll_data.get("candidates", [])
+        _fire_candidates = list(candidates)
 
         # Filter for unbound opencode-lane tasks
         unbound_opencode = [
@@ -694,7 +867,60 @@ def _prompt_safe_packet(packet):
     return packet
 
 
-def launch_step(mode: str, cap_room: int) -> List[Dict]:
+def _post_launch_agent_note(task_id, session_id, candidate, packet) -> bool:
+    """Step 4e (#8038): post the agent-note:v1 handed-off note on the
+    task's issue naming the task id + session id, after a successful
+    bind. The note text is a fixed template carrying only the two
+    ids - no packet content enters it. A failed note never unbinds
+    or fails the launch (the binding stands; supervision owns the
+    session) - the caller flags the launch entry instead. Returns
+    True iff the post is confirmed by the gh CLI's exit code."""
+    _packet = packet if isinstance(packet, dict) else {}
+    repo = _packet.get("repo") or ""
+    issue_no = candidate.get("issue_number")
+    if issue_no is None and isinstance(_packet.get("issue"), dict):
+        issue_no = _packet["issue"].get("number")
+    if issue_no is None:
+        raw_issue = candidate.get("issue") or ""
+        digits = "".join(ch for ch in str(raw_issue) if ch.isdigit())
+        issue_no = digits or None
+    if not repo or not issue_no:
+        return False
+    note = (
+        "<!-- agent-note:v1 agent=opencode-claimant state=handed off "
+        f"task={task_id} session={session_id} -->\n\n"
+        f"Agent note - handed off: queue task {task_id} is bound to "
+        f"opencode session {session_id}, launched by the claimant "
+        f"(step 4e). The session works the task under its bound "
+        f"claim; terminal state is recorded by the worker session."
+    )
+    try:
+        result = subprocess.run(
+            [
+                "gh",
+                "issue",
+                "comment",
+                str(int(str(issue_no).lstrip("#"))),
+                "--repo",
+                str(repo),
+                "--body",
+                note,
+            ],
+            capture_output=True,
+            text=True,
+            timeout=15,
+        )
+    except Exception:
+        return False
+    return result.returncode == 0
+
+
+def launch_step(
+    mode: str,
+    cap_room: int,
+    exclude_task_ids=None,
+    fire_start_candidates=None,
+) -> List[Dict]:
     """
     Step 4: Launch - create sessions and bind tasks.
 
@@ -708,10 +934,13 @@ def launch_step(mode: str, cap_room: int) -> List[Dict]:
         # that WOULD launch, bounded by cap room, and mutate nothing —
         # no session created, nothing bound, nothing prompted.
         try:
-            poll_data = run_poll()
+            if fire_start_candidates is not None:
+                snapshot = fire_start_candidates
+            else:
+                snapshot = run_poll().get("candidates", [])
             candidates = [
                 c
-                for c in poll_data.get("candidates", [])
+                for c in snapshot
                 if c.get("lane") == "opencode"
                 and not c.get("session_id")
                 and c.get("stage") in ("handed_off", "launch_failed")
@@ -739,19 +968,39 @@ def launch_step(mode: str, cap_room: int) -> List[Dict]:
     launched = []
     skips = []
 
+    excluded = set(exclude_task_ids or ())
     try:
-        poll_data = run_poll()
-        candidates = poll_data.get("candidates", [])
+        if fire_start_candidates is not None:
+            candidates = fire_start_candidates
+        else:
+            poll_data = run_poll()
+            candidates = poll_data.get("candidates", [])
 
         # Sort by queue priority (order in QUEUES list)
-        # Filter for unbound opencode-lane tasks with correct stage
-        unbound_opencode = [
-            c
-            for c in candidates
-            if c.get("lane") == "opencode"
-            and not c.get("session_id")
-            and c.get("stage") in ("handed_off", "launch_failed")
-        ]
+        # Filter for unbound opencode-lane tasks with correct stage.
+        # The candidate SET is the fire-start snapshot (#8038 item
+        # 7): launch_step no longer re-polls to discover a different
+        # set than the fire started with (per-candidate step-4a
+        # re-verification below still re-reads state). A task
+        # recovered during this fire's supervision is excluded by
+        # id - it is eligible on the NEXT fire, not this one.
+        unbound_opencode = []
+        for c in candidates:
+            if not (
+                c.get("lane") == "opencode"
+                and not c.get("session_id")
+                and c.get("stage") in ("handed_off", "launch_failed")
+            ):
+                continue
+            if c.get("id") in excluded:
+                skips.append(
+                    {
+                        "task_id": c["id"],
+                        "reason": "recovered_this_fire_next_fire_only",
+                    }
+                )
+                continue
+            unbound_opencode.append(c)
 
         # Parked handoff sink (#8097 Rule 1): collect this fire's
         # sink candidates' claims up front, grouped by queue,
@@ -954,9 +1203,29 @@ Issue: {issue}
 Packet: {json.dumps(_prompt_safe_packet(packet), indent=2)}
 
 You are a build agent working on this opencode-lane task.
+
+QUEUE RUNBOOK (step 4d, inlined): this task is ALREADY claimed and
+lane-bound to your session - do not claim another task and do not
+re-claim this one. Work in checkpoints: checkpoint on claim
+(stage claimed), at verified / reproduced, branch_created,
+implementation_complete, targeted_tests_passed or
+targeted_tests_failed, pr_opened, awaiting_ci, merge_ready, and
+bookkeeping_complete, each storing the artifact reference and the
+next action. Create a dedicated worktree for the task on this
+machine (branch queue/<task-id>-<issue-number>-<short-slug>); never
+work in a primary checkout. Poll CI for at most five minutes while
+actively progressing - if CI is still pending, park the task as a
+CI wait instead of holding the claim. Never just stop: if you
+cannot finish, park with a reason and a resume condition, or block
+with a reason class.
+
+Use --worker {worker_id} for EVERY queue CLI operation (the queue
+CLI on this machine is repo-queue, ~/.local/bin/repo-queue).
+Lease-heartbeat cadence: heartbeat at least every 10 minutes while
+working and at every checkpoint - heartbeat --extend-seconds 900 -
+so the claim lease never lapses under a live session; a lease that
+expires while you work hands the task to supervision/recovery.
 Build discipline: run heavy cargo builds/tests through ~/tools/cargo-target-broker exec --repo <repo short name> --profile <test|dev|release> -- cargo ... so they use a leased pooled target dir (code#6797); never use a per-worktree CARGO_TARGET_DIR and never blank RUSTC_WRAPPER. ~/tools/fleet-build-lock is an accepted equivalent wrapper.
-Use --worker {worker_id} for all queue CLI operations.
-Heartbeat while working to keep the claim lease alive.
 Finish with a queue terminal verb (complete, park, block, or fail) carrying --worker {worker_id} and --execution '{{"lane": "opencode", "session_id": "{session_id}"}}'.
 """
 
@@ -969,6 +1238,13 @@ Finish with a queue terminal verb (complete, park, block, or fail) carrying --wo
                 }
                 if not _send_prompt(session_id, prompt):
                     entry["prompt_failed"] = True
+                # Step 4e: the launch agent-note on the issue,
+                # naming task id + session id. Its failure flags
+                # the entry but never unbinds the session.
+                if _post_launch_agent_note(task_id, session_id, candidate, packet):
+                    entry["agent_note"] = "posted"
+                else:
+                    entry["agent_note_failed"] = True
                 launched.append(entry)
 
                 cap_room -= 1
@@ -988,23 +1264,37 @@ def main():
 
     print(f"OpenCode claimant starting in {mode} mode")
 
-    # Step 1: Supervision (always runs in live mode)
+    # Step 1: Supervision (always runs in live mode). Tasks it
+    # recovers are eligible on the NEXT fire, not this one (#8038
+    # item 7): their ids are excluded from this fire's launch set.
+    recovered_ids = []
     if mode == "live":
         print("Running supervision step...")
-        supervision_step(mode)
+        recovered = supervision_step(mode)
+        recovered_ids = [c["task_id"] for c in recovered]
 
-    # Step 2: Gate
+    # Step 2: Gate (records the fire-start candidate snapshot and
+    # the queue-health line in _fire_candidates / _fire_health).
     print("Running gate step...")
     has_candidates = gate_step()
+    fire_candidates = _fire_candidates
+    fire_health = _fire_health
 
     if has_candidates is None:
         print("Gate check failed: candidate discovery unknown. Exiting.")
-        log_fire(mode, None, [], None, [{"reason": "gate_unknown"}])
+        log_fire(mode, None, [], None, [{"reason": "gate_unknown"}], health=fire_health)
         return 1
 
     if not has_candidates:
         print("No unbound opencode-lane candidates found. Exiting.")
-        log_fire(mode, [], [], None, [{"reason": "no_candidates"}])
+        log_fire(
+            mode,
+            fire_candidates if fire_candidates is not None else [],
+            [],
+            None,
+            [{"reason": "no_candidates"}],
+            health=fire_health,
+        )
         return 0
 
     # Step 3: Cap
@@ -1013,25 +1303,46 @@ def main():
 
     if cap_room == -1:
         print("Warning: Could not determine cap room. Exiting.")
-        log_fire(mode, [], [], None, [{"reason": "cap_unknown"}])
+        log_fire(
+            mode,
+            fire_candidates,
+            [],
+            None,
+            [{"reason": "cap_unknown"}],
+            health=fire_health,
+        )
         return 1
 
     if cap_room <= 0:
         print(f"Cap saturated ({CONCURRENCY_CAP} active sessions). Exiting.")
-        log_fire(mode, [], [], cap_room, [{"reason": "cap_saturated"}])
+        log_fire(
+            mode,
+            fire_candidates,
+            [],
+            cap_room,
+            [{"reason": "cap_saturated"}],
+            health=fire_health,
+        )
         return 0
 
     print(f"Cap room: {cap_room} sessions available")
 
-    # Step 4: Launch
+    # Step 4: Launch, from the fire-start snapshot, excluding any
+    # task supervision recovered during this same fire.
     print("Running launch step...")
-    launched, skips = launch_step(mode, cap_room)
+    launched, skips = launch_step(
+        mode,
+        cap_room,
+        exclude_task_ids=recovered_ids,
+        fire_start_candidates=fire_candidates,
+    )
 
     # Step 5: Terminal states (handled by workers)
-    # Step 6: Log fire
+    # Step 6: Log fire - candidates_seen is the real fire-start
+    # snapshot, never a hardcoded [] (#8038 item 3).
     print(f"Fire complete. Launched {len(launched)} sessions.")
 
-    log_fire(mode, [], launched, cap_room, skips)
+    log_fire(mode, fire_candidates, launched, cap_room, skips, health=fire_health)
 
     return 0
 
