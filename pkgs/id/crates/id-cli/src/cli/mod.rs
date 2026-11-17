@@ -11,9 +11,13 @@
 //!
 //! Commands:
 //!   serve      Start server (accepts put/get from peers)
+//!   publish    Publish a program (world) on the running serve node
+//!   unpublish  Remove a dynamic publication from the running serve node
+//!   publications List the running serve node's dynamic publications
 //!   repl       Interactive REPL (alias: shell)
 //!   put        Store files (aliases: in, add, store, import)
 //!   put-hash   Store content by hash only
+//!   send       Copy a file from one server to another
 //!   get        Retrieve files by name or hash
 //!   get-hash   Retrieve by hash (shortcut)
 //!   cat        Output files to stdout (aliases: output, out)
@@ -31,7 +35,7 @@
 //!   group        Groups: create, policy, add, remove, set roles, list, join
 //!   delegate     Grant a delegate a scope in a group
 //!   revoke       Revoke a delegation by its grant's event ID
-//!   doc          Documents: publish a file; list events, frontier, history
+//!   doc          Documents: publish a file, fetch its bytes; list events, frontier, history
 //!   claim        Tag claims on any subject (set, clear, list, search)
 //!   writer-sets  Writer sets in the event store (show, expand, discover)
 //!   migrate-tags Migrate existing files to name/file auto-tags (alias: migrate)
@@ -114,12 +118,13 @@ pub use groups::{DelegateArgs, GroupCommand, GroupRemoveMode, GroupTemplate, Rev
 pub use match_audit::MatchAuditCommand;
 pub use tag::TagCommand;
 pub use world::{
-    WorldApplyArgs, WorldCapsArgs, WorldCommand, WorldCompileArgs, WorldCrossWorldWriteArgs,
-    WorldDevArgs, WorldDiffArgs, WorldDoctorArgs, WorldDownloadArgs, WorldFileScopeArgs,
-    WorldForceCrossWorldWriteArgs, WorldInstallArgs, WorldInviteArgs, WorldIsolationArgs,
-    WorldJoinArgs, WorldListArgs, WorldLogsArgs, WorldMeasureArgs, WorldMirrorArgs,
-    WorldProfileArgs, WorldRecordArgs, WorldRecordsArgs, WorldReplayArgs, WorldReplicaArgs,
-    WorldRuntimeArgs, WorldSshTunnelArgs, WorldStatsArgs, WorldVerifyArgs, WorldVia,
+    JournalCommand, WorldApplyArgs, WorldCapsArgs, WorldCommand, WorldCompileArgs,
+    WorldCrossWorldWriteArgs, WorldDevArgs, WorldDiffArgs, WorldDoctorArgs, WorldDownloadArgs,
+    WorldFileScopeArgs, WorldForceCrossWorldWriteArgs, WorldInstallArgs, WorldInviteArgs,
+    WorldIsolationArgs, WorldJoinArgs, WorldJournalArgs, WorldListArgs, WorldLogsArgs,
+    WorldMeasureArgs, WorldMirrorArgs, WorldProfileArgs, WorldRecordArgs, WorldRecordsArgs,
+    WorldReplayArgs, WorldReplicaArgs, WorldRuntimeArgs, WorldSshTunnelArgs, WorldStatsArgs,
+    WorldVerifyArgs, WorldVia,
 };
 pub use writer_sets::WriterSetCommand;
 
@@ -645,6 +650,47 @@ pub enum Command {
     /// id serve --replace-defaults
     /// ```
     Serve(ServeArgs),
+    /// Publish a program (world) on the RUNNING `id serve` (#2147).
+    ///
+    /// Drives the serve process's publication manager: the program
+    /// goes live without restarting the node, and the publication
+    /// persists across restarts. Exactly one placement is required:
+    /// `--listen ADDR` for a dedicated listener, or `--path PATH`
+    /// for a mount on the primary Explorer listener. A path mount
+    /// that shadows an Explorer route is refused unless
+    /// `--acknowledge-shadow` is passed. Operator-only: the command
+    /// connects with the serve node's own key, and fails when no
+    /// serve is running (it never edits local state directly).
+    Publish {
+        /// The world (program) name to publish.
+        world: String,
+        /// Publish on a dedicated listener at this address
+        /// (e.g. `127.0.0.1:8080`; port 0 = OS-assigned).
+        #[arg(long, conflicts_with = "path")]
+        listen: Option<String>,
+        /// Publish as a path mount on the primary Explorer
+        /// listener (e.g. `/prog`).
+        #[arg(long)]
+        path: Option<String>,
+        /// Acknowledge that a path mount shadows an Explorer
+        /// route ("I know I'm doing this").
+        #[arg(long)]
+        acknowledge_shadow: bool,
+    },
+    /// Remove a dynamic publication from the RUNNING `id serve`
+    /// (#2147): the listener closes or the Explorer route is
+    /// restored, without restarting the node.
+    Unpublish {
+        /// Unpublish the dedicated listener at this address.
+        #[arg(long, conflicts_with = "path")]
+        listen: Option<String>,
+        /// Unpublish the path mount at this path.
+        #[arg(long)]
+        path: Option<String>,
+    },
+    /// List the RUNNING `id serve`'s dynamic publications (#2147),
+    /// with live listener addresses.
+    Publications,
     /// Start an interactive REPL for issuing commands.
     ///
     /// The REPL provides a shell-like interface for executing multiple
@@ -746,6 +792,45 @@ pub enum Command {
     PutHash {
         /// File path to store, or "-" for stdin.
         source: String,
+    },
+    /// Copy a file from one running server to another (server-to-server send).
+    ///
+    /// The *source server* performs the transfer with its own identity:
+    /// it pushes the file's blob to the destination and registers the
+    /// name there. The destination's write policy must allow the source
+    /// server's node ID, and that node is recorded as the copy's origin.
+    /// No file bytes pass through this client.
+    ///
+    /// # Examples
+    ///
+    /// ```bash
+    /// # Copy report.txt from server A to server B under the same name
+    /// id send A_NODE_ID report.txt --to B_NODE_ID
+    ///
+    /// # Copy under a different destination name
+    /// id send A_NODE_ID report.txt --to B_NODE_ID --as summary.txt
+    ///
+    /// # Replace an existing destination name (old file is archived first)
+    /// id send A_NODE_ID report.txt --to B_NODE_ID --replace
+    /// ```
+    Send {
+        /// Source server node ID (64 hex characters).
+        source: String,
+        /// Name of the file on the source server.
+        name: String,
+        /// Destination server node ID (64 hex characters).
+        #[arg(long)]
+        to: String,
+        /// Name to register on the destination (defaults to the source name).
+        #[arg(long = "as")]
+        dest_name: Option<String>,
+        /// Replace an existing, different destination file; the old file
+        /// is preserved under an archive name on the destination first.
+        #[arg(long)]
+        replace: bool,
+        /// Disable relay servers for the connection to the source.
+        #[arg(long)]
+        no_relay: bool,
     },
     /// Retrieve one or more files by name or hash.
     ///
@@ -1307,16 +1392,20 @@ pub enum Command {
     Delegate(DelegateArgs),
     /// Revoke a delegation by its grant's event ID, as `delegate` printed it (P6.7b).
     Revoke(RevokeArgs),
-    /// Documents: publish a file, and list a document's events, frontier and history (P6.7c).
+    /// Documents: publish a file, fetch a document's bytes, and list a document's events,
+    /// frontier and history (P6.7c).
     ///
     /// Each action signs one event into the event store and prints one line, or one JSON object
     /// with `--json`. The store stands in for sync: nodes that share it see each other's events.
-    /// Lists print one line per row, or one JSON array with `--json`.
+    /// Publish also stores the file's bytes in the blob store under their hash, so `content`
+    /// can fetch them back by document ID. Lists print one line per row, or one JSON array
+    /// with `--json`.
     ///
     /// # Examples
     ///
     /// ```bash
     /// id doc publish notes.md --media-type text/markdown --tag topic=plans
+    /// id doc content DOCUMENT
     /// id doc history DOCUMENT
     /// id doc frontier --json
     /// ```

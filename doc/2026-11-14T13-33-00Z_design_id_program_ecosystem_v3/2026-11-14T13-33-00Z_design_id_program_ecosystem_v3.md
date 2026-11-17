@@ -48,7 +48,7 @@ assignments travel in the record's signed discovery metadata
 (author-asserted, per D6). The taxonomy itself is a governed list
 published as a registry-adjacent object by the operator. Where the
 operator disagrees with an author's category (miscategorised,
-missing), it may attach an *operator overlay* — its own tags,
+missing), it may attach an _operator overlay_ — its own tags,
 stored and served as operator data, visibly distinct from the
 signed metadata, never rewriting it. A different host's overlay
 differs; the signed record never does.
@@ -69,7 +69,7 @@ registry and starts being a storefront.
 **G4 — Featured collections are operator-signed objects, labelled
 as the operator's.** A collection is a named, ordered list of
 record references, published as its own object signed by the
-*operator's* key and rendered with that attribution ("Featured by
+_operator's_ key and rendered with that attribution ("Featured by
 <operator>"). Any host may publish collections the same way;
 featuring is a property of a host's editorial voice, not of the
 protocol, and a collection never alters the records it lists.
@@ -89,7 +89,7 @@ reassignable.
 
 **G6 — Curation is admission, and admission decisions are public.**
 D6's validity-vs-admission line governs: the operator of our
-endpoint decides what *it* lists (admission), and that decision
+endpoint decides what _it_ lists (admission), and that decision
 binds only our endpoint — a refused or removed record continues to
 exist in the registry ecosystem and on other hosts. Every removal
 from our endpoint is written to a public transparency list (record

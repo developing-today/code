@@ -76,6 +76,13 @@ export default {
       } catch {
         return errorJson(400, "bad_request", "body must be JSON");
       }
+      // `null` is valid JSON, so the parse guard above lets it through;
+      // every property read below would throw out of the handler and
+      // surface as a platform 500 instead of this route's envelope
+      // (#6879). Reject non-object bodies before dereferencing.
+      if (typeof body !== "object" || body === null) {
+        return errorJson(400, "bad_request", "body must be a JSON object");
+      }
       if (typeof body.query !== "string") {
         return errorJson(400, "bad_request", "query must be a string");
       }

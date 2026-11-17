@@ -30,7 +30,9 @@ TOKEN_NAME = "turso.fleet-platform-rw-token"
 def get_token():
     out = subprocess.run(
         ["fleet", "secrets", "get", TOKEN_NAME],
-        capture_output=True, text=True, timeout=60,
+        capture_output=True,
+        text=True,
+        timeout=60,
     )
     if out.returncode != 0:
         raise SystemExit(f"token fetch failed for {TOKEN_NAME} (rc={out.returncode})")
@@ -38,16 +40,21 @@ def get_token():
 
 
 def execute(token, sql):
-    body = json.dumps({
-        "requests": [
-            {"type": "execute", "stmt": {"sql": sql}},
-            {"type": "close"},
-        ]
-    }).encode()
+    body = json.dumps(
+        {
+            "requests": [
+                {"type": "execute", "stmt": {"sql": sql}},
+                {"type": "close"},
+            ]
+        }
+    ).encode()
     req = urllib.request.Request(
-        TURSO_URL, data=body,
-        headers={"Authorization": f"Bearer {token}",
-                 "Content-Type": "application/json"},
+        TURSO_URL,
+        data=body,
+        headers={
+            "Authorization": f"Bearer {token}",
+            "Content-Type": "application/json",
+        },
     )
     with urllib.request.urlopen(req, timeout=120) as resp:
         payload = json.load(resp)
@@ -63,10 +70,17 @@ def scalar(result):
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__)
-    ap.add_argument("--days", type=int, default=90,
-                    help="hot retention window in days (default 90, per #5693 design)")
-    ap.add_argument("--dry-run", action="store_true",
-                    help="count the rows past the window without deleting")
+    ap.add_argument(
+        "--days",
+        type=int,
+        default=90,
+        help="hot retention window in days (default 90, per #5693 design)",
+    )
+    ap.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="count the rows past the window without deleting",
+    )
     args = ap.parse_args()
     if args.days < 1:
         raise SystemExit("--days must be positive")

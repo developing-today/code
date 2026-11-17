@@ -55,6 +55,37 @@ pub struct Thread {
     pub title: String,
 }
 
+/// Reference-not-content pointer from a board post to a note, per the
+/// note->board sharing model decided on #5830 (implementation #7587).
+///
+/// The post stores ONLY this reference: the note's object id, the home
+/// server that serves it, the pinned version id plus that version's
+/// content hash, and the sharer attribution. Note content is never
+/// copied into the post, so pinned-view semantics and visibility
+/// revocation on the home server stay meaningful (later slices render
+/// live vs pinned views and resolve cross-server, grant-checked and
+/// hash-verified against `pinned_content_hash`). The referenced note
+/// is NOT a board-graph dependency: it need not — and ordinarily will
+/// not — be present in this graph, so graph insertion never requires
+/// it and replication closure never claims it.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct NoteRef {
+    /// Object id of the shared note on its home server.
+    pub object: ArtifactHash,
+    /// Home server that serves the note (host identifier text).
+    pub home_server: String,
+    /// Version id of the note version pinned at share time.
+    pub pinned_version: ArtifactHash,
+    /// Content hash of the pinned note version; renderers and
+    /// resolvers must verify fetched content against it.
+    pub pinned_content_hash: ArtifactHash,
+    /// Sharer's canonical Ed25519 public key; must match the post's
+    /// signer, so a share can only be attributed to its author.
+    /// Sharing grants no edit rights and creates no fork.
+    pub sharer: String,
+}
+
 /// Immutable post or post revision.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -71,6 +102,11 @@ pub struct Post {
     pub attachments: Vec<ArtifactHash>,
     /// Typed hook for a signed game post; it does not imply execution.
     pub embed_ref: Option<GamePostRef>,
+    /// Reference-not-content pointer to a shared note, if this post
+    /// shares one (#7587). Older v1 post bodies written before this
+    /// field existed decode as .
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub note_ref: Option<NoteRef>,
 }
 
 /// Metadata-only reference to a content-addressed attachment blob.

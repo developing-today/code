@@ -21,7 +21,13 @@ use iroh::{
 };
 use iroh_base::EndpointId;
 
-use crate::protocol::{MetaRequest, MetaResponse};
+use iroh_blobs::{
+    ALPN as BLOBS_ALPN, Hash,
+    api::Store,
+    protocol::{ChunkRanges, ChunkRangesSeq, PushRequest},
+};
+
+use crate::protocol::{META_ALPN, MetaRequest, MetaResponse};
 
 /// Maximum accepted size of a single response (64 MiB).
 pub const MAX_RESPONSE_BYTES: usize = 64 * 1024 * 1024;
@@ -317,5 +323,72 @@ mod tests {
             format!("response too large: exceeds the {MAX_RESPONSE_BYTES}-byte limit"),
             "the message must be exactly the named limit, with no leftover placeholder text"
         );
+    }
+}
+
+const PUT_FINALIZATION_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(2 * 60);
+
+/// Upload `hash` to `target`, **then** register `name` for it.
+///
+/// Two ordering rules make this safe:
+///
+/// 1. **Bytes before name.** The server verifies the blob is present before it
+///    creates a name, so a failed upload can never leave a dangling name.
+/// 2. **Keep the blobs connection open until the server confirms.** A push is
+///    one-way — the server sends no acknowledgement — and closing the QUIC
+///    connection right after the last write can abort the server's import of
+///    data it has buffered but not yet processed. The `Put` request is the
+///    acknowledgement: the server answers it once the blob is complete, so we
+///    close the blobs connection only after that.
+///
+/// A `Put` for a blob that is still being finalized is retried for up to two
+/// minutes (large blobs take a moment to finish on the server).
+pub async fn push_and_name(
+    store: &Store,
+    endpoint: &Endpoint,
+    target: EndpointAddr,
+    name: &str,
+    hash: Hash,
+) -> Result<()> {
+    let blobs_conn = id_core::connectivity::connect(endpoint, target.clone(), BLOBS_ALPN).await?;
+    let push_request = PushRequest::new(hash, ChunkRangesSeq::from_ranges([ChunkRanges::all()]));
+    store
+        .remote()
+        .execute_push(blobs_conn.clone(), push_request)
+        .await
+        .context(
+            "blob push rejected: the server only accepts writes from allowed nodes \
+             (run `id id --client` on this machine and add the printed ID to the \
+             server's `--allow-node` or `.iroh-allowed`)",
+        )?;
+
+    let meta_conn = id_core::connectivity::connect(endpoint, target, META_ALPN).await?;
+    let req = MetaRequest::Put {
+        filename: name.to_owned(),
+        hash,
+    };
+    let outcome = id_core::connectivity::within(
+        PUT_FINALIZATION_TIMEOUT,
+        "registering the blob name",
+        async {
+            loop {
+                match request_over(&meta_conn, &req).await? {
+                    MetaResponse::Error { message }
+                        if crate::fileops::is_blob_missing_message(&message) =>
+                    {
+                        tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+                    }
+                    response => return Ok(response),
+                }
+            }
+        },
+    )
+    .await;
+    meta_conn.close(0u32.into(), b"done");
+    blobs_conn.close(0u32.into(), b"done");
+    match expect_ok(outcome?)? {
+        MetaResponse::Put { success: true } => Ok(()),
+        MetaResponse::Put { success: false } => bail!("server rejected"),
+        _ => bail!("unexpected response"),
     }
 }

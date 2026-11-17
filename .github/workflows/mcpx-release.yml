@@ -18,7 +18,12 @@ name: mcpx release
 # A manual run (workflow_dispatch) is a snapshot: it builds the same three
 # artifacts with the same script and uploads them as a workflow artifact,
 # without publishing a release. That run is the proof the release path works,
-# and it is how a person checks a change before tagging.
+# and it is how a person checks a change before tagging. The one exception
+# is a dispatch with publish=true (#9900): the container job then also
+# pushes the image to GHCR — the only publish path left for an existing
+# tag since tag-push triggers were disabled — while the GitHub-release
+# job stays push-only, so a dispatch never creates or re-creates a
+# release.
 on:
   workflow_dispatch:
     inputs:
@@ -26,6 +31,11 @@ on:
         description: "Version to build (default: pkgs/mcpx/VERSION)"
         required: false
         type: string
+      publish:
+        description: "Publish the container image to GHCR for the version above (release publish; does not create a GitHub release)"
+        required: false
+        default: false
+        type: boolean
 
 permissions:
   actions: read
@@ -264,22 +274,31 @@ jobs:
 
   container:
     name: "release: container image"
-    # Channel 3 (decision 0005 §2.3, §6.6): the Containerfile already builds a
-    # working image; this wires it to the release version so the image cannot
-    # carry a fifth hand-synced copy of the string. A tag pushes it to GHCR;
-    # a snapshot builds it and reads `mcpx --version` back, proving the
-    # build-arg path without publishing anything.
+    # Channel 3 (decision 0005 §2.3, §6.6; Nix cutover #5771): the shipped
+    # image is the Nix-built packages.x86_64-linux.mcpx-container artifact,
+    # whose tag comes from pkgs/mcpx/VERSION — the same single source the
+    # release version is read from. A tag push — or a dispatch with
+    # publish=true (#9900) — pushes it to GHCR; a plain snapshot builds
+    # it and reads `mcpx --version` back without publishing.
     needs: artifacts
     # Same always() opt-in as installer above: a skipped release-gate must
     # not silently drop the snapshot container build on manual runs.
     if: always() && needs.artifacts.result == 'success'
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@v7
 
+      - uses: DeterminateSystems/nix-installer-action@3138316df39ed29be04236d7ffc686fa525866aa # v23
+
+      - uses: DeterminateSystems/magic-nix-cache-action@84c0677f58dcedf3b91f8223ce36a9ea5b3c84b7 # v15
+        continue-on-error: true
+        with:
+          use-flakehub: false
+          use-gha-cache: true
+
       - name: Log in to GHCR
-        if: github.event_name == 'push'
+        if: github.event_name == 'push' || inputs.publish
         uses: docker/login-action@v4
         with:
           registry: ghcr.io
@@ -289,6 +308,7 @@ jobs:
       - name: Build the image at the release version, and read it back
         env:
           VERSION: ${{ needs.artifacts.outputs.version }}
+          PUBLISH: ${{ github.event_name == 'push' || inputs.publish }}
           # Lowercased: GHCR rejects uppercase, and an owner or repo name can
           # carry it. The image sits under the repository, so it cannot
           # collide with another package's image in the same org.
@@ -296,22 +316,25 @@ jobs:
         run: |
           set -euo pipefail
           image=$(printf '%s' "$IMAGE" | tr '[:upper:]' '[:lower:]')
-          tags=(--tag "$image:$VERSION")
-          if [ "$GITHUB_EVENT_NAME" = "push" ]; then
-            tags+=(--tag "$image:latest")
+          nix build .#packages.x86_64-linux.mcpx-container --print-build-logs --out-link mcpx-image
+          loaded=$(docker load -i mcpx-image | sed -n 's/^Loaded image: //p')
+          test -n "$loaded"
+          echo "loaded $loaded"
+          case "$loaded" in
+          *":$VERSION") ;;
+          *) echo "::error::Nix image tag '$loaded' does not match release version '$VERSION' (pkgs/mcpx/VERSION is the single source)"; exit 1 ;;
+          esac
+          docker tag "$loaded" "$image:$VERSION"
+          if [ "$PUBLISH" = "true" ]; then
+            docker tag "$loaded" "$image:latest"
           fi
-          docker build \
-            --file pkgs/mcpx/Containerfile \
-            --build-arg "VERSION=$VERSION" \
-            "${tags[@]}" \
-            pkgs/mcpx
           got=$(docker run --rm "$image:$VERSION" --version)
           echo "image mcpx --version: $got"
           case "$got" in
           *"$VERSION"*) ;;
           *) echo "::error::image reports '$got', expected $VERSION"; exit 1 ;;
           esac
-          if [ "$GITHUB_EVENT_NAME" = "push" ]; then
+          if [ "$PUBLISH" = "true" ]; then
             docker push "$image:$VERSION"
             docker push "$image:latest"
             echo "published $image:$VERSION"

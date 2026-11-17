@@ -19,11 +19,18 @@
 //! at its historical `id::` path, so no call site outside the moved
 //! modules changed.
 
+/// The port contract (`record-store` port kind) this crate's adapters
+/// advertise against, owned by `id-core` (slice 9110-02, #10160).
+pub use id_core::port;
+
 pub mod chain;
 pub mod chat;
+pub mod chat_anchor;
 pub mod documents;
 pub mod event_types;
 pub mod issuer_rotation;
+pub mod media;
+pub mod note_checkpoints;
 pub mod note_links;
 pub mod notes;
 pub mod policy;

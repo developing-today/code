@@ -27,10 +27,14 @@
 //   itself and its run log names "requested via dashboard, action
 //   da-…".
 // - kind "session" — routed by the action's sessionSource: the
-//   orchestration pass consumes the OpenCode sources
-//   ("opencode-sandbox", "opencode-laptop") for poke/answer/stop.
-//   Sources with no live control channel (claude-code, cron) render
-//   no enabled controls.
+//   fast session-action consumer (a dedicated minutely cron,
+//   #10118) consumes the OpenCode laptop source
+//   ("opencode-laptop") for poke/answer/stop, so an answer lands
+//   inside the question tool's ~600 s live window; it also rejects
+//   "opencode-sandbox" actions (that server is retired). The
+//   orchestration pass no longer polls this slice. Sources with no
+//   live control channel (claude-code, cron) render no enabled
+//   controls.
 // - kind "preference" — the orchestration pass: set-delegation-default
 //   records the standing auto toggle (#1290; Drew's 2026-10-27 decision
 //   is the initial record). The aggregator also reads these records to
@@ -557,6 +561,13 @@ export function newClientToken(): string {
   return `ct-${Date.now().toString(36)}-${rand}`;
 }
 
+export interface ActionsRemote {
+  loadAll(): Promise<DashAction[]>;
+  /** Upsert the store's full current record set. History is never
+   *  deleted; state transitions ride the same rows. */
+  saveAll(actions: readonly DashAction[]): Promise<void>;
+}
+
 export class ActionsStore {
   private actions: DashAction[] = [];
   private fileExtras: Record<string, unknown> = {};
@@ -567,6 +578,9 @@ export class ActionsStore {
   constructor(
     private readonly file: string,
     private readonly archive: StoreArchive = archiveStoreBytes,
+    /** #6815: when set, the store uses this backend instead of the file.
+     *  The file is then never read or written (no dual write). */
+    private readonly remote?: ActionsRemote,
   ) {}
 
   // The load is memoized as a single promise (#1509): the old
@@ -579,6 +593,11 @@ export class ActionsStore {
   }
 
   private async doLoad(): Promise<void> {
+    if (this.remote) {
+      this.actions = await this.remote.loadAll();
+      this.fileExtras = {};
+      return;
+    }
     // #1452: a missing file is the only silent empty start ("no store
     // yet"). An unparseable or wrongly-shaped file is NOT an empty
     // store: it is the append-only audit history, so quarantine the
@@ -685,6 +704,10 @@ export class ActionsStore {
   // CommentsStore.persist (#1509).
   private persist(): Promise<void> {
     const run = this.writeChain.then(async () => {
+      if (this.remote) {
+        await this.remote.saveAll([...this.actions]);
+        return;
+      }
       const data = { ...this.fileExtras, version: 1 as const, actions: this.actions };
       await mkdir(dirname(this.file), { recursive: true });
       const tmp = `${this.file}.tmp-${process.pid}-${++this.writeSeq}`;

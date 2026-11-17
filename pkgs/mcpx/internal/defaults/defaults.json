@@ -102,13 +102,16 @@
     "taskResultWait": "2m",
     "statsTop": 20,
     "registryLimit": 20,
-    "handoffRetryInterval": "10ms"
+    "handoffRetryInterval": "10ms",
+    "scriptWait": "2s",
+    "failoverCooldown": "60s"
   },
   "resolve": {
     "dialTimeout": "200ms"
   },
   "preflight": {
-    "npmTimeout": "5s"
+    "npmTimeout": "5s",
+    "probeTimeout": "10s"
   },
   "elicit": {
     "ttl": "120s",

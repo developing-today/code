@@ -43,7 +43,9 @@ import {
   activityCoverageHtml,
   gapsHtml,
   ACTIVITY_SOURCE_COVERAGE,
+  type ActivitySourceStatus,
 } from "./activity.ts";
+import { GithubHotListConsumer, unconfiguredGithubStatus } from "./github-hot-list.ts";
 import { RoadmapAnnotationsStore, validateNewRoadmapAnnotation } from "./roadmap-annotations.ts";
 import { createAccessAuthorEnforcer, enforceAccessAuthor } from "./access-identity.ts";
 import {
@@ -54,6 +56,7 @@ import {
   type RepoCensus,
 } from "./coverage.ts";
 import { loadConfig } from "./config.ts";
+import { createSupabaseRemotes } from "./remote-stores.ts";
 import { itemServiceLinks } from "./service-links.ts";
 import { loadFeed } from "./feed.ts";
 import { AA_PLAN_FACTS, sectionPoolIdsFromConfig } from "./aa.ts";
@@ -112,6 +115,7 @@ import {
 import { manifestRouteFor } from "./pages.ts";
 import { conflictInbox, type ConflictInbox } from "./conflicts.ts";
 import { watchdogTierItems, WATCHDOG_PROBE_SERVICE_IDS } from "./watchdog.ts";
+import { readHostHealthSnapshot } from "./host-health.ts";
 import {
   allRefs,
   buildAttention,
@@ -142,6 +146,9 @@ import {
   projectConfigById,
 } from "./project-config.ts";
 import { PHASE12_REPO, parsePhase12Steps, type Phase12Snapshot } from "./phase12.ts";
+import { PHASE_MAPPING_REPO, type PhaseMappingSnapshot } from "./phase-mapping.ts";
+import type { BuildHealthSnapshot } from "./build-health.ts";
+import { parseF12Items, type F12PrRef } from "./f12-readiness.ts";
 import { identitiesFromRecords, type AuthorIdentity } from "./registry.ts";
 import {
   attentionFragment,
@@ -198,6 +205,7 @@ import { recordSwProbe, swProbeSummary, VAPID_PUBLIC_KEY } from "./push.ts";
 import { resolveBwsSecret, resolveBwsSecretLookup } from "./secrets.ts";
 import { SW_SOURCE } from "./sw-source.ts";
 import { renderAlerts, renderNotificationPreferences, renderNotifications, renderDigest, esc } from "./render.ts";
+import type { QueueSnapshot } from "./queue.ts";
 import {
   deriveSoleDoorPoolIds,
   isNotificationTestClass,
@@ -326,7 +334,12 @@ async function coverageSnapshot(
   }
   return next;
 }
-const actionsStore = new ActionsStore(cfg.actionsFile);
+// #6815: the four formerly laptop-local stores (actions, activity
+// ingestion, usage snapshots, aa-last-good) move to muse-dev2 when
+// PM_AGG_STORE_BACKEND=supabase. Exactly one backend is active: with
+// "file" (the default) no remote exists and no database call is made.
+const storeRemotes = cfg.storeBackend === "supabase" ? createSupabaseRemotes() : null;
+const actionsStore = new ActionsStore(cfg.actionsFile, undefined, storeRemotes?.actions);
 const viewsStore = new ViewsStore(cfg.viewsFile);
 const eventsStore = new EventsStore(cfg.eventsFile);
 const freshnessStore = new FreshnessStore(cfg.freshnessFile);
@@ -337,7 +350,42 @@ const freshnessStore = new FreshnessStore(cfg.freshnessFile);
  *  collector's notice identity (generatedAt + sha256 of the file).
  *  Its health view feeds /health + /api/health via healthContext. */
 const freshnessReconciler = new FreshnessReconciler(freshnessStore, [fleetFeedRevisionReader(cfg.feedFile)]);
-const activityStore = new IngestionStore(cfg.activityFile);
+const activityStore = new IngestionStore(cfg.activityFile, storeRemotes?.activity);
+const githubHotListConsumer =
+  cfg.source === "live" && cfg.projector.baseUrl && cfg.projector.apiToken
+    ? new GithubHotListConsumer({
+        baseUrl: cfg.projector.baseUrl,
+        token: cfg.projector.apiToken,
+        store: activityStore,
+        events: eventsStore,
+      })
+    : null;
+
+async function githubActivityStatus(): Promise<ActivitySourceStatus> {
+  return (
+    (await activityStore.sourceStatuses()).find((status) => status.source === "github") ?? unconfiguredGithubStatus()
+  );
+}
+
+function activitySourceStatusHtml(status: ActivitySourceStatus): string {
+  const cursorDistance =
+    status.checkpointCursor !== null && status.highWater !== null
+      ? Math.max(0, status.highWater - status.checkpointCursor)
+      : null;
+  const cursorText = status.cursor === null ? "not checkpointed" : String(status.cursor);
+  const checkpointText = status.checkpointCursor === null ? "not checkpointed" : String(status.checkpointCursor);
+  const highWaterText = status.highWater === null ? "unknown" : String(status.highWater);
+  const lagText = cursorDistance === null ? "unknown" : String(cursorDistance);
+  const escapeHtml = (value: string) =>
+    value.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+  const error = status.error ? `; detail: ${escapeHtml(status.error)}` : "";
+  return (
+    `<p>GitHub hot-list consumer: <strong>${status.state}</strong>; processed cursor ${cursorText}; ` +
+    `acknowledged cursor ${checkpointText}; high-water ${highWaterText}; unacknowledged cursor distance ${lagText}; ` +
+    `last successful sweep ${escapeHtml(status.lastSuccessAt ?? "never")}${error}. ` +
+    `Current means caught up to the hot-list high-water, not complete GitHub history.</p>`
+  );
+}
 
 /** #1739: the event log's fire-and-forget sink for source-side
  *  writers (orchestration publishes, registry merges). Never awaited,
@@ -347,7 +395,7 @@ function recordStreamEvent(event: Parameters<typeof emitEvent>[1]): void {
 }
 
 /** #3321: the activity-ingestion sink for the source-side writers
- *  (watchdog episodes, Kaneo board changes). Dedupe + checkpoints
+ *  (watchdog episodes, Kaneo board changes, GitHub hot-list rows). Dedupe + checkpoints
  *  live in the store. The returned promise resolves true only when
  *  every delivery is durable (ingested or already seen): the live
  *  source awaits it as the acknowledgment that lets it discard its
@@ -417,6 +465,7 @@ function pickSource(): Source {
         onFreshness: recordFreshness,
         onSourceGap: recordSourceGap,
         seenActivityIds: (source) => activityStore.seenIds(source),
+        snapshotRemote: storeRemotes?.usage,
       })
     : fixtureSource();
 }
@@ -1555,9 +1604,14 @@ const enqueueWatchdogGapSync = createWatchdogGapSyncQueue();
 // registry age from the source's already-loaded feed.
 async function deriveWatchdogItems(diagnosis?: ReturnType<NonNullable<Source["diagnostics"]>>["orchestration"]) {
   if (cfg.source !== "live") return [];
-  const [health, projectAudit] = await Promise.all([
+  const [health, projectAudit, hostHealth] = await Promise.all([
     healthContext(false),
     source.projectAudit ? source.projectAudit().catch(() => null) : Promise.resolve(null),
+    // #10141: the host-health collector's snapshot (claimant mode +
+    // PM unit states). A read failure yields null, which the watchdog
+    // surfaces as the snapshot-absent item — the surfacer's own
+    // silence is a breach, never a pass.
+    readHostHealthSnapshot(cfg.hostHealthFile).catch(() => null),
   ]);
   const items = watchdogTierItems({
     now: Date.now(),
@@ -1575,6 +1629,7 @@ async function deriveWatchdogItems(diagnosis?: ReturnType<NonNullable<Source["di
         detail: s.detail,
         ...(s.probedAt ? { probedAt: s.probedAt } : {}),
       })),
+    hostHealth,
   });
   // #3321: every derivation is also an ingestion pass — the current
   // breach episodes go to the stream (dedupe makes re-derivation a
@@ -1589,7 +1644,7 @@ async function deriveWatchdogItems(diagnosis?: ReturnType<NonNullable<Source["di
   return items;
 }
 
-async function attentionContext(opts: { census?: boolean } = {}) {
+async function loadAttentionContext(opts: { census?: boolean } = {}) {
   // #1226/#3970: the Needs-Drew census costs up to eight sequential
   // GitHub search calls (up to ~64 s when the API is unreachable). Only
   // the attention page render consumes it, so it opts in; the overview,
@@ -1630,10 +1685,32 @@ async function attentionContext(opts: { census?: boolean } = {}) {
   };
 }
 
+// #9850: /api/attention.json is a sentinel-probed health surface, but
+// the assembly above re-reads every source leg on every request — under
+// load that per-request cost is what flapped the feed (multi-second
+// answers at load ~10). Same contract as the today/overview assemblies
+// (#5082): a short-TTL cache with coalesced loads and
+// stale-while-revalidate, one cache per census variant — the census
+// assembly costs up to ~64 s of GitHub search calls and must never
+// ride the JSON path, or vice versa.
+const attentionContextCache = new TodayCache<Awaited<ReturnType<typeof loadAttentionContext>>>(TODAY_CACHE_TTL_MS);
+const attentionCensusContextCache = new TodayCache<Awaited<ReturnType<typeof loadAttentionContext>>>(
+  TODAY_CACHE_TTL_MS,
+);
+async function attentionContext(opts: { census?: boolean } = {}) {
+  return opts.census
+    ? attentionCensusContextCache.get(() => loadAttentionContext(opts))
+    : attentionContextCache.get(() => loadAttentionContext(opts));
+}
+
 /**
- * One Datastar patch-elements event (#1444). The fragment root
- * carries its own id + data-on-load attributes, so "outer" mode
- * replaces the shell's placeholder with a self-refreshing container.
+ * One Datastar patch-elements event (#1444). The fragment root carries
+ * its own id + `data-on:dashrefresh__window` refresh hook, so "outer"
+ * mode replaces the shell's placeholder with a self-refreshing
+ * container. The payload deliberately carries NO `data-init` (#10605):
+ * an outer-mode patch re-mounts the element, so an init trigger inside
+ * the payload would fetch itself again on every patch — a loop. First
+ * paint is driven by the shell placeholder's `data-init` instead.
  */
 function ssePatch(selector: string, elementHtml: string): string {
   const lines = elementHtml
@@ -1821,6 +1898,8 @@ async function overviewContext(): Promise<Awaited<ReturnType<typeof loadOverview
 freshnessStore.onNotice(() => {
   overviewContextCache.invalidate();
   todayContextCache.invalidate();
+  attentionContextCache.invalidate();
+  attentionCensusContextCache.invalidate();
   void overviewContext().catch(() => {});
   void todayContext().catch(() => {});
 });
@@ -2404,6 +2483,7 @@ async function handler(req: Request): Promise<Response> {
         `<button type="submit">Filter</button></form>` +
         eventTableHtml(page.events) +
         (nextUrl ? `<p><a rel="next" href="${esc(nextUrl.pathname + nextUrl.search)}">Next page →</a></p>` : "") +
+        `<h2>Activity source status</h2>${activitySourceStatusHtml(await githubActivityStatus())}` +
         `<h2>Activity gaps</h2><div class="tblwrap">` +
         gapsHtml(await activityStore.gaps()) +
         `</div><h2>Activity source coverage</h2><div class="tblwrap">` +
@@ -2416,8 +2496,18 @@ async function handler(req: Request): Promise<Response> {
     // #3321: activity-ingestion state — per-source checkpoints, gap
     // records, and the documented source coverage. The machine twin
     // of the sections the /events page renders below its table.
-    const [checkpoints, gaps] = await Promise.all([activityStore.checkpoints(), activityStore.gaps()]);
-    return json({ checkpoints, gaps, coverage: ACTIVITY_SOURCE_COVERAGE });
+    const [checkpoints, gaps, sources] = await Promise.all([
+      activityStore.checkpoints(),
+      activityStore.gaps(),
+      activityStore.sourceStatuses(),
+    ]);
+    const github = sources.find((status) => status.source === "github") ?? unconfiguredGithubStatus();
+    return json({
+      checkpoints,
+      gaps,
+      sources: [{ ...github, completeHistory: false }],
+      coverage: ACTIVITY_SOURCE_COVERAGE,
+    });
   }
   if (path === "/api/views.json") {
     // #1276: the saved views, per owner (?owner=<kind>:<id>) or all.
@@ -2474,7 +2564,7 @@ async function handler(req: Request): Promise<Response> {
   }
   if (path === "/frag/overview") {
     const data = await overviewContext();
-    const wrapped = `<div id="overview-main" data-frag data-on-load="@get('/frag/overview')" data-on:dashrefresh__window="@get('/frag/overview')">${renderOverviewBody(deriveOverview(data))}</div>`;
+    const wrapped = `<div id="overview-main" data-frag data-on:dashrefresh__window="@get('/frag/overview')">${renderOverviewBody(deriveOverview(data))}</div>`;
     return sseResponse(ssePatch("#overview-main", wrapped));
   }
   if (path === "/board") {
@@ -2505,7 +2595,7 @@ async function handler(req: Request): Promise<Response> {
     const fragUrl = fragBoardUrl(url.searchParams);
     const resolved = await resolveView(url);
     const view = resolved ? filterBoardForView(board, items, act.poolByRef, resolved.filters) : { board, items };
-    const wrapped = `<div id="board-main" data-frag data-on-load="@get('${fragUrl}')" data-on:dashrefresh__window="@get('${fragUrl}')">${renderBoardBody(view.board, view.items, counts, act, { showAllDone: url.searchParams.get("done") === "all" })}</div>`;
+    const wrapped = `<div id="board-main" data-frag data-on:dashrefresh__window="@get('${fragUrl}')">${renderBoardBody(view.board, view.items, counts, act, { showAllDone: url.searchParams.get("done") === "all" })}</div>`;
     return sseResponse(ssePatch("#board-main", wrapped));
   }
 
@@ -2550,7 +2640,7 @@ async function handler(req: Request): Promise<Response> {
     // is from page load, which its footer states. (?full=1 never uses
     // the shell, so it passes questionsHtml via renderToday instead.)
     const { today, view, coverage, quota, health, quotaUnavailable, queue, queueStale } = await todayContext();
-    const wrapped = `<div id="today-main" data-frag data-on-load="@get('/frag/today')" data-on:dashrefresh__window="@get('/frag/today')">${renderTodayBody(today, view, quota, coverage, health, quotaUnavailable, queue, queueStale)}</div>`;
+    const wrapped = `<div id="today-main" data-frag data-on:dashrefresh__window="@get('/frag/today')">${renderTodayBody(today, view, quota, coverage, health, quotaUnavailable, queue, queueStale)}</div>`;
     return sseResponse(ssePatch("#today-main", wrapped));
   }
 
@@ -2574,7 +2664,7 @@ async function handler(req: Request): Promise<Response> {
   }
   if (path === "/frag/queue") {
     const view = await queueContext();
-    const wrapped = `<div id="queue-main" data-frag data-on-load="@get('/frag/queue')" data-on:dashrefresh__window="@get('/frag/queue')">${renderQueueBody(view)}</div>`;
+    const wrapped = `<div id="queue-main" data-frag data-on:dashrefresh__window="@get('/frag/queue')">${renderQueueBody(view)}</div>`;
     return sseResponse(ssePatch("#queue-main", wrapped));
   }
 
@@ -3005,10 +3095,13 @@ async function handler(req: Request): Promise<Response> {
         404,
       );
     }
-    const [items, pool, rows] = await Promise.all([
+    const [items, pool, rows, orchestration, formOpts, actionsByObject] = await Promise.all([
       source.items(allProjectRefs()).catch(() => new Map()),
       source.projects().catch(() => []),
       source.roadmap().catch(() => []),
+      source.orchestration().catch(() => null),
+      commentFormOpts(),
+      actionsStore.byObject(),
     ]);
     // #9922: the id page's Path to Phase 12 panel — fetch the #1235
     // body snapshot when the source carries one, and resolve the
@@ -3026,7 +3119,75 @@ async function handler(req: Request): Promise<Response> {
         }
       }
     }
-    return html(renderProgramProject(buildProjectDetail(config, items, pool, rows), items, prov(), provDetail(), pool, phase12));
+    // #9924: the id page's Build health panel — the Actions-API
+    // snapshot, when the source carries one.
+    let buildHealth: BuildHealthSnapshot | null = null;
+    if (config.id === "id" && source.buildHealth) {
+      buildHealth = await source.buildHealth().catch(() => null);
+    }
+    // #9921: the id page's Queue & fleet panel — the read-only
+    // fleet-queue collector snapshot (#9920), when the source
+    // carries one.
+    let queueSnap: QueueSnapshot | null = null;
+    if (config.id === "id" && source.queue) {
+      queueSnap = await source.queue().catch(() => null);
+    }
+    // #9926: the id page's Phase 12 readiness panel — #534's body
+    // (design checklist) and the F-item issues' timeline PR
+    // cross-references, when the source carries them; the F-item
+    // refs join the items map so the projection sees live states.
+    let f12: { design: Phase12Snapshot | null; prRefs: Map<number, F12PrRef[]> | null } | null = null;
+    if (config.id === "id") {
+      const [design, prRefs] = await Promise.all([
+        source.phase12Design ? source.phase12Design().catch(() => null) : Promise.resolve(null),
+        source.f12PrRefs ? source.f12PrRefs().catch(() => null) : Promise.resolve(null),
+      ]);
+      f12 = { design, prRefs };
+      if (phase12) {
+        const fRefs = parseF12Items(phase12.body).map((s) => `${PHASE12_REPO}#${s.issueNumber}`);
+        const missing = fRefs.filter((r) => !items.has(r));
+        if (missing.length) {
+          const resolved = await source.items(missing).catch(() => new Map());
+          for (const [k, v] of resolved) items.set(k, v);
+        }
+      }
+    }
+    // #9923 step 3: the Phase tracker's F-item mapping snapshot
+    // (planning/roadmaps/id.md via the source), when the source
+    // carries one, with the mapped refs resolved into the items map
+    // like the phase12 steps above.
+    let phaseMapping: PhaseMappingSnapshot | null = null;
+    if (config.id === "id" && source.phaseMapping) {
+      phaseMapping = await source.phaseMapping().catch(() => null);
+      if (phaseMapping) {
+        const mapRefs = [...new Set(phaseMapping.entries.map((e) => `${PHASE_MAPPING_REPO}#${e.number}`))];
+        const missing = mapRefs.filter((r) => !items.has(r));
+        if (missing.length) {
+          const resolved = await source.items(missing).catch(() => new Map());
+          for (const [k, v] of resolved) items.set(k, v);
+        }
+      }
+    }
+    return html(
+      renderProgramProject(
+        buildProjectDetail(config, items, pool, rows),
+        items,
+        prov(),
+        provDetail(),
+        pool,
+        phase12,
+        buildHealth,
+        f12,
+        queueSnap,
+        phaseMapping,
+        {
+          orchestration,
+          actionsByObject,
+          identities: formOpts.identities,
+          orchestrationState: source.diagnostics?.().orchestration.state,
+        },
+      ),
+    );
   }
   if (path === "/api/program-project.json") {
     const id = url.searchParams.get("id") ?? "";
@@ -4163,7 +4324,13 @@ setTimeout(() => {
   void (async () => {
     try {
       primeAttemptAggregates();
-      await Promise.allSettled([boardContext(), overviewContext(), todayContext(), programSources(), commentIdentities()]);
+      await Promise.allSettled([
+        boardContext(),
+        overviewContext(),
+        todayContext(),
+        programSources(),
+        commentIdentities(),
+      ]);
       // #9781: warm the briefs' latest comments for the program pool
       // too — the board briefs read a subset of the same refs, so one
       // prime covers both pages, and neither page's first post-restart
@@ -4213,6 +4380,37 @@ if (source.ingestSnapshots) {
   };
   void ingestSnapshots(); // recover the latest feed immediately on startup
   setInterval(() => void ingestSnapshots(), SNAPSHOT_INGEST_INTERVAL_MS);
+}
+
+// The hot-list consumer is a server-owned writer just like snapshot
+// ingestion: it runs immediately on startup and then periodically, never
+// as a side effect of rendering a page. A failed sweep leaves the remote
+// checkpoint untouched and is retried on the next tick.
+const GITHUB_HOT_LIST_INTERVAL_MS = 60_000;
+if (githubHotListConsumer) {
+  let githubSyncRunning = false;
+  const syncGithubHotList = async (): Promise<void> => {
+    if (githubSyncRunning) return;
+    githubSyncRunning = true;
+    try {
+      await githubHotListConsumer.sync();
+    } catch (error) {
+      console.error(
+        `[activity] WARNING: GitHub hot-list worker failed: ${error instanceof Error ? error.message : String(error)}`,
+      );
+    } finally {
+      githubSyncRunning = false;
+    }
+  };
+  void syncGithubHotList();
+  const timer = setInterval(() => void syncGithubHotList(), GITHUB_HOT_LIST_INTERVAL_MS);
+  timer.unref?.();
+} else {
+  void activityStore.setSourceStatus(unconfiguredGithubStatus()).catch((error) => {
+    console.error(
+      `[activity] WARNING: could not persist unconfigured GitHub source status: ${error instanceof Error ? error.message : String(error)}`,
+    );
+  });
 }
 
 // The alert throat's engine (#3676): the ~60s delivery/escalation

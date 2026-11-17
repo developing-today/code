@@ -40,6 +40,156 @@ export function fmtN(n: number): string {
   return `${Math.round(n)}`;
 }
 
+// --- Reset horizon (#9553 Part 1, Drew 2026-11-13) -------------------------
+// A reset timeline spanning the past 3 days through 35 days out, per
+// pool/window, so "what is open, what opens soon, what is walled" —
+// including the monthly walls into next month — reads at a glance.
+// Events are stepped from each window's recorded next reset by its
+// period; a window whose name names no known period contributes only
+// its recorded reset. All rendering is America/Chicago (fmtWhen).
+
+export interface ResetHorizonEvent {
+  poolId: string;
+  provider: string;
+  plan: string;
+  window: string;
+  percent: number;
+  at: number;
+  /** The recorded next reset itself, vs a stepped neighbour. */
+  recorded: boolean;
+  /** Sub-daily windows repeat inside the horizon; the event list is
+   * thinned to the neighbourhood of now and this flag says so. */
+  thinned: boolean;
+}
+
+export const HORIZON_PAST_MS = 3 * 86_400_000;
+export const HORIZON_FUTURE_MS = 35 * 86_400_000;
+const DAY_MS = 86_400_000;
+
+/** One period step for a window name, or null when the name names no
+ * known period (monthly is calendar-stepped, not a fixed ms count). */
+export function resetPeriodMs(name: string): number | null {
+  const n = name.toLowerCase();
+  if (n.includes("5-hour") || n.includes("5h")) return 5 * 3_600_000;
+  if (n.includes("hour")) return 3_600_000;
+  if (n.includes("week") || n === "7d") return 7 * DAY_MS;
+  if (n.includes("day") || n === "daily" || n === "24h" || n === "1d") return DAY_MS;
+  return null;
+}
+
+function stepReset(ms: number, name: string, dir: 1 | -1): number | null {
+  if (name.toLowerCase().includes("month")) {
+    const d = new Date(ms);
+    d.setUTCMonth(d.getUTCMonth() + dir);
+    return d.getTime();
+  }
+  const period = resetPeriodMs(name);
+  return period == null ? null : ms + dir * period;
+}
+
+export function resetHorizonEvents(a: QuotaAnalytics): ResetHorizonEvent[] {
+  const lo = a.now - HORIZON_PAST_MS;
+  const hi = a.now + HORIZON_FUTURE_MS;
+  const out: ResetHorizonEvent[] = [];
+  for (const p of a.pools) {
+    for (const w of p.windows) {
+      if (!w.resetsAt) continue;
+      const first = Date.parse(w.resetsAt);
+      if (!Number.isFinite(first)) continue;
+      const period = resetPeriodMs(w.name);
+      const monthly = w.name.toLowerCase().includes("month");
+      const subDaily = period != null && period < DAY_MS;
+      const ats = new Set<number>();
+      if (first >= lo && first <= hi) ats.add(first);
+      if (period != null || monthly) {
+        let cur = first;
+        for (let i = 0; i < 500; i++) {
+          const prev = stepReset(cur, w.name, -1);
+          if (prev == null || prev < lo) break;
+          ats.add(prev);
+          cur = prev;
+        }
+        cur = first;
+        for (let i = 0; i < 500; i++) {
+          const next = stepReset(cur, w.name, 1);
+          if (next == null || next > hi) break;
+          ats.add(next);
+          cur = next;
+        }
+      }
+      let list = [...ats].sort((x, y) => x - y);
+      let thinned = false;
+      if (subDaily && period != null) {
+        const kept = list.filter((at) => at >= a.now - 15 * 3_600_000 && at <= a.now + period);
+        thinned = kept.length < list.length;
+        list = kept;
+      }
+      for (const at of list) {
+        out.push({
+          poolId: p.poolId,
+          provider: p.provider,
+          plan: p.plan,
+          window: w.name,
+          percent: w.percent,
+          at,
+          recorded: at === first,
+          thinned,
+        });
+      }
+    }
+  }
+  return out.sort((x, y) => x.at - y.at);
+}
+
+const dayFmt = new Intl.DateTimeFormat("en-US", {
+  timeZone: "America/Chicago",
+  weekday: "short",
+  month: "short",
+  day: "numeric",
+});
+
+function resetHorizonHtml(a: QuotaAnalytics, display: (n: string) => string): string {
+  const events = resetHorizonEvents(a);
+  const head =
+    `<h3 id="analytics-horizon">Reset horizon — past 3 days to next 35 days</h3>` +
+    `<p class="muted">Every pool window's resets in the horizon, stepped from its recorded next reset by its period. All times America/Chicago (Central) — no UTC on this page.</p>`;
+  if (!events.length)
+    return head + `<div class="card"><span class="muted">no recorded resets in the horizon</span></div>`;
+  const byWindow = new Map<string, ResetHorizonEvent[]>();
+  for (const e of events) {
+    const key = `${e.poolId} ${e.window}`;
+    const list = byWindow.get(key) ?? [];
+    list.push(e);
+    byWindow.set(key, list);
+  }
+  const rows: string[] = [];
+  for (const list of byWindow.values()) {
+    const firstEv = list[0];
+    const past = list.filter((e) => e.at < a.now);
+    const future = list.filter((e) => e.at >= a.now);
+    const next = future[0];
+    const rest = future.slice(1);
+    const shown = rest.slice(0, 8);
+    const more = rest.length - shown.length;
+    const parts: string[] = [];
+    if (past.length) parts.push(`<span class="muted">reset ${past.map((e) => esc(fmtWhen(e.at))).join(", ")}</span>`);
+    if (next) parts.push(`<strong>next ${esc(fmtWhen(next.at))}</strong> (in ${esc(fmtDuration(next.at - a.now))})`);
+    if (shown.length) parts.push(shown.map((e) => esc(dayFmt.format(new Date(e.at)))).join(" · "));
+    if (more > 0)
+      parts.push(
+        `<span class="muted">+${more} more through ${esc(dayFmt.format(new Date(rest[rest.length - 1].at)))}</span>`,
+      );
+    if (firstEv.thinned)
+      parts.push(
+        `<span class="muted">repeats every ${esc(firstEv.window)} — only the resets nearest now are listed</span>`,
+      );
+    rows.push(
+      `<div><strong><a href="#pool-${esc(firstEv.poolId)}">${esc(display(firstEv.provider))} · ${esc(firstEv.plan)} — ${esc(firstEv.window)}</a></strong> (${firstEv.percent.toFixed(0)}% used): ${parts.join(" · ")}</div>`,
+    );
+  }
+  return head + `<div class="card"><div>${rows.join("")}</div></div>`;
+}
+
 function fmtWow(w: WowDelta | null, unit: string): string {
   if (!w) return "";
   const sign = w.abs > 0 ? "+" : "";
@@ -200,9 +350,10 @@ export function analyticsSectionHtml(a: QuotaAnalytics, display: (n: string) => 
     `<p class="muted">Key values first: what is walled, what walls next and when, what unlocks at each reset and what stays walled. ` +
     `Burn from the route_attempt ledger (${a.attemptsFrom ? esc(a.attemptsFrom.slice(0, 10)) : "—"} → ${a.attemptsTo ? esc(a.attemptsTo.slice(0, 10)) : "—"}); ` +
     `projections from dated quota reads in the snapshot store. Sections: ` +
-    `<a href="#analytics-summary">at-risk summary</a> · <a href="#analytics-pools">pool projections</a> · <a href="#analytics-breakdowns">breakdowns</a> · <a href="#analytics-patterns">time patterns</a> · <a href="#analytics-activity">activity</a> · ` +
+    `<a href="#analytics-summary">at-risk summary</a> · <a href="#analytics-horizon">reset horizon</a> · <a href="#analytics-pools">pool projections</a> · <a href="#analytics-breakdowns">breakdowns</a> · <a href="#analytics-patterns">time patterns</a> · <a href="#analytics-activity">activity</a> · ` +
     `data: <a href="/api/quota-analytics.json">/api/quota-analytics.json</a> · prices: <a href="/aa">model review</a> · rules: <a href="#model-choice">model choice</a></p>` +
     `<h3 id="analytics-summary">At-risk summary</h3>${summaryStrip(a, display)}` +
+    resetHorizonHtml(a, display) +
     `<div class="card"><div><strong>All-route burn</strong></div><div>` +
     burnLine("last hour", totals.lastHour) +
     burnLine("today", totals.today) +

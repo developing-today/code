@@ -9,9 +9,9 @@ on:
   push:
     branches: [main]
     paths:
-      - 'pkgs/opencode-config-normalize/**'
-      - 'home/common/default.nix'
-      - '.github/workflows/opencode-config-normalize-test.yml'
+      - "pkgs/opencode-config-normalize/**"
+      - "home/common/default.nix"
+      - ".github/workflows/opencode-config-normalize-test.yml"
   workflow_dispatch:
 
 permissions:

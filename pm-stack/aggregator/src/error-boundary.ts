@@ -13,6 +13,8 @@
 // unit-testable without booting a server (the path-segment.ts
 // precedent).
 
+import { esc } from "./render.ts";
+
 export function isApiPath(path: string): boolean {
   return path.startsWith("/api/");
 }
@@ -26,7 +28,7 @@ export function notFoundResponse(path: string): Response {
       headers: { "content-type": "application/json; charset=utf-8" },
     });
   }
-  return new Response(`<h1>Not found</h1><p class="muted">no page at <code>${path}</code></p>`, {
+  return new Response(`<h1>Not found</h1><p class="muted">no page at <code>${esc(path)}</code></p>`, {
     status: 404,
     headers: { "content-type": "text/html; charset=utf-8" },
   });

@@ -21,6 +21,19 @@
 //!   from the first frame, the Python clients) or negotiate the
 //!   hello first (proto 1, fleet clients) — decided per connection
 //!   by peeking at the first frame, never by configuration.
+//! * Two reaches carry tunnels to the laptop (code#10356, Drew's
+//!   2026-11-15 ruling that sandbox↔laptop transport lives in
+//!   this binary): the Cloudflare leg — TLS through the platform
+//!   egress proxy to the named tunnel's edge hostname, Access
+//!   service-token headers riding the HTTP request — is PRIMARY
+//!   for the laptop-agent daemon port when its Access file
+//!   exists, and the tailnet leg (CONNECT through the session
+//!   proxy to the tailnet host) is the automatic fallback, on
+//!   connection failure and on a Cloudflare edge error status
+//!   (502/503/530) alike. The attempt plan is the Python broker's
+//!   exactly (see [`attempt_plan`]); pools and recovery gates key
+//!   on (port, transport) so the legs' warmth and failure state
+//!   never share a bucket.
 //!
 //! The broker persists nothing: routing table from config,
 //! tunnels in memory, tokens in their files.
@@ -28,7 +41,9 @@
 use std::collections::HashMap;
 use std::io::Write;
 use std::net::TcpStream;
+use std::os::unix::io::AsRawFd;
 use std::os::unix::net::{UnixListener, UnixStream};
+use std::path::Path;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -40,7 +55,10 @@ use fleet_proxy_proto::{
 };
 
 use crate::http::{HttpConn, HttpError};
-use crate::tunnel::{Egress, connect_raw_tunnel, connect_tunnel, egress_from_env};
+use crate::tunnel::{
+    Egress, connect_cf_tunnel, connect_raw_tunnel, connect_tunnel, egress_from_env,
+    egress_from_env_url_port,
+};
 
 /// Keepalive cadence (the Python's KEEPALIVE_S).
 const KEEPALIVE_S: u64 = 180;
@@ -115,11 +133,47 @@ fn pool_size() -> usize {
         .unwrap_or(DEFAULT_POOL_SIZE)
 }
 
+/// Which reach carries a tunnel (code#10356): the Cloudflare
+/// leg (TLS to the named tunnel's edge hostname through the
+/// platform egress proxy) or the tailnet leg (CONNECT through
+/// the session proxy to the tailnet host). Pools and recovery
+/// gates key on the pair (port, transport): the legs fail
+/// independently, so their warmth and their recovery state
+/// must never share a bucket.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+enum Transport {
+    Cf,
+    Ts,
+}
+
+impl Transport {
+    /// The wire name, stamped on response frames and spoken by
+    /// request frames' `transport` preference.
+    fn as_str(&self) -> &'static str {
+        match self {
+            Transport::Cf => "cf",
+            Transport::Ts => "ts",
+        }
+    }
+}
+
+/// Where one attempt's connection comes from: the (port,
+/// transport) idle pool, or a fresh open. The Python broker's
+/// attempt plan names both sources.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Source {
+    Pool,
+    Fresh,
+}
+
+/// The pool key: one laptop service on one transport leg.
+type PoolKey = (u16, Transport);
+
 /// The per-port tunnel pools: an idle cache plus a live count
-/// (idle + checked out) per port, behind one mutex that is
-/// never held during network I/O — the same lock discipline
-/// the pre-fix pool had (checkout/open/put all release it
-/// before touching a socket).
+/// (idle + checked out) per (port, transport), behind one
+/// mutex that is never held during network I/O — the same
+/// lock discipline the pre-fix pool had (checkout/open/put
+/// all release it before touching a socket).
 struct TunnelPool {
     state: Mutex<PoolState>,
     /// Signalled whenever a tunnel returns or a live slot
@@ -132,8 +186,8 @@ struct TunnelPool {
 
 #[derive(Default)]
 struct PoolState {
-    idle: HashMap<u16, Vec<HttpConn>>,
-    live: HashMap<u16, usize>,
+    idle: HashMap<PoolKey, Vec<HttpConn>>,
+    live: HashMap<PoolKey, usize>,
 }
 
 /// What a checkout decided: reuse this tunnel, or open a new
@@ -157,20 +211,20 @@ impl TunnelPool {
         self.size
     }
 
-    fn live_of(state: &PoolState, port: u16) -> usize {
-        state.live.get(&port).copied().unwrap_or(0)
+    fn live_of(state: &PoolState, key: PoolKey) -> usize {
+        state.live.get(&key).copied().unwrap_or(0)
     }
 
-    fn reserve(state: &mut PoolState, port: u16) {
-        *state.live.entry(port).or_insert(0) += 1;
+    fn reserve(state: &mut PoolState, key: PoolKey) {
+        *state.live.entry(key).or_insert(0) += 1;
     }
 
-    fn unreserve(&self, state: &mut PoolState, port: u16) {
-        let live = TunnelPool::live_of(state, port);
+    fn unreserve(&self, state: &mut PoolState, key: PoolKey) {
+        let live = TunnelPool::live_of(state, key);
         if live <= 1 {
-            state.live.remove(&port);
+            state.live.remove(&key);
         } else {
-            state.live.insert(port, live - 1);
+            state.live.insert(key, live - 1);
         }
         self.returned.notify_all();
     }
@@ -189,20 +243,20 @@ impl TunnelPool {
     ///    hard-fail because of the pool; the wait only ever
     ///    trades a probable ~100–300 ms return against a
     ///    certain seconds-long tunnel establishment.
-    fn checkout(&self, port: u16) -> Checkout {
+    fn checkout(&self, key: PoolKey) -> Checkout {
         let deadline = Instant::now() + POOL_WAIT_BUDGET;
         let mut state = self.state.lock().unwrap();
         loop {
-            if let Some(conn) = state.idle.get_mut(&port).and_then(|pool| pool.pop()) {
+            if let Some(conn) = state.idle.get_mut(&key).and_then(|pool| pool.pop()) {
                 return Checkout::Idle(conn);
             }
-            if TunnelPool::live_of(&state, port) < self.size {
-                TunnelPool::reserve(&mut state, port);
+            if TunnelPool::live_of(&state, key) < self.size {
+                TunnelPool::reserve(&mut state, key);
                 return Checkout::Grow;
             }
             let remaining = deadline.saturating_duration_since(Instant::now());
             if remaining.is_zero() {
-                TunnelPool::reserve(&mut state, port);
+                TunnelPool::reserve(&mut state, key);
                 return Checkout::Grow;
             }
             let (guard, _) = self.returned.wait_timeout(state, remaining).unwrap();
@@ -214,32 +268,32 @@ impl TunnelPool {
     /// fresh connection. No idle pop (the retry contract is a
     /// *fresh* tunnel), no wait (the request is already on its
     /// second attempt); accounting only.
-    fn reserve_fresh(&self, port: u16) {
+    fn reserve_fresh(&self, key: PoolKey) {
         let mut state = self.state.lock().unwrap();
-        TunnelPool::reserve(&mut state, port);
+        TunnelPool::reserve(&mut state, key);
     }
 
     /// A reserved slot whose tunnel never opened: hand it back.
-    fn release(&self, port: u16) {
+    fn release(&self, key: PoolKey) {
         let mut state = self.state.lock().unwrap();
-        self.unreserve(&mut state, port);
+        self.unreserve(&mut state, key);
     }
 
     /// Return a tunnel after use. Retained as idle when it is
-    /// reusable and the port's idle vec has room; otherwise it
+    /// reusable and the key's idle vec has room; otherwise it
     /// stops counting as live and is dropped — after the lock
     /// is released, like every other socket touch in the pool.
     /// Every return wakes waiters (a retained tunnel is
     /// immediately checkout-able; a dropped one frees live
     /// headroom).
-    fn put(&self, port: u16, conn: HttpConn) {
+    fn put(&self, key: PoolKey, conn: HttpConn) {
         let mut state = self.state.lock().unwrap();
-        if conn.reusable() && state.idle.get(&port).map_or(0, |p| p.len()) < self.size {
-            state.idle.entry(port).or_default().push(conn);
+        if conn.reusable() && state.idle.get(&key).map_or(0, |p| p.len()) < self.size {
+            state.idle.entry(key).or_default().push(conn);
             self.returned.notify_all();
             return;
         }
-        self.unreserve(&mut state, port);
+        self.unreserve(&mut state, key);
         drop(state);
         drop(conn);
     }
@@ -247,23 +301,23 @@ impl TunnelPool {
     /// A checked-out tunnel died in use and will never be
     /// returned: it stops counting as live, and waiters wake
     /// (headroom appeared).
-    fn discard(&self, port: u16) {
+    fn discard(&self, key: PoolKey) {
         let mut state = self.state.lock().unwrap();
-        self.unreserve(&mut state, port);
+        self.unreserve(&mut state, key);
     }
 
     #[cfg(test)]
-    fn live_count(&self, port: u16) -> usize {
-        TunnelPool::live_of(&self.state.lock().unwrap(), port)
+    fn live_count(&self, key: PoolKey) -> usize {
+        TunnelPool::live_of(&self.state.lock().unwrap(), key)
     }
 
     #[cfg(test)]
-    fn idle_count(&self, port: u16) -> usize {
+    fn idle_count(&self, key: PoolKey) -> usize {
         self.state
             .lock()
             .unwrap()
             .idle
-            .get(&port)
+            .get(&key)
             .map_or(0, |p| p.len())
     }
 }
@@ -367,7 +421,7 @@ fn record(entry: &mut GateState, recovery_generation: Option<u64>, error: Option
 /// so an opener's immediate retry can never steal or overwrite
 /// the failure its cohort observed.
 struct RecoveryGate {
-    state: Mutex<std::collections::HashMap<u16, GateState>>,
+    state: Mutex<std::collections::HashMap<PoolKey, GateState>>,
     finished: Condvar,
 }
 
@@ -379,12 +433,16 @@ impl RecoveryGate {
         }
     }
 
-    fn run<T>(&self, port: u16, attempt: impl FnOnce() -> Result<T, String>) -> Result<T, String> {
+    fn run<T>(
+        &self,
+        key: PoolKey,
+        attempt: impl FnOnce() -> Result<T, String>,
+    ) -> Result<T, String> {
         let deadline = Instant::now() + RECOVERY_WAIT;
         let mut waiting_on: Option<u64> = None;
         let recovery_generation = loop {
             let mut state = self.state.lock().unwrap();
-            let entry = state.entry(port).or_default();
+            let entry = state.entry(key).or_default();
             match decide(entry, waiting_on) {
                 Decision::ShareFailure(err) => return Err(err),
                 Decision::ProceedAfterRecovery => break None,
@@ -395,7 +453,9 @@ impl RecoveryGate {
                     let left = deadline.saturating_duration_since(Instant::now());
                     if left.is_zero() {
                         return Err(format!(
-                            "tunnel recovery for port {port} still in flight; failing fast"
+                            "tunnel recovery for port {} via {} still in flight; failing fast",
+                            key.0,
+                            key.1.as_str()
                         ));
                     }
                     let (guard, _) = self.finished.wait_timeout(state, left).unwrap();
@@ -406,7 +466,7 @@ impl RecoveryGate {
         };
         let got = attempt();
         let mut state = self.state.lock().unwrap();
-        let entry = state.entry(port).or_default();
+        let entry = state.entry(key).or_default();
         record(entry, recovery_generation, got.as_ref().err());
         if recovery_generation.is_some() {
             self.finished.notify_all();
@@ -457,6 +517,12 @@ fn startup_line(pool_size: usize, socket_path: &std::path::Path) -> String {
 struct Broker {
     config: Config,
     egress: Option<Egress>,
+    /// The Cloudflare leg's egress: the same proxy as `egress`,
+    /// dialled at the proxy URL's own port (see
+    /// [`crate::tunnel::egress_from_env_url_port`]). Parsed at
+    /// startup like `egress`; None only when the env is missing,
+    /// in which case the leg fails per-request until it appears.
+    cf_egress: Option<Egress>,
     pool: TunnelPool,
     /// Single-flight gate for tunnel opens (recovery stampedes).
     recovery: RecoveryGate,
@@ -481,14 +547,32 @@ impl Broker {
         Ok(stream)
     }
 
-    fn open_conn(&self, port: u16) -> Result<HttpConn, String> {
+    fn open_conn(&self, port: u16, transport: Transport) -> Result<HttpConn, String> {
         // Tunnel opens pass through the recovery gate: ungated
         // while healthy, single-flight once an open has failed —
         // see [`RecoveryGate`].
-        self.recovery.run(port, || self.open_conn_raw(port))
+        self.recovery
+            .run((port, transport), || self.open_conn_raw(port, transport))
     }
 
-    fn open_conn_raw(&self, port: u16) -> Result<HttpConn, String> {
+    fn open_conn_raw(&self, port: u16, transport: Transport) -> Result<HttpConn, String> {
+        if transport == Transport::Cf {
+            // The Cloudflare leg (code#10356): TLS to the named
+            // tunnel's edge hostname through the platform egress
+            // proxy. It never takes the colocated direct path —
+            // direct mode is a same-box arrangement, and the leg
+            // exists exactly for the cross-box case (the attempt
+            // plan never offers it in direct mode anyway).
+            let egress = self
+                .cf_egress
+                .as_ref()
+                .ok_or_else(|| "HTTPS_PROXY must be set (runtime proxy env)".to_string())?;
+            let cf_host = self.config.cf_host();
+            let stream = connect_cf_tunnel(egress, cf_host)
+                .map_err(|e| format!("cloudflare tunnel to {cf_host}:443: {e}"))?;
+            return HttpConn::from_tls(stream)
+                .map_err(|e| format!("cloudflare tunnel to {cf_host}:443: {e}"));
+        }
         let target = self.config.target_host();
         if self.config.proxy_direct() {
             // Colocated direct mode (#6219): when the service on
@@ -534,13 +618,14 @@ impl Broker {
     /// grow (see [`TunnelPool::checkout`] for the overflow
     /// policy); a grow reservation is handed back if the open
     /// fails so the live count never leaks.
-    fn pool_get(&self, port: u16) -> Result<HttpConn, String> {
-        match self.pool.checkout(port) {
+    fn pool_get(&self, port: u16, transport: Transport) -> Result<HttpConn, String> {
+        let key = (port, transport);
+        match self.pool.checkout(key) {
             Checkout::Idle(conn) => Ok(conn),
-            Checkout::Grow => match self.open_conn(port) {
+            Checkout::Grow => match self.open_conn(port, transport) {
                 Ok(conn) => Ok(conn),
                 Err(e) => {
-                    self.pool.release(port);
+                    self.pool.release(key);
                     Err(e)
                 }
             },
@@ -550,26 +635,49 @@ impl Broker {
     /// The retry path's fresh tunnel: reserved in the live
     /// count, opened immediately (no idle pop, no wait — the
     /// request is already on its second attempt).
-    fn pool_fresh(&self, port: u16) -> Result<HttpConn, String> {
-        self.pool.reserve_fresh(port);
-        match self.open_conn(port) {
+    fn pool_fresh(&self, port: u16, transport: Transport) -> Result<HttpConn, String> {
+        let key = (port, transport);
+        self.pool.reserve_fresh(key);
+        match self.open_conn(port, transport) {
             Ok(conn) => Ok(conn),
             Err(e) => {
-                self.pool.release(port);
+                self.pool.release(key);
                 Err(e)
             }
         }
     }
 
-    fn pool_put(&self, port: u16, conn: HttpConn) {
-        self.pool.put(port, conn);
+    fn pool_put(&self, port: u16, transport: Transport, conn: HttpConn) {
+        self.pool.put((port, transport), conn);
     }
 
-    /// One routed request, Python semantics: pooled connection
-    /// first, one retry on a fresh connection on any failure.
-    /// `client` distinguishes real client traffic (resets the idle
-    /// timer) from the broker's own keepalive (never does).
-    fn do_request(&self, req: &Request, client: bool) -> Result<(u16, serde_json::Value), String> {
+    /// Whether the Cloudflare leg can be attempted at all: the
+    /// egress env parsed at startup AND the Access file exists.
+    /// The file's existence is the enable (the Python broker's
+    /// rule) and is checked per request — dropping the file in,
+    /// or removing it, takes effect without a broker restart.
+    fn cf_available(&self) -> bool {
+        self.cf_egress.is_some() && self.config.cf_access_file().exists()
+    }
+
+    /// One routed request: the request's attempt plan (see
+    /// [`attempt_plan`]) executed in order — pooled Cloudflare,
+    /// fresh Cloudflare, fresh tailnet when the leg is in play;
+    /// pooled tailnet, fresh tailnet otherwise. A Cloudflare
+    /// edge error status (502/503/530 — the edge answering for a
+    /// tunnel that is down) is not the service's reply: the
+    /// connection is dropped and the plan falls to the next leg.
+    /// Returns the status, the parsed body, and the transport
+    /// that actually served, which the caller stamps on the
+    /// response frame so a client's trip record proves which leg
+    /// a request rode. `client` distinguishes real client
+    /// traffic (resets the idle timer) from the broker's own
+    /// keepalive (never does).
+    fn do_request(
+        &self,
+        req: &Request,
+        client: bool,
+    ) -> Result<(u16, serde_json::Value, Transport), String> {
         if client {
             self.last_used.store(now_secs(), Ordering::Relaxed);
         }
@@ -585,13 +693,31 @@ impl Broker {
             Some(body) => Some(serde_json::to_vec(body).map_err(|e| e.to_string())?),
             None => None,
         };
-        let host_header = format!("{}:{}", self.config.target_host(), port);
+        let pref = req.transport.as_deref().unwrap_or("auto");
+        let cf_ok = req.cf_ok.unwrap_or_else(|| cf_request_ok(req));
+        let plan = attempt_plan(
+            port,
+            pref,
+            cf_ok,
+            self.cf_available(),
+            self.config.proxy_direct(),
+        );
+        // The Access headers are read once per request (the file
+        // is the rotation surface) and ride Cloudflare attempts
+        // only. The trip id, when the frame carries one, rides
+        // every attempt — the daemon logs it per request, joining
+        // the client's trip record to the daemon's own log.
+        let cf_headers = if plan.iter().any(|(t, _)| *t == Transport::Cf) {
+            read_cf_access_headers(&self.config.cf_access_file())
+        } else {
+            Vec::new()
+        };
         let mut last_err: Option<String> = None;
-        for attempt in 0..2 {
-            let mut conn = match if attempt == 0 {
-                self.pool_get(port)
-            } else {
-                self.pool_fresh(port)
+        for (transport, source) in &plan {
+            let key = (port, *transport);
+            let mut conn = match match source {
+                Source::Pool => self.pool_get(port, *transport),
+                Source::Fresh => self.pool_fresh(port, *transport),
             } {
                 Ok(c) => c,
                 Err(e) => {
@@ -599,18 +725,43 @@ impl Broker {
                     continue;
                 }
             };
-            match conn.request(
+            let host_header = match transport {
+                Transport::Cf => self.config.cf_host().to_string(),
+                Transport::Ts => format!("{}:{}", self.config.target_host(), port),
+            };
+            let mut headers: Vec<(String, String)> = Vec::new();
+            if let Some(trip) = &req.trip {
+                headers.push(("X-Trip-Id".to_string(), trip.clone()));
+            }
+            if *transport == Transport::Cf {
+                headers.extend(cf_headers.iter().cloned());
+            }
+            match conn.request_with_extra_headers(
                 &req.method,
                 &req.path,
                 &host_header,
                 token,
                 payload.as_deref(),
+                &headers,
             ) {
                 Ok((status, data)) => {
-                    self.pool_put(port, conn);
+                    if *transport == Transport::Cf && CF_EDGE_STATUSES.contains(&status) {
+                        // The edge answered for a dead tunnel:
+                        // not the service's reply. Drop the
+                        // connection and fall to the next leg,
+                        // exactly as the Python broker does.
+                        eprintln!(
+                            "fleet proxy serve: cloudflare edge status {status} for {} {}; falling to next leg",
+                            req.method, req.path
+                        );
+                        self.pool.discard(key);
+                        last_err = Some(format!("cloudflare edge status {status}"));
+                        continue;
+                    }
+                    self.pool_put(port, *transport, conn);
                     let body = serde_json::from_slice(&data)
                         .map_err(|e| format!("service on port {port} answered non-JSON: {e}"))?;
-                    return Ok((status, body));
+                    return Ok((status, body, *transport));
                 }
                 Err(e) => {
                     last_err = Some(match e {
@@ -620,7 +771,7 @@ impl Broker {
                     // conn drops: never re-pooled after an error,
                     // and it stops counting against the pool's
                     // live level.
-                    self.pool.discard(port);
+                    self.pool.discard(key);
                 }
             }
         }
@@ -644,6 +795,102 @@ impl Broker {
     }
 }
 
+/// HTTP statuses that mean the Cloudflare EDGE answered, not
+/// the service: the tunnel is down, or the edge cannot reach it.
+/// The Python broker's set — the connection is dropped and the
+/// plan falls to the next leg.
+const CF_EDGE_STATUSES: [u16; 3] = [502, 503, 530];
+
+/// The attempt plan for one request, the Python broker's plan
+/// exactly (code#10356). The Cloudflare leg is in play only for
+/// the laptop-agent daemon port, only when the caller's
+/// per-request verdict allows the request to ride it (`cf_ok`),
+/// the transport preference is `auto` or `cf`, the Access file
+/// exists (`cf_available`), and the broker is not in colocated
+/// direct mode (same-box there; the leg exists for the
+/// cross-box case). In play, the plan is pooled-CF, fresh-CF,
+/// and — under `auto` only — fresh tailnet. Every other case is
+/// the historical plan: pooled tailnet, fresh tailnet. A `cf`
+/// preference with the leg out of play degrades to the tailnet
+/// plan: the preference is a preference, never a hard failure
+/// (the Python's rule).
+fn attempt_plan(
+    port: u16,
+    pref: &str,
+    cf_ok: bool,
+    cf_available: bool,
+    direct: bool,
+) -> Vec<(Transport, Source)> {
+    let cf_in_play = !direct
+        && port == fleet_config::PORT_LAPTOP_AGENT
+        && cf_ok
+        && cf_available
+        && (pref == "auto" || pref == "cf");
+    if cf_in_play {
+        let mut plan = vec![
+            (Transport::Cf, Source::Pool),
+            (Transport::Cf, Source::Fresh),
+        ];
+        if pref == "auto" {
+            plan.push((Transport::Ts, Source::Fresh));
+        }
+        plan
+    } else {
+        vec![
+            (Transport::Ts, Source::Pool),
+            (Transport::Ts, Source::Fresh),
+        ]
+    }
+}
+
+/// The broker's own verdict on whether a request may ride the
+/// Cloudflare leg, used when the frame carries no `cf_ok`: the
+/// edge's response window makes a long /exec unsuitable — the
+/// Python client's 660 s safety valve, computed from the same
+/// body field. A frame that DOES carry `cf_ok` is honored
+/// verbatim (the client computes the same rule, plus its own
+/// knowledge of the request).
+fn cf_request_ok(req: &Request) -> bool {
+    if req.path == "/exec" {
+        if let Some(timeout_s) = req
+            .body
+            .as_ref()
+            .and_then(|b| b.get("timeout_s"))
+            .and_then(|v| v.as_f64())
+        {
+            if timeout_s > 660.0 {
+                return false;
+            }
+        }
+    }
+    true
+}
+
+/// The Cloudflare Access service-token headers for one request,
+/// read fresh from the Access file (rotation without a restart;
+/// the values are never stored on the broker and never logged).
+/// Any failure — missing file, bad JSON, missing fields — yields
+/// no headers, the Python's rule: the request still rides the
+/// leg and the edge's 403 is the service-visible answer.
+fn read_cf_access_headers(path: &Path) -> Vec<(String, String)> {
+    let Ok(text) = std::fs::read_to_string(path) else {
+        return Vec::new();
+    };
+    let Ok(value) = serde_json::from_str::<serde_json::Value>(&text) else {
+        return Vec::new();
+    };
+    let (Some(id), Some(secret)) = (
+        value.get("client_id").and_then(|v| v.as_str()),
+        value.get("client_secret").and_then(|v| v.as_str()),
+    ) else {
+        return Vec::new();
+    };
+    vec![
+        ("CF-Access-Client-Id".to_string(), id.to_string()),
+        ("CF-Access-Client-Secret".to_string(), secret.to_string()),
+    ]
+}
+
 /// Handle one request frame value; always answers a response frame
 /// value (errors ride the Python's `{status: 502, body:{error}}`
 /// shape — consumers branch on status, not on text).
@@ -654,15 +901,22 @@ fn handle_request(broker: &Broker, frame: &serde_json::Value) -> serde_json::Val
             return serde_json::to_value(Response {
                 status: 502,
                 body: serde_json::json!({ "error": format!("broker: {why}") }),
+                transport: None,
             })
             .unwrap();
         }
     };
     match broker.do_request(&req, true) {
-        Ok((status, body)) => serde_json::to_value(Response { status, body }).unwrap(),
+        Ok((status, body, transport)) => serde_json::to_value(Response {
+            status,
+            body,
+            transport: Some(transport.as_str().to_string()),
+        })
+        .unwrap(),
         Err(why) => serde_json::to_value(Response {
             status: 502,
             body: serde_json::json!({ "error": format!("broker: {why}") }),
+            transport: None,
         })
         .unwrap(),
     }
@@ -702,9 +956,38 @@ fn parse_request(frame: &serde_json::Value) -> Result<Request, String> {
     }
     let body = frame.get("body").filter(|b| !b.is_null()).cloned();
     let port = parse_port(frame)?;
-    let token_file = match frame.get("token_file") {
+    let token_file = parse_opt_string(frame, "token_file")?;
+    // The transport fields (code#10356) ride the same strict
+    // boundary: a present-but-misshapen value is refused, never
+    // silently reinterpreted — a `transport` that is not a string
+    // must not quietly become the default preference.
+    let trip = parse_opt_string(frame, "trip")?;
+    let transport = parse_opt_string(frame, "transport")?;
+    let cf_ok = match frame.get("cf_ok") {
         None | Some(serde_json::Value::Null) => None,
-        Some(serde_json::Value::String(path)) => Some(path.clone()),
+        Some(serde_json::Value::Bool(b)) => Some(*b),
+        Some(_) => return Err("request \"cf_ok\" must be a boolean or null".to_string()),
+    };
+    Ok(Request {
+        method,
+        path,
+        body,
+        port,
+        token_file,
+        trip,
+        transport,
+        cf_ok,
+    })
+}
+
+/// An optional string frame field (`token_file`, and the
+/// code#10356 `trip` / `transport` fields): absent or null is
+/// None; a string is taken verbatim; anything else is refused
+/// with the shape named — the #6516 strict-boundary rule.
+fn parse_opt_string(frame: &serde_json::Value, field: &str) -> Result<Option<String>, String> {
+    match frame.get(field) {
+        None | Some(serde_json::Value::Null) => Ok(None),
+        Some(serde_json::Value::String(s)) => Ok(Some(s.clone())),
         Some(value) => {
             let shape = match value {
                 serde_json::Value::Bool(_) => "boolean",
@@ -714,18 +997,11 @@ fn parse_request(frame: &serde_json::Value) -> Result<Request, String> {
                 serde_json::Value::Null => "null",
                 serde_json::Value::String(_) => "string",
             };
-            return Err(format!(
-                "request \"token_file\" must be a string or null, got {shape}"
-            ));
+            Err(format!(
+                "request \"{field}\" must be a string or null, got {shape}"
+            ))
         }
-    };
-    Ok(Request {
-        method,
-        path,
-        body,
-        port,
-        token_file,
-    })
+    }
 }
 
 /// The frame's `port`, strictly. Absent -- or null, mirroring how
@@ -780,6 +1056,7 @@ fn serve_session(broker: &Broker, mut stream: UnixStream) {
                     &serde_json::to_value(Response {
                         status: 502,
                         body: serde_json::json!({ "error": "broker: malformed hello" }),
+                        transport: None,
                     })
                     .unwrap(),
                 );
@@ -827,6 +1104,7 @@ fn serve_session(broker: &Broker, mut stream: UnixStream) {
                 body: serde_json::json!({
                     "error": "broker: first frame is neither hello nor request"
                 }),
+                transport: None,
             })
             .unwrap(),
         );
@@ -916,6 +1194,9 @@ fn keepalive_loop(broker: Arc<Broker>, idle_exit: bool) {
         body: None,
         port: Some(fleet_config::PORT_LAPTOP_AGENT),
         token_file: None,
+        trip: None,
+        transport: None,
+        cf_ok: None,
     };
     let mut last_health = now_secs();
     loop {
@@ -935,6 +1216,34 @@ fn keepalive_loop(broker: Arc<Broker>, idle_exit: bool) {
             let _ = broker.do_request(&health_req, false);
         }
     }
+}
+
+/// #9611 acceptance 1 (fleet-proxy leg): the cross-implementation
+/// singleton lock. The Python broker holds an exclusive flock on
+/// `broker.lock` beside the socket for its whole lifetime; this
+/// implementation must play by the same rule, or the two can both
+/// pass the stale-socket probe and race to bind (episode 1: Errno 98
+/// churn; episode 2 tail: a silent takeover after which broker.pid
+/// named a dead process). Returns the lock file, to be kept alive
+/// for the process lifetime, or None when another implementation
+/// already holds the singleton — the caller then converges on that
+/// owner instead of competing for the socket. The flock releases
+/// automatically when the holder dies, so a crashed broker never
+/// wedges the path.
+fn acquire_singleton_lock(socket_dir: &Path) -> Option<std::fs::File> {
+    let lock_path = socket_dir.join("broker.lock");
+    let file = std::fs::OpenOptions::new()
+        .create(true)
+        .read(true)
+        .write(true)
+        .truncate(false)
+        .open(&lock_path)
+        .ok()?;
+    let rc = unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) };
+    if rc != 0 {
+        return None;
+    }
+    Some(file)
 }
 
 /// Run the broker co-hosted with other serve roles in one process
@@ -958,6 +1267,23 @@ pub fn run(config: &Config) -> i32 {
 
 fn run_inner(config: &Config, idle_exit: bool) -> i32 {
     let socket_path = config.broker_socket();
+    // #9611 acceptance 1: converge on the cross-implementation
+    // singleton before touching the socket. Held for the whole
+    // process lifetime (the serve loop below never returns while
+    // this binding is alive).
+    let _singleton_lock = match socket_path.parent() {
+        Some(dir) => match acquire_singleton_lock(dir) {
+            Some(f) => Some(f),
+            None => {
+                eprintln!(
+                    "fleet proxy serve: broker singleton lock held by another                      implementation; not competing for {}",
+                    socket_path.display()
+                );
+                return 0;
+            }
+        },
+        None => None,
+    };
     if let Some(parent) = socket_path.parent() {
         let _ = std::fs::create_dir_all(parent);
         // The Python chmods its socket dir 0700 (best effort).
@@ -985,6 +1311,13 @@ fn run_inner(config: &Config, idle_exit: bool) -> i32 {
             return crate::EXIT_TRANSPORT;
         }
     };
+    // broker.pid names the socket owner, written only after this
+    // process actually owns the listening socket (#9611 acc. 1) —
+    // previously only the Python broker wrote it, so a fleet-proxy
+    // takeover left it naming a dead pid.
+    if let Some(dir) = socket_path.parent() {
+        let _ = std::fs::write(dir.join("broker.pid"), std::process::id().to_string());
+    }
     let size = pool_size();
     // The stamp is the FIRST line a starting broker writes, so it
     // precedes any per-request tunnel failure the egress setup
@@ -1005,24 +1338,51 @@ fn run_inner(config: &Config, idle_exit: bool) -> i32 {
             }
         }
     };
+    let cf_egress = if config.proxy_direct() {
+        None
+    } else {
+        match egress_from_env_url_port() {
+            Ok(e) => Some(e),
+            Err(why) => {
+                eprintln!("fleet proxy serve: {why} (cloudflare leg will fail until it is set)");
+                None
+            }
+        }
+    };
     let broker = Arc::new(Broker {
         config: config.clone(),
         egress,
+        cf_egress,
         pool: TunnelPool::new(size),
         recovery: RecoveryGate::new(),
         last_used: AtomicU64::new(now_secs()),
     });
     // Preconnect: warm the laptop-agent pool through the same
     // checkout accounting as requests, best effort (the Python
-    // does the same in a daemon thread).
+    // does the same in a daemon thread). The warmth goes to the
+    // pool the first requests will draw from: the Cloudflare
+    // pool when the leg is in play, switching to tailnet warmth
+    // if a Cloudflare open fails (the Python preconnect's rule);
+    // the tailnet pool otherwise, as before.
     {
         let broker = Arc::clone(&broker);
         std::thread::spawn(move || {
+            let port = fleet_config::PORT_LAPTOP_AGENT;
+            let mut transport = if broker.cf_available() {
+                Transport::Cf
+            } else {
+                Transport::Ts
+            };
             for _ in 0..broker.pool.size() {
-                if let Ok(conn) = broker.pool_get(fleet_config::PORT_LAPTOP_AGENT) {
-                    broker.pool_put(fleet_config::PORT_LAPTOP_AGENT, conn);
-                } else {
-                    break;
+                match broker.pool_get(port, transport) {
+                    Ok(conn) => broker.pool_put(port, transport, conn),
+                    Err(_) => {
+                        if transport == Transport::Cf {
+                            transport = Transport::Ts;
+                            continue;
+                        }
+                        break;
+                    }
                 }
             }
         });
@@ -1109,6 +1469,12 @@ mod tests {
 
     const PORT: u16 = 4799;
 
+    /// The pool/gate key the pre-transport tests exercise: the
+    /// daemon port on the tailnet leg. The Cloudflare leg's own
+    /// key separation is covered by
+    /// `pool_keys_separate_the_transports`.
+    const KEY: PoolKey = (PORT, Transport::Ts);
+
     #[test]
     fn parse_request_validates_token_file_shape() {
         let mut absent = serde_json::json!({"method": "GET", "path": "/health"});
@@ -1180,28 +1546,185 @@ mod tests {
     }
 
     #[test]
+    fn attempt_plan_puts_cloudflare_first_when_the_leg_is_in_play() {
+        // Daemon port, auto, suitable request, Access file
+        // present: pooled CF, fresh CF, fresh tailnet.
+        assert_eq!(
+            attempt_plan(PORT, "auto", true, true, false),
+            vec![
+                (Transport::Cf, Source::Pool),
+                (Transport::Cf, Source::Fresh),
+                (Transport::Ts, Source::Fresh),
+            ]
+        );
+        // cf pinned: no tailnet leg at all.
+        assert_eq!(
+            attempt_plan(PORT, "cf", true, true, false),
+            vec![
+                (Transport::Cf, Source::Pool),
+                (Transport::Cf, Source::Fresh),
+            ]
+        );
+    }
+
+    #[test]
+    fn attempt_plan_degrades_to_the_tailnet_plan() {
+        let ts_plan = vec![
+            (Transport::Ts, Source::Pool),
+            (Transport::Ts, Source::Fresh),
+        ];
+        // ts pinned.
+        assert_eq!(attempt_plan(PORT, "ts", true, true, false), ts_plan);
+        // No Access file: the leg is not in play, even for cf.
+        assert_eq!(attempt_plan(PORT, "cf", true, false, false), ts_plan);
+        assert_eq!(attempt_plan(PORT, "auto", true, false, false), ts_plan);
+        // The request may not ride the edge (long /exec).
+        assert_eq!(attempt_plan(PORT, "auto", false, true, false), ts_plan);
+        // Other ports never take the leg.
+        assert_eq!(
+            attempt_plan(fleet_config::PORT_SECRETS_BROKER, "auto", true, true, false),
+            ts_plan
+        );
+        // Colocated direct mode never takes the leg.
+        assert_eq!(attempt_plan(PORT, "auto", true, true, true), ts_plan);
+        // An unrecognized preference is not auto/cf: tailnet.
+        assert_eq!(attempt_plan(PORT, "warp", true, true, false), ts_plan);
+    }
+
+    #[test]
+    fn pool_keys_separate_the_transports() {
+        // The legs' warmth must not share a bucket: a tunnel
+        // pooled under the Cloudflare key is invisible to a
+        // tailnet checkout for the same port, and the live
+        // counts are independent.
+        let pool = TunnelPool::new(2);
+        let cf_key = (PORT, Transport::Cf);
+        assert!(matches!(pool.checkout(cf_key), Checkout::Grow));
+        pool.put(cf_key, dummy_conn());
+        assert_eq!(pool.idle_count(cf_key), 1);
+        assert_eq!(pool.idle_count(KEY), 0);
+        assert!(matches!(pool.checkout(KEY), Checkout::Grow));
+        assert_eq!(pool.live_count(KEY), 1);
+        assert_eq!(pool.live_count(cf_key), 1);
+    }
+
+    #[test]
+    fn parse_request_reads_the_transport_fields() {
+        let frame = serde_json::json!({
+            "method": "POST",
+            "path": "/exec",
+            "trip": "t-123",
+            "transport": "cf",
+            "cf_ok": false,
+        });
+        let req = parse_request(&frame).unwrap();
+        assert_eq!(req.trip.as_deref(), Some("t-123"));
+        assert_eq!(req.transport.as_deref(), Some("cf"));
+        assert_eq!(req.cf_ok, Some(false));
+
+        // Absent fields stay absent (pre-field frames parse
+        // exactly as before).
+        let bare = serde_json::json!({"method": "GET", "path": "/health"});
+        let req = parse_request(&bare).unwrap();
+        assert!(req.trip.is_none() && req.transport.is_none() && req.cf_ok.is_none());
+
+        // Misshapen fields are refused at the boundary.
+        let bad = serde_json::json!({"method": "GET", "path": "/health", "transport": 3});
+        assert!(parse_request(&bad).unwrap_err().contains("transport"));
+        let bad = serde_json::json!({"method": "GET", "path": "/health", "cf_ok": "yes"});
+        assert!(parse_request(&bad).unwrap_err().contains("cf_ok"));
+    }
+
+    #[test]
+    fn cf_request_ok_applies_the_exec_safety_valve() {
+        let mk = |path: &str, body: serde_json::Value| Request {
+            method: "POST".to_string(),
+            path: path.to_string(),
+            body: Some(body),
+            port: None,
+            token_file: None,
+            trip: None,
+            transport: None,
+            cf_ok: None,
+        };
+        // A long /exec may not ride the edge.
+        assert!(!cf_request_ok(&mk(
+            "/exec",
+            serde_json::json!({"timeout_s": 3600})
+        )));
+        assert!(cf_request_ok(&mk(
+            "/exec",
+            serde_json::json!({"timeout_s": 600})
+        )));
+        assert!(cf_request_ok(&mk(
+            "/exec",
+            serde_json::json!({"timeout_s": 660})
+        )));
+        // No timeout named: the daemon's own default applies,
+        // which is inside the valve.
+        assert!(cf_request_ok(&mk("/exec", serde_json::json!({}))));
+        // Other paths are unaffected by a timeout-shaped field.
+        assert!(cf_request_ok(&mk(
+            "/run",
+            serde_json::json!({"timeout_s": 3600})
+        )));
+    }
+
+    #[test]
+    fn cf_access_headers_read_the_file_and_fail_closed_to_none() {
+        let dir = std::env::temp_dir().join(format!("fleet-cf-access-test-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("access.json");
+        // Missing file: no headers (the request still rides the
+        // leg; the edge's 403 is the visible answer).
+        assert!(read_cf_access_headers(&path).is_empty());
+        std::fs::write(
+            &path,
+            r#"{"client_id": "id-1", "client_secret": "secret-1"}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            read_cf_access_headers(&path),
+            vec![
+                ("CF-Access-Client-Id".to_string(), "id-1".to_string()),
+                (
+                    "CF-Access-Client-Secret".to_string(),
+                    "secret-1".to_string()
+                ),
+            ]
+        );
+        // Bad JSON / missing fields: no headers, never a panic.
+        std::fs::write(&path, "not json").unwrap();
+        assert!(read_cf_access_headers(&path).is_empty());
+        std::fs::write(&path, r#"{"client_id": "id-1"}"#).unwrap();
+        assert!(read_cf_access_headers(&path).is_empty());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
     fn checkout_grows_below_ceiling_then_reuses_idle() {
         let pool = TunnelPool::new(2);
-        assert!(matches!(pool.checkout(PORT), Checkout::Grow));
-        assert_eq!(pool.live_count(PORT), 1);
-        pool.put(PORT, dummy_conn());
-        assert_eq!(pool.idle_count(PORT), 1);
-        assert!(matches!(pool.checkout(PORT), Checkout::Idle(_)));
+        assert!(matches!(pool.checkout(KEY), Checkout::Grow));
+        assert_eq!(pool.live_count(KEY), 1);
+        pool.put(KEY, dummy_conn());
+        assert_eq!(pool.idle_count(KEY), 1);
+        assert!(matches!(pool.checkout(KEY), Checkout::Idle(_)));
         // Checking out an idle tunnel does not change the
         // live count: the tunnel existed all along.
-        assert_eq!(pool.live_count(PORT), 1);
-        assert_eq!(pool.idle_count(PORT), 0);
+        assert_eq!(pool.live_count(KEY), 1);
+        assert_eq!(pool.idle_count(KEY), 0);
     }
 
     #[test]
     fn waiter_is_woken_by_put_and_gets_the_returned_tunnel() {
         let pool = Arc::new(TunnelPool::new(1));
         // Occupy the only live slot.
-        assert!(matches!(pool.checkout(PORT), Checkout::Grow));
+        assert!(matches!(pool.checkout(KEY), Checkout::Grow));
         let (tx, rx) = mpsc::channel();
         let waiter_pool = Arc::clone(&pool);
         let waiter = std::thread::spawn(move || {
-            let got = waiter_pool.checkout(PORT);
+            let got = waiter_pool.checkout(KEY);
             tx.send(matches!(got, Checkout::Idle(_))).unwrap();
         });
         // At the ceiling with nothing idle, the waiter must
@@ -1212,21 +1735,21 @@ mod tests {
             other => panic!("waiter returned before any put: {other:?}"),
         }
         // Return a tunnel: the waiter wakes and reuses it.
-        pool.put(PORT, dummy_conn());
+        pool.put(KEY, dummy_conn());
         match rx.recv_timeout(Duration::from_secs(5)) {
             Ok(true) => {}
             other => panic!("waiter did not get the returned tunnel: {other:?}"),
         }
         waiter.join().unwrap();
-        assert_eq!(pool.live_count(PORT), 1);
+        assert_eq!(pool.live_count(KEY), 1);
     }
 
     #[test]
     fn waiter_times_out_and_grows_anyway() {
         let pool = TunnelPool::new(1);
-        assert!(matches!(pool.checkout(PORT), Checkout::Grow));
+        assert!(matches!(pool.checkout(KEY), Checkout::Grow));
         let t0 = Instant::now();
-        let got = pool.checkout(PORT);
+        let got = pool.checkout(KEY);
         let elapsed = t0.elapsed();
         // Nobody returns anything: after the bounded wait the
         // checkout grows past the ceiling rather than failing.
@@ -1236,46 +1759,46 @@ mod tests {
             "waited only {elapsed:?} of the {POOL_WAIT_BUDGET:?} budget"
         );
         assert!(elapsed < Duration::from_secs(5), "waited {elapsed:?}");
-        assert_eq!(pool.live_count(PORT), 2);
+        assert_eq!(pool.live_count(KEY), 2);
     }
 
     #[test]
     fn release_and_discard_keep_the_live_count_honest() {
         let pool = TunnelPool::new(2);
-        assert!(matches!(pool.checkout(PORT), Checkout::Grow));
-        assert_eq!(pool.live_count(PORT), 1);
-        pool.release(PORT); // the open failed: reservation back
-        assert_eq!(pool.live_count(PORT), 0);
+        assert!(matches!(pool.checkout(KEY), Checkout::Grow));
+        assert_eq!(pool.live_count(KEY), 1);
+        pool.release(KEY); // the open failed: reservation back
+        assert_eq!(pool.live_count(KEY), 0);
 
-        assert!(matches!(pool.checkout(PORT), Checkout::Grow));
-        pool.put(PORT, dummy_conn());
-        assert!(matches!(pool.checkout(PORT), Checkout::Idle(_)));
-        pool.discard(PORT); // the checked-out tunnel died in use
-        assert_eq!(pool.live_count(PORT), 0);
-        assert_eq!(pool.idle_count(PORT), 0);
+        assert!(matches!(pool.checkout(KEY), Checkout::Grow));
+        pool.put(KEY, dummy_conn());
+        assert!(matches!(pool.checkout(KEY), Checkout::Idle(_)));
+        pool.discard(KEY); // the checked-out tunnel died in use
+        assert_eq!(pool.live_count(KEY), 0);
+        assert_eq!(pool.idle_count(KEY), 0);
     }
 
     #[test]
     fn put_drops_when_idle_is_full_or_conn_not_reusable() {
         let pool = TunnelPool::new(1);
-        pool.reserve_fresh(PORT);
-        pool.put(PORT, dummy_conn()); // retained: idle 1, live 1
-        assert_eq!(pool.idle_count(PORT), 1);
-        assert_eq!(pool.live_count(PORT), 1);
+        pool.reserve_fresh(KEY);
+        pool.put(KEY, dummy_conn()); // retained: idle 1, live 1
+        assert_eq!(pool.idle_count(KEY), 1);
+        assert_eq!(pool.live_count(KEY), 1);
 
-        pool.reserve_fresh(PORT); // live 2 (retry path counts too)
-        pool.put(PORT, dummy_conn()); // idle full: dropped, live 1
-        assert_eq!(pool.idle_count(PORT), 1);
-        assert_eq!(pool.live_count(PORT), 1);
+        pool.reserve_fresh(KEY); // live 2 (retry path counts too)
+        pool.put(KEY, dummy_conn()); // idle full: dropped, live 1
+        assert_eq!(pool.idle_count(KEY), 1);
+        assert_eq!(pool.live_count(KEY), 1);
 
-        assert!(matches!(pool.checkout(PORT), Checkout::Idle(_)));
-        pool.discard(PORT);
-        assert_eq!(pool.live_count(PORT), 0);
+        assert!(matches!(pool.checkout(KEY), Checkout::Idle(_)));
+        pool.discard(KEY);
+        assert_eq!(pool.live_count(KEY), 0);
 
-        pool.reserve_fresh(PORT);
-        pool.put(PORT, close_conn()); // not reusable: never pooled
-        assert_eq!(pool.idle_count(PORT), 0);
-        assert_eq!(pool.live_count(PORT), 0);
+        pool.reserve_fresh(KEY);
+        pool.put(KEY, close_conn()); // not reusable: never pooled
+        assert_eq!(pool.idle_count(KEY), 0);
+        assert_eq!(pool.live_count(KEY), 0);
     }
 
     #[test]
@@ -1292,7 +1815,7 @@ mod tests {
             Err::<(), String>("tunnel to laptop:4799: refused".to_string())
         };
         // Prime: a normal-mode failure arms single-flight recovery.
-        let priming = gate.run(PORT, || attempt(&attempts));
+        let priming = gate.run(KEY, || attempt(&attempts));
         assert!(priming.is_err());
         assert_eq!(attempts.load(Ordering::Relaxed), 1);
         let mut handles = Vec::new();
@@ -1300,7 +1823,7 @@ mod tests {
             let gate = Arc::clone(&gate);
             let attempts = Arc::clone(&attempts);
             handles.push(std::thread::spawn(move || {
-                gate.run(PORT, || attempt(&attempts))
+                gate.run(KEY, || attempt(&attempts))
             }));
         }
         for h in handles {
@@ -1327,7 +1850,7 @@ mod tests {
             let in_flight = Arc::clone(&in_flight);
             let peak = Arc::clone(&peak);
             handles.push(std::thread::spawn(move || {
-                gate.run(PORT, || {
+                gate.run(KEY, || {
                     let now = in_flight.fetch_add(1, Ordering::Relaxed) + 1;
                     peak.fetch_max(now, Ordering::Relaxed);
                     std::thread::sleep(Duration::from_millis(100));
@@ -1360,21 +1883,21 @@ mod tests {
             std::thread::sleep(Duration::from_millis(ms));
             Err::<(), String>(format!("failure-{k}"))
         };
-        assert_eq!(gate.run(PORT, || mk(&n, 0)).unwrap_err(), "failure-1");
+        assert_eq!(gate.run(KEY, || mk(&n, 0)).unwrap_err(), "failure-1");
         // Leader: recovery attempt #2 (slow fail), then an
         // immediate retry = attempt #3 (even slower fail).
         let leader = {
             let gate = Arc::clone(&gate);
             let n = Arc::clone(&n);
             std::thread::spawn(move || {
-                let first = gate.run(PORT, || mk(&n, 200));
-                let second = gate.run(PORT, || mk(&n, 600));
+                let first = gate.run(KEY, || mk(&n, 200));
+                let second = gate.run(KEY, || mk(&n, 600));
                 (first, second)
             })
         };
         // Waiter arrives while attempt #2 is in flight.
         std::thread::sleep(Duration::from_millis(50));
-        let waited = gate.run(PORT, || mk(&n, 0));
+        let waited = gate.run(KEY, || mk(&n, 0));
         // The waiter shares attempt #2's verdict — it neither
         // waits for nor reports attempt #3's.
         assert_eq!(waited.unwrap_err(), "failure-2");
@@ -1388,13 +1911,13 @@ mod tests {
         // After a recovery succeeds, opens are concurrent again.
         let gate = Arc::new(RecoveryGate::new());
         assert!(
-            gate.run(PORT, || Err::<(), String>("dead".to_string()))
+            gate.run(KEY, || Err::<(), String>("dead".to_string()))
                 .is_err()
         );
-        assert!(gate.run(PORT, || Ok::<(), String>(())).is_ok());
+        assert!(gate.run(KEY, || Ok::<(), String>(())).is_ok());
         // needs_recovery cleared: a later failure is a fresh
         // normal-mode failure, and the gate re-arms only then.
-        assert!(gate.run(PORT, || Ok::<(), String>(())).is_ok());
+        assert!(gate.run(KEY, || Ok::<(), String>(())).is_ok());
     }
 
     // Model-based property test for the RecoveryGate decision
@@ -1552,6 +2075,28 @@ mod tests {
                 "callers stranded: {callers:?}"
             );
         });
+    }
+
+    #[test]
+    fn singleton_lock_is_exclusive_across_open_descriptions() {
+        let dir =
+            std::env::temp_dir().join(format!("fleet-proxy-singleton-test-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let first = acquire_singleton_lock(&dir);
+        assert!(first.is_some(), "first acquisition must succeed");
+        // flock is per open-file-description: a second open in the
+        // same process still conflicts — the property the
+        // cross-implementation singleton relies on.
+        assert!(
+            acquire_singleton_lock(&dir).is_none(),
+            "second acquisition must fail while the first is held"
+        );
+        drop(first);
+        assert!(
+            acquire_singleton_lock(&dir).is_some(),
+            "acquisition must succeed again after the holder drops"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

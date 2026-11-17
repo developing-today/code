@@ -84,6 +84,8 @@ func (a *App) CmdElicit(ctx context.Context, args []string) error {
 		if err != nil {
 			return err
 		}
+		// Listing as an answerer is presence: heartbeat it (#2438).
+		_ = b.NoteAnswerer(elicit.Audience(*audience))
 		if a.JSON {
 			return a.out(pending)
 		}
@@ -225,6 +227,7 @@ func (a *App) watchElicit(ctx context.Context, b *elicit.Broker, session string)
 		if err != nil {
 			return err
 		}
+		_ = b.NoteAnswerer("")
 		for _, r := range pending {
 			if seen[r.ID] {
 				continue

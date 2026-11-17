@@ -34,6 +34,16 @@ idempotent by construction: an issue that already holds a live task is
 never uncovered, and an enqueue that races another lane's import dedupes
 onto the live row.
 
+**Open-PR coverage (#4951):** the broker diff only knows tasks, so
+`check_coverage.py` additionally consults the repo's open PRs before
+declaring an issue uncovered (branch `queue/<task>-<issue>-*`, a
+closing keyword, or a trailing `(#n)` title reference). An issue with
+an open fix PR is in-flight: no triage packet. With `--import` it gets
+one merge-watch packet per PR (dedupe
+`repo-health:v1:merge-watch:<repo>:pr:<n>`) — the ~24h recheck that
+re-tests mergibility, refreshes the branch, merges, or closes the PR
+with a salvage note, instead of letting pr_opened work bit-rot.
+
 ## Running it
 
 ```bash

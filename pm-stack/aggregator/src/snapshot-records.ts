@@ -137,6 +137,32 @@ export function recordsFromPaygLines(lines: PaygLine[], observedBy: string): Sna
         observedBy,
       });
     }
+    if (line.settledUsd != null && line.settledAt) {
+      // The settled counterpart record (#1056): keyed exactly as
+      // extractPaygLines' settlement lookup expects, so a line derived
+      // from the store and a line written back to it are one series.
+      const key =
+        line.id === "cloudflare-gateway"
+          ? { serviceId: "cloudflare", metricId: "gateway-accrual" }
+          : line.id === "meta-payg"
+            ? { serviceId: "meta", metricId: "payg-settled" }
+            : null;
+      if (key) {
+        out.push({
+          // Preserve the settlement record's original instant when the
+          // line carries it (CodeRabbit, PR #10433): settledAt is
+          // date-only, and deriving noon from it would let this
+          // write-back outrank a later same-day correction.
+          ts: line.settledTs ?? tsFor(line.settledAt),
+          serviceId: key.serviceId,
+          metricId: key.metricId,
+          value: line.settledUsd,
+          unit: "usd",
+          source: line.settledSource ?? "invoice",
+          observedBy,
+        });
+      }
+    }
     if (line.estimate) {
       // cloudflare-platform-excess duplicates the Cloudflare service's
       // own estimate (extractPaygLines derives the line FROM it) — the

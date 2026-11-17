@@ -23,9 +23,12 @@
 //! limit (50 per 10 seconds) is an admission rule of the sending path, not a property of a
 //! stored message, so it is enforced where events are admitted ([`SendRate`]), not on a stored message.
 //!
-//! A message may carry object references as links. Only `blob` and `event` are v1 link
-//! kinds. A link names content by hash and names its author; it never embeds a capability.
-//! Retrieval accepts a holder set (see [`ChatLink::holders`]) even though v1 usually knows
+//! A message may carry object references as links. V1 names `blob` and `event`
+//! link kinds; #5872 adds the `object` kind for an addressable ID object, and an
+//! unknown kind decodes tolerantly as [`ChatLinkKind::Unknown`] so a client that
+//! predates a future kind can skip it instead of failing projection. A link names
+//! content by hash and names its author; it never embeds a capability. Retrieval
+//! accepts a holder set (see [`ChatLink::holders`]) even though v1 usually knows
 //! one holder, the author or the optional hint.
 //!
 //! Membership and history enforcement live with the group policy and the store read path
@@ -62,7 +65,8 @@ pub fn is_chat_message_kind(kind: &str) -> bool {
     kind == CHAT_MESSAGE_KIND
 }
 
-/// The kind of object a [`ChatLink`] references. Only these two kinds exist in v1.
+/// The kind of object a [`ChatLink`] references. V1 names `blob` and `event`;
+/// #5872 adds `object`, an addressable ID object named by ID and author.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum ChatLinkKind {
@@ -70,6 +74,13 @@ pub enum ChatLinkKind {
     Blob,
     /// Another event, named by its event ID.
     Event,
+    /// An addressable ID object, named by its object ID and author (#5872).
+    Object,
+    /// A kind this client does not know. Decoding it is tolerated so a client that
+    /// predates an extension can skip the link instead of failing projection
+    /// (#5872 invariant 7); the link itself is otherwise preserved.
+    #[serde(other)]
+    Unknown,
 }
 
 /// An object reference carried by a message: content by hash, its author, and an optional
@@ -588,11 +599,70 @@ mod tests {
     }
 
     #[test]
-    fn test_link_kinds_are_only_blob_and_event() {
-        let parsed: Result<ChatLink, _> = serde_json::from_str(
+    fn test_link_kinds_tolerate_unknown_and_name_object() {
+        // #5872 invariant 7: a kind this client predates decodes as `Unknown`, so a
+        // v1 client skips the link instead of failing the whole message.
+        let parsed: ChatLink = serde_json::from_str(
             r#"{"kind":"file","hash":"0000000000000000000000000000000000000000000000000000000000000000","author":[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],"hint":null}"#,
+        )
+        .unwrap();
+        assert_eq!(parsed.kind, ChatLinkKind::Unknown);
+
+        let object: ChatLink = serde_json::from_str(
+            r#"{"kind":"object","hash":"0000000000000000000000000000000000000000000000000000000000000000","author":[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],"hint":null}"#,
+        )
+        .unwrap();
+        assert_eq!(object.kind, ChatLinkKind::Object);
+
+        // The known v1 kinds still decode exactly, and a round trip keeps `Unknown`'s
+        // original spelling out of the wire form's meaning.
+        for (name, kind) in [
+            ("blob", ChatLinkKind::Blob),
+            ("event", ChatLinkKind::Event),
+            ("object", ChatLinkKind::Object),
+        ] {
+            let json = format!(
+                r#"{{"kind":"{name}","hash":"0000000000000000000000000000000000000000000000000000000000000000","author":[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],"hint":null}}"#
+            );
+            assert_eq!(serde_json::from_str::<ChatLink>(&json).unwrap().kind, kind);
+        }
+    }
+
+    #[test]
+    fn test_v1_links_and_messages_encode_byte_identically() {
+        // #6222 must be additive: a v1 blob or event link, and a v1 message carrying
+        // them, encode exactly as they did before `object`/`unknown` existed. The
+        // golden strings below were produced by the v1 encoder; they must not change.
+        let blob = ChatLink {
+            kind: ChatLinkKind::Blob,
+            hash: Hash::from_bytes([0; 32]),
+            author: [0; 32],
+            hint: None,
+        };
+        assert_eq!(
+            serde_json::to_string(&blob).unwrap(),
+            r#"{"kind":"blob","hash":"0000000000000000000000000000000000000000000000000000000000000000","author":[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],"hint":null}"#
         );
-        assert!(parsed.is_err());
+
+        let event = ChatLink {
+            kind: ChatLinkKind::Event,
+            hash: Hash::from_bytes([0; 32]),
+            author: [0; 32],
+            hint: Some("relay".to_owned()),
+        };
+        assert_eq!(
+            serde_json::to_string(&event).unwrap(),
+            r#"{"kind":"event","hash":"0000000000000000000000000000000000000000000000000000000000000000","author":[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],"hint":"relay"}"#
+        );
+
+        let message = ChatMessage {
+            text: "hello".to_owned(),
+            links: vec![blob, event],
+        };
+        assert_eq!(
+            serde_json::to_string(&message).unwrap(),
+            r#"{"text":"hello","links":[{"kind":"blob","hash":"0000000000000000000000000000000000000000000000000000000000000000","author":[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],"hint":null},{"kind":"event","hash":"0000000000000000000000000000000000000000000000000000000000000000","author":[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],"hint":"relay"}]}"#
+        );
     }
 
     #[test]
@@ -675,6 +745,7 @@ mod tests {
             checkpoint: None,
             rotation: None,
             chat: Some(message),
+            anchor: None,
         }
     }
 

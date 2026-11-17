@@ -17,6 +17,7 @@ function freePort(): number {
   const s = Bun.serve({ port: 0, fetch: () => new Response("x") });
   const p = s.port;
   s.stop(true);
+  if (p === undefined) throw new Error("freePort: Bun.serve did not report a port");
   return p;
 }
 

@@ -301,6 +301,61 @@ class PublisherTests(unittest.TestCase):
                 with self.assertRaisesRegex(publisher.Refusal, "readback"):
                     publisher.queue_readback(args, 42, key)
 
+    def test_resume_readback_accepts_terminal_done_only(self):
+        # Oracle (#10143): on resume, an exact-match row in terminal
+        # "done" status is a completed disposition and is returned;
+        # any other terminal status still refuses, and the fresh
+        # queue_readback stays LIVE-only for the same "done" row.
+        key = "repo-health:v1:triage:developing-today/code:issue:9"
+        args = type(
+            "Args", (), {"_broker_url": "http://broker", "_broker_token": "fake-token"}
+        )()
+        done = json.dumps(
+            {
+                "ok": True,
+                "rows": [
+                    {
+                        "id": 42,
+                        "queue": publisher.QUEUE,
+                        "status": "done",
+                        "dedupe_key": key,
+                    }
+                ],
+            }
+        ).encode()
+        with patch.object(
+            publisher.urllib.request, "urlopen", return_value=self.FakeResponse(done)
+        ):
+            with self.assertRaisesRegex(publisher.Refusal, "readback"):
+                publisher.queue_readback(args, 42, key)
+        with patch.object(
+            publisher.urllib.request,
+            "urlopen",
+            side_effect=[self.FakeResponse(done), self.FakeResponse(done)],
+        ):
+            row = publisher.queue_readback_resume(args, 42, key)
+        self.assertEqual(row["status"], "done")
+        cancelled = json.dumps(
+            {
+                "ok": True,
+                "rows": [
+                    {
+                        "id": 42,
+                        "queue": publisher.QUEUE,
+                        "status": "cancelled",
+                        "dedupe_key": key,
+                    }
+                ],
+            }
+        ).encode()
+        with patch.object(
+            publisher.urllib.request,
+            "urlopen",
+            side_effect=[self.FakeResponse(cancelled), self.FakeResponse(cancelled)],
+        ):
+            with self.assertRaisesRegex(publisher.Refusal, "readback"):
+                publisher.queue_readback_resume(args, 42, key)
+
     def test_enqueue_row_from_offline_fake_cli_output(self):
         with tempfile.TemporaryDirectory() as td:
             fake = Path(td) / "fleet-fake"

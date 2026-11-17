@@ -683,6 +683,9 @@ impl<'a, L: LedgerBackend> RegistrationService<'a, L> {
     /// The §2.5 confirm step, shared by `register` and `reconcile`:
     /// re-check applicable adverse events FIRST; only then advance
     /// Presented → PendingHold.
+    // The two expects below name store invariants: the transition is
+    // listed in the state table, and the grant was read from this store.
+    #[allow(clippy::expect_used)]
     fn confirm(&mut self, grant: GrantRecord, now: u64) -> RegistrationOutcome {
         if let Some(event) = self.adverse.adverse_event_for(&grant) {
             return RegistrationOutcome::IntentPending {
@@ -783,11 +786,14 @@ impl<'a, L: LedgerBackend> RegistrationService<'a, L> {
                         report.blocked_by_event += 1;
                         continue;
                     }
-                    let cfg = self
-                        .config
-                        .get(&grant.storefront_id)
-                        .expect("grant's storefront is configured")
-                        .clone();
+                    // A restored grant can outlive its storefront's
+                    // config (decommissioned storefront, typo, foreign
+                    // snapshot). Leave it untouched and count it as
+                    // unresolved rather than crash the reconciler.
+                    let Some(cfg) = self.config.get(&grant.storefront_id).cloned() else {
+                        report.still_pending += 1;
+                        continue;
+                    };
                     match self.create_pending_transfer(&cfg, &grant) {
                         Ok(()) => match self.confirm(grant, now) {
                             RegistrationOutcome::PendingHold(_) => report.confirmed += 1,
@@ -820,6 +826,7 @@ pub struct ReconcileReport {
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
     use super::*;
     use crate::currency_poc::ledger::InMemoryLedger;
@@ -1443,6 +1450,44 @@ mod tests {
             .register(&request("grant-2", "AAAAA-11111-BBBBB", 5_000))
             .unwrap();
         assert!(matches!(outcome, RegistrationOutcome::Rejected { .. }));
+    }
+
+    #[test]
+    fn reconcile_skips_restored_grant_whose_storefront_is_unconfigured() {
+        let v = verifier();
+        let adverse = no_adverse();
+        let ledger = DropFirstCreate {
+            inner: InMemoryLedger::new(),
+            dropped: false,
+        };
+        let mut svc = RegistrationService::new(GrantStore::new(), ledger, config(), &v, &adverse);
+        let outcome = svc
+            .register(&request("grant-1", "AAAAA-11111-BBBBB", 1_000))
+            .unwrap();
+        assert!(matches!(outcome, RegistrationOutcome::IntentPending { .. }));
+        let snapshot = svc.store().snapshot();
+        let RegistrationService { ledger, .. } = svc;
+        let restored = GrantStore::restore(snapshot).unwrap();
+        let mut svc2 = RegistrationService::new(restored, ledger, HashMap::new(), &v, &adverse);
+        let report = svc2.reconcile(1_000 + 3_600, 60);
+        assert_eq!(
+            report,
+            ReconcileReport {
+                scanned: 1,
+                still_pending: 1,
+                ..ReconcileReport::default()
+            }
+        );
+        assert_eq!(
+            svc2.store().grant("grant-1").unwrap().state,
+            GrantState::Presented
+        );
+        assert!(
+            svc2.ledger()
+                .inner
+                .lookup_transfer(transfer_id_for_grant("grant-1"))
+                .is_none()
+        );
     }
 
     #[test]

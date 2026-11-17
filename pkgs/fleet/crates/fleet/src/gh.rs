@@ -43,6 +43,24 @@
 //! prints every rotation source with its core and GraphQL
 //! rate-limit headroom and exits 3 when any source is down.
 //!
+//! `fleet gh cache-serve` (also a shadow subcommand) runs the
+//! credential/token cache daemon (code#10742): secret resolutions
+//! (short TTL), App JWTs (within expiry), installation tokens
+//! (until shortly before expiry) and per-App installation lists,
+//! memory-only with single-flight minting. `fleet gh cache-status`
+//! probes the configured daemons. Every normal call resolves through
+//! the localhost daemon, then the laptop daemon, when one answers;
+//! with no daemon it resolves in-process and says so on stderr.
+//!
+//! Raw mode — `fleet gh --raw <gh args...>` or FLEET_GH_RAW=1 —
+//! is the first-class bypass (Drew, 2026-11-14): the real `gh`
+//! execs directly with the caller's ambient credentials and
+//! environment; no token is resolved or injected and there is
+//! no rotation or failover. It exists so callers that must pin
+//! one identity (and the `gh` -> `fleet gh` PATH shim, whose
+//! escape hatch this is) never have to choose between the
+//! rotation and bypassing fleet entirely.
+//!
 //! Retry-safety rule (the #8887 contract): a WRITE is only repeated
 //! under a fresh token when the failure proves GitHub refused the
 //! request before processing it — rate-limit rejections (the limiter
@@ -72,11 +90,21 @@
 //!   FLEET_GH_DEVTODAY_OWNERS / FLEET_GH_BACKUP_OWNERS
 //!                       comma lists replacing those Apps' owners
 //!   FLEET_GH_TRACE=1    name each attempt's token source on stderr
+//!   FLEET_GH_RAW=1      raw mode (same as a leading `--raw`):
+//!                       exec the real gh with ambient credentials,
+//!                       no rotation, no token injection
+//!   FLEET_GH_CACHE      comma list of cache-daemon addresses
+//!                       (`host[:port]`, default port 4802),
+//!                       beating fleet config's `[gh]` table
+//!   FLEET_GH_CACHE_BIND bind address for `cache-serve`
+//!                       (default 127.0.0.1:4802)
 
-use fleet_config::Config;
+use crate::gh_cache;
+use fleet_config::{Config, DEFAULT_GH_CACHE_PORT};
 use fleet_secrets::Resolver;
 use std::io::Write;
 use std::process::{Command, Stdio};
+use std::sync::Mutex;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 const EXIT_OK: i32 = 0;
@@ -85,6 +113,11 @@ const EXIT_USAGE: i32 = 2;
 /// for "no token source could be resolved at all" (matches the
 /// secrets/dispatch unresolved exit shape).
 const EXIT_UNRESOLVED: i32 = 3;
+
+fn usage_error(message: &str) -> i32 {
+    eprintln!("error: {message}");
+    EXIT_USAGE
+}
 
 const PERSONAL_SECRET_NAME: &str = "github-cli.hosts-yml";
 const APP_KEY_SECRET_NAME: &str = "github-app.developing-today-fleet.private-key";
@@ -101,13 +134,30 @@ const GITHUB_API: &str = "https://api.github.com";
 const USAGE: &str = "\
 Usage: fleet gh <gh args...>
        fleet gh tiers
+       fleet gh cache-serve [--bind <addr>]
+       fleet gh cache-status
+       fleet gh [--cache-addr <addr>...] [--no-cache] <gh args...>
+       fleet gh --raw <gh args...>
 
 Run the real `gh` CLI with every argument passed through unchanged,
 under a token selected from the fleet rotation (personal token, then
 the fleet's three GitHub Apps' installation tokens). A rate-limit or
 permission failure fails over to the next token; the caller sees only
 the final attempt's output and exit code. `fleet gh tiers` lists each
-rotation source with its rate-limit headroom. See code#8887.";
+rotation source with its rate-limit headroom. `fleet gh --raw` (or
+FLEET_GH_RAW=1) bypasses the rotation entirely: the real gh runs with
+the caller's ambient credentials, no token injected. See code#8887.
+
+Credential cache (code#10742): token resolution goes through the
+cache daemon when one answers — the localhost daemon first, then the
+laptop daemon (fleet config `[gh] cache_local` / `cache_laptop`, or
+FLEET_GH_CACHE as a comma list; an address without a port gets port
+4802). `fleet gh cache-serve` runs the daemon (default bind
+127.0.0.1:4802, `--bind` or FLEET_GH_CACHE_BIND to change it);
+`fleet gh cache-status` probes the configured daemons. `--cache-addr`
+overrides every daemon address for one call; `--no-cache` resolves
+in-process. When no daemon answers, the call resolves in-process and
+says so on stderr — never silently.";
 
 /// The fleet's GitHub Apps, in rotation order. Each carries its
 /// private key (and, except the fleet App whose ID is a public
@@ -128,6 +178,18 @@ impl GhApp {
             GhApp::Fleet => "app",
             GhApp::DevToday => "devtoday",
             GhApp::Backup => "backup",
+        }
+    }
+
+    /// Parse a slug back to its App (the cache wire names Apps by
+    /// slug, so the daemon side resolves them without importing
+    /// the rotation's enum spelling twice).
+    fn parse(slug: &str) -> Option<GhApp> {
+        match slug {
+            "app" => Some(GhApp::Fleet),
+            "devtoday" => Some(GhApp::DevToday),
+            "backup" => Some(GhApp::Backup),
+            _ => None,
         }
     }
 
@@ -439,30 +501,60 @@ trait TokenProvider {
     fn token_for(&mut self, source: &TokenSource) -> Result<String, String>;
 }
 
-/// The production provider: the fleet-secrets resolver chain for
-/// named secrets, plus in-process App installation minting.
-struct FleetTokenProvider<'a> {
-    config: &'a Config,
-    app_ids: Vec<(GhApp, String)>,
-    app_jwts: Vec<(GhApp, String)>,
-    minted: Vec<(GhApp, String, String)>,
+/// Raw credential operations, with no caching: the
+/// fleet-secrets resolver chain for named secrets, plus in-process
+/// App installation minting. Both the cache daemon and the
+/// no-daemon in-process fallback compose the same
+/// [`gh_cache::Cache`] over this backend, so one implementation
+/// serves both paths (code#10742).
+struct RawMinter {
+    config: Config,
+    agent: ureq::Agent,
+    app_ids: Mutex<Vec<(GhApp, String)>>,
 }
 
-impl<'a> FleetTokenProvider<'a> {
-    fn new(config: &'a Config) -> Self {
-        FleetTokenProvider {
-            config,
-            app_ids: Vec::new(),
-            app_jwts: Vec::new(),
-            minted: Vec::new(),
+impl RawMinter {
+    fn new(config: &Config) -> Self {
+        // Platform root store, not webpki-roots alone: hosts
+        // behind a TLS-intercepting egress proxy present the
+        // proxy's CA, which only the platform store carries (the
+        // sandbox App leg died with UnknownIssuer before this).
+        let agent: ureq::Agent = ureq::Agent::config_builder()
+            .timeout_global(Some(std::time::Duration::from_secs(60)))
+            .timeout_connect(Some(std::time::Duration::from_secs(10)))
+            .http_status_as_error(false)
+            .tls_config(
+                ureq::tls::TlsConfig::builder()
+                    .root_certs(ureq::tls::RootCerts::PlatformVerifier)
+                    .build(),
+            )
+            .build()
+            .into();
+        RawMinter {
+            config: config.clone(),
+            agent,
+            app_ids: Mutex::new(Vec::new()),
         }
+    }
+
+    fn resolve_named(&self, name: &str) -> Result<String, String> {
+        Resolver::default_chain(&self.config)
+            .resolve(name)
+            .map(|v| v.expose().to_string())
+            .map_err(|e| format!("secret '{name}' unresolved: {e}"))
     }
 
     /// The App ID for one App: the fleet App's is a public constant
     /// (FLEET_GH_APP_ID may override it); the other Apps carry
     /// theirs in the broker next to their keys.
-    fn app_id(&mut self, app: GhApp) -> Result<String, String> {
-        if let Some((_, id)) = self.app_ids.iter().find(|(a, _)| *a == app) {
+    fn app_id(&self, app: GhApp) -> Result<String, String> {
+        if let Some((_, id)) = self
+            .app_ids
+            .lock()
+            .expect("gh app-id lock")
+            .iter()
+            .find(|(a, _)| *a == app)
+        {
             return Ok(id.clone());
         }
         let id = match app.id_secret() {
@@ -475,25 +567,26 @@ impl<'a> FleetTokenProvider<'a> {
         if id.is_empty() {
             return Err(format!("app id for {} resolved empty", app.slug()));
         }
-        self.app_ids.push((app, id.clone()));
+        self.app_ids
+            .lock()
+            .expect("gh app-id lock")
+            .push((app, id.clone()));
         Ok(id)
     }
+}
 
-    fn resolve_named(&self, name: &str) -> Result<String, String> {
-        Resolver::default_chain(self.config)
-            .resolve(name)
-            .map(|v| v.expose().to_string())
-            .map_err(|e| format!("secret '{name}' unresolved: {e}"))
+impl gh_cache::Backend for RawMinter {
+    fn resolve_secret(&self, name: &str) -> Result<String, String> {
+        self.resolve_named(name)
     }
 
-    /// One App's JWT, built once per process per App: header and
-    /// payload are public claims; only the signature touches the
-    /// private key, and that happens inside `openssl` with the key
-    /// arriving on an inherited fd.
-    fn jwt(&mut self, app: GhApp) -> Result<String, String> {
-        if let Some((_, jwt)) = self.app_jwts.iter().find(|(a, _)| *a == app) {
-            return Ok(jwt.clone());
-        }
+    /// One App's JWT: header and payload are public claims; only
+    /// the signature touches the private key, and that happens
+    /// inside `openssl` with the key arriving on an inherited fd.
+    /// The TTL is the JWT's own lifetime minus the cache skew, so
+    /// the cache serves it only within expiry.
+    fn sign_jwt(&self, app: &str) -> Result<(String, u64), String> {
+        let app = GhApp::parse(app).ok_or_else(|| format!("unknown gh app {app:?}"))?;
         let app_id = self.app_id(app)?;
         let key_pem = self.resolve_named(app.key_secret())?;
         let now = SystemTime::now()
@@ -513,38 +606,20 @@ impl<'a> FleetTokenProvider<'a> {
         let signing_input = format!("{header}.{payload}");
         let signature = openssl_rs256_sign(key_pem.as_bytes(), signing_input.as_bytes())?;
         let jwt = format!("{signing_input}.{}", base64url(&signature));
-        self.app_jwts.push((app, jwt.clone()));
-        Ok(jwt)
+        Ok((jwt, 540u64.saturating_sub(gh_cache::EXPIRY_SKEW_SECS)))
     }
 
-    fn mint_installation_token(&mut self, app: GhApp, owner: &str) -> Result<String, String> {
-        if let Some((_, _, token)) = self.minted.iter().find(|(a, o, _)| *a == app && o == owner) {
-            return Ok(token.clone());
-        }
-        let jwt = self.jwt(app)?;
-        // Platform root store, not webpki-roots alone: hosts
-        // behind a TLS-intercepting egress proxy present the
-        // proxy's CA, which only the platform store carries (the
-        // sandbox App leg died with UnknownIssuer before this).
-        let agent: ureq::Agent = ureq::Agent::config_builder()
-            .timeout_global(Some(std::time::Duration::from_secs(60)))
-            .timeout_connect(Some(std::time::Duration::from_secs(10)))
-            .http_status_as_error(false)
-            .tls_config(
-                ureq::tls::TlsConfig::builder()
-                    .root_certs(ureq::tls::RootCerts::PlatformVerifier)
-                    .build(),
-            )
-            .build()
-            .into();
-        // Resolve the owner's installation live, paginating: the App
-        // has 100+ installations and a first-page-only read silently
-        // loses the fleet's (the fleet-paperwork #7930 break).
-        let mut installation_id: Option<i64> = None;
+    /// One App's installations as `(owner_login, id)` pairs,
+    /// resolved live and paginated: the App has 100+ installations
+    /// and a first-page-only read silently loses the fleet's (the
+    /// fleet-paperwork #7930 break).
+    fn list_installations(&self, app: &str) -> Result<Vec<(String, i64)>, String> {
+        let (jwt, _) = self.sign_jwt(app)?;
+        let mut pairs: Vec<(String, i64)> = Vec::new();
         let mut page = 1;
-        while installation_id.is_none() {
+        loop {
             let url = format!("{GITHUB_API}/app/installations?per_page=100&page={page}");
-            let (status, body) = api_call(&agent, "GET", &url, &jwt, None)?;
+            let (status, body) = api_call(&self.agent, "GET", &url, &jwt, None)?;
             if status != 200 {
                 return Err(format!(
                     "app installations list failed: HTTP {status} (page {page})"
@@ -561,9 +636,10 @@ impl<'a> FleetTokenProvider<'a> {
                     .pointer("/account/login")
                     .and_then(|v| v.as_str())
                     .unwrap_or("");
-                if login.eq_ignore_ascii_case(owner) {
-                    installation_id = entry.get("id").and_then(|v| v.as_i64());
-                    break;
+                if !login.is_empty()
+                    && let Some(id) = entry.get("id").and_then(|v| v.as_i64())
+                {
+                    pairs.push((login.to_string(), id));
                 }
             }
             if count < 100 {
@@ -571,15 +647,19 @@ impl<'a> FleetTokenProvider<'a> {
             }
             page += 1;
         }
-        let Some(iid) = installation_id else {
-            return Err(format!("no app installation found for owner '{owner}'"));
-        };
-        let url = format!("{GITHUB_API}/app/installations/{iid}/access_tokens");
-        let (status, body) = api_call(&agent, "POST", &url, &jwt, Some("{}"))?;
+        Ok(pairs)
+    }
+
+    /// Mint an installation token for one installation id. The TTL
+    /// comes from the response's `expires_at`, minus the cache
+    /// skew: the cache serves the token until shortly before its
+    /// own expiry.
+    fn mint_token(&self, app: &str, installation_id: i64) -> Result<(String, u64), String> {
+        let (jwt, _) = self.sign_jwt(app)?;
+        let url = format!("{GITHUB_API}/app/installations/{installation_id}/access_tokens");
+        let (status, body) = api_call(&self.agent, "POST", &url, &jwt, Some("{}"))?;
         if status != 201 {
-            return Err(format!(
-                "installation token mint for '{owner}' failed: HTTP {status}"
-            ));
+            return Err(format!("installation token mint failed: HTTP {status}"));
         }
         let parsed: serde_json::Value =
             serde_json::from_str(&body).map_err(|_| "mint response unparseable")?;
@@ -589,22 +669,84 @@ impl<'a> FleetTokenProvider<'a> {
             .filter(|t| !t.is_empty())
             .ok_or_else(|| "mint response carried no token".to_string())?
             .to_string();
-        self.minted.push((app, owner.to_string(), token.clone()));
-        Ok(token)
+        let ttl = parsed
+            .get("expires_at")
+            .and_then(|v| v.as_str())
+            .map(gh_cache::token_ttl_from_expires_at)
+            .unwrap_or(3500);
+        Ok((token, ttl))
     }
 }
 
-impl TokenProvider for FleetTokenProvider<'_> {
+/// The production provider: a process-local [`gh_cache::Cache`]
+/// over [`RawMinter`], fronted by the cache daemons when one
+/// answers. Daemon addresses arrive ordered (localhost first, then
+/// the laptop daemon); the first answer wins per request.
+struct FleetTokenProvider {
+    cache: gh_cache::Cache<RawMinter>,
+    addrs: Vec<String>,
+    daemon_dead: bool,
+    noted: bool,
+}
+
+impl FleetTokenProvider {
+    fn new(config: &Config, addrs: Vec<String>) -> Self {
+        FleetTokenProvider {
+            cache: gh_cache::Cache::new(RawMinter::new(config)),
+            addrs,
+            daemon_dead: false,
+            noted: false,
+        }
+    }
+
+    /// Resolve one cache request: the first answering daemon wins;
+    /// when none answers, the process-local cache mints instead —
+    /// with one visible note on stderr, never silence (code#10742).
+    /// A daemon that ANSWERS with an error is authoritative: its
+    /// error is the result, not a cue to mint locally (the local
+    /// mint would fail the same way a moment later).
+    fn via(
+        &mut self,
+        req: serde_json::Value,
+        local: impl FnOnce(&gh_cache::Cache<RawMinter>) -> Result<String, String>,
+    ) -> Result<String, String> {
+        if !self.daemon_dead && !self.addrs.is_empty() {
+            match gh_cache::fetch_any(&self.addrs, &req, gh_cache::CONNECT_TIMEOUT) {
+                Ok(resp) => return gh_cache::response_token(&resp),
+                Err(e) => {
+                    self.daemon_dead = true;
+                    if !self.noted {
+                        self.noted = true;
+                        eprintln!(
+                            "fleet gh: no cache daemon answered (tried {}: {e}); resolving in-process",
+                            self.addrs.join(", ")
+                        );
+                    }
+                }
+            }
+        }
+        local(&self.cache)
+    }
+}
+
+impl TokenProvider for FleetTokenProvider {
     fn token_for(&mut self, source: &TokenSource) -> Result<String, String> {
         match source {
             TokenSource::Personal => {
-                let hosts = self.resolve_named(PERSONAL_SECRET_NAME)?;
-                parse_hosts_yml_token(&hosts).ok_or_else(|| {
-                    format!("secret '{PERSONAL_SECRET_NAME}' carries no oauth_token")
+                let req =
+                    gh_cache::request("personal", None, None, Some(PERSONAL_SECRET_NAME));
+                self.via(req, |cache| {
+                    let hosts = cache.secret(PERSONAL_SECRET_NAME)?;
+                    parse_hosts_yml_token(&hosts).ok_or_else(|| {
+                        format!("secret '{PERSONAL_SECRET_NAME}' carries no oauth_token")
+                    })
                 })
             }
             TokenSource::AppInstallation { app, owner } => {
-                self.mint_installation_token(*app, owner)
+                let req = gh_cache::request("token", Some(app.slug()), Some(owner), None);
+                self.via(req, |cache| {
+                    cache.installation_token(app.slug(), owner)
+                })
             }
         }
     }
@@ -864,10 +1006,10 @@ fn emit(attempt: &Attempt) {
 /// core and GraphQL rate-limit headroom. Labels and numbers only —
 /// token values never leave the provider. Exit 0 when every source
 /// answers, EXIT_UNRESOLVED when any source is down.
-fn run_tiers(config: &Config) -> i32 {
+fn run_tiers(config: &Config, addrs: Vec<String>) -> i32 {
     let gh_bin = std::env::var("FLEET_GH_BIN").unwrap_or_else(|_| "gh".to_string());
     let sources = rotation(&[]);
-    let mut provider = FleetTokenProvider::new(config);
+    let mut provider = FleetTokenProvider::new(config, addrs);
     let mut any_down = false;
     for source in &sources {
         let label = source.label();
@@ -911,23 +1053,288 @@ fn run_tiers(config: &Config) -> i32 {
     if any_down { EXIT_UNRESOLVED } else { EXIT_OK }
 }
 
+/// Raw-mode split: returns the arguments to hand the real `gh`
+/// when raw mode is requested — a leading `--raw` (stripped) or
+/// FLEET_GH_RAW=1 (args unchanged) — and None when the call goes
+/// through the rotation. Only a LEADING `--raw` is ours: later
+/// positions belong to `gh` (its own `--raw-field` family lives
+/// further along the command line, never first).
+fn raw_args(args: &[String], raw_env: bool) -> Option<Vec<String>> {
+    if args.first().is_some_and(|a| a == "--raw") {
+        return Some(args[1..].to_vec());
+    }
+    if raw_env {
+        return Some(args.to_vec());
+    }
+    None
+}
+
+/// Raw mode: exec the real `gh` with the caller's ambient
+/// environment untouched — no token resolved, none injected, no
+/// failover. Stdio is inherited (not captured) so interactive
+/// `gh` behaves exactly as it does unwrapped; the exit code is
+/// the child's own.
+fn run_raw(gh_bin: &str, args: &[String]) -> i32 {
+    match Command::new(gh_bin)
+        .args(args)
+        .stdin(Stdio::inherit())
+        .stdout(Stdio::inherit())
+        .stderr(Stdio::inherit())
+        .status()
+    {
+        Ok(status) => status.code().unwrap_or(1),
+        Err(e) => {
+            eprintln!("fleet gh --raw: failed to run '{gh_bin}': {e}");
+            EXIT_UNRESOLVED
+        }
+    }
+}
+
 pub fn run(config: &Config, args: &[String]) -> i32 {
+    // Cache flags come first: leading `--cache-addr` (repeatable)
+    // and `--no-cache` are fleet's own, stripped before anything
+    // else sees the arguments. Only LEADING flags are ours, like
+    // `--raw`: anything later belongs to `gh`.
+    let flags = match split_cache_flags(args) {
+        Ok(f) => f,
+        Err(e) => return usage_error(&e),
+    };
+    let args = &flags.rest;
+    // Raw mode comes first: `--raw` with no further args is the
+    // real gh with no args, not this domain's usage text.
+    let raw_env = std::env::var("FLEET_GH_RAW").is_ok_and(|v| v == "1");
+    if let Some(raw) = raw_args(args, raw_env) {
+        let gh_bin = std::env::var("FLEET_GH_BIN").unwrap_or_else(|_| "gh".to_string());
+        return run_raw(&gh_bin, &raw);
+    }
     if args.is_empty()
         || args.first().is_some_and(|a| a == "--help" || a == "-h") && args.len() == 1
     {
         println!("{USAGE}");
         return EXIT_OK;
     }
-    // `tiers` is a shadow subcommand: real `gh` has no such verb,
-    // so intercepting it cannot shadow a passthrough call.
+    // `tiers`, `cache-serve` and `cache-status` are shadow
+    // subcommands: real `gh` has no such verbs, so intercepting
+    // them cannot shadow a passthrough call.
     if args.first().is_some_and(|a| a == "tiers") {
-        return run_tiers(config);
+        if args.len() > 1 {
+            return usage_error(&format!(
+                "unexpected argument '{}' for 'fleet gh tiers'",
+                args[1]
+            ));
+        }
+        return run_tiers(config, cache_addrs(config, &flags));
+    }
+    if args.first().is_some_and(|a| a == "cache-serve") {
+        return run_cache_serve(config, &args[1..]);
+    }
+    if args.first().is_some_and(|a| a == "cache-status") {
+        return run_cache_status(&args[1..], &cache_addrs(config, &flags));
     }
     let gh_bin = std::env::var("FLEET_GH_BIN").unwrap_or_else(|_| "gh".to_string());
     let sources = rotation(args);
     let trace = std::env::var("FLEET_GH_TRACE").is_ok_and(|v| v == "1");
-    let mut provider = FleetTokenProvider::new(config);
+    let mut provider = FleetTokenProvider::new(config, cache_addrs(config, &flags));
     run_with_provider(&mut provider, &gh_bin, args, &sources, trace)
+}
+
+/// Leading cache flags (code#10742): `--cache-addr <addr>`
+/// (repeatable, also `--cache-addr=<addr>`) and `--no-cache`.
+/// Parsing stops at the first non-flag, which with everything
+/// after it belongs to `gh` (the `--raw` rule).
+struct CacheFlags {
+    addrs: Vec<String>,
+    no_cache: bool,
+    rest: Vec<String>,
+}
+
+fn split_cache_flags(args: &[String]) -> Result<CacheFlags, String> {
+    let mut addrs = Vec::new();
+    let mut no_cache = false;
+    let mut i = 0;
+    while i < args.len() {
+        match args[i].as_str() {
+            "--no-cache" => {
+                no_cache = true;
+                i += 1;
+            }
+            "--cache-addr" => {
+                i += 1;
+                let value = args
+                    .get(i)
+                    .ok_or_else(|| "--cache-addr needs an address".to_string())?;
+                if value.trim().is_empty() {
+                    return Err("--cache-addr must not be empty".to_string());
+                }
+                addrs.push(value.clone());
+                i += 1;
+            }
+            arg if arg.starts_with("--cache-addr=") => {
+                let value = arg["--cache-addr=".len()..].to_string();
+                if value.trim().is_empty() {
+                    return Err("--cache-addr must not be empty".to_string());
+                }
+                addrs.push(value);
+                i += 1;
+            }
+            _ => break,
+        }
+    }
+    Ok(CacheFlags {
+        addrs,
+        no_cache,
+        rest: args[i..].to_vec(),
+    })
+}
+
+/// Daemon addresses for one call (code#10742 precedence):
+/// `--cache-addr` flag beats `FLEET_GH_CACHE` beats config beats
+/// defaults (the env/config/default legs live in
+/// [`Config::gh_cache_addrs`]). `--no-cache` empties the route:
+/// in-process resolution only.
+fn cache_addrs(config: &Config, flags: &CacheFlags) -> Vec<String> {
+    if flags.no_cache {
+        return Vec::new();
+    }
+    if !flags.addrs.is_empty() {
+        return flags
+            .addrs
+            .iter()
+            .map(|a| Config::with_default_port(a))
+            .collect();
+    }
+    config.gh_cache_addrs()
+}
+
+const CACHE_SERVE_USAGE: &str = "\
+Usage: fleet gh cache-serve [--bind <addr>]
+
+Run the gh credential/token cache daemon in the foreground (code#10742):
+secret resolutions, App JWTs, installation tokens and per-App
+installation lists, memory-only with single-flight minting. Nothing is
+written to disk; a restart is a cold cache, never a stale one.
+
+The bind address defaults to 127.0.0.1:4802 (FLEET_GH_CACHE_BIND beats
+the default; --bind beats both; a bind without a port gets 4802).";
+
+/// `fleet gh cache-serve`: the cache daemon role. The bind leaf
+/// takes only `--bind` (or help); anything else is a usage error,
+/// never something silently dropped before the socket is bound.
+fn run_cache_serve(config: &Config, tail: &[String]) -> i32 {
+    let mut bind: Option<String> = None;
+    let mut i = 0;
+    while i < tail.len() {
+        match tail[i].as_str() {
+            "--help" | "-h" => {
+                println!("{CACHE_SERVE_USAGE}");
+                return EXIT_OK;
+            }
+            "--bind" => {
+                i += 1;
+                match tail.get(i) {
+                    Some(v) if !v.trim().is_empty() => bind = Some(v.clone()),
+                    _ => {
+                        return usage_error(&format!(
+                            "'--bind' needs an address\n\n{CACHE_SERVE_USAGE}"
+                        ));
+                    }
+                }
+            }
+            arg if arg.starts_with("--bind=") => {
+                let value = arg["--bind=".len()..].to_string();
+                if value.trim().is_empty() {
+                    return usage_error(&format!(
+                        "'--bind' must not be empty\n\n{CACHE_SERVE_USAGE}"
+                    ));
+                }
+                bind = Some(value);
+            }
+            other => {
+                return usage_error(&format!(
+                    "unexpected argument '{other}' for 'fleet gh cache-serve'\n\n{CACHE_SERVE_USAGE}"
+                ));
+            }
+        }
+        i += 1;
+    }
+    let raw = bind
+        .or_else(|| {
+            std::env::var("FLEET_GH_CACHE_BIND")
+                .ok()
+                .filter(|v| !v.trim().is_empty())
+        })
+        .unwrap_or_else(|| format!("127.0.0.1:{DEFAULT_GH_CACHE_PORT}"));
+    let bind = Config::with_default_port(&raw);
+    eprintln!("fleet gh cache-serve: listening on {bind}");
+    gh_cache::serve(RawMinter::new(config), &bind)
+}
+
+const CACHE_STATUS_USAGE: &str = "\
+Usage: fleet gh cache-status
+
+Probe the configured cache daemons (code#10742) and print each one's
+snapshot: entry counts by kind, hit/miss counters, and the soonest
+expiry. Key names and values never leave the daemon — counts only.
+Exits 3 when no daemon answered.";
+
+fn run_cache_status(tail: &[String], addrs: &[String]) -> i32 {
+    if tail.first().is_some_and(|a| a == "--help" || a == "-h") {
+        println!("{CACHE_STATUS_USAGE}");
+        return EXIT_OK;
+    }
+    if let Some(extra) = tail.first() {
+        return usage_error(&format!(
+            "unexpected argument '{extra}' for 'fleet gh cache-status'\n\n{CACHE_STATUS_USAGE}"
+        ));
+    }
+    let req = gh_cache::request("status", None, None, None);
+    let mut any_up = false;
+    for addr in addrs {
+        match gh_cache::fetch_one(addr, &req, gh_cache::CONNECT_TIMEOUT) {
+            Ok(resp) => {
+                if resp.get("ok").and_then(|v| v.as_bool()) == Some(true) {
+                    any_up = true;
+                    println!("{addr}\tUP\t{}", summarize_status(&resp));
+                } else {
+                    let e = resp
+                        .get("error")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("reported failure");
+                    println!("{addr}\tDOWN\t{e}");
+                }
+            }
+            Err(e) => println!("{addr}\tDOWN\t{e}"),
+        }
+    }
+    if addrs.is_empty() {
+        println!("no cache daemon configured (--no-cache); nothing to probe");
+    }
+    if any_up { EXIT_OK } else { EXIT_UNRESOLVED }
+}
+
+/// One daemon's status object as a single tab-separated line:
+/// counts by kind, hits/misses, soonest expiry — nothing keyed by
+/// name, per the kind-only status rule.
+fn summarize_status(resp: &serde_json::Value) -> String {
+    let status = &resp["status"];
+    let kinds = status
+        .get("kinds")
+        .and_then(|k| k.as_object())
+        .map(|m| {
+            let mut rows: Vec<String> =
+                m.iter().map(|(k, v)| format!("{k}={v}")).collect();
+            rows.sort();
+            rows.join(" ")
+        })
+        .unwrap_or_default();
+    format!(
+        "entries={} kinds:[{kinds}] hits={} misses={} min_ttl={}s uptime={}s",
+        status.get("live_entries").and_then(|v| v.as_u64()).unwrap_or(0),
+        status.get("hits").and_then(|v| v.as_u64()).unwrap_or(0),
+        status.get("misses").and_then(|v| v.as_u64()).unwrap_or(0),
+        status.get("min_ttl_secs").and_then(|v| v.as_u64()).unwrap_or(0),
+        status.get("uptime_secs").and_then(|v| v.as_u64()).unwrap_or(0),
+    )
 }
 
 // ---------------------------------------------------------------------------
@@ -1213,6 +1620,45 @@ mod tests {
             calls.lines().count(),
             1,
             "write attempted exactly once: {calls}"
+        );
+    }
+
+    // oracle: Drew's 2026-11-14 raw-mode contract — a LEADING
+    // `--raw` is fleet's and is stripped; `--raw` anywhere else
+    // is gh's own argument and must not trigger the bypass;
+    // FLEET_GH_RAW=1 selects raw with the args untouched.
+    #[test]
+    fn raw_args_split() {
+        let v = |xs: &[&str]| xs.iter().map(|s| s.to_string()).collect::<Vec<String>>();
+        assert_eq!(
+            raw_args(&v(&["--raw", "api", "user"]), false),
+            Some(v(&["api", "user"]))
+        );
+        assert_eq!(raw_args(&v(&["--raw"]), false), Some(v(&[])));
+        assert_eq!(raw_args(&v(&["api", "--raw-field", "x=1"]), false), None);
+        assert_eq!(raw_args(&v(&["issue", "list"]), false), None);
+        assert_eq!(
+            raw_args(&v(&["issue", "list"]), true),
+            Some(v(&["issue", "list"]))
+        );
+    }
+
+    // oracle: the same contract, at the exec boundary — raw mode
+    // runs the real gh exactly once and hands it NO token: the
+    // fake gh logs the GH_TOKEN it saw, and raw must log an empty
+    // one (ambient test env carries no GH_TOKEN), where every
+    // rotated call above logs a tok-* value.
+    #[test]
+    fn raw_mode_runs_gh_without_token() {
+        let (dir, script) = fake_gh("raw");
+        let log = format!("{dir}/calls.log");
+        let args: Vec<String> = ["issue", "list"].iter().map(|s| s.to_string()).collect();
+        let code = run_raw(&script, &args);
+        assert_eq!(code, 0);
+        let calls = std::fs::read_to_string(&log).unwrap();
+        assert_eq!(
+            calls, "\n",
+            "exactly one call, with no token injected: {calls:?}"
         );
     }
 }

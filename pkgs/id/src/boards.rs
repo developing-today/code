@@ -22,6 +22,14 @@
 //! [`BoardGraph::replay_game_lineage`] folds a verified turn lineage through
 //! the exact package bytes the game post pins, under the sandbox limits, so
 //! every peer recomputes the same state from the same signed inputs.
+//! Note sharing (#7587, slice 1 of the #5830 model) adds [`Post::note_ref`]:
+//! a board post may carry a [`NoteRef`] — the note object id, home server,
+//! pinned version id and content hash, and sharer attribution — and never
+//! the note content. The reference is an embeds edge from the post to a
+//! note that need not live in this graph (it lives on its home server);
+//! [`BoardGraph::note_embeds`] / [`BoardGraph::note_backlinks`] project the
+//! edge set. Rendering, reply anchoring, and cross-server resolution are
+//! later slices.
 //! Duplicate `Rules` objects for the same board and revision are legal signed
 //! history. [`BoardGraph::resolve_rules`] selects the greater content hash
 //! within a revision; current rules are the highest revision, using that same
@@ -264,6 +272,13 @@ impl BoardObject {
                     unique.len() == value.attachments.len(),
                     "duplicate attachment reference"
                 );
+                if let Some(note_ref) = &value.note_ref {
+                    validate_text("note home server", &note_ref.home_server, false)?;
+                    ensure!(
+                        is_public_key(&note_ref.sharer),
+                        "note sharer is not canonical Ed25519 hex"
+                    );
+                }
             }
             Self::Attachment(value) => {
                 validate_text("attachment media type", &value.media_type, false)?;
@@ -553,6 +568,36 @@ impl BoardGraph {
             .collect()
     }
 
+    /// Every embeds edge in the graph: `(post hash, note reference)`
+    /// for each post carrying a [`Post::note_ref`], in deterministic
+    /// content-hash order. This is the post —embeds→ note edge set of
+    /// the #5830 sharing model; the note targets themselves are not
+    /// graph objects and are never listed here as objects.
+    pub fn note_embeds(&self) -> Vec<(ArtifactHash, &NoteRef)> {
+        self.objects
+            .iter()
+            .filter_map(|(hash, signed)| {
+                let BoardObject::Post(post) = &signed.object else {
+                    return None;
+                };
+                post.note_ref
+                    .as_ref()
+                    .map(|note_ref| (hash.clone(), note_ref))
+            })
+            .collect()
+    }
+
+    /// Backlinks for one note: the hashes of every post in the graph
+    /// whose [`Post::note_ref`] names `note`, in deterministic
+    /// content-hash order. Empty when nothing in this graph shares it.
+    pub fn note_backlinks(&self, note: &ArtifactHash) -> Vec<ArtifactHash> {
+        self.note_embeds()
+            .into_iter()
+            .filter(|(_, note_ref)| note_ref.object == *note)
+            .map(|(post_hash, _)| post_hash)
+            .collect()
+    }
+
     fn validate_links(&self, signed: &SignedBoardObject) -> Result<()> {
         let author = signed.artifact.author.as_str();
         match &signed.object {
@@ -604,6 +649,16 @@ impl BoardGraph {
                 }
                 if let Some(embed_ref) = &value.embed_ref {
                     self.require_scoped(&embed_ref.object, &value.board, "game_post")?;
+                }
+                if let Some(note_ref) = &value.note_ref {
+                    // The note lives on its home server, not in this
+                    // graph: never require it here. The one authority
+                    // rule is attribution — a share is signed by the
+                    // sharer it names.
+                    ensure!(
+                        note_ref.sharer == author,
+                        "note reference must be signed by its named sharer"
+                    );
                 }
             }
             BoardObject::GamePost(value) => {
@@ -2359,7 +2414,7 @@ fn is_public_key(value: &str) -> bool {
 }
 
 #[cfg(test)]
-#[allow(clippy::unwrap_used, clippy::expect_used)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
     use ed25519_dalek::SigningKey;
     use proptest::prelude::*;
@@ -2402,6 +2457,7 @@ mod tests {
                 body: body.to_owned(),
                 attachments: Vec::new(),
                 embed_ref: None,
+                note_ref: None,
             }),
         )
         .unwrap()
@@ -2425,6 +2481,31 @@ mod tests {
                 body: body.to_owned(),
                 attachments: Vec::new(),
                 embed_ref: Some(GamePostRef { object: embed_ref }),
+                note_ref: None,
+            }),
+        )
+        .unwrap()
+    }
+
+    fn post_with_note_ref(
+        key: &SigningKey,
+        board: ArtifactHash,
+        thread: ArtifactHash,
+        note_ref: NoteRef,
+        body: &str,
+    ) -> SignedBoardObject {
+        SignedBoardObject::sign(
+            key,
+            1,
+            "",
+            BoardObject::Post(Post {
+                board,
+                thread,
+                parent_post: None,
+                body: body.to_owned(),
+                attachments: Vec::new(),
+                embed_ref: None,
+                note_ref: Some(note_ref),
             }),
         )
         .unwrap()
@@ -2974,6 +3055,7 @@ mod tests {
                 body: "cross-thread reply".to_owned(),
                 attachments: Vec::new(),
                 embed_ref: None,
+                note_ref: None,
             }),
         )
         .unwrap();
@@ -2990,6 +3072,7 @@ mod tests {
                 body: "same-thread reply".to_owned(),
                 attachments: Vec::new(),
                 embed_ref: None,
+                note_ref: None,
             }),
         )
         .unwrap();
@@ -6848,5 +6931,175 @@ mod tests {
             &author,
             empty_version,
         ));
+    }
+    fn sample_note_ref(key: &SigningKey) -> NoteRef {
+        NoteRef {
+            object: ArtifactHash::new("a".repeat(64)).unwrap(),
+            home_server: "notes.example.host".to_owned(),
+            pinned_version: ArtifactHash::new("b".repeat(64)).unwrap(),
+            pinned_content_hash: ArtifactHash::new("c".repeat(64)).unwrap(),
+            sharer: hex_encode(&key.verifying_key().to_bytes()),
+        }
+    }
+
+    #[test]
+    fn post_note_ref_is_an_embeds_edge_to_a_note_absent_from_the_graph() {
+        let creator = key(11);
+        let mut graph = BoardGraph::default();
+        let root_hash = graph.insert(board(&creator)).unwrap();
+        let thread_hash = graph
+            .insert(thread(&creator, root_hash.clone(), "main"))
+            .unwrap();
+        let note_ref = sample_note_ref(&creator);
+        let note_object = note_ref.object.clone();
+
+        // The note itself is never inserted — it lives on its home
+        // server — yet the sharing post is accepted: the reference is
+        // the edge, and no note content is copied into the post.
+        let post_hash = graph
+            .insert(post_with_note_ref(
+                &creator,
+                root_hash.clone(),
+                thread_hash.clone(),
+                note_ref.clone(),
+                "sharing a note",
+            ))
+            .unwrap();
+        let plain_hash = graph
+            .insert(post(&creator, root_hash, thread_hash, "plain post"))
+            .unwrap();
+
+        let embeds = graph.note_embeds();
+        assert_eq!(embeds.len(), 1);
+        assert_eq!(embeds[0].0, post_hash);
+        assert_eq!(embeds[0].1, &note_ref);
+        assert_eq!(graph.note_backlinks(&note_object), vec![post_hash.clone()]);
+        assert!(
+            graph
+                .note_backlinks(&ArtifactHash::new("d".repeat(64)).unwrap())
+                .is_empty()
+        );
+        assert_ne!(plain_hash, post_hash);
+
+        // The signed body carries the reference fields only: pinned
+        // version + content hash are present, and there is no field
+        // that could hold the note's own content.
+        let stored = graph.get(&post_hash).unwrap();
+        let BoardObject::Post(stored_post) = &stored.object else {
+            panic!("expected a post");
+        };
+        let stored_ref = stored_post.note_ref.as_ref().unwrap();
+        assert_eq!(stored_ref.pinned_version.as_str(), "b".repeat(64).as_str());
+        assert_eq!(
+            stored_ref.pinned_content_hash.as_str(),
+            "c".repeat(64).as_str()
+        );
+        assert_eq!(stored_post.body, "sharing a note");
+    }
+
+    #[test]
+    fn post_note_ref_must_be_signed_by_its_named_sharer() {
+        let creator = key(12);
+        let other = key(13);
+        let mut graph = BoardGraph::default();
+        let root_hash = graph.insert(board(&creator)).unwrap();
+        let thread_hash = graph
+            .insert(thread(&creator, root_hash.clone(), "main"))
+            .unwrap();
+
+        // Signed by the creator but naming someone else as sharer.
+        let mut foreign = sample_note_ref(&creator);
+        foreign.sharer = hex_encode(&other.verifying_key().to_bytes());
+        assert!(
+            graph
+                .insert(post_with_note_ref(
+                    &creator,
+                    root_hash.clone(),
+                    thread_hash.clone(),
+                    foreign,
+                    "misattributed share",
+                ))
+                .is_err()
+        );
+
+        // Signed by the other key while naming the creator as sharer:
+        // the signature must be the sharer's either way.
+        assert!(
+            graph
+                .insert(post_with_note_ref(
+                    &other,
+                    root_hash,
+                    thread_hash,
+                    sample_note_ref(&creator),
+                    "forged share",
+                ))
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn note_ref_shape_rejects_bad_sharer_and_empty_home_server() {
+        let creator = key(14);
+        let board_hash = ArtifactHash::new("e".repeat(64)).unwrap();
+        let thread_hash = ArtifactHash::new("f".repeat(64)).unwrap();
+
+        let mut bad_sharer = sample_note_ref(&creator);
+        bad_sharer.sharer = "not-a-public-key".to_owned();
+        assert!(
+            SignedBoardObject::sign(
+                &creator,
+                1,
+                "",
+                BoardObject::Post(Post {
+                    board: board_hash.clone(),
+                    thread: thread_hash.clone(),
+                    parent_post: None,
+                    body: "x".to_owned(),
+                    attachments: Vec::new(),
+                    embed_ref: None,
+                    note_ref: Some(bad_sharer),
+                }),
+            )
+            .is_err()
+        );
+
+        let mut no_home = sample_note_ref(&creator);
+        no_home.home_server = String::new();
+        assert!(
+            SignedBoardObject::sign(
+                &creator,
+                1,
+                "",
+                BoardObject::Post(Post {
+                    board: board_hash,
+                    thread: thread_hash,
+                    parent_post: None,
+                    body: "x".to_owned(),
+                    attachments: Vec::new(),
+                    embed_ref: None,
+                    note_ref: Some(no_home),
+                }),
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn v1_post_body_without_note_ref_decodes_as_none() {
+        // Post bodies written before note_ref existed carry no
+        // note_ref key at all; they must still decode, as None.
+        let object = BoardObject::Post(Post {
+            board: ArtifactHash::new("1".repeat(64)).unwrap(),
+            thread: ArtifactHash::new("2".repeat(64)).unwrap(),
+            parent_post: None,
+            body: "old post".to_owned(),
+            attachments: Vec::new(),
+            embed_ref: None,
+            note_ref: None,
+        });
+        let value = serde_json::to_value(&object).unwrap();
+        assert!(value["data"].get("note_ref").is_none());
+        let decoded: BoardObject = serde_json::from_value(value).unwrap();
+        assert_eq!(decoded, object);
     }
 }

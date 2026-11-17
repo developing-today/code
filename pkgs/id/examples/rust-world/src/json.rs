@@ -188,7 +188,10 @@ impl<'a> Parser<'a> {
             Some(c) if c == b'-' || c.is_ascii_digit() => {
                 let start = self.pos;
                 while self.pos < self.bytes.len()
-                    && matches!(self.bytes[self.pos], b'-' | b'+' | b'.' | b'e' | b'E' | b'0'..=b'9')
+                    && matches!(
+                        self.bytes[self.pos],
+                        b'-' | b'+' | b'.' | b'e' | b'E' | b'0'..=b'9'
+                    )
                 {
                     self.pos += 1;
                 }
@@ -237,7 +240,9 @@ impl<'a> Parser<'a> {
                         b'r' => out.push('\r'),
                         b't' => out.push('\t'),
                         b'u' => {
-                            let hex = self.bytes.get(self.pos..self.pos + 4)
+                            let hex = self
+                                .bytes
+                                .get(self.pos..self.pos + 4)
                                 .ok_or("json: bad \\u escape")?;
                             let text = std::str::from_utf8(hex).map_err(|_| "json: bad \\u")?;
                             let code = u32::from_str_radix(text, 16)
@@ -370,7 +375,10 @@ mod tests {
     fn decode_preserves_number_lexemes_and_first_key_wins() {
         let v = decode("{\"a\": -12.50e3, \"a\": 2, \"b\": [true, null, \"x\"]}").unwrap();
         assert_eq!(v.get("a"), Some(&Value::Number("-12.50e3".into())));
-        assert_eq!(v.get("b").and_then(|b| b.as_array()).map(|a| a.len()), Some(3));
+        assert_eq!(
+            v.get("b").and_then(|b| b.as_array()).map(|a| a.len()),
+            Some(3)
+        );
         assert_eq!(v.get("missing"), None);
     }
 

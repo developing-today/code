@@ -11,7 +11,7 @@ When retrieving public web content with `curl`, `wget`, Python HTTP clients, or 
    - `WhatsApp/2.23.20.0` (link-preview fetcher; rarely blocked, often slips through news/paywall-adjacent CDNs)
    - `Mozilla/5.0 AppleWebKit/537.36 (KHTML, like Gecko); compatible; ChatGPT-User/1.0; +https://openai.com/bot`
    - `Mozilla/5.0 AppleWebKit/537.36 (KHTML, like Gecko); compatible; ClaudeBot/1.0; +claudebot@anthropic.com`
-4. A full sorted list of known user-agent strings, which operators publish IP ranges for verification, and a site-by-site access matrix (which agents worked or failed on which domains) lives in [`ai-crawler-site-access-table.md`](./ai-crawler-site-access-table.md#user-agents). Check that section for details and prior findings — including notes about the specific domain you are hitting.
+4. A full sorted list of known user-agent strings, which operators publish IP ranges for verification, and a site-by-site access matrix (which agents worked or failed on which domains) lives in [`ai-crawler-site-access-table.md`](../../ai-crawler-site-access-table.md#user-agents). Check that section for details and prior findings — including notes about the specific domain you are hitting.
 5. Do not use altered User-Agent headers when testing or debugging the actual HTTP behaviour of an application, API, website, authentication flow, or client, because doing so could hide genuine access-control or compatibility problems.
 6. Do not treat a successful response obtained with an alternate User-Agent as evidence that the resource works normally for ordinary clients.
 7. Do not use User-Agent substitution to bypass authentication, account permissions, or other explicit access controls.

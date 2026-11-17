@@ -52,6 +52,12 @@ type Server struct {
 	// everything those sessions own. The zero value is ready;
 	// every Server gets its own.
 	pluginSessions pluginsession.Registry
+	// pluginHooks resolves plugin-session manifest hooks into live
+	// bus subscribers (#1873 slice 2, #10046). Built lazily by
+	// hookResolver, because tests construct Servers directly and a
+	// Server's bus exists only where New (or the test) put one.
+	pluginHooks     *pluginsession.Resolver
+	pluginHooksOnce sync.Once
 	// augment is Options.Augment, kept for reloads.
 	augment func(*config.Config) error
 	paths   Paths
@@ -388,6 +394,12 @@ func (s *Server) Listen(tcpPort int) error {
 	}
 	s.endpoint = "http://" + tcpLn.Addr().String()
 	s.started = time.Now()
+	// Adopt supervised instances a previous daemon left running
+	// (#9962): their supervisors outlive the daemon by design.
+	s.reg.AdoptSupervised(context.Background())
+	// Reap the supervisors no configured server claims anymore
+	// (#9963, the other half of the adopt-or-reap scan).
+	s.reg.ReapOrphanedSupervisors()
 	return s.publish()
 }
 
@@ -761,7 +773,18 @@ func (s *Server) shutdown() error {
 // the whole stop is bounded by pool.ExecDrainTimeout, the same window a reload
 // gives a replaced pool. The HTTP grace is capped to that window too, so a
 // long http.shutdownGrace cannot stretch the stop past it.
-func (s *Server) stopServing() {
+func (s *Server) stopServing() { s.stopServingForRestart(false) }
+
+// stopServingForRestart stops the front door and then the pools. restart marks
+// a restart-intent graceful shutdown (#1414): each pool then keeps its upstream
+// HTTP sessions alive for the successor process instead of ending them with an
+// upstream DELETE. The HTTP server goes first, so calls already running can
+// finish and take the leases they still need. The pools are then drained with
+// what is left of the drain window, so the whole stop is bounded by
+// pool.ExecDrainTimeout, the same window a reload gives a replaced pool. The
+// HTTP grace is capped to that window too, so a long http.shutdownGrace cannot
+// stretch the stop past it.
+func (s *Server) stopServingForRestart(restart bool) {
 	window := pool.ExecDrainTimeout
 	start := time.Now()
 	if s.httpSrv != nil {
@@ -774,6 +797,10 @@ func (s *Server) stopServing() {
 		cancel()
 	}
 	if s.reg != nil {
+		if restart {
+			s.reg.CloseWithinForRestart(window - time.Since(start))
+			return
+		}
 		s.reg.CloseWithin(window - time.Since(start))
 	}
 }
@@ -1583,10 +1610,20 @@ func (s *Server) handleDaemonRestart(w http.ResponseWriter, _ *http.Request) {
 			if err := s.reg.SaveCache(); err != nil && s.logger != nil {
 				s.logger.Printf("save cache before restart: %v", err)
 			}
+			// The restart keeps upstream sessions alive instead of
+			// DELETING them (#1414), so the persisted session table is
+			// what the successor resumes from: flush it before the
+			// exec, the same way a final stop does.
+			if err := s.reg.SaveSessions(); err != nil && s.logger != nil {
+				s.logger.Printf("save sessions before restart: %v", err)
+			}
 		}
 		execPath, err := os.Executable()
 		if err == nil {
-			s.stopServing()
+			// Restart intent, not a final stop: pools close without an
+			// upstream DELETE so the next daemon process can resume the
+			// sessions recorded here (#1414).
+			s.stopServingForRestart(true)
 			if s.paths.Socket != "" {
 				_ = os.Remove(s.paths.Socket)
 			}
@@ -1774,6 +1811,10 @@ func (s *Server) handleElicitList(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
 		return
 	}
+	// This list is the answerer-facing surface: whatever polls it is
+	// looking for questions to answer, so it heartbeats answerer
+	// presence for the broker's no-audience signal (#2438).
+	_ = s.reg.broker.NoteAnswerer(elicit.Audience(r.URL.Query().Get("audience")))
 	if pending == nil {
 		pending = []elicit.Request{}
 	}

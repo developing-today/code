@@ -85,6 +85,16 @@ export function normalizeResetAt(v: unknown): string | null {
  * entriesWithPoolSplits below ALSO files attributable rows under
  * their split pool ids. Antigravity's per-model windows likewise keep
  * their flattened names here; the pool grouping is a split-row step.
+ * The OpenCode Zen door (provider ids `opencode.<workspace>`, the
+ * zen-plans door set in .opencode/route-fallbacks.md;
+ * the group was named opencode-zen-plans until the 2026-11-15 rename) reads
+ * the SAME plan meters as the Go door: on the 2026-11-15 ticks its
+ * per-workspace rows carried windows and reset instants identical to
+ * the matching `opencode-go.<workspace>` rows (#10443). Its rows
+ * therefore file under the Go pool ids below — aliasing, not three
+ * new pools, so the same meter is never double-counted. The provider
+ * id itself stays the Zen config id (canonicalProviderId is a
+ * separate contract; the router matches by exact provider id).
  */
 export function serviceIdFor(providerId: string): string {
   switch (providerId) {
@@ -106,6 +116,12 @@ export function serviceIdFor(providerId: string): string {
       return "meta";
     case "opendesign":
       return "opendesign";
+    case "opencode.drewrypope":
+      return "opencode-go.drewrypope";
+    case "opencode.popesdrew":
+      return "opencode-go.popesdrew";
+    case "opencode.developing-today-0":
+      return "opencode-go.developing-today-0";
     default:
       return providerId;
   }
@@ -231,7 +247,7 @@ export function goPoolServiceId(entry: QuotaCurrentEntry): string | null {
  * Claude+GPT pool. Quota grouping must use the same rule, or burn and
  * quota would disagree about which pool a model draws from.
  */
-function antigravityPoolForModel(model: string, legacy = false): string {
+export function antigravityPoolForModel(model: string, legacy = false): string {
   if (legacy)
     return model.startsWith("gemini") ? ANTIGRAVITY_LEGACY_GEMINI_SERVICE_ID : ANTIGRAVITY_LEGACY_CLAUDE_GPT_SERVICE_ID;
   return model.startsWith("gemini") ? ANTIGRAVITY_GEMINI_SERVICE_ID : ANTIGRAVITY_CLAUDE_GPT_SERVICE_ID;

@@ -20,7 +20,7 @@
 - **#5813:** the relay/proxy protocol itself — how frames are
   forwarded, queued, and acknowledged — and the security boundary
   that a relay is a dumb pipe. This record decides the
-  *authorization* layer #5813 assumes: who may ask a broker to do
+  _authorization_ layer #5813 assumes: who may ask a broker to do
   what, what the broker may learn, and what compromise buys an
   attacker.
 - **#2036 / #5815:** message classes and the security binding —
@@ -44,7 +44,7 @@ session setup, and verified by the broker before it acts:
   widened, subdivided beyond their action set, or re-issued by the
   broker.
 - **The allowlist is a deployment property, not a broker
-  property.** Each deployment publishes the capability *types* its
+  property.** Each deployment publishes the capability _types_ its
   brokers may be granted. The allowlist can never contain: content
   access or decryption assistance, identity assertion on behalf of
   a peer, durable storage beyond in-flight queueing (#5813's
@@ -61,7 +61,7 @@ session setup, and verified by the broker before it acts:
   (a seized broker would inherit them all); a central authorization
   server brokers must call home to (new trusted party, availability
   coupling, and it learns every session); mutual-TLS-only
-  authorization (authenticates the broker's *identity*, grants it
+  authorization (authenticates the broker's _identity_, grants it
   everything — the exact confusion #5674's TLS rule forbids at the
   ID layer).
 
@@ -103,6 +103,7 @@ fact. The design goal: compromise degrades availability, never
 confidentiality or integrity.
 
 **A compromised broker CAN:**
+
 - Drop, delay, reorder, or duplicate frames (liveness/quality
   attacks). Bounded by: #5791 multi-path fallback (peers walk to
   other brokers/paths), #5813 gap surfacing (loss is visible to the
@@ -116,6 +117,7 @@ confidentiality or integrity.
   broker is never the only route in the #5791 walk.
 
 **A compromised broker CANNOT:**
+
 - Read content: payloads are E2E-protected end to end (#5671
   boundary); the broker holds no keys and capabilities grant no
   decryption assistance (§2 allowlist).
@@ -132,7 +134,7 @@ confidentiality or integrity.
   capability is refused by peers and other brokers alike.
 - Rewrite history: durable state is origin-signed and range-sync
   recoverable from the origin; a broker's in-flight queue is never
-  authoritative, and its retained logs (§3) are the *only* thing a
+  authoritative, and its retained logs (§3) are the _only_ thing a
   seizure yields beyond live metadata — which is why they are
   minimised and short-lived.
 - Escalate into other sessions: capabilities are per-session and

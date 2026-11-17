@@ -168,6 +168,7 @@ impl WorldService {
             outbox: None,
             profile_operation: Arc::new(Mutex::new(())),
             next_session_id: Arc::new(std::sync::atomic::AtomicU64::new(1)),
+            resume_baselines: Arc::new(Mutex::new(super::resume::BaselineCache::default())),
         }
     }
 
@@ -185,6 +186,20 @@ impl WorldService {
     ) -> Self {
         self.runtime = runtime;
         self
+    }
+
+    /// A snapshot of the world's retained audit records (F12.6),
+    /// oldest first.
+    #[must_use]
+    pub fn audit_records(&self) -> Vec<crate::world::AuditRecord> {
+        self.world.audit_records()
+    }
+
+    /// The world's retained audit records as an OpenTelemetry
+    /// OTLP/JSON logs payload (F12.6).
+    #[must_use]
+    pub fn audit_otlp_json(&self) -> serde_json::Value {
+        crate::world::export_otlp_json(&self.world.audit_records())
     }
 
     /// Replace the world's capability ceiling, admin only. Unlike a profile,

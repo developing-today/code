@@ -30,6 +30,30 @@ because upstream ships only an npm package; Pad and Grist run as
 containers per the standing container rule. Grist was chosen over
 Baserow — the evaluation is in the design record.
 
+## Environment numbers (the #2835 contract)
+
+Numeric environment variables are boot-time arguments, not strings to
+coerce. Every pm-stack service parses them the same way:
+
+- **Spelling:** decimal digits only (`^[0-9]+$`). `12abc`, `1.5`, `0x10`,
+  `+7`, whitespace, `NaN` and empty are invalid — no `parseInt`
+  truncation, no `Number()` coercion.
+- **Kinds and ranges:** port `1–65535`; milliseconds `1–2147483647`
+  (2³¹−1, the `setTimeout` limit); count/minutes `≥ 1`; ids positive.
+- **Boot failure:** an invalid value stops the process at startup with
+  the variable name and the offending value in the message. Services
+  never fall back silently on a malformed value; an unset variable
+  still takes the documented default.
+- **Exemptions must be named:** test-only variables (e.g. the id e2e
+  `TEST_PORT`), systemd protocol variables (`LISTEN_FDS`/`LISTEN_PID`,
+  read with an integer guard and a safe fallback), and incident-replay
+  hooks (`OPENCODE_ROUTE_PROXY_NOW_MS`) are not service configuration
+  and do not use this parser.
+
+The bin/ family states the same contract in
+[`bin/proxy-port.mjs`](../bin/proxy-port.mjs) and parses through its
+helpers (`parseProxyPort`, `parseProxyMillis`).
+
 **Capability provenance:** the tables in this README are deployment
 definitions (what the stack configures), not observed runtime. The
 single per-facet matrix — live source, fallback, and deployment
@@ -237,7 +261,12 @@ What syncs (verified against Kaneo v2.47.0): issues ↔ tasks, comments
 (create-only; edits/deletes do not sync), open/close both ways,
 `status:*`/`priority:*` labels both ways, title/body edits. PRs are
 read-only to Kaneo — they only move tasks (push → in-progress, PR
-opened → in-review, merged → done). Bot-authored comments are not
+opened → in-review, merged → in-review). A merge must never move a
+task to Done by itself: until 2026-11-14 `pr_merged` mapped to Done,
+which made the two-way close sync close GitHub issues that a merged
+PR merely referenced (defect #7610). The rule, why, and how to
+re-apply it after a re-connect live in
+[KANEO-GITHUB-SYNC.md](KANEO-GITHUB-SYNC.md). Bot-authored comments are not
 imported inbound. Each Kaneo project connects to exactly one
 repository (upstream issue usekaneo/kaneo#791).
 

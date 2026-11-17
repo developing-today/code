@@ -6,11 +6,11 @@
 //
 // Everything except fetchIssueBodySnapshot is pure: the GraphQL
 // response parser, the step parser for #1235's checklist grammar, and
-// the join against the aggregator's GhItem states. The queue half of
-// the join (queue state by dedupe key) waits on the fleet-queue
-// collector (#9920); until it lands the panel joins GitHub state only
-// and says so.
+// the joins against the aggregator's GhItem states and — since the
+// fleet-queue collector landed (#9920) — the queue tasks serving each
+// step's issue, joined by the collector's dedupe-key/payload join.
 import type { GhItem, RefKey } from "./model.ts";
+import type { QueueSnapshot, QueueTask } from "./queue.ts";
 
 export const PHASE12_REPO = "developing-today/code";
 export const PHASE12_ISSUE_NUMBER = 1235;
@@ -56,13 +56,15 @@ export function parseIssueBodyResponse(json: unknown): { body: string; issueUpda
   return { body: issue.body, issueUpdatedAt: issue.updatedAt };
 }
 
-/** Fetch #1235's body via GraphQL with a caller-supplied token.
- * Throws on HTTP/GraphQL errors (never logs the token), mirroring
- * fetchProjectPool in projects.ts. */
+/** Fetch an issue's body via GraphQL with a caller-supplied token
+ * (#1235 by default; #9926's readiness panel reads #534's body
+ * through the same feed). Throws on HTTP/GraphQL errors (never logs
+ * the token), mirroring fetchProjectPool in projects.ts. */
 export async function fetchIssueBodySnapshot(
   token: string,
   fetchFn: typeof fetch = fetch,
   now: () => Date = () => new Date(),
+  issueNumber: number = PHASE12_ISSUE_NUMBER,
 ): Promise<Phase12Snapshot> {
   const [owner, name] = PHASE12_REPO.split("/");
   const res = await fetchFn("https://api.github.com/graphql", {
@@ -74,7 +76,7 @@ export async function fetchIssueBodySnapshot(
     },
     body: JSON.stringify({
       query: ISSUE_BODY_QUERY,
-      variables: { owner, name, number: PHASE12_ISSUE_NUMBER },
+      variables: { owner, name, number: issueNumber },
     }),
     signal: AbortSignal.timeout(20_000),
   });
@@ -126,6 +128,25 @@ export function parsePhase12Steps(body: string): Phase12Step[] {
   return steps;
 }
 
+/** Queue tasks grouped by the repo-qualified ref of the issue they
+ * serve, newest first. The collector (#9920) already resolved each
+ * task's repo + issue from its dedupe key (payload as corroboration);
+ * tasks it could not join name no issue and cannot belong to a step,
+ * so they are skipped here rather than guessed at. */
+export function phase12QueueByRef(queue: QueueSnapshot | null): Map<RefKey, QueueTask[]> {
+  const out = new Map<RefKey, QueueTask[]>();
+  if (!queue) return out;
+  for (const task of queue.tasks) {
+    if (!task.repo || task.issue === null) continue;
+    const ref: RefKey = `${task.repo}#${task.issue}`;
+    const list = out.get(ref);
+    if (list) list.push(task);
+    else out.set(ref, [task]);
+  }
+  for (const list of out.values()) list.sort((a, b) => b.id - a.id);
+  return out;
+}
+
 /** A step joined with the live GitHub state the aggregator resolved. */
 export interface Phase12StepState extends Phase12Step {
   ref: RefKey;
@@ -137,10 +158,20 @@ export interface Phase12StepState extends Phase12Step {
   /** The live item's title when resolved (the body's title is the
    * fallback and the historical record). */
   liveTitle: string | null;
+  /** Queue tasks serving this step's issue (newest first), via the
+   * collector's join. Empty when no task names the issue — the panel
+   * renders that as "no queue task", never as an invented state. */
+  queueTasks: QueueTask[];
 }
 
-/** Join parsed steps to GhItem states by repo-qualified ref. */
-export function joinPhase12Steps(steps: Phase12Step[], items: ReadonlyMap<RefKey, GhItem>): Phase12StepState[] {
+/** Join parsed steps to GhItem states by repo-qualified ref, and to
+ * queue tasks when a collector snapshot is supplied. */
+export function joinPhase12Steps(
+  steps: Phase12Step[],
+  items: ReadonlyMap<RefKey, GhItem>,
+  queue: QueueSnapshot | null = null,
+): Phase12StepState[] {
+  const queueByRef = phase12QueueByRef(queue);
   return steps.map((step) => {
     const ref: RefKey = `${PHASE12_REPO}#${step.issueNumber}`;
     const item = items.get(ref);
@@ -150,6 +181,7 @@ export function joinPhase12Steps(steps: Phase12Step[], items: ReadonlyMap<RefKey
       url: item?.url ?? `https://github.com/${PHASE12_REPO}/issues/${step.issueNumber}`,
       liveState: item ? item.state : null,
       liveTitle: item ? item.title : null,
+      queueTasks: queueByRef.get(ref) ?? [],
     };
   });
 }

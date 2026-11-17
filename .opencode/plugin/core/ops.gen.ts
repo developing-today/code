@@ -20,7 +20,7 @@ type OpSpec = {
   response: "json" | "response"
 }
 
-export const OPERATION_FINGERPRINT = "f991ef3215011e82484759f8a9b2122671e0b974d4da47647141cf2f1017e8af"
+export const OPERATION_FINGERPRINT = "8560a42def5f8ce8a9e4c2d50d8aef3f0380caffd0b81b7f07bfac75f9a0aced"
 
 /** Every /v1 operation, by name. */
 export const OPS: Record<string, OpSpec> = {
@@ -42,6 +42,31 @@ export const OPS: Record<string, OpSpec> = {
   adapters_remove: {
     method: "DELETE",
     path: "/v1/adapters/{name}",
+    params: {
+      name: { in: "path", required: true },
+    },
+    response: "json",
+  },
+  apis_add: {
+    method: "POST",
+    path: "/v1/apis",
+    params: {
+      name: { in: "body", required: true },
+      spec: { in: "body", required: true },
+      baseUrl: { in: "body" },
+      include: { in: "body" },
+      exclude: { in: "body" },
+      methods: { in: "body" },
+      includeDeprecated: { in: "body" },
+      headers: { in: "body" },
+      description: { in: "body" },
+      replace: { in: "body" },
+    },
+    response: "json",
+  },
+  apis_remove: {
+    method: "DELETE",
+    path: "/v1/apis/{name}",
     params: {
       name: { in: "path", required: true },
     },
@@ -444,6 +469,38 @@ export const OPS: Record<string, OpSpec> = {
     method: "GET",
     path: "/v1/openapi.json",
     params: {},
+    response: "json",
+  },
+  plugin_session_close: {
+    method: "DELETE",
+    path: "/v1/plugin-sessions/{id}",
+    params: {
+      id: { in: "path", required: true },
+    },
+    response: "json",
+  },
+  plugin_session_get: {
+    method: "GET",
+    path: "/v1/plugin-sessions/{id}",
+    params: {
+      id: { in: "path", required: true },
+    },
+    response: "json",
+  },
+  plugin_sessions_list: {
+    method: "GET",
+    path: "/v1/plugin-sessions",
+    params: {},
+    response: "json",
+  },
+  plugin_sessions_open: {
+    method: "POST",
+    path: "/v1/plugin-sessions",
+    params: {
+      plugin: { in: "body", required: true },
+      capabilities: { in: "body" },
+      hooks: { in: "body" },
+    },
     response: "json",
   },
   preflight: {
@@ -932,6 +989,23 @@ export class DaemonOps {
   }
 
   /**
+   * Add an API declaration, live. `POST /v1/apis`.
+   * Privileged: it changes the daemon rather than reading it.
+   */
+  apisAdd(args: { name: string; spec: string; baseUrl?: string; include?: unknown[]; exclude?: unknown[]; methods?: unknown[]; includeDeprecated?: boolean; headers?: Record<string, unknown>; description?: string; replace?: boolean }, opts: CallOptions = {}): Promise<unknown> {
+    return this.invoke("apis_add", args, opts) as Promise<unknown>
+  }
+
+  /**
+   * Remove an API declaration, live. `DELETE /v1/apis/{name}`.
+   * Privileged: it changes the daemon rather than reading it.
+   * Destructive: it cannot be undone, and other callers are affected.
+   */
+  apisRemove(args: { name: string }, opts: CallOptions = {}): Promise<unknown> {
+    return this.invoke("apis_remove", args, opts) as Promise<unknown>
+  }
+
+  /**
    * Forget one artifact. `DELETE /v1/artifacts/{id}`.
    * Privileged: it changes the daemon rather than reading it.
    * Destructive: it cannot be undone, and other callers are affected.
@@ -1229,6 +1303,34 @@ export class DaemonOps {
    */
   openapi(args: Record<string, never> = {}, opts: CallOptions = {}): Promise<unknown> {
     return this.invoke("openapi", args, opts) as Promise<unknown>
+  }
+
+  /**
+   * End a plugin session, dropping everything it owns. `DELETE /v1/plugin-sessions/{id}`.
+   */
+  pluginSessionClose(args: { id: string }, opts: CallOptions = {}): Promise<unknown> {
+    return this.invoke("plugin_session_close", args, opts) as Promise<unknown>
+  }
+
+  /**
+   * One live plugin session. `GET /v1/plugin-sessions/{id}`.
+   */
+  pluginSessionGet(args: { id: string }, opts: CallOptions = {}): Promise<unknown> {
+    return this.invoke("plugin_session_get", args, opts) as Promise<unknown>
+  }
+
+  /**
+   * Live plugin sessions and what each one owns. `GET /v1/plugin-sessions`.
+   */
+  pluginSessionsList(args: Record<string, never> = {}, opts: CallOptions = {}): Promise<unknown> {
+    return this.invoke("plugin_sessions_list", args, opts) as Promise<unknown>
+  }
+
+  /**
+   * Open a plugin session and be issued its id. `POST /v1/plugin-sessions`.
+   */
+  pluginSessionsOpen(args: { plugin: string; capabilities?: unknown[]; hooks?: unknown[] }, opts: CallOptions = {}): Promise<unknown> {
+    return this.invoke("plugin_sessions_open", args, opts) as Promise<unknown>
   }
 
   /**

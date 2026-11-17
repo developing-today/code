@@ -247,5 +247,54 @@ class TestSupervision(unittest.TestCase):
         self.assertIn(claimant.LAUNCHED_BY_RECOVERY_ZERO_MESSAGE, bind_argv)
 
 
+class ReadModeLoudDefaultTests(unittest.TestCase):
+    """#10141: read_mode() keeps shadow as the fail-safe default for a
+    missing/unreadable/invalid mode file, but logs a loud
+    CLAIMANT-MODE-WARNING line on every such read — the silence was
+    the bug, not the default. Oracle: captured stderr."""
+
+    def _read_with_file(self, tmp: Path, content):
+        mode_file = tmp / "mode"
+        if content is not None:
+            mode_file.write_text(content)
+        import io
+        from contextlib import redirect_stderr
+
+        buf = io.StringIO()
+        with patch.object(claimant, "MODE_FILE", mode_file), redirect_stderr(buf):
+            result = claimant.read_mode()
+        return result, buf.getvalue()
+
+    def test_missing_file_defaults_shadow_and_warns_loudly(self):
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as td:
+            result, err = self._read_with_file(Path(td), None)
+        self.assertEqual(result, "shadow")
+        self.assertIn("CLAIMANT-MODE-WARNING", err)
+        self.assertIn("MISSING", err)
+
+    def test_invalid_content_defaults_shadow_and_warns_loudly(self):
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as td:
+            result, err = self._read_with_file(Path(td), "banana\n")
+        self.assertEqual(result, "shadow")
+        self.assertIn("CLAIMANT-MODE-WARNING", err)
+
+    def test_valid_modes_are_returned_quietly(self):
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as td:
+            for content, want in (
+                ("live\n", "live"),
+                ("shadow", "shadow"),
+                (" LIVE ", "live"),
+            ):
+                result, err = self._read_with_file(Path(td), content)
+                self.assertEqual(result, want)
+                self.assertNotIn("CLAIMANT-MODE-WARNING", err)
+
+
 if __name__ == "__main__":
     unittest.main()

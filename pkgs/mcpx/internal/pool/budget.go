@@ -68,11 +68,6 @@ func RequestedCallTimeout(ctx context.Context) (time.Duration, bool) {
 	return d, ok && d > 0
 }
 
-// callTimeout is the effective budget for one upstream request: the
-// pool's configured CallTimeout, lowered by a caller's per-call request
-// when one is present and smaller. A configured value of zero or less
-// means the operator set no bound, so a per-call request then applies
-// exactly as asked.
 // CallTimeout is the pool's resolved per-call budget for ctx: the
 // configured CallTimeout, lowered by a caller's per-call request when
 // one is present and smaller. It is the same value upstream calls are
@@ -83,6 +78,11 @@ func (p *Pool) CallTimeout(ctx context.Context) time.Duration {
 	return p.callTimeout(ctx)
 }
 
+// callTimeout is the effective budget for one upstream request: the
+// pool's configured CallTimeout, lowered by a caller's per-call request
+// when one is present and smaller. A configured value of zero or less
+// means the operator set no bound, so a per-call request then applies
+// exactly as asked.
 func (p *Pool) callTimeout(ctx context.Context) time.Duration {
 	cfg := p.cfg.CallTimeout
 	req, ok := RequestedCallTimeout(ctx)

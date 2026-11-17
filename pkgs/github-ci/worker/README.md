@@ -9,7 +9,10 @@ during the dual-run diff period.
 ## Shape
 
 - `src/index.ts` — HMAC-SHA256 gate (Web Crypto, same semantics as
-  the Edge Function), routing, workflow_run ingest.
+  the Edge Function), routing, workflow_run ingest. The gate is
+  unconditional (#6936): with `GITHUB_WEBHOOK_SECRET` unset or empty,
+  every POST is rejected 503 "webhook secret not configured" before
+  any write — the Worker fails closed, never open.
 - `src/policy.ts` — the v4 ingest policy as pure functions:
   completed runs only, conclusion != skipped, raw payload kept
   only for failures, dedupe_key `github:<repo>:<run>:<attempt>:<action>`.
@@ -133,3 +136,26 @@ The mirror is a **read model**: rebuildable from GitHub at any time,
 never a second truth. Staleness is reported, never gated on (#8575).
 Mirror write failures are fatal (500 -> GitHub retries), matching the
 ci_events policy.
+
+### Backfill / repair sweep
+
+`scripts/backfill.ts` reconciles the mirror from the GitHub API —
+the repair path for anything the webhooks missed (a Worker outage,
+a repo whose hook was added late, a deletion, which GitHub never
+replays). It diffs every issue/PR in a repo against the stored rows
+on `(gh_updated_at, body_hash)`, re-upserts changed rows through the
+same statement builders the webhook paths use (all guards apply
+identically), tombstones + deletes stored numbers the API no longer
+returns, re-derives the latest-agent-note pointer for changed items
+from their surviving comments, and stamps
+`github_mirror_meta.last_backfill_at`. It never stamps the webhook
+fields. Run it from this directory:
+
+```sh
+GH_TOKEN=$(gh auth token) \
+TURSO_QUEUE_TOKEN=$(fleet secrets get turso.fleet-queue-rw-token) \
+npm run backfill -- [owner/repo ...]   # default: every FLEET_REPOS repo
+```
+
+Output is one JSON summary line per repo (seen / upserted /
+vanished_deleted / pointers_set / pointers_cleared / unchanged).

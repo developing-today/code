@@ -1,4 +1,4 @@
-// The test child environment: an allowlist, not an inheritance.
+// Package testsupport provides the test child environment: an allowlist, not an inheritance.
 //
 // Every end-to-end test starts a real mcpx binary as a child process. That
 // child used to inherit the developer's whole environment minus MCPX_*
@@ -71,6 +71,15 @@ func ChildEnv(parent []string, dir string, extra ...string) []string {
 		"XDG_CACHE_HOME="+filepath.Join(dir, ".cache"),
 		"XDG_RUNTIME_DIR="+filepath.Join(dir, "run"),
 	)
+	// Coverage for the cover-built suite binary (#1980 stage 3): once
+	// MCPXBinary has established the cover dir, every child gets
+	// GOCOVERDIR so its executions of the binary (and the daemon it
+	// autostarts, which inherits the environment) write coverage there.
+	// A child that is not a cover build ignores the variable. It sits
+	// before extra, so a test that sets GOCOVERDIR itself still wins.
+	if cover := MCPXCoverDir(); cover != "" {
+		out = append(out, "GOCOVERDIR="+cover)
+	}
 	out = append(out, extra...)
 	return out
 }

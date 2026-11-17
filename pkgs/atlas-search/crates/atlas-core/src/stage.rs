@@ -17,6 +17,10 @@
 //!   v1 DDL from the versioned artifact [`STAGE_V1_DDL`];
 //! * [`Registry`] records units and looks them up;
 //! * [`Registry::provision`] is the one tool that does both.
+//! * [`stage_artifact`] is the item writer for code/config
+//!   embedding entries (#1518): one `items` row plus its
+//!   `chunks_raw`, carrying the confirmed definition's metadata
+//!   (repo, path, commit SHA, kind, language, unit).
 //! * [`Registry::promote`] is the merge-on-close transition, gated on
 //!   the embedding-model contract (#7648, M6 of the #6060 decision
 //!   record): a unit is promoted only when its database's recorded
@@ -188,6 +192,232 @@ pub fn check_stage_schema(conn: &Connection) -> Result<()> {
         )));
     }
     Ok(())
+}
+
+// ------------------------------------------------------------- items --
+
+/// The #1518 whole-file ceiling: a small config at or below this
+/// size stages as one whole-file unit. Above it, the artifact is
+/// split into declaration-sized chunks (see [`chunk_artifact_text`]).
+pub const WHOLE_FILE_MAX_BYTES: usize = 32 * 1024;
+
+/// The hard ceiling for one `chunks_raw` chunk: a single
+/// declaration larger than this is split further at line
+/// boundaries (never mid-line), so no chunk is unbounded.
+pub const MAX_CHUNK_BYTES: usize = 64 * 1024;
+
+/// One repository artifact to stage as a code/config embedding
+/// entry (#1518, definition in
+/// `doc/2026-11-14T19-00-00Z_design_code-config-embeddings.md`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ArtifactEntry {
+    /// The entry kind: `prose` | `code` | `config`.
+    pub kind: String,
+    /// The repository the bytes came from (e.g. `developing-today/code`).
+    pub repo: String,
+    /// The artifact's path inside the repo.
+    pub path: String,
+    /// The commit SHA the bytes were read at. Together with repo
+    /// and path this is the entry's source-of-truth pointer: the
+    /// repo at that revision is the truth; the embedding is a cache.
+    pub commit_sha: String,
+    /// The artifact language (`yaml`, `toml`, `rust`, ...).
+    pub language: String,
+    /// The existing basic sensitivity classification; recorded on
+    /// the row, as for every staged item.
+    pub sensitivity: Tier,
+    /// The artifact's full text.
+    pub text: String,
+}
+
+/// One staged item, read back from a staging DB ([`list_staged_items`]).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StagedItem {
+    pub id: i64,
+    pub unit_id: String,
+    pub kind: String,
+    pub source: Option<String>,
+    pub sensitivity: String,
+    pub created_at: String,
+    pub meta: Option<String>,
+    pub chunk_count: i64,
+}
+
+fn artifact_source(entry: &ArtifactEntry) -> String {
+    format!("{}:{}@{}", entry.repo, entry.path, entry.commit_sha)
+}
+
+fn is_top_level_declaration(line: &str) -> bool {
+    let t = line.trim_end_matches(['\n', '\r']);
+    !t.is_empty() && !t.starts_with([' ', '\t', '#']) && (t.contains(':') || t.ends_with('{'))
+}
+
+/// Split artifact text into `chunks_raw` chunks under the #1518
+/// unit rules: at or below [`WHOLE_FILE_MAX_BYTES`] the whole text
+/// is one chunk; above it, chunks break before top-level
+/// declaration lines (a non-indented, non-comment line carrying a
+/// `:` or opening a block), and any chunk still over
+/// [`MAX_CHUNK_BYTES`] is split further at line boundaries. The
+/// chunks always partition the input exactly: concatenating them
+/// reproduces `text` byte for byte.
+pub fn chunk_artifact_text(text: &str) -> Vec<String> {
+    if text.len() <= WHOLE_FILE_MAX_BYTES {
+        return vec![text.to_string()];
+    }
+    let mut starts: Vec<usize> = vec![0];
+    let mut offset = 0usize;
+    for line in text.split_inclusive('\n') {
+        if offset > 0 && is_top_level_declaration(line) {
+            starts.push(offset);
+        }
+        offset += line.len();
+    }
+    starts.push(text.len());
+    let mut chunks = Vec::new();
+    for w in starts.windows(2) {
+        let piece = &text[w[0]..w[1]];
+        if piece.len() <= MAX_CHUNK_BYTES {
+            chunks.push(piece.to_string());
+            continue;
+        }
+        // One declaration over the hard ceiling: split at line
+        // boundaries, keeping every piece within the ceiling when
+        // a boundary exists inside it.
+        let mut start = 0usize;
+        let mut acc = 0usize;
+        for line in piece.split_inclusive('\n') {
+            if acc > 0 && acc + line.len() > MAX_CHUNK_BYTES {
+                chunks.push(piece[start..start + acc].to_string());
+                start += acc;
+                acc = 0;
+            }
+            acc += line.len();
+        }
+        if acc > 0 {
+            chunks.push(piece[start..start + acc].to_string());
+        }
+    }
+    chunks
+}
+
+fn sha256_hex(text: &str) -> String {
+    use sha2::{Digest, Sha256};
+    let digest = Sha256::digest(text.as_bytes());
+    digest.iter().map(|b| format!("{b:02x}")).collect()
+}
+
+/// Stage one code/config artifact into a v1 staging DB as one
+/// `items` row plus its `chunks_raw` rows, per the #1518
+/// definition: `source` carries the source-of-truth pointer
+/// (`repo:path@commit_sha`) and `meta` the required metadata set
+/// (repo, path, commit_sha, kind, language, unit, embedded_at).
+/// Returns the new item's id. The DB must already be a v1 staging
+/// DB ([`check_stage_schema`]); vectors are produced later, at
+/// promotion, as for every staged item.
+pub fn stage_artifact(
+    conn: &Connection,
+    unit_id: &str,
+    entry: &ArtifactEntry,
+    now: &str,
+) -> Result<i64> {
+    check_stage_schema(conn)?;
+    let chunks = chunk_artifact_text(&entry.text);
+    let unit = if entry.text.len() <= WHOLE_FILE_MAX_BYTES {
+        "whole-file"
+    } else {
+        "declaration"
+    };
+    let meta = serde_json::json!({
+        "repo": entry.repo,
+        "path": entry.path,
+        "commit_sha": entry.commit_sha,
+        "kind": entry.kind,
+        "language": entry.language,
+        "unit": unit,
+        "embedded_at": now,
+        "chunks": chunks.len(),
+    })
+    .to_string();
+    conn.execute(
+        "INSERT INTO items (unit_id, kind, source, text, sensitivity, created_at, meta) \
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+        params![
+            unit_id,
+            entry.kind,
+            artifact_source(entry),
+            entry.text,
+            entry.sensitivity.name(),
+            now,
+            meta,
+        ],
+    )
+    .map_err(|e| Error::backend(format!("staging: inserting item for {}: {e}", entry.path)))?;
+    let item_id = conn.last_insert_rowid();
+    for (idx, chunk) in chunks.iter().enumerate() {
+        conn.execute(
+            "INSERT INTO chunks_raw (item_id, idx, text, content_hash, created_at) \
+             VALUES (?1, ?2, ?3, ?4, ?5)",
+            params![item_id, idx as i64, chunk, sha256_hex(chunk), now],
+        )
+        .map_err(|e| {
+            Error::backend(format!(
+                "staging: inserting chunk {idx} for {}: {e}",
+                entry.path
+            ))
+        })?;
+    }
+    Ok(item_id)
+}
+
+/// [`stage_artifact`] against a staging DB file: the form the
+/// `atlas-stage ingest` tool calls, so the CLI needs no DB handle
+/// of its own.
+pub fn stage_artifact_in_db(
+    db: &Path,
+    unit_id: &str,
+    entry: &ArtifactEntry,
+    now: &str,
+) -> Result<i64> {
+    let conn = open(db)?;
+    stage_artifact(&conn, unit_id, entry, now)
+}
+
+/// Read back the items staged in a v1 staging DB, optionally only
+/// one unit's, each with its chunk count.
+pub fn list_staged_items(conn: &Connection, unit_id: Option<&str>) -> Result<Vec<StagedItem>> {
+    check_stage_schema(conn)?;
+    let mut stmt = conn
+        .prepare(
+            "SELECT i.id, i.unit_id, i.kind, i.source, i.sensitivity, i.created_at, i.meta, \
+             (SELECT COUNT(*) FROM chunks_raw c WHERE c.item_id = i.id) \
+             FROM items i WHERE (?1 IS NULL OR i.unit_id = ?1) ORDER BY i.id",
+        )
+        .map_err(|e| Error::backend(format!("staging: listing items: {e}")))?;
+    let rows = stmt
+        .query_map(params![unit_id], |r| {
+            Ok(StagedItem {
+                id: r.get(0)?,
+                unit_id: r.get(1)?,
+                kind: r.get(2)?,
+                source: r.get(3)?,
+                sensitivity: r.get(4)?,
+                created_at: r.get(5)?,
+                meta: r.get(6)?,
+                chunk_count: r.get(7)?,
+            })
+        })
+        .map_err(|e| Error::backend(format!("staging: listing items: {e}")))?;
+    let mut out = Vec::new();
+    for row in rows {
+        out.push(row.map_err(|e| Error::backend(format!("staging: listing items: {e}")))?);
+    }
+    Ok(out)
+}
+
+/// [`list_staged_items`] against a staging DB file.
+pub fn list_staged_items_in_db(db: &Path, unit_id: Option<&str>) -> Result<Vec<StagedItem>> {
+    let conn = open(db)?;
+    list_staged_items(&conn, unit_id)
 }
 
 // ---------------------------------------------------------- registry --
@@ -618,5 +848,144 @@ mod tests {
         );
 
         let _ = std::fs::remove_dir_all(&dir);
+    }
+    // ---- #1518: code/config artifact item writer ----
+    // Oracle: the staged rows themselves, read back from a real
+    // provisioned staging DB -- the items row carries the
+    // definition's metadata and source-of-truth pointer, the
+    // chunks_raw rows partition the artifact text exactly, and
+    // each chunk's content_hash is the SHA-256 of its text.
+
+    fn artifact_entry(text: &str) -> ArtifactEntry {
+        ArtifactEntry {
+            kind: "config".to_string(),
+            repo: "developing-today/code".to_string(),
+            path: "infra/dns/dns_config.yaml".to_string(),
+            commit_sha: "abc1234".to_string(),
+            language: "yaml".to_string(),
+            sensitivity: Tier::Internal,
+            text: text.to_string(),
+        }
+    }
+
+    fn provisioned_conn(dir: &std::path::Path) -> Connection {
+        let db = dir.join("unit.db");
+        provision_staging_db(&db).expect("provision staging db");
+        open(&db).expect("open staging db")
+    }
+
+    #[test]
+    fn staged_small_config_is_one_whole_file_item() {
+        let dir = std::env::temp_dir().join(format!("atlas-stage-writer-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("temp dir");
+        let conn = provisioned_conn(&dir);
+        let text = "argo.internal:\n  type: A\n  content: 10.10.32.1\n";
+        let item_id = stage_artifact(
+            &conn,
+            "task-17164",
+            &artifact_entry(text),
+            "2026-11-16T00:00:00Z",
+        )
+        .expect("stage artifact");
+        let items = list_staged_items(&conn, Some("task-17164")).expect("list items");
+        assert_eq!(items.len(), 1);
+        let item = &items[0];
+        assert_eq!(item.id, item_id);
+        assert_eq!(item.kind, "config");
+        assert_eq!(
+            item.source.as_deref(),
+            Some("developing-today/code:infra/dns/dns_config.yaml@abc1234")
+        );
+        assert_eq!(item.chunk_count, 1);
+        let meta: serde_json::Value =
+            serde_json::from_str(item.meta.as_deref().expect("meta")).expect("meta json");
+        assert_eq!(meta["repo"], "developing-today/code");
+        assert_eq!(meta["path"], "infra/dns/dns_config.yaml");
+        assert_eq!(meta["commit_sha"], "abc1234");
+        assert_eq!(meta["kind"], "config");
+        assert_eq!(meta["language"], "yaml");
+        assert_eq!(meta["unit"], "whole-file");
+        // The single chunk is the whole text, hash-verified.
+        let (chunk_text, chunk_hash): (String, String) = conn
+            .query_row(
+                "SELECT text, content_hash FROM chunks_raw WHERE item_id = ?1 AND idx = 0",
+                params![item_id],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .expect("chunk row");
+        assert_eq!(chunk_text, text);
+        assert_eq!(chunk_hash, sha256_hex(text));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn staged_large_config_chunks_partition_the_text_exactly() {
+        let dir =
+            std::env::temp_dir().join(format!("atlas-stage-writer-big-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("temp dir");
+        let conn = provisioned_conn(&dir);
+        // 200 top-level records of ~200 bytes each: ~40 KiB, over
+        // the whole-file ceiling, under the per-chunk ceiling.
+        let mut text = String::new();
+        for i in 0..200 {
+            text.push_str(&format!(
+                "record_{i}:\n  type: A\n  content: 10.10.32.1\n  filler: {}\n",
+                "x".repeat(150)
+            ));
+        }
+        assert!(
+            text.len() > WHOLE_FILE_MAX_BYTES,
+            "fixture must exceed the whole-file ceiling"
+        );
+        let item_id = stage_artifact(
+            &conn,
+            "task-17164",
+            &artifact_entry(&text),
+            "2026-11-16T00:00:00Z",
+        )
+        .expect("stage artifact");
+        let items = list_staged_items(&conn, Some("task-17164")).expect("list items");
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0].chunk_count, 200, "one chunk per top-level record");
+        let meta: serde_json::Value =
+            serde_json::from_str(items[0].meta.as_deref().expect("meta")).expect("meta json");
+        assert_eq!(meta["unit"], "declaration");
+        // Lossless partition oracle: chunks in idx order rejoin to
+        // the exact artifact bytes, and each chunk opens at a
+        // top-level record line.
+        let mut stmt = conn
+            .prepare("SELECT text FROM chunks_raw WHERE item_id = ?1 ORDER BY idx")
+            .expect("chunk query");
+        let chunks: Vec<String> = stmt
+            .query_map(params![item_id], |r| r.get(0))
+            .expect("chunk rows")
+            .collect::<std::result::Result<_, _>>()
+            .expect("chunk values");
+        assert_eq!(chunks.concat(), text);
+        for (i, chunk) in chunks.iter().enumerate() {
+            assert!(
+                chunk.starts_with(&format!("record_{i}:")),
+                "chunk {i} must open at its top-level record"
+            );
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn staging_into_a_non_staging_db_is_refused() {
+        let conn = Connection::open_in_memory().expect("memory db");
+        let err = stage_artifact(
+            &conn,
+            "task-17164",
+            &artifact_entry("a: b\n"),
+            "2026-11-16T00:00:00Z",
+        )
+        .expect_err("a non-staging DB must refuse the write");
+        assert!(
+            err.to_string().contains("staging:"),
+            "unexpected error: {err}"
+        );
     }
 }

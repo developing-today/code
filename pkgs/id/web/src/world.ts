@@ -157,20 +157,30 @@ function initWorld(): void {
   const hasNonStringField = (frame: Record<string, unknown>, fields: string[]): boolean =>
     fields.some((field) => frame[field] !== undefined && typeof frame[field] !== "string");
   const isFiniteNumber = (value: unknown): value is number => typeof value === "number" && Number.isFinite(value);
+  // #10401: snapshot/event sequence and participant-id fields are
+  // protocol u64s. Finiteness alone accepts -1, 1.5 and 1e100, and an
+  // accepted value is assigned to (snapshot) or raised into (event)
+  // the reconnect cursor, poisoning resume. Require the same
+  // safe-non-negative-integer shape PR #4250's collab INIT version
+  // check uses, so such frames fall into the rejectFrame() path.
+  const isSafeNonNegativeInteger = (value: unknown): value is number =>
+    typeof value === "number" && Number.isSafeInteger(value) && value >= 0;
   const isWorldSnapshot = (value: unknown): value is NonNullable<WorldFrame["snapshot"]> =>
     isRecord(value) &&
     typeof value.world_id === "string" &&
-    isFiniteNumber(value.current_sequence) &&
+    isSafeNonNegativeInteger(value.current_sequence) &&
     Array.isArray(value.participants) &&
     value.participants.every(
       (participant) =>
-        isRecord(participant) && isFiniteNumber(participant.id) && typeof participant.display_name === "string",
+        isRecord(participant) &&
+        isSafeNonNegativeInteger(participant.id) &&
+        typeof participant.display_name === "string",
     );
   const isWorldEvent = (value: unknown): value is NonNullable<WorldFrame["event"]> => {
     if (
       !isRecord(value) ||
-      !isFiniteNumber(value.sequence) ||
-      !isFiniteNumber(value.participant_id) ||
+      !isSafeNonNegativeInteger(value.sequence) ||
+      !isSafeNonNegativeInteger(value.participant_id) ||
       !isRecord(value.kind)
     ) {
       return false;

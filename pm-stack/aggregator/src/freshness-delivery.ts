@@ -83,7 +83,7 @@ const SOURCE_NAMES: FreshnessSource[] = ["github", "kaneo", "fleet-feed", "orche
 
 /** Pages whose body is a single Datastar fragment container (#1444). A notice
  *  that invalidates one of these patches that container by re-mounting it with
- *  its own `data-on-load`, so the existing `/frag/*` route performs the
+ *  its own `data-init`, so the existing `/frag/*` route performs the
  *  canonical re-render. Pages without a fragment container get the notice
  *  alone; their client decides when to reread. */
 export const FRESHNESS_PAGE_FRAGMENTS: Readonly<Record<string, { id: string; path: string }>> = {
@@ -95,11 +95,14 @@ export const FRESHNESS_PAGE_FRAGMENTS: Readonly<Record<string, { id: string; pat
 
 /** One Datastar patch-elements frame in the format the dashboard already
  *  emits (src/server.ts `ssePatch`): outer mode replaces the container with
- *  itself plus its own load/refresh hooks, which re-issues the fragment GET. */
+ *  the skeleton plus a `data-init` hook, which re-issues the fragment GET
+ *  exactly once (#10605: `data-on-load` is not a Datastar v1 attribute and
+ *  never fired). The `/frag/*` payload that replaces it carries no init
+ *  trigger, so the re-mount cannot loop. */
 export function freshnessPatchFrame(page: string): string | null {
   const fragment = FRESHNESS_PAGE_FRAGMENTS[page];
   if (!fragment) return null;
-  const element = `<div id="${fragment.id}" data-frag data-on-load="@get('${fragment.path}')" data-on:dashrefresh__window="@get('${fragment.path}')"><div class="skel">Refreshing…</div></div>`;
+  const element = `<div id="${fragment.id}" data-frag data-init="@get('${fragment.path}')" data-on:dashrefresh__window="@get('${fragment.path}')"><div class="skel">Refreshing…</div></div>`;
   const lines = element
     .split("\n")
     .map((line) => `data: elements ${line}`)

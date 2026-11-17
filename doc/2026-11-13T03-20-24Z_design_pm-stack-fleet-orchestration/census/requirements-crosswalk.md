@@ -1,6 +1,6 @@
 # Curated requirement crosswalk and current-state coverage
 
-**Evidence pin:** `a038f084dbeb525494d7bb928ad91f597db2ac51` for source code; issue/ref evidence is separately dated. **Semantic requirements:** 389 records (349 non-duplicate outcome nodes plus 40 explicit duplicate-linked records; 9 group nodes). **Source dispositions:** 3,571 occurrence rows. This is design/census evidence, not implementation completion or deployment proof.
+**Evidence pin:** `a038f084dbeb525494d7bb928ad91f597db2ac51` for source code; issue/ref evidence is separately dated. **Semantic requirements:** 389 records (349 non-duplicate outcome nodes plus 40 explicit duplicate-linked records; 9 group nodes). **Source dispositions:** 3,572 occurrence rows. This is design/census evidence, not implementation completion or deployment proof.
 
 ## Crosswalk schema and coverage rule
 
@@ -35,6 +35,8 @@ Allowed statuses are exactly `verified existing`, `partially implemented`, `open
 Group nodes and their child IDs: `C-R009` → `C-R005`, `C-R039`, `C-R040`, `C-R043`, `C-R096`, `C-R112`, `C-R118`, `C-R126`, `C-R129`, `C-R134`, `C-R145`; `H-R016` → `C-R150`, `C-R151`, `C-R152`, `C-R153`, `P-R022`, `C-R093`, `C-R135`, `P-R046`, `H-R021`; `H-R021` → `H-R038`, `H-R039`, `H-R040`, `H-R041`, `H-R042`, `H-R043`, `H-R044`; `H-R023` → `H-R045`, `H-R046`, `H-R047`, `H-R048`, `H-R049`, `H-R050`; `O-R005` → `O-R054`, `O-R055`, `O-R056`, `O-R057`; `O-R009` → `O-R058`, `O-R059`, `O-R060`, `O-R061`; `O-R014` → `O-R062`, `O-R063`, `O-R064`, `O-R065`; `P-R023` → `P-R041`, `P-R042`, `P-R043`, `P-R044`, `P-R045`, `P-R046`, `P-R047`, `P-R048`; `P-R027` → `P-R049`, `P-R050`, `P-R051`, `P-R052`, `P-R053`, `P-R054`, `P-R055`.
 
 All requirement IDs are individually classified even where `duplicate_of` points to a canonical semantic row; H/P/O/S additions and source modality are retained. The machine ledger is the row-level oracle.
+
+Validation (CEN-01, #9500): `python3 check_requirements_crosswalk.py --check` in this directory validates the 389 IDs, occurrence-citation join to the disposition ledger, status vocabulary, verified/partial evidence objects, design anchors, and the 215-key command map, and emits explicit per-class unmapped occurrence rows; `test_requirements_crosswalk.py` carries the negative cases. The disposition count above was corrected 3,571 -> 3,572 for the recovered S-066 occurrence (see #9500).
 
 ## Exact command and option coverage
 
@@ -281,7 +283,7 @@ The current census command inventory `census/commands.jsonl` contains **215 uniq
 ## Unmapped and missing-evidence report
 
 - Semantic IDs and source counts are checked against the live `inventory/requirements.jsonl`; IDs are not renumbered. Every source occurrence ID referenced by the crosswalk exists in dispositions; no occurrence is silently omitted.
-- Structural join result at this snapshot: 389/389 requirement IDs have one crosswalk row and a real design anchor; all 3,571 occurrence rows are dispositioned, and every substantive `requirement_link`/`candidate_link`/`history`/`example` occurrence has a semantic reference. There are zero structurally unmapped semantic IDs at this snapshot. This does **not** mean zero implementation gaps.
+- Structural join result at this snapshot: 389/389 requirement IDs have one crosswalk row and a real design anchor; all 3,572 occurrence rows are dispositioned, and every substantive `requirement_link`/`candidate_link`/`history`/`example` occurrence has a semantic reference. There are zero structurally unmapped semantic IDs at this snapshot. This does **not** mean zero implementation gaps.
 - Command coverage: all 215 inventory keys match 215 one-to-one slice-map entries; each exact key has a primary/supporting local slice. Those local keys still need real issue URLs after batch filing.
 - Actual issue-URL join: **pending** batch filing and `issues/index.json`; no new local slice is reported as an existing GitHub issue. This is an explicit unresolved coverage join, not a fabricated zero.
 - Design refs resolve to actual file headings; verified/partial rows have concrete source fields. Projector partial evidence is constrained to intake/projection, not Fleet operation acceptance.
@@ -291,3 +293,39 @@ The current census command inventory `census/commands.jsonl` contains **215 uniq
 ## Validation oracle
 
 Re-run exact set equality and uniqueness of crosswalk IDs vs current requirements JSONL; occurrence-ref existence against dispositions; command-key equality vs command-slice-map; actual-heading resolution for every design ref; enum check for status; concrete evidence fields for verified/partial rows; and one primary slice for every exact command row. A zero unmapped count is valid only after those checks; issue URL joins remain pending until real filing.
+
+## CEN-02 evidence audit (2026-11-16, task 15934)
+
+Independent re-check of every row's evidence claims against the pinned
+tree `a038f084dbeb525494d7bb928ad91f597db2ac51`, run by
+`census/test_census_evidence.py` (the audit is table-driven over all
+389 rows; per-row results are recorded additively as the
+`evidence_audit` object in `requirements-crosswalk.jsonl` — no row's
+status or pinned claim was rewritten).
+
+| Class | Rows | Result |
+|---|---|---|
+| `verified existing` / `partially implemented` | 47 | All structurally audited: pin correct, every cited path exists at the pin, every cited line range in bounds, required evidence fields (path/symbol/lines/test/timestamp) complete |
+| All other statuses | 342 | Every row carries explicit `missing_evidence` — no silent gaps (`verdict: missing_recorded`) |
+
+**Findings (bounded claims, not upgrades):**
+
+- **Exact-symbol: 0 of 47.** Every positive row's `symbol` field is a
+  descriptive phrase for an area (e.g. "one-queue matcher / atomic
+  claim selection"), not a literal symbol verified in the cited
+  window. Under the CEN-02 oracle (`test_census_evidence_requires_exact_symbol_and_bounded_claim`),
+  descriptive evidence is `descriptive_bounded`: it supports the
+  row's bounded claim and can never upgrade a separate capability.
+- **Test artifacts: 0 of 47.** Every positive row's `test` field is a
+  prose pointer or note (e.g. "See census/track-b.md §Pinned existing
+  test evidence", "Documented contract; live Project mutation not
+  retested") — `note_only`, not a test artifact at the pin.
+- **Spot checks pass** for the done-check artifacts at the pin:
+  projector `webhook.ts:7–57`, `server.ts:147–201`,
+  `webhook-delivery-id.test.ts:90–154`, `validate.ts` 11–60,
+  `turso_queue.rs` claim/filter 3110–3129.
+- The counterexamples are pinned by the oracle test: an adjacent
+  verb's evidence, a closed parent issue, a mock, and a projector
+  delivery ACK each fail `evidence_supports` for a target capability
+  (a projector ACK is transport evidence, not Fleet command
+  acceptance; #8187 evidence is not #6533 proof).

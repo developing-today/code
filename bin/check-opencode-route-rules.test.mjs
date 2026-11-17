@@ -233,7 +233,9 @@ import { CLASS_FALLBACKS, inspectFallbackLayout } from './check-opencode-route-r
 
 function configWithFallbacks(overrides = {}) {
   const config = configWith({
-    scout: ['good/model#low', 'opencode-route/workhorse'],
+    // Scout chain ruled by Drew 2026-11-14: background first, then workhorse
+    // (matches CLASS_FALLBACKS, .opencode/route-fallbacks.md, and the canonical config).
+    scout: ['good/model#low', 'opencode-route/background', 'opencode-route/workhorse'],
     workhorse: ['good/model#high', 'opencode-route/scout', 'opencode-route/specialist'],
     summit: ['plan/model#high', 'opencode-route/specialist'],
     ...overrides,

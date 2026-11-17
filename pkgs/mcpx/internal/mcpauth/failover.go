@@ -44,6 +44,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/developing-today/code/pkgs/mcpx/internal/defaults"
 )
 
 // Identity is one entry in a failover list.
@@ -87,7 +89,7 @@ type Failover struct {
 
 func (f *Failover) cooldown() time.Duration {
 	if f == nil || f.CooldownSeconds <= 0 {
-		return 60 * time.Second
+		return defaults.FailoverCooldown
 	}
 	return time.Duration(f.CooldownSeconds) * time.Second
 }
@@ -144,10 +146,10 @@ func Classify(err error) Block {
 	if !errors.As(err, &ae) {
 		return BlockHard
 	}
-	switch {
-	case ae.Status == 429:
+	switch ae.Status {
+	case 429:
 		return BlockSoft
-	case ae.Status == 403:
+	case 403:
 		if ae.RetryAfter > 0 {
 			return BlockSoft
 		}
@@ -454,7 +456,7 @@ func (m *Minter) Mint(ctx context.Context, keyPEM []byte, appID, installationID 
 	if err != nil {
 		return "", time.Time{}, err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	body, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		return "", time.Time{}, &APIError{Status: resp.StatusCode, Body: string(body)}

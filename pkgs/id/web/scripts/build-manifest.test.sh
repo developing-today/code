@@ -20,7 +20,10 @@ BUN=${BUN:-bun}
 TMP=$(mktemp -d)
 trap 'rm -rf "$TMP"' EXIT
 
-fail() { echo "FAIL: $1" >&2; exit 1; }
+fail() {
+  echo "FAIL: $1" >&2
+  exit 1
+}
 
 manifest_styles() {
   # print the manifest's styles.css target, or nothing
@@ -34,8 +37,8 @@ run_manifest() {
 # --- cases 1+2: double run -------------------------------------------------
 D=$TMP/double
 mkdir -p "$D/dist"
-printf 'body { color: red; }\n' > "$D/dist/styles.css"
-printf 'console.log(1);\n' > "$D/dist/main.abc12xyz.js"
+printf 'body { color: red; }\n' >"$D/dist/styles.css"
+printf 'console.log(1);\n' >"$D/dist/main.abc12xyz.js"
 run_manifest "$D"
 FIRST=$(manifest_styles "$D")
 [ -n "$FIRST" ] || fail "run 1: manifest has no styles.css entry"
@@ -48,7 +51,7 @@ SECOND=$(manifest_styles "$D")
 echo "ok: double run keeps $FIRST"
 
 # --- case 3: rotation on a changed styles.css ------------------------------
-printf 'body { color: blue; }\n' > "$D/dist/styles.css"
+printf 'body { color: blue; }\n' >"$D/dist/styles.css"
 run_manifest "$D"
 THIRD=$(manifest_styles "$D")
 [ -n "$THIRD" ] && [ "$THIRD" != "$FIRST" ] || fail "rotation: manifest did not rotate ($FIRST -> $THIRD)"
@@ -59,8 +62,8 @@ echo "ok: changed styles.css rotates to $THIRD"
 # --- case 4: adoption from scratch -----------------------------------------
 A=$TMP/adopt
 mkdir -p "$A/dist"
-printf 'body { color: green; }\n' > "$A/dist/styles.deadbeef.css"
-printf 'console.log(2);\n' > "$A/dist/main.abc12xyz.js"
+printf 'body { color: green; }\n' >"$A/dist/styles.deadbeef.css"
+printf 'console.log(2);\n' >"$A/dist/main.abc12xyz.js"
 run_manifest "$A"
 ADOPTED=$(manifest_styles "$A")
 [ "$ADOPTED" = "styles.deadbeef.css" ] || fail "adoption: manifest maps styles.css to $ADOPTED"
@@ -68,7 +71,7 @@ ADOPTED=$(manifest_styles "$A")
 echo "ok: pre-hashed stylesheet adopted"
 
 # --- case 5: non-contract names are left alone ------------------------------
-printf 'body { color: black; }\n' > "$A/dist/styles.darkmode.css"
+printf 'body { color: black; }\n' >"$A/dist/styles.darkmode.css"
 run_manifest "$A"
 [ -f "$A/dist/styles.darkmode.css" ] || fail "non-contract: styles.darkmode.css was deleted"
 [ "$(manifest_styles "$A")" = "styles.deadbeef.css" ] || fail "non-contract: adopted entry changed"

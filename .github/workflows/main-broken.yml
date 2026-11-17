@@ -441,6 +441,7 @@ jobs:
           title: ${{ steps.identify.outputs.title }}
           prompt: ${{ steps.identify.outputs.prompt }}
           issue_number: ${{ steps.identify.outputs.existing_number }}
+          dedupe_key: main-broken-${{ github.run_id }}-${{ github.run_attempt }}-${{ github.job }}-dispatch-append
 
       - name: Append a recurrence comment to the existing issue
         if: steps.identify.outputs.action == 'append' && (steps.scout.outputs.route == '' || steps.scout.outputs.route == 'fix')

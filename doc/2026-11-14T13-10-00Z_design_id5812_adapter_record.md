@@ -27,7 +27,7 @@
   cap 1 MiB; **transport is not authority** — every path leads to the
   same ID validation.
 - **#5791 ordering:** `direct UDP → relay-assisted UDP → TCP →
-  HTTP/HTTPS proxy`; negotiation state machine and failure
+HTTP/HTTPS proxy`; negotiation state machine and failure
   classification stay with #5791. #5811 settled what the WSS/HTTPS
   tiers are. This record settles what the TCP/TLS, WebRTC, and local
   IPC adapters are — not when the client walks to them.
@@ -143,7 +143,7 @@ presents the same contract to the session layer:
 - **Classes.** Stream semantics identical to TCP: both classes on
   one connection, session layer enforces class behaviour.
 - **Identity.** OS peer credentials (SO_PEERCRED / pipe client
-  identity) are checked as a *pre-filter* — a connection from a
+  identity) are checked as a _pre-filter_ — a connection from a
   different OS user is refused before any frame is read — but per
   §2.3 the ID handshake still runs and is authoritative; two ID
   identities sharing one OS account (the common local-dev case)

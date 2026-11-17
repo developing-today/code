@@ -242,7 +242,7 @@ model providers, and the credential/OAuth providers that hand out tokens.
   resolver ignores `nsswitch.conf`. The measured cost was nothing: a fully
   static linux binary within ~100 bytes of the cgo build (14 811 298
   against 14 811 401) that still runs `exec`, verified `not a dynamic
-  executable` under `ldd`. The policy that came out of it (#1987): the
+executable` under `ldd`. The policy that came out of it (#1987): the
   artifacts that ship as a bare binary ship static, and `package.nix` sets
   `env.CGO_ENABLED = "0"`. On macOS, since Go 1.20, `net` and `os/user`
   use the system libraries without cgo, so the flag changes nothing there.
