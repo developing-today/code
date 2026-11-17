@@ -53,17 +53,6 @@ name: mcpx
 # (#297).
 
 on:
-  push:
-    branches: [main]
-    paths:
-      - "pkgs/mcpx/**"
-      # The seed store is data the collector bot files (#1953): its
-      # commits must never re-trigger this workflow (the collector
-      # also marks its commits [skip ci] — both addendum fixes).
-      - "!pkgs/mcpx/testdata/seeds/**"
-      - ".opencode/plugin/**"
-      # Keep the workflow self-tested, including this trigger restoration.
-      - ".github/workflows/mcpx.yml"
   schedule:
     # Nightly full-suite stress (#1973). Odd minute, off the hour.
     - cron: "23 3 * * *"
@@ -165,7 +154,7 @@ jobs:
     name: "basic: test"
     # Original coverage was push-only; the pull_request/schedule
     # triggers above exist for the flake-policy jobs (#1973).
-    if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
+    if: github.event_name == 'push' || github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
     needs: seed
     runs-on: ubuntu-latest
     timeout-minutes: 30
@@ -243,7 +232,7 @@ jobs:
           MCPX_TEST_SEED: ${{ needs.seed.outputs.seed }}
           VARS: ${{ toJSON(vars) }}
           GH_TOKEN: ${{ secrets.MCPX_CONFORMANCE_VARS_TOKEN }}
-          ON_MAIN: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
+          ON_MAIN: ${{ (github.event_name == 'push' || github.event_name == 'schedule') && github.ref == 'refs/heads/main' }}
           RUN: ${{ github.run_id }}/${{ github.run_attempt }}
           MCPX_FEATURE_COVERAGE_LEDGER: ${{ runner.temp }}/mcpx-feature-coverage.jsonl
         run: |

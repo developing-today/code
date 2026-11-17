@@ -19,11 +19,10 @@ name: mcpx conformance
 # "Variables: read and write" on this repository, stored as the secret MCPX_CONFORMANCE_VARS_TOKEN.
 
 on:
-  push:
-    branches: [main]
-    paths:
-      - "pkgs/mcpx/**"
-      - ".github/workflows/mcpx-conformance.yml"
+  schedule:
+    # Nightly instead of on every push to main (Drew, 2026-11-16; see
+    # .github/ci-policy.md "Nightly main CI").
+    - cron: "17 7 * * *"
   workflow_dispatch:
 
 permissions:
@@ -307,7 +306,7 @@ jobs:
         env:
           VARS: ${{ toJSON(vars) }}
           GH_TOKEN: ${{ secrets.MCPX_CONFORMANCE_VARS_TOKEN }}
-          ON_MAIN: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
+          ON_MAIN: ${{ (github.event_name == 'push' || github.event_name == 'schedule') && github.ref == 'refs/heads/main' }}
           RUN: ${{ github.run_id }}/${{ github.run_attempt }}
           MCPX: ${{ steps.lists.outputs.mcpx }}
           SUITE: ${{ steps.lists.outputs.suite }}
@@ -361,7 +360,7 @@ jobs:
         env:
           VARS: ${{ toJSON(vars) }}
           GH_TOKEN: ${{ secrets.MCPX_CONFORMANCE_VARS_TOKEN }}
-          ON_MAIN: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
+          ON_MAIN: ${{ (github.event_name == 'push' || github.event_name == 'schedule') && github.ref == 'refs/heads/main' }}
           RUN: ${{ github.run_id }}/${{ github.run_attempt }}
         run: |
           now=$(date -u +%Y-%m-%dT%H:%M:%SZ)

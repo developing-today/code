@@ -24,13 +24,13 @@ REGISTRY=(
   "workflow-lint.yml|workflow-lint|manual"
   "proxy-port-fallbacks.yml|proxy-port-fallbacks|manual"
   "fleet-search-parity-guard.yml|fleet-search-parity-guard|manual"
-  "opencode-config-guard.yml|opencode-config-guard|main"
-  "mcpx-fix-test-guard.yml|mcpx fix-test guard|main"
-  "production-line-guard.yml|production-line guard|main"
-  "go-modules-build.yml|go modules build|main"
-  "identity-build.yml|identity build|main"
-  "map-build.yml|map build|main"
-  "mcpx-nixbuild.yml|mcpx nix build|main"
+  "opencode-config-guard.yml|opencode-config-guard|nightly"
+  "mcpx-fix-test-guard.yml|mcpx fix-test guard|nightly"
+  "production-line-guard.yml|production-line guard|nightly"
+  "go-modules-build.yml|go modules build|nightly"
+  "identity-build.yml|identity build|nightly"
+  "map-build.yml|map build|nightly"
+  "mcpx-nixbuild.yml|mcpx nix build|nightly"
 )
 
 # Waivers: workflow-file|tier-leg|phase issue. Each waiver records a
