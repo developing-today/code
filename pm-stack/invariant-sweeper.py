@@ -69,6 +69,7 @@ Run on the laptop (Kaneo's Postgres lives there):
 import argparse
 import hashlib
 import json
+import os
 import re
 import subprocess
 import sys
@@ -178,6 +179,26 @@ def resolve_gh_route():
         GH_ROUTE = "gh (FALLBACK: fleet binary not on PATH — personal token)"
 
 
+# #11416: every subprocess this sweeper starts is bounded. The timer
+# runs a oneshot unit, so one wedged gh/psql call would otherwise hang
+# the daily sweep forever. Override with PM_SWEEPER_SUBPROCESS_TIMEOUT
+# (seconds).
+SUBPROCESS_TIMEOUT_SECS = int(os.environ.get("PM_SWEEPER_SUBPROCESS_TIMEOUT", "120"))
+
+
+def run_bounded(cmd, what):
+    """subprocess.run with a timeout; a timeout becomes a RuntimeError
+    naming the call, like every other failure of these helpers."""
+    try:
+        return subprocess.run(
+            cmd, capture_output=True, text=True, timeout=SUBPROCESS_TIMEOUT_SECS
+        )
+    except subprocess.TimeoutExpired:
+        raise RuntimeError(
+            f"{what} timed out after {SUBPROCESS_TIMEOUT_SECS}s"
+        ) from None
+
+
 def gh_graphql(query, **variables):
     """One GraphQL call via the gh CLI. Raises RuntimeError on failure."""
     cmd = [*GH_CMD, "api", "graphql", "-f", f"query={query}"]
@@ -185,7 +206,7 @@ def gh_graphql(query, **variables):
         # -F types the value (ints stay ints); -f keeps strings verbatim
         # (pagination cursors must never be re-typed).
         cmd += ["-F" if isinstance(value, int) else "-f", f"{key}={value}"]
-    out = subprocess.run(cmd, capture_output=True, text=True)
+    out = run_bounded(cmd, "gh api graphql")
     if out.returncode != 0:
         raise RuntimeError(f"gh api graphql failed: {out.stderr.strip()[:300]}")
     data = json.loads(out.stdout)
@@ -195,7 +216,7 @@ def gh_graphql(query, **variables):
 
 
 def gh_run(*args):
-    out = subprocess.run([*GH_CMD, *args], capture_output=True, text=True)
+    out = run_bounded([*GH_CMD, *args], f"gh {' '.join(args)}")
     if out.returncode != 0:
         raise RuntimeError(f"gh {' '.join(args)} failed: {out.stderr.strip()[:300]}")
     return out.stdout
@@ -361,7 +382,7 @@ def kaneo_links():
         "JOIN task t ON t.id = el.task_id "
         "WHERE el.resource_type='issue'"
     )
-    out = subprocess.run(KAN_PSQL + ["-c", sql], capture_output=True, text=True)
+    out = run_bounded(KAN_PSQL + ["-c", sql], "kaneo psql")
     if out.returncode != 0:
         raise RuntimeError(f"kaneo psql failed: {out.stderr.strip()[:300]}")
     links = {}
