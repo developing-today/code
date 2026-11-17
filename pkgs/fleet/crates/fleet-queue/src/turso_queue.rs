@@ -2994,24 +2994,26 @@ fn claim_by_id(
     if let Some(reason) = claim_guard_reason(&row) {
         quarantine_task(t, task_id, &reason)?;
         return Ok(None);
-        // #8217: the plain by-id path honors the same recorded
-        // platform limitation the transfer claim enforces (#8210):
-        // an invalid (reason-less) stored limitation is cleared,
-        // never enforced; a valid one refuses a claim from any
-        // other family (or none) — the row simply reads unclaimable
-        // by id, like any other by-id refusal.
-        if let Some(ledger) = get_ledger(t, task_id)? {
-            let limit = ledger.get("platform_limit").and_then(|v| v.as_str());
-            let limit_reason = ledger.get("platform_limit_reason").and_then(|v| v.as_str());
-            if platform_limit_invalid(limit, limit_reason) {
-                t.exec(
-                    "UPDATE repo_task_lane_ledger SET platform_limit = NULL, \
-                   platform_limit_reason = NULL, updated_at = ? WHERE task_id = ?",
-                    &[Arg::Text(now_iso()), Arg::Int(task_id)],
-                )?;
-            } else if platform_limit_refusal(limit, limit_reason, family).is_some() {
-                return Ok(None);
-            }
+    }
+    // #8217/#8456: the plain by-id path honors the same recorded
+    // platform limitation the transfer claim enforces (#8210):
+    // an invalid (reason-less) stored limitation is cleared,
+    // never enforced; a valid one refuses a claim from any
+    // other family (or none) — the row simply reads unclaimable
+    // by id, like any other by-id refusal. This block must stay
+    // OUTSIDE the claim-guard block above: inside it, it sat
+    // after that block's `return Ok(None)` and never ran (G7).
+    if let Some(ledger) = get_ledger(t, task_id)? {
+        let limit = ledger.get("platform_limit").and_then(|v| v.as_str());
+        let limit_reason = ledger.get("platform_limit_reason").and_then(|v| v.as_str());
+        if platform_limit_invalid(limit, limit_reason) {
+            t.exec(
+                "UPDATE repo_task_lane_ledger SET platform_limit = NULL, \
+               platform_limit_reason = NULL, updated_at = ? WHERE task_id = ?",
+                &[Arg::Text(now_iso()), Arg::Int(task_id)],
+            )?;
+        } else if platform_limit_refusal(limit, limit_reason, family).is_some() {
+            return Ok(None);
         }
     }
     let status = row
@@ -11068,6 +11070,70 @@ mod tests {
     }
 
     #[test]
+    fn claim_by_id_platform_limit_block_is_reachable_8456() {
+        // #8456 (G7) oracle: the by-id platform-limit enforcement
+        // must EXECUTE — before this fix it sat inside the
+        // claim-guard block, after that block's `return Ok(None)`,
+        // as unreachable code (rustc warned; the source-shape test
+        // above still passed, because the code was present, just
+        // dead). Reachability half: in claim_by_id's own segment,
+        // the guard block contains no platform_limit_refusal call,
+        // and the enforcement call appears after the guard block's
+        // closing brace.
+        let src = include_str!("turso_queue.rs");
+        let seg = src
+            .split("fn claim_by_id(")
+            .nth(1)
+            .unwrap_or("")
+            .split("\n}\n")
+            .next()
+            .unwrap_or("");
+        let guard_open = seg
+            .find("if let Some(reason) = claim_guard_reason(&row)")
+            .expect("claim_by_id opens with the claim guard");
+        let guard_close = seg[guard_open..]
+            .find("\n    }\n")
+            .map(|i| guard_open + i)
+            .expect("the claim-guard block closes");
+        let guard_block = &seg[guard_open..guard_close];
+        assert!(
+            !guard_block.contains("platform_limit_refusal("),
+            "the enforcement must not sit inside the claim-guard block (dead after its return)"
+        );
+        let enforce_at = seg
+            .find("platform_limit_refusal(")
+            .expect("claim_by_id enforces the recorded platform limitation");
+        assert!(
+            enforce_at > guard_close,
+            "the enforcement runs after the guard block, on the live by-id path"
+        );
+        // Behavior half — the decisions the now-reachable block
+        // makes, pinned on the pure predicates it runs (the
+        // claim_race idiom: no live store needed). A valid
+        // limitation refuses every other family, and a claim
+        // declaring no family at all:
+        assert!(
+            platform_limit_refusal(
+                Some("muse"),
+                Some("needs the muse surface"),
+                Some("openchamber"),
+            )
+            .is_some()
+        );
+        assert!(
+            platform_limit_refusal(Some("muse"), Some("needs the muse surface"), None,).is_some()
+        );
+        // The limited family itself is not refused:
+        assert!(
+            platform_limit_refusal(Some("muse"), Some("needs the muse surface"), Some("muse"),)
+                .is_none()
+        );
+        // A reason-less stored limitation is invalid: the block
+        // clears it, never enforces it.
+        assert!(platform_limit_invalid(Some("muse"), None));
+        assert!(platform_limit_refusal(Some("muse"), None, Some("openchamber")).is_none());
+    }
+
     fn claim_by_id_targets_exactly_the_named_task_7735() {
         // #7735 oracle: a targeted claim is a claim of one row or
         // no claim — it can never fall through to the queue's
