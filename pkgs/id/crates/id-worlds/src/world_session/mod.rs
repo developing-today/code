@@ -77,8 +77,9 @@ pub(crate) use documents::{
 
 pub use types::MAX_ADMIN_TOKEN_BYTES;
 pub(crate) use types::{
-    CAPS_CEILING_NOTICE, ClientFrame, MAX_CAPABILITY_BYTES, MAX_CONCURRENT_MODULE_UPLOADS,
-    MAX_RESUME_TOKEN_BYTES, ServerFrame, invite_bounds,
+    CAPS_CEILING_NOTICE, ClientFrame, HoverEvent, InputEnvironment, InputRefusalReason,
+    MAX_CAPABILITY_BYTES, MAX_CONCURRENT_MODULE_UPLOADS, MAX_RESUME_TOKEN_BYTES, PointerButton,
+    PointerEvent, ServerFrame, invite_bounds,
 };
 pub use types::{
     INVITE_DEFAULT_SECS, INVITE_MAX_SECS, Inbound, InstallError, InviteError, InviteResponse,
