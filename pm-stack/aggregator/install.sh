@@ -262,8 +262,23 @@ systemctl --user is-active pm-aggregator.service
 GATHERER_SVC_SRC="$SRC/systemd/quota-gatherer.service"
 GATHERER_TMR_SRC="$SRC/systemd/quota-gatherer.timer"
 if [ -f "$GATHERER_SVC_SRC" ] && [ -f "$GATHERER_TMR_SRC" ]; then
-  cp "$GATHERER_SVC_SRC" "$HOME/.config/systemd/user/quota-gatherer.service"
-  cp "$GATHERER_TMR_SRC" "$HOME/.config/systemd/user/quota-gatherer.timer"
+  # Home-manager hosts manage these units as symlinks into /nix/store
+  # (#9586): a plain cp over the symlink aborts the install on the
+  # read-only store. Mirror the pm-aggregator unit guard above: skip
+  # the copy for symlink-managed destinations and leave those units
+  # to the NixOS/home-manager switch.
+  GATHERER_SVC_DST="$HOME/.config/systemd/user/quota-gatherer.service"
+  GATHERER_TMR_DST="$HOME/.config/systemd/user/quota-gatherer.timer"
+  if [ -L "$GATHERER_SVC_DST" ]; then
+    echo "quota-gatherer.service is symlink-managed at $GATHERER_SVC_DST; skipping unit copy"
+  else
+    cp "$GATHERER_SVC_SRC" "$GATHERER_SVC_DST"
+  fi
+  if [ -L "$GATHERER_TMR_DST" ]; then
+    echo "quota-gatherer.timer is symlink-managed at $GATHERER_TMR_DST; skipping unit copy"
+  else
+    cp "$GATHERER_TMR_SRC" "$GATHERER_TMR_DST"
+  fi
   systemctl --user daemon-reload
   systemctl --user enable --now quota-gatherer.timer
   echo "quota-gatherer.timer: $(systemctl --user is-active quota-gatherer.timer)"
