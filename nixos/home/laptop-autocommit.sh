@@ -30,6 +30,29 @@ fi
 db="$(git -C "$d" symbolic-ref --short refs/remotes/origin/HEAD 2>/dev/null | sed 's|^origin/||')"
 [ -z "$db" ] && db=main
 [ "$(git -C "$d" branch --show-current)" = "$db" ] || exit 0
+# Oversized-file guard (#10559): a tracked file over GitHub's 100 MB
+# per-file limit makes every push impossible, and the every-minute sweep
+# re-enters the death spiral — re-hash, pack-objects on all cores for the
+# full push timeout, unpushed count growing forever. Refuse loudly BEFORE
+# staging when a tracked file git already reports as modified exceeds the
+# threshold (95 MB, safely under the hard limit): skip this repo's commit
+# this cycle and exit non-zero naming the file and its size, so the unit
+# shows failed and a human untracks or shrinks the file. Cheap by
+# construction: only files in the unstaged/staged diffs are stat'ed, never
+# a full-tree scan. LAPTOP_AUTOCOMMIT_MAX_FILE_BYTES overrides the
+# threshold (tests use it to exercise the guard without 95 MB fixtures).
+max_bytes="${LAPTOP_AUTOCOMMIT_MAX_FILE_BYTES:-99614720}"
+oversized=""
+while IFS= read -r -d '' f; do
+  sz="$(stat -c %s -- "$d/$f" 2>/dev/null || echo 0)"
+  if [ "${sz:-0}" -gt "$max_bytes" ]; then
+    oversized="${oversized} ${f} (${sz} bytes)"
+  fi
+done < <(git -C "$d" diff --name-only -z; git -C "$d" diff --cached --name-only -z)
+if [ -n "$oversized" ]; then
+  echo "autocommit: OVERSIZED tracked file(s) in $d over the ${max_bytes}-byte guard — refusing to commit this cycle (a push past GitHub's 100 MB per-file limit can never succeed, #10559):${oversized}"
+  exit 1
+fi
 git -C "$d" add -u || exit 0
 if ! git -C "$d" diff --cached --quiet; then
   if git -C "$d" commit -q -m "autocommit: $(basename "$d") $(date '+%Y-%m-%d %H:%M')"; then
